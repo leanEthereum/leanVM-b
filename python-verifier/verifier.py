@@ -357,91 +357,16 @@ def lagrange_interpolate(nodes: Sequence[E], values: Sequence[E], point: E) -> E
 # Proof transport ------------------------------------------------------------
 
 
-class BinaryReader:
-    """Strict reader for bincode's fixed-width encoding used by the project."""
-
-    def __init__(self, data: bytes) -> None:
-        self.data = data
-        self.offset = 0
-
-    def take(self, length: int) -> bytes:
-        end = self.offset + length
-        require(end <= len(self.data), "truncated proof encoding")
-        result = self.data[self.offset : end]
-        self.offset = end
-        return result
-
-    def u64(self) -> int:
-        return int.from_bytes(self.take(8), "little")
-
-    def field(self) -> E:
-        return E.from_bytes(self.take(24))
-
-    def count(self, item_size: int, what: str) -> range:
-        """The length prefix of a vector of `item_size`-byte items."""
-        length = self.u64()
-        require(length <= self.remaining // item_size, f"invalid {what} length")
-        return range(length)
-
-    def fields(self) -> tuple[E, ...]:
-        return tuple(self.field() for _ in self.count(24, "field vector"))
-
-    def base_fields(self) -> tuple[K, ...]:
-        return tuple(K(self.u64()) for _ in self.count(8, "base-field vector"))
-
-    def hashes(self) -> tuple[Digest, ...]:
-        return tuple(Digest(self.take(32)) for _ in self.count(32, "hash vector"))
-
-    @property
-    def remaining(self) -> int:
-        return len(self.data) - self.offset
-
-    def finish(self) -> None:
-        require(self.remaining == 0, "trailing proof encoding")
-
-
-@dataclass(frozen=True)
-class RawMerklePath:
-    """One query's opening: its leaf words and the full sibling path to the root.
-
-    A leaf is its raw K words, which is what the committer hashed, so an E-valued
-    row of width `w` arrives as `3w` of them and is regrouped by the reader.
-    Unpruned: two queries of the same phase repeat whatever siblings they share,
-    which is what makes checking one a walk up one path.
-    """
-
-    leaf_data: tuple[K, ...]
-    path: tuple[Digest, ...]
-
-    @classmethod
-    def read(cls, reader: BinaryReader) -> RawMerklePath:
-        return cls(reader.base_fields(), reader.hashes())
-
-    def root(self, leaf_index: int) -> Digest:
-        """The root this opening claims, recomputed from its leaf and path."""
-        node = _row_hash(self.leaf_data)
-        for sibling in self.path:
-            node = _hash_pair(node, sibling) if leaf_index & 1 == 0 else _hash_pair(sibling, node)
-            leaf_index >>= 1
-        return node
-
-
 @dataclass(frozen=True)
 class Proof:
     stream: tuple[E, ...]
-    merkle: tuple[RawMerklePath, ...]
+    merkle_openings: bytes
 
     @classmethod
-    def from_bincode(cls, data: bytes) -> Proof:
-        reader = BinaryReader(data)
-        stream = reader.fields()
-        merkle = tuple(RawMerklePath.read(reader) for _ in reader.count(16, "opening"))
-        reader.finish()
-        return cls(stream, merkle)
-
-    @classmethod
-    def load(cls, path: str | Path) -> Proof:
-        return cls.from_bincode(Path(path).read_bytes())
+    def load(cls, stream: Path, merkle_openings: Path) -> Proof:
+        data = stream.read_bytes()
+        require(len(data) % 24 == 0, "the stream is not a whole number of field elements")
+        return cls(tuple(E.from_bytes(data[at : at + 24]) for at in range(0, len(data), 24)), merkle_openings.read_bytes())
 
 
 # Fiat--Shamir ---------------------------------------------------------------
@@ -516,6 +441,13 @@ class Transcript:
         self.state = compress(self.state, block)
         require(valid, "invalid grinding nonce")
 
+    def _take(self, length: int) -> bytes:
+        end = self.opening_offset + length
+        require(end <= len(self.proof.merkle_openings), "Merkle opening missing")
+        chunk = self.proof.merkle_openings[self.opening_offset : end]
+        self.opening_offset = end
+        return chunk
+
     def merkle(self, root: Digest, block_length: int, queries: Sequence[int], leaf_words: int) -> list[tuple[K, ...]]:
         """Pull one opening per query and authenticate each against `root`.
 
@@ -526,14 +458,15 @@ class Transcript:
         height = log2_strict(block_length)
         rows = []
         for query in queries:
-            require(self.opening_offset < len(self.proof.merkle), "Merkle opening missing")
-            opening = self.proof.merkle[self.opening_offset]
-            self.opening_offset += 1
             require(0 <= query < block_length, "Merkle query is out of range")
-            require(len(opening.leaf_data) == leaf_words, "opened row has the wrong width")
-            require(len(opening.path) == height, "Merkle path has the wrong length")
-            require(opening.root(query) == root, "Merkle root mismatch")
-            rows.append(opening.leaf_data)
+            # The leaf's bytes are the committer's preimage as they lie on the wire.
+            leaf = self._take(8 * leaf_words)
+            node = blake2s_hash(leaf)
+            for level in range(height):
+                sibling = Digest(self._take(32))
+                node = _hash_pair(node, sibling) if query >> level & 1 == 0 else _hash_pair(sibling, node)
+            require(node == root, "Merkle root mismatch")
+            rows.append(tuple(K(word) for word in unpack(f"<{leaf_words}Q", leaf)))
         return rows
 
     def round_poly(self, count: int, claim: E, equality: E | None = None) -> list[E]:
@@ -555,7 +488,7 @@ class Transcript:
 
     def finish(self) -> None:
         require(self.stream_offset == len(self.proof.stream), "proof stream not fully consumed")
-        require(self.opening_offset == len(self.proof.merkle), "Merkle openings not fully consumed")
+        require(self.opening_offset == len(self.proof.merkle_openings), "Merkle openings not fully consumed")
 
 
 # GKR product triple ---------------------------------------------------------
@@ -1291,11 +1224,6 @@ def _hash_pair(left: Digest, right: Digest) -> Digest:
     return blake2s_hash(left.value + right.value)
 
 
-def _row_hash(row: Sequence[K]) -> Digest:
-    """The committer's leaf preimage: the row's words in their 8-byte transport image."""
-    return blake2s_hash(b"".join(word.to_bytes() for word in row))
-
-
 def _ext_row(words: Sequence[K]) -> tuple[E, ...]:
     """Regroup a level's leaf words into the E values they encode, three per lane."""
     return tuple(E(*words[i : i + 3]) for i in range(0, len(words), 3))
@@ -1427,10 +1355,7 @@ def verify_whir(
         # Level 0 committed the K witness, one leaf word per lane; every deeper
         # level a folded E one, three words per lane.
         lanes = 2**fold_count
-        try:
-            words = transcript.merkle(current_root, block_length, queries, lanes if level == 0 else 3 * lanes)
-        except VerificationError as exc:
-            raise VerificationError(f"WHIR level {level}: {exc}") from exc
+        words = transcript.merkle(current_root, block_length, queries, lanes if level == 0 else 3 * lanes)
         rows: list[Sequence[K | E]] = [tuple(reversed(row)) for row in words] if level == 0 else [_ext_row(row) for row in words]
         enforced = _enforced_sum(rows, level_folds, query_weights)
 
@@ -1793,9 +1718,6 @@ def verify_stacked_opening(
     )
 
 
-# Complete VM verification and CLI -------------------------------------------
-
-
 def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) -> None:
     pi = public_input.halves()
     # The public statement, bound before any challenge (`lean_vm::cpu::fs_seed`).
@@ -1899,13 +1821,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Verify a leanVM-b execution proof")
     parser.add_argument("bytecode", type=Path, help="stacked bytecode multilinear, little-endian 64-bit words")
     parser.add_argument("public_input", type=Path, help="256-bit public input")
-    parser.add_argument("proof", type=Path, help="bincode proof")
+    parser.add_argument("stream", type=Path, help="the proof's scalar stream, 24-byte little-endian field elements")
+    parser.add_argument("merkle_openings", type=Path, help="every Merkle opening: its leaf's words, then its sibling digests")
     arguments = parser.parse_args(argv)
     try:
         encoded_bytecode = arguments.bytecode.read_bytes()
         require(len(encoded_bytecode) % 8 == 0, "bytecode is not a whole number of 64-bit words")
         bytecode = [K(int.from_bytes(encoded_bytecode[i : i + 8], "little")) for i in range(0, len(encoded_bytecode), 8)]
-        verify_execution(bytecode, Digest(arguments.public_input.read_bytes()), Proof.load(arguments.proof))
+        proof = Proof.load(arguments.stream, arguments.merkle_openings)
+        verify_execution(bytecode, Digest(arguments.public_input.read_bytes()), proof)
     except (OSError, ValueError, KeyError, VerificationError) as exc:
         parser.exit(1, f"verification failed: {exc}\n")
     print("verification succeeded")

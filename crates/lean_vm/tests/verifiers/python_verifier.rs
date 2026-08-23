@@ -3,12 +3,13 @@
 //! change must land in all three, and this is what catches the Python one
 //! drifting.
 
+use fiat_shamir::transcript::RawProof;
 use lean_compiler::{compile, parse_with_replacements};
 use lean_vm::cpu::{prove, verify};
 use primitives::field::{F64, F192, g_pow};
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output};
 use std::time::Instant;
 
 const SOURCE: &str = r#"
@@ -39,6 +40,41 @@ def main():
 "#;
 
 const LOOP_STEPS: usize = 16_384;
+
+/// Write `raw` as the two files Python reads and run the verifier on it: the
+/// scalar stream as 24-byte little-endian elements, and every opening's leaf
+/// words followed by its sibling digests. Neither file carries a length, the
+/// reader deriving every leaf width and tree height from the protocol it is
+/// replaying.
+fn python_verify(directory: &Path, bytecode: &Path, public_input: &Path, raw: &RawProof) -> Output {
+    let mut stream = Vec::new();
+    for scalar in &raw.stream {
+        for limb in [scalar.c0, scalar.c1, scalar.c2] {
+            stream.extend(limb.to_le_bytes());
+        }
+    }
+    let mut openings = Vec::new();
+    for opening in &raw.merkle {
+        for word in &opening.leaf_data {
+            openings.extend(word.0.to_le_bytes());
+        }
+        for digest in &opening.path {
+            openings.extend(digest);
+        }
+    }
+    let stream_path = directory.join("stream.bin");
+    let openings_path = directory.join("merkle_openings.bin");
+    std::fs::write(&stream_path, stream).expect("write scalar stream");
+    std::fs::write(&openings_path, openings).expect("write Merkle openings");
+    Command::new("python3")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../python-verifier/verifier.py"))
+        .arg(bytecode)
+        .arg(public_input)
+        .arg(stream_path)
+        .arg(openings_path)
+        .output()
+        .expect("run native Python verifier")
+}
 
 fn public_input() -> [F192; 2] {
     use lean_vm::hash_flock::{FINAL_FLAG, IV, PINNED_T, compression, digest, metadata};
@@ -82,11 +118,9 @@ fn test_python_verifier() {
 
     let directory = std::env::temp_dir().join(format!("leanvm-python-verifier-test-{}", std::process::id()));
     std::fs::create_dir_all(&directory).expect("create test directory");
-    let proof_path = directory.join("proof.bin");
     let bytecode_path = directory.join("bytecode.bin");
     let public_input_path = directory.join("public_input.bin");
     let encoded = bincode::serialize(&proof).expect("serialize proof");
-    std::fs::write(&proof_path, bincode::serialize(&raw).expect("serialize raw proof")).expect("write proof");
     // The statement the verifier takes is the bytecode multilinear plus 256 bits
     // of public input, not a structured program.
     let table: Vec<u8> = lean_vm::cpu::layout::bytecode_table(&program.prog)
@@ -100,15 +134,8 @@ fn test_python_verifier() {
         .collect();
     std::fs::write(&public_input_path, &pi).expect("write public input");
 
-    let verifier = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../python-verifier/verifier.py");
     let verification_started = Instant::now();
-    let output = Command::new("python3")
-        .arg(&verifier)
-        .arg(&bytecode_path)
-        .arg(&public_input_path)
-        .arg(&proof_path)
-        .output()
-        .expect("run native Python verifier");
+    let output = python_verify(&directory, &bytecode_path, &public_input_path, &raw);
     let verification_time = verification_started.elapsed();
     assert!(
         output.status.success(),
@@ -122,18 +149,7 @@ fn test_python_verifier() {
     assert!(verify(&program, &public_input, &malformed_announcement).is_err());
     let mut raw_announcement = raw.clone();
     raw_announcement.stream[0].c1 = 1;
-    std::fs::write(
-        &proof_path,
-        bincode::serialize(&raw_announcement).expect("serialize malformed announcement"),
-    )
-    .expect("write malformed announcement");
-    let output = Command::new("python3")
-        .arg(&verifier)
-        .arg(&bytecode_path)
-        .arg(&public_input_path)
-        .arg(&proof_path)
-        .output()
-        .expect("run Python verifier on malformed announcement");
+    let output = python_verify(&directory, &bytecode_path, &public_input_path, &raw_announcement);
     assert!(!output.status.success(), "Python accepted a noncanonical announcement");
 
     let mut malformed_root = proof.clone();
@@ -142,18 +158,7 @@ fn test_python_verifier() {
     assert!(verify(&program, &public_input, &malformed_root).is_err());
     let mut raw_root = raw.clone();
     raw_root.stream[root_offset].c2 = 1;
-    std::fs::write(
-        &proof_path,
-        bincode::serialize(&raw_root).expect("serialize malformed root"),
-    )
-    .expect("write malformed root");
-    let output = Command::new("python3")
-        .arg(verifier)
-        .arg(bytecode_path)
-        .arg(public_input_path)
-        .arg(proof_path)
-        .output()
-        .expect("run Python verifier on malformed root");
+    let output = python_verify(&directory, &bytecode_path, &public_input_path, &raw_root);
     assert!(
         !output.status.success(),
         "Python accepted a noncanonical commitment root"
