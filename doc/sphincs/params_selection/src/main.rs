@@ -2,7 +2,7 @@
 //! and everything left over gets searched.
 
 use sphincs_params::cost::{Convention, SCHEMES, Scheme};
-use sphincs_params::report::{report, table, utilization};
+use sphincs_params::report::{legend, report, table, utilization};
 use sphincs_params::search::{
     A_MAX, Budgets, CHAIN_BITS_MAX, D_MAX, DROPPED_MAX, Grid, H_MAX, K_MAX, LEVEL1_BITS, Span, Stats, Sums, Unit,
     edges, search,
@@ -255,6 +255,7 @@ fn run(argv: &[String]) -> Result<bool, String> {
             unit.label()
         );
         println!("{}\n", table(&b, &found[..top.min(found.len())]));
+        println!("{}\n", legend(&b));
     }
 
     let best = &found[0];

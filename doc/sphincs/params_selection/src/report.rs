@@ -121,8 +121,8 @@ const COLUMNS: [(&str, usize); 16] = [
     ("size", 6),
     ("keygen", 8),
     ("sign", 8),
-    ("sign$", 8),
-    ("state", 7),
+    ("cached", 8),
+    ("cache B", 7),
 ];
 
 fn cells(b: &Budgets, c: &Candidate) -> Vec<String> {
@@ -145,6 +145,17 @@ fn cells(b: &Budgets, c: &Candidate) -> Vec<String> {
         si(b.unit.of(x.sign_cached)),
         x.cache_bytes.to_string(),
     ]
+}
+
+/// What the abbreviated columns mean, since several of them are this project's
+/// own and not the report's.
+pub fn legend(b: &Budgets) -> String {
+    format!(
+        "ht = top layer height, cb = log2(w), drop = chains dropped beyond the pinned digest bits, l = chains signed, \
+         S_wn = target digit sum\nsign / cached = signing without and with the top tree's half top in state, \
+         cache B of it; verify, keygen and both signs in {}",
+        b.unit.label()
+    )
 }
 
 pub fn table(b: &Budgets, cands: &[Candidate]) -> String {

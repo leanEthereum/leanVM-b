@@ -6,8 +6,7 @@ One command. Give a parameter to pin it, leave it out to search it:
 
 ```sh
 cd doc/sphincs/params_selection
-cargo run --release -- --lifetime 40 --scheme W+C_F+C --height 40 --layers 5 --top-height 8 \
-                       -a 14 -k 11 -w 256 --drop-chains 0 --swn 2040
+cargo run --release -- --lifetime 40 --scheme W+C_F+C --height 40 --layers 5 --top-height 8 -a 14 -k 11 -w 256 --drop-chains 0 --swn 2040
 ```
 
 That pins everything, so it just costs that one set (the report's bold 2^40 row: 4356 bytes, 10402 hashes to verify). Leave axes out and they get searched instead, against whichever budgets you set:
