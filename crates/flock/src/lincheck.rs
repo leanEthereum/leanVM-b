@@ -135,7 +135,7 @@ use zk_alloc::ArenaVec;
 //
 // `LincheckCircuit` is the seam: the prover and verifier take
 // `&dyn LincheckCircuit` instead of a pair of matrices. The one live impl is
-// `blake2s::WalkLincheckCircuit`, which walks the circuit in both directions
+// `hash::WalkLincheckCircuit`, which walks the circuit in both directions
 // (forwards for the verifier's `bilinear_form`, backwards for the prover's
 // marginal) and never touches a matrix entry. See doc/leanvm, Annex C
 // "Evaluating the matrices".
