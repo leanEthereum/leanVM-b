@@ -112,37 +112,11 @@ impl Profile {
     }
 }
 
-impl Profile {
-    /// The heights as one token, for a table column: `5x8`, `12+3x5`, `11+5+7+3`.
-    pub fn compact(&self) -> String {
-        format!("{self}").replace(' ', "")
-    }
-}
-
 impl std::fmt::Display for Profile {
+    /// Every height, top first: `12 + 7 + 7`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.uniform() {
-            return write!(f, "{} x {}", self.layers(), self.h_top());
-        }
-        // run-length, so the usual shapes read as "12 + 3 x 5"
-        let mut first = true;
-        let mut runs = Vec::new();
-        for h in self.heights() {
-            match runs.last_mut() {
-                Some((prev, count)) if *prev == h => *count += 1,
-                _ => runs.push((h, 1u64)),
-            }
-        }
-        for (h, count) in runs {
-            let sep = if first { "" } else { " + " };
-            first = false;
-            if count == 1 {
-                write!(f, "{sep}{h}")?;
-            } else {
-                write!(f, "{sep}{count} x {h}")?;
-            }
-        }
-        Ok(())
+        let listed: Vec<String> = self.heights().map(|h| h.to_string()).collect();
+        write!(f, "{}", listed.join(" + "))
     }
 }
 

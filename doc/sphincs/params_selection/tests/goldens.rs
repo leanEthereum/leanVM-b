@@ -521,7 +521,7 @@ fn any_profile_can_be_costed() {
     assert_eq!(lay.profile, lopsided);
     // and the canonical one with the same top is at least as cheap to sign
     let canon = Layers::new(&Params { h_top: Some(11), ..p }).unwrap();
-    assert_eq!(format!("{}", canon.profile), "11 + 3 x 5");
+    assert_eq!(format!("{}", canon.profile), "11 + 5 + 5 + 5");
     assert!(canon.trees_cached.compressions <= lay.trees_cached.compressions);
     // heights have to add up over the layers there are
     assert!(Layers::from_profile(&p, Profile::new(&[11, 5, 7, 4]).unwrap()).is_none());
