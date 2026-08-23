@@ -257,7 +257,7 @@ fn digit_sum_counts_are_exact() {
 /// `(lifetime, h, k, a)` -> forgery exponent, from `security.sage` via the
 /// python port's 100-digit decimal sum. The f64 log-space version here has to
 /// land within a thousandth of a bit.
-const SECURITY: [(u32, u32, u64, u64, f64); 13] = [
+const SECURITY: [(i32, u32, u64, u64, f64); 13] = [
     (64, 63, 14, 12, 133.749299297),
     (40, 44, 8, 16, 128.283950447),
     (40, 40, 11, 14, 134.630384667),
@@ -275,22 +275,23 @@ const SECURITY: [(u32, u32, u64, u64, f64); 13] = [
 
 #[test]
 fn security_matches_the_decimal_sum() {
-    for (lifetime, h, k, a, want) in SECURITY {
-        let got = forgery_exponent(lifetime, h, k, a).expect("converges");
+    for (log2_q_s, h, k, a, want) in SECURITY {
+        let q_s = 2f64.powi(log2_q_s);
+        let got = forgery_exponent(q_s, h, k, a).expect("converges");
         assert!(
             (got - want).abs() < 1e-3,
-            "forgery exponent at q_s=2^{lifetime} h={h} k={k} a={a}: got {got:.9}, want {want:.9}"
+            "forgery exponent at q_s=2^{log2_q_s} h={h} k={k} a={a}: got {got:.9}, want {want:.9}"
         );
     }
     // The preimage bound caps the reported level, and 128 bits is what every
     // parameter set in the report reaches.
-    assert_eq!(security_bits(64, 63, 14, 12, 16), 128.0);
-    assert_eq!(security_bits(30, 32, 10, 14, 16), 128.0);
+    assert_eq!(security_bits(2f64.powi(64), 63, 14, 12, 16), 128.0);
+    assert_eq!(security_bits(2f64.powi(30), 32, 10, 14, 16), 128.0);
     // n = 32 lifts the cap, so the forgery term shows through.
-    assert!((security_bits(30, 32, 10, 14, 32) - 131.514752565).abs() < 1e-3);
+    assert!((security_bits(2f64.powi(30), 32, 10, 14, 32) - 131.514752565).abs() < 1e-3);
     // A lifetime far past the hypertree has nothing left to quantify.
-    assert!(forgery_exponent(40, 20, 10, 15).is_none());
-    assert_eq!(security_bits(40, 20, 10, 15, 16), 0.0);
+    assert!(forgery_exponent(2f64.powi(40), 20, 10, 15).is_none());
+    assert_eq!(security_bits(2f64.powi(40), 20, 10, 15, 16), 0.0);
 }
 
 #[test]
@@ -299,7 +300,7 @@ fn secure_k_form_an_up_set() {
     // property that makes "the smallest secure k" a meaningful phrase at all.
     for (h, a) in [(20u32, 10u64), (24, 12), (30, 14)] {
         let flags: Vec<bool> = (1..=32)
-            .map(|k| security_bits(20, h, k, a, 16) >= LEVEL1_BITS)
+            .map(|k| security_bits(2f64.powi(20), h, k, a, 16) >= LEVEL1_BITS)
             .collect();
         let mut sorted = flags.clone();
         sorted.sort_unstable();
@@ -326,9 +327,9 @@ fn half_top_cache_is_a_saving_and_reduces_to_the_full_tree() {
     assert_eq!(costs(none, None).unwrap().sign_cached.hashes, c.sign.hashes);
 }
 
-fn budgets(lifetime: u32, keygen: u64, sign: u64, cached: u64, size: u64) -> Budgets {
+fn budgets(log2_q_s: i32, keygen: u64, sign: u64, cached: u64, size: u64) -> Budgets {
     Budgets {
-        lifetime,
+        q_s: 2f64.powi(log2_q_s),
         keygen: Some(keygen),
         sign: Some(sign),
         sign_cached: Some(cached),

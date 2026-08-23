@@ -5,7 +5,7 @@
 //! log2-space `f64`, as the report's own site does, which `tests/goldens` pins
 //! against the decimal values to better than 0.001 bits.
 
-/// -log2 P(FORS subset forgery) after `q_s = 2^lifetime` signatures.
+/// -log2 P(FORS subset forgery) after `q_s` signatures.
 ///
 /// An adversary that finds a hypertree leaf reused `r` times, and a message
 /// whose `k` FORS indices all point at leaves those `r` signatures already
@@ -19,17 +19,18 @@
 /// The binomial term is carried by its recurrence rather than built from
 /// `C(q_s, r)`, so `q_s = 2^64` costs no more than `q_s = 2^20`.
 ///
+/// `q_s` need not be a power of two.
+///
 /// `None` when `q_s` so far exceeds the `2^h` leaves that there is no security
 /// left to quantify.
-pub fn forgery_exponent(lifetime: u32, h: u32, k: u64, a: u64) -> Option<f64> {
+pub fn forgery_exponent(q_s: f64, h: u32, k: u64, a: u64) -> Option<f64> {
     const LOG2_E: f64 = std::f64::consts::LOG2_E;
     // Expected times one FORS instance is reused. Past a few thousand the sum
     // needs more terms than it is worth: the answer is "none", not a number.
-    let lam = 2f64.powi(lifetime as i32 - h as i32);
-    if lam > 4096.0 {
+    let lam = q_s / 2f64.powi(h as i32);
+    if lam > 4096.0 || q_s < 1.0 {
         return None;
     }
-    let q_s = 2f64.powi(lifetime as i32);
     let log2_p = -(h as f64);
     let log2_1mp = (-2f64.powi(-(h as i32))).ln_1p() * LOG2_E;
     let ln_miss = (-1.0 / 2f64.powi(a as i32)).ln_1p(); // ln(1 - 1/t)
@@ -60,8 +61,8 @@ pub fn forgery_exponent(lifetime: u32, h: u32, k: u64, a: u64) -> Option<f64> {
 /// A query aimed at a FORS forgery cannot double as a preimage query for a tree
 /// node or a WOTS chain (different tweaks), so the two attacks are independent
 /// strategies and the adversary simply takes the better one.
-pub fn security_bits(lifetime: u32, h: u32, k: u64, a: u64, n: u64) -> f64 {
-    forgery_exponent(lifetime, h, k, a).map_or(0.0, |e| e.min(8.0 * n as f64))
+pub fn security_bits(q_s: f64, h: u32, k: u64, a: u64, n: u64) -> f64 {
+    forgery_exponent(q_s, h, k, a).map_or(0.0, |e| e.min(8.0 * n as f64))
 }
 
 fn log2_sum_exp(a: f64, b: f64) -> f64 {
@@ -77,7 +78,7 @@ fn log2_sum_exp(a: f64, b: f64) -> f64 {
 /// A search revisits the same triple once per `(scheme, d, chain_bits,
 /// dropped_chains)`, so without this the security sum dominates everything.
 pub struct SecurityTable {
-    lifetime: u32,
+    q_s: f64,
     target: f64,
     n: u64,
     h_max: u32,
@@ -88,10 +89,10 @@ pub struct SecurityTable {
 }
 
 impl SecurityTable {
-    pub fn new(lifetime: u32, target: f64, n: u64, h_max: u32, k_max: u64, a_max: u64) -> Self {
+    pub fn new(q_s: f64, target: f64, n: u64, h_max: u32, k_max: u64, a_max: u64) -> Self {
         let cells = (h_max as usize + 1) * (k_max as usize + 1) * (a_max as usize + 1);
         Self {
-            lifetime,
+            q_s,
             target,
             n,
             h_max,
@@ -113,6 +114,6 @@ impl SecurityTable {
     }
 
     fn compute(&self, h: u32, k: u64, a: u64) -> bool {
-        security_bits(self.lifetime, h, k, a, self.n) >= self.target
+        security_bits(self.q_s, h, k, a, self.n) >= self.target
     }
 }

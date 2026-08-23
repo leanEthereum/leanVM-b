@@ -4,6 +4,27 @@ use crate::params::{Costs, Params};
 use crate::search::{Budgets, Candidate};
 use crate::security::forgery_exponent;
 
+/// A signature count, as a power of two when it is one.
+pub fn signatures(q_s: f64) -> String {
+    let log2 = q_s.log2();
+    if (log2 - log2.round()).abs() < 1e-9 {
+        return format!("2^{}", log2.round() as i64);
+    }
+    for (unit, div) in [
+        ("E", 1e18),
+        ("P", 1e15),
+        ("T", 1e12),
+        ("G", 1e9),
+        ("M", 1e6),
+        ("K", 1e3),
+    ] {
+        if q_s >= div {
+            return format!("{:.3}{unit} (2^{log2:.1})", q_s / div);
+        }
+    }
+    format!("{q_s:.0}")
+}
+
 pub fn si(x: u64) -> String {
     let f = x as f64;
     for (unit, div) in [("G", 1e9), ("M", 1e6), ("K", 1e3)] {
@@ -39,8 +60,8 @@ pub fn encoding_line(p: &Params, c: &Costs) -> String {
 }
 
 /// The full picture of one parameter set.
-pub fn report(p: &Params, c: &Costs, lifetime: u32) -> String {
-    let forgery = forgery_exponent(lifetime, p.h as u32, p.k, p.a);
+pub fn report(p: &Params, c: &Costs, q_s: f64) -> String {
+    let forgery = forgery_exponent(q_s, p.h as u32, p.k, p.a);
     let cap = 8.0 * p.n as f64;
     let security = forgery.map_or(0.0, |f| f.min(cap));
     let speedup = c.sign.hashes as f64 / c.sign_cached.hashes.max(1) as f64;
@@ -48,8 +69,9 @@ pub fn report(p: &Params, c: &Costs, lifetime: u32) -> String {
 
     let mut lines = vec![
         format!(
-            "scheme          {}   q_s = 2^{lifetime}   n = {} bits",
+            "scheme          {}   q_s = {}   n = {} bits",
             p.scheme.label(),
+            signatures(q_s),
             8 * p.n
         ),
         format!("(h, d)          ({}, {})   layer heights {}", p.h, p.d, c.profile),
@@ -72,8 +94,9 @@ pub fn report(p: &Params, c: &Costs, lifetime: u32) -> String {
                 cap as u64
             ),
             None => format!(
-                "security        none: q_s = 2^{lifetime} reuses every FORS instance ~2^{} times",
-                lifetime as i64 - p.h as i64
+                "security        none: q_s = {} reuses every FORS instance ~{:.0} times",
+                signatures(q_s),
+                q_s / 2f64.powi(p.h as i32)
             ),
         },
         format!("signature       {} bytes", c.sig_bytes),

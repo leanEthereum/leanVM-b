@@ -96,8 +96,8 @@ pub enum Sums {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Budgets {
-    /// log2 of the signatures allowed under one public key.
-    pub lifetime: u32,
+    /// Signatures allowed under one public key. Need not be a power of two.
+    pub q_s: f64,
     /// An unset budget is no limit.
     pub keygen: Option<u64>,
     pub sign: Option<u64>,
@@ -306,7 +306,7 @@ fn room(b: &Budgets, g: &Grid, p: &Params) -> Option<Room> {
 pub fn search(b: &Budgets, g: &Grid, st: &mut Stats) -> Vec<Candidate> {
     let started = Instant::now();
     let digest_bits = (8 * g.n) as u32;
-    let mut sec = SecurityTable::new(b.lifetime, b.security, g.n, g.h.hi as u32, g.k.hi, g.a.hi);
+    let mut sec = SecurityTable::new(b.q_s, b.security, g.n, g.h.hi as u32, g.k.hi, g.a.hi);
     // Every (scheme, h, d, a, k, w, dropped) key is reached exactly once, so
     // rows need no deduplication, only a bound: budgets loose enough to admit
     // millions of them would otherwise be held in memory to print a dozen.
@@ -506,7 +506,7 @@ pub fn naive_search(b: &Budgets, g: &Grid) -> Vec<Candidate> {
                                     };
                                     let Some(sk) = Skeleton::new(p) else { continue };
                                     let Some(lay) = Layers::new(&p) else { continue };
-                                    if crate::security::security_bits(b.lifetime, h as u32, k, a, g.n) < b.security {
+                                    if crate::security::security_bits(b.q_s, h as u32, k, a, g.n) < b.security {
                                         continue;
                                     }
                                     let table = scheme.wots_c().then(|| NuTable::new(sk.l, w, digest_bits));

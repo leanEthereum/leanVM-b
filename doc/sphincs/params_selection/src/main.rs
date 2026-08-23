@@ -2,7 +2,7 @@
 //! and everything left over gets searched.
 
 use sphincs_params::cost::{SCHEMES, Scheme};
-use sphincs_params::report::{legend, report, table, utilization};
+use sphincs_params::report::{legend, report, signatures, table, utilization};
 use sphincs_params::search::{
     A_MAX, Budgets, CHAIN_BITS_MAX, D_MAX, DROPPED_MAX, Grid, H_MAX, K_MAX, LEVEL1_BITS, Span, Stats, Sums, edges,
     search,
@@ -17,7 +17,7 @@ Give a parameter to pin it, leave it out to search it. Pin them all and the run
 just costs that one set. Numbers may be written as 2e6.
 
 parameters
-  --lifetime L      log2 of the signatures allowed per public key (required)
+  --lifetime Q      signatures allowed per public key, e.g. 16e6 (required)
   --scheme S        SPX | W+C | W+C_F+C, repeatable       [all three]
   --height h        total hypertree height                [1..96]
   --layers d        hypertree layers                      [1..32]
@@ -54,9 +54,9 @@ other
   --stats               report how much of the space was visited
 
 examples
-  sphincs_params --lifetime 30 --max-keygen 2e6 --max-sign 6e6 \\
+  sphincs_params --lifetime 1e9 --max-keygen 2e6 --max-sign 6e6 \\
                  --max-sign-cached 4e6 --max-size 4000
-  sphincs_params --lifetime 40 --height 40 --layers 5 -a 14 -k 11 -w 256 --swn 2040
+  sphincs_params --lifetime 1e12 --height 40 --layers 5 -a 14 -k 11 -w 256 --swn 2040
 ";
 
 fn main() -> std::process::ExitCode {
@@ -118,6 +118,16 @@ impl Args {
     }
 
     /// Accepts 2e6 as well as 2000000.
+    fn float(&self, name: &str) -> Result<Option<f64>, String> {
+        match self.get(name) {
+            None => Ok(None),
+            Some(s) => s
+                .parse::<f64>()
+                .map(Some)
+                .map_err(|_| format!("{name}: expected a number, got {s}")),
+        }
+    }
+
     fn num(&self, name: &str) -> Result<Option<u64>, String> {
         match self.get(name) {
             None => Ok(None),
@@ -174,9 +184,9 @@ impl Args {
 
 fn run(argv: &[String]) -> Result<bool, String> {
     let args = Args::parse(argv)?;
-    let lifetime = args.num("--lifetime")?.ok_or("--lifetime is required")?;
+    let q_s = args.float("--lifetime")?.ok_or("--lifetime is required")?;
     let b = Budgets {
-        lifetime: lifetime as u32,
+        q_s,
         keygen: args.num("--max-keygen")?,
         sign: args.num("--max-sign")?,
         sign_cached: args.num("--max-sign-cached")?,
@@ -227,8 +237,9 @@ fn run(argv: &[String]) -> Result<bool, String> {
     }
     if found.is_empty() {
         println!(
-            "nothing meets these constraints at {:.0}-bit security and q_s = 2^{lifetime}",
-            b.security
+            "nothing meets these constraints at {:.0}-bit security and q_s = {}",
+            b.security,
+            signatures(q_s)
         );
         println!("--stats says where the space went; the binding budget is usually size or keygen");
         return Ok(false);
@@ -263,6 +274,6 @@ fn run(argv: &[String]) -> Result<bool, String> {
         ..best.params
     };
     let costs = sphincs_params::params::costs(shown, best.costs.swn).ok_or("inconsistent parameters")?;
-    println!("{}", report(&shown, &costs, b.lifetime));
+    println!("{}", report(&shown, &costs, b.q_s));
     Ok(true)
 }
