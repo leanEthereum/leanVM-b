@@ -1,7 +1,6 @@
 // CREDIT: https://github.com/succinctlabs/flock (flock-core), MIT OR Apache-2.0.
-//! Binary Merkle tree with SHA3-256, SIMD-batching independent hashes across
-//! leaves and internal levels through the lane-transposed multi-input hasher in
-//! [`primitives::sha3`].
+//! Binary Merkle tree with SHA3-256, batching independent hashes across leaves
+//! and internal levels through the two-state hasher in [`primitives::sha3`].
 //!
 //! The committer's half. What a proof actually carries (the digest encoding,
 //! the leaf/node hashes, one phase's pruned octopus) lives in
@@ -20,12 +19,11 @@
 //! Hashing is [`primitives::sha3::hash_md`], the chain of 64-byte SHA3-256
 //! hashes the VM's `Keccak` opcode can reproduce, which is what lets the
 //! recursion guest re-hash an opened leaf. A parent, being 64 bytes, is plain
-//! SHA3-256. Independent hashes of equal-length inputs
-//! step their block counters in lockstep, so the batched hasher is
-//! byte-identical to an independent [`hash_leaf`] per input; the leaf-size
-//! dispatch below exists only to make the length a compile-time constant.
-//! Leaves of other sizes use the scalar path. Internal 64-byte child pairs,
-//! which are one compression each, always take the batched path.
+//! SHA3-256. Two chains over equal-length records take the same links in
+//! lockstep, so the batched hasher is byte-identical to an independent
+//! [`hash_leaf`] per input; the leaf-size dispatch below exists only to make the
+//! length a compile-time constant. Internal 64-byte child pairs, which are one
+//! compression each, take the same path with one link.
 
 pub use fiat_shamir::merkle::{Hash, hash_leaf, hash_pair};
 use parallel::SendPtr;

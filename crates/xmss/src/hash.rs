@@ -47,12 +47,19 @@ pub fn make_tweak(tweak_type: u8, sub_position: u32, index: u32, payload_len: us
 /// `tweak | pp | payload`, zero-filled to whole 32-byte groups and hashed: one
 /// SHA3-256 up to 64 bytes, a [`primitives::sha3::hash_md`] chain beyond it.
 pub fn tweak_hash(pp: &PublicParam, tweak_type: u8, sub_position: u32, index: u32, payload: &[u8]) -> Digest {
-    let mut msg = Vec::with_capacity(TWEAK_LEN + pp.len() + payload.len() + 32);
-    msg.extend_from_slice(&make_tweak(tweak_type, sub_position, index, payload.len()));
-    msg.extend_from_slice(pp);
-    msg.extend_from_slice(payload);
-    msg.resize(msg.len().next_multiple_of(32).max(64), 0);
-    primitives::sha3::hash_md(&msg)[..DIGEST_LEN].try_into().unwrap()
+    /// The longest string any call site hashes: a WOTS public key's `V` chain
+    /// tips. On the stack, because a chain step is one of these and the encoding
+    /// grinds thousands.
+    const CAP: usize = TWEAK_LEN + PUBLIC_PARAM_LEN + V * DIGEST_LEN;
+    let len = (TWEAK_LEN + PUBLIC_PARAM_LEN + payload.len())
+        .next_multiple_of(32)
+        .max(64);
+    assert!(len <= CAP, "payload longer than any call site hashes");
+    let mut msg = [0u8; CAP];
+    msg[..TWEAK_LEN].copy_from_slice(&make_tweak(tweak_type, sub_position, index, payload.len()));
+    msg[TWEAK_LEN..][..PUBLIC_PARAM_LEN].copy_from_slice(pp);
+    msg[TWEAK_LEN + PUBLIC_PARAM_LEN..][..payload.len()].copy_from_slice(payload);
+    primitives::sha3::hash_md(&msg[..len])[..DIGEST_LEN].try_into().unwrap()
 }
 
 #[cfg(test)]
