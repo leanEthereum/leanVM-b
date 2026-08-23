@@ -4,7 +4,7 @@
 # parameters: `chain(buf, 3)` specializes and unrolls three BLAKE2s steps over
 # heap slices indexed by `i` (a 256-bit BLAKE2s value is two canonical cells).
 # Published: the two 128-bit digest cells of H^3(5, 7): same chain as
-# blake2s_heap_chain.py, unrolled instead of looped.
+# hash_heap_chain.py, unrolled instead of looped.
 # public_input: 64347157528245356000384183465036755063, 163839818445703091465558660402169004232
 from snark_lib import *
 

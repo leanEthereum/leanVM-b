@@ -64,7 +64,7 @@ fn prf(seed: &[u8; 32], domain: u32, a: u64, b: u64) -> Digest {
     msg[..4].copy_from_slice(&domain.to_le_bytes());
     msg[4..12].copy_from_slice(&a.to_le_bytes());
     msg[12..20].copy_from_slice(&b.to_le_bytes());
-    primitives::blake2s::keyed_hash(seed, &msg)[..DIGEST_LEN]
+    primitives::hash::keyed_hash(seed, &msg)[..DIGEST_LEN]
         .try_into()
         .unwrap()
 }

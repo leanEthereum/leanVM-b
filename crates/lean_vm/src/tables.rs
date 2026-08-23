@@ -393,7 +393,7 @@ pub(crate) fn blake2s_metadata(prog: &[Op], pc: u32) -> F192 {
 
 /// BLAKE2s value-column LOCAL indices in canonical slot order
 /// `[a0..a3, b0..b3, c0..c3, cv0..cv3, md_lo, md_hi]` (matches
-/// `blake2s_flock::SLOTS`). These columns are
+/// `hash_flock::SLOTS`). These columns are
 /// VIRTUAL (never committed): `q_flock` already holds those words at fixed packed
 /// slots, so `cpu` routes their memory-bus evaluation claims straight to `q_flock`
 /// (`slot_claims`): the value the bus flushes IS the flock-proven word.
@@ -418,7 +418,7 @@ pub const BLAKE2S_VALUE_COLS: [usize; 18] = [
     blake2st::MD1,
 ];
 // The eighteen value lanes are laid out contiguously (VA0..VA0+17), so they map
-// 1:1 onto `blake2s_flock::SLOTS`.
+// 1:1 onto `hash_flock::SLOTS`.
 const _: () = assert!(
     blake2st::VB0 == blake2st::VA0 + 4
         && blake2st::VC0 == blake2st::VA0 + 8
@@ -830,7 +830,7 @@ impl Table for JumpTable {
 /// `fp·o_c`, so the row reads eight cells in all. No address is committed: each rides the bus as the product `fp·o_X`
 /// (§sec:m3). The compression relating output words to input words carries no
 /// table constraint either: it is proven by flock's R1CS validity via `q_flock`
-/// (§blake2s_flock), which leaves this table with no identity of its own.
+/// (§hash_flock), which leaves this table with no identity of its own.
 ///
 /// A 128-bit chunk is two flock 64-bit words (lo, hi lanes), so the sixteen
 /// memory-borne flock words are sixteen value LANE columns over eight cells,

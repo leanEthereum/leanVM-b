@@ -5,7 +5,7 @@
 //! is over `E = F192 = K[y]/(y³+y+1)` (XOR degree 1, MUL_NATIVE degree 2),
 //! with each word carried by three committed `K = F64` limbs. `BLAKE2s`
 //! adds the memory/state/bytecode plumbing for a 64→32-byte compression
-//! whose relation is discharged by flock (see [`crate::blake2s_flock`]). All
+//! whose relation is discharged by flock (see [`crate::hash_flock`]). All
 //! Challenges and transcript scalars live in the same tower E.
 
 use std::collections::HashMap;
@@ -37,9 +37,9 @@ pub(crate) use trace::{Brow, Drow, Jrow, Srow, Trace, Xrow};
 /// words are laid out little-endian into 64 bytes, combined with the supplied
 /// chaining value and metadata, and the 32-byte result is split back into the
 /// four output words `c`. Flock proves this same compression relation
-/// ([`crate::blake2s_flock`]).
+/// ([`crate::hash_flock`]).
 fn blake2s_compress(va: [F64; 4], vb: [F64; 4], vcv: [F64; 4], metadata: F192) -> [F64; 4] {
-    crate::blake2s_flock::digest(&crate::blake2s_flock::compression(va, vb, vcv, metadata))
+    crate::hash_flock::digest(&crate::hash_flock::compression(va, vb, vcv, metadata))
 }
 
 /// Data-memory size bounds (doc §Memory): memory is `2^h` cells with
@@ -66,7 +66,7 @@ const MAX_LOG_BYTECODE: usize = 32;
 /// The Fiat-Shamir seed: ONE 32-byte digest, as two field words, committing to
 /// everything fixed about the proving environment.
 ///
-/// Two things go in. [`flock::blake2s::R1CS_DIGEST`] names the flock BLAKE2s
+/// Two things go in. [`flock::hash::R1CS_DIGEST`] names the flock BLAKE2s
 /// circuit, independent of the instance count: the full instance is
 /// block-diagonal and the count is announced and absorbed with the other sizes,
 /// so one constant covers every shape. And the bytecode enters through the hash
@@ -79,9 +79,9 @@ const MAX_LOG_BYTECODE: usize = 32;
 /// version and the program before anything else; a recursion guest carries the
 /// INNER program's seed in its public input, pinning both with one word pair.
 pub fn fs_seed(program: &Program) -> [F192; 2] {
-    let mut h = primitives::blake2s::Hasher::new();
+    let mut h = primitives::hash::Hasher::new();
     h.update(b"leanvm-b-fs-seed-v2-blake2s");
-    h.update(&flock::blake2s::R1CS_DIGEST);
+    h.update(&flock::hash::R1CS_DIGEST);
     h.update(&program.bytecode_hash);
     let d = h.finalize();
     let word = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
@@ -148,7 +148,7 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2])
         // BLAKE2s table's value columns share that instance cube, so a height below the
         // floor describes a layout the arithmetization cannot express. The other two
         // verifiers reject it here too (`python-verifier`, `guests/aggregate.py`).
-        || taus[tables::BLAKE2S_TABLE] < crate::blake2s_flock::n_blocks_log(1)
+        || taus[tables::BLAKE2S_TABLE] < crate::hash_flock::n_blocks_log(1)
         || ::pcs::whir::validate_log_inv_rate(log_inv_rate).is_err()
     {
         return Err(Error::PublicInput);
@@ -220,7 +220,7 @@ impl Program {
             // exactly the concatenation of its `to_le_bytes` on little-endian targets.
             let bytes: &[u8] =
                 unsafe { core::slice::from_raw_parts(table.as_ptr().cast::<u8>(), core::mem::size_of_val(&table[..])) };
-            primitives::blake2s::Hasher::new().update(bytes).finalize()
+            primitives::hash::Hasher::new().update(bytes).finalize()
         };
         Self {
             prog,
@@ -419,7 +419,7 @@ fn blake2s_value_slot(col: usize) -> Option<usize> {
     tables::BLAKE2S_VALUE_COLS
         .iter()
         .position(|&c| base + c == col)
-        .map(|i| crate::blake2s_flock::SLOTS[i])
+        .map(|i| crate::hash_flock::SLOTS[i])
 }
 
 /// Run statistics returned alongside the proof: the cycle count (total executed
@@ -512,7 +512,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     );
     // Warm the shape-dependent BLAKE2s R1CS setup concurrently with the earlier proving stages. A no-BLAKE2s program still uses the padding shape.
     let n_blake2s_warm = exec.trace.blake2s.len().max(1);
-    std::thread::spawn(move || crate::blake2s_flock::warm_setup(n_blake2s_warm));
+    std::thread::spawn(move || crate::hash_flock::warm_setup(n_blake2s_warm));
     let cycles = exec.cycles;
     let mut w = crate::stage!("Build witness", || program.build(&exec));
     let counts = w.layout.taus.map(|t| 1usize << t);
@@ -527,7 +527,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
         pcs::commit(&mut ps, &w.q, w.layout.shape, log_inv_rate)
     });
 
-    // BLAKE2s to flock (§blake2s_flock), single PCS: q_flock is ALWAYS a column in
+    // BLAKE2s to flock (§hash_flock), single PCS: q_flock is ALWAYS a column in
     // `w.q` (≥1 instance, a program with no BLAKE2s carries one padding instance,
     // so the proof shape is uniform and there is no has/hasn't-BLAKE2s fork). flock's
     // R1CS validity and EVERY leanVM point claim are discharged together by ONE
@@ -598,7 +598,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     let n_blocks = flock_reduction.n_blocks();
     drop(flock_reduction);
     let offset = w.layout.placements[QFLOCK].offset;
-    let ring = crate::blake2s_flock::ring_switch_open(n_blocks, offset, &reduced);
+    let ring = crate::hash_flock::ring_switch_open(n_blocks, offset, &reduced);
     crate::stage!("PCS open", || { pcs::open(&mut ps, &committed, &w.q, &slots, &ring) });
     (
         ps.into_proof(),
@@ -725,9 +725,9 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     // instance, including programs that execute no BLAKE2s instruction.
     let n_blocks = n_blake2s.max(1);
     let offset = l.placements[QFLOCK].offset;
-    let replay = crate::blake2s_flock::verify_reduction(n_blocks, &mut vs).map_err(Error::Blake2s)?;
+    let replay = crate::hash_flock::verify_reduction(n_blocks, &mut vs).map_err(Error::Blake2s)?;
     let flock_stream_end = vs.stream_offset();
-    let ring = crate::blake2s_flock::ring_switch_verify(n_blocks, offset, &replay.claim);
+    let ring = crate::hash_flock::ring_switch_verify(n_blocks, offset, &replay.claim);
     pcs::verify(&mut vs, &slots, &ring, l.shape, log_inv_rate, &root).map_err(Error::Open)?;
     vs.finish().map_err(Error::Transcript)?;
     Ok(VerifySummary {
@@ -762,7 +762,7 @@ fn slot_claims(l: &Layout, claims: &[ColumnClaim]) -> Vec<pcs::SlotClaim> {
                 return pcs::SlotClaim::Strided {
                     offset: l.placements[QFLOCK].offset,
                     slot,
-                    stride_log: crate::blake2s_flock::SLOT_STRIDE_LOG,
+                    stride_log: crate::hash_flock::SLOT_STRIDE_LOG,
                     point: c.point.clone(),
                     value: c.value,
                 };
@@ -792,7 +792,7 @@ mod tests {
 
     /// The default one-block-root metadata for a hand-built BLAKE2s op.
     fn md() -> F192 {
-        crate::blake2s_flock::metadata(crate::blake2s_flock::PINNED_T, crate::blake2s_flock::FINAL_FLAG, 0)
+        crate::hash_flock::metadata(crate::hash_flock::PINNED_T, crate::hash_flock::FINAL_FLAG, 0)
     }
 
     /// The four chaining-value lanes of the two cv cells.
@@ -832,9 +832,9 @@ mod tests {
                 ins: [2, 3, 4, 5],
                 cv: 0,
                 out: 6,
-                metadata: crate::blake2s_flock::metadata(
-                    crate::blake2s_flock::PINNED_T,
-                    crate::blake2s_flock::FINAL_FLAG,
+                metadata: crate::hash_flock::metadata(
+                    crate::hash_flock::PINNED_T,
+                    crate::hash_flock::FINAL_FLAG,
                     0,
                 ),
             },
@@ -923,9 +923,9 @@ mod tests {
                 ins: [2, 3, 2, 3],
                 cv: 0,
                 out: 4,
-                metadata: crate::blake2s_flock::metadata(
-                    crate::blake2s_flock::PINNED_T,
-                    crate::blake2s_flock::FINAL_FLAG,
+                metadata: crate::hash_flock::metadata(
+                    crate::hash_flock::PINNED_T,
+                    crate::hash_flock::FINAL_FLAG,
                     0,
                 ),
             },

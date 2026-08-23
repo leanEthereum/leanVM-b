@@ -74,7 +74,7 @@ pub struct Committed {
     pub commitment: Commitment,
     /// Codeword + Merkle tree retained for opening. Public so the single stacked
     /// WHIR opening (which also discharges flock's claim over
-    /// this same commitment, §blake2s_flock) can reuse it.
+    /// this same commitment, §hash_flock) can reuse it.
     pub prover_data: ProverData,
     /// `log2` of the witness length in F64 words.
     pub mu: usize,

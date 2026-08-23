@@ -207,14 +207,14 @@ impl DeferredClaim {
     fn leaf() -> Self {
         Self::recompute(
             vec![F192::ZERO; bytecode_vars()],
-            vec![F192::ZERO; 2 * flock::blake2s::K_LOG],
+            vec![F192::ZERO; 2 * flock::hash::K_LOG],
         )
         .expect("the all-zeros point has the right shape")
     }
 
     /// Evaluate the three fixed polynomials at `bytecode_point` / `matrix_point`.
     fn recompute(bytecode_point: Vec<F192>, matrix_point: Vec<F192>) -> Result<Self, VerifyError> {
-        let klog = flock::blake2s::K_LOG;
+        let klog = flock::hash::K_LOG;
         if bytecode_point.len() != bytecode_vars() || matrix_point.len() != 2 * klog {
             return Err(VerifyError::MalformedClaim);
         }
@@ -235,7 +235,7 @@ impl DeferredClaim {
         let sp = tracing::info_span!("matrix walk").entered();
         let eq_r = pcs::whir::build_eq_table_ext(&matrix_point[..klog]);
         let eq_c = pcs::whir::build_eq_table_ext(&matrix_point[klog..]);
-        let (matrix_a_value, matrix_b_value) = flock::blake2s::bilinear_walk_pair(&eq_r, &eq_c);
+        let (matrix_a_value, matrix_b_value) = flock::hash::bilinear_walk_pair(&eq_r, &eq_c);
         drop(sp);
         Ok(Self {
             bytecode_point,
@@ -275,7 +275,7 @@ fn tagged_hash(label: &[u8], lanes: impl Iterator<Item = u64>) -> [F192; 2] {
     let mut bytes = label_tag(label).to_vec();
     bytes.extend(lanes.flat_map(u64::to_le_bytes));
     bytes.resize(bytes.len().next_multiple_of(64), 0);
-    pack_hash_state(&primitives::blake2s::hash(&bytes))
+    pack_hash_state(&primitives::hash::hash(&bytes))
 }
 
 /// A node's public statement, hashed to the two words the VM publishes. The
@@ -733,7 +733,7 @@ fn aggregate_deferred_claims(
     let child_count = subproofs.len();
     assert_eq!(child_count, carried_claims.len(), "one carried claim per child");
     let kbcv = bytecode_vars();
-    let klog = flock::blake2s::K_LOG;
+    let klog = flock::hash::K_LOG;
 
     let mut transcript = FiatShamirState::new(RECURSION_AGG_LABEL, &[]);
     transcript.observe(count(child_count));
@@ -880,7 +880,7 @@ fn aggregate_deferred_claims(
     // over the ~89M nonzeros. A before B, the order `ga`/`gb` index.
     let mut ms: Vec<Vec<F192>> = Vec::with_capacity(2 * ws.len());
     for w in &ws {
-        let (ra, rb) = flock::blake2s::row_values_walk(w);
+        let (ra, rb) = flock::hash::row_values_walk(w);
         ms.push(ra);
         ms.push(rb);
     }
@@ -938,7 +938,7 @@ fn aggregate_deferred_claims(
     let _rows = tracing::info_span!("Contract rows").entered();
     // `A_0ᵀ eq` and `B_0ᵀ eq` are the column marginals, which the circuit walks
     // backwards (`gf2`'s `back_*`) in O(circuit).
-    let (mut acol, mut bcol) = flock::blake2s::marginal_walk_pair(&eq_rstar);
+    let (mut acol, mut bcol) = flock::hash::marginal_walk_pair(&eq_rstar);
     drop(_rows);
     let mut wa = vec![F192::ZERO; 1 << klog];
     let mut wb = vec![F192::ZERO; 1 << klog];
@@ -1044,7 +1044,7 @@ fn whir_shape(mu: usize, log_inv_rate: usize) -> WhirShape {
     }
 }
 
-/// The BLAKE2s table's virtual value columns, in `blake2s_flock::SLOTS` order.
+/// The BLAKE2s table's virtual value columns, in `hash_flock::SLOTS` order.
 fn blake2s_value_columns() -> Vec<usize> {
     let base = lean_vm::cpu::schema().base[5];
     lean_vm::tables::BLAKE2S_VALUE_COLS.iter().map(|&c| base + c).collect()
@@ -1209,7 +1209,7 @@ fn gen_verify(
 
     let taus = layout.taus;
     // Flock replay data, all named struct fields.
-    let lcrounds = flock::blake2s::K_LOG - 6;
+    let lcrounds = flock::hash::K_LOG - 6;
     let zcf = [summary.zc_claim.a_eval, summary.zc_claim.b_eval];
     let zc_z = summary.zc_claim.z;
     let zchi = summary.zc_claim.mlv_challenges.clone();
@@ -1243,10 +1243,10 @@ fn gen_verify(
     }
     let mut pinw = lc_beta;
     for (j, &rv) in lrr.iter().enumerate() {
-        let bit = (flock::blake2s::Z_CONST_POS >> (flock::blake2s::K_LOG - 1 - j)) & 1;
+        let bit = (flock::hash::Z_CONST_POS >> (flock::hash::K_LOG - 1 - j)) & 1;
         pinw *= if bit == 1 { rv } else { F192::ONE + rv };
     }
-    pinw *= lcz[flock::blake2s::Z_CONST_POS % 64];
+    pinw *= lcz[flock::hash::Z_CONST_POS % 64];
     // The c term: eq(ρ_in, ρ'_in) times the φ8-Lagrange combination of the 64
     // slices, ρ'_in being the lincheck challenges read back in coordinate order.
     let mut c_point_eq = F192::ONE;
@@ -1326,7 +1326,7 @@ fn gen_verify(
             ClaimSite::Framework { kappa, .. } => kappa,
             ClaimSite::TableColumn { table, is_virtual, .. } => {
                 if is_virtual {
-                    lean_vm::blake2s_flock::SLOT_STRIDE_LOG + taus[table]
+                    lean_vm::hash_flock::SLOT_STRIDE_LOG + taus[table]
                 } else {
                     taus[table]
                 }
@@ -1343,7 +1343,7 @@ fn gen_verify(
     // `qflockv` coordinates, and a BLAKE2s-dominated inner proof pushes that past
     // the fold rounds. Same quantity as the q_flock point claim's `nover`, but
     // the guest pins it independently, in the rs block.
-    let qflockv = lean_vm::blake2s_flock::SLOT_STRIDE_LOG + taus[5];
+    let qflockv = lean_vm::hash_flock::SLOT_STRIDE_LOG + taus[5];
     let rs_nover = qflockv.saturating_sub(lenris);
 
     let deferred = DeferredSubproof {
@@ -1765,7 +1765,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
         [F192::ZERO, F192::ZERO],
     );
     let sides: [&[Block]; 3] = [&layout.push, &layout.pull, &layout.count];
-    let lcrounds = flock::blake2s::K_LOG - 6;
+    let lcrounds = flock::hash::K_LOG - 6;
 
     // ---- flattened block/coord descriptors (structural) ----
     let (mut sblk, mut bc0, mut bcn) = (vec![0usize], vec![], vec![]);
@@ -1869,7 +1869,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
                 compact_col_pm[column]
             });
             cpqslot.push(if is_virtual {
-                lean_vm::blake2s_flock::SLOTS[valcols.iter().position(|&v| v == column).unwrap()]
+                lean_vm::hash_flock::SLOTS[valcols.iter().position(|&v| v == column).unwrap()]
             } else {
                 0
             });
@@ -2024,11 +2024,11 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("LAGRANGE_INV_COMBINED", flds(&icmb));
     ps("LAGRANGE_INV_S", flds(&isdom));
     ps("LINCHECK_ROUNDS", lcrounds.to_string());
-    ps("PIN_COLUMN", flock::blake2s::Z_CONST_POS.to_string());
-    ps("K_LOG", flock::blake2s::K_LOG.to_string());
+    ps("PIN_COLUMN", flock::hash::Z_CONST_POS.to_string());
+    ps("K_LOG", flock::hash::K_LOG.to_string());
     // The q_flock Strided-claim slot stride is K_LOG - LOG_PACKING (= 8), so the
     // qflock point-claim slot must use THIS, not LOG2_FIELD_BITS.
-    ps("SLOT_STRIDE_LOG", lean_vm::blake2s_flock::SLOT_STRIDE_LOG.to_string());
+    ps("SLOT_STRIDE_LOG", lean_vm::hash_flock::SLOT_STRIDE_LOG.to_string());
 
     // ---- LIG candidate tables (fixed [minm, maxm] range; open_stacked config) ----
     let oshape = |m: usize, log_inv_rate: usize| {
@@ -2315,7 +2315,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     );
     ps("CLAIM_POINT_BUF", ints(&cpbuf));
     ps("CLAIM_COMMITTED_COL", ints(&cpcol));
-    let slot_stride_log = lean_vm::blake2s_flock::SLOT_STRIDE_LOG;
+    let slot_stride_log = lean_vm::hash_flock::SLOT_STRIDE_LOG;
     let cpqbits: Vec<usize> = cpqslot
         .iter()
         .flat_map(|&slot| (0..slot_stride_log).map(move |k| (slot >> k) & 1))
@@ -2343,7 +2343,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     let tag = label_tag(RECURSION_STATEMENT_LABEL);
     ps("STMT_TAG_0", dsl_u128(pack_16_bytes(&tag[..16])).to_string());
     ps("STMT_TAG_1", dsl_u128(pack_16_bytes(&tag[16..])).to_string());
-    let defer_cells = kbc + log2_bc_cols + 1 + 2 * flock::blake2s::K_LOG + 2;
+    let defer_cells = kbc + log2_bc_cols + 1 + 2 * flock::hash::K_LOG + 2;
     let (off, pairs) = (2 + STATEMENT_HEADER, defer_cells.div_ceil(2));
     let blocks = (off + 3 * pairs).div_ceil(4);
     ps("STMT_ODD", (defer_cells % 2).to_string());
@@ -2529,13 +2529,13 @@ mod tests {
     /// statement.
     #[test]
     fn leaf_claim_matches_the_general_path() {
-        let klog = flock::blake2s::K_LOG;
+        let klog = flock::hash::K_LOG;
         let leaf = DeferredClaim::leaf();
         let general = {
             let bytecode_value = mle_eval_par(stacked_bytecode(), &leaf.bytecode_point);
             let eq_r = pcs::whir::build_eq_table_ext(&leaf.matrix_point[..klog]);
             let eq_c = pcs::whir::build_eq_table_ext(&leaf.matrix_point[klog..]);
-            let (matrix_a_value, matrix_b_value) = flock::blake2s::bilinear_walk_pair(&eq_r, &eq_c);
+            let (matrix_a_value, matrix_b_value) = flock::hash::bilinear_walk_pair(&eq_r, &eq_c);
             (bytecode_value, matrix_a_value, matrix_b_value)
         };
         assert_eq!((leaf.bytecode_value, leaf.matrix_a_value, leaf.matrix_b_value), general);

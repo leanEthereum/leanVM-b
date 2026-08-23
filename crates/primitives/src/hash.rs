@@ -4,7 +4,7 @@
 //!
 //! - [`compress`], the 10-round compression. Every other hash in leanVM-b is a
 //!   chain of these, and it is the one the VM's `Blake2s` opcode computes and
-//!   `flock::blake2s` proves.
+//!   `flock::hash` proves.
 //! - [`hash`] / [`keyed_hash`] / [`Hasher`], ordinary BLAKE2s-256 over bytes.
 //! - [`hash_many`], the batched form: `LANES` independent equal-length inputs
 //!   hashed together with the state transposed across lanes, which is how the

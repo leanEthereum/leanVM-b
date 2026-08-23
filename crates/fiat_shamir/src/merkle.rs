@@ -38,7 +38,7 @@ pub fn scalars_to_hash(scalars: &[F192; 2]) -> Result<Hash, Error> {
 /// Hash one leaf with standard BLAKE2s-256.
 #[inline]
 pub fn hash_leaf(data: &[u8]) -> Hash {
-    primitives::blake2s::hash(data)
+    primitives::hash::hash(data)
 }
 
 /// Hash two children into their parent.
@@ -47,7 +47,7 @@ pub fn hash_pair(left: &Hash, right: &Hash) -> Hash {
     let mut buf = [0u8; 64];
     buf[..32].copy_from_slice(left);
     buf[32..].copy_from_slice(right);
-    primitives::blake2s::hash(&buf)
+    primitives::hash::hash(&buf)
 }
 
 /// Restore a stored row's omitted zero prefix.

@@ -116,7 +116,7 @@ const _: () = assert!(
 );
 
 /// Number of BLAKE2s rounds.
-pub const N_ROUNDS: usize = primitives::blake2s::ROUNDS;
+pub const N_ROUNDS: usize = primitives::hash::ROUNDS;
 /// Number of G calls per round (4 column + 4 diagonal).
 pub const N_G_PER_ROUND: usize = 8;
 /// Total G calls per compression.
@@ -129,11 +129,11 @@ pub const WORD_BITS: usize = crate::gf2::WORD_BITS;
 pub const G_STRIDE: usize = 2 * ADD3_BITS + 2 * CARRY_BITS_PER_ADD; // 184
 
 /// BLAKE2s initial values, the SHA-256 IV.
-pub use primitives::blake2s::IV as BLAKE2S_IV;
+pub use primitives::hash::IV as BLAKE2S_IV;
 
 /// BLAKE2s message schedule and per-G lane assignment, from the native hash so
 /// the circuit provably encodes the same schedule the prover computes.
-pub use primitives::blake2s::{G_LANES, SIGMA};
+pub use primitives::hash::{G_LANES, SIGMA};
 
 // ---------------------------------------------------------------------------
 // Layout positions (bit indices into the per-block z slice of length K)
@@ -233,7 +233,7 @@ pub type Compression = ([u32; 8], [u32; 16], u64, u32, u32);
 /// BLAKE2s-256's initial chaining value: the IV with the parameter block
 /// (digest length 32, no key, fanout/depth 1) folded into word 0.
 pub const fn param_iv() -> [u32; 8] {
-    primitives::blake2s::PARAM_IV
+    primitives::hash::PARAM_IV
 }
 
 /// The byte counter of a single 64-byte block.

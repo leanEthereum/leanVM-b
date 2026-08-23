@@ -135,7 +135,7 @@ use zk_alloc::ArenaVec;
 //
 // `LincheckCircuit` is the seam: the prover and verifier take
 // `&dyn LincheckCircuit` instead of a pair of matrices. The one live impl is
-// `blake2s::WalkLincheckCircuit`, which walks the circuit in both directions
+// `hash::WalkLincheckCircuit`, which walks the circuit in both directions
 // (forwards for the verifier's `bilinear_form`, backwards for the prover's
 // marginal) and never touches a matrix entry. See doc/leanvm, Annex C
 // "Evaluating the matrices".
@@ -169,7 +169,7 @@ pub trait LincheckCircuit: Sync {
     /// `n_cols()` each), WITHOUT materializing the length-k column marginal.
     /// [`verify`] only ever consumes the marginal through one inner product
     /// against a column-weight vector, so an implementation that can walk its
-    /// circuit (O(circuit) field ops, see `blake2s::bilinear_walk`) answers
+    /// circuit (O(circuit) field ops, see `hash::bilinear_walk`) answers
     /// here and never pays the ∝ NNZ marginal. Default `None`: the verifier
     /// falls back to `fold_alpha_batched`.
     fn bilinear_form(&self, _alpha: F192, _u: &[F192], _w: &[F192]) -> Option<F192> {

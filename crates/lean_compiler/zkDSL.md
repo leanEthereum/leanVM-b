@@ -417,7 +417,7 @@ blake2s(tail[0:2], tail[2:4], out, cv=cv, counter=80, final=1)
 
 The three positional arguments form a **statement**: one standard BLAKE2s compression consumes the two 256-bit message operands `a`, `b` (64 bytes) and writes its 32-byte result into the 2-cell run `out`. With no keywords it computes the standard hash of exactly 64 bytes: the parameterized BLAKE2s-256 initial chaining value (digest length 32, unkeyed, fanout and depth 1), byte counter 64, final-block flag `f0` set. That is `blake2s(a || b)`, the form every Fiat-Shamir step and Merkle node uses.
 
-Every compression also has a 256-bit chaining value and a compile-time 128-bit metadata immediate. BLAKE2s takes the byte counter and the two flags as ordinary compression inputs, which is why one instruction is a complete hash of any length and there is no chunk tree to drive (see `primitives::blake2s`). The optional keywords are:
+Every compression also has a 256-bit chaining value and a compile-time 128-bit metadata immediate. BLAKE2s takes the byte counter and the two flags as ordinary compression inputs, which is why one instruction is a complete hash of any length and there is no chunk tree to drive (see `primitives::hash`). The optional keywords are:
 
 - `cv=<pair>`: a consecutive 2-cell chaining value, the previous block's output; omitting it selects the parameterized IV above. On each runtime path, a function emits two `SET`s at its first such hash only and reuses those cells thereafter. Supplying `cv=` also requires one of the three below, since a chained block is never the default one-block hash;
 - `counter=<u64>`: BLAKE2s's byte counter `t`, **cumulative** through this block, so `64 * whole_blocks_before + bytes_in_this_block`. Defaults to 64;

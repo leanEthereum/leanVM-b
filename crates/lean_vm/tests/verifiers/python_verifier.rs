@@ -41,7 +41,7 @@ def main():
 const LOOP_STEPS: usize = 16_384;
 
 fn public_input() -> [F192; 2] {
-    use lean_vm::blake2s_flock::{FINAL_FLAG, IV, PINNED_T, compression, digest, metadata};
+    use lean_vm::hash_flock::{FINAL_FLAG, IV, PINNED_T, compression, digest, metadata};
 
     let seed = [F64(5), F64::ZERO, F64(7), F64::ZERO];
     let metadata = metadata(PINNED_T, FINAL_FLAG, 0);

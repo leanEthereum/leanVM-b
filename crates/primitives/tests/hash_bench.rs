@@ -24,7 +24,7 @@ fn time(reps: usize, mut f: impl FnMut()) -> f64 {
     median(samples)
 }
 
-/// cargo test --release -p primitives --test b2s_bench multithreaded_throughput -- --ignored --nocapture
+/// cargo test --release -p primitives --test hash_bench multithreaded_throughput -- --ignored --nocapture
 #[test]
 #[ignore = "manual throughput measurement"]
 fn multithreaded_throughput() {
@@ -38,7 +38,7 @@ fn multithreaded_throughput() {
         parallel::chunks_mut(&mut out, K * 32, |i, sub| {
             let d = &data[i * K * 64..i * K * 64 + sub.len() * 2];
             for _ in 0..ITERS {
-                primitives::blake2s::hash_many::<64>(d, sub);
+                primitives::hash::hash_many::<64>(d, sub);
                 std::hint::black_box(&mut *sub);
             }
         });
@@ -46,7 +46,7 @@ fn multithreaded_throughput() {
     println!(
         "64B -> 32B, {} threads, LANES={}: {:.0} Mhash/s",
         parallel::num_threads(),
-        primitives::blake2s::LANES,
+        primitives::hash::LANES,
         (TASKS * K * ITERS) as f64 / s / 1e6,
     );
 }

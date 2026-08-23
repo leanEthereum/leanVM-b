@@ -1,14 +1,14 @@
 //! The BLAKE2s circuit driven through flock's actual reduction: zerocheck then
 //! lincheck, prover and verifier, on the shared transcript.
 //!
-//! The unit tests in `flock::blake2s` establish that the circuit is the right
+//! The unit tests in `flock::hash` establish that the circuit is the right
 //! circuit (known-answer vectors, honest witness satisfies, walk agrees with
 //! the matrices). This establishes that the ten-round encoding is *provable*
 //! with the machinery as it stands: same zerocheck, same lincheck, same
 //! `k_log = 14` and `k_skip = 6`. Only the PCS opening is left out, which is
 //! generic in the claims and covered end to end by `blake2s_batch`.
 
-use crate::blake2s::{
+use crate::hash::{
     Compression, K_LOG, K_SKIP, USEFUL_BITS, WalkLincheckCircuit, generate_witness_with_ab_packed_and_lincheck,
     min_n_blocks_log, param_iv,
 };
@@ -130,7 +130,7 @@ fn run(n: usize, tamper: Option<usize>) -> bool {
 
 /// Ten rounds of BLAKE2s inside a 2^14 block, proved and verified through the
 /// unmodified zerocheck and lincheck. The lincheck verifier here answers via
-/// [`flock::blake2s::bilinear_walk`], so this also exercises the circuit walk
+/// [`flock::hash::bilinear_walk`], so this also exercises the circuit walk
 /// against the same transcript the walk-driven prover produced.
 #[test]
 fn blake2s_reduction_roundtrip() {

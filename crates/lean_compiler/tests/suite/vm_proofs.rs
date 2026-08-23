@@ -7,7 +7,7 @@
 //! duplicating their knowledge of what a dummy row looks like.
 
 use lean_compiler::{compile, parse};
-use lean_vm::blake2s_flock::warm_setup;
+use lean_vm::hash_flock::warm_setup;
 use lean_vm::cpu::{Error, Proof, prove, verify};
 use lean_vm::vmhash::compress;
 use primitives::field::{F64, F192};
