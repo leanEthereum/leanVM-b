@@ -1,6 +1,6 @@
 //! One parameter set, and the costs it implies.
 
-use crate::cost::{COUNTER_BYTES, Convention, Cost, Encoding, NuTable, Scheme};
+use crate::cost::{Blocks, COUNTER_BYTES, Cost, Encoding, NuTable, Scheme};
 
 /// A SPHINCS+ parameter set. `q_s` is not part of it: see [`crate::security`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,7 +27,6 @@ pub struct Params {
     pub cache_height: Option<u64>,
     /// Cache one level rather than it and everything above.
     pub cache_level_only: bool,
-    pub convention: Convention,
 }
 
 /// The height of every XMSS tree in the hypertree.
@@ -163,12 +162,17 @@ impl Params {
         l1 * (self.w - 1) + l2 * (self.w - 1) - digit_sum
     }
 
+    /// The compression counts of the hashes this parameter set uses.
+    pub fn blocks(&self) -> Blocks {
+        Blocks::new(self.n)
+    }
+
     /// One WOTS key pair, plus the compression of its `l` chain ends into a leaf.
     fn wots_leaf(&self, l: u64) -> Cost {
-        let cv = self.convention;
+        let b = self.blocks();
         Cost::new(
             l + l * (self.w - 1) + 1,
-            l * cv.prf() + l * (self.w - 1) * cv.th1() + cv.th(l, self.n),
+            l * b.prf() + l * (self.w - 1) * b.chain_step() + b.compress(l),
         )
     }
 }
@@ -193,10 +197,10 @@ impl Layers {
         let profile = p.profile()?;
         let l = p.chains()?;
         let leaf = p.wots_leaf(l);
-        let cv = p.convention;
+        let b = p.blocks();
         let tree = |height: u64| {
             let leaves = 1u64 << height;
-            leaf * leaves + Cost::new(leaves - 1, (leaves - 1) * cv.th2())
+            leaf * leaves + Cost::new(leaves - 1, (leaves - 1) * b.merkle_node())
         };
         let top = tree(profile.h_top);
         let lower = tree(profile.tall) * profile.n_tall + tree(profile.short) * profile.n_short;
@@ -222,7 +226,7 @@ impl Layers {
         let mut cached = tree(c);
         let cache_bytes;
         if p.cache_level_only {
-            cached = cached + Cost::new(stored_level - 1, (stored_level - 1) * cv.th2());
+            cached = cached + Cost::new(stored_level - 1, (stored_level - 1) * b.merkle_node());
             cache_bytes = stored_level * p.n;
         } else {
             cache_bytes = (2 * stored_level - 1) * p.n;
@@ -254,7 +258,8 @@ pub struct Skeleton {
     pub max_swn: u64,
     pub default_swn: u64,
     pub sig_bytes: u64,
-    pub fors_c_grinding: u64,
+    /// What FORS+C's digest grinding costs, zero for the other schemes.
+    pub fors_c_grinding: Cost,
     /// The `(a, k)` part of signing: growing the FORS trees, and any grinding
     /// FORS+C does. Common to both signing costs, cached or not.
     pub fors_part: Cost,
@@ -285,7 +290,7 @@ impl Skeleton {
         let enc = p.encoding()?;
         let l = p.chains()?;
         let profile = p.profile()?;
-        let (n, cv, d) = (p.n, p.convention, p.d);
+        let (n, b, d) = (p.n, p.blocks(), p.d);
         let trees = p.scheme.trees(p.k);
         let t = 1u64 << p.a;
 
@@ -294,10 +299,10 @@ impl Skeleton {
         let layer = l * n + if p.scheme.wots_c() { COUNTER_BYTES } else { 0 };
         let sig_bytes = n + profile.total() * n + d * layer + trees * n + trees * p.a * n;
 
-        let msg_hash = Cost::new(2, cv.hmsg() + cv.prfmsg());
+        let msg_hash = Cost::new(2, b.message_hash() + b.message_prf());
         let fors_build = Cost::new(
             trees * t + trees * t + trees * (t - 1) + 1,
-            trees * t * cv.prf() + trees * t * cv.th1() + trees * (t - 1) * cv.th2() + cv.th(trees, n),
+            trees * t * b.prf() + trees * t * b.chain_step() + trees * (t - 1) * b.merkle_node() + b.compress(trees),
         );
         // FORS+C grinds the digest until its last a bits vanish, so the last
         // FORS tree always opens leaf 0 and needs no authentication path.
@@ -305,22 +310,22 @@ impl Skeleton {
 
         let fors_verify = Cost::new(
             trees + trees * p.a + 1,
-            trees * cv.th1() + trees * p.a * cv.th2() + cv.th(trees, n),
+            trees * b.chain_step() + trees * p.a * b.merkle_node() + b.compress(trees),
         );
-        let auth = Cost::new(profile.total(), profile.total() * cv.th2());
-        let mut verify_base = Cost::new(1, cv.hmsg()) + fors_verify + auth;
+        let auth = Cost::new(profile.total(), profile.total() * b.merkle_node());
+        let mut verify_base = Cost::new(1, b.message_hash()) + fors_verify + auth;
         let mut verify_step = Cost::default();
         let mut verify_worst_extra = Cost::default();
         if p.scheme.wots_c() {
             // the digits sum to S_wn, so the remaining chain steps are fixed at
             // (w-1)*l - S_wn, and the counter is hashed once per layer
-            verify_base = verify_base + Cost::new(2, cv.th1c() + cv.th(l, n)) * d;
-            verify_step = Cost::new(1, cv.th1()) * d;
+            verify_base = verify_base + Cost::new(2, b.chain_step_with_counter() + b.compress(l)) * d;
+            verify_step = Cost::new(1, b.chain_step()) * d;
         } else {
             let avg = (p.w - 1) * l / 2;
-            verify_base = verify_base + Cost::new(avg + 1, avg * cv.th1() + cv.th(l, n)) * d;
+            verify_base = verify_base + Cost::new(avg + 1, avg * b.chain_step() + b.compress(l)) * d;
             let worst = p.wots_tw_worst_steps();
-            verify_worst_extra = Cost::new(worst - avg, (worst - avg) * cv.th1()) * d;
+            verify_worst_extra = Cost::new(worst - avg, (worst - avg) * b.chain_step()) * d;
         }
 
         Some(Self {
@@ -331,9 +336,9 @@ impl Skeleton {
             max_swn: (p.w - 1) * l,
             default_swn: if p.scheme.wots_c() { enc.default_swn() } else { 0 },
             sig_bytes,
-            fors_c_grinding: if p.scheme.fors_c() { fors_grind.hashes } else { 0 },
+            fors_c_grinding: if p.scheme.fors_c() { fors_grind } else { Cost::default() },
             fors_part: fors_build + fors_grind,
-            grind_step: Cost::new(1, cv.th1c()),
+            grind_step: Cost::new(1, b.chain_step_with_counter()),
             verify_base,
             verify_step,
             verify_worst_extra,
@@ -380,7 +385,7 @@ impl Skeleton {
             sign_cached: self.sign_cached(lay, trials),
             verify: self.verify(swn),
             verify_worst: self.verify_worst(swn),
-            wots_c_grinding: trials.saturating_mul(self.params.d),
+            wots_c_grinding: self.grinding(trials),
             fors_c_grinding: self.fors_c_grinding,
             cache_depth: lay.cache_depth,
             cache_bytes: lay.cache_bytes,
@@ -403,14 +408,17 @@ pub struct Costs {
     pub sign_cached: Cost,
     pub verify: Cost,
     pub verify_worst: Cost,
-    pub wots_c_grinding: u64,
-    pub fors_c_grinding: u64,
+    /// Searching for admissible WOTS+C counters, across every layer.
+    pub wots_c_grinding: Cost,
+    /// Grinding the digest so FORS+C's last tree opens leaf zero.
+    pub fors_c_grinding: Cost,
     pub cache_depth: u64,
     pub cache_bytes: u64,
 }
 
 impl Costs {
-    pub fn grinding(&self) -> u64 {
+    /// Everything the signer spends on grinding rather than on trees.
+    pub fn grinding(&self) -> Cost {
         self.wots_c_grinding + self.fors_c_grinding
     }
 }

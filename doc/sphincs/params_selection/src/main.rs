@@ -1,11 +1,11 @@
 //! One command: pin the parameters you know, budget the costs you care about,
 //! and everything left over gets searched.
 
-use sphincs_params::cost::{Convention, SCHEMES, Scheme};
+use sphincs_params::cost::{SCHEMES, Scheme};
 use sphincs_params::report::{legend, report, table, utilization};
 use sphincs_params::search::{
-    A_MAX, Budgets, CHAIN_BITS_MAX, D_MAX, DROPPED_MAX, Grid, H_MAX, K_MAX, LEVEL1_BITS, Span, Stats, Sums, Unit,
-    edges, search,
+    A_MAX, Budgets, CHAIN_BITS_MAX, D_MAX, DROPPED_MAX, Grid, H_MAX, K_MAX, LEVEL1_BITS, Span, Stats, Sums, edges,
+    search,
 };
 
 const USAGE: &str = "\
@@ -38,20 +38,18 @@ searched only against a budget that bounds it; with none they take the value the
 report's own parameter sets use, shown above after the comma.
   -n N              hash output in bytes                  [16]
 
-budgets, all optional: an unset one is no limit
-  --max-keygen N        hashes at key generation
-  --max-sign N          hashes at signing
-  --max-sign-cached N   hashes at signing with the top tree's half top cached
+budgets, all optional: an unset one is no limit. Every cost is counted in
+compression calls, one per 64 bytes of hash input.
+  --max-keygen N        compressions at key generation
+  --max-sign N          compressions at signing
+  --max-sign-cached N   compressions at signing with the top tree's half top
+                        kept in state
   --max-size B          signature bytes
   --security BITS       classical security floor          [128, NIST level 1]
-  --unit U              hashes | compressions, for the budgets and the
-                        objective alike                   [hashes]
 
 other
   --cache-height C      cached top-tree level, above the leaves  [half of h_top]
   --cache-level-only    cache one level, not it and everything above
-  --uncached            charge every hash for its full input, rather than
-                        caching the PK.seed midstate
   --top N               rows of the table to print        [15]
   --stats               report how much of the space was visited
 
@@ -80,7 +78,7 @@ fn main() -> std::process::ExitCode {
 /// Flags and their values, repeatable flags kept in order.
 struct Args(Vec<(String, Option<String>)>);
 
-const NO_VALUE: [&str; 4] = ["--uncached", "--cache-level-only", "--stats", "--help"];
+const NO_VALUE: [&str; 3] = ["--cache-level-only", "--stats", "--help"];
 
 impl Args {
     fn parse(argv: &[String]) -> Result<Self, String> {
@@ -177,11 +175,6 @@ impl Args {
 fn run(argv: &[String]) -> Result<bool, String> {
     let args = Args::parse(argv)?;
     let lifetime = args.num("--lifetime")?.ok_or("--lifetime is required")?;
-    let unit = match args.get("--unit").unwrap_or("hashes") {
-        "hashes" => Unit::Hashes,
-        "compressions" => Unit::Compressions,
-        other => return Err(format!("--unit: expected hashes or compressions, got {other}")),
-    };
     let b = Budgets {
         lifetime: lifetime as u32,
         keygen: args.num("--max-keygen")?,
@@ -191,7 +184,6 @@ fn run(argv: &[String]) -> Result<bool, String> {
         security: args.get("--security").map_or(Ok(LEVEL1_BITS), |s| {
             s.parse().map_err(|_| format!("--security: expected a number, got {s}"))
         })?,
-        unit,
     };
     // A higher target sum, dropped chains and a taller top tree all buy cheaper
     // verification with signer work, so with nothing bounding the signer they
@@ -249,13 +241,9 @@ fn run(argv: &[String]) -> Result<bool, String> {
         } else {
             format!("{} feasible sets", found.len())
         };
-        println!(
-            "{kept}, best {} by verification {}:\n",
-            top.min(found.len()),
-            unit.label()
-        );
-        println!("{}\n", table(&b, &found[..top.min(found.len())]));
-        println!("{}\n", legend(&b));
+        println!("{kept}, best {} by verification cost:\n", top.min(found.len()));
+        println!("{}\n", table(&found[..top.min(found.len())]));
+        println!("{}\n", legend());
     }
 
     let best = &found[0];
@@ -269,13 +257,9 @@ fn run(argv: &[String]) -> Result<bool, String> {
     if !use_.is_empty() || !edges(&g, best).is_empty() {
         println!();
     }
-    // The convention and the cache split are not searched, so they ride here
-    // rather than in the grid.
+    // The cache split is not searched, so it rides here rather than in the grid.
     let shown = sphincs_params::params::Params {
         cache_height: args.num("--cache-height")?,
-        convention: Convention {
-            cached_midstate: !args.flag("--uncached"),
-        },
         ..best.params
     };
     let costs = sphincs_params::params::costs(shown, best.costs.swn).ok_or("inconsistent parameters")?;

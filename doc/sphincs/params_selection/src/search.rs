@@ -55,27 +55,6 @@ pub const DROPPED_MAX: u64 = 16;
 /// NIST level 1, matching SLH-DSA's level 1 parameter sets.
 pub const LEVEL1_BITS: f64 = 128.0;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Unit {
-    Hashes,
-    Compressions,
-}
-
-impl Unit {
-    pub fn of(self, c: Cost) -> u64 {
-        match self {
-            Unit::Hashes => c.hashes,
-            Unit::Compressions => c.compressions,
-        }
-    }
-    pub fn label(self) -> &'static str {
-        match self {
-            Unit::Hashes => "hashes",
-            Unit::Compressions => "compressions",
-        }
-    }
-}
-
 /// The values of one parameter to try. Pinned when `lo == hi`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Span {
@@ -126,8 +105,6 @@ pub struct Budgets {
     pub size: Option<u64>,
     /// Classical security floor in bits.
     pub security: f64,
-    /// Unit of every budget above, and of the objective.
-    pub unit: Unit,
 }
 
 impl Budgets {
@@ -147,8 +124,9 @@ impl Budgets {
         self.sign.is_some() || self.sign_cached.is_some()
     }
 
+    /// Everything is counted in compression calls: see [`crate::cost::Blocks`].
     pub fn of(&self, c: Cost) -> u64 {
-        self.unit.of(c)
+        c.compressions
     }
 
     pub fn fits(&self, c: &Costs) -> bool {
@@ -272,7 +250,6 @@ fn params(g: &Grid, scheme: Scheme, h: u64, d: u64, a: u64, k: u64, w: u64, drop
         dropped_chains: dropped,
         cache_height: None,
         cache_level_only: g.cache_level_only,
-        convention: Default::default(),
     }
 }
 

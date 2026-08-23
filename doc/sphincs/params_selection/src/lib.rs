@@ -35,9 +35,11 @@
 //! as signer state, which is `sqrt(2^h')` of storage for a `sqrt(2^h')` top-tree
 //! cost per signature.
 //!
-//! Every cost comes in two units, matching the report's tables: `hashes` counts
-//! tweakable-hash and PRF invocations, `compressions` counts SHA-256 compression
-//! calls under the FIPS 205 SHA-2 layout with the PK.seed midstate cached.
+//! Everything is counted in compression calls, one per 64 bytes of hash input:
+//! a Merkle node or a WOTS chain step is one, the message digest two, and
+//! compressing `m` hash values `ceil((2n + mn) / 64)`. See [`cost::Blocks`],
+//! which also notes that this is the same function as the report's SHA-2 layout
+//! with the PK.seed midstate cached, so its published counts still pin it.
 //!
 //! [`search::search`] inverts the question: given a lifetime and a budget for
 //! keygen, signing (both flavours) and size, it enumerates the space and returns

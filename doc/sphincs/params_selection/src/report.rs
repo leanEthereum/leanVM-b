@@ -1,7 +1,7 @@
 //! Human-readable output.
 
 use crate::params::{Costs, Params};
-use crate::search::{Budgets, Candidate, Unit};
+use crate::search::{Budgets, Candidate};
 use crate::security::forgery_exponent;
 
 pub fn si(x: u64) -> String {
@@ -44,9 +44,7 @@ pub fn report(p: &Params, c: &Costs, lifetime: u32) -> String {
     let cap = 8.0 * p.n as f64;
     let security = forgery.map_or(0.0, |f| f.min(cap));
     let speedup = c.sign.hashes as f64 / c.sign_cached.hashes.max(1) as f64;
-    let row = |label: &str, x: crate::cost::Cost, note: String| {
-        format!("{label:<24}{:>12}{:>16}{note}", si(x.hashes), si(x.compressions))
-    };
+    let row = |label: &str, x: crate::cost::Cost, note: String| format!("{label:<24}{:>12}{note}", si(x.compressions));
 
     let mut lines = vec![
         format!(
@@ -80,7 +78,7 @@ pub fn report(p: &Params, c: &Costs, lifetime: u32) -> String {
         },
         format!("signature       {} bytes", c.sig_bytes),
         String::new(),
-        format!("{:<24}{:>12}{:>16}", "", "hashes", "compressions"),
+        format!("{:<24}{:>12}", "", "compressions"),
         row("keygen", c.keygen, String::new()),
         row("sign (avg)", c.sign, String::new()),
         row(
@@ -98,10 +96,10 @@ pub fn report(p: &Params, c: &Costs, lifetime: u32) -> String {
     }
     lines.push(String::new());
     lines.push(format!(
-        "of signing, grinding accounts for {} hashes: {} for the WOTS+C counters, {} for the FORS+C digest",
-        si(c.grinding()),
-        si(c.wots_c_grinding),
-        si(c.fors_c_grinding)
+        "of signing, grinding accounts for {}: {} searching for WOTS+C counters, {} on the FORS+C digest",
+        si(c.grinding().compressions),
+        si(c.wots_c_grinding.compressions),
+        si(c.fors_c_grinding.compressions)
     ));
     lines.join("\n")
 }
@@ -125,10 +123,10 @@ const COLUMNS: [(&str, usize); 16] = [
     ("cache B", 7),
 ];
 
-fn cells(b: &Budgets, c: &Candidate) -> Vec<String> {
+fn cells(c: &Candidate) -> Vec<String> {
     let (p, x) = (&c.params, &c.costs);
     vec![
-        si(b.unit.of(x.verify)),
+        si(x.verify.compressions),
         p.scheme.label().to_string(),
         p.h.to_string(),
         p.d.to_string(),
@@ -140,30 +138,28 @@ fn cells(b: &Budgets, c: &Candidate) -> Vec<String> {
         x.l.to_string(),
         x.swn.map_or("-".to_string(), |s| s.to_string()),
         x.sig_bytes.to_string(),
-        si(b.unit.of(x.keygen)),
-        si(b.unit.of(x.sign)),
-        si(b.unit.of(x.sign_cached)),
+        si(x.keygen.compressions),
+        si(x.sign.compressions),
+        si(x.sign_cached.compressions),
         x.cache_bytes.to_string(),
     ]
 }
 
 /// What the abbreviated columns mean, since several of them are this project's
 /// own and not the report's.
-pub fn legend(b: &Budgets) -> String {
-    format!(
-        "ht = top layer height, cb = log2(w), drop = chains dropped beyond the pinned digest bits, l = chains signed, \
-         S_wn = target digit sum\nsign / sign-cached = signing without and with the top tree's half top in state, \
-         cache B of it; verify, keygen and both signs in {}",
-        b.unit.label()
-    )
+pub fn legend() -> String {
+    "every cost in compression calls, one per 64 bytes of hash input; sign / sign-cached = signing without and \
+     with the top tree's half top in state, cache B of it\nht = top layer height, cb = log2(w), drop = chains \
+     dropped beyond the pinned digest bits, l = chains signed, S_wn = target digit sum"
+        .to_string()
 }
 
-pub fn table(b: &Budgets, cands: &[Candidate]) -> String {
+pub fn table(cands: &[Candidate]) -> String {
     let head: Vec<String> = COLUMNS.iter().map(|(name, w)| format!("{name:>w$}")).collect();
     let head = head.join(" ");
     let mut lines = vec![head.clone(), "-".repeat(head.len())];
     for c in cands {
-        let row: Vec<String> = cells(b, c)
+        let row: Vec<String> = cells(c)
             .iter()
             .zip(COLUMNS)
             .map(|(cell, (_, w))| format!("{cell:>w$}", w = w))
@@ -176,9 +172,9 @@ pub fn table(b: &Budgets, cands: &[Candidate]) -> String {
 /// How much of each budget the candidate uses. Unset budgets say nothing.
 pub fn utilization(b: &Budgets, c: &Candidate) -> String {
     let used = [
-        ("keygen", b.unit.of(c.costs.keygen), b.keygen),
-        ("sign", b.unit.of(c.costs.sign), b.sign),
-        ("sign cached", b.unit.of(c.costs.sign_cached), b.sign_cached),
+        ("keygen", c.costs.keygen.compressions, b.keygen),
+        ("sign", c.costs.sign.compressions, b.sign),
+        ("sign-cached", c.costs.sign_cached.compressions, b.sign_cached),
         ("size", c.costs.sig_bytes, b.size),
     ];
     used.iter()
@@ -186,8 +182,4 @@ pub fn utilization(b: &Budgets, c: &Candidate) -> String {
         .map(|(name, v, limit)| format!("{name} {:.0}%", 100.0 * *v as f64 / limit as f64))
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-pub fn unit_label(u: Unit) -> &'static str {
-    u.label()
 }

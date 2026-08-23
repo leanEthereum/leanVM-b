@@ -10,12 +10,12 @@
 //!   * `doc/xmss/main.tex`, for the digest-cut geometry;
 //!   * for the search, a naive oracle in this crate that skips nothing.
 
-use sphincs_params::cost::{Convention, Encoding, NuTable, Scheme};
+use sphincs_params::cost::{Blocks, Encoding, NuTable, Scheme};
 use sphincs_params::params::{Layers, Params, Profile, Skeleton, costs};
-use sphincs_params::search::{Budgets, Grid, LEVEL1_BITS, Span, Stats, Unit, naive_search, search};
+use sphincs_params::search::{Budgets, Grid, LEVEL1_BITS, Span, Stats, naive_search, search};
 use sphincs_params::security::{forgery_exponent, security_bits};
 
-fn params(scheme: Scheme, h: u64, d: u64, a: u64, k: u64, w: u64, cached_midstate: bool) -> Params {
+fn params(scheme: Scheme, h: u64, d: u64, a: u64, k: u64, w: u64) -> Params {
     Params {
         scheme,
         h,
@@ -28,7 +28,6 @@ fn params(scheme: Scheme, h: u64, d: u64, a: u64, k: u64, w: u64, cached_midstat
         dropped_chains: 0,
         cache_height: None,
         cache_level_only: false,
-        convention: Convention { cached_midstate },
     }
 }
 
@@ -110,50 +109,47 @@ const FIXTURES_CACHED: [Fixture; 7] = [
     ),
 ];
 
-/// The same under the uncached convention, from the fixtures' `uncached_spot`.
-const FIXTURES_UNCACHED: [Fixture; 2] = [
-    (
-        Scheme::Spx,
-        63,
-        7,
-        14,
-        12,
-        16,
-        None,
-        [7856, 292862, 2279391, 2387, 4123],
-    ),
-    (
-        Scheme::Wc,
-        44,
-        4,
-        8,
-        16,
-        16,
-        Some(240),
-        [4960, 1071102, 6381815, 1357, 1357],
-    ),
-];
-
 #[test]
 fn matches_the_sage_fixtures() {
-    for (cached, rows) in [(true, &FIXTURES_CACHED[..]), (false, &FIXTURES_UNCACHED[..])] {
-        for &(scheme, h, d, k, a, w, swn, want) in rows {
-            let p = params(scheme, h, d, a, k, w, cached);
-            let c = costs(p, swn).expect("consistent parameters");
-            let got = [
-                c.sig_bytes,
-                c.keygen.compressions,
-                c.sign.compressions,
-                c.verify.compressions,
-                c.verify_worst.compressions,
-            ];
-            assert_eq!(
-                got,
-                want,
-                "{} h={h} d={d} k={k} a={a} w={w} cached={cached}",
-                scheme.label()
-            );
-        }
+    for &(scheme, h, d, k, a, w, swn, want) in &FIXTURES_CACHED {
+        let p = params(scheme, h, d, a, k, w);
+        let c = costs(p, swn).expect("consistent parameters");
+        let got = [
+            c.sig_bytes,
+            c.keygen.compressions,
+            c.sign.compressions,
+            c.verify.compressions,
+            c.verify_worst.compressions,
+        ];
+        assert_eq!(got, want, "{} h={h} d={d} k={k} a={a} w={w}", scheme.label());
+    }
+}
+
+/// The compression rule: one call per 64 bytes of hash input, the input being
+/// the n-byte public parameter, the n-byte tweak, and the payload.
+#[test]
+fn one_compression_per_64_bytes() {
+    let b = Blocks::new(16);
+    assert_eq!(b.merkle_node(), 1, "two 16-byte children fill one block exactly");
+    assert_eq!(b.chain_step(), 1);
+    assert_eq!(b.chain_step_with_counter(), 1);
+    assert_eq!(b.prf(), 1);
+    // doc/xmss's IncEnc: 32 B of prefix, a 32 B message, 24 B of randomness
+    // and 8 B of padding
+    assert_eq!(b.message_hash(), 2);
+    assert_eq!(b.message_prf(), 2);
+    for m in 1..200 {
+        assert_eq!(b.compress(m), (32 + 16 * m).div_ceil(64), "compressing {m} hash values");
+    }
+    // And it is the same function as the report's SHA-2 layout with the PK.seed
+    // midstate cached, ceil((22*8 + 128m + 65) / 512), which is why its
+    // published compression counts still pin this model.
+    for m in 1..4000u64 {
+        assert_eq!(
+            b.compress(m),
+            (22 * 8 + 128 * m + 65).div_ceil(512),
+            "against the report's layout at m={m}"
+        );
     }
 }
 
@@ -188,7 +184,7 @@ const REPORT_TABLE: [ReportRow; 18] = [
 #[test]
 fn matches_the_report_tables() {
     for (scheme, h, d, a, k, w, swn, sigver, sigtime_e4, search) in REPORT_TABLE {
-        let p = params(scheme, h, d, a, k, w, true);
+        let p = params(scheme, h, d, a, k, w);
         let c = costs(p, swn).expect("consistent parameters");
         let tag = format!("{} h={h} d={d} a={a} k={k} w={w} S={swn:?}", scheme.label());
         assert_eq!(c.verify.hashes, sigver, "SigVer {tag}");
@@ -198,7 +194,7 @@ fn matches_the_report_tables() {
             "SigTime {tag}: got {got:.2}e4, want {sigtime_e4}e4"
         );
         if let Some(want) = search {
-            assert_eq!(c.grinding(), want, "Exp. Search {tag}");
+            assert_eq!(c.grinding().hashes, want, "Exp. Search {tag}");
         }
     }
 }
@@ -313,7 +309,7 @@ fn secure_k_form_an_up_set() {
 
 #[test]
 fn half_top_cache_is_a_saving_and_reduces_to_the_full_tree() {
-    let p = params(Scheme::WcFc, 40, 5, 14, 11, 256, true);
+    let p = params(Scheme::WcFc, 40, 5, 14, 11, 256);
     let c = costs(p, None).unwrap();
     assert!(c.sign_cached.hashes < c.sign.hashes);
     // caching at the leaves is caching the whole tree: nothing left to rebuild
@@ -338,7 +334,6 @@ fn budgets(lifetime: u32, keygen: u64, sign: u64, cached: u64, size: u64) -> Bud
         sign_cached: Some(cached),
         size: Some(size),
         security: LEVEL1_BITS,
-        unit: Unit::Hashes,
     }
 }
 
@@ -415,7 +410,7 @@ fn a_taller_top_layer_is_free_on_size_and_verification() {
     // divide h, so only the signer's costs move.
     let uniform = Params {
         h_top: Some(8),
-        ..params(Scheme::WcFc, 40, 5, 14, 11, 256, true)
+        ..params(Scheme::WcFc, 40, 5, 14, 11, 256)
     };
     let tall = Params {
         h_top: Some(15),
@@ -450,7 +445,7 @@ fn a_taller_top_layer_is_free_on_size_and_verification() {
 fn skeleton_rejects_trees_that_do_not_fit_a_u64() {
     // 2^h' leaves has to be countable: without this the shift masks and a
     // 2^64-leaf tree reports the cost of a one-leaf tree.
-    let p = params(Scheme::WcFc, 64, 1, 14, 11, 256, true);
+    let p = params(Scheme::WcFc, 64, 1, 14, 11, 256);
     assert!(Skeleton::new(p).is_none());
     assert!(Skeleton::new(Params { h: 63, ..p }).is_some());
     assert!(Skeleton::new(Params { a: 64, ..p }).is_none());
@@ -463,7 +458,7 @@ fn skeleton_rejects_trees_that_do_not_fit_a_u64() {
 
 #[test]
 fn skeleton_rejects_inconsistent_parameters() {
-    let ok = params(Scheme::WcFc, 40, 5, 14, 11, 256, true);
+    let ok = params(Scheme::WcFc, 40, 5, 14, 11, 256);
     assert!(Skeleton::new(ok).is_some());
     // d need not divide h: the layers just come out within one of each other
     let uneven = Skeleton::new(Params { d: 3, ..ok }).expect("d need not divide h");

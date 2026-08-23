@@ -10,10 +10,12 @@ use std::ops::{Add, Mul, Sub};
 /// The WOTS+C grinding counter, carried once per hypertree layer.
 pub const COUNTER_BYTES: u64 = 4;
 
-/// A cost in both units the report uses.
+/// What something costs.
 ///
-/// `hashes` counts tweakable-hash and PRF invocations (its "hash" columns),
-/// `compressions` counts SHA-256 compression calls (its Compr. columns).
+/// `compressions` is the number everything here is measured in and the only one
+/// reported. `hashes`, the number of tweakable-hash and PRF invocations, is
+/// carried alongside it only because the report publishes hash counts too, so
+/// `tests/goldens` can check this model against both of its columns.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Cost {
     pub hashes: u64,
@@ -50,50 +52,67 @@ impl Mul<u64> for Cost {
     }
 }
 
-/// Compression calls charged to each kind of hash invocation.
+/// One compression per 64 bytes of hash input.
+pub const BLOCK: u64 = 64;
+
+/// The message a signature covers: a 256-bit digest of it.
+pub const MESSAGE_BYTES: u64 = 32;
+
+/// What each kind of hash costs, in compression calls.
 ///
-/// `cached_midstate` is the FIPS 205 SHA-2 layout with the PK.seed midstate
-/// cached; without it every call pays for its full input.
+/// Every hash here is `Th(P, tweak, payload)`, whose input is the n-byte public
+/// parameter, the n-byte tweak, and then the payload, and the compression
+/// function takes 64 bytes of it at a time. BLAKE2s absorbs 64 bytes per call
+/// and carries the byte counter and final-block flag as compression inputs
+/// rather than as a block, so nothing is spent on padding; SHA-256 under the
+/// length-prefixed Merkle-Damgard of `primitives::sha2` behaves the same way.
+///
+/// At n = 16 that makes a chain step and a Merkle node one compression each,
+/// the message hash two, and the compression of `m` hash values
+/// `ceil((32 + 16m) / 64)`. Which is, for every m, exactly what the report's
+/// SHA-2 layout with the PK.seed midstate cached comes to, so its published
+/// compression counts are still the yardstick in `tests/goldens`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Convention {
-    pub cached_midstate: bool,
+pub struct Blocks {
+    pub n: u64,
 }
 
-impl Default for Convention {
-    fn default() -> Self {
-        Self { cached_midstate: true }
+impl Blocks {
+    pub const fn new(n: u64) -> Self {
+        Self { n }
     }
-}
-
-impl Convention {
-    /// PK.seed + ADRS + one n-byte value.
-    pub const fn th1(self) -> u64 {
-        1
+    /// Compressions for a hash over `payload` bytes.
+    pub const fn of(&self, payload: u64) -> u64 {
+        (2 * self.n + payload).div_ceil(BLOCK)
     }
-    /// ... and the 4-byte WOTS+C counter.
-    pub const fn th1c(self) -> u64 {
-        1
+    /// A secret key element from the seed.
+    pub const fn prf(&self) -> u64 {
+        self.of(self.n)
     }
-    /// Two n-byte children.
-    pub const fn th2(self) -> u64 {
-        if self.cached_midstate { 1 } else { 2 }
+    /// One step along a WOTS chain.
+    pub const fn chain_step(&self) -> u64 {
+        self.of(self.n)
     }
-    /// PK.seed + PK.root + R + message digest.
-    pub const fn hmsg(self) -> u64 {
-        2
+    /// The same, plus the WOTS+C counter the verifier hashes in once per layer.
+    pub const fn chain_step_with_counter(&self) -> u64 {
+        self.of(self.n + COUNTER_BYTES)
     }
-    /// SK.prf + opt + message.
-    pub const fn prfmsg(self) -> u64 {
-        2
+    /// One Merkle node from its two children.
+    pub const fn merkle_node(&self) -> u64 {
+        self.of(2 * self.n)
     }
-    /// PK.seed + SK.seed + ADRS.
-    pub const fn prf(self) -> u64 {
-        1
+    /// Compressing `values` hash values into one: a WOTS public key, or the
+    /// FORS roots.
+    pub const fn compress(&self, values: u64) -> u64 {
+        self.of(values * self.n)
     }
-    /// Compressions for a tweakable hash over `m` n-byte values.
-    pub const fn th(self, m: u64, n: u64) -> u64 {
-        let prefix = if self.cached_midstate { 22 * 8 } else { 8 * (n + 12) };
-        (prefix + 8 * n * m + 65).div_ceil(512)
+    /// The randomized message digest, over R, PK.root and the message.
+    pub const fn message_hash(&self) -> u64 {
+        self.of(2 * self.n + MESSAGE_BYTES)
+    }
+    /// Deriving that randomness from the secret seed and the message.
+    pub const fn message_prf(&self) -> u64 {
+        self.of(self.n + MESSAGE_BYTES)
     }
 }
 
