@@ -299,15 +299,19 @@ fn run(argv: &[String]) -> Result<bool, String> {
         return Ok(false);
     }
 
-    if found.len() > 1 {
+    if !g.fully_pinned() {
         let top = args.u64_or("--top", 15)? as usize;
-        let kept = if stats.rows_dropped > 0 {
-            format!("{} feasible sets, {} kept", stats.rows, found.len())
-        } else {
-            format!("{} feasible sets", found.len())
+        let shown = top.min(found.len());
+        let kept = match (found.len(), stats.rows_dropped) {
+            (1, _) => "1 feasible set".to_string(),
+            (n, 0) => format!("{n} feasible sets, best {shown} by verification cost"),
+            (n, _) => format!(
+                "{} feasible sets, {n} kept, best {shown} by verification cost",
+                stats.rows
+            ),
         };
-        println!("{kept}, best {} by verification cost:\n", top.min(found.len()));
-        println!("{}\n", table(&found[..top.min(found.len())]));
+        println!("{kept}:\n");
+        println!("{}\n", table(&found[..shown]));
         println!("{}\n", legend());
     }
 

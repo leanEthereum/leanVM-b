@@ -144,6 +144,27 @@ pub struct Grid {
     pub cache_level_only: bool,
 }
 
+impl Grid {
+    /// Is every axis pinned to one value, so that a run costs one parameter set
+    /// rather than searching for one? Distinct from a search that happens to
+    /// leave one survivor, which still deserves its count and its table.
+    pub fn fully_pinned(&self) -> bool {
+        let h_top_pinned = match self.h_top {
+            None => true, // the classic split is one profile
+            Some(span) => span.pinned(),
+        };
+        self.schemes.len() == 1
+            && self.chain_bits.len() == 1
+            && self.h.pinned()
+            && self.d.pinned()
+            && self.a.pinned()
+            && self.k.pinned()
+            && self.dropped.pinned()
+            && h_top_pinned
+            && !matches!(self.sums, Sums::Sweep)
+    }
+}
+
 impl Default for Grid {
     fn default() -> Self {
         Self {
@@ -210,7 +231,8 @@ impl std::fmt::Display for Stats {
             f,
             "grid {} (scheme, h, d, chain_bits, dropped) tuples, {} over keygen; \
              then {} (a, k) pairs insecure, {} over size, {} over signing; \
-             {} target-sum ranges swept, {} points feasible over {} rows ({} dropped as worse than everything kept); \
+             {} target-sum ranges swept, {} points feasible over {} parameter tuples ({} dropped as worse than \
+             everything kept); \
              {} layer profiles and {} parameter sets costed in {:.1}s",
             self.grid,
             self.keygen_pruned,
