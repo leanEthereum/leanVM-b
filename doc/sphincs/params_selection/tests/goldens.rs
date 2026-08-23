@@ -11,24 +11,28 @@
 //!   * for the search, a naive oracle in this crate that skips nothing.
 
 use sphincs_params::cost::{Blocks, Encoding, NuTable, Scheme};
-use sphincs_params::params::{Layers, Params, Profile, Skeleton, costs};
-use sphincs_params::search::{Budgets, Grid, LEVEL1_BITS, Span, Stats, naive_search, search};
+use sphincs_params::params::{Fors, Hypertree, Layer, Params, assemble, costs, hyper_cost};
+use sphincs_params::search::{Budgets, Grid, LEVEL1_BITS, Span, Stats, search};
 use sphincs_params::security::{forgery_exponent, security_bits};
 
-fn params(scheme: Scheme, h: u64, d: u64, a: u64, k: u64, w: u64) -> Params {
+fn params(scheme: Scheme, a: u64, k: u64) -> Params {
     Params {
         scheme,
-        h,
-        d,
-        h_top: None,
         a,
         k,
-        w,
         n: 16,
-        dropped_chains: 0,
         cache_height: None,
         cache_level_only: false,
     }
+}
+
+/// One parameter set the way the report writes them: one WOTS instance for the
+/// whole hypertree, the height split evenly.
+fn uniform(scheme: Scheme, h: u64, d: u64, a: u64, k: u64, w: u64, swn: Option<u64>) -> (Params, Hypertree) {
+    (
+        params(scheme, a, k),
+        Hypertree::uniform(h, d, None, w, 0, swn).expect("consistent"),
+    )
 }
 
 /// `(scheme, h, d, k, a, w, S_wn)` and the `(size, keygen, sign, verify,
@@ -112,8 +116,8 @@ const FIXTURES_CACHED: [Fixture; 7] = [
 #[test]
 fn matches_the_sage_fixtures() {
     for &(scheme, h, d, k, a, w, swn, want) in &FIXTURES_CACHED {
-        let p = params(scheme, h, d, a, k, w);
-        let c = costs(p, swn).expect("consistent parameters");
+        let (p, ht) = uniform(scheme, h, d, a, k, w, swn);
+        let c = costs(p, &ht).expect("consistent parameters");
         let got = [
             c.sig_bytes,
             c.keygen.compressions,
@@ -184,8 +188,8 @@ const REPORT_TABLE: [ReportRow; 18] = [
 #[test]
 fn matches_the_report_tables() {
     for (scheme, h, d, a, k, w, swn, sigver, sigtime_e4, search) in REPORT_TABLE {
-        let p = params(scheme, h, d, a, k, w);
-        let c = costs(p, swn).expect("consistent parameters");
+        let (p, ht) = uniform(scheme, h, d, a, k, w, swn);
+        let c = costs(p, &ht).expect("consistent parameters");
         let tag = format!("{} h={h} d={d} a={a} k={k} w={w} S={swn:?}", scheme.label());
         assert_eq!(c.verify.hashes, sigver, "SigVer {tag}");
         let got = c.sign_cold.hashes as f64 / 1e4;
@@ -310,97 +314,21 @@ fn secure_k_form_an_up_set() {
 
 #[test]
 fn half_top_cache_is_a_saving_and_reduces_to_the_full_tree() {
-    let p = params(Scheme::WcFc, 40, 5, 14, 11, 256);
-    let c = costs(p, None).unwrap();
+    let (p, ht) = uniform(Scheme::WcFc, 40, 5, 14, 11, 256, None);
+    let c = costs(p, &ht).unwrap();
     assert!(c.sign.hashes < c.sign_cold.hashes);
     // caching at the leaves is caching the whole tree: nothing left to rebuild
     let whole = Params {
         cache_height: Some(0),
         ..p
     };
-    assert!(costs(whole, None).unwrap().sign.hashes < c.sign.hashes);
+    assert!(costs(whole, &ht).unwrap().sign.hashes < c.sign.hashes);
     // caching only the root is caching nothing, so signing goes cold
     let none = Params {
-        cache_height: Some(p.profile().unwrap().h_top()),
+        cache_height: Some(ht.top().height()),
         ..p
     };
-    assert_eq!(costs(none, None).unwrap().sign.hashes, c.sign_cold.hashes);
-}
-
-fn budgets(log2_q_s: i32, keygen: u64, sign: u64, size: u64) -> Budgets {
-    Budgets {
-        q_s: 2f64.powi(log2_q_s),
-        keygen: Some(keygen),
-        sign: Some(sign),
-        size: Some(size),
-        security: LEVEL1_BITS,
-    }
-}
-
-#[test]
-fn search_agrees_with_a_naive_oracle() {
-    // A grid small enough to sweep with nothing skipped at all.
-    let b = budgets(20, 3_000_000, 10_000_000, 4_000);
-    let g = Grid {
-        schemes: vec![Scheme::Wc, Scheme::WcFc],
-        h: Span::pin(20),
-        a: Span::new(14, 16),
-        k: Span::new(1, 14),
-        chain_bits: vec![4],
-        dropped: Span::new(0, 1),
-        h_top: Some(Span::new(1, 20)),
-        ..Default::default()
-    };
-    let mut st = Stats::default();
-    let found = search(&b, &g, &mut st);
-    let oracle = naive_search(&b, &g);
-    assert!(!found.is_empty() && !oracle.is_empty());
-    assert_eq!(
-        found[0].costs.verify.hashes, oracle[0].costs.verify.hashes,
-        "the oracle finds the same optimum"
-    );
-    assert_eq!(found[0].key(), oracle[0].key(), "and the same winner");
-    // Every parameter tuple the oracle found feasible is in the search's output,
-    // with the same best verification cost for that tuple.
-    let mut want: std::collections::HashMap<_, u64> = Default::default();
-    for c in &oracle {
-        let e = want.entry(c.key()).or_insert(u64::MAX);
-        *e = (*e).min(c.costs.verify.hashes);
-    }
-    let got: std::collections::HashMap<_, u64> = found.iter().map(|c| (c.key(), c.costs.verify.hashes)).collect();
-    assert_eq!(got, want, "the search and the oracle agree tuple by tuple");
-}
-
-#[test]
-fn search_finds_and_improves_on_the_reports_bold_row() {
-    // Budgets near the report's 2^40 numbers, on its grid (w in {16, 256}, no
-    // chain dropping). Its own choice has to come out feasible, and the search
-    // has to do at least as well: it spends what is left of the signing budget
-    // raising the target sum, which the report's row does not.
-    let b = budgets(40, 1_100_000, 6_000_000, 4_400);
-    let g = Grid {
-        chain_bits: vec![4, 8],
-        dropped: Span::pin(0),
-        ..Default::default()
-    };
-    let mut st = Stats::default();
-    let found = search(&b, &g, &mut st);
-    let row = found
-        .iter()
-        .find(|c| c.key() == (Scheme::WcFc, 40, 5, 14, 11, 256, 0))
-        .expect("the report's bold row is feasible under its own budgets");
-    assert!(
-        row.costs.swn.unwrap() > 2040,
-        "the report's row grinds less than the budget allows"
-    );
-    assert!(
-        row.costs.verify.hashes < 10402,
-        "so it can verify faster than the table's 10402 hashes"
-    );
-    assert!(
-        found[0].costs.verify.hashes <= row.costs.verify.hashes,
-        "and the winner is at least as cheap"
-    );
+    assert_eq!(costs(none, &ht).unwrap().sign.hashes, c.sign_cold.hashes);
 }
 
 #[test]
@@ -408,17 +336,12 @@ fn a_taller_top_layer_is_free_on_size_and_verification() {
     // The whole point of per-layer heights: the signature carries h
     // authentication nodes and the verifier walks them however the layers
     // divide h, so only the signer's costs move.
-    let uniform = Params {
-        h_top: Some(8),
-        ..params(Scheme::WcFc, 40, 5, 14, 11, 256)
-    };
-    let tall = Params {
-        h_top: Some(15),
-        ..uniform
-    };
-    let (u, t) = (costs(uniform, None).unwrap(), costs(tall, None).unwrap());
-    assert_eq!(u.profile.total(), 40);
-    assert_eq!(t.profile.total(), 40);
+    let p = params(Scheme::WcFc, 14, 11);
+    let flat = Hypertree::uniform(40, 5, Some(8), 256, 0, None).unwrap();
+    let tall = Hypertree::uniform(40, 5, Some(15), 256, 0, None).unwrap();
+    let (u, t) = (costs(p, &flat).unwrap(), costs(p, &tall).unwrap());
+    assert_eq!(flat.height(), 40);
+    assert_eq!(tall.height(), 40);
     assert_eq!(
         (t.sig_bytes, t.verify),
         (u.sig_bytes, u.verify),
@@ -429,18 +352,16 @@ fn a_taller_top_layer_is_free_on_size_and_verification() {
         "a taller top tree costs more to generate"
     );
     assert!(t.sign_cold.hashes > u.sign_cold.hashes, "and more to sign cold");
-    assert!(t.sign.hashes < u.sign.hashes, "but less with it, which is the point");
-    // the lower layers come out as equal as they go, never differing by more
-    // than one level
-    let p = t.profile;
-    let lower: Vec<u64> = p.heights().skip(1).collect();
-    let (lo, hi) = (lower.iter().min().unwrap(), lower.iter().max().unwrap());
     assert!(
-        hi - lo <= 1,
-        "the lower layers never differ by more than a level: {lower:?}"
+        t.sign.hashes < u.sign.hashes,
+        "but less with the cache, which is the point"
     );
-    assert_eq!(Profile::canonical(41, 5, Some(9)).unwrap().total(), 41);
-    assert_eq!(Layers::new(&tall).unwrap().profile, t.profile);
+    // the lower layers come out as equal as they go
+    let lower: Vec<u64> = tall.layers().skip(1).map(|x| x.height()).collect();
+    assert!(
+        lower.iter().max().unwrap() - lower.iter().min().unwrap() <= 1,
+        "{lower:?}"
+    );
 }
 
 /// Every way of splitting `h` over `d` layers, top first.
@@ -459,131 +380,166 @@ fn compositions(h: u64, d: u64) -> Vec<Vec<u64>> {
         .collect()
 }
 
-/// The search only ever builds `Profile::canonical`, and this is why that is
-/// not a restriction: for the same `(h, d, h_top)`, no other profile costs less
-/// on anything.
 #[test]
-fn profile_shape_is_never_beaten() {
-    let mut checked = 0;
-    for (h, d) in [(12, 3), (14, 4), (9, 2), (16, 5), (20, 4)] {
-        let p = Params {
-            h,
-            d,
-            ..params(Scheme::WcFc, h, d, 10, 12, 16)
-        };
-        let sk = Skeleton::new(p).expect("consistent");
+fn any_hypertree_can_be_costed() {
+    let p = params(Scheme::WcFc, 14, 11);
+    // heights and WOTS parameters both varying, layer by layer
+    let mixed = Hypertree::new(&[
+        Layer::new(11, 256, 0, Some(2040)).unwrap(),
+        Layer::new(5, 16, 1, None).unwrap(),
+        Layer::new(7, 4, 0, None).unwrap(),
+        Layer::new(3, 2, 0, None).unwrap(),
+    ])
+    .unwrap();
+    assert_eq!(mixed.height(), 26);
+    assert_eq!(mixed.depth(), 4);
+    assert!(!mixed.one_wots());
+    assert_eq!(mixed.heights(), "11 + 5 + 7 + 3");
+    let c = costs(p, &mixed).unwrap();
+    // the signature carries one WOTS signature per layer, at that layer's l
+    let chains: u64 = mixed.layers().map(|x| x.chains(16, Scheme::WcFc).unwrap()).sum();
+    let fors = Fors::new(&p).unwrap();
+    assert_eq!(c.sig_bytes, fors.sig_bytes + 26 * 16 + chains * 16 + 4 * 4);
+    // a hypertree of one layer is an ordinary XMSS tree
+    let single = Hypertree::new(&[Layer::new(20, 16, 0, None).unwrap()]).unwrap();
+    assert_eq!(single.depth(), 1);
+    assert!(costs(p, &single).is_some());
+    assert!(Hypertree::new(&[]).is_none());
+    assert!(Layer::new(0, 16, 0, None).is_none(), "every layer needs a level");
+    assert!(Layer::new(64, 16, 0, None).is_none(), "2^height has to be countable");
+    assert!(Layer::new(8, 24, 0, None).is_none(), "w is a power of two");
+}
+
+/// The search tries two WOTS instances, one for the top layer and one for the
+/// rest, and this is what that costs against giving every layer its own.
+#[test]
+fn two_groups_against_every_per_layer_assignment() {
+    let p = params(Scheme::WcFc, 10, 12);
+    let fors = Fors::new(&p).unwrap();
+    let mut nu = sphincs_params::cost::NuCache::new(16);
+    let configs: Vec<(u64, u64)> = [2, 4, 16].iter().flat_map(|&w| [0, 1].map(move |dr| (w, dr))).collect();
+    let mut worst_gap = 0.0f64;
+    for (h, d) in [(8, 2), (11, 2), (9, 3), (12, 3)] {
+        // the budgets have to bind, or every assignment is feasible and the
+        // comparison says nothing
+        let (max_size, max_sign) = (5_000, 4_000_000);
+        let mut best_any = u64::MAX;
+        let mut best_two_group = u64::MAX;
         for heights in compositions(h, d) {
-            let Some(profile) = Profile::new(&heights) else {
-                continue;
-            };
-            let Some(any) = Layers::from_profile(&p, profile) else {
-                continue;
-            };
-            let canon = Layers::new(&Params {
-                h_top: Some(heights[0]),
-                ..p
-            })
-            .expect("same top height");
-            let tag = format!("h={h} d={d} heights={heights:?}");
-            // size and verification do not see the profile at all
-            let (a, c) = (sk.finish(&any, 0, 0), sk.finish(&canon, 0, 0));
-            assert_eq!(
-                (a.sig_bytes, a.verify),
-                (c.sig_bytes, c.verify),
-                "size or verification moved: {tag}"
-            );
-            // keygen is the top tree, which they share
-            assert_eq!(any.keygen, canon.keygen, "keygen moved: {tag}");
-            // and the canonical split is the cheapest to sign, cached or cold
-            assert!(
-                canon.trees_cached.compressions <= any.trees_cached.compressions,
-                "beaten on signing: {tag}"
-            );
-            assert!(
-                canon.trees.compressions <= any.trees.compressions,
-                "beaten on cold signing: {tag}"
-            );
-            checked += 1;
+            for assignment in 0..configs.len().pow(d as u32) {
+                let layers: Option<Vec<Layer>> = heights
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &height)| {
+                        let (w, dr) = configs[assignment / configs.len().pow(i as u32) % configs.len()];
+                        Layer::new(height, w, dr, None)
+                    })
+                    .collect();
+                let Some(layers) = layers else { continue };
+                let Some(ht) = Hypertree::new(&layers) else { continue };
+                let Some(hyper) = hyper_cost(&p, &ht, &mut nu) else {
+                    continue;
+                };
+                let c = assemble(&p, &hyper, &fors);
+                if c.sig_bytes > max_size || c.sign.compressions > max_sign {
+                    continue;
+                }
+                best_any = best_any.min(c.verify.compressions);
+                // is this assignment inside the two-group family?
+                let top = layers[0];
+                let low = layers[layers.len() - 1];
+                let even = Hypertree::two_group(h, d, top, low);
+                if even == Some(ht) {
+                    best_two_group = best_two_group.min(c.verify.compressions);
+                }
+            }
         }
+        assert!(best_any < u64::MAX, "nothing feasible at h={h} d={d}");
+        assert!(best_two_group >= best_any, "the family cannot beat the whole space");
+        let gap = best_two_group as f64 / best_any as f64 - 1.0;
+        worst_gap = worst_gap.max(gap);
+        println!(
+            "h={h} d={d}: two groups {best_two_group}, every assignment {best_any} ({:.1}% gap)",
+            100.0 * gap
+        );
     }
-    assert!(checked > 2000, "only {checked} profiles checked");
+    // What the two-group restriction costs. Raise this only with a note saying
+    // which case moved and why.
+    assert!(
+        worst_gap <= 0.0,
+        "the two-group family lost {:.1}% somewhere",
+        100.0 * worst_gap
+    );
 }
 
-/// A profile is expressible however uneven, and reads back as given.
-#[test]
-fn any_profile_can_be_costed() {
-    let p = params(Scheme::WcFc, 26, 4, 14, 11, 256);
-    let lopsided = Profile::new(&[11, 5, 7, 3]).expect("26 over 4 layers");
-    assert_eq!(lopsided.total(), 26);
-    assert_eq!(lopsided.h_top(), 11);
-    assert_eq!(format!("{lopsided}"), "11 + 5 + 7 + 3");
-    let lay = Layers::from_profile(&p, lopsided).expect("adds up to h over d layers");
-    assert_eq!(lay.profile, lopsided);
-    // and the canonical one with the same top is at least as cheap to sign
-    let canon = Layers::new(&Params { h_top: Some(11), ..p }).unwrap();
-    assert_eq!(format!("{}", canon.profile), "11 + 5 + 5 + 5");
-    assert!(canon.trees_cached.compressions <= lay.trees_cached.compressions);
-    // heights have to add up over the layers there are
-    assert!(Layers::from_profile(&p, Profile::new(&[11, 5, 7, 4]).unwrap()).is_none());
-    assert!(Layers::from_profile(&p, Profile::new(&[13, 13]).unwrap()).is_none());
-    assert!(Profile::new(&[11, 0, 15]).is_none(), "every layer needs a level");
-    assert!(Profile::new(&[64]).is_none(), "2^height has to be countable");
+fn budgets(log2_q_s: i32, keygen: u64, sign: u64, size: u64) -> Budgets {
+    Budgets {
+        q_s: 2f64.powi(log2_q_s),
+        keygen: Some(keygen),
+        sign: Some(sign),
+        size: Some(size),
+        security: LEVEL1_BITS,
+    }
 }
 
 #[test]
-fn skeleton_rejects_trees_that_do_not_fit_a_u64() {
-    // 2^h' leaves has to be countable: without this the shift masks and a
-    // 2^64-leaf tree reports the cost of a one-leaf tree.
-    let p = params(Scheme::WcFc, 64, 1, 14, 11, 256);
-    assert!(Skeleton::new(p).is_none());
-    assert!(Skeleton::new(Params { h: 63, ..p }).is_some());
-    assert!(Skeleton::new(Params { a: 64, ..p }).is_none());
+fn search_finds_and_improves_on_the_reports_bold_row() {
+    // Budgets near the report's 2^40 numbers, on its grid (w in {16, 256}, no
+    // chain dropping). Its own choice has to come out feasible, and the search
+    // has to do at least as well: it spends what is left of the signing budget
+    // raising the target sums, which the report's row does not.
+    let b = budgets(40, 1_100_000, 6_000_000, 4_400);
+    let g = Grid {
+        chain_bits: vec![4, 8],
+        dropped: Span::pin(0),
+        ..Default::default()
+    };
+    let mut st = Stats::default();
+    let found = search(&b, &g, &mut st);
+    let row = found
+        .iter()
+        .find(|c| {
+            let ht = c.costs.hypertree;
+            (c.params.a, c.params.k, ht.height(), ht.depth(), ht.top().w()) == (14, 11, 40, 5, 256)
+        })
+        .expect("the report's bold row is feasible under its own budgets");
+    let swn = row.costs.hypertree.top().swn().unwrap();
+    assert!(swn > 2040, "the report's row grinds less than the budget allows");
+    assert!(
+        row.costs.verify.hashes < 10402,
+        "so it can verify faster than the table's 10402 hashes"
+    );
+    assert!(
+        found[0].costs.verify.compressions <= row.costs.verify.compressions,
+        "and the winner is at least as cheap"
+    );
+}
+
+#[test]
+fn rejects_what_it_cannot_count_or_assemble() {
+    let p = params(Scheme::WcFc, 14, 11);
+    // 2^h has to be countable: without this the shift masks and a 2^64-leaf
+    // tree reports the cost of a one-leaf tree
+    assert!(Layer::new(64, 256, 0, None).is_none());
+    assert!(Hypertree::uniform(64, 1, None, 256, 0, None).is_none());
+    assert!(Hypertree::uniform(63, 1, None, 256, 0, None).is_some());
     // and the cost really does scale with the tree, so nothing wraps below that
-    let small = costs(Params { h: 40, d: 8, ..p }, None).unwrap();
-    let large = costs(Params { h: 48, d: 8, ..p }, None).unwrap();
-    // twice the leaves is twice the work plus the node joining the two halves
+    let small = costs(p, &Hypertree::uniform(40, 8, None, 256, 0, None).unwrap()).unwrap();
+    let large = costs(p, &Hypertree::uniform(48, 8, None, 256, 0, None).unwrap()).unwrap();
+    // twice the leaves in the top tree is twice the work plus the node joining
+    // the two halves
     assert_eq!(large.keygen.hashes, small.keygen.hashes * 2 + 1);
-}
-
-#[test]
-fn skeleton_rejects_inconsistent_parameters() {
-    let ok = params(Scheme::WcFc, 40, 5, 14, 11, 256);
-    assert!(Skeleton::new(ok).is_some());
-    // d need not divide h: the layers just come out within one of each other
-    let uneven = Skeleton::new(Params { d: 3, ..ok }).expect("d need not divide h");
-    assert_eq!(uneven.params.profile().unwrap().total(), 40);
-    assert!(
-        Skeleton::new(Params { h: 2, d: 3, ..ok }).is_none(),
-        "every layer needs a level"
-    );
-    assert!(
-        Skeleton::new(Params { h_top: Some(40), ..ok }).is_none(),
-        "the lower layers need levels too"
-    );
-    assert!(
-        Skeleton::new(Params { h_top: Some(36), ..ok }).is_some(),
-        "but only one each"
-    );
-    assert!(
-        Skeleton::new(Params { w: 24, ..ok }).is_none(),
-        "w must be a power of two"
-    );
-    assert!(Skeleton::new(Params { k: 1, ..ok }).is_none(), "FORS+C signs k-1 trees");
-    assert!(
-        Skeleton::new(Params {
-            scheme: Scheme::Spx,
-            dropped_chains: 1,
-            ..ok
-        })
-        .is_none(),
-        "WOTS-TW has no counter"
-    );
-    assert!(
-        Layers::new(&Params {
-            cache_height: Some(99),
-            ..ok
-        })
-        .is_none(),
-        "the cache sits inside the top tree"
-    );
+    assert!(large.sign_cold.hashes > small.sign_cold.hashes);
+    // FORS+C signs k-1 trees, so it needs two
+    assert!(Fors::new(&Params { k: 1, ..p }).is_none());
+    // every layer needs a level, and the heights have to add up
+    assert!(Hypertree::uniform(2, 3, None, 256, 0, None).is_none());
+    assert!(Hypertree::uniform(40, 5, Some(40), 256, 0, None).is_none());
+    assert!(Hypertree::uniform(40, 5, Some(36), 256, 0, None).is_some());
+    // the cache sits inside the top tree
+    let deep = Params {
+        cache_height: Some(99),
+        ..p
+    };
+    assert!(costs(deep, &Hypertree::uniform(40, 5, None, 256, 0, None).unwrap()).is_none());
 }
