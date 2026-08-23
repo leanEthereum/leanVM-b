@@ -2,7 +2,7 @@
 
 Security, signature size and hash counts for the WOTS/FORS schemes of "Hash-based Signature Schemes for Bitcoin" (Kudinov, Nick, Blockstream Research), and a search for the set that verifies cheapest under a given set of budgets. See `src/lib.rs` for what is modelled and what is deliberately not.
 
-One command. Give a parameter to pin it, leave it out to search it. Numbers may be written as `2e6`, including the lifetime, which is a signature count rather than its log:
+One command. Give a parameter to pin it, leave it out to search it. Numbers may be written as `2e6` or `100,000` or `100_000`, including the lifetime, which is a signature count rather than its log:
 
 ```sh
 cd doc/sphincs/params_selection
@@ -12,7 +12,7 @@ cargo run --release -- --lifetime 1e12 --scheme W+C_F+C --height 40 --layers 5 -
 That pins everything, so it just costs that one set: the report's bold 2^40 row, 4356 bytes and 10425 compressions to verify. Size and verification do not depend on the lifetime, only the security line does. Leave axes out and they get searched instead, against whichever budgets you set:
 
 ```sh
-cargo run --release -- --lifetime 2e6 --max-keygen 2e6 --max-sign 10e6 --max-sign-cached 4e6 --max-size 4000
+cargo run --release -- --lifetime 2e6 --max-keygen 2e6 --max-sign 100,000 --max-sign-cached 4e6 --max-size 4000
 ```
 
 Every cost is compression calls, one per 64 bytes of hash input: a Merkle node or a WOTS chain step is one, the message digest two, compressing `m` hash values `ceil((2n + mn) / 64)`.

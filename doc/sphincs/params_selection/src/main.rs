@@ -2,7 +2,7 @@
 //! and everything left over gets searched.
 
 use sphincs_params::cost::{SCHEMES, Scheme};
-use sphincs_params::report::{legend, report, signatures, table, utilization};
+use sphincs_params::report::{legend, report, si, signatures, table, utilization};
 use sphincs_params::search::{
     A_MAX, Budgets, CHAIN_BITS_MAX, D_MAX, DROPPED_MAX, Grid, H_MAX, K_MAX, LEVEL1_BITS, Span, Stats, Sums, edges,
     search,
@@ -14,7 +14,7 @@ SPHINCS+ parameter selection: what verifies cheapest, or what one set costs.
 usage: sphincs_params --lifetime Q [parameters] [budgets] [output]
 
 Give a parameter to pin it, leave it out to search it. Pin them all and the run
-just costs that one set. Numbers may be written as 2e6.
+just costs that one set. Numbers may be written as 2e6 or 100,000 or 100_000.
 
 parameters
   --lifetime Q      signatures allowed per public key, e.g. 16e6 (required)
@@ -82,7 +82,49 @@ fn main() -> std::process::ExitCode {
 /// Flags and their values, repeatable flags kept in order.
 struct Args(Vec<(String, Option<String>)>);
 
-const NO_VALUE: [&str; 3] = ["--cache-level-only", "--stats", "--help"];
+const NO_VALUE: [&str; 4] = ["--cache-level-only", "--stats", "--help", "-h"];
+
+const FLAGS: [&str; 21] = [
+    "--lifetime",
+    "--scheme",
+    "--height",
+    "--layers",
+    "--top-height",
+    "-a",
+    "-k",
+    "--chain-bits",
+    "-w",
+    "--drop-chains",
+    "--swn",
+    "-n",
+    "--max-keygen",
+    "--max-sign",
+    "--max-size",
+    "--security",
+    "--cache-height",
+    "--cache-level-only",
+    "--top",
+    "--stats",
+    "--help",
+];
+
+/// Flags that used to exist, and what to reach for instead.
+const GONE: [(&str, &str); 8] = [
+    (
+        "--max-sign-cached",
+        "--max-sign, which now counts exactly that: signing with the half top in state",
+    ),
+    ("--unit", "nothing: every cost is compression calls"),
+    ("--uncached", "nothing: every cost is compression calls"),
+    ("--max-dropped", "--drop-chains"),
+    (
+        "--h-max",
+        "--height, which pins it; widening the range means raising H_MAX in src/search.rs",
+    ),
+    ("--d-max", "--layers, or D_MAX in src/search.rs"),
+    ("--a-max", "-a, or A_MAX in src/search.rs"),
+    ("--k-max", "-k, or K_MAX in src/search.rs"),
+];
 
 impl Args {
     fn parse(argv: &[String]) -> Result<Self, String> {
@@ -92,6 +134,12 @@ impl Args {
             let flag = &argv[i];
             if !flag.starts_with('-') {
                 return Err(format!("unexpected argument {flag}"));
+            }
+            if let Some((_, instead)) = GONE.iter().find(|(gone, _)| gone == flag) {
+                return Err(format!("{flag} is gone: use {instead}"));
+            }
+            if !FLAGS.contains(&flag.as_str()) {
+                return Err(format!("unknown flag {flag}; run with no arguments for the list"));
             }
             if NO_VALUE.contains(&flag.as_str()) {
                 out.push((flag.clone(), None));
@@ -121,11 +169,12 @@ impl Args {
         self.all(name).last().copied()
     }
 
-    /// Accepts 2e6 as well as 2000000.
+    /// Accepts 2e6 and 100,000 and 100_000 as well as 100000.
     fn float(&self, name: &str) -> Result<Option<f64>, String> {
         match self.get(name) {
             None => Ok(None),
             Some(s) => s
+                .replace([',', '_', ' '], "")
                 .parse::<f64>()
                 .map(Some)
                 .map_err(|_| format!("{name}: expected a number, got {s}")),
@@ -133,13 +182,7 @@ impl Args {
     }
 
     fn num(&self, name: &str) -> Result<Option<u64>, String> {
-        match self.get(name) {
-            None => Ok(None),
-            Some(s) => s
-                .parse::<f64>()
-                .map(|f| Some(f as u64))
-                .map_err(|_| format!("{name}: expected a number, got {s}")),
-        }
+        Ok(self.float(name)?.map(|f| f as u64))
     }
 
     fn u64_or(&self, name: &str, default: u64) -> Result<u64, String> {
@@ -245,7 +288,14 @@ fn run(argv: &[String]) -> Result<bool, String> {
             b.security,
             signatures(q_s)
         );
-        println!("--stats says where the space went; the binding budget is usually size or keygen");
+        println!(
+            "rejected: {} layer sets over --max-keygen, {} parameter sets over --max-size, {} over --max-sign; \
+             and {} (a, k) pairs never reached the security floor",
+            si(stats.keygen_pruned),
+            si(stats.size_pruned),
+            si(stats.sign_pruned),
+            si(stats.insecure)
+        );
         return Ok(false);
     }
 
