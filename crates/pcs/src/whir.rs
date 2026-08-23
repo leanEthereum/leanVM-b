@@ -1324,7 +1324,6 @@ pub fn recursive_prover_with_basis(
     };
     ps.observe_root(&initial_root);
 
-    let fold_bits = |lvl: usize| -> u32 { config.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
     let ood_count = |lvl: usize| -> usize { config.ood_samples.get(lvl).copied().unwrap_or(0) };
 
     let _t = std::time::Instant::now();
@@ -1335,13 +1334,6 @@ pub fn recursive_prover_with_basis(
 
     let mut r_lane_fold = Vec::with_capacity(initial_k);
     for j in 0..initial_k {
-        // Tapered fold-challenge grinding: round j of the lane fold needs
-        // (fold_bits - j) bits (worst round j=0 carries the full budget); see
-        // the original's App. C.3 `mca-commutes` comment.
-        let bits = fold_bits(0).saturating_sub(j as u32);
-        if bits > 0 {
-            ps.grind(bits);
-        }
         let r_j = ps.sample();
         let msg = sumcheck_span.in_scope(|| sc_prover.fold_lane(r_j, lane_block, j + 1 == initial_k));
         send_msg(ps, msg, sc_prover.claim());
@@ -1432,13 +1424,7 @@ pub fn recursive_prover_with_basis(
         let mut level_rs = Vec::with_capacity(k_i);
         let _t = std::time::Instant::now();
         let sumcheck_span = tracing::info_span!("Sumcheck");
-        for j in 0..k_i {
-            // These folds fold level i+1's commitment; tapered grinding as in
-            // the L0 loop.
-            let bits = fold_bits(i + 1).saturating_sub(j as u32);
-            if bits > 0 {
-                ps.grind(bits);
-            }
+        for _ in 0..k_i {
             let ri = ps.sample();
             let msg = sumcheck_span.in_scope(|| sc_prover.fold(ri));
             send_msg(ps, msg, sc_prover.claim());
@@ -1662,16 +1648,11 @@ impl PrevLevel {
 fn replay_fold_rounds(
     vs: &mut impl Receiver,
     k: usize,
-    level_fold_bits: u32,
     t_r: &mut F192,
     running_quad: &mut RoundQuad,
 ) -> Option<Vec<F192>> {
     let mut rs = Vec::with_capacity(k);
-    for j in 0..k {
-        let bits = level_fold_bits.saturating_sub(j as u32);
-        if bits > 0 {
-            vs.grind_check(bits).ok()?;
-        }
+    for _ in 0..k {
         let ri = vs.sample();
         rs.push(ri);
         *t_r = running_quad.eval(ri);
@@ -1774,11 +1755,10 @@ pub fn recursive_verifier_with_basis(
         return false;
     };
 
-    let fold_bits = |lvl: usize| -> u32 { config.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
     let ood_count = |lvl: usize| -> usize { config.ood_samples.get(lvl).copied().unwrap_or(0) };
     let mut ood_bases: Vec<(Vec<F192>, usize, F192)> = Vec::new();
 
-    let Some(r_lane_fold) = replay_fold_rounds(vs, initial_k, fold_bits(0), &mut t_r, &mut running_quad) else {
+    let Some(r_lane_fold) = replay_fold_rounds(vs, initial_k, &mut t_r, &mut running_quad) else {
         return false;
     };
 
@@ -1869,7 +1849,7 @@ pub fn recursive_verifier_with_basis(
         if n_current < k_i {
             return false;
         }
-        let Some(level_rs) = replay_fold_rounds(vs, k_i, fold_bits(i + 1), &mut t_r, &mut running_quad) else {
+        let Some(level_rs) = replay_fold_rounds(vs, k_i, &mut t_r, &mut running_quad) else {
             return false;
         };
         ris.extend_from_slice(&level_rs);
@@ -2116,7 +2096,6 @@ where
         return false;
     };
 
-    let fold_bits = |lvl: usize| -> u32 { config.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
     let ood_count = |lvl: usize| -> usize { config.ood_samples.get(lvl).copied().unwrap_or(0) };
     struct OodCtx {
         z: Vec<F192>,
@@ -2125,7 +2104,7 @@ where
     }
     let mut ood_ctxs: Vec<OodCtx> = Vec::new();
 
-    let Some(r_lane_fold) = replay_fold_rounds(vs, initial_k, fold_bits(0), &mut t_r, &mut running_quad) else {
+    let Some(r_lane_fold) = replay_fold_rounds(vs, initial_k, &mut t_r, &mut running_quad) else {
         return false;
     };
 
@@ -2216,7 +2195,7 @@ where
         if n_current < k_i {
             return false;
         }
-        let Some(level_rs) = replay_fold_rounds(vs, k_i, fold_bits(i + 1), &mut t_r, &mut running_quad) else {
+        let Some(level_rs) = replay_fold_rounds(vs, k_i, &mut t_r, &mut running_quad) else {
             return false;
         };
         ris.extend_from_slice(&level_rs);
@@ -2511,7 +2490,6 @@ mod tests {
         assert_eq!(pc.ood_samples[0], 0);
         assert!(pc.ood_samples.iter().skip(1).all(|&s| s >= 1));
         assert!(pc.grinding_bits.iter().all(|&b| b == QUERY_GRINDING_BITS));
-        assert!(pc.fold_grinding_bits.iter().all(|&b| b == 0));
         // And log_n = 12 is below the production ladder's feasibility floor, so
         // the tests there use the default_config fallback.
         assert!(configs_for(12).is_err());

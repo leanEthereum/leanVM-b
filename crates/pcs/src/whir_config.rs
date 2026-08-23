@@ -108,12 +108,6 @@ pub struct ProverConfig {
     /// post-commit/pre-queries. Length = level_steps + 1. Each bit here
     /// substitutes for ~1/log₂(1/(1−γ)) queries at that level.
     pub grinding_bits: Vec<usize>,
-    /// Per-level **fold-challenge** PoW grinding bits (L0, ..., L_r), ground
-    /// immediately before EACH of the level's fold challenges (so a level
-    /// with `k` folds does `k` grinds of this many bits). Boosts the
-    /// proximity-gap term, which lives on the fold challenges. Length =
-    /// level_steps + 1.
-    pub fold_grinding_bits: Vec<usize>,
     /// Per-commit-level out-of-domain samples (L0, ..., L_r), taken right
     /// after the level's Merkle root enters the transcript. `[0]` must be 0:
     /// L0 is bound by the opening's own (post-commit, random-point)
@@ -225,7 +219,6 @@ pub fn default_config(log_n: usize, log_batch_size: usize, log_inv_rate: usize) 
         initial_k,
         level_ks: shape.k_levels[1..].to_vec(),
         grinding_bits: vec![0usize; n_levels],
-        fold_grinding_bits: vec![0usize; n_levels],
         ood_samples: vec![0usize; n_levels],
     })
 }
@@ -328,8 +321,9 @@ fn derive_ladder_shape(log_n: usize, initial_k: usize, log_inv_rate: usize) -> R
 // That analysis is always the Johnson radius with explicit slack `eta`
 // (gamma = (1 - sqrt(rho)) - eta) WITH out-of-domain binding (`doc/leanvm/body/b-polynomial-commitment-scheme.tex`,
 // Thm `thm:rbr`). The MCA theorem (`thm:mca-johnson` = BCHKS25 Thm 4.6) gives
-// the proximity-gap exceptional set `a = O_rho(n / eta^5)`, so a level's
-// `fold_grinding_bits` must be at least `target_bits - log2(q/a)`. Binding to a
+// the proximity-gap exceptional set `a = O_rho(n / eta^5)`, and the eta search
+// keeps `log2(q/a)` above the target on its own rather than grinding the fold
+// challenges for it. Binding to a
 // single codeword of the (Johnson-bounded) interleaved list is via
 // `ood_samples` explicit multilinear OOD evaluations, except at L0, where the
 // opening's own post-commit random evaluation claim plays the OOD role (union
@@ -366,11 +360,6 @@ pub struct WhirLevelConfig {
     /// **Query-phase** PoW grinding bits, ground post-commit/pre-queries.
     /// Each bit substitutes for ~1/log₂(1/(1−γ)) queries at this level.
     pub grinding_bits: usize,
-    /// **Fold-challenge** PoW grinding bits, ground immediately before EACH
-    /// of this level's `k` fold challenges. Boosts the
-    /// proximity-gap term (which lives on the fold challenges):
-    /// `eps_pg + fold_grinding_bits ≥ target`.
-    pub fold_grinding_bits: usize,
     /// Out-of-domain samples taken right after this level's commit enters
     /// the transcript. Each binds the prover to a single codeword of the
     /// interleaved list via a multilinear evaluation claim.
@@ -396,8 +385,7 @@ pub struct FinalBlockConfig {
 ///
 /// **Validation invariants** (checked by [`Self::validate`]):
 /// 1. `initial_k + Σ levels[1..].k + final_block.yr_log_n == log_n`.
-/// 2. Each level's proximity-gap bits plus its `fold_grinding_bits` reach
-///    `target_security_bits`.
+/// 2. Each level's proximity-gap bits reach `target_security_bits`.
 /// 3. Each level's query soundness reaches `target_security_bits −
 ///    grinding_bits` (queries cover what grinding doesn't).
 /// 4. `eta` is finite and inside the Johnson range for the level's rate.
@@ -555,31 +543,44 @@ fn johnson_interleaved_list_log2(log_inv_rate: usize, log_msg_cols: usize, eta: 
 /// - the total degree of the GF64-to-GF192 ring-switch batching map (L0 only,
 ///   but included at every level so the bound also dominates the claim batch
 ///   entering the next level's list, whatever its query count);
-/// - `J − 1 = queries + ood_samples`, the batch polynomial's degree in the
-///   level's single lambda (residual + OOD + one claim per query); and
+/// - `J − 1 = prev_queries + ood_samples`, the batch polynomial's degree in the
+///   level's single lambda. The claims it batches are the ones the PREVIOUS
+///   level's query phase raised (`thm:rbr`: `J_i = n_{i-1} + 2`, one per query
+///   plus the residual and the OOD claim), so this level's own query count is
+///   the wrong quantity: query counts fall with depth, so using it would
+///   understate the degree and overstate the bound. At L0 there is no previous
+///   level and `J_0` is set by the outer protocol's claim pool rather than by a
+///   query count, so 0 is passed; that pool is a few hundred claims, orders below
+///   the ring-switch degree the `max` takes anyway; and
 /// - 2 for quadratic sumcheck.
 fn johnson_algebraic_bits_for(
     log_inv_rate: usize,
     log_msg_cols: usize,
     eta: f64,
-    queries: usize,
+    prev_queries: usize,
     ood_samples: usize,
 ) -> f64 {
     let log2_l = johnson_interleaved_list_log2(log_inv_rate, log_msg_cols, eta);
     let degree = crate::ring_switch::RING_SWITCH_SOUNDNESS_DEGREE
-        .max(queries + ood_samples)
+        .max(prev_queries + ood_samples)
         .max(2);
     ANALYSIS_LOG_Q - (degree as f64).log2() - log2_l
 }
 
-fn johnson_algebraic_bits(level: &WhirLevelConfig) -> f64 {
+/// `prev_queries` is `levels[i-1].queries`, and 0 for `i = 0`.
+fn johnson_algebraic_bits(level: &WhirLevelConfig, prev_queries: usize) -> f64 {
     johnson_algebraic_bits_for(
         level.log_inv_rate,
         level.log_msg_cols,
         level.eta,
-        level.queries,
+        prev_queries,
         level.ood_samples,
     )
+}
+
+/// The query count the batch at `levels[i]` carries claims from.
+fn prev_queries_at(levels: &[WhirLevelConfig], i: usize) -> usize {
+    if i == 0 { 0 } else { levels[i - 1].queries }
 }
 
 /// OOD binding bits for a level. `mu_vars` is the level's multilinear
@@ -642,6 +643,7 @@ fn optimize_johnson_level(
     log_num_interleaved: usize,
     target_bits: usize,
     query_grinding_bits: usize,
+    prev_queries: usize,
 ) -> Result<OptimizedJohnsonLevel, String> {
     let target = target_bits as f64;
     let query_target = target_bits.saturating_sub(query_grinding_bits).max(1) as f64;
@@ -682,7 +684,7 @@ fn optimize_johnson_level(
         };
         let eps_ood = paper_ood_bits(log_inv_rate, log_msg_cols, eta, mu, ood_samples);
         if eps_ood + 1e-12 < target
-            || johnson_algebraic_bits_for(log_inv_rate, log_msg_cols, eta, queries, ood_samples) + 1e-12 < target
+            || johnson_algebraic_bits_for(log_inv_rate, log_msg_cols, eta, prev_queries, ood_samples) + 1e-12 < target
         {
             continue;
         }
@@ -865,17 +867,17 @@ impl WhirSecurityConfig {
             // reach target. (The pg bad event lives on the fold challenges,
             // so only the fold grind (done before each fold challenge)
             // boosts it; the query-phase grind does not.)
-            if pg_pred + lv.fold_grinding_bits as f64 + 1e-12 < lv.target_security_bits as f64 {
+            if pg_pred + 1e-12 < lv.target_security_bits as f64 {
                 return Err(format!(
-                    "L{i}: proximity-gap soundness ({pg_pred:.2} bits) + fold_grinding ({}) < target ({})",
-                    lv.fold_grinding_bits, lv.target_security_bits
+                    "L{i}: proximity-gap soundness ({pg_pred:.2} bits) < target ({})",
+                    lv.target_security_bits
                 ));
             }
 
             // The largest list-unioned algebraic identity test (currently the
             // composed ring-switch batching map) is not grindable and must
             // clear the target.
-            let algebraic = johnson_algebraic_bits(lv);
+            let algebraic = johnson_algebraic_bits(lv, prev_queries_at(&self.levels, i));
             if algebraic + 1e-12 < lv.target_security_bits as f64 {
                 return Err(format!(
                     "L{i}: list-unioned algebraic soundness ({algebraic:.2} bits) < target ({})",
@@ -940,7 +942,8 @@ impl WhirSecurityConfig {
             let rate = shape.log_inv_rates[i];
             let cols = shape.log_msg_cols[i];
             let ilv = shape.log_num_interleaved[i];
-            let optimized = optimize_johnson_level(i, rate, cols, ilv, target_bits, query_grind)?;
+            let prev_queries = prev_queries_at(&levels, i);
+            let optimized = optimize_johnson_level(i, rate, cols, ilv, target_bits, query_grind, prev_queries)?;
 
             levels.push(WhirLevelConfig {
                 log_inv_rate: rate,
@@ -950,7 +953,6 @@ impl WhirSecurityConfig {
                 eta: optimized.eta,
                 queries: optimized.queries,
                 grinding_bits: query_grind,
-                fold_grinding_bits: 0,
                 ood_samples: optimized.ood_samples,
                 target_security_bits: target_bits,
             });
@@ -984,7 +986,6 @@ impl WhirSecurityConfig {
             level_ks: self.levels.iter().skip(1).map(|lv| lv.k).collect(),
             queries: self.levels.iter().map(|lv| lv.queries).collect(),
             grinding_bits: self.levels.iter().map(|lv| lv.grinding_bits).collect(),
-            fold_grinding_bits: self.levels.iter().map(|lv| lv.fold_grinding_bits).collect(),
             ood_samples: self.levels.iter().map(|lv| lv.ood_samples).collect(),
         };
         Ok((config.clone(), config))
@@ -1021,10 +1022,9 @@ mod tests {
                 for (i, level) in cfg.levels.iter().enumerate() {
                     let (pg_bits, query_bits) = level.paper_predicted_bits();
                     let ood_bits = level.paper_predicted_ood_bits();
-                    let algebraic_bits = johnson_algebraic_bits(level);
+                    let algebraic_bits = johnson_algebraic_bits(level, prev_queries_at(&cfg.levels, i));
                     min_pg_bits = min_pg_bits.min(pg_bits);
                     assert_eq!(level.grinding_bits, QUERY_GRINDING_BITS);
-                    assert_eq!(level.fold_grinding_bits, 0);
                     assert!(query_bits + level.grinding_bits as f64 >= 128.0);
                     assert!(pg_bits >= 128.0);
                     assert!(ood_bits >= 128.0);

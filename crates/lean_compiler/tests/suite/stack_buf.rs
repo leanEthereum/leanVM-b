@@ -481,3 +481,4 @@ fn heap_index_boundary_ok() {
     let (proof, _) = prove(&program, pi, lean_vm::pcs::LOG_INV_RATE);
     verify(&program, &pi, &proof).expect("boundary access verifies");
 }
+

@@ -39,7 +39,7 @@
 
 use super::ir::{Hint, KVal, LInstr, LOp, Off};
 use lean_vm::cpu::hints::RHint;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// A pure operation's identity: the opcode plus its operand cells (commutative
 /// operands sorted, so `a*b` and `b*a` share an entry), or a constant's bits.
@@ -63,6 +63,7 @@ enum Key {
 pub(crate) fn cse(code: &mut Vec<LInstr>, abi_end: Off, frozen_from: usize) -> usize {
     let writes = write_counts(code);
     let labels = label_targets(code);
+    let pinned = run_cells(code);
 
     let mut subst: HashMap<Off, Off> = HashMap::new();
     let mut seen: HashMap<Key, Off> = HashMap::new();
@@ -98,7 +99,12 @@ pub(crate) fn cse(code: &mut Vec<LInstr>, abi_end: Off, frozen_from: usize) -> u
         // instruction is the only generally safe way to preserve that control-
         // flow position: moving a branch-local hint to the next textual
         // instruction could move it past the branch join.
-        if !ins.hints.is_empty() {
+        //
+        // A cell inside a run-addressed operand is kept for a different reason:
+        // the value has to be in THAT cell, so pointing the reads elsewhere is
+        // not available (see [`run_cells`]). Both still serve as the canonical
+        // cell for other copies of the same value.
+        if !ins.hints.is_empty() || pinned.contains(&dst) {
             seen.entry(key).or_insert(dst);
             continue;
         }
@@ -120,6 +126,29 @@ pub(crate) fn cse(code: &mut Vec<LInstr>, abi_end: Off, frozen_from: usize) -> u
         compact(code, &drop);
     }
     dropped
+}
+
+/// Cells covered by a run-addressed operand. `Keccak` names its pad, its
+/// previous state and its output by a base and a length, so it reads and writes
+/// those cells where they lie: a cell inside one of the runs cannot be replaced
+/// by another cell holding the same value, and its defining write has to stay
+/// even when an identical pure op computed that value earlier. Dropping one
+/// leaves the instruction reading a cell nothing writes, which is a
+/// prover-chosen free variable (`cpu::prove` asserts against exactly that).
+///
+/// The four `ins` cells are addressed independently, so they are not runs and
+/// substitution is fine for them.
+fn run_cells(code: &[LInstr]) -> HashSet<Off> {
+    use lean_vm::hash_flock::{REST_CELLS, STATE_CELLS};
+    let mut pinned = HashSet::new();
+    for ins in code {
+        if let LOp::Keccak { rest, prev, c, .. } = ins.op {
+            for (base, len) in [(rest, REST_CELLS), (prev, STATE_CELLS), (c, STATE_CELLS)] {
+                pinned.extend(base..base + len as u32);
+            }
+        }
+    }
+    pinned
 }
 
 /// How many times each frame cell is written, instructions and hints together.

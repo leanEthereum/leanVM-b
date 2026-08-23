@@ -38,6 +38,17 @@ fn whir_query_table_matches_rust() {
     let mut range = lines.next().expect("range line").split_whitespace();
     let mut next_bound = || range.next().expect("a bound").parse::<usize>().expect("a bound");
     let (min_log, max_log) = (next_bound(), next_bound());
+    // Every verifier admits the same committed-size window, and `pcs::MAX_MU` is the
+    // one knob that sets it. `python-verifier` is standalone and dependency-free, so
+    // it cannot read the Rust constant and keeps a literal; this is what stops the
+    // two drifting, and names the edit when the knob moves.
+    assert_eq!(
+        (min_log, max_log),
+        (lean_vm::pcs::MIN_MU, lean_vm::pcs::MAX_MU),
+        "set MIN_STACKED_LOG / MAX_STACKED_LOG in python-verifier/verifier.py to {} / {}",
+        lean_vm::pcs::MIN_MU,
+        lean_vm::pcs::MAX_MU
+    );
 
     let mut checked = 0;
     for line in lines {
