@@ -54,7 +54,7 @@ pub fn report(p: &Params, c: &Costs, lifetime: u32) -> String {
             p.scheme.label(),
             8 * p.n
         ),
-        format!("(h, d, h')      ({}, {}, {})", p.h, p.d, p.h_prime()),
+        format!("(h, d)          ({}, {})   layer heights {}", p.h, p.d, c.profile),
         format!(
             "(a, k)          ({}, {}){}",
             p.a,
@@ -111,7 +111,7 @@ const COLUMNS: [(&str, usize); 16] = [
     ("scheme", 9),
     ("h", 4),
     ("d", 3),
-    ("h'", 4),
+    ("ht", 4),
     ("a", 3),
     ("k", 3),
     ("cb", 3),
@@ -132,7 +132,7 @@ fn cells(b: &Budgets, c: &Candidate) -> Vec<String> {
         p.scheme.label().to_string(),
         p.h.to_string(),
         p.d.to_string(),
-        p.h_prime().to_string(),
+        x.profile.h_top.to_string(),
         p.a.to_string(),
         p.k.to_string(),
         x.chain_bits.to_string(),

@@ -19,6 +19,15 @@
 //! cut integral; dropping further chains pins `log2(w)` more bits each, every
 //! pinned bit doubling the expected grinding.
 //!
+//! The hypertree's height is split per layer, not `h/d` on every layer: the top
+//! tree gets `h_top` and the rest divide what is left as evenly as it goes, so
+//! `d` need not divide `h`. That matters because the signature carries `h`
+//! authentication nodes and the verifier walks them however the layers divide
+//! `h`: size and verification depend only on `(h, d)`, while only the top tree
+//! is cacheable. A taller top layer is therefore free on both, costs keygen and
+//! vanilla signing, and cuts cached signing, which at `h = 40, d = 5` is 2x for
+//! `h_top = 15` against the uniform 8. See [`params::Profile`].
+//!
 //! For one parameter set [`params::costs`] reports the signature size and the
 //! keygen, signing and verification cost, and [`security::security_bits`] the
 //! classical security. Signing comes in two flavours: vanilla, and with the top

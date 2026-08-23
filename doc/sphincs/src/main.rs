@@ -4,7 +4,8 @@ use sphincs_params::cost::{Convention, SCHEMES, Scheme};
 use sphincs_params::params::{Params, costs};
 use sphincs_params::report::{report, table, utilization};
 use sphincs_params::search::{
-    A_MAX, Budgets, CHAIN_BITS_MAX, Candidate, DROPPED_MAX, Grid, H_MAX, K_MAX, LEVEL1_BITS, Stats, Unit, edges, search,
+    A_MAX, Budgets, CHAIN_BITS_MAX, Candidate, D_MAX, DROPPED_MAX, Grid, H_MAX, K_MAX, LEVEL1_BITS, Stats, Unit, edges,
+    search,
 };
 
 const USAGE: &str = "\
@@ -16,6 +17,7 @@ params options (defaults are the report's bold 2^40 row):
   --lifetime L      log2 of signatures per key     [40]
   --height h        hypertree height               [40]
   --layers d        hypertree layers               [5]
+  --top-height H    height of the top XMSS tree     [h/d, so every layer equal]
   -a A              log2 leaves per FORS tree      [14]
   -k K              FORS trees                     [11]
   -w W              Winternitz parameter           [256]
@@ -38,7 +40,7 @@ search options (all five budgets required):
   --scheme S            restrict the schemes searched (repeatable)
   --chain-bits B        restrict log2(w) searched (repeatable)
   --top N               rows to print              [15]
-  --h-max / --a-max / --k-max / --max-dropped      widen or narrow a range
+  --h-max / --d-max / --a-max / --k-max / --max-dropped   widen or narrow a range
   --stats               report how much of the space was visited
   -n N                  hash output in bytes       [16]
 ";
@@ -156,6 +158,10 @@ fn cmd_params(argv: &[String]) -> Result<bool, String> {
         },
         h: args.u64("--height", 40)?,
         d: args.u64("--layers", 5)?,
+        h_top: args
+            .get("--top-height")
+            .map(|_| args.u64("--top-height", 0))
+            .transpose()?,
         a: args.u64("-a", 14)?,
         k: args.u64("-k", 11)?,
         w,
@@ -207,6 +213,7 @@ fn cmd_search(argv: &[String]) -> Result<bool, String> {
         h_max: args.u64("--h-max", H_MAX)?,
         a_max: args.u64("--a-max", A_MAX)?,
         k_max: args.u64("--k-max", K_MAX)?,
+        d_max: args.u64("--d-max", D_MAX)?,
         chain_bits: if bits.is_empty() {
             (1..=CHAIN_BITS_MAX).collect()
         } else {

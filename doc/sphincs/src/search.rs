@@ -1,24 +1,34 @@
 //! Exhaustive search for the parameter set with the cheapest verification.
 //!
-//! Every `(scheme, h, d | h, chain_bits, dropped_chains, a, k, S_wn)` point that
-//! meets the budgets is costed and compared. Nothing is chosen by an optimality
+//! Every `(scheme, h, d, h_top, chain_bits, dropped_chains, a, k, S_wn)` point
+//! that meets the budgets is costed and compared. Nothing is chosen by an optimality
 //! argument, and nothing is skipped by a monotonicity one: the three tests that
 //! run before the `S_wn` scan reject only points that no `S_wn` could rescue,
 //! because size and keygen do not depend on `S_wn` at all, and the least
 //! grinding any `S_wn` can ask for is read off the digit-sum table rather than
 //! assumed to sit anywhere in particular.
 //!
+//! The layer heights are `(h, d, h_top)`: the top tree gets `h_top`, the rest
+//! divide what is left as evenly as it goes. [`crate::params::Profile`] argues
+//! why that shape covers the cost-optimal representative of every profile, so
+//! `d` no longer has to divide `h`. Which `h_top` is best does not depend on
+//! `(a, k)` or on the target sum, because size and verification do not depend on
+//! `h_top` at all and both signing budgets take the `(a, k)` part as the same
+//! additive offset; so the profiles are ranked once per `(h, d)`, by how much
+//! grinding they leave room for, and that ranking then holds for every `(a, k)`.
+//!
 //! What is assumed is the searched range of each parameter, hardcoded below.
 //! When a result comes out at the top of one of those ranges the range itself
 //! may be what is limiting it, so [`edges`] reports that and names the constant
 //! to raise. Ranges the budgets or the structure already close (`d` over the
-//! divisors of `h`, `S_wn` over the digit sums a code of `l` chains can reach)
+//! layer heights that do not add up to `h`, `S_wn` over the digit sums a code of
+//! `l` chains can reach)
 //! need no such warning and get none.
 
 use std::time::Instant;
 
 use crate::cost::{Cost, NuTable, SCHEMES, Scheme};
-use crate::params::{Costs, Params, Skeleton};
+use crate::params::{Costs, Layers, Params, Skeleton};
 use crate::security::SecurityTable;
 
 /// Hardcoded search ranges, wide enough that the budgets are normally what
@@ -31,6 +41,8 @@ pub const H_MAX: u64 = 96;
 pub const A_MAX: u64 = 32;
 /// Number of FORS trees.
 pub const K_MAX: u64 = 64;
+/// Hypertree layers.
+pub const D_MAX: u64 = 32;
 /// log2(w), so w up to 4096.
 pub const CHAIN_BITS_MAX: u64 = 12;
 /// WOTS+C chains dropped beyond the minimal bit pinning.
@@ -96,6 +108,7 @@ pub struct Grid {
     pub a_min: u64,
     pub a_max: u64,
     pub k_max: u64,
+    pub d_max: u64,
     pub chain_bits: Vec<u64>,
     pub max_dropped: u64,
     pub cache_level_only: bool,
@@ -111,6 +124,7 @@ impl Default for Grid {
             a_min: 1,
             a_max: A_MAX,
             k_max: K_MAX,
+            d_max: D_MAX,
             chain_bits: (1..=CHAIN_BITS_MAX).collect(),
             max_dropped: DROPPED_MAX,
             cache_level_only: false,
@@ -147,6 +161,12 @@ pub struct Stats {
     /// Points meeting every budget.
     pub feasible: u64,
     pub skeletons: u64,
+    /// Layer profiles kept after the keygen budget.
+    pub profiles: u64,
+    /// Parameter tuples that came out feasible, one row each.
+    pub rows: u64,
+    /// Rows dropped as worse than everything kept.
+    pub rows_dropped: u64,
     pub seconds: f64,
 }
 
@@ -156,7 +176,8 @@ impl std::fmt::Display for Stats {
             f,
             "grid {} (scheme, h, d, chain_bits, dropped) tuples, {} over keygen; \
              then {} (a, k) pairs insecure, {} over size, {} over signing; \
-             {} target-sum ranges swept, {} points feasible ({} parameter sets costed) in {:.1}s",
+             {} target-sum ranges swept, {} points feasible over {} rows ({} dropped as worse than everything kept); \
+             {} layer profiles and {} parameter sets costed in {:.1}s",
             self.grid,
             self.keygen_pruned,
             self.insecure,
@@ -164,24 +185,25 @@ impl std::fmt::Display for Stats {
             self.sign_pruned,
             self.swept,
             self.feasible,
+            self.rows,
+            self.rows_dropped,
+            self.profiles,
             self.skeletons,
             self.seconds
         )
     }
 }
 
-/// Identifies one parameter tuple, everything but the target sum.
+/// Identifies one parameter tuple: everything but the layer profile and the
+/// target sum, neither of which changes what it verifies at.
 pub type Key = (Scheme, u64, u64, u64, u64, u64, u64);
-
-fn divisors(h: u64) -> Vec<u64> {
-    (1..=h).filter(|d| h.is_multiple_of(*d)).collect()
-}
 
 fn params(g: &Grid, scheme: Scheme, h: u64, d: u64, a: u64, k: u64, w: u64, dropped: u64) -> Params {
     Params {
         scheme,
         h,
         d,
+        h_top: None,
         a,
         k,
         w,
@@ -193,18 +215,58 @@ fn params(g: &Grid, scheme: Scheme, h: u64, d: u64, a: u64, k: u64, w: u64, drop
     }
 }
 
+/// The layer profiles worth trying for one `(h, d)`, and how much grinding the
+/// best of them leaves room for.
+///
+/// `slack` is `max over profiles of min(max_sign - trees, max_sign_cached -
+/// trees_cached)`, in the budget's unit. Both signing costs take the `(a, k)`
+/// part of signing as the same additive offset, so subtracting that offset from
+/// `slack` gives the grinding budget of the best profile for any `(a, k)`,
+/// without re-ranking the profiles per candidate.
+struct Room {
+    profiles: Vec<Layers>,
+    slack: u64,
+}
+
+fn room(b: &Budgets, p: &Params) -> Option<Room> {
+    let mut profiles = Vec::new();
+    let mut slack = 0;
+    // The top tree has 2^h_top leaves and every leaf costs at least one hash,
+    // so a top height past the keygen budget's log is out for any (a, k).
+    let ceiling = 64 - b.max_keygen.max(1).leading_zeros() as u64;
+    for h_top in 1..=(p.h + 1).saturating_sub(p.d).min(ceiling) {
+        let Some(lay) = Layers::new(&Params {
+            h_top: Some(h_top),
+            ..*p
+        }) else {
+            continue;
+        };
+        if b.of(lay.keygen) > b.max_keygen {
+            continue;
+        }
+        let room = b
+            .max_sign
+            .saturating_sub(b.of(lay.trees))
+            .min(b.max_sign_cached.saturating_sub(b.of(lay.trees_cached)));
+        slack = slack.max(room);
+        profiles.push(lay);
+    }
+    (!profiles.is_empty()).then_some(Room { profiles, slack })
+}
+
 /// Every feasible parameter set, ordered by verification cost.
 ///
 /// One row per `(scheme, h, d, a, k, w, dropped_chains)`, carrying the best
-/// target sum for that tuple. Rows are what gets printed; the comparison behind
-/// each one saw every target sum.
+/// target sum for that tuple and the layer profile that admitted it. Rows are
+/// what gets printed; the comparison behind each one saw every target sum.
 pub fn search(b: &Budgets, g: &Grid, st: &mut Stats) -> Vec<Candidate> {
     let started = Instant::now();
     let digest_bits = (8 * g.n) as u32;
     let mut sec = SecurityTable::new(b.lifetime, b.security, g.n, g.h_max as u32, g.k_max, g.a_max);
+    // Every (scheme, h, d, a, k, w, dropped) key is reached exactly once, so
+    // rows need no deduplication, only a bound: budgets loose enough to admit
+    // millions of them would otherwise be held in memory to print a dozen.
     let mut best: Vec<Candidate> = Vec::new();
-    let mut index: std::collections::HashMap<Key, usize> = Default::default();
-    let all_divisors: Vec<Vec<u64>> = (0..=g.h_max).map(divisors).collect();
 
     for &scheme in &g.schemes {
         for &bits in &g.chain_bits {
@@ -231,25 +293,15 @@ pub fn search(b: &Budgets, g: &Grid, st: &mut Stats) -> Vec<Candidate> {
                 let table = scheme.wots_c().then(|| NuTable::new(l, w, digest_bits));
                 let min_trials = table.as_ref().map_or(0, |t| t.min_trials());
                 for h in g.h_min..=g.h_max {
-                    for &d in &all_divisors[h as usize] {
+                    for d in 1..=h.min(g.d_max) {
                         st.grid += 1;
-                        // keygen is one top tree: no a, k or target sum in it
-                        let kg = params(
-                            g,
-                            scheme,
-                            h,
-                            d,
-                            g.a_min,
-                            if scheme.fors_c() { 2 } else { 1 },
-                            w,
-                            dropped,
-                        );
-                        let Some(kg) = Skeleton::new(kg) else { continue };
-                        st.skeletons += 1;
-                        if b.of(kg.keygen) > b.max_keygen {
+                        // Layer profiles first: they need no a or k, and the
+                        // keygen budget alone usually settles the question.
+                        let Some(room) = room(b, &params(g, scheme, h, d, g.a_min, 1, w, dropped)) else {
                             st.keygen_pruned += 1;
                             continue;
-                        }
+                        };
+                        st.profiles += room.profiles.len() as u64;
                         for a in g.a_min..=g.a_max {
                             for k in 1..=g.k_max {
                                 if !sec.is_secure(h as u32, k, a) {
@@ -259,36 +311,32 @@ pub fn search(b: &Budgets, g: &Grid, st: &mut Stats) -> Vec<Candidate> {
                                 let p = params(g, scheme, h, d, a, k, w, dropped);
                                 let Some(sk) = Skeleton::new(p) else { continue };
                                 st.skeletons += 1;
-                                // size and keygen do not depend on the target
-                                // sum, and no target sum grinds less than the
-                                // table's cheapest, so these three reject only
-                                // points that no target sum could rescue
+                                // The signature grows with k, so once it is too
+                                // big it stays too big.
                                 if sk.sig_bytes > b.max_size {
                                     st.size_pruned += 1;
-                                    continue;
+                                    break;
                                 }
-                                if b.of(sk.sign(min_trials)) > b.max_sign
-                                    || b.of(sk.sign_cached(min_trials)) > b.max_sign_cached
-                                {
-                                    st.sign_pruned += 1;
-                                    continue;
-                                }
+                                // What the best profile can still afford to
+                                // grind, once this (a, k) has taken its share.
+                                let per_trial = b.of(sk.grind_step) * d;
+                                let max_trials = room.slack.saturating_sub(b.of(sk.fors_part)) / per_trial.max(1);
                                 let Some(table) = table.as_ref() else {
-                                    // WOTS-TW: no target sum to choose
-                                    let c = sk.finish(0, 0);
-                                    if b.fits(&c) {
+                                    // WOTS-TW: no counter, no target sum
+                                    if room.slack >= b.of(sk.fors_part) {
                                         st.feasible += 1;
-                                        record(&mut best, &mut index, Candidate { params: p, costs: c }, b);
+                                        record(&mut best, st, b, &sk, &room, 0, 0);
                                     }
                                     continue;
                                 };
+                                if max_trials < min_trials {
+                                    st.sign_pruned += 1;
+                                    continue;
+                                }
                                 st.swept += 1;
                                 let mut winner: Option<(u64, u64)> = None;
                                 for swn in 0..=sk.max_swn {
-                                    let trials = table.trials(swn);
-                                    if b.of(sk.sign(trials)) > b.max_sign
-                                        || b.of(sk.sign_cached(trials)) > b.max_sign_cached
-                                    {
+                                    if table.trials(swn) > max_trials {
                                         continue;
                                     }
                                     st.feasible += 1;
@@ -298,8 +346,7 @@ pub fn search(b: &Budgets, g: &Grid, st: &mut Stats) -> Vec<Candidate> {
                                     }
                                 }
                                 if let Some((swn, _)) = winner {
-                                    let c = sk.finish(swn, table.trials(swn));
-                                    record(&mut best, &mut index, Candidate { params: p, costs: c }, b);
+                                    record(&mut best, st, b, &sk, &room, swn, table.trials(swn));
                                 }
                             }
                         }
@@ -310,18 +357,44 @@ pub fn search(b: &Budgets, g: &Grid, st: &mut Stats) -> Vec<Candidate> {
     }
 
     st.seconds = started.elapsed().as_secs_f64();
-    best.sort_by_key(|c| (b.of(c.costs.verify), c.costs.sig_bytes, b.of(c.costs.sign)));
+    sort_rows(&mut best, b);
     best
 }
 
-fn record(best: &mut Vec<Candidate>, index: &mut std::collections::HashMap<Key, usize>, cand: Candidate, b: &Budgets) {
-    match index.get(&cand.key()) {
-        Some(&i) if b.of(best[i].costs.verify) <= b.of(cand.costs.verify) => {}
-        Some(&i) => best[i] = cand,
-        None => {
-            index.insert(cand.key(), best.len());
-            best.push(cand);
-        }
+/// Rows kept before the list is trimmed back to `ROWS_KEPT`. The optimum is
+/// unaffected: what gets dropped is worse than everything retained.
+const ROWS_CAP: usize = 1 << 18;
+const ROWS_KEPT: usize = 1 << 17;
+
+fn sort_rows(rows: &mut [Candidate], b: &Budgets) {
+    rows.sort_by_key(|c| (b.of(c.costs.verify), c.costs.sig_bytes, b.of(c.costs.sign)));
+}
+
+/// Record this parameter tuple on the cheapest layer profile that fits: they
+/// all verify the same, so the tie goes to cached signing.
+fn record(rows: &mut Vec<Candidate>, st: &mut Stats, b: &Budgets, sk: &Skeleton, room: &Room, swn: u64, trials: u64) {
+    let Some(lay) = room
+        .profiles
+        .iter()
+        .filter(|lay| {
+            b.of(sk.sign(lay, trials)) <= b.max_sign && b.of(sk.sign_cached(lay, trials)) <= b.max_sign_cached
+        })
+        .min_by_key(|lay| (b.of(sk.sign_cached(lay, trials)), b.of(sk.sign(lay, trials))))
+    else {
+        return;
+    };
+    st.rows += 1;
+    rows.push(Candidate {
+        params: Params {
+            h_top: Some(lay.profile.h_top),
+            ..sk.params
+        },
+        costs: sk.finish(lay, swn, trials),
+    });
+    if rows.len() >= ROWS_CAP {
+        sort_rows(rows, b);
+        rows.truncate(ROWS_KEPT);
+        st.rows_dropped += (ROWS_CAP - ROWS_KEPT) as u64;
     }
 }
 
@@ -330,35 +403,43 @@ fn record(best: &mut Vec<Candidate>, index: &mut std::collections::HashMap<Key, 
 /// Such a result may be limited by the range rather than by the budgets, so it
 /// is worth raising the range and rerunning before believing it.
 pub fn edges(g: &Grid, c: &Candidate) -> Vec<String> {
-    let bits_max = g.chain_bits.iter().copied().max().unwrap_or(0);
+    let bits = (
+        g.chain_bits.iter().copied().min().unwrap_or(0),
+        g.chain_bits.iter().copied().max().unwrap_or(0),
+    );
+    // (axis, value, floor, limit, what to raise). An axis with a single value in
+    // range was pinned deliberately, so it gets no warning.
     let at = [
-        ("h", c.params.h, g.h_max, "H_MAX / --h-max"),
-        ("a", c.params.a, g.a_max, "A_MAX / --a-max"),
-        ("k", c.params.k, g.k_max, "K_MAX / --k-max"),
+        ("h", c.params.h, g.h_min, g.h_max, "H_MAX / --h-max"),
+        ("d", c.params.d, 1, g.d_max, "D_MAX / --d-max"),
+        ("a", c.params.a, g.a_min, g.a_max, "A_MAX / --a-max"),
+        ("k", c.params.k, 1, g.k_max, "K_MAX / --k-max"),
         (
             "chain_bits",
             c.costs.chain_bits,
-            bits_max,
+            bits.0,
+            bits.1,
             "CHAIN_BITS_MAX / --chain-bits",
         ),
         (
             "dropped_chains",
             c.params.dropped_chains,
+            0,
             g.max_dropped,
             "DROPPED_MAX / --max-dropped",
         ),
     ];
     at.iter()
-        .filter(|(_, v, limit, _)| *v + 1 >= *limit)
-        .map(|(axis, v, limit, what)| {
+        .filter(|(_, v, floor, limit, _)| limit > floor && *v + 1 >= *limit)
+        .map(|(axis, v, _, limit, what)| {
             let where_ = if v >= limit { "at" } else { "one step below" };
             format!("{axis} = {v} is {where_} the top of the searched range ({limit}): raise {what} and rerun")
         })
         .collect()
 }
 
-/// The same search with nothing skipped: every `(a, k, S_wn)` point costed in
-/// full and checked against every budget.
+/// The same search with nothing skipped: every `(a, k, h_top, S_wn)` point
+/// costed in full and checked against every budget.
 ///
 /// Only usable on a tiny grid, which is the point: it is the oracle the real
 /// search is diffed against in `tests/goldens`.
@@ -371,24 +452,30 @@ pub fn naive_search(b: &Budgets, g: &Grid) -> Vec<Candidate> {
             let max_dropped = if scheme.wots_c() { g.max_dropped } else { 0 };
             for dropped in 0..=max_dropped {
                 for h in g.h_min..=g.h_max {
-                    for d in divisors(h) {
-                        for a in g.a_min..=g.a_max {
-                            for k in 1..=g.k_max {
-                                let p = params(g, scheme, h, d, a, k, w, dropped);
-                                let Some(sk) = Skeleton::new(p) else { continue };
-                                if crate::security::security_bits(b.lifetime, h as u32, k, a, g.n) < b.security {
-                                    continue;
-                                }
-                                let table = scheme.wots_c().then(|| NuTable::new(sk.l, w, digest_bits));
-                                let sums: Vec<u64> = match &table {
-                                    Some(_) => (0..=sk.max_swn).collect(),
-                                    None => vec![0],
-                                };
-                                for swn in sums {
-                                    let trials = table.as_ref().map_or(0, |t| t.trials(swn));
-                                    let c = sk.finish(swn, trials);
-                                    if b.fits(&c) {
-                                        out.push(Candidate { params: p, costs: c });
+                    for d in 1..=h.min(g.d_max) {
+                        for h_top in 1..=h {
+                            for a in g.a_min..=g.a_max {
+                                for k in 1..=g.k_max {
+                                    let p = Params {
+                                        h_top: Some(h_top),
+                                        ..params(g, scheme, h, d, a, k, w, dropped)
+                                    };
+                                    let Some(sk) = Skeleton::new(p) else { continue };
+                                    let Some(lay) = Layers::new(&p) else { continue };
+                                    if crate::security::security_bits(b.lifetime, h as u32, k, a, g.n) < b.security {
+                                        continue;
+                                    }
+                                    let table = scheme.wots_c().then(|| NuTable::new(sk.l, w, digest_bits));
+                                    let sums: Vec<u64> = match &table {
+                                        Some(_) => (0..=sk.max_swn).collect(),
+                                        None => vec![0],
+                                    };
+                                    for swn in sums {
+                                        let trials = table.as_ref().map_or(0, |t| t.trials(swn));
+                                        let c = sk.finish(&lay, swn, trials);
+                                        if b.fits(&c) {
+                                            out.push(Candidate { params: p, costs: c });
+                                        }
                                     }
                                 }
                             }

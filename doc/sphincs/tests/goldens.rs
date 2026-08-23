@@ -11,7 +11,7 @@
 //!   * for the search, a naive oracle in this crate that skips nothing.
 
 use sphincs_params::cost::{Convention, Encoding, NuTable, Scheme};
-use sphincs_params::params::{Params, Skeleton, costs};
+use sphincs_params::params::{Layers, Params, Profile, Skeleton, costs};
 use sphincs_params::search::{Budgets, Grid, LEVEL1_BITS, Stats, Unit, naive_search, search};
 use sphincs_params::security::{forgery_exponent, security_bits};
 
@@ -20,6 +20,7 @@ fn params(scheme: Scheme, h: u64, d: u64, a: u64, k: u64, w: u64, cached_midstat
         scheme,
         h,
         d,
+        h_top: None,
         a,
         k,
         w,
@@ -323,7 +324,7 @@ fn half_top_cache_is_a_saving_and_reduces_to_the_full_tree() {
     assert!(costs(whole, None).unwrap().sign_cached.hashes < c.sign_cached.hashes);
     // caching only the root is caching nothing
     let none = Params {
-        cache_height: Some(p.h_prime()),
+        cache_height: Some(p.profile().unwrap().h_top),
         ..p
     };
     assert_eq!(costs(none, None).unwrap().sign_cached.hashes, c.sign.hashes);
@@ -377,10 +378,11 @@ fn search_agrees_with_a_naive_oracle() {
 }
 
 #[test]
-fn search_recovers_the_reports_bold_row() {
+fn search_finds_and_improves_on_the_reports_bold_row() {
     // Budgets near the report's 2^40 numbers, on its grid (w in {16, 256}, no
-    // chain dropping): the search should land on h=40 d=5 a=14 k=11 w=256 and
-    // then spend what is left of the signing budget raising the target sum.
+    // chain dropping). Its own choice has to come out feasible, and the search
+    // has to do at least as well: it spends what is left of the signing budget
+    // raising the target sum, which the report's row does not.
     let b = budgets(40, 1_100_000, 6_000_000, 6_000_000, 4_400);
     let g = Grid {
         chain_bits: vec![4, 8],
@@ -389,23 +391,60 @@ fn search_recovers_the_reports_bold_row() {
     };
     let mut st = Stats::default();
     let found = search(&b, &g, &mut st);
-    let best = &found[0];
-    assert_eq!(
-        (
-            best.params.scheme,
-            best.params.h,
-            best.params.d,
-            best.params.a,
-            best.params.k,
-            best.params.w
-        ),
-        (Scheme::WcFc, 40, 5, 14, 11, 256)
-    );
+    let row = found
+        .iter()
+        .find(|c| c.key() == (Scheme::WcFc, 40, 5, 14, 11, 256, 0))
+        .expect("the report's bold row is feasible under its own budgets");
     assert!(
-        best.costs.swn.unwrap() > 2040,
+        row.costs.swn.unwrap() > 2040,
         "the report's row grinds less than the budget allows"
     );
-    assert!(best.costs.verify.hashes < 10402, "and verifies faster than it does");
+    assert!(
+        row.costs.verify.hashes < 10402,
+        "so it can verify faster than the table's 10402 hashes"
+    );
+    assert!(
+        found[0].costs.verify.hashes <= row.costs.verify.hashes,
+        "and the winner is at least as cheap"
+    );
+}
+
+#[test]
+fn a_taller_top_layer_is_free_on_size_and_verification() {
+    // The whole point of per-layer heights: the signature carries h
+    // authentication nodes and the verifier walks them however the layers
+    // divide h, so only the signer's costs move.
+    let uniform = Params {
+        h_top: Some(8),
+        ..params(Scheme::WcFc, 40, 5, 14, 11, 256, true)
+    };
+    let tall = Params {
+        h_top: Some(15),
+        ..uniform
+    };
+    let (u, t) = (costs(uniform, None).unwrap(), costs(tall, None).unwrap());
+    assert_eq!(u.profile.total(), 40);
+    assert_eq!(t.profile.total(), 40);
+    assert_eq!(
+        (t.sig_bytes, t.verify),
+        (u.sig_bytes, u.verify),
+        "size and verification do not move"
+    );
+    assert!(
+        t.keygen.hashes > u.keygen.hashes,
+        "a taller top tree costs more to generate"
+    );
+    assert!(t.sign.hashes > u.sign.hashes, "and more to sign without the cache");
+    assert!(
+        t.sign_cached.hashes < u.sign_cached.hashes,
+        "but less with it, which is the point"
+    );
+    // the lower layers come out as equal as they go, never differing by more
+    // than one level
+    let p = t.profile;
+    assert!(p.n_tall == 0 || p.n_short == 0 || p.tall == p.short + 1);
+    assert_eq!(Profile::new(41, 5, Some(9)).unwrap().total(), 41);
+    assert_eq!(Layers::new(&tall).unwrap().profile, t.profile);
 }
 
 #[test]
@@ -427,7 +466,21 @@ fn skeleton_rejects_trees_that_do_not_fit_a_u64() {
 fn skeleton_rejects_inconsistent_parameters() {
     let ok = params(Scheme::WcFc, 40, 5, 14, 11, 256, true);
     assert!(Skeleton::new(ok).is_some());
-    assert!(Skeleton::new(Params { d: 3, ..ok }).is_none(), "d must divide h");
+    // d need not divide h: the layers just come out within one of each other
+    let uneven = Skeleton::new(Params { d: 3, ..ok }).expect("d need not divide h");
+    assert_eq!(uneven.params.profile().unwrap().total(), 40);
+    assert!(
+        Skeleton::new(Params { h: 2, d: 3, ..ok }).is_none(),
+        "every layer needs a level"
+    );
+    assert!(
+        Skeleton::new(Params { h_top: Some(40), ..ok }).is_none(),
+        "the lower layers need levels too"
+    );
+    assert!(
+        Skeleton::new(Params { h_top: Some(36), ..ok }).is_some(),
+        "but only one each"
+    );
     assert!(
         Skeleton::new(Params { w: 24, ..ok }).is_none(),
         "w must be a power of two"
@@ -443,7 +496,7 @@ fn skeleton_rejects_inconsistent_parameters() {
         "WOTS-TW has no counter"
     );
     assert!(
-        Skeleton::new(Params {
+        Layers::new(&Params {
             cache_height: Some(99),
             ..ok
         })
