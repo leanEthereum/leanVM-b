@@ -147,7 +147,7 @@ fn cells(c: &Candidate) -> Vec<String> {
         p.scheme.label().to_string(),
         p.h.to_string(),
         p.d.to_string(),
-        x.profile.h_top.to_string(),
+        x.profile.h_top().to_string(),
         p.a.to_string(),
         p.k.to_string(),
         p.w.to_string(),

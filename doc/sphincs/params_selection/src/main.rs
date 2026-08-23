@@ -2,6 +2,7 @@
 //! and everything left over gets searched.
 
 use sphincs_params::cost::{SCHEMES, Scheme};
+use sphincs_params::params::Profile;
 use sphincs_params::report::{legend, report, si, signatures, table, utilization};
 use sphincs_params::search::{
     A_MAX, Budgets, CHAIN_BITS_MAX, D_MAX, DROPPED_MAX, Grid, H_MAX, K_MAX, LEVEL1_BITS, Span, Stats, Sums, edges,
@@ -23,6 +24,11 @@ parameters
   --layers d        hypertree layers                      [1..32]
   --top-height ht   height of the top XMSS tree, the rest
                     of h splitting evenly below it        [1..h-d+1, or h/d]
+  --heights H,...   every layer height outright, top first, pinning h and d
+                    with it. Nothing here searches uneven lower layers,
+                    because for the same h, d and top height they never cost
+                    less: see Profile in src/params.rs. This is for costing
+                    one anyway.
   -a A              log2 of the leaves in a FORS tree     [1..32]
   -k K              FORS trees                            [1..64]
   --chain-bits B    log2(w), repeatable                   [1..12]
@@ -84,12 +90,13 @@ struct Args(Vec<(String, Option<String>)>);
 
 const NO_VALUE: [&str; 4] = ["--cache-level-only", "--stats", "--help", "-h"];
 
-const FLAGS: [&str; 21] = [
+const FLAGS: [&str; 22] = [
     "--lifetime",
     "--scheme",
     "--height",
     "--layers",
     "--top-height",
+    "--heights",
     "-a",
     "-k",
     "--chain-bits",
@@ -263,17 +270,39 @@ fn run(argv: &[String]) -> Result<bool, String> {
         (None, true) => Some(Span::new(1, H_MAX)),
         (None, false) => None,
     };
+    let profile = match args.get("--heights") {
+        None => None,
+        Some(list) => {
+            let heights: Vec<u64> = list
+                .split(',')
+                .map(|x| {
+                    x.trim()
+                        .parse::<u64>()
+                        .map_err(|_| format!("--heights: expected numbers, got {list}"))
+                })
+                .collect::<Result<_, _>>()?;
+            Some(Profile::new(&heights).ok_or_else(|| format!("--heights: {list} is not 1..=32 heights of 1..=63"))?)
+        }
+    };
     let g = Grid {
         schemes: args.schemes()?,
         n: args.u64_or("-n", 16)?,
-        h: args.span("--height", Span::new(1, H_MAX))?,
-        d: args.span("--layers", Span::new(1, D_MAX))?,
+        h: match profile {
+            Some(pr) => Span::pin(pr.total()),
+            None => args.span("--height", Span::new(1, H_MAX))?,
+        },
+        d: match profile {
+            Some(pr) => Span::pin(pr.layers()),
+            None => args.span("--layers", Span::new(1, D_MAX))?,
+        },
         h_top,
         a: args.span("-a", Span::new(1, A_MAX))?,
         k: args.span("-k", Span::new(1, K_MAX))?,
         dropped,
         chain_bits: args.chain_bits()?,
         sums,
+        profile,
+        cache_height: args.num("--cache-height")?,
         cache_level_only: args.flag("--cache-level-only"),
     };
 
@@ -326,12 +355,6 @@ fn run(argv: &[String]) -> Result<bool, String> {
     if !use_.is_empty() || !edges(&g, best).is_empty() {
         println!();
     }
-    // The cache split is not searched, so it rides here rather than in the grid.
-    let shown = sphincs_params::params::Params {
-        cache_height: args.num("--cache-height")?,
-        ..best.params
-    };
-    let costs = sphincs_params::params::costs(shown, best.costs.swn).ok_or("inconsistent parameters")?;
-    println!("{}", report(&shown, &costs, b.q_s));
+    println!("{}", report(&best.params, &best.costs, b.q_s));
     Ok(true)
 }

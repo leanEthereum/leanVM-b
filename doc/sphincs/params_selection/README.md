@@ -21,6 +21,8 @@ Every cost is compression calls, one per 64 bytes of hash input: a Merkle node o
 
 Since size and verification depend only on `(h, d)` and not on how the layers divide `h`, a taller top layer is free on both and cheaper to sign with the cache: compare `--top-height 8` against `--top-height 15` at `--height 40 --layers 5`.
 
+Layer heights can be given outright with `--heights 11,5,7,3`, which pins `h` and `d` with them. The search never produces an uneven lower half, and that is not a restriction: for the same `h`, `d` and top height, no other profile costs less on anything, since size, verification and keygen do not move and signing sums `2^height`, which at a fixed total is smallest when the heights are equal. `profile_shape_is_never_beaten` checks that against every composition of several small `(h, d)`. So `--heights` is for costing a profile you already have in mind.
+
 `cargo run --release --` with no arguments prints every flag and its default. `cargo test --release` runs the goldens: the upstream sage fixtures, the report's own tables, and a naive search oracle that skips nothing.
 
 The search is exhaustive over hardcoded ranges and warns when its answer leans on the top of one. Budgets loose enough that nothing prunes can take a couple of minutes, reported by `--stats`; realistic ones finish in seconds.

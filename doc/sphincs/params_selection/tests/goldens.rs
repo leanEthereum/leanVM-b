@@ -321,7 +321,7 @@ fn half_top_cache_is_a_saving_and_reduces_to_the_full_tree() {
     assert!(costs(whole, None).unwrap().sign.hashes < c.sign.hashes);
     // caching only the root is caching nothing, so signing goes cold
     let none = Params {
-        cache_height: Some(p.profile().unwrap().h_top),
+        cache_height: Some(p.profile().unwrap().h_top()),
         ..p
     };
     assert_eq!(costs(none, None).unwrap().sign.hashes, c.sign_cold.hashes);
@@ -433,9 +433,101 @@ fn a_taller_top_layer_is_free_on_size_and_verification() {
     // the lower layers come out as equal as they go, never differing by more
     // than one level
     let p = t.profile;
-    assert!(p.n_tall == 0 || p.n_short == 0 || p.tall == p.short + 1);
-    assert_eq!(Profile::new(41, 5, Some(9)).unwrap().total(), 41);
+    let lower: Vec<u64> = p.heights().skip(1).collect();
+    let (lo, hi) = (lower.iter().min().unwrap(), lower.iter().max().unwrap());
+    assert!(
+        hi - lo <= 1,
+        "the lower layers never differ by more than a level: {lower:?}"
+    );
+    assert_eq!(Profile::canonical(41, 5, Some(9)).unwrap().total(), 41);
     assert_eq!(Layers::new(&tall).unwrap().profile, t.profile);
+}
+
+/// Every way of splitting `h` over `d` layers, top first.
+fn compositions(h: u64, d: u64) -> Vec<Vec<u64>> {
+    if d == 1 {
+        return vec![vec![h]];
+    }
+    (1..=h.saturating_sub(d - 1))
+        .flat_map(|first| {
+            compositions(h - first, d - 1).into_iter().map(move |rest| {
+                let mut out = vec![first];
+                out.extend(rest);
+                out
+            })
+        })
+        .collect()
+}
+
+/// The search only ever builds `Profile::canonical`, and this is why that is
+/// not a restriction: for the same `(h, d, h_top)`, no other profile costs less
+/// on anything.
+#[test]
+fn profile_shape_is_never_beaten() {
+    let mut checked = 0;
+    for (h, d) in [(12, 3), (14, 4), (9, 2), (16, 5), (20, 4)] {
+        let p = Params {
+            h,
+            d,
+            ..params(Scheme::WcFc, h, d, 10, 12, 16)
+        };
+        let sk = Skeleton::new(p).expect("consistent");
+        for heights in compositions(h, d) {
+            let Some(profile) = Profile::new(&heights) else {
+                continue;
+            };
+            let Some(any) = Layers::from_profile(&p, profile) else {
+                continue;
+            };
+            let canon = Layers::new(&Params {
+                h_top: Some(heights[0]),
+                ..p
+            })
+            .expect("same top height");
+            let tag = format!("h={h} d={d} heights={heights:?}");
+            // size and verification do not see the profile at all
+            let (a, c) = (sk.finish(&any, 0, 0), sk.finish(&canon, 0, 0));
+            assert_eq!(
+                (a.sig_bytes, a.verify),
+                (c.sig_bytes, c.verify),
+                "size or verification moved: {tag}"
+            );
+            // keygen is the top tree, which they share
+            assert_eq!(any.keygen, canon.keygen, "keygen moved: {tag}");
+            // and the canonical split is the cheapest to sign, cached or cold
+            assert!(
+                canon.trees_cached.compressions <= any.trees_cached.compressions,
+                "beaten on signing: {tag}"
+            );
+            assert!(
+                canon.trees.compressions <= any.trees.compressions,
+                "beaten on cold signing: {tag}"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 2000, "only {checked} profiles checked");
+}
+
+/// A profile is expressible however uneven, and reads back as given.
+#[test]
+fn any_profile_can_be_costed() {
+    let p = params(Scheme::WcFc, 26, 4, 14, 11, 256);
+    let lopsided = Profile::new(&[11, 5, 7, 3]).expect("26 over 4 layers");
+    assert_eq!(lopsided.total(), 26);
+    assert_eq!(lopsided.h_top(), 11);
+    assert_eq!(format!("{lopsided}"), "11 + 5 + 7 + 3");
+    let lay = Layers::from_profile(&p, lopsided).expect("adds up to h over d layers");
+    assert_eq!(lay.profile, lopsided);
+    // and the canonical one with the same top is at least as cheap to sign
+    let canon = Layers::new(&Params { h_top: Some(11), ..p }).unwrap();
+    assert_eq!(format!("{}", canon.profile), "11 + 3 x 5");
+    assert!(canon.trees_cached.compressions <= lay.trees_cached.compressions);
+    // heights have to add up over the layers there are
+    assert!(Layers::from_profile(&p, Profile::new(&[11, 5, 7, 4]).unwrap()).is_none());
+    assert!(Layers::from_profile(&p, Profile::new(&[13, 13]).unwrap()).is_none());
+    assert!(Profile::new(&[11, 0, 15]).is_none(), "every layer needs a level");
+    assert!(Profile::new(&[64]).is_none(), "2^height has to be countable");
 }
 
 #[test]

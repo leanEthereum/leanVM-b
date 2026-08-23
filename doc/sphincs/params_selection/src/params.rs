@@ -29,90 +29,110 @@ pub struct Params {
     pub cache_level_only: bool,
 }
 
-/// The height of every XMSS tree in the hypertree.
+/// The height of every XMSS tree in the hypertree, top first.
 ///
-/// Only the top tree is worth caching, and the layers below it are otherwise
-/// interchangeable, so the only profile shape worth considering is "the top one,
-/// then the rest as equal as they go". For a fixed `(h, d, h_top)` that shape is
-/// no worse than any other on every cost: size and verification depend only on
-/// `(h, d)`, keygen only on `h_top`, and signing sums `2^height` over the
-/// layers, which for a fixed total is smallest when they are equal. So
+/// Any heights are expressible, but a search only ever needs
+/// [`Profile::canonical`]: the top tree at some height and the rest dividing
+/// what is left as evenly as it goes. For a fixed `(h, d, h_top)` that shape is
+/// no worse than any other on every cost, since size and verification depend
+/// only on `(h, d)`, keygen only on `h_top`, and signing sums `2^height` over
+/// the layers, which at a fixed total is smallest when they are equal. So
 /// enumerating `(h, d, h_top)` covers the cost-optimal representative of every
-/// layer profile, and the `d - 1` lower heights differ by at most one.
+/// profile. `profile_shape_is_never_beaten` in `tests/goldens` checks that
+/// against every composition of a few small `(h, d)`.
+///
+/// Heights are at most 63, since `2^height` has to be countable, and there are
+/// at most [`MAX_LAYERS`] of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Profile {
-    pub h_top: u64,
-    /// The taller of the two lower heights, and how many layers have it.
-    pub tall: u64,
-    pub n_tall: u64,
-    /// The shorter of the two, and how many layers have it.
-    pub short: u64,
-    pub n_short: u64,
+    heights: [u8; MAX_LAYERS],
+    len: u8,
 }
 
+/// The most hypertree layers a [`Profile`] can hold.
+pub const MAX_LAYERS: usize = 32;
+
 impl Profile {
-    /// `None` if some layer would be empty, or too tall for `2^height` to count.
-    pub fn new(h: u64, d: u64, h_top: Option<u64>) -> Option<Self> {
-        if d == 0 || h == 0 {
+    /// Any heights at all, the top tree first.
+    pub fn new(heights: &[u64]) -> Option<Self> {
+        if heights.is_empty() || heights.len() > MAX_LAYERS || heights.iter().any(|&x| !(1..=63).contains(&x)) {
+            return None;
+        }
+        let mut out = Self {
+            heights: [0; MAX_LAYERS],
+            len: heights.len() as u8,
+        };
+        for (slot, &h) in out.heights.iter_mut().zip(heights) {
+            *slot = h as u8;
+        }
+        Some(out)
+    }
+
+    /// The top tree at `h_top`, the other `d - 1` layers dividing `h - h_top` as
+    /// evenly as it goes. `None` for `h_top` is the classic `h/d` split.
+    pub fn canonical(h: u64, d: u64, h_top: Option<u64>) -> Option<Self> {
+        if d == 0 || d as usize > MAX_LAYERS || h == 0 {
             return None;
         }
         let h_top = h_top.unwrap_or(h / d).max(1);
         let lower_total = h.checked_sub(h_top)?;
         let m = d - 1;
         if m == 0 {
-            if lower_total != 0 {
-                return None; // one layer has to be the whole height
-            }
-            return Self::checked(Self {
-                h_top,
-                tall: 0,
-                n_tall: 0,
-                short: 0,
-                n_short: 0,
-            });
+            return (lower_total == 0).then(|| Self::new(&[h_top]))?;
         }
         if lower_total < m {
             return None; // every layer needs at least one level
         }
         let (q, r) = (lower_total / m, lower_total % m);
-        Self::checked(Self {
-            h_top,
-            tall: q + 1,
-            n_tall: r,
-            short: q,
-            n_short: m - r,
-        })
+        let mut heights = vec![h_top];
+        heights.extend(std::iter::repeat_n(q + 1, r as usize));
+        heights.extend(std::iter::repeat_n(q, (m - r) as usize));
+        Self::new(&heights)
     }
 
-    /// A tree of `2^63` leaves is already past any budget a `u64` can hold, and
-    /// `2^64` does not fit the count at all.
-    fn checked(self) -> Option<Self> {
-        (self.h_top <= 63 && self.tall <= 63).then_some(self)
+    pub fn heights(&self) -> impl Iterator<Item = u64> + '_ {
+        self.heights[..self.len as usize].iter().map(|&x| x as u64)
+    }
+
+    /// The top tree's height: the one layer that is the same for every signature.
+    pub fn h_top(&self) -> u64 {
+        self.heights().next().unwrap_or(0)
     }
 
     pub fn total(&self) -> u64 {
-        self.h_top + self.tall * self.n_tall + self.short * self.n_short
+        self.heights().sum()
     }
 
     pub fn layers(&self) -> u64 {
-        1 + self.n_tall + self.n_short
+        self.len as u64
     }
 
-    /// Is every layer the same height?
     pub fn uniform(&self) -> bool {
-        (self.n_tall == 0 || self.tall == self.h_top) && (self.n_short == 0 || self.short == self.h_top)
+        self.heights().all(|x| x == self.h_top())
     }
 }
 
 impl std::fmt::Display for Profile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.uniform() {
-            return write!(f, "{} x {}", self.layers(), self.h_top);
+            return write!(f, "{} x {}", self.layers(), self.h_top());
         }
-        write!(f, "top {}", self.h_top)?;
-        for (height, count) in [(self.tall, self.n_tall), (self.short, self.n_short)] {
-            if count > 0 {
-                write!(f, " + {count} x {height}")?;
+        // run-length, so the usual shapes read as "12 + 3 x 5"
+        let mut first = true;
+        let mut runs = Vec::new();
+        for h in self.heights() {
+            match runs.last_mut() {
+                Some((prev, count)) if *prev == h => *count += 1,
+                _ => runs.push((h, 1u64)),
+            }
+        }
+        for (h, count) in runs {
+            let sep = if first { "" } else { " + " };
+            first = false;
+            if count == 1 {
+                write!(f, "{sep}{h}")?;
+            } else {
+                write!(f, "{sep}{count} x {h}")?;
             }
         }
         Ok(())
@@ -121,7 +141,7 @@ impl std::fmt::Display for Profile {
 
 impl Params {
     pub fn profile(&self) -> Option<Profile> {
-        Profile::new(self.h, self.d, self.h_top)
+        Profile::canonical(self.h, self.d, self.h_top)
     }
 
     pub fn encoding(&self) -> Option<Encoding> {
@@ -193,8 +213,16 @@ pub struct Layers {
 }
 
 impl Layers {
+    /// The canonical profile of `p`: see [`Profile::canonical`].
     pub fn new(p: &Params) -> Option<Self> {
-        let profile = p.profile()?;
+        Self::from_profile(p, p.profile()?)
+    }
+
+    /// Any profile, as long as its heights add up to `p.h` over `p.d` layers.
+    pub fn from_profile(p: &Params, profile: Profile) -> Option<Self> {
+        if profile.total() != p.h || profile.layers() != p.d {
+            return None;
+        }
         let l = p.chains()?;
         let leaf = p.wots_leaf(l);
         let b = p.blocks();
@@ -202,8 +230,12 @@ impl Layers {
             let leaves = 1u64 << height;
             leaf * leaves + Cost::new(leaves - 1, (leaves - 1) * b.merkle_node())
         };
-        let top = tree(profile.h_top);
-        let lower = tree(profile.tall) * profile.n_tall + tree(profile.short) * profile.n_short;
+        let top = tree(profile.h_top());
+        let lower = profile
+            .heights()
+            .skip(1)
+            .map(tree)
+            .fold(Cost::default(), |acc, x| acc + x);
 
         // Only the top tree is worth caching: it is the same for every
         // signature, while the trees below it are picked by the (pseudorandom)
@@ -218,11 +250,11 @@ impl Layers {
         // consecutive signatures land on unrelated leaves and nothing
         // amortizes; an index-independent cache like this one is what is left,
         // hence sqrt rather than h'.
-        let c = p.cache_height.unwrap_or(profile.h_top / 2);
-        if c > profile.h_top {
+        let c = p.cache_height.unwrap_or(profile.h_top() / 2);
+        if c > profile.h_top() {
             return None;
         }
-        let stored_level = 1u64 << (profile.h_top - c);
+        let stored_level = 1u64 << (profile.h_top() - c);
         let mut cached = tree(c);
         let cache_bytes;
         if p.cache_level_only {
@@ -238,7 +270,7 @@ impl Layers {
             trees: top + lower,
             trees_cached: cached + lower,
             cache_bytes,
-            cache_depth: profile.h_top - c,
+            cache_depth: profile.h_top() - c,
         })
     }
 }

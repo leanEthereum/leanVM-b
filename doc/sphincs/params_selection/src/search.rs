@@ -32,7 +32,7 @@ use std::ops::RangeInclusive;
 use std::time::Instant;
 
 use crate::cost::{Cost, NuTable, SCHEMES, Scheme};
-use crate::params::{Costs, Layers, Params, Skeleton};
+use crate::params::{Costs, Layers, Params, Profile, Skeleton};
 use crate::security::SecurityTable;
 
 /// Hardcoded search ranges, wide enough that the budgets are normally what
@@ -141,6 +141,11 @@ pub struct Grid {
     pub dropped: Span,
     pub chain_bits: Vec<u64>,
     pub sums: Sums,
+    /// A profile given outright, instead of `h_top` over the canonical shape.
+    /// Its heights have to add up to `h` over `d` layers, both of which are
+    /// then pinned by it.
+    pub profile: Option<Profile>,
+    pub cache_height: Option<u64>,
     pub cache_level_only: bool,
 }
 
@@ -149,10 +154,11 @@ impl Grid {
     /// rather than searching for one? Distinct from a search that happens to
     /// leave one survivor, which still deserves its count and its table.
     pub fn fully_pinned(&self) -> bool {
-        let h_top_pinned = match self.h_top {
-            None => true, // the classic split is one profile
-            Some(span) => span.pinned(),
-        };
+        let h_top_pinned = self.profile.is_some()
+            || match self.h_top {
+                None => true, // the classic split is one profile
+                Some(span) => span.pinned(),
+            };
         self.schemes.len() == 1
             && self.chain_bits.len() == 1
             && self.h.pinned()
@@ -178,6 +184,8 @@ impl Default for Grid {
             dropped: Span::new(0, DROPPED_MAX),
             chain_bits: (1..=CHAIN_BITS_MAX).collect(),
             sums: Sums::Sweep,
+            profile: None,
+            cache_height: None,
             cache_level_only: false,
         }
     }
@@ -261,7 +269,7 @@ fn params(g: &Grid, scheme: Scheme, h: u64, d: u64, a: u64, k: u64, w: u64, drop
         w,
         n: g.n,
         dropped_chains: dropped,
-        cache_height: None,
+        cache_height: g.cache_height,
         cache_level_only: g.cache_level_only,
     }
 }
@@ -281,25 +289,27 @@ struct Room {
 fn room(b: &Budgets, g: &Grid, p: &Params) -> Option<Room> {
     let mut profiles = Vec::new();
     let mut slack = 0;
-    let mut consider = |h_top: Option<u64>| {
-        let Some(lay) = Layers::new(&Params { h_top, ..*p }) else {
-            return;
-        };
+    let mut consider = |lay: Option<Layers>| {
+        let Some(lay) = lay else { return };
         if b.of(lay.keygen) > b.max_keygen() {
             return;
         }
         slack = slack.max(b.max_sign().saturating_sub(b.of(lay.trees_cached)));
         profiles.push(lay);
     };
-    match g.h_top {
-        None => consider(None),
-        Some(span) => {
+    match (g.profile, g.h_top) {
+        (Some(profile), _) => consider(Layers::from_profile(p, profile)),
+        (None, None) => consider(Layers::new(p)),
+        (None, Some(span)) => {
             // The top tree has 2^h_top leaves and every leaf costs at least one
             // hash, so a top height past the keygen budget's log is out for any
             // (a, k).
             let ceiling = 64 - b.max_keygen().max(1).leading_zeros() as u64;
             for h_top in span.within((p.h + 1).saturating_sub(p.d).min(ceiling)) {
-                consider(Some(h_top));
+                consider(Layers::new(&Params {
+                    h_top: Some(h_top),
+                    ..*p
+                }));
             }
         }
     }
@@ -441,7 +451,7 @@ fn record(rows: &mut Vec<Candidate>, st: &mut Stats, b: &Budgets, sk: &Skeleton,
     st.rows += 1;
     rows.push(Candidate {
         params: Params {
-            h_top: Some(lay.profile.h_top),
+            h_top: Some(lay.profile.h_top()),
             ..sk.params
         },
         costs: sk.finish(lay, swn, trials),
