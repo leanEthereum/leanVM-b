@@ -17,10 +17,10 @@
 //!   degree-2 identities plus their three bus forms (§sec:air).
 //! - [`tables`]: the six instruction tables (columns, flushes, constraints).
 //! - [`cpu`]: whole-program assembly, control flow, and the prove/verify entry points.
-//! - [`blake2s_flock`]: the `BLAKE2s` glue: flock's R1CS validity proof over the same commitment.
+//! - [`hash_flock`]: the `BLAKE2s` glue: flock's R1CS validity proof over the same commitment.
 //! - [`vmhash`]: VM-native hashing (one-block compression and standard BLAKE2s slice hashing).
 
-pub mod blake2s_flock;
+pub mod hash_flock;
 pub mod colval;
 pub mod constraints;
 pub mod cpu;

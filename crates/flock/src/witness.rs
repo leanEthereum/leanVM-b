@@ -1,6 +1,6 @@
 // CREDIT: https://github.com/succinctlabs/flock (flock-prover), MIT OR Apache-2.0.
 //! Bit-packing and R1CS-row helpers for the monolithic hash R1CS modules
-//! (only `blake2s` in this vendored subset).
+//! (only `hash` in this vendored subset).
 
 use primitives::bits::transpose_8_u64s_to_64_bytes;
 use zk_alloc::ArenaVec;

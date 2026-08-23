@@ -789,7 +789,7 @@ impl Program {
                     let vcv = [F64(words[4].c0), F64(words[4].c1), F64(words[5].c0), F64(words[5].c1)];
                     // Compress the 64 message bytes to the 32-byte result, then
                     // write it to c's two cells. No table constraint covers the
-                    // digest (the relation is proven by flock, §blake2s_flock); the
+                    // digest (the relation is proven by flock, §hash_flock); the
                     // interpreter still computes the definite digest so the output
                     // cells are consistent for any later read.
                     let vc = blake2s_compress(va, vb, vcv, metadata);

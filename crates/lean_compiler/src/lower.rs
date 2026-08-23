@@ -372,7 +372,7 @@ impl FnLower<'_> {
             return o;
         }
         let o = self.alloc_stack(2);
-        for (k, value) in lean_vm::blake2s_flock::IV_CELLS.into_iter().enumerate() {
+        for (k, value) in lean_vm::hash_flock::IV_CELLS.into_iter().enumerate() {
             self.set_const(o + k as u32, value);
             self.scope
                 .const_cells
@@ -2313,7 +2313,7 @@ impl FnLower<'_> {
         // node use.
         let counter = u64::try_from(const_kw(self, "counter", 64)).expect("BLAKE2s counter does not fit in u64");
         let f0 = if const_kw(self, "final", if customized { 0 } else { 1 }) != 0 {
-            lean_vm::blake2s_flock::FINAL_FLAG
+            lean_vm::hash_flock::FINAL_FLAG
         } else {
             0
         };
@@ -2322,7 +2322,7 @@ impl FnLower<'_> {
         } else {
             0
         };
-        let metadata = lean_vm::blake2s_flock::metadata(counter, f0, f1);
+        let metadata = lean_vm::hash_flock::metadata(counter, f0, f1);
         // Each operand is two 128-bit chunk cells; the flexible opcode addresses
         // the four input cells independently (`blake2s_input` forwards the real
         // chunk sources where it can). The digest occupies the two consecutive

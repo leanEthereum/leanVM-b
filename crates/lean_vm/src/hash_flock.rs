@@ -1,4 +1,4 @@
-//! Bridge to the flock BLAKE2s prover ([`flock::blake2s`]), single-PCS.
+//! Bridge to the flock BLAKE2s prover ([`flock::hash`]), single-PCS.
 //!
 //! `q_flock` (flock's packed BLAKE2s witness, 64 bits per `F64` word) is committed
 //! as a column in leanVM-b's ONE stacked `F64` witness (§sec:stacking), with no separate flock
@@ -32,7 +32,7 @@
 
 use crate::transcript::{ProverState, VerifierState};
 use ::pcs::pack::LOG_PACKING;
-use flock::blake2s::{
+use flock::hash::{
     Blake2sSetup, Compression, K_LOG, ReductionReplay, blake2s_compress, generate_witness_with_ab_packed_and_lincheck,
 };
 use flock::verifier::VerifyError;
@@ -40,16 +40,16 @@ use primitives::field::{F64, F192};
 use primitives::stream::Stream;
 use zk_alloc::ArenaVec;
 
-pub use flock::blake2s::{
+pub use flock::hash::{
     SliceClaim, min_n_blocks_log as n_blocks_log, qflock_kappa, ring_switch_open, ring_switch_verify,
 };
 
 /// BLAKE2s's final-block flag `f0`, which RFC 7693 sets to all ones on the last
 /// block. A hash-shaped compression is one 64-byte final block, so it is always
 /// set there.
-pub const FINAL_FLAG: u32 = flock::blake2s::PINNED_F0;
+pub const FINAL_FLAG: u32 = flock::hash::PINNED_F0;
 /// The byte counter of the one 64-byte block a hash-shaped compression absorbs.
-pub const PINNED_T: u64 = flock::blake2s::PINNED_T;
+pub const PINNED_T: u64 = flock::hash::PINNED_T;
 
 /// Flock-native reduction buffers emitted in the same fused pass as the
 /// committed, flattened `q_flock`. They stay alive across commit, bus, and
@@ -143,14 +143,14 @@ pub const fn unpack_metadata(x: F192) -> (u64, u32, u32) {
 /// folded into word 0, which is what makes a 64-byte compression equal
 /// `blake2s` of those 64 bytes.
 ///
-/// Derived from [`flock::blake2s::param_iv`] rather than written out: the
+/// Derived from [`flock::hash::param_iv`] rather than written out: the
 /// parameter block touches three bytes of word 0, and a hand-copied constant
 /// that XORs only the low byte still looks plausible.
 pub const IV: [F64; 4] = {
     const fn w(lo: u32, hi: u32) -> F64 {
         F64((lo as u64) | ((hi as u64) << 32))
     }
-    let h = flock::blake2s::param_iv();
+    let h = flock::hash::param_iv();
     [w(h[0], h[1]), w(h[2], h[3]), w(h[4], h[5]), w(h[6], h[7])]
 };
 
@@ -342,7 +342,7 @@ mod tests {
             for (s, w) in input.as_chunks_mut::<8>().0.iter_mut().zip(a.into_iter().chain(b)) {
                 *s = w.0.to_le_bytes();
             }
-            let h = primitives::blake2s::hash(&input);
+            let h = primitives::hash::hash(&input);
             let word = |o: usize| F64(u64::from_le_bytes(h[o..o + 8].try_into().unwrap()));
             let d: [F64; 4] = std::array::from_fn(|k| word(8 * k));
             assert_eq!(digest(blk), d);
@@ -353,7 +353,7 @@ mod tests {
         // Input slots for this one-block hash: the parameterized initial chaining
         // value in slots 0..4, the byte counter in slot 18, and the packed
         // f0‖f1 flag word in slot 19.
-        let iv = flock::blake2s::param_iv();
+        let iv = flock::hash::param_iv();
         for k in 0..4 {
             assert_eq!(slot(0, k), pack_words([iv[2 * k], iv[2 * k + 1]]));
         }

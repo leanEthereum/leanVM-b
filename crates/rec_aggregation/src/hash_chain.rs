@@ -3,7 +3,7 @@
 use std::time::Instant;
 
 use lean_compiler::{compile, compile_without_filler, parse};
-use lean_vm::blake2s_flock::warm_setup;
+use lean_vm::hash_flock::warm_setup;
 use lean_vm::cpu::{prove, verify};
 use lean_vm::vmhash::compress;
 use primitives::{

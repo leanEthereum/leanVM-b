@@ -7,7 +7,7 @@
 use std::time::Instant;
 
 use fiat_shamir::transcript::{ProverState, Receiver, Transmitter, VerifierState};
-use flock::blake2s::{
+use flock::hash::{
     Blake2sSetup, Compression, K_LOG, generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log,
     pinned_compression, ring_switch_open, ring_switch_verify,
 };

@@ -10,7 +10,7 @@
 //!: the reference `compress` is fed that lane layout.
 
 use lean_compiler::{compile, parse};
-use lean_vm::blake2s_flock::{compression, digest, metadata, unpack_metadata, warm_setup};
+use lean_vm::hash_flock::{compression, digest, metadata, unpack_metadata, warm_setup};
 use lean_vm::cpu::{Op, prove, verify};
 use lean_vm::vmhash::compress;
 use primitives::field::{F64, F192};
@@ -82,7 +82,7 @@ def main():
         input.extend_from_slice(&value.to_le_bytes());
         input.extend_from_slice(&0u64.to_le_bytes());
     }
-    let d = primitives::blake2s::hash(&input);
+    let d = primitives::hash::hash(&input);
     let word = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
     let want = [F192::new(word(0), word(8), 0), F192::new(word(16), word(24), 0)];
     let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);

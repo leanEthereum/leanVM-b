@@ -520,7 +520,7 @@ pub struct RingSwitchProveState {
 /// possibly shared map afterwards.
 ///
 /// The slices are NOT sent here: the caller has already bound them (flock sends
-/// its family itself, see `flock::blake2s`), which is what lets this
+/// its family itself, see `flock::hash`), which is what lets this
 /// phase touch no transcript at all. `precomputed_s_hat_v` is `None` only for a
 /// caller that wants them folded out of the witness instead.
 pub fn prove_prepare(
