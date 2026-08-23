@@ -6,7 +6,7 @@
 //! the rate is either used or wasted.
 //!
 //! ```text
-//! BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=18 cargo test --release -p flock --test sha3_batch -- --ignored --nocapture
+//! BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=16 cargo test --release -p flock --test sha3_batch -- --ignored --nocapture
 //! ```
 
 use std::time::Instant;
