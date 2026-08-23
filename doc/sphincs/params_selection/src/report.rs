@@ -139,7 +139,7 @@ const COLUMNS: [(&str, usize); 16] = [
     ("ht", 4),
     ("a", 3),
     ("k", 3),
-    ("cb", 3),
+    ("w", 5),
     ("drop", 5),
     ("l", 4),
     ("S_wn", 6),
@@ -160,7 +160,7 @@ fn cells(c: &Candidate) -> Vec<String> {
         x.profile.h_top.to_string(),
         p.a.to_string(),
         p.k.to_string(),
-        x.chain_bits.to_string(),
+        p.w.to_string(),
         p.dropped_chains.to_string(),
         x.l.to_string(),
         x.swn.map_or("-".to_string(), |s| s.to_string()),
@@ -176,8 +176,9 @@ fn cells(c: &Candidate) -> Vec<String> {
 /// own and not the report's.
 pub fn legend() -> String {
     "every cost in compression calls, one per 64 bytes of hash input; sign = signing with the top tree's half top \
-     in state, cache B of it, and cold = the same with no state at all\nht = top layer height, cb = log2(w), \
-     drop = chains dropped beyond the pinned digest bits, l = chains signed, S_wn = target digit sum"
+     in state, cache B of it, and cold = the same with no state at all\nht = top layer height, w = Winternitz parameter, the positions one chain \
+     has (--chain-bits takes its log2), drop = chains dropped beyond the pinned digest bits, l = chains signed, \
+     S_wn = target digit sum"
         .to_string()
 }
 
