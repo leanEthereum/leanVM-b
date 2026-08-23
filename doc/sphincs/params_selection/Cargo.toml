@@ -8,7 +8,6 @@ edition = "2024"
 [workspace]
 
 [dependencies]
-rayon = "1.12.0"
 
 [lints.clippy]
 too_many_arguments = "allow"

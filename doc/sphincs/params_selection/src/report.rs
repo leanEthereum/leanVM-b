@@ -1,7 +1,6 @@
 //! Human-readable output.
 
-use crate::cost::Cost;
-use crate::params::{Costs, Layer, Params};
+use crate::params::{Costs, Params};
 use crate::search::{Budgets, Candidate};
 use crate::security::forgery_exponent;
 
@@ -36,37 +35,36 @@ pub fn si(x: u64) -> String {
     x.to_string()
 }
 
-/// One layer's WOTS instance: how its digest is cut into chain positions.
-fn wots_line(p: &Params, layer: Layer) -> String {
-    let l = layer.chains(p.n, p.scheme).unwrap_or(0);
-    let enc = layer.encoding(p.n);
-    if !p.scheme.wots_c() {
-        let l1 = (8 * p.n).div_ceil(layer.chain_bits());
-        return format!("WOTS-TW, {l} chains: {l1} for the digest + {} checksum", l - l1);
-    }
-    let pinned = enc.map_or(0, |e| e.pinned_bits);
-    let swn = layer.swn().unwrap_or_else(|| enc.map_or(0, |e| e.default_swn()));
-    let dropped = if layer.dropped_chains() > 0 {
-        format!(", {} chain(s) dropped", layer.dropped_chains())
+/// One line spelling out the WOTS+C digest-to-chains cut.
+pub fn encoding_line(p: &Params, c: &Costs) -> String {
+    let Some(swn) = c.swn else {
+        let l1 = (8 * p.n).div_ceil(c.chain_bits);
+        return format!(
+            "encoding        WOTS-TW: {} chains, {l1} for the digest + {} checksum",
+            c.l,
+            c.l - l1
+        );
+    };
+    let dropped = if c.dropped_chains > 0 {
+        format!(", {} chain(s) dropped", c.dropped_chains)
     } else {
         String::new()
     };
     format!(
-        "w = {}, {l} chains of {} bits, {pinned} of {} digest bits pinned{dropped}, S_wn = {swn} of {}",
-        layer.w(),
-        layer.chain_bits(),
+        "encoding        {} bits/chain, {} of {} digest bits pinned to zero{dropped}, S_wn = {swn} of {}",
+        c.chain_bits,
+        c.pinned_bits,
         8 * p.n,
-        l * (layer.w() - 1)
+        c.l * (p.w - 1)
     )
 }
 
 /// The full picture of one parameter set.
 pub fn report(p: &Params, c: &Costs, q_s: f64) -> String {
-    let forgery = forgery_exponent(q_s, c.hypertree.height() as u32, p.k, p.a);
+    let forgery = forgery_exponent(q_s, p.h as u32, p.k, p.a);
     let cap = 8.0 * p.n as f64;
     let security = forgery.map_or(0.0, |f| f.min(cap));
-    let ht = c.hypertree;
-    let row = |label: &str, x: Cost, note: String| format!("{label:<24}{:>12}{note}", si(x.compressions));
+    let row = |label: &str, x: crate::cost::Cost, note: String| format!("{label:<24}{:>12}{note}", si(x.compressions));
 
     let mut lines = vec![
         format!(
@@ -75,12 +73,7 @@ pub fn report(p: &Params, c: &Costs, q_s: f64) -> String {
             signatures(q_s),
             8 * p.n
         ),
-        format!(
-            "(h, d)          ({}, {})   layer heights {}",
-            ht.height(),
-            ht.depth(),
-            ht.heights()
-        ),
+        format!("(h, d)          ({}, {})   layer heights {}", p.h, p.d, c.profile),
         format!(
             "(a, k)          ({}, {}){}",
             p.a,
@@ -91,54 +84,31 @@ pub fn report(p: &Params, c: &Costs, q_s: f64) -> String {
                 String::new()
             }
         ),
+        format!("(w, l)          ({}, {})", p.w, c.l),
+        encoding_line(p, c),
+        String::new(),
+        match forgery {
+            Some(f) => format!(
+                "security        {security:.1} bits classical   (FORS forgery {f:.1}, preimage {})",
+                cap as u64
+            ),
+            None => format!(
+                "security        none: q_s = {} reuses every FORS instance ~{:.0} times",
+                signatures(q_s),
+                q_s / 2f64.powi(p.h as i32)
+            ),
+        },
+        format!("signature       {} bytes", c.sig_bytes),
+        String::new(),
+        format!("{:<24}{:>12}", "", "compressions"),
+        row("keygen", c.keygen, String::new()),
+        row(
+            "sign",
+            c.sign,
+            format!("   ({} B of state at depth {})", c.cache_bytes, c.cache_depth),
+        ),
+        row("verify", c.verify, String::new()),
     ];
-    // one line per distinct WOTS instance, which is one line unless the layers
-    // disagree
-    if ht.one_wots() {
-        lines.push(format!("every layer     {}", wots_line(p, ht.top())));
-    } else {
-        // one line per run of layers sharing their WOTS parameters
-        let mut runs: Vec<(Layer, u64, u64)> = Vec::new();
-        for (i, layer) in ht.layers().enumerate() {
-            let same =
-                |a: Layer, b: Layer| (a.w(), a.dropped_chains(), a.swn()) == (b.w(), b.dropped_chains(), b.swn());
-            match runs.last_mut() {
-                Some((prev, _, last)) if same(*prev, layer) => *last = i as u64,
-                _ => runs.push((layer, i as u64, i as u64)),
-            }
-        }
-        for (layer, first, last) in runs {
-            let which = match (first, last) {
-                (0, 0) => "top layer".to_string(),
-                (f, l) if f == l => format!("layer {f}"),
-                (f, l) if l + 1 == ht.depth() => format!("layers {f}..{l}"),
-                (f, l) => format!("layers {f}..{l}"),
-            };
-            lines.push(format!("{which:<16}{}", wots_line(p, layer)));
-        }
-    }
-    lines.push(String::new());
-    lines.push(match forgery {
-        Some(f) => format!(
-            "security        {security:.1} bits classical   (FORS forgery {f:.1}, preimage {})",
-            cap as u64
-        ),
-        None => format!(
-            "security        none: q_s = {} reuses every FORS instance ~{:.0} times",
-            signatures(q_s),
-            q_s / 2f64.powi(ht.height() as i32)
-        ),
-    });
-    lines.push(format!("signature       {} bytes", c.sig_bytes));
-    lines.push(String::new());
-    lines.push(format!("{:<24}{:>12}", "", "compressions"));
-    lines.push(row("keygen", c.keygen, String::new()));
-    lines.push(row(
-        "sign",
-        c.sign,
-        format!("   ({} B of state at depth {})", c.cache_bytes, c.cache_depth),
-    ));
-    lines.push(row("verify", c.verify, String::new()));
     if c.verify_worst != c.verify {
         lines.push(row("verify (worst)", c.verify_worst, String::new()));
     }
@@ -160,48 +130,30 @@ const COLUMNS: [(&str, usize); 15] = [
     ("heights", 18),
     ("a", 3),
     ("k", 3),
-    ("w", 9),
+    ("w", 5),
     ("drop", 5),
-    ("l", 7),
-    ("S_wn", 11),
+    ("l", 4),
+    ("S_wn", 6),
     ("size", 6),
     ("keygen", 8),
     ("sign", 8),
     ("cache B", 7),
 ];
 
-/// `top/low` when the layers disagree, one value when they do not.
-fn per_group(top: String, low: String) -> String {
-    if top == low { top } else { format!("{top}/{low}") }
-}
-
 fn cells(c: &Candidate) -> Vec<String> {
     let (p, x) = (&c.params, &c.costs);
-    let ht = x.hypertree;
-    let (top, low) = (ht.top(), ht.layers().last().unwrap_or(ht.top()));
-    let chains = |layer: Layer| layer.chains(p.n, p.scheme).unwrap_or(0);
-    let sum = |layer: Layer| {
-        layer
-            .swn()
-            .or_else(|| layer.encoding(p.n).map(|e| e.default_swn()))
-            .map_or("-".to_string(), |s| s.to_string())
-    };
     vec![
         si(x.verify.compressions),
         p.scheme.label().to_string(),
-        ht.height().to_string(),
-        ht.depth().to_string(),
-        ht.heights(),
+        p.h.to_string(),
+        p.d.to_string(),
+        x.profile.to_string(),
         p.a.to_string(),
         p.k.to_string(),
-        per_group(top.w().to_string(), low.w().to_string()),
-        per_group(top.dropped_chains().to_string(), low.dropped_chains().to_string()),
-        per_group(chains(top).to_string(), chains(low).to_string()),
-        if p.scheme.wots_c() {
-            per_group(sum(top), sum(low))
-        } else {
-            "-".to_string()
-        },
+        p.w.to_string(),
+        p.dropped_chains.to_string(),
+        x.l.to_string(),
+        x.swn.map_or("-".to_string(), |s| s.to_string()),
         x.sig_bytes.to_string(),
         si(x.keygen.compressions),
         si(x.sign.compressions),
@@ -213,9 +165,9 @@ fn cells(c: &Candidate) -> Vec<String> {
 /// own and not the report's.
 pub fn legend() -> String {
     "every cost in compression calls, one per 64 bytes of hash input; sign = signing with the top tree's half top \
-     in state, cache B of it\nheights = every layer's height, top first, and the only one worth caching is that top \
-     one; w, drop, l and S_wn are written top/lower where the layers differ, and are the Winternitz parameter, the \
-     chains dropped beyond the pinned digest bits, the chains signed, and the target digit sum"
+     in state, cache B of it\nheights = every layer's height, top first, and the only one worth caching is that top one, w = Winternitz parameter, the positions one chain \
+     has (--chain-bits takes its log2), drop = chains dropped beyond the pinned digest bits, l = chains signed, \
+     S_wn = target digit sum"
         .to_string()
 }
 

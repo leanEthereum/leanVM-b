@@ -21,11 +21,7 @@ Every cost is compression calls, one per 64 bytes of hash input: a Merkle node o
 
 Since size and verification depend only on `(h, d)` and not on how the layers divide `h`, a taller top layer is free on both and cheaper to sign with the cache: compare `--top-height 8` against `--top-height 15` at `--height 40 --layers 5`.
 
-Each layer carries its own WOTS instance too, so `w`, the target sum and the dropped chains need not agree across layers. `--layer 12,w=16,swn=240 --layer 12,w=8,drop=1` costs one such hypertree outright, `--heights 11,5,7,3` gives just the heights, and `--split-wots` searches a separate instance for the top layer.
-
-Two instances is all a search needs. Any Lagrangian relaxation of the per-layer choice is separable, so each layer takes its own argmin, and every layer below the top has an identical cost function, since only the top tree is the cached one and only it is what keygen pays for. So at most two distinct choices come back. `two_groups_against_every_per_layer_assignment` checks that against every per-layer assignment of several small hypertrees, and finds no gap.
-
-Whether it is worth searching is another matter. Size charges every layer the same `l * n` and verification charges every layer its own walk, so on those two the exchange rate is identical everywhere and a uniform `w` is what a size budget wants: the walk is convex in `l`, so at a fixed total `l` an equal split is cheapest. Only signing distinguishes the layers, a tall tree wanting cheap leaves. So per-layer WOTS pays only when the signing budget binds and the heights are uneven, and on the queries tried here the uniform choice still wins.
+Layer heights can be given outright with `--heights 11,5,7,3`, which pins `h` and `d` with them. The search never produces an uneven lower half, and that is not a restriction: for the same `h`, `d` and top height, no other profile costs less on anything, since size, verification and keygen do not move and signing sums `2^height`, which at a fixed total is smallest when the heights are equal. `profile_shape_is_never_beaten` checks that against every composition of several small `(h, d)`. So `--heights` is for costing a profile you already have in mind.
 
 `cargo run --release --` with no arguments prints every flag and its default. `cargo test --release` runs the goldens: the upstream sage fixtures, the report's own tables, and a naive search oracle that skips nothing.
 

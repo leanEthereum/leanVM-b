@@ -307,65 +307,11 @@ impl NuTable {
         self.trials.get(swn as usize).copied().unwrap_or(u64::MAX)
     }
 
-    /// The largest target sum the code can reach.
-    pub fn max_swn(&self) -> u64 {
-        self.l * (self.w - 1)
-    }
-
     /// The least grinding any target sum can ask for.
     ///
     /// Read off the table rather than assumed to sit at the mean, so nothing
     /// downstream depends on where the distribution peaks.
     pub fn min_trials(&self) -> u64 {
         self.trials.iter().copied().min().unwrap_or(u64::MAX)
-    }
-}
-
-/// [`NuTable`]s by `(l, chain_bits)`, since a search revisits the same few.
-///
-/// Direct-mapped rather than hashed: a search asks for one per layer per
-/// candidate, millions of times, and hashing showed up in the profile.
-pub struct NuCache {
-    digest_bits: u32,
-    slots: Vec<Option<NuTable>>,
-}
-
-const MAX_L: usize = 512;
-const MAX_BITS: usize = 16;
-
-impl NuCache {
-    pub fn new(n: u64) -> Self {
-        Self {
-            digest_bits: (8 * n) as u32,
-            slots: vec![None; MAX_L * MAX_BITS],
-        }
-    }
-
-    fn slot(l: u64, w: u64) -> Option<usize> {
-        let bits = w.trailing_zeros() as usize;
-        (w.is_power_of_two() && (l as usize) < MAX_L && bits < MAX_BITS).then(|| l as usize * MAX_BITS + bits)
-    }
-
-    pub fn table(&mut self, l: u64, w: u64) -> &NuTable {
-        let i = Self::slot(l, w).expect("l and w within the searched ranges");
-        if self.slots[i].is_none() {
-            self.slots[i] = Some(NuTable::new(l, w, self.digest_bits));
-        }
-        self.slots[i].as_ref().expect("just filled")
-    }
-
-    /// Two tables at once, which a two-group hypertree needs.
-    pub fn pair(&mut self, top: (u64, u64), low: (u64, u64)) -> (&NuTable, &NuTable) {
-        self.table(top.0, top.1);
-        self.table(low.0, low.1);
-        let (i, j) = (Self::slot(top.0, top.1).unwrap(), Self::slot(low.0, low.1).unwrap());
-        if i == j {
-            let t = self.slots[i].as_ref().unwrap();
-            return (t, t);
-        }
-        let (lo, hi) = if i < j { (i, j) } else { (j, i) };
-        let (left, right) = self.slots.split_at(hi);
-        let (a, b) = (left[lo].as_ref().unwrap(), right[0].as_ref().unwrap());
-        if i < j { (a, b) } else { (b, a) }
     }
 }

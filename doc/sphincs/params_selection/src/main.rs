@@ -2,7 +2,7 @@
 //! and everything left over gets searched.
 
 use sphincs_params::cost::{SCHEMES, Scheme};
-use sphincs_params::params::{Hypertree, Layer};
+use sphincs_params::params::Profile;
 use sphincs_params::report::{legend, report, si, signatures, table, utilization};
 use sphincs_params::search::{
     A_MAX, Budgets, CHAIN_BITS_MAX, D_MAX, DROPPED_MAX, Grid, H_MAX, K_MAX, LEVEL1_BITS, Span, Stats, Sums, edges,
@@ -25,14 +25,10 @@ parameters
   --top-height ht   height of the top XMSS tree, the rest
                     of h splitting evenly below it        [1..h-d+1, or h/d]
   --heights H,...   every layer height outright, top first, pinning h and d
-  --layer SPEC      one layer outright, repeated top first, e.g.
-                    --layer 12,w=16,swn=240 --layer 12,w=8,drop=1
-                    Fields: the bare number is the height, then w=, swn=,
-                    drop=. Pins h, d and every layer's WOTS instance.
-  --split-wots      search a separate WOTS instance for the top layer rather
-                    than one for the whole hypertree. Two instances is all a
-                    search needs (see Hypertree::two_group), but it multiplies
-                    the grid by the number of instances, so expect minutes.
+                    with it. Nothing here searches uneven lower layers,
+                    because for the same h, d and top height they never cost
+                    less: see Profile in src/params.rs. This is for costing
+                    one anyway.
   -a A              log2 of the leaves in a FORS tree     [1..32]
   -k K              FORS trees                            [1..64]
   --chain-bits B    log2(w), repeatable                   [1..12]
@@ -92,17 +88,15 @@ fn main() -> std::process::ExitCode {
 /// Flags and their values, repeatable flags kept in order.
 struct Args(Vec<(String, Option<String>)>);
 
-const NO_VALUE: [&str; 5] = ["--cache-level-only", "--stats", "--help", "-h", "--split-wots"];
+const NO_VALUE: [&str; 4] = ["--cache-level-only", "--stats", "--help", "-h"];
 
-const FLAGS: [&str; 24] = [
+const FLAGS: [&str; 22] = [
     "--lifetime",
     "--scheme",
     "--height",
     "--layers",
     "--top-height",
     "--heights",
-    "--layer",
-    "--split-wots",
     "-a",
     "-k",
     "--chain-bits",
@@ -242,61 +236,6 @@ impl Args {
     }
 }
 
-/// `--heights 12,7,7`, or `--layer 12,w=16,swn=240 --layer 7,w=8` repeated once
-/// per layer, top first. Both give the hypertree outright.
-fn layers_from(args: &Args) -> Result<Option<Hypertree>, String> {
-    let specs = args.all("--layer");
-    if !specs.is_empty() {
-        let layers: Vec<Layer> = specs
-            .iter()
-            .map(|spec| {
-                let mut height = None;
-                let (mut w, mut dropped, mut swn) = (16, 0, None);
-                for field in spec.split(',') {
-                    let field = field.trim();
-                    let (key, value) = field.split_once('=').unwrap_or(("height", field));
-                    let value: u64 = value
-                        .replace([',', '_'], "")
-                        .parse()
-                        .map_err(|_| format!("--layer {spec}: {value} is not a number"))?;
-                    match key {
-                        "height" | "h" => height = Some(value),
-                        "w" => w = value,
-                        "drop" | "dropped" => dropped = value,
-                        "swn" | "S" => swn = Some(value),
-                        other => return Err(format!("--layer {spec}: unknown field {other}")),
-                    }
-                }
-                let height = height.ok_or_else(|| format!("--layer {spec}: no height"))?;
-                Layer::new(height, w, dropped, swn)
-                    .ok_or_else(|| format!("--layer {spec}: height 1..=63 and w a power of two are needed"))
-            })
-            .collect::<Result<_, _>>()?;
-        return Ok(Some(
-            Hypertree::new(&layers).ok_or("--layer: 1 to 32 layers, top first")?,
-        ));
-    }
-    let Some(list) = args.get("--heights") else {
-        return Ok(None);
-    };
-    let heights: Vec<u64> = list
-        .split(',')
-        .map(|x| {
-            x.trim()
-                .parse::<u64>()
-                .map_err(|_| format!("--heights: expected numbers, got {list}"))
-        })
-        .collect::<Result<_, _>>()?;
-    let w = args.num("-w")?.unwrap_or(16);
-    let dropped = args.num("--drop-chains")?.unwrap_or(0);
-    let swn = args.num("--swn")?;
-    let layers: Option<Vec<Layer>> = heights.iter().map(|&h| Layer::new(h, w, dropped, swn)).collect();
-    Ok(Some(
-        Hypertree::new(&layers.ok_or("--heights: heights are 1..=63")?)
-            .ok_or("--heights: 1 to 32 heights, top first")?,
-    ))
-}
-
 fn run(argv: &[String]) -> Result<bool, String> {
     let args = Args::parse(argv)?;
     let q_s = args.float("--lifetime")?.ok_or("--lifetime is required")?;
@@ -331,16 +270,29 @@ fn run(argv: &[String]) -> Result<bool, String> {
         (None, true) => Some(Span::new(1, H_MAX)),
         (None, false) => None,
     };
-    let hypertree = layers_from(&args)?;
+    let profile = match args.get("--heights") {
+        None => None,
+        Some(list) => {
+            let heights: Vec<u64> = list
+                .split(',')
+                .map(|x| {
+                    x.trim()
+                        .parse::<u64>()
+                        .map_err(|_| format!("--heights: expected numbers, got {list}"))
+                })
+                .collect::<Result<_, _>>()?;
+            Some(Profile::new(&heights).ok_or_else(|| format!("--heights: {list} is not 1..=32 heights of 1..=63"))?)
+        }
+    };
     let g = Grid {
         schemes: args.schemes()?,
         n: args.u64_or("-n", 16)?,
-        h: match hypertree {
-            Some(ht) => Span::pin(ht.height()),
+        h: match profile {
+            Some(pr) => Span::pin(pr.total()),
             None => args.span("--height", Span::new(1, H_MAX))?,
         },
-        d: match hypertree {
-            Some(ht) => Span::pin(ht.depth()),
+        d: match profile {
+            Some(pr) => Span::pin(pr.layers()),
             None => args.span("--layers", Span::new(1, D_MAX))?,
         },
         h_top,
@@ -349,8 +301,7 @@ fn run(argv: &[String]) -> Result<bool, String> {
         dropped,
         chain_bits: args.chain_bits()?,
         sums,
-        split_wots: args.flag("--split-wots"),
-        hypertree,
+        profile,
         cache_height: args.num("--cache-height")?,
         cache_level_only: args.flag("--cache-level-only"),
     };

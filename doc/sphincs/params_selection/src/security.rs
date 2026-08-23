@@ -89,30 +89,6 @@ pub struct SecurityTable {
 }
 
 impl SecurityTable {
-    /// Fill every cell up front, in parallel, so the search can share it.
-    ///
-    /// The set of `(h, k, a)` a search touches is fixed by its grid and does not
-    /// depend on the scheme or the WOTS parameters, so this is computed once
-    /// rather than per worker.
-    pub fn filled(q_s: f64, target: f64, n: u64, h_max: u32, k_max: u64, a_max: u64) -> Self {
-        use rayon::prelude::*;
-        let mut out = Self::new(q_s, target, n, h_max, k_max, a_max);
-        let (kk, aa) = (k_max as usize + 1, a_max as usize + 1);
-        let flags: Vec<u8> = (0..=h_max as usize)
-            .into_par_iter()
-            .flat_map_iter(|h| {
-                (0..kk).flat_map(move |k| {
-                    (0..aa).map(move |a| {
-                        let secure = k >= 1 && a >= 1 && security_bits(q_s, h as u32, k as u64, a as u64, n) >= target;
-                        if secure { 1u8 } else { 2 }
-                    })
-                })
-            })
-            .collect();
-        out.seen = flags;
-        out
-    }
-
     pub fn new(q_s: f64, target: f64, n: u64, h_max: u32, k_max: u64, a_max: u64) -> Self {
         let cells = (h_max as usize + 1) * (k_max as usize + 1) * (a_max as usize + 1);
         Self {
@@ -126,11 +102,14 @@ impl SecurityTable {
         }
     }
 
-    pub fn is_secure(&self, h: u32, k: u64, a: u64) -> bool {
+    pub fn is_secure(&mut self, h: u32, k: u64, a: u64) -> bool {
         if h > self.h_max || k > self.k_max || a > self.a_max {
             return self.compute(h, k, a);
         }
         let i = (h as usize * (self.k_max as usize + 1) + k as usize) * (self.a_max as usize + 1) + a as usize;
+        if self.seen[i] == 0 {
+            self.seen[i] = if self.compute(h, k, a) { 1 } else { 2 };
+        }
         self.seen[i] == 1
     }
 
