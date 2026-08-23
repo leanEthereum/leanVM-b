@@ -112,6 +112,13 @@ impl Profile {
     }
 }
 
+impl Profile {
+    /// The heights as one token, for a table column: `5x8`, `12+3x5`, `11+5+7+3`.
+    pub fn compact(&self) -> String {
+        format!("{self}").replace(' ', "")
+    }
+}
+
 impl std::fmt::Display for Profile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.uniform() {
