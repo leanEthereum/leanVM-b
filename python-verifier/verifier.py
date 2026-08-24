@@ -4,6 +4,7 @@ import hashlib
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from functools import cache, reduce
+from itertools import accumulate, islice, repeat
 from operator import mul
 from pathlib import Path
 from struct import pack, unpack
@@ -64,8 +65,6 @@ class K:
 
     def __add__(self, other: object) -> K:
         rhs = _as_k(other)
-        # Deferring lets `K + E` and `K * E` fall through to E's reflected
-        # operator, which lifts the K side into the extension.
         return NotImplemented if rhs is None else K(self.value ^ rhs.value)
 
     __radd__ = __add__
@@ -81,7 +80,6 @@ class K:
 
 
 def _as_k(value: object) -> K | None:
-    """`value` as a K element, or None if it is not one (see `K.__add__`)."""
     if isinstance(value, K):
         return value
     if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 2**64 - 1:
@@ -91,12 +89,7 @@ def _as_k(value: object) -> K | None:
 
 @dataclass(frozen=True, slots=True, init=False)
 class E:
-    """K[y]/(y^3 + y + 1): the challenge field, a degree-3 extension of K.
-
-    The three limbs are K elements, so the tower product below is written in K
-    arithmetic rather than in raw 64-bit words. Limbs may be given as plain
-    integers, which are lifted.
-    """
+    """K[y]/(y^3 + y + 1): the challenge field, a degree-3 extension of K. Limbs may be given as plain integers, which are lifted."""
 
     c0: K
     c1: K
@@ -292,8 +285,7 @@ def eq_eval(left: Sequence[E], right: Sequence[E]) -> E:
 
 
 def dot(left: Sequence[K | E], right: Sequence[K | E]) -> E:
-    """`Σ_i left[i] · right[i]` in E. Either side may be K-valued; lifting the
-    left one is what `K * E`'s reflected operator would do anyway."""
+    """`Σ_i left[i] · right[i]` in E."""
     result = ZERO
     for x, y in zip(left, right, strict=True):
         result += E.lift(x) * y
@@ -743,34 +735,23 @@ class Air:
 
 
 def powers(base: E, count: int) -> list[E]:
-    result, current = [], ONE
-    for _ in range(count):
-        result.append(current)
-        current *= base
-    return result
+    """`[1, base, base^2, ...]`, `count` terms."""
+    return list(islice(accumulate(repeat(base), mul, initial=ONE), count))
 
 
 def verify_constraints(
-    airs: Sequence[Air],
-    constraint_powers: Sequence[E],
-    form_powers: Sequence[E],
-    equality_point: MultilinearPoint,
-    target: E,
-    transcript: Transcript,
+    airs: Sequence[Air], constraint_powers: Sequence[E], form_powers: Sequence[E], equality_point: MultilinearPoint, target: E, transcript: Transcript
 ) -> list[ColumnClaim]:
     depth = max((air.log_height for air in airs), default=0)
     require(len(equality_point) >= depth, "AIR equality point is too short")
 
-    claim = target
+    # Back-loaded: the first round binds the top variable, so each table reads its
+    # own low ones off the head of `point`.
+    challenges, claim = sumcheck(transcript, target, 4, [None] * depth)
+    point = list(reversed(challenges))
     weights = [ONE] * len(airs)
-    point = [ZERO] * depth
-    for round_index in range(depth):
-        variable = depth - 1 - round_index
-        message = transcript.round_poly(4, claim)
-        challenge = transcript.sample()
-        point[variable] = challenge
+    for variable, challenge in enumerate(point):
         equality = ONE + equality_point[variable] + challenge
-        claim = poly_eval(message, challenge)
         for table_index, air in enumerate(airs):
             weights[table_index] *= equality if air.log_height > variable else challenge
 
@@ -827,12 +808,12 @@ def _const(value: E | int) -> Form:
     return Form({(): value if isinstance(value, E) else E(value)})
 
 
-def _col(index: int) -> Form:
-    return Form({(index,): ONE})
+def _col(index: int, exponent: int = 0) -> Form:
+    return Form({(index,): _gpow(exponent)})
 
 
-def _gcol(index: int) -> Form:
-    return Form({(index,): GEN})
+def _prod(a: int, b: int, exponent: int = 0) -> Form:
+    return Form({tuple(sorted((a, b))): _gpow(exponent)})
 
 
 def _sum(forms: Iterable[Form]) -> Form:
@@ -840,10 +821,6 @@ def _sum(forms: Iterable[Form]) -> Form:
     for form in forms:
         total.add_scaled(form, ONE)
     return total
-
-
-def _prod(a: int, b: int, exponent: int = 0) -> Form:
-    return Form({tuple(sorted((a, b))): _gpow(exponent)})
 
 
 SEP_STATE = ONE
@@ -860,22 +837,20 @@ class Flushes:
         self.push.append(tuple(push))
         self.pull.append(tuple(pull))
 
-    def state_step(self, pc: int, fp: int) -> None:
-        self.pair((_const(SEP_STATE), _gcol(pc), _col(fp)), (_const(SEP_STATE), _col(pc), _col(fp)))
-
     def state_derived(self, pc: int, fp: int, npc: Form, nfp: Form) -> None:
         self.pair((_const(SEP_STATE), npc, nfp), (_const(SEP_STATE), _col(pc), _col(fp)))
 
+    def state_step(self, pc: int, fp: int) -> None:
+        self.state_derived(pc, fp, _col(pc, 1), _col(fp))
+
+    def _counted(self, prefix: Sequence[Form], count: int, suffix: Sequence[Form]) -> None:
+        self.pair((*prefix, _col(count, 1), *suffix), (*prefix, _col(count), *suffix))
+
     def bytecode(self, pc: int, count: int, opcode: int, operands: Sequence[Form]) -> None:
-        prefix_push = (_const(SEP_BYTECODE), _col(pc), _gcol(count), _const(_gpow(opcode)))
-        prefix_pull = (_const(SEP_BYTECODE), _col(pc), _col(count), _const(_gpow(opcode)))
-        self.pair((*prefix_push, *operands), (*prefix_pull, *operands))
+        self._counted((_const(SEP_BYTECODE), _col(pc)), count, (_const(_gpow(opcode)), *operands))
 
     def memory(self, address: Form, count: int, values: Sequence[Form]) -> None:
-        self.pair(
-            (_const(SEP_MEM), address, _gcol(count), *values),
-            (_const(SEP_MEM), address, _col(count), *values),
-        )
+        self._counted((_const(SEP_MEM), address), count, values)
 
     def memory_cols(self, address: Form, count: int, *columns: int) -> None:
         """A word whose lanes are committed columns, low lane first.
@@ -928,11 +903,7 @@ class Table:
 
 
 # Operand pairs contributing to each lane after reducing y^3 = y + 1 in E = K[y]/(y^3 + y + 1).
-TOWER_LANES = (
-    ((0, 0), (1, 2), (2, 1)),
-    ((0, 1), (1, 0), (1, 2), (2, 1), (2, 2)),
-    ((0, 2), (1, 1), (2, 0), (2, 2)),
-)
+TOWER_LANES = (((0, 0), (1, 2), (2, 1)), ((0, 1), (1, 0), (1, 2), (2, 1), (2, 2)), ((0, 2), (1, 1), (2, 0), (2, 2)))
 
 
 def _arith_result(multiply: bool, a: Sequence[int], b: Sequence[int]) -> tuple[Form, ...]:
@@ -980,11 +951,7 @@ def _flushes_deref(table: Table) -> Flushes:
 
     # v2 = (1 + f_pc + f_fp)*v3 + f_pc*(g^2*pc) + f_fp*fp, lane-wise: only the low
     # lane takes the two K-valued sources.
-    store = (
-        _sum((*gated(v3[0]), _prod(f_pc, pc, 2), _prod(f_fp, fp))),
-        _sum(gated(v3[1])),
-        _sum(gated(v3[2])),
-    )
+    store = (_sum((*gated(v3[0]), _prod(f_pc, pc, 2), _prod(f_fp, fp))), _sum(gated(v3[1])), _sum(gated(v3[2])))
     flushes = Flushes()
     flushes.state_step(pc, fp)
     flushes.bytecode(pc, cnt_bc, table.opcode, (_col(alpha), _col(beta), _col(gamma), _col(f_pc), _col(f_fp)))
@@ -999,12 +966,7 @@ def _flushes_jump(table: Table) -> Flushes:
     cnt_c, cnt_d, cnt_f, cnt_bc = table.cols("cnt_c", "cnt_d", "cnt_f", "cnt_bc")
     flushes = Flushes()
     # next_pc = b*dest + (b+1)*g*pc, next_fp = b*frame + (b+1)*fp, both derived.
-    flushes.state_derived(
-        pc,
-        fp,
-        _sum((_prod(b, dest), _prod(b, pc, 1), _gcol(pc))),
-        _sum((_prod(b, frame), _prod(b, fp), _col(fp))),
-    )
+    flushes.state_derived(pc, fp, _sum((_prod(b, dest), _prod(b, pc, 1), _col(pc, 1))), _sum((_prod(b, frame), _prod(b, fp), _col(fp))))
     flushes.bytecode(pc, cnt_bc, table.opcode, (_col(o_c), _col(o_d), _col(o_f), _const(ZERO), _const(ZERO)))
     # The condition, the destination and the frame are K-valued on every row, taken
     # or not, so each is one K-limb read through literal zeros in the upper lanes.
@@ -1095,29 +1057,11 @@ BLAKE2S = TABLES[5]
 # sec:tab-blake2s): one 64-bit slot per limb, the chaining value first, then the
 # digest, the message block and the metadata. Slots 8 and 9 hold the
 # compression's high output words, which no memory cell carries.
-BLAKE2S_SLOT_BY_COLUMN = {
-    BLAKE2S.col(name): slot
-    for name, slot in {
-        "cv0_lo": 0,
-        "cv0_hi": 1,
-        "cv1_lo": 2,
-        "cv1_hi": 3,
-        "out0_lo": 4,
-        "out0_hi": 5,
-        "out1_lo": 6,
-        "out1_hi": 7,
-        "m0_lo": 10,
-        "m0_hi": 11,
-        "m1_lo": 12,
-        "m1_hi": 13,
-        "m2_lo": 14,
-        "m2_hi": 15,
-        "m3_lo": 16,
-        "m3_hi": 17,
-        "md_0": 18,
-        "md_1": 19,
-    }.items()
-}
+BLAKE2S_SLOTS = (
+    "cv0_lo", "cv0_hi", "cv1_lo", "cv1_hi", "out0_lo", "out0_hi", "out1_lo", "out1_hi", None, None,
+    "m0_lo", "m0_hi", "m1_lo", "m1_hi", "m2_lo", "m2_hi", "m3_lo", "m3_hi", "md_0", "md_1",
+)  # fmt: skip
+BLAKE2S_SLOT_BY_COLUMN = {BLAKE2S.col(name): slot for slot, name in enumerate(BLAKE2S_SLOTS) if name}
 
 WIDTHS = tuple(t.width for t in TABLES)
 # Global column numbering: the shared columns, then each table's block in turn.
@@ -1169,11 +1113,6 @@ def build_airs(layout: Layout, bus_forms: Sequence[Sequence[Form]]) -> list[Air]
     return [Air(table, height, tuple(side[table.opcode] for side in bus_forms)) for table, height in zip(TABLES, layout.table_logs, strict=True)]
 
 
-def virtual_slot(column: int) -> int | None:
-    """The q_flock slot a BLAKE2s value column rides in, or None if committed."""
-    return BLAKE2S_SLOT_BY_COLUMN.get(column - BASES[BLAKE2S.opcode])
-
-
 # WHIR opening ----------------------------------------------------------------
 
 INITIAL_FOLDING_FACTOR = 6
@@ -1213,11 +1152,7 @@ def derive_config(log_n: int, log_inv_rate: int) -> WhirConfig:
     require(len(folds) >= 2, "WHIR requires at least two levels")
     queries = WHIR_QUERIES[log_inv_rate - 1][log_n - MIN_STACKED_LOG]
     require(len(queries) == len(folds), "tabulated query count does not match the ladder")
-    return WhirConfig(
-        log_inv_rates=tuple(log_inv_rates),
-        folds=tuple(folds),
-        queries=queries,
-    )
+    return WhirConfig(log_inv_rates=tuple(log_inv_rates), folds=tuple(folds), queries=queries)
 
 
 def _hash_pair(left: Digest, right: Digest) -> Digest:
@@ -1241,11 +1176,7 @@ def sample_queries(transcript: Transcript, block_length: int, count: int) -> lis
     return result
 
 
-def _enforced_sum(
-    rows: Sequence[Sequence[K | E]],
-    folds: Sequence[E],
-    query_weights: Sequence[E],
-) -> E:
+def _enforced_sum(rows: Sequence[Sequence[K | E]], folds: Sequence[E], query_weights: Sequence[E]) -> E:
     lane_weights = eq_kernel(folds)
     total = ZERO
     for query_weight, row in zip(query_weights, rows, strict=True):
@@ -1254,16 +1185,11 @@ def _enforced_sum(
 
 
 def _subspace_roots(log_n: int) -> list[E]:
-    roots = [ZERO] * (log_n + 1)
-    roots[0] = ONE
+    roots = [ONE]
     layer = [E(2**i) for i in range(1, log_n + 1)]
-    for level in range(log_n):
-        for index in range(log_n - level):
-            value = layer[index] ** 2 + roots[level] * layer[index]
-            if index == 0:
-                roots[level + 1] = value
-            else:
-                layer[index - 1] = value
+    for _ in range(log_n):
+        layer = [value**2 + roots[-1] * value for value in layer]
+        roots.append(layer.pop(0))
     return roots
 
 
@@ -1302,14 +1228,7 @@ class GluedClaim:
     weight_at: Callable[[Sequence[E]], E]
 
 
-def verify_whir(
-    transcript: Transcript,
-    log_n: int,
-    log_inv_rate: int,
-    target: E,
-    root: Digest,
-    evaluate_basis: Callable[[Sequence[E]], E],
-) -> None:
+def verify_whir(transcript: Transcript, log_n: int, log_inv_rate: int, target: E, root: Digest, evaluate_basis: Callable[[Sequence[E]], E]) -> None:
     """Verify the base-field multilevel opening with a one-point terminal check."""
     config = derive_config(log_n, log_inv_rate)
     levels = len(config.folds)
@@ -1418,6 +1337,17 @@ class ZerocheckResult:
     v_c: E
 
 
+def sumcheck(transcript: Transcript, claim: E, count: int, equalities: Sequence[E | None]) -> tuple[MultilinearPoint, E]:
+    """One sumcheck round per entry of `equalities`, each the round's pulled-out eq factor or None: the challenges drawn, and the claim they leave."""
+    point = []
+    for equality in equalities:
+        message = transcript.round_poly(count, claim, equality)
+        challenge = transcript.sample()
+        point.append(challenge)
+        claim = poly_eval(message, challenge)
+    return tuple(point), claim
+
+
 def verify_flock_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResult:
     """The zerocheck: one univariate skip round, then nflock quadratic ones.
     C rides those rounds with AB, so all three claims come out at one point."""
@@ -1431,17 +1361,12 @@ def verify_flock_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResul
     v_p = lagrange_interpolate(PHI[: 2 * K_BITS], [ZERO] * K_BITS + list(p_coset), z_skip)
 
     # nflock quadratic rounds on P, closed by v_a, v_b.
-    running, chi = v_p, []
-    for equality in r:
-        message = transcript.round_poly(3, running, equality)
-        challenge = transcript.sample()
-        chi.append(challenge)
-        running = poly_eval(message, challenge)
+    chi, running = sumcheck(transcript, v_p, 3, r)
     v_a, v_b = transcript.scalars(2)
     # v_c is what the terminal identity leaves, never transmitted: nothing is
     # checked here, lincheck pins all three claims against the committed witness.
     v_c = running + v_a * v_b
-    return ZerocheckResult(z_skip, tuple(chi), v_a, v_b, v_c)
+    return ZerocheckResult(z_skip, chi, v_a, v_b, v_c)
 
 
 def verify_flock_lincheck(zc: ZerocheckResult, transcript: Transcript) -> tuple[MultilinearPoint, tuple[E, ...]]:
@@ -1457,13 +1382,8 @@ def verify_flock_lincheck(zc: ZerocheckResult, transcript: Transcript) -> tuple[
     e_row = [weight * value for weight in eq_kernel(chi_in) for value in skip_weights]
 
     # The 8 rounds that bind the high column coordinates, leaving 64 unfolded.
-    running, round_challenges = zc.v_a + alpha * zc.v_b + alpha_sq * zc.v_c + alpha_cu, []
-    for _ in range(FLOCK_NUM_LINCHECK_ROUNDS):
-        message = transcript.round_poly(3, running)
-        challenge = transcript.sample()
-        running = poly_eval(message, challenge)
-        round_challenges.append(challenge)
-    r_lc = running
+    claim = zc.v_a + alpha * zc.v_b + alpha_sq * zc.v_c + alpha_cu
+    round_challenges, r_lc = sumcheck(transcript, claim, 3, [None] * FLOCK_NUM_LINCHECK_ROUNDS)
 
     # The residual, then the terminal identity: pin term and c term included.
     # C = I, so the c weight is e_row itself, and both sides being tensors it
@@ -1708,14 +1628,7 @@ def verify_stacked_opening(
             value += scale * eq_eval(claim_point, point)
         return value
 
-    verify_whir(
-        transcript,
-        stack_log,
-        log_inv_rate,
-        target,
-        root,
-        evaluate_basis,
-    )
+    verify_whir(transcript, stack_log, log_inv_rate, target, root, evaluate_basis)
 
 
 def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) -> None:
@@ -1758,14 +1671,7 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     xi_powers = powers(xi, n_constraints + 3)
     constraint_powers, form_powers = xi_powers[:n_constraints], xi_powers[n_constraints:]
     target = dot(form_powers, bus.totals)
-    air_claims = verify_constraints(
-        build_airs(layout, bus.forms),
-        constraint_powers,
-        form_powers,
-        bus.point,
-        target,
-        transcript,
-    )
+    air_claims = verify_constraints(build_airs(layout, bus.forms), constraint_powers, form_powers, bus.point, target, transcript)
     claims = [*bus.claims, *air_claims]
 
     # 5] Public input: the first two memory cells, as one claim per limb on the
@@ -1776,10 +1682,7 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     public_point = [ZERO] * layout.placements[MEM_0].variables
     public_point[0] = public_challenge
     public_value = multilinear_eval(pi, [public_challenge])
-    require(
-        public_limbs[0] + Y * public_limbs[1] + Y**2 * public_limbs[2] == public_value,
-        "public input limbs are off the line",
-    )
+    require(public_limbs[0] + Y * public_limbs[1] + Y**2 * public_limbs[2] == public_value, "public input limbs are off the line")
     claims.extend(ColumnClaim(column, tuple(public_point), value) for column, value in zip((MEM_0, MEM_1, MEM_2), public_limbs, strict=True))
 
     # 6] Locate every claim in the stack: a column claim keeps its point and
@@ -1791,7 +1694,7 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
         # A BLAKE2s value column is committed inside q_flock rather than on its
         # own, so its claim is re-routed to the equal evaluation of q_flock's
         # slot: the same point, under a different placement, behind the slot bits.
-        slot = virtual_slot(claim.column)
+        slot = BLAKE2S_SLOT_BY_COLUMN.get(claim.column - BASES[BLAKE2S.opcode])
         placement = qflock if slot is not None else layout.placements[claim.column]
         prefix = _selector_point(slot, QFLOCK_SLOT_BITS) if slot is not None else ()
         require(not placement.virtual, "claim targets an uncommitted column")
@@ -1803,15 +1706,7 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     # discharges every claim.
     flock_point, flock_s = verify_flock(BLAKE2S_R1CS_LOG_SIZE + layout.table_logs[BLAKE2S.opcode], transcript)
     ring = ring_switch(flock_point, flock_s, transcript)
-    verify_stacked_opening(
-        transcript,
-        root,
-        layout.stack_log,
-        log_inverse_rate,
-        qflock,
-        ring,
-        point_claims,
-    )
+    verify_stacked_opening(transcript, root, layout.stack_log, log_inverse_rate, qflock, ring, point_claims)
     transcript.finish()
 
 
