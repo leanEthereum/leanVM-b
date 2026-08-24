@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.Arith
+import SphincsSecurity.Proof.Bytes
 import SphincsSecurity.Proof.Chain
 import SphincsSecurity.Proof.Eval
 import SphincsSecurity.Proof.StatementLemmas
@@ -17,4 +18,8 @@ What is proven so far is correctness: `Correctness.eval_verify` says `Ver` accep
 from the secrets, under an arbitrary answer function rather than under the lazy oracle. That is the
 form the reduction needs, the random oracle's support being characterized by total answer functions,
 and it is what rules out the statement holding vacuously for want of an accepting run.
+
+`Bytes.tweakBytes_injective` is the other half of the foundation: a tweak names one structural
+position, so one query bears on one position and an inversion stays at `2^-n` per query with no
+multi-target factor.
 -/
