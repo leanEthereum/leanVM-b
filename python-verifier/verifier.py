@@ -19,7 +19,7 @@ def require(condition: bool, message: str) -> None:
         raise VerificationError(message)
 
 
-# Field arithmetic and BLAKE2s ------------------------------------------------
+# Field arithmetic ------------------------------------------------------------
 
 
 def _base_mul(left: int, right: int) -> int:
@@ -179,7 +179,7 @@ GEN = E(2)
 Y = E(0, 1)  # the tower generator, y^3 = y + 1
 
 
-# BLAKE2s -------------------------------------------------------------------
+# BLAKE2s and digests ---------------------------------------------------------
 
 BLAKE2S_IV = (0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A, 0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19)  # fmt: skip
 BLAKE2S_SIGMA = ((0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15), (14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3), (11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4), (7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8), (9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13), (2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9), (12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11), (13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10), (6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5), (10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0))  # fmt: skip
@@ -209,6 +209,9 @@ class Digest:
     def from_halves(cls, low: E, high: E) -> Digest:
         require(not (low.c2 or high.c2), "a digest half is 128-bit")
         return cls(pack("<4Q", low.c0, low.c1, high.c0, high.c1))
+
+
+# Multilinear and stacking helpers --------------------------------------------
 
 
 type MultilinearPoint = tuple[E, ...]
@@ -470,13 +473,11 @@ class Transcript:
         which fixes `c1`; a round whose eq factor `r` the protocol pulled out has
         `c0 + r·(c1 + ... + cd)`, which fixes `c0`.
         """
-        fixed = 1 if equality is None else 0
-        coefficients = [ZERO if index == fixed else self.scalar() for index in range(count)]
         if equality is None:
-            coefficients[fixed] = claim + sum(coefficients[2:], ZERO)
-        else:
-            coefficients[fixed] = claim + equality * sum(coefficients[1:], ZERO)
-        return coefficients
+            constant, tail = self.scalar(), self.scalars(count - 2)
+            return [constant, claim + sum(tail, ZERO), *tail]
+        tail = self.scalars(count - 1)
+        return [claim + equality * sum(tail, ZERO), *tail]
 
     def finish(self) -> None:
         require(self.stream_offset == len(self.proof.stream), "proof stream not fully consumed")
@@ -1547,18 +1548,6 @@ def _phi(value: E, challenges: Sequence[E]) -> E:
     return value
 
 
-def _phi_coefficients(challenges: Sequence[E]) -> list[E]:
-    """The same map as a Frobenius sum, `Phi(a) = sum_k c_k a^(2^k)` for k < 64."""
-    coefficients = []
-    for k in range(K_BITS):
-        c = ONE
-        for challenge, shift in zip(challenges, RING_MAP_SHIFTS, strict=True):
-            if k & shift:
-                c *= challenge ** (2 ** (k % shift))
-        coefficients.append(c)
-    return coefficients
-
-
 def _ring_weight(r: MultilinearPoint, r_prime: Sequence[E], coefficients: Sequence[E]) -> E:
     """The weight `W(u) = Phi(eq(r, u))`, extended and evaluated by the opening at
     `r_prime`: `sum_k c_k prod_n (1 + r_n^(2^k) + r'_n)`."""
@@ -1586,7 +1575,8 @@ def ring_switch(point: MultilinearPoint, s: Sequence[E], transcript: Transcript)
     """The 64 claims s[i] = z(i, point) become one claim on q_flock: draw Phi once they
     are fixed, then take the target `T = sum_i x^i Phi(s_i)` against `W(u) = Phi(eq(point, u))`."""
     challenges = transcript.samples(len(RING_MAP_SHIFTS))
-    coefficients = _phi_coefficients(challenges)
+    # The same map as a Frobenius sum, `Phi(a) = sum_k c_k a^(2^k)` for k < 64.
+    coefficients = [reduce(mul, (f ** (2 ** (k % s)) for f, s in zip(challenges, RING_MAP_SHIFTS, strict=True) if k & s), ONE) for k in range(K_BITS)]
     target = dot(powers(GEN, K_BITS), [_phi(value, challenges) for value in s])
     return RingSwitchClaim(target, lambda r_prime: _ring_weight(point, r_prime, coefficients))
 
