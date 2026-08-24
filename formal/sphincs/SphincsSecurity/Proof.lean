@@ -3,6 +3,7 @@ import SphincsSecurity.Proof.Bytes
 import SphincsSecurity.Proof.Code
 import SphincsSecurity.Proof.Guess
 import SphincsSecurity.Proof.QueryBound
+import SphincsSecurity.Proof.PairBound
 import SphincsSecurity.Proof.Game
 import SphincsSecurity.Proof.Chain
 import SphincsSecurity.Proof.Eval
