@@ -5,6 +5,7 @@ import SphincsSecurity.Proof.Guess
 import SphincsSecurity.Proof.QueryBound
 import SphincsSecurity.Proof.Amortized
 import SphincsSecurity.Proof.Game
+import SphincsSecurity.Proof.Secrets
 import SphincsSecurity.Proof.Logged
 import SphincsSecurity.Proof.Support
 import SphincsSecurity.Proof.Hybrid
