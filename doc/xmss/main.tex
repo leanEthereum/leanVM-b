@@ -178,14 +178,16 @@ Set $\rootnode=X_{h,0}$ and return
 
 The public key is serialized as $\rootnode\concat P$.
 
-This specification deliberately uses an ideal precomputed secret key. It stores the full Merkle tree and all intermediate one-time-signature chain values so that signing does not recompute them. Repeated access to such a value is a table read, not a fresh random-oracle query. An implementation may represent or derive the same fixed values differently without changing this security model.
+\begin{remark}[Ideal precomputed secret key]
+This specification deliberately uses an ideal precomputed secret key. It stores the full Merkle tree and all intermediate one-time-signature chain values so that signing does not recompute them. Repeated access to such a value is a table read, not a fresh random-oracle query. An implementation may store or recompute those values as it sees fit, provided the sampled ones keep the distribution above.
+\end{remark}
 
-\begin{remark}[seed derivation]
-The sampled secret values may instead be generated from a master secret using a pseudorandom function.
+\begin{remark}[Seed derivation]
+The sampled secret values may instead be generated from a master secret using a pseudorandom function. For simplicity the theorem of Section~\ref{sec:security} does not cover that case. One could for instance reuse $\hash$ itself, under a fresh tweak type, and we expect the security proof to adapt easily.
 \end{remark}
 
 \begin{remark}[Restricted key generation]
-Key generation may be restricted to a smaller interval of epochs by replacing subtrees outside that interval with random nodes. The resulting key signs only epochs in that interval.
+Key generation may be restricted to a smaller interval of epochs by replacing subtrees outside that interval with random nodes. The resulting key signs only epochs in that interval. The theorem of Section~\ref{sec:security} does not cover this variant either, but we also expect the security proof to adapt easily.
 \end{remark}
 
 \section{Signing}
@@ -222,6 +224,7 @@ $\Ver(\pk,\ep,m,\bot)=0$. For $\sigma\neq\bot$, $\Ver(\pk,\ep,m,\sigma)$ parses 
 \end{enumerate}
 
 \section{Security}
+\label{sec:security}
 
 \subsection{Classical security}
 
