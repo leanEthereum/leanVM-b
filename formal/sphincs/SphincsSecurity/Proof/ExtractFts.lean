@@ -55,7 +55,7 @@ theorem ftsFoldValue_succ (value : Digest) (level : Nat) :
           (.ftsNode index tree (level + 1) (leaf.val / 2 ^ (level + 1)))
           (ftsFoldPayload f parameter index tree leaf path value level))) := by
   simp only [ftsFoldValue, ftsFoldPayload, ftsSibling, ftsFold_succ_eq, evalWithAnswerFn_bind,
-    eval_tweakableHash, orderedPayload]
+    orderedPayload]
   cases leaf.val.testBit level <;> rfl
 
 /-- A hit at a few-time node. -/
