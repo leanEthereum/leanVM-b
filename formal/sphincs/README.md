@@ -22,7 +22,46 @@ The bound is the slope `q / 2^bits`, so it bounds what one query buys. Every str
 
 ## Status
 
-Nothing is proven. The one-time and Merkle halves of `formal/xmss` carry over, sharing the tweakable hash, the target-sum code and the shape of the bound; what is new is the hypertree, the few-time forest, the digest that picks the index, and the counter search under a tweak shared across attempts.
+## What is proven
+
+Correctness (`Ver` accepts honest signatures, against every answer function, which is what rules out
+the claim holding vacuously); domain separation and the injectivity of every payload in the scheme;
+incomparability of the target-sum code; the one-guess bound `2^-n`; the pair bound `q * 2^-n`;
+extraction of the first divergence for chains, layer trees, one-time signatures and few-time
+openings; and the frames the reduction is assembled in, including the adversary's queries logged at
+no cost to any distribution.
+
+## What remains, and where the tools are
+
+The extraction lemmas all end in "the adversary's value equals the honest value", and an equality in
+its output is not yet a break. Turning it into one needs the honest secret to be unpredictable given
+the adversary's view, conditioned on no query having hit it: a hybrid in which the chain's first
+answer is reprogrammed to a fresh value, after which the view is independent of the secret and the
+logged queries hit it with probability at most `q * 2^-n`.
+
+VCVio has that machinery, which is worth knowing before rebuilding it:
+
+- `OracleComp/QueryTracking/ProgrammingOracle.lean` defines `withProgramming` with the bad flag of
+  the identical-until-bad pattern, and `ProgramLogic/Relational/ProgrammingOracle.lean` proves the
+  bound `tvDist_simulateQ_withCaching_withProgramming_le_probEvent_bad`, with a heterogeneous version
+  for the lazy random oracle whose base implementation lives in `ProbComp`.
+- `RandomOracle/ProbeEps.lean` has the hidden-target bound `probEvent_hiddenReadMany_le`: a target
+  drawn once and probed by `q` adaptive reads fires with probability at most `q * eps`.
+- `RandomOracle/DeferredSampling.lean` has the distribution-level bind commutation that front-loads
+  answer-irrelevant draws onto a tape.
+
+What does not fit yet is the shape. Those bridges are stated for a computation over one spec,
+simulated by `so.withCaching`; the game here runs over `unifSpec + HashSpec` under
+`unifFwdImpl + randomOracle`, which is not `so.withCaching` for any single `so`, and `roSim` carries
+only lifting and dispatch lemmas, no bridge. Two routes: generalize the identical-until-bad bound to
+the sum spec, or front-load the game's own sampling so the surface computation is hash-only, which is
+what `DeferredTape.Factorizes` is for and which its authors flag as the scheme-specific part. The
+randomizer resampling is the awkward case there, since it does influence control flow.
+
+After the hybrid: composing the extractions through it, the leak's binomial argument for the
+`2^-133.3` term, and the arithmetic to `q / 2^120`.
+
+Nothing closes the main claim yet. The one-time and Merkle halves of `formal/xmss` carry over, sharing the tweakable hash, the target-sum code and the shape of the bound; what is new is the hypertree, the few-time forest, the digest that picks the index, and the counter search under a tweak shared across attempts.
 
 Two places a proof can go wrong, both found by attacking the claim rather than by reading it:
 
