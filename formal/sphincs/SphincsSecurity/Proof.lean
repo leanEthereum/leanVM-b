@@ -17,6 +17,7 @@ import SphincsSecurity.Proof.Correctness
 import SphincsSecurity.Proof.Extract
 import SphincsSecurity.Proof.ExtractChain
 import SphincsSecurity.Proof.ExtractOts
+import SphincsSecurity.Proof.ExtractFts
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
