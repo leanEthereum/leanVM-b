@@ -14,7 +14,6 @@
 \theoremstyle{definition}
 \newtheorem{definition}{Definition}[section]
 \theoremstyle{plain}
-\newtheorem{claim}[definition]{Claim}
 \theoremstyle{remark}
 \newtheorem{remark}[definition]{Remark}
 
@@ -80,7 +79,7 @@ We present, as an example, a SPHINCS$^+$-based signature with the following prop
 \end{itemize}
 \end{abstract}
 
-The construction is SPHINCS$^+$~\cite{SPHINCSPLUS,FIPS205} with two of the optimizations surveyed in~\cite{KN25}, WOTS$^+$C and FORS$^+$C, both from~\cite{HK22C}; its third, PORS$^+$FP, is not used. 
+The construction is SPHINCS$^+$~\cite{SPHINCSPLUS,FIPS205} with two of the optimizations surveyed in~\cite{KN25}, WOTS$^+$C and FORS$^+$C, both from~\cite{HK22C}; its third, PORS$^+$FP, is not used.
 
 \section{Definitions and notation}
 
@@ -114,7 +113,7 @@ $d$ & $3$ & hypertree layers\\
 $(h_0,h_1,h_2)$ & $(12,7,7)$ & Merkle tree height of each layer\\
 $h$ & $26$ & total height, $h=\sum_\lay h_\lay$\\
 $a$ & $10$ & $\log_2$ of the leaves in one few-time tree\\
-$k$ & $15$ & few-time trees\\
+$k$ & $15$ & digest index groups; the forest holds $k-1$ trees\\
 $\qs$ & $2^{24}$ & signatures per key pair\\
 $\amax$ & $2^{32}$ & maximum digest attempts per signature\\
 $\cmax$ & $2^{32}$ & maximum encoding attempts per layer\\
@@ -142,16 +141,16 @@ A tweak names one hash call in the whole structure, which is what lets a securit
   \mathsf{tw}_{\mathrm{prf}}(\lay,\tau,i,e) &= \mathsf{enc}(0,\lay,\tau,i,e),\\
   \mathsf{tw}_{\mathrm{chain}}(\lay,\tau,e,i,\mu) &= \mathsf{enc}(1,\lay,\tau,2^wi+\mu-1,e), &&0\leq i<v,\ 0<\mu<2^w,\\
   \mathsf{tw}_{\mathrm{leaf}}(\lay,\tau,e) &= \mathsf{enc}(2,\lay,\tau,0,e),\\
-  \mathsf{tw}_{\mathrm{node}}(\lay,\tau,\lambda,j) &= \mathsf{enc}(3,\lay,\tau,\lambda,j), &&\lambda\leq h_\lay,\ j<2^{h_\lay-\lambda},\\
+  \mathsf{tw}_{\mathrm{node}}(\lay,\tau,\lambda,j) &= \mathsf{enc}(3,\lay,\tau,\lambda,j), &&1\leq\lambda\leq h_\lay,\ j<2^{h_\lay-\lambda},\\
   \mathsf{tw}_{\mathrm{enc}}(\lay,\tau,e) &= \mathsf{enc}(4,\lay,\tau,0,e),\\
   \mathsf{tw}_{\mathrm{ftsprf}}(\idx,\kappa,j) &= \mathsf{enc}(5,\kappa,\idx,0,j),\\
   \mathsf{tw}_{\mathrm{ftsleaf}}(\idx,\kappa,j) &= \mathsf{enc}(6,\kappa,\idx,0,j),\\
-  \mathsf{tw}_{\mathrm{ftsnode}}(\idx,\kappa,\lambda,j) &= \mathsf{enc}(7,\kappa,\idx,\lambda,j), &&\lambda\leq a,\ j<2^{a-\lambda},\\
+  \mathsf{tw}_{\mathrm{ftsnode}}(\idx,\kappa,\lambda,j) &= \mathsf{enc}(7,\kappa,\idx,\lambda,j), &&1\leq\lambda\leq a,\ j<2^{a-\lambda},\\
   \mathsf{tw}_{\mathrm{ftsroots}}(\idx) &= \mathsf{enc}(8,0,\idx,0,0),\\
   \mathsf{tw}_{\mathrm{msg}} &= \mathsf{enc}(9,0,0,0,0).
 \end{aligned}
 \]
-Every structural position has its own tweak. Two are shared on purpose: $\mathsf{tw}_{\mathrm{msg}}$ across every message and $\mathsf{tw}_{\mathrm{enc}}(\lay,\tau,e)$ across every counter tried at that leaf. Section~\ref{sec:security} treats both. Types $0$ and $5$ are used only by the seed derivation of Remark~\ref{rem:seed}.
+Every structural position has its own tweak. Two are shared on purpose: $\mathsf{tw}_{\mathrm{msg}}$ across every message and $\mathsf{tw}_{\mathrm{enc}}(\lay,\tau,e)$ across every counter tried at that leaf. Types $0$ and $5$ are used only by the seed derivation of Remark~\ref{rem:seed}.
 
 \section{The index}
 
@@ -226,11 +225,11 @@ $\OtsLeaf(P,\lay,\tau,e,M,c,\sigma)$ computes $x=\Enc(P,\lay,\tau,e,M,c)$ and re
 \]
 \end{definition}
 
-$\OtsLeaf$ returns $X^{\lay,\tau}_{0,e}$ exactly when $(c,\sigma)$ is what $\OtsSign$ produced on that $M$, and otherwise a value the forger does not control. It is deterministic and does not touch the secrets, which is why it is the verifier's half.
+$\OtsLeaf$ returns $X^{\lay,\tau}_{0,e}$ on what $\OtsSign$ produced for that $M$, and on nothing else short of colliding $\Th$: a second admissible counter for the same codeword would do, and by the previous paragraph that codeword fixes $D$, so it is a $128$-bit hit. Otherwise it returns a value the forger does not control. It is deterministic and does not touch the secrets, which is why it is the verifier's half.
 
 \begin{remark}[One key, one message]
 \label{rem:once}
-Each one-time key signs exactly one value. The key at leaf $e_\lay$ of tree $(\lay,\tau_\lay)$ is reached only by indices with those two components, and every such index gives it the same $M$, namely the root of the tree below at $\lay<d-1$ and the few-time public key at $\lay=d-1$. This is why $\OtsSign$ takes the \emph{least} admissible counter and not any admissible one. A signer that resumed or randomized that search would make one key sign two distinct codewords $x\neq x'$ of equal sum; being incomparable neither covers the other, so the pair leaves an adversary holding $\min(x_i,x'_i)$ on every chain, and forging then costs only grinding $(M',c')$ until $\Enc$ yields a codeword dominating that minimum, of order $2^{53}$ for these parameters against the $2^{128}$ intended.
+Each one-time key signs exactly one value. The key at leaf $e_\lay$ of tree $(\lay,\tau_\lay)$ is reached only by indices with those two components, and every such index gives it the same $M$, namely the root of the tree below at $\lay<d-1$ and the few-time public key at $\lay=d-1$. This is why $\OtsSign$ fixes the counter as a function of its inputs, here the \emph{least} admissible one, rather than taking any admissible one. A signer that resumed or randomized that search would make one key sign two distinct codewords $x\neq x'$ of equal sum; being incomparable neither covers the other, so the pair leaves an adversary holding $\min(x_i,x'_i)$ on every chain, and forging then costs only grinding $(M',c')$ until $\Enc$ yields a codeword dominating that minimum, of order $2^{53}$ for these parameters against the $2^{128}$ intended.
 \end{remark}
 
 \section{A layer}
@@ -266,7 +265,7 @@ $\TreeFold(P,\lay,\tau,e,X^{\lay,\tau}_{0,e},\TreePath(P,\lay,\tau,e))=\TreeRoot
 \section{The few-time signature}
 \label{sec:fts}
 
-A few-time key is a forest of $k-1$ Merkle trees of $2^a$ secret leaves. A signature opens one leaf per tree, at indices a digest chooses. Reuse leaks rather than breaks: after $r$ signatures under one instance an adversary holds $r$ leaves per tree, and it can sign any message whose indices all fall on leaves it holds, which happens with probability $\left(1-(1-2^{-a})^{r}\right)^{k-1}$. The forest holds $k-1$ trees rather than $k$ because the digest is resampled until its last index is zero, so that tree carries no information and is dropped: FORS$^+$C~\cite{HK22C}.
+A few-time key is a forest of $k-1$ Merkle trees of $2^a$ secret leaves. A signature opens one leaf per tree, at indices a digest chooses. Reuse leaks rather than breaks: after $r$ signatures under one instance an adversary holds $r$ leaves per tree, and it can sign any message that lands on that instance, has last index zero, and has its other indices all on leaves it holds, the last condition holding with probability $\left(1-(1-2^{-a})^{r}\right)^{k-1}$. The forest holds $k-1$ trees rather than $k$ because the digest is resampled until its last index is zero, so that tree carries no information and is dropped: FORS$^+$C~\cite{HK22C}.
 
 The secrets $s_{\idx,\kappa,j}$ for $0\leq\kappa<k-1$ and $0\leq j<2^a$ are sampled by $\Gen$; Remark~\ref{rem:seed} derives them instead. Their trees are
 \[
@@ -302,7 +301,7 @@ $\FtsRec(P,\idx,u,s,B)$ sets, for $0\leq\kappa<k-1$, $W_{\kappa,0}=\Th(P,\mathsf
 and returns $\Th\!\left(P,\mathsf{tw}_{\mathrm{ftsroots}}(\idx),W_{0,a}\concat\cdots\concat W_{k-2,a}\right)$.
 \end{definition}
 
-$\FtsRec$ returns $\FtsKey(P,\idx)$ exactly when $(s,B)$ opens the leaves $u$ of that instance.
+$\FtsRec$ returns $\FtsKey(P,\idx)$ on an opening of the leaves $u$ of that instance, and on nothing else short of colliding $\Th$.
 
 \begin{definition}[Message digest]
 $\Digest(P,\rootnode,m,\rho)$ returns
@@ -319,7 +318,7 @@ and the digest is admissible if $u_{k-1}=0$.
 
 \begin{remark}[The randomizer]
 \label{rem:rho}
-$\rho\in\bits{\lrnd}$ is sampled fresh per attempt and carried in the signature, the verifier recomputing the digest from it. Without it the argument would need collision resistance of $\Digest$: an adversary could look for two messages sharing a digest and carry a signature from either to the other. Sampling denies it that, since it cannot know, before committing to a message, which digest that message will be signed under. FIPS~205 has the same element as $R$ and offers a deterministic derivation of it as its default~\cite{FIPS205}; sampling additionally hedges the signer against faults and side channels.
+$\rho\in\bits{\lrnd}$ is sampled fresh per attempt and carried in the signature, the verifier recomputing the digest from it. Without it the argument would need collision resistance of $\Digest$: an adversary could look for two messages sharing a digest and carry a signature from either to the other. Sampling denies it that, since it cannot know, before committing to a message, which digest that message will be signed under. FIPS~205 has the same element as $R$, derives it from a secret key and an optional input rather than sampling it, and defaults to drawing that input at random, keeping a deterministic choice for platforms without a random source~\cite{FIPS205}.
 
 Resampling until $u_{k-1}=0$ is what gives FORS$^+$C its dropped tree. It conditions the digest without biasing $\idx$, the $h$ index bits and the $a$ bits of $u_{k-1}$ being disjoint parts of a random oracle output.
 \end{remark}
@@ -346,7 +345,7 @@ leaving $\sk=(P,\rootnode,S)$, 48 bytes. The specification samples rather than d
 
 \begin{remark}[Signer state]
 \label{rem:cache}
-Layer $0$'s tree is the same for every signature, so a signer may keep part of it. Keeping the $2^6$ nodes at depth $\lceil h_0/2\rceil=6$, 1024 bytes, leaves a $2^6$-leaf subtree to rebuild per signature and $2^6-1$ nodes to refold above it: that layer's share of signing falls from 1.38M hashes to 21.7K, and the total from 1.55M to 190K. It is a cache, not state: a deterministic function of the secrets, so losing it costs recomputation. Traversal~\cite{BDS08} would amortize further, but consecutive signatures land on unrelated leaves.
+Layer $0$'s tree is the same for every signature, so a signer may keep part of it. Keeping the $2^6$ nodes at depth $\lceil h_0/2\rceil=6$, 1024 bytes, leaves a $2^6$-leaf subtree to rebuild per signature and at most $2^6-1$ nodes to refold above it: that layer's share of signing falls from 1.38M hashes to 21.7K, and the total from 1.55M to 190K. It is a cache, not state: a deterministic function of the secrets, so losing it costs recomputation. Traversal~\cite{BDS08} would amortize further, but consecutive signatures land on unrelated leaves.
 \end{remark}
 
 \section{Signing}
@@ -447,13 +446,15 @@ Let $\SIG=(\Gen,\Sig,\Ver)$ be a signature scheme whose algorithms use a hash fu
 The adversary wins if $\Ver(\pk,m^*,\sigma^*)=1$ and the signer did not return $\sigma^*$ in response to a signing query for $m^*$, meaning:
 \begin{itemize}[leftmargin=2em]
   \item if the adversary never queried a signature for $m^*$;
-  \item or it did, but the signer's answer was not $\sigma^*$.
+  \item or it did, but no answer it received was $\sigma^*$.
 \end{itemize}
-Let $\Forge_{\SIG}(\qs,q)$ be the maximum winning probability of any adversary for which the total number of random-oracle queries made in the experiment, including during key generation, signing, and the final verification of the claimed forgery, is at most $q$; it is $0$ for any $q$ the honest experiment alone exceeds. We say that $\SIG$ has $x$ bits of classical strong unforgeability in the ROM at $\qs$ signatures if
+Let $\Forge_{\SIG}(\qs,q)$ be the maximum winning probability of any adversary for which the total number of random-oracle queries made in the experiment, including during key generation, signing, and the final verification of the claimed forgery, is at most $q$ on every execution path; it is $0$ below what key generation and one verification already cost. An adversary that spends all $\qs$ signatures needs $q$ past $2^{58}$, the attempt caps bounding the loops, so that is where the claim is read. We say that $\SIG$ has $x$ bits of classical strong unforgeability in the ROM at $\qs$ signatures if
 \[
   \max_{q\geq1}\frac{\Forge_{\SIG}(\qs,q)}{q}\leq 2^{-x}.
 \]
 \end{definition}
+
+That game, with the parameters and the algorithms above, is written out in Lean4 over the VCVio framework~\cite{VCVio} in \texttt{./formal/sphincs/SphincsSecurity/Statement.lean}, which states $x=120$ at $\qs=2^{24}$: the eight bits below $n$ are what a proof may spend on union bounds and constants. Nothing proves it yet.
 
 \subsection{Quantum security}
 \label{sec:quantum}
