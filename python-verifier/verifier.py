@@ -318,37 +318,6 @@ def poly_eval(coefficients: Sequence[E], point: E) -> E:
     return reduce(lambda acc, c: acc * point + c, reversed(coefficients), ZERO)
 
 
-@cache
-def _denominators(nodes: tuple[E, ...]) -> tuple[E, ...]:
-    result = []
-    for index, node in enumerate(nodes):
-        denominator = ONE
-        for other_index, other in enumerate(nodes):
-            if other_index != index:
-                denominator *= node + other
-        result.append(denominator.inv())
-    return tuple(result)
-
-
-def lagrange_weights(nodes: Sequence[E], point: E) -> list[E]:
-    fixed_nodes = tuple(nodes)
-    differences = [point + node for node in fixed_nodes]
-    prefix = [ONE]
-    for difference in differences:
-        prefix.append(prefix[-1] * difference)
-    suffix = ONE
-    result = [ZERO] * len(fixed_nodes)
-    inverses = _denominators(fixed_nodes)
-    for index in range(len(fixed_nodes) - 1, -1, -1):
-        result[index] = prefix[index] * suffix * inverses[index]
-        suffix *= differences[index]
-    return result
-
-
-def lagrange_interpolate(nodes: Sequence[E], values: Sequence[E], point: E) -> E:
-    return dot(lagrange_weights(nodes, point), values)
-
-
 # Proof transport ------------------------------------------------------------
 
 
@@ -1329,6 +1298,29 @@ FIXED_CHALLENGES = (
 )  # fmt: skip
 
 
+@cache
+def _window_denominator(count: int) -> E:
+    """The one barycentric denominator `PHI[:count]` has: `prod_(k != 0) PHI[k]`, inverted.
+
+    PHI is F2-linear in its index, so `PHI[i] + PHI[j] = PHI[i ^ j]`, and over a power-of-two prefix
+    `j -> i ^ j` only permutes the block. Every node is left the same product.
+    """
+    return reduce(mul, PHI[1:count], ONE).inv()
+
+
+def lagrange_weights(count: int, point: E) -> list[E]:
+    """The barycentric weights of `PHI[:count]` at `point`, by prefix and suffix numerator products."""
+    differences = [point + node for node in PHI[:count]]
+    prefix = list(accumulate(differences, mul, initial=ONE))
+    suffix = list(accumulate(reversed(differences), mul, initial=ONE))[::-1]
+    denominator = _window_denominator(count)
+    return [p * s * denominator for p, s in zip(prefix[:count], suffix[1:], strict=True)]
+
+
+def lagrange_interpolate(count: int, values: Sequence[E], point: E) -> E:
+    return dot(lagrange_weights(count, point), values)
+
+
 @dataclass(frozen=True)
 class ZerocheckResult:
     z_skip: E
@@ -1359,7 +1351,7 @@ def verify_flock_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResul
     # P = P^AB + P^C on the coset, then z_skip; the 64 zeros on Lambda are assumed.
     p_coset = transcript.scalars(K_BITS)
     z_skip = transcript.sample()
-    v_p = lagrange_interpolate(PHI[: 2 * K_BITS], [ZERO] * K_BITS + list(p_coset), z_skip)
+    v_p = lagrange_interpolate(2 * K_BITS, [ZERO] * K_BITS + list(p_coset), z_skip)
 
     # nflock quadratic rounds on P, closed by v_a, v_b.
     chi, running = sumcheck(transcript, v_p, 3, r)
@@ -1378,7 +1370,7 @@ def verify_flock_lincheck(zc: ZerocheckResult, transcript: Transcript) -> tuple[
     alpha_sq = alpha**2
     alpha_cu = alpha**3
     # e_row: phi8 Lagrange in the skip coordinate, eq in the slot variables.
-    skip_weights = lagrange_weights(PHI[:K_BITS], zc.z_skip)
+    skip_weights = lagrange_weights(K_BITS, zc.z_skip)
     chi_in = zc.chi[:FLOCK_NUM_LINCHECK_ROUNDS]
     e_row = [weight * value for weight in eq_kernel(chi_in) for value in skip_weights]
 

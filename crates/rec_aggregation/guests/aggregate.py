@@ -104,8 +104,8 @@ TABLE_JUMP = 4
 TABLE_BLAKE2s = 5
 N_TABLES = N_TABLES_PLACEHOLDER
 # Phase D (flock reduction): the seven fixed inner challenges (+ inverses of 1+c),
-# the phi8 node table + baked Lagrange inverse denominators (combined domain,
-# S domain). The zerocheck point/round buffers are sized at
+# the phi8 node table + the one baked Lagrange inverse denominator per domain
+# (combined, S). The zerocheck point/round buffers are sized at
 # runtime in the exponent (m = K_LOG + tau_5 and m - 6, both certified);
 # LINCHECK_ROUNDS = k_log - k_skip is protocol-fixed, PIN_COLUMN the
 # const-pin column.
@@ -632,8 +632,9 @@ def squeeze(state):
 @inline
 def lag64(z, out, node_base: Const):
     # The 64 phi8-domain Lagrange NUMERATORS at z, nodes PHI8_NODES[node_base..node_base+64]:
-    # out[i] = prod_{j != i} (z + PHI8_NODES[node_base + j]). Callers multiply by their
-    # baked inverse-denominator table (LAGRANGE_INV_S / LAGRANGE_INV_COMBINED).
+    # out[i] = prod_{j != i} (z + PHI8_NODES[node_base + j]). Every barycentric denominator
+    # over an aligned phi8 window is the same element, so callers scale the finished sum once
+    # by LAGRANGE_INV_S / LAGRANGE_INV_COMBINED instead of the numerators one by one.
     pre = StackBuf(65)
     pre[0] = 1
     for i in unroll(0, 64):
@@ -1709,8 +1710,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     fs, zerocheck_z = squeeze(fs)  # cursor now sits at the multilinear round messages, walked below
     # P(z), interpolated at z over ALL 128 phi8 nodes: the transmitted Lambda
     # values (nodes 64..128) plus the S half, zero by the zerocheck identity.
-    # Prefix/suffix numerator products with baked inverse denominators; the
-    # full-domain product only adds the S-half factor to the Lambda numerators.
+    # Prefix/suffix numerator products, the finished sum scaled once by the domain's inverse
+    # denominator; the full-domain product only adds the S-half factor to the Lambda numerators.
     lagrange_nums = StackBuf(2 ** K_SKIP)
     lag64(zerocheck_z, lagrange_nums, 2 ** K_SKIP)
     s_half_product = GEN ** 0  # the S-domain half of the combined interpolation (zero by the identity)
@@ -1718,8 +1719,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         s_half_product *= (zerocheck_z + PHI8_NODES[i])
     zc_running = 0  # the zerocheck running claim entering the multilinear rounds
     for i in unroll(0, 2 ** K_SKIP):
-        zc_running += lagrange_nums[i] * LAGRANGE_INV_COMBINED[i] * zc_round1[GEN ** i]
-    zc_running *= s_half_product
+        zc_running += lagrange_nums[i] * zc_round1[GEN ** i]
+    zc_running *= s_half_product * LAGRANGE_INV_COMBINED
     # multilinear rounds.
     mr1cs_rounds_g = mr1cs_g * INV_GEN ** 6  # runtime zerocheck mlv rounds: m - 6
     zerocheck_chis = HeapBuf(mr1cs_rounds_g)
@@ -1806,7 +1807,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         c_point_eq *= (1 + zerocheck_chis[GEN ** t] + lincheck_rs[GEN ** (LINCHECK_ROUNDS - 1 - t)])
     c_slice_value = 0
     for i in unroll(0, 2 ** K_SKIP):
-        c_slice_value += claim_nums[i] * LAGRANGE_INV_S[i] * z_partial[GEN ** i]
+        c_slice_value += claim_nums[i] * z_partial[GEN ** i]
+    c_slice_value *= LAGRANGE_INV_S
     matrix_part = matrix_eval[0]
     lincheck_final = matrix_part + pin_term + lincheck_beta * c_point_eq * c_slice_value  # deferred matrix eval + pin + C
     assert lc_running == lincheck_final
@@ -2808,7 +2810,8 @@ def aggregate_claims(n_children_g, child_pi, child_fresh, child_carried, defer_s
         lag64(z_skip_t, row_nums, 0)
         row_weight = 0
         for i in unroll(0, 2 ** K_SKIP):
-            row_weight += row_nums[i] * LAGRANGE_INV_S[i] * eq_rows[GEN ** (2 ** K_SKIP - 2 + i)]
+            row_weight += row_nums[i] * eq_rows[GEN ** (2 ** K_SKIP - 2 + i)]
+        row_weight *= LAGRANGE_INV_S
         for k in unroll(0, LINCHECK_ROUNDS):
             row_weight *= (1 + fresh[GEN ** (BYTECODE_VARS + 3 + k)] + mat_point[GEN ** (K_SKIP + k)])
         col_weight = 0

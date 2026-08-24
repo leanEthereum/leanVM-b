@@ -2013,23 +2013,16 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
         })
         .collect();
     ps("COORD_BASIS", flds(&coord_basis));
-    let inverse_denominator = |nodes: &[F192], node: F192, skipped_node: F192| {
-        let mut denominator = F192::ONE;
-        for &candidate in nodes {
-            if candidate != skipped_node {
-                denominator *= node + candidate;
-            }
-        }
-        denominator.inv()
-    };
-    let icmb: Vec<F192> = (0..64)
-        .map(|i| inverse_denominator(&phi[..128], phi[64 + i], phi[64 + i]))
-        .collect();
-    let isdom: Vec<F192> = (0..64)
-        .map(|i| inverse_denominator(&phi[..64], phi[i], phi[i]))
-        .collect();
-    ps("LAGRANGE_INV_COMBINED", flds(&icmb));
-    ps("LAGRANGE_INV_S", flds(&isdom));
+    // One constant per domain, not one per node: every barycentric denominator over an aligned φ₈
+    // window is the same element (`primitives::multilinear::window_denominator`).
+    ps(
+        "LAGRANGE_INV_COMBINED",
+        f192_literal(primitives::multilinear::window_denominator(128)),
+    );
+    ps(
+        "LAGRANGE_INV_S",
+        f192_literal(primitives::multilinear::window_denominator(64)),
+    );
     ps("LINCHECK_ROUNDS", lcrounds.to_string());
     ps("PIN_COLUMN", flock::hash::Z_CONST_POS.to_string());
     ps("K_LOG", flock::hash::K_LOG.to_string());
