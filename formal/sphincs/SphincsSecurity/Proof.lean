@@ -6,6 +6,7 @@ import SphincsSecurity.Proof.QueryBound
 import SphincsSecurity.Proof.PairBound
 import SphincsSecurity.Proof.Game
 import SphincsSecurity.Proof.Logged
+import SphincsSecurity.Proof.Support
 import SphincsSecurity.Proof.Hybrid
 import SphincsSecurity.Proof.LeakArith
 import SphincsSecurity.Proof.Chain
