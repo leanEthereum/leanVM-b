@@ -5,6 +5,8 @@ import SphincsSecurity.Proof.StatementLemmas
 import SphincsSecurity.Proof.OneTime
 import SphincsSecurity.Proof.Merkle
 import SphincsSecurity.Proof.FewTime
+import SphincsSecurity.Proof.Layer
+import SphincsSecurity.Proof.Hypertree
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to

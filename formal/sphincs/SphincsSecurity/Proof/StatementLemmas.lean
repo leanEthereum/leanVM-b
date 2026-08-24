@@ -82,4 +82,27 @@ theorem ftsFold_succ_eq (parameter : PublicParameter) (index : Index) (tree : Ft
             tweakableHash parameter (.ftsNode index tree (levels + 1) (leaf.val / 2 ^ (levels + 1)))
               (nodePayload current sibling)) := rfl
 
+@[simp]
+theorem verifyLayers_zero_eq (parameter : PublicParameter) (index : Index) (signature : Signature)
+    (message : Digest) :
+    verifyLayers (m := m) parameter index signature 0 message = pure (some message) := rfl
+
+theorem verifyLayers_succ_eq (parameter : PublicParameter) (index : Index) (signature : Signature)
+    (remaining : Nat) (message : Digest) :
+    verifyLayers (m := m) parameter index signature (remaining + 1) message
+      = (if hlayer : remaining < numLayers then
+          (do
+            match ← otsLeaf parameter ⟨remaining, hlayer⟩ (treeIndexAt index ⟨remaining, hlayer⟩)
+                (leafIndexAt index ⟨remaining, hlayer⟩) message
+                (signature.counter ⟨remaining, hlayer⟩)
+                (signature.chainValue ⟨remaining, hlayer⟩) with
+            | none => pure none
+            | some value => do
+                let root ← treeFold parameter ⟨remaining, hlayer⟩
+                  (treeIndexAt index ⟨remaining, hlayer⟩) (leafIndexAt index ⟨remaining, hlayer⟩)
+                  (signaturePath signature ⟨remaining, hlayer⟩) (layerHeight ⟨remaining, hlayer⟩)
+                  value
+                verifyLayers parameter index signature remaining root)
+        else pure none) := rfl
+
 end SphincsSecurity.Concrete
