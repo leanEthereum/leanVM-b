@@ -210,8 +210,6 @@ serialized as $\sigma_{\mathrm{OTS},0}\concat\cdots\concat\sigma_{\mathrm{OTS},v
 
 Consequently, signing queries the random oracle only when evaluating $\IncEnc$, once per attempt. Reading the stored chain values and authentication path makes no random-oracle query.
 
-When $\hash$ is modeled as a random oracle, a single attempt succeeds with probability approximately $2^{-14.848}$. Consequently, the probability that all $2^{23}$ attempts fail is less than $2^{-410}$.
-
 \section{Verification}
 
 $\Ver(\pk,\ep,m,\bot)=0$. For $\sigma\neq\bot$, $\Ver(\pk,\ep,m,\sigma)$ parses $\pk=(\rootnode,P)$ and $\sigma=(\rho,(y_i)_i,(A_\ell)_\ell)$, then:
@@ -269,6 +267,50 @@ This claim has two caveats:
 to the underlying forging probability. For $q_s\leq2^{32}$ the second term stays below $2^{-32}$, but the first term falls $1.5$ bits short of 64.
 \item This specification does not use the WOTS+ encoding standardized in FIPS~205. SLH-DSA appends a Winternitz checksum to the base-$16$ message digits, whereas this specification uses a target-sum encoding. A complete quantum security proof for precisely our XMSS remains to be written.
 \end{enumerate}
+
+\section{Completeness}
+
+\begin{definition}[Completeness]
+With $\hash$ modeled as a random oracle, the completeness error of $\SIG$ is the worst-case probability that the signer fails,
+\[
+  \varepsilon_{\SIG}=\max_{\ep,\,m}\ \Pr\!\left[\sigma=\bot\ \middle|\ (\pk,\sk)\gets\Gen,\ \sigma\gets\Sig(\sk,\ep,m)\right],
+\]
+over the oracle and the randomness of $\Gen$ and $\Sig$. The scheme is $\varepsilon$-complete if $\varepsilon_{\SIG}\leq\varepsilon$.
+\end{definition}
+
+\begin{theorem}[XMSS completeness]
+The XMSS specified above is $2^{-256}$-complete in the ROM. Consequently a single key answers all $L=2^{32}$ of its epochs with a signature, except with probability at most $2^{-224}$.
+\end{theorem}
+
+\begin{proof}
+Fix $\ep$ and $m$. As $\ep$ is unused, $\Sig(\sk,\ep,m)$ returns $\bot$ only by exhausting its $\amax$ attempts. Each attempt makes one oracle query,
+\[
+  I(\rho)=\mathsf{tweak}_{\mathrm{enc}}(\ep)\concat P\concat m\concat\rho\concat0^{64},
+  \qquad D=\Truncate_{n\text{ bits}}\!\left(\hash(I(\rho))\right),
+\]
+and succeeds or not according to $D$ alone: it succeeds exactly when $D\in\mathcal D$, where
+\[
+  \mathcal D=\left\{D\in\bits n:\text{bit }63\text{ of }d_0\text{ and of }d_1\text{ is zero, and }x\in\mathcal C\right\}
+\]
+is a fixed subset of $\bits n$, reading $d_0$, $d_1$ and $x$ off $D$ as in $\IncEnc$. Put $\alpha=|\mathcal D|/2^n$.
+
+\emph{The count.} As $wv+2=n$, the digits of $x$ and the two padding bits partition the bit positions of $D$, so zeroing the padding bits puts $\mathcal D$ in bijection with the $x\in\{0,\ldots,2^w-1\}^v$ summing to $T$. Counting those is classical~\cite{Comtet74}:
+\[
+  |\mathcal D|=\sum_{b=0}^{\lfloor T/2^w\rfloor}(-1)^b\binom{v}{b}\binom{T-b2^w+v-1}{v-1}.
+\]
+At $w=3$, $v=42$ and $T=195$,
+\[
+  |\mathcal D|=11539185377238682781344003244544752,\qquad \alpha=2^{-14.8479\ldots}\geq2^{-15}+2^{-128}.
+\]
+
+\emph{One attempt.} The map $I$ is injective, and no query of $\Gen$ reaches its image, $\Gen$ using tweak types $0$, $1$ and $2$, not $3$. So a $\rho$ not drawn before is a fresh oracle point, making $D$ uniform on $\bits n$ and independent of the history, and the attempt succeeds with probability exactly $\alpha$.
+
+\emph{Exhausting the attempts.} Let $\mathcal F_a$ be the event that the first $a$ attempts all fail. The signer then samples a new $\rho$, uniformly at random and independently of the earlier attempts. This $\rho$ equals one of the $a$ earlier ones with probability at most $a2^{-\lrnd}$, and otherwise the attempt fails with probability $1-\alpha$, so $\Pr[\mathcal F_{a+1}\mid\mathcal F_a]\leq1-\alpha+a2^{-\lrnd}$. Multiplying over $0\leq a<\amax$, and since $\amax2^{-\lrnd}=2^{-169}\leq2^{-128}$,
+\[
+  \Pr[\sigma=\bot]=\Pr[\mathcal F_{\amax}]\leq\left(1-\alpha+\amax2^{-\lrnd}\right)^{\amax}\leq\left(1-2^{-15}\right)^{\amax}.
+\]
+As $\left(1-2^{-15}\right)^{2^{15}}\leq2^{-1}$ and $\amax=2^{15}\cdot2^{8}$, this gives $\varepsilon_{\SIG}\leq2^{-2^{8}}=2^{-256}$. Finally $\mathsf{tweak}_{\mathrm{enc}}(\ep)$ carries the epoch, so calls at distinct epochs query disjoint oracle points and the bound holds for each of a key's $L$ epochs; a union bound over them gives the second claim.
+\end{proof}
 
 \bibliographystyle{alphaurl}
 \bibliography{refs}
