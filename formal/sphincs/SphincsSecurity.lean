@@ -1,4 +1,5 @@
 import SphincsSecurity.Statement
+import SphincsSecurity.Proof
 
 namespace SphincsSecurity
 
