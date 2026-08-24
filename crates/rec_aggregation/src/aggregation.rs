@@ -345,7 +345,7 @@ struct DeferredSubproof {
 pub struct AggregateSignature {
     pub message: xmss::Message,
     pub epoch: u32,
-    /// Strictly sorted, deduplicated, non-empty, at most [`MAX_KEYS`] long.
+    /// Strictly sorted, deduplicated, non-empty, and strictly shorter than [`MAX_KEYS`].
     pub public_keys: Vec<XmssPublicKey>,
     /// What this aggregate defers to whoever discharges it: its parent, in
     /// circuit, or [`Self::verify`], natively.
@@ -355,7 +355,7 @@ pub struct AggregateSignature {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerifyError {
-    /// The signer set is empty, unsorted, holds a duplicate, or is too long.
+    /// The signer set is empty, unsorted, holds a duplicate, or has [`MAX_KEYS`] keys or more.
     MalformedSignerSet,
     /// A deferred claim's point has the wrong number of coordinates.
     MalformedClaim,
@@ -372,7 +372,7 @@ pub enum AggregateError {
     InvalidChild(VerifyError),
     /// Nothing to aggregate: no raw signatures and no children.
     Empty,
-    /// More than [`MAX_CHILDREN`] children, or more than [`MAX_KEYS`] signers
+    /// More than [`MAX_CHILDREN`] children, or [`MAX_KEYS`] signers or more
     /// once the duplicate slots are counted.
     TooLarge,
     /// A child's committed witness falls outside the opening arms the guest was
@@ -394,7 +394,8 @@ fn wire() -> impl bincode::Options {
 
 /// Reject a signer set that the coverage argument does not cover: strict sorting
 /// is what makes "every declared key signed" mean `public_keys.len()` distinct
-/// signers rather than one signer counted many times.
+/// signers rather than one signer counted many times. [`MAX_KEYS`] is exclusive
+/// here, as in the guest.
 fn check_signer_set(keys: &[XmssPublicKey]) -> Result<(), VerifyError> {
     if keys.is_empty() || keys.len() >= MAX_KEYS || !keys.windows(2).all(|w| w[0] < w[1]) {
         return Err(VerifyError::MalformedSignerSet);
@@ -2427,6 +2428,27 @@ mod tests {
 
     const SMALL_LEAF_SIZE: usize = 6;
     const LOG_INV_RATE: usize = lean_vm::pcs::LOG_INV_RATE;
+
+    /// Distinct keys, strictly increasing, without generating any.
+    fn signer_set(len: usize) -> Vec<XmssPublicKey> {
+        (0..len)
+            .map(|i| XmssPublicKey {
+                merkle_root: (i as u128).to_be_bytes(),
+                public_param: [0; xmss::PUBLIC_PARAM_LEN],
+            })
+            .collect()
+    }
+
+    /// `MAX_KEYS` is exclusive at both host checks: one key short of it passes,
+    /// the cap itself is the documented error. No proof involved.
+    #[test]
+    fn max_keys_bound_is_exclusive() {
+        let full = signer_set(MAX_KEYS);
+        check_signer_set(&full[..MAX_KEYS - 1]).expect("one short of the cap");
+        assert_eq!(check_signer_set(&full), Err(VerifyError::MalformedSignerSet));
+        plan_coverage(&full[..MAX_KEYS - 1], &[]).expect("one short of the cap");
+        assert_eq!(plan_coverage(&full, &[]).err(), Some(AggregateError::TooLarge));
+    }
 
     fn prove_leaf(signers: &[(XmssPublicKey, XmssSignature)]) -> AggregateSignature {
         aggregate(&[], signers.to_vec(), message(), EPOCH, LOG_INV_RATE).expect("leaf aggregates")
