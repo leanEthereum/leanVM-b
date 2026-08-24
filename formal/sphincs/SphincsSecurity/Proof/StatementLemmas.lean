@@ -11,7 +11,7 @@ those instead of unfolding anything.
 
 namespace SphincsSecurity.Concrete
 
-attribute [local semireducible] treeNode ftsNode
+attribute [local semireducible] treeNode ftsNode verify
 
 variable {m : Type → Type} [Monad m] [HasQuery HashSpec m]
 
@@ -104,5 +104,19 @@ theorem verifyLayers_succ_eq (parameter : PublicParameter) (index : Index) (sign
                   value
                 verifyLayers parameter index signature remaining root)
         else pure none) := rfl
+
+theorem verify_eq (publicKey : PublicKey) (message : Message) (signature : Signature) :
+    verify (m := m) publicKey message signature
+      = (do
+          let digest ← messageDigest publicKey.parameter publicKey.root message signature.randomness
+          if ¬ Admissible digest then
+            return false
+          else
+            let ftsPublicKey ← ftsRecover publicKey.parameter (digestIndex digest)
+              (digestLeaves digest) signature.ftsSecret signature.ftsPath
+            match ← verifyLayers publicKey.parameter (digestIndex digest) signature numLayers
+                ftsPublicKey with
+            | none => return false
+            | some root => return decide (root = publicKey.root)) := rfl
 
 end SphincsSecurity.Concrete

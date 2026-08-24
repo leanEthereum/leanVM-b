@@ -7,12 +7,14 @@ import SphincsSecurity.Proof.Merkle
 import SphincsSecurity.Proof.FewTime
 import SphincsSecurity.Proof.Layer
 import SphincsSecurity.Proof.Hypertree
+import SphincsSecurity.Proof.Correctness
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
 be trusted; everything here is checked by Lean.
 
-What is proven so far is the structure of the three primitives, each as an equality between what the
-signer produces and what the verifier recomputes, under an arbitrary answer function. That is the
-form the reduction needs, the random oracle's support being characterized by total answer functions.
+What is proven so far is correctness: `Correctness.eval_verify` says `Ver` accepts a signature built
+from the secrets, under an arbitrary answer function rather than under the lazy oracle. That is the
+form the reduction needs, the random oracle's support being characterized by total answer functions,
+and it is what rules out the statement holding vacuously for want of an accepting run.
 -/
