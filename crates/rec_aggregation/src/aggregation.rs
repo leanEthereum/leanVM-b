@@ -372,6 +372,9 @@ pub enum AggregateError {
     InvalidChild(VerifyError),
     /// Nothing to aggregate: no raw signatures and no children.
     Empty,
+    /// A raw signature's randomness does not decode to a target-sum encoding,
+    /// so there is no witness to build for it.
+    MalformedRawSignature,
     /// More than [`MAX_CHILDREN`] children, or [`MAX_KEYS`] signers or more
     /// once the duplicate slots are counted.
     TooLarge,
@@ -1529,16 +1532,16 @@ fn push_signature_hints(
     sig: &XmssSignature,
     message: &xmss::Message,
     epoch: u32,
-) {
+) -> Result<(), AggregateError> {
     let wots = &sig.wots_signature;
+    let encoding = xmss::wots_encode(message, epoch, &pk.public_param, &wots.randomness)
+        .ok_or(AggregateError::MalformedRawSignature)?;
     let mut randomness = [0u8; xmss::STATE_LEN];
     randomness[..xmss::RANDOMNESS_LEN].copy_from_slice(&wots.randomness);
     hints.push(
         "rand",
         vec![pack_16_bytes(&randomness[..16]), pack_16_bytes(&randomness[16..])],
     );
-    let encoding =
-        xmss::wots_encode(message, epoch, &pk.public_param, &wots.randomness).expect("a verified signature encodes");
     for &e in &encoding {
         hints.push("digits", vec![count(e as usize)]);
     }
@@ -1548,6 +1551,7 @@ fn push_signature_hints(
     for sibling in &sig.merkle_proof {
         hints.push("siblings", vec![pack_16_bytes(sibling)]);
     }
+    Ok(())
 }
 
 /// Aggregate raw XMSS signatures and previously aggregated signatures into one
@@ -1556,7 +1560,9 @@ fn push_signature_hints(
 ///
 /// Children and raw signatures mix freely: no children is a leaf, no raw
 /// signatures is a pure recursion step, and one child plus a few signatures
-/// tops up an existing aggregate. One proving job at a time per process.
+/// tops up an existing aggregate. Raw signatures are expected to be valid: the
+/// host does not check what the guest checks anyway. One proving job at a time
+/// per process.
 pub fn aggregate(
     children: &[AggregateSignature],
     raw: Vec<(XmssPublicKey, XmssSignature)>,
@@ -1663,7 +1669,7 @@ pub(crate) fn aggregate_tampered(
     }
     for (&idx, (pk, sig)) in cover.raw_indices.iter().zip(&raw) {
         hints.push("raw_index", vec![count(idx)]);
-        push_signature_hints(&mut hints, pk, sig, &message, epoch);
+        push_signature_hints(&mut hints, pk, sig, &message, epoch)?;
     }
 
     let mut subs = Vec::with_capacity(children.len());
@@ -2682,6 +2688,45 @@ mod tests {
         assert!(
             !matches!(built, Ok(Ok(true))),
             "a forged signature must not produce a verifying aggregate"
+        );
+    }
+
+    /// Randomness that does not decode to a target-sum encoding used to panic
+    /// the hint builder; it is a typed error now, and the abandoned builder
+    /// leaves nothing behind.
+    #[test]
+    fn malformed_raw_signature_is_an_error() {
+        let message = message();
+        let pk = XmssPublicKey {
+            merkle_root: [0; xmss::DIGEST_LEN],
+            public_param: [0; xmss::PUBLIC_PARAM_LEN],
+        };
+        let randomness = (0..=u8::MAX)
+            .find_map(|byte| {
+                let mut randomness = [0; xmss::RANDOMNESS_LEN];
+                randomness[0] = byte;
+                xmss::wots_encode(&message, EPOCH, &pk.public_param, &randomness)
+                    .is_none()
+                    .then_some(randomness)
+            })
+            .expect("some randomness fails the target sum");
+        let sig = XmssSignature {
+            wots_signature: xmss::WotsSignature {
+                chain_tips: [[0; xmss::DIGEST_LEN]; xmss::V],
+                randomness,
+            },
+            merkle_proof: [[0; xmss::DIGEST_LEN]; xmss::LOG_LIFETIME],
+        };
+
+        let mut hints = Hints::default();
+        assert_eq!(
+            push_signature_hints(&mut hints, &pk, &sig, &message, EPOCH),
+            Err(AggregateError::MalformedRawSignature)
+        );
+        assert!(hints.0.is_empty());
+        assert_eq!(
+            aggregate(&[], vec![(pk, sig)], message, EPOCH, LOG_INV_RATE).err(),
+            Some(AggregateError::MalformedRawSignature)
         );
     }
 }
