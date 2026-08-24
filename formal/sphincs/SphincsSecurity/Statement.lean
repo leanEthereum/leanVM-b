@@ -224,7 +224,7 @@ end TargetSum
 
 /-! ## The algorithms
 
-Key generation, signing and verification exactly as run in the experiment, together with the oracle hash calls they make. Key generation samples the parameter and every secret and builds layer `0`'s tree; signing rebuilds whatever tree it reads rather than caching anything, as specified, so the honest experiment spends `2^44.5` hash queries of its own and its worst-case path, which is what the query bound counts, `2^58`; verification is the ordinary verifier.
+Key generation, signing and verification exactly as run in the experiment, together with the oracle hash calls they make. Key generation samples the parameter and every secret, builds layer `0`'s tree, and then walks the rest of the structure and discards it, so that every honest value is fixed before the adversary runs; signing rebuilds whatever tree it reads rather than caching anything, as specified, so the honest experiment spends `2^44.5` hash queries of its own and its worst-case path, which is what the query bound counts, `2^58`; verification is the ordinary verifier.
 
 The `irreducible` attributes only seal definitions against accidental unfolding in proofs. Lean restricts global reducibility attributes to the defining module, so they must appear here. -/
 
@@ -638,6 +638,19 @@ attribute [irreducible] sampleParameter sampleOtsSecrets sampleFtsSecrets sample
 
 def rootTree : TreeIndex := ⟨0, Nat.two_pow_pos _⟩
 
+/-- Walk the whole structure and discard it: every tree of every layer, and every few-time forest.
+This changes neither the key nor any signature, only the number of queries the experiment makes, and
+it is what fixes every honest value before the adversary runs. Without it an adversary could query a
+position first and hope the honest value collides with its answer later, which is a birthday term
+rather than a per-query one, and no bound of the shape `q / 2^bits` can carry it. -/
+def warmStructure {m : Type → Type} [Monad m] [HasQuery HashSpec m] (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) : m Unit := do
+  let _ ← sequenceFin fun lay : Layer =>
+    sequenceFin fun tree : TreeIndex => treeRoot parameter lay tree (otsSecret lay tree)
+  let _ ← sequenceFin fun index : Index => ftsKey parameter index (ftsSecret index)
+  pure ()
+
 /-- `Gen`: sample the parameter and every secret, and build layer `0`'s tree for the root. The trees below it are built when a signature needs them, so nothing else is computed here. -/
 noncomputable def keygen : OracleComp OracleWorld (PublicKey × SecretKey) := do
   let parameter ← liftM sampleParameter
@@ -646,6 +659,7 @@ noncomputable def keygen : OracleComp OracleWorld (PublicKey × SecretKey) := do
   let root ← liftM
     (treeRoot parameter topLayer rootTree (otsSecret topLayer rootTree) :
       OracleComp HashSpec Digest)
+  let _ ← liftM (warmStructure parameter otsSecret ftsSecret : OracleComp HashSpec Unit)
   return (⟨root, parameter⟩, ⟨parameter, root, otsSecret, ftsSecret⟩)
 
 attribute [irreducible] keygen
