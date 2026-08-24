@@ -1,6 +1,7 @@
 import SphincsSecurity.Proof.Arith
 import SphincsSecurity.Proof.Bytes
 import SphincsSecurity.Proof.Guess
+import SphincsSecurity.Proof.QueryBound
 import SphincsSecurity.Proof.Chain
 import SphincsSecurity.Proof.Eval
 import SphincsSecurity.Proof.StatementLemmas
