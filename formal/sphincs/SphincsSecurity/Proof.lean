@@ -4,6 +4,7 @@ import SphincsSecurity.Proof.Code
 import SphincsSecurity.Proof.Guess
 import SphincsSecurity.Proof.QueryBound
 import SphincsSecurity.Proof.Amortized
+import SphincsSecurity.Proof.Position
 import SphincsSecurity.Proof.Game
 import SphincsSecurity.Proof.Secrets
 import SphincsSecurity.Proof.Logged
