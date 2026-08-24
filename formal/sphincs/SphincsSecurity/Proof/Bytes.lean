@@ -117,4 +117,24 @@ theorem tweakableHashInput_injective (parameter : PublicParameter) {d1 d2 : Hash
   obtain ⟨htweak, _⟩ := List.append_inj' hprefix (by simp [bytesLE_length])
   exact ⟨tweakBytes_injective h1 h2 htweak, hpayload⟩
 
+/-! ### Payloads
+
+A node's payload is its two children, a leaf's is its `v` chain endpoints, and a few-time key's is
+its `k-1` roots. Each is injective, which is what lets the extraction argument descend: if an
+adversary's payload hashes to an honest value, either it *is* the honest payload, and then its parts
+are the honest parts, or the hash was hit. -/
+
+theorem digestBytes_injective {x y : Digest} (h : Concrete.digestBytes x = Concrete.digestBytes y) :
+    x = y :=
+  bytesLE_injective h
+
+theorem digestBytes_length (x : Digest) : (Concrete.digestBytes x).length = 16 :=
+  bytesLE_length 16 x
+
+theorem nodePayload_injective {left right left' right' : Digest}
+    (h : Concrete.nodePayload left right = Concrete.nodePayload left' right') :
+    left = left' ∧ right = right' := by
+  obtain ⟨hleft, hright⟩ := List.append_inj h (by simp [Concrete.digestBytes, bytesLE_length])
+  exact ⟨digestBytes_injective hleft, digestBytes_injective hright⟩
+
 end SphincsSecurity
