@@ -60,7 +60,6 @@ compression calls, one per 64 bytes of hash input.
 
 other
   --cache-height C      cached top-tree level, above the leaves  [half of h_top]
-  --cache-level-only    cache one level, not it and everything above
   --top N               rows of the table to print        [15]
   --stats               report how much of the space was visited
 
@@ -88,9 +87,9 @@ fn main() -> std::process::ExitCode {
 /// Flags and their values, repeatable flags kept in order.
 struct Args(Vec<(String, Option<String>)>);
 
-const NO_VALUE: [&str; 4] = ["--cache-level-only", "--stats", "--help", "-h"];
+const NO_VALUE: [&str; 3] = ["--stats", "--help", "-h"];
 
-const FLAGS: [&str; 22] = [
+const FLAGS: [&str; 21] = [
     "--lifetime",
     "--scheme",
     "--height",
@@ -109,7 +108,6 @@ const FLAGS: [&str; 22] = [
     "--max-size",
     "--security",
     "--cache-height",
-    "--cache-level-only",
     "--top",
     "--stats",
     "--help",
@@ -303,7 +301,6 @@ fn run(argv: &[String]) -> Result<bool, String> {
         sums,
         profile,
         cache_height: args.num("--cache-height")?,
-        cache_level_only: args.flag("--cache-level-only"),
     };
 
     let mut stats = Stats::default();

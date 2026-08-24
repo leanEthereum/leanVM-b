@@ -27,7 +27,6 @@ fn params(scheme: Scheme, h: u64, d: u64, a: u64, k: u64, w: u64) -> Params {
         n: 16,
         dropped_chains: 0,
         cache_height: None,
-        cache_level_only: false,
     }
 }
 

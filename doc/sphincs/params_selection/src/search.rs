@@ -146,7 +146,6 @@ pub struct Grid {
     /// then pinned by it.
     pub profile: Option<Profile>,
     pub cache_height: Option<u64>,
-    pub cache_level_only: bool,
 }
 
 impl Grid {
@@ -186,7 +185,6 @@ impl Default for Grid {
             sums: Sums::Sweep,
             profile: None,
             cache_height: None,
-            cache_level_only: false,
         }
     }
 }
@@ -270,7 +268,6 @@ fn params(g: &Grid, scheme: Scheme, h: u64, d: u64, a: u64, k: u64, w: u64, drop
         n: g.n,
         dropped_chains: dropped,
         cache_height: g.cache_height,
-        cache_level_only: g.cache_level_only,
     }
 }
 

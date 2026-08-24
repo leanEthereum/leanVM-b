@@ -25,8 +25,6 @@ pub struct Params {
     pub dropped_chains: u64,
     /// Height above the leaves of the cached top-tree level; `None` is half of it.
     pub cache_height: Option<u64>,
-    /// Cache one level rather than it and everything above.
-    pub cache_level_only: bool,
 }
 
 /// The height of every XMSS tree in the hypertree, top first.
@@ -234,9 +232,9 @@ impl Layers {
         // Only the top tree is worth caching: it is the same for every
         // signature, while the trees below it are picked by the (pseudorandom)
         // index. Its auth path splits at the cached level: below, rebuild the
-        // 2^c-leaf subtree the signing leaf sits in; above, the nodes are
-        // already in state. Rebuilt leaves are charged a full WOTS public key,
-        // as everywhere else here.
+        // 2^c-leaf subtree the signing leaf sits in; above, refold the stored
+        // level. Rebuilt leaves are charged a full WOTS public key, as
+        // everywhere else here.
         //
         // A BDS-style traversal would amortize a tree to h' leaves per
         // signature with O(h') state, but it only works walking the leaves in
@@ -248,15 +246,12 @@ impl Layers {
         if c > profile.h_top() {
             return None;
         }
+        // Only the level itself is stored, not the triangle above it: refolding
+        // that is 2^(h-c)-1 node calls, nothing next to the subtree rebuild,
+        // while storing it would double the bytes.
         let stored_level = 1u64 << (profile.h_top() - c);
-        let mut cached = tree(c);
-        let cache_bytes;
-        if p.cache_level_only {
-            cached = cached + Cost::new(stored_level - 1, (stored_level - 1) * b.merkle_node());
-            cache_bytes = stored_level * p.n;
-        } else {
-            cache_bytes = (2 * stored_level - 1) * p.n;
-        }
+        let cached = tree(c) + Cost::new(stored_level - 1, (stored_level - 1) * b.merkle_node());
+        let cache_bytes = stored_level * p.n;
 
         Some(Self {
             profile,
