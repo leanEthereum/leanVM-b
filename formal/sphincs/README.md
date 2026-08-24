@@ -46,11 +46,14 @@ The frame splits the game at the secret sampling rather than after key generatio
 
 ## What remains
 
-- The honest structure as a function of the domain, and `Determined`, with the few-time analogues of the extraction lemmas.
-- The amortized step for that `Bad`: the three charges above.
-- The descent, which is the deterministic bulk. A forgery is `Bad`, or a replay, or the few-time leak, or a guessed secret. It needs the honest values along the forgery's path to be cached, which is where "key generation queried all of layer 0" and "signing queried every tree it read" are used, and it needs incomparability at each layer to turn "every value honest" into "the message is one that was signed".
-- The leak's counting side, `LeakArith.leak_union_bound_scaled` being its arithmetic already, and the guessed secret, which is where `ProbeEps.probEvent_hiddenReadMany_le` fits: a few-time secret is drawn once and read only by the openings.
-- The final arithmetic to `q / 2^120`.
+The probabilistic side is finished as a tool and half-instantiated. What is in place: `Position` (the finite index set, with `mem_children_iff`, so children and parent agree and no position has two parents), `Honest` (payload, input and value at a position, every payload being the values below it at sixteen bytes each, hence `honestPayload_congr` and `slots_injective`), `Settled` (the positions a cache pins, monotone), `Slot` (`slotDigest_flatMap`, reading the block of a payload a value lands in), and `Charge` (`Bad`, `cachedAt`, `unsettledChildren`, `potential`, and `settled_of_settled_cacheQuery`: one query settles no position but the one its input is at, unless it settles that position's parent).
+
+In order:
+
+- **The amortized step for `Bad`**, feeding `Amortized.probEvent_bad_le_amortized` with `c = 44`. The case analysis on the queried input `input₀` is: at no position, at a settled position (one target, the honest answer's truncation), at an unsettled position it is not the honest input of (no target, nothing settles), and the honest input of an unsettled position whose children are all settled. Only the last one charges: the truncations of the inputs already cached at that position, paid by the unit each of them deposited, and the blocks `slotDigest` reads at the parent, paid by the parent's per-child units. `settled_of_settled_cacheQuery` is what closes the rest.
+- **The descent**, the deterministic bulk. A forgery is `Bad`, or a replay, or the few-time leak, or a guessed secret. It needs the honest values along the forgery's path settled, which is where "key generation queried all of layer 0" and "signing queried every tree it read" are used, and incomparability at each layer to turn "every value honest" into "the message is one that was signed".
+- **The leak's counting side**, `LeakArith.leak_union_bound_scaled` being its arithmetic already, and the guessed secret, which is where `ProbeEps.probEvent_hiddenReadMany_le` fits: a few-time secret is drawn once and read only by the openings.
+- **The final arithmetic** to `q / 2^120`.
 
 Nothing closes the main claim yet. The one-time and Merkle halves of `formal/xmss` carry over, sharing the tweakable hash, the target-sum code and the shape of the bound; what is new is the hypertree, the few-time forest, the digest that picks the index, and the counter search under a tweak shared across attempts.
 

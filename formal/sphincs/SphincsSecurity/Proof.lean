@@ -26,6 +26,8 @@ import SphincsSecurity.Proof.ExtractOts
 import SphincsSecurity.Proof.ExtractFts
 import SphincsSecurity.Proof.Honest
 import SphincsSecurity.Proof.Settled
+import SphincsSecurity.Proof.Slot
+import SphincsSecurity.Proof.Charge
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
