@@ -127,7 +127,13 @@ theorem honestValue_ftsRoots (index : Index) :
   rw [Concrete.honestFtsKey_eq f parameter index (ftsSecret index)]
   rfl
 
-/-! ### The payload is a function of the children's values -/
+/-! ### The payload is a concatenation of the values below
+
+Every payload of the instance is the same shape: the values at the position's children, written as
+`16` bytes each, one after another, or the secret the family starts from. Reading it that way once is
+what makes the accounting generic: the payload is a function of the children's values, and it
+determines each of them.
+-/
 
 /-- The positions `Position` over-approximates: a node whose children would fall outside the index
 width. Nothing honest lives there, and the accounting never settles one. -/
@@ -136,6 +142,126 @@ def Position.Valid : Position → Prop
   | .ftsNode _ _ _ nodeIdx => 2 * nodeIdx.val + 1 < 2 ^ ftsTreeHeight
   | _ => True
 
+/-- The values at a position's children. -/
+noncomputable def childValues (p : Position) : List Digest :=
+  p.children.map (honestValue f parameter otsSecret ftsSecret)
+
+/-- The values a position's payload concatenates: those at its children, or the secret its family
+starts from. -/
+noncomputable def slots : Position → List Digest
+  | .chain lay tree leafIdx chainIdx step =>
+      if step.val = 0 then [otsSecret lay tree leafIdx chainIdx]
+      else childValues f parameter otsSecret ftsSecret (.chain lay tree leafIdx chainIdx step)
+  | .ftsLeaf index tree leafIdx => [ftsSecret index tree leafIdx]
+  | p => childValues f parameter otsSecret ftsSecret p
+
+/-- **The payload is the values below it.** -/
+theorem honestPayload_eq_slots {p : Position} (hvalid : p.Valid) :
+    honestPayload f parameter otsSecret ftsSecret p
+      = (slots f parameter otsSecret ftsSecret p).flatMap Concrete.digestBytes := by
+  cases p with
+  | chain lay tree leafIdx chainIdx step =>
+      rcases Nat.eq_zero_or_pos step.val with hstep | hstep
+      · have hslots : slots f parameter otsSecret ftsSecret
+            (.chain lay tree leafIdx chainIdx step) = [otsSecret lay tree leafIdx chainIdx] := by
+          simp only [slots, if_pos hstep]
+        rw [hslots]
+        simp only [honestPayload, hstep, Concrete.honestChain_zero, List.flatMap_cons,
+          List.flatMap_nil, List.append_nil]
+      · obtain ⟨s, hs⟩ : ∃ s, step.val = s + 1 := ⟨step.val - 1, by omega⟩
+        have hslt : s < chainLength - 1 := by have := step.isLt; omega
+        have hchildren : (Position.chain lay tree leafIdx chainIdx step).children
+            = [.chain lay tree leafIdx chainIdx ⟨s, hslt⟩] := by
+          rw [Position.children, dif_pos hstep]
+          simp only [List.cons.injEq, Position.chain.injEq, Fin.mk.injEq, and_true, true_and]
+          omega
+        have hslots : slots f parameter otsSecret ftsSecret
+            (.chain lay tree leafIdx chainIdx step)
+            = [honestValue f parameter otsSecret ftsSecret
+                (.chain lay tree leafIdx chainIdx ⟨s, hslt⟩)] := by
+          simp only [slots, if_neg (by omega : ¬ step.val = 0), childValues, hchildren,
+            List.map_cons, List.map_nil]
+        rw [hslots, honestValue_chain]
+        simp only [honestPayload, List.flatMap_cons, List.flatMap_nil, List.append_nil, hs]
+  | leaf lay tree leafIdx =>
+      have hslots : slots f parameter otsSecret ftsSecret (.leaf lay tree leafIdx)
+          = List.ofFn fun chainIdx : ChainIndex => honestValue f parameter otsSecret ftsSecret
+              (.chain lay tree leafIdx chainIdx Position.lastChainStep) := by
+        simp only [slots, childValues, Position.children, List.map_ofFn, Function.comp_def]
+      rw [hslots]
+      simp only [honestPayload, Concrete.leafPayload]
+      refine congrArg _ (congrArg _ (funext fun chainIdx => ?_))
+      rw [honestValue_chain]
+      rfl
+  | node lay tree level nodeIdx =>
+      simp only [Position.Valid] at hvalid
+      rcases Nat.eq_zero_or_pos level.val with hlevel | hlevel
+      · have hchildren : (Position.node lay tree level nodeIdx).children
+            = [.leaf lay tree ⟨2 * nodeIdx.val, by omega⟩,
+              .leaf lay tree ⟨2 * nodeIdx.val + 1, by omega⟩] := by
+          rw [Position.children, dif_pos hvalid, dif_neg (by omega)]
+        simp only [slots, childValues, hchildren, List.map_cons, List.map_nil, List.flatMap_cons,
+          List.flatMap_nil, List.append_nil, honestPayload, Concrete.nodePayload]
+        rw [honestValue_leaf, honestValue_leaf, hlevel]
+      · have hchildren : (Position.node lay tree level nodeIdx).children
+            = [.node lay tree ⟨level.val - 1, by have := level.isLt; omega⟩
+                ⟨2 * nodeIdx.val, by omega⟩,
+              .node lay tree ⟨level.val - 1, by have := level.isLt; omega⟩
+                ⟨2 * nodeIdx.val + 1, by omega⟩] := by
+          rw [Position.children, dif_pos hvalid, dif_pos hlevel]
+        simp only [slots, childValues, hchildren, List.map_cons, List.map_nil, List.flatMap_cons,
+          List.flatMap_nil, List.append_nil, honestPayload, Concrete.nodePayload]
+        rw [honestValue_node, honestValue_node, show level.val - 1 + 1 = level.val from by omega]
+  | ftsLeaf index tree leafIdx =>
+      simp [slots, honestPayload]
+  | ftsNode index tree level nodeIdx =>
+      simp only [Position.Valid] at hvalid
+      rcases Nat.eq_zero_or_pos level.val with hlevel | hlevel
+      · have hchildren : (Position.ftsNode index tree level nodeIdx).children
+            = [.ftsLeaf index tree ⟨2 * nodeIdx.val, by omega⟩,
+              .ftsLeaf index tree ⟨2 * nodeIdx.val + 1, by omega⟩] := by
+          rw [Position.children, dif_pos hvalid, dif_neg (by omega)]
+        simp only [slots, childValues, hchildren, List.map_cons, List.map_nil, List.flatMap_cons,
+          List.flatMap_nil, List.append_nil, honestPayload, Concrete.nodePayload]
+        rw [honestValue_ftsLeaf, honestValue_ftsLeaf, hlevel]
+      · have hchildren : (Position.ftsNode index tree level nodeIdx).children
+            = [.ftsNode index tree ⟨level.val - 1, by have := level.isLt; omega⟩
+                ⟨2 * nodeIdx.val, by omega⟩,
+              .ftsNode index tree ⟨level.val - 1, by have := level.isLt; omega⟩
+                ⟨2 * nodeIdx.val + 1, by omega⟩] := by
+          rw [Position.children, dif_pos hvalid, dif_pos hlevel]
+        simp only [slots, childValues, hchildren, List.map_cons, List.map_nil, List.flatMap_cons,
+          List.flatMap_nil, List.append_nil, honestPayload, Concrete.nodePayload]
+        rw [honestValue_ftsNode, honestValue_ftsNode,
+          show level.val - 1 + 1 = level.val from by omega]
+  | ftsRoots index =>
+      have hslots : slots f parameter otsSecret ftsSecret (.ftsRoots index)
+          = List.ofFn fun tree : FtsTree => honestValue f parameter otsSecret ftsSecret
+              (.ftsNode index tree ⟨ftsTreeHeight - 1, by decide⟩ ⟨0, by positivity⟩) := by
+        simp only [slots, childValues, Position.children, List.map_ofFn, Function.comp_def]
+      rw [hslots]
+      simp only [honestPayload, Concrete.ftsRootsPayload]
+      refine congrArg _ (congrArg _ (funext fun tree => ?_))
+      rw [honestValue_ftsNode]
+      rfl
+
+set_option linter.unnecessarySeqFocus false in
+/-- The slot list has the same length whatever the answer function: it is the children, or one
+secret. -/
+theorem slots_length (p : Position) :
+    (slots f parameter otsSecret ftsSecret p).length
+      = (slots g parameter otsSecret ftsSecret p).length := by
+  cases p <;> simp only [slots, childValues, List.length_map] <;> (try split_ifs) <;> simp
+
+theorem slots_congr {p : Position}
+    (hchildren : ∀ c ∈ p.children, honestValue f parameter otsSecret ftsSecret c
+      = honestValue g parameter otsSecret ftsSecret c) :
+    slots f parameter otsSecret ftsSecret p = slots g parameter otsSecret ftsSecret p := by
+  have hmap : childValues f parameter otsSecret ftsSecret p
+      = childValues g parameter otsSecret ftsSecret p :=
+    List.map_congr_left hchildren
+  cases p <;> simp only [slots] <;> first | rfl | exact hmap | (split_ifs <;> simp [hmap])
+
 /-- **The payload is local.** Two answer functions agreeing on the values at a position's children
 agree on its payload, and so on its input. -/
 theorem honestPayload_congr {p : Position} (hvalid : p.Valid)
@@ -143,90 +269,19 @@ theorem honestPayload_congr {p : Position} (hvalid : p.Valid)
       = honestValue g parameter otsSecret ftsSecret c) :
     honestPayload f parameter otsSecret ftsSecret p
       = honestPayload g parameter otsSecret ftsSecret p := by
-  cases p with
-  | chain lay tree leafIdx chainIdx step =>
-      rcases Nat.eq_zero_or_pos step.val with hstep | hstep
-      · simp only [honestPayload, hstep, Concrete.honestChain_zero]
-      · obtain ⟨s, hs⟩ : ∃ s, step.val = s + 1 := ⟨step.val - 1, by omega⟩
-        have hmem : (Position.chain lay tree leafIdx chainIdx ⟨s, by have := step.isLt; omega⟩)
-            ∈ (Position.chain lay tree leafIdx chainIdx step).children := by
-          rw [Position.children, dif_pos hstep]
-          simp only [List.mem_singleton, Position.chain.injEq, Fin.ext_iff, true_and]
-          omega
-        have := hchildren _ hmem
-        rw [honestValue_chain, honestValue_chain] at this
-        simp only [honestPayload, hs]
-        rw [this]
-    | leaf lay tree leafIdx =>
-        simp only [honestPayload, Concrete.leafPayload]
-        refine congrArg _ (congrArg _ (funext fun chainIdx => ?_))
-        have hmem : (Position.chain lay tree leafIdx chainIdx Position.lastChainStep)
-            ∈ (Position.leaf lay tree leafIdx).children := by
-          simp only [Position.children, List.mem_ofFn]
-          exact ⟨chainIdx, rfl⟩
-        have := hchildren _ hmem
-        rw [honestValue_chain, honestValue_chain] at this
-        simpa only [Concrete.honestEndpoints, Position.lastChainStep,
-          show chainLength - 2 + 1 = chainLength - 1 from rfl] using this
-    | node lay tree level nodeIdx =>
-        simp only [Position.Valid] at hvalid
-        rcases Nat.eq_zero_or_pos level.val with hlevel | hlevel
-        · have hleft := hchildren (Position.leaf lay tree ⟨2 * nodeIdx.val, by omega⟩) (by
-            rw [Position.children, dif_pos hvalid, dif_neg (by omega)]
-            exact List.mem_pair.mpr (Or.inl rfl))
-          have hright := hchildren (Position.leaf lay tree ⟨2 * nodeIdx.val + 1, by omega⟩) (by
-            rw [Position.children, dif_pos hvalid, dif_neg (by omega)]
-            exact List.mem_pair.mpr (Or.inr rfl))
-          rw [honestValue_leaf, honestValue_leaf] at hleft hright
-          simp only [honestPayload, hlevel]
-          rw [hleft, hright]
-        · have hleft := hchildren (Position.node lay tree ⟨level.val - 1, by
-            have := level.isLt; omega⟩ ⟨2 * nodeIdx.val, by omega⟩) (by
-              rw [Position.children, dif_pos hvalid, dif_pos hlevel]
-              exact List.mem_pair.mpr (Or.inl rfl))
-          have hright := hchildren (Position.node lay tree ⟨level.val - 1, by
-            have := level.isLt; omega⟩ ⟨2 * nodeIdx.val + 1, by omega⟩) (by
-              rw [Position.children, dif_pos hvalid, dif_pos hlevel]
-              exact List.mem_pair.mpr (Or.inr rfl))
-          rw [honestValue_node, honestValue_node] at hleft hright
-          rw [show level.val - 1 + 1 = level.val from by omega] at hleft hright
-          simp only [honestPayload]
-          rw [hleft, hright]
-    | ftsLeaf => rfl
-    | ftsNode index tree level nodeIdx =>
-        simp only [Position.Valid] at hvalid
-        rcases Nat.eq_zero_or_pos level.val with hlevel | hlevel
-        · have hleft := hchildren (Position.ftsLeaf index tree ⟨2 * nodeIdx.val, by omega⟩) (by
-            rw [Position.children, dif_pos hvalid, dif_neg (by omega)]
-            exact List.mem_pair.mpr (Or.inl rfl))
-          have hright := hchildren (Position.ftsLeaf index tree ⟨2 * nodeIdx.val + 1, by omega⟩) (by
-            rw [Position.children, dif_pos hvalid, dif_neg (by omega)]
-            exact List.mem_pair.mpr (Or.inr rfl))
-          rw [honestValue_ftsLeaf, honestValue_ftsLeaf] at hleft hright
-          simp only [honestPayload, hlevel]
-          rw [hleft, hright]
-        · have hleft := hchildren (Position.ftsNode index tree ⟨level.val - 1, by
-            have := level.isLt; omega⟩ ⟨2 * nodeIdx.val, by omega⟩) (by
-              rw [Position.children, dif_pos hvalid, dif_pos hlevel]
-              exact List.mem_pair.mpr (Or.inl rfl))
-          have hright := hchildren (Position.ftsNode index tree ⟨level.val - 1, by
-            have := level.isLt; omega⟩ ⟨2 * nodeIdx.val + 1, by omega⟩) (by
-              rw [Position.children, dif_pos hvalid, dif_pos hlevel]
-              exact List.mem_pair.mpr (Or.inr rfl))
-          rw [honestValue_ftsNode, honestValue_ftsNode] at hleft hright
-          rw [show level.val - 1 + 1 = level.val from by omega] at hleft hright
-          simp only [honestPayload]
-          rw [hleft, hright]
-    | ftsRoots index =>
-        simp only [honestPayload, Concrete.ftsRootsPayload]
-        refine congrArg _ (congrArg _ (funext fun tree => ?_))
-        have hmem : (Position.ftsNode index tree ⟨ftsTreeHeight - 1, by decide⟩
-            ⟨0, by positivity⟩) ∈ (Position.ftsRoots index).children := by
-          simp only [Position.children, List.mem_ofFn]
-          exact ⟨tree, rfl⟩
-        have := hchildren _ hmem
-        rw [honestValue_ftsNode, honestValue_ftsNode] at this
-        simpa only [show ftsTreeHeight - 1 + 1 = ftsTreeHeight from rfl] using this
+  rw [honestPayload_eq_slots f parameter otsSecret ftsSecret hvalid,
+    honestPayload_eq_slots g parameter otsSecret ftsSecret hvalid,
+    slots_congr f g parameter otsSecret ftsSecret hchildren]
+
+/-- **The payload determines the values below it.** -/
+theorem slots_injective {p : Position} (hvalid : p.Valid)
+    (h : honestPayload f parameter otsSecret ftsSecret p
+      = honestPayload g parameter otsSecret ftsSecret p) :
+    slots f parameter otsSecret ftsSecret p = slots g parameter otsSecret ftsSecret p := by
+  rw [honestPayload_eq_slots f parameter otsSecret ftsSecret hvalid,
+    honestPayload_eq_slots g parameter otsSecret ftsSecret hvalid] at h
+  exact TargetSum.flatMap_injective Concrete.digestBytes 16 digestBytes_length
+    (fun _ _ => digestBytes_injective) (slots_length f g parameter otsSecret ftsSecret p) h
 
 theorem honestInput_congr {p : Position} (hvalid : p.Valid)
     (hchildren : ∀ c ∈ p.children, honestValue f parameter otsSecret ftsSecret c

@@ -40,6 +40,24 @@ theorem flatMap_ofFn_injective {α β : Type} (g : α → List β) (len : Nat)
       | zero => exact hzero
       | succ j => exact congrFun hsucc j
 
+/-- The same, for lists: a concatenation of fixed-length blocks determines the blocks. -/
+theorem flatMap_injective {α β : Type} (g : α → List β) (len : Nat)
+    (hlen : ∀ a, (g a).length = len) (hinj : ∀ a b, g a = g b → a = b) :
+    ∀ {xs ys : List α}, xs.length = ys.length → xs.flatMap g = ys.flatMap g → xs = ys := by
+  intro xs
+  induction xs with
+  | nil =>
+      intro ys hlength _
+      exact (List.eq_nil_of_length_eq_zero hlength.symm).symm
+  | cons x xs ih =>
+      intro ys hlength h
+      cases ys with
+      | nil => simp at hlength
+      | cons y ys =>
+          simp only [List.flatMap_cons] at h
+          obtain ⟨hhead, htail⟩ := List.append_inj h (by rw [hlen, hlen])
+          exact congrArg₂ _ (hinj _ _ hhead) (ih (by simpa using hlength) htail)
+
 /-- A one-time signature's payload is its `v` endpoints, and the concatenation determines them. -/
 theorem leafPayload_injective {endpoints endpoints' : ChainIndex → Digest}
     (h : Concrete.leafPayload endpoints = Concrete.leafPayload endpoints') :
