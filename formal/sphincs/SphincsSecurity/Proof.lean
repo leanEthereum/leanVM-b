@@ -1,5 +1,6 @@
 import SphincsSecurity.Proof.Arith
 import SphincsSecurity.Proof.Bytes
+import SphincsSecurity.Proof.Code
 import SphincsSecurity.Proof.Guess
 import SphincsSecurity.Proof.QueryBound
 import SphincsSecurity.Proof.Game
