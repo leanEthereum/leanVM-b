@@ -28,7 +28,7 @@ theorem gameRest_eq_map_gameRestLogged (scheme : Scheme) (adversary : Adversary)
     gameRest scheme adversary pk sk = Prod.fst <$> gameRestLogged scheme adversary pk sk := by
   simp only [gameRest, gameRestLogged, map_bind, map_pure]
   rw [← QueryImpl.fst_map_run_withLogging (forwardOracles + signingOracle scheme sk) (adversary.main pk)]
-  simp [map_bind, bind_map_left]
+  simp [bind_map_left]
 
 /-- **The reduction's frame, with the adversary's queries in hand.** -/
 theorem forgeAdvantage_le_logged (scheme : Scheme) (adversary : Adversary) (c : ℝ≥0∞)
