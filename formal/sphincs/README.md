@@ -24,42 +24,33 @@ The bound is the slope `q / 2^bits`, so it bounds what one query buys. Every str
 
 ## What is proven
 
-Correctness (`Ver` accepts honest signatures, against every answer function, which is what rules out
-the claim holding vacuously); domain separation and the injectivity of every payload in the scheme;
-incomparability of the target-sum code; the one-guess bound `2^-n`; the pair bound `q * 2^-n`;
-extraction of the first divergence for chains, layer trees, one-time signatures and few-time
-openings; and the frames the reduction is assembled in, including the adversary's queries logged at
-no cost to any distribution.
+Correctness (`Ver` accepts honest signatures, against every answer function, which is what rules out the claim holding vacuously); domain separation and the injectivity of every payload in the scheme; incomparability of the target-sum code; the one-guess bound `2^-n` at the digest length and at any width, including the index a fresh digest selects; the accounting `(c * q + potential) * eps` for an arbitrary bad event on the oracle's cache; extraction of the first divergence for chains, layer trees, one-time signatures and few-time openings; and the frames the reduction is assembled in, including the adversary's queries logged at no cost to any distribution.
 
-## What remains, and where the tools are
+## The shape of the proof
 
-The extraction lemmas all end in "the adversary's value equals the honest value", and an equality in
-its output is not yet a break. Turning it into one needs the honest secret to be unpredictable given
-the adversary's view, conditioned on no query having hit it: a hybrid in which the chain's first
-answer is reprogrammed to a fresh value, after which the view is independent of the secret and the
-logged queries hit it with probability at most `q * 2^-n`.
+The whole probabilistic side is one lemma, `Amortized.probEvent_bad_le_amortized`. Give it a predicate `Bad` on the random oracle's cache, a potential `Nat` on caches and a constant `c`, prove that a fresh answer on an uncached input turns the cache bad only by landing in a finite set of digests whose size the potential pays for up to `c` per query, and it returns `(c * q + potential) * eps`. Nothing else about the oracle is needed: no presampling, no reprogramming, no hybrid.
 
-VCVio has that machinery, which is worth knowing before rebuilding it:
+That shape is forced by what the forgery has to hit. Every hit the extraction produces is "a payload other than the honest one, hashing at the same tweak to the honest value there", and the honest value is itself an oracle answer, drawn during the run. So no fixed map on inputs can name the honest partner of an input, and a bound quantified over such a map cannot be instantiated. What replaces it is a cache-local event. A tweak names one structural position (`Bytes.tweakBytes_injective`), a position has one honest payload, and that payload is *determined* by the cache as soon as every honest query below it is cached, in the sense that all answer functions agreeing with the cache agree on it. `Bad` is then: some domain is determined, its honest input is cached, and some other cached input at the same domain has the same truncated answer.
 
-- `OracleComp/QueryTracking/ProgrammingOracle.lean` defines `withProgramming` with the bad flag of
-  the identical-until-bad pattern, and `ProgramLogic/Relational/ProgrammingOracle.lean` proves the
-  bound `tvDist_simulateQ_withCaching_withProgramming_le_probEvent_bad`, with a heterogeneous version
-  for the lazy random oracle whose base implementation lives in `ProbComp`.
-- `RandomOracle/ProbeEps.lean` has the hidden-target bound `probEvent_hiddenReadMany_le`: a target
-  drawn once and probed by `q` adaptive reads fires with probability at most `q * eps`.
-- `RandomOracle/DeferredSampling.lean` has the distribution-level bind commutation that front-loads
-  answer-irrelevant draws onto a tape.
+The charges a fresh answer faces, and what pays for them:
 
-What does not fit yet is the shape. Those bridges are stated for a computation over one spec,
-simulated by `so.withCaching`; the game here runs over `unifSpec + HashSpec` under
-`unifFwdImpl + randomOracle`, which is not `so.withCaching` for any single `so`, and `roSim` carries
-only lifting and dispatch lemmas, no bridge. Two routes: generalize the identical-until-bad bound to
-the sum spec, or front-load the game's own sampling so the surface computation is hash-only, which is
-what `DeferredTape.Factorizes` is for and which its authors flag as the scheme-specific part. The
-randomizer resampling is the awkward case there, since it does influence control flow.
+- an adversarial input at a domain whose honest input is already cached and determined: one target, paid by `c`;
+- the honest input at such a domain, queried fresh: one target per cached input at that domain, each of which deposited a unit when it was cached and had no honest counterpart to hit yet;
+- the answer that *determines* a domain, one query being the last honest query below it: the domain's honest input is fixed only now, and may already be cached, so one target per cached input at that domain, each of which deposited one unit per undetermined slot of its own domain's payload.
 
-After the hybrid: composing the extractions through it, the leak's binomial argument for the
-`2^-133.3` term, and the arithmetic to `q / 2^120`.
+Each honest position feeds exactly one parent, so one answer determines at most one domain and the third charge happens once per slot. The potential is therefore the sum, over cached inputs at a structural domain, of one plus the number of that domain's slots still undetermined, and `c` is `2` plus the widest payload, the `v = 42` chain endpoints of a leaf. That is `log2 44 = 5.5` bits of the `8` the claim leaves, against `2^-122.9` for the few-time leak: the two together stay under `2^-120`.
+
+The frame splits the game at the secret sampling rather than after key generation. Key generation's own hash queries then belong to the accounted run, so the accounting starts from the empty cache, at potential `0` and trivially clean, and no fact about what key generation leaves behind is needed.
+
+`PairBound` was deleted rather than kept: it bounded the same sum through a fixed partner map on inputs, which is exactly what the honest value's run dependence rules out.
+
+## What remains
+
+- The honest structure as a function of the domain, and `Determined`, with the few-time analogues of the extraction lemmas.
+- The amortized step for that `Bad`: the three charges above.
+- The descent, which is the deterministic bulk. A forgery is `Bad`, or a replay, or the few-time leak, or a guessed secret. It needs the honest values along the forgery's path to be cached, which is where "key generation queried all of layer 0" and "signing queried every tree it read" are used, and it needs incomparability at each layer to turn "every value honest" into "the message is one that was signed".
+- The leak's counting side, `LeakArith.leak_union_bound_scaled` being its arithmetic already, and the guessed secret, which is where `ProbeEps.probEvent_hiddenReadMany_le` fits: a few-time secret is drawn once and read only by the openings.
+- The final arithmetic to `q / 2^120`.
 
 Nothing closes the main claim yet. The one-time and Merkle halves of `formal/xmss` carry over, sharing the tweakable hash, the target-sum code and the shape of the bound; what is new is the hypertree, the few-time forest, the digest that picks the index, and the counter search under a tweak shared across attempts.
 

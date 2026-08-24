@@ -3,7 +3,7 @@ import SphincsSecurity.Proof.Bytes
 import SphincsSecurity.Proof.Code
 import SphincsSecurity.Proof.Guess
 import SphincsSecurity.Proof.QueryBound
-import SphincsSecurity.Proof.PairBound
+import SphincsSecurity.Proof.Amortized
 import SphincsSecurity.Proof.Game
 import SphincsSecurity.Proof.Logged
 import SphincsSecurity.Proof.Support
@@ -34,5 +34,7 @@ and it is what rules out the statement holding vacuously for want of an acceptin
 
 `Bytes.tweakBytes_injective` is the other half of the foundation: a tweak names one structural
 position, so one query bears on one position and an inversion stays at `2^-n` per query with no
-multi-target factor.
+multi-target factor. `Amortized.probEvent_bad_le_amortized` is what turns that into a bound on a
+run: it is the only probabilistic argument the reduction makes, and `README.md` explains the shape
+it imposes on everything else.
 -/
