@@ -21,6 +21,9 @@ being on `n`, and asking it to try costs two minutes and then fails.
 
 namespace SphincsSecurity
 
+-- the terms carry exponents past the linter's threshold; `decide` evaluates them, the elaborator need not
+set_option exponentiation.threshold 400
+
 /-- `d ! * C(n, d) ≤ n ^ d`, which is what lets the binomials go. -/
 theorem factorial_mul_choose_le_pow (n d : Nat) :
     Nat.factorial d * Nat.choose n d ≤ n ^ d := by
