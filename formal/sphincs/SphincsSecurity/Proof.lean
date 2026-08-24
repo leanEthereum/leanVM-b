@@ -14,6 +14,7 @@ import SphincsSecurity.Proof.Layer
 import SphincsSecurity.Proof.Hypertree
 import SphincsSecurity.Proof.Correctness
 import SphincsSecurity.Proof.Extract
+import SphincsSecurity.Proof.ExtractChain
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
