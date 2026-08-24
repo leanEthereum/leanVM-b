@@ -55,7 +55,7 @@
 \begin{abstract}
 As proposed in~\cite{DKKW25}, XMSS is a promising post-quantum replacement for BLS \cite{BLS}, the signature scheme used by Ethereum validators. The lack of native aggregation can be mitigated with a post-quantum snark. This technical note specifies an XMSS instance with the following properties:
 \begin{itemize}
-  \item \textbf{NIST security level~1}~\cite{NISTPQC}, $\approx 128$-bit (resp. $\approx 64$-bit) of classical (resp. quantum) security, in the Random Oracle model, ROM (resp. Quantum Random Oracle model, QROM).\footnote{The quantum claim is not fully formalized (yet).}
+  \item \textbf{NIST security level~1}~\cite{NISTPQC}, $\approx 128$-bit (resp. $\approx 64$-bit) of classical (resp. quantum) security, in the Random Oracle model, ROM (resp. Quantum Random Oracle model, QROM).\footnote{The classical bound is proved (Section~\ref{sec:security}); the quantum one is a target, not a proved statement (Section~\ref{sec:quantum}).}
   \item \textbf{public key: 32 bytes}.
   \item \textbf{signature: 1208 bytes} (smaller than the 1280-byte minimum IPv6 MTU~\cite{RFC8200}).
   \item snark-friendly encoding, optimized for aggregation via leanVM-b~\cite{leanVMb}, requiring 15 bits of grinding on average.
@@ -258,18 +258,9 @@ TODO
 \end{proof}
 
 \subsection{Quantum security}
+\label{sec:quantum}
 
-If $\hash$ is modeled as a quantum random oracle, we claim NIST security category~1 (i.e. $\approx 64$ bits of quantum security), subject to the caveats below. Indeed, FIPS~205 assigns category~1 to the SLH-DSA parameter sets with a 128-bit hash digest~\cite{FIPS205}. The security proof for the XMSS layers of SPHINCS+ applies to random messages~\cite{HK22}. We then apply the reduction of a chosen-message forgery to a random-message forgery from~\cite{GHHM21}.
-
-This claim has two caveats:
-\begin{enumerate}[leftmargin=2em]
-\item The reduction is not lossless. Since $\ep$ is included in $\mathsf{tweak}_{\mathrm{enc}}(\ep)$, the indexed bound of~\cite{GHHM21} is the relevant one. An adversary making at most $q_s$ signing queries and $q_H$ quantum random-oracle queries adds
-\[
-  \frac{8(q_s+q_H)^2}{2^{n}}+\frac{3q_s}{2}\sqrt{\frac{q_H+q_s}{2^{\lrnd}}}
-\]
-to the underlying forging probability. For $q_s\leq2^{32}$ the second term stays below $2^{-32}$, but the first term falls $1.5$ bits short of 64.
-\item This specification does not use the WOTS+ encoding standardized in FIPS~205. SLH-DSA appends a Winternitz checksum to the base-$16$ message digits, whereas this specification uses a target-sum encoding. A complete quantum security proof for precisely our XMSS remains to be written.
-\end{enumerate}
+Only the classical bound of Section~\ref{sec:security} is proved. We expect $\approx64$ quantum bits, NIST category~1, which FIPS~205 assigns to the SLH-DSA parameter sets with a 128-bit digest~\cite{FIPS205}. The XMSS layers of SPHINCS+ have a QROM bound against an adversary that does not choose the signed messages~\cite{HK22}, and hash-then-sign reduces chosen messages to random ones~\cite{GHHM21}. This remains a conjecture: the first bound is proved for the WOTS+ encoding rather than for a target sum, and the second reduction induces a small loss of arround 1.5 bits.
 
 \section{Completeness}
 
