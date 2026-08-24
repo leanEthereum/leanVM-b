@@ -26,7 +26,6 @@
 \newcommand{\Sig}{\mathsf{Sig}}
 \newcommand{\Ver}{\mathsf{Ver}}
 \newcommand{\SIG}{\mathsf{SIG}}
-\newcommand{\Forge}{\mathsf{Forge}}
 \newcommand{\Chain}{\mathsf{Chain}}
 \newcommand{\hash}{\mathsf{H}}
 \newcommand{\LE}{\mathsf{LE}}
@@ -241,9 +240,9 @@ The adversary wins if $\Ver(\pk,\ep^*,m^*,\sigma^*)=1$ and the signer did not re
   \item or it did, but the signer's answer was not $\sigma^*$.
 \end{itemize}
 
-For $q \geq 1$, let $\Forge_{\SIG}(q)$ be the maximum winning probability of any adversary for which the total number of random-oracle queries made in the experiment, including during key generation, signing, and the final verification of the claimed forgery, is at most $q$. We say that $\SIG$ has $x$ bits of classical strong unforgeability in the ROM if
+Call $\mathcal A$ $q$-bounded if the experiment makes at most $q$ random-oracle queries on every execution, counting those of key generation, signing, and the final verification of the claimed forgery. We say that $\SIG$ has $x$ bits of classical strong unforgeability in the ROM if every $q\geq1$ and every $q$-bounded $\mathcal A$ satisfy
 \[
-  \max_{q \geq 1}\frac{\Forge_{\SIG}(q)}{q}\leq 2^{-x}.
+  \Pr[\mathcal A\text{ wins}]\leq\frac{q}{2^{x}}.
 \]
 \end{definition}
 
@@ -251,7 +250,7 @@ For $q \geq 1$, let $\Forge_{\SIG}(q)$ be the maximum winning probability of any
 The XMSS specified above has 127 bits of classical strong unforgeability in the ROM.
 \end{theorem}
 
-A formal Lean4 proof of this theorem, using the VCVio framework \cite{VCVio}, can be found in \texttt{./formal/xmss/XmssSecurity/Statement.lean}. The theorem depends only on Lean's three standard axioms.
+A formal Lean4 proof of this theorem, using the VCVio framework \cite{VCVio}, can be found in \texttt{./formal/xmss/}. The claim is stated in \texttt{XmssSecurity/Statement.lean}, discharged at the root in \texttt{XmssSecurity.lean}, and derived under \texttt{XmssSecurity/Proof/}. The theorem depends only on Lean's three standard axioms.
 
 \begin{proof}[Proof sketch]
 TODO
@@ -260,7 +259,7 @@ TODO
 \subsection{Quantum security}
 \label{sec:quantum}
 
-Only the classical bound of Section~\ref{sec:security} is proved. We expect $\approx64$ quantum bits, NIST category~1, which FIPS~205 assigns to the SLH-DSA parameter sets with a 128-bit digest~\cite{FIPS205}. The XMSS layers of SPHINCS+ have a QROM bound against an adversary that does not choose the signed messages~\cite{HK22}, and hash-then-sign reduces chosen messages to random ones~\cite{GHHM21}. This remains a conjecture: the first bound is proved for the WOTS+ encoding rather than for a target sum, and the second reduction induces a small loss of arround 1.5 bits.
+Only the classical bound of Section~\ref{sec:security} is proved. We expect $\approx64$ quantum bits, NIST category~1, which FIPS~205 assigns to the SLH-DSA parameter sets with a 128-bit digest~\cite{FIPS205}. The XMSS layers of SPHINCS+ have a QROM bound against an adversary that does not choose the signed messages~\cite{HK22}, and hash-then-sign reduces chosen messages to random ones~\cite{GHHM21}. This remains a conjecture: the first bound is proved for the WOTS+ encoding rather than for a target sum, and the second reduction induces a small loss of around 1.5 bits.
 
 \section{Completeness}
 
