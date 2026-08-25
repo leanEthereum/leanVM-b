@@ -451,6 +451,47 @@ theorem OriginMonitorState.pendingReuses_advanceSigner_card_add_one
   apply Finset.card_erase_add_one
   simp [OriginMonitorState.pendingReuses, hseen, hordinal]
 
+theorem OriginMonitorState.pendingReuses_advanceSigner_of_selectedAt?_eq_none
+    {signatures distinct sources : Nat}
+    {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (state : OriginMonitorState configuration)
+    (hselected : pattern.selectedAt? state.signerOrdinal = none) :
+    state.advanceSigner.pendingReuses = state.pendingReuses := by
+  classical
+  ext candidate
+  simp only [OriginMonitorState.pendingReuses, OriginMonitorState.advanceSigner,
+    Finset.mem_filter, Finset.mem_univ, true_and]
+  constructor
+  · rintro ⟨hseen, hle⟩
+    exact ⟨hseen, Nat.le_trans (Nat.le_succ _) hle⟩
+  · rintro ⟨hseen, hle⟩
+    refine ⟨hseen, ?_⟩
+    by_contra hnot
+    have heq : candidate.1.1.val = state.signerOrdinal := by omega
+    have hsome : pattern.selectedAt? state.signerOrdinal = some candidate.1 :=
+      (pattern.selectedAt?_eq_some_iff state.signerOrdinal candidate.1).2 heq
+    rw [hselected] at hsome
+    contradiction
+
+theorem OriginMonitorState.potential_advanceSigner_of_selectedAt?_eq_none
+    {signatures distinct sources : Nat}
+    {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (state : OriginMonitorState configuration)
+    (event : (pattern.selected → FewTimeView) → Prop)
+    (hselected : pattern.selectedAt? state.signerOrdinal = none) :
+    state.advanceSigner.potential event = state.potential event := by
+  classical
+  rw [OriginMonitorState.potential, OriginMonitorState.potential]
+  have hvalid : state.advanceSigner.valid = state.valid := rfl
+  rw [hvalid]
+  congr 1
+  rw [congrArg Finset.card state.pendingSources_advanceSigner,
+    congrArg Finset.card
+      (state.pendingReuses_advanceSigner_of_selectedAt?_eq_none hselected)]
+  rfl
+
 theorem source_reuse_weighted_sum
     {Index : Type} [Fintype Index] (probability mass : Index → ℝ≥0∞)
     (sourceCount reuseCount : Nat) (totalMass : ℝ≥0∞)
