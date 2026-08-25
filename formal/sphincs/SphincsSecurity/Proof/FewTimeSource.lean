@@ -374,6 +374,14 @@ theorem randomOracle_run_output_cached (input : HashInput)
       obtain ⟨rfl, rfl⟩ := hmem
       exact hcache
 
+def FewTimeCover.PrecachedEntries {f : QueryImpl HashSpec Id}
+    {cache : QueryCache HashSpec} {secretKey : SecretKey}
+    {signingLog : QueryLog SigningSpec} {index : Index}
+    {targetLeaves : DigestTree → FtsLeaf}
+    (cover : FewTimeCover f cache secretKey signingLog index targetLeaves)
+    (trace : SigningCacheTrace) (hlog : trace.toSigningLog = signingLog) :=
+  {entry : cover.entries // cover.EntryDigestPrecached trace hlog entry}
+
 theorem FewTimeCover.precached_entry_has_fresh_direct_view_source
     (adversary : Adversary) (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
@@ -396,6 +404,7 @@ theorem FewTimeCover.precached_entry_has_fresh_direct_view_source
         ∧ (output, (result.2.2.intervals.get source).finalCache) ∈ support
           ((randomOracle (cover.entryDigestInput entry)).run
             (result.2.2.intervals.get source).initialCache)
+        ∧ signAttemptResultOfOutput output ≠ none
         ∧ hashOutputFewTimeView output = cover.entryView entry := by
   obtain ⟨source, hsourceInput, hsourceMiss⟩ :=
     cover.precached_entry_has_earlier_direct_source adversary parameter otsSecret ftsSecret
@@ -431,7 +440,10 @@ theorem FewTimeCover.precached_entry_has_fresh_direct_view_source
       simpa only [messageDigest, oracleHash, evalWithAnswerFn_bind, evalWithAnswerFn_query,
         evalWithAnswerFn_pure, selected] using hentryDigest
     exact (congrArg truncateMessageDigest hfinput').symm.trans hentryDigest'
-  refine ⟨source, output, hsourceInput, hsourceMiss, hsourceRun', ?_⟩
+  have hadmissible : signAttemptResultOfOutput output ≠ none := by
+    rw [signAttemptResultOfOutput_ne_none_iff, hdigest]
+    exact (cover.entryDigest_spec entry).2.1
+  refine ⟨source, output, hsourceInput, hsourceMiss, hsourceRun', hadmissible, ?_⟩
   apply Prod.ext
   · change digestIndex (truncateMessageDigest output) = digestIndex (cover.entryDigest entry)
     rw [hdigest]
@@ -439,6 +451,46 @@ theorem FewTimeCover.precached_entry_has_fresh_direct_view_source
     change digestLeaves (truncateMessageDigest output) (ftsIndexOf tree) =
       digestLeaves (cover.entryDigest entry) (ftsIndexOf tree)
     rw [hdigest]
+
+theorem FewTimeCover.precached_entries_have_injective_fresh_direct_view_sources
+    (adversary : Adversary) (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (result : (Digest × Forgery × Bool) × (QueryCache HashSpec × FullAdversaryTrace))
+    (hresult : result ∈ support
+      (gameAfterSecretsWithFullTrace adversary parameter otsSecret ftsSecret))
+    (f : QueryImpl HashSpec Id) (hf : result.2.1.AgreesWithFn f)
+    (index : Index) (targetLeaves : DigestTree → FtsLeaf)
+    (cover : FewTimeCover f result.2.1
+      ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+      result.2.2.signing.toSigningLog index targetLeaves) :
+    ∃ (source : cover.PrecachedEntries result.2.2.signing rfl →
+          Fin result.2.2.intervals.length)
+        (output : cover.PrecachedEntries result.2.2.signing rfl → HashOutput),
+      Function.Injective source
+        ∧ ∀ entry,
+          (result.2.2.intervals.get (source entry)).input =
+              .inl (.inr (cover.entryDigestInput entry.1))
+            ∧ (result.2.2.intervals.get (source entry)).initialCache
+              (cover.entryDigestInput entry.1) = none
+            ∧ (output entry, (result.2.2.intervals.get (source entry)).finalCache) ∈ support
+              ((randomOracle (cover.entryDigestInput entry.1)).run
+                (result.2.2.intervals.get (source entry)).initialCache)
+            ∧ signAttemptResultOfOutput (output entry) ≠ none
+            ∧ hashOutputFewTimeView (output entry) = cover.entryView entry.1 := by
+  classical
+  choose source output hsource using fun entry :
+      cover.PrecachedEntries result.2.2.signing rfl =>
+    cover.precached_entry_has_fresh_direct_view_source adversary parameter otsSecret ftsSecret
+      result hresult f hf index targetLeaves entry.1 entry.2
+  refine ⟨source, output, ?_, hsource⟩
+  intro left right heq
+  apply Subtype.ext
+  apply cover.entryDigestInput_injective
+  have hleft := (hsource left).1
+  have hright := (hsource right).1
+  rw [heq] at hleft
+  simpa only [Sum.inl.injEq, Sum.inr.injEq] using hleft.symm.trans hright
 
 theorem FewTimeCover.precached_entry_has_earlier_sample_source
     (adversary : Adversary) (parameter : PublicParameter)
