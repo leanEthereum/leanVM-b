@@ -26,7 +26,6 @@
 \newcommand{\Sig}{\mathsf{Sig}}
 \newcommand{\Ver}{\mathsf{Ver}}
 \newcommand{\SIG}{\mathsf{SIG}}
-\newcommand{\Forge}{\mathsf{Forge}}
 \newcommand{\Chain}{\mathsf{Chain}}
 \newcommand{\hash}{\mathsf{H}}
 \newcommand{\LE}{\mathsf{LE}}
@@ -75,7 +74,7 @@ We present, as an example, a SPHINCS$^+$-based signature with the following prop
   \item \textbf{signature: 4924 bytes}.
   \item \textbf{497 hashes per verification}.
   \item signing costs 190K hashes with 1024 bytes of cached signer state, or 1.55M without.
-  \item \textbf{key generation costs 1.38M hashes}, which is the one tree of layer $0$ and nothing else.
+  \item \textbf{key generation costs 1.38M hashes}.
 \end{itemize}
 \end{abstract}
 
@@ -437,10 +436,10 @@ Nothing implements this scheme yet, so the document carries no test vectors. One
 \subsection{Classical security}
 
 \begin{definition}[Strong unforgeability in the ROM]
-Let $\SIG=(\Gen,\Sig,\Ver)$ be a signature scheme whose algorithms use a hash function $\hash:\bits{*}\to\bits{256}$. Consider the following game between a signer and an adversary $\mathcal A$ (an arbitrary probabilistic algorithm with unbounded running time and memory), with $\hash$ sampled as a random oracle that both may query. The signer runs $(\pk,\sk)\gets\Gen$ and gives $\pk$ to $\mathcal A$, which may then adaptively take any of the following actions:
+Let $\SIG=(\Gen,\Sig,\Ver)$ be a signature scheme whose algorithms use a hash function $\hash:\bits{*}\to\bits{256}$. Consider the following game between a signer and an adversary $\mathcal A$ (an arbitrary probabilistic algorithm with unbounded running time and memory), with $\hash$ sampled as a random oracle, that both signer and adversary can query. The signer first runs $(\pk,\sk)\gets\Gen$ and gives $\pk$ to $\mathcal A$. The adversary may then adaptively take any of the following actions:
 \begin{enumerate}[leftmargin=2em]
   \item Query the random oracle on any input and receive its 256-bit output.
-  \item Submit a message $m\in\bits{\lmsg}$ and receive $\sigma\gets\Sig(\sk,m)$ from the signer, which may be $\bot$. It may do so at most $\qs$ times.
+  \item Submit a message $m\in\bits{\lmsg}$ and receive $\sigma\gets\Sig(\sk,m)$ from the signer, which may be $\bot$. It may do so at most $\qs$ times, on any messages, the same one included: $\Sig$ keeps no state, so nothing here is used up.
   \item Terminate with a claimed forgery $(m^*,\sigma^*)$.
 \end{enumerate}
 The adversary wins if $\Ver(\pk,m^*,\sigma^*)=1$ and the signer did not return $\sigma^*$ in response to a signing query for $m^*$, meaning:
@@ -448,13 +447,14 @@ The adversary wins if $\Ver(\pk,m^*,\sigma^*)=1$ and the signer did not return $
   \item if the adversary never queried a signature for $m^*$;
   \item or it did, but no answer it received was $\sigma^*$.
 \end{itemize}
-Let $\Forge_{\SIG}(\qs,q)$ be the maximum winning probability of any adversary for which the total number of random-oracle queries made in the experiment, including during key generation, signing, and the final verification of the claimed forgery, is at most $q$ on every execution path; it is $0$ below what key generation and one verification already cost. An adversary that spends all $\qs$ signatures needs $q$ past $2^{58}$, the attempt caps bounding the loops, so that is where the claim is read. We say that $\SIG$ has $x$ bits of classical strong unforgeability in the ROM at $\qs$ signatures if
+
+Call $\mathcal A$ $q$-bounded if the experiment makes at most $q$ random-oracle queries on every execution, counting those of key generation, signing, and the final verification of the claimed forgery. We say that $\SIG$ has $x$ bits of classical strong unforgeability in the ROM at $\qs$ signatures if every $q\geq1$ and every $q$-bounded $\mathcal A$ satisfy
 \[
-  \max_{q\geq1}\frac{\Forge_{\SIG}(\qs,q)}{q}\leq 2^{-x}.
+  \Pr[\mathcal A\text{ wins}]\leq\frac{q}{2^{x}}.
 \]
 \end{definition}
 
-That game, with the parameters and the algorithms above, is written out in Lean4 over the VCVio framework~\cite{VCVio} in \texttt{./formal/sphincs/SphincsSecurity/Statement.lean}, which states $x=120$ at $\qs=2^{24}$: the eight bits below $n$ are what a proof may spend on union bounds and constants. Nothing proves it yet.
+TODO prove 127 bits of classical strong unforgeability in the ROM at $\qs=2^{24}$ signatures.
 
 \subsection{Quantum security}
 \label{sec:quantum}
