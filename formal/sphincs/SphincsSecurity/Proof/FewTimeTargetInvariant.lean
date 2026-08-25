@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.FewTimeTargetMonitor
+import SphincsSecurity.Proof.FewTimeTargetCompletion
 
 /-!
 # One-step invariant for one adaptive few-time target
@@ -56,6 +57,150 @@ theorem OriginTargetMonitorState.potential_afterDirect_of_ordinal_ne
     exact OriginTargetMonitorState.potential_recordCandidate_of_ordinal_ne
       targetOrdinal _ _ _ event hne
   · simp [OriginTargetMonitorState.afterDirect, hfresh]
+
+theorem OriginTargetMonitorState.potential_advanceOrigin_congr
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (state : OriginTargetMonitorState configuration)
+    (left right : OriginMonitorState configuration)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
+    (hcongr : ∀ target,
+      left.potential (fun views => event (views, target)) =
+        right.potential (fun views => event (views, target))) :
+    (state.advanceOrigin left).potential event =
+      (state.advanceOrigin right).potential event := by
+  classical
+  simp only [OriginTargetMonitorState.advanceOrigin,
+    OriginTargetMonitorState.potential]
+  split
+  · cases state.targetView with
+    | none => simp_rw [hcongr]
+    | some target => exact hcongr target
+  · rfl
+
+theorem OriginTargetMonitorState.potential_recordCandidate_advanceOrigin_congr
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (targetOrdinal : Nat) (state : OriginTargetMonitorState configuration)
+    (allowed : Bool) (view : FewTimeView)
+    (left right : OriginMonitorState configuration)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
+    (hcongr : ∀ target,
+      left.potential (fun views => event (views, target)) =
+        right.potential (fun views => event (views, target))) :
+    ((state.advanceOrigin left).recordCandidate targetOrdinal allowed view).potential event =
+      ((state.advanceOrigin right).recordCandidate targetOrdinal allowed view).potential event := by
+  classical
+  by_cases heq : state.candidateOrdinal = targetOrdinal
+  · cases hstate : state.valid <;> cases hallowed : allowed <;>
+      simp [OriginTargetMonitorState.recordCandidate,
+        OriginTargetMonitorState.advanceOrigin, OriginTargetMonitorState.potential,
+        heq, hstate, hcongr]
+  · by_cases hvalid : state.valid = true
+    · cases htarget : state.targetView with
+      | none =>
+          simp [OriginTargetMonitorState.recordCandidate,
+            OriginTargetMonitorState.advanceOrigin, OriginTargetMonitorState.potential,
+            heq, hvalid, htarget]
+          simp_rw [hcongr]
+      | some target =>
+          simpa [OriginTargetMonitorState.recordCandidate,
+            OriginTargetMonitorState.advanceOrigin, OriginTargetMonitorState.potential,
+            heq, hvalid, htarget] using hcongr target
+    · simp [OriginTargetMonitorState.recordCandidate,
+        OriginTargetMonitorState.advanceOrigin, OriginTargetMonitorState.potential,
+        heq, hvalid]
+
+noncomputable def OriginTargetMonitorState.afterSigner
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (targetOrdinal : Nat) (secretKey : SecretKey) (request : SignRequest)
+    (state : OriginTargetMonitorState configuration)
+    (targetRun : TargetSignerResult × QueryCache HashSpec) :
+    OriginTargetMonitorState configuration :=
+  let signerRun := (targetSignerResultView targetRun.1, targetRun.2)
+  let advanced := state.advanceOrigin
+    (state.origin.afterSigner secretKey request signerRun)
+  match targetRun.1.2 with
+  | none => advanced
+  | some (input, view) =>
+      if state.origin.viewed.cache input = none then
+        advanced.recordCandidate targetOrdinal
+          (decide (pattern.selectedAt? state.origin.signerOrdinal = none)) view
+      else advanced
+
+theorem OriginTargetMonitorState.targetScheduleCoherent_afterSigner
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (targetOrdinal : Nat) (secretKey : SecretKey) (request : SignRequest)
+    (state : OriginTargetMonitorState configuration)
+    (targetRun : TargetSignerResult × QueryCache HashSpec)
+    (hcoherent : state.TargetScheduleCoherent targetOrdinal) :
+    (state.afterSigner targetOrdinal secretKey request targetRun).TargetScheduleCoherent
+      targetOrdinal := by
+  cases hselection : targetRun.1.2 with
+  | none =>
+      simpa [OriginTargetMonitorState.afterSigner, hselection] using
+        state.targetScheduleCoherent_advanceOrigin targetOrdinal
+          (state.origin.afterSigner secretKey request
+            (targetSignerResultView targetRun.1, targetRun.2)) hcoherent
+  | some selection =>
+      rcases selection with ⟨input, view⟩
+      by_cases hfresh : state.origin.viewed.cache input = none
+      · simp only [OriginTargetMonitorState.afterSigner, hselection, hfresh, if_true]
+        exact OriginTargetMonitorState.targetScheduleCoherent_recordCandidate targetOrdinal
+          (state.advanceOrigin (state.origin.afterSigner secretKey request
+            (targetSignerResultView targetRun.1, targetRun.2))) _ _
+          (state.targetScheduleCoherent_advanceOrigin targetOrdinal _ hcoherent)
+      · simpa [OriginTargetMonitorState.afterSigner, hselection, hfresh] using
+          state.targetScheduleCoherent_advanceOrigin targetOrdinal
+            (state.origin.afterSigner secretKey request
+              (targetSignerResultView targetRun.1, targetRun.2)) hcoherent
+
+theorem OriginTargetMonitorState.potential_afterSigner_of_ordinal_ne
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (targetOrdinal : Nat) (secretKey : SecretKey) (request : SignRequest)
+    (state : OriginTargetMonitorState configuration)
+    (targetRun : TargetSignerResult × QueryCache HashSpec)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
+    (hne : state.candidateOrdinal ≠ targetOrdinal) :
+    (state.afterSigner targetOrdinal secretKey request targetRun).potential event =
+      (state.advanceOrigin (state.origin.afterSigner secretKey request
+        (targetSignerResultView targetRun.1, targetRun.2))).potential event := by
+  cases hselection : targetRun.1.2 with
+  | none => simp [OriginTargetMonitorState.afterSigner, hselection]
+  | some selection =>
+      rcases selection with ⟨input, view⟩
+      by_cases hfresh : state.origin.viewed.cache input = none
+      · simp only [OriginTargetMonitorState.afterSigner, hselection, hfresh, if_true]
+        exact OriginTargetMonitorState.potential_recordCandidate_of_ordinal_ne
+          targetOrdinal _ _ _ event hne
+      · simp [OriginTargetMonitorState.afterSigner, hselection, hfresh]
+
+theorem OriginMonitorState.expected_potential_afterTargetSigner_le
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (secretKey : SecretKey) (request : SignRequest)
+    (state : OriginMonitorState configuration)
+    (event : (pattern.selected → FewTimeView) → Prop)
+    (q : Nat) (hq : q ≤ 2 ^ 120) (hcache : QueryCache.enncard state.viewed.cache ≤ q)
+    (hcoherent : state.ScheduleCoherent) :
+    (∑' targetRun,
+      Pr[= targetRun |
+        (simulateQ romImpl (signWithTargetView secretKey request)).run state.viewed.cache] *
+        (state.afterSigner secretKey request
+          (targetSignerResultView targetRun.1, targetRun.2)).potential event) ≤
+      state.potential event := by
+  calc
+    _ = ∑' signerRun,
+        Pr[= signerRun |
+          (simulateQ romImpl (signWithView secretKey request)).run state.viewed.cache] *
+          (state.afterSigner secretKey request signerRun).potential event := by
+      rw [← simulateQ_signWithTargetView_projection_run]
+      rw [tsum_probOutput_map_mul]
+    _ ≤ _ := state.expected_potential_afterSigner_le secretKey request event q hq
+      hcache hcoherent
 
 theorem OriginTargetMonitorState.expected_potential_advanceOrigin_le
     {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
@@ -199,6 +344,321 @@ theorem OriginTargetMonitorState.expected_potential_afterDirect_le
     intro target
     exact state.origin.expected_potential_afterDirect_le input
       (fun views => event (views, target)) horigin
+
+set_option maxRecDepth 1000000 in
+set_option maxHeartbeats 2000000 in
+theorem OriginTargetMonitorState.expected_potential_afterSigner_le
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (targetOrdinal : Nat) (secretKey : SecretKey) (request : SignRequest)
+    (state : OriginTargetMonitorState configuration)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
+    (q : Nat) (hq : q ≤ 2 ^ 120)
+    (hcache : QueryCache.enncard state.origin.viewed.cache ≤ q)
+    (horigin : state.origin.ScheduleCoherent)
+    (htarget : state.TargetScheduleCoherent targetOrdinal) :
+    (∑' targetRun,
+      Pr[= targetRun |
+        (simulateQ romImpl (signWithTargetView secretKey request)).run
+          state.origin.viewed.cache] *
+        (state.afterSigner targetOrdinal secretKey request targetRun).potential event) ≤
+      state.potential event := by
+  classical
+  by_cases heq : state.candidateOrdinal = targetOrdinal
+  · cases hselected : pattern.selectedAt? state.origin.signerOrdinal with
+    | some selected =>
+        calc
+          (∑' targetRun,
+              Pr[= targetRun |
+                (simulateQ romImpl (signWithTargetView secretKey request)).run
+                  state.origin.viewed.cache] *
+                (state.afterSigner targetOrdinal secretKey request targetRun).potential
+                  event) ≤
+              ∑' targetRun,
+                Pr[= targetRun |
+                  (simulateQ romImpl (signWithTargetView secretKey request)).run
+                    state.origin.viewed.cache] *
+                  (state.advanceOrigin (state.origin.afterSigner secretKey request
+                    (targetSignerResultView targetRun.1, targetRun.2))).potential event := by
+            apply ENNReal.tsum_le_tsum
+            intro targetRun
+            apply mul_le_mul' le_rfl
+            cases hselection : targetRun.1.2 with
+            | none =>
+                simp [OriginTargetMonitorState.afterSigner, hselection]
+            | some selection =>
+                rcases selection with ⟨input, view⟩
+                by_cases hfresh : state.origin.viewed.cache input = none
+                · have hdisallowed : decide
+                      (pattern.selectedAt? state.origin.signerOrdinal = none) = false := by
+                    simp [hselected]
+                  rw [OriginTargetMonitorState.afterSigner]
+                  simp only [hselection]
+                  rw [if_pos hfresh, hdisallowed]
+                  rw [OriginTargetMonitorState.potential_recordCandidate_eq_of_disallowed]
+                  · exact zero_le
+                  · simpa [OriginTargetMonitorState.advanceOrigin] using heq
+                · simp [OriginTargetMonitorState.afterSigner, hselection, hfresh]
+          _ ≤ state.potential event := by
+            apply state.expected_potential_advanceOrigin_le
+            intro target
+            exact state.origin.expected_potential_afterTargetSigner_le secretKey request
+              (fun views => event (views, target)) q hq hcache horigin
+    | none =>
+        cases hvalid : state.valid with
+        | false =>
+            have hzero : ∀ targetRun,
+                (state.afterSigner targetOrdinal secretKey request targetRun).potential
+                  event = 0 := by
+              intro targetRun
+              apply OriginTargetMonitorState.potential_eq_zero_of_invalid
+              cases hselection : targetRun.1.2 with
+              | none =>
+                  simp [OriginTargetMonitorState.afterSigner, hselection,
+                    OriginTargetMonitorState.advanceOrigin, hvalid]
+              | some selection =>
+                  rcases selection with ⟨input, view⟩
+                  by_cases hfresh : state.origin.viewed.cache input = none
+                  · simp [OriginTargetMonitorState.afterSigner, hselection, hfresh,
+                      OriginTargetMonitorState.recordCandidate,
+                      OriginTargetMonitorState.advanceOrigin, hvalid]
+                  · simp [OriginTargetMonitorState.afterSigner, hselection, hfresh,
+                      OriginTargetMonitorState.advanceOrigin, hvalid]
+            simp_rw [hzero]
+            simp [OriginTargetMonitorState.potential, hvalid]
+        | true =>
+            have htargetView : state.targetView = none :=
+              state.targetView_eq_none_of_candidateOrdinal_eq htarget heq
+            rw [OriginTargetMonitorState.potential, if_pos hvalid, htargetView]
+            let signerCost := fun targetRun : TargetSignerResult × QueryCache HashSpec =>
+              (state.afterSigner targetOrdinal secretKey request targetRun).potential event
+            let signerRisk := fun target : FewTimeView =>
+              state.origin.potential (fun views => event (views, target))
+            refine tsum_probOutput_signWithTargetView_completed_le_expected
+              secretKey request state.origin.viewed.cache signerCost signerRisk ?_ ?_
+            · intro targetRun _hsupport hnone
+              dsimp only [signerCost, signerRisk]
+              cases hselection : targetRun.1.2 with
+              | none =>
+                  simp [OriginTargetMonitorState.afterSigner, hselection,
+                    OriginTargetMonitorState.potential,
+                    OriginTargetMonitorState.advanceOrigin, hvalid, htargetView,
+                    state.origin.potential_afterSigner_of_selectedAt?_eq_none
+                      secretKey request
+                        (targetSignerResultView targetRun.1, targetRun.2) _ hselected]
+              | some selection =>
+                  rcases selection with ⟨input, view⟩
+                  have hfresh : state.origin.viewed.cache input ≠ none := by
+                    simpa [freshTargetSignerView?, hselection] using hnone
+                  simp [OriginTargetMonitorState.afterSigner, hselection, hfresh,
+                    OriginTargetMonitorState.potential,
+                    OriginTargetMonitorState.advanceOrigin, hvalid, htargetView,
+                    state.origin.potential_afterSigner_of_selectedAt?_eq_none
+                      secretKey request
+                        (targetSignerResultView targetRun.1, targetRun.2) _ hselected]
+            · intro targetRun _hsupport target hsome
+              dsimp only [signerCost, signerRisk]
+              cases hselection : targetRun.1.2 with
+              | none => simp [freshTargetSignerView?, hselection] at hsome
+              | some selection =>
+                  rcases selection with ⟨input, view⟩
+                  have hfresh : state.origin.viewed.cache input = none := by
+                    by_contra hnot
+                    simp [freshTargetSignerView?, hselection, hnot] at hsome
+                  have hview : view = target := by
+                    simpa [freshTargetSignerView?, hselection, hfresh] using hsome
+                  subst view
+                  simp [OriginTargetMonitorState.afterSigner, hselection, hfresh,
+                    OriginTargetMonitorState.recordCandidate,
+                    OriginTargetMonitorState.advanceOrigin,
+                    OriginTargetMonitorState.potential, heq, hvalid, hselected,
+                    state.origin.potential_afterSigner_of_selectedAt?_eq_none
+                      secretKey request
+                        (targetSignerResultView targetRun.1, targetRun.2) _ hselected]
+  · simp_rw [state.potential_afterSigner_of_ordinal_ne targetOrdinal secretKey request _
+      event heq]
+    apply state.expected_potential_advanceOrigin_le
+    intro target
+    exact state.origin.expected_potential_afterTargetSigner_le secretKey request
+      (fun views => event (views, target)) q hq hcache horigin
+
+theorem originTargetMonitoredAdversaryImpl_direct_result_potential
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
+    (targetOrdinal : Nat) (state : OriginTargetMonitorState configuration)
+    (input : HashInput) (result : HashOutput × QueryCache HashSpec)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop) :
+    let trace := fullAdversaryTraceUpdate (.inl (.inr input)) state.origin.viewed.cache
+      result.1 result.2 state.origin.viewed.trace
+    let monitored := monitorDirectSource state.origin input result.1
+    let origin : OriginMonitorState configuration :=
+      ⟨⟨result.2, trace, state.origin.viewed.views, state.origin.viewed.targetView⟩,
+        monitored.1, state.origin.directOrdinal + 1, state.origin.signerOrdinal,
+        monitored.2⟩
+    let advanced := state.advanceOrigin origin
+    (if state.origin.viewed.cache input = none then
+      advanced.recordCandidate targetOrdinal
+        (decide (configuration.sourceAt? state.origin.directOrdinal = none))
+        (hashOutputFewTimeView result.1)
+    else advanced).potential event =
+      (state.afterDirect targetOrdinal input result.1).potential event := by
+  classical
+  dsimp only
+  have horigin : ∀ target,
+      (⟨⟨result.2,
+          fullAdversaryTraceUpdate (.inl (.inr input)) state.origin.viewed.cache
+            result.1 result.2 state.origin.viewed.trace,
+          state.origin.viewed.views, state.origin.viewed.targetView⟩,
+        (monitorDirectSource state.origin input result.1).1,
+        state.origin.directOrdinal + 1, state.origin.signerOrdinal,
+        (monitorDirectSource state.origin input result.1).2⟩ :
+          OriginMonitorState configuration).potential
+          (fun views => event (views, target)) =
+        (state.origin.afterDirect input result.1).potential
+          (fun views => event (views, target)) := by
+    intro target
+    exact originMonitoredAdversaryImpl_direct_result_potential configuration secretKey
+      state.origin input result (fun views => event (views, target))
+  by_cases hfresh : state.origin.viewed.cache input = none
+  · simp only [hfresh, if_true, OriginTargetMonitorState.afterDirect]
+    exact OriginTargetMonitorState.potential_recordCandidate_advanceOrigin_congr
+      targetOrdinal state _ _ _ _ event horigin
+  · simp only [hfresh, if_false, OriginTargetMonitorState.afterDirect]
+    exact state.potential_advanceOrigin_congr _ _ event horigin
+
+theorem originTargetMonitoredAdversaryImpl_signer_result_potential
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
+    (targetOrdinal : Nat) (state : OriginTargetMonitorState configuration)
+    (request : SignRequest) (targetRun : TargetSignerResult × QueryCache HashSpec)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop) :
+    let signerRun := (targetSignerResultView targetRun.1, targetRun.2)
+    let trace := fullAdversaryTraceUpdate (.inr request) state.origin.viewed.cache
+      signerRun.1.1 signerRun.2 state.origin.viewed.trace
+    let monitored := monitorSigner secretKey request state.origin signerRun
+    let origin : OriginMonitorState configuration :=
+      ⟨⟨signerRun.2, trace, state.origin.viewed.views ++ [signerRun.1.2],
+        state.origin.viewed.targetView⟩, monitored.1, state.origin.directOrdinal,
+        state.origin.signerOrdinal + 1, monitored.2⟩
+    let advanced := state.advanceOrigin origin
+    (match targetRun.1.2 with
+    | none => advanced
+    | some (input, view) =>
+        if state.origin.viewed.cache input = none then
+          advanced.recordCandidate targetOrdinal
+            (decide (pattern.selectedAt? state.origin.signerOrdinal = none)) view
+        else advanced).potential event =
+      (state.afterSigner targetOrdinal secretKey request targetRun).potential event := by
+  classical
+  dsimp only
+  have horigin : ∀ target,
+      (⟨⟨targetRun.2,
+          fullAdversaryTraceUpdate (.inr request) state.origin.viewed.cache
+            (targetSignerResultView targetRun.1).1 targetRun.2 state.origin.viewed.trace,
+          state.origin.viewed.views ++ [(targetSignerResultView targetRun.1).2],
+          state.origin.viewed.targetView⟩,
+        (monitorSigner secretKey request state.origin
+          (targetSignerResultView targetRun.1, targetRun.2)).1,
+        state.origin.directOrdinal, state.origin.signerOrdinal + 1,
+        (monitorSigner secretKey request state.origin
+          (targetSignerResultView targetRun.1, targetRun.2)).2⟩ :
+          OriginMonitorState configuration).potential
+          (fun views => event (views, target)) =
+        (state.origin.afterSigner secretKey request
+          (targetSignerResultView targetRun.1, targetRun.2)).potential
+            (fun views => event (views, target)) := by
+    intro target
+    exact originMonitoredAdversaryImpl_signer_result_potential configuration secretKey
+      state.origin request (targetSignerResultView targetRun.1, targetRun.2)
+        (fun views => event (views, target))
+  cases hselection : targetRun.1.2 with
+  | none =>
+      simp only [OriginTargetMonitorState.afterSigner, hselection]
+      exact state.potential_advanceOrigin_congr _ _ event horigin
+  | some selection =>
+      rcases selection with ⟨input, view⟩
+      by_cases hfresh : state.origin.viewed.cache input = none
+      · simp only [OriginTargetMonitorState.afterSigner, hselection, hfresh, if_true]
+        exact OriginTargetMonitorState.potential_recordCandidate_advanceOrigin_congr
+          targetOrdinal state _ view _ _ event horigin
+      · simp only [OriginTargetMonitorState.afterSigner, hselection, hfresh, if_false]
+        exact state.potential_advanceOrigin_congr _ _ event horigin
+
+theorem originTargetMonitoredAdversaryImpl_expected_potential_le
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
+    (targetOrdinal : Nat) (input : (OracleWorld + SigningSpec).Domain)
+    (state : OriginTargetMonitorState configuration)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
+    (q : Nat) (hq : q ≤ 2 ^ 120)
+    (hcache : QueryCache.enncard state.origin.viewed.cache ≤ q)
+    (horigin : state.origin.ScheduleCoherent)
+    (htarget : state.TargetScheduleCoherent targetOrdinal) :
+    (∑' result,
+      Pr[= result |
+        (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal input).run
+          state] * result.2.potential event) ≤
+      state.potential event := by
+  classical
+  cases input with
+  | inl worldInput =>
+      cases worldInput with
+      | inl uniformInput =>
+          simp only [originTargetMonitoredAdversaryImpl, StateT.run,
+            tsum_probOutput_bind_mul, tsum_probOutput_pure_mul]
+          apply state.expected_potential_advanceOrigin_le
+          intro target
+          exact originMonitoredAdversaryImpl_expected_potential_le configuration secretKey
+            (.inl (.inl uniformInput)) state.origin (fun views => event (views, target))
+              q hq hcache horigin
+      | inr hashInput =>
+          simp only [originTargetMonitoredAdversaryImpl, StateT.run,
+            tsum_probOutput_bind_mul, tsum_probOutput_pure_mul,
+            originMonitoredAdversaryImpl]
+          by_cases hfresh : state.origin.viewed.cache hashInput = none
+          · simp only [hfresh, if_true, tsum_probOutput_pure_mul]
+            convert state.expected_potential_afterDirect_le targetOrdinal hashInput event
+              horigin htarget using 1
+            apply tsum_congr
+            intro result
+            congr 1
+            simpa only [hfresh, if_true] using
+              (originTargetMonitoredAdversaryImpl_direct_result_potential
+                configuration secretKey targetOrdinal state hashInput result event)
+          · simp only [hfresh, if_false, tsum_probOutput_pure_mul]
+            convert state.expected_potential_afterDirect_le targetOrdinal hashInput event
+              horigin htarget using 1
+            apply tsum_congr
+            intro result
+            congr 1
+            simpa only [hfresh, if_false] using
+              (originTargetMonitoredAdversaryImpl_direct_result_potential
+                configuration secretKey targetOrdinal state hashInput result event)
+  | inr request =>
+      simp only [originTargetMonitoredAdversaryImpl, StateT.run,
+        tsum_probOutput_bind_mul]
+      convert state.expected_potential_afterSigner_le targetOrdinal secretKey request event
+        q hq hcache horigin htarget using 1
+      apply tsum_congr
+      intro targetRun
+      congr 1
+      cases hselection : targetRun.1.2 with
+      | none =>
+          simp only [tsum_probOutput_pure_mul]
+          simpa only [hselection] using
+            (originTargetMonitoredAdversaryImpl_signer_result_potential
+              configuration secretKey targetOrdinal state request targetRun event)
+      | some selection =>
+          rcases selection with ⟨input, view⟩
+          by_cases hfresh : state.origin.viewed.cache input = none
+          · simp only [hfresh, if_true, tsum_probOutput_pure_mul]
+            simpa only [hselection, hfresh, if_true] using
+              (originTargetMonitoredAdversaryImpl_signer_result_potential
+                configuration secretKey targetOrdinal state request targetRun event)
+          · simp only [hfresh, if_false, tsum_probOutput_pure_mul]
+            simpa only [hselection, hfresh, if_false] using
+              (originTargetMonitoredAdversaryImpl_signer_result_potential
+                configuration secretKey targetOrdinal state request targetRun event)
 
 end Concrete
 
