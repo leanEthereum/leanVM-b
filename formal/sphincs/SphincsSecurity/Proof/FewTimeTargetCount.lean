@@ -74,6 +74,113 @@ theorem freshTargetCandidate_of_message_transition
           targetPayload hbefore hafter
       exact Or.inr ⟨request, randomness, rfl, by rw [hpayload]⟩
 
+set_option linter.constructorNameAsVariable false in
+theorem signWithView_fresh_admissible_transition_view
+    (secretKey : SecretKey) (message : Message)
+    (initialCache finalCache : QueryCache HashSpec)
+    (signature : Option Signature) (view : Option FewTimeView)
+    (hmem : ((signature, view), finalCache) ∈ support
+      ((simulateQ romImpl (signWithView secretKey message)).run initialCache))
+    (targetPayload : HashInput) (output : HashOutput) (index : Index)
+    (leaves : DigestTree → FtsLeaf)
+    (hbefore : initialCache
+      (tweakableHashInput secretKey.parameter .message targetPayload) = none)
+    (hafter : finalCache
+      (tweakableHashInput secretKey.parameter .message targetPayload) = some output)
+    (houtput : signAttemptResultOfOutput output = some (index, leaves)) :
+    ∃ randomness,
+      targetPayload = messageDigestPayload secretKey.root message randomness
+        ∧ view = some (hashOutputFewTimeView output) := by
+  rw [signWithView, simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hmem
+  obtain ⟨⟨loopResult, loopCache⟩, hloop, hfinish⟩ := hmem
+  have hloopLe : loopCache ≤ finalCache := by
+    cases loopResult with
+    | none =>
+        have heq : ((signature, view), finalCache) = ((none, none), loopCache) := by
+          simpa only [simulateQ_pure, StateT.run_pure, support_pure,
+            Set.mem_singleton_iff] using hfinish
+        rw [show loopCache = finalCache from (congrArg Prod.snd heq).symm]
+    | some selected =>
+        rcases selected with ⟨randomness, selectedIndex, selectedLeaves⟩
+        exact simulateQ_romImpl_cache_le
+          (do
+            let signature ← liftM
+              (signAfterDigest secretKey randomness selectedIndex selectedLeaves)
+            pure (signature, some (selectedFewTimeView selectedIndex selectedLeaves)))
+          loopCache ((signature, view), finalCache) hfinish
+  have hloopHit : loopCache
+      (tweakableHashInput secretKey.parameter .message targetPayload) ≠ none := by
+    intro hnone
+    cases hloopResult : loopResult with
+    | none =>
+        have heq : ((signature, view), finalCache) = ((none, none), loopCache) := by
+          simpa only [hloopResult, simulateQ_pure, StateT.run_pure, support_pure,
+            Set.mem_singleton_iff] using hfinish
+        have hcache : finalCache = loopCache := congrArg Prod.snd heq
+        rw [hcache, hnone] at hafter
+        simp at hafter
+    | some selected =>
+        rcases selected with ⟨randomness, selectedIndex, selectedLeaves⟩
+        rw [hloopResult, simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hfinish
+        obtain ⟨⟨signatureResult, signatureCache⟩, hsignature, hpure⟩ := hfinish
+        have hpureEq : ((signature, view), finalCache) =
+            ((signatureResult, some (selectedFewTimeView selectedIndex selectedLeaves)),
+              signatureCache) := by
+          simpa only [simulateQ_pure, StateT.run_pure, support_pure,
+            Set.mem_singleton_iff] using hpure
+        have hsignature' : (signatureResult, signatureCache) ∈ support
+            ((simulateQ (randomOracle : QueryImpl HashSpec _)
+              (signAfterDigest secretKey randomness selectedIndex selectedLeaves)).run
+                loopCache) := by
+          simpa only [simulateQ_romImpl_liftM] using hsignature
+        have hnone' := signAfterDigest_cache_message_none secretKey randomness
+          selectedIndex selectedLeaves loopCache signatureCache signatureResult hsignature'
+          targetPayload hnone
+        have hcache : finalCache = signatureCache := congrArg Prod.snd hpureEq
+        rw [hcache, hnone'] at hafter
+        simp at hafter
+  obtain ⟨loopOutput, hloopOutput⟩ := Option.ne_none_iff_exists'.mp hloopHit
+  have hloopOutputEq : loopOutput = output := by
+    have := hloopLe hloopOutput
+    rw [hafter] at this
+    exact Option.some.inj this.symm
+  have hloopOutput' : loopCache
+      (tweakableHashInput secretKey.parameter .message targetPayload) = some output := by
+    rw [← hloopOutputEq]
+    exact hloopOutput
+  obtain ⟨_, randomness, _, hpayload, hloopResult⟩ :=
+    signDigestLoop_successful_source_is_selected digestAttemptLimit secretKey message
+      initialCache loopCache loopResult hloop targetPayload output index leaves
+      hbefore hloopOutput' houtput
+  rw [hloopResult, simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hfinish
+  obtain ⟨⟨signatureResult, signatureCache⟩, _, hpure⟩ := hfinish
+  have hpureEq : ((signature, view), finalCache) =
+      ((signatureResult, some (selectedFewTimeView index leaves)), signatureCache) := by
+    simpa only [simulateQ_pure, StateT.run_pure, support_pure,
+      Set.mem_singleton_iff] using hpure
+  have hview : view = some (selectedFewTimeView index leaves) :=
+    congrArg (fun result => result.1.2) hpureEq
+  have houtputView := signAttemptResultOfOutput_view output index leaves houtput
+  exact ⟨randomness, hpayload, hview.trans (by
+    simpa only [selectedFewTimeView] using congrArg some houtputView)⟩
+
+theorem signingCacheEntry_validView_fresh_admissible_transition_view
+    {secretKey : SecretKey} {entry : SigningCacheEntry} {view : Option FewTimeView}
+    (hvalid : SigningCacheEntry.ValidView secretKey entry view)
+    (targetPayload : HashInput) (output : HashOutput) (index : Index)
+    (leaves : DigestTree → FtsLeaf)
+    (hbefore : entry.initialCache
+      (tweakableHashInput secretKey.parameter .message targetPayload) = none)
+    (hafter : entry.finalCache
+      (tweakableHashInput secretKey.parameter .message targetPayload) = some output)
+    (houtput : signAttemptResultOfOutput output = some (index, leaves)) :
+    ∃ randomness,
+      targetPayload = messageDigestPayload secretKey.root entry.request randomness
+        ∧ view = some (hashOutputFewTimeView output) :=
+  signWithView_fresh_admissible_transition_view secretKey entry.request
+    entry.initialCache entry.finalCache entry.signature view hvalid targetPayload output
+    index leaves hbefore hafter houtput
+
 noncomputable def freshTargetCandidatePositions
     (secretKey : SecretKey) (trace : FullAdversaryTrace) :
     Finset (Fin trace.intervals.length) :=
