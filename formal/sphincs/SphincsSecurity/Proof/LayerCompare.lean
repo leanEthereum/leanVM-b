@@ -99,6 +99,36 @@ theorem honestLayerOpening_compare (f : QueryImpl HashSpec Id) (parameter : Publ
       (valid_of_eval_encode_eq_some f parameter lay tree leafIdx rightMessage rightCounter rightCodeword
         hrightEncode) hle)
 
+theorem honestLayerOpening_values_path_eq_of_encodingHit
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (leftMessage rightMessage : Digest) (leftCounter rightCounter : Counter)
+    (leftValues rightValues : ChainIndex → Digest) (leftPath rightPath : Nat → Digest)
+    (hleft : HonestLayerOpening f parameter otsSecret lay tree leafIdx leftMessage leftCounter
+      leftValues leftPath)
+    (hright : HonestLayerOpening f parameter otsSecret lay tree leafIdx rightMessage rightCounter
+      rightValues rightPath)
+    (hhit : EncodingHit f parameter lay tree leafIdx leftMessage rightMessage
+      leftCounter rightCounter) :
+    leftValues = rightValues ∧
+      ∀ level, level < layerHeight lay → leftPath level = rightPath level := by
+  obtain ⟨leftCodeword, hleftEncode, hleftValues, hleftPath⟩ := hleft
+  obtain ⟨rightCodeword, hrightEncode, hrightValues, hrightPath⟩ := hright
+  have hleftDecode := decode_of_eval_encode_eq_some f parameter lay tree leafIdx leftMessage
+    leftCounter leftCodeword hleftEncode
+  have hrightDecode := decode_of_eval_encode_eq_some f parameter lay tree leafIdx rightMessage
+    rightCounter rightCodeword hrightEncode
+  change _ ≠ _ ∧ truncateHash (f _) = truncateHash (f _) at hhit
+  rw [hhit.2] at hleftDecode
+  have hcodeword : leftCodeword = rightCodeword :=
+    Option.some.inj (hleftDecode.symm.trans hrightDecode)
+  constructor
+  · funext chainIdx
+    rw [hleftValues chainIdx, hrightValues chainIdx, hcodeword]
+  · intro level hlevel
+    rw [hleftPath level hlevel, hrightPath level hlevel]
+
 def SignedLayerAt (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
     (secretKey : SecretKey) (signingLog : QueryLog SigningSpec) (lay : Layer)
     (tree : TreeIndex) (leafIdx : LeafIndex) : Prop :=
@@ -130,6 +160,10 @@ def LayerComparisonFailure (f : QueryImpl HashSpec Id) (cache : QueryCache HashS
       ∧ SuccessfulSignRun f cache secretKey entry.1 signature
       ∧ treeIndexAt index lay = tree
       ∧ leafIndexAt index lay = leafIdx
+      ∧ CachedRun cache f (layerMessage secretKey index lay)
+      ∧ HonestLayerOpening f secretKey.parameter secretKey.otsSecret lay tree leafIdx
+          (evalWithAnswerFn f (layerMessage secretKey index lay)) (signature.counter lay)
+          (signature.chainValue lay) (signaturePath signature lay)
       ∧ cache (tweakableHashInput secretKey.parameter
         (.encoding lay tree leafIdx)
         (digestBytes (evalWithAnswerFn f (layerMessage secretKey index lay)) ++
@@ -181,6 +215,10 @@ theorem SignedLayerAt.compare_forgery {f : QueryImpl HashSpec Id}
         ∧ SuccessfulSignRun f cache secretKey entry.1 signature
         ∧ treeIndexAt index lay = tree
         ∧ leafIndexAt index lay = leafIdx
+        ∧ CachedRun cache f (layerMessage secretKey index lay)
+        ∧ HonestLayerOpening f secretKey.parameter secretKey.otsSecret lay tree leafIdx
+            (evalWithAnswerFn f (layerMessage secretKey index lay)) (signature.counter lay)
+            (signature.chainValue lay) (signaturePath signature lay)
         ∧ cache (tweakableHashInput secretKey.parameter (.encoding lay tree leafIdx)
           (digestBytes (evalWithAnswerFn f (layerMessage secretKey index lay)) ++
             counterBytes (signature.counter lay))) ≠ none
@@ -199,14 +237,15 @@ theorem SignedLayerAt.compare_forgery {f : QueryImpl HashSpec Id}
               ∧ evalWithAnswerFn f (encode secretKey.parameter lay tree leafIdx
                 forgedMessage forgedCounter) = some forgedCodeword
               ∧ ∃ chainIdx, (forgedCodeword chainIdx).val < (signedCodeword chainIdx).val) := by
-  obtain ⟨entry, signature, index, hentry, hresponse, hrun, htree, hleaf, _, hencoding,
+  obtain ⟨entry, signature, index, hentry, hresponse, hrun, htree, hleaf, hmessage, hencoding,
     hopening⟩ := hsigned
   have hopening' : HonestLayerOpening f secretKey.parameter secretKey.otsSecret lay tree leafIdx
       (evalWithAnswerFn f (layerMessage secretKey index lay)) (signature.counter lay)
       (signature.chainValue lay) (signaturePath signature lay) := by
     simpa only [htree, hleaf] using hopening
   rw [htree, hleaf] at hencoding
-  exact ⟨entry, signature, index, hentry, hresponse, hrun, htree, hleaf, hencoding,
+  exact ⟨entry, signature, index, hentry, hresponse, hrun, htree, hleaf, hmessage, hopening',
+    hencoding,
     honestLayerOpening_compare f secretKey.parameter secretKey.otsSecret lay tree leafIdx
       (evalWithAnswerFn f (layerMessage secretKey index lay)) forgedMessage
       (signature.counter lay) forgedCounter (signature.chainValue lay) forgedValues
@@ -234,14 +273,15 @@ theorem SignedLayerAt.exact_or_failure {f : QueryImpl HashSpec Id}
           signaturePath signature lay level = forgedPath level)
       ∨ LayerComparisonFailure f cache secretKey signingLog lay tree leafIdx
         forgedMessage forgedCounter := by
-  obtain ⟨entry, signature, index, hentry, hresponse, hrun, htree, hleaf, hcached, hresult⟩ :=
+  obtain ⟨entry, signature, index, hentry, hresponse, hrun, htree, hleaf, hmessage,
+    hopening, hcached, hresult⟩ :=
     hsigned.compare_forgery forgedMessage forgedCounter forgedValues forgedPath hforged
   rcases hresult with hexact | hencoding | hearlier
   · exact Or.inl ⟨entry, signature, index, hentry, hresponse, hrun, htree, hleaf, hexact⟩
   · exact Or.inr ⟨entry, signature, index, hentry, hresponse, hrun,
-      htree, hleaf, hcached, Or.inl hencoding⟩
+      htree, hleaf, hmessage, hopening, hcached, Or.inl hencoding⟩
   · exact Or.inr ⟨entry, signature, index, hentry, hresponse, hrun,
-      htree, hleaf, hcached, Or.inr hearlier⟩
+      htree, hleaf, hmessage, hopening, hcached, Or.inr hearlier⟩
 
 theorem SignedLayerAt.settles_middle {f : QueryImpl HashSpec Id}
     {cache : QueryCache HashSpec} {secretKey : SecretKey} {signingLog : QueryLog SigningSpec}
