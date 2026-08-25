@@ -25,45 +25,51 @@ Machine: Mac M4 Max
 Our XMSS is specified in [XMSS.pdf](https://github.com/leanEthereum/leanVM-b/releases/download/doc-latest/XMSS.pdf).
 
 ```bash
-cargo run --release -- aggregate --xmss 900 --log-inv-rate 1 --repeat 3
+cargo run --release -- aggregate --xmss 205 --log-inv-rate 1 --repeat 3
 ```
 
 ```
-XMSS aggregation, 900 signatures
-  cycles (VM steps)           : 1,542,617 = 2^20.557
-    proven rows               : 1,967,104 = 2^20.908  (filled to powers of two)
-    details                   : DEREF 2^18.988 (33.7%)  SET 2^18.402 (22.4%)  MUL 2^18.198 (19.5%)  KECCAK 2^16.995 (8.5%)  XOR 2^16.96 (8.3%)  JUMP 2^16.831 (7.6%)  PACK64X2 2^9.938 (0.1%)  MEMORY 2^21.725  TOTAL_COMMITTED 2^26.195
-  signers                     : 900
-  proof size                  : 304.4 KiB
-  aggregating                 : 0.816 s ± 4.2%      peak memory 13.815 GiB
-  per signature               : 1,102.621 XMSS/s
-  verifying                   : 0.0137 s
+aggregation, 205 XMSS signatures
+  cycles (VM steps)           : 528,117 = 2^19.01
+    details                   : SET 2^17.523 (35.7%)  MUL 2^17.018 (25.1%)  DEREF 2^16.86 (22.5%)  KECCAK 2^14.966 (6.1%)  XOR 2^14.835 (5.5%)  JUMP 2^14.713 (5.1%)  MEMORY 2^20.838  TOTAL_COMMITTED 2^25.656
+  proof size                  : 308.4 KiB
+  proving time                : 0.764 s ± 2.3%      peak memory 8.832 GiB
+  per signature               : 268.236 signatures/s
+  verifying                   : 0.0145 s
 ```
 
 ### SPHINCS aggregation
 
-Our SPHINCS is specified in [SPHINCS.pdf](https://github.com/leanEthereum/leanVM-b/releases/download/doc-latest/SPHINCS.pdf). It is stateless, so a key needs no epoch, and each SPHINCS signer signs its own message where the XMSS signers share one. A verification is 564 permutations against XMSS's 154, so a leaf of comparable proven size holds proportionally fewer signers; `--xmss` and `--sphincs` add up, so a mixed leaf is one command.
+Our SPHINCS is specified in [SPHINCS.pdf](https://github.com/leanEthereum/leanVM-b/releases/download/doc-latest/SPHINCS.pdf).
 
 ```bash
-cargo run --release -- aggregate --sphincs 120 --log-inv-rate 1 --repeat 3
+cargo run --release -- aggregate --sphincs 55 --log-inv-rate 1 --repeat 3
+```
+
+```
+aggregation, 55 SPHINCS signatures
+  cycles (VM steps)           : 778,768 = 2^19.571
+    details                   : SET 2^17.625 (26.0%)  MUL 2^17.602 (25.5%)  XOR 2^17.315 (20.9%)  DEREF 2^17.3 (20.7%)  KECCAK 2^14.937 (4.0%)  JUMP 2^14.418 (2.8%)  MEMORY 2^20.924  TOTAL_COMMITTED 2^25.797
+  proof size                  : 316.9 KiB
+  proving time                : 0.854 s ± 9.4%      peak memory 9.531 GiB
+  per signature               : 64.387 signatures/s
+  verifying                   : 0.0249 s
 ```
 
 ### Recursion
 
 
 ```bash
-cargo run --release -- recursion --n 2 --log-inv-rate 2 --repeat 3
+cargo run --release -- recursion --n 2 --xmss-per-leaf 450 --log-inv-rate 2 --repeat 3
 ```
 
 ```
-recursion 2→1, over leaves of 900 signatures
-  cycles (VM steps)           : 796,006 = 2^19.602
-    proven rows               : 1,196,032 = 2^20.19  (filled to powers of two)
-    details                   : DEREF 2^18.168 (37.0%)  MUL 2^17.818 (29.0%)  XOR 2^17.374 (21.3%)  SET 2^15.536 (6.0%)  KECCAK 2^14.44 (2.8%)  PACK64X2 2^14.349 (2.6%)  JUMP 2^13.272 (1.2%)  MEMORY 2^19.932  TOTAL_COMMITTED 2^24.863
-  signers                     : 1,800
-  proof size                  : 213.7 KiB
-  aggregating                 : 0.446 s ± 3.1%      peak memory 17.299 GiB
-  verifying                   : 0.015 s
+recursion 2→1, over leaves of 450 XMSS signatures
+  cycles (VM steps)           : 951,746 = 2^19.86
+    details                   : MUL 2^18.232 (32.4%)  DEREF 2^18.219 (32.0%)  XOR 2^17.636 (21.4%)  SET 2^16.314 (8.6%)  JUMP 2^14.888 (3.2%)  KECCAK 2^14.509 (2.4%)  MEMORY 2^20.44  TOTAL_COMMITTED 2^25.967
+  proof size                  : 228.9 KiB
+  proving time                : 1.378 s ± 14.8%      peak memory 35.494 GiB
+  verifying                   : 0.018 s
 ```
 
 ### Fibonacci
