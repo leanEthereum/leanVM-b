@@ -32,6 +32,8 @@ The local source composition is now formalized too. A fresh direct random-oracle
 
 The local rules also preserve a view-dependent remaining risk instead of replacing it by a worst-case constant. A fresh selected signer is bounded by the finite expectation of that risk under one uniform `FewTimeView`. A fixed-input prehit signer multiplies an arbitrary continuation event by `2^-117`, and its earlier fresh direct source supplies admissibility and the same uniform-view expectation, producing `2^-127` times the expectation. These are the query and signer cases required by the adaptive recursion.
 
+Origin configurations now pad from the execution's actual signing-log length into the fixed `signatureLimit` index space. The selected-position equivalence preserves the prehit subset and its cardinality, transports every injective direct-source assignment unchanged, and lifts `OriginConfiguration.RealizedBy` with all exact query and cache-interval witnesses. Consequently every supported cover has a realized padded configuration under the global query budget, so adaptive transcript lengths require no additional union bound.
+
 ## The shape of the proof
 
 The whole probabilistic side is one lemma, `Amortized.probEvent_bad_le_amortized`. Give it a predicate `Bad` on the random oracle's cache, a potential `Nat` on caches and a constant `c`, prove that a fresh answer on an uncached input turns the cache bad only by landing in a finite set of digests whose size the potential pays for up to `c` per query, and it returns `(c * q + potential) * eps`. Nothing else about the oracle is needed: no presampling, no reprogramming, no hybrid.
