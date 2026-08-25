@@ -318,6 +318,109 @@ theorem probEvent_viewedTerminalWitness_le (parameter : PublicParameter)
       gcongr
       exact probEvent_or_le _ _ _
 
+theorem probEvent_clean_viewedTerminalWitness_le (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (run : ProbComp ((Digest × Forgery × Bool) × ViewedFullTraceState)) :
+    Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+        ViewedTerminalWitness parameter otsSecret ftsSecret result | run] ≤
+      Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+        ViewedFreshLayerOpeningWitness parameter otsSecret ftsSecret result | run] +
+      (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+        ViewedEncodingCollisionWitness parameter otsSecret ftsSecret result | run] +
+      (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+        ViewedBackwardChainOpeningWitness parameter otsSecret ftsSecret result | run] +
+      (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+        ViewedMessageDigestCollisionWitness parameter otsSecret ftsSecret result | run] +
+      (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+        ViewedProperFewTimeLeakWitness parameter otsSecret ftsSecret result | run] +
+      Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+        ViewedUncoveredFtsSecretWitness parameter otsSecret ftsSecret result | run])))) := by
+  classical
+  calc
+    _ ≤ Pr[fun result =>
+        (¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+          ViewedFreshLayerOpeningWitness parameter otsSecret ftsSecret result) ∨
+        (¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+          ViewedEncodingCollisionWitness parameter otsSecret ftsSecret result) ∨
+        (¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+          ViewedBackwardChainOpeningWitness parameter otsSecret ftsSecret result) ∨
+        (¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+          ViewedMessageDigestCollisionWitness parameter otsSecret ftsSecret result) ∨
+        (¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+          ViewedProperFewTimeLeakWitness parameter otsSecret ftsSecret result) ∨
+        (¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+          ViewedUncoveredFtsSecretWitness parameter otsSecret ftsSecret result) | run] := by
+      apply probEvent_mono
+      intro result _ hwitness
+      obtain ⟨hclean, hterminal⟩ := hwitness
+      rcases viewedTerminalWitness_cases parameter otsSecret ftsSecret result hterminal with
+        hfresh | hencoding | hbackward | hmessage | hproper | huncovered
+      · exact Or.inl ⟨hclean, hfresh⟩
+      · exact Or.inr (Or.inl ⟨hclean, hencoding⟩)
+      · exact Or.inr (Or.inr (Or.inl ⟨hclean, hbackward⟩))
+      · exact Or.inr (Or.inr (Or.inr (Or.inl ⟨hclean, hmessage⟩)))
+      · exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inl ⟨hclean, hproper⟩))))
+      · exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr ⟨hclean, huncovered⟩))))
+    _ ≤ _ := by
+      calc
+        _ ≤ Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+              ViewedFreshLayerOpeningWitness parameter otsSecret ftsSecret result | run] +
+            Pr[fun result =>
+              (¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+                ViewedEncodingCollisionWitness parameter otsSecret ftsSecret result) ∨
+              (¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+                ViewedBackwardChainOpeningWitness parameter otsSecret ftsSecret result) ∨
+              (¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+                ViewedMessageDigestCollisionWitness parameter otsSecret ftsSecret result) ∨
+              (¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+                ViewedProperFewTimeLeakWitness parameter otsSecret ftsSecret result) ∨
+              (¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+                ViewedUncoveredFtsSecretWitness parameter otsSecret ftsSecret result) | run] :=
+          probEvent_or_le _ _ _
+        _ ≤ _ := by
+          gcongr
+          calc
+            _ ≤ Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+                  ViewedEncodingCollisionWitness parameter otsSecret ftsSecret result | run] +
+                Pr[fun result =>
+                  (¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+                    ViewedBackwardChainOpeningWitness parameter otsSecret ftsSecret result) ∨
+                  (¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+                    ViewedMessageDigestCollisionWitness parameter otsSecret ftsSecret result) ∨
+                  (¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+                    ViewedProperFewTimeLeakWitness parameter otsSecret ftsSecret result) ∨
+                  (¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+                    ViewedUncoveredFtsSecretWitness parameter otsSecret ftsSecret result) | run] :=
+              probEvent_or_le _ _ _
+            _ ≤ _ := by
+              gcongr
+              calc
+                _ ≤ Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+                      ViewedBackwardChainOpeningWitness parameter otsSecret ftsSecret result | run] +
+                    Pr[fun result =>
+                      (¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+                        ViewedMessageDigestCollisionWitness parameter otsSecret ftsSecret result) ∨
+                      (¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+                        ViewedProperFewTimeLeakWitness parameter otsSecret ftsSecret result) ∨
+                      (¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+                        ViewedUncoveredFtsSecretWitness parameter otsSecret ftsSecret result) | run] :=
+                  probEvent_or_le _ _ _
+                _ ≤ _ := by
+                  gcongr
+                  calc
+                    _ ≤ Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+                          ViewedMessageDigestCollisionWitness parameter otsSecret ftsSecret result |
+                            run] +
+                        Pr[fun result =>
+                          (¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+                            ViewedProperFewTimeLeakWitness parameter otsSecret ftsSecret result) ∨
+                          (¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+                            ViewedUncoveredFtsSecretWitness parameter otsSecret ftsSecret result) |
+                              run] := probEvent_or_le _ _ _
+                    _ ≤ _ := by
+                      gcongr
+                      exact probEvent_or_le _ _ _
 theorem gameAfterSecretsWithViewTrace_verdictCache_projection (adversary : Adversary)
     (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
@@ -337,6 +440,45 @@ theorem gameAfterSecretsWithViewTrace_verdictCache_projection (adversary : Adver
       rw [gameAfterSecretsWithViewTrace_projection]
     _ = _ := gameAfterSecretsWithFullTrace_projection adversary parameter otsSecret ftsSecret
 
+theorem probEvent_bad_gameAfterSecretsWithViewTrace_le (adversary : Adversary)
+    (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (hq : (gameAfterSecrets adversary parameter otsSecret ftsSecret).IsQueryBoundP
+      (· matches Sum.inr _) q) :
+    Pr[fun result => Bad parameter otsSecret ftsSecret result.2.cache |
+        gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret] ≤
+      ((44 * q : Nat) : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  calc
+    _ = Pr[fun result : Bool × QueryCache HashSpec =>
+          Bad parameter otsSecret ftsSecret result.2 |
+        (fun result => (result.1.2.2, result.2.cache)) <$>
+          gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret] := by
+      rw [probEvent_map]
+      rfl
+    _ = Pr[fun result => Bad parameter otsSecret ftsSecret result.2 |
+        (simulateQ romImpl
+          (gameAfterSecrets adversary parameter otsSecret ftsSecret)).run ∅] := by
+      rw [gameAfterSecretsWithViewTrace_verdictCache_projection]
+    _ ≤ _ := probEvent_bad_gameAfterSecrets_le adversary parameter otsSecret ftsSecret q hq
+
+theorem probEvent_clean_properFewTimeLeak_le_nine_mul_inv
+    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
+    (hqMax : q ≤ 2 ^ 120)
+    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (hots : otsSecret ∈ support sampleOtsSecrets)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (hfts : ftsSecret ∈ support sampleFtsSecrets) :
+    Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+        ViewedProperFewTimeLeakWitness parameter otsSecret ftsSecret result |
+      gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret] ≤
+      ((2 * q + 1 : Nat) : ℝ≥0∞) *
+        (9 * ((2 ^ 125 : Nat) : ℝ≥0∞)⁻¹) := by
+  apply le_trans (probEvent_mono fun _ _ event => event.2)
+  exact probEvent_gameAfterSecretsWithViewTrace_proper_leak_le_nine_mul_inv adversary q hq
+    hqMax parameter hparameter otsSecret hots ftsSecret hfts
+
 theorem probEvent_win_le_viewed_bad_add_terminal_cases (adversary : Adversary)
     (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
@@ -345,12 +487,18 @@ theorem probEvent_win_le_viewed_bad_add_terminal_cases (adversary : Adversary)
     Pr[= true | (simulateQ romImpl
         (gameAfterSecrets adversary parameter otsSecret ftsSecret)).run' ∅] ≤
       Pr[fun result => Bad parameter otsSecret ftsSecret result.2.cache | run] +
-      (Pr[ViewedFreshLayerOpeningWitness parameter otsSecret ftsSecret | run] +
-      (Pr[ViewedEncodingCollisionWitness parameter otsSecret ftsSecret | run] +
-      (Pr[ViewedBackwardChainOpeningWitness parameter otsSecret ftsSecret | run] +
-      (Pr[ViewedMessageDigestCollisionWitness parameter otsSecret ftsSecret | run] +
-      (Pr[ViewedProperFewTimeLeakWitness parameter otsSecret ftsSecret | run] +
-        Pr[ViewedUncoveredFtsSecretWitness parameter otsSecret ftsSecret | run]))))) := by
+      (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+        ViewedFreshLayerOpeningWitness parameter otsSecret ftsSecret result | run] +
+      (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+        ViewedEncodingCollisionWitness parameter otsSecret ftsSecret result | run] +
+      (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+        ViewedBackwardChainOpeningWitness parameter otsSecret ftsSecret result | run] +
+      (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+        ViewedMessageDigestCollisionWitness parameter otsSecret ftsSecret result | run] +
+      (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+        ViewedProperFewTimeLeakWitness parameter otsSecret ftsSecret result | run] +
+      Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+        ViewedUncoveredFtsSecretWitness parameter otsSecret ftsSecret result | run]))))) := by
   classical
   dsimp only
   let run := gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret
@@ -364,17 +512,23 @@ theorem probEvent_win_le_viewed_bad_add_terminal_cases (adversary : Adversary)
       rw [probEvent_map]
       rfl
     _ ≤ Pr[fun result => Bad parameter otsSecret ftsSecret result.2.cache ∨
-          ViewedTerminalWitness parameter otsSecret ftsSecret result | run] := by
+          (¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+            ViewedTerminalWitness parameter otsSecret ftsSecret result) | run] := by
       apply probEvent_mono
       intro result hresult hwin
-      exact gameAfterSecretsWithViewTrace_winning_terminal_classify adversary parameter
-        otsSecret ftsSecret result hresult hwin
+      rcases gameAfterSecretsWithViewTrace_winning_terminal_classify adversary parameter
+          otsSecret ftsSecret result hresult hwin with hbad | hterminal
+      · exact Or.inl hbad
+      · by_cases hbad : Bad parameter otsSecret ftsSecret result.2.cache
+        · exact Or.inl hbad
+        · exact Or.inr ⟨hbad, hterminal⟩
     _ ≤ Pr[fun result => Bad parameter otsSecret ftsSecret result.2.cache | run] +
-        Pr[ViewedTerminalWitness parameter otsSecret ftsSecret | run] :=
+        Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
+          ViewedTerminalWitness parameter otsSecret ftsSecret result | run] :=
       probEvent_or_le _ _ _
     _ ≤ _ := by
       gcongr
-      exact probEvent_viewedTerminalWitness_le parameter otsSecret ftsSecret run
+      exact probEvent_clean_viewedTerminalWitness_le parameter otsSecret ftsSecret run
 
 end Concrete
 
