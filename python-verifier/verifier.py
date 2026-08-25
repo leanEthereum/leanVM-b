@@ -464,8 +464,8 @@ class ProductTriple:
 
 
 def verify_product_triple(depth: int, transcript: Transcript) -> ProductTriple:
-    root_values = transcript.scalars(3)
-    roots = (root_values[0], root_values[1], root_values[2])
+    shared, count = transcript.scalar(), transcript.scalar()
+    roots = (shared, shared, count)
     combine = transcript.sample()
     point: list[E] = []
     values = list(roots)
@@ -612,13 +612,8 @@ def verify_bus_balance(layout: Layout, transcript: Transcript) -> BusResult:
     weights = eq_kernel(alphas)
     beta = transcript.sample()
     product = verify_product_triple(push_layout.depth, transcript)
-    push_root, pull_root, count_root = product.roots
+    count_root = product.roots[2]
     require(count_root != ZERO, "a bus read count is zero")
-
-    # Every row of every table is a real row: the prover's fill blocks bring each
-    # table's count up to a power of two, so the two sides balance outright with no
-    # padding surplus to divide back out.
-    require(push_root == pull_root, "bus is unbalanced")
 
     # The framework blocks' committed columns, in the order the two sides first
     # name them: the memory image on push, then each array's final count on pull.
@@ -1601,11 +1596,6 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     log_inverse_rate = int(announced[-1].c0)
     require(1 <= log_inverse_rate <= 4, "invalid PCS inverse rate")
     layout = build_layout(bytecode, log_memory, table_logs)
-    # The announced sizes bound themselves, but what the PCS has to be configured
-    # for is the stacked size they IMPLY, and the instance caps admit a `stack_log`
-    # far past the largest the WHIR ladder is feasible for. Checked here, before any
-    # reduction runs against the layout, and against the same window the Rust
-    # verifier's `pcs::{MIN_MU, MAX_MU}` and the recursion guest declare.
     require(MIN_STACKED_LOG <= layout.stack_log <= MAX_STACKED_LOG, "committed size outside the PCS window")
 
     # 2] WHIR commitment: one Merkle root (No OOD, our PCS is only List-binding).

@@ -1193,7 +1193,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     gkr_pts = HeapBuf(GKR_POINTS_CAP)
     assert log(g_bus_mu) < COUNT_BITS
     fs, root_push, cursor = fs_next(fs, cursor)
-    fs, root_pull, cursor = fs_next(fs, cursor)
+    root_pull = root_push
     fs, root_count, cursor = fs_next(fs, cursor)
     fs, initial_layer_lambda = squeeze(fs)
     gkr_layer_lambda[GEN ** 0] = initial_layer_lambda  # λ over the three roots
@@ -1372,12 +1372,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             g_off *= g_squares[block_kappa[global_g]]  # an omission fails the
     #                                              # decompose's offset read.
 
-    # ---- balance: push_root == pull_root ----
-    # Every row of every table is a real row, so the two sides balance outright:
-    # there is no padding surplus to divide back out, and with it went a bit-ladder
-    # per side and table, each pinning a padding delta against an advice-decomposed
-    # exponent.
-    assert gkr_roots[PUSH_SIDE] == gkr_roots[PULL_SIDE]
 
     # ---- 3× leaf decomposition (claims pooled; bytecode Public DEFERRED) ----
     # The program's whole share of a bytecode leaf is ONE evaluation of the stacked
