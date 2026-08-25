@@ -112,6 +112,30 @@ theorem FullAdversaryTrace.CacheChain.transition_before
               omega
             simp only [List.get_eq_getElem, List.getElem_cons_zero, hhead, hstart]
 
+theorem FullAdversaryTrace.CacheChain.transition_to_finish
+    {start finish : QueryCache HashSpec} {intervals : List AdversaryCacheEntry}
+    (hchain : FullAdversaryTrace.CacheChain start intervals finish)
+    (input : HashInput) (hstart : start input = none) (hfinish : finish input ≠ none) :
+    ∃ source : Fin intervals.length,
+      (intervals.get source).initialCache input = none
+        ∧ (intervals.get source).finalCache input ≠ none := by
+  induction intervals generalizing start finish with
+  | nil =>
+      change finish = start at hchain
+      rw [hchain, hstart] at hfinish
+      exact (hfinish rfl).elim
+  | cons head rest ih =>
+      rcases hchain with ⟨hhead, hrest⟩
+      by_cases hnext : head.finalCache input = none
+      · obtain ⟨source, hsourceInitial, hsourceFinal⟩ :=
+          ih hrest hnext hfinish
+        exact ⟨⟨source.val + 1, Nat.succ_lt_succ source.isLt⟩,
+          by simpa only [List.get_eq_getElem, List.getElem_cons_succ] using hsourceInitial,
+          by simpa only [List.get_eq_getElem, List.getElem_cons_succ] using hsourceFinal⟩
+      · exact ⟨⟨0, by simp⟩,
+          by simpa only [List.get_eq_getElem, List.getElem_cons_zero, hhead] using hstart,
+          by simpa only [List.get_eq_getElem, List.getElem_cons_zero] using hnext⟩
+
 theorem FullAdversaryTrace.Chronological.append_singleton
     {intervals : List AdversaryCacheEntry} {entry : AdversaryCacheEntry}
     (hchronological : FullAdversaryTrace.Chronological intervals)
