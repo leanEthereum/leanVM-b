@@ -25,8 +25,8 @@
 //! gadgets, forwards and transposed, kept separate because the fused
 //! three-operand adder's bit boundaries are the subtlest thing here.
 
-pub mod hash;
 mod gf2;
+pub mod hash;
 pub mod lincheck;
 /// The circuit driven through the whole reduction. A `src` module rather than
 /// its own test binary so it shares the process, and so the slow

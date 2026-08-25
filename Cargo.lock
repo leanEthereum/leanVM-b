@@ -381,6 +381,7 @@ dependencies = [
  "primitives",
  "rand",
  "serde",
+ "sphincs",
  "tracing",
  "xmss",
  "zk_alloc",
@@ -455,6 +456,7 @@ dependencies = [
  "parallel",
  "primitives",
  "rand",
+ "serde",
 ]
 
 [[package]]

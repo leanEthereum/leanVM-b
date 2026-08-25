@@ -10,3 +10,4 @@ workspace = true
 primitives.workspace = true
 parallel.workspace = true
 rand.workspace = true
+serde.workspace = true

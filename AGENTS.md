@@ -31,8 +31,8 @@ Dependency order, leaves first:
 | `lean_vm`         | arithmetization: tables, bus, constraints, `cpu::prove`/`verify`       |
 | `lean_compiler`   | zkDSL (Python subset) → ISA                                            |
 | `xmss`            | XMSS over BLAKE2s; an independent leaf, consumed only by `rec_aggregation` |
-| `sphincs`         | the stateless SPHINCS+ instance of `doc/sphincs`; an independent leaf, not yet consumed |
-| `rec_aggregation` | recursive XMSS aggregation: the one guest, the public API, the benchmarks |
+| `sphincs`         | the stateless SPHINCS+ instance of `doc/sphincs`; an independent leaf, consumed only by `rec_aggregation` |
+| `rec_aggregation` | recursive XMSS and SPHINCS aggregation: the one guest, the public API, the benchmarks |
 
 `src/main.rs` is the CLI; guests are zkDSL under `crates/rec_aggregation/guests/`.
 
@@ -64,8 +64,11 @@ Heavy benches and measurement harnesses are `#[ignore]`d; run by name with `-- -
 ## Benchmarking
 
 The benchmarks we care about:
-- `cargo run --release -- xmss --n-signatures 900 --log-inv-rate 1 --repeat 3`
+- `cargo run --release -- aggregate --xmss 900 --log-inv-rate 1 --repeat 3`
+- `cargo run --release -- aggregate --sphincs 220 --log-inv-rate 1 --repeat 3`
 - `cargo run --release -- recursion --n 2 --xmss-per-leaf 900 --log-inv-rate 2 --repeat 3`
+
+`aggregate` takes a count per scheme, both defaulting to zero, so either alone or a mix of the two is one command; `recursion --sphincs-per-leaf` likewise puts both schemes in one tree. One SPHINCS signature costs 531 compressions against XMSS's 144, and about six times an XMSS signature's VM cycles, so a leaf of a given proven size holds proportionally fewer of them.
 
 ## The proving arena (`zk_alloc`)
 
@@ -91,9 +94,9 @@ The same verification algorithm is written out three times, in three languages. 
 
 1. **Rust**, `lean_vm::cpu::verify`. The performant verifier implem.
 2. **Python**, `python-verifier/verifier.py` (~2.5k lines, no dependencies). pure python, for readability and simplicity. Pinned by `lean_vm/tests/verifiers/python_verifier.rs`.
-3. **Recursive verifier**, `crates/rec_aggregation/guests/aggregate.py` (~2.7k lines of zkDSL). Written using our pythonic zkDSL (but it's not real python!), which then compiles to our custom ISA. Proving it result in recursion -> a snark of another snark.
+3. **Recursive verifier**, `crates/rec_aggregation/guests/aggregate.py` (~3.2k lines of zkDSL). Written using our pythonic zkDSL (but it's not real python!), which then compiles to our custom ISA. Proving it result in recursion -> a snark of another snark.
 
-Understand the third before changing the verifier. `guests/aggregate.py` is zkDSL, not runnable Python. `lean_compiler` lowers it to the six-opcode, write-once-memory VM, so the prover proves every verifier step. The guest is ~330k instructions (2^19 padded), with the mix reported by the recursion benchmark. Two consequences:
+Understand the third before changing the verifier. `guests/aggregate.py` is zkDSL, not runnable Python. `lean_compiler` lowers it to the six-opcode, write-once-memory VM, so the prover proves every verifier step. The guest is ~354k instructions (2^19 padded), with the mix reported by the recursion benchmark. It verifies raw signatures of both schemes: a node's coverage table is one contiguous region per scheme, so the one range check a write already needs also keeps an XMSS signature off a declared SPHINCS claim, and the statement's two signer lists say which scheme verified which key. The XMSS signers share the statement's message and epoch; a SPHINCS signer's message rides its own four-cell slot, so that list is `(key, message)` pairs and its length counts claims rather than distinct signers. XMSS's tweaks ride the statement (they depend only on the public epoch); SPHINCS's are built in-circuit from the index its message digest picks. Two consequences:
 
 - The guest is **self-referential**: it verifies proofs of itself, so `unified_guest` compiles it to a fixed point on its own log size. The digest needs no fixed point, riding the statement instead of the code, which is also what lets one bytecode serve any inner size and PCS rate.
 - It does not verify *quite* everything in-circuit. Three claims on fixed polynomials (stacked bytecode, flock's A0/B0) are deferred. Each node batches its children's carried claims with the fresh ones its verifications raise, `2n` per polynomial down to one; only the root's are discharged natively, by `AggregateSignature::verify` (explained in `doc/leanvm/`).

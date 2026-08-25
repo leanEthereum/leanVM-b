@@ -8,6 +8,7 @@
 //! what makes the scheme stateless.
 
 use rand::{CryptoRng, Rng};
+use serde::{Deserialize, Serialize};
 
 use crate::*;
 
@@ -47,7 +48,9 @@ pub fn path_range(lay: usize) -> std::ops::Range<usize> {
     start..start + HEIGHTS[lay]
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// Ordered lexicographically on [`Self::flatten`], which is what an aggregate's
+/// signer list is sorted and deduplicated by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PublicKey {
     pub root: Digest,
     pub public_param: PublicParam,
@@ -365,7 +368,7 @@ pub fn sign(rng: &mut impl CryptoRng, sk: &SecretKey, message: &Message) -> Resu
 }
 
 /// `Tree.fold`: the other half of a Merkle opening.
-fn tree_fold(pp: &PublicParam, pos: Pos, leaf: Digest, path: &[Digest]) -> Digest {
+pub fn tree_fold(pp: &PublicParam, pos: Pos, leaf: Digest, path: &[Digest]) -> Digest {
     path.iter().enumerate().fold(leaf, |current, (level, sibling)| {
         let (left, right) = if (pos.e >> level) & 1 == 0 {
             (current, *sibling)

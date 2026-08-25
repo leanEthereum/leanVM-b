@@ -10,8 +10,8 @@
 //!: the reference `compress` is fed that lane layout.
 
 use lean_compiler::{compile, parse};
-use lean_vm::hash_flock::{compression, digest, metadata, unpack_metadata, warm_setup};
 use lean_vm::cpu::{Op, prove, verify};
+use lean_vm::hash_flock::{compression, digest, metadata, unpack_metadata, warm_setup};
 use lean_vm::vmhash::compress;
 use primitives::field::{F64, F192};
 

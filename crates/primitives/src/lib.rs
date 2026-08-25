@@ -3,8 +3,8 @@
 
 pub mod bench;
 pub mod bits;
-pub mod hash;
 pub mod field;
+pub mod hash;
 pub mod multilinear;
 pub mod stream;
 
