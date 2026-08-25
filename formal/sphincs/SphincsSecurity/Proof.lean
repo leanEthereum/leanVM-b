@@ -91,6 +91,7 @@ import SphincsSecurity.Proof.FewTimeOriginInvariant
 import SphincsSecurity.Proof.FewTimeOriginTerminal
 import SphincsSecurity.Proof.FewTimeOriginLift
 import SphincsSecurity.Proof.FewTimeTargetMonitor
+import SphincsSecurity.Proof.FewTimeTargetInvariant
 import SphincsSecurity.Proof.TerminalDecomposition
 
 /-!
