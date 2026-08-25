@@ -3,6 +3,7 @@ import SphincsSecurity.Proof.Bytes
 import SphincsSecurity.Proof.Code
 import SphincsSecurity.Proof.Guess
 import SphincsSecurity.Proof.QueryBound
+import SphincsSecurity.Proof.CacheSize
 import SphincsSecurity.Proof.Amortized
 import SphincsSecurity.Proof.Position
 import SphincsSecurity.Proof.Game
