@@ -90,7 +90,8 @@ theorem signWithView_fresh_admissible_transition_view
     (houtput : signAttemptResultOfOutput output = some (index, leaves)) :
     ∃ randomness,
       targetPayload = messageDigestPayload secretKey.root message randomness
-        ∧ view = some (hashOutputFewTimeView output) := by
+        ∧ view = some (hashOutputFewTimeView output)
+        ∧ ∀ signed, signature = some signed → randomness = signed.randomness := by
   rw [signWithView, simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hmem
   obtain ⟨⟨loopResult, loopCache⟩, hloop, hfinish⟩ := hmem
   have hloopLe : loopCache ≤ finalCache := by
@@ -153,7 +154,7 @@ theorem signWithView_fresh_admissible_transition_view
       initialCache loopCache loopResult hloop targetPayload output index leaves
       hbefore hloopOutput' houtput
   rw [hloopResult, simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hfinish
-  obtain ⟨⟨signatureResult, signatureCache⟩, _, hpure⟩ := hfinish
+  obtain ⟨⟨signatureResult, signatureCache⟩, hsignature, hpure⟩ := hfinish
   have hpureEq : ((signature, view), finalCache) =
       ((signatureResult, some (selectedFewTimeView index leaves)), signatureCache) := by
     simpa only [simulateQ_pure, StateT.run_pure, support_pure,
@@ -161,8 +162,20 @@ theorem signWithView_fresh_admissible_transition_view
   have hview : view = some (selectedFewTimeView index leaves) :=
     congrArg (fun result => result.1.2) hpureEq
   have houtputView := signAttemptResultOfOutput_view output index leaves houtput
-  exact ⟨randomness, hpayload, hview.trans (by
-    simpa only [selectedFewTimeView] using congrArg some houtputView)⟩
+  refine ⟨randomness, hpayload, hview.trans (by
+    simpa only [selectedFewTimeView] using congrArg some houtputView), ?_⟩
+  intro signed hsigned
+  have hresult : signatureResult = some signed := by
+    have := congrArg (fun result => result.1.1) hpureEq
+    rw [hsigned] at this
+    exact this.symm
+  have hsignature' : (some signed, signatureCache) ∈ support
+      ((simulateQ (randomOracle : QueryImpl HashSpec _)
+        (signAfterDigest secretKey randomness index leaves)).run loopCache) := by
+    rw [hresult] at hsignature
+    simpa only [simulateQ_romImpl_liftM] using hsignature
+  exact (signAfterDigest_support_some_randomness secretKey randomness index leaves
+    loopCache signatureCache signed hsignature').symm
 
 theorem signingCacheEntry_validView_fresh_admissible_transition_view
     {secretKey : SecretKey} {entry : SigningCacheEntry} {view : Option FewTimeView}
@@ -176,7 +189,8 @@ theorem signingCacheEntry_validView_fresh_admissible_transition_view
     (houtput : signAttemptResultOfOutput output = some (index, leaves)) :
     ∃ randomness,
       targetPayload = messageDigestPayload secretKey.root entry.request randomness
-        ∧ view = some (hashOutputFewTimeView output) :=
+        ∧ view = some (hashOutputFewTimeView output)
+        ∧ ∀ signed, entry.signature = some signed → randomness = signed.randomness :=
   signWithView_fresh_admissible_transition_view secretKey entry.request
     entry.initialCache entry.finalCache entry.signature view hvalid targetPayload output
     index leaves hbefore hafter houtput

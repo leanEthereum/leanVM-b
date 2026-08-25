@@ -147,7 +147,7 @@ theorem ViewedFullTraceState.ValidViews.signer_interval_fresh_admissible_view
   obtain ⟨signingPosition, viewPosition, hsigningRank, hviewRank, hentry,
       hviewRun⟩ := ViewedFullTraceState.ValidViews.signer_interval hvalid hconsistent
         position request signature initialCache finalCache hinterval
-  obtain ⟨_, _, hview⟩ :=
+  obtain ⟨_, _, hview, _⟩ :=
     signingCacheEntry_validView_fresh_admissible_transition_view hviewRun
       targetPayload output index leaves hbefore hafter houtput
   apply List.getElem?_eq_some_iff.mpr
@@ -162,6 +162,88 @@ theorem ViewedFullTraceState.ValidViews.signer_interval_fresh_admissible_view
     change state.views.get rankedViewPosition = some (hashOutputFewTimeView output)
     rw [hpositionEq]
     exact hview
+
+theorem ProperFewTimeLeak.signer_target_signature_eq_none
+    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec}
+    {secretKey : SecretKey} {signingLog : QueryLog SigningSpec}
+    {index : Index} {leaves : DigestTree → FtsLeaf}
+    (hproper : ProperFewTimeLeak f cache secretKey signingLog index leaves)
+    (state : ViewedFullTraceState)
+    (hlog : state.trace.signing.toSigningLog = signingLog)
+    (hvalidViews : state.ValidViews secretKey)
+    (hconsistent : state.trace.Consistent)
+    (hvalidRuns : state.trace.signing.ValidRuns secretKey)
+    (hcaches : state.trace.signing.CachesLe cache) (hf : cache.AgreesWithFn f)
+    (position : Fin state.trace.intervals.length)
+    (request : SignRequest) (signature : Option Signature)
+    (initialCache finalCache : QueryCache HashSpec)
+    (hinterval : state.trace.intervals.get position =
+      ⟨.inr request, signature, initialCache, finalCache⟩)
+    (targetPayload : HashInput) (output : HashOutput)
+    (hbefore : initialCache
+      (tweakableHashInput secretKey.parameter .message targetPayload) = none)
+    (hafter : finalCache
+      (tweakableHashInput secretKey.parameter .message targetPayload) = some output)
+    (houtput : signAttemptResultOfOutput output = some (index, leaves)) :
+    signature = none := by
+  obtain ⟨signingPosition, viewPosition, _, _, hentry, hviewRun⟩ :=
+    ViewedFullTraceState.ValidViews.signer_interval hvalidViews hconsistent position
+      request signature initialCache finalCache hinterval
+  cases hsignature : signature with
+  | none => rfl
+  | some signed =>
+      exfalso
+      have hsigningMem := List.get_mem state.trace.signing signingPosition
+      let signingEntry : SigningCacheEntry :=
+        ⟨request, some signed, initialCache, finalCache⟩
+      have hentry' : state.trace.signing.get signingPosition = signingEntry := by
+        simpa only [hsignature, signingEntry] using hentry
+      have hsigningEntryMem : signingEntry ∈ state.trace.signing := by
+        rw [← hentry']
+        exact hsigningMem
+      have hlogMem : (⟨request, some signed⟩ :
+          (request : SignRequest) × SigningSpec.Range request) ∈ signingLog := by
+        rw [← hlog, SigningCacheTrace.toSigningLog, List.mem_map]
+        exact ⟨signingEntry, hsigningEntryMem, by simp [signingEntry]⟩
+      rw [hsignature] at hviewRun
+      obtain ⟨randomness, hpayload, _, hrandomness⟩ :=
+        signingCacheEntry_validView_fresh_admissible_transition_view hviewRun
+          targetPayload output index leaves hbefore hafter houtput
+      have hrandomness' : randomness = signed.randomness :=
+        hrandomness signed rfl
+      have hvalidRun := hvalidRuns signingEntry hsigningEntryMem
+      change (some signed, finalCache) ∈ support
+        ((simulateQ romImpl (scheme.sign secretKey request)).run initialCache) at hvalidRun
+      rw [show scheme.sign secretKey request = sign secretKey request from rfl] at hvalidRun
+      have hcacheLe : finalCache ≤ cache :=
+        (hcaches signingEntry hsigningEntryMem).2
+      have hfinalAgree : finalCache.AgreesWithFn f :=
+        fun _ _ hcached => hf (hcacheLe hcached)
+      have hreplay := replayRom_of_mem_support (sign secretKey request) initialCache
+        (some signed) finalCache hvalidRun f hfinalAgree
+      have hrun := successfulSignRun_of_mem_support f secretKey request signed
+        initialCache finalCache cache hreplay hcacheLe hf
+      have htargetCached : cache
+          (tweakableHashInput secretKey.parameter .message targetPayload) = some output :=
+        hcacheLe hafter
+      have htargetAnswer : f
+          (tweakableHashInput secretKey.parameter .message targetPayload) = output :=
+        hf htargetCached
+      have hevalTarget : evalWithAnswerFn f
+          (signAttempt secretKey request signed.randomness) = some (index, leaves) := by
+        simp only [signAttempt, messageDigest, oracleHash, evalWithAnswerFn_bind,
+          evalWithAnswerFn_query]
+        rw [← hrandomness', ← hpayload, htargetAnswer]
+        by_cases hadmissibleOutput : Admissible (truncateMessageDigest output)
+        · simpa only [if_pos hadmissibleOutput, evalWithAnswerFn_pure,
+            signAttemptResultOfOutput] using houtput
+        · simpa only [if_neg hadmissibleOutput, evalWithAnswerFn_pure,
+            signAttemptResultOfOutput] using houtput
+      obtain ⟨actualIndex, actualLeaves, hhonest⟩ := hrun.honest_fts_at
+      have hpairs : (actualIndex, actualLeaves) = (index, leaves) := by
+        exact Option.some.inj (hhonest.1.2.1.symm.trans hevalTarget)
+      obtain ⟨rfl, rfl⟩ := Prod.mk.inj hpairs
+      exact hproper.2 ⟨request, some signed⟩ signed hlogMem rfl hrun hhonest
 
 theorem gameAfterSecretsWithViewTrace_target_in_freshCandidateViews
     (adversary : Adversary) (parameter : PublicParameter)
