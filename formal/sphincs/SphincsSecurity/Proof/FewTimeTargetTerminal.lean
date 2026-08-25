@@ -2481,7 +2481,24 @@ theorem OriginConfiguration.target_monitored_complete_of_projection
     hviewMonitored hallowedMonitored (by rwa [← htargetOrdinalMonitored])
     htraceCoherent.2 (by rwa [← htargetOrdinalMonitored]) hallowedTraceCoherent.2
 
-theorem gameAfterSecretsWithViewTrace_proper_target_classified
+def VerifierFreshTarget (parameter : PublicParameter)
+    (result : (Digest × Forgery × Bool) × ViewedFullTraceState) : Prop :=
+  let input := tweakableHashInput parameter .message
+    (messageDigestPayload result.1.1 result.1.2.1.message
+      result.1.2.1.signature.randomness)
+  ∃ (adversaryCache digestCache : QueryCache HashSpec) (output : HashOutput),
+    adversaryCache input = none
+      ∧ (output, digestCache) ∈ support
+        ((simulateQ (randomOracle : QueryImpl HashSpec _) (oracleHash input)).run
+          adversaryCache)
+      ∧ digestCache ≤ result.2.cache
+      ∧ result.2.targetView = some (hashOutputFewTimeView output)
+
+noncomputable instance (parameter : PublicParameter) :
+    DecidablePred (VerifierFreshTarget parameter) :=
+  fun result => Classical.propDecidable (VerifierFreshTarget parameter result)
+
+theorem gameAfterSecretsWithViewTrace_proper_target_classified_at_adversary_state
     (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
     (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
@@ -2500,21 +2517,16 @@ theorem gameAfterSecretsWithViewTrace_proper_target_classified
     (hproper : ProperFewTimeLeak f result.2.cache
       ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
       result.2.trace.signing.toSigningLog (digestIndex digest) (digestLeaves digest))
-    (hle : result.2.trace.signing.toSigningLog.length ≤ signatureLimit) :
+    (hle : result.2.trace.signing.toSigningLog.length ≤ signatureLimit)
+    (rootCache : QueryCache HashSpec) (state : ViewedFullTraceState)
+    (htrace : result.2.trace = state.trace) (hviews : result.2.views = state.views)
+    (hstateCache : state.cache ≤ result.2.cache) :
     let secretKey : SecretKey := ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
-    let targetInput := tweakableHashInput parameter .message
-      (messageDigestPayload result.1.1 result.1.2.1.message
-        result.1.2.1.signature.randomness)
-    (∃ adversaryCache : QueryCache HashSpec, adversaryCache targetInput = none) ∨
-      ∃ (rootCache : QueryCache HashSpec) (state : ViewedFullTraceState)
-          (distinct : Nat) (_ : distinct ∈ Finset.Icc 1 14)
+    VerifierFreshTarget parameter result ∨
+      ∃ (distinct : Nat) (_ : distinct ∈ Finset.Icc 1 14)
           (pattern : FewTimePattern signatureLimit distinct)
           (configuration : OriginConfiguration pattern q) (candidate : Fin q),
-        (result.1.2.1, state) ∈ support
-          ((simulateQ (viewedFullTracedMappedAdversaryImpl secretKey)
-            (adversary.main ⟨result.1.1, parameter⟩)).run
-              ⟨rootCache, ⟨[], [], []⟩, [], none⟩)
-        ∧ FixedOriginTargetViewedTerminal secretKey
+        FixedOriginTargetViewedTerminal secretKey
           (adversary.main ⟨result.1.1, parameter⟩) rootCache q
             configuration candidate.val (result.1.2.1, state) := by
   classical
@@ -2522,12 +2534,14 @@ theorem gameAfterSecretsWithViewTrace_proper_target_classified
   let targetPayload := messageDigestPayload result.1.1 result.1.2.1.message
     result.1.2.1.signature.randomness
   let targetInput := tweakableHashInput parameter .message targetPayload
-  obtain ⟨_, adversaryCache, _, _, _, _, _, _, _, horigin, _⟩ :=
+  obtain ⟨_, adversaryCache, digestCache, output, _, _, hquery, hdigestLe,
+      htargetView, horigin, _⟩ :=
     gameAfterSecretsWithViewTrace_target_source_kind adversary parameter otsSecret
       ftsSecret result hresult
   rcases horigin with hverifier | ⟨source, hsourceInitial, hsourceFinal, hkind⟩
-  · exact Or.inl ⟨adversaryCache,
-      by simpa only [targetInput, targetPayload] using hverifier⟩
+  · exact Or.inl ⟨adversaryCache, digestCache, output,
+      by simpa only [targetInput, targetPayload] using hverifier,
+      by simpa only [targetInput, targetPayload] using hquery, hdigestLe, htargetView⟩
   · obtain ⟨sourceOutput, hcandidate, hsourceView, hsourceOutput, hattempt⟩ :=
       gameAfterSecretsWithViewTrace_target_source_candidate adversary parameter otsSecret
         ftsSecret result hresult f hf digest hdigest hadmissible source
@@ -2570,19 +2584,15 @@ theorem gameAfterSecretsWithViewTrace_proper_target_classified
         adversary q hq parameter hparameter otsSecret hots ftsSecret hfts result hresult
       exact_mod_cast hbound
     let candidate : Fin q := ⟨targetOrdinal, hordinalLt.trans_le hcountLe⟩
-    obtain ⟨rootCache, state, _, hadversary, htrace, hviews, hstateCache⟩ :=
-      gameAfterSecretsWithViewTrace_support_adversary_state adversary parameter otsSecret
-        ftsSecret result hresult
     have hfinalCache : QueryCache.enncard result.2.cache ≤ q :=
       gameAfterSecretsWithFullTrace_support_enncard_le adversary q hq parameter hparameter
         otsSecret hots ftsSecret hfts (result.1, result.2.base) hbase
     have hviewedCache : QueryCache.enncard state.cache ≤ q :=
       (QueryCache.enncard_mono hstateCache).trans hfinalCache
-    refine Or.inr ⟨rootCache, state, hproper.1.cover.entries.card,
+    refine Or.inr ⟨hproper.1.cover.entries.card,
       Finset.mem_Icc.2 ⟨hproper.1.cover.entries_card_pos,
         hproper.1.cover.entries_card_le_trees⟩,
-      hproper.1.cover.pattern.pad hle, configuration, candidate, hadversary,
-      hviewedCache, ?_⟩
+      hproper.1.cover.pattern.pad hle, configuration, candidate, hviewedCache, ?_⟩
     intro monitored hmonitored heq
     have hstateEq : monitored.2.origin.viewed = state := congrArg Prod.snd heq
     have htrace' : result.2.trace = monitored.2.origin.viewed.trace := by
@@ -2595,6 +2605,52 @@ theorem gameAfterSecretsWithViewTrace_proper_target_classified
       otsSecret ftsSecret result hresult f hf digest hproper hle hrealized source
       hcandidate hsourceView hallowed targetOrdinal rfl rootCache monitored hmonitored
       htrace' hviews'
+
+theorem gameAfterSecretsWithViewTrace_proper_target_classified
+    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
+    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (hots : otsSecret ∈ support sampleOtsSecrets)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (hfts : ftsSecret ∈ support sampleFtsSecrets)
+    (result : (Digest × Forgery × Bool) × ViewedFullTraceState)
+    (hresult : result ∈ support
+      (gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret))
+    (f : QueryImpl HashSpec Id) (hf : result.2.cache.AgreesWithFn f)
+    (digest : MessageDigest)
+    (hdigest : evalWithAnswerFn f
+      (messageDigest parameter result.1.1 result.1.2.1.message
+        result.1.2.1.signature.randomness) = digest)
+    (hadmissible : Admissible digest)
+    (hproper : ProperFewTimeLeak f result.2.cache
+      ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+      result.2.trace.signing.toSigningLog (digestIndex digest) (digestLeaves digest))
+    (hle : result.2.trace.signing.toSigningLog.length ≤ signatureLimit) :
+    let secretKey : SecretKey := ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+    VerifierFreshTarget parameter result ∨
+      ∃ (rootCache : QueryCache HashSpec) (state : ViewedFullTraceState)
+          (distinct : Nat) (_ : distinct ∈ Finset.Icc 1 14)
+          (pattern : FewTimePattern signatureLimit distinct)
+          (configuration : OriginConfiguration pattern q) (candidate : Fin q),
+        (result.1.2.1, state) ∈ support
+          ((simulateQ (viewedFullTracedMappedAdversaryImpl secretKey)
+            (adversary.main ⟨result.1.1, parameter⟩)).run
+              ⟨rootCache, ⟨[], [], []⟩, [], none⟩)
+        ∧ FixedOriginTargetViewedTerminal secretKey
+          (adversary.main ⟨result.1.1, parameter⟩) rootCache q
+            configuration candidate.val (result.1.2.1, state) := by
+  obtain ⟨rootCache, state, _, hadversary, htrace, hviews, hstateCache⟩ :=
+    gameAfterSecretsWithViewTrace_support_adversary_state adversary parameter otsSecret
+      ftsSecret result hresult
+  rcases gameAfterSecretsWithViewTrace_proper_target_classified_at_adversary_state
+      adversary q hq parameter hparameter otsSecret hots ftsSecret hfts result hresult
+      f hf digest hdigest hadmissible hproper hle rootCache state htrace
+      hviews hstateCache with hfresh | hclassified
+  · exact Or.inl hfresh
+  · obtain ⟨distinct, hdistinct, pattern, configuration, candidate, hterminal⟩ :=
+      hclassified
+    exact Or.inr ⟨rootCache, state, distinct, hdistinct, pattern, configuration,
+      candidate, hadversary, hterminal⟩
 
 theorem gameAfterSecretsWithViewTrace_proper_target_bridge
     (adversary : Adversary) (parameter : PublicParameter)
@@ -2617,10 +2673,7 @@ theorem gameAfterSecretsWithViewTrace_proper_target_bridge
     (configuration : OriginConfiguration (hproper.1.cover.pattern.pad hle) sources)
     (hrealized : configuration.PaddedRealizedBy hproper.1.cover hle result.2.trace rfl) :
     let secretKey : SecretKey := ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
-    let targetInput := tweakableHashInput parameter .message
-      (messageDigestPayload result.1.1 result.1.2.1.message
-        result.1.2.1.signature.randomness)
-    (∃ adversaryCache : QueryCache HashSpec, adversaryCache targetInput = none) ∨
+    VerifierFreshTarget parameter result ∨
       ∃ (targetOrdinal : Nat) (rootCache : QueryCache HashSpec)
           (monitored : Forgery × OriginTargetMonitorState configuration),
         targetOrdinal < freshTargetCandidateCount secretKey result.2.trace
@@ -2640,11 +2693,13 @@ theorem gameAfterSecretsWithViewTrace_proper_target_bridge
     result.1.2.1.signature.randomness
   let targetInput := tweakableHashInput parameter .message targetPayload
   obtain ⟨rootCache₀, adversaryCache, digestCache, verifierOutput, _, _, hverify,
-      hdigestLe, _, horigin, _⟩ :=
+      hdigestLe, htargetView, horigin, _⟩ :=
     gameAfterSecretsWithViewTrace_target_source_kind adversary parameter otsSecret
       ftsSecret result hresult
   rcases horigin with hverifier | ⟨source, hsourceInitial, hsourceFinal, hkind⟩
-  · exact Or.inl ⟨adversaryCache, by simpa only [targetInput, targetPayload] using hverifier⟩
+  · exact Or.inl ⟨adversaryCache, digestCache, verifierOutput,
+      by simpa only [targetInput, targetPayload] using hverifier,
+      by simpa only [targetInput, targetPayload] using hverify, hdigestLe, htargetView⟩
   · obtain ⟨sourceOutput, hcandidate, hsourceView, hsourceOutput, hattempt⟩ :=
       gameAfterSecretsWithViewTrace_target_source_candidate adversary parameter otsSecret
         ftsSecret result hresult f hf digest hdigest hadmissible source
