@@ -80,6 +80,7 @@ import SphincsSecurity.Proof.FewTimeOriginProbability
 import SphincsSecurity.Proof.FewTimeOriginPadding
 import SphincsSecurity.Proof.FewTimeOriginSchedule
 import SphincsSecurity.Proof.FewTimeOriginMonitor
+import SphincsSecurity.Proof.FewTimeOriginWP
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to

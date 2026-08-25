@@ -38,6 +38,8 @@ The padded configuration now has unique lookups by chronological ordinal. `sourc
 
 A proof-only origin monitor now follows one padded configuration through the viewed adversary handler. At configured direct slots it records only fresh admissible source answers; at configured fresh signer slots it records the selected view; at configured prehit signer slots it checks reuse of the recorded exact input and view. Forgetting the observation, ordinals and validity bit projects query by query, and through every simulated adversary computation, exactly to the existing viewed full trace.
 
+The local source and signer estimates are now available in expectation form, so an arbitrary continuation cost can depend on the retained view without taking a maximum over views. A generic weakest-precondition recursion over a stateful oracle simulation is proved equal to the expected postcondition of the resulting probabilistic run. These are the semantic ingredients for the remaining monitor supermartingale.
+
 ## The shape of the proof
 
 The whole probabilistic side is one lemma, `Amortized.probEvent_bad_le_amortized`. Give it a predicate `Bad` on the random oracle's cache, a potential `Nat` on caches and a constant `c`, prove that a fresh answer on an uncached input turns the cache bad only by landing in a finite set of digests whose size the potential pays for up to `c` per query, and it returns `(c * q + potential) * eps`. Nothing else about the oracle is needed: no presampling, no reprogramming, no hybrid.
