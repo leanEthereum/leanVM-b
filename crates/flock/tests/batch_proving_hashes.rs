@@ -1,7 +1,7 @@
 //! Standalone batch BLAKE2s proving, isolated from the VM.
 //!
 //! ```text
-//! BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=18 cargo test --release -p flock --test blake2s_batch -- --ignored --nocapture
+//! BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=18 cargo test --release --package flock --test batch_proving_hashes -- hash_batch_prove_verify --exact --nocapture --include-ignored
 //! ```
 
 use std::time::Instant;
@@ -20,7 +20,7 @@ use primitives::{field::F64, pretty_integer, test_rng::Rng};
 
 #[test]
 #[ignore = "manual release benchmark; needs a large-stack worker and substantial memory"]
-fn blake2s_batch_prove_verify() {
+fn hash_batch_prove_verify() {
     // The XMSS n=820 workload executes about 2^17 BLAKE2s compressions.
     let requested_n_log: usize = std::env::var("FLOCK_N_LOG")
         .ok()
