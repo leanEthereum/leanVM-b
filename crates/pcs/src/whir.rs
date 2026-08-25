@@ -1297,13 +1297,14 @@ pub fn recursive_prover_with_basis(
     let mut t_intro_glue = std::time::Duration::ZERO;
     let t_total = std::time::Instant::now();
 
-    // (No opener domain-label absorb: the extension-field opener has none and the recursion
-    // guest replays a label-free opening transcript; the observed `target` +
-    // outer transcript context provide domain separation.)
-    ps.observe_scalar(target);
+    // Nothing is absorbed on entry. The commitment was bound by the `add_root`/`next_root` that
+    // transmitted it, and the target is `sum_i lambda^i * claim_i` over claim values bound by their
+    // own reads, with lambda drawn from the state: the state already determines both. Every caller
+    // must therefore have transmitted its root before opening against it, which is what makes the
+    // fold challenges depend on the commitment.
 
-    // L0 codeword + tree are borrowed (reused from `commit`).
-    let initial_root: Hash = l0_tree[l0_tree.len() - 1];
+    // L0 codeword + tree are borrowed (reused from `commit`); the root itself is never needed
+    // here, the caller having transmitted it.
     // The codeword interleaves only the committed lanes, and its lane `t` is stack
     // block `n_lanes-1-t`, so a row IS the tail of the leaf image: the absent lanes
     // are the image's leading zeros (`merkle::merkle_tree_padded_rows` shares their
@@ -1319,7 +1320,6 @@ pub fn recursive_prover_with_basis(
         }
         row
     };
-    ps.observe_root(&initial_root);
 
     let ood_count = |lvl: usize| -> usize { config.ood_samples.get(lvl).copied().unwrap_or(0) };
 
@@ -1735,11 +1735,11 @@ pub fn recursive_verifier_with_basis(
 
     // The L0 root is the caller's statement (not proof data): absorb it in the
     // prover's slot and check L0 opens against it below.
-    // (No opener domain-label absorb: the extension-field opener has none and the recursion
-    // guest replays a label-free opening transcript; the observed `target` +
-    // outer transcript context provide domain separation.)
-    vs.observe_scalar(target);
-    vs.observe_root(expected_initial_root);
+    // Nothing is absorbed on entry. The commitment was bound by the `add_root`/`next_root` that
+    // transmitted it, and the target is `sum_i lambda^i * claim_i` over claim values bound by their
+    // own reads, with lambda drawn from the state: the state already determines both. Every caller
+    // must therefore have transmitted its root before opening against it, which is what makes the
+    // fold challenges depend on the commitment.
 
     let log_inv_rate_0 = config.log_inv_rates[0];
     let log_msg_cols_0 = log_n - initial_k;
@@ -2077,11 +2077,11 @@ where
 
     // The L0 root is the caller's statement (not proof data): absorb it
     // exactly where the prover absorbed its own.
-    // (No opener domain-label absorb: the extension-field opener has none and the recursion
-    // guest replays a label-free opening transcript; the observed `target` +
-    // outer transcript context provide domain separation.)
-    vs.observe_scalar(target);
-    vs.observe_root(expected_initial_root);
+    // Nothing is absorbed on entry. The commitment was bound by the `add_root`/`next_root` that
+    // transmitted it, and the target is `sum_i lambda^i * claim_i` over claim values bound by their
+    // own reads, with lambda drawn from the state: the state already determines both. Every caller
+    // must therefore have transmitted its root before opening against it, which is what makes the
+    // fold challenges depend on the commitment.
 
     let log_inv_rate_0 = config.log_inv_rates[0];
     let log_msg_cols_0 = log_n - initial_k;

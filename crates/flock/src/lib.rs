@@ -27,13 +27,13 @@
 //! subtlest thing here.
 
 mod gf2;
+pub mod hash;
 pub mod lincheck;
 /// The circuit driven through the whole reduction. A `src` module rather than
 /// its own test binary so it shares the process, and its guest compilation,
 /// with the unit tests.
 #[cfg(test)]
 mod reduction_tests;
-pub mod hash;
 pub mod verifier;
 mod witness;
 pub mod zerocheck;

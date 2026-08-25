@@ -71,4 +71,3 @@ fn multithreaded_throughput_without_hardware_acceleration() {
         primitives::hash::LANES,
     );
 }
-

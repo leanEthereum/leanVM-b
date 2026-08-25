@@ -1,4 +1,5 @@
-//! Persistent cache for deterministic XMSS benchmark signatures.
+//! Persistent cache for deterministic benchmark signatures, one file per
+//! scheme.
 //!
 //! The cache grows as needed and is memoized in-process. Its filename binds the
 //! parameters, hash construction, and encoding predicate. Loaded signatures are
@@ -21,7 +22,8 @@ type CachedSignature = (XmssPublicKey, XmssSignature);
 
 const SCHEMA_VERSION: u32 = 2;
 
-pub const EPOCH: u32 = 7;
+/// The epoch every cached XMSS signature was made at. SPHINCS has none.
+pub const XMSS_EPOCH: u32 = 7;
 const KEY_START: u32 = 0;
 const KEY_END: u32 = 15;
 
@@ -36,7 +38,7 @@ fn compute_signer(index: usize) -> CachedSignature {
     let mut seed = [10u8; 32];
     seed[..8].copy_from_slice(&(index as u64).to_le_bytes());
     let (sk, pk) = xmss_key_gen(seed, KEY_START, KEY_END).expect("keygen");
-    let sig = xmss_sign(&mut StdRng::seed_from_u64(index as u64), &sk, &message(), EPOCH).expect("sign");
+    let sig = xmss_sign(&mut StdRng::seed_from_u64(index as u64), &sk, &message(), XMSS_EPOCH).expect("sign");
     (pk, sig)
 }
 
@@ -54,7 +56,7 @@ fn encoding_fingerprint() -> (u64, [u8; V]) {
     for counter in 0u64.. {
         let mut randomness = [0u8; RANDOMNESS_LEN];
         randomness[..8].copy_from_slice(&counter.to_le_bytes());
-        if let Some(digits) = wots_encode(&msg, EPOCH, &pp, &randomness) {
+        if let Some(digits) = wots_encode(&msg, XMSS_EPOCH, &pp, &randomness) {
             return (counter, digits);
         }
     }
@@ -64,7 +66,7 @@ fn encoding_fingerprint() -> (u64, [u8; V]) {
 fn footprint() -> u64 {
     let mut hasher = DefaultHasher::new();
     SCHEMA_VERSION.hash(&mut hasher);
-    EPOCH.hash(&mut hasher);
+    XMSS_EPOCH.hash(&mut hasher);
     KEY_START.hash(&mut hasher);
     KEY_END.hash(&mut hasher);
     message().hash(&mut hasher);
@@ -91,7 +93,7 @@ fn try_load_cache() -> Option<Vec<CachedSignature>> {
     let msg = message();
     let valid = signers
         .iter()
-        .take_while(|(pk, sig)| xmss_verify(pk, &msg, sig, EPOCH).is_ok())
+        .take_while(|(pk, sig)| xmss_verify(pk, &msg, sig, XMSS_EPOCH).is_ok())
         .count();
     if valid < signers.len() {
         eprintln!(
@@ -150,6 +152,138 @@ pub fn get_signers(n: usize) -> Vec<CachedSignature> {
             let mut fresh = generate_range(pool.len(), n);
             pool.append(&mut fresh);
             save_cache(&pool);
+        }
+    }
+    pool[..n].to_vec()
+}
+
+/// A SPHINCS signer, generated the same way, with the message it signed: each
+/// SPHINCS signer carries its own, where the XMSS ones share one. Signing is
+/// stateless, so unlike XMSS there is no epoch and no key range: one key
+/// answers for every index.
+type CachedSphincsSignature = (sphincs::PublicKey, sphincs::Message, sphincs::Signature);
+
+/// Signer `index`'s own message, distinct from every other's and from the shared
+/// XMSS [`message`], so a test that mixed them up would fail rather than pass.
+pub fn sphincs_message(index: usize) -> sphincs::Message {
+    let mut msg = [0u8; sphincs::MESSAGE_LEN];
+    msg[..8].copy_from_slice(&(index as u64).to_le_bytes());
+    msg[8..].copy_from_slice(&[0xC5; sphincs::MESSAGE_LEN - 8]);
+    msg
+}
+
+/// One cached SPHINCS signer, as fixed-size bytes: the scheme's own
+/// serializations, so nothing here has to agree with a derived one.
+const SPHINCS_RECORD: usize = sphincs::PUB_KEY_SIZE + sphincs::MESSAGE_LEN + sphincs::SIG_SIZE;
+
+fn compute_sphincs_signer(index: usize) -> CachedSphincsSignature {
+    let mut rng = StdRng::seed_from_u64(0x5F1A_C500 ^ index as u64);
+    let (secret_key, public_key) = sphincs::key_gen(&mut rng);
+    let message = sphincs_message(index);
+    let signature = sphincs::sign(&mut rng, &secret_key, &message).expect("sign");
+    (public_key, message, signature)
+}
+
+fn sphincs_footprint() -> u64 {
+    let mut hasher = DefaultHasher::new();
+    SCHEMA_VERSION.hash(&mut hasher);
+    // The record layout and the per-signer messages, so a change to either
+    // invalidates the file rather than being read back as another scheme's.
+    SPHINCS_RECORD.hash(&mut hasher);
+    sphincs_message(0).hash(&mut hasher);
+    sphincs_message(1).hash(&mut hasher);
+    (
+        sphincs::V,
+        sphincs::W,
+        sphincs::TARGET_SUM,
+        sphincs::D,
+        sphincs::HEIGHTS,
+        sphincs::A,
+        sphincs::K,
+    )
+        .hash(&mut hasher);
+    // The tweakable hash itself, so a change to it invalidates the file.
+    sphincs::th(
+        &[0xA5; sphincs::PUBLIC_PARAM_LEN],
+        &sphincs::tweak(1, 2, 3, 4, 5),
+        &[0x3C; 16],
+    )
+    .hash(&mut hasher);
+    hasher.finish()
+}
+
+fn sphincs_cache_path() -> PathBuf {
+    cache_dir().join(format!("sphincs_signers_{:016x}.bin", sphincs_footprint()))
+}
+
+fn try_load_sphincs_cache() -> Option<Vec<CachedSphincsSignature>> {
+    let bytes = fs::read(sphincs_cache_path()).ok()?;
+    let mut signers = Vec::with_capacity(bytes.len() / SPHINCS_RECORD);
+    for record in bytes.as_chunks::<SPHINCS_RECORD>().0 {
+        let (key_bytes, rest) = record.split_at(sphincs::PUB_KEY_SIZE);
+        let (message_bytes, signature_bytes) = rest.split_at(sphincs::MESSAGE_LEN);
+        let public_key = sphincs::PublicKey::from_bytes(key_bytes.try_into().unwrap());
+        let message: sphincs::Message = message_bytes.try_into().unwrap();
+        let signature = sphincs::Signature::from_bytes(signature_bytes.try_into().unwrap());
+        if sphincs::verify(&public_key, &message, &signature).is_err() {
+            eprintln!(
+                "warning: signers cache {} is stale (signer {} no longer verifies); regenerating from there",
+                sphincs_cache_path().display(),
+                signers.len()
+            );
+            break;
+        }
+        signers.push((public_key, message, signature));
+    }
+    Some(signers)
+}
+
+fn save_sphincs_cache(signers: &[CachedSphincsSignature]) {
+    let path = sphincs_cache_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let mut bytes = Vec::with_capacity(signers.len() * SPHINCS_RECORD);
+    for (public_key, message, signature) in signers {
+        bytes.extend_from_slice(&public_key.flatten());
+        bytes.extend_from_slice(message);
+        bytes.extend_from_slice(&signature.to_bytes());
+    }
+    if let Err(error) = fs::write(&path, &bytes) {
+        eprintln!("warning: could not write signers cache to {}: {error}", path.display());
+    }
+}
+
+static SPHINCS_POOL: Mutex<Vec<CachedSphincsSignature>> = Mutex::new(Vec::new());
+
+pub fn get_sphincs_signers(n: usize) -> Vec<CachedSphincsSignature> {
+    let mut pool = SPHINCS_POOL.lock().unwrap();
+    if pool.len() < n {
+        if let Some(disk) = try_load_sphincs_cache()
+            && disk.len() > pool.len()
+        {
+            *pool = disk;
+        }
+        // Key generation is one whole 2^12-leaf tree, which is the expensive
+        // part; it fans out internally, so this loop stays sequential.
+        let started = Instant::now();
+        let missing = n.saturating_sub(pool.len());
+        for index in pool.len()..n {
+            pool.push(compute_sphincs_signer(index));
+            print!(
+                "\r  generating SPHINCS signers (one-time, then cached): {}/{}",
+                pretty_integer(index + 1 - (n - missing)),
+                pretty_integer(missing)
+            );
+            let _ = std::io::stdout().flush();
+        }
+        if missing > 0 {
+            println!(
+                "\r  generated {} SPHINCS in {} s (cached to disk)              ",
+                pretty_integer(missing),
+                pretty_f64(started.elapsed().as_secs_f64())
+            );
+            save_sphincs_cache(&pool);
         }
     }
     pool[..n].to_vec()

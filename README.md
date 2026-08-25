@@ -19,7 +19,15 @@ Machine: Mac M4 Max
 Our XMSS is specified in [XMSS.pdf](https://github.com/leanEthereum/leanVM-b/releases/download/doc-latest/XMSS.pdf).
 
 ```bash
-cargo run --release -- xmss --n-signatures 900 --log-inv-rate 1 --repeat 3
+cargo run --release -- aggregate --xmss 900 --log-inv-rate 1 --repeat 3
+```
+
+### SPHINCS aggregation
+
+Our SPHINCS is specified in [SPHINCS.pdf](https://github.com/leanEthereum/leanVM-b/releases/download/doc-latest/SPHINCS.pdf). It is stateless, so a key needs no epoch, and each SPHINCS signer signs its own message where the XMSS signers share one. One verification costs 531 compressions against XMSS's 144, so a leaf of comparable proven size holds proportionally fewer signers; `--xmss` and `--sphincs` add up, so a mixed leaf is one command.
+
+```bash
+cargo run --release -- aggregate --sphincs 245 --log-inv-rate 1 --repeat 3
 ```
 
 ### Recursion

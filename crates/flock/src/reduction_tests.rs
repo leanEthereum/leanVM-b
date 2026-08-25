@@ -8,11 +8,11 @@
 //! `k_skip = 6`. Only the PCS opening is left out, which is generic in the
 //! claims and covered end to end by `hash_batch`.
 
-use crate::lincheck::QuirkyPoint;
 use crate::hash::{
     Compression, K_LOG, K_SKIP, USEFUL_BITS, WalkLincheckCircuit, generate_witness_with_ab_packed_and_lincheck, iv_64,
     min_n_blocks_log,
 };
+use crate::lincheck::QuirkyPoint;
 use crate::zerocheck::{PaddingSpec, ZerocheckClaim};
 use fiat_shamir::transcript::{ProverState, VerifierState};
 use primitives::test_rng::Rng;

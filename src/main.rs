@@ -1,4 +1,4 @@
-//! Benchmark CLI for XMSS aggregation, recursion, and the Fibonacci demo.
+//! Benchmark CLI for signature aggregation, recursion, and the Fibonacci demo.
 
 use clap::{Parser, Subcommand};
 
@@ -36,21 +36,28 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Aggregate XMSS signatures inside the VM and verify the proof.
-    Xmss {
-        /// Number of signatures to aggregate.
-        #[arg(long, default_value = "820")]
-        n_signatures: usize,
+    /// Aggregate signatures of either scheme, or of both, inside the VM and
+    /// verify the proof. At least one count must be nonzero.
+    Aggregate {
+        /// XMSS signatures to aggregate.
+        #[arg(long, default_value = "0")]
+        xmss: usize,
+        /// SPHINCS signatures to aggregate.
+        #[arg(long, default_value = "0")]
+        sphincs: usize,
     },
     /// Aggregate n previously aggregated signatures into one proof.
     Recursion {
         /// Number of child aggregates.
         #[arg(long, default_value = "2")]
         n: usize,
-        /// Signatures in each child. Sets the child proof's committed size,
+        /// XMSS signatures in each child. Sets the child proof's committed size,
         /// which is what the recursion cost should be quoted against.
         #[arg(long, default_value = "900")]
         xmss_per_leaf: usize,
+        /// SPHINCS signatures in each child, on top of the XMSS ones.
+        #[arg(long, default_value = "0")]
+        sphincs_per_leaf: usize,
     },
     /// Prove and verify Fibonacci in the exponent (demo).
     Fibonacci {
@@ -68,11 +75,15 @@ fn main() {
         primitives::init_tracing();
     }
     match cli.command {
-        Command::Xmss { n_signatures } => {
-            rec_aggregation::run_xmss_aggregation(n_signatures, cli.log_inv_rate, plan);
+        Command::Aggregate { xmss, sphincs } => {
+            rec_aggregation::run_aggregation(xmss, sphincs, cli.log_inv_rate, plan);
         }
-        Command::Recursion { n, xmss_per_leaf } => {
-            rec_aggregation::run_recursion(n, xmss_per_leaf, cli.log_inv_rate, cli.tracing, plan);
+        Command::Recursion {
+            n,
+            xmss_per_leaf,
+            sphincs_per_leaf,
+        } => {
+            rec_aggregation::run_recursion(n, xmss_per_leaf, sphincs_per_leaf, cli.log_inv_rate, cli.tracing, plan);
         }
         Command::Fibonacci { n } => {
             rec_aggregation::run_fibonacci(n, cli.log_inv_rate, plan);
