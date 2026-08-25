@@ -26,12 +26,15 @@ def OriginConfiguration.RealizedBy {f : QueryImpl HashSpec Id}
       ∀ hselected : cover.entriesEquivPatternSelected entry.1 ∈ configuration.prehit,
       ∃ (output : HashOutput)
           (sourcePosition : Fin trace.hashQueries.length)
-          (intervalPosition : Fin trace.intervals.length),
+          (intervalPosition : Fin trace.intervals.length)
+          (hdirect : isDirectHashQuery (trace.intervals.get intervalPosition).input),
         sourcePosition.val =
             (configuration.source.1
               ⟨cover.entriesEquivPatternSelected entry.1, hselected⟩).val
-          ∧ trace.hashQueries.get sourcePosition =
-            (cover.entryDigestInput entry.1, output)
+          ∧ sourcePosition.val =
+            (Fin.encodeSubtype (fun position =>
+              isDirectHashQuery (trace.intervals.get position).input)
+              ⟨intervalPosition, hdirect⟩).val
           ∧ (trace.intervals.get intervalPosition).input =
             .inl (.inr (cover.entryDigestInput entry.1))
           ∧ (trace.intervals.get intervalPosition).initialCache
@@ -59,7 +62,7 @@ theorem FewTimeCover.exists_realized_originConfiguration_of_hashQueries_length_l
       OriginConfiguration.RealizedBy cover configuration result.2.2 rfl := by
   classical
   obtain ⟨source, intervalSource, output, hsourceInjective, _hintervalInjective,
-      hsource⟩ := cover.precached_entries_have_numbered_source_entries adversary parameter
+      hsource⟩ := cover.precached_entries_have_injective_numbered_sources adversary parameter
     otsSecret ftsSecret result hresult f hf index targetLeaves
   let budgetSource : cover.PrecachedEntries result.2.2.signing rfl → Fin q :=
     fun entry => Fin.castLE hqueries (source entry)
@@ -80,9 +83,10 @@ theorem FewTimeCover.exists_realized_originConfiguration_of_hashQueries_length_l
     have hconfigurationSource : configuration.source.1 selected = budgetSource entry := by
       rw [cover.originConfiguration_source_apply result.2.2.signing rfl q budgetSource
         hbudgetSourceInjective selected, hentry]
-    refine ⟨output entry, source entry, intervalSource entry, ?_, (hsource entry).1, ?_⟩
+    obtain ⟨hdirect, hordinal, hinterval⟩ := hsource entry
+    refine ⟨output entry, source entry, intervalSource entry, hdirect, ?_, ?_, hinterval⟩
     · exact congrArg Fin.val hconfigurationSource |>.symm
-    · exact (hsource entry).2
+    · exact hordinal
 
 theorem FewTimeCover.exists_realized_originConfiguration_of_queryBudget
     (adversary : Adversary) (q : Nat)

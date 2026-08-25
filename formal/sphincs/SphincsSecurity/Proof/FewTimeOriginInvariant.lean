@@ -1053,6 +1053,33 @@ theorem OriginMonitorState.cappedPotential_eq_one_of_complete
   rw [state.cappedPotential_eq_of_enncard_le q event hcache,
     state.potential_eq_one_of_complete event hcomplete hevent]
 
+theorem OriginMonitorState.complete_of_valid_and_ordinals
+    {signatures distinct sources : Nat}
+    {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (state : OriginMonitorState configuration)
+    (hcoherent : state.ScheduleCoherent) (hvalid : state.valid = true)
+    (hsources : ∀ selected : ↑configuration.prehit,
+      (configuration.source.1 selected).val < state.directOrdinal)
+    (hsigners : ∀ selected : pattern.selected,
+      selected.1.val < state.signerOrdinal) :
+    state.Complete := by
+  classical
+  have hseenSources : state.observation.seenSources = Finset.univ := by
+    ext selected
+    simp only [Finset.mem_univ, iff_true]
+    exact (hcoherent hvalid).1 selected |>.2 (hsources selected)
+  have hseenViews : state.observation.seenViews = Finset.univ := by
+    ext selected
+    simp only [Finset.mem_univ, iff_true]
+    exact (hcoherent hvalid).2.1 selected |>.2 (Or.inl (hsigners selected))
+  refine ⟨hvalid, ?_, ?_, hseenViews⟩
+  · ext selected
+    simp [OriginMonitorState.pendingSources, hseenSources]
+  · ext selected
+    simp [OriginMonitorState.pendingReuses, hseenSources,
+      Nat.not_le_of_lt (hsigners selected.1)]
+
 theorem probEvent_originMonitored_complete_le_initial
     {signatures distinct sources : Nat}
     {pattern : FewTimePattern signatures distinct}

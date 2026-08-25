@@ -145,8 +145,13 @@ theorem FewTimeCover.precached_entries_have_injective_numbered_sources
         (output : cover.PrecachedEntries result.2.2.signing rfl → HashOutput),
       Function.Injective source
         ∧ Function.Injective intervalSource
-        ∧ ∀ entry,
-          (result.2.2.intervals.get (intervalSource entry)).input =
+        ∧ ∀ entry, ∃ hdirect : isDirectHashQuery
+            (result.2.2.intervals.get (intervalSource entry)).input,
+          (source entry).val =
+              (Fin.encodeSubtype (fun position =>
+                isDirectHashQuery (result.2.2.intervals.get position).input)
+                ⟨intervalSource entry, hdirect⟩).val
+            ∧ (result.2.2.intervals.get (intervalSource entry)).input =
               .inl (.inr (cover.entryDigestInput entry.1))
             ∧ (result.2.2.intervals.get (intervalSource entry)).initialCache
               (cover.entryDigestInput entry.1) = none
@@ -186,7 +191,9 @@ theorem FewTimeCover.precached_entries_have_injective_numbered_sources
       Fin result.2.2.hashQueries.length := fun entry => Fin.cast hcount (encodedSource entry)
   have hsourceInjective : Function.Injective source := by
     exact Function.Injective.comp (Fin.cast_injective hcount) hencodedInjective
-  exact ⟨source, intervalSource, output, hsourceInjective, hintervalInjective, hinterval⟩
+  refine ⟨source, intervalSource, output, hsourceInjective, hintervalInjective, ?_⟩
+  intro entry
+  refine ⟨(directSource entry).2, rfl, hinterval entry⟩
 
 private theorem AdversaryCacheEntry.queryEntry_eq_of_direct_hash_runs
     (secretKey : SecretKey) (entry : AdversaryCacheEntry) (target : HashInput)
@@ -253,9 +260,22 @@ theorem FewTimeCover.precached_entries_have_numbered_source_entries
             ∧ hashOutputFewTimeView (output entry) = cover.entryView entry.1 := by
   classical
   obtain ⟨_numberedSource, intervalSource, output, _hnumberedInjective,
-      hintervalInjective, hinterval⟩ :=
+      hintervalInjective, hnumbered⟩ :=
     cover.precached_entries_have_injective_numbered_sources adversary parameter otsSecret
       ftsSecret result hresult f hf index targetLeaves
+  have hinterval : ∀ entry,
+      (result.2.2.intervals.get (intervalSource entry)).input =
+          .inl (.inr (cover.entryDigestInput entry.1))
+        ∧ (result.2.2.intervals.get (intervalSource entry)).initialCache
+          (cover.entryDigestInput entry.1) = none
+        ∧ (output entry,
+            (result.2.2.intervals.get (intervalSource entry)).finalCache) ∈ support
+          ((randomOracle (cover.entryDigestInput entry.1)).run
+            (result.2.2.intervals.get (intervalSource entry)).initialCache)
+        ∧ signAttemptResultOfOutput (output entry) ≠ none
+        ∧ hashOutputFewTimeView (output entry) = cover.entryView entry.1 := by
+    intro entry
+    exact (hnumbered entry).choose_spec.2
   have hvalid := gameAfterSecretsWithFullTrace_support_validIntervals adversary parameter
     otsSecret ftsSecret result hresult
   have hconsistent := (gameAfterSecretsWithFullTrace_support_interval_invariants adversary
