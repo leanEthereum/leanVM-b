@@ -72,6 +72,7 @@ import SphincsSecurity.Proof.FewTimeRace
 import SphincsSecurity.Proof.FewTimeOrigins
 import SphincsSecurity.Proof.FewTimeWeightedCount
 import SphincsSecurity.Proof.FewTimeOriginSampler
+import SphincsSecurity.Proof.FewTimeNumberedSources
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
