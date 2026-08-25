@@ -85,23 +85,23 @@ Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = 2,000,000
 ### Batch proving Keccak
 
 ```bash
-BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=18 cargo test --release -p flock --test hash_batch -- --ignored --nocapture
+BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=16 cargo test --release --package flock --test batch_proving_hashes -- hash_batch_prove_verify --exact --nocapture --include-ignored
 ```
 
 ```
-Flock Keccak-f[1600] batch proving, 262,144 permutations (2^18 slots)
+Flock Keccak-f[1600] batch proving, 65,536 permutations (2^16 slots)
   setup (preprocessing, excluded) :      0.0 ms
-  witness-gen                     :     62.2 ms ± 29.8%  10.1%
-  commit                          :    100.2 ms ± 1.2%   16.3%
-  zerocheck                       :    234.8 ms ± 1.4%   38.3%
-  lincheck                        :     20.5 ms ± 7.7%    3.3%
-  pcs opening                     :    195.9 ms ± 3.4%   31.9%
+  witness-gen                     :     33.9 ms ± 37.9%   4.4%
+  commit                          :    230.2 ms ± 0.9%   29.9%
+  zerocheck                       :    192.0 ms ± 4.0%   24.9%
+  lincheck                        :     15.4 ms ± 17.6%   2.0%
+  pcs opening                     :    299.1 ms ± 6.9%   38.8%
   other                           :      0.0 ms           0.0%
   ------------------------------------------
-  prove TOTAL (witness excluded)  :    551.4 ms ± 1.9%   89.9%
-  verify                          :      2.0 ms
-  throughput                      :        475,423 compressions/s ± 1.9%
-  (~3256.3 XMSS/s equivalent at 146 compressions/signature)
+  prove TOTAL (witness excluded)  :    736.7 ms ± 1.4%   95.6%
+  verify                          :      3.3 ms
+  throughput                      :         88,956 permutations/s ± 1.4%
+  (~644.6 XMSS/s equivalent at 138 permutations/signature)
 ```
 
 ## Security

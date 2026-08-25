@@ -6,7 +6,7 @@
 //! the rate is either used or wasted.
 //!
 //! ```text
-//! BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=16 cargo test --release -p flock --test hash_batch -- --ignored --nocapture
+//! BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=16 cargo test --release --package flock --test batch_proving_hashes -- hash_batch_prove_verify --exact --nocapture --include-ignored
 //! ```
 
 use std::time::Instant;
@@ -25,9 +25,7 @@ use primitives::{field::F64, pretty_integer, test_rng::Rng};
 
 #[test]
 #[ignore = "manual release benchmark; needs a large-stack worker and substantial memory"]
-fn sha3_batch_prove_verify() {
-    // A `2^16` block is large, so the same memory holds fewer doublings than a
-    // narrower circuit would; the default is set accordingly.
+fn hash_batch_prove_verify() {
     let requested_n_log: usize = std::env::var("FLOCK_N_LOG")
         .ok()
         .map(|s| s.parse().expect("FLOCK_N_LOG must be an integer"))
