@@ -2617,6 +2617,172 @@ theorem OriginConfiguration.paddedRealized_append_direct
     · exact hadmissible
     · exact hview
 
+theorem OriginConfiguration.paddedRealized_sourceAt_directIntervalCount_eq_none
+    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec}
+    {secretKey : SecretKey} {signingLog : QueryLog SigningSpec} {index : Index}
+    {targetLeaves : DigestTree → FtsLeaf}
+    {cover : FewTimeCover f cache secretKey signingLog index targetLeaves}
+    {q limit : Nat} {hle : signingLog.length ≤ limit}
+    {configuration : OriginConfiguration (cover.pattern.pad hle) q}
+    {trace : FullAdversaryTrace} {hlog : trace.signing.toSigningLog = signingLog}
+    (hrealized : configuration.PaddedRealizedBy cover hle trace hlog) :
+    configuration.sourceAt? (directIntervalCount trace.intervals) = none := by
+  cases hlookup : configuration.sourceAt? (directIntervalCount trace.intervals) with
+  | none => rfl
+  | some selected =>
+      have heq := (configuration.sourceAt?_eq_some_iff _ selected).1 hlookup
+      have hlt := configuration.paddedRealized_source_lt_directIntervalCount
+        hrealized selected
+      omega
+
+def adversaryWithTargetQuery (adversary : Adversary) (publicKey : PublicKey) :
+    OracleComp (OracleWorld + SigningSpec) (Forgery × HashOutput) := do
+  let forgery ← adversary.main publicKey
+  let input := tweakableHashInput publicKey.parameter .message
+    (messageDigestPayload publicKey.root forgery.message forgery.signature.randomness)
+  let output ← OracleComp.liftComp
+    (OracleComp.liftComp
+      (liftM (HashSpec.query input) : OracleComp HashSpec HashOutput) OracleWorld)
+    (OracleWorld + SigningSpec)
+  pure (forgery, output)
+
+theorem adversaryWithTargetQuery_viewed_support
+    (adversary : Adversary) (publicKey : PublicKey) (secretKey : SecretKey)
+    (rootCache : QueryCache HashSpec) (forgery : Forgery) (state : ViewedFullTraceState)
+    (hadversary : (forgery, state) ∈ support
+      ((simulateQ (viewedFullTracedMappedAdversaryImpl secretKey)
+        (adversary.main publicKey)).run ⟨rootCache, ⟨[], [], []⟩, [], none⟩))
+    (output : HashOutput) (finalCache : QueryCache HashSpec)
+    (hquery : (output, finalCache) ∈ support
+      ((randomOracle (tweakableHashInput publicKey.parameter .message
+        (messageDigestPayload publicKey.root forgery.message
+          forgery.signature.randomness))).run state.cache)) :
+    ((forgery, output), appendTargetViewedState
+        (.inl (.inr (tweakableHashInput publicKey.parameter .message
+          (messageDigestPayload publicKey.root forgery.message
+            forgery.signature.randomness))))
+        state.cache output finalCache none state) ∈ support
+      ((simulateQ (viewedFullTracedMappedAdversaryImpl secretKey)
+        (adversaryWithTargetQuery adversary publicKey)).run
+          ⟨rootCache, ⟨[], [], []⟩, [], none⟩) := by
+  rw [adversaryWithTargetQuery, simulateQ_bind, StateT.run_bind,
+    mem_support_bind_iff]
+  refine ⟨(forgery, state), hadversary, ?_⟩
+  rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff]
+  let appended := appendTargetViewedState
+    (.inl (.inr (tweakableHashInput publicKey.parameter .message
+      (messageDigestPayload publicKey.root forgery.message forgery.signature.randomness))))
+    state.cache output finalCache none state
+  refine ⟨(output, appended), ?_, ?_⟩
+  · let input := tweakableHashInput publicKey.parameter .message
+      (messageDigestPayload publicKey.root forgery.message forgery.signature.randomness)
+    have hsingle : (output, appended) ∈ support
+        ((simulateQ (viewedFullTracedMappedAdversaryImpl secretKey)
+          (OracleComp.liftComp
+            (OracleComp.liftComp
+              (liftM (HashSpec.query input) : OracleComp HashSpec HashOutput) OracleWorld)
+            (OracleWorld + SigningSpec))).run state) := by
+      let worldImpl : QueryImpl OracleWorld (StateT ViewedFullTraceState ProbComp) :=
+        fun worldInput => viewedFullTracedMappedAdversaryImpl secretKey (.inl worldInput)
+      let signingImpl : QueryImpl SigningSpec (StateT ViewedFullTraceState ProbComp) :=
+        fun request => viewedFullTracedMappedAdversaryImpl secretKey (.inr request)
+      have houter : viewedFullTracedMappedAdversaryImpl secretKey =
+          worldImpl + signingImpl := by
+        funext queryInput
+        cases queryInput <;> rfl
+      rw [houter]
+      have houterSim := QueryImpl.simulateQ_add_liftComp_left worldImpl signingImpl
+        (OracleComp.liftComp
+          (liftM (HashSpec.query input) : OracleComp HashSpec HashOutput) OracleWorld)
+      have houterRun := congrArg (fun computation => computation.run state) houterSim
+      have houterSupport := congrArg support houterRun
+      apply (Set.ext_iff.mp houterSupport (output, appended)).mpr
+      let uniformImpl : QueryImpl unifSpec (StateT ViewedFullTraceState ProbComp) :=
+        fun uniformInput => worldImpl (.inl uniformInput)
+      let hashImpl : QueryImpl HashSpec (StateT ViewedFullTraceState ProbComp) :=
+        fun hashInput => worldImpl (.inr hashInput)
+      have hworld : worldImpl = uniformImpl + hashImpl := by
+        funext worldInput
+        cases worldInput <;> rfl
+      rw [hworld]
+      have hworldSim := QueryImpl.simulateQ_add_liftComp_right uniformImpl hashImpl
+        (liftM (HashSpec.query input) : OracleComp HashSpec HashOutput)
+      have hworldRun := congrArg (fun computation => computation.run state) hworldSim
+      have hworldSupport := congrArg support hworldRun
+      apply (Set.ext_iff.mp hworldSupport (output, appended)).mpr
+      let directImpl : QueryImpl HashSpec (StateT ViewedFullTraceState ProbComp) :=
+        fun hashInput current =>
+          (fun queryResult => (queryResult.1,
+            ⟨queryResult.2,
+              fullAdversaryTraceUpdate (.inl (.inr hashInput)) current.cache
+                queryResult.1 queryResult.2 current.trace,
+              current.views, current.targetView⟩)) <$>
+            (randomOracle hashInput).run current.cache
+      have hhash : hashImpl = directImpl := by
+        funext hashInput current
+        dsimp [hashImpl, worldImpl]
+        rw [viewedFullTracedMappedAdversaryImpl]
+        rfl
+      rw [hhash, simulateQ_spec_query]
+      change (output, appended) ∈ support (directImpl input state)
+      dsimp only [directImpl]
+      rw [support_map]
+      refine ⟨(output, finalCache), hquery, ?_⟩
+      simp [input, appendTargetViewedState, appendOriginReplayView, appended]
+    simpa only [Prod.fst, Prod.snd, input] using hsingle
+  · simp [appended]
+
+theorem viewedFullTracedMappedAdversaryImpl_interval_invariants
+    (secretKey : SecretKey)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialCache : QueryCache HashSpec) (result : α × ViewedFullTraceState)
+    (hmem : result ∈ support
+      ((simulateQ (viewedFullTracedMappedAdversaryImpl secretKey) computation).run
+        ⟨initialCache, ⟨[], [], []⟩, [], none⟩)) :
+    result.2.trace.Consistent ∧ result.2.trace.IntervalsLe result.2.cache ∧
+      FullAdversaryTrace.Chronological result.2.trace.intervals := by
+  have hprojected : (result.1, result.2.base) ∈ support
+      ((simulateQ (fullTracedMappedAdversaryImpl secretKey) computation).run
+        (initialCache, ⟨[], [], []⟩)) := by
+    have hmap : (result.1, result.2.base) ∈ support
+        (Prod.map id ViewedFullTraceState.base <$>
+          (simulateQ (viewedFullTracedMappedAdversaryImpl secretKey) computation).run
+            ⟨initialCache, ⟨[], [], []⟩, [], none⟩) := by
+      rw [support_map]
+      exact ⟨result, hmem, rfl⟩
+    rw [viewedFullTracedMappedAdversaryImpl_projection secretKey computation
+      ⟨initialCache, ⟨[], [], []⟩, [], none⟩] at hmap
+    exact hmap
+  exact fullTracedMappedAdversaryImpl_interval_invariants secretKey computation
+    initialCache ⟨[], [], []⟩ (result.1, result.2.base)
+      (by simp [FullAdversaryTrace.Consistent])
+      (by simp [FullAdversaryTrace.IntervalsLe])
+      (by simp [FullAdversaryTrace.Chronological]) hprojected
+
+theorem viewedFullTracedMappedAdversaryImpl_validIntervals
+    (secretKey : SecretKey)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialCache : QueryCache HashSpec) (result : α × ViewedFullTraceState)
+    (hmem : result ∈ support
+      ((simulateQ (viewedFullTracedMappedAdversaryImpl secretKey) computation).run
+        ⟨initialCache, ⟨[], [], []⟩, [], none⟩)) :
+    result.2.trace.ValidIntervals secretKey := by
+  have hprojected : (result.1, result.2.base) ∈ support
+      ((simulateQ (fullTracedMappedAdversaryImpl secretKey) computation).run
+        (initialCache, ⟨[], [], []⟩)) := by
+    have hmap : (result.1, result.2.base) ∈ support
+        (Prod.map id ViewedFullTraceState.base <$>
+          (simulateQ (viewedFullTracedMappedAdversaryImpl secretKey) computation).run
+            ⟨initialCache, ⟨[], [], []⟩, [], none⟩) := by
+      rw [support_map]
+      exact ⟨result, hmem, rfl⟩
+    rw [viewedFullTracedMappedAdversaryImpl_projection secretKey computation
+      ⟨initialCache, ⟨[], [], []⟩, [], none⟩] at hmap
+    exact hmap
+  exact fullTracedMappedAdversaryImpl_validIntervals secretKey computation
+    initialCache ⟨[], [], []⟩ (result.1, result.2.base)
+      (by simp [FullAdversaryTrace.ValidIntervals]) hprojected
+
 theorem gameAfterSecretsWithViewTrace_proper_target_classified_at_adversary_state
     (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
     (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
