@@ -2889,21 +2889,48 @@ mod tests {
         assert!(node.xmss_keys.windows(2).all(|w| w[0] < w[1]));
     }
 
+    /// Three levels, both schemes. The SPHINCS claims are rebuilt twice over, once
+    /// into each node and again into the root, and the two nodes share one claim,
+    /// so the root needs a SPHINCS duplicate slot for a claim it never saw
+    /// directly. The root also adds a raw signature of each scheme alongside its
+    /// children.
     #[test]
     #[ignore]
     fn aggregate_three_levels() {
         lean_vm::init_prover_pool();
         let signers = get_signers(4 * SMALL_LEAF_SIZE + 2);
-        let leaf = |index: usize| prove_leaf(&signers[index * SMALL_LEAF_SIZE..(index + 1) * SMALL_LEAF_SIZE]);
-        let left =
-            aggregate(&[leaf(0), leaf(1)], message(), XMSS_EPOCH, vec![], vec![], LOG_INV_RATE).expect("left node");
-        let right =
-            aggregate(&[leaf(2), leaf(3)], message(), XMSS_EPOCH, vec![], vec![], LOG_INV_RATE).expect("right node");
-        let extra = signers[4 * SMALL_LEAF_SIZE..].to_vec();
-        let root =
-            aggregate(&[left, right], message(), XMSS_EPOCH, extra, vec![], LOG_INV_RATE).expect("root aggregates");
+        let claims = get_sphincs_signers(5);
+        let leaf = |index: usize, sphincs: &[RawSphincs]| {
+            aggregate(
+                &[],
+                message(),
+                XMSS_EPOCH,
+                signers[index * SMALL_LEAF_SIZE..(index + 1) * SMALL_LEAF_SIZE].to_vec(),
+                sphincs.to_vec(),
+                LOG_INV_RATE,
+            )
+            .expect("leaf aggregates")
+        };
+        let node = |children: &[AggregateSignature]| {
+            aggregate(children, message(), XMSS_EPOCH, vec![], vec![], LOG_INV_RATE).expect("node aggregates")
+        };
+        // Claim 1 is under both nodes; claim 4 arrives raw at the root.
+        let left = node(&[leaf(0, &claims[..2]), leaf(1, &[])]);
+        let right = node(&[leaf(2, &claims[1..3]), leaf(3, &[])]);
+        let root = aggregate(
+            &[left, right],
+            message(),
+            XMSS_EPOCH,
+            signers[4 * SMALL_LEAF_SIZE..].to_vec(),
+            claims[4..].to_vec(),
+            LOG_INV_RATE,
+        )
+        .expect("root aggregates");
         root.verify().expect("root verifies");
         assert_eq!(root.xmss_keys.len(), 4 * SMALL_LEAF_SIZE + 2);
+        assert_eq!(root.sphincs_signers.len(), 4, "claims 0, 1, 2 and 4, the repeat merged");
+        assert!(root.xmss_keys.windows(2).all(|w| w[0] < w[1]));
+        assert!(root.sphincs_signers.windows(2).all(|w| w[0] < w[1]));
     }
 
     #[test]
