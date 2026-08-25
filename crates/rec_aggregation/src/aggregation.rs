@@ -421,7 +421,7 @@ pub struct AggregateSignature {
     pub xmss_message: xmss::Message,
     pub xmss_epoch: u32,
     /// Strictly sorted and deduplicated. May be empty, but not together with
-    /// `sphincs_signers`; the two together are at most [`MAX_KEYS`] long.
+    /// `sphincs_signers`; the two together are strictly shorter than [`MAX_KEYS`].
     pub xmss_keys: Vec<XmssPublicKey>,
     /// Strictly sorted and deduplicated on the whole `(key, message)` pair.
     pub sphincs_signers: Vec<SphincsSigner>,
@@ -433,7 +433,7 @@ pub struct AggregateSignature {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerifyError {
-    /// The signer set is empty, unsorted, holds a duplicate, or is too long.
+    /// The signer set is empty, unsorted, holds a duplicate, or has [`MAX_KEYS`] keys or more.
     MalformedSignerSet,
     /// A deferred claim's point has the wrong number of coordinates.
     MalformedClaim,
@@ -450,7 +450,10 @@ pub enum AggregateError {
     InvalidChild(VerifyError),
     /// Nothing to aggregate: no raw signatures and no children.
     Empty,
-    /// More than [`MAX_CHILDREN`] children, or more than [`MAX_KEYS`] signers
+    /// A raw signature's randomness does not decode to a target-sum encoding,
+    /// so there is no witness to build for it.
+    MalformedRawSignature,
+    /// More than [`MAX_CHILDREN`] children, or [`MAX_KEYS`] signers or more
     /// once the duplicate slots are counted.
     TooLarge,
     /// A child's committed witness falls outside the opening arms the guest was
@@ -474,9 +477,10 @@ fn wire() -> impl bincode::Options {
 }
 
 /// Reject a signer set that the coverage argument does not cover: strict sorting
-/// within each list is what makes "every declared key signed" mean as many
-/// distinct signers as the lists are long, rather than one signer counted many
-/// times. Either list may be empty; both may not.
+/// within each list is what stops one signer being counted many times: the XMSS
+/// list's length is a count of distinct keys, the SPHINCS list's of distinct
+/// `(key, message)` claims. Either list may be empty; both may not. [`MAX_KEYS`]
+/// is exclusive here, as in the guest.
 fn check_signer_set(xmss_keys: &[XmssPublicKey], sphincs_signers: &[SphincsSigner]) -> Result<(), VerifyError> {
     let total = xmss_keys.len() + sphincs_signers.len();
     if total == 0
@@ -1694,16 +1698,16 @@ fn push_signature_hints(
     sig: &XmssSignature,
     message: &xmss::Message,
     xmss_epoch: u32,
-) {
+) -> Result<(), AggregateError> {
     let wots = &sig.wots_signature;
+    let encoding = xmss::wots_encode(message, xmss_epoch, &pk.public_param, &wots.randomness)
+        .ok_or(AggregateError::MalformedRawSignature)?;
     let mut randomness = [0u8; xmss::STATE_LEN];
     randomness[..xmss::RANDOMNESS_LEN].copy_from_slice(&wots.randomness);
     hints.push(
         "rand",
         vec![pack_16_bytes(&randomness[..16]), pack_16_bytes(&randomness[16..])],
     );
-    let encoding = xmss::wots_encode(message, xmss_epoch, &pk.public_param, &wots.randomness)
-        .expect("a verified signature encodes");
     for &e in &encoding {
         hints.push("digits", vec![count(e as usize)]);
     }
@@ -1713,6 +1717,7 @@ fn push_signature_hints(
     for sibling in &sig.merkle_proof {
         hints.push("siblings", vec![pack_16_bytes(sibling)]);
     }
+    Ok(())
 }
 
 /// One SPHINCS signature's witness: the randomizer, the few-time opening, and
@@ -1723,7 +1728,11 @@ fn push_signature_hints(
 /// nothing here carries them; what it does carry is the per-layer message, which
 /// this walk recomputes exactly as the guest will. The signer's own message is
 /// not hinted either: it rides its slot in the coverage table.
-fn push_sphincs_hints(hints: &mut Hints, (pk, message): &SphincsSigner, sig: &SphincsSignature) {
+fn push_sphincs_hints(
+    hints: &mut Hints,
+    (pk, message): &SphincsSigner,
+    sig: &SphincsSignature,
+) -> Result<(), AggregateError> {
     let pp = &pk.public_param;
     hints.push("sp_rand", vec![pack_16_bytes(&sig.randomizer)]);
     let (idx, u) = sphincs::message_digest(pp, &pk.root, &sig.randomizer, message);
@@ -1737,7 +1746,7 @@ fn push_sphincs_hints(hints: &mut Hints, (pk, message): &SphincsSigner, sig: &Sp
     for lay in (0..sphincs::D).rev() {
         let pos = sphincs::Pos::new(lay, sphincs::tree_of(idx, lay), sphincs::leaf_of(idx, lay));
         let counter = sig.counters[lay];
-        let codeword = sphincs::encode(pp, pos, &signed, counter).expect("a verified signature encodes");
+        let codeword = sphincs::encode(pp, pos, &signed, counter).ok_or(AggregateError::MalformedRawSignature)?;
         hints.push("sp_counter", vec![F192::new(u64::from(counter), 0, 0)]);
         for (&digit, opened) in codeword.iter().zip(&sig.ots[lay]) {
             hints.push("sp_digits", vec![count(digit as usize)]);
@@ -1747,10 +1756,12 @@ fn push_sphincs_hints(hints: &mut Hints, (pk, message): &SphincsSigner, sig: &Sp
         for sibling in path {
             hints.push("sp_siblings", vec![pack_16_bytes(sibling)]);
         }
-        let leaf = sphincs::ots_leaf(pp, pos, &signed, counter, &sig.ots[lay]).expect("a verified signature encodes");
+        let leaf =
+            sphincs::ots_leaf(pp, pos, &signed, counter, &sig.ots[lay]).ok_or(AggregateError::MalformedRawSignature)?;
         signed = sphincs::tree_fold(pp, pos, leaf, path);
     }
     debug_assert_eq!(signed, pk.root, "the hinted walk reaches the public key");
+    Ok(())
 }
 
 /// Aggregate raw signatures of either scheme and previously aggregated
@@ -1759,7 +1770,9 @@ fn push_sphincs_hints(hints: &mut Hints, (pk, message): &SphincsSigner, sig: &Sp
 ///
 /// Children and raw signatures mix freely: no children is a leaf, no raw
 /// signatures is a pure recursion step, and one child plus a few signatures
-/// tops up an existing aggregate. One proving job at a time per process.
+/// tops up an existing aggregate. Raw signatures are expected to be valid: the
+/// host does not check what the guest checks anyway. One proving job at a time
+/// per process.
 pub fn aggregate(
     children: &[AggregateSignature],
     xmss_message: xmss::Message,
@@ -1895,13 +1908,13 @@ pub(crate) fn aggregate_tampered(
     }
     for (&idx, (pk, sig)) in cover.raw_xmss.iter().zip(&raw_xmss) {
         hints.push("raw_index", vec![count(idx)]);
-        push_signature_hints(&mut hints, pk, sig, &xmss_message, xmss_epoch);
+        push_signature_hints(&mut hints, pk, sig, &xmss_message, xmss_epoch)?;
     }
     // A SPHINCS slot is hinted as an offset into the SPHINCS region, which is
     // how one range check keeps the scheme's writers off the other's keys.
     for (&offset, (pk, message, sig)) in cover.raw_sphincs.iter().zip(&raw_sphincs) {
         hints.push("sp_raw_index", vec![count(offset)]);
-        push_sphincs_hints(&mut hints, &(*pk, *message), sig);
+        push_sphincs_hints(&mut hints, &(*pk, *message), sig)?;
     }
 
     let mut subs = Vec::with_capacity(children.len());
@@ -2256,23 +2269,16 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
         })
         .collect();
     ps("COORD_BASIS", flds(&coord_basis));
-    let inverse_denominator = |nodes: &[F192], node: F192, skipped_node: F192| {
-        let mut denominator = F192::ONE;
-        for &candidate in nodes {
-            if candidate != skipped_node {
-                denominator *= node + candidate;
-            }
-        }
-        denominator.inv()
-    };
-    let icmb: Vec<F192> = (0..64)
-        .map(|i| inverse_denominator(&phi[..128], phi[64 + i], phi[64 + i]))
-        .collect();
-    let isdom: Vec<F192> = (0..64)
-        .map(|i| inverse_denominator(&phi[..64], phi[i], phi[i]))
-        .collect();
-    ps("LAGRANGE_INV_COMBINED", flds(&icmb));
-    ps("LAGRANGE_INV_S", flds(&isdom));
+    // One constant per domain, not one per node: every barycentric denominator over an aligned φ₈
+    // window is the same element (`primitives::multilinear::window_denominator`).
+    ps(
+        "LAGRANGE_INV_COMBINED",
+        f192_literal(primitives::multilinear::window_denominator(128)),
+    );
+    ps(
+        "LAGRANGE_INV_S",
+        f192_literal(primitives::multilinear::window_denominator(64)),
+    );
     ps("LINCHECK_ROUNDS", lcrounds.to_string());
     ps("PIN_COLUMN", flock::hash::Z_CONST_POS.to_string());
     ps("K_LOG", flock::hash::K_LOG.to_string());
@@ -2703,6 +2709,41 @@ mod tests {
 
     const SMALL_LEAF_SIZE: usize = 6;
     const LOG_INV_RATE: usize = lean_vm::pcs::LOG_INV_RATE;
+
+    /// Distinct keys, strictly increasing, without generating any.
+    fn signer_set(len: usize) -> Vec<XmssPublicKey> {
+        (0..len)
+            .map(|i| XmssPublicKey {
+                merkle_root: (i as u128).to_be_bytes(),
+                public_param: [0; xmss::PUBLIC_PARAM_LEN],
+            })
+            .collect()
+    }
+
+    /// `MAX_KEYS` is exclusive at both host checks: one key short of it passes,
+    /// the cap itself is the documented error. The cap counts both schemes, so
+    /// one XMSS key short of it plus one SPHINCS claim is already over. No proof
+    /// involved.
+    #[test]
+    fn max_keys_bound_is_exclusive() {
+        let full = signer_set(MAX_KEYS);
+        let claim = [(
+            SphincsPublicKey::from_bytes(&[0; sphincs::PUB_KEY_SIZE]),
+            [0; sphincs::MESSAGE_LEN],
+        )];
+        check_signer_set(&full[..MAX_KEYS - 1], &[]).expect("one short of the cap");
+        assert_eq!(check_signer_set(&full, &[]), Err(VerifyError::MalformedSignerSet));
+        assert_eq!(
+            check_signer_set(&full[..MAX_KEYS - 1], &claim),
+            Err(VerifyError::MalformedSignerSet)
+        );
+        plan_coverage(&full[..MAX_KEYS - 1], &[], &[]).expect("one short of the cap");
+        assert_eq!(plan_coverage(&full, &[], &[]).err(), Some(AggregateError::TooLarge));
+        assert_eq!(
+            plan_coverage(&full[..MAX_KEYS - 1], &claim, &[]).err(),
+            Some(AggregateError::TooLarge)
+        );
+    }
 
     fn prove_leaf(signers: &[(XmssPublicKey, XmssSignature)]) -> AggregateSignature {
         aggregate(&[], message(), XMSS_EPOCH, signers.to_vec(), vec![], LOG_INV_RATE).expect("leaf aggregates")
@@ -3188,6 +3229,60 @@ mod tests {
         assert!(
             !matches!(built, Ok(Ok(true))),
             "a forged SPHINCS signature must not produce a verifying aggregate"
+        );
+    }
+
+    /// Randomness that does not decode to a target-sum encoding used to panic
+    /// the hint builder; it is a typed error now, and the abandoned builder
+    /// leaves nothing behind.
+    #[test]
+    fn malformed_raw_signature_is_an_error() {
+        let message = message();
+        let pk = XmssPublicKey {
+            merkle_root: [0; xmss::DIGEST_LEN],
+            public_param: [0; xmss::PUBLIC_PARAM_LEN],
+        };
+        let randomness = (0..=u8::MAX)
+            .find_map(|byte| {
+                let mut randomness = [0; xmss::RANDOMNESS_LEN];
+                randomness[0] = byte;
+                xmss::wots_encode(&message, XMSS_EPOCH, &pk.public_param, &randomness)
+                    .is_none()
+                    .then_some(randomness)
+            })
+            .expect("some randomness fails the target sum");
+        let sig = XmssSignature {
+            wots_signature: xmss::WotsSignature {
+                chain_tips: [[0; xmss::DIGEST_LEN]; xmss::V],
+                randomness,
+            },
+            merkle_proof: [[0; xmss::DIGEST_LEN]; xmss::LOG_LIFETIME],
+        };
+
+        let mut hints = Hints::default();
+        assert_eq!(
+            push_signature_hints(&mut hints, &pk, &sig, &message, XMSS_EPOCH),
+            Err(AggregateError::MalformedRawSignature)
+        );
+        assert!(hints.0.is_empty());
+        assert_eq!(
+            aggregate(&[], message, XMSS_EPOCH, vec![(pk, sig)], vec![], LOG_INV_RATE).err(),
+            Some(AggregateError::MalformedRawSignature)
+        );
+    }
+
+    /// The same for a SPHINCS claim, whose witness walk is equally fallible: a
+    /// counter that does not encode has no witness, and that is an error rather
+    /// than a panic inside the prover.
+    #[test]
+    fn malformed_raw_sphincs_signature_is_an_error() {
+        let (public_key, signed, mut signature) = get_sphincs_signers(1).pop().expect("one signer");
+        signature.counters[sphincs::D - 1] ^= 1;
+        assert!(sphincs::verify(&public_key, &signed, &signature).is_err());
+        let raw = vec![(public_key, signed, signature)];
+        assert_eq!(
+            aggregate(&[], message(), XMSS_EPOCH, vec![], raw, LOG_INV_RATE).err(),
+            Some(AggregateError::MalformedRawSignature)
         );
     }
 }

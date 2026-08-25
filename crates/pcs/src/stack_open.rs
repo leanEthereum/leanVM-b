@@ -31,9 +31,10 @@
 //! ## Transcript order (identical on both sides)
 //!
 //! label -> shared linear map sampled ([`super::ring_switch`]'s own label; the
-//! claims' slices were bound by the caller, so none are sent here) -> per point
-//! claim (label + value observed) -> lambda (ONE challenge for both families) ->
-//! WHIR, with domain-separated labels for every phase.
+//! claims' slices were bound by the caller, so none are sent here) -> lambda (ONE
+//! challenge for both families) -> WHIR, with domain-separated labels for every
+//! phase. No claim value is observed here: each was bound by the stream read that
+//! produced it, so lambda already depends on every one of them.
 //!
 //! ## The combined weight
 //!
@@ -393,11 +394,9 @@ pub fn open_batch_mixed_whir_stacked(
     let map_challenges = ring_switch::sample_map_challenges(ps);
     let coordinate_weights = ring_switch::build_coordinate_weights(&map_challenges);
 
-    // 2. Point-claim values, then the ONE batching challenge both families take
-    //    disjoint power ranges of.
-    for claim in point_claims {
-        ps.observe_scalar(claim.value());
-    }
+    // 2. The ONE batching challenge both families take disjoint power ranges of. Nothing is
+    //    observed first: every claim value reached the caller through a binding stream read, so
+    //    the challenge already depends on all of them (`lean_vm::pcs::open`).
     let lambdas = powers(ps.sample(), ring.claims.len() + point_claims.len());
     let (lambdas_rs, lambdas_pd) = lambdas.split_at(ring.claims.len());
 
@@ -514,11 +513,8 @@ pub fn verify_opening_batch_mixed_whir_stacked(
     let map_challenges = ring_switch::sample_map_challenges(vs);
     let coordinate_weights = ring_switch::build_coordinate_weights(&map_challenges);
 
-    // 2. Point-claim values, then the one batching challenge, then fold both
-    //    families into the target over disjoint power ranges.
-    for claim in point_claims {
-        vs.observe_scalar(claim.value());
-    }
+    // 2. The one batching challenge (see the opener: the claim values are bound by the read that
+    //    produced them), then fold both families into the target over disjoint power ranges.
     let lambdas = powers(vs.sample(), n_rs + point_claims.len());
     let (lambdas_rs, lambdas_pd) = lambdas.split_at(n_rs);
 

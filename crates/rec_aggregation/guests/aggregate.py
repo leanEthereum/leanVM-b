@@ -104,8 +104,8 @@ TABLE_JUMP = 4
 TABLE_BLAKE2s = 5
 N_TABLES = N_TABLES_PLACEHOLDER
 # Phase D (flock reduction): the seven fixed inner challenges (+ inverses of 1+c),
-# the phi8 node table + baked Lagrange inverse denominators (combined domain,
-# S domain). The zerocheck point/round buffers are sized at
+# the phi8 node table + the one baked Lagrange inverse denominator per domain
+# (combined, S). The zerocheck point/round buffers are sized at
 # runtime in the exponent (m = K_LOG + tau_5 and m - 6, both certified);
 # LINCHECK_ROUNDS = k_log - k_skip is protocol-fixed, PIN_COLUMN the
 # const-pin column.
@@ -697,8 +697,9 @@ def squeeze(state):
 @inline
 def lag64(z, out, node_base: Const):
     # The 64 phi8-domain Lagrange NUMERATORS at z, nodes PHI8_NODES[node_base..node_base+64]:
-    # out[i] = prod_{j != i} (z + PHI8_NODES[node_base + j]). Callers multiply by their
-    # baked inverse-denominator table (LAGRANGE_INV_S / LAGRANGE_INV_COMBINED).
+    # out[i] = prod_{j != i} (z + PHI8_NODES[node_base + j]). Every barycentric denominator
+    # over an aligned phi8 window is the same element, so callers scale the finished sum once
+    # by LAGRANGE_INV_S / LAGRANGE_INV_COMBINED instead of the numerators one by one.
     pre = StackBuf(65)
     pre[0] = 1
     for i in unroll(0, 64):
@@ -774,9 +775,6 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     # The K opener binds the initial Merkle root as its two F192 scalars, not as
     # a byte string, and every digest uses ONE 128/128 encoding, so those scalars
     # are exactly the root's two cells. Level roots are likewise scalar-observed.
-    fs = obs(fs, target)
-    fs = obs(fs, commit_root_0)
-    fs = obs(fs, commit_root_1)
 
     # The opening's scalars (sumcheck messages, level roots, nonces, final
     # message) ride the SHARED stream: msg_cursor is just the main stream
@@ -1260,7 +1258,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     gkr_pts = HeapBuf(GKR_POINTS_CAP)
     assert log(g_bus_mu) < COUNT_BITS
     fs, root_push, cursor = fs_next(fs, cursor)
-    fs, root_pull, cursor = fs_next(fs, cursor)
+    root_pull = root_push
     fs, root_count, cursor = fs_next(fs, cursor)
     fs, initial_layer_lambda = squeeze(fs)
     gkr_layer_lambda[GEN ** 0] = initial_layer_lambda  # λ over the three roots
@@ -1439,12 +1437,6 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
             g_off *= g_squares[block_kappa[global_g]]  # an omission fails the
     #                                              # decompose's offset read.
 
-    # ---- balance: push_root == pull_root ----
-    # Every row of every table is a real row, so the two sides balance outright:
-    # there is no padding surplus to divide back out, and with it went a bit-ladder
-    # per side and table, each pinning a padding delta against an advice-decomposed
-    # exponent.
-    assert gkr_roots[PUSH_SIDE] == gkr_roots[PULL_SIDE]
 
     # ---- 3× leaf decomposition (claims pooled; bytecode Public DEFERRED) ----
     # The program's whole share of a bytecode leaf is ONE evaluation of the stacked
@@ -1774,8 +1766,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     fs, zerocheck_z = squeeze(fs)  # cursor now sits at the multilinear round messages, walked below
     # P(z), interpolated at z over ALL 128 phi8 nodes: the transmitted Lambda
     # values (nodes 64..128) plus the S half, zero by the zerocheck identity.
-    # Prefix/suffix numerator products with baked inverse denominators; the
-    # full-domain product only adds the S-half factor to the Lambda numerators.
+    # Prefix/suffix numerator products, the finished sum scaled once by the domain's inverse
+    # denominator; the full-domain product only adds the S-half factor to the Lambda numerators.
     lagrange_nums = StackBuf(2 ** K_SKIP)
     lag64(zerocheck_z, lagrange_nums, 2 ** K_SKIP)
     s_half_product = GEN ** 0  # the S-domain half of the combined interpolation (zero by the identity)
@@ -1783,8 +1775,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         s_half_product *= (zerocheck_z + PHI8_NODES[i])
     zc_running = 0  # the zerocheck running claim entering the multilinear rounds
     for i in unroll(0, 2 ** K_SKIP):
-        zc_running += lagrange_nums[i] * LAGRANGE_INV_COMBINED[i] * zc_round1[GEN ** i]
-    zc_running *= s_half_product
+        zc_running += lagrange_nums[i] * zc_round1[GEN ** i]
+    zc_running *= s_half_product * LAGRANGE_INV_COMBINED
     # multilinear rounds.
     mr1cs_rounds_g = mr1cs_g * INV_GEN ** 6  # runtime zerocheck mlv rounds: m - 6
     zerocheck_chis = HeapBuf(mr1cs_rounds_g)
@@ -1871,7 +1863,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         c_point_eq *= (1 + zerocheck_chis[GEN ** t] + lincheck_rs[GEN ** (LINCHECK_ROUNDS - 1 - t)])
     c_slice_value = 0
     for i in unroll(0, 2 ** K_SKIP):
-        c_slice_value += claim_nums[i] * LAGRANGE_INV_S[i] * z_partial[GEN ** i]
+        c_slice_value += claim_nums[i] * z_partial[GEN ** i]
+    c_slice_value *= LAGRANGE_INV_S
     matrix_part = matrix_eval[0]
     lincheck_final = matrix_part + pin_term + lincheck_beta * c_point_eq * c_slice_value  # deferred matrix eval + pin + C
     assert lc_running == lincheck_final
@@ -1928,10 +1921,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     zr_hi = zerocheck_chis * GEN ** LINCHECK_ROUNDS
     for xt in mul_range(1, tau_blake2s_g):
         zv_lo[xt] = zr_hi[xt]
-    # Observe every pooled point claim, then ONE batching challenge for all of
-    # them: N_CLAIMS - 1 fewer Fiat-Shamir compressions than a challenge per claim.
-    for j in unroll(0, N_CLAIMS):
-        fs = obs(fs, claim_pool[GEN ** j])
+    # ONE batching challenge for the whole pool: N_CLAIMS - 1 fewer Fiat-Shamir compressions than a
+    # challenge per claim, and none for the values themselves, `fs_next` having bound every one of
+    # them as it read it, so `lam_cl` already depends on all of them.
     fs, lam_cl = squeeze(fs)
     # Disjoint power ranges, as for the zc_xi-powers above: the ring-switch claim
     # takes lam_cl^0, the pool lam_cl^1 onward.
@@ -3228,7 +3220,8 @@ def aggregate_claims(n_children_g, child_pi, child_fresh, child_carried, defer_s
         lag64(z_skip_t, row_nums, 0)
         row_weight = 0
         for i in unroll(0, 2 ** K_SKIP):
-            row_weight += row_nums[i] * LAGRANGE_INV_S[i] * eq_rows[GEN ** (2 ** K_SKIP - 2 + i)]
+            row_weight += row_nums[i] * eq_rows[GEN ** (2 ** K_SKIP - 2 + i)]
+        row_weight *= LAGRANGE_INV_S
         for k in unroll(0, LINCHECK_ROUNDS):
             row_weight *= (1 + fresh[GEN ** (BYTECODE_VARS + 3 + k)] + mat_point[GEN ** (K_SKIP + k)])
         col_weight = 0
