@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.FewTimeOriginSampler
+import SphincsSecurity.Proof.FewTimeSourceCount
 
 /-!
 # Numbering direct few-time sources
@@ -147,6 +148,46 @@ theorem FewTimeCover.has_originConfiguration_of_hashQueries_length_le
     fun entry => Fin.castLE hqueries (numberedSource entry)
   have hsourceInjective : Function.Injective source := by
     exact Function.Injective.comp (finCastLEEmbedding hqueries).injective hnumberedInjective
+  let configuration := cover.originConfiguration result.2.2.signing rfl q source
+    hsourceInjective
+  exact ⟨configuration,
+    cover.originConfiguration_prehit_card result.2.2.signing rfl q source hsourceInjective⟩
+
+theorem FewTimeCover.has_originConfiguration_of_queryBudget
+    (adversary : Adversary) (q : Nat)
+    (hq : HasHashQueryBound scheme adversary q)
+    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (hots : otsSecret ∈ support sampleOtsSecrets)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (hfts : ftsSecret ∈ support sampleFtsSecrets)
+    (result : (Digest × Forgery × Bool) × (QueryCache HashSpec × FullAdversaryTrace))
+    (hresult : result ∈ support
+      (gameAfterSecretsWithFullTrace adversary parameter otsSecret ftsSecret))
+    (f : QueryImpl HashSpec Id) (hf : result.2.1.AgreesWithFn f)
+    (index : Index) (targetLeaves : DigestTree → FtsLeaf)
+    (cover : FewTimeCover f result.2.1
+      ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+      result.2.2.signing.toSigningLog index targetLeaves) :
+    ∃ configuration : OriginConfiguration cover.pattern q,
+      configuration.prehit.card =
+        (cover.precachedEntryFinset result.2.2.signing rfl).card := by
+  classical
+  let precached := cover.precachedEntryFinset result.2.2.signing rfl
+  have hcard : precached.card ≤ q := by
+    have hcard' := cover.precachedEntryCount_le_queryBudget adversary q hq parameter
+      hparameter otsSecret hots ftsSecret hfts result hresult f hf index targetLeaves
+    exact_mod_cast hcard'
+  have htypeCard : Fintype.card
+      (cover.PrecachedEntries result.2.2.signing rfl) = precached.card := by
+    simpa only [precached, FewTimeCover.precachedEntryFinset] using
+      (Fintype.card_subtype
+        (cover.EntryDigestPrecached result.2.2.signing rfl))
+  let source : cover.PrecachedEntries result.2.2.signing rfl → Fin q :=
+    fun entry => Fin.castLE (htypeCard.le.trans hcard) (Fintype.equivFin _ entry)
+  have hsourceInjective : Function.Injective source := by
+    exact Function.Injective.comp (finCastLEEmbedding (htypeCard.le.trans hcard)).injective
+      (Fintype.equivFin _).injective
   let configuration := cover.originConfiguration result.2.2.signing rfl q source
     hsourceInjective
   exact ⟨configuration,
