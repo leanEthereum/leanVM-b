@@ -205,6 +205,64 @@ noncomputable def freshTargetCandidatePositions
   Finset.univ.filter fun position =>
     FreshTargetCandidate secretKey (trace.intervals.get position)
 
+noncomputable def freshTargetCandidateCount
+    (secretKey : SecretKey) (trace : FullAdversaryTrace) : Nat :=
+  trace.intervals.countP fun entry => decide (FreshTargetCandidate secretKey entry)
+
+theorem freshTargetCandidateCount_eq_card
+    (secretKey : SecretKey) (trace : FullAdversaryTrace) :
+    freshTargetCandidateCount secretKey trace =
+      (freshTargetCandidatePositions secretKey trace).card := by
+  classical
+  let predicate := fun position : Fin trace.intervals.length =>
+    FreshTargetCandidate secretKey (trace.intervals.get position)
+  let encoded : {position // predicate position} ≃
+      Fin (Fin.countP fun position => decide (predicate position)) := {
+    toFun := Fin.encodeSubtype predicate
+    invFun := Fin.decodeSubtype predicate
+    left_inv := Fin.decodeSubtype_encodeSubtype predicate
+    right_inv := Fin.encodeSubtype_decodeSubtype predicate }
+  have hcard := Fintype.card_congr encoded
+  have hcount : freshTargetCandidateCount secretKey trace =
+      Fin.countP (fun position => decide (predicate position)) := by
+    rw [freshTargetCandidateCount, Fin.countP_eq_countP_map_finRange]
+    calc
+      trace.intervals.countP
+          (fun entry => decide (FreshTargetCandidate secretKey entry)) =
+          ((List.finRange trace.intervals.length).map trace.intervals.get).countP
+            (fun entry => decide (FreshTargetCandidate secretKey entry)) := by
+              rw [List.map_get_finRange]
+      _ = (List.finRange trace.intervals.length).countP
+          ((fun entry => decide (FreshTargetCandidate secretKey entry)) ∘
+            trace.intervals.get) := List.countP_map
+      _ = _ := by rfl
+  rw [hcount]
+  rw [← Fintype.card_fin (Fin.countP fun position => decide (predicate position)),
+    ← hcard]
+  let positions := freshTargetCandidatePositions secretKey trace
+  let subtypeEquiv : {position // predicate position} ≃ ↑positions := {
+    toFun := fun position => ⟨position.1, Finset.mem_filter.mpr
+      ⟨Finset.mem_univ _, position.2⟩⟩
+    invFun := fun position => ⟨position.1,
+      (Finset.mem_filter.mp position.2).2⟩
+    left_inv := fun position => rfl
+    right_inv := fun position => rfl }
+  exact (Fintype.card_congr subtypeEquiv).trans (Fintype.card_coe positions)
+
+theorem freshTargetCandidateCount_update
+    (secretKey : SecretKey) (input : (OracleWorld + SigningSpec).Domain)
+    (initialCache : QueryCache HashSpec)
+    (output : (OracleWorld + SigningSpec).Range input)
+    (finalCache : QueryCache HashSpec) (trace : FullAdversaryTrace) :
+    freshTargetCandidateCount secretKey
+        (fullAdversaryTraceUpdate input initialCache output finalCache trace) =
+      freshTargetCandidateCount secretKey trace +
+        if FreshTargetCandidate secretKey
+          ⟨input, output, initialCache, finalCache⟩ then 1 else 0 := by
+  classical
+  simp [freshTargetCandidateCount, fullAdversaryTraceUpdate,
+    List.countP_append, List.countP_cons]
+
 theorem freshTargetCandidatePositions_card_le_enncard
     (secretKey : SecretKey) (trace : FullAdversaryTrace)
     (finalCache : QueryCache HashSpec)
