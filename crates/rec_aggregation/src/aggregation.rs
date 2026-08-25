@@ -81,6 +81,10 @@ fn dsl_u128(value: F192) -> u128 {
     (value.c0 as u128) | ((value.c1 as u128) << 64)
 }
 
+/// Most queries one call of the guest's per-query loop may handle (`LIG_QUERY_STRIP`). Each one
+/// costs another unrolled copy of the loop body in the bytecode, so this trades size for rows.
+const QUERY_STRIP_CAP: usize = 8;
+
 fn f192_literal(f: F192) -> String {
     format!("f192({},{},{})", f.c0, f.c1, f.c2)
 }
@@ -2229,6 +2233,37 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
             ),
         );
         ps("LIG_QUERIES", ints(&flat(&|c| c.queries.clone(), maxlev)));
+        // How many queries one call of the guest's per-query loop handles. A `for` body is lowered
+        // to a tail-recursive helper with a fresh frame per iteration, so a loop-invariant table
+        // (here the level's interleaving weights) costs one DEREF per entry per QUERY. Handling
+        // `strip` queries per call loads it once for all of them instead. It must divide the query
+        // count exactly, so the guest needs no remainder arm; only level 0 earns the bytecode,
+        // its leaves being 2^INITIAL_FOLDING_FACTOR words against the deeper levels' handful.
+        let strip = |queries: &[usize]| -> Vec<usize> {
+            queries
+                .iter()
+                .enumerate()
+                .map(|(level, &q)| {
+                    if level > 0 {
+                        return 1;
+                    }
+                    (1..=QUERY_STRIP_CAP).rev().find(|u| q % u == 0).unwrap_or(1)
+                })
+                .collect()
+        };
+        ps("LIG_QUERY_STRIP", ints(&flat(&|c| strip(&c.queries), maxlev)));
+        // A parse-time bound for the strip's in-frame copy of those weights: the widest
+        // interleaving any candidate level commits.
+        ps(
+            "LIG_INTERLEAVE_CAP",
+            cands
+                .iter()
+                .flat_map(|c| c.interleaving.iter())
+                .max()
+                .copied()
+                .unwrap_or(1)
+                .to_string(),
+        );
         ps("LIG_FOLDS", ints(&flat(&|c| c.folds.clone(), maxlev)));
         ps("LIG_INTERLEAVE", ints(&flat(&|c| c.interleaving.clone(), maxlev)));
         ps(

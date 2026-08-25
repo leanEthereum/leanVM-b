@@ -170,6 +170,8 @@ LIG_PATHS_LEN = LIG_PATHS_LEN_PLACEHOLDER
 LIG_QUERY_GRIND_BITS = LIG_QUERY_GRIND_BITS_PLACEHOLDER
 LIG_OOD_SAMPLES = LIG_OOD_SAMPLES_PLACEHOLDER
 LIG_QUERIES = LIG_QUERIES_PLACEHOLDER
+LIG_QUERY_STRIP = LIG_QUERY_STRIP_PLACEHOLDER
+LIG_INTERLEAVE_CAP = LIG_INTERLEAVE_CAP_PLACEHOLDER
 LIG_FOLDS = LIG_FOLDS_PLACEHOLDER
 LIG_INTERLEAVE = LIG_INTERLEAVE_PLACEHOLDER
 LIG_LEAF_PAIRS = LIG_LEAF_PAIRS_PLACEHOLDER
@@ -842,73 +844,90 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
 
         query_sum_chain = HeapBuf(GEN ** (LIG_MAX_QUERIES[m_idx] + 1))
         query_sum_chain[GEN ** 0] = 0
-        for xe in mul_range(1, GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]):
-            if lvl == 0:
-                row_base = xe ** LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]
+        # `LIG_QUERY_STRIP` queries per call of the loop helper, not one. A `for` body is lowered
+        # to a tail-recursive helper with a fresh frame per iteration, so the level's interleaving
+        # weights, identical for every query, would cost one DEREF per lane per query. Loading them
+        # into the frame once serves the whole strip; the factor divides the query count exactly, so
+        # there is no remainder arm, and it is 1 where the bytecode would not earn it.
+        for xb in mul_range(1, GEN ** (LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl] // LIG_QUERY_STRIP[m_idx * LIG_MAX_LEVELS + lvl])):
+            row_eq = StackBuf(LIG_INTERLEAVE_CAP)
+            for i in unroll(0, LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]):
+                row_eq[i] = row_eq_weights[GEN ** i]
+            if LIG_QUERY_STRIP[m_idx * LIG_MAX_LEVELS + lvl] == 1:
+                xstrip = xb
             else:
-                row_base = xe ** (3 * LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl])
-            row_ptr = merkle_leaf_rows * GEN ** LIG_ROWS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * row_base
-            row_dot = 0
-            packed_row = StackBuf(LIG_PACKED_ROW_CAP)
-            if lvl == 0:
-                # Level-0 rows are base-field F64, embedded one-per word. Pack
-                # the lanes into a contiguous run of canonical 128-bit cells for
-                # the standard leaf hash; the dot consumes the individual lanes.
-                # The untaken JUMP reads both source cells through the memory bus as
-                # `(lo, 0, 0)`, so the packing helpers also prove every hinted lane is
-                # genuinely F64 before it enters the hash or row_dot.
-                for jb in unroll(0, LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl] // 4):
-                    e0 = row_ptr[GEN ** (4 * jb)]
-                    e1 = row_ptr[GEN ** (4 * jb + 1)]
-                    e2 = row_ptr[GEN ** (4 * jb + 2)]
-                    e3 = row_ptr[GEN ** (4 * jb + 3)]
-                    packed_row[2 * jb] = pack64x2(e0, e1)
-                    packed_row[2 * jb + 1] = pack64x2(e2, e3)
-                    row_dot += e0 * row_eq_weights[GEN ** (4 * jb)] + e1 * row_eq_weights[GEN ** (4 * jb + 1)] + e2 * row_eq_weights[GEN ** (4 * jb + 2)] + e3 * row_eq_weights[GEN ** (4 * jb + 3)]
-            else:
-                # Higher-level F192 rows arrive as flat F64 tower limbs (three
-                # per word); constrain every serialized limb before reassembly
-                # and pack them into the contiguous 24-byte-per-word byte image
-                # the committed leaf hashes.
-                # Load each serialized limb ONCE into frame cells, then read the
-                # words back off the PACKED cells: a pack holds
-                # `lane(2k) + Y*lane(2k+1)` exactly, so word w (limbs 3w..3w+2)
-                # is one multiply-add away from the pack that covers its even
-                # limb pair.
-                lanes = StackBuf(LIG_PACKED_ROW_CAP)  # >= 3 limbs per word for every candidate
-                for jl in unroll(0, 3 * LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]):
-                    lanes[jl] = row_ptr[GEN ** jl]
-                for jb in unroll(0, LIG_LEAF_PAIRS[m_idx * LIG_MAX_LEVELS + lvl]):
-                    packed_row[2 * jb] = pack64x2(lanes[4 * jb], lanes[4 * jb + 1])
-                    packed_row[2 * jb + 1] = pack64x2(lanes[4 * jb + 2], lanes[4 * jb + 3])
-                for jw in unroll(0, LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]):
-                    if 3 * jw % 2 == 0:
-                        # limbs (3w, 3w+1) are a pack; add Y^2 * limb(3w+2).
-                        row_word = packed_row[3 * jw // 2] + Y_TOWER * Y_TOWER * lanes[3 * jw + 2]
-                    else:
-                        # limbs (3w+1, 3w+2) are a pack; shift it by Y and add limb(3w).
-                        row_word = lanes[3 * jw] + Y_TOWER * packed_row[(3 * jw + 1) // 2]
-                    row_dot += row_word * row_eq_weights[GEN ** jw]
-            # Standard BLAKE2s of the packed row (a power of two of full 64-byte
-            # blocks, within one 1024-byte chunk).
-            leaf_hash_state = StackBuf(2)
-            blake2s(packed_row[0:2], packed_row[2:4], leaf_hash_state, counter=64, final=1 // LIG_LEAF_BLOCKS[m_idx * LIG_MAX_LEVELS + lvl])
-            for jb in unroll(1, LIG_LEAF_BLOCKS[m_idx * LIG_MAX_LEVELS + lvl]):
-                leaf_digest = StackBuf(2)
-                blake2s(packed_row[4 * jb:4 * jb + 2], packed_row[4 * jb + 2:4 * jb + 4], leaf_digest, cv=leaf_hash_state, counter=64 * (jb + 1), final=(jb + 1) // LIG_LEAF_BLOCKS[m_idx * LIG_MAX_LEVELS + lvl])
-                leaf_hash_state = leaf_digest
-            node_0 = leaf_hash_state[0]
-            node_1 = leaf_hash_state[1]
-            query_sum_chain[xe * GEN] = query_sum_chain[xe] + query_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xe] * row_dot
-            direction_bits = query_bit_ptrs[GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * xe]
-            path_base = xe ** (2 * LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl])
-            path_ptr = merkle_paths * GEN ** LIG_PATHS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * path_base
-            root_0, root_1 = verify_merkle_path(node_0, node_1, path_ptr, direction_bits, LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl])  # walk the query's Merkle path to the level root
-            # A heap store IS the equality assert here (`DerefMode::Cell` unifies
-            # the two cells, and the slot holds this level's bound root already),
-            # at one instruction instead of three.
-            level_roots_0[GEN ** lvl] = root_0
-            level_roots_1[GEN ** lvl] = root_1
+                xstrip = xb ** LIG_QUERY_STRIP[m_idx * LIG_MAX_LEVELS + lvl]
+            for us in unroll(0, LIG_QUERY_STRIP[m_idx * LIG_MAX_LEVELS + lvl]):
+                if us == 0:
+                    xe = xstrip
+                else:
+                    xe = xstrip * GEN ** us
+                if lvl == 0:
+                    row_base = xe ** LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]
+                else:
+                    row_base = xe ** (3 * LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl])
+                row_ptr = merkle_leaf_rows * GEN ** LIG_ROWS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * row_base
+                row_dot = 0
+                packed_row = StackBuf(LIG_PACKED_ROW_CAP)
+                if lvl == 0:
+                    # Level-0 rows are base-field F64, embedded one-per word. Pack
+                    # the lanes into a contiguous run of canonical 128-bit cells for
+                    # the standard leaf hash; the dot consumes the individual lanes.
+                    # The untaken JUMP reads both source cells through the memory bus as
+                    # `(lo, 0, 0)`, so the packing helpers also prove every hinted lane is
+                    # genuinely F64 before it enters the hash or row_dot.
+                    for jb in unroll(0, LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl] // 4):
+                        e0 = row_ptr[GEN ** (4 * jb)]
+                        e1 = row_ptr[GEN ** (4 * jb + 1)]
+                        e2 = row_ptr[GEN ** (4 * jb + 2)]
+                        e3 = row_ptr[GEN ** (4 * jb + 3)]
+                        packed_row[2 * jb] = pack64x2(e0, e1)
+                        packed_row[2 * jb + 1] = pack64x2(e2, e3)
+                        row_dot += e0 * row_eq[4 * jb] + e1 * row_eq[4 * jb + 1] + e2 * row_eq[4 * jb + 2] + e3 * row_eq[4 * jb + 3]
+                else:
+                    # Higher-level F192 rows arrive as flat F64 tower limbs (three
+                    # per word); constrain every serialized limb before reassembly
+                    # and pack them into the contiguous 24-byte-per-word byte image
+                    # the committed leaf hashes.
+                    # Load each serialized limb ONCE into frame cells, then read the
+                    # words back off the PACKED cells: a pack holds
+                    # `lane(2k) + Y*lane(2k+1)` exactly, so word w (limbs 3w..3w+2)
+                    # is one multiply-add away from the pack that covers its even
+                    # limb pair.
+                    lanes = StackBuf(LIG_PACKED_ROW_CAP)  # >= 3 limbs per word for every candidate
+                    for jl in unroll(0, 3 * LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]):
+                        lanes[jl] = row_ptr[GEN ** jl]
+                    for jb in unroll(0, LIG_LEAF_PAIRS[m_idx * LIG_MAX_LEVELS + lvl]):
+                        packed_row[2 * jb] = pack64x2(lanes[4 * jb], lanes[4 * jb + 1])
+                        packed_row[2 * jb + 1] = pack64x2(lanes[4 * jb + 2], lanes[4 * jb + 3])
+                    for jw in unroll(0, LIG_INTERLEAVE[m_idx * LIG_MAX_LEVELS + lvl]):
+                        if 3 * jw % 2 == 0:
+                            # limbs (3w, 3w+1) are a pack; add Y^2 * limb(3w+2).
+                            row_word = packed_row[3 * jw // 2] + Y_TOWER * Y_TOWER * lanes[3 * jw + 2]
+                        else:
+                            # limbs (3w+1, 3w+2) are a pack; shift it by Y and add limb(3w).
+                            row_word = lanes[3 * jw] + Y_TOWER * packed_row[(3 * jw + 1) // 2]
+                        row_dot += row_word * row_eq[jw]
+                # Standard BLAKE2s of the packed row (a power of two of full 64-byte
+                # blocks, within one 1024-byte chunk).
+                leaf_hash_state = StackBuf(2)
+                blake2s(packed_row[0:2], packed_row[2:4], leaf_hash_state, counter=64, final=1 // LIG_LEAF_BLOCKS[m_idx * LIG_MAX_LEVELS + lvl])
+                for jb in unroll(1, LIG_LEAF_BLOCKS[m_idx * LIG_MAX_LEVELS + lvl]):
+                    leaf_digest = StackBuf(2)
+                    blake2s(packed_row[4 * jb:4 * jb + 2], packed_row[4 * jb + 2:4 * jb + 4], leaf_digest, cv=leaf_hash_state, counter=64 * (jb + 1), final=(jb + 1) // LIG_LEAF_BLOCKS[m_idx * LIG_MAX_LEVELS + lvl])
+                    leaf_hash_state = leaf_digest
+                node_0 = leaf_hash_state[0]
+                node_1 = leaf_hash_state[1]
+                query_sum_chain[xe * GEN] = query_sum_chain[xe] + query_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xe] * row_dot
+                direction_bits = query_bit_ptrs[GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * xe]
+                path_base = xe ** (2 * LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl])
+                path_ptr = merkle_paths * GEN ** LIG_PATHS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * path_base
+                root_0, root_1 = verify_merkle_path(node_0, node_1, path_ptr, direction_bits, LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl])  # walk the query's Merkle path to the level root
+                # A heap store IS the equality assert here (`DerefMode::Cell` unifies
+                # the two cells, and the slot holds this level's bound root already),
+                # at one instruction instead of three.
+                level_roots_0[GEN ** lvl] = root_0
+                level_roots_1[GEN ** lvl] = root_1
         level_query_sum = query_sum_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]
 
         # Every level, including the last, ties its commitment in through an
@@ -1013,13 +1032,29 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     for lvl in unroll(0, LIG_N_LEVELS[m_idx]):
         residual_chain = HeapBuf(GEN ** (LIG_MAX_QUERIES[m_idx] + 1))
         residual_chain[GEN ** 0] = 0
-        for xr in mul_range(1, GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]):
-            basis_chain = query_positions[GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * xr]
-            prefix_eq = basis_a[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP)] + basis_b[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP)] * basis_chain
-            for t in unroll(1, LIG_LOG_MSG_COLS[m_idx * LIG_MAX_LEVELS + lvl]):
-                basis_chain *= (basis_chain + LIG_VANISH_VALS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t - 1])  # subspace-vanishing recurrence for the novel-basis point
-                prefix_eq *= basis_a[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP + t)] + basis_b[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP + t)] * basis_chain
-            residual_chain[xr * GEN] = residual_chain[xr] + query_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xr] * prefix_eq
+        # Strip-mined like the query loop in `open_stacked`: the level's two coefficient rows are the
+        # same for every query, so a fresh frame per query would re-DEREF both per coordinate.
+        for xrb in mul_range(1, GEN ** (LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl] // LIG_QUERY_STRIP[m_idx * LIG_MAX_LEVELS + lvl])):
+            coef_a = StackBuf(LIG_LOG_MSG_COLS_CAP)
+            coef_b = StackBuf(LIG_LOG_MSG_COLS_CAP)
+            for t in unroll(0, LIG_LOG_MSG_COLS[m_idx * LIG_MAX_LEVELS + lvl]):
+                coef_a[t] = basis_a[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP + t)]
+                coef_b[t] = basis_b[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP + t)]
+            if LIG_QUERY_STRIP[m_idx * LIG_MAX_LEVELS + lvl] == 1:
+                xrs = xrb
+            else:
+                xrs = xrb ** LIG_QUERY_STRIP[m_idx * LIG_MAX_LEVELS + lvl]
+            for us in unroll(0, LIG_QUERY_STRIP[m_idx * LIG_MAX_LEVELS + lvl]):
+                if us == 0:
+                    xr = xrs
+                else:
+                    xr = xrs * GEN ** us
+                basis_chain = query_positions[GEN ** LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl] * xr]
+                prefix_eq = coef_a[0] + coef_b[0] * basis_chain
+                for t in unroll(1, LIG_LOG_MSG_COLS[m_idx * LIG_MAX_LEVELS + lvl]):
+                    basis_chain *= (basis_chain + LIG_VANISH_VALS[m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[m_idx * LIG_MAX_LEVELS + lvl] + t - 1])  # subspace-vanishing recurrence for the novel-basis point
+                    prefix_eq *= coef_a[t] + coef_b[t] * basis_chain
+                residual_chain[xr * GEN] = residual_chain[xr] + query_weights[GEN ** (lvl * LIG_MAX_QUERIES[m_idx]) * xr] * prefix_eq
         inner_chain[GEN ** (lvl + 1)] = inner_chain[GEN ** lvl] + level_betas[GEN ** lvl] * residual_chain[GEN ** LIG_QUERIES[m_idx * LIG_MAX_LEVELS + lvl]]  # accumulate beta_lvl * (per-level residual sum) into the grand residual
 
     # Explicit OOD eq bases at the same terminal point.
