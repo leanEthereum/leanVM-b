@@ -1794,6 +1794,209 @@ theorem ProperFewTimeLeak.target_source_interval_allowed
         congrArg AdversaryCacheEntry.input hentry
     simp [targetCandidateIntervalAllowed, hinputElem, hnone]
 
+theorem gameAfterSecretsWithViewTrace_target_source_candidate
+    (adversary : Adversary) (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (result : (Digest × Forgery × Bool) × ViewedFullTraceState)
+    (hresult : result ∈ support
+      (gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret))
+    (f : QueryImpl HashSpec Id) (hf : result.2.cache.AgreesWithFn f)
+    (digest : MessageDigest)
+    (hdigest : evalWithAnswerFn f
+      (messageDigest parameter result.1.1 result.1.2.1.message
+        result.1.2.1.signature.randomness) = digest)
+    (hadmissible : Admissible digest)
+    (source : Fin result.2.trace.intervals.length)
+    (hsourceInitial : (result.2.trace.intervals.get source).initialCache
+      (tweakableHashInput parameter .message
+        (messageDigestPayload result.1.1 result.1.2.1.message
+          result.1.2.1.signature.randomness)) = none)
+    (hsourceFinal : (result.2.trace.intervals.get source).finalCache
+      (tweakableHashInput parameter .message
+        (messageDigestPayload result.1.1 result.1.2.1.message
+          result.1.2.1.signature.randomness)) ≠ none)
+    (hkind : (result.2.trace.intervals.get source).input = .inl (.inr
+        (tweakableHashInput parameter .message
+          (messageDigestPayload result.1.1 result.1.2.1.message
+            result.1.2.1.signature.randomness))) ∨
+      ∃ request, (result.2.trace.intervals.get source).input = .inr request) :
+    let secretKey : SecretKey := ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+    ∃ output,
+      FreshTargetCandidate secretKey (result.2.trace.intervals.get source)
+        ∧ targetCandidateIntervalView result.2 source =
+          fewTimeTargetView (digestIndex digest) (digestLeaves digest)
+        ∧ (result.2.trace.intervals.get source).finalCache
+          (tweakableHashInput parameter .message
+            (messageDigestPayload result.1.1 result.1.2.1.message
+              result.1.2.1.signature.randomness)) = some output
+        ∧ signAttemptResultOfOutput output =
+          some (digestIndex digest, digestLeaves digest) := by
+  let secretKey : SecretKey := ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+  let targetPayload := messageDigestPayload result.1.1 result.1.2.1.message
+    result.1.2.1.signature.randomness
+  let input := tweakableHashInput parameter .message targetPayload
+  obtain ⟨output, hsourceOutput⟩ := Option.ne_none_iff_exists'.mp hsourceFinal
+  have hbase : (result.1, result.2.base) ∈ support
+      (gameAfterSecretsWithFullTrace adversary parameter otsSecret ftsSecret) := by
+    rw [← gameAfterSecretsWithViewTrace_projection adversary parameter otsSecret ftsSecret,
+      support_map]
+    exact ⟨result, hresult, rfl⟩
+  have hintervals := gameAfterSecretsWithFullTrace_support_interval_invariants adversary
+    parameter otsSecret ftsSecret (result.1, result.2.base) hbase
+  have hvalidIntervals := gameAfterSecretsWithFullTrace_support_validIntervals adversary
+    parameter otsSecret ftsSecret (result.1, result.2.base) hbase
+  have hvalidViews := gameAfterSecretsWithViewTrace_support_validViews adversary parameter
+    otsSecret ftsSecret result hresult
+  let entry := result.2.trace.intervals.get source
+  have hentry : result.2.trace.intervals.get source = entry := rfl
+  have hsourceLe : entry.finalCache ≤ result.2.cache :=
+    (hintervals.2.1 entry (List.get_mem _ source)).2
+  have hcachedFinal : result.2.cache input = some output := by
+    exact hsourceLe (by simpa only [entry, input] using hsourceOutput)
+  have hanswer : f input = output := hf hcachedFinal
+  have hdigestOutput : truncateMessageDigest output = digest := by
+    simpa only [messageDigest, oracleHash, evalWithAnswerFn_bind, evalWithAnswerFn_query,
+      evalWithAnswerFn_pure, input, targetPayload, hanswer] using hdigest
+  have hattempt : signAttemptResultOfOutput output =
+      some (digestIndex digest, digestLeaves digest) := by
+    simp [signAttemptResultOfOutput, hdigestOutput, hadmissible]
+  have htargetOutput : hashOutputFewTimeView output =
+      fewTimeTargetView (digestIndex digest) (digestLeaves digest) := by
+    simp [hashOutputFewTimeView, fewTimeTargetView, hdigestOutput]
+  have hsourceCandidate : FreshTargetCandidate secretKey entry :=
+    freshTargetCandidate_of_message_transition secretKey entry targetPayload
+      (hvalidIntervals entry (List.get_mem _ source))
+      (by simpa only [secretKey, input, entry] using hsourceInitial)
+      (by simpa only [secretKey, input, entry, hsourceOutput])
+      (by
+        intro sourceOutput hsourceOutput'
+        have hcached := hsourceLe (by simpa only [input] using hsourceOutput')
+        rw [hcachedFinal] at hcached
+        have hsourceOutputEq : sourceOutput = output :=
+          (Option.some.inj hcached).symm
+        rw [hsourceOutputEq, hattempt]
+        simp)
+      (by simpa only [secretKey, input, entry] using hkind)
+  refine ⟨output, by simpa only [entry] using hsourceCandidate, ?_,
+    by simpa only [input] using hsourceOutput, hattempt⟩
+  rcases hkind with hdirect | ⟨request, hsigner⟩
+  · rcases entry with ⟨entryInput, entryOutput, initialCache, finalCache⟩
+    change (result.2.trace.intervals.get source).input = .inl (.inr input) at hdirect
+    have hentryInput := congrArg AdversaryCacheEntry.input hentry
+    rw [hentryInput] at hdirect
+    rcases entryInput with worldInput | sourceRequest
+    · rcases worldInput with uniformInput | directInput
+      · simp at hdirect
+      · simp only [Sum.inl.injEq, Sum.inr.injEq] at hdirect
+        subst directInput
+        rw [hentry] at hsourceOutput
+        change finalCache input = some output at hsourceOutput
+        have hvalidEntry := hvalidIntervals
+          (⟨.inl (.inr input), entryOutput, initialCache, finalCache⟩ :
+            AdversaryCacheEntry) (by rw [← hentry]; exact List.get_mem _ source)
+        have hdirectRun : (entryOutput, finalCache) ∈ support
+            ((randomOracle input).run initialCache) := hvalidEntry
+        have hdirectCached : finalCache input = some entryOutput :=
+          randomOracle_run_output_cached input initialCache finalCache entryOutput hdirectRun
+        have hentryOutputEq : entryOutput = output := by
+          rw [hsourceOutput] at hdirectCached
+          exact (Option.some.inj hdirectCached).symm
+        rw [targetCandidateIntervalView_direct result.2 source input entryOutput
+          initialCache finalCache hentry, hentryOutputEq]
+        exact htargetOutput
+    · simp at hdirect
+  · rcases entry with ⟨entryInput, entryOutput, initialCache, finalCache⟩
+    change (result.2.trace.intervals.get source).input = .inr request at hsigner
+    have hentryInput := congrArg AdversaryCacheEntry.input hentry
+    rw [hentryInput] at hsigner
+    rcases entryInput with worldInput | sourceRequest
+    · simp at hsigner
+    · simp only [Sum.inr.injEq] at hsigner
+      subst sourceRequest
+      rw [hentry] at hsourceInitial hsourceOutput
+      change initialCache input = none at hsourceInitial
+      change finalCache input = some output at hsourceOutput
+      have hstored := ViewedFullTraceState.ValidViews.signer_interval_fresh_admissible_view
+        hvalidViews hintervals.1 source request entryOutput initialCache finalCache
+        hentry targetPayload output (digestIndex digest) (digestLeaves digest)
+        (by simpa only [secretKey, input] using hsourceInitial)
+        (by simpa only [secretKey, input] using hsourceOutput) hattempt
+      rw [targetCandidateIntervalView_signer result.2 source request entryOutput
+        initialCache finalCache (hashOutputFewTimeView output) hentry hstored]
+      exact htargetOutput
+
+def castTracePosition
+    (left right : ViewedFullTraceState) (htrace : left.trace = right.trace)
+    (position : Fin left.trace.intervals.length) :
+    Fin right.trace.intervals.length :=
+  Fin.cast (congrArg (fun trace : FullAdversaryTrace => trace.intervals.length) htrace)
+    position
+
+theorem get_castTracePosition
+    (left right : ViewedFullTraceState) (htrace : left.trace = right.trace)
+    (position : Fin left.trace.intervals.length) :
+    right.trace.intervals.get (castTracePosition left right htrace position) =
+      left.trace.intervals.get position := by
+  have hintervals : left.trace.intervals = right.trace.intervals :=
+    congrArg FullAdversaryTrace.intervals htrace
+  have hright : position.val < right.trace.intervals.length := by
+    rw [← hintervals]
+    exact position.isLt
+  have hget := congrArg (fun intervals : List AdversaryCacheEntry =>
+    intervals[position.val]?) hintervals
+  rw [List.getElem?_eq_getElem position.isLt,
+    List.getElem?_eq_getElem hright] at hget
+  exact (Option.some.inj hget).symm
+
+theorem take_castTracePosition
+    (left right : ViewedFullTraceState) (htrace : left.trace = right.trace)
+    (position : Fin left.trace.intervals.length) :
+    right.trace.intervals.take (castTracePosition left right htrace position).val =
+      left.trace.intervals.take position.val := by
+  have hintervals : left.trace.intervals = right.trace.intervals :=
+    congrArg FullAdversaryTrace.intervals htrace
+  change right.trace.intervals.take position.val =
+    left.trace.intervals.take position.val
+  exact (congrArg (List.take position.val) hintervals).symm
+
+theorem targetCandidateIntervalView_castTracePosition
+    (left right : ViewedFullTraceState) (htrace : left.trace = right.trace)
+    (hviews : left.views = right.views)
+    (position : Fin left.trace.intervals.length) :
+    targetCandidateIntervalView right (castTracePosition left right htrace position) =
+      targetCandidateIntervalView left position := by
+  simp only [targetCandidateIntervalView]
+  rw [get_castTracePosition left right htrace position,
+    take_castTracePosition left right htrace position, ← hviews]
+
+theorem targetCandidateIntervalAllowed_castTracePosition
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources)
+    (left right : ViewedFullTraceState) (htrace : left.trace = right.trace)
+    (position : Fin left.trace.intervals.length) :
+    targetCandidateIntervalAllowed configuration right
+        (castTracePosition left right htrace position) =
+      targetCandidateIntervalAllowed configuration left position := by
+  simp only [targetCandidateIntervalAllowed]
+  rw [get_castTracePosition left right htrace position,
+    take_castTracePosition left right htrace position]
+
+theorem OriginConfiguration.paddedRealized_transport
+    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec}
+    {secretKey : SecretKey} {signingLog : QueryLog SigningSpec} {index : Index}
+    {targetLeaves : DigestTree → FtsLeaf}
+    {cover : FewTimeCover f cache secretKey signingLog index targetLeaves}
+    {q limit : Nat} {hle : signingLog.length ≤ limit}
+    {configuration : OriginConfiguration (cover.pattern.pad hle) q}
+    (left right : FullAdversaryTrace) (htrace : left = right)
+    (hlog : left.signing.toSigningLog = signingLog)
+    (hrealized : configuration.PaddedRealizedBy cover hle left hlog) :
+    ∃ hlog' : right.signing.toSigningLog = signingLog,
+      configuration.PaddedRealizedBy cover hle right hlog' := by
+  subst right
+  exact ⟨hlog, hrealized⟩
+
 theorem OriginConfiguration.paddedRealized_target_complete_and_hit
     {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec}
     {secretKey : SecretKey} {signingLog : QueryLog SigningSpec} {index : Index}
@@ -1848,6 +2051,160 @@ theorem OriginConfiguration.paddedRealized_target_complete_and_hit
       exact Option.some.inj (htarget'.symm.trans htarget)
     rw [htargetEq]
     exact horigin.2
+
+theorem gameAfterSecretsWithViewTrace_proper_target_bridge
+    (adversary : Adversary) (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (result : (Digest × Forgery × Bool) × ViewedFullTraceState)
+    (hresult : result ∈ support
+      (gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret))
+    (f : QueryImpl HashSpec Id) (hf : result.2.cache.AgreesWithFn f)
+    (digest : MessageDigest)
+    (hdigest : evalWithAnswerFn f
+      (messageDigest parameter result.1.1 result.1.2.1.message
+        result.1.2.1.signature.randomness) = digest)
+    (hadmissible : Admissible digest)
+    (hproper : ProperFewTimeLeak f result.2.cache
+      ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+      result.2.trace.signing.toSigningLog (digestIndex digest) (digestLeaves digest))
+    {limit : Nat} (hle : result.2.trace.signing.toSigningLog.length ≤ limit)
+    {sources : Nat}
+    (configuration : OriginConfiguration (hproper.1.cover.pattern.pad hle) sources)
+    (hrealized : configuration.PaddedRealizedBy hproper.1.cover hle result.2.trace rfl) :
+    let secretKey : SecretKey := ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+    let targetInput := tweakableHashInput parameter .message
+      (messageDigestPayload result.1.1 result.1.2.1.message
+        result.1.2.1.signature.randomness)
+    (∃ adversaryCache : QueryCache HashSpec, adversaryCache targetInput = none) ∨
+      ∃ (targetOrdinal : Nat) (rootCache : QueryCache HashSpec)
+          (monitored : Forgery × OriginTargetMonitorState configuration),
+        targetOrdinal < freshTargetCandidateCount secretKey result.2.trace
+          ∧ monitored ∈ support
+            ((simulateQ
+              (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal)
+              (adversary.main ⟨result.1.1, parameter⟩)).run
+                (OriginTargetMonitorState.initial configuration rootCache))
+          ∧ monitored.1 = result.1.2.1
+          ∧ monitored.2.Complete
+          ∧ ∀ target, monitored.2.targetView = some target →
+            FixedFewTimePatternHit (hproper.1.cover.pattern.pad hle).assignment
+              (monitored.2.origin.observation.views, target) := by
+  classical
+  let secretKey : SecretKey := ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+  let targetPayload := messageDigestPayload result.1.1 result.1.2.1.message
+    result.1.2.1.signature.randomness
+  let targetInput := tweakableHashInput parameter .message targetPayload
+  obtain ⟨rootCache₀, adversaryCache, digestCache, verifierOutput, _, _, hverify,
+      hdigestLe, _, horigin, _⟩ :=
+    gameAfterSecretsWithViewTrace_target_source_kind adversary parameter otsSecret
+      ftsSecret result hresult
+  rcases horigin with hverifier | ⟨source, hsourceInitial, hsourceFinal, hkind⟩
+  · exact Or.inl ⟨adversaryCache, by simpa only [targetInput, targetPayload] using hverifier⟩
+  · obtain ⟨sourceOutput, hcandidate, hsourceView, hsourceOutput, hattempt⟩ :=
+      gameAfterSecretsWithViewTrace_target_source_candidate adversary parameter otsSecret
+        ftsSecret result hresult f hf digest hdigest hadmissible source
+          (by simpa only [targetInput, targetPayload] using hsourceInitial)
+          (by simpa only [targetInput, targetPayload] using hsourceFinal)
+          (by simpa only [targetInput, targetPayload] using hkind)
+    let targetOrdinal := result.2.trace.intervals.countPBefore
+      (fun entry => decide (FreshTargetCandidate secretKey entry)) source.val
+    obtain ⟨rootCache, monitored, _, hmonitored, hforgery, htrace, hviews, hcache⟩ :=
+      gameAfterSecretsWithViewTrace_support_target_monitored_state configuration
+        targetOrdinal adversary parameter otsSecret ftsSecret result hresult
+    let monitoredPosition := castTracePosition result.2 monitored.2.origin.viewed
+      htrace source
+    have hcandidateMonitored : FreshTargetCandidate secretKey
+        (monitored.2.origin.viewed.trace.intervals.get monitoredPosition) := by
+      rw [get_castTracePosition result.2 monitored.2.origin.viewed htrace source]
+      exact hcandidate
+    have hviewMonitored : targetCandidateIntervalView monitored.2.origin.viewed
+        monitoredPosition = fewTimeTargetView (digestIndex digest) (digestLeaves digest) := by
+      rw [targetCandidateIntervalView_castTracePosition result.2
+        monitored.2.origin.viewed htrace hviews source]
+      exact hsourceView
+    have hbase : (result.1, result.2.base) ∈ support
+        (gameAfterSecretsWithFullTrace adversary parameter otsSecret ftsSecret) := by
+      rw [← gameAfterSecretsWithViewTrace_projection adversary parameter otsSecret ftsSecret,
+        support_map]
+      exact ⟨result, hresult, rfl⟩
+    have hinvariants := gameAfterSecretsWithFullTrace_support_invariants adversary
+      parameter otsSecret ftsSecret (result.1, result.2.base) hbase
+    have hintervals := gameAfterSecretsWithFullTrace_support_interval_invariants adversary
+      parameter otsSecret ftsSecret (result.1, result.2.base) hbase
+    have hvalidIntervals := gameAfterSecretsWithFullTrace_support_validIntervals adversary
+      parameter otsSecret ftsSecret (result.1, result.2.base) hbase
+    have hvalidViews := gameAfterSecretsWithViewTrace_support_validViews adversary parameter
+      otsSecret ftsSecret result hresult
+    have hallowed : targetCandidateIntervalAllowed configuration result.2 source = true :=
+      hproper.target_source_interval_allowed result.1.2.1 digest hdigest rfl result.2 rfl
+        hvalidViews hintervals.1 hinvariants.1 hinvariants.2.1 hf hle configuration
+          hrealized hvalidIntervals source sourceOutput
+          (by simpa only [targetInput, targetPayload] using hsourceInitial)
+          (by simpa only [targetInput, targetPayload] using hsourceOutput)
+          hattempt (by simpa only [targetInput, targetPayload] using hkind)
+    have hallowedMonitored : targetCandidateIntervalAllowed configuration
+        monitored.2.origin.viewed monitoredPosition = true := by
+      rw [targetCandidateIntervalAllowed_castTracePosition configuration result.2
+        monitored.2.origin.viewed htrace source]
+      exact hallowed
+    have htraceCoherent := originTargetMonitoredAdversaryImpl_candidateTraceCoherent
+      configuration secretKey targetOrdinal (adversary.main ⟨result.1.1, parameter⟩)
+      (OriginTargetMonitorState.initial configuration rootCache) monitored
+      (OriginTargetMonitorState.candidateTraceCoherent_initial configuration secretKey rootCache)
+      hmonitored
+    have hallowedTraceCoherent :=
+      originTargetMonitoredAdversaryImpl_candidateAllowedTraceCoherent
+        configuration secretKey targetOrdinal (adversary.main ⟨result.1.1, parameter⟩)
+        (OriginTargetMonitorState.initial configuration rootCache) monitored
+        (OriginTargetMonitorState.candidateAllowedTraceCoherent_initial
+          configuration secretKey rootCache)
+        hmonitored
+    have hviewsCoherent := originTargetMonitoredAdversaryImpl_candidateViewsCoherent
+      configuration secretKey targetOrdinal (adversary.main ⟨result.1.1, parameter⟩)
+      (OriginTargetMonitorState.initial configuration rootCache) monitored
+      (OriginTargetMonitorState.candidateViewsCoherent_initial configuration rootCache
+        targetOrdinal) hmonitored
+    have hallowedCoherent := originTargetMonitoredAdversaryImpl_candidateAllowedCoherent
+      configuration secretKey targetOrdinal (adversary.main ⟨result.1.1, parameter⟩)
+      (OriginTargetMonitorState.initial configuration rootCache) monitored
+      (OriginTargetMonitorState.candidateAllowedCoherent_initial configuration rootCache
+        targetOrdinal) hmonitored
+    have htargetOrdinal : targetOrdinal =
+        monitored.2.origin.viewed.trace.intervals.countPBefore
+          (fun entry => decide (FreshTargetCandidate secretKey entry))
+            monitoredPosition.val := by
+      change result.2.trace.intervals.countPBefore
+          (fun entry => decide (FreshTargetCandidate secretKey entry)) source.val =
+        monitored.2.origin.viewed.trace.intervals.countPBefore
+          (fun entry => decide (FreshTargetCandidate secretKey entry)) monitoredPosition.val
+      rw [List.countPBefore_eq_countP_take, List.countPBefore_eq_countP_take,
+        take_castTracePosition result.2 monitored.2.origin.viewed htrace source]
+    obtain ⟨hlogMonitored, hrealizedMonitored⟩ :=
+      configuration.paddedRealized_transport result.2.trace
+        monitored.2.origin.viewed.trace htrace rfl hrealized
+    have hvalidIntervalsMonitored :
+        monitored.2.origin.viewed.trace.ValidIntervals secretKey := by
+      rw [← htrace]
+      exact hvalidIntervals
+    have hchronologicalMonitored : FullAdversaryTrace.Chronological
+        monitored.2.origin.viewed.trace.intervals := by
+      rw [← htrace]
+      exact hintervals.2.2
+    have hcachesMonitored : monitored.2.origin.viewed.trace.signing.CachesLe
+        result.2.cache := by
+      rw [← htrace]
+      exact hinvariants.2.1
+    have hterminal := configuration.paddedRealized_target_complete_and_hit
+      hlogMonitored hrealizedMonitored htraceCoherent.1 hvalidIntervalsMonitored
+      hchronologicalMonitored hcachesMonitored hf monitoredPosition hcandidateMonitored
+      hviewMonitored hallowedMonitored (by rwa [← htargetOrdinal]) htraceCoherent.2
+      (by rwa [← htargetOrdinal]) hallowedTraceCoherent.2
+    have hordinalLt : targetOrdinal < freshTargetCandidateCount secretKey result.2.trace := by
+      apply List.countPBefore_lt_countP_of_lt_length_of_pos
+      exact decide_eq_true hcandidate
+    exact Or.inr ⟨targetOrdinal, rootCache, monitored, hordinalLt, hmonitored,
+      hforgery, hterminal.1, hterminal.2⟩
 
 end Concrete
 
