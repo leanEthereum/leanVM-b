@@ -391,6 +391,377 @@ theorem originTargetMonitoredAdversaryImpl_candidateViewsCoherent
         configuration secretKey targetOrdinal input state queryResult hstate hquery)
     computation initialState hcoherent result hmem
 
+def appendTargetViewedState
+    (input : (OracleWorld + SigningSpec).Domain)
+    (initialCache : QueryCache HashSpec)
+    (output : (OracleWorld + SigningSpec).Range input)
+    (finalCache : QueryCache HashSpec) (view : Option FewTimeView)
+    (state : ViewedFullTraceState) : ViewedFullTraceState :=
+  let entry : AdversaryCacheEntry := ⟨input, output, initialCache, finalCache⟩
+  ⟨finalCache, fullAdversaryTraceUpdate input initialCache output finalCache state.trace,
+    appendOriginReplayView entry state.views view, state.targetView⟩
+
+theorem targetCandidateIntervalView_appendTargetViewedState_old
+    (secretKey : SecretKey) (state : ViewedFullTraceState)
+    (hvalid : state.ValidViews secretKey) (hconsistent : state.trace.Consistent)
+    (input : (OracleWorld + SigningSpec).Domain)
+    (initialCache : QueryCache HashSpec)
+    (output : (OracleWorld + SigningSpec).Range input)
+    (finalCache : QueryCache HashSpec) (view : Option FewTimeView)
+    (position : Fin state.trace.intervals.length) :
+    targetCandidateIntervalView
+        (appendTargetViewedState input initialCache output finalCache view state)
+        ⟨position.val, by
+          simp [appendTargetViewedState, fullAdversaryTraceUpdate]⟩ =
+      targetCandidateIntervalView state position := by
+  let oldEntry := state.trace.intervals.get position
+  have hentry : state.trace.intervals.get position = oldEntry := rfl
+  rcases oldEntry with ⟨entryInput, entryOutput, entryInitial, entryFinal⟩
+  have hentryElem : state.trace.intervals[position.val] =
+      ⟨entryInput, entryOutput, entryInitial, entryFinal⟩ := by
+    simpa only [List.get_eq_getElem] using hentry
+  cases entryInput with
+  | inl worldInput =>
+      cases worldInput <;>
+        simp [targetCandidateIntervalView, appendTargetViewedState,
+          fullAdversaryTraceUpdate, List.getElem_append_left position.isLt, hentryElem]
+  | inr request =>
+      obtain ⟨_, viewPosition, _, hviewRank, _, _⟩ :=
+        ViewedFullTraceState.ValidViews.signer_interval hvalid hconsistent position request
+          entryOutput entryInitial entryFinal hentry
+      have hrankLt : signerIntervalCount
+          (state.trace.intervals.take position.val) < state.views.length := by
+        rw [← hviewRank]
+        exact viewPosition.isLt
+      have htake (newInput : (OracleWorld + SigningSpec).Domain)
+          (newOutput : (OracleWorld + SigningSpec).Range newInput) :
+          (state.trace.intervals ++
+            [(⟨newInput, newOutput, initialCache, finalCache⟩ :
+              AdversaryCacheEntry)]).take position.val =
+              state.trace.intervals.take position.val := by
+        rw [List.take_append_of_le_length]
+        exact position.isLt.le
+      cases input with
+      | inl worldInput =>
+          cases worldInput <;>
+            simp [targetCandidateIntervalView, appendTargetViewedState,
+              appendOriginReplayView, fullAdversaryTraceUpdate,
+              List.getElem_append_left position.isLt, hentryElem, htake]
+      | inr newRequest =>
+          simp only [targetCandidateIntervalView, appendTargetViewedState,
+            appendOriginReplayView, fullAdversaryTraceUpdate]
+          simp only [List.get_eq_getElem]
+          rw [List.getElem_append_left position.isLt, hentryElem,
+            htake (.inr newRequest) output]
+          rw [List.getElem?_append_left hrankLt]
+
+theorem targetCandidateIntervalView_appendTargetViewedState_last
+    (secretKey : SecretKey) (state : ViewedFullTraceState)
+    (hvalid : state.ValidViews secretKey) (hconsistent : state.trace.Consistent)
+    (input : (OracleWorld + SigningSpec).Domain)
+    (initialCache : QueryCache HashSpec)
+    (output : (OracleWorld + SigningSpec).Range input)
+    (finalCache : QueryCache HashSpec) (view : Option FewTimeView) :
+    targetCandidateIntervalView
+        (appendTargetViewedState input initialCache output finalCache view state)
+        ⟨state.trace.intervals.length, by
+          simp [appendTargetViewedState, fullAdversaryTraceUpdate]⟩ =
+      match input with
+      | .inl (.inl _) => default
+      | .inl (.inr _) => hashOutputFewTimeView output
+      | .inr _ => view.getD default := by
+  have hrank : signerIntervalCount state.trace.intervals = state.views.length := by
+    calc
+      signerIntervalCount state.trace.intervals = state.trace.signing.length := by
+        exact congrArg List.length hconsistent.2
+      _ = state.views.length := hvalid.length_eq
+  cases input with
+  | inl worldInput =>
+      cases worldInput <;>
+        simp [targetCandidateIntervalView, appendTargetViewedState,
+          fullAdversaryTraceUpdate]
+  | inr request =>
+      simp [targetCandidateIntervalView, appendTargetViewedState,
+        appendOriginReplayView, fullAdversaryTraceUpdate, hrank]
+
+def CandidateViewsCover (secretKey : SecretKey) (state : ViewedFullTraceState)
+    (candidateViews : List FewTimeView) : Prop :=
+  ∀ position, FreshTargetCandidate secretKey (state.trace.intervals.get position) →
+    targetCandidateIntervalView state position ∈ candidateViews
+
+theorem candidateViewsCover_nil (secretKey : SecretKey) (cache : QueryCache HashSpec) :
+    CandidateViewsCover secretKey ⟨cache, ⟨[], [], []⟩, [], none⟩ [] := by
+  intro position
+  exact Fin.elim0 position
+
+theorem candidateViewsCover_append_candidate
+    (secretKey : SecretKey) (state : ViewedFullTraceState)
+    (hvalid : state.ValidViews secretKey) (hconsistent : state.trace.Consistent)
+    (candidateViews : List FewTimeView)
+    (hcover : CandidateViewsCover secretKey state candidateViews)
+    (input : (OracleWorld + SigningSpec).Domain)
+    (initialCache : QueryCache HashSpec)
+    (output : (OracleWorld + SigningSpec).Range input)
+    (finalCache : QueryCache HashSpec) (view : Option FewTimeView)
+    (retained : FewTimeView)
+    (hlast : targetCandidateIntervalView
+        (appendTargetViewedState input initialCache output finalCache view state)
+        ⟨state.trace.intervals.length, by
+          simp [appendTargetViewedState, fullAdversaryTraceUpdate]⟩ = retained) :
+    CandidateViewsCover secretKey
+      (appendTargetViewedState input initialCache output finalCache view state)
+      (candidateViews ++ [retained]) := by
+  intro position hcandidate
+  by_cases hold : position.val < state.trace.intervals.length
+  · let oldPosition : Fin state.trace.intervals.length := ⟨position.val, hold⟩
+    have hposition : position = ⟨oldPosition.val, by
+        simp [appendTargetViewedState, fullAdversaryTraceUpdate]⟩ := Fin.ext rfl
+    have hentry :
+        (appendTargetViewedState input initialCache output finalCache view state).trace.intervals.get
+            position = state.trace.intervals.get oldPosition := by
+      have hget :
+          (appendTargetViewedState input initialCache output finalCache view state).trace.intervals[
+              position.val]? = state.trace.intervals[position.val]? := by
+        simp [appendTargetViewedState, fullAdversaryTraceUpdate,
+          List.getElem?_append_left hold]
+      rw [List.getElem?_eq_getElem position.isLt,
+        List.getElem?_eq_getElem hold] at hget
+      exact Option.some.inj hget
+    have holdCandidate : FreshTargetCandidate secretKey
+        (state.trace.intervals.get oldPosition) := by
+      rw [← hentry]
+      exact hcandidate
+    have holdView := hcover oldPosition holdCandidate
+    rw [hposition, targetCandidateIntervalView_appendTargetViewedState_old
+      secretKey state hvalid hconsistent input initialCache output finalCache view oldPosition]
+    exact List.mem_append_left _ holdView
+  · have hlastValue : position.val = state.trace.intervals.length := by
+      have hlt : position.val < state.trace.intervals.length + 1 := by
+        simpa [appendTargetViewedState, fullAdversaryTraceUpdate] using position.isLt
+      omega
+    have hposition : position = ⟨state.trace.intervals.length, by
+        simp [appendTargetViewedState, fullAdversaryTraceUpdate]⟩ := Fin.ext hlastValue
+    rw [hposition, hlast]
+    simp
+
+theorem candidateViewsCover_append_noncandidate
+    (secretKey : SecretKey) (state : ViewedFullTraceState)
+    (hvalid : state.ValidViews secretKey) (hconsistent : state.trace.Consistent)
+    (candidateViews : List FewTimeView)
+    (hcover : CandidateViewsCover secretKey state candidateViews)
+    (input : (OracleWorld + SigningSpec).Domain)
+    (initialCache : QueryCache HashSpec)
+    (output : (OracleWorld + SigningSpec).Range input)
+    (finalCache : QueryCache HashSpec) (view : Option FewTimeView)
+    (hnon : ¬ FreshTargetCandidate secretKey
+      ⟨input, output, initialCache, finalCache⟩) :
+    CandidateViewsCover secretKey
+      (appendTargetViewedState input initialCache output finalCache view state)
+      candidateViews := by
+  intro position hcandidate
+  by_cases hold : position.val < state.trace.intervals.length
+  · let oldPosition : Fin state.trace.intervals.length := ⟨position.val, hold⟩
+    have hposition : position = ⟨oldPosition.val, by
+        simp [appendTargetViewedState, fullAdversaryTraceUpdate]⟩ := Fin.ext rfl
+    have hentry :
+        (appendTargetViewedState input initialCache output finalCache view state).trace.intervals.get
+            position = state.trace.intervals.get oldPosition := by
+      have hget :
+          (appendTargetViewedState input initialCache output finalCache view state).trace.intervals[
+              position.val]? = state.trace.intervals[position.val]? := by
+        simp [appendTargetViewedState, fullAdversaryTraceUpdate,
+          List.getElem?_append_left hold]
+      rw [List.getElem?_eq_getElem position.isLt,
+        List.getElem?_eq_getElem hold] at hget
+      exact Option.some.inj hget
+    have holdCandidate : FreshTargetCandidate secretKey
+        (state.trace.intervals.get oldPosition) := by
+      rw [← hentry]
+      exact hcandidate
+    have holdView := hcover oldPosition holdCandidate
+    rw [hposition, targetCandidateIntervalView_appendTargetViewedState_old
+      secretKey state hvalid hconsistent input initialCache output finalCache view oldPosition]
+    exact holdView
+  · have hlastValue : position.val = state.trace.intervals.length := by
+      have hlt : position.val < state.trace.intervals.length + 1 := by
+        simpa [appendTargetViewedState, fullAdversaryTraceUpdate] using position.isLt
+      omega
+    have hposition : position = ⟨state.trace.intervals.length, by
+        simp [appendTargetViewedState, fullAdversaryTraceUpdate]⟩ := Fin.ext hlastValue
+    exfalso
+    apply hnon
+    simpa [hposition, appendTargetViewedState, fullAdversaryTraceUpdate] using hcandidate
+
+def OriginTargetMonitorState.CandidateTraceCoherent
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (secretKey : SecretKey) (state : OriginTargetMonitorState configuration) : Prop :=
+  state.origin.ReplayConsistent secretKey ∧
+    CandidateViewsCover secretKey state.origin.viewed state.candidateViews
+
+theorem OriginTargetMonitorState.candidateTraceCoherent_initial
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
+    (cache : QueryCache HashSpec) :
+    (OriginTargetMonitorState.initial configuration cache).CandidateTraceCoherent
+      secretKey := by
+  constructor
+  · exact OriginMonitorState.replayConsistent_initial configuration secretKey cache
+  · exact candidateViewsCover_nil secretKey cache
+
+theorem originTargetMonitoredAdversaryImpl_query_candidateTraceCoherent
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
+    (targetOrdinal : Nat) (input : (OracleWorld + SigningSpec).Domain)
+    (state : OriginTargetMonitorState configuration)
+    (result : (OracleWorld + SigningSpec).Range input ×
+      OriginTargetMonitorState configuration)
+    (hcoherent : state.CandidateTraceCoherent secretKey)
+    (hmem : result ∈ support
+      ((originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal input).run
+        state)) : result.2.CandidateTraceCoherent secretKey := by
+  classical
+  have horiginMem : (result.1, result.2.origin) ∈ support
+      ((originMonitoredAdversaryImpl configuration secretKey input).run state.origin) := by
+    rw [← originTargetMonitoredAdversaryImpl_query_projection
+      configuration secretKey targetOrdinal input state, support_map]
+    exact ⟨result, hmem, rfl⟩
+  have hreplay := originMonitoredAdversaryImpl_query_replayConsistent
+    configuration secretKey input state.origin (result.1, result.2.origin)
+      hcoherent.1 horiginMem
+  refine ⟨hreplay, ?_⟩
+  have hvalid := hcoherent.1.1
+  have hconsistent := hcoherent.1.2.1
+  have hcover := hcoherent.2
+  cases input with
+  | inl worldInput =>
+      rw [originTargetMonitoredAdversaryImpl] at hmem
+      simp only [StateT.run, mem_support_bind_iff] at hmem
+      obtain ⟨⟨output, origin⟩, horigin, hpure⟩ := hmem
+      rw [originMonitoredAdversaryImpl] at horigin
+      simp only [StateT.run, mem_support_bind_iff] at horigin
+      obtain ⟨⟨originOutput, finalCache⟩, hquery, horiginPure⟩ := horigin
+      cases worldInput with
+      | inl uniformInput =>
+          simp only [support_pure, Set.mem_singleton_iff] at horiginPure hpure
+          obtain ⟨rfl, rfl⟩ := Prod.mk.inj horiginPure
+          have hstateEq := congrArg Prod.snd hpure
+          rw [hstateEq]
+          change CandidateViewsCover secretKey
+            (appendTargetViewedState (.inl (.inl uniformInput))
+              state.origin.viewed.cache output finalCache none state.origin.viewed)
+            state.candidateViews
+          exact candidateViewsCover_append_noncandidate secretKey state.origin.viewed
+            hvalid hconsistent state.candidateViews hcover _ _ _ _ _
+              (freshTargetCandidate_uniform_false secretKey uniformInput output
+                state.origin.viewed.cache finalCache)
+      | inr hashInput =>
+          simp only [support_pure, Set.mem_singleton_iff] at horiginPure
+          obtain ⟨rfl, rfl⟩ := Prod.mk.inj horiginPure
+          have hquery' : (output, finalCache) ∈
+              support ((randomOracle hashInput).run state.origin.viewed.cache) := hquery
+          by_cases hfresh : state.origin.viewed.cache hashInput = none
+          · simp only [hfresh, if_true, support_pure, Set.mem_singleton_iff] at hpure
+            have hstateEq := congrArg Prod.snd hpure
+            rw [hstateEq]
+            change CandidateViewsCover secretKey
+              (appendTargetViewedState (.inl (.inr hashInput))
+                state.origin.viewed.cache output finalCache none state.origin.viewed)
+              (state.candidateViews ++ [hashOutputFewTimeView output])
+            apply candidateViewsCover_append_candidate secretKey state.origin.viewed
+              hvalid hconsistent state.candidateViews hcover
+            simpa using targetCandidateIntervalView_appendTargetViewedState_last
+              secretKey state.origin.viewed hvalid hconsistent (.inl (.inr hashInput))
+                state.origin.viewed.cache output finalCache none
+          · simp only [hfresh, if_false, support_pure, Set.mem_singleton_iff] at hpure
+            have hstateEq := congrArg Prod.snd hpure
+            rw [hstateEq]
+            change CandidateViewsCover secretKey
+              (appendTargetViewedState (.inl (.inr hashInput))
+                state.origin.viewed.cache output finalCache none state.origin.viewed)
+              state.candidateViews
+            apply candidateViewsCover_append_noncandidate secretKey state.origin.viewed
+              hvalid hconsistent state.candidateViews hcover
+            exact fun hcandidate => hfresh
+              ((freshTargetCandidate_direct_iff secretKey hashInput output
+                state.origin.viewed.cache finalCache hquery').mp hcandidate)
+  | inr request =>
+      rw [originTargetMonitoredAdversaryImpl] at hmem
+      simp only [StateT.run, mem_support_bind_iff] at hmem
+      obtain ⟨targetRun, htargetRun, hpure⟩ := hmem
+      have hcand := freshTargetCandidate_signer_iff secretKey request
+        state.origin.viewed.cache targetRun htargetRun
+      cases hselection : targetRun.1.2 with
+      | none =>
+          simp only [hselection, targetSignerResultView, Option.map,
+            support_pure, Set.mem_singleton_iff] at hpure
+          have hstateEq := congrArg Prod.snd hpure
+          rw [hstateEq]
+          change CandidateViewsCover secretKey
+            (appendTargetViewedState (.inr request) state.origin.viewed.cache
+              targetRun.1.1 targetRun.2 none state.origin.viewed)
+            state.candidateViews
+          apply candidateViewsCover_append_noncandidate secretKey state.origin.viewed
+            hvalid hconsistent state.candidateViews hcover
+          intro hcandidate
+          obtain ⟨selectedInput, view, hsome, _⟩ := hcand.mp hcandidate
+          rw [hselection] at hsome
+          simp at hsome
+      | some selection =>
+          rcases selection with ⟨selectedInput, view⟩
+          by_cases hfresh : state.origin.viewed.cache selectedInput = none
+          · simp only [hselection, targetSignerResultView, Option.map, hfresh,
+              if_true, support_pure,
+              Set.mem_singleton_iff] at hpure
+            have hstateEq := congrArg Prod.snd hpure
+            rw [hstateEq]
+            change CandidateViewsCover secretKey
+              (appendTargetViewedState (.inr request) state.origin.viewed.cache
+                targetRun.1.1 targetRun.2 (some view) state.origin.viewed)
+              (state.candidateViews ++ [view])
+            apply candidateViewsCover_append_candidate secretKey state.origin.viewed
+              hvalid hconsistent state.candidateViews hcover
+            simpa using targetCandidateIntervalView_appendTargetViewedState_last
+              secretKey state.origin.viewed hvalid hconsistent (.inr request)
+                state.origin.viewed.cache targetRun.1.1 targetRun.2 (some view)
+          · simp only [hselection, targetSignerResultView, Option.map, hfresh,
+              if_false, support_pure,
+              Set.mem_singleton_iff] at hpure
+            have hstateEq := congrArg Prod.snd hpure
+            rw [hstateEq]
+            change CandidateViewsCover secretKey
+              (appendTargetViewedState (.inr request) state.origin.viewed.cache
+                targetRun.1.1 targetRun.2 (some view) state.origin.viewed)
+              state.candidateViews
+            apply candidateViewsCover_append_noncandidate secretKey state.origin.viewed
+              hvalid hconsistent state.candidateViews hcover
+            intro hcandidate
+            obtain ⟨input, foundView, hsome, hmiss⟩ := hcand.mp hcandidate
+            have hfields := Prod.mk.inj (Option.some.inj (hselection.symm.trans hsome))
+            apply hfresh
+            rw [hfields.1]
+            exact hmiss
+
+theorem originTargetMonitoredAdversaryImpl_candidateTraceCoherent
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
+    (targetOrdinal : Nat) (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialState : OriginTargetMonitorState configuration)
+    (result : α × OriginTargetMonitorState configuration)
+    (hcoherent : initialState.CandidateTraceCoherent secretKey)
+    (hmem : result ∈ support
+      ((simulateQ
+        (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal)
+        computation).run initialState)) : result.2.CandidateTraceCoherent secretKey := by
+  exact OracleComp.simulateQ_run_preservesInv
+    (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal)
+    (OriginTargetMonitorState.CandidateTraceCoherent secretKey)
+    (by
+      intro input state hstate queryResult hquery
+      exact originTargetMonitoredAdversaryImpl_query_candidateTraceCoherent
+        configuration secretKey targetOrdinal input state queryResult hstate hquery)
+    computation initialState hcoherent result hmem
+
 end Concrete
 
 end SphincsSecurity
