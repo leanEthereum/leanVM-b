@@ -98,6 +98,8 @@ import SphincsSecurity.Proof.TerminalDecomposition
 import SphincsSecurity.Proof.TerminalView
 import SphincsSecurity.Proof.MandatoryQueries
 import SphincsSecurity.Proof.TerminalArith
+import SphincsSecurity.Proof.TerminalBudget
+import SphincsSecurity.Proof.TerminalSampling
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
