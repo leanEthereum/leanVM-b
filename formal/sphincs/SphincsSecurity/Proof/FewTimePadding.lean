@@ -360,6 +360,136 @@ theorem probEvent_someFewTimePatternHit_uniformPadded_le :
       exact evalDist_uniformPaddedSample signatureLimit)]
   simpa only [one_div] using probEvent_someFewTimePatternHit_le le_rfl
 
+def SomeFewTimePatternHitCandidates (signatures candidates : Nat)
+    (sample : (Fin signatures → FewTimeView) × (Fin candidates → FewTimeView)) : Prop :=
+  ∃ candidate, SomeFewTimePatternHit signatures (sample.1, sample.2 candidate)
+
+noncomputable instance (signatures candidates : Nat) :
+    DecidablePred (SomeFewTimePatternHitCandidates signatures candidates) :=
+  fun sample => Classical.propDecidable
+    (SomeFewTimePatternHitCandidates signatures candidates sample)
+
+noncomputable def uniformCandidateSample (signatures candidates : Nat) :
+    ProbComp ((Fin signatures → FewTimeView) × (Fin candidates → FewTimeView)) := do
+  let views ← $ᵗ (Fin signatures → FewTimeView)
+  let targets ← $ᵗ (Fin candidates → FewTimeView)
+  pure (views, targets)
+
+theorem evalDist_uniformCandidateFunctionEval {candidates : Nat}
+    (candidate : Fin candidates) :
+    𝒟[(fun targets : Fin candidates → FewTimeView => targets candidate) <$>
+        ($ᵗ (Fin candidates → FewTimeView) :
+          ProbComp (Fin candidates → FewTimeView))] =
+      𝒟[($ᵗ FewTimeView : ProbComp FewTimeView)] := by
+  let embed : Unit → Fin candidates := fun _ => candidate
+  have hembed : Function.Injective embed := by
+    intro left right _
+    cases left
+    cases right
+    rfl
+  let evaluate : (Unit → FewTimeView) → FewTimeView := fun table => table ()
+  have hevaluate : Function.Bijective evaluate := by
+    constructor
+    · intro left right heq
+      funext input
+      cases input
+      exact heq
+    · intro value
+      exact ⟨fun _ => value, rfl⟩
+  have hrestrict :
+      𝒟[(fun table : Fin candidates → FewTimeView => table ∘ embed) <$>
+          ($ᵗ (Fin candidates → FewTimeView) :
+            ProbComp (Fin candidates → FewTimeView))] =
+        𝒟[($ᵗ (Unit → FewTimeView) : ProbComp (Unit → FewTimeView))] := by
+    simpa only [bind_pure_comp] using
+      evalDist_uniformSample_map_comp_injective (R := FewTimeView) hembed
+  have hmarginal :
+      𝒟[evaluate <$> ((fun table : Fin candidates → FewTimeView => table ∘ embed) <$>
+          ($ᵗ (Fin candidates → FewTimeView) :
+            ProbComp (Fin candidates → FewTimeView)))] =
+        𝒟[($ᵗ FewTimeView : ProbComp FewTimeView)] := by
+    rw [evalDist_map, hrestrict, ← evalDist_map]
+    exact evalDist_map_bijective_uniform_cross
+      (α := Unit → FewTimeView) (β := FewTimeView) evaluate hevaluate
+  simpa [map_eq_bind_pure_comp, bind_assoc, evaluate, embed] using hmarginal
+
+theorem evalDist_uniformCandidateSample_target (signatures candidates : Nat)
+    (candidate : Fin candidates) :
+    𝒟[(fun sample => (sample.1, sample.2 candidate)) <$>
+        uniformCandidateSample signatures candidates] =
+      𝒟[($ᵗ ((Fin signatures → FewTimeView) × FewTimeView) :
+        ProbComp ((Fin signatures → FewTimeView) × FewTimeView))] := by
+  letI : Nonempty (Fin candidates) := ⟨candidate⟩
+  calc
+    _ = 𝒟[(do
+        let views ← $ᵗ (Fin signatures → FewTimeView)
+        let target ← $ᵗ FewTimeView
+        pure (views, target))] := by
+      rw [uniformCandidateSample]
+      simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind, Function.comp_apply]
+      apply evalDist_bind_congr
+      intro views _
+      change 𝒟[(fun targets : Fin candidates → FewTimeView =>
+          (views, targets candidate)) <$>
+            ($ᵗ (Fin candidates → FewTimeView) :
+              ProbComp (Fin candidates → FewTimeView))] =
+        𝒟[(fun target : FewTimeView => (views, target)) <$>
+          ($ᵗ FewTimeView : ProbComp FewTimeView)]
+      calc
+        _ = 𝒟[(fun target : FewTimeView => (views, target)) <$>
+            ((fun targets : Fin candidates → FewTimeView => targets candidate) <$>
+              ($ᵗ (Fin candidates → FewTimeView) :
+                ProbComp (Fin candidates → FewTimeView)))] := by
+          simp [Functor.map_map]
+        _ = _ := by
+          rw [evalDist_map]
+          rw [evalDist_uniformCandidateFunctionEval candidate, ← evalDist_map]
+    _ = _ := evalDist_independent_uniform_pair
+
+theorem probEvent_someFewTimePatternHitCandidates_uniform_le
+    (signatures candidates : Nat) (hsignatures : signatures ≤ signatureLimit) :
+    Pr[SomeFewTimePatternHitCandidates signatures candidates |
+        uniformCandidateSample signatures candidates] ≤
+      candidates * ((2 ^ 122 : Nat) : ℝ≥0∞)⁻¹ := by
+  classical
+  let sampler := uniformCandidateSample signatures candidates
+  calc
+    Pr[SomeFewTimePatternHitCandidates signatures candidates | sampler] =
+        Pr[fun sample => ∃ candidate ∈ (Finset.univ : Finset (Fin candidates)),
+          SomeFewTimePatternHit signatures (sample.1, sample.2 candidate) | sampler] := by
+      congr 1
+      funext sample
+      simp [SomeFewTimePatternHitCandidates]
+    _ ≤ ∑ candidate ∈ (Finset.univ : Finset (Fin candidates)),
+          Pr[fun sample => SomeFewTimePatternHit signatures
+            (sample.1, sample.2 candidate) | sampler] :=
+      probEvent_exists_finset_le_sum Finset.univ sampler
+        (fun candidate sample => SomeFewTimePatternHit signatures
+          (sample.1, sample.2 candidate))
+    _ = ∑ _candidate ∈ (Finset.univ : Finset (Fin candidates)),
+          Pr[SomeFewTimePatternHit signatures |
+            ($ᵗ ((Fin signatures → FewTimeView) × FewTimeView) :
+              ProbComp ((Fin signatures → FewTimeView) × FewTimeView))] := by
+      apply Finset.sum_congr rfl
+      intro candidate _
+      calc
+        Pr[fun sample => SomeFewTimePatternHit signatures
+            (sample.1, sample.2 candidate) | sampler] =
+            Pr[SomeFewTimePatternHit signatures |
+              (fun sample => (sample.1, sample.2 candidate)) <$> sampler] := by
+          rw [probEvent_map]
+          rfl
+        _ = _ := probEvent_congr' (fun _ _ => Iff.rfl) (by
+          simpa [sampler] using
+            evalDist_uniformCandidateSample_target signatures candidates candidate)
+    _ ≤ ∑ _candidate ∈ (Finset.univ : Finset (Fin candidates)),
+          ((2 ^ 122 : Nat) : ℝ≥0∞)⁻¹ := by
+      apply Finset.sum_le_sum
+      intro candidate _
+      exact probEvent_someFewTimePatternHit_le hsignatures
+    _ = candidates * ((2 ^ 122 : Nat) : ℝ≥0∞)⁻¹ := by
+      rw [Finset.sum_const, Finset.card_univ, Fintype.card_fin, nsmul_eq_mul]
+
 theorem completeAndPadViews_getElem?_eq_of_some
     (limit : Nat) (options : List (Option FewTimeView))
     (values : List FewTimeView)

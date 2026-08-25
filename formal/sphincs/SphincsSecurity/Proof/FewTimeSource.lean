@@ -1,5 +1,6 @@
 import SphincsSecurity.Proof.FullTrace
 import SphincsSecurity.Proof.FewTimeTrace
+import SphincsSecurity.Proof.FewTimeLoop
 import SphincsSecurity.Proof.SignerDigestSource
 
 /-!
@@ -12,6 +13,65 @@ locates the earlier interval that first inserted it. Key generation is not a pos
 namespace SphincsSecurity.Concrete
 
 open OracleComp OracleSpec
+
+theorem traverseOption_some {alpha : Type} {count : Nat}
+    (values : Fin count → alpha) :
+    traverseOption (fun position => some (values position)) = some values := by
+  induction count with
+  | zero =>
+      rw [traverseOption]
+      congr
+      funext position
+      exact Fin.elim0 position
+  | succ count ih =>
+      rw [traverseOption, ih]
+      change some (Fin.cases (values 0) (fun position => values position.succ)) = some values
+      rw [Option.some.injEq]
+      funext position
+      cases position using Fin.cases <;> rfl
+
+theorem SuccessfulSignRun.eval_signAfterDigest {f : QueryImpl HashSpec Id}
+    {cache : QueryCache HashSpec} {secretKey : SecretKey} {message : Message}
+    {signature : Signature} (hrun : SuccessfulSignRun f cache secretKey message signature) :
+    ∃ (index : Index) (leaves : DigestTree → FtsLeaf),
+      SuccessfulDigestRun f cache secretKey message signature.randomness index leaves
+        ∧ evalWithAnswerFn f
+          (signAfterDigest secretKey signature.randomness index leaves) = some signature := by
+  obtain ⟨index, leaves, parts, hdigest, hftsSecret, hftsPath, hcounter, hchainValue,
+      hauthPath, _, hlayers, _⟩ := hrun
+  refine ⟨index, leaves, hdigest, ?_⟩
+  have hlayers' :
+      (fun lay => evalWithAnswerFn f (signLayer secretKey index lay)) =
+        (fun lay => some (parts lay)) := by
+    funext lay
+    exact hlayers lay
+  simp only [signAfterDigest, evalWithAnswerFn_bind, evalWithAnswerFn_sequenceFin,
+    hlayers', traverseOption_some, evalWithAnswerFn_pure, Option.some.injEq]
+  cases signature
+  simp_all
+
+theorem SuccessfulSignRun.cached_digest_source {f : QueryImpl HashSpec Id}
+    {cache : QueryCache HashSpec} {secretKey : SecretKey} {message : Message}
+    {signature : Signature} (hrun : SuccessfulSignRun f cache secretKey message signature)
+    (hf : cache.AgreesWithFn f) {output : HashOutput}
+    (hcached : cache (tweakableHashInput secretKey.parameter .message
+      (messageDigestPayload secretKey.root message signature.randomness)) = some output) :
+    ∃ (index : Index) (leaves : DigestTree → FtsLeaf),
+      signAttemptResultOfOutput output = some (index, leaves)
+        ∧ evalWithAnswerFn f
+          (signAfterDigest secretKey signature.randomness index leaves) = some signature := by
+  obtain ⟨index, leaves, hdigest, hafter⟩ := hrun.eval_signAfterDigest
+  obtain ⟨_, digest, heval, hadmissible, hindex, hleaves, _⟩ := hdigest.extract
+  have hfinput : f (tweakableHashInput secretKey.parameter .message
+      (messageDigestPayload secretKey.root message signature.randomness)) = output :=
+    hf hcached
+  have hdigest : digest = truncateMessageDigest output := by
+    rw [← heval]
+    simp only [messageDigest, oracleHash, evalWithAnswerFn_bind, evalWithAnswerFn_query,
+      hfinput, evalWithAnswerFn_pure]
+  refine ⟨index, leaves, ?_, hafter⟩
+  simp only [signAttemptResultOfOutput, ← hdigest, if_pos hadmissible]
+  rw [hindex, hleaves]
 
 theorem FewTimeCover.precached_entry_has_earlier_source
     (adversary : Adversary) (parameter : PublicParameter)
@@ -142,6 +202,136 @@ theorem FewTimeCover.precached_entry_has_earlier_exact_source
       hearlier source hlt sourceEntry hsourceEntry
     exact ⟨earlier, by simpa only [selectedSigning] using hearlierLt,
       hsourceEntry.trans (congrArg some hearlierEntry.symm)⟩
+
+theorem FewTimeCover.precached_entry_has_earlier_direct_source
+    (adversary : Adversary) (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (result : (Digest × Forgery × Bool) × (QueryCache HashSpec × FullAdversaryTrace))
+    (hresult : result ∈ support
+      (gameAfterSecretsWithFullTrace adversary parameter otsSecret ftsSecret))
+    (f : QueryImpl HashSpec Id) (hf : result.2.1.AgreesWithFn f)
+    (index : Index) (targetLeaves : DigestTree → FtsLeaf)
+    (cover : FewTimeCover f result.2.1
+      ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+      result.2.2.signing.toSigningLog index targetLeaves)
+    (entry : cover.entries)
+    (hprecached : cover.EntryDigestPrecached result.2.2.signing rfl entry) :
+    ∃ source : Fin result.2.2.intervals.length,
+      (result.2.2.intervals.get source).input =
+        .inl (.inr (cover.entryDigestInput entry)) := by
+  obtain ⟨source, _, _, _, hsourceMiss, hsourceHit, hkind⟩ :=
+    cover.precached_entry_has_earlier_exact_source adversary parameter otsSecret ftsSecret
+      result hresult f index targetLeaves entry hprecached
+  rcases hkind with hdirect | ⟨earlier, hearlier, hsourceEntry⟩
+  · exact ⟨source, hdirect⟩
+  · exfalso
+    let secretKey : SecretKey := ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+    let earlierEntry := result.2.2.signing.get earlier
+    let selected := cover.select (cover.representativeTree entry)
+    let targetPayload := messageDigestPayload result.1.1 selected.entry.1
+      selected.signature.randomness
+    have hinvariants := gameAfterSecretsWithFullTrace_support_invariants adversary parameter
+      otsSecret ftsSecret result hresult
+    have hvalid : earlierEntry.ValidRun secretKey :=
+      hinvariants.1 earlierEntry (List.get_mem _ earlier)
+    have hcaches := hinvariants.2.1
+    have hearlierLe : earlierEntry.finalCache ≤ result.2.1 :=
+      (hcaches earlierEntry (List.get_mem _ earlier)).2
+    have hbefore : earlierEntry.initialCache
+        (tweakableHashInput parameter .message targetPayload) = none := by
+      have hcacheEq := AdversaryCacheEntry.initialCache_eq_of_signingEntry?_eq_some
+        (interval := result.2.2.intervals.get source) hsourceEntry
+      rw [← hcacheEq]
+      simpa only [FewTimeCover.entryDigestInput, selected, targetPayload] using hsourceMiss
+    have hafter : earlierEntry.finalCache
+        (tweakableHashInput parameter .message targetPayload) ≠ none := by
+      have hcacheEq := AdversaryCacheEntry.finalCache_eq_of_signingEntry?_eq_some
+        (interval := result.2.2.intervals.get source) hsourceEntry
+      rw [← hcacheEq]
+      simpa only [FewTimeCover.entryDigestInput, selected, targetPayload] using hsourceHit
+    obtain ⟨output, houtputEarlier⟩ := Option.ne_none_iff_exists'.mp hafter
+    have houtputFinal : result.2.1
+        (tweakableHashInput parameter .message targetPayload) = some output :=
+      hearlierLe houtputEarlier
+    have hselectedRun := cover.cacheEntry_successfulSignRun result.2.2.signing rfl
+      hinvariants.1 hcaches hf entry
+    obtain ⟨actualIndex, actualLeaves, hattemptOutput, htailEval⟩ :=
+      hselectedRun.cached_digest_source hf (by
+        simpa only [FewTimeCover.entryDigestInput, selected, targetPayload] using houtputFinal)
+    change (earlierEntry.signature, earlierEntry.finalCache) ∈ support
+      ((simulateQ romImpl (sign secretKey earlierEntry.request)).run
+        earlierEntry.initialCache) at hvalid
+    rw [sign_eq_digestLoop_afterDigest, simulateQ_bind, StateT.run_bind,
+      mem_support_bind_iff] at hvalid
+    obtain ⟨⟨loopResult, loopCache⟩, hloop, hrest⟩ := hvalid
+    have hloopHit : loopCache
+        (tweakableHashInput parameter .message targetPayload) ≠ none := by
+      intro hloopNone
+      cases loopResult with
+      | none =>
+          have hpure : (earlierEntry.signature, earlierEntry.finalCache) =
+              (none, loopCache) := by
+            simpa using hrest
+          have hcache : earlierEntry.finalCache = loopCache := congrArg Prod.snd hpure
+          rw [hcache, hloopNone] at hafter
+          exact hafter rfl
+      | some data =>
+          rcases data with ⟨randomness, sourceIndex, sourceLeaves⟩
+          have hrest' : (earlierEntry.signature, earlierEntry.finalCache) ∈ support
+              ((simulateQ (randomOracle : QueryImpl HashSpec _)
+                (signAfterDigest secretKey randomness sourceIndex sourceLeaves)).run loopCache) := by
+            simpa only [simulateQ_romImpl_liftM] using hrest
+          have hnone := signAfterDigest_cache_message_none secretKey randomness sourceIndex
+            sourceLeaves loopCache earlierEntry.finalCache earlierEntry.signature hrest'
+            targetPayload hloopNone
+          exact hafter hnone
+    obtain ⟨loopOutput, hloopOutput⟩ := Option.ne_none_iff_exists'.mp hloopHit
+    have hloopLe : loopCache ≤ earlierEntry.finalCache := by
+      cases loopResult with
+      | none =>
+          have hpure : (earlierEntry.signature, earlierEntry.finalCache) =
+              (none, loopCache) := by
+            simpa using hrest
+          have hcache : earlierEntry.finalCache = loopCache := congrArg Prod.snd hpure
+          rw [hcache]
+      | some data =>
+          rcases data with ⟨randomness, sourceIndex, sourceLeaves⟩
+          exact simulateQ_romImpl_cache_le
+            (liftM (signAfterDigest secretKey randomness sourceIndex sourceLeaves) :
+              OracleComp OracleWorld (Option Signature)) loopCache
+            (earlierEntry.signature, earlierEntry.finalCache) hrest
+    have hloopOutputEq : loopOutput = output := by
+      have := hloopLe hloopOutput
+      rw [houtputEarlier] at this
+      exact Option.some.inj this.symm
+    have hattemptOutput' : signAttemptResultOfOutput loopOutput =
+        some (actualIndex, actualLeaves) := by
+      rw [hloopOutputEq]
+      exact hattemptOutput
+    obtain ⟨_, sourceRandomness, _, hpayload, hloopResult⟩ :=
+      signDigestLoop_successful_source_is_selected digestAttemptLimit secretKey
+        earlierEntry.request earlierEntry.initialCache loopCache loopResult hloop targetPayload
+        loopOutput actualIndex actualLeaves hbefore hloopOutput hattemptOutput'
+    have hpayloadFields := messageDigestPayload_injective result.1.1 hpayload.symm
+    have hmessage : earlierEntry.request = selected.entry.1 := hpayloadFields.1
+    have hrandomness : sourceRandomness = selected.signature.randomness := hpayloadFields.2
+    have hrest' : (earlierEntry.signature, earlierEntry.finalCache) ∈ support
+        ((simulateQ (randomOracle : QueryImpl HashSpec _)
+          (signAfterDigest secretKey sourceRandomness actualIndex actualLeaves)).run loopCache) := by
+      rw [hloopResult] at hrest
+      simpa only [simulateQ_romImpl_liftM] using hrest
+    have hearlierEval := (replay_of_mem_support_of_le
+      (signAfterDigest secretKey sourceRandomness actualIndex actualLeaves) loopCache
+      earlierEntry.signature earlierEntry.finalCache result.2.1 hrest' hearlierLe f hf).1
+    have hresponse : earlierEntry.signature = some selected.signature := by
+      rw [hrandomness] at hearlierEval
+      exact hearlierEval.symm.trans htailEval
+    have hne := cover.earlier_successful_digest_input_ne result.2.2.signing rfl
+      hinvariants.1 hcaches hf entry earlier hearlier selected.signature hresponse
+    apply hne
+    rw [hmessage]
+    rfl
 
 theorem FewTimeCover.precached_entry_has_earlier_sample_source
     (adversary : Adversary) (parameter : PublicParameter)

@@ -265,4 +265,114 @@ theorem signDigestLoop_fresh_selected_attempt
           · rw [← hcache, ← hrandomness]
             exact hattemptCache
 
+set_option linter.constructorNameAsVariable false in
+theorem signDigestLoop_successful_source_is_selected
+    (attempts : Nat) (secretKey : SecretKey) (message : Message)
+    (beforeCache afterCache : QueryCache HashSpec)
+    (result : Option (Randomness × Index × (DigestTree → FtsLeaf)))
+    (hmem : (result, afterCache) ∈ support
+      ((simulateQ romImpl
+        (signDigestLoop attempts secretKey message)).run beforeCache))
+    (targetPayload : HashInput) (output : HashOutput) (index : Index)
+    (leaves : DigestTree → FtsLeaf)
+    (hbefore : beforeCache
+      (tweakableHashInput secretKey.parameter .message targetPayload) = none)
+    (hafter : afterCache
+      (tweakableHashInput secretKey.parameter .message targetPayload) = some output)
+    (houtput : signAttemptResultOfOutput output = some (index, leaves)) :
+    ∃ (attemptIndex : Nat) (randomness : Randomness),
+      attemptIndex < attempts
+        ∧ targetPayload = messageDigestPayload secretKey.root message randomness
+        ∧ result = some (randomness, index, leaves) := by
+  induction attempts generalizing beforeCache afterCache result with
+  | zero =>
+      simp only [signDigestLoop, simulateQ_pure, StateT.run_pure, support_pure,
+        Set.mem_singleton_iff, Prod.mk.injEq] at hmem
+      obtain ⟨rfl, rfl⟩ := hmem
+      rw [hbefore] at hafter
+      simp at hafter
+  | succ attempts ih =>
+      rw [signDigestLoop_run_succ_eq, mem_support_bind_iff] at hmem
+      obtain ⟨randomness, _hrandomness, hrest⟩ := hmem
+      rw [mem_support_bind_iff] at hrest
+      obtain ⟨⟨attempt, attemptCache⟩, hattempt, hfinish⟩ := hrest
+      have hattempt' : (attempt, attemptCache) ∈ support
+          ((simulateQ (randomOracle : QueryImpl HashSpec _)
+            (signAttempt secretKey message randomness)).run beforeCache) := by
+        simpa only [simulateQ_romImpl_liftM] using hattempt
+      by_cases heqPayload : targetPayload =
+          messageDigestPayload secretKey.root message randomness
+      · let targetInput := tweakableHashInput secretKey.parameter .message targetPayload
+        have hqueried : attemptCache targetInput ≠ none := by
+          obtain ⟨_, answerFn, _, _, hqueries⟩ :=
+            exists_answerFn_replay_of_mem_support
+              (signAttempt secretKey message randomness) beforeCache attempt attemptCache
+              hattempt'
+          apply hqueries targetInput
+          rw [queriedInputs_signAttempt]
+          simp [targetInput, heqPayload]
+        obtain ⟨attemptOutput, hattemptOutput⟩ := Option.ne_none_iff_exists'.mp hqueried
+        have hattemptLe : attemptCache ≤ afterCache := by
+          cases hattemptResult : attempt with
+          | none =>
+              exact simulateQ_romImpl_cache_le
+                (signDigestLoop attempts secretKey message) attemptCache
+                (result, afterCache) (by
+                  simpa [signDigestLoopContinuation, hattemptResult] using hfinish)
+          | some selected =>
+              have hpure : (result, afterCache) =
+                  (some (randomness, selected.1, selected.2), attemptCache) := by
+                simpa [signDigestLoopContinuation, hattemptResult] using hfinish
+              have hcache : afterCache = attemptCache := congrArg Prod.snd hpure
+              rw [hcache]
+        have hattemptOutputEq : attemptOutput = output := by
+          have := hattemptLe hattemptOutput
+          rw [hafter] at this
+          exact Option.some.inj this.symm
+        have hattemptResult : attempt = some (index, leaves) := by
+          have hattemptOutput' : attemptCache
+              (tweakableHashInput secretKey.parameter .message
+                (messageDigestPayload secretKey.root message randomness)) =
+              some attemptOutput := by
+            rw [← heqPayload]
+            exact hattemptOutput
+          rw [signAttempt_result_of_cached secretKey message randomness beforeCache attemptCache
+            attempt attemptOutput hattemptOutput' hattempt', hattemptOutputEq, houtput]
+        have hresult : result = some (randomness, index, leaves) := by
+          have hpure : (result, afterCache) =
+              (some (randomness, index, leaves), attemptCache) := by
+            simpa [signDigestLoopContinuation, hattemptResult] using hfinish
+          exact congrArg Prod.fst hpure
+        refine ⟨0, randomness, ?_⟩
+        constructor
+        · omega
+        constructor
+        · exact heqPayload
+        · exact hresult
+      · have hattemptNone : attemptCache
+            (tweakableHashInput secretKey.parameter .message targetPayload) = none := by
+          apply signAttempt_cache_other_none secretKey message randomness beforeCache attemptCache
+            attempt hattempt' _ hbefore
+          intro hinput
+          have hpayload := (tweakableHashInput_injective secretKey.parameter (by trivial)
+            (by trivial) hinput).2
+          exact heqPayload hpayload
+        cases hattemptResult : attempt with
+        | none =>
+            have hfuture : (result, afterCache) ∈ support
+                ((simulateQ romImpl
+                  (signDigestLoop attempts secretKey message)).run attemptCache) := by
+              simpa [signDigestLoopContinuation, hattemptResult] using hfinish
+            obtain ⟨attemptIndex, sourceRandomness, hattemptIndex, hpayload, hresult⟩ :=
+              ih attemptCache afterCache result hfuture hattemptNone hafter
+            exact ⟨attemptIndex + 1, sourceRandomness, by omega, hpayload, hresult⟩
+        | some selected =>
+            have hcache : afterCache = attemptCache := by
+              have hpure : (result, afterCache) =
+                  (some (randomness, selected.1, selected.2), attemptCache) := by
+                simpa [signDigestLoopContinuation, hattemptResult] using hfinish
+              exact congrArg Prod.snd hpure
+            rw [hcache, hattemptNone] at hafter
+            simp at hafter
+
 end SphincsSecurity.Concrete
