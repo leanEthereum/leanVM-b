@@ -59,8 +59,8 @@ pub fn encode(pp: &PublicParam, pos: Pos, m: &Digest, c: u32) -> Option<[u8; V]>
 fn codeword(digest: &Digest) -> Option<[u8; V]> {
     let mut x = [0u8; V];
     let mut sum = 0;
-    for (q, half) in digest.chunks_exact(N / 2).enumerate() {
-        let d = u64::from_le_bytes(half.try_into().unwrap());
+    for (q, half) in digest.as_chunks::<{ N / 2 }>().0.iter().enumerate() {
+        let d = u64::from_le_bytes(*half);
         if d >> (W * V / 2) != 0 {
             return None;
         }
