@@ -45,7 +45,23 @@ cargo run --release -- fibonacci --n 2000000 --log-inv-rate 1 --repeat 3
 ### Batch proving SHA-256 compression
 
 ```bash
-BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=17 cargo test --release -p flock --test hash_batch -- --ignored --nocapture
+BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=17 cargo test --release --package flock --test batch_proving_hashes -- hash_batch_prove_verify --exact --nocapture --include-ignored
+```
+
+```
+Flock SHA-256 batch proving, 131,072 compressions (2^17 slots)
+  setup (preprocessing, excluded) :      0.0 ms
+  witness-gen                     :     51.2 ms ± 16.3%   9.2%
+  commit                          :     85.1 ms ± 2.1%   15.3%
+  zerocheck                       :    221.8 ms ± 2.2%   39.8%
+  lincheck                        :     19.4 ms ± 15.2%   3.5%
+  pcs opening                     :    180.0 ms ± 14.3%  32.3%
+  other                           :      0.0 ms           0.0%
+  ------------------------------------------
+  prove TOTAL (witness excluded)  :    506.3 ms ± 5.2%   90.8%
+  verify                          :      1.6 ms
+  throughput                      :        258,881 compressions/s ± 5.2%
+  (~1773.2 XMSS/s equivalent at 146 compressions/signature)
 ```
 
 ## Security
