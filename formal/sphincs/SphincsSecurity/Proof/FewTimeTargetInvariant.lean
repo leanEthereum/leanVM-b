@@ -660,6 +660,451 @@ theorem originTargetMonitoredAdversaryImpl_expected_potential_le
               (originTargetMonitoredAdversaryImpl_signer_result_potential
                 configuration secretKey targetOrdinal state request targetRun event)
 
+def OriginTargetMonitorState.JointCoherent
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (targetOrdinal : Nat) (state : OriginTargetMonitorState configuration) : Prop :=
+  state.origin.ScheduleCoherent ∧ state.TargetScheduleCoherent targetOrdinal
+
+theorem OriginTargetMonitorState.jointCoherent_initial
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (cache : QueryCache HashSpec)
+    (targetOrdinal : Nat) :
+    (OriginTargetMonitorState.initial configuration cache).JointCoherent targetOrdinal := by
+  exact ⟨OriginMonitorState.scheduleCoherent_initial configuration cache,
+    OriginTargetMonitorState.targetScheduleCoherent_initial configuration cache targetOrdinal⟩
+
+theorem originTargetMonitoredAdversaryImpl_query_jointCoherent
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
+    (targetOrdinal : Nat) (input : (OracleWorld + SigningSpec).Domain)
+    (state : OriginTargetMonitorState configuration)
+    (result : (OracleWorld + SigningSpec).Range input ×
+      OriginTargetMonitorState configuration)
+    (hcoherent : state.JointCoherent targetOrdinal)
+    (hmem : result ∈ support
+      ((originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal input).run
+        state)) : result.2.JointCoherent targetOrdinal := by
+  classical
+  rcases hcoherent with ⟨horigin, htarget⟩
+  cases input with
+  | inl worldInput =>
+      rw [originTargetMonitoredAdversaryImpl] at hmem
+      simp only [StateT.run, mem_support_bind_iff] at hmem
+      obtain ⟨⟨output, origin⟩, horiginMem, hpure⟩ := hmem
+      cases worldInput with
+      | inl uniformInput =>
+          simp only [support_pure, Set.mem_singleton_iff] at hpure
+          subst result
+          constructor
+          · exact originMonitoredAdversaryImpl_query_scheduleCoherent configuration secretKey
+              (.inl (.inl uniformInput)) state.origin (output, origin) horigin horiginMem
+          · simpa [OriginTargetMonitorState.JointCoherent,
+              OriginTargetMonitorState.TargetScheduleCoherent,
+              OriginTargetMonitorState.advanceOrigin] using htarget
+      | inr hashInput =>
+          by_cases hfresh : state.origin.viewed.cache hashInput = none
+          · simp only [hfresh, if_true, support_pure, Set.mem_singleton_iff] at hpure
+            subst result
+            constructor
+            · exact originMonitoredAdversaryImpl_query_scheduleCoherent configuration secretKey
+                (.inl (.inr hashInput)) state.origin (output, origin) horigin horiginMem
+            · exact OriginTargetMonitorState.targetScheduleCoherent_recordCandidate
+                targetOrdinal (state.advanceOrigin origin) _ _
+                  (state.targetScheduleCoherent_advanceOrigin targetOrdinal origin htarget)
+          · simp only [hfresh, if_false, support_pure, Set.mem_singleton_iff] at hpure
+            subst result
+            constructor
+            · exact originMonitoredAdversaryImpl_query_scheduleCoherent configuration secretKey
+                (.inl (.inr hashInput)) state.origin (output, origin) horigin horiginMem
+            · exact state.targetScheduleCoherent_advanceOrigin targetOrdinal origin htarget
+  | inr request =>
+      rw [originTargetMonitoredAdversaryImpl] at hmem
+      simp only [StateT.run, mem_support_bind_iff] at hmem
+      obtain ⟨targetRun, htargetRun, hpure⟩ := hmem
+      cases hselection : targetRun.1.2 with
+      | none =>
+          simp only [hselection, support_pure, Set.mem_singleton_iff] at hpure
+          subst result
+          constructor
+          · simpa [OriginMonitorState.ScheduleCoherent, OriginMonitorState.afterSigner,
+              OriginTargetMonitorState.advanceOrigin] using
+              state.origin.scheduleCoherent_afterSigner secretKey request
+                (targetSignerResultView targetRun.1, targetRun.2) horigin
+          · exact state.targetScheduleCoherent_advanceOrigin targetOrdinal _ htarget
+      | some selection =>
+          rcases selection with ⟨selectedInput, view⟩
+          by_cases hfresh : state.origin.viewed.cache selectedInput = none
+          · simp only [hselection, hfresh, if_true, support_pure,
+              Set.mem_singleton_iff] at hpure
+            subst result
+            constructor
+            · simpa [OriginMonitorState.ScheduleCoherent, OriginMonitorState.afterSigner,
+                OriginTargetMonitorState.recordCandidate,
+                OriginTargetMonitorState.advanceOrigin] using
+                state.origin.scheduleCoherent_afterSigner secretKey request
+                  (targetSignerResultView targetRun.1, targetRun.2) horigin
+            · exact OriginTargetMonitorState.targetScheduleCoherent_recordCandidate
+                targetOrdinal _ _ _
+                  (state.targetScheduleCoherent_advanceOrigin targetOrdinal _ htarget)
+          · simp only [hselection, hfresh, if_false, support_pure,
+              Set.mem_singleton_iff] at hpure
+            subst result
+            constructor
+            · simpa [OriginMonitorState.ScheduleCoherent, OriginMonitorState.afterSigner,
+                OriginTargetMonitorState.advanceOrigin] using
+                state.origin.scheduleCoherent_afterSigner secretKey request
+                  (targetSignerResultView targetRun.1, targetRun.2) horigin
+            · exact state.targetScheduleCoherent_advanceOrigin targetOrdinal _ htarget
+
+theorem originTargetMonitoredAdversaryImpl_query_cache_le
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
+    (targetOrdinal : Nat) (input : (OracleWorld + SigningSpec).Domain)
+    (state : OriginTargetMonitorState configuration)
+    (result : (OracleWorld + SigningSpec).Range input ×
+      OriginTargetMonitorState configuration)
+    (hmem : result ∈ support
+      ((originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal input).run
+        state)) : state.origin.viewed.cache ≤ result.2.origin.viewed.cache := by
+  classical
+  cases input with
+  | inl worldInput =>
+      rw [originTargetMonitoredAdversaryImpl] at hmem
+      simp only [StateT.run, mem_support_bind_iff] at hmem
+      obtain ⟨⟨output, origin⟩, horiginMem, hpure⟩ := hmem
+      cases worldInput with
+      | inl uniformInput =>
+          simp only [support_pure, Set.mem_singleton_iff] at hpure
+          subst result
+          exact originMonitoredAdversaryImpl_query_cache_le configuration secretKey
+            (.inl (.inl uniformInput)) state.origin (output, origin) horiginMem
+      | inr hashInput =>
+          by_cases hfresh : state.origin.viewed.cache hashInput = none
+          · simp only [hfresh, if_true, support_pure, Set.mem_singleton_iff] at hpure
+            subst result
+            exact originMonitoredAdversaryImpl_query_cache_le configuration secretKey
+              (.inl (.inr hashInput)) state.origin (output, origin) horiginMem
+          · simp only [hfresh, if_false, support_pure, Set.mem_singleton_iff] at hpure
+            subst result
+            exact originMonitoredAdversaryImpl_query_cache_le configuration secretKey
+              (.inl (.inr hashInput)) state.origin (output, origin) horiginMem
+  | inr request =>
+      rw [originTargetMonitoredAdversaryImpl] at hmem
+      simp only [StateT.run, mem_support_bind_iff] at hmem
+      obtain ⟨targetRun, htargetRun, hpure⟩ := hmem
+      have hle := simulateQ_romImpl_cache_le (signWithTargetView secretKey request)
+        state.origin.viewed.cache targetRun htargetRun
+      cases hselection : targetRun.1.2 with
+      | none =>
+          simp only [hselection, support_pure, Set.mem_singleton_iff] at hpure
+          subst result
+          exact hle
+      | some selection =>
+          rcases selection with ⟨selectedInput, view⟩
+          by_cases hfresh : state.origin.viewed.cache selectedInput = none
+          · simp only [hselection, hfresh, if_true, support_pure,
+              Set.mem_singleton_iff] at hpure
+            subst result
+            exact hle
+          · simp only [hselection, hfresh, if_false, support_pure,
+              Set.mem_singleton_iff] at hpure
+            subst result
+            exact hle
+
+noncomputable def OriginTargetMonitorState.cappedPotential
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (q : Nat) (state : OriginTargetMonitorState configuration)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop) : ℝ≥0∞ :=
+  if QueryCache.enncard state.origin.viewed.cache ≤ q then state.potential event else 0
+
+theorem OriginTargetMonitorState.cappedPotential_le_potential
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (q : Nat) (state : OriginTargetMonitorState configuration)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop) :
+    state.cappedPotential q event ≤ state.potential event := by
+  classical
+  simp only [OriginTargetMonitorState.cappedPotential]
+  split_ifs
+  · exact le_rfl
+  · exact bot_le
+
+theorem OriginTargetMonitorState.cappedPotential_eq_of_enncard_le
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (q : Nat) (state : OriginTargetMonitorState configuration)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
+    (hcache : QueryCache.enncard state.origin.viewed.cache ≤ q) :
+    state.cappedPotential q event = state.potential event := by
+  simp [OriginTargetMonitorState.cappedPotential, hcache]
+
+theorem OriginTargetMonitorState.cappedPotential_eq_zero_of_not_enncard_le
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (q : Nat) (state : OriginTargetMonitorState configuration)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
+    (hcache : ¬ QueryCache.enncard state.origin.viewed.cache ≤ q) :
+    state.cappedPotential q event = 0 := by
+  simp [OriginTargetMonitorState.cappedPotential, hcache]
+
+theorem originTargetMonitoredAdversaryImpl_expected_cappedPotential_le
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
+    (targetOrdinal : Nat) (input : (OracleWorld + SigningSpec).Domain)
+    (state : OriginTargetMonitorState configuration)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
+    (q : Nat) (hq : q ≤ 2 ^ 120)
+    (hcoherent : state.JointCoherent targetOrdinal) :
+    (∑' result,
+      Pr[= result |
+        (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal input).run
+          state] * result.2.cappedPotential q event) ≤
+      state.cappedPotential q event := by
+  classical
+  by_cases hcache : QueryCache.enncard state.origin.viewed.cache ≤ q
+  · rw [state.cappedPotential_eq_of_enncard_le q event hcache]
+    calc
+      (∑' result,
+          Pr[= result |
+            (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal input).run
+              state] * result.2.cappedPotential q event) ≤
+          ∑' result,
+            Pr[= result |
+              (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal input).run
+                state] * result.2.potential event := by
+        apply ENNReal.tsum_le_tsum
+        intro result
+        exact mul_le_mul' le_rfl (result.2.cappedPotential_le_potential q event)
+      _ ≤ _ := originTargetMonitoredAdversaryImpl_expected_potential_le configuration
+        secretKey targetOrdinal input state event q hq hcache hcoherent.1 hcoherent.2
+  · rw [state.cappedPotential_eq_zero_of_not_enncard_le q event hcache]
+    have hzero : (∑' result,
+        Pr[= result |
+          (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal input).run
+            state] * result.2.cappedPotential q event) = 0 := by
+      apply ENNReal.tsum_eq_zero.2
+      intro result
+      by_cases hresult : result ∈ support
+          ((originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal input).run
+            state)
+      · have hle := originTargetMonitoredAdversaryImpl_query_cache_le configuration
+          secretKey targetOrdinal input state result hresult
+        have hcard := QueryCache.enncard_mono hle
+        have hnotFinal : ¬ QueryCache.enncard result.2.origin.viewed.cache ≤ q :=
+          fun hfinal => hcache (hcard.trans hfinal)
+        rw [result.2.cappedPotential_eq_zero_of_not_enncard_le q event hnotFinal,
+          mul_zero]
+      · rw [probOutput_eq_zero_of_not_mem_support hresult, zero_mul]
+    exact hzero.le
+
+theorem originTargetMonitoredAdversaryImpl_expected_cappedPotential_simulateQ_le
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
+    (targetOrdinal : Nat) (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialState : OriginTargetMonitorState configuration)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
+    (q : Nat) (hq : q ≤ 2 ^ 120)
+    (hcoherent : initialState.JointCoherent targetOrdinal) :
+    (∑' result,
+      Pr[= result |
+        (simulateQ
+          (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal)
+          computation).run initialState] *
+        result.2.cappedPotential q event) ≤ initialState.cappedPotential q event := by
+  induction computation using OracleComp.inductionOn generalizing initialState with
+  | pure value =>
+      simp [simulateQ_pure, tsum_probOutput_pure_mul]
+  | query_bind input next ih =>
+      rw [simulateQ_bind, StateT.run_bind, simulateQ_query,
+        tsum_probOutput_bind_mul]
+      simp only [OracleQuery.input_query, OracleQuery.cont_query, id_map]
+      calc
+        (∑' result,
+            Pr[= result |
+              (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal input).run
+                initialState] *
+              ∑' finalResult,
+                Pr[= finalResult |
+                  (simulateQ
+                    (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal)
+                    (next result.1)).run result.2] *
+                  finalResult.2.cappedPotential q event) ≤
+            ∑' result,
+              Pr[= result |
+                (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal input).run
+                  initialState] * result.2.cappedPotential q event := by
+          apply ENNReal.tsum_le_tsum
+          intro result
+          by_cases hresult : result ∈ support
+              ((originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal input).run
+                initialState)
+          · apply mul_le_mul' le_rfl
+            exact ih result.1 result.2
+              (originTargetMonitoredAdversaryImpl_query_jointCoherent configuration secretKey
+                targetOrdinal input initialState result hcoherent hresult)
+          · rw [probOutput_eq_zero_of_not_mem_support hresult, zero_mul, zero_mul]
+        _ ≤ _ := originTargetMonitoredAdversaryImpl_expected_cappedPotential_le
+          configuration secretKey targetOrdinal input initialState event q hq hcoherent
+
+def OriginTargetMonitorState.Complete
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (state : OriginTargetMonitorState configuration) : Prop :=
+  state.valid = true ∧ state.origin.Complete ∧ ∃ target, state.targetView = some target
+
+theorem OriginTargetMonitorState.potential_eq_one_of_complete
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (state : OriginTargetMonitorState configuration)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
+    (hcomplete : state.Complete)
+    (hevent : ∀ target, state.targetView = some target →
+      event (state.origin.observation.views, target)) :
+    state.potential event = 1 := by
+  rcases hcomplete with ⟨hvalid, horigin, target, htarget⟩
+  simp [OriginTargetMonitorState.potential, hvalid, htarget,
+    state.origin.potential_eq_one_of_complete
+      (fun views => event (views, target)) horigin (hevent target htarget)]
+
+theorem OriginTargetMonitorState.cappedPotential_eq_one_of_complete
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (q : Nat) (state : OriginTargetMonitorState configuration)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
+    (hcache : QueryCache.enncard state.origin.viewed.cache ≤ q)
+    (hcomplete : state.Complete)
+    (hevent : ∀ target, state.targetView = some target →
+      event (state.origin.observation.views, target)) :
+    state.cappedPotential q event = 1 := by
+  rw [state.cappedPotential_eq_of_enncard_le q event hcache,
+    state.potential_eq_one_of_complete event hcomplete hevent]
+
+theorem probEvent_originTargetMonitored_complete_le_initial
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
+    (targetOrdinal : Nat) (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialState : OriginTargetMonitorState configuration)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
+    (q : Nat) (hq : q ≤ 2 ^ 120)
+    (hcoherent : initialState.JointCoherent targetOrdinal) :
+    Pr[fun result : α × OriginTargetMonitorState configuration =>
+        result.2.Complete ∧
+          (∀ target, result.2.targetView = some target →
+            event (result.2.origin.observation.views, target)) ∧
+          QueryCache.enncard result.2.origin.viewed.cache ≤ q |
+      (simulateQ
+        (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal)
+        computation).run initialState] ≤ initialState.cappedPotential q event := by
+  let run := (simulateQ
+    (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal)
+    computation).run initialState
+  calc
+    Pr[fun result : α × OriginTargetMonitorState configuration =>
+        result.2.Complete ∧
+          (∀ target, result.2.targetView = some target →
+            event (result.2.origin.observation.views, target)) ∧
+          QueryCache.enncard result.2.origin.viewed.cache ≤ q | run] ≤
+        ∑' result, Pr[= result | run] * result.2.cappedPotential q event := by
+      apply probEvent_le_tsum_probOutput_mul_cost
+      intro result hresult
+      rw [result.2.cappedPotential_eq_one_of_complete q event hresult.2.2
+        hresult.1 hresult.2.1]
+    _ ≤ _ := originTargetMonitoredAdversaryImpl_expected_cappedPotential_simulateQ_le
+      configuration secretKey targetOrdinal computation initialState event q hq hcoherent
+
+theorem probEvent_uniform_views_target_eq_sum
+    {signatures distinct : Nat} (pattern : FewTimePattern signatures distinct)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop) :
+    Pr[event | ($ᵗ ((pattern.selected → FewTimeView) × FewTimeView) :
+      ProbComp ((pattern.selected → FewTimeView) × FewTimeView))] =
+      ∑ target, Pr[fun value : FewTimeView => value = target |
+        ($ᵗ FewTimeView : ProbComp FewTimeView)] *
+          Pr[fun views => event (views, target) |
+            ($ᵗ (pattern.selected → FewTimeView) :
+              ProbComp (pattern.selected → FewTimeView))] := by
+  classical
+  let viewsComp := ($ᵗ (pattern.selected → FewTimeView) :
+    ProbComp (pattern.selected → FewTimeView))
+  let targetComp := ($ᵗ FewTimeView : ProbComp FewTimeView)
+  calc
+    _ = Pr[event | do
+        let views ← viewsComp
+        let target ← targetComp
+        pure (views, target)] := by
+      apply probEvent_congr' (fun _ _ => Iff.rfl)
+      exact evalDist_independent_uniform_pair.symm
+    _ = Pr[event | do
+        let target ← targetComp
+        let views ← viewsComp
+        pure (views, target)] := by
+      apply probEvent_congr' (fun _ _ => Iff.rfl)
+      exact OracleComp.DeferredSampling.evalDist_bind_comm viewsComp targetComp
+        (fun views target => pure (views, target))
+    _ = ∑' target, Pr[= target | targetComp] *
+        Pr[fun views => event (views, target) | viewsComp] := by
+      rw [probEvent_bind_eq_tsum]
+      apply tsum_congr
+      intro target
+      congr 1
+      rw [bind_pure_comp, probEvent_map]
+      rfl
+    _ = _ := by
+      simp only [viewsComp, targetComp, tsum_fintype,
+        probEvent_eq_eq_probOutput]
+
+theorem OriginTargetMonitorState.potential_initial
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources)
+    (cache : QueryCache HashSpec)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop) :
+    (OriginTargetMonitorState.initial configuration cache).potential event =
+      ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹ ^ configuration.prehit.card *
+        Pr[event | ($ᵗ ((pattern.selected → FewTimeView) × FewTimeView) :
+          ProbComp ((pattern.selected → FewTimeView) × FewTimeView))] := by
+  classical
+  rw [OriginTargetMonitorState.potential]
+  simp only [OriginTargetMonitorState.initial, if_true]
+  simp_rw [OriginMonitorState.potential_initial]
+  rw [probEvent_uniform_views_target_eq_sum pattern event]
+  rw [Finset.mul_sum]
+  apply Finset.sum_congr rfl
+  intro target _
+  ac_rfl
+
+theorem probEvent_originTargetMonitored_complete_le_ideal
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
+    (targetOrdinal : Nat) (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialCache : QueryCache HashSpec)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
+    (q : Nat) (hq : q ≤ 2 ^ 120)
+    (hcache : QueryCache.enncard initialCache ≤ q) :
+    Pr[fun result : α × OriginTargetMonitorState configuration =>
+        result.2.Complete ∧
+          (∀ target, result.2.targetView = some target →
+            event (result.2.origin.observation.views, target)) ∧
+          QueryCache.enncard result.2.origin.viewed.cache ≤ q |
+      (simulateQ
+        (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal)
+        computation).run (OriginTargetMonitorState.initial configuration initialCache)] ≤
+      ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹ ^ configuration.prehit.card *
+        Pr[event | ($ᵗ ((pattern.selected → FewTimeView) × FewTimeView) :
+          ProbComp ((pattern.selected → FewTimeView) × FewTimeView))] := by
+  calc
+    _ ≤ (OriginTargetMonitorState.initial configuration initialCache).cappedPotential
+        q event :=
+      probEvent_originTargetMonitored_complete_le_initial configuration secretKey
+        targetOrdinal computation (OriginTargetMonitorState.initial configuration initialCache)
+          event q hq
+            (OriginTargetMonitorState.jointCoherent_initial configuration initialCache
+              targetOrdinal)
+    _ = (OriginTargetMonitorState.initial configuration initialCache).potential event :=
+      OriginTargetMonitorState.cappedPotential_eq_of_enncard_le q
+        (OriginTargetMonitorState.initial configuration initialCache) event hcache
+    _ = _ := OriginTargetMonitorState.potential_initial configuration initialCache event
+
 end Concrete
 
 end SphincsSecurity
