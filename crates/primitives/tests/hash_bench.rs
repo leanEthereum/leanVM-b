@@ -30,7 +30,7 @@ fn time(reps: usize, mut f: impl FnMut()) -> f64 {
 fn multithreaded_throughput() {
     const K: usize = 1 << 10; // hashes per call: 96 KiB in+out per task, cache-resident
     const ITERS: usize = 1 << 5; // rehash rounds per task per dispatch
-    const TASKS: usize = 512;
+    const TASKS: usize = 1 << 10;
 
     let data: Vec<u8> = (0..TASKS * K * 64).map(|i| (i & 0xff) as u8).collect();
     let mut out = vec![0u8; TASKS * K * 32];
