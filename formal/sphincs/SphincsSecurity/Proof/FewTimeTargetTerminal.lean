@@ -2521,6 +2521,102 @@ noncomputable instance (parameter : PublicParameter)
   fun result => Classical.propDecidable
     (ViewedProperFewTimeLeakWitness parameter otsSecret ftsSecret result)
 
+theorem directHashQueries_append (left right : QueryLog (OracleWorld + SigningSpec)) :
+    directHashQueries (left ++ right) =
+      directHashQueries left ++ directHashQueries right := by
+  induction left with
+  | nil => rfl
+  | cons head rest ih =>
+      obtain ⟨input, output⟩ := head
+      rcases input with worldInput | request
+      · rcases worldInput with uniformInput | hashInput <;>
+          simp [directHashQueries, ih]
+      · simp [directHashQueries, ih]
+
+theorem OriginConfiguration.paddedRealized_append_direct
+    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec}
+    {secretKey : SecretKey} {signingLog : QueryLog SigningSpec} {index : Index}
+    {targetLeaves : DigestTree → FtsLeaf}
+    {cover : FewTimeCover f cache secretKey signingLog index targetLeaves}
+    {q limit : Nat} {hle : signingLog.length ≤ limit}
+    {configuration : OriginConfiguration (cover.pattern.pad hle) q}
+    (state : ViewedFullTraceState)
+    (hlog : state.trace.signing.toSigningLog = signingLog)
+    (hrealized : configuration.PaddedRealizedBy cover hle state.trace hlog)
+    (input : HashInput) (output : HashOutput) (finalCache : QueryCache HashSpec) :
+    let appended := appendTargetViewedState (.inl (.inr input)) state.cache output
+      finalCache none state
+    ∃ hlog' : appended.trace.signing.toSigningLog = signingLog,
+      configuration.PaddedRealizedBy cover hle appended.trace hlog' := by
+  classical
+  let appended := appendTargetViewedState (.inl (.inr input)) state.cache output
+    finalCache none state
+  have hlog' : appended.trace.signing.toSigningLog = signingLog := by
+    simpa [appended, appendTargetViewedState, fullAdversaryTraceUpdate,
+      signingCacheTraceUpdate] using hlog
+  refine ⟨hlog', ?_⟩
+  have hlogEq : hlog' = hlog := Subsingleton.elim _ _
+  subst hlog'
+  constructor
+  · exact hrealized.1
+  · intro entry hselected
+    obtain ⟨sourceOutput, sourcePosition, intervalPosition, selectedIntervalPosition,
+      hdirect, hsource, hordinal, hbefore, hselectedInterval, hselectedRank,
+      hinput, hinitial, hquery, hadmissible, hview⟩ := hrealized.2 entry hselected
+    let sourcePosition' : Fin appended.trace.hashQueries.length :=
+      ⟨sourcePosition.val, by
+        simp [appended, appendTargetViewedState, fullAdversaryTraceUpdate,
+          FullAdversaryTrace.hashQueries, directHashQueries_append, directHashQueries]⟩
+    let intervalPosition' : Fin appended.trace.intervals.length :=
+      ⟨intervalPosition.val, by
+        simp [appended, appendTargetViewedState, fullAdversaryTraceUpdate]⟩
+    let selectedIntervalPosition' : Fin appended.trace.intervals.length :=
+      ⟨selectedIntervalPosition.val, by
+        simp [appended, appendTargetViewedState, fullAdversaryTraceUpdate]⟩
+    have hinterval : appended.trace.intervals.get intervalPosition' =
+        state.trace.intervals.get intervalPosition := by
+      simp [appended, appendTargetViewedState, fullAdversaryTraceUpdate,
+        intervalPosition', List.get_eq_getElem,
+        List.getElem_append_left intervalPosition.isLt]
+    have hselectedInterval' : appended.trace.intervals.get selectedIntervalPosition' =
+        state.trace.intervals.get selectedIntervalPosition := by
+      simp [appended, appendTargetViewedState, fullAdversaryTraceUpdate,
+        selectedIntervalPosition', List.get_eq_getElem,
+        List.getElem_append_left selectedIntervalPosition.isLt]
+    have hdirect' : isDirectHashQuery
+        (appended.trace.intervals.get intervalPosition').input := by
+      rwa [hinterval]
+    refine ⟨sourceOutput, sourcePosition', intervalPosition', selectedIntervalPosition',
+      hdirect', ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+    · exact hsource
+    · calc
+        sourcePosition'.val = sourcePosition.val := rfl
+        _ = (Fin.encodeSubtype (fun position =>
+            isDirectHashQuery (state.trace.intervals.get position).input)
+            ⟨intervalPosition, hdirect⟩).val := hordinal
+        _ = directIntervalCount (state.trace.intervals.take intervalPosition.val) :=
+          encodeSubtype_directInterval_eq state.trace.intervals intervalPosition hdirect
+        _ = directIntervalCount
+            (appended.trace.intervals.take intervalPosition'.val) := by
+          simp [appended, appendTargetViewedState, fullAdversaryTraceUpdate,
+            intervalPosition', List.take_append_of_le_length intervalPosition.isLt.le]
+        _ = (Fin.encodeSubtype (fun position =>
+            isDirectHashQuery (appended.trace.intervals.get position).input)
+            ⟨intervalPosition', hdirect'⟩).val :=
+          (encodeSubtype_directInterval_eq appended.trace.intervals
+            intervalPosition' hdirect').symm
+    · exact hbefore
+    · rwa [hselectedInterval']
+    · simpa [appended, appendTargetViewedState, fullAdversaryTraceUpdate,
+        selectedIntervalPosition', List.take_append_of_le_length
+          selectedIntervalPosition.isLt.le] using hselectedRank
+    · rwa [hinterval]
+    · rwa [hinterval]
+    · rw [hinterval]
+      exact hquery
+    · exact hadmissible
+    · exact hview
+
 theorem gameAfterSecretsWithViewTrace_proper_target_classified_at_adversary_state
     (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
     (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
