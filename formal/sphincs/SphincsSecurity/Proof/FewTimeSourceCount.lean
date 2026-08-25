@@ -30,7 +30,7 @@ theorem FewTimeCover.precachedEntryCount_le_queryBudget
       result.2.2.signing.toSigningLog index targetLeaves) :
     ((cover.precachedEntryFinset result.2.2.signing rfl).card : ℝ≥0∞) ≤ q := by
   classical
-  obtain ⟨source, output, hsourceInjective, hsource⟩ :=
+  obtain ⟨source, _selected, output, hsourceInjective, hsource⟩ :=
     cover.precached_entries_have_injective_fresh_direct_view_sources adversary parameter
       otsSecret ftsSecret result hresult f hf index targetLeaves
   let precached := cover.precachedEntryFinset result.2.2.signing rfl
@@ -49,7 +49,8 @@ theorem FewTimeCover.precachedEntryCount_le_queryBudget
           have hcached : interval.finalCache (cover.entryDigestInput selected.1) =
               some (output selected) :=
             randomOracle_run_output_cached (cover.entryDigestInput selected.1)
-              interval.initialCache interval.finalCache (output selected) (hsource selected).2.2.1
+              interval.initialCache interval.finalCache (output selected)
+                (hsource selected).2.2.2.2.1
           exact (hintervals.2.1 interval (List.get_mem _ (source selected))).2 hcached⟩,
       by
         intro left right heq

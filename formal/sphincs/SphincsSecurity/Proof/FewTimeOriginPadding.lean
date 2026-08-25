@@ -103,6 +103,7 @@ def OriginConfiguration.PaddedRealizedBy {f : QueryImpl HashSpec Id}
       ∃ (output : HashOutput)
           (sourcePosition : Fin trace.hashQueries.length)
           (intervalPosition : Fin trace.intervals.length)
+          (selectedIntervalPosition : Fin trace.intervals.length)
           (hdirect : isDirectHashQuery (trace.intervals.get intervalPosition).input),
         sourcePosition.val =
             (configuration.source.1
@@ -112,6 +113,10 @@ def OriginConfiguration.PaddedRealizedBy {f : QueryImpl HashSpec Id}
             (Fin.encodeSubtype (fun position =>
               isDirectHashQuery (trace.intervals.get position).input)
               ⟨intervalPosition, hdirect⟩).val
+          ∧ intervalPosition.val < selectedIntervalPosition.val
+          ∧ AdversaryCacheEntry.signingEntry?
+            (trace.intervals.get selectedIntervalPosition) =
+              some (cover.cacheEntry trace.signing hlog entry.1)
           ∧ (trace.intervals.get intervalPosition).input =
             .inl (.inr (cover.entryDigestInput entry.1))
           ∧ (trace.intervals.get intervalPosition).initialCache
@@ -140,9 +145,11 @@ theorem OriginConfiguration.RealizedBy.pad {f : QueryImpl HashSpec Id}
     let selected := cover.entriesEquivPatternSelected entry.1
     have hold : selected ∈ configuration.prehit :=
       (configuration.mem_pad_prehit_iff hle selected).1 hselected
-    obtain ⟨output, sourcePosition, intervalPosition, hdirect, hsource, hordinal, hrest⟩ :=
+    obtain ⟨output, sourcePosition, intervalPosition, selectedIntervalPosition, hdirect,
+      hsource, hordinal, hrest⟩ :=
       hrealized.2 entry hold
-    refine ⟨output, sourcePosition, intervalPosition, hdirect, ?_, hordinal, hrest⟩
+    refine ⟨output, sourcePosition, intervalPosition, selectedIntervalPosition, hdirect,
+      ?_, hordinal, hrest⟩
     have hpadSource := configuration.pad_source_apply hle selected hold
     have hpadSource' :
         (configuration.pad hle).source.1

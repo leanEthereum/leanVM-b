@@ -219,16 +219,19 @@ theorem FewTimeCover.precached_entry_has_earlier_direct_source
       result.2.2.signing.toSigningLog index targetLeaves)
     (entry : cover.entries)
     (hprecached : cover.EntryDigestPrecached result.2.2.signing rfl entry) :
-    ∃ source : Fin result.2.2.intervals.length,
-      (result.2.2.intervals.get source).input =
-        .inl (.inr (cover.entryDigestInput entry))
-      ∧ (result.2.2.intervals.get source).initialCache
-        (cover.entryDigestInput entry) = none := by
-  obtain ⟨source, _, _, _, hsourceMiss, hsourceHit, hkind⟩ :=
+    ∃ (source selected : Fin result.2.2.intervals.length),
+      source.val < selected.val
+        ∧ AdversaryCacheEntry.signingEntry? (result.2.2.intervals.get selected) =
+          some (cover.cacheEntry result.2.2.signing rfl entry)
+        ∧ (result.2.2.intervals.get source).input =
+          .inl (.inr (cover.entryDigestInput entry))
+        ∧ (result.2.2.intervals.get source).initialCache
+          (cover.entryDigestInput entry) = none := by
+  obtain ⟨source, selected, hlt, hselected, hsourceMiss, hsourceHit, hkind⟩ :=
     cover.precached_entry_has_earlier_exact_source adversary parameter otsSecret ftsSecret
       result hresult f index targetLeaves entry hprecached
   rcases hkind with hdirect | ⟨earlier, hearlier, hsourceEntry⟩
-  · exact ⟨source, hdirect, hsourceMiss⟩
+  · exact ⟨source, selected, hlt, hselected, hdirect, hsourceMiss⟩
   · exfalso
     let secretKey : SecretKey := ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
     let earlierEntry := result.2.2.signing.get earlier
@@ -436,8 +439,11 @@ theorem FewTimeCover.precached_entry_has_fresh_direct_view_source
       result.2.2.signing.toSigningLog index targetLeaves)
     (entry : cover.entries)
     (hprecached : cover.EntryDigestPrecached result.2.2.signing rfl entry) :
-    ∃ (source : Fin result.2.2.intervals.length) (output : HashOutput),
-      (result.2.2.intervals.get source).input =
+    ∃ (source selected : Fin result.2.2.intervals.length) (output : HashOutput),
+      source.val < selected.val
+        ∧ AdversaryCacheEntry.signingEntry? (result.2.2.intervals.get selected) =
+          some (cover.cacheEntry result.2.2.signing rfl entry)
+        ∧ (result.2.2.intervals.get source).input =
           .inl (.inr (cover.entryDigestInput entry))
         ∧ (result.2.2.intervals.get source).initialCache
           (cover.entryDigestInput entry) = none
@@ -446,7 +452,7 @@ theorem FewTimeCover.precached_entry_has_fresh_direct_view_source
             (result.2.2.intervals.get source).initialCache)
         ∧ signAttemptResultOfOutput output ≠ none
         ∧ hashOutputFewTimeView output = cover.entryView entry := by
-  obtain ⟨source, hsourceInput, hsourceMiss⟩ :=
+  obtain ⟨source, selected, hsourceLt, hselected, hsourceInput, hsourceMiss⟩ :=
     cover.precached_entry_has_earlier_direct_source adversary parameter otsSecret ftsSecret
       result hresult f hf index targetLeaves entry hprecached
   have hvalid := gameAfterSecretsWithFullTrace_support_validIntervals
@@ -483,7 +489,8 @@ theorem FewTimeCover.precached_entry_has_fresh_direct_view_source
   have hadmissible : signAttemptResultOfOutput output ≠ none := by
     rw [signAttemptResultOfOutput_ne_none_iff, hdigest]
     exact (cover.entryDigest_spec entry).2.1
-  refine ⟨source, output, hsourceInput, hsourceMiss, hsourceRun', hadmissible, ?_⟩
+  refine ⟨source, selected, output, hsourceLt, hselected, hsourceInput, hsourceMiss,
+    hsourceRun', hadmissible, ?_⟩
   apply Prod.ext
   · change digestIndex (truncateMessageDigest output) = digestIndex (cover.entryDigest entry)
     rw [hdigest]
@@ -506,10 +513,16 @@ theorem FewTimeCover.precached_entries_have_injective_fresh_direct_view_sources
       result.2.2.signing.toSigningLog index targetLeaves) :
     ∃ (source : cover.PrecachedEntries result.2.2.signing rfl →
           Fin result.2.2.intervals.length)
+        (selected : cover.PrecachedEntries result.2.2.signing rfl →
+          Fin result.2.2.intervals.length)
         (output : cover.PrecachedEntries result.2.2.signing rfl → HashOutput),
       Function.Injective source
         ∧ ∀ entry,
-          (result.2.2.intervals.get (source entry)).input =
+          (source entry).val < (selected entry).val
+            ∧ AdversaryCacheEntry.signingEntry?
+              (result.2.2.intervals.get (selected entry)) =
+                some (cover.cacheEntry result.2.2.signing rfl entry.1)
+            ∧ (result.2.2.intervals.get (source entry)).input =
               .inl (.inr (cover.entryDigestInput entry.1))
             ∧ (result.2.2.intervals.get (source entry)).initialCache
               (cover.entryDigestInput entry.1) = none
@@ -519,16 +532,16 @@ theorem FewTimeCover.precached_entries_have_injective_fresh_direct_view_sources
             ∧ signAttemptResultOfOutput (output entry) ≠ none
             ∧ hashOutputFewTimeView (output entry) = cover.entryView entry.1 := by
   classical
-  choose source output hsource using fun entry :
+  choose source selected output hsource using fun entry :
       cover.PrecachedEntries result.2.2.signing rfl =>
     cover.precached_entry_has_fresh_direct_view_source adversary parameter otsSecret ftsSecret
       result hresult f hf index targetLeaves entry.1 entry.2
-  refine ⟨source, output, ?_, hsource⟩
+  refine ⟨source, selected, output, ?_, hsource⟩
   intro left right heq
   apply Subtype.ext
   apply cover.entryDigestInput_injective
-  have hleft := (hsource left).1
-  have hright := (hsource right).1
+  have hleft := (hsource left).2.2.1
+  have hright := (hsource right).2.2.1
   rw [heq] at hleft
   simpa only [Sum.inl.injEq, Sum.inr.injEq] using hleft.symm.trans hright
 
@@ -547,7 +560,7 @@ theorem FewTimeCover.precachedEntries_card_le_hashQueries_length
     (cover.precachedEntryFinset result.2.2.signing rfl).card ≤
       result.2.2.hashQueries.length := by
   classical
-  obtain ⟨source, _output, hsourceInjective, hsource⟩ :=
+  obtain ⟨source, _selected, _output, hsourceInjective, hsource⟩ :=
     cover.precached_entries_have_injective_fresh_direct_view_sources adversary parameter
       otsSecret ftsSecret result hresult f hf index targetLeaves
   let precached := cover.precachedEntryFinset result.2.2.signing rfl
@@ -560,7 +573,7 @@ theorem FewTimeCover.precachedEntries_card_le_hashQueries_length
       {position : Fin result.2.2.intervals.length //
         isDirectHashQuery (result.2.2.intervals.get position).input} :=
     fun entry => ⟨source (asPrecached entry), by
-      rw [(hsource (asPrecached entry)).1]
+      rw [(hsource (asPrecached entry)).2.2.1]
       trivial⟩
   have hdirectSourceInjective : Function.Injective directSource := by
     intro left right heq

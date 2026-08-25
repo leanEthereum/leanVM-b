@@ -143,18 +143,20 @@ theorem FewTimeCover.selected_entries_have_injective_origins
             ∧ signAttemptResultOfOutput (output entry) ≠ none
             ∧ hashOutputFewTimeView (output entry) = cover.entryView entry.1 := by
   classical
-  obtain ⟨source, output, hsourceInjective, hsource⟩ :=
+  obtain ⟨source, _selected, output, hsourceInjective, hsource⟩ :=
     cover.precached_entries_have_injective_fresh_direct_view_sources adversary parameter
       otsSecret ftsSecret result hresult f hf index targetLeaves
   let sourceEmbedding : cover.PrecachedEntries result.2.2.signing rfl ↪
       Fin result.2.2.intervals.length := ⟨source, hsourceInjective⟩
   let origin := cover.originEmbedding result.2.2.signing rfl sourceEmbedding
-  refine ⟨origin, source, output, hsourceInjective, ?_, ?_, hsource⟩
+  refine ⟨origin, source, output, hsourceInjective, ?_, ?_, ?_⟩
   · intro entry hprehit
     exact cover.originEmbedding_apply_prehit result.2.2.signing rfl sourceEmbedding
       entry hprehit
   · intro entry hfresh
     exact cover.originEmbedding_apply_fresh result.2.2.signing rfl sourceEmbedding entry hfresh
+  · intro entry
+    exact (hsource entry).2.2
 
 end Concrete
 

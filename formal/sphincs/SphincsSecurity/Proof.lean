@@ -83,6 +83,7 @@ import SphincsSecurity.Proof.FewTimeOriginMonitor
 import SphincsSecurity.Proof.FewTimeOriginWP
 import SphincsSecurity.Proof.FewTimeOriginPotential
 import SphincsSecurity.Proof.FewTimeOriginInvariant
+import SphincsSecurity.Proof.FewTimeOriginTerminal
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to

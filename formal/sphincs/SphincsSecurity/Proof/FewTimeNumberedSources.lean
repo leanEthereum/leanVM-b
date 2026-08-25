@@ -142,6 +142,8 @@ theorem FewTimeCover.precached_entries_have_injective_numbered_sources
           Fin result.2.2.hashQueries.length)
         (intervalSource : cover.PrecachedEntries result.2.2.signing rfl →
           Fin result.2.2.intervals.length)
+        (selectedInterval : cover.PrecachedEntries result.2.2.signing rfl →
+          Fin result.2.2.intervals.length)
         (output : cover.PrecachedEntries result.2.2.signing rfl → HashOutput),
       Function.Injective source
         ∧ Function.Injective intervalSource
@@ -151,6 +153,10 @@ theorem FewTimeCover.precached_entries_have_injective_numbered_sources
               (Fin.encodeSubtype (fun position =>
                 isDirectHashQuery (result.2.2.intervals.get position).input)
                 ⟨intervalSource entry, hdirect⟩).val
+            ∧ (intervalSource entry).val < (selectedInterval entry).val
+            ∧ AdversaryCacheEntry.signingEntry?
+              (result.2.2.intervals.get (selectedInterval entry)) =
+                some (cover.cacheEntry result.2.2.signing rfl entry.1)
             ∧ (result.2.2.intervals.get (intervalSource entry)).input =
               .inl (.inr (cover.entryDigestInput entry.1))
             ∧ (result.2.2.intervals.get (intervalSource entry)).initialCache
@@ -162,13 +168,13 @@ theorem FewTimeCover.precached_entries_have_injective_numbered_sources
             ∧ signAttemptResultOfOutput (output entry) ≠ none
             ∧ hashOutputFewTimeView (output entry) = cover.entryView entry.1 := by
   classical
-  obtain ⟨intervalSource, output, hintervalInjective, hinterval⟩ :=
+  obtain ⟨intervalSource, selectedInterval, output, hintervalInjective, hinterval⟩ :=
     cover.precached_entries_have_injective_fresh_direct_view_sources adversary parameter
       otsSecret ftsSecret result hresult f hf index targetLeaves
   let directSource : cover.PrecachedEntries result.2.2.signing rfl →
       {position : Fin result.2.2.intervals.length //
         isDirectHashQuery (result.2.2.intervals.get position).input} :=
-    fun entry => ⟨intervalSource entry, by rw [(hinterval entry).1]; trivial⟩
+    fun entry => ⟨intervalSource entry, by rw [(hinterval entry).2.2.1]; trivial⟩
   have hdirectInjective : Function.Injective directSource := by
     intro left right heq
     exact hintervalInjective (congrArg Subtype.val heq)
@@ -191,7 +197,8 @@ theorem FewTimeCover.precached_entries_have_injective_numbered_sources
       Fin result.2.2.hashQueries.length := fun entry => Fin.cast hcount (encodedSource entry)
   have hsourceInjective : Function.Injective source := by
     exact Function.Injective.comp (Fin.cast_injective hcount) hencodedInjective
-  refine ⟨source, intervalSource, output, hsourceInjective, hintervalInjective, ?_⟩
+  refine ⟨source, intervalSource, selectedInterval, output, hsourceInjective,
+    hintervalInjective, ?_⟩
   intro entry
   refine ⟨(directSource entry).2, rfl, hinterval entry⟩
 
@@ -259,7 +266,7 @@ theorem FewTimeCover.precached_entries_have_numbered_source_entries
             ∧ signAttemptResultOfOutput (output entry) ≠ none
             ∧ hashOutputFewTimeView (output entry) = cover.entryView entry.1 := by
   classical
-  obtain ⟨_numberedSource, intervalSource, output, _hnumberedInjective,
+  obtain ⟨_numberedSource, intervalSource, _selectedInterval, output, _hnumberedInjective,
       hintervalInjective, hnumbered⟩ :=
     cover.precached_entries_have_injective_numbered_sources adversary parameter otsSecret
       ftsSecret result hresult f hf index targetLeaves
@@ -275,7 +282,7 @@ theorem FewTimeCover.precached_entries_have_numbered_source_entries
         ∧ signAttemptResultOfOutput (output entry) ≠ none
         ∧ hashOutputFewTimeView (output entry) = cover.entryView entry.1 := by
     intro entry
-    exact (hnumbered entry).choose_spec.2
+    exact (hnumbered entry).choose_spec.2.2.2
   have hvalid := gameAfterSecretsWithFullTrace_support_validIntervals adversary parameter
     otsSecret ftsSecret result hresult
   have hconsistent := (gameAfterSecretsWithFullTrace_support_interval_invariants adversary
@@ -328,7 +335,8 @@ theorem FewTimeCover.has_originConfiguration_of_hashQueries_length_le
       configuration.prehit.card =
         (cover.precachedEntryFinset result.2.2.signing rfl).card := by
   classical
-  obtain ⟨numberedSource, _intervalSource, _output, hnumberedInjective, _, _⟩ :=
+  obtain ⟨numberedSource, _intervalSource, _selectedInterval, _output,
+      hnumberedInjective, _, _⟩ :=
     cover.precached_entries_have_injective_numbered_sources adversary parameter otsSecret
       ftsSecret result hresult f hf index targetLeaves
   let source : cover.PrecachedEntries result.2.2.signing rfl → Fin q :=

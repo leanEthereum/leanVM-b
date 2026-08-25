@@ -27,6 +27,7 @@ def OriginConfiguration.RealizedBy {f : QueryImpl HashSpec Id}
       ∃ (output : HashOutput)
           (sourcePosition : Fin trace.hashQueries.length)
           (intervalPosition : Fin trace.intervals.length)
+          (selectedIntervalPosition : Fin trace.intervals.length)
           (hdirect : isDirectHashQuery (trace.intervals.get intervalPosition).input),
         sourcePosition.val =
             (configuration.source.1
@@ -35,6 +36,10 @@ def OriginConfiguration.RealizedBy {f : QueryImpl HashSpec Id}
             (Fin.encodeSubtype (fun position =>
               isDirectHashQuery (trace.intervals.get position).input)
               ⟨intervalPosition, hdirect⟩).val
+          ∧ intervalPosition.val < selectedIntervalPosition.val
+          ∧ AdversaryCacheEntry.signingEntry?
+            (trace.intervals.get selectedIntervalPosition) =
+              some (cover.cacheEntry trace.signing hlog entry.1)
           ∧ (trace.intervals.get intervalPosition).input =
             .inl (.inr (cover.entryDigestInput entry.1))
           ∧ (trace.intervals.get intervalPosition).initialCache
@@ -61,8 +66,9 @@ theorem FewTimeCover.exists_realized_originConfiguration_of_hashQueries_length_l
     ∃ configuration : OriginConfiguration cover.pattern q,
       OriginConfiguration.RealizedBy cover configuration result.2.2 rfl := by
   classical
-  obtain ⟨source, intervalSource, output, hsourceInjective, _hintervalInjective,
-      hsource⟩ := cover.precached_entries_have_injective_numbered_sources adversary parameter
+  obtain ⟨source, intervalSource, selectedInterval, output, hsourceInjective,
+      _hintervalInjective, hsource⟩ :=
+    cover.precached_entries_have_injective_numbered_sources adversary parameter
     otsSecret ftsSecret result hresult f hf index targetLeaves
   let budgetSource : cover.PrecachedEntries result.2.2.signing rfl → Fin q :=
     fun entry => Fin.castLE hqueries (source entry)
@@ -84,9 +90,9 @@ theorem FewTimeCover.exists_realized_originConfiguration_of_hashQueries_length_l
       rw [cover.originConfiguration_source_apply result.2.2.signing rfl q budgetSource
         hbudgetSourceInjective selected, hentry]
     obtain ⟨hdirect, hordinal, hinterval⟩ := hsource entry
-    refine ⟨output entry, source entry, intervalSource entry, hdirect, ?_, ?_, hinterval⟩
+    refine ⟨output entry, source entry, intervalSource entry, selectedInterval entry,
+      hdirect, ?_, hordinal, hinterval⟩
     · exact congrArg Fin.val hconfigurationSource |>.symm
-    · exact hordinal
 
 theorem FewTimeCover.exists_realized_originConfiguration_of_queryBudget
     (adversary : Adversary) (q : Nat)
