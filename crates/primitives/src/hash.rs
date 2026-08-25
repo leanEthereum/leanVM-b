@@ -22,14 +22,21 @@
 //! products of affine forms span at most four dimensions. So 1,600 AND rows a
 //! round is a floor, and `theta`, `rho`, `pi` and `iota` are free over GF(2).
 //!
-//! Natively the same shape pays off on aarch64, where FEAT_SHA3 gives `BCAX`
-//! (`chi` in one instruction), `EOR3`, `RAX1` and `XAR` (`theta`'s per-lane XOR
-//! fused into `rho`'s rotation). Those are 128-bit instructions, so the state of
-//! TWO sponges fits one set of registers and the batched paths
-//! ([`hash_many_md`], [`hash_many`]) get two hashes for the price of one, which
-//! is where the volume is: the PCS Merkle tree. A lone hash runs the same code
-//! with its state in both halves, wasting the width but keeping the fused
-//! instructions, which still beats the portable permutation.
+//! Natively the permutation is bitwise and lanewise, so what a host gives it is
+//! width: `LANES` independent sponges share one set of vector registers, one
+//! per state lane, and a round is elementwise 64-bit work with no cross-lane
+//! traffic. That is where the volume is, the PCS Merkle tree hashing millions
+//! of independent leaves and parents, so the batched paths ([`hash_many_md`],
+//! [`hash_many`]) get `LANES` hashes for the price of one.
+//!
+//! aarch64's FEAT_SHA3 fits two states in its 128-bit registers and spends
+//! fewer instructions on each: `BCAX` is `chi` in one, and `XAR` fuses
+//! `theta`'s per-lane XOR into `rho`'s rotation. x86 has no Keccak extension,
+//! but `vpternlogq` recovers `chi` and `theta`'s parity as one instruction each,
+//! and AVX-512's eight states per register more than pay for the rotation it
+//! cannot fuse. A lone hash rides the pair on aarch64, the fused instructions
+//! covering the idle lane; on x86 it stays scalar, seven idle lanes being no
+//! bargain.
 //!
 //! Surfaces: [`permute`] (the opcode's relation), [`hash_block`] for the
 //! 64-byte case (the Fiat-Shamir chain, the Merkle parent), [`hash_md`] and
@@ -118,11 +125,9 @@ pub const PI: [usize; STATE_LANES] = {
 /// is bytes `8i..8i+8` of the sponge, little-endian.
 #[inline]
 pub fn permute(state: &mut [u64; STATE_LANES]) {
-    #[cfg(all(target_arch = "aarch64", target_feature = "sha3"))]
-    aarch64_sha3::permute(state);
-    #[cfg(not(all(target_arch = "aarch64", target_feature = "sha3")))]
-    {
-        *state = permute_portable(*state);
+    let a = permute_lanes::<Single>(std::array::from_fn(|i| Single::splat(state[i])));
+    for (lane, v) in state.iter_mut().zip(a) {
+        *lane = v.lane0();
     }
 }
 
@@ -263,14 +268,7 @@ pub fn hash(data: &[u8]) -> [u8; OUT_LEN] {
 /// permutation and the pad is a constant.
 #[inline]
 pub fn hash_block(block: &[u8; 64]) -> [u8; OUT_LEN] {
-    #[cfg(all(target_arch = "aarch64", target_feature = "sha3"))]
-    return aarch64_sha3::hash_block(block);
-    #[cfg(not(all(target_arch = "aarch64", target_feature = "sha3")))]
-    {
-        let mut state = [0u64; STATE_LANES];
-        absorb_final(&mut state, block);
-        squeeze(&state)
-    }
+    md_one::<Single>(block, None)
 }
 
 /// Merkle-Damgard chain over [`hash_block`], for the messages the VM cannot
@@ -312,10 +310,7 @@ fn md_zero_filled(msg: &[u8], chain: impl Fn(&[u8]) -> [u8; OUT_LEN]) -> [u8; OU
 /// [`hash_md`] of a record that already is whole 32-byte groups, at least two.
 fn hash_md_padded(msg: &[u8]) -> [u8; OUT_LEN] {
     debug_assert!(msg.len() >= 64 && msg.len().is_multiple_of(32));
-    #[cfg(all(target_arch = "aarch64", target_feature = "sha3"))]
-    return aarch64_sha3::hash_md_one(msg, None);
-    #[cfg(not(all(target_arch = "aarch64", target_feature = "sha3")))]
-    hash_md_portable(msg)
+    md_one::<Single>(msg, None)
 }
 
 /// One 64-byte compression through [`permute_portable`]. 64 is under [`RATE`],
@@ -345,19 +340,7 @@ fn hash_md_portable(msg: &[u8]) -> [u8; OUT_LEN] {
 /// Continue a [`hash_md`] chain over the 32-byte groups of `rest`.
 pub fn hash_md_from_state(rest: &[u8], state: &[u8; OUT_LEN]) -> [u8; OUT_LEN] {
     debug_assert!(rest.len().is_multiple_of(32));
-    #[cfg(all(target_arch = "aarch64", target_feature = "sha3"))]
-    return aarch64_sha3::hash_md_one(rest, Some(state));
-    #[cfg(not(all(target_arch = "aarch64", target_feature = "sha3")))]
-    {
-        let mut st = *state;
-        let mut block = [0u8; 64];
-        for group in rest.chunks_exact(32) {
-            block[..32].copy_from_slice(&st);
-            block[32..].copy_from_slice(group);
-            st = compress64_portable(&block);
-        }
-        st
-    }
+    md_one::<Single>(rest, Some(state))
 }
 
 /// The [`hash_md`] state after `n_zero_groups` leading 32-byte groups of zeros,
@@ -383,9 +366,8 @@ pub fn hash_many_md(data: &[u8], len: usize, out: &mut [u8]) {
     let n = data.len().checked_div(len).unwrap_or(0);
     assert!(out.len() >= n * OUT_LEN, "digest buffer too small");
     let mut i = 0;
-    #[cfg(all(target_arch = "aarch64", target_feature = "sha3"))]
     if len >= 64 && len.is_multiple_of(32) {
-        i = aarch64_sha3::hash_many_md_pairs(data, len, None, out);
+        i = md_many::<Batch>(data, len, n, None, out);
     }
     while i < n {
         let d = hash_md(&data[i * len..(i + 1) * len]);
@@ -415,10 +397,7 @@ pub fn hash_many_md_from_state(data: &[u8], len: usize, state: &[u8; OUT_LEN], o
     let n = data.len().checked_div(len).unwrap_or(0);
     assert!(out.len() >= n * OUT_LEN, "digest buffer too small");
     assert!(len.is_multiple_of(32), "a record is whole 32-byte groups");
-    #[cfg(all(target_arch = "aarch64", target_feature = "sha3"))]
-    let mut i = aarch64_sha3::hash_many_md_pairs(data, len, Some(state), out);
-    #[cfg(not(all(target_arch = "aarch64", target_feature = "sha3")))]
-    let mut i = 0;
+    let mut i = md_many::<Batch>(data, len, n, Some(state), out);
     while i < n {
         let d = hash_md_from_state(&data[i * len..(i + 1) * len], state);
         out[i * OUT_LEN..(i + 1) * OUT_LEN].copy_from_slice(&d);
@@ -508,14 +487,10 @@ pub fn hash_from_state(data: &[u8], state: &[u64; STATE_LANES]) -> [u8; OUT_LEN]
 // Batched hashing (the PCS Merkle tree)
 // ---------------------------------------------------------------------------
 
-/// States hashed in one batch. On aarch64 the FEAT_SHA3 instructions are
-/// 128-bit, so two states share every register; elsewhere the portable
-/// permutation runs one at a time and batching only amortizes the loop.
-pub const LANES: usize = if cfg!(all(target_arch = "aarch64", target_feature = "sha3")) {
-    2
-} else {
-    1
-};
+/// States hashed in one batch: eight under AVX-512, four under AVX2, two under
+/// aarch64's FEAT_SHA3, one with no vector permutation to run. Batched entry
+/// points accept any count and run the remainder one at a time.
+pub const LANES: usize = <Batch as Lanes64>::WIDTH;
 
 /// SHA3-256 of each `LEN`-byte record of `data`, digests written in order.
 /// `LEN` is a constant because every caller knows its record size, which keeps
@@ -535,17 +510,20 @@ pub fn hash_many_dyn(data: &[u8], len: usize, out: &mut [u8]) {
 pub fn hash_many_dyn_from_state(data: &[u8], len: usize, state: &[u64; STATE_LANES], out: &mut [u8]) {
     let n = data.len().checked_div(len).unwrap_or(0);
     assert!(out.len() >= n * OUT_LEN, "digest buffer too small");
-    let mut i = 0;
-    #[cfg(all(target_arch = "aarch64", target_feature = "sha3"))]
-    while i + 2 <= n {
-        let (d0, d1) = aarch64_sha3::hash_pair_from_state(
-            &data[i * len..(i + 1) * len],
-            &data[(i + 1) * len..(i + 2) * len],
-            state,
-        );
-        out[i * OUT_LEN..(i + 1) * OUT_LEN].copy_from_slice(&d0);
-        out[(i + 1) * OUT_LEN..(i + 2) * OUT_LEN].copy_from_slice(&d1);
-        i += 2;
+    let mut i = n - n % LANES;
+    for g in 0..i / LANES {
+        let base = g * LANES;
+        // SAFETY: record `base + LANES - 1` ends at `i * len <= data.len()`, and
+        // its digest at `(base + LANES - 1) * OUT_LEN` is inside `out`.
+        unsafe {
+            sponge_group::<Batch>(
+                data.as_ptr().add(base * len),
+                len,
+                len,
+                state,
+                out.as_mut_ptr().add(base * OUT_LEN),
+            );
+        }
     }
     while i < n {
         let d = hash_from_state(&data[i * len..(i + 1) * len], state);
@@ -554,327 +532,584 @@ pub fn hash_many_dyn_from_state(data: &[u8], len: usize, state: &[u64; STATE_LAN
     }
 }
 
-/// Two independent sponges per NEON register, driven by FEAT_SHA3's `EOR3`,
-/// `RAX1`, `XAR` and `BCAX`. `BCAX(a, b, c) = a ^ (b & ~c)` is exactly `chi`,
-/// so the nonlinear layer is one instruction per lane pair, and
-/// `XAR(a, b, n) = rotr(a ^ b, n)` fuses `theta`'s per-lane XOR into `rho`'s
-/// rotation, so neither costs an instruction of its own. A round is then 10
-/// `EOR3`, 5 `RAX1`, 25 `XAR`, 25 `BCAX` and the `iota` `EOR`, for two states.
+// ---------------------------------------------------------------------------
+// The batched core
+// ---------------------------------------------------------------------------
+
+// `WIDTH` independent sponges share one set of vector registers: state lane `i`
+// of every one of them is a single vector, so a round is elementwise 64-bit work
+// with no cross-lane traffic. The permutation is written once over [`Lanes64`]
+// and instantiated per backend, which supply only `theta`'s parity, `theta`'s
+// XOR fused with `rho`'s rotation, and `chi`.
+//
+// The register file fixes the width: twenty-five lanes is twenty-five of the
+// thirty-two vector registers, so the state stays resident across all 24 rounds
+// and a wider batch spills. That is two states on aarch64's 128-bit registers
+// and eight on AVX-512's. AVX2 takes four, which does spill, and still wins for
+// having four times the XOR width and nothing else to spend it on.
+//
+// The instruction sets are not equal here. FEAT_SHA3 gives `BCAX` (`chi` in one
+// instruction), `EOR3`, `RAX1` and `XAR` (`theta`'s per-lane XOR fused into
+// `rho`'s rotation), so a round is 10 `EOR3`, 5 `RAX1`, 25 `XAR`, 25 `BCAX` and
+// the `iota` `EOR`. AVX-512 has no Keccak extension, but `vpternlogq` is an
+// arbitrary three-input bitwise function in one instruction, so `EOR3` is
+// immediate `0x96` and `BCAX` immediate `0xb4`; only `XAR` has no counterpart,
+// `vprorq` costing an instruction beyond the XOR. A round is then 96
+// instructions against aarch64's 66, for four times the states.
+
+/// The widest batch any backend runs, and the length of every scratch array the
+/// generic driver keeps on the stack.
+const MAX_LANES: usize = 8;
+
+/// One state lane across a whole batch: a vector of `WIDTH` 64-bit lanes.
 ///
-/// Twenty-five lanes of two states is twenty-five of the thirty-two vector
-/// registers, so the state stays resident across all 24 rounds. That is what
-/// fixes the width at two: a wider batch spills, and the round is written out
-/// rather than looped over the lanes because `XAR` takes its rotation as an
-/// immediate. A lone hash runs the same code with its state in both halves,
-/// which the fused instructions still pay for.
-#[cfg(all(target_arch = "aarch64", target_feature = "sha3"))]
-mod aarch64_sha3 {
-    use super::{DOMAIN, OUT_LEN, RATE, RC, STATE_LANES};
-    use core::arch::aarch64::*;
+/// # Safety
+/// `load` and `store` take raw pointers to `WIDTH` contiguous `u64`, and
+/// implementors may use unaligned vector accesses, so callers must keep those
+/// `WIDTH` elements in bounds.
+trait Lanes64: Copy {
+    /// States hashed together. A power of two, and at most [`MAX_LANES`].
+    const WIDTH: usize;
 
-    /// A pair of 32-byte digests, interleaved: lane 0 of each word is the first
-    /// state's, lane 1 the second's.
-    type Pair = [uint64x2_t; 4];
-
-    #[inline(always)]
-    unsafe fn eor3(a: uint64x2_t, b: uint64x2_t, c: uint64x2_t) -> uint64x2_t {
-        unsafe { veor3q_u64(a, b, c) }
-    }
-
+    fn splat(x: u64) -> Self;
+    fn xor(self, b: Self) -> Self;
+    /// `a ^ b ^ c`; `theta`'s column parity is two of these.
+    fn xor3(self, b: Self, c: Self) -> Self;
     /// `a ^ rotl(b, 1)`, which is `theta`'s `d` word.
-    #[inline(always)]
-    unsafe fn rax1(a: uint64x2_t, b: uint64x2_t) -> uint64x2_t {
-        unsafe { vrax1q_u64(a, b) }
-    }
-
-    /// `rotr(a ^ b, N)`.
-    #[inline(always)]
-    unsafe fn xar<const N: i32>(a: uint64x2_t, b: uint64x2_t) -> uint64x2_t {
-        unsafe { vxarq_u64::<N>(a, b) }
-    }
-
+    fn rax1(self, b: Self) -> Self;
+    /// `rotr(a ^ b, N)`: `theta`'s per-lane XOR and `rho`'s rotation, which one
+    /// instruction does on aarch64 and two everywhere else.
+    fn xor_rotr<const N: i32>(self, b: Self) -> Self;
     /// `a ^ (b & !c)`, which is `chi`.
-    #[inline(always)]
-    unsafe fn bcax(a: uint64x2_t, b: uint64x2_t, c: uint64x2_t) -> uint64x2_t {
-        unsafe { vbcaxq_u64(a, b, c) }
-    }
+    fn chi(self, b: Self, c: Self) -> Self;
+    /// Lane 0, which is the whole answer when a lone hash rides a batched
+    /// backend.
+    fn lane0(self) -> u64;
 
-    #[inline]
-    unsafe fn permute_x2(mut a: [uint64x2_t; STATE_LANES]) -> [uint64x2_t; STATE_LANES] {
-        unsafe {
-            for &rc in RC.iter() {
-                let c0 = eor3(eor3(a[0], a[5], a[10]), a[15], a[20]);
-                let c1 = eor3(eor3(a[1], a[6], a[11]), a[16], a[21]);
-                let c2 = eor3(eor3(a[2], a[7], a[12]), a[17], a[22]);
-                let c3 = eor3(eor3(a[3], a[8], a[13]), a[18], a[23]);
-                let c4 = eor3(eor3(a[4], a[9], a[14]), a[19], a[24]);
-                let d0 = rax1(c4, c1);
-                let d1 = rax1(c0, c2);
-                let d2 = rax1(c1, c3);
-                let d3 = rax1(c2, c4);
-                let d4 = rax1(c3, c0);
+    /// # Safety
+    /// `p` must be valid for reads of `WIDTH` `u64`.
+    unsafe fn load(p: *const u64) -> Self;
 
-                let b00 = xar::<0>(a[0], d0);
-                let b01 = xar::<20>(a[6], d1);
-                let b02 = xar::<21>(a[12], d2);
-                let b03 = xar::<43>(a[18], d3);
-                let b04 = xar::<50>(a[24], d4);
-                let b05 = xar::<36>(a[3], d3);
-                let b06 = xar::<44>(a[9], d4);
-                let b07 = xar::<61>(a[10], d0);
-                let b08 = xar::<19>(a[16], d1);
-                let b09 = xar::<3>(a[22], d2);
-                let b10 = xar::<63>(a[1], d1);
-                let b11 = xar::<58>(a[7], d2);
-                let b12 = xar::<39>(a[13], d3);
-                let b13 = xar::<56>(a[19], d4);
-                let b14 = xar::<46>(a[20], d0);
-                let b15 = xar::<37>(a[4], d4);
-                let b16 = xar::<28>(a[5], d0);
-                let b17 = xar::<54>(a[11], d1);
-                let b18 = xar::<49>(a[17], d2);
-                let b19 = xar::<8>(a[23], d3);
-                let b20 = xar::<2>(a[2], d2);
-                let b21 = xar::<9>(a[8], d3);
-                let b22 = xar::<25>(a[14], d4);
-                let b23 = xar::<23>(a[15], d0);
-                let b24 = xar::<62>(a[21], d1);
+    /// # Safety
+    /// `p` must be valid for writes of `WIDTH` `u64`.
+    unsafe fn store(self, p: *mut u64);
 
-                a[0] = bcax(b00, b02, b01);
-                a[1] = bcax(b01, b03, b02);
-                a[2] = bcax(b02, b04, b03);
-                a[3] = bcax(b03, b00, b04);
-                a[4] = bcax(b04, b01, b00);
-                a[5] = bcax(b05, b07, b06);
-                a[6] = bcax(b06, b08, b07);
-                a[7] = bcax(b07, b09, b08);
-                a[8] = bcax(b08, b05, b09);
-                a[9] = bcax(b09, b06, b05);
-                a[10] = bcax(b10, b12, b11);
-                a[11] = bcax(b11, b13, b12);
-                a[12] = bcax(b12, b14, b13);
-                a[13] = bcax(b13, b10, b14);
-                a[14] = bcax(b14, b11, b10);
-                a[15] = bcax(b15, b17, b16);
-                a[16] = bcax(b16, b18, b17);
-                a[17] = bcax(b17, b19, b18);
-                a[18] = bcax(b18, b15, b19);
-                a[19] = bcax(b19, b16, b15);
-                a[20] = bcax(b20, b22, b21);
-                a[21] = bcax(b21, b23, b22);
-                a[22] = bcax(b22, b24, b23);
-                a[23] = bcax(b23, b20, b24);
-                a[24] = bcax(b24, b21, b20);
-
-                a[0] = veorq_u64(a[0], vdupq_n_u64(rc));
-            }
-            a
-        }
-    }
-
-    /// Absorb eight lanes and the constant 64-byte pad, then permute: one link
-    /// of the [`super::hash_md`] chain, and the whole of a 64-byte SHA3-256.
-    /// The pad is constant because the length is: `0x06` at byte 64 and the
-    /// final `0x80` at byte `RATE - 1`.
-    #[inline]
-    unsafe fn link(l: [uint64x2_t; 8]) -> Pair {
-        unsafe {
-            let mut a = [vdupq_n_u64(0); STATE_LANES];
-            a[0] = l[0];
-            a[1] = l[1];
-            a[2] = l[2];
-            a[3] = l[3];
-            a[4] = l[4];
-            a[5] = l[5];
-            a[6] = l[6];
-            a[7] = l[7];
-            a[8] = vdupq_n_u64(DOMAIN as u64);
-            a[16] = vdupq_n_u64(0x80u64 << 56);
-            let a = permute_x2(a);
-            [a[0], a[1], a[2], a[3]]
-        }
-    }
-
-    /// The four interleaved lanes of 32 bytes read from each pointer. Pass the
-    /// same pointer twice to run one chain in both halves.
-    #[inline(always)]
-    unsafe fn load32(p0: *const u8, p1: *const u8) -> Pair {
-        unsafe {
-            let x0 = vreinterpretq_u64_u8(vld1q_u8(p0));
-            let x1 = vreinterpretq_u64_u8(vld1q_u8(p0.add(16)));
-            let y0 = vreinterpretq_u64_u8(vld1q_u8(p1));
-            let y1 = vreinterpretq_u64_u8(vld1q_u8(p1.add(16)));
-            [
-                vzip1q_u64(x0, y0),
-                vzip2q_u64(x0, y0),
-                vzip1q_u64(x1, y1),
-                vzip2q_u64(x1, y1),
-            ]
-        }
-    }
-
-    /// De-interleave a digest pair into 32 bytes at each pointer.
-    #[inline(always)]
-    unsafe fn store32(v: Pair, o0: *mut u8, o1: *mut u8) {
-        unsafe {
-            vst1q_u8(o0, vreinterpretq_u8_u64(vzip1q_u64(v[0], v[1])));
-            vst1q_u8(o0.add(16), vreinterpretq_u8_u64(vzip1q_u64(v[2], v[3])));
-            vst1q_u8(o1, vreinterpretq_u8_u64(vzip2q_u64(v[0], v[1])));
-            vst1q_u8(o1.add(16), vreinterpretq_u8_u64(vzip2q_u64(v[2], v[3])));
-        }
-    }
-
-    /// One [`super::hash_md`] chain per pointer, walked together: 64 bytes open
-    /// it, then a 32-byte group a link. `len` is a whole number of groups and at
-    /// least 64, or, with `st`, a whole number of groups continuing that state.
+    /// Lane `l` is the little-endian `u64` at `base + l * stride + off`. A
+    /// `stride` of 0 puts one input in every lane, which is how a lone hash runs
+    /// on a batched backend.
     ///
-    /// SAFETY: both pointers must be readable for `len` bytes.
-    #[inline]
-    unsafe fn chain(p0: *const u8, p1: *const u8, len: usize, st: Option<Pair>) -> Pair {
-        unsafe {
-            let (mut acc, mut off) = match st {
-                Some(st) => (st, 0),
-                None => {
-                    let lo = load32(p0, p1);
-                    let hi = load32(p0.add(32), p1.add(32));
-                    (link([lo[0], lo[1], lo[2], lo[3], hi[0], hi[1], hi[2], hi[3]]), 64)
-                }
-            };
-            while off < len {
-                let g = load32(p0.add(off), p1.add(off));
-                acc = link([acc[0], acc[1], acc[2], acc[3], g[0], g[1], g[2], g[3]]);
-                off += 32;
-            }
-            acc
+    /// # Safety
+    /// Every `base + l * stride + off` must be valid for 8 readable bytes.
+    #[inline(always)]
+    unsafe fn gather(base: *const u8, stride: usize, off: usize) -> Self {
+        let mut w = [0u64; MAX_LANES];
+        for (l, slot) in w[..Self::WIDTH].iter_mut().enumerate() {
+            // SAFETY: the caller guarantees 8 readable bytes at every lane.
+            *slot = unsafe { base.add(l * stride + off).cast::<u64>().read_unaligned() };
         }
+        // SAFETY: `w` holds MAX_LANES >= WIDTH words.
+        unsafe { Self::load(w.as_ptr()) }
     }
 
-    /// A chain state broadcast into both halves.
-    #[inline]
-    fn broadcast(state: &[u8; OUT_LEN]) -> Pair {
-        // SAFETY: no memory is touched; `state` is read as four words.
-        unsafe { std::array::from_fn(|i| vdupq_n_u64(u64::from_le_bytes(state[8 * i..8 * i + 8].try_into().unwrap()))) }
-    }
-
-    /// [`super::hash_many_md`] and [`super::hash_many_md_from_state`] over the
-    /// even prefix of the records, two chains at a time. Returns how many
-    /// records were written, always even.
-    pub fn hash_many_md_pairs(data: &[u8], len: usize, state: Option<&[u8; OUT_LEN]>, out: &mut [u8]) -> usize {
-        let n = (data.len() / len) & !1;
-        let st = state.map(broadcast);
-        for p in 0..n / 2 {
-            // SAFETY: record `2p+1` ends at `(2p + 2) * len <= data.len()`, and the
-            // two 32-byte digests at `2p * OUT_LEN` are inside `out`, which the
-            // caller checked holds `data.len() / len` of them.
-            unsafe {
-                let p0 = data.as_ptr().add(2 * p * len);
-                let acc = chain(p0, p0.add(len), len, st);
-                let o0 = out.as_mut_ptr().add(2 * p * OUT_LEN);
-                store32(acc, o0, o0.add(OUT_LEN));
-            }
+    /// De-interleave the four digest words into `WIDTH` consecutive 32-byte
+    /// digests.
+    ///
+    /// # Safety
+    /// `out` must be valid for writes of `WIDTH * OUT_LEN` bytes.
+    #[inline(always)]
+    unsafe fn store_digests(h: &[Self; 4], out: *mut u8) {
+        let mut w = [0u64; 4 * MAX_LANES];
+        for (i, hi) in h.iter().enumerate() {
+            // SAFETY: `w` holds 4 * MAX_LANES >= 4 * WIDTH words.
+            unsafe { hi.store(w.as_mut_ptr().add(i * Self::WIDTH)) };
         }
-        n
-    }
-
-    /// One [`super::hash_md`] chain, in lanes: the same code with the record in
-    /// both halves.
-    pub fn hash_md_one(rec: &[u8], state: Option<&[u8; OUT_LEN]>) -> [u8; OUT_LEN] {
-        let mut out = [0u8; 2 * OUT_LEN];
-        // SAFETY: `rec` is `rec.len()` readable bytes, read twice, and `out`
-        // holds the two 32-byte halves the de-interleave writes.
-        unsafe {
-            let p = rec.as_ptr();
-            let acc = chain(p, p, rec.len(), state.map(broadcast));
-            store32(acc, out.as_mut_ptr(), out.as_mut_ptr().add(OUT_LEN));
-        }
-        out[..OUT_LEN].try_into().unwrap()
-    }
-
-    /// SHA3-256 of exactly 64 bytes.
-    pub fn hash_block(block: &[u8; 64]) -> [u8; OUT_LEN] {
-        hash_md_one(block, None)
-    }
-
-    /// `Keccak-f[1600]` on one state, which is [`permute_x2`] with the state in
-    /// both halves. Half the width goes unused; the fused instructions and the
-    /// absence of spills still beat the portable permutation.
-    pub fn permute(state: &mut [u64; STATE_LANES]) {
-        // SAFETY: `state` is 8-aligned and 25 words long, and every store below
-        // writes one of those words.
-        unsafe {
-            let a = permute_x2(std::array::from_fn(|i| vdupq_n_u64(state[i])));
-            for (i, v) in a.iter().enumerate() {
-                vst1_u64(state.as_mut_ptr().add(i), vget_low_u64(*v));
+        for lane in 0..Self::WIDTH {
+            for i in 0..4 {
+                let bytes = w[i * Self::WIDTH + lane].to_le_bytes();
+                // SAFETY: `lane * 32 + 8 * i + 8 <= WIDTH * OUT_LEN`.
+                unsafe {
+                    out.add(lane * OUT_LEN + 8 * i)
+                        .copy_from_nonoverlapping(bytes.as_ptr(), 8)
+                };
             }
-        }
-    }
-
-    /// SHA3-256 of two equal-length messages, resuming from a shared state:
-    /// the plain sponge, absorbing whole [`RATE`] blocks.
-    pub fn hash_pair_from_state(m0: &[u8], m1: &[u8], state: &[u64; STATE_LANES]) -> ([u8; OUT_LEN], [u8; OUT_LEN]) {
-        debug_assert_eq!(m0.len(), m1.len());
-        // SAFETY: the loads below stay inside `m0` and `m1`, and the digests are
-        // written to local arrays.
-        unsafe {
-            let mut a: [uint64x2_t; STATE_LANES] = std::array::from_fn(|i| vdupq_n_u64(state[i]));
-            let (mut r0, mut r1) = (m0, m1);
-            while r0.len() >= RATE {
-                xor_pair(&mut a, &r0[..RATE], &r1[..RATE]);
-                a = permute_x2(a);
-                r0 = &r0[RATE..];
-                r1 = &r1[RATE..];
-            }
-            xor_pair(&mut a, r0, r1);
-            pad_pair(&mut a, r0.len());
-            let a = permute_x2(a);
-            let mut out = [0u8; 2 * OUT_LEN];
-            store32(
-                [a[0], a[1], a[2], a[3]],
-                out.as_mut_ptr(),
-                out.as_mut_ptr().add(OUT_LEN),
-            );
-            (out[..OUT_LEN].try_into().unwrap(), out[OUT_LEN..].try_into().unwrap())
-        }
-    }
-
-    /// XOR two messages into the rate, a lane of each state at a time and the
-    /// odd tail byte by byte.
-    #[inline]
-    unsafe fn xor_pair(a: &mut [uint64x2_t; STATE_LANES], b0: &[u8], b1: &[u8]) {
-        unsafe {
-            let whole = b0.len() / 8;
-            for l in 0..whole {
-                let w0 = u64::from_le_bytes(b0[8 * l..8 * l + 8].try_into().unwrap());
-                let w1 = u64::from_le_bytes(b1[8 * l..8 * l + 8].try_into().unwrap());
-                a[l] = veorq_u64(a[l], vcombine_u64(vcreate_u64(w0), vcreate_u64(w1)));
-            }
-            let mut t0 = 0u64;
-            let mut t1 = 0u64;
-            for (i, (&x, &y)) in b0[8 * whole..].iter().zip(&b1[8 * whole..]).enumerate() {
-                t0 |= (x as u64) << (8 * i);
-                t1 |= (y as u64) << (8 * i);
-            }
-            if t0 | t1 != 0 {
-                a[whole] = veorq_u64(a[whole], vcombine_u64(vcreate_u64(t0), vcreate_u64(t1)));
-            }
-        }
-    }
-
-    /// `pad10*1` around the domain byte, for a tail shorter than [`RATE`].
-    #[inline]
-    unsafe fn pad_pair(a: &mut [uint64x2_t; STATE_LANES], tail: usize) {
-        unsafe {
-            let d = vdupq_n_u64((DOMAIN as u64) << (8 * (tail % 8)));
-            a[tail / 8] = veorq_u64(a[tail / 8], d);
-            let e = vdupq_n_u64(0x80u64 << (8 * ((RATE - 1) % 8)));
-            a[(RATE - 1) / 8] = veorq_u64(a[(RATE - 1) / 8], e);
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+/// The portable backend, and the reference the SIMD ones are checked against.
+/// Also what a lone hash runs on wherever the batched backend is wider than
+/// aarch64's two, since there the idle lanes are not paid for by fused
+/// instructions.
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+struct Scalar(u64);
+
+impl Lanes64 for Scalar {
+    const WIDTH: usize = 1;
+
+    #[inline(always)]
+    fn splat(x: u64) -> Self {
+        Self(x)
+    }
+    #[inline(always)]
+    fn xor(self, b: Self) -> Self {
+        Self(self.0 ^ b.0)
+    }
+    #[inline(always)]
+    fn xor3(self, b: Self, c: Self) -> Self {
+        Self(self.0 ^ b.0 ^ c.0)
+    }
+    #[inline(always)]
+    fn rax1(self, b: Self) -> Self {
+        Self(self.0 ^ b.0.rotate_left(1))
+    }
+    #[inline(always)]
+    fn xor_rotr<const N: i32>(self, b: Self) -> Self {
+        Self((self.0 ^ b.0).rotate_right(N as u32))
+    }
+    #[inline(always)]
+    fn chi(self, b: Self, c: Self) -> Self {
+        Self(self.0 ^ (b.0 & !c.0))
+    }
+    #[inline(always)]
+    fn lane0(self) -> u64 {
+        self.0
+    }
+    #[inline(always)]
+    unsafe fn load(p: *const u64) -> Self {
+        Self(unsafe { *p })
+    }
+    #[inline(always)]
+    unsafe fn store(self, p: *mut u64) {
+        unsafe { *p = self.0 };
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_feature = "sha3"))]
+mod arm {
+    use super::Lanes64;
+    use core::arch::aarch64::*;
+
+    /// Two states per Q register, driven by FEAT_SHA3's `EOR3`, `RAX1`, `XAR`
+    /// and `BCAX`.
+    #[derive(Clone, Copy)]
+    pub(super) struct Neon(uint64x2_t);
+
+    impl Lanes64 for Neon {
+        const WIDTH: usize = 2;
+
+        #[inline(always)]
+        fn splat(x: u64) -> Self {
+            Self(unsafe { vdupq_n_u64(x) })
+        }
+        #[inline(always)]
+        fn xor(self, b: Self) -> Self {
+            Self(unsafe { veorq_u64(self.0, b.0) })
+        }
+        #[inline(always)]
+        fn xor3(self, b: Self, c: Self) -> Self {
+            Self(unsafe { veor3q_u64(self.0, b.0, c.0) })
+        }
+        #[inline(always)]
+        fn rax1(self, b: Self) -> Self {
+            Self(unsafe { vrax1q_u64(self.0, b.0) })
+        }
+        #[inline(always)]
+        fn xor_rotr<const N: i32>(self, b: Self) -> Self {
+            Self(unsafe { vxarq_u64::<N>(self.0, b.0) })
+        }
+        #[inline(always)]
+        fn chi(self, b: Self, c: Self) -> Self {
+            Self(unsafe { vbcaxq_u64(self.0, b.0, c.0) })
+        }
+        #[inline(always)]
+        fn lane0(self) -> u64 {
+            unsafe { vgetq_lane_u64::<0>(self.0) }
+        }
+        #[inline(always)]
+        unsafe fn load(p: *const u64) -> Self {
+            Self(unsafe { vld1q_u64(p) })
+        }
+        #[inline(always)]
+        unsafe fn store(self, p: *mut u64) {
+            unsafe { vst1q_u64(p, self.0) };
+        }
+        /// Two scalar loads and one `INS`, which is what the hand-written pair
+        /// loader did before this was written over [`Lanes64`]. The default's
+        /// stack round trip measured the same on the wider x86 backends, so
+        /// this is conservatism about a host that cannot be measured here, not
+        /// a known win.
+        #[inline(always)]
+        unsafe fn gather(base: *const u8, stride: usize, off: usize) -> Self {
+            unsafe {
+                let w0 = base.add(off).cast::<u64>().read_unaligned();
+                let w1 = base.add(stride + off).cast::<u64>().read_unaligned();
+                Self(vcombine_u64(vcreate_u64(w0), vcreate_u64(w1)))
+            }
+        }
+        /// The digest pair de-interleaved by `ZIP1`/`ZIP2`, as above.
+        #[inline(always)]
+        unsafe fn store_digests(h: &[Self; 4], out: *mut u8) {
+            unsafe {
+                let o1 = out.add(super::OUT_LEN);
+                vst1q_u8(out, vreinterpretq_u8_u64(vzip1q_u64(h[0].0, h[1].0)));
+                vst1q_u8(out.add(16), vreinterpretq_u8_u64(vzip1q_u64(h[2].0, h[3].0)));
+                vst1q_u8(o1, vreinterpretq_u8_u64(vzip2q_u64(h[0].0, h[1].0)));
+                vst1q_u8(o1.add(16), vreinterpretq_u8_u64(vzip2q_u64(h[2].0, h[3].0)));
+            }
+        }
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+mod x86 {
+    use super::Lanes64;
+    use core::arch::x86_64::*;
+
+    /// AVX2: four states, at four registers each, so the state does not stay
+    /// resident and the round pays some spill traffic. Kept anyway because it is
+    /// still four XORs an instruction, and because most x86 has no AVX-512.
+    ///
+    /// Unused by the library on an AVX-512 target (the dispatch is compile
+    /// time), but always exercised by `every_backend_matches_scalar`.
+    #[cfg_attr(target_feature = "avx512f", allow(dead_code))]
+    #[derive(Clone, Copy)]
+    pub(super) struct Avx2(__m256i);
+
+    /// `rotr` by a constant, as the shift pair AVX2 has to spell it. The count
+    /// travels in an `xmm` because the const-generic shift wants `64 - N`, which
+    /// is not an expression a stable const generic may hold; LLVM folds the
+    /// splat back into the shift's immediate.
+    #[inline(always)]
+    unsafe fn ror(x: __m256i, n: i32) -> __m256i {
+        unsafe {
+            if n == 0 {
+                return x;
+            }
+            _mm256_or_si256(
+                _mm256_srl_epi64(x, _mm_cvtsi32_si128(n)),
+                _mm256_sll_epi64(x, _mm_cvtsi32_si128(64 - n)),
+            )
+        }
+    }
+
+    impl Lanes64 for Avx2 {
+        const WIDTH: usize = 4;
+
+        #[inline(always)]
+        fn splat(x: u64) -> Self {
+            Self(unsafe { _mm256_set1_epi64x(x as i64) })
+        }
+        #[inline(always)]
+        fn xor(self, b: Self) -> Self {
+            Self(unsafe { _mm256_xor_si256(self.0, b.0) })
+        }
+        #[inline(always)]
+        fn xor3(self, b: Self, c: Self) -> Self {
+            Self(unsafe { _mm256_xor_si256(_mm256_xor_si256(self.0, b.0), c.0) })
+        }
+        #[inline(always)]
+        fn rax1(self, b: Self) -> Self {
+            Self(unsafe { _mm256_xor_si256(self.0, ror(b.0, 63)) })
+        }
+        #[inline(always)]
+        fn xor_rotr<const N: i32>(self, b: Self) -> Self {
+            Self(unsafe { ror(_mm256_xor_si256(self.0, b.0), N) })
+        }
+        #[inline(always)]
+        fn chi(self, b: Self, c: Self) -> Self {
+            Self(unsafe { _mm256_xor_si256(self.0, _mm256_andnot_si256(c.0, b.0)) })
+        }
+        #[inline(always)]
+        fn lane0(self) -> u64 {
+            unsafe { _mm_cvtsi128_si64(_mm256_castsi256_si128(self.0)) as u64 }
+        }
+        #[inline(always)]
+        unsafe fn load(p: *const u64) -> Self {
+            Self(unsafe { _mm256_loadu_si256(p.cast()) })
+        }
+        #[inline(always)]
+        unsafe fn store(self, p: *mut u64) {
+            unsafe { _mm256_storeu_si256(p.cast(), self.0) };
+        }
+    }
+
+    /// AVX-512: eight states, `vpternlogq` for `chi` and `theta`'s parity, and
+    /// `vprorq` for `rho`.
+    #[cfg(target_feature = "avx512f")]
+    #[derive(Clone, Copy)]
+    pub(super) struct Avx512(__m512i);
+
+    #[cfg(target_feature = "avx512f")]
+    impl Lanes64 for Avx512 {
+        const WIDTH: usize = 8;
+
+        #[inline(always)]
+        fn splat(x: u64) -> Self {
+            Self(unsafe { _mm512_set1_epi64(x as i64) })
+        }
+        #[inline(always)]
+        fn xor(self, b: Self) -> Self {
+            Self(unsafe { _mm512_xor_si512(self.0, b.0) })
+        }
+        #[inline(always)]
+        fn xor3(self, b: Self, c: Self) -> Self {
+            Self(unsafe { _mm512_ternarylogic_epi64::<0x96>(self.0, b.0, c.0) })
+        }
+        #[inline(always)]
+        fn rax1(self, b: Self) -> Self {
+            Self(unsafe { _mm512_xor_si512(self.0, _mm512_rol_epi64::<1>(b.0)) })
+        }
+        #[inline(always)]
+        fn xor_rotr<const N: i32>(self, b: Self) -> Self {
+            Self(unsafe { _mm512_ror_epi64::<N>(_mm512_xor_si512(self.0, b.0)) })
+        }
+        #[inline(always)]
+        fn chi(self, b: Self, c: Self) -> Self {
+            Self(unsafe { _mm512_ternarylogic_epi64::<0xb4>(self.0, b.0, c.0) })
+        }
+        #[inline(always)]
+        fn lane0(self) -> u64 {
+            unsafe { _mm_cvtsi128_si64(_mm512_castsi512_si128(self.0)) as u64 }
+        }
+        #[inline(always)]
+        unsafe fn load(p: *const u64) -> Self {
+            Self(unsafe { _mm512_loadu_si512(p.cast()) })
+        }
+        #[inline(always)]
+        unsafe fn store(self, p: *mut u64) {
+            unsafe { _mm512_storeu_si512(p.cast(), self.0) };
+        }
+    }
+}
+
+/// The backend a batch of independent hashes runs on.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+type Batch = x86::Avx512;
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f"), target_feature = "avx2"))]
+type Batch = x86::Avx2;
+#[cfg(all(target_arch = "aarch64", target_feature = "sha3"))]
+type Batch = arm::Neon;
+#[cfg(not(any(
+    all(target_arch = "x86_64", target_feature = "avx2"),
+    all(target_arch = "aarch64", target_feature = "sha3")
+)))]
+type Batch = Scalar;
+
+/// The backend a lone hash runs on, with the same input in every lane. Only
+/// aarch64 wants a vector there: FEAT_SHA3's fused instructions pay for the one
+/// idle lane, where a wider x86 vector would waste seven and lose to the scalar
+/// permutation.
+#[cfg(all(target_arch = "aarch64", target_feature = "sha3"))]
+type Single = arm::Neon;
+#[cfg(not(all(target_arch = "aarch64", target_feature = "sha3")))]
+type Single = Scalar;
+
+/// `Keccak-f[1600]` on `S::WIDTH` states at once.
+#[inline(always)]
+fn permute_lanes<S: Lanes64>(mut a: [S; STATE_LANES]) -> [S; STATE_LANES] {
+    for &rc in RC.iter() {
+        let c0 = a[0].xor3(a[5], a[10]).xor3(a[15], a[20]);
+        let c1 = a[1].xor3(a[6], a[11]).xor3(a[16], a[21]);
+        let c2 = a[2].xor3(a[7], a[12]).xor3(a[17], a[22]);
+        let c3 = a[3].xor3(a[8], a[13]).xor3(a[18], a[23]);
+        let c4 = a[4].xor3(a[9], a[14]).xor3(a[19], a[24]);
+        let d0 = c4.rax1(c1);
+        let d1 = c0.rax1(c2);
+        let d2 = c1.rax1(c3);
+        let d3 = c2.rax1(c4);
+        let d4 = c3.rax1(c0);
+
+        // `rho` and `pi` gathered: lane `PI[i]` of the theta'd state, rotated
+        // left by `RHO[PI[i]]`, which is the `64 - N` these spell as a rotate
+        // right.
+        let b00 = a[0].xor_rotr::<0>(d0);
+        let b01 = a[6].xor_rotr::<20>(d1);
+        let b02 = a[12].xor_rotr::<21>(d2);
+        let b03 = a[18].xor_rotr::<43>(d3);
+        let b04 = a[24].xor_rotr::<50>(d4);
+        let b05 = a[3].xor_rotr::<36>(d3);
+        let b06 = a[9].xor_rotr::<44>(d4);
+        let b07 = a[10].xor_rotr::<61>(d0);
+        let b08 = a[16].xor_rotr::<19>(d1);
+        let b09 = a[22].xor_rotr::<3>(d2);
+        let b10 = a[1].xor_rotr::<63>(d1);
+        let b11 = a[7].xor_rotr::<58>(d2);
+        let b12 = a[13].xor_rotr::<39>(d3);
+        let b13 = a[19].xor_rotr::<56>(d4);
+        let b14 = a[20].xor_rotr::<46>(d0);
+        let b15 = a[4].xor_rotr::<37>(d4);
+        let b16 = a[5].xor_rotr::<28>(d0);
+        let b17 = a[11].xor_rotr::<54>(d1);
+        let b18 = a[17].xor_rotr::<49>(d2);
+        let b19 = a[23].xor_rotr::<8>(d3);
+        let b20 = a[2].xor_rotr::<2>(d2);
+        let b21 = a[8].xor_rotr::<9>(d3);
+        let b22 = a[14].xor_rotr::<25>(d4);
+        let b23 = a[15].xor_rotr::<23>(d0);
+        let b24 = a[21].xor_rotr::<62>(d1);
+
+        a[0] = b00.chi(b02, b01);
+        a[1] = b01.chi(b03, b02);
+        a[2] = b02.chi(b04, b03);
+        a[3] = b03.chi(b00, b04);
+        a[4] = b04.chi(b01, b00);
+        a[5] = b05.chi(b07, b06);
+        a[6] = b06.chi(b08, b07);
+        a[7] = b07.chi(b09, b08);
+        a[8] = b08.chi(b05, b09);
+        a[9] = b09.chi(b06, b05);
+        a[10] = b10.chi(b12, b11);
+        a[11] = b11.chi(b13, b12);
+        a[12] = b12.chi(b14, b13);
+        a[13] = b13.chi(b10, b14);
+        a[14] = b14.chi(b11, b10);
+        a[15] = b15.chi(b17, b16);
+        a[16] = b16.chi(b18, b17);
+        a[17] = b17.chi(b19, b18);
+        a[18] = b18.chi(b15, b19);
+        a[19] = b19.chi(b16, b15);
+        a[20] = b20.chi(b22, b21);
+        a[21] = b21.chi(b23, b22);
+        a[22] = b22.chi(b24, b23);
+        a[23] = b23.chi(b20, b24);
+        a[24] = b24.chi(b21, b20);
+
+        a[0] = a[0].xor(S::splat(rc));
+    }
+    a
+}
+
+/// One link of the [`hash_md`] chain, and the whole of a 64-byte SHA3-256:
+/// absorb `acc ‖ m` and the constant 64-byte pad, permute, keep the digest.
+/// The pad is constant because the length is: `0x06` at byte 64 and the final
+/// `0x80` at byte `RATE - 1`.
+#[inline]
+fn link<S: Lanes64>(acc: [S; 4], m: [S; 4]) -> [S; 4] {
+    let mut a = [S::splat(0); STATE_LANES];
+    a[..4].copy_from_slice(&acc);
+    a[4..8].copy_from_slice(&m);
+    a[8] = S::splat(DOMAIN as u64);
+    a[16] = S::splat(0x80u64 << 56);
+    let a = permute_lanes(a);
+    [a[0], a[1], a[2], a[3]]
+}
+
+/// `S::WIDTH` [`hash_md`] chains walked together, one per lane: 64 bytes open
+/// each, then a 32-byte group a link, or, with `st`, whole groups continuing
+/// that state. Lane `l` reads `base + l * stride`, so a `stride` of 0 runs one
+/// record in every lane.
+///
+/// # Safety
+/// Every `base + l * stride` must be valid for `len` readable bytes, `len` a
+/// whole number of 32-byte groups and at least 64 unless `st` is given, and
+/// `out` valid for `S::WIDTH * OUT_LEN` writable bytes.
+unsafe fn md_group<S: Lanes64>(base: *const u8, stride: usize, len: usize, st: Option<&[u8; OUT_LEN]>, out: *mut u8) {
+    // SAFETY: the caller guarantees `len` readable bytes in every lane, and
+    // `group` is only ever called at offsets inside that.
+    let group = |off: usize| -> [S; 4] { std::array::from_fn(|j| unsafe { S::gather(base, stride, off + 8 * j) }) };
+    let (mut acc, mut off) = match st {
+        Some(s) => {
+            let words = |i: usize| u64::from_le_bytes(s[8 * i..8 * i + 8].try_into().unwrap());
+            (std::array::from_fn(|i| S::splat(words(i))), 0)
+        }
+        None => (link(group(0), group(32)), 64),
+    };
+    while off < len {
+        acc = link(acc, group(off));
+        off += 32;
+    }
+    // SAFETY: the caller guarantees `WIDTH * OUT_LEN` writable bytes at `out`.
+    unsafe { S::store_digests(&acc, out) };
+}
+
+/// One [`hash_md`] chain, with the record in every lane of `S`.
+fn md_one<S: Lanes64>(rec: &[u8], st: Option<&[u8; OUT_LEN]>) -> [u8; OUT_LEN] {
+    let mut out = [0u8; MAX_LANES * OUT_LEN];
+    // SAFETY: a stride of 0 reads `rec` in every lane, and `out` holds
+    // MAX_LANES >= WIDTH digests.
+    unsafe { md_group::<S>(rec.as_ptr(), 0, rec.len(), st, out.as_mut_ptr()) };
+    out[..OUT_LEN].try_into().unwrap()
+}
+
+/// [`hash_many_md`] and [`hash_many_md_from_state`] over the `S::WIDTH`-aligned
+/// prefix of `n` records of `len` bytes. Returns how many were written.
+fn md_many<S: Lanes64>(data: &[u8], len: usize, n: usize, st: Option<&[u8; OUT_LEN]>, out: &mut [u8]) -> usize {
+    let whole = n - n % S::WIDTH;
+    assert!(data.len() >= whole * len && out.len() >= whole * OUT_LEN);
+    for g in 0..whole / S::WIDTH {
+        let base = g * S::WIDTH;
+        // SAFETY: record `base + WIDTH - 1` ends at `whole * len <= data.len()`,
+        // and the `WIDTH` digests at `base * OUT_LEN` are inside `out`.
+        unsafe {
+            md_group::<S>(
+                data.as_ptr().add(base * len),
+                len,
+                len,
+                st,
+                out.as_mut_ptr().add(base * OUT_LEN),
+            );
+        }
+    }
+    whole
+}
+
+/// XOR `n` bytes of every lane's message, starting at record offset `off`, into
+/// the rate.
+///
+/// # Safety
+/// Every `base + l * stride + off` must be valid for `n` readable bytes, with
+/// `n <= RATE`.
+#[inline]
+unsafe fn xor_rate_lanes<S: Lanes64>(a: &mut [S; STATE_LANES], base: *const u8, stride: usize, off: usize, n: usize) {
+    unsafe {
+        let whole = n / 8;
+        for (l, slot) in a[..whole].iter_mut().enumerate() {
+            *slot = slot.xor(S::gather(base, stride, off + 8 * l));
+        }
+        let rem = n % 8;
+        if rem != 0 {
+            let mut w = [0u64; MAX_LANES];
+            for (lane, slot) in w[..S::WIDTH].iter_mut().enumerate() {
+                let p = base.add(lane * stride + off + 8 * whole);
+                for i in 0..rem {
+                    *slot |= (*p.add(i) as u64) << (8 * i);
+                }
+            }
+            a[whole] = a[whole].xor(S::load(w.as_ptr()));
+        }
+    }
+}
+
+/// `S::WIDTH` plain sponges of `len` bytes each, resuming from a shared state:
+/// absorb whole [`RATE`] blocks, then the tail and `pad10*1`.
+///
+/// # Safety
+/// Every `base + l * stride` must be valid for `len` readable bytes, and `out`
+/// for `S::WIDTH * OUT_LEN` writable bytes.
+unsafe fn sponge_group<S: Lanes64>(
+    base: *const u8,
+    stride: usize,
+    len: usize,
+    state: &[u64; STATE_LANES],
+    out: *mut u8,
+) {
+    unsafe {
+        let mut a: [S; STATE_LANES] = std::array::from_fn(|i| S::splat(state[i]));
+        let mut off = 0;
+        while len - off >= RATE {
+            xor_rate_lanes::<S>(&mut a, base, stride, off, RATE);
+            a = permute_lanes(a);
+            off += RATE;
+        }
+        let tail = len - off;
+        xor_rate_lanes::<S>(&mut a, base, stride, off, tail);
+        a[tail / 8] = a[tail / 8].xor(S::splat((DOMAIN as u64) << (8 * (tail % 8))));
+        a[(RATE - 1) / 8] = a[(RATE - 1) / 8].xor(S::splat(0x80u64 << (8 * ((RATE - 1) % 8))));
+        let a = permute_lanes(a);
+        S::store_digests(&[a[0], a[1], a[2], a[3]], out);
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -958,13 +1193,18 @@ mod tests {
     #[test]
     fn hash_many_matches_hash() {
         for len in [1usize, 32, 64, RATE - 1, RATE, RATE + 1, 2 * RATE + 5] {
-            let n = 5;
-            let data: Vec<u8> = (0..n * len).map(|i| (i * 17 + 3) as u8).collect();
-            let mut out = vec![0u8; n * OUT_LEN];
-            hash_many_dyn(&data, len, &mut out);
-            for i in 0..n {
-                let want = hash(&data[i * len..(i + 1) * len]);
-                assert_eq!(&out[i * OUT_LEN..(i + 1) * OUT_LEN], &want[..], "len {len}, record {i}");
+            for n in [1usize, 5, LANES, LANES + 1, 2 * LANES + 3] {
+                let data: Vec<u8> = (0..n * len).map(|i| (i * 17 + 3) as u8).collect();
+                let mut out = vec![0u8; n * OUT_LEN];
+                hash_many_dyn(&data, len, &mut out);
+                for i in 0..n {
+                    let want = hash(&data[i * len..(i + 1) * len]);
+                    assert_eq!(
+                        &out[i * OUT_LEN..(i + 1) * OUT_LEN],
+                        &want[..],
+                        "len {len}, n {n}, record {i}"
+                    );
+                }
             }
         }
     }
@@ -994,7 +1234,7 @@ mod tests {
         for zero_groups in [2usize, 3, 6] {
             for groups in [1usize, 2, 5] {
                 let len = 32 * groups;
-                let n = 5;
+                let n = 2 * LANES + 3;
                 let data: Vec<u8> = (0..n * len).map(|i| (i * 29 + 11) as u8).collect();
                 let state = md_zero_prefix_state(zero_groups);
                 let mut out = vec![0u8; n * OUT_LEN];
@@ -1019,7 +1259,7 @@ mod tests {
     #[test]
     fn batched_md_matches_the_portable_chain() {
         for len in [64usize, 96, 192, 512] {
-            for n in [1usize, 2, 5] {
+            for n in [1usize, 2, 5, LANES, LANES + 1, 2 * LANES + 3] {
                 let data: Vec<u8> = (0..n * len).map(|i| (i * 37 + 13) as u8).collect();
                 let mut out = vec![0u8; n * OUT_LEN];
                 hash_many_md(&data, len, &mut out);
@@ -1045,6 +1285,55 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Every backend the crate can compile, taken or not, against the portable
+    /// chain: the dispatch resolves at compile time, so without this the arm the
+    /// host does not run is never executed anywhere.
+    #[test]
+    fn every_backend_matches_scalar() {
+        fn check<S: Lanes64>(name: &str) {
+            for n in [1usize, S::WIDTH - 1, S::WIDTH, S::WIDTH + 1, 3 * S::WIDTH + 2] {
+                for len in [64usize, 96, 192, 512] {
+                    let data: Vec<u8> = (0..n * len).map(|i| ((i * 37 + 11) & 0xff) as u8).collect();
+                    let mut out = vec![0u8; n * OUT_LEN];
+                    let done = md_many::<S>(&data, len, n, None, &mut out);
+                    assert_eq!(done, n - n % S::WIDTH, "{name}: n {n}");
+                    for i in 0..done {
+                        let rec = &data[i * len..(i + 1) * len];
+                        assert_eq!(
+                            &out[i * OUT_LEN..(i + 1) * OUT_LEN],
+                            &hash_md_portable(rec)[..],
+                            "{name}: chain of {n} records of {len}, record {i}"
+                        );
+                        assert_eq!(md_one::<S>(rec, None), hash_md_portable(rec), "{name}: lone chain");
+                    }
+                    // The plain sponge, whose tail is not a whole lane.
+                    let mut sponged = vec![0u8; S::WIDTH * OUT_LEN];
+                    // SAFETY: `data` holds n * len >= WIDTH * len bytes when the
+                    // batch is full, and `sponged` WIDTH digests.
+                    if n >= S::WIDTH {
+                        unsafe {
+                            sponge_group::<S>(data.as_ptr(), len, len, &[0u64; STATE_LANES], sponged.as_mut_ptr())
+                        };
+                        for i in 0..S::WIDTH {
+                            assert_eq!(
+                                &sponged[i * OUT_LEN..(i + 1) * OUT_LEN],
+                                &hash(&data[i * len..(i + 1) * len])[..],
+                                "{name}: sponge of {len}, record {i}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        check::<Scalar>("scalar");
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+        check::<x86::Avx2>("avx2");
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+        check::<x86::Avx512>("avx512");
+        #[cfg(all(target_arch = "aarch64", target_feature = "sha3"))]
+        check::<arm::Neon>("neon");
     }
 
     #[test]
