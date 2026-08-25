@@ -60,6 +60,26 @@ def FullAdversaryTrace.CacheChain (start : QueryCache HashSpec) :
       entry.initialCache = start ∧
         FullAdversaryTrace.CacheChain entry.finalCache rest finish
 
+theorem FullAdversaryTrace.Chronological.get_finalCache_le_initialCache
+    {intervals : List AdversaryCacheEntry}
+    (hchronological : FullAdversaryTrace.Chronological intervals)
+    (earlier later : Fin intervals.length) (hlt : earlier.val < later.val) :
+    (intervals.get earlier).finalCache ≤ (intervals.get later).initialCache := by
+  induction intervals with
+  | nil => exact Fin.elim0 earlier
+  | cons head rest ih =>
+      cases earlier using Fin.cases with
+      | zero =>
+          cases later using Fin.cases with
+          | zero => omega
+          | succ later =>
+              exact hchronological.1 (rest.get later) (List.get_mem rest later)
+      | succ earlier =>
+          cases later using Fin.cases with
+          | zero => simp at hlt
+          | succ later =>
+              exact ih hchronological.2 earlier later (by simpa using hlt)
+
 theorem FullAdversaryTrace.CacheChain.append_singleton
     {start current : QueryCache HashSpec} {intervals : List AdversaryCacheEntry}
     (hchain : FullAdversaryTrace.CacheChain start intervals current)

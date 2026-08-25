@@ -64,6 +64,7 @@ import SphincsSecurity.Proof.FewTimeLoop
 import SphincsSecurity.Proof.FewTimeSignerView
 import SphincsSecurity.Proof.FewTimeViewTrace
 import SphincsSecurity.Proof.FewTimeTargetSource
+import SphincsSecurity.Proof.FewTimeTargetCount
 import SphincsSecurity.Proof.FewTimePadding
 import SphincsSecurity.Proof.FewTimeFresh
 import SphincsSecurity.Proof.FewTimePrehit
