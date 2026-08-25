@@ -428,7 +428,7 @@ fn blake2s_value_slot(col: usize) -> Option<usize> {
 /// committed witness size, the sum of the column lengths, i.e. the real data
 /// before the stacked witness is zero-padded to a power of two `2^m`.
 pub struct Stats {
-    pub cycles: usize,
+    pub cycles: usize, // including the padding to make every instruction count a power of two
     /// Rows per table as proven: each an exact power of two, the fill blocks having
     /// filled them (`filler`).
     pub counts: [usize; tables::N_TABLES],

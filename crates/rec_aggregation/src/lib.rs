@@ -1,6 +1,7 @@
-//! Recursive XMSS aggregation ([`aggregation`]) and the harnesses that measure
-//! it ([`benchmark`]), plus the Fibonacci demo. One zkDSL guest
-//! (`guests/aggregate.py`) serves every node of an aggregation tree.
+//! Recursive aggregation of XMSS and SPHINCS signatures ([`aggregation`]) and
+//! the harnesses that measure it ([`benchmark`]), plus the Fibonacci demo. One
+//! zkDSL guest (`guests/aggregate.py`) serves every node of an aggregation tree,
+//! and knows both schemes.
 
 pub mod aggregation;
 pub mod benchmark;
@@ -13,7 +14,7 @@ mod hash_chain;
 pub mod signers_cache;
 
 pub use aggregation::{AggregateError, AggregateSignature, VerifyError, aggregate};
-pub use benchmark::{run_recursion, run_xmss_aggregation};
+pub use benchmark::{run_aggregation, run_recursion};
 pub use fibonacci::run_fibonacci;
 
 /// The pieces every workload's benchmark report ends with.

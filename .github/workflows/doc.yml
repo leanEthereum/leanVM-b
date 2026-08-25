@@ -62,10 +62,16 @@ jobs:
         with:
           working_directory: doc/xmss
           root_file: main.tex
+      - name: Compile SPHINCS specification
+        uses: xu-cheng/latex-action@v3
+        with:
+          working_directory: doc/sphincs
+          root_file: main.tex
       - name: Name the artifacts
         run: |
           cp doc/leanvm/.build/main.pdf leanVM-b.pdf
           cp doc/xmss/.build/main.pdf XMSS.pdf
+          cp doc/sphincs/.build/main.pdf SPHINCS.pdf
       - name: Publish PDFs as release assets
         uses: softprops/action-gh-release@v2
         with:
@@ -76,7 +82,9 @@ jobs:
 
             `leanVM-b.pdf` contains the leanVM-b specification.
             `XMSS.pdf` contains the XMSS specification.
+            `SPHINCS.pdf` contains the SPHINCS specification.
           make_latest: false
           files: |
             leanVM-b.pdf
             XMSS.pdf
+            SPHINCS.pdf

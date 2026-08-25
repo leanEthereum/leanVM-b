@@ -228,7 +228,7 @@ AGG_SEED_1 = AGG_SEED_1_PLACEHOLDER
 # two to a cell and four cells to a 64-byte block.
 STMT_TAG_0 = STMT_TAG_0_PLACEHOLDER
 STMT_TAG_1 = STMT_TAG_1_PLACEHOLDER
-STMT_HEADER = 9
+STMT_HEADER = STMT_HEADER_PLACEHOLDER
 STMT_DEFER_OFF = 2 + STMT_HEADER
 STMT_ODD = STMT_ODD_PLACEHOLDER
 STMT_PAIRS = STMT_PAIRS_PLACEHOLDER
@@ -300,8 +300,73 @@ DIGITS_PER_WORD = V / 2
 TIP_CELLS = WORDS_PER_VALUE * V    # the V chain tips, one cell each
 WOTS_PK_BLOCKS = (2 + V) / 4  # prefix (tweak, pp) + V tips, four cells per BLAKE2s block
 
-# Aggregation bounds. MAX_KEYS caps n_keys + n_dup, which is what the coverage
-# range check needs below 2^MIN_LOG_MEM; MAX_CHILDREN is the recursion arity.
+# ---- SPHINCS+ instance parameters (host-supplied via placeholders) ----
+# The scheme's own letters, prefixed SP_ where XMSS has the same one.
+SP_V = SP_V_PLACEHOLDER
+SP_W = SP_W_PLACEHOLDER
+SP_TARGET_SUM = SP_TARGET_SUM_PLACEHOLDER
+SP_D = SP_D_PLACEHOLDER
+SP_HEIGHTS = SP_HEIGHTS_PLACEHOLDER   # h_lay, one per hypertree layer, top first
+SP_SUFFIX = SP_SUFFIX_PLACEHOLDER     # SP_SUFFIX[lay] = sum of h_j for j >= lay
+SP_A = SP_A_PLACEHOLDER
+SP_K = SP_K_PLACEHOLDER
+SP_H = SP_H_PLACEHOLDER      # the total hypertree height, SP_SUFFIX[0]
+
+SP_CHAIN_LENGTH = 2 ** SP_W
+SP_CHAIN_STEPS = SP_CHAIN_LENGTH - 1
+SP_DIGITS_PER_WORD = SP_V / 2
+SP_TIP_CELLS = SP_V
+SP_LEAF_BLOCKS = (2 + SP_V) / 4       # prefix (tweak, pp) + V tips, four cells a block
+SP_N_FTS = SP_K - 1                   # the forest drops the last index's tree
+SP_ROOT_BLOCKS = (2 + SP_N_FTS) / 4
+
+# The message digest is h + k*a bits of a BLAKE2s output: the whole low cell and
+# the low 48 bits of the high one. Decomposing the high cell's low lane covers
+# them, so the buffer holds three lanes and the top 16 are never read.
+SP_BIT_LANES = 3
+SP_BIT_CELLS = SP_BIT_LANES * BASE_FIELD_BITS
+
+# Tweak types (the tweak's first byte). Types 0 and 5 are the seed derivation's,
+# which is a signer's own business: nothing in-circuit ever verifies one.
+SP_TW_PRF = 0
+SP_TW_CHAIN = 1
+SP_TW_LEAF = 2
+SP_TW_NODE = 3
+SP_TW_ENC = 4
+SP_TW_FTS_PRF = 5
+SP_TW_FTS_LEAF = 6
+SP_TW_FTS_NODE = 7
+SP_TW_FTS_ROOTS = 8
+SP_TW_MSG = 9
+
+# enc(t, lay, tau, p, j) packs t at bit 0, lay at 8, tau at 16, p at 48 and j at
+# 80, fourteen bytes of fields and two of padding. Every field this instance uses
+# is small enough that none straddles the 64-bit lane boundary (tau < 2^26 at bit
+# 16, p <= 334 at bit 48, j < 2^12 at bit 80), so a tweak cell is
+# `t + lay*2^8 + tau*2^16 + p*2^48` in lane 0 plus `j*2^16` in lane 1, and every
+# term is one field addition. `SP_TAU_POS` and `SP_J_POS` are where a bit of tau
+# or of j weighs in the coordinate basis, the j position already carrying the
+# lane, so nothing has to be multiplied by Y afterwards.
+SP_LAY_MUL = 2 ** 8
+SP_P_MUL = 2 ** 48
+SP_TAU_POS = 16
+SP_J_POS = BASE_FIELD_BITS + 16
+# A value expression's constants fold IN THE FIELD, where `1 + 1` is 0, so a
+# Merkle level cannot be written `level + 1` there (it would be `level XOR 1`,
+# and the p field would silently vanish on odd levels). SP_P_LEVEL[lambda] is
+# the literal `lambda * 2^48` outright, indexed with the integer arithmetic that
+# an index position does support.
+SP_P_LEVEL = SP_P_LEVEL_PLACEHOLDER
+SP_CHAIN_MUL = SP_CHAIN_LENGTH * SP_P_MUL   # chain i's tweaks start at p = 2^w * i
+
+# The encoding counter, LE_32 in the low four bytes of its cell: bounded by
+# decomposing exactly that many bits, so the guest accepts no preimage the
+# native verifier cannot parse.
+SP_COUNTER_BITS = 32
+
+# Aggregation bounds. MAX_KEYS caps the coverage table's slots, both schemes'
+# declared keys and their duplicates, which is what the coverage range check
+# needs below 2^MIN_LOG_MEM; MAX_CHILDREN is the recursion arity.
 MAX_KEYS = MAX_KEYS_PLACEHOLDER
 MAX_CHILDREN = MAX_CHILDREN_PLACEHOLDER
 
@@ -2356,9 +2421,250 @@ def walk(value, chain_tweaks, pp, k: Const):
 
 
 
-def statement_digest(seed_0, seed_1, n_keys_g, pk_hash, msg, epoch, defer):
+@inline
+def sp_bit_field(bits_ptr, off: Const, n: Const, pos: Const):
+    # The integer held by bits [off, off+n) of the digest, weighed into the
+    # coordinate basis at `pos`: a tweak field placed where the tweak wants it,
+    # one fused multiply-add a bit, whatever lane the bits came from.
+    acc = 0
+    for i in unroll(0, n):
+        acc += bits_ptr[GEN ** (off + i)] * COORD_BASIS[pos + i]
+    return acc
+
+
+def sp_bind_lane(bits_ptr, lane):
+    # The 64 bits of one lane: boolean-pinned as in decode_query_bits (the cell
+    # already holds the bit, so storing its square IS the assert) and tied back
+    # by reconstruction, which is what makes the hinted decomposition the lane's.
+    acc = 0
+    for i in unroll(0, BASE_FIELD_BITS):
+        b = bits_ptr[GEN ** i]
+        bits_ptr[GEN ** i] = b * b
+        acc += b * COORD_BASIS[i]
+    assert acc == lane
+    return
+
+
+def sp_walk(value, tw_base, pp, k: Const):
+    # Walk chain steps k..SP_CHAIN_STEPS-1: value' = Th(P, tw_chain, value).
+    # `tw_base` already carries the type byte, the layer, 2^w*i and the position
+    # (tau, e), so step s's tweak is one addition of a compile-time literal.
+    block = StackBuf(WORDS_PER_BLOCK)
+    block[0] = value
+    block[1] = 0
+    for s in unroll(k, SP_CHAIN_STEPS):
+        step_tweak = StackBuf(WORDS_PER_BLOCK)
+        step_tweak[0] = tw_base + s * SP_P_MUL
+        step_tweak[1] = pp
+        out = StackBuf(WORDS_PER_BLOCK)
+        blake2s(step_tweak, block, out, counter=48, final=1)
+        block = StackBuf(WORDS_PER_BLOCK)
+        block[0] = out[0]
+        block[1] = 0
+    return block[0], k
+
+
+def sp_ots_leaf(tw_pos, pp, msg):
+    # One layer's one-time verification: the encoding of `msg` under the hinted
+    # counter, the V chains walked from the revealed values, and the leaf they
+    # hash to. `tw_pos` is the position's tweak base (layer, tau, e); this
+    # function is called once per layer, so the V dispatch tables are compiled
+    # once for the whole scheme.
+    ctr = StackBuf(1)
+    hint_witness(ctr, "sp_counter")
+    ctr_bits = HeapBuf(GEN ** SP_COUNTER_BITS)
+    hint_decompose_bits(ctr_bits, ctr[0], SP_COUNTER_BITS)
+    ctr_acc = 0
+    for i in unroll(0, SP_COUNTER_BITS):
+        b = ctr_bits[GEN ** i]
+        ctr_bits[GEN ** i] = b * b
+        ctr_acc += b * COORD_BASIS[i]
+    assert ctr_acc == ctr[0]  # LE_32: the counter's cell is four bytes and twelve of padding
+
+    # D = Th(P, tw_enc, msg | LE_32(c)), a 52-byte one-block hash.
+    enc_tweak = StackBuf(WORDS_PER_BLOCK)
+    enc_tweak[0] = tw_pos + SP_TW_ENC
+    enc_tweak[1] = pp
+    enc_block = StackBuf(WORDS_PER_BLOCK)
+    enc_block[0] = msg
+    enc_block[1] = ctr[0]
+    digest = StackBuf(WORDS_PER_BLOCK)
+    blake2s(enc_tweak, enc_block, digest, counter=52, final=1)
+
+    # The codeword, as in XMSS: each digit is hinted in the exponent, range
+    # checked and dispatched once, arm k walking the remaining steps; the product
+    # of the digits is the target sum, and the digits weighted by 2^w within each
+    # 64-bit lane reconstruct D, which pins each lane's leftover top bit to zero.
+    tips = StackBuf(SP_TIP_CELLS)
+    digit_product = 1
+    acc_lo = 0
+    weight = 1
+    for i in unroll(0, SP_DIGITS_PER_WORD):
+        digit = StackBuf(1)
+        hint_witness(digit[0:1], "sp_digits")
+        assert log(digit[0]) < SP_CHAIN_LENGTH
+        chain_start = StackBuf(1)
+        hint_witness(chain_start, "sp_chain_starts")
+        tw_chain = tw_pos + SP_TW_CHAIN + i * SP_CHAIN_MUL
+        t, e = match_range(log(digit[0]), range(0, SP_CHAIN_LENGTH), lambda k: sp_walk(chain_start[0], tw_chain, pp, k))
+        tips[i] = t
+        digit_product = digit_product * digit[0]
+        acc_lo = acc_lo + e * weight
+        weight = weight * SP_CHAIN_LENGTH
+    acc_hi = 0
+    weight = 1
+    for i in unroll(SP_DIGITS_PER_WORD, SP_V):
+        digit = StackBuf(1)
+        hint_witness(digit[0:1], "sp_digits")
+        assert log(digit[0]) < SP_CHAIN_LENGTH
+        chain_start = StackBuf(1)
+        hint_witness(chain_start, "sp_chain_starts")
+        tw_chain = tw_pos + SP_TW_CHAIN + i * SP_CHAIN_MUL
+        t, e = match_range(log(digit[0]), range(0, SP_CHAIN_LENGTH), lambda k: sp_walk(chain_start[0], tw_chain, pp, k))
+        tips[i] = t
+        digit_product = digit_product * digit[0]
+        acc_hi = acc_hi + e * weight
+        weight = weight * SP_CHAIN_LENGTH
+    assert digit_product == GEN ** SP_TARGET_SUM
+    assert acc_lo + acc_hi * Y_TOWER == digest[0]
+
+    leaf_tweak = StackBuf(WORDS_PER_BLOCK)
+    leaf_tweak[0] = tw_pos + SP_TW_LEAF
+    leaf_tweak[1] = pp
+    leaf = StackBuf(WORDS_PER_BLOCK)
+    blake2s(leaf_tweak, tips[0:2], leaf, counter=64, final=0)
+    for q in unroll(1, SP_LEAF_BLOCKS):
+        next_leaf = StackBuf(WORDS_PER_BLOCK)
+        blake2s(tips[4 * q - 2:4 * q], tips[4 * q:4 * q + 2], next_leaf, cv=leaf, counter=64 * (q + 1), final=(q + 1) // SP_LEAF_BLOCKS)
+        leaf = next_leaf
+    return leaf[0]
+
+
+def verify_sig_sphincs(signer):
+    # `signer` is one 4-cell entry of the SPHINCS coverage table: the key's root
+    # and public parameter, then the message THAT signer signed. Where XMSS's
+    # message is one statement field for the whole node, a SPHINCS message rides
+    # its own slot, and the signer-set digest binds the two together.
+    pp = signer[GEN]
+
+    # ---- the message digest, which chooses the few-time key ----
+    # D = Truncate(H(tw_msg | P | rho | root | m)), 96 bytes in two blocks.
+    msg_tweak = StackBuf(WORDS_PER_BLOCK)
+    msg_tweak[0] = SP_TW_MSG
+    msg_tweak[1] = pp
+    rho_root = StackBuf(WORDS_PER_BLOCK)
+    hint_witness(rho_root[0:1], "sp_rand")
+    rho_root[1] = signer[1]
+    prefix = StackBuf(WORDS_PER_BLOCK)
+    blake2s(msg_tweak, rho_root, prefix, counter=64, final=0)
+    msg_block = StackBuf(WORDS_PER_BLOCK)
+    msg_block[0] = signer[GEN ** 2]
+    msg_block[1] = signer[GEN ** 3]
+    zero_block = StackBuf(WORDS_PER_BLOCK)
+    zero_block[0] = 0
+    zero_block[1] = 0
+    digest = StackBuf(WORDS_PER_BLOCK)
+    blake2s(msg_block, zero_block, digest, cv=prefix, counter=96, final=1)
+
+    # The index and the k leaf indices are bit fields of that digest, so its bits
+    # are advice-decomposed here and bound lane by lane. Nothing else derives
+    # them: every tweak below is built from these bits.
+    bits = HeapBuf(GEN ** SP_BIT_CELLS)
+    low = StackBuf(1)
+    hint_f192_limbs(low, digest[0])
+    high = (digest[0] + low[0]) * Y_INV
+    assert_in_k(low[0], high)
+    hint_decompose_bits(bits, low[0], BASE_FIELD_BITS)
+    hint_decompose_bits(bits * GEN ** BASE_FIELD_BITS, high, BASE_FIELD_BITS)
+    tail = StackBuf(1)
+    hint_f192_limbs(tail, digest[1])
+    tail_high = (digest[1] + tail[0]) * Y_INV
+    assert_in_k(tail[0], tail_high)
+    hint_decompose_bits(bits * GEN ** (2 * BASE_FIELD_BITS), tail[0], BASE_FIELD_BITS)
+    sp_bind_lane(bits, low[0])
+    sp_bind_lane(bits * GEN ** BASE_FIELD_BITS, high)
+    sp_bind_lane(bits * GEN ** (2 * BASE_FIELD_BITS), tail[0])
+
+    # The digest is admissible only if its last leaf index is zero, which is what
+    # lets the forest drop that tree.
+    for b in unroll(0, SP_A):
+        assert bits[GEN ** (SP_H + (SP_K - 1) * SP_A + b)] == 0
+
+    # ---- the few-time signature: one opened leaf per tree of the forest ----
+    idx_tau = sp_bit_field(bits, 0, SP_H, SP_TAU_POS)
+    roots = StackBuf(SP_N_FTS)
+    for kappa in unroll(0, SP_N_FTS):
+        leaf_off = SP_H + kappa * SP_A
+        secret = StackBuf(WORDS_PER_BLOCK)
+        hint_witness(secret[0:1], "sp_fts_secrets")
+        secret[1] = 0
+        fts_tweak = StackBuf(WORDS_PER_BLOCK)
+        fts_tweak[0] = SP_TW_FTS_LEAF + kappa * SP_LAY_MUL + idx_tau + sp_bit_field(bits, leaf_off, SP_A, SP_J_POS)
+        fts_tweak[1] = pp
+        fts_leaf = StackBuf(WORDS_PER_BLOCK)
+        blake2s(fts_tweak, secret, fts_leaf, counter=48, final=1)
+        node = fts_leaf[0]
+        for level in unroll(0, SP_A):
+            bit = bits[GEN ** (leaf_off + level)]
+            sibling = StackBuf(1)
+            hint_witness(sibling, "sp_fts_paths")
+            # Branchless child ordering, as in verify_sig: bit is one of the
+            # boolean-pinned digest bits, so the swap is a select.
+            diff = node + sibling[0]
+            m = bit * diff
+            children = StackBuf(WORDS_PER_BLOCK)
+            children[0] = node + m
+            children[1] = sibling[0] + m
+            node_tweak = StackBuf(WORDS_PER_BLOCK)
+            node_tweak[0] = SP_TW_FTS_NODE + kappa * SP_LAY_MUL + SP_P_LEVEL[level + 1] + idx_tau + sp_bit_field(bits, leaf_off + level + 1, SP_A - level - 1, SP_J_POS)
+            node_tweak[1] = pp
+            parent = StackBuf(WORDS_PER_BLOCK)
+            blake2s(node_tweak, children, parent)
+            node = parent[0]
+        roots[kappa] = node
+    roots_tweak = StackBuf(WORDS_PER_BLOCK)
+    roots_tweak[0] = SP_TW_FTS_ROOTS + idx_tau
+    roots_tweak[1] = pp
+    fts_key = StackBuf(WORDS_PER_BLOCK)
+    blake2s(roots_tweak, roots[0:2], fts_key, counter=64, final=0)
+    for q in unroll(1, SP_ROOT_BLOCKS):
+        next_key = StackBuf(WORDS_PER_BLOCK)
+        blake2s(roots[4 * q - 2:4 * q], roots[4 * q:4 * q + 2], next_key, cv=fts_key, counter=64 * (q + 1), final=(q + 1) // SP_ROOT_BLOCKS)
+        fts_key = next_key
+    signed = fts_key[0]
+
+    # ---- the hypertree, bottom layer first ----
+    # Layer lay signs what the layer below produced: the few-time key at the
+    # bottom, that layer's root above it, and the public key's root at the top.
+    for step in unroll(0, SP_D):
+        lay = SP_D - 1 - step
+        leaf_index_off = SP_SUFFIX[lay + 1]
+        tau_field = sp_bit_field(bits, SP_SUFFIX[lay], SP_H - SP_SUFFIX[lay], SP_TAU_POS)
+        tw_pos = tau_field + sp_bit_field(bits, leaf_index_off, SP_HEIGHTS[lay], SP_J_POS) + lay * SP_LAY_MUL
+        node = sp_ots_leaf(tw_pos, pp, signed)
+        for level in unroll(0, SP_HEIGHTS[lay]):
+            bit = bits[GEN ** (leaf_index_off + level)]
+            sibling = StackBuf(1)
+            hint_witness(sibling, "sp_siblings")
+            diff = node + sibling[0]
+            m = bit * diff
+            children = StackBuf(WORDS_PER_BLOCK)
+            children[0] = node + m
+            children[1] = sibling[0] + m
+            node_tweak = StackBuf(WORDS_PER_BLOCK)
+            node_tweak[0] = SP_TW_NODE + lay * SP_LAY_MUL + SP_P_LEVEL[level + 1] + tau_field + sp_bit_field(bits, leaf_index_off + level + 1, SP_HEIGHTS[lay] - level - 1, SP_J_POS)
+            node_tweak[1] = pp
+            parent = StackBuf(WORDS_PER_BLOCK)
+            blake2s(node_tweak, children, parent)
+            node = parent[0]
+        signed = node
+    assert signed == signer[1]
+    return
+
+
+def statement_digest(seed_0, seed_1, n_xmss_g, n_sphincs_g, pk_hash, msg, epoch_digest, defer):
     # A node's statement, hashed to the two words the VM publishes: the proving
-    # environment, the signer count, the signer-set digest, the shared
+    # environment, the two signer counts, the signer-set digest, the shared
     # (message, epoch), and the deferred claims. A parent rebuilds a child's with
     # the very same call, which is what forces the child to be a proof of THIS
     # bytecode against THIS message and epoch.
@@ -2372,7 +2678,7 @@ def statement_digest(seed_0, seed_1, n_keys_g, pk_hash, msg, epoch, defer):
     cells = StackBuf(4 * STMT_BLOCKS)
     cells[0] = STMT_TAG_0
     cells[1] = STMT_TAG_1
-    hdr = [seed_0, seed_1, n_keys_g, pk_hash[1], pk_hash[GEN], msg[1], msg[GEN], epoch[1], epoch[GEN]]
+    hdr = [seed_0, seed_1, n_xmss_g, n_sphincs_g, pk_hash[1], pk_hash[GEN], msg[1], msg[GEN], epoch_digest[1], epoch_digest[GEN]]
     for i in unroll(0, STMT_HEADER):
         cells[2 + i] = hdr[i]
     dfr = StackBuf(DEFER_STMT_CELLS + STMT_ODD)
@@ -2401,27 +2707,164 @@ def statement_digest(seed_0, seed_1, n_keys_g, pk_hash, msg, epoch, defer):
     return st[0], st[1]
 
 
+def hash_key_range(state_0, state_1, keys_ptr, half_g, odd_g):
+    # Absorb one declared key list from the coverage table into the signer-set
+    # digest, continuing the chain from (state_0, state_1). Two keys a frame: the
+    # chain is unchanged, one compression a key, and what halves is the number of
+    # loop frames, a frame costing far more memory cells than the body it holds.
+    # `half` and `odd` are pinned by the caller to n//2 and n%2.
+    chain = HeapBuf(half_g ** 4 * GEN ** WORDS_PER_BLOCK)
+    chain[1] = state_0
+    chain[GEN] = state_1
+    for xp in mul_range(1, half_g):
+        pair = xp ** 4
+        keys = keys_ptr * pair
+        hint_witness(keys[0:4], "pubkeys")
+        state = chain * pair
+        blake2s(state[0:2], keys[0:2], state[2:4])
+        blake2s(state[2:4], keys[2:4], state[4:6])
+    # The odd key out, absorbed the same way. Only one branch runs, so both write
+    # the digest cells and the join reads them.
+    paired_end = chain * (half_g ** 4)
+    out = StackBuf(WORDS_PER_BLOCK)
+    if odd_g == 1:
+        out[0] = paired_end[1]
+        out[1] = paired_end[GEN]
+    else:
+        last = keys_ptr * (half_g ** 4)
+        hint_witness(last[0:2], "pubkeys")
+        blake2s(paired_end[0:2], last[0:2], out)
+    return out[0], out[1]
+
+
+def hash_sphincs_range(state_0, state_1, entries_ptr, n_g):
+    # Absorb the declared SPHINCS claims into the signer-set digest: two
+    # compressions an entry, its key then the message that key signed, so no
+    # pairing of the two can be swapped without changing the digest. One entry a
+    # frame where the XMSS list takes two keys, an entry being twice as wide and a
+    # SPHINCS leaf holding far fewer signers: there is no parity case to carry.
+    chain = HeapBuf(n_g ** 4 * GEN ** WORDS_PER_BLOCK)
+    chain[1] = state_0
+    chain[GEN] = state_1
+    for xe in mul_range(1, n_g):
+        quad = xe ** 4
+        entry = entries_ptr * quad
+        hint_witness(entry[0:4], "sphincs_signers")
+        state = chain * quad
+        blake2s(state[0:2], entry[0:2], state[2:4])
+        blake2s(state[2:4], entry[2:4], state[4:6])
+    end = chain * (n_g ** 4)
+    return end[1], end[GEN]
+
+
+def hash_child_sphincs(state_0, state_1, entries_ptr, cover, base, origin_g, limit_g, n_g):
+    # A child's SPHINCS claims, rebuilt from indices into THIS node's table, as
+    # hash_child_keys does for its XMSS keys. The index is an offset into the
+    # SPHINCS region and bounded by that region's size, so a child's SPHINCS claim
+    # can only ever land on a SPHINCS slot.
+    chain = HeapBuf(n_g ** 4 * GEN ** WORDS_PER_BLOCK)
+    chain[1] = state_0
+    chain[GEN] = state_1
+    for xe in mul_range(1, n_g):
+        off_hint = StackBuf(1)
+        hint_witness(off_hint, "child_sphincs_index")
+        assert log(off_hint[0]) < log(limit_g)  # precondition as in the raw loops
+        cover[origin_g * off_hint[0]] = base * xe
+        entry = entries_ptr * (off_hint[0] ** 4)
+        quad = xe ** 4
+        state = chain * quad
+        blake2s(state[0:2], entry[0:2], state[2:4])
+        blake2s(state[2:4], entry[2:4], state[4:6])
+    end = chain * (n_g ** 4)
+    return end[1], end[GEN]
+
+
+def hash_child_keys(state_0, state_1, keys_ptr, cover, base, limit_g, half_g, odd_g):
+    # A child's XMSS keys, rebuilt from indices into THIS node's coverage table:
+    # each key is absorbed exactly as the child absorbed it, and the index is
+    # what ties the child's set into this node's coverage. The index is bounded
+    # by the XMSS region's size, so a child's XMSS key can only ever land on an
+    # XMSS slot. The XMSS region starts at slot 0, so one index serves both the
+    # coverage table and the key table; hash_child_sphincs, whose region starts
+    # past it, has to keep the two apart.
+    chain = HeapBuf(half_g ** 4 * GEN ** WORDS_PER_BLOCK)
+    chain[1] = state_0
+    chain[GEN] = state_1
+    for xp in mul_range(1, half_g):
+        two = StackBuf(2)
+        hint_witness(two, "child_index")
+        assert log(two[0]) < log(limit_g)  # precondition as in the raw loops
+        assert log(two[1]) < log(limit_g)
+        first = two[0]
+        second = two[1]
+        even = xp * xp
+        cover[first] = base * even
+        cover[second] = base * even * GEN
+        state = chain * (even * even)
+        key_a = keys_ptr * (first * first)
+        key_b = keys_ptr * (second * second)
+        blake2s(state[0:2], key_a[0:2], state[2:4])
+        blake2s(state[2:4], key_b[0:2], state[4:6])
+    paired_end = chain * (half_g ** 4)
+    out = StackBuf(WORDS_PER_BLOCK)
+    if odd_g == 1:
+        out[0] = paired_end[1]
+        out[1] = paired_end[GEN]
+    else:
+        tail_hint = StackBuf(1)
+        hint_witness(tail_hint, "child_index")
+        assert log(tail_hint[0]) < log(limit_g)
+        tail_idx = tail_hint[0]
+        cover[tail_idx] = base * (half_g * half_g)
+        key_last = keys_ptr * (tail_idx * tail_idx)
+        blake2s(paired_end[0:2], key_last[0:2], out)
+    return out[0], out[1]
+
+
 def main():
-    # One node of an aggregation tree: n_raw XMSS signatures and n_children
-    # sub-proofs OF THIS SAME BYTECODE, all against one (message, epoch).
+    # One node of an aggregation tree: n_raw_xmss XMSS signatures, n_raw_sphincs
+    # SPHINCS signatures and n_children sub-proofs OF THIS SAME BYTECODE. The
+    # XMSS half shares one message and one epoch; each SPHINCS signature is
+    # against the message in its own coverage slot.
     #
-    # meta = [n_keys, n_dup, n_raw, n_children], every count in the exponent.
-    # n_keys is the declared signer set; the duplicate slots absorb keys a child
-    # covers that the set already holds. Their sum bounds the coverage indices,
-    # so it is what has to sit below the minimum memory size.
-    meta = StackBuf(4)
+    # meta = [n_xmss, n_xmss_dup, n_sphincs, n_sphincs_dup, n_raw_xmss,
+    # n_raw_sphincs, n_children], every count in the exponent. The two declared
+    # lists are the signer set; the duplicate slots absorb keys a child covers
+    # that the set already holds. The coverage table is one region per scheme,
+    # each holding its declared keys then its duplicates:
+    #
+    #   [0, n_xmss)  [n_xmss, X)  [X, X + n_sphincs)  [X + n_sphincs, n_total)
+    #    declared      dup            declared              dup
+    #   \------- XMSS, X slots -----/\------- SPHINCS ---------------------/
+    #
+    # so one range check per write keeps an XMSS signature off a declared SPHINCS
+    # claim and the other way round: that is what makes the split in the statement
+    # mean which scheme verified which key. An XMSS slot is two cells, a SPHINCS
+    # slot four: a key and the message that key signed.
+    meta = StackBuf(7)
     hint_witness(meta, "meta")
-    n_keys_g = meta[0]
-    n_dup_g = meta[1]
-    n_raw_g = meta[2]
-    n_children_g = meta[3]
-    assert n_keys_g != 1  # a signer set is never empty
-    assert log(n_keys_g) < MAX_KEYS
-    assert log(n_dup_g) < MAX_KEYS
-    n_total_g = n_keys_g * n_dup_g
-    assert log(n_total_g) < MAX_KEYS
-    assert log(n_raw_g) < MAX_KEYS
+    n_xmss_g = meta[0]
+    n_xdup_g = meta[1]
+    n_sphincs_g = meta[2]
+    n_sdup_g = meta[3]
+    n_raw_x_g = meta[4]
+    n_raw_s_g = meta[5]
+    n_children_g = meta[6]
+    assert log(n_xmss_g) < MAX_KEYS
+    assert log(n_xdup_g) < MAX_KEYS
+    assert log(n_sphincs_g) < MAX_KEYS
+    assert log(n_sdup_g) < MAX_KEYS
+    assert log(n_raw_x_g) < MAX_KEYS
+    assert log(n_raw_s_g) < MAX_KEYS
     assert log(n_children_g) < MAX_CHILDREN + 1
+    n_keys_g = n_xmss_g * n_sphincs_g
+    assert n_keys_g != 1  # a signer set is never empty
+    xmss_slots_g = n_xmss_g * n_xdup_g
+    sphincs_slots_g = n_sphincs_g * n_sdup_g
+    # The sum of every region bounds the coverage indices, so it is what has to
+    # sit below the minimum memory size.
+    n_total_g = xmss_slots_g * sphincs_slots_g
+    assert log(n_total_g) < MAX_KEYS
 
     # The proving environment (flock's R1CS and this bytecode) as one digest. It
     # rides the statement rather than the bytecode, so nothing here has to know
@@ -2432,16 +2875,20 @@ def main():
     seed_0 = fs_seed[0]
     seed_1 = fs_seed[1]
 
-    message = HeapBuf(WORDS_PER_BLOCK)
+    # The one message every XMSS signer signed. A SPHINCS signer's is not this:
+    # it rides that signer's own slot in the coverage table.
+    xmss_msg = HeapBuf(WORDS_PER_BLOCK)
     msg_hint = StackBuf(WORDS_PER_BLOCK)
     hint_witness(msg_hint, "message")
-    message[1] = msg_hint[0]
-    message[GEN] = msg_hint[1]
+    xmss_msg[1] = msg_hint[0]
+    xmss_msg[GEN] = msg_hint[1]
 
     # ---- the epoch, as the tweak table and the Merkle direction bits ----
     # Both are hinted and bound by one digest in the statement; the outer
     # verifier rebuilds them from the epoch and rehashes. Nothing derives a
-    # tweak in-circuit.
+    # tweak in-circuit. They serve the XMSS signatures only: SPHINCS derives
+    # every tweak of its own from the index its digest picks, which is not
+    # public and differs per signer.
     # A plain BLAKE2s, four cells a block, where a re-injected state left room
     # for two. Each block is hashed out of the frame it was hinted into: a
     # blake2s operand is addressed off `fp`, so a heap one would cost a DEREF
@@ -2471,70 +2918,59 @@ def main():
         next_state = StackBuf(WORDS_PER_BLOCK)
         blake2s(blk[0:2], blk[2:4], next_state, cv=epoch_state, counter=64 * (N_TWEAK_BLOCKS + u + 2), final=(u + 1) // MERKLE_BIT_BLOCKS)
         epoch_state = next_state
-    epoch = HeapBuf(WORDS_PER_BLOCK)
-    epoch[1] = epoch_state[0]
-    epoch[GEN] = epoch_state[1]
+    xmss_epoch = HeapBuf(WORDS_PER_BLOCK)
+    xmss_epoch[1] = epoch_state[0]
+    xmss_epoch[GEN] = epoch_state[1]
 
     # ---- the signer set ----
-    # all_pubkeys is the declared set (n_keys, strictly sorted: checked by the
-    # outer verifier, which holds the list) followed by n_dup duplicate slots.
-    # Signer i occupies cells g^{2i}..g^{2i+1}.
-    n_total_2 = n_total_g * n_total_g
-    all_pubkeys = HeapBuf(n_total_2)
-    n_keys_2 = n_keys_g * n_keys_g
-    # The count leads the chain, which makes the encoding prefix-free: a longer
-    # key list starts from a different block 0, so no digest extends another and
-    # the digest binds its own length rather than leaning on the statement's.
+    # One table per scheme, each the declared list (strictly sorted, checked by
+    # the outer verifier, which holds it) followed by its duplicate slots. An
+    # XMSS slot is a key's two cells; a SPHINCS slot is four, its key and the
+    # message that key signed. The coverage indices below still run over one
+    # space: the XMSS region, then the SPHINCS one.
+    xmss_table = HeapBuf(xmss_slots_g * xmss_slots_g)
+    sphincs_table = HeapBuf(sphincs_slots_g ** 4)
+    # Both counts lead the chain, which makes the encoding prefix-free: a longer
+    # key list, or the same keys split differently between the schemes, starts
+    # from a different block 0, so no digest extends another and the digest binds
+    # its own lengths rather than leaning on the statement's.
     pk_seed = StackBuf(4)
     pk_seed[0] = PK_IV_0
     pk_seed[1] = PK_IV_1
-    pk_seed[2] = n_keys_g
-    pk_seed[3] = 0
-    pk_chain = HeapBuf(n_keys_2 * GEN ** WORDS_PER_BLOCK)
-    blake2s(pk_seed[0:2], pk_seed[2:4], pk_chain[0:2])
-    # Two keys per iteration. The chain is unchanged, one compression per key;
-    # what halves is the number of loop frames, and a frame costs far more memory
-    # cells than the body it holds. `half` and `odd` are hinted and pinned by
-    # half*half*odd == n_keys with odd in {0, 1}, which leaves half = n_keys // 2
-    # and odd = n_keys % 2 as the only solution.
+    pk_seed[2] = n_xmss_g
+    pk_seed[3] = n_sphincs_g
+    pk_iv = StackBuf(WORDS_PER_BLOCK)
+    blake2s(pk_seed[0:2], pk_seed[2:4], pk_iv)
+    # `half` and `odd` are hinted and pinned by half*half*odd == n with odd in
+    # {0, 1}, which leaves half = n // 2 and odd = n % 2 as the only solution.
     halves = StackBuf(2)
     hint_witness(halves, "pk_halves")
-    half_g = halves[0]
-    odd_g = halves[1]
-    assert log(odd_g) < 2
-    assert log(half_g) < MAX_KEYS
-    assert half_g * half_g * odd_g == n_keys_g
-    for xp in mul_range(1, half_g):
-        pair = xp ** 4
-        keys = all_pubkeys * pair
-        hint_witness(keys[0:4], "pubkeys")
-        state = pk_chain * pair
-        blake2s(state[0:2], keys[0:2], state[2:4])
-        blake2s(state[2:4], keys[2:4], state[4:6])
-    # The odd key out, absorbed the same way. Only one branch runs, so both write
-    # the digest cells and the join reads them.
+    x_half_g = halves[0]
+    x_odd_g = halves[1]
+    assert log(x_odd_g) < 2
+    assert log(x_half_g) < MAX_KEYS
+    assert x_half_g * x_half_g * x_odd_g == n_xmss_g
+    mid_0, mid_1 = hash_key_range(pk_iv[0], pk_iv[1], xmss_table, x_half_g, x_odd_g)
+    hash_0, hash_1 = hash_sphincs_range(mid_0, mid_1, sphincs_table, n_sphincs_g)
     pk_hash = HeapBuf(WORDS_PER_BLOCK)
-    paired_end = pk_chain * (half_g ** 4)
-    if odd_g == 1:
-        pk_hash[1] = paired_end[1]
-        pk_hash[GEN] = paired_end[GEN]
-    else:
-        last = all_pubkeys * (half_g ** 4)
-        hint_witness(last[0:2], "pubkeys")
-        blake2s(paired_end[0:2], last[0:2], pk_hash[0:2])
-    # The duplicate slots ride the same table but outside the hashed prefix.
-    for xd in mul_range(1, n_dup_g):
-        dup = all_pubkeys * (n_keys_2 * xd * xd)
+    pk_hash[1] = hash_0
+    pk_hash[GEN] = hash_1
+    # The duplicate slots ride the same table but outside the hashed prefixes.
+    for xd in mul_range(1, n_xdup_g):
+        dup = xmss_table * (n_xmss_g * n_xmss_g * xd * xd)
         hint_witness(dup[0:2], "dup_pubkeys")
+    for xd in mul_range(1, n_sdup_g):
+        dup = sphincs_table * ((n_sphincs_g * xd) ** 4)
+        hint_witness(dup[0:4], "dup_sphincs")
 
     # ---- coverage ----
     # Every one of the n_total slots is written exactly once: write-once memory
     # rejects a second write (the value written is the running count, so two
     # writes to one slot disagree), and the count below rejects a missed one. So
-    # every declared signer is covered by a raw signature or by a verified
-    # child, which is the whole security claim of the aggregate.
+    # every declared signer is covered by a signature of ITS OWN scheme or by a
+    # verified child, which is the whole security claim of the aggregate.
     cover = HeapBuf(n_total_g)
-    for xi in mul_range(1, n_raw_g):
+    for xi in mul_range(1, n_raw_x_g):
         idx_hint = StackBuf(1)
         hint_witness(idx_hint, "raw_index")
         idx = idx_hint[0]
@@ -2542,10 +2978,16 @@ def main():
         # discharged by the compile-time `assert log(n_total_g) < MAX_KEYS`
         # above. Without it this degenerates to what DEREF alone gives and an
         # index could reach past `cover`, which is the whole bijection.
-        assert log(idx) < log(n_total_g)
+        assert log(idx) < log(xmss_slots_g)
         cover[idx] = xi
-        signer = all_pubkeys * (idx * idx)
-        verify_sig(message, tweak_table, merkle_bits, signer)
+        signer = xmss_table * (idx * idx)
+        verify_sig(xmss_msg, tweak_table, merkle_bits, signer)
+    for xj in mul_range(1, n_raw_s_g):
+        off_hint = StackBuf(1)
+        hint_witness(off_hint, "sp_raw_index")
+        assert log(off_hint[0]) < log(sphincs_slots_g)
+        cover[xmss_slots_g * off_hint[0]] = n_raw_x_g * xj
+        verify_sig_sphincs(sphincs_table * (off_hint[0] ** 4))
 
     # ---- children ----
     g_logs_pow2, g_squares = exponent_tables()
@@ -2554,64 +2996,42 @@ def main():
     child_carried = HeapBuf(n_children_g ** DEFER_STMT_CELLS)
     # Loop-carried write count, one entry per child (the guest's chain idiom).
     written = HeapBuf(n_children_g * GEN)
-    written[GEN ** 0] = n_raw_g
+    written[GEN ** 0] = n_raw_x_g * n_raw_s_g
     for xc in mul_range(1, n_children_g):
         base = written[xc]
-        nsub_hint = StackBuf(1)
+        nsub_hint = StackBuf(2)
         hint_witness(nsub_hint, "child_n_keys")
-        nsub_g = nsub_hint[0]
+        nsub_x_g = nsub_hint[0]
+        nsub_s_g = nsub_hint[1]
+        nsub_g = nsub_x_g * nsub_s_g
         assert nsub_g != 1
-        assert log(nsub_g) < MAX_KEYS
+        assert log(nsub_x_g) < MAX_KEYS
+        assert log(nsub_s_g) < MAX_KEYS
         # Rebuild the child's signer-set digest from indices into the shared
-        # table, absorbing each key exactly as the child did. The indices are
-        # what tie the child's set into this node's coverage.
-        # Two keys per iteration, as for this node's own set above: same chain,
-        # half the loop frames.
+        # table, absorbing each key exactly as the child did, one list per
+        # scheme. Two keys per iteration, as for this node's own set above.
         sub_halves = StackBuf(2)
         hint_witness(sub_halves, "child_halves")
-        sub_half_g = sub_halves[0]
-        sub_odd_g = sub_halves[1]
-        assert log(sub_odd_g) < 2
-        assert log(sub_half_g) < MAX_KEYS
-        assert sub_half_g * sub_half_g * sub_odd_g == nsub_g
+        sub_x_half_g = sub_halves[0]
+        sub_x_odd_g = sub_halves[1]
+        assert log(sub_x_odd_g) < 2
+        assert log(sub_x_half_g) < MAX_KEYS
+        assert sub_x_half_g * sub_x_half_g * sub_x_odd_g == nsub_x_g
         sub_seed = StackBuf(4)
         sub_seed[0] = PK_IV_0
         sub_seed[1] = PK_IV_1
-        sub_seed[2] = nsub_g
-        sub_seed[3] = 0
-        sub_chain = HeapBuf(nsub_g * nsub_g * GEN ** WORDS_PER_BLOCK)
-        blake2s(sub_seed[0:2], sub_seed[2:4], sub_chain[0:2])
-        for xp in mul_range(1, sub_half_g):
-            two = StackBuf(2)
-            hint_witness(two, "child_index")
-            first = two[0]
-            second = two[1]
-            assert log(first) < log(n_total_g)  # precondition as in the raw loop above
-            assert log(second) < log(n_total_g)
-            even = xp * xp
-            cover[first] = base * even
-            cover[second] = base * even * GEN
-            state = sub_chain * (even * even)
-            key_a = all_pubkeys * (first * first)
-            key_b = all_pubkeys * (second * second)
-            blake2s(state[0:2], key_a[0:2], state[2:4])
-            blake2s(state[2:4], key_b[0:2], state[4:6])
-        paired_end = sub_chain * (sub_half_g ** 4)
+        sub_seed[2] = nsub_x_g
+        sub_seed[3] = nsub_s_g
+        sub_iv = StackBuf(WORDS_PER_BLOCK)
+        blake2s(sub_seed[0:2], sub_seed[2:4], sub_iv)
+        sub_mid_0, sub_mid_1 = hash_child_keys(sub_iv[0], sub_iv[1], xmss_table, cover, base, xmss_slots_g, sub_x_half_g, sub_x_odd_g)
+        sub_hash_0, sub_hash_1 = hash_child_sphincs(sub_mid_0, sub_mid_1, sphincs_table, cover, base * nsub_x_g, xmss_slots_g, sphincs_slots_g, nsub_s_g)
         sub_hash = HeapBuf(WORDS_PER_BLOCK)
-        if sub_odd_g == 1:
-            sub_hash[1] = paired_end[1]
-            sub_hash[GEN] = paired_end[GEN]
-        else:
-            tail_hint = StackBuf(1)
-            hint_witness(tail_hint, "child_index")
-            tail_idx = tail_hint[0]
-            assert log(tail_idx) < log(n_total_g)
-            cover[tail_idx] = base * (sub_half_g * sub_half_g)
-            key_last = all_pubkeys * (tail_idx * tail_idx)
-            blake2s(paired_end[0:2], key_last[0:2], sub_hash[0:2])
+        sub_hash[1] = sub_hash_0
+        sub_hash[GEN] = sub_hash_1
         xd = xc ** DEFER_STMT_CELLS
         hint_witness(child_carried[xd:xd + DEFER_STMT_CELLS], "child_defer")
-        pi_0, pi_1 = statement_digest(seed_0, seed_1, nsub_g, sub_hash, message, epoch, child_carried * xd)
+        pi_0, pi_1 = statement_digest(seed_0, seed_1, nsub_x_g, nsub_s_g, sub_hash, xmss_msg, xmss_epoch, child_carried * xd)
         x2 = xc * xc
         child_pi[x2] = pi_0
         child_pi[x2 * GEN] = pi_1
@@ -2638,7 +3058,7 @@ def main():
     else:
         aggregate_claims(n_children_g, child_pi, child_fresh, child_carried, defer_stmt)
 
-    own_0, own_1 = statement_digest(seed_0, seed_1, n_keys_g, pk_hash, message, epoch, defer_stmt)
+    own_0, own_1 = statement_digest(seed_0, seed_1, n_xmss_g, n_sphincs_g, pk_hash, xmss_msg, xmss_epoch, defer_stmt)
     pub_ptr = GEN ** 0
     own_pi_0 = pub_ptr[1]
     own_pi_1 = pub_ptr[GEN]
