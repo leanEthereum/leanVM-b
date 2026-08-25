@@ -13,6 +13,72 @@ namespace SphincsSecurity.Concrete
 
 open OracleComp OracleSpec
 
+noncomputable def FewTimeCover.precachedPatternSelected {f : QueryImpl HashSpec Id}
+    {cache : QueryCache HashSpec} {secretKey : SecretKey}
+    {signingLog : QueryLog SigningSpec} {index : Index}
+    {targetLeaves : DigestTree → FtsLeaf}
+    (cover : FewTimeCover f cache secretKey signingLog index targetLeaves)
+    (trace : SigningCacheTrace) (hlog : trace.toSigningLog = signingLog) :
+    Finset cover.pattern.selected :=
+  (cover.precachedEntryFinset trace hlog).map cover.entriesEquivPatternSelected.toEmbedding
+
+noncomputable def FewTimeCover.precachedOfPatternSelected {f : QueryImpl HashSpec Id}
+    {cache : QueryCache HashSpec} {secretKey : SecretKey}
+    {signingLog : QueryLog SigningSpec} {index : Index}
+    {targetLeaves : DigestTree → FtsLeaf}
+    (cover : FewTimeCover f cache secretKey signingLog index targetLeaves)
+    (trace : SigningCacheTrace) (hlog : trace.toSigningLog = signingLog)
+    (selected : ↑(cover.precachedPatternSelected trace hlog)) :
+    cover.PrecachedEntries trace hlog := by
+  classical
+  let equivalence := cover.entriesEquivPatternSelected
+  let entry := equivalence.symm selected.1
+  refine ⟨entry, ?_⟩
+  have hmem : entry ∈ cover.precachedEntryFinset trace hlog := by
+    obtain ⟨original, horiginal, heq⟩ := Finset.mem_map.1 selected.2
+    have horiginalEq : original = entry := by
+      apply equivalence.injective
+      rw [equivalence.apply_symm_apply]
+      exact heq
+    rw [← horiginalEq]
+    exact horiginal
+  exact (Finset.mem_filter.mp hmem).2
+
+theorem FewTimeCover.precachedOfPatternSelected_entry {f : QueryImpl HashSpec Id}
+    {cache : QueryCache HashSpec} {secretKey : SecretKey}
+    {signingLog : QueryLog SigningSpec} {index : Index}
+    {targetLeaves : DigestTree → FtsLeaf}
+    (cover : FewTimeCover f cache secretKey signingLog index targetLeaves)
+    (trace : SigningCacheTrace) (hlog : trace.toSigningLog = signingLog)
+    (selected : ↑(cover.precachedPatternSelected trace hlog)) :
+    (cover.precachedOfPatternSelected trace hlog selected).1 =
+      cover.entriesEquivPatternSelected.symm selected.1 := rfl
+
+theorem FewTimeCover.mem_precachedPatternSelected_iff {f : QueryImpl HashSpec Id}
+    {cache : QueryCache HashSpec} {secretKey : SecretKey}
+    {signingLog : QueryLog SigningSpec} {index : Index}
+    {targetLeaves : DigestTree → FtsLeaf}
+    (cover : FewTimeCover f cache secretKey signingLog index targetLeaves)
+    (trace : SigningCacheTrace) (hlog : trace.toSigningLog = signingLog)
+    (selected : cover.pattern.selected) :
+    selected ∈ cover.precachedPatternSelected trace hlog ↔
+      cover.EntryDigestPrecached trace hlog
+        (cover.entriesEquivPatternSelected.symm selected) := by
+  classical
+  rw [FewTimeCover.precachedPatternSelected, Finset.mem_map]
+  constructor
+  · rintro ⟨entry, hentry, heq⟩
+    have hentryEq : entry = cover.entriesEquivPatternSelected.symm selected := by
+      apply cover.entriesEquivPatternSelected.injective
+      rw [cover.entriesEquivPatternSelected.apply_symm_apply]
+      exact heq
+    rw [← hentryEq]
+    exact (Finset.mem_filter.mp hentry).2
+  · intro hprehit
+    refine ⟨cover.entriesEquivPatternSelected.symm selected, ?_, ?_⟩
+    · exact Finset.mem_filter.2 ⟨Finset.mem_univ _, hprehit⟩
+    · exact cover.entriesEquivPatternSelected.apply_symm_apply selected
+
 noncomputable def FewTimeCover.originConfiguration {f : QueryImpl HashSpec Id}
     {cache : QueryCache HashSpec} {secretKey : SecretKey}
     {signingLog : QueryLog SigningSpec} {index : Index}
@@ -23,30 +89,28 @@ noncomputable def FewTimeCover.originConfiguration {f : QueryImpl HashSpec Id}
     (source : cover.PrecachedEntries trace hlog → Fin sources)
     (hsource : Function.Injective source) : OriginConfiguration cover.pattern sources := by
   classical
-  let equivalence := cover.entriesEquivPatternSelected
-  let precached := cover.precachedEntryFinset trace hlog
-  let selectedPrehits : Finset cover.pattern.selected :=
-    precached.map equivalence.toEmbedding
-  let asPrecached : ↑selectedPrehits → cover.PrecachedEntries trace hlog :=
-    fun selected =>
-      let entry := equivalence.symm selected.1
-      ⟨entry, by
-        have hmem : entry ∈ precached := by
-          obtain ⟨original, horiginal, heq⟩ := Finset.mem_map.1 selected.2
-          have horiginalEq : original = entry := by
-            apply equivalence.injective
-            rw [equivalence.apply_symm_apply]
-            exact heq
-          rw [← horiginalEq]
-          exact horiginal
-        exact (Finset.mem_filter.mp hmem).2⟩
-  refine ⟨selectedPrehits, ⟨fun selected => source (asPrecached selected), ?_⟩⟩
+  let selectedPrehits := cover.precachedPatternSelected trace hlog
+  refine ⟨selectedPrehits,
+    ⟨fun selected => source (cover.precachedOfPatternSelected trace hlog selected), ?_⟩⟩
   intro left right heq
-  have hasPrecached : asPrecached left = asPrecached right := hsource heq
+  have hasPrecached : cover.precachedOfPatternSelected trace hlog left =
+      cover.precachedOfPatternSelected trace hlog right := hsource heq
   apply Subtype.ext
   have hentries := congrArg (fun entry : cover.PrecachedEntries trace hlog => entry.1)
     hasPrecached
-  exact equivalence.symm.injective hentries
+  exact cover.entriesEquivPatternSelected.symm.injective hentries
+
+theorem FewTimeCover.originConfiguration_source_apply {f : QueryImpl HashSpec Id}
+    {cache : QueryCache HashSpec} {secretKey : SecretKey}
+    {signingLog : QueryLog SigningSpec} {index : Index}
+    {targetLeaves : DigestTree → FtsLeaf}
+    (cover : FewTimeCover f cache secretKey signingLog index targetLeaves)
+    (trace : SigningCacheTrace) (hlog : trace.toSigningLog = signingLog)
+    (sources : Nat) (source : cover.PrecachedEntries trace hlog → Fin sources)
+    (hsource : Function.Injective source)
+    (selected : ↑(cover.originConfiguration trace hlog sources source hsource).prehit) :
+    (cover.originConfiguration trace hlog sources source hsource).source.1 selected =
+      source (cover.precachedOfPatternSelected trace hlog selected) := rfl
 
 theorem FewTimeCover.originConfiguration_prehit_card {f : QueryImpl HashSpec Id}
     {cache : QueryCache HashSpec} {secretKey : SecretKey}
@@ -60,7 +124,7 @@ theorem FewTimeCover.originConfiguration_prehit_card {f : QueryImpl HashSpec Id}
     (cover.originConfiguration trace hlog sources source hsource).prehit.card =
       (cover.precachedEntryFinset trace hlog).card := by
   classical
-  simp [FewTimeCover.originConfiguration]
+  simp [FewTimeCover.originConfiguration, FewTimeCover.precachedPatternSelected]
 
 theorem FewTimeCover.precached_entries_have_injective_numbered_sources
     (adversary : Adversary) (parameter : PublicParameter)
