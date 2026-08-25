@@ -34,6 +34,8 @@ The local rules also preserve a view-dependent remaining risk instead of replaci
 
 Origin configurations now pad from the execution's actual signing-log length into the fixed `signatureLimit` index space. The selected-position equivalence preserves the prehit subset and its cardinality, transports every injective direct-source assignment unchanged, and lifts `OriginConfiguration.RealizedBy` with all exact query and cache-interval witnesses. Consequently every supported cover has a realized padded configuration under the global query budget, so adaptive transcript lengths require no additional union bound.
 
+The padded configuration now has unique lookups by chronological ordinal. `sourceAt?` identifies the prehit assigned to a direct-query slot, and `selectedAt?` identifies the pattern entry assigned to a signer slot. An `OriginObservation` records the source input and view or the fresh signer view at those slots, with update and noninterference lemmas ready for the recursive probability invariant.
+
 ## The shape of the proof
 
 The whole probabilistic side is one lemma, `Amortized.probEvent_bad_le_amortized`. Give it a predicate `Bad` on the random oracle's cache, a potential `Nat` on caches and a constant `c`, prove that a fresh answer on an uncached input turns the cache bad only by landing in a finite set of digests whose size the potential pays for up to `c` per query, and it returns `(c * q + potential) * eps`. Nothing else about the oracle is needed: no presampling, no reprogramming, no hybrid.

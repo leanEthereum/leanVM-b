@@ -78,6 +78,7 @@ import SphincsSecurity.Proof.DirectQueryBudget
 import SphincsSecurity.Proof.FewTimeOriginRealization
 import SphincsSecurity.Proof.FewTimeOriginProbability
 import SphincsSecurity.Proof.FewTimeOriginPadding
+import SphincsSecurity.Proof.FewTimeOriginSchedule
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
