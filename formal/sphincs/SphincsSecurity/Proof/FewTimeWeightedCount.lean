@@ -81,6 +81,19 @@ theorem FewTimePattern.originChoiceMass_le_two {signatures distinct q : Nat}
       rw [Fintype.card_coe, pattern.card_selected]
     _ ≤ 2 := prehit_origin_inflation_pow_le hq hdistinct
 
+theorem FewTimePattern.originChoiceMass_le_nine_eighths {signatures distinct q : Nat}
+    (pattern : FewTimePattern signatures distinct) (hq : q ≤ 2 ^ 120)
+    (hdistinct : distinct ≤ 14) :
+    originChoiceMass pattern.selected q ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹ ≤ 9 / 8 := by
+  calc
+    originChoiceMass pattern.selected q ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹ ≤
+        (1 + q * ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹) ^
+          Fintype.card pattern.selected :=
+      originChoiceMass_le pattern.selected q ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹
+    _ = (1 + q * ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹) ^ distinct := by
+      rw [Fintype.card_coe, pattern.card_selected]
+    _ ≤ 9 / 8 := prehit_origin_inflation_pow_le_nine_eighths hq hdistinct
+
 noncomputable def weightedFewTimePatternBound (signatures q : Nat) : ℝ≥0∞ :=
   ∑ distinct ∈ Finset.Icc 1 14,
     ∑ pattern : FewTimePattern signatures distinct,
@@ -117,6 +130,40 @@ theorem weightedFewTimePatternBound_le {signatures q : Nat}
     _ = ((2 ^ 121 : Nat) : ℝ≥0∞)⁻¹ := by
       apply (ENNReal.toReal_eq_toReal_iff' (by finiteness) (by finiteness)).mp
       simp only [ENNReal.toReal_mul, ENNReal.toReal_inv, ENNReal.toReal_natCast]
+      norm_num
+
+theorem weightedFewTimePatternBound_le_nine_mul_inv {signatures q : Nat}
+    (hsignatures : signatures ≤ signatureLimit) (hq : q ≤ 2 ^ 120) :
+    weightedFewTimePatternBound signatures q ≤
+      9 * ((2 ^ 125 : Nat) : ℝ≥0∞)⁻¹ := by
+  classical
+  calc
+    weightedFewTimePatternBound signatures q ≤
+        ∑ distinct ∈ Finset.Icc 1 14,
+          ∑ _pattern : FewTimePattern signatures distinct,
+            (9 / 8) * ((2 ^ (26 * distinct + 140) : Nat) : ℝ≥0∞)⁻¹ := by
+      apply Finset.sum_le_sum
+      intro distinct hdistinct
+      apply Finset.sum_le_sum
+      intro pattern _
+      gcongr
+      exact pattern.originChoiceMass_le_nine_eighths hq
+        (Finset.mem_Icc.mp hdistinct).2
+    _ = (9 / 8) * (∑ distinct ∈ Finset.Icc 1 14,
+          (Fintype.card (FewTimePattern signatures distinct) : ℝ≥0∞) *
+            ((2 ^ (26 * distinct + 140) : Nat) : ℝ≥0∞)⁻¹) := by
+      simp only [Finset.sum_const, Finset.card_univ, nsmul_eq_mul]
+      rw [Finset.mul_sum]
+      apply Finset.sum_congr rfl
+      intro distinct _
+      ring
+    _ ≤ (9 / 8) * ((2 ^ 122 : Nat) : ℝ≥0∞)⁻¹ := by
+      gcongr
+      exact fewTimePattern_unionBound_le hsignatures
+    _ = 9 * ((2 ^ 125 : Nat) : ℝ≥0∞)⁻¹ := by
+      apply (ENNReal.toReal_eq_toReal_iff' (by finiteness) (by finiteness)).mp
+      simp only [ENNReal.toReal_mul, ENNReal.toReal_inv, ENNReal.toReal_div,
+        ENNReal.toReal_natCast]
       norm_num
 
 end SphincsSecurity.Concrete

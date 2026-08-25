@@ -3798,6 +3798,30 @@ theorem probEvent_gameAfterSecretsWithViewTrace_proper_leak_le
       (probEvent_gameAfterSecretsWithViewTrace_fresh_proper_leak_le adversary q hq
         hqMax parameter hparameter otsSecret hots ftsSecret hfts))
 
+theorem probEvent_gameAfterSecretsWithViewTrace_proper_leak_le_nine_mul_inv
+    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
+    (hqMax : q ≤ 2 ^ 120)
+    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (hots : otsSecret ∈ support sampleOtsSecrets)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (hfts : ftsSecret ∈ support sampleFtsSecrets) :
+    Pr[ViewedProperFewTimeLeakWitness parameter otsSecret ftsSecret |
+      gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret] ≤
+      ((2 * q + 1 : Nat) : ℝ≥0∞) *
+        (9 * ((2 ^ 125 : Nat) : ℝ≥0∞)⁻¹) := by
+  calc
+    _ ≤ q * idealOriginUnionBound signatureLimit q +
+          ((q + 1 : Nat) : ℝ≥0∞) * idealOriginUnionBound signatureLimit q :=
+      probEvent_gameAfterSecretsWithViewTrace_proper_leak_le adversary q hq hqMax
+        parameter hparameter otsSecret hots ftsSecret hfts
+    _ = ((2 * q + 1 : Nat) : ℝ≥0∞) * idealOriginUnionBound signatureLimit q := by
+      push_cast
+      ring
+    _ ≤ _ := by
+      gcongr
+      exact idealOriginUnionBound_le_nine_mul_inv le_rfl hqMax
+
 theorem probEvent_gameAfterSecretsWithViewTrace_nonfresh_proper_leak_le_inv
     (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
     (hqMax : q ≤ 2 ^ 120)

@@ -158,4 +158,11 @@ theorem idealOriginUnionBound_le {signatures sources : Nat}
   rw [idealOriginUnionBound_eq_weightedFewTimePatternBound]
   exact weightedFewTimePatternBound_le hsignatures hsources
 
+theorem idealOriginUnionBound_le_nine_mul_inv {signatures sources : Nat}
+    (hsignatures : signatures ≤ signatureLimit) (hsources : sources ≤ 2 ^ 120) :
+    idealOriginUnionBound signatures sources ≤
+      9 * ((2 ^ 125 : Nat) : ℝ≥0∞)⁻¹ := by
+  rw [idealOriginUnionBound_eq_weightedFewTimePatternBound]
+  exact weightedFewTimePatternBound_le_nine_mul_inv hsignatures hsources
+
 end SphincsSecurity.Concrete
