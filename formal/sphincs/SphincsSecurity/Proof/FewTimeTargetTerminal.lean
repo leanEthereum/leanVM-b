@@ -2675,6 +2675,190 @@ theorem gameAfterSecretsWithViewTrace_proper_target_classified
     exact Or.inr ⟨rootCache, state, distinct, hdistinct, pattern, configuration,
       candidate, hadversary, hterminal⟩
 
+theorem OracleComp.IsQueryBoundP.of_bind_left
+    {ι : Type} {spec : ι → Type} {oa : OracleComp spec α}
+    {ob : α → OracleComp spec β} {p : ι → Prop} [DecidablePred p] {q : Nat}
+    (hbound : (oa >>= ob).IsQueryBoundP p q) : oa.IsQueryBoundP p q := by
+  induction oa using OracleComp.inductionOn generalizing q with
+  | pure _ => trivial
+  | query_bind input continuation ih =>
+      rw [bind_assoc, isQueryBoundP_query_bind_iff] at hbound
+      rw [isQueryBoundP_query_bind_iff]
+      exact ⟨hbound.1, fun output => ih output (hbound.2 output)⟩
+
+theorem probEvent_gameRestWithViewTrace_nonfresh_proper_leak_le
+    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
+    (hqMax : q ≤ 2 ^ 120)
+    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (hots : otsSecret ∈ support sampleOtsSecrets)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (hfts : ftsSecret ∈ support sampleFtsSecrets)
+    (root : Digest) (rootCache : QueryCache HashSpec)
+    (hroot : (root, rootCache) ∈ support
+      ((simulateQ romImpl
+        (liftM ((treeRoot parameter topLayer rootTree
+          (otsSecret topLayer rootTree) : OracleComp HashSpec Digest)) :
+            OracleComp OracleWorld Digest)).run ∅)) :
+    Pr[fun rest =>
+        let result : (Digest × Forgery × Bool) × ViewedFullTraceState :=
+          ((root, rest.1.1, rest.1.2), rest.2)
+        ViewedProperFewTimeLeakWitness parameter otsSecret ftsSecret result
+          ∧ ¬VerifierFreshTarget parameter result |
+      gameRestWithViewTrace adversary ⟨root, parameter⟩
+        ⟨parameter, root, otsSecret, ftsSecret⟩ rootCache] ≤
+      q * idealOriginUnionBound signatureLimit q := by
+  classical
+  let secretKey : SecretKey := ⟨parameter, root, otsSecret, ftsSecret⟩
+  let publicKey : PublicKey := ⟨root, parameter⟩
+  let initialState : ViewedFullTraceState :=
+    ⟨rootCache, ⟨[], [], []⟩, [], none⟩
+  let run := (simulateQ (viewedFullTracedMappedAdversaryImpl secretKey)
+    (adversary.main publicKey)).run initialState
+  let finish : Forgery × ViewedFullTraceState →
+      ProbComp ((Forgery × Bool) × ViewedFullTraceState) := fun prior => do
+    let ((verified, targetView), finalCache) ←
+      (simulateQ romImpl
+        (liftM (verifyWithView publicKey prior.1.message prior.1.signature) :
+          OracleComp OracleWorld (Bool × FewTimeView))).run prior.2.cache
+    let log := prior.2.trace.signing.toSigningLog
+    let verdict := decide (SigningTranscript.Valid log ∧
+      ¬SigningTranscript.Contains log prior.1) && verified
+    pure ((prior.1, verdict),
+      ⟨finalCache, prior.2.trace, prior.2.views, some targetView⟩)
+  let prefixEvent := fun prior : Forgery × ViewedFullTraceState =>
+    ∃ distinct ∈ Finset.Icc 1 14,
+      ∃ pattern : FewTimePattern signatureLimit distinct,
+      ∃ configuration : OriginConfiguration pattern q,
+      ∃ candidate : Fin q,
+        FixedOriginTargetViewedTerminal secretKey (adversary.main publicKey)
+          rootCache q configuration candidate.val prior
+  have hgame : gameRestWithViewTrace adversary publicKey secretKey rootCache =
+      run >>= finish := by
+    rfl
+  rw [show ⟨root, parameter⟩ = publicKey from rfl,
+    show ⟨parameter, root, otsSecret, ftsSecret⟩ = secretKey from rfl, hgame]
+  calc
+    _ ≤ Pr[prefixEvent | run] := by
+      apply probEvent_bind_le_probEvent
+      intro prior hprior hnotPrefix
+      rcases prior with ⟨forgery, state⟩
+      apply probEvent_eq_zero
+      intro rest hrest hevent
+      rw [mem_support_bind_iff] at hrest
+      obtain ⟨⟨⟨verified, targetView⟩, finalCache⟩, hverify, hpure⟩ := hrest
+      simp only [support_pure, Set.mem_singleton_iff] at hpure
+      subst rest
+      let result : (Digest × Forgery × Bool) × ViewedFullTraceState :=
+        ((root, forgery,
+          decide (SigningTranscript.Valid state.trace.signing.toSigningLog ∧
+            ¬SigningTranscript.Contains state.trace.signing.toSigningLog forgery) &&
+              verified),
+          ⟨finalCache, state.trace, state.views, some targetView⟩)
+      have hrestSupport :
+          ((forgery,
+              decide (SigningTranscript.Valid state.trace.signing.toSigningLog ∧
+                ¬SigningTranscript.Contains state.trace.signing.toSigningLog forgery) &&
+                  verified),
+            ⟨finalCache, state.trace, state.views, some targetView⟩) ∈
+            support (gameRestWithViewTrace adversary publicKey secretKey rootCache) := by
+        rw [hgame, mem_support_bind_iff]
+        refine ⟨(forgery, state), hprior, ?_⟩
+        rw [mem_support_bind_iff]
+        exact ⟨((verified, targetView), finalCache), hverify,
+          by simp only [support_pure, Set.mem_singleton_iff]⟩
+      have hresult : result ∈ support
+          (gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret) := by
+        rw [gameAfterSecretsWithViewTrace, mem_support_bind_iff]
+        refine ⟨(root, rootCache), hroot, ?_⟩
+        rw [mem_support_bind_iff]
+        exact ⟨_, hrestSupport, by simp [result]⟩
+      obtain ⟨f, digest, hf, hvalid, _, hdigest, hadmissible, hproper⟩ := hevent.1
+      have hcacheLe : state.cache ≤ finalCache :=
+        simulateQ_romImpl_cache_le
+          (liftM (verifyWithView publicKey forgery.message forgery.signature) :
+            OracleComp OracleWorld (Bool × FewTimeView)) state.cache
+              ((verified, targetView), finalCache) hverify
+      rcases gameAfterSecretsWithViewTrace_proper_target_classified_at_adversary_state
+          adversary q hq parameter hparameter otsSecret hots ftsSecret hfts result hresult
+          f hf digest hdigest hadmissible hproper hvalid rootCache state rfl rfl hcacheLe with
+        hfresh | hclassified
+      · exact hevent.2 hfresh
+      · obtain ⟨distinct, hdistinct, pattern, configuration, candidate, hterminal⟩ :=
+          hclassified
+        apply hnotPrefix
+        exact ⟨distinct, hdistinct, pattern, configuration, candidate, hterminal⟩
+    _ ≤ _ := probEvent_exists_fixedOriginTargetViewedTerminal_le_idealOrigin
+      secretKey (adversary.main publicKey) rootCache signatureLimit q q hqMax
+        (by
+          have hroot' : QueryCache.enncard rootCache ≤ q := by
+            have hprojected : (root, rootCache) ∈ support
+                ((simulateQ romImpl
+                  (liftM ((treeRoot parameter topLayer rootTree
+                    (otsSecret topLayer rootTree) : OracleComp HashSpec Digest)) :
+                      OracleComp OracleWorld Digest)).run ∅) := hroot
+            have hgameBound := isQueryBoundP_gameAfterSecrets adversary q hq
+              hparameter hots hfts
+            rw [gameAfterSecrets] at hgameBound
+            have hrootBound := OracleComp.IsQueryBoundP.of_bind_left
+              (p := fun input : OracleWorld.Domain => input matches Sum.inr _) hgameBound
+            have hbound := simulateQ_romImpl_enncard_le_queryBound
+              (liftM ((treeRoot parameter topLayer rootTree
+                (otsSecret topLayer rootTree) : OracleComp HashSpec Digest)) :
+                  OracleComp OracleWorld Digest) q
+              hrootBound
+              (root, rootCache) hprojected
+            exact hbound
+          exact hroot')
+
+theorem probEvent_gameAfterSecretsWithViewTrace_nonfresh_proper_leak_le
+    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
+    (hqMax : q ≤ 2 ^ 120)
+    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (hots : otsSecret ∈ support sampleOtsSecrets)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (hfts : ftsSecret ∈ support sampleFtsSecrets) :
+    Pr[fun result =>
+        ViewedProperFewTimeLeakWitness parameter otsSecret ftsSecret result
+          ∧ ¬VerifierFreshTarget parameter result |
+      gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret] ≤
+      q * idealOriginUnionBound signatureLimit q := by
+  rw [gameAfterSecretsWithViewTrace]
+  apply probEvent_bind_le_of_forall_le
+  rintro ⟨root, rootCache⟩ hroot
+  let attach := fun rest : (Forgery × Bool) × ViewedFullTraceState =>
+    ((root, rest.1.1, rest.1.2), rest.2)
+  change Pr[fun result =>
+      ViewedProperFewTimeLeakWitness parameter otsSecret ftsSecret result ∧
+        ¬VerifierFreshTarget parameter result |
+    gameRestWithViewTrace adversary ⟨root, parameter⟩
+      ⟨parameter, root, otsSecret, ftsSecret⟩ rootCache >>= pure ∘ attach] ≤ _
+  rw [probEvent_bind_pure_comp]
+  exact probEvent_gameRestWithViewTrace_nonfresh_proper_leak_le adversary q hq hqMax
+    parameter hparameter otsSecret hots ftsSecret hfts root rootCache hroot
+
+theorem probEvent_gameAfterSecretsWithViewTrace_nonfresh_proper_leak_le_inv
+    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
+    (hqMax : q ≤ 2 ^ 120)
+    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (hots : otsSecret ∈ support sampleOtsSecrets)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (hfts : ftsSecret ∈ support sampleFtsSecrets) :
+    Pr[fun result =>
+        ViewedProperFewTimeLeakWitness parameter otsSecret ftsSecret result
+          ∧ ¬VerifierFreshTarget parameter result |
+      gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret] ≤
+      q * ((2 ^ 121 : Nat) : ℝ≥0∞)⁻¹ := by
+  calc
+    _ ≤ q * idealOriginUnionBound signatureLimit q :=
+      probEvent_gameAfterSecretsWithViewTrace_nonfresh_proper_leak_le adversary q hq
+        hqMax parameter hparameter otsSecret hots ftsSecret hfts
+    _ ≤ _ := by
+      gcongr
+      exact idealOriginUnionBound_le le_rfl hqMax
+
 theorem gameAfterSecretsWithViewTrace_proper_target_bridge
     (adversary : Adversary) (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
