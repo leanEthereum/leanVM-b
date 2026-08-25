@@ -2,6 +2,7 @@ import SphincsSecurity.Proof.FullTrace
 import SphincsSecurity.Proof.FewTimeTrace
 import SphincsSecurity.Proof.FewTimeLoop
 import SphincsSecurity.Proof.SignerDigestSource
+import SphincsSecurity.Proof.FewTimeProbability
 
 /-!
 # Sources of previously cached selected digests
@@ -219,12 +220,14 @@ theorem FewTimeCover.precached_entry_has_earlier_direct_source
     (hprecached : cover.EntryDigestPrecached result.2.2.signing rfl entry) :
     ∃ source : Fin result.2.2.intervals.length,
       (result.2.2.intervals.get source).input =
-        .inl (.inr (cover.entryDigestInput entry)) := by
+        .inl (.inr (cover.entryDigestInput entry))
+      ∧ (result.2.2.intervals.get source).initialCache
+        (cover.entryDigestInput entry) = none := by
   obtain ⟨source, _, _, _, hsourceMiss, hsourceHit, hkind⟩ :=
     cover.precached_entry_has_earlier_exact_source adversary parameter otsSecret ftsSecret
       result hresult f index targetLeaves entry hprecached
   rcases hkind with hdirect | ⟨earlier, hearlier, hsourceEntry⟩
-  · exact ⟨source, hdirect⟩
+  · exact ⟨source, hdirect, hsourceMiss⟩
   · exfalso
     let secretKey : SecretKey := ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
     let earlierEntry := result.2.2.signing.get earlier
@@ -332,6 +335,110 @@ theorem FewTimeCover.precached_entry_has_earlier_direct_source
     apply hne
     rw [hmessage]
     rfl
+
+theorem AdversaryCacheEntry.direct_hash_run
+    (secretKey : SecretKey) (entry : AdversaryCacheEntry) (target : HashInput)
+    (hinput : entry.input = .inl (.inr target))
+    (hvalid : (entry.output, entry.finalCache) ∈ support
+      ((unloggedMappedAdversaryImpl secretKey entry.input).run entry.initialCache)) :
+    ∃ output : HashOutput,
+      (output, entry.finalCache) ∈ support ((randomOracle target).run entry.initialCache) := by
+  rcases entry with ⟨input, output, initialCache, finalCache⟩
+  cases input with
+  | inr request => simp at hinput
+  | inl worldInput =>
+      cases worldInput with
+      | inl uniformInput => simp at hinput
+      | inr hashInput =>
+          simp only [Sum.inl.injEq, Sum.inr.injEq] at hinput
+          subst hashInput
+          change (output, finalCache) ∈ support
+            ((randomOracle target).run initialCache) at hvalid
+          exact ⟨output, hvalid⟩
+
+theorem randomOracle_run_output_cached (input : HashInput)
+    (initialCache finalCache : QueryCache HashSpec) (output : HashOutput)
+    (hmem : (output, finalCache) ∈ support ((randomOracle input).run initialCache)) :
+    finalCache input = some output := by
+  cases hcache : initialCache input with
+  | none =>
+      rw [OracleSpec.randomOracle,
+        QueryImpl.withCaching_run_none uniformSampleImpl hcache, support_map] at hmem
+      obtain ⟨sampledOutput, _, heq⟩ := hmem
+      obtain ⟨rfl, rfl⟩ := heq
+      exact QueryCache.cacheQuery_self initialCache input output
+  | some cachedOutput =>
+      rw [OracleSpec.randomOracle,
+        QueryImpl.withCaching_run_some uniformSampleImpl hcache,
+        support_pure, Set.mem_singleton_iff] at hmem
+      obtain ⟨rfl, rfl⟩ := hmem
+      exact hcache
+
+theorem FewTimeCover.precached_entry_has_fresh_direct_view_source
+    (adversary : Adversary) (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (result : (Digest × Forgery × Bool) × (QueryCache HashSpec × FullAdversaryTrace))
+    (hresult : result ∈ support
+      (gameAfterSecretsWithFullTrace adversary parameter otsSecret ftsSecret))
+    (f : QueryImpl HashSpec Id) (hf : result.2.1.AgreesWithFn f)
+    (index : Index) (targetLeaves : DigestTree → FtsLeaf)
+    (cover : FewTimeCover f result.2.1
+      ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+      result.2.2.signing.toSigningLog index targetLeaves)
+    (entry : cover.entries)
+    (hprecached : cover.EntryDigestPrecached result.2.2.signing rfl entry) :
+    ∃ (source : Fin result.2.2.intervals.length) (output : HashOutput),
+      (result.2.2.intervals.get source).input =
+          .inl (.inr (cover.entryDigestInput entry))
+        ∧ (result.2.2.intervals.get source).initialCache
+          (cover.entryDigestInput entry) = none
+        ∧ (output, (result.2.2.intervals.get source).finalCache) ∈ support
+          ((randomOracle (cover.entryDigestInput entry)).run
+            (result.2.2.intervals.get source).initialCache)
+        ∧ hashOutputFewTimeView output = cover.entryView entry := by
+  obtain ⟨source, hsourceInput, hsourceMiss⟩ :=
+    cover.precached_entry_has_earlier_direct_source adversary parameter otsSecret ftsSecret
+      result hresult f hf index targetLeaves entry hprecached
+  have hvalid := gameAfterSecretsWithFullTrace_support_validIntervals
+    adversary parameter otsSecret ftsSecret result hresult
+  have hintervals := gameAfterSecretsWithFullTrace_support_interval_invariants
+    adversary parameter otsSecret ftsSecret result hresult
+  let sourceInterval := result.2.2.intervals.get source
+  have hsourceRun := hvalid sourceInterval (List.get_mem _ source)
+  obtain ⟨output, hsourceRun'⟩ := AdversaryCacheEntry.direct_hash_run
+    ⟨parameter, result.1.1, otsSecret, ftsSecret⟩ sourceInterval
+    (cover.entryDigestInput entry)
+    (by simpa only [sourceInterval] using hsourceInput) hsourceRun
+  have hcachedSource : sourceInterval.finalCache (cover.entryDigestInput entry) = some output :=
+    randomOracle_run_output_cached (cover.entryDigestInput entry)
+      sourceInterval.initialCache sourceInterval.finalCache output hsourceRun'
+  have hsourceLe : sourceInterval.finalCache ≤ result.2.1 :=
+    (hintervals.2.1 sourceInterval (List.get_mem _ source)).2
+  have hfinput : f (cover.entryDigestInput entry) = output :=
+    hf (hsourceLe hcachedSource)
+  have hdigest : truncateMessageDigest output = cover.entryDigest entry := by
+    let selected := cover.select (cover.representativeTree entry)
+    have hentryDigest := (cover.entryDigest_spec entry).1
+    have hfinput' : f (tweakableHashInput parameter .message
+        (messageDigestPayload result.1.1 selected.entry.1
+          selected.signature.randomness)) = output := by
+      simpa only [FewTimeCover.entryDigestInput, selected] using hfinput
+    have hentryDigest' : truncateMessageDigest
+        (f (tweakableHashInput parameter .message
+          (messageDigestPayload result.1.1 selected.entry.1
+            selected.signature.randomness))) = cover.entryDigest entry := by
+      simpa only [messageDigest, oracleHash, evalWithAnswerFn_bind, evalWithAnswerFn_query,
+        evalWithAnswerFn_pure, selected] using hentryDigest
+    exact (congrArg truncateMessageDigest hfinput').symm.trans hentryDigest'
+  refine ⟨source, output, hsourceInput, hsourceMiss, hsourceRun', ?_⟩
+  apply Prod.ext
+  · change digestIndex (truncateMessageDigest output) = digestIndex (cover.entryDigest entry)
+    rw [hdigest]
+  · funext tree
+    change digestLeaves (truncateMessageDigest output) (ftsIndexOf tree) =
+      digestLeaves (cover.entryDigest entry) (ftsIndexOf tree)
+    rw [hdigest]
 
 theorem FewTimeCover.precached_entry_has_earlier_sample_source
     (adversary : Adversary) (parameter : PublicParameter)

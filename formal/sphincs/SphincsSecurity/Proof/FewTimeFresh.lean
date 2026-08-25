@@ -64,6 +64,55 @@ theorem evalDist_uniformHashOutputCoordinates_bind_reordered {Result : Type}
         reorderHashOutputCoordinates, Function.comp_apply]
       rfl
 
+theorem probEvent_uniformDigestCoordinates_admissible_view
+    (P : FewTimeView → Prop) :
+    Pr[fun coordinates : FewTimeView × FtsLeaf => coordinates.2 = 0 ∧ P coordinates.1 |
+      ($ᵗ (FewTimeView × FtsLeaf) : ProbComp (FewTimeView × FtsLeaf))] =
+      ((2 ^ ftsTreeHeight : Nat) : ℝ≥0∞)⁻¹ *
+        Pr[P | ($ᵗ FewTimeView : ProbComp FewTimeView)] := by
+  change Pr[fun coordinates : FewTimeView × FtsLeaf =>
+      coordinates.2 = 0 ∧ P coordinates.1 |
+    Prod.mk <$> ($ᵗ FewTimeView : ProbComp FewTimeView) <*>
+      ($ᵗ FtsLeaf : ProbComp FtsLeaf)] = _
+  calc
+    _ = Pr[P | ($ᵗ FewTimeView : ProbComp FewTimeView)] *
+          Pr[fun leaf : FtsLeaf => leaf = 0 |
+            ($ᵗ FtsLeaf : ProbComp FtsLeaf)] := by
+      apply probEvent_seq_map_eq_mul
+      intro view _hview leaf _hleaf
+      simp [and_comm]
+    _ = Pr[P | ($ᵗ FewTimeView : ProbComp FewTimeView)] *
+          ((2 ^ ftsTreeHeight : Nat) : ℝ≥0∞)⁻¹ := by
+      rw [probEvent_eq_eq_probOutput, probOutput_uniformSample, Fintype.card_fin]
+    _ = _ := by rw [mul_comm]
+
+set_option maxRecDepth 100000 in
+theorem probEvent_uniformHashOutput_admissible_view
+    (P : FewTimeView → Prop) :
+    Pr[fun output : HashOutput =>
+      signAttemptResultOfOutput output ≠ none ∧ P (hashOutputFewTimeView output) |
+      ($ᵗ HashOutput : ProbComp HashOutput)] =
+      ((2 ^ ftsTreeHeight : Nat) : ℝ≥0∞)⁻¹ *
+        Pr[P | ($ᵗ FewTimeView : ProbComp FewTimeView)] := by
+  let coordinates : HashOutput → FewTimeView × FtsLeaf := fun output =>
+    digestCoordinates (truncateMessageDigest output)
+  let event : FewTimeView × FtsLeaf → Prop := fun value => value.2 = 0 ∧ P value.1
+  calc
+    Pr[fun output : HashOutput =>
+        signAttemptResultOfOutput output ≠ none ∧ P (hashOutputFewTimeView output) |
+        ($ᵗ HashOutput : ProbComp HashOutput)] =
+        Pr[event | coordinates <$> ($ᵗ HashOutput : ProbComp HashOutput)] := by
+      rw [probEvent_map]
+      congr 1
+      funext output
+      rw [signAttemptResultOfOutput_ne_none_iff]
+      rfl
+    _ = Pr[event |
+        ($ᵗ (FewTimeView × FtsLeaf) : ProbComp (FewTimeView × FtsLeaf))] :=
+      probEvent_congr' (fun _ _ => Iff.rfl) (by
+        simpa only [coordinates] using evalDist_hashOutput_digestCoordinates_uniform)
+    _ = _ := probEvent_uniformDigestCoordinates_admissible_view P
+
 def OnlyRejectedNewMessageEntries (referenceCache workingCache : QueryCache HashSpec)
     (secretKey : SecretKey) (message : Message) : Prop :=
   ∀ randomness output,
