@@ -1656,6 +1656,61 @@ theorem ProperFewTimeLeak.target_source_interval_allowed
         congrArg AdversaryCacheEntry.input hentry
     simp [targetCandidateIntervalAllowed, hinputElem, hnone]
 
+theorem OriginConfiguration.paddedRealized_target_complete_and_hit
+    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec}
+    {secretKey : SecretKey} {signingLog : QueryLog SigningSpec} {index : Index}
+    {targetLeaves : DigestTree → FtsLeaf}
+    {cover : FewTimeCover f cache secretKey signingLog index targetLeaves}
+    {q limit : Nat} {hle : signingLog.length ≤ limit}
+    {configuration : OriginConfiguration (cover.pattern.pad hle) q}
+    {state : OriginTargetMonitorState configuration}
+    (hlog : state.origin.viewed.trace.signing.toSigningLog = signingLog)
+    (hrealized : configuration.PaddedRealizedBy cover hle
+      state.origin.viewed.trace hlog)
+    (hreplay : state.origin.ReplayConsistent secretKey)
+    (hvalidIntervals : state.origin.viewed.trace.ValidIntervals secretKey)
+    (hchronological : FullAdversaryTrace.Chronological
+      state.origin.viewed.trace.intervals)
+    (hcaches : state.origin.viewed.trace.signing.CachesLe cache)
+    (hf : cache.AgreesWithFn f)
+    (position : Fin state.origin.viewed.trace.intervals.length)
+    (hcandidate : FreshTargetCandidate secretKey
+      (state.origin.viewed.trace.intervals.get position))
+    (hview : targetCandidateIntervalView state.origin.viewed position =
+      fewTimeTargetView index targetLeaves)
+    (hallowed : targetCandidateIntervalAllowed configuration
+      state.origin.viewed position = true)
+    (hviewsCoherent : state.CandidateViewsCoherent
+      (state.origin.viewed.trace.intervals.countPBefore
+        (fun entry => decide (FreshTargetCandidate secretKey entry)) position.val))
+    (hviewsExact : CandidateViewsExact secretKey
+      state.origin.viewed state.candidateViews)
+    (hallowedCoherent : state.CandidateAllowedCoherent
+      (state.origin.viewed.trace.intervals.countPBefore
+        (fun entry => decide (FreshTargetCandidate secretKey entry)) position.val))
+    (hallowedExact : CandidateAllowedExact configuration secretKey
+      state.origin.viewed state.candidateAllowed) :
+    state.Complete ∧
+      ∀ target, state.targetView = some target →
+        FixedFewTimePatternHit (cover.pattern.pad hle).assignment
+          (state.origin.observation.views, target) := by
+  have horigin := configuration.paddedRealized_complete_and_hit hlog hrealized
+    hreplay hvalidIntervals hchronological hcaches hf
+  have htarget := state.targetView_eq_candidateInterval secretKey position hcandidate
+    hviewsCoherent hviewsExact
+  rw [hview] at htarget
+  have hvalid := state.valid_eq_candidateIntervalAllowed secretKey position hcandidate
+    hallowedCoherent hallowedExact
+  rw [hallowed] at hvalid
+  constructor
+  · exact ⟨hvalid, horigin.1,
+      fewTimeTargetView index targetLeaves, htarget⟩
+  · intro target htarget'
+    have htargetEq : target = fewTimeTargetView index targetLeaves := by
+      exact Option.some.inj (htarget'.symm.trans htarget)
+    rw [htargetEq]
+    exact horigin.2
+
 end Concrete
 
 end SphincsSecurity
