@@ -2308,6 +2308,294 @@ theorem probEvent_exists_originConfiguration_fixedOrdinal_viewedEvent_le_idealOr
       rw [idealOriginUnionBound]
       simp_rw [← Finset.mul_sum]
 
+def FixedOriginTargetViewedTerminal
+    (secretKey : SecretKey) (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialCache : QueryCache HashSpec) (q : Nat)
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (candidate : Nat)
+    (result : α × ViewedFullTraceState) : Prop :=
+  QueryCache.enncard result.2.cache ≤ q ∧
+    ∀ monitored : α × OriginTargetMonitorState configuration,
+      monitored ∈ support
+        ((simulateQ
+          (originTargetMonitoredAdversaryImpl configuration secretKey candidate)
+          computation).run (OriginTargetMonitorState.initial configuration initialCache)) →
+      (monitored.1, monitored.2.origin.viewed) = result →
+      monitored.2.Complete ∧
+        ∀ target, monitored.2.targetView = some target →
+          FixedFewTimePatternHit pattern.assignment
+            (monitored.2.origin.observation.views, target)
+
+noncomputable instance
+    (secretKey : SecretKey) (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialCache : QueryCache HashSpec) (q : Nat)
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (candidate : Nat) :
+    DecidablePred
+      (FixedOriginTargetViewedTerminal secretKey computation initialCache q
+        configuration candidate) :=
+  fun result => Classical.propDecidable
+    (FixedOriginTargetViewedTerminal secretKey computation initialCache q
+      configuration candidate result)
+
+theorem probEvent_exists_fixedOriginTargetViewedTerminal_le_idealOrigin
+    (secretKey : SecretKey) (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialCache : QueryCache HashSpec) (signatures sources q : Nat)
+    (hq : q ≤ 2 ^ 120) (hcache : QueryCache.enncard initialCache ≤ q) :
+    Pr[fun result => ∃ distinct ∈ Finset.Icc 1 14,
+        ∃ pattern : FewTimePattern signatures distinct,
+        ∃ configuration : OriginConfiguration pattern sources,
+        ∃ candidate : Fin q,
+          FixedOriginTargetViewedTerminal secretKey computation initialCache q
+            configuration candidate.val result |
+      (simulateQ (viewedFullTracedMappedAdversaryImpl secretKey)
+        computation).run ⟨initialCache, ⟨[], [], []⟩, [], none⟩] ≤
+      q * idealOriginUnionBound signatures sources := by
+  apply probEvent_exists_originConfiguration_fixedOrdinal_viewedEvent_le_idealOrigin
+    secretKey computation initialCache signatures sources q hq hcache q
+      (fun _ _ configuration candidate =>
+        FixedOriginTargetViewedTerminal secretKey computation initialCache q
+          configuration candidate.val)
+  intro distinct pattern configuration candidate result hresult hevent
+  obtain ⟨hcacheFinal, hterminal⟩ := hevent
+  have hprojection : (result.1, result.2.origin.viewed) =
+      (result.1, result.2.origin.viewed) := rfl
+  obtain ⟨hcomplete, hhit⟩ := hterminal result hresult hprojection
+  exact ⟨hcomplete, hhit, hcacheFinal⟩
+
+theorem OriginConfiguration.target_monitored_complete_of_projection
+    (adversary : Adversary) (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (result : (Digest × Forgery × Bool) × ViewedFullTraceState)
+    (hresult : result ∈ support
+      (gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret))
+    (f : QueryImpl HashSpec Id) (hf : result.2.cache.AgreesWithFn f)
+    (digest : MessageDigest)
+    (hproper : ProperFewTimeLeak f result.2.cache
+      ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+      result.2.trace.signing.toSigningLog (digestIndex digest) (digestLeaves digest))
+    {limit sources : Nat} (hle : result.2.trace.signing.toSigningLog.length ≤ limit)
+    (configuration : OriginConfiguration (hproper.1.cover.pattern.pad hle) sources)
+    (hrealized : configuration.PaddedRealizedBy hproper.1.cover hle result.2.trace rfl)
+    (source : Fin result.2.trace.intervals.length)
+    (hcandidate : FreshTargetCandidate
+      ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+      (result.2.trace.intervals.get source))
+    (hsourceView : targetCandidateIntervalView result.2 source =
+      fewTimeTargetView (digestIndex digest) (digestLeaves digest))
+    (hallowed : targetCandidateIntervalAllowed configuration result.2 source = true)
+    (targetOrdinal : Nat)
+    (htargetOrdinal : targetOrdinal = result.2.trace.intervals.countPBefore
+      (fun entry => decide (FreshTargetCandidate
+        ⟨parameter, result.1.1, otsSecret, ftsSecret⟩ entry)) source.val)
+    (rootCache : QueryCache HashSpec)
+    (monitored : Forgery × OriginTargetMonitorState configuration)
+    (hmonitored : monitored ∈ support
+      ((simulateQ
+        (originTargetMonitoredAdversaryImpl configuration
+          ⟨parameter, result.1.1, otsSecret, ftsSecret⟩ targetOrdinal)
+        (adversary.main ⟨result.1.1, parameter⟩)).run
+          (OriginTargetMonitorState.initial configuration rootCache)))
+    (htrace : result.2.trace = monitored.2.origin.viewed.trace)
+    (hviews : result.2.views = monitored.2.origin.viewed.views) :
+    monitored.2.Complete ∧
+      ∀ target, monitored.2.targetView = some target →
+        FixedFewTimePatternHit (hproper.1.cover.pattern.pad hle).assignment
+          (monitored.2.origin.observation.views, target) := by
+  let secretKey : SecretKey := ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+  let monitoredPosition := castTracePosition result.2 monitored.2.origin.viewed
+    htrace source
+  have hcandidateMonitored : FreshTargetCandidate secretKey
+      (monitored.2.origin.viewed.trace.intervals.get monitoredPosition) := by
+    rw [get_castTracePosition result.2 monitored.2.origin.viewed htrace source]
+    exact hcandidate
+  have hviewMonitored : targetCandidateIntervalView monitored.2.origin.viewed
+      monitoredPosition = fewTimeTargetView (digestIndex digest) (digestLeaves digest) := by
+    rw [targetCandidateIntervalView_castTracePosition result.2
+      monitored.2.origin.viewed htrace hviews source]
+    exact hsourceView
+  have hallowedMonitored : targetCandidateIntervalAllowed configuration
+      monitored.2.origin.viewed monitoredPosition = true := by
+    rw [targetCandidateIntervalAllowed_castTracePosition configuration result.2
+      monitored.2.origin.viewed htrace source]
+    exact hallowed
+  have hbase : (result.1, result.2.base) ∈ support
+      (gameAfterSecretsWithFullTrace adversary parameter otsSecret ftsSecret) := by
+    rw [← gameAfterSecretsWithViewTrace_projection adversary parameter otsSecret ftsSecret,
+      support_map]
+    exact ⟨result, hresult, rfl⟩
+  have hinvariants := gameAfterSecretsWithFullTrace_support_invariants adversary
+    parameter otsSecret ftsSecret (result.1, result.2.base) hbase
+  have hintervals := gameAfterSecretsWithFullTrace_support_interval_invariants adversary
+    parameter otsSecret ftsSecret (result.1, result.2.base) hbase
+  have hvalidIntervals := gameAfterSecretsWithFullTrace_support_validIntervals adversary
+    parameter otsSecret ftsSecret (result.1, result.2.base) hbase
+  have htraceCoherent := originTargetMonitoredAdversaryImpl_candidateTraceCoherent
+    configuration secretKey targetOrdinal (adversary.main ⟨result.1.1, parameter⟩)
+    (OriginTargetMonitorState.initial configuration rootCache) monitored
+    (OriginTargetMonitorState.candidateTraceCoherent_initial configuration secretKey rootCache)
+    hmonitored
+  have hallowedTraceCoherent :=
+    originTargetMonitoredAdversaryImpl_candidateAllowedTraceCoherent
+      configuration secretKey targetOrdinal (adversary.main ⟨result.1.1, parameter⟩)
+      (OriginTargetMonitorState.initial configuration rootCache) monitored
+      (OriginTargetMonitorState.candidateAllowedTraceCoherent_initial
+        configuration secretKey rootCache)
+      hmonitored
+  have hviewsCoherent := originTargetMonitoredAdversaryImpl_candidateViewsCoherent
+    configuration secretKey targetOrdinal (adversary.main ⟨result.1.1, parameter⟩)
+    (OriginTargetMonitorState.initial configuration rootCache) monitored
+    (OriginTargetMonitorState.candidateViewsCoherent_initial configuration rootCache
+      targetOrdinal) hmonitored
+  have hallowedCoherent := originTargetMonitoredAdversaryImpl_candidateAllowedCoherent
+    configuration secretKey targetOrdinal (adversary.main ⟨result.1.1, parameter⟩)
+    (OriginTargetMonitorState.initial configuration rootCache) monitored
+    (OriginTargetMonitorState.candidateAllowedCoherent_initial configuration rootCache
+      targetOrdinal) hmonitored
+  have htargetOrdinalMonitored : targetOrdinal =
+      monitored.2.origin.viewed.trace.intervals.countPBefore
+        (fun entry => decide (FreshTargetCandidate secretKey entry))
+          monitoredPosition.val := by
+    rw [htargetOrdinal]
+    rw [List.countPBefore_eq_countP_take, List.countPBefore_eq_countP_take,
+      take_castTracePosition result.2 monitored.2.origin.viewed htrace source]
+  obtain ⟨hlogMonitored, hrealizedMonitored⟩ :=
+    configuration.paddedRealized_transport result.2.trace
+      monitored.2.origin.viewed.trace htrace rfl hrealized
+  have hvalidIntervalsMonitored :
+      monitored.2.origin.viewed.trace.ValidIntervals secretKey := by
+    rw [← htrace]
+    exact hvalidIntervals
+  have hchronologicalMonitored : FullAdversaryTrace.Chronological
+      monitored.2.origin.viewed.trace.intervals := by
+    rw [← htrace]
+    exact hintervals.2.2
+  have hcachesMonitored : monitored.2.origin.viewed.trace.signing.CachesLe
+      result.2.cache := by
+    rw [← htrace]
+    exact hinvariants.2.1
+  exact configuration.paddedRealized_target_complete_and_hit
+    hlogMonitored hrealizedMonitored htraceCoherent.1 hvalidIntervalsMonitored
+    hchronologicalMonitored hcachesMonitored hf monitoredPosition hcandidateMonitored
+    hviewMonitored hallowedMonitored (by rwa [← htargetOrdinalMonitored])
+    htraceCoherent.2 (by rwa [← htargetOrdinalMonitored]) hallowedTraceCoherent.2
+
+theorem gameAfterSecretsWithViewTrace_proper_target_classified
+    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
+    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (hots : otsSecret ∈ support sampleOtsSecrets)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (hfts : ftsSecret ∈ support sampleFtsSecrets)
+    (result : (Digest × Forgery × Bool) × ViewedFullTraceState)
+    (hresult : result ∈ support
+      (gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret))
+    (f : QueryImpl HashSpec Id) (hf : result.2.cache.AgreesWithFn f)
+    (digest : MessageDigest)
+    (hdigest : evalWithAnswerFn f
+      (messageDigest parameter result.1.1 result.1.2.1.message
+        result.1.2.1.signature.randomness) = digest)
+    (hadmissible : Admissible digest)
+    (hproper : ProperFewTimeLeak f result.2.cache
+      ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+      result.2.trace.signing.toSigningLog (digestIndex digest) (digestLeaves digest))
+    (hle : result.2.trace.signing.toSigningLog.length ≤ signatureLimit) :
+    let secretKey : SecretKey := ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+    let targetInput := tweakableHashInput parameter .message
+      (messageDigestPayload result.1.1 result.1.2.1.message
+        result.1.2.1.signature.randomness)
+    (∃ adversaryCache : QueryCache HashSpec, adversaryCache targetInput = none) ∨
+      ∃ (rootCache : QueryCache HashSpec) (state : ViewedFullTraceState)
+          (distinct : Nat) (_ : distinct ∈ Finset.Icc 1 14)
+          (pattern : FewTimePattern signatureLimit distinct)
+          (configuration : OriginConfiguration pattern q) (candidate : Fin q),
+        (result.1.2.1, state) ∈ support
+          ((simulateQ (viewedFullTracedMappedAdversaryImpl secretKey)
+            (adversary.main ⟨result.1.1, parameter⟩)).run
+              ⟨rootCache, ⟨[], [], []⟩, [], none⟩)
+        ∧ FixedOriginTargetViewedTerminal secretKey
+          (adversary.main ⟨result.1.1, parameter⟩) rootCache q
+            configuration candidate.val (result.1.2.1, state) := by
+  classical
+  let secretKey : SecretKey := ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+  let targetPayload := messageDigestPayload result.1.1 result.1.2.1.message
+    result.1.2.1.signature.randomness
+  let targetInput := tweakableHashInput parameter .message targetPayload
+  obtain ⟨_, adversaryCache, _, _, _, _, _, _, _, horigin, _⟩ :=
+    gameAfterSecretsWithViewTrace_target_source_kind adversary parameter otsSecret
+      ftsSecret result hresult
+  rcases horigin with hverifier | ⟨source, hsourceInitial, hsourceFinal, hkind⟩
+  · exact Or.inl ⟨adversaryCache,
+      by simpa only [targetInput, targetPayload] using hverifier⟩
+  · obtain ⟨sourceOutput, hcandidate, hsourceView, hsourceOutput, hattempt⟩ :=
+      gameAfterSecretsWithViewTrace_target_source_candidate adversary parameter otsSecret
+        ftsSecret result hresult f hf digest hdigest hadmissible source
+          (by simpa only [targetInput, targetPayload] using hsourceInitial)
+          (by simpa only [targetInput, targetPayload] using hsourceFinal)
+          (by simpa only [targetInput, targetPayload] using hkind)
+    have hbase : (result.1, result.2.base) ∈ support
+        (gameAfterSecretsWithFullTrace adversary parameter otsSecret ftsSecret) := by
+      rw [← gameAfterSecretsWithViewTrace_projection adversary parameter otsSecret ftsSecret,
+        support_map]
+      exact ⟨result, hresult, rfl⟩
+    obtain ⟨configuration, hrealized⟩ :=
+      hproper.1.cover.exists_paddedRealized_originConfiguration_of_queryBudget
+        adversary q hq parameter hparameter otsSecret hots ftsSecret hfts
+          (result.1, result.2.base) hbase f hf (digestIndex digest) (digestLeaves digest)
+          signatureLimit hle
+    have hinvariants := gameAfterSecretsWithFullTrace_support_invariants adversary
+      parameter otsSecret ftsSecret (result.1, result.2.base) hbase
+    have hintervals := gameAfterSecretsWithFullTrace_support_interval_invariants adversary
+      parameter otsSecret ftsSecret (result.1, result.2.base) hbase
+    have hvalidIntervals := gameAfterSecretsWithFullTrace_support_validIntervals adversary
+      parameter otsSecret ftsSecret (result.1, result.2.base) hbase
+    have hvalidViews := gameAfterSecretsWithViewTrace_support_validViews adversary parameter
+      otsSecret ftsSecret result hresult
+    have hallowed : targetCandidateIntervalAllowed configuration result.2 source = true :=
+      hproper.target_source_interval_allowed result.1.2.1 digest hdigest rfl result.2 rfl
+        hvalidViews hintervals.1 hinvariants.1 hinvariants.2.1 hf hle configuration
+          hrealized hvalidIntervals source sourceOutput
+          (by simpa only [targetInput, targetPayload] using hsourceInitial)
+          (by simpa only [targetInput, targetPayload] using hsourceOutput)
+          hattempt (by simpa only [targetInput, targetPayload] using hkind)
+    let targetOrdinal := result.2.trace.intervals.countPBefore
+      (fun entry => decide (FreshTargetCandidate secretKey entry)) source.val
+    have hordinalLt : targetOrdinal < freshTargetCandidateCount secretKey result.2.trace := by
+      apply List.countPBefore_lt_countP_of_lt_length_of_pos
+      exact decide_eq_true hcandidate
+    have hcountLe : freshTargetCandidateCount secretKey result.2.trace ≤ q := by
+      rw [freshTargetCandidateCount_eq_card]
+      have hbound := gameAfterSecretsWithViewTrace_freshTargetCandidatePositions_card_le
+        adversary q hq parameter hparameter otsSecret hots ftsSecret hfts result hresult
+      exact_mod_cast hbound
+    let candidate : Fin q := ⟨targetOrdinal, hordinalLt.trans_le hcountLe⟩
+    obtain ⟨rootCache, state, _, hadversary, htrace, hviews, hstateCache⟩ :=
+      gameAfterSecretsWithViewTrace_support_adversary_state adversary parameter otsSecret
+        ftsSecret result hresult
+    have hfinalCache : QueryCache.enncard result.2.cache ≤ q :=
+      gameAfterSecretsWithFullTrace_support_enncard_le adversary q hq parameter hparameter
+        otsSecret hots ftsSecret hfts (result.1, result.2.base) hbase
+    have hviewedCache : QueryCache.enncard state.cache ≤ q :=
+      (QueryCache.enncard_mono hstateCache).trans hfinalCache
+    refine Or.inr ⟨rootCache, state, hproper.1.cover.entries.card,
+      Finset.mem_Icc.2 ⟨hproper.1.cover.entries_card_pos,
+        hproper.1.cover.entries_card_le_trees⟩,
+      hproper.1.cover.pattern.pad hle, configuration, candidate, hadversary,
+      hviewedCache, ?_⟩
+    intro monitored hmonitored heq
+    have hstateEq : monitored.2.origin.viewed = state := congrArg Prod.snd heq
+    have htrace' : result.2.trace = monitored.2.origin.viewed.trace := by
+      rw [hstateEq]
+      exact htrace
+    have hviews' : result.2.views = monitored.2.origin.viewed.views := by
+      rw [hstateEq]
+      exact hviews
+    exact configuration.target_monitored_complete_of_projection adversary parameter
+      otsSecret ftsSecret result hresult f hf digest hproper hle hrealized source
+      hcandidate hsourceView hallowed targetOrdinal rfl rootCache monitored hmonitored
+      htrace' hviews'
+
 theorem gameAfterSecretsWithViewTrace_proper_target_bridge
     (adversary : Adversary) (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
