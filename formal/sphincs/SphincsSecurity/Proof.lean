@@ -86,6 +86,7 @@ import SphincsSecurity.Proof.FewTimeOriginWP
 import SphincsSecurity.Proof.FewTimeOriginPotential
 import SphincsSecurity.Proof.FewTimeOriginInvariant
 import SphincsSecurity.Proof.FewTimeOriginTerminal
+import SphincsSecurity.Proof.FewTimeOriginLift
 import SphincsSecurity.Proof.TerminalDecomposition
 
 /-!

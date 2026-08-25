@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.FewTimeViewTrace
+import Batteries.Data.Fin.Coding
 
 /-!
 # Cache origin of the verifier target view
@@ -13,6 +14,70 @@ namespace SphincsSecurity
 open OracleComp OracleSpec
 
 namespace Concrete
+
+def isTargetCandidateInterval (entry : AdversaryCacheEntry) : Prop :=
+  match entry.input with
+  | .inl (.inr _) => True
+  | .inr _ => True
+  | .inl (.inl _) => False
+
+instance : DecidablePred isTargetCandidateInterval := fun entry => by
+  rcases entry with ⟨input, output, initialCache, finalCache⟩
+  rcases input with worldInput | request
+  · rcases worldInput with uniformInput | hashInput
+    · exact isFalse id
+    · exact isTrue trivial
+  · exact isTrue trivial
+
+abbrev TargetCandidateIntervals (trace : FullAdversaryTrace) :=
+  {position : Fin trace.intervals.length //
+    isTargetCandidateInterval (trace.intervals.get position)}
+
+def targetCandidateIntervalCount (trace : FullAdversaryTrace) : Nat :=
+  Fin.countP fun position : Fin trace.intervals.length =>
+    decide (isTargetCandidateInterval (trace.intervals.get position))
+
+noncomputable def targetCandidateIntervalOrdinal (trace : FullAdversaryTrace)
+    (position : Fin trace.intervals.length)
+    (hcandidate : isTargetCandidateInterval (trace.intervals.get position)) :
+    Fin (targetCandidateIntervalCount trace) :=
+  Fin.encodeSubtype (fun candidate =>
+    isTargetCandidateInterval (trace.intervals.get candidate)) ⟨position, hcandidate⟩
+
+def TargetCandidateAt (trace : FullAdversaryTrace) (input : HashInput)
+    (adversaryCache : QueryCache HashSpec)
+    (candidate : Fin (targetCandidateIntervalCount trace + 1)) : Prop :=
+  (∃ (source : Fin trace.intervals.length)
+      (hcandidate : isTargetCandidateInterval (trace.intervals.get source)),
+      candidate.val = (targetCandidateIntervalOrdinal trace source hcandidate).val
+        ∧ (trace.intervals.get source).initialCache input = none
+        ∧ (trace.intervals.get source).finalCache input ≠ none)
+    ∨ (candidate.val = targetCandidateIntervalCount trace ∧
+      adversaryCache input = none)
+
+theorem exists_targetCandidateAt_of_source_kind
+    (trace : FullAdversaryTrace) (input : HashInput)
+    (adversaryCache : QueryCache HashSpec)
+    (horigin : adversaryCache input = none ∨
+      ∃ source : Fin trace.intervals.length,
+        (trace.intervals.get source).initialCache input = none
+          ∧ (trace.intervals.get source).finalCache input ≠ none
+          ∧ ((trace.intervals.get source).input = .inl (.inr input)
+            ∨ ∃ request, (trace.intervals.get source).input = .inr request)) :
+    ∃ candidate : Fin (targetCandidateIntervalCount trace + 1),
+      TargetCandidateAt trace input adversaryCache candidate := by
+  rcases horigin with hverifier | ⟨source, hinitial, hfinal, hkind⟩
+  · exact ⟨⟨targetCandidateIntervalCount trace, Nat.lt_succ_self _⟩,
+      Or.inr ⟨rfl, hverifier⟩⟩
+  · have hcandidate : isTargetCandidateInterval (trace.intervals.get source) := by
+      rcases hkind with hdirect | ⟨request, hsigner⟩
+      · rw [isTargetCandidateInterval, hdirect]
+        trivial
+      · rw [isTargetCandidateInterval, hsigner]
+        trivial
+    let ordinal := targetCandidateIntervalOrdinal trace source hcandidate
+    exact ⟨⟨ordinal.val, Nat.lt_succ_of_lt ordinal.isLt⟩,
+      Or.inl ⟨source, hcandidate, rfl, hinitial, hfinal⟩⟩
 
 theorem gameAfterSecretsWithViewTrace_target_source_kind
     (adversary : Adversary) (parameter : PublicParameter)
@@ -36,7 +101,9 @@ theorem gameAfterSecretsWithViewTrace_target_source_kind
             (result.2.trace.intervals.get source).initialCache input = none
               ∧ (result.2.trace.intervals.get source).finalCache input ≠ none
               ∧ ((result.2.trace.intervals.get source).input = .inl (.inr input)
-                ∨ ∃ request, (result.2.trace.intervals.get source).input = .inr request)) := by
+                ∨ ∃ request, (result.2.trace.intervals.get source).input = .inr request))
+        ∧ ∃ candidate : Fin (targetCandidateIntervalCount result.2.trace + 1),
+          TargetCandidateAt result.2.trace input adversaryCache candidate := by
   rw [gameAfterSecretsWithViewTrace, mem_support_bind_iff] at hmem
   obtain ⟨⟨root, rootCache⟩, hroot, hrest⟩ := hmem
   rw [mem_support_bind_iff] at hrest
@@ -86,15 +153,23 @@ theorem gameAfterSecretsWithViewTrace_target_source_kind
   refine ⟨rootCache, state.cache, digestCache, output, hrootNone, hchain,
     ?_, hdigestLe, congrArg some htarget, ?_⟩
   · simpa only [input, publicKey] using houtput
-  · by_cases hcached : state.cache input = none
-    · exact Or.inl hcached
-    · right
-      obtain ⟨source, hsourceInitial, hsourceFinal⟩ :=
-        hchain.transition_to_finish input (hrootNone _) hcached
-      exact ⟨source, hsourceInitial, hsourceFinal,
-        FullAdversaryTrace.transition_source_kind hvalid
-          (state.trace.intervals.get source) (List.get_mem _ source) input
-          hsourceInitial hsourceFinal⟩
+  · have horigin : state.cache input = none ∨
+        ∃ source : Fin state.trace.intervals.length,
+          (state.trace.intervals.get source).initialCache input = none
+            ∧ (state.trace.intervals.get source).finalCache input ≠ none
+            ∧ ((state.trace.intervals.get source).input = .inl (.inr input)
+              ∨ ∃ request, (state.trace.intervals.get source).input = .inr request) := by
+      by_cases hcached : state.cache input = none
+      · exact Or.inl hcached
+      · right
+        obtain ⟨source, hsourceInitial, hsourceFinal⟩ :=
+          hchain.transition_to_finish input (hrootNone _) hcached
+        exact ⟨source, hsourceInitial, hsourceFinal,
+          FullAdversaryTrace.transition_source_kind hvalid
+            (state.trace.intervals.get source) (List.get_mem _ source) input
+            hsourceInitial hsourceFinal⟩
+    exact ⟨horigin,
+      exists_targetCandidateAt_of_source_kind state.trace input state.cache horigin⟩
 
 end Concrete
 
