@@ -66,6 +66,7 @@ import SphincsSecurity.Proof.FewTimeViewTrace
 import SphincsSecurity.Proof.FewTimePadding
 import SphincsSecurity.Proof.FewTimeFresh
 import SphincsSecurity.Proof.FewTimePrehit
+import SphincsSecurity.Proof.FewTimeSourceCount
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
