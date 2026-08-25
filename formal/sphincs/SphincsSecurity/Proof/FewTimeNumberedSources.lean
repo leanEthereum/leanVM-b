@@ -124,6 +124,109 @@ theorem FewTimeCover.precached_entries_have_injective_numbered_sources
     exact Function.Injective.comp (Fin.cast_injective hcount) hencodedInjective
   exact ⟨source, intervalSource, output, hsourceInjective, hintervalInjective, hinterval⟩
 
+private theorem AdversaryCacheEntry.queryEntry_eq_of_direct_hash_runs
+    (secretKey : SecretKey) (entry : AdversaryCacheEntry) (target : HashInput)
+    (output : HashOutput) (hinput : entry.input = .inl (.inr target))
+    (hvalid : (entry.output, entry.finalCache) ∈ support
+      ((unloggedMappedAdversaryImpl secretKey entry.input).run entry.initialCache))
+    (hrun : (output, entry.finalCache) ∈ support
+      ((randomOracle target).run entry.initialCache)) :
+    entry.queryEntry =
+      (⟨.inl (.inr target), output⟩ :
+        (query : (OracleWorld + SigningSpec).Domain) ×
+          (OracleWorld + SigningSpec).Range query) := by
+  rcases entry with ⟨input, entryOutput, initialCache, finalCache⟩
+  cases input with
+  | inr request => simp at hinput
+  | inl worldInput =>
+      cases worldInput with
+      | inl uniformInput => simp at hinput
+      | inr hashInput =>
+          simp only [Sum.inl.injEq, Sum.inr.injEq] at hinput
+          subst hashInput
+          change (entryOutput, finalCache) ∈ support
+            ((randomOracle target).run initialCache) at hvalid
+          have hcachedEntry := randomOracle_run_output_cached target initialCache finalCache
+            entryOutput hvalid
+          have hcachedOutput := randomOracle_run_output_cached target initialCache finalCache
+            output hrun
+          have heq : entryOutput = output :=
+            Option.some.inj (hcachedEntry.symm.trans hcachedOutput)
+          subst output
+          rfl
+
+theorem FewTimeCover.precached_entries_have_numbered_source_entries
+    (adversary : Adversary) (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (result : (Digest × Forgery × Bool) × (QueryCache HashSpec × FullAdversaryTrace))
+    (hresult : result ∈ support
+      (gameAfterSecretsWithFullTrace adversary parameter otsSecret ftsSecret))
+    (f : QueryImpl HashSpec Id) (hf : result.2.1.AgreesWithFn f)
+    (index : Index) (targetLeaves : DigestTree → FtsLeaf)
+    (cover : FewTimeCover f result.2.1
+      ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+      result.2.2.signing.toSigningLog index targetLeaves) :
+    ∃ (source : cover.PrecachedEntries result.2.2.signing rfl →
+          Fin result.2.2.hashQueries.length)
+        (intervalSource : cover.PrecachedEntries result.2.2.signing rfl →
+          Fin result.2.2.intervals.length)
+        (output : cover.PrecachedEntries result.2.2.signing rfl → HashOutput),
+      Function.Injective source
+        ∧ Function.Injective intervalSource
+        ∧ ∀ entry,
+          result.2.2.hashQueries.get (source entry) =
+              (cover.entryDigestInput entry.1, output entry)
+            ∧ (result.2.2.intervals.get (intervalSource entry)).input =
+              .inl (.inr (cover.entryDigestInput entry.1))
+            ∧ (result.2.2.intervals.get (intervalSource entry)).initialCache
+              (cover.entryDigestInput entry.1) = none
+            ∧ (output entry,
+                (result.2.2.intervals.get (intervalSource entry)).finalCache) ∈ support
+              ((randomOracle (cover.entryDigestInput entry.1)).run
+                (result.2.2.intervals.get (intervalSource entry)).initialCache)
+            ∧ signAttemptResultOfOutput (output entry) ≠ none
+            ∧ hashOutputFewTimeView (output entry) = cover.entryView entry.1 := by
+  classical
+  obtain ⟨_numberedSource, intervalSource, output, _hnumberedInjective,
+      hintervalInjective, hinterval⟩ :=
+    cover.precached_entries_have_injective_numbered_sources adversary parameter otsSecret
+      ftsSecret result hresult f hf index targetLeaves
+  have hvalid := gameAfterSecretsWithFullTrace_support_validIntervals adversary parameter
+    otsSecret ftsSecret result hresult
+  have hconsistent := (gameAfterSecretsWithFullTrace_support_interval_invariants adversary
+    parameter otsSecret ftsSecret result hresult).1
+  let pair : cover.PrecachedEntries result.2.2.signing rfl → HashInput × HashOutput :=
+    fun entry => (cover.entryDigestInput entry.1, output entry)
+  have hpairMem : ∀ entry, pair entry ∈ result.2.2.hashQueries := by
+    intro entry
+    let interval := result.2.2.intervals.get (intervalSource entry)
+    have hqueryEntry := AdversaryCacheEntry.queryEntry_eq_of_direct_hash_runs
+      (⟨parameter, result.1.1, otsSecret, ftsSecret⟩ : SecretKey) interval
+      (cover.entryDigestInput entry.1) (output entry) (hinterval entry).1
+      (hvalid interval (List.get_mem _ _)) (hinterval entry).2.2.1
+    rw [FullAdversaryTrace.hashQueries, mem_directHashQueries_iff]
+    rw [← hconsistent.1]
+    apply List.mem_map.2
+    exact ⟨interval, List.get_mem _ _, hqueryEntry⟩
+  let source : cover.PrecachedEntries result.2.2.signing rfl →
+      Fin result.2.2.hashQueries.length := fun entry =>
+    ⟨result.2.2.hashQueries.idxOf (pair entry),
+      List.idxOf_lt_length_of_mem (hpairMem entry)⟩
+  have hsourceGet : ∀ entry,
+      result.2.2.hashQueries.get (source entry) = pair entry := by
+    intro entry
+    exact List.idxOf_get _
+  have hsourceInjective : Function.Injective source := by
+    intro left right heq
+    apply Subtype.ext
+    apply cover.entryDigestInput_injective
+    have hpairs : pair left = pair right := by
+      rw [← hsourceGet left, heq, hsourceGet right]
+    exact congrArg Prod.fst hpairs
+  exact ⟨source, intervalSource, output, hsourceInjective, hintervalInjective,
+    fun entry => ⟨hsourceGet entry, hinterval entry⟩⟩
+
 theorem FewTimeCover.has_originConfiguration_of_hashQueries_length_le
     (adversary : Adversary) (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)

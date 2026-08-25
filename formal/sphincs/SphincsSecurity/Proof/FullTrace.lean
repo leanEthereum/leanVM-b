@@ -137,6 +137,23 @@ def directHashQueries : QueryLog (OracleWorld + SigningSpec) → List (HashInput
   | ⟨.inl (.inr input), output⟩ :: rest => (input, output) :: directHashQueries rest
   | _ :: rest => directHashQueries rest
 
+theorem mem_directHashQueries_iff (log : QueryLog (OracleWorld + SigningSpec))
+    (input : HashInput) (output : HashOutput) :
+    (input, output) ∈ directHashQueries log ↔
+      (⟨.inl (.inr input), output⟩ :
+        (query : (OracleWorld + SigningSpec).Domain) ×
+          (OracleWorld + SigningSpec).Range query) ∈ log := by
+  induction log with
+  | nil => simp [directHashQueries]
+  | cons head rest ih =>
+      obtain ⟨headInput, headOutput⟩ := head
+      cases headInput with
+      | inl worldInput =>
+          cases worldInput with
+          | inl uniformInput => simp [directHashQueries, ih]
+          | inr hashInput => simp [directHashQueries, ih]
+      | inr request => simp [directHashQueries, ih]
+
 def isDirectHashQuery : (OracleWorld + SigningSpec).Domain → Prop
   | .inl (.inr _) => True
   | _ => False
