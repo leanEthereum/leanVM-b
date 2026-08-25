@@ -69,6 +69,7 @@ import SphincsSecurity.Proof.FewTimePrehit
 import SphincsSecurity.Proof.FewTimeSourceCount
 import SphincsSecurity.Proof.FewTimePrehitArith
 import SphincsSecurity.Proof.FewTimeRace
+import SphincsSecurity.Proof.FewTimeOrigins
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
