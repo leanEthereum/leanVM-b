@@ -4,10 +4,10 @@ import SphincsSecurity.Proof.FewTimePrehit
 /-!
 # Counting fresh target-view candidates
 
-A direct hash interval contributes its queried input. A signer interval may contribute any
-message-digest input it inserted, including the selected digest of a signing invocation whose later
-signature construction failed. If that input was fresh, distinct candidate intervals embed into
-distinct entries of the final random-oracle cache.
+A direct hash interval contributes its queried input. A signer interval contributes its freshly
+inserted admissible message-digest input, including the selected digest of a signing invocation
+whose later signature construction failed. Distinct candidate intervals embed into distinct entries
+of the final random-oracle cache.
 -/
 
 namespace SphincsSecurity.Concrete
@@ -15,17 +15,18 @@ namespace SphincsSecurity.Concrete
 open OracleComp OracleSpec ENNReal
 
 def TargetCandidateInput (secretKey : SecretKey)
-    (entry : AdversaryCacheEntry) (input : HashInput) : Prop :=
+    (entry : AdversaryCacheEntry) (input : HashInput) (output : HashOutput) : Prop :=
   (entry.input = .inl (.inr input)) ∨
     ∃ request randomness,
       entry.input = .inr request ∧
         input = tweakableHashInput secretKey.parameter .message
-          (messageDigestPayload secretKey.root request randomness)
+          (messageDigestPayload secretKey.root request randomness) ∧
+        signAttemptResultOfOutput output ≠ none
 
 def FreshTargetCandidate (secretKey : SecretKey)
     (entry : AdversaryCacheEntry) : Prop :=
   ∃ input output,
-    TargetCandidateInput secretKey entry input
+    TargetCandidateInput secretKey entry input output
       ∧ entry.initialCache input = none
       ∧ entry.finalCache input = some output
 
@@ -41,6 +42,9 @@ theorem freshTargetCandidate_of_message_transition
       (tweakableHashInput secretKey.parameter .message targetPayload) = none)
     (hafter : entry.finalCache
       (tweakableHashInput secretKey.parameter .message targetPayload) ≠ none)
+    (hadmissible : ∀ output, entry.finalCache
+      (tweakableHashInput secretKey.parameter .message targetPayload) = some output →
+        signAttemptResultOfOutput output ≠ none)
     (hkind : entry.input = .inl (.inr
         (tweakableHashInput secretKey.parameter .message targetPayload)) ∨
       ∃ request, entry.input = .inr request) :
@@ -72,7 +76,7 @@ theorem freshTargetCandidate_of_message_transition
       obtain ⟨_, randomness, _, _, hpayload⟩ :=
         sign_message_source secretKey request initialCache finalCache result hsign
           targetPayload hbefore hafter
-      exact Or.inr ⟨request, randomness, rfl, by rw [hpayload]⟩
+      exact Or.inr ⟨request, randomness, rfl, by rw [hpayload], hadmissible output houtput⟩
 
 set_option linter.constructorNameAsVariable false in
 theorem signWithView_fresh_admissible_transition_view
@@ -216,7 +220,7 @@ theorem freshTargetCandidatePositions_card_le_enncard
     Classical.choose (Classical.choose_spec ((Finset.mem_filter.mp candidate.2).2))
   have candidateSpec : ∀ candidate : ↑candidates,
       TargetCandidateInput secretKey (trace.intervals.get candidate.1)
-          (candidateInput candidate)
+          (candidateInput candidate) (candidateOutput candidate)
         ∧ (trace.intervals.get candidate.1).initialCache (candidateInput candidate) = none
         ∧ (trace.intervals.get candidate.1).finalCache (candidateInput candidate) =
           some (candidateOutput candidate) := by

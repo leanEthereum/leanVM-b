@@ -306,6 +306,16 @@ theorem gameAfterSecretsWithViewTrace_target_in_freshCandidateViews
         (hvalidIntervals entry (List.get_mem _ source))
         (by simpa only [secretKey, input] using hsourceInitial)
         (by simpa only [secretKey, input] using hsourceFinal)
+        (by
+          intro sourceOutput hsourceOutput
+          have hsourceLe : entry.finalCache ≤ result.2.cache :=
+            (hintervals.2.1 entry (List.get_mem _ source)).2
+          have hcached := hsourceLe (by simpa only [input] using hsourceOutput)
+          rw [hcachedFinal] at hcached
+          have hsourceOutputEq : sourceOutput = output :=
+            (Option.some.inj hcached).symm
+          rw [hsourceOutputEq, hattempt]
+          simp)
         (by simpa only [secretKey, input] using hkind)
     have hcandidateMem : source ∈
         freshTargetCandidatePositions secretKey result.2.trace := by
