@@ -9,9 +9,9 @@
 </p>
 
 <p align="center">
-  <a href="#xmss-aggregation"><img src="https://img.shields.io/badge/Aggregation-1100%20XMSS%2Fs-brightgreen?style=for-the-badge" alt="Aggregation: 1100 XMSS/s"></a>
-  <a href="#sphincs-aggregation"><img src="https://img.shields.io/badge/Aggregation-196%20SPHINCS%2Fs-green?style=for-the-badge" alt="Aggregation: 196 SPHINCS/s"></a>
-  <a href="#recursion"><img src="https://img.shields.io/badge/2%20to%201%20recursion-0.45s-orange?style=for-the-badge" alt="2 to 1 recursion: 0.45s"></a>
+  <a href="#xmss-aggregation"><img src="https://img.shields.io/badge/Aggregation-1100%20XMSS%2Fs-brightgreen?style=for-the-badge"></a>
+  <a href="#sphincs-aggregation"><img src="https://img.shields.io/badge/Aggregation-200%20SPHINCS%2Fs-green?style=for-the-badge"></a>
+  <a href="#recursion"><img src="https://img.shields.io/badge/2%20to%201%20recursion-0.45s-orange?style=for-the-badge"></a>
 </p>
 
 Warning: highly experimental.
