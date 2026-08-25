@@ -443,20 +443,22 @@ theorem Concrete.probEvent_signDigestLoop_prehitSelectedView_le_race
 
 set_option maxRecDepth 100000 in
 set_option linter.constructorNameAsVariable false in
-theorem Concrete.probEvent_signWithView_prehitSuccessful_le_race
-    (secretKey : SecretKey) (message : Message) (initialCache : QueryCache HashSpec)
+theorem Concrete.probEvent_signWithView_prehitSuccessful_le_race_reference
+    (secretKey : SecretKey) (message : Message)
+    (referenceCache initialCache : QueryCache HashSpec)
     (P : FewTimeView → Prop)
+    (hreference : referenceCache ≤ initialCache)
     (hbudget : QueryCache.enncard initialCache + (digestAttemptLimit : ℝ≥0∞) ≤
       ((2 ^ 121 : Nat) : ℝ≥0∞)) :
-    Pr[PrehitSuccessfulSignerView initialCache secretKey message P |
+    Pr[PrehitSuccessfulSignerView referenceCache secretKey message P |
       (simulateQ romImpl (signWithView secretKey message)).run initialCache] ≤
-      cachedMessageEntryCountWhere initialCache secretKey.parameter secretKey.root message P *
+      cachedMessageEntryCountWhere referenceCache secretKey.parameter secretKey.root message P *
         ((2 ^ 117 : Nat) : ℝ≥0∞)⁻¹ := by
   rw [signWithView, simulateQ_bind, StateT.run_bind]
   refine (probEvent_bind_le_probEvent
-    (p := PrehitSelectedView initialCache secretKey message P) ?_).trans
+    (p := PrehitSelectedView referenceCache secretKey message P) ?_).trans
     (probEvent_signDigestLoop_prehitSelectedView_le_race digestAttemptLimit
-      secretKey message initialCache initialCache P le_rfl hbudget)
+      secretKey message referenceCache initialCache P hreference hbudget)
   intro loopResult hloop hnotPrehit
   cases hloopResult : loopResult.1 with
   | none =>
@@ -493,6 +495,7 @@ theorem Concrete.probEvent_signWithView_prehitSuccessful_le_race
       have hcached' : initialCache
           (tweakableHashInput secretKey.parameter .message
             (messageDigestPayload secretKey.root message randomness)) = some output := by
+        apply hreference
         rw [← hrandomness]
         exact hcached
       have hloop' : (some (randomness, index, leaves), loopResult.2) ∈ support
@@ -506,7 +509,21 @@ theorem Concrete.probEvent_signWithView_prehitSuccessful_le_race
         digestAttemptLimit secretKey message randomness index leaves initialCache loopResult.2
         output hcached' hloop'
       apply hnotPrehit
-      exact ⟨randomness, index, leaves, hloopResult, output, hcached', hresultOutput, hP⟩
+      exact ⟨randomness, index, leaves, hloopResult, output, by
+        rw [← hrandomness]
+        exact hcached, hresultOutput, hP⟩
+
+theorem Concrete.probEvent_signWithView_prehitSuccessful_le_race
+    (secretKey : SecretKey) (message : Message) (initialCache : QueryCache HashSpec)
+    (P : FewTimeView → Prop)
+    (hbudget : QueryCache.enncard initialCache + (digestAttemptLimit : ℝ≥0∞) ≤
+      ((2 ^ 121 : Nat) : ℝ≥0∞)) :
+    Pr[PrehitSuccessfulSignerView initialCache secretKey message P |
+      (simulateQ romImpl (signWithView secretKey message)).run initialCache] ≤
+      cachedMessageEntryCountWhere initialCache secretKey.parameter secretKey.root message P *
+        ((2 ^ 117 : Nat) : ℝ≥0∞)⁻¹ := by
+  exact probEvent_signWithView_prehitSuccessful_le_race_reference secretKey message
+    initialCache initialCache P le_rfl hbudget
 
 theorem Concrete.probEvent_signWithView_prehitSuccessful_le_race_of_enncard_le
     (secretKey : SecretKey) (message : Message) (initialCache : QueryCache HashSpec)
