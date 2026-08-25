@@ -75,7 +75,6 @@ pub struct ColumnClaim {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     Truncated,
-    Unbalanced,
     /// A read count is zero, so a read self-cancels on the bus (§sec:memchan).
     ZeroCount,
     Gkr(gkr::GkrError),
@@ -701,7 +700,11 @@ pub fn prove_balance(
     // All three trees run as ONE RLC-batched GKR (equal μ: push/pull match
     // block-for-block, count is padded), so every claim lands on ONE point ζ.
     let bus_gkr = crate::stage!("Bus GKR", || {
-        gkr::prove_product_triple([push_leaves, pull_leaves, count_leaves], ps)
+        gkr::prove_product_triple(
+            [push_leaves, pull_leaves, count_leaves],
+            ps,
+            gkr::RootShape::FirstTwoShared,
+        )
     });
 
     // Framework blocks keep their per-column claims (deduped: push/pull share ζ);
@@ -876,19 +879,18 @@ pub fn verify_balance(
     // three verify as ONE RLC-batched GKR at ONE shared point.
     count_lay.mu = push_lay.mu;
     let beta = vs.sample();
-    let bus_gkr = gkr::verify_product_triple(push_lay.mu, vs).map_err(Error::Gkr)?;
-    let [push_root, pull_root, count_root] = bus_gkr.roots;
+    let bus_gkr = gkr::verify_product_triple(push_lay.mu, vs, gkr::RootShape::FirstTwoShared).map_err(Error::Gkr)?;
+    let count_root = bus_gkr.roots[2];
     // Every read count is nonzero iff this product is (§sec:memchan); a zero would
     // let a read self-cancel and free its value from memory.
     if count_root == F192::ZERO {
         return Err(Error::ZeroCount);
     }
-    // Every row of every table is a real row (`cpu::filler`), so the two sides
-    // balance outright: no padding tuples to divide back out, and no announced row
-    // counts whose truthfulness the soundness argument would have to establish.
-    if push_root != pull_root {
-        return Err(Error::Unbalanced);
-    }
+    // Every row of every table is a real row (`cpu::filler`), so the two sides balance
+    // outright: no padding tuples to divide back out, and no announced row counts whose
+    // truthfulness the soundness argument would have to establish. The GKR sends ONE root
+    // for both sides, so a prover cannot even state an unbalanced bus, and there is nothing
+    // to check here.
 
     // Framework blocks decompose as before; the tables' blocks become linear forms.
     // Each side's table share is DERIVED from `framework + Ṽ₀(ζ)` rather than checked

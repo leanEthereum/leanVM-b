@@ -1,6 +1,8 @@
-//! The two benchmarks: one leaf of the aggregation tree (`xmss`), and an n→1
-//! recursion step over leaves of that size (`recursion`). Both drive the same
-//! [`crate::aggregation::aggregate`] entry point the real API uses.
+//! The two benchmarks: one leaf of the aggregation tree (`aggregate`), and an
+//! n→1 recursion step over leaves of that size (`recursion`). Each takes a
+//! count per scheme, so either alone or a mix of both is one command, and both
+//! drive the same [`crate::aggregation::aggregate`] entry point the real API
+//! uses.
 
 use primitives::bench::Plan;
 use primitives::{pretty_f64, pretty_integer};
@@ -11,7 +13,19 @@ use crate::signers_cache;
 
 /// Cached signers `[from, to)`, as the aggregation API takes them.
 fn signers(from: usize, to: usize) -> Vec<(XmssPublicKey, XmssSignature)> {
+    if to == 0 {
+        return Vec::new();
+    }
     signers_cache::get_signers(to)[from..to].to_vec()
+}
+
+/// Each SPHINCS signer comes with the message it signed, unlike the XMSS ones,
+/// which share the statement's.
+fn sphincs_signers(from: usize, to: usize) -> Vec<(sphincs::PublicKey, sphincs::Message, sphincs::Signature)> {
+    if to == 0 {
+        return Vec::new();
+    }
+    signers_cache::get_sphincs_signers(to)[from..to].to_vec()
 }
 
 /// Report the shape and cost of one aggregation node.
@@ -26,47 +40,59 @@ fn report(label: &str, stats: &lean_vm::cpu::Stats, sig: &AggregateSignature, pr
         pretty_integer(base_cycles),
         crate::report::pow(base_cycles)
     );
-    println!(
-        "    proven rows               : {} = {}  (filled to powers of two)",
-        pretty_integer(stats.cycles),
-        crate::report::pow(stats.cycles)
-    );
     println!("    details                   : {}", stats.details());
-    println!(
-        "  signers                     : {}",
-        pretty_integer(sig.public_keys.len())
-    );
     crate::report::print_proof_size(sig.proof());
     // The whole `aggregate` call, not just `cpu::prove`: for a node that also
     // covers verifying each child and batching the deferred claims, which are
     // real per-node costs. `--tracing` breaks it down.
     println!(
-        "  aggregating                 : {} s{}      peak memory {} GiB",
+        "  proving time                : {} s{}      peak memory {} GiB",
         pretty_f64(prove_time.mean()),
         prove_time.spread(),
         crate::report::peak_gib()
     );
 }
 
-/// Aggregate `n` XMSS signatures in one leaf and verify it.
+/// How a benchmark names a leaf of either scheme or of both.
+fn describe(n_xmss: usize, n_sphincs: usize) -> String {
+    match (n_xmss, n_sphincs) {
+        (x, 0) => format!("{} XMSS", pretty_integer(x)),
+        (0, s) => format!("{} SPHINCS", pretty_integer(s)),
+        (x, s) => format!("{} XMSS and {} SPHINCS", pretty_integer(x), pretty_integer(s)),
+    }
+}
+
+/// Aggregate `n_xmss` XMSS and `n_sphincs` SPHINCS signatures in one leaf and
+/// verify it. A SPHINCS verification is 531 compressions against XMSS's 144, so
+/// a leaf of a given proven size holds proportionally fewer of them.
 ///
 /// Proving runs one discarded warmup pass followed by `plan.repeat` measured
 /// passes; see [`primitives::bench`] for why the first pass is not
 /// representative and why the cooldown matters.
-pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize, plan: Plan) {
-    let trace_span = tracing::info_span!("XMSS aggregation", n, log_inv_rate).entered();
+pub fn run_aggregation(n_xmss: usize, n_sphincs: usize, log_inv_rate: usize, plan: Plan) {
+    assert!(n_xmss + n_sphincs >= 1, "a leaf needs at least one signer");
+    let trace_span = tracing::info_span!("aggregation", n_xmss, n_sphincs, log_inv_rate).entered();
     // Spawn the worker pool before any timed work, so no kernel pays the spawn
     // cost. Opting into the arena is the calling *process's* decision (one region,
     // one proof at a time), so it stays in `main`, not here.
     lean_vm::init_prover_pool();
-    let raw = signers(0, n);
-    let (message, epoch) = (signers_cache::message(), signers_cache::EPOCH);
+    let raw_xmss = signers(0, n_xmss);
+    let raw_sphincs = sphincs_signers(0, n_sphincs);
+    let (xmss_message, xmss_epoch) = (signers_cache::message(), signers_cache::XMSS_EPOCH);
 
     // Only the final measured pass of each stage is traced: the tree describes the
     // proof the reported timings are about, instead of repeating itself per pass.
     let ((sig, stats), prove_time) = plan.warm_then_measure(|last| {
         let _quiet = (!last).then(primitives::suppress_tracing);
-        aggregate_with_stats(&[], raw.clone(), message, epoch, log_inv_rate).expect("leaf aggregates")
+        aggregate_with_stats(
+            &[],
+            xmss_message,
+            xmss_epoch,
+            raw_xmss.clone(),
+            raw_sphincs.clone(),
+            log_inv_rate,
+        )
+        .expect("leaf aggregates")
     });
     let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|last| {
         let _quiet = (!last).then(primitives::suppress_tracing);
@@ -75,14 +101,14 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize, plan: Plan) {
     drop(trace_span);
 
     report(
-        &format!("\nXMSS aggregation, {} signatures", pretty_integer(n)),
+        &format!("\naggregation, {} signatures", describe(n_xmss, n_sphincs)),
         &stats,
         &sig,
         &prove_time,
     );
     println!(
-        "  per signature               : {} XMSS/s",
-        pretty_f64(n as f64 / prove_time.mean())
+        "  per signature               : {} signatures/s",
+        pretty_f64((n_xmss + n_sphincs) as f64 / prove_time.mean())
     );
     println!("  verifying                   : {} s", pretty_f64(verify_time.mean()));
 }
@@ -90,11 +116,20 @@ pub fn run_xmss_aggregation(n: usize, log_inv_rate: usize, plan: Plan) {
 /// Prove `n` leaves of `per_leaf` signatures each, then aggregate them in one
 /// recursion step and verify the result. The leaves are built once; only the
 /// recursion step is measured.
-pub fn run_recursion(n: usize, per_leaf: usize, log_inv_rate: usize, enable_tracing: bool, plan: Plan) {
+pub fn run_recursion(
+    n: usize,
+    per_leaf: usize,
+    sphincs_per_leaf: usize,
+    log_inv_rate: usize,
+    enable_tracing: bool,
+    plan: Plan,
+) {
     assert!(n >= 1, "a recursion step needs at least one child");
+    assert!(per_leaf + sphincs_per_leaf >= 1, "a leaf needs at least one signer");
     lean_vm::init_prover_pool();
-    let (message, epoch) = (signers_cache::message(), signers_cache::EPOCH);
+    let (xmss_message, xmss_epoch) = (signers_cache::message(), signers_cache::XMSS_EPOCH);
     let all = signers(0, n * per_leaf);
+    let all_sphincs = sphincs_signers(0, n * sphincs_per_leaf);
     let started = std::time::Instant::now();
     let guest_instructions: usize = crate::aggregation::unified_guest()
         .fn_ranges
@@ -107,9 +142,10 @@ pub fn run_recursion(n: usize, per_leaf: usize, log_inv_rate: usize, enable_trac
         .map(|k| {
             aggregate(
                 &[],
+                xmss_message,
+                xmss_epoch,
                 all[k * per_leaf..(k + 1) * per_leaf].to_vec(),
-                message,
-                epoch,
+                all_sphincs[k * sphincs_per_leaf..(k + 1) * sphincs_per_leaf].to_vec(),
                 log_inv_rate,
             )
             .expect("leaf aggregates")
@@ -121,7 +157,8 @@ pub fn run_recursion(n: usize, per_leaf: usize, log_inv_rate: usize, enable_trac
     }
     let ((sig, stats), prove_time) = plan.warm_then_measure(|last| {
         let _quiet = (!last).then(primitives::suppress_tracing);
-        aggregate_with_stats(&children, vec![], message, epoch, log_inv_rate).expect("node aggregates")
+        aggregate_with_stats(&children, xmss_message, xmss_epoch, vec![], vec![], log_inv_rate)
+            .expect("node aggregates")
     });
     let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|last| {
         let _quiet = (!last).then(primitives::suppress_tracing);
@@ -137,7 +174,7 @@ pub fn run_recursion(n: usize, per_leaf: usize, log_inv_rate: usize, enable_trac
     report(
         &format!(
             "\nrecursion {n}\u{2192}1, over leaves of {} signatures",
-            pretty_integer(per_leaf)
+            describe(per_leaf, sphincs_per_leaf)
         ),
         &stats,
         &sig,

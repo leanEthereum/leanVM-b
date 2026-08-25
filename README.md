@@ -9,8 +9,9 @@
 </p>
 
 <p align="center">
-  <a href="#xmss-aggregation"><img src="https://img.shields.io/badge/Aggregation-1100%20XMSS%2Fs-brightgreen?style=for-the-badge" alt="Aggregation: 1100 XMSS/s"></a>
-  <a href="#recursion"><img src="https://img.shields.io/badge/2%20to%201%20recursion-0.45s-orange?style=for-the-badge" alt="2 to 1 recursion: 0.45s"></a>
+  <a href="#xmss-aggregation"><img src="https://img.shields.io/badge/Aggregation-1100%20XMSS%2Fs-brightgreen?style=for-the-badge"></a>
+  <a href="#sphincs-aggregation"><img src="https://img.shields.io/badge/Aggregation-200%20SPHINCS%2Fs-green?style=for-the-badge"></a>
+  <a href="#recursion"><img src="https://img.shields.io/badge/2%20to%201%20recursion-0.45s-orange?style=for-the-badge"></a>
 </p>
 
 Warning: highly experimental.
@@ -24,7 +25,7 @@ Machine: Mac M4 Max
 Our XMSS is specified in [XMSS.pdf](https://github.com/leanEthereum/leanVM-b/releases/download/doc-latest/XMSS.pdf).
 
 ```bash
-cargo run --release -- xmss --n-signatures 900 --log-inv-rate 1 --repeat 3
+cargo run --release -- aggregate --xmss 900 --log-inv-rate 1 --repeat 3
 ```
 
 ```
@@ -37,6 +38,14 @@ XMSS aggregation, 900 signatures
   aggregating                 : 0.816 s ± 4.2%      peak memory 13.815 GiB
   per signature               : 1,102.621 XMSS/s
   verifying                   : 0.0137 s
+```
+
+### SPHINCS aggregation
+
+Our SPHINCS is specified in [SPHINCS.pdf](https://github.com/leanEthereum/leanVM-b/releases/download/doc-latest/SPHINCS.pdf). It is stateless, so a key needs no epoch, and each SPHINCS signer signs its own message where the XMSS signers share one. A verification is 564 permutations against XMSS's 154, so a leaf of comparable proven size holds proportionally fewer signers; `--xmss` and `--sphincs` add up, so a mixed leaf is one command.
+
+```bash
+cargo run --release -- aggregate --sphincs 120 --log-inv-rate 1 --repeat 3
 ```
 
 ### Recursion
@@ -66,11 +75,11 @@ cargo run --release -- fibonacci --n 2000000 --log-inv-rate 1 --repeat 3
 
 ```
 Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = 2,000,000
-  cycles (VM steps)           : 2,127,881
-    details                   : MUL 2^20.937 (98.7%)  DEREF 2^13.967 (0.8%)  SET 2^12.552 (0.3%) JUMP 2^10.968 (0.1%)  XOR 2^10.966 (0.1%)  MEMORY 2^20.964  TOTAL_COMMITTED 2^25.263
-  proof size                  : 284.7 KiB
-  proving                     : 0.41 s ± 2.9%   5,191,741 cycles/s      peak memory 7.482 GiB
-  verifying                   : 0.00352 s
+  cycles (VM steps)           : 2,127,880
+    details                   : MUL 2^20.937 (98.7%)  DEREF 2^13.967 (0.8%)  SET 2^12.552 (0.3%)  JUMP 2^10.968 (0.1%)  XOR 2^10.966 (0.1%)  MEMORY 2^20.964  TOTAL_COMMITTED 2^25.263
+  proof size                  : 286.2 KiB
+  proving                     : 0.425 s ± 6.9%   5,009,971 cycles/s      peak memory 7.523 GiB
+  verifying                   : 0.00315 s
 ```
 
 ### Batch proving Keccak
@@ -82,16 +91,17 @@ BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=18 cargo test --release -p flock --t
 ```
 Flock Keccak-f[1600] batch proving, 262,144 permutations (2^18 slots)
   setup (preprocessing, excluded) :      0.0 ms
-  witness-gen                     :     51.2 ms ± 23.3%   8.6%
-  commit                          :    100.1 ms ± 0.3%   16.8%
-  zerocheck                       :    237.0 ms ± 4.2%   39.7%
-  lincheck                        :     19.4 ms ± 10.8%   3.3%
-  pcs opening                     :    188.9 ms ± 7.1%   31.7%
+  witness-gen                     :     62.2 ms ± 29.8%  10.1%
+  commit                          :    100.2 ms ± 1.2%   16.3%
+  zerocheck                       :    234.8 ms ± 1.4%   38.3%
+  lincheck                        :     20.5 ms ± 7.7%    3.3%
+  pcs opening                     :    195.9 ms ± 3.4%   31.9%
   other                           :      0.0 ms           0.0%
   ------------------------------------------
-  prove TOTAL (witness excluded)  :    545.5 ms ± 3.9%   91.4%
+  prove TOTAL (witness excluded)  :    551.4 ms ± 1.9%   89.9%
   verify                          :      2.0 ms
-  throughput                      :        480,600 compressions/s ± 3.9%
+  throughput                      :        475,423 compressions/s ± 1.9%
+  (~3256.3 XMSS/s equivalent at 146 compressions/signature)
 ```
 
 ## Security

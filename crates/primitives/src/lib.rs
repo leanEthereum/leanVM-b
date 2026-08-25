@@ -4,8 +4,8 @@
 pub mod bench;
 pub mod bits;
 pub mod field;
-pub mod multilinear;
 pub mod hash;
+pub mod multilinear;
 pub mod stream;
 
 #[cfg(feature = "test-util")]

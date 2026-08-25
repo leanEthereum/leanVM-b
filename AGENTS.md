@@ -6,6 +6,8 @@ A minimal (zero-knowledge Virtual Machine, which is actually not ZK in the real 
 
 - `doc/leanvm/` is the LaTeX project describing the machine ISA and the snark that proves it. Its root is `doc/leanvm/main.tex`; build it with `cd doc/leanvm && latexmk -pdf main.tex`, which writes to the gitignored `doc/leanvm/.build/`. Sections live in `doc/leanvm/body/`, numbered `01`..`10` plus the lettered annexes `a` (ring switching), `b` (the PCS), and `c` (Flock), and every symbol is defined once in `doc/leanvm/preamble/macros.tex`. If latexmk fails oddly (a bibtex error, or a missing `main.log`) right after inputs are renamed or `refs.bib` is edited, remove `doc/leanvm/.build` and rerun; it has not reproduced on unchanged inputs. **Drafting one section:** each section file carries a `% !TeX root` comment pointing at its generated driver in `doc/leanvm/drafts/`, so the LaTeX build key (`F5`, or the extension's `cmd+alt+b`) compiles only that section, numbered as in the full document and with cross-references and citations resolved against `.build/main.aux`; in `main.tex` the same key builds everything. Run `doc/leanvm/make-drafts.sh` after adding, renaming or renumbering a section.
 - `doc/xmss/` is the standalone specification of the concrete XMSS instance implemented by `crates/xmss`.
+- `doc/sphincs/` is the standalone specification of the concrete SPHINCS+ instance we would use instead of XMSS where statelessness matters; its root is `doc/sphincs/main.tex`, built the same way as `doc/xmss`, and implemented by `crates/sphincs`. It shares XMSS's hash function, tweakable hash and target-sum code, so an aggregator implements one primitive.
+- `formal/xmss/` is a Lean 4 proof (over VCVio) of that instance's classical random-oracle security, `xmss_has_127_bits_of_classical_security`. `XmssSecurity/Statement.lean` is the only module a reviewer has to read: the concrete parameters, the byte layout of every hash input, the three algorithms, the game, and the claim. `lake exe cache get` once, then `lake build`. SPHINCS has no formalization; its security section is a target, not a theorem.
 - The one hash function is **SHA3-256**, in `primitives::hash`: byte-exact FIPS 202, with a `const fn` portable `Keccak-f[1600]` and a two-way batched path on aarch64's `FEAT_SHA3`, where `BCAX` is chi in one instruction. Surfaces: `permute`, `hash_block` for the 64-byte case (the Fiat-Shamir chain, the Merkle parent), `hash` / `Hasher` for anything else, `hash_md` for the chain below, and `hash_many_md*` for the PCS Merkle tree.
 - **The VM proves one sponge step per opcode**: `permute(prev ^ (msg ‖ 0…0))`, absorbing a 136-byte rate block into a 1600-bit state. The XOR is free over GF(2), so folding the absorb into the circuit costs nothing and makes one instruction worth 136 bytes. A 64-byte message is one such step from the zero state with a constant pad, and so IS plain SHA3-256; that covers the Fiat-Shamir chain and every Merkle parent.
 - **Anything longer than 64 bytes uses `hash_md`, not the sponge.** `st' = SHA3-256(st ‖ group32)`. Not because the sponge is unavailable but because the guest cannot lay a rate block out: seventeen lanes have no 128-bit memory-cell alignment, and forcing a nine-cell grouping would re-layout every buffer the guest hashes, the PCS leaf image included. 32 bytes is two cells, which is exactly what the guest holds. The caller binds the length; XMSS's tweak carries it explicitly.
@@ -30,7 +32,8 @@ Dependency order, leaves first:
 | `lean_vm`         | arithmetization: tables, bus, constraints, `cpu::prove`/`verify`       |
 | `lean_compiler`   | zkDSL (Python subset) → ISA                                            |
 | `xmss`            | XMSS over SHA3-256; an independent leaf, consumed only by `rec_aggregation` |
-| `rec_aggregation` | recursive XMSS aggregation: the one guest, the public API, the benchmarks |
+| `sphincs`         | the stateless SPHINCS+ instance of `doc/sphincs`; an independent leaf, consumed only by `rec_aggregation` |
+| `rec_aggregation` | recursive XMSS and SPHINCS aggregation: the one guest, the public API, the benchmarks |
 
 `src/main.rs` is the CLI; guests are zkDSL under `crates/rec_aggregation/guests/`.
 
@@ -62,8 +65,11 @@ Heavy benches and measurement harnesses are `#[ignore]`d; run by name with `-- -
 ## Benchmarking
 
 The benchmarks we care about:
-- `cargo run --release -- xmss --n-signatures 450 --log-inv-rate 1 --repeat 3`
+- `cargo run --release -- aggregate --xmss 450 --log-inv-rate 1 --repeat 3`
+- `cargo run --release -- aggregate --sphincs 120 --log-inv-rate 1 --repeat 3`
 - `cargo run --release -- recursion --n 2 --xmss-per-leaf 450 --log-inv-rate 2 --repeat 3`
+
+`aggregate` takes a count per scheme, both defaulting to zero, so either alone or a mix of the two is one command; `recursion --sphincs-per-leaf` likewise puts both schemes in one tree. One SPHINCS signature costs 531 compressions against XMSS's 144, and about six times an XMSS signature's VM cycles, so a leaf of a given proven size holds proportionally fewer of them.
 
 ## The proving arena (`zk_alloc`)
 
@@ -89,9 +95,9 @@ The same verification algorithm is written out three times, in three languages. 
 
 1. **Rust**, `lean_vm::cpu::verify`. The performant verifier implem.
 2. **Python**, `python-verifier/verifier.py` (~2.5k lines, no dependencies). pure python, for readability and simplicity. Pinned by `lean_vm/tests/verifiers/python_verifier.rs`.
-3. **Recursive verifier**, `crates/rec_aggregation/guests/aggregate.py` (~2.7k lines of zkDSL). Written using our pythonic zkDSL (but it's not real python!), which then compiles to our custom ISA. Proving it result in recursion -> a snark of another snark.
+3. **Recursive verifier**, `crates/rec_aggregation/guests/aggregate.py` (~3.2k lines of zkDSL). Written using our pythonic zkDSL (but it's not real python!), which then compiles to our custom ISA. Proving it result in recursion -> a snark of another snark.
 
-The third is worth understanding before touching the verifier. `guests/aggregate.py` is not Python that runs; it is the zkDSL, which `lean_compiler` lowers to the VM's six-opcode ISA (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `KECCAK`) over write-once memory. So every verifier step, Fiat-Shamir absorption, sumcheck fold, Merkle path, field inverse, becomes VM instructions that the prover then proves the execution of, which is why the guest is ~330k instructions (2^19 padded) and why its opcode mix is what the recursion benchmark reports. Two consequences:
+Understand the third before changing the verifier. `guests/aggregate.py` is zkDSL, not runnable Python. `lean_compiler` lowers it to the VM's six-opcode ISA (`XOR`, `MUL`, `SET`, `DEREF`, `JUMP`, `KECCAK`) over write-once memory, so the prover proves every verifier step. The guest is ~409k instructions (2^19 padded), with the mix reported by the recursion benchmark. It verifies raw signatures of both schemes: a node's coverage table is one contiguous region per scheme, so the one range check a write already needs also keeps an XMSS signature off a declared SPHINCS claim, and the statement's two signer lists say which scheme verified which key. The XMSS signers share the statement's message and epoch; a SPHINCS signer's message rides its own four-cell slot, so that list is `(key, message)` pairs and its length counts claims rather than distinct signers. XMSS's tweaks ride the statement (they depend only on the public epoch); SPHINCS's are built in-circuit from the index its message digest picks. Two consequences:
 
 - The guest is **self-referential**: it verifies proofs of itself, so `unified_guest` compiles it to a fixed point on its own log size. The digest needs no fixed point, riding the statement instead of the code, which is also what lets one bytecode serve any inner size and PCS rate.
 - It does not verify *quite* everything in-circuit. Three claims on fixed polynomials (stacked bytecode, flock's A0/B0) are deferred. Each node batches its children's carried claims with the fresh ones its verifications raise, `2n` per polynomial down to one; only the root's are discharged natively, by `AggregateSignature::verify` (explained in `doc/leanvm/`).

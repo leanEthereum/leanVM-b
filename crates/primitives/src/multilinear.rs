@@ -8,7 +8,7 @@
 
 use std::ops::DerefMut;
 
-use crate::field::{F64, F192, F192Unreduced};
+use crate::field::{F64, F192, F192Unreduced, PHI_8_TABLE_192 as PHI_8_TABLE};
 use zk_alloc::ArenaVec;
 
 /// The one thing the in-place folds need beyond a mutable slice: the ability to
@@ -175,23 +175,39 @@ pub fn shrink_eq_high<B: Shrink<F192>>(table: &mut B) {
     table.shrink_to(half);
 }
 
-/// The barycentric weights of distinct `nodes` at `p`: `weights[i] =
+/// The one barycentric denominator an aligned `size`-node window of the φ₈ table has: `∏_{k≠0} φ₈(k)`,
+/// inverted. φ₈ is F2-linear on its index, so `nodes[a] + nodes[b] = φ₈(a ^ b)` (the window's offset
+/// cancels) and `b ↦ a ^ b` only permutes the window, leaving every node the same product.
+pub fn window_denominator(size: usize) -> F192 {
+    PHI_8_TABLE[1..size]
+        .iter()
+        .fold(F192::ONE, |acc, &node| acc * node)
+        .inv()
+}
+
+/// The barycentric weights of `nodes` at `p`: `weights[i] =
 /// ∏_{k≠i} (p + nodes[k]) / ∏_{k≠i} (nodes[i] + nodes[k])`. `O(n²)` multiplies
-/// plus one inverse per node.
+/// and, by `window_denominator`, a single inverse.
+///
+/// `nodes` must be an aligned window of the φ₈ table, `nodes[a] = nodes[0] + φ₈(a)`, which is what
+/// every caller passes: a `2^k` prefix, or one of its cosets.
 fn lagrange_weights(nodes: &[F192], p: F192) -> Vec<F192> {
     let n = nodes.len();
+    debug_assert!(n.is_power_of_two() && n <= PHI_8_TABLE.len());
+    debug_assert!(
+        (0..n).all(|a| nodes[a] == nodes[0] + PHI_8_TABLE[a]),
+        "not an aligned φ₈ window"
+    );
+    let denominator = window_denominator(n);
     (0..n)
         .map(|i| {
             let mut num = F192::ONE;
-            let mut den = F192::ONE;
             for k in 0..n {
-                if k == i {
-                    continue;
+                if k != i {
+                    num *= p + nodes[k];
                 }
-                num *= p + nodes[k];
-                den *= nodes[i] + nodes[k];
             }
-            num * den.inv()
+            num * denominator
         })
         .collect()
 }
@@ -312,7 +328,6 @@ fn fold_ladder(mut cur: Vec<F192>, point: &[F192], par: bool) -> F192 {
 /// Barycentric weights over the first `2^k_skip` nodes of the GF(2^8) subfield.
 /// O(2^{2·k_skip}) field multiplies, a one-time cost.
 pub fn lagrange_weights_naive(k_skip: usize, z: F192) -> Vec<F192> {
-    use crate::field::PHI_8_TABLE_192 as PHI_8_TABLE;
     let ell = 1usize << k_skip;
     assert!(ell <= 256, "k_skip > 8 would exceed PHI_8_TABLE");
     lagrange_weights(&PHI_8_TABLE[..ell], z)

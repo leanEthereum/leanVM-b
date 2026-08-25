@@ -40,11 +40,71 @@ fn serialize_deserialize_and_size() {
 }
 
 #[test]
-fn key_range_changes_root() {
+fn deterministic_keygen_and_range_separation() {
     let seed = [3u8; 32];
-    let (_, shorter_range) = xmss_key_gen(seed, 50, 60).unwrap();
+    let (_, pk) = xmss_key_gen(seed, 50, 60).unwrap();
+    let (_, same_seed_and_range) = xmss_key_gen(seed, 50, 60).unwrap();
+    assert_eq!(pk, same_seed_and_range);
+    // A different range changes the filler/real split, hence the root.
     let (_, longer_range) = xmss_key_gen(seed, 50, 61).unwrap();
-    assert_ne!(shorter_range.merkle_root, longer_range.merkle_root);
+    assert_ne!(pk.merkle_root, longer_range.merkle_root);
+}
+
+/// Pin the wire layout of the tweak: the type byte, both little-endian `u32`
+/// fields, and the seven trailing zeros. Literal bytes, so an endianness
+/// mistake cannot be mirrored here.
+#[test]
+fn tweak_layout_is_exact() {
+    assert_eq!(
+        [
+            TWEAK_TYPE_CHAIN,
+            TWEAK_TYPE_WOTS_PK,
+            TWEAK_TYPE_MERKLE,
+            TWEAK_TYPE_ENCODING
+        ],
+        [0, 1, 2, 3]
+    );
+    assert_eq!(
+        make_tweak(TWEAK_TYPE_MERKLE, 0x0102_0304, 0xa0b0_c0d0, 2 * DIGEST_LEN),
+        [2, 0x04, 0x03, 0x02, 0x01, 0xd0, 0xc0, 0xb0, 0xa0, 32, 0, 0, 0, 0, 0, 0]
+    );
+}
+
+#[test]
+fn tweak_separates_hash_domains() {
+    let pp = [7u8; PUBLIC_PARAM_LEN];
+    let x = [1u8; DIGEST_LEN];
+    let base = tweak_hash(&pp, TWEAK_TYPE_CHAIN, 3, 5, &x);
+    // Different type, position, index, or public parameter: different hash.
+    assert_ne!(base, tweak_hash(&pp, TWEAK_TYPE_MERKLE, 3, 5, &x));
+    assert_ne!(base, tweak_hash(&pp, TWEAK_TYPE_CHAIN, 4, 5, &x));
+    assert_ne!(base, tweak_hash(&pp, TWEAK_TYPE_CHAIN, 3, 6, &x));
+    assert_ne!(base, tweak_hash(&[8u8; PUBLIC_PARAM_LEN], TWEAK_TYPE_CHAIN, 3, 5, &x));
+    // Standard BLAKE2s binds the exact payload length.
+    let mut extended = [0u8; STATE_LEN];
+    extended[..DIGEST_LEN].copy_from_slice(&x);
+    assert_ne!(base, tweak_hash(&pp, TWEAK_TYPE_CHAIN, 3, 5, &extended));
+}
+
+/// The multi-group WOTS public-key hash is the `hash_md` chain over
+/// `tweak | pp | payload`, which is what the VM's 64-byte opcode reproduces, and
+/// not a plain sponge over the same bytes. Assembled independently here.
+#[test]
+fn multi_group_tweak_hash_is_the_md_chain() {
+    let pp = [9u8; PUBLIC_PARAM_LEN];
+    let payload = [5u8; V * DIGEST_LEN];
+    let mut input = Vec::new();
+    input.extend_from_slice(&make_tweak(TWEAK_TYPE_WOTS_PK, 0, 42, payload.len()));
+    input.extend_from_slice(&pp);
+    input.extend_from_slice(&payload);
+
+    let expected = primitives::hash::hash_md(&input);
+    assert_eq!(
+        tweak_hash(&pp, TWEAK_TYPE_WOTS_PK, 0, 42, &payload),
+        expected[..DIGEST_LEN]
+    );
+    // The chain is not the sponge: 704 bytes through one is not the other.
+    assert_ne!(expected, primitives::hash::hash(&input));
 }
 
 #[test]

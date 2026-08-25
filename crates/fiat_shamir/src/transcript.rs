@@ -1,4 +1,4 @@
-//! Fiat-Shamir proof transport. `add_scalar` and `next_scalar` transmit and bind together. `observe_scalar` is only for public values both sides derive. Merkle hints are authenticated by their trees and are not absorbed separately.
+//! Fiat-Shamir proof transport. `add_scalar` and `next_scalar` transmit and bind together, which is the only way anything enters the state: a transmitted value needs no separate absorb, a value derived from transmitted ones needs none either, and the statement rides the seed the state starts from. So there is no absorb-only method at all. Merkle hints are authenticated by their trees and are not absorbed separately.
 
 use crate::FiatShamirState;
 use crate::merkle::{Hash, PrunedMerklePaths, RawMerklePath, hash_to_scalars, scalars_to_hash};
@@ -36,18 +36,6 @@ pub enum Error {
 pub trait Challenger {
     fn sample(&mut self) -> F192;
     fn sample_vec(&mut self, n: usize) -> Vec<F192>;
-    /// Bind a value both sides derive themselves (never transmitted), so it is
-    /// side-agnostic and lives here rather than on the two halves below.
-    fn observe_scalar(&mut self, x: F192);
-
-    /// Bind a root both sides already hold (a commitment that is part of the
-    /// statement) as its two scalars, not as a byte string, so the recursion
-    /// guest replays one shape for every digest.
-    fn observe_root(&mut self, root: &Hash) {
-        for s in hash_to_scalars(root) {
-            self.observe_scalar(s);
-        }
-    }
 }
 
 /// The prover half of a transmitting sub-protocol (WHIR and its sumchecks):
@@ -58,8 +46,9 @@ pub trait Transmitter: Challenger {
     fn add_scalars(&mut self, xs: &[F192]);
     fn grind(&mut self, bits: u32);
 
-    /// Transmit a root as its two scalars ([`Challenger::observe_root`] is for
-    /// the one root the verifier already holds).
+    /// Transmit a root as its two scalars, not as a byte string, so the recursion guest replays
+    /// one shape for every digest. Sending it is what binds it: no verifier absorbs a root
+    /// separately (see [`Receiver::next_root`], its mirror).
     fn add_root(&mut self, root: &Hash) {
         self.add_scalars(&hash_to_scalars(root));
     }
@@ -323,9 +312,6 @@ impl Challenger for ProverState {
     fn sample_vec(&mut self, n: usize) -> Vec<F192> {
         self.fs.sample_vec(n)
     }
-    fn observe_scalar(&mut self, x: F192) {
-        self.fs.observe(x);
-    }
 }
 
 impl Challenger for VerifierState<'_> {
@@ -334,12 +320,6 @@ impl Challenger for VerifierState<'_> {
     }
     fn sample_vec(&mut self, n: usize) -> Vec<F192> {
         self.fs.sample_vec(n)
-    }
-    /// Absorb a value both parties compute themselves (never transmitted):
-    /// protocol steps that bind derived values before sampling, e.g. the
-    /// stacked-bytecode claim reduction (`leaf::verify_balance`).
-    fn observe_scalar(&mut self, x: F192) {
-        self.fs.observe(x);
     }
 }
 
