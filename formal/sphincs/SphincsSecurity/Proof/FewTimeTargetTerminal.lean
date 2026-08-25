@@ -14,6 +14,144 @@ open OracleComp OracleSpec ENNReal
 
 namespace Concrete
 
+theorem originTargetMonitoredAdversaryImpl_viewed_projection
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
+    (targetOrdinal : Nat) (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialState : OriginTargetMonitorState configuration) :
+    (fun result => (result.1, result.2.origin.viewed)) <$>
+        (simulateQ
+          (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal)
+          computation).run initialState =
+      (simulateQ (viewedFullTracedMappedAdversaryImpl secretKey)
+        computation).run initialState.origin.viewed := by
+  calc
+    _ = Prod.map id OriginMonitorState.viewed <$>
+        (Prod.map id OriginTargetMonitorState.origin <$>
+          (simulateQ
+            (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal)
+            computation).run initialState) := by
+      simp only [map_eq_bind_pure_comp, bind_assoc]
+      apply bind_congr
+      intro result
+      rfl
+    _ = Prod.map id OriginMonitorState.viewed <$>
+        (simulateQ (originMonitoredAdversaryImpl configuration secretKey)
+          computation).run initialState.origin := by
+      rw [originTargetMonitoredAdversaryImpl_projection]
+    _ = _ := originMonitoredAdversaryImpl_projection configuration secretKey
+      computation initialState.origin
+
+theorem exists_originTargetMonitored_of_viewed_support
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
+    (targetOrdinal : Nat) (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialState : OriginTargetMonitorState configuration)
+    (result : α × ViewedFullTraceState)
+    (hmem : result ∈ support
+      ((simulateQ (viewedFullTracedMappedAdversaryImpl secretKey)
+        computation).run initialState.origin.viewed)) :
+    ∃ monitored ∈ support
+        ((simulateQ
+          (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal)
+          computation).run initialState),
+      monitored.1 = result.1 ∧ monitored.2.origin.viewed = result.2 := by
+  rw [← originTargetMonitoredAdversaryImpl_viewed_projection configuration secretKey
+    targetOrdinal computation initialState, support_map] at hmem
+  obtain ⟨monitored, hmonitored, heq⟩ := hmem
+  refine ⟨monitored, hmonitored, ?_⟩
+  exact Prod.mk.inj heq
+
+theorem gameAfterSecretsWithViewTrace_support_adversary_state
+    (adversary : Adversary) (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (result : (Digest × Forgery × Bool) × ViewedFullTraceState)
+    (hmem : result ∈ support
+      (gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret)) :
+    ∃ (rootCache : QueryCache HashSpec) (state : ViewedFullTraceState),
+      (result.1.1, rootCache) ∈ support
+        ((simulateQ romImpl
+          (liftM ((treeRoot parameter topLayer rootTree
+            (otsSecret topLayer rootTree) : OracleComp HashSpec Digest)) :
+              OracleComp OracleWorld Digest)).run ∅)
+        ∧ (result.1.2.1, state) ∈ support
+          ((simulateQ
+            (viewedFullTracedMappedAdversaryImpl
+              ⟨parameter, result.1.1, otsSecret, ftsSecret⟩)
+            (adversary.main ⟨result.1.1, parameter⟩)).run
+              ⟨rootCache, ⟨[], [], []⟩, [], none⟩)
+        ∧ result.2.trace = state.trace
+        ∧ result.2.views = state.views
+        ∧ state.cache ≤ result.2.cache := by
+  rw [gameAfterSecretsWithViewTrace, mem_support_bind_iff] at hmem
+  obtain ⟨⟨root, rootCache⟩, hroot, hrest⟩ := hmem
+  rw [mem_support_bind_iff] at hrest
+  obtain ⟨restResult, hrest, hpure⟩ := hrest
+  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  subst result
+  rw [gameRestWithViewTrace, mem_support_bind_iff] at hrest
+  obtain ⟨⟨forgery, state⟩, hadversary, hfinish⟩ := hrest
+  rw [mem_support_bind_iff] at hfinish
+  obtain ⟨⟨⟨verified, targetView⟩, finalCache⟩, hverify, hpure⟩ := hfinish
+  simp only [support_pure, Set.mem_singleton_iff] at hpure
+  subst restResult
+  refine ⟨rootCache, state, hroot, hadversary, rfl, rfl, ?_⟩
+  exact simulateQ_romImpl_cache_le
+    (liftM (verifyWithView (⟨root, parameter⟩ : PublicKey)
+      forgery.message forgery.signature) :
+        OracleComp OracleWorld (Bool × FewTimeView))
+    state.cache ((verified, targetView), finalCache) hverify
+
+theorem gameAfterSecretsWithViewTrace_support_target_monitored_state
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources)
+    (targetOrdinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (result : (Digest × Forgery × Bool) × ViewedFullTraceState)
+    (hmem : result ∈ support
+      (gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret)) :
+    let secretKey : SecretKey := ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+    ∃ (rootCache : QueryCache HashSpec)
+        (monitored : Forgery × OriginTargetMonitorState configuration),
+      (result.1.1, rootCache) ∈ support
+        ((simulateQ romImpl
+          (liftM ((treeRoot parameter topLayer rootTree
+            (otsSecret topLayer rootTree) : OracleComp HashSpec Digest)) :
+              OracleComp OracleWorld Digest)).run ∅)
+        ∧ monitored ∈ support
+          ((simulateQ
+            (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal)
+            (adversary.main ⟨result.1.1, parameter⟩)).run
+              (OriginTargetMonitorState.initial configuration rootCache))
+        ∧ monitored.1 = result.1.2.1
+        ∧ result.2.trace = monitored.2.origin.viewed.trace
+        ∧ result.2.views = monitored.2.origin.viewed.views
+        ∧ monitored.2.origin.viewed.cache ≤ result.2.cache := by
+  let secretKey : SecretKey := ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+  obtain ⟨rootCache, state, hroot, hadversary, htrace, hviews, hcache⟩ :=
+    gameAfterSecretsWithViewTrace_support_adversary_state adversary parameter otsSecret
+      ftsSecret result hmem
+  have hadversary' : (result.1.2.1, state) ∈ support
+      ((simulateQ (viewedFullTracedMappedAdversaryImpl secretKey)
+        (adversary.main ⟨result.1.1, parameter⟩)).run
+          (OriginTargetMonitorState.initial configuration rootCache).origin.viewed) := by
+    simpa only [secretKey, OriginTargetMonitorState.initial,
+      OriginMonitorState.initial] using hadversary
+  obtain ⟨monitored, hmonitored, hforgery, hstate⟩ :=
+    exists_originTargetMonitored_of_viewed_support configuration secretKey targetOrdinal
+      (adversary.main ⟨result.1.1, parameter⟩)
+      (OriginTargetMonitorState.initial configuration rootCache)
+      (result.1.2.1, state) hadversary'
+  refine ⟨rootCache, monitored, hroot, hmonitored, hforgery, ?_, ?_, ?_⟩
+  · rw [hstate]
+    exact htrace
+  · rw [hstate]
+    exact hviews
+  · rw [hstate]
+    exact hcache
+
 theorem freshTargetCandidate_uniform_false
     (secretKey : SecretKey) (input : unifSpec.Domain)
     (output : unifSpec.Range input) (initialCache finalCache : QueryCache HashSpec) :
