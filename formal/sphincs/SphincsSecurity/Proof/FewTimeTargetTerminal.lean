@@ -2197,6 +2197,117 @@ theorem probEvent_exists_fixedOrdinal_viewedEvent_le_ideal
     _ = _ := by
       rw [Finset.sum_const, Finset.card_univ, Fintype.card_fin, nsmul_eq_mul]
 
+theorem probEvent_exists_originConfiguration_fixedOrdinal_viewedEvent_le_idealOrigin
+    (secretKey : SecretKey) (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialCache : QueryCache HashSpec) (signatures sources q : Nat)
+    (hq : q ≤ 2 ^ 120) (hcache : QueryCache.enncard initialCache ≤ q)
+    (candidates : Nat)
+    (viewedEvent : ∀ (distinct : Nat) (pattern : FewTimePattern signatures distinct),
+      OriginConfiguration pattern sources → Fin candidates →
+        α × ViewedFullTraceState → Prop)
+    (himp : ∀ (distinct : Nat) (pattern : FewTimePattern signatures distinct)
+      (configuration : OriginConfiguration pattern sources) (candidate : Fin candidates)
+      (result : α × OriginTargetMonitorState configuration),
+      result ∈ support
+        ((simulateQ
+          (originTargetMonitoredAdversaryImpl configuration secretKey candidate.val)
+          computation).run (OriginTargetMonitorState.initial configuration initialCache)) →
+      viewedEvent distinct pattern configuration candidate
+          (result.1, result.2.origin.viewed) →
+        result.2.Complete ∧
+          (∀ target, result.2.targetView = some target →
+            FixedFewTimePatternHit pattern.assignment
+              (result.2.origin.observation.views, target)) ∧
+          QueryCache.enncard result.2.origin.viewed.cache ≤ q) :
+    Pr[fun result => ∃ distinct ∈ Finset.Icc 1 14,
+        ∃ pattern : FewTimePattern signatures distinct,
+        ∃ configuration : OriginConfiguration pattern sources,
+        ∃ candidate : Fin candidates,
+          viewedEvent distinct pattern configuration candidate result |
+      (simulateQ (viewedFullTracedMappedAdversaryImpl secretKey)
+        computation).run ⟨initialCache, ⟨[], [], []⟩, [], none⟩] ≤
+      candidates * idealOriginUnionBound signatures sources := by
+  classical
+  let run := (simulateQ (viewedFullTracedMappedAdversaryImpl secretKey)
+    computation).run ⟨initialCache, ⟨[], [], []⟩, [], none⟩
+  calc
+    Pr[fun result => ∃ distinct ∈ Finset.Icc 1 14,
+        ∃ pattern : FewTimePattern signatures distinct,
+        ∃ configuration : OriginConfiguration pattern sources,
+        ∃ candidate : Fin candidates,
+          viewedEvent distinct pattern configuration candidate result | run] ≤
+        ∑ distinct ∈ Finset.Icc 1 14,
+          Pr[fun result =>
+            ∃ pattern : FewTimePattern signatures distinct,
+            ∃ configuration : OriginConfiguration pattern sources,
+            ∃ candidate : Fin candidates,
+              viewedEvent distinct pattern configuration candidate result | run] :=
+      probEvent_exists_finset_le_sum (Finset.Icc 1 14) run fun distinct result =>
+        ∃ pattern : FewTimePattern signatures distinct,
+        ∃ configuration : OriginConfiguration pattern sources,
+        ∃ candidate : Fin candidates,
+          viewedEvent distinct pattern configuration candidate result
+    _ ≤ ∑ distinct ∈ Finset.Icc 1 14,
+        ∑ pattern : FewTimePattern signatures distinct,
+          Pr[fun result =>
+            ∃ configuration : OriginConfiguration pattern sources,
+            ∃ candidate : Fin candidates,
+              viewedEvent distinct pattern configuration candidate result | run] := by
+      apply Finset.sum_le_sum
+      intro distinct _
+      calc
+        _ = Pr[fun result =>
+              ∃ pattern ∈ (Finset.univ : Finset (FewTimePattern signatures distinct)),
+              ∃ configuration : OriginConfiguration pattern sources,
+              ∃ candidate : Fin candidates,
+                viewedEvent distinct pattern configuration candidate result | run] := by
+            congr 1
+            funext result
+            simp
+        _ ≤ _ := probEvent_exists_finset_le_sum Finset.univ run fun pattern result =>
+          ∃ configuration : OriginConfiguration pattern sources,
+          ∃ candidate : Fin candidates,
+            viewedEvent distinct pattern configuration candidate result
+    _ ≤ ∑ distinct ∈ Finset.Icc 1 14,
+        ∑ pattern : FewTimePattern signatures distinct,
+          ∑ configuration : OriginConfiguration pattern sources,
+            Pr[fun result => ∃ candidate : Fin candidates,
+                viewedEvent distinct pattern configuration candidate result | run] := by
+      apply Finset.sum_le_sum
+      intro distinct _
+      apply Finset.sum_le_sum
+      intro pattern _
+      calc
+        _ = Pr[fun result =>
+              ∃ configuration ∈
+                (Finset.univ : Finset (OriginConfiguration pattern sources)),
+              ∃ candidate : Fin candidates,
+                viewedEvent distinct pattern configuration candidate result | run] := by
+            congr 1
+            funext result
+            simp
+        _ ≤ _ := probEvent_exists_finset_le_sum Finset.univ run fun configuration result =>
+          ∃ candidate : Fin candidates,
+            viewedEvent distinct pattern configuration candidate result
+    _ ≤ ∑ distinct ∈ Finset.Icc 1 14,
+        ∑ pattern : FewTimePattern signatures distinct,
+          ∑ configuration : OriginConfiguration pattern sources,
+            candidates * Pr[configuration.Hit |
+              ($ᵗ configuration.Sample : ProbComp configuration.Sample)] := by
+      apply Finset.sum_le_sum
+      intro distinct _
+      apply Finset.sum_le_sum
+      intro pattern _
+      apply Finset.sum_le_sum
+      intro configuration _
+      exact probEvent_exists_fixedOrdinal_viewedEvent_le_ideal configuration secretKey
+        computation initialCache q hq hcache candidates
+          (viewedEvent distinct pattern configuration)
+          (himp distinct pattern configuration)
+    _ = candidates * idealOriginUnionBound signatures sources := by
+      rw [idealOriginUnionBound]
+      simp_rw [← Finset.mul_sum]
+
 theorem gameAfterSecretsWithViewTrace_proper_target_bridge
     (adversary : Adversary) (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
