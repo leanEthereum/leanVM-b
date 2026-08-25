@@ -13,10 +13,6 @@ namespace SphincsSecurity
 
 open OracleComp OracleSpec ENNReal
 
-noncomputable local instance fewTimeUniformSampleable
-    {R : Type} [Fintype R] [Nonempty R] : SampleableType R :=
-  SampleableType.ofFintype R
-
 def splitHashOutput (width : Nat) (output : HashOutput) :
     BitVec width × BitVec (hashOutputBits - width) :=
   (output.extractLsb' 0 width,

@@ -325,6 +325,46 @@ theorem gameAfterSecretsWithPaddedViews_support
   subst result
   exact ⟨values, hviewed, hvalues, rfl, htarget⟩
 
+theorem gameAfterSecretsWithPaddedViews_projection
+    (adversary : Adversary) (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    𝒟[(fun result => result.1) <$>
+        gameAfterSecretsWithPaddedViews adversary parameter otsSecret ftsSecret] =
+      𝒟[gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret] := by
+  rw [gameAfterSecretsWithPaddedViews, map_eq_bind_pure_comp, bind_assoc]
+  calc
+    _ = 𝒟[gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret >>=
+          fun result => pure result] := by
+      apply evalDist_bind_congr
+      intro result _
+      have hnormalize :
+          ((do
+              let values ← completeAndPadViews signatureLimit result.2.views
+              let target ← completeOptionView result.2.targetView
+              pure (result, (listToFunction signatureLimit values, target))) :
+              ProbComp (((Digest × Forgery × Bool) × ViewedFullTraceState) ×
+                ((Fin signatureLimit → FewTimeView) × FewTimeView))) >>=
+              (pure ∘ fun padded => padded.1) =
+            (do
+              let _ ← completeAndPadViews signatureLimit result.2.views
+              let _ ← completeOptionView result.2.targetView
+              pure result) := by
+        simp [bind_assoc]
+      rw [hnormalize]
+      calc
+        𝒟[completeAndPadViews signatureLimit result.2.views >>= fun _ =>
+            completeOptionView result.2.targetView >>= fun _ => pure result] =
+            𝒟[completeOptionView result.2.targetView >>= fun _ => pure result] := by
+          exact OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+            (completeAndPadViews signatureLimit result.2.views)
+            (probFailure_eq_zero' inferInstance) _
+        _ = 𝒟[pure result] := by
+          exact OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+            (completeOptionView result.2.targetView)
+            (probFailure_eq_zero' inferInstance) _
+    _ = _ := by simp
+
 theorem evalDist_uniformPaddedSample (count : Nat) :
     𝒟[(do
       let values ← uniformSnocList FewTimeView count

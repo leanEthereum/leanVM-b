@@ -63,6 +63,7 @@ import SphincsSecurity.Proof.FewTimeLoop
 import SphincsSecurity.Proof.FewTimeSignerView
 import SphincsSecurity.Proof.FewTimeViewTrace
 import SphincsSecurity.Proof.FewTimePadding
+import SphincsSecurity.Proof.FewTimeFresh
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
