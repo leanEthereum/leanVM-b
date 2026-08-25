@@ -11,9 +11,95 @@ the stream of fresh direct answers and fresh signer selections. Its signer uses
 
 namespace SphincsSecurity
 
-open OracleComp OracleSpec
+open OracleComp OracleSpec ENNReal
 
 namespace Concrete
+
+theorem probEvent_randomOracle_fresh_view
+    (input : HashInput) (cache : QueryCache HashSpec) (hcache : cache input = none)
+    (P : FewTimeView → Prop) :
+    Pr[fun result : HashOutput × QueryCache HashSpec => P (hashOutputFewTimeView result.1) |
+      (randomOracle input).run cache] =
+      Pr[P | ($ᵗ FewTimeView : ProbComp FewTimeView)] := by
+  rw [OracleSpec.randomOracle, QueryImpl.withCaching_run_none _ hcache]
+  change Pr[fun result : HashOutput × QueryCache HashSpec =>
+      P (hashOutputFewTimeView result.1) |
+    (fun output : HashOutput => (output, cache.cacheQuery input output)) <$>
+      ($ᵗ HashOutput : ProbComp HashOutput)] = _
+  rw [probEvent_map]
+  calc
+    Pr[fun output : HashOutput => P (hashOutputFewTimeView output) |
+        ($ᵗ HashOutput : ProbComp HashOutput)] =
+        Pr[P | hashOutputFewTimeView <$> ($ᵗ HashOutput : ProbComp HashOutput)] :=
+      (probEvent_map (mx := ($ᵗ HashOutput : ProbComp HashOutput))
+        (f := hashOutputFewTimeView) P).symm
+    _ = _ := probEvent_congr' (fun _ _ => Iff.rfl)
+      evalDist_hashOutputFewTimeView_uniform
+
+theorem tsum_probOutput_randomOracle_fresh_view_mul_le_expected
+    (input : HashInput) (cache : QueryCache HashSpec) (hcache : cache input = none)
+    (cost : HashOutput × QueryCache HashSpec → ℝ≥0∞)
+    (risk : FewTimeView → ℝ≥0∞)
+    (hon : ∀ source ∈ support ((randomOracle input).run cache),
+      cost source ≤ risk (hashOutputFewTimeView source.1)) :
+    (∑' source, Pr[= source | (randomOracle input).run cache] * cost source) ≤
+      ∑ view, Pr[fun value : FewTimeView => value = view |
+        ($ᵗ FewTimeView : ProbComp FewTimeView)] * risk view := by
+  let classify : HashOutput × QueryCache HashSpec → Option FewTimeView :=
+    fun source => some (hashOutputFewTimeView source.1)
+  have hbound := tsum_probOutput_mul_le_classifiedRisk
+    ((randomOracle input).run cache) classify risk cost
+    (by
+      intro source _ hnone
+      simp [classify] at hnone)
+    (by
+      intro source hsource view hview
+      have : hashOutputFewTimeView source.1 = view := by
+        simpa [classify] using hview
+      rw [← this]
+      exact hon source hsource)
+  refine hbound.trans ?_
+  apply Finset.sum_le_sum
+  intro view _
+  apply mul_le_mul' _ le_rfl
+  exact le_of_eq (calc
+    Pr[fun source => classify source = some view | (randomOracle input).run cache] =
+        Pr[fun source : HashOutput × QueryCache HashSpec =>
+          hashOutputFewTimeView source.1 = view | (randomOracle input).run cache] := by
+      apply probEvent_congr'
+      · intro source _
+        simp only [classify, Option.some.injEq]
+      · rfl
+    _ = _ := probEvent_randomOracle_fresh_view input cache hcache
+      (fun value => value = view))
+
+theorem tsum_probOutput_signWithTargetView_fresh_mul_le_expected
+    (secretKey : SecretKey) (message : Message)
+    (initialCache : QueryCache HashSpec)
+    (cost : (TargetSignerResult × QueryCache HashSpec) → ℝ≥0∞)
+    (risk : FewTimeView → ℝ≥0∞)
+    (hoff : ∀ signerResult ∈ support
+        ((simulateQ romImpl (signWithTargetView secretKey message)).run initialCache),
+      freshTargetSignerView? initialCache signerResult = none → cost signerResult = 0)
+    (hon : ∀ signerResult ∈ support
+        ((simulateQ romImpl (signWithTargetView secretKey message)).run initialCache),
+      ∀ view, freshTargetSignerView? initialCache signerResult = some view →
+        cost signerResult ≤ risk view) :
+    (∑' signerResult,
+      Pr[= signerResult |
+        (simulateQ romImpl (signWithTargetView secretKey message)).run initialCache] *
+          cost signerResult) ≤
+      ∑ view, Pr[fun value : FewTimeView => value = view |
+        ($ᵗ FewTimeView : ProbComp FewTimeView)] * risk view := by
+  have hbound := tsum_probOutput_mul_le_classifiedRisk
+    ((simulateQ romImpl (signWithTargetView secretKey message)).run initialCache)
+    (freshTargetSignerView? initialCache) risk cost hoff hon
+  refine hbound.trans ?_
+  apply Finset.sum_le_sum
+  intro view _
+  exact mul_le_mul'
+    (probEvent_freshTargetSignerView?_eq_some_le_uniform secretKey message initialCache view)
+    le_rfl
 
 structure OriginTargetMonitorState {signatures distinct sources : Nat}
     {pattern : FewTimePattern signatures distinct}
@@ -45,6 +131,129 @@ def OriginTargetMonitorState.advanceOrigin
     (state : OriginTargetMonitorState configuration)
     (origin : OriginMonitorState configuration) : OriginTargetMonitorState configuration :=
   { state with origin := origin }
+
+noncomputable def OriginTargetMonitorState.potential
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (state : OriginTargetMonitorState configuration)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop) : ℝ≥0∞ :=
+  if state.valid then
+    match state.targetView with
+    | some target => state.origin.potential fun views => event (views, target)
+    | none => ∑ target, Pr[fun value : FewTimeView => value = target |
+        ($ᵗ FewTimeView : ProbComp FewTimeView)] *
+          state.origin.potential (fun views => event (views, target))
+  else 0
+
+def OriginTargetMonitorState.TargetScheduleCoherent
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (targetOrdinal : Nat) (state : OriginTargetMonitorState configuration) : Prop :=
+  (state.targetView = none) ↔ state.candidateOrdinal ≤ targetOrdinal
+
+theorem OriginTargetMonitorState.targetScheduleCoherent_initial
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (cache : QueryCache HashSpec)
+    (targetOrdinal : Nat) :
+    (OriginTargetMonitorState.initial configuration cache).TargetScheduleCoherent
+      targetOrdinal := by
+  simp [OriginTargetMonitorState.TargetScheduleCoherent,
+    OriginTargetMonitorState.initial]
+
+theorem OriginTargetMonitorState.targetView_eq_none_of_candidateOrdinal_eq
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    {targetOrdinal : Nat} {state : OriginTargetMonitorState configuration}
+    (hcoherent : state.TargetScheduleCoherent targetOrdinal)
+    (heq : state.candidateOrdinal = targetOrdinal) : state.targetView = none := by
+  exact hcoherent.mpr heq.le
+
+theorem OriginTargetMonitorState.targetScheduleCoherent_advanceOrigin
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (targetOrdinal : Nat) (state : OriginTargetMonitorState configuration)
+    (origin : OriginMonitorState configuration)
+    (hcoherent : state.TargetScheduleCoherent targetOrdinal) :
+    (state.advanceOrigin origin).TargetScheduleCoherent targetOrdinal := hcoherent
+
+theorem OriginTargetMonitorState.targetScheduleCoherent_recordCandidate
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (targetOrdinal : Nat) (state : OriginTargetMonitorState configuration)
+    (allowed : Bool) (view : FewTimeView)
+    (hcoherent : state.TargetScheduleCoherent targetOrdinal) :
+    (state.recordCandidate targetOrdinal allowed view).TargetScheduleCoherent
+      targetOrdinal := by
+  by_cases heq : state.candidateOrdinal = targetOrdinal
+  · simp [OriginTargetMonitorState.TargetScheduleCoherent,
+      OriginTargetMonitorState.recordCandidate, heq]
+  · have hview : state.targetView = none ↔ state.candidateOrdinal ≤ targetOrdinal := hcoherent
+    simp only [OriginTargetMonitorState.TargetScheduleCoherent,
+      OriginTargetMonitorState.recordCandidate, heq, if_false]
+    constructor
+    · intro hnone
+      have hle : state.candidateOrdinal ≤ targetOrdinal := hview.mp hnone
+      exact Nat.add_one_le_iff.mpr (lt_of_le_of_ne hle heq)
+    · intro hle
+      apply hview.mpr
+      exact (Nat.le_add_right state.candidateOrdinal 1).trans hle
+
+theorem OriginTargetMonitorState.potential_eq_zero_of_invalid
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (state : OriginTargetMonitorState configuration)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
+    (hinvalid : state.valid = false) : state.potential event = 0 := by
+  simp [OriginTargetMonitorState.potential, hinvalid]
+
+theorem OriginTargetMonitorState.potential_advanceOrigin
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (state : OriginTargetMonitorState configuration)
+    (origin : OriginMonitorState configuration)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop) :
+    (state.advanceOrigin origin).potential event =
+      if state.valid then
+        match state.targetView with
+        | some target => origin.potential fun views => event (views, target)
+        | none => ∑ target, Pr[fun value : FewTimeView => value = target |
+            ($ᵗ FewTimeView : ProbComp FewTimeView)] *
+              origin.potential (fun views => event (views, target))
+      else 0 := by
+  rfl
+
+theorem OriginTargetMonitorState.potential_recordCandidate_of_ordinal_ne
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (targetOrdinal : Nat) (state : OriginTargetMonitorState configuration)
+    (allowed : Bool) (view : FewTimeView)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
+    (hne : state.candidateOrdinal ≠ targetOrdinal) :
+    (state.recordCandidate targetOrdinal allowed view).potential event =
+      state.potential event := by
+  simp [OriginTargetMonitorState.recordCandidate, OriginTargetMonitorState.potential, hne]
+
+theorem OriginTargetMonitorState.potential_recordCandidate_eq_of_allowed
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (targetOrdinal : Nat) (state : OriginTargetMonitorState configuration)
+    (view : FewTimeView)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
+    (heq : state.candidateOrdinal = targetOrdinal) (hvalid : state.valid = true) :
+    (state.recordCandidate targetOrdinal true view).potential event =
+      state.origin.potential (fun views => event (views, view)) := by
+  simp [OriginTargetMonitorState.recordCandidate, OriginTargetMonitorState.potential,
+    heq, hvalid]
+
+theorem OriginTargetMonitorState.potential_recordCandidate_eq_of_disallowed
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (targetOrdinal : Nat) (state : OriginTargetMonitorState configuration)
+    (view : FewTimeView)
+    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
+    (heq : state.candidateOrdinal = targetOrdinal) :
+    (state.recordCandidate targetOrdinal false view).potential event = 0 := by
+  simp [OriginTargetMonitorState.recordCandidate, OriginTargetMonitorState.potential, heq]
 
 noncomputable def originTargetMonitoredAdversaryImpl
     {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
