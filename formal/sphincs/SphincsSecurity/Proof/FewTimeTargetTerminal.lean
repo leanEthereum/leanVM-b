@@ -2498,6 +2498,29 @@ noncomputable instance (parameter : PublicParameter) :
     DecidablePred (VerifierFreshTarget parameter) :=
   fun result => Classical.propDecidable (VerifierFreshTarget parameter result)
 
+def ViewedProperFewTimeLeakWitness (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (result : (Digest × Forgery × Bool) × ViewedFullTraceState) : Prop :=
+  ∃ (f : QueryImpl HashSpec Id) (digest : MessageDigest),
+    result.2.cache.AgreesWithFn f
+      ∧ SigningTranscript.Valid result.2.trace.signing.toSigningLog
+      ∧ ¬SigningTranscript.Contains result.2.trace.signing.toSigningLog result.1.2.1
+      ∧ evalWithAnswerFn f
+          (messageDigest parameter result.1.1 result.1.2.1.message
+            result.1.2.1.signature.randomness) = digest
+      ∧ Admissible digest
+      ∧ ProperFewTimeLeak f result.2.cache
+        ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+        result.2.trace.signing.toSigningLog (digestIndex digest) (digestLeaves digest)
+
+noncomputable instance (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    DecidablePred (ViewedProperFewTimeLeakWitness parameter otsSecret ftsSecret) :=
+  fun result => Classical.propDecidable
+    (ViewedProperFewTimeLeakWitness parameter otsSecret ftsSecret result)
+
 theorem gameAfterSecretsWithViewTrace_proper_target_classified_at_adversary_state
     (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
     (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
