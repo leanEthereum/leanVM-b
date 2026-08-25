@@ -155,6 +155,17 @@ noncomputable def slots : Position → List Digest
   | .ftsLeaf index tree leafIdx => [ftsSecret index tree leafIdx]
   | p => childValues f parameter otsSecret ftsSecret p
 
+theorem slots_eq_childValues_of_mem {p c : Position} (hc : c ∈ p.children) :
+    slots f parameter otsSecret ftsSecret p = childValues f parameter otsSecret ftsSecret p := by
+  cases p with
+  | chain lay tree leafIdx chainIdx step =>
+      simp only [slots]
+      rw [if_neg]
+      intro hstep
+      simp [Position.children, hstep] at hc
+  | ftsLeaf => simp [Position.children] at hc
+  | leaf | node | ftsNode | ftsRoots => rfl
+
 /-- **The payload is the values below it.** -/
 theorem honestPayload_eq_slots {p : Position} (hvalid : p.Valid) :
     honestPayload f parameter otsSecret ftsSecret p

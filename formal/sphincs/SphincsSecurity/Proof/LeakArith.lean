@@ -31,7 +31,8 @@ theorem factorial_mul_choose_le_pow (n d : Nat) :
   exact Nat.descFactorial_le_pow n d
 
 /-- The leak's union bound, with `14!` and the powers of two cleared through it. The multipliers are
-`14! / d!`, written out so that nothing has to evaluate a factorial. -/
+`14! / d!`, written out so that nothing has to evaluate a factorial. The right side retains two
+bits of the true `2^-122.9` bound for the final union with the structural event. -/
 theorem leak_union_bound_scaled :
     87178291200 * 2 ^ (24 * 1) * 1 ^ 14 * 2 ^ (26 * 13)
       + 43589145600 * 2 ^ (24 * 2) * 2 ^ 14 * 2 ^ (26 * 12)
@@ -47,7 +48,13 @@ theorem leak_union_bound_scaled :
       + 182 * 2 ^ (24 * 12) * 12 ^ 14 * 2 ^ (26 * 2)
       + 14 * 2 ^ (24 * 13) * 13 ^ 14 * 2 ^ 26
       + 1 * 2 ^ (24 * 14) * 14 ^ 14
-    ≤ 87178291200 * 2 ^ 384 := by
+    ≤ 87178291200 * 2 ^ 382 := by
+  decide
+
+theorem leak_union_bound_scaled_sum :
+    ∑ d ∈ Finset.Icc 1 14,
+        (d + 1).ascFactorial (14 - d) * 2 ^ (24 * d) * d ^ 14 * 2 ^ (26 * (14 - d))
+      ≤ Nat.factorial 14 * 2 ^ 382 := by
   decide
 
 end SphincsSecurity

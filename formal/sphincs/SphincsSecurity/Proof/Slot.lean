@@ -68,4 +68,21 @@ theorem slotDigest_flatMap (parameter : PublicParameter) (domain : HashDomain)
   rw [hdrop, List.flatMap_cons, ← digestBytes_length values[k], List.take_left,
     digestOfBytes_digestBytes]
 
+/-- The slot occupied by a child in an honest input contains that child's honest value. -/
+theorem slotDigest_honestInput_child (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) {parent child : Position}
+    (hvalid : parent.Valid) (hmem : child ∈ parent.children) :
+    slotDigest (parent.children.idxOf child)
+        (honestInput f parameter otsSecret ftsSecret parent)
+      = honestValue f parameter otsSecret ftsSecret child := by
+  have hidx : parent.children.idxOf child < parent.children.length :=
+    List.idxOf_lt_length_iff.mpr hmem
+  rw [honestInput, honestPayload_eq_slots f parameter otsSecret ftsSecret hvalid,
+    slots_eq_childValues_of_mem f parameter otsSecret ftsSecret hmem,
+    slotDigest_flatMap parameter parent.domain
+      (childValues f parameter otsSecret ftsSecret parent) (parent.children.idxOf child)
+      (by simpa [childValues] using hidx)]
+  simp [childValues, List.getElem_idxOf hidx]
+
 end SphincsSecurity

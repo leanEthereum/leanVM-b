@@ -11,7 +11,10 @@ those instead of unfolding anything.
 
 namespace SphincsSecurity.Concrete
 
-attribute [local semireducible] treeNode ftsNode verify
+attribute [local semireducible] treeNode ftsNode verify sign sampleRandomness
+
+noncomputable local instance : SampleableType Randomness :=
+  SampleableType.ofFintype Randomness
 
 variable {m : Type → Type} [Monad m] [HasQuery HashSpec m]
 
@@ -118,5 +121,34 @@ theorem verify_eq (publicKey : PublicKey) (message : Message) (signature : Signa
                 ftsPublicKey with
             | none => return false
             | some root => return decide (root = publicKey.root)) := rfl
+
+theorem sign_eq (secretKey : SecretKey) (message : Message) :
+    sign secretKey message
+      = (do
+          match ← signDigestLoop digestAttemptLimit secretKey message with
+          | none => return none
+          | some (randomness, index, leaves) => do
+              let ftsPath ← liftM
+                (ftsOpen secretKey.parameter index leaves (secretKey.ftsSecret index) :
+                  OracleComp HashSpec (FtsTree → Fin ftsTreeHeight → Digest))
+              let layers ← liftM
+                (sequenceFin (fun lay => signLayer secretKey index lay) :
+                  OracleComp HashSpec
+                    (Layer →
+                      Option (Counter × (ChainIndex → Digest) × (Fin maxLayerHeight → Digest))))
+              match traverseOption layers with
+              | none => return none
+              | some parts =>
+                  return some
+                    { randomness := randomness
+                      ftsSecret := fun tree =>
+                        secretKey.ftsSecret index tree (leaves (ftsIndexOf tree))
+                      ftsPath := ftsPath
+                      counter := fun lay => (parts lay).1
+                      chainValue := fun lay => (parts lay).2.1
+                      authPath := flattenPaths fun lay => (parts lay).2.2 }) := rfl
+
+theorem sampleRandomness_eq :
+    sampleRandomness = ($ᵗ Randomness : ProbComp Randomness) := rfl
 
 end SphincsSecurity.Concrete

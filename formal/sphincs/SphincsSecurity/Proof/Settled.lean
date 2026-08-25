@@ -109,6 +109,23 @@ theorem honestValue_eq_of_settled {cache : QueryCache HashSpec} {f : QueryImpl H
       = honestValue (fromCache cache) parameter otsSecret ftsSecret p :=
   (honestInput_eq_of_settled_aux hf (p.depth + 1) p (by omega) hsettled).2
 
+/-- A valid position settles once its children are settled and its honest input is cached. -/
+theorem settled_of_honestInput_cached {cache : QueryCache HashSpec}
+    {f : QueryImpl HashSpec Id} (hf : cache.AgreesWithFn f) {p : Position}
+    (hvalid : p.Valid)
+    (hcached : cache (honestInput f parameter otsSecret ftsSecret p) ≠ none)
+    (hchildren : ∀ c ∈ p.children, Settled parameter otsSecret ftsSecret cache c) :
+    Settled parameter otsSecret ftsSecret cache p := by
+  have hvalues : ∀ c ∈ p.children,
+      honestValue f parameter otsSecret ftsSecret c
+        = honestValue (fromCache cache) parameter otsSecret ftsSecret c := fun c hc =>
+    honestValue_eq_of_settled hf (hchildren c hc)
+  have hinput := honestInput_congr f (fromCache cache) parameter otsSecret ftsSecret hvalid hvalues
+  rw [settled_iff]
+  refine ⟨hvalid, ?_, hchildren⟩
+  change cache (honestInput (fromCache cache) parameter otsSecret ftsSecret p) ≠ none
+  rwa [← hinput]
+
 /-- **Settling is monotone, and what it pins does not move.** -/
 private theorem settled_mono_aux {cache cache' : QueryCache HashSpec} (hle : cache ≤ cache') :
     ∀ (n : Nat) (p : Position), p.depth < n → Settled parameter otsSecret ftsSecret cache p →

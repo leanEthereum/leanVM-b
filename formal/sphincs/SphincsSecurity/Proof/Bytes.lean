@@ -117,6 +117,19 @@ theorem tweakableHashInput_injective (parameter : PublicParameter) {d1 d2 : Hash
   obtain ⟨htweak, _⟩ := List.append_inj' hprefix (by simp [bytesLE_length])
   exact ⟨tweakBytes_injective h1 h2 htweak, hpayload⟩
 
+theorem tweakableHashInput_ne_message (parameter : PublicParameter) (domain : HashDomain)
+    (hdomain : domain ≠ .message) (payload messagePayload : HashInput) :
+    tweakableHashInput parameter domain payload ≠
+      tweakableHashInput parameter .message messagePayload := by
+  intro hinput
+  simp only [tweakableHashInput] at hinput
+  obtain ⟨hprefix, _⟩ := List.append_inj hinput
+    (by simp [tweakBytes_length, bytesLE_length])
+  obtain ⟨htweak, _⟩ := List.append_inj' hprefix (by simp [bytesLE_length])
+  apply hdomain
+  cases domain <;>
+    simp_all [tweakBytes_eq_iff, hashDomainFields, TweakFields.mk.injEq]
+
 /-! ### Payloads
 
 A node's payload is its two children, a leaf's is its `v` chain endpoints, and a few-time key's is

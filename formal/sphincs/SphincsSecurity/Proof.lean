@@ -28,6 +28,41 @@ import SphincsSecurity.Proof.Honest
 import SphincsSecurity.Proof.Settled
 import SphincsSecurity.Proof.Slot
 import SphincsSecurity.Proof.Charge
+import SphincsSecurity.Proof.ChargeStep
+import SphincsSecurity.Proof.HitBad
+import SphincsSecurity.Proof.Queried
+import SphincsSecurity.Proof.Cached
+import SphincsSecurity.Proof.SettledPath
+import SphincsSecurity.Proof.Descent
+import SphincsSecurity.Proof.Execution
+import SphincsSecurity.Proof.ReplayWorld
+import SphincsSecurity.Proof.SigningReplay
+import SphincsSecurity.Proof.SigningTrace
+import SphincsSecurity.Proof.TracedGame
+import SphincsSecurity.Proof.RootCache
+import SphincsSecurity.Proof.NoMessage
+import SphincsSecurity.Proof.SignerDigestSource
+import SphincsSecurity.Proof.FullTrace
+import SphincsSecurity.Proof.SignSupport
+import SphincsSecurity.Proof.EncodingCached
+import SphincsSecurity.Proof.LayerCompare
+import SphincsSecurity.Proof.FewTimeCompare
+import SphincsSecurity.Proof.ForgeryClassify
+import SphincsSecurity.Proof.Replay
+import SphincsSecurity.Proof.Sampling
+import SphincsSecurity.Proof.OneTimeEvents
+import SphincsSecurity.Proof.TerminalCache
+import SphincsSecurity.Proof.FewTimeWitness
+import SphincsSecurity.Proof.FewTimePatterns
+import SphincsSecurity.Proof.FewTimeProbability
+import SphincsSecurity.Proof.FewTimeTrace
+import SphincsSecurity.Proof.FewTimeSource
+import SphincsSecurity.Proof.MessagePrehit
+import SphincsSecurity.Proof.FewTimeUniform
+import SphincsSecurity.Proof.FewTimeLoop
+import SphincsSecurity.Proof.FewTimeSignerView
+import SphincsSecurity.Proof.FewTimeViewTrace
+import SphincsSecurity.Proof.FewTimePadding
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to

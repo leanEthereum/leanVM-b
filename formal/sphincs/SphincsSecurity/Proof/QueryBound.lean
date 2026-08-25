@@ -36,6 +36,48 @@ theorem isQueryBoundP_of_bind {α β : Type} {oa : OracleComp OracleWorld α}
       obtain ⟨u, hu⟩ := (mem_support_bind_iff _ _ _).mp hx
       exact (ih u (h.2 u) x hu.2).mono (by split_ifs <;> omega)
 
+/-- A query bound on a bind bounds its left-hand computation. -/
+theorem IsQueryBoundP.of_bind_left {ι : Type} {spec : OracleSpec ι}
+    {α β : Type} {oa : OracleComp spec α} {ob : α → OracleComp spec β}
+    {p : ι → Prop} [DecidablePred p] {n : Nat}
+    (h : IsQueryBoundP (oa >>= ob) p n) : IsQueryBoundP oa p n := by
+  induction oa using OracleComp.inductionOn generalizing n with
+  | pure _ => trivial
+  | query_bind input continuation ih =>
+      rw [bind_assoc, isQueryBoundP_query_bind_iff] at h
+      rw [isQueryBoundP_query_bind_iff]
+      exact ⟨h.1, fun output => ih output (h.2 output)⟩
+
+/-- A predicate query bound controls the matching entries of every logging trace. -/
+theorem queryLog_countQ_le_of_mem_support_run_simulateQ
+    {ι : Type} {spec : OracleSpec.{0, 0} ι}
+    [spec.DecidableEq] [IsUniformSpec spec] {α : Type}
+    {oa : OracleComp spec α} {p : ι → Prop} [DecidablePred p] {n : Nat}
+    (hbound : IsQueryBoundP oa p n)
+    {z : α × QueryLog spec}
+    (hz : z ∈ support ((simulateQ loggingOracle oa).run)) :
+    z.2.countQ p ≤ n := by
+  induction oa using OracleComp.inductionOn generalizing n z with
+  | pure x =>
+      simp only [simulateQ_pure] at hz
+      subst hz
+      simp [QueryLog.countQ]
+  | query_bind t mx ih =>
+      rw [isQueryBoundP_query_bind_iff] at hbound
+      obtain ⟨hcan, hrest⟩ := hbound
+      rw [run_simulateQ_loggingOracle_query_bind, support_bind] at hz
+      simp only [Set.mem_iUnion, support_map] at hz
+      obtain ⟨u, _, z', hz', rfl⟩ := hz
+      have htail := ih u (hrest u) hz'
+      by_cases ht : p t
+      · have hn : 0 < n := by simpa [ht] using hcan
+        simp only [ht, if_true] at htail
+        change z'.2.countQ p ≤ n - 1 at htail
+        rw [QueryLog.countQ] at htail
+        simp only [QueryLog.countQ, QueryLog.getQ_cons, ht, if_true, List.length_cons]
+        omega
+      · simpa [QueryLog.countQ, QueryLog.getQ_cons, ht] using htail
+
 /-- The cache holds an answer satisfying `P` at its input. -/
 def CacheHit (P : HashInput → HashOutput → Prop) (cache : QueryCache HashSpec) : Prop :=
   ∃ input answer, cache input = some answer ∧ P input answer
