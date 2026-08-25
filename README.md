@@ -19,21 +19,50 @@ Machine: Mac M4 Max
 Our XMSS is specified in [XMSS.pdf](https://github.com/leanEthereum/leanVM-b/releases/download/doc-latest/XMSS.pdf).
 
 ```bash
-cargo run --release -- aggregate --xmss 900 --log-inv-rate 1 --repeat 3
+cargo run --release -- aggregate --xmss 450 --log-inv-rate 1 --repeat 3
+```
+
+````
+aggregation, 450 XMSS signatures
+  cycles (VM steps)           : 773,972 = 2^19.562
+    details                   : DEREF 2^17.99 (33.6%)  SET 2^17.417 (22.6%)  MUL 2^17.2 (19.5%)  SHA2 2^15.996 (8.4%)  XOR 2^15.963 (8.3%)  JUMP 2^15.844 (7.6%)  MEMORY 2^20.727  TOTAL_COMMITTED 2^25.725
+  proof size                  : 311.0 KiB
+  proving time                : 0.519 s ± 4.6%      peak memory 9.083 GiB
+  per signature               : 866.405 signatures/s
+  verifying                   : 0.0169 s
 ```
 
 ### SPHINCS aggregation
 
-Our SPHINCS is specified in [SPHINCS.pdf](https://github.com/leanEthereum/leanVM-b/releases/download/doc-latest/SPHINCS.pdf). It is stateless, so a key needs no epoch, and each SPHINCS signer signs its own message where the XMSS signers share one. One verification costs 531 compressions against XMSS's 144, so a leaf of comparable proven size holds proportionally fewer signers; `--xmss` and `--sphincs` add up, so a mixed leaf is one command.
+Our SPHINCS is specified in [SPHINCS.pdf](https://github.com/leanEthereum/leanVM-b/releases/download/doc-latest/SPHINCS.pdf).
 
 ```bash
-cargo run --release -- aggregate --sphincs 245 --log-inv-rate 1 --repeat 3
+cargo run --release -- aggregate --sphincs 122 --log-inv-rate 1 --repeat 3
+```
+
+```
+aggregation, 122 SPHINCS signatures
+  cycles (VM steps)           : 1,335,535 = 2^20.349
+    details                   : DEREF 2^18.446 (26.7%)  XOR 2^18.301 (24.2%)  MUL 2^18.207 (22.7%)  SET 2^17.869 (17.9%)  SHA2 2^15.991 (4.9%)  JUMP 2^15.563 (3.6%)  MEMORY 2^21.085  TOTAL_COMMITTED 2^26.228
+  proof size                  : 305.6 KiB
+  proving time                : 0.763 s ± 4.3%      peak memory 13.904 GiB
+  per signature               : 159.799 signatures/s
+  verifying                   : 0.0136 s
 ```
 
 ### Recursion
 
 ```bash
 cargo run --release -- recursion --n 2 --xmss-per-leaf 900 --log-inv-rate 2 --repeat 3
+```
+
+```
+recursion 2→1, over leaves of 900 XMSS signatures
+  cycles (VM steps)           : 807,023 = 2^19.622
+    details                   : DEREF 2^18.108 (35.0%)  MUL 2^17.872 (29.7%)  XOR 2^17.499 (23.0%)  SET 2^15.571 (6.0%)  JUMP 2^14.806 (3.6%)  SHA2 2^14.424 (2.7%)  MEMORY 2^19.909  TOTAL_COMMITTED 2^25.208
+  proof size                  : 202.9 KiB
+  proving time                : 0.547 s ± 3.0%      peak memory 25.53 GiB
+  verifying                   : 0.0143 s
 ```
 
 ### Fibonacci
