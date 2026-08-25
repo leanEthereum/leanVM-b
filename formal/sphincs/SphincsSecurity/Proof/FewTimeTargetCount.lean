@@ -4,38 +4,75 @@ import SphincsSecurity.Proof.FewTimePrehit
 /-!
 # Counting fresh target-view candidates
 
-A direct hash interval contributes its queried input. A successful signer interval contributes the
-message-digest input selected by its returned signature. If that input was fresh, distinct
-candidate intervals embed into distinct entries of the final random-oracle cache.
+A direct hash interval contributes its queried input. A signer interval may contribute any
+message-digest input it inserted, including the selected digest of a signing invocation whose later
+signature construction failed. If that input was fresh, distinct candidate intervals embed into
+distinct entries of the final random-oracle cache.
 -/
 
 namespace SphincsSecurity.Concrete
 
 open OracleComp OracleSpec ENNReal
 
-def targetCandidateInput?
-    (secretKey : SecretKey) (entry : AdversaryCacheEntry) : Option HashInput := by
-  rcases entry with ⟨input, output, initialCache, finalCache⟩
-  rcases input with worldInput | request
-  · rcases worldInput with uniformInput | hashInput
-    · exact none
-    · exact some hashInput
-  · cases output with
-    | none => exact none
-    | some signature =>
-        exact some (tweakableHashInput secretKey.parameter .message
-          (messageDigestPayload secretKey.root request signature.randomness))
+def TargetCandidateInput (secretKey : SecretKey)
+    (entry : AdversaryCacheEntry) (input : HashInput) : Prop :=
+  (entry.input = .inl (.inr input)) ∨
+    ∃ request randomness,
+      entry.input = .inr request ∧
+        input = tweakableHashInput secretKey.parameter .message
+          (messageDigestPayload secretKey.root request randomness)
 
 def FreshTargetCandidate (secretKey : SecretKey)
     (entry : AdversaryCacheEntry) : Prop :=
   ∃ input output,
-    targetCandidateInput? secretKey entry = some input
+    TargetCandidateInput secretKey entry input
       ∧ entry.initialCache input = none
       ∧ entry.finalCache input = some output
 
 noncomputable instance (secretKey : SecretKey) :
     DecidablePred (FreshTargetCandidate secretKey) :=
   fun entry => Classical.propDecidable (FreshTargetCandidate secretKey entry)
+
+theorem freshTargetCandidate_of_message_transition
+    (secretKey : SecretKey) (entry : AdversaryCacheEntry) (targetPayload : HashInput)
+    (hvalid : (entry.output, entry.finalCache) ∈ support
+      ((unloggedMappedAdversaryImpl secretKey entry.input).run entry.initialCache))
+    (hbefore : entry.initialCache
+      (tweakableHashInput secretKey.parameter .message targetPayload) = none)
+    (hafter : entry.finalCache
+      (tweakableHashInput secretKey.parameter .message targetPayload) ≠ none)
+    (hkind : entry.input = .inl (.inr
+        (tweakableHashInput secretKey.parameter .message targetPayload)) ∨
+      ∃ request, entry.input = .inr request) :
+    FreshTargetCandidate secretKey entry := by
+  rcases entry with ⟨input, result, initialCache, finalCache⟩
+  rcases input with worldInput | request
+  · rcases worldInput with uniformInput | hashInput
+    · rcases hkind with hfalse | ⟨_, hfalse⟩ <;> simp at hfalse
+    · obtain ⟨output, houtput⟩ := Option.ne_none_iff_exists'.mp hafter
+      refine ⟨tweakableHashInput secretKey.parameter .message targetPayload, output, ?_,
+        hbefore, houtput⟩
+      rcases hkind with hdirect | ⟨_, hfalse⟩
+      · exact Or.inl hdirect
+      · simp at hfalse
+  · obtain ⟨output, houtput⟩ := Option.ne_none_iff_exists'.mp hafter
+    change Option Signature at result
+    change (result, finalCache) ∈ support
+      ((simulateQ romImpl (scheme.sign secretKey request)).run initialCache) at hvalid
+    refine ⟨tweakableHashInput secretKey.parameter .message targetPayload, output, ?_,
+      hbefore, houtput⟩
+    rcases hkind with hfalse | ⟨sourceRequest, hrequest⟩
+    · simp at hfalse
+    · have hrequestEq : request = sourceRequest := by injection hrequest
+      subst sourceRequest
+      have hsign : (result, finalCache) ∈ support
+          ((simulateQ romImpl (scheme.sign secretKey request)).run initialCache) := by
+        exact hvalid
+      rw [show scheme.sign secretKey request = sign secretKey request from rfl] at hsign
+      obtain ⟨_, randomness, _, _, hpayload⟩ :=
+        sign_message_source secretKey request initialCache finalCache result hsign
+          targetPayload hbefore hafter
+      exact Or.inr ⟨request, randomness, rfl, by rw [hpayload]⟩
 
 noncomputable def freshTargetCandidatePositions
     (secretKey : SecretKey) (trace : FullAdversaryTrace) :
@@ -57,8 +94,8 @@ theorem freshTargetCandidatePositions_card_le_enncard
   let candidateOutput : ∀ candidate : ↑candidates, HashOutput := fun candidate =>
     Classical.choose (Classical.choose_spec ((Finset.mem_filter.mp candidate.2).2))
   have candidateSpec : ∀ candidate : ↑candidates,
-      targetCandidateInput? secretKey (trace.intervals.get candidate.1) =
-          some (candidateInput candidate)
+      TargetCandidateInput secretKey (trace.intervals.get candidate.1)
+          (candidateInput candidate)
         ∧ (trace.intervals.get candidate.1).initialCache (candidateInput candidate) = none
         ∧ (trace.intervals.get candidate.1).finalCache (candidateInput candidate) =
           some (candidateOutput candidate) := by
