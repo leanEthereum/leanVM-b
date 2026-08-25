@@ -123,4 +123,33 @@ theorem FewTimeCover.precached_entries_have_injective_numbered_sources
     exact Function.Injective.comp (Fin.cast_injective hcount) hencodedInjective
   exact ⟨source, intervalSource, output, hsourceInjective, hintervalInjective, hinterval⟩
 
+theorem FewTimeCover.has_originConfiguration_of_hashQueries_length_le
+    (adversary : Adversary) (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (result : (Digest × Forgery × Bool) × (QueryCache HashSpec × FullAdversaryTrace))
+    (hresult : result ∈ support
+      (gameAfterSecretsWithFullTrace adversary parameter otsSecret ftsSecret))
+    (f : QueryImpl HashSpec Id) (hf : result.2.1.AgreesWithFn f)
+    (index : Index) (targetLeaves : DigestTree → FtsLeaf)
+    (cover : FewTimeCover f result.2.1
+      ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+      result.2.2.signing.toSigningLog index targetLeaves)
+    (q : Nat) (hqueries : result.2.2.hashQueries.length ≤ q) :
+    ∃ configuration : OriginConfiguration cover.pattern q,
+      configuration.prehit.card =
+        (cover.precachedEntryFinset result.2.2.signing rfl).card := by
+  classical
+  obtain ⟨numberedSource, _intervalSource, _output, hnumberedInjective, _, _⟩ :=
+    cover.precached_entries_have_injective_numbered_sources adversary parameter otsSecret
+      ftsSecret result hresult f hf index targetLeaves
+  let source : cover.PrecachedEntries result.2.2.signing rfl → Fin q :=
+    fun entry => Fin.castLE hqueries (numberedSource entry)
+  have hsourceInjective : Function.Injective source := by
+    exact Function.Injective.comp (finCastLEEmbedding hqueries).injective hnumberedInjective
+  let configuration := cover.originConfiguration result.2.2.signing rfl q source
+    hsourceInjective
+  exact ⟨configuration,
+    cover.originConfiguration_prehit_card result.2.2.signing rfl q source hsourceInjective⟩
+
 end SphincsSecurity.Concrete
