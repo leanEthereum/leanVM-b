@@ -20,11 +20,11 @@
 //! - [`hash_flock`]: the `BLAKE2s` glue: flock's R1CS validity proof over the same commitment.
 //! - [`vmhash`]: VM-native hashing (one-block compression and standard BLAKE2s slice hashing).
 
-pub mod hash_flock;
 pub mod colval;
 pub mod constraints;
 pub mod cpu;
 pub mod gkr;
+pub mod hash_flock;
 pub mod leaf;
 pub mod pcs;
 pub mod tables;

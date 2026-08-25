@@ -1203,9 +1203,6 @@ def verify_whir(transcript: Transcript, log_n: int, log_inv_rate: int, target: E
     config = derive_config(log_n, log_inv_rate)
     levels = len(config.folds)
 
-    transcript.observe(target)
-    for half in root.halves():
-        transcript.observe(half)
     running_target = target
     running_quad = transcript.round_poly(3, target)
     folds: list[E] = []
@@ -1554,61 +1551,35 @@ def _ring_weight(r: MultilinearPoint, r_prime: Sequence[E], coefficients: Sequen
     return total
 
 
-@dataclass(frozen=True)
-class RingSwitchClaim:
-    """The one dense claim the 64 bit claims reduce to: `sum_u W(u) qflock(u) = target`,
-    for the MLE-friendly weight `W` evaluated by `weight_at`."""
+def ring_switch(point: MultilinearPoint, s: Sequence[E], transcript: Transcript) -> tuple[E, Callable[[Sequence[E]], E]]:
+    """The 64 claims s[i] = z(i, point) become the one dense claim `sum_u W(u) qflock(u) = target`.
 
-    target: E
-    weight_at: Callable[[Sequence[E]], E]
-
-
-def ring_switch(point: MultilinearPoint, s: Sequence[E], transcript: Transcript) -> RingSwitchClaim:
-    """The 64 claims s[i] = z(i, point) become one claim on q_flock: draw Phi once they
-    are fixed, then take the target `T = sum_i x^i Phi(s_i)` against `W(u) = Phi(eq(point, u))`."""
+    Draw Phi once they are fixed, then take the target `T = sum_i x^i Phi(s_i)` against the
+    MLE-friendly weight `W(u) = Phi(eq(point, u))`. Returns the target and W as a closure."""
     challenges = transcript.samples(len(RING_MAP_SHIFTS))
     # The same map as a Frobenius sum, `Phi(a) = sum_k c_k a^(2^k)` for k < 64.
     coefficients = [reduce(mul, (f ** (2 ** (k % s)) for f, s in zip(challenges, RING_MAP_SHIFTS, strict=True) if k & s), ONE) for k in range(K_BITS)]
     target = dot(powers(GEN, K_BITS), [_phi(value, challenges) for value in s])
-    return RingSwitchClaim(target, lambda r_prime: _ring_weight(point, r_prime, coefficients))
+    return target, lambda r_prime: _ring_weight(point, r_prime, coefficients)
 
 
 # Stacked opening -------------------------------------------------------------
 
 
-def verify_stacked_opening(
-    transcript: Transcript,
-    root: Digest,
-    stack_log: int,
-    log_inv_rate: int,
-    qflock: Placement,
-    ring: RingSwitchClaim,
-    point_claims: Sequence[tuple[MultilinearPoint, E]],
-) -> None:
-    """Bind the ring-switched claim and all ordinary stack point claims."""
-    # One challenge over disjoint power ranges: the ring-switched claim takes
-    # the first power, the claim pool the rest.
-    for _, value in point_claims:
-        transcript.observe(value)
-    scales = powers(transcript.sample(), 1 + len(point_claims))
-    ring_scale, point_scales = scales[0], scales[1:]
-    target = ring_scale * ring.target + dot(point_scales, [value for _, value in point_claims])
+type StackClaim = tuple[E, Callable[[Sequence[E]], E]]
+"""A claim on the committed stack: its value, and the weight it puts on the stack."""
 
-    selector = qflock.selector
+
+def verify_stacked_opening(transcript: Transcript, root: Digest, stack_log: int, log_inv_rate: int, claims: Sequence[StackClaim]) -> None:
+    """Discharge every claim on the committed stack in one opening.
+    Batching is then powers of one challenge over both halves of every claim.
+    """
+    scales = powers(transcript.sample(), len(claims))
+    target = dot(scales, [value for value, _ in claims])
 
     def evaluate_basis(point: Sequence[E]) -> E:
-        """Every pooled claim's weight at the opening's terminal point.
-
-        The ring-switched claim is supported on the q_flock region, so it
-        carries that placement's selector; an ordinary point claim is an eq
-        against the full stacked point.
-        """
-        low, high = point[: qflock.variables], point[qflock.variables :]
-        selector_weight = selector_eq(selector, high)
-        value = selector_weight * ring_scale * ring.weight_at(low)
-        for scale, (claim_point, _) in zip(point_scales, point_claims, strict=True):
-            value += scale * eq_eval(claim_point, point)
-        return value
+        """Every claim's weight at the opening's terminal point."""
+        return sum((scale * weight(point) for scale, (_, weight) in zip(scales, claims, strict=True)), ZERO)
 
     verify_whir(transcript, stack_log, log_inv_rate, target, root, evaluate_basis)
 
@@ -1670,7 +1641,7 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     # 6] Locate every claim in the stack: a column claim keeps its point and
     # gains its placement's selector bits; a BLAKE2s value claim is re-routed to
     # the equal q_flock slot evaluation.
-    point_claims: list[tuple[MultilinearPoint, E]] = []
+    stack_claims: list[StackClaim] = []
     qflock = layout.placements[QFLOCK]
     for claim in claims:
         # A BLAKE2s value column is committed inside q_flock rather than on its
@@ -1682,13 +1653,17 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
         require(not placement.virtual, "claim targets an uncommitted column")
         require(len(prefix) + len(claim.point) == placement.variables, "column claim dimension mismatch")
         tail = _selector_point(placement.selector, layout.stack_log - placement.variables)
-        point_claims.append((prefix + claim.point + tail, claim.value))
+        point = prefix + claim.point + tail
+        stack_claims.append((claim.value, lambda x, p=point: eq_eval(p, x)))
 
     # 7] BLAKE2s validity, its 64 claims ring-switched, then the one opening that
     # discharges every claim.
     flock_point, flock_s = verify_flock(BLAKE2S_R1CS_LOG_SIZE + layout.table_logs[BLAKE2S.opcode], transcript)
-    ring = ring_switch(flock_point, flock_s, transcript)
-    verify_stacked_opening(transcript, root, layout.stack_log, log_inverse_rate, qflock, ring, point_claims)
+    ringswitch_target, ringswitch_weight = ring_switch(flock_point, flock_s, transcript)
+    # That claim is supported on q_flock's region of the stack, so its weight carries the
+    # placement's selector, and it leads the batch, taking the first power.
+    ringswitch = (ringswitch_target, lambda x: selector_eq(qflock.selector, x[qflock.variables :]) * ringswitch_weight(x[: qflock.variables]))
+    verify_stacked_opening(transcript, root, layout.stack_log, log_inverse_rate, [ringswitch, *stack_claims])
     transcript.finish()
 
 

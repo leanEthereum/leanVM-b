@@ -710,9 +710,6 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     # The K opener binds the initial Merkle root as its two F192 scalars, not as
     # a byte string, and every digest uses ONE 128/128 encoding, so those scalars
     # are exactly the root's two cells. Level roots are likewise scalar-observed.
-    fs = obs(fs, target)
-    fs = obs(fs, commit_root_0)
-    fs = obs(fs, commit_root_1)
 
     # The opening's scalars (sumcheck messages, level roots, nonces, final
     # message) ride the SHARED stream: msg_cursor is just the main stream
@@ -1865,10 +1862,9 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     zr_hi = zerocheck_chis * GEN ** LINCHECK_ROUNDS
     for xt in mul_range(1, tau_blake2s_g):
         zv_lo[xt] = zr_hi[xt]
-    # Observe every pooled point claim, then ONE batching challenge for all of
-    # them: N_CLAIMS - 1 fewer Fiat-Shamir compressions than a challenge per claim.
-    for j in unroll(0, N_CLAIMS):
-        fs = obs(fs, claim_pool[GEN ** j])
+    # ONE batching challenge for the whole pool: N_CLAIMS - 1 fewer Fiat-Shamir compressions than a
+    # challenge per claim, and none for the values themselves, `fs_next` having bound every one of
+    # them as it read it, so `lam_cl` already depends on all of them.
     fs, lam_cl = squeeze(fs)
     # Disjoint power ranges, as for the zc_xi-powers above: the ring-switch claim
     # takes lam_cl^0, the pool lam_cl^1 onward.

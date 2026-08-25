@@ -832,11 +832,7 @@ mod tests {
                 ins: [2, 3, 4, 5],
                 cv: 0,
                 out: 6,
-                metadata: crate::hash_flock::metadata(
-                    crate::hash_flock::PINNED_T,
-                    crate::hash_flock::FINAL_FLAG,
-                    0,
-                ),
+                metadata: crate::hash_flock::metadata(crate::hash_flock::PINNED_T, crate::hash_flock::FINAL_FLAG, 0),
             },
         ]; // c → cells 6,7
         // 16 slots: 5 executed, then 10 filler SETs step the pc to 15, whose slot is
@@ -923,11 +919,7 @@ mod tests {
                 ins: [2, 3, 2, 3],
                 cv: 0,
                 out: 4,
-                metadata: crate::hash_flock::metadata(
-                    crate::hash_flock::PINNED_T,
-                    crate::hash_flock::FINAL_FLAG,
-                    0,
-                ),
+                metadata: crate::hash_flock::metadata(crate::hash_flock::PINNED_T, crate::hash_flock::FINAL_FLAG, 0),
             },
         ];
         // 8 slots: 3 executed, 4 filler SETs stepping the pc, then the sentinel.
