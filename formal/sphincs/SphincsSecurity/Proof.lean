@@ -96,6 +96,8 @@ import SphincsSecurity.Proof.FewTimeTargetInvariant
 import SphincsSecurity.Proof.FewTimeTargetTerminal
 import SphincsSecurity.Proof.TerminalDecomposition
 import SphincsSecurity.Proof.TerminalView
+import SphincsSecurity.Proof.MandatoryQueries
+import SphincsSecurity.Proof.TerminalArith
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
