@@ -46,8 +46,9 @@ pub trait Transmitter: Challenger {
     fn add_scalars(&mut self, xs: &[F192]);
     fn grind(&mut self, bits: u32);
 
-    /// Transmit a root as its two scalars ([`Challenger::observe_root`] is for
-    /// the one root the verifier already holds).
+    /// Transmit a root as its two scalars, not as a byte string, so the recursion guest replays
+    /// one shape for every digest. Sending it is what binds it: no verifier absorbs a root
+    /// separately (see [`Receiver::next_root`], its mirror).
     fn add_root(&mut self, root: &Hash) {
         self.add_scalars(&hash_to_scalars(root));
     }
