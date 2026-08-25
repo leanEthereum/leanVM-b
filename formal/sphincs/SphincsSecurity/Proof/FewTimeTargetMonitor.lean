@@ -107,6 +107,7 @@ structure OriginTargetMonitorState {signatures distinct sources : Nat}
   origin : OriginMonitorState configuration
   candidateOrdinal : Nat
   candidateViews : List FewTimeView
+  candidateAllowed : List Bool
   targetView : Option FewTimeView
   valid : Bool
 
@@ -114,7 +115,7 @@ noncomputable def OriginTargetMonitorState.initial
     {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
     (configuration : OriginConfiguration pattern sources)
     (cache : QueryCache HashSpec) : OriginTargetMonitorState configuration :=
-  ⟨OriginMonitorState.initial configuration cache, 0, [], none, true⟩
+  ⟨OriginMonitorState.initial configuration cache, 0, [], [], none, true⟩
 
 def OriginTargetMonitorState.recordCandidate
     {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
@@ -124,6 +125,7 @@ def OriginTargetMonitorState.recordCandidate
   { state with
     candidateOrdinal := state.candidateOrdinal + 1
     candidateViews := state.candidateViews ++ [view]
+    candidateAllowed := state.candidateAllowed ++ [allowed]
     targetView := if state.candidateOrdinal = targetOrdinal then some view else state.targetView
     valid := if state.candidateOrdinal = targetOrdinal then state.valid && allowed else state.valid }
 
@@ -206,6 +208,69 @@ theorem OriginTargetMonitorState.candidateViewsCoherent_recordCandidate
         rw [hview, List.getElem?_append_right hgt.le]
         simp [hlt]
         omega
+
+def OriginTargetMonitorState.CandidateAllowedCoherent
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (targetOrdinal : Nat) (state : OriginTargetMonitorState configuration) : Prop :=
+  state.candidateOrdinal = state.candidateAllowed.length ∧
+    state.valid = state.candidateAllowed[targetOrdinal]?.getD true
+
+theorem OriginTargetMonitorState.candidateAllowedCoherent_initial
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (cache : QueryCache HashSpec)
+    (targetOrdinal : Nat) :
+    (OriginTargetMonitorState.initial configuration cache).CandidateAllowedCoherent
+      targetOrdinal := by
+  simp [OriginTargetMonitorState.CandidateAllowedCoherent,
+    OriginTargetMonitorState.initial]
+
+theorem OriginTargetMonitorState.candidateAllowedCoherent_advanceOrigin
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (targetOrdinal : Nat) (state : OriginTargetMonitorState configuration)
+    (origin : OriginMonitorState configuration)
+    (hcoherent : state.CandidateAllowedCoherent targetOrdinal) :
+    (state.advanceOrigin origin).CandidateAllowedCoherent targetOrdinal := hcoherent
+
+theorem OriginTargetMonitorState.candidateAllowedCoherent_recordCandidate
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (targetOrdinal : Nat) (state : OriginTargetMonitorState configuration)
+    (allowed : Bool) (view : FewTimeView)
+    (hcoherent : state.CandidateAllowedCoherent targetOrdinal) :
+    (state.recordCandidate targetOrdinal allowed view).CandidateAllowedCoherent
+      targetOrdinal := by
+  rcases hcoherent with ⟨hcount, hvalid⟩
+  by_cases heq : state.candidateOrdinal = targetOrdinal
+  · constructor
+    · change state.candidateOrdinal + 1 = (state.candidateAllowed ++ [allowed]).length
+      simpa only [List.length_append, List.length_singleton] using
+        congrArg (fun value => value + 1) hcount
+    · have hlookup : state.candidateAllowed[targetOrdinal]? = none := by
+        rw [← heq, hcount]
+        simp
+      have hstateValid : state.valid = true := by
+        rw [hvalid, hlookup]
+        rfl
+      simp [OriginTargetMonitorState.recordCandidate, heq, ← hcount, hstateValid]
+  · constructor
+    · change state.candidateOrdinal + 1 = (state.candidateAllowed ++ [allowed]).length
+      simpa only [List.length_append, List.length_singleton] using
+        congrArg (fun value => value + 1) hcount
+    · by_cases hlt : targetOrdinal < state.candidateAllowed.length
+      · simp only [OriginTargetMonitorState.recordCandidate, heq, if_false]
+        rw [hvalid, List.getElem?_append_left hlt]
+      · have hgt : state.candidateAllowed.length < targetOrdinal := by
+          have hne : state.candidateAllowed.length ≠ targetOrdinal := by
+            omega
+          omega
+        simp only [OriginTargetMonitorState.recordCandidate, heq, if_false]
+        change state.valid = (state.candidateAllowed ++ [allowed])[targetOrdinal]?.getD true
+        rw [hvalid, List.getElem?_append_right hgt.le]
+        have hsub : targetOrdinal - state.candidateAllowed.length ≠ 0 :=
+          Nat.sub_ne_zero_iff_lt.mpr hgt
+        simp [hlt, hsub]
 
 theorem OriginTargetMonitorState.targetScheduleCoherent_initial
     {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
