@@ -72,6 +72,7 @@ import SphincsSecurity.Proof.FewTimeRace
 import SphincsSecurity.Proof.FewTimeOrigins
 import SphincsSecurity.Proof.FewTimeWeightedCount
 import SphincsSecurity.Proof.FewTimeOriginSampler
+import SphincsSecurity.Proof.FewTimeOriginCandidates
 import SphincsSecurity.Proof.FewTimeNumberedSources
 import SphincsSecurity.Proof.FewTimeFixedPrehit
 import SphincsSecurity.Proof.DirectQueryBudget
