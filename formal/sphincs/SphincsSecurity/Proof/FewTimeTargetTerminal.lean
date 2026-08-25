@@ -592,12 +592,166 @@ theorem candidateViewsCover_append_noncandidate
     apply hnon
     simpa [hposition, appendTargetViewedState, fullAdversaryTraceUpdate] using hcandidate
 
+def CandidateViewsExact (secretKey : SecretKey) (state : ViewedFullTraceState)
+    (candidateViews : List FewTimeView) : Prop :=
+  CandidateViewsCover secretKey state candidateViews ∧
+    candidateViews.length = freshTargetCandidateCount secretKey state.trace ∧
+    ∀ position, FreshTargetCandidate secretKey (state.trace.intervals.get position) →
+      candidateViews[state.trace.intervals.countPBefore
+        (fun entry => decide (FreshTargetCandidate secretKey entry)) position.val]? =
+          some (targetCandidateIntervalView state position)
+
+theorem candidateViewsExact_nil (secretKey : SecretKey) (cache : QueryCache HashSpec) :
+    CandidateViewsExact secretKey ⟨cache, ⟨[], [], []⟩, [], none⟩ [] := by
+  refine ⟨candidateViewsCover_nil secretKey cache, rfl, ?_⟩
+  intro position
+  exact Fin.elim0 position
+
+theorem candidateViewsExact_append_candidate
+    (secretKey : SecretKey) (state : ViewedFullTraceState)
+    (hvalid : state.ValidViews secretKey) (hconsistent : state.trace.Consistent)
+    (candidateViews : List FewTimeView)
+    (hexact : CandidateViewsExact secretKey state candidateViews)
+    (input : (OracleWorld + SigningSpec).Domain)
+    (initialCache : QueryCache HashSpec)
+    (output : (OracleWorld + SigningSpec).Range input)
+    (finalCache : QueryCache HashSpec) (view : Option FewTimeView)
+    (retained : FewTimeView)
+    (hcandidate : FreshTargetCandidate secretKey
+      ⟨input, output, initialCache, finalCache⟩)
+    (hlast : targetCandidateIntervalView
+        (appendTargetViewedState input initialCache output finalCache view state)
+        ⟨state.trace.intervals.length, by
+          simp [appendTargetViewedState, fullAdversaryTraceUpdate]⟩ = retained) :
+    CandidateViewsExact secretKey
+      (appendTargetViewedState input initialCache output finalCache view state)
+      (candidateViews ++ [retained]) := by
+  refine ⟨candidateViewsCover_append_candidate secretKey state hvalid hconsistent
+    candidateViews hexact.1 input initialCache output finalCache view retained hlast, ?_, ?_⟩
+  · simp [freshTargetCandidateCount, appendTargetViewedState, fullAdversaryTraceUpdate,
+      hcandidate, hexact.2.1]
+  · intro position hpositionCandidate
+    by_cases hold : position.val < state.trace.intervals.length
+    · let oldPosition : Fin state.trace.intervals.length := ⟨position.val, hold⟩
+      have hentry :
+          (appendTargetViewedState input initialCache output finalCache view state).trace.intervals.get
+              position = state.trace.intervals.get oldPosition := by
+        have hget :
+            (appendTargetViewedState input initialCache output finalCache view state).trace.intervals[
+                position.val]? = state.trace.intervals[position.val]? := by
+          simp [appendTargetViewedState, fullAdversaryTraceUpdate,
+            List.getElem?_append_left hold]
+        rw [List.getElem?_eq_getElem position.isLt,
+          List.getElem?_eq_getElem hold] at hget
+        exact Option.some.inj hget
+      have holdCandidate : FreshTargetCandidate secretKey
+          (state.trace.intervals.get oldPosition) := by
+        rw [← hentry]
+        exact hpositionCandidate
+      have htake :
+          (appendTargetViewedState input initialCache output finalCache view state).trace.intervals.take
+              position.val = state.trace.intervals.take oldPosition.val := by
+        change (state.trace.intervals ++
+          [(⟨input, output, initialCache, finalCache⟩ : AdversaryCacheEntry)]).take position.val =
+            state.trace.intervals.take position.val
+        rw [List.take_append_of_le_length hold.le]
+      rw [List.countPBefore_eq_countP_take, htake,
+        ← List.countPBefore_eq_countP_take]
+      rw [show position = ⟨oldPosition.val, by
+          simp [appendTargetViewedState, fullAdversaryTraceUpdate]⟩ from Fin.ext rfl,
+        targetCandidateIntervalView_appendTargetViewedState_old
+          secretKey state hvalid hconsistent input initialCache output finalCache view oldPosition]
+      have holdExact := hexact.2.2 oldPosition holdCandidate
+      rw [List.getElem?_append_left
+        (List.getElem?_eq_some_iff.mp holdExact).1]
+      exact holdExact
+    · have hlastValue : position.val = state.trace.intervals.length := by
+        have hlt : position.val < state.trace.intervals.length + 1 := by
+          simpa [appendTargetViewedState, fullAdversaryTraceUpdate] using position.isLt
+        omega
+      have hposition : position = ⟨state.trace.intervals.length, by
+          simp [appendTargetViewedState, fullAdversaryTraceUpdate]⟩ := Fin.ext hlastValue
+      have hviewLast : targetCandidateIntervalView
+          (appendTargetViewedState input initialCache output finalCache view state) position =
+            retained := by
+        rw [hposition]
+        exact hlast
+      rw [hviewLast]
+      rw [List.countPBefore_eq_countP_take, hlastValue]
+      simp only [appendTargetViewedState, fullAdversaryTraceUpdate]
+      rw [List.take_append_of_le_length (Nat.le_refl _), List.take_length]
+      change (candidateViews ++ [retained])[
+        freshTargetCandidateCount secretKey state.trace]? = some retained
+      rw [← hexact.2.1]
+      simp
+
+theorem candidateViewsExact_append_noncandidate
+    (secretKey : SecretKey) (state : ViewedFullTraceState)
+    (hvalid : state.ValidViews secretKey) (hconsistent : state.trace.Consistent)
+    (candidateViews : List FewTimeView)
+    (hexact : CandidateViewsExact secretKey state candidateViews)
+    (input : (OracleWorld + SigningSpec).Domain)
+    (initialCache : QueryCache HashSpec)
+    (output : (OracleWorld + SigningSpec).Range input)
+    (finalCache : QueryCache HashSpec) (view : Option FewTimeView)
+    (hnon : ¬FreshTargetCandidate secretKey
+      ⟨input, output, initialCache, finalCache⟩) :
+    CandidateViewsExact secretKey
+      (appendTargetViewedState input initialCache output finalCache view state)
+      candidateViews := by
+  refine ⟨candidateViewsCover_append_noncandidate secretKey state hvalid hconsistent
+    candidateViews hexact.1 input initialCache output finalCache view hnon, ?_, ?_⟩
+  · simp [freshTargetCandidateCount, appendTargetViewedState, fullAdversaryTraceUpdate,
+      hnon, hexact.2.1]
+  · intro position hpositionCandidate
+    by_cases hold : position.val < state.trace.intervals.length
+    · let oldPosition : Fin state.trace.intervals.length := ⟨position.val, hold⟩
+      have hentry :
+          (appendTargetViewedState input initialCache output finalCache view state).trace.intervals.get
+              position = state.trace.intervals.get oldPosition := by
+        have hget :
+            (appendTargetViewedState input initialCache output finalCache view state).trace.intervals[
+                position.val]? = state.trace.intervals[position.val]? := by
+          simp [appendTargetViewedState, fullAdversaryTraceUpdate,
+            List.getElem?_append_left hold]
+        rw [List.getElem?_eq_getElem position.isLt,
+          List.getElem?_eq_getElem hold] at hget
+        exact Option.some.inj hget
+      have holdCandidate : FreshTargetCandidate secretKey
+          (state.trace.intervals.get oldPosition) := by
+        rw [← hentry]
+        exact hpositionCandidate
+      have htake :
+          (appendTargetViewedState input initialCache output finalCache view state).trace.intervals.take
+              position.val = state.trace.intervals.take oldPosition.val := by
+        change (state.trace.intervals ++
+          [(⟨input, output, initialCache, finalCache⟩ : AdversaryCacheEntry)]).take position.val =
+            state.trace.intervals.take position.val
+        rw [List.take_append_of_le_length hold.le]
+      rw [List.countPBefore_eq_countP_take, htake,
+        ← List.countPBefore_eq_countP_take]
+      rw [show position = ⟨oldPosition.val, by
+          simp [appendTargetViewedState, fullAdversaryTraceUpdate]⟩ from Fin.ext rfl,
+        targetCandidateIntervalView_appendTargetViewedState_old
+          secretKey state hvalid hconsistent input initialCache output finalCache view oldPosition]
+      exact hexact.2.2 oldPosition holdCandidate
+    · have hlastValue : position.val = state.trace.intervals.length := by
+        have hlt : position.val < state.trace.intervals.length + 1 := by
+          simpa [appendTargetViewedState, fullAdversaryTraceUpdate] using position.isLt
+        omega
+      have hposition : position = ⟨state.trace.intervals.length, by
+          simp [appendTargetViewedState, fullAdversaryTraceUpdate]⟩ := Fin.ext hlastValue
+      exfalso
+      apply hnon
+      simpa [hposition, appendTargetViewedState, fullAdversaryTraceUpdate] using
+        hpositionCandidate
+
 def OriginTargetMonitorState.CandidateTraceCoherent
     {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
     {configuration : OriginConfiguration pattern sources}
     (secretKey : SecretKey) (state : OriginTargetMonitorState configuration) : Prop :=
   state.origin.ReplayConsistent secretKey ∧
-    CandidateViewsCover secretKey state.origin.viewed state.candidateViews
+    CandidateViewsExact secretKey state.origin.viewed state.candidateViews
 
 theorem OriginTargetMonitorState.candidateTraceCoherent_initial
     {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
@@ -607,7 +761,7 @@ theorem OriginTargetMonitorState.candidateTraceCoherent_initial
       secretKey := by
   constructor
   · exact OriginMonitorState.replayConsistent_initial configuration secretKey cache
-  · exact candidateViewsCover_nil secretKey cache
+  · exact candidateViewsExact_nil secretKey cache
 
 theorem originTargetMonitoredAdversaryImpl_query_candidateTraceCoherent
     {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
@@ -632,7 +786,7 @@ theorem originTargetMonitoredAdversaryImpl_query_candidateTraceCoherent
   refine ⟨hreplay, ?_⟩
   have hvalid := hcoherent.1.1
   have hconsistent := hcoherent.1.2.1
-  have hcover := hcoherent.2
+  have hexact := hcoherent.2
   cases input with
   | inl worldInput =>
       rw [originTargetMonitoredAdversaryImpl] at hmem
@@ -647,12 +801,12 @@ theorem originTargetMonitoredAdversaryImpl_query_candidateTraceCoherent
           obtain ⟨rfl, rfl⟩ := Prod.mk.inj horiginPure
           have hstateEq := congrArg Prod.snd hpure
           rw [hstateEq]
-          change CandidateViewsCover secretKey
+          change CandidateViewsExact secretKey
             (appendTargetViewedState (.inl (.inl uniformInput))
               state.origin.viewed.cache output finalCache none state.origin.viewed)
             state.candidateViews
-          exact candidateViewsCover_append_noncandidate secretKey state.origin.viewed
-            hvalid hconsistent state.candidateViews hcover _ _ _ _ _
+          exact candidateViewsExact_append_noncandidate secretKey state.origin.viewed
+            hvalid hconsistent state.candidateViews hexact _ _ _ _ _
               (freshTargetCandidate_uniform_false secretKey uniformInput output
                 state.origin.viewed.cache finalCache)
       | inr hashInput =>
@@ -664,24 +818,26 @@ theorem originTargetMonitoredAdversaryImpl_query_candidateTraceCoherent
           · simp only [hfresh, if_true, support_pure, Set.mem_singleton_iff] at hpure
             have hstateEq := congrArg Prod.snd hpure
             rw [hstateEq]
-            change CandidateViewsCover secretKey
+            change CandidateViewsExact secretKey
               (appendTargetViewedState (.inl (.inr hashInput))
                 state.origin.viewed.cache output finalCache none state.origin.viewed)
               (state.candidateViews ++ [hashOutputFewTimeView output])
-            apply candidateViewsCover_append_candidate secretKey state.origin.viewed
-              hvalid hconsistent state.candidateViews hcover
+            apply candidateViewsExact_append_candidate secretKey state.origin.viewed
+              hvalid hconsistent state.candidateViews hexact
+            · exact (freshTargetCandidate_direct_iff secretKey hashInput output
+                state.origin.viewed.cache finalCache hquery').mpr hfresh
             simpa using targetCandidateIntervalView_appendTargetViewedState_last
               secretKey state.origin.viewed hvalid hconsistent (.inl (.inr hashInput))
                 state.origin.viewed.cache output finalCache none
           · simp only [hfresh, if_false, support_pure, Set.mem_singleton_iff] at hpure
             have hstateEq := congrArg Prod.snd hpure
             rw [hstateEq]
-            change CandidateViewsCover secretKey
+            change CandidateViewsExact secretKey
               (appendTargetViewedState (.inl (.inr hashInput))
                 state.origin.viewed.cache output finalCache none state.origin.viewed)
               state.candidateViews
-            apply candidateViewsCover_append_noncandidate secretKey state.origin.viewed
-              hvalid hconsistent state.candidateViews hcover
+            apply candidateViewsExact_append_noncandidate secretKey state.origin.viewed
+              hvalid hconsistent state.candidateViews hexact
             exact fun hcandidate => hfresh
               ((freshTargetCandidate_direct_iff secretKey hashInput output
                 state.origin.viewed.cache finalCache hquery').mp hcandidate)
@@ -697,12 +853,12 @@ theorem originTargetMonitoredAdversaryImpl_query_candidateTraceCoherent
             support_pure, Set.mem_singleton_iff] at hpure
           have hstateEq := congrArg Prod.snd hpure
           rw [hstateEq]
-          change CandidateViewsCover secretKey
+          change CandidateViewsExact secretKey
             (appendTargetViewedState (.inr request) state.origin.viewed.cache
               targetRun.1.1 targetRun.2 none state.origin.viewed)
             state.candidateViews
-          apply candidateViewsCover_append_noncandidate secretKey state.origin.viewed
-            hvalid hconsistent state.candidateViews hcover
+          apply candidateViewsExact_append_noncandidate secretKey state.origin.viewed
+            hvalid hconsistent state.candidateViews hexact
           intro hcandidate
           obtain ⟨selectedInput, view, hsome, _⟩ := hcand.mp hcandidate
           rw [hselection] at hsome
@@ -715,12 +871,13 @@ theorem originTargetMonitoredAdversaryImpl_query_candidateTraceCoherent
               Set.mem_singleton_iff] at hpure
             have hstateEq := congrArg Prod.snd hpure
             rw [hstateEq]
-            change CandidateViewsCover secretKey
+            change CandidateViewsExact secretKey
               (appendTargetViewedState (.inr request) state.origin.viewed.cache
                 targetRun.1.1 targetRun.2 (some view) state.origin.viewed)
               (state.candidateViews ++ [view])
-            apply candidateViewsCover_append_candidate secretKey state.origin.viewed
-              hvalid hconsistent state.candidateViews hcover
+            apply candidateViewsExact_append_candidate secretKey state.origin.viewed
+              hvalid hconsistent state.candidateViews hexact
+            · exact hcand.mpr ⟨selectedInput, view, hselection, hfresh⟩
             simpa using targetCandidateIntervalView_appendTargetViewedState_last
               secretKey state.origin.viewed hvalid hconsistent (.inr request)
                 state.origin.viewed.cache targetRun.1.1 targetRun.2 (some view)
@@ -729,12 +886,12 @@ theorem originTargetMonitoredAdversaryImpl_query_candidateTraceCoherent
               Set.mem_singleton_iff] at hpure
             have hstateEq := congrArg Prod.snd hpure
             rw [hstateEq]
-            change CandidateViewsCover secretKey
+            change CandidateViewsExact secretKey
               (appendTargetViewedState (.inr request) state.origin.viewed.cache
                 targetRun.1.1 targetRun.2 (some view) state.origin.viewed)
               state.candidateViews
-            apply candidateViewsCover_append_noncandidate secretKey state.origin.viewed
-              hvalid hconsistent state.candidateViews hcover
+            apply candidateViewsExact_append_noncandidate secretKey state.origin.viewed
+              hvalid hconsistent state.candidateViews hexact
             intro hcandidate
             obtain ⟨input, foundView, hsome, hmiss⟩ := hcand.mp hcandidate
             have hfields := Prod.mk.inj (Option.some.inj (hselection.symm.trans hsome))
@@ -761,6 +918,31 @@ theorem originTargetMonitoredAdversaryImpl_candidateTraceCoherent
       exact originTargetMonitoredAdversaryImpl_query_candidateTraceCoherent
         configuration secretKey targetOrdinal input state queryResult hstate hquery)
     computation initialState hcoherent result hmem
+
+theorem OriginTargetMonitorState.CandidateTraceCoherent.candidateCountCoherent
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    {secretKey : SecretKey} {state : OriginTargetMonitorState configuration}
+    (hcoherent : state.CandidateTraceCoherent secretKey)
+    (hviews : state.candidateOrdinal = state.candidateViews.length) :
+    state.CandidateCountCoherent secretKey := by
+  rw [OriginTargetMonitorState.CandidateCountCoherent, hviews,
+    hcoherent.2.2.1]
+
+theorem OriginTargetMonitorState.targetView_eq_candidateInterval
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (secretKey : SecretKey) (state : OriginTargetMonitorState configuration)
+    (position : Fin state.origin.viewed.trace.intervals.length)
+    (hcandidate : FreshTargetCandidate secretKey
+      (state.origin.viewed.trace.intervals.get position))
+    (hviews : state.CandidateViewsCoherent
+      (state.origin.viewed.trace.intervals.countPBefore
+        (fun entry => decide (FreshTargetCandidate secretKey entry)) position.val))
+    (hexact : CandidateViewsExact secretKey state.origin.viewed state.candidateViews) :
+    state.targetView = some (targetCandidateIntervalView state.origin.viewed position) := by
+  rw [hviews.2]
+  exact hexact.2.2 position hcandidate
 
 end Concrete
 
