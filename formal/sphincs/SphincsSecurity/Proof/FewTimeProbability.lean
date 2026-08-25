@@ -356,6 +356,41 @@ noncomputable instance (signatures : Nat) : DecidablePred (SomeFewTimePatternHit
   fun sample => Classical.propDecidable (SomeFewTimePatternHit signatures sample)
 
 set_option exponentiation.threshold 400 in
+theorem fewTimePattern_unionBound_le {signatures : Nat}
+    (hsignatures : signatures ≤ signatureLimit) :
+    (∑ distinct ∈ Finset.Icc 1 14,
+      (Fintype.card (FewTimePattern signatures distinct) : ℝ≥0∞) *
+        ((2 ^ (26 * distinct + 140) : Nat) : ℝ≥0∞)⁻¹) ≤
+      ((2 ^ 122 : Nat) : ℝ≥0∞)⁻¹ := by
+  classical
+  calc
+    (∑ distinct ∈ Finset.Icc 1 14,
+        (Fintype.card (FewTimePattern signatures distinct) : ℝ≥0∞) *
+          ((2 ^ (26 * distinct + 140) : Nat) : ℝ≥0∞)⁻¹) =
+        ∑ distinct ∈ Finset.Icc 1 14,
+          (Fintype.card (FewTimePattern signatures distinct) *
+              2 ^ (26 * (14 - distinct)) : Nat) *
+            ((2 ^ 504 : Nat) : ℝ≥0∞)⁻¹ := by
+      apply Finset.sum_congr rfl
+      intro distinct hdistinct
+      exact fewTimePattern_term_common_denominator signatures distinct
+        (Finset.mem_Icc.mp hdistinct).2
+    _ = ((∑ distinct ∈ Finset.Icc 1 14,
+          Fintype.card (FewTimePattern signatures distinct) *
+            2 ^ (26 * (14 - distinct)) : Nat) : ℝ≥0∞) *
+          ((2 ^ 504 : Nat) : ℝ≥0∞)⁻¹ := by
+      rw [← Finset.sum_mul, Nat.cast_sum]
+    _ ≤ ((2 ^ 382 : Nat) : ℝ≥0∞) * ((2 ^ 504 : Nat) : ℝ≥0∞)⁻¹ := by
+      gcongr
+      exact_mod_cast fewTimePattern_sum_le hsignatures
+    _ = ((2 ^ 122 : Nat) : ℝ≥0∞)⁻¹ := by
+      have hzero : ((2 ^ 382 : Nat) : ℝ≥0∞) ≠ 0 := by positivity
+      have htop : ((2 ^ 382 : Nat) : ℝ≥0∞) ≠ ∞ := by simp
+      rw [show 504 = 382 + 122 by norm_num, pow_add, Nat.cast_mul,
+        ENNReal.mul_inv (Or.inl hzero) (Or.inl htop), ← mul_assoc,
+        ENNReal.mul_inv_cancel hzero htop, one_mul]
+
+set_option exponentiation.threshold 400 in
 theorem probEvent_someFewTimePatternHit_le {signatures : Nat}
     (hsignatures : signatures ≤ signatureLimit) :
     Pr[SomeFewTimePatternHit signatures |
@@ -380,28 +415,8 @@ theorem probEvent_someFewTimePatternHit_le {signatures : Nat}
       intro distinct _
       simpa only [totalHeight, ftsTreeHeight, ftsTrees] using
         (probEvent_anyFewTimePatternHit_le (signatures := signatures) (distinct := distinct))
-    _ = ∑ distinct ∈ Finset.Icc 1 14,
-          (Fintype.card (FewTimePattern signatures distinct) *
-              2 ^ (26 * (14 - distinct)) : Nat) *
-            ((2 ^ 504 : Nat) : ℝ≥0∞)⁻¹ := by
-      apply Finset.sum_congr rfl
-      intro distinct hdistinct
-      exact fewTimePattern_term_common_denominator signatures distinct
-        (Finset.mem_Icc.mp hdistinct).2
-    _ = ((∑ distinct ∈ Finset.Icc 1 14,
-          Fintype.card (FewTimePattern signatures distinct) *
-            2 ^ (26 * (14 - distinct)) : Nat) : ℝ≥0∞) *
-          ((2 ^ 504 : Nat) : ℝ≥0∞)⁻¹ := by
-      rw [← Finset.sum_mul, Nat.cast_sum]
-    _ ≤ ((2 ^ 382 : Nat) : ℝ≥0∞) * ((2 ^ 504 : Nat) : ℝ≥0∞)⁻¹ := by
-      gcongr
-      exact_mod_cast fewTimePattern_sum_le hsignatures
-    _ = ((2 ^ 122 : Nat) : ℝ≥0∞)⁻¹ := by
-      have hzero : ((2 ^ 382 : Nat) : ℝ≥0∞) ≠ 0 := by positivity
-      have htop : ((2 ^ 382 : Nat) : ℝ≥0∞) ≠ ∞ := by simp
-      rw [show 504 = 382 + 122 by norm_num, pow_add, Nat.cast_mul,
-        ENNReal.mul_inv (Or.inl hzero) (Or.inl htop), ← mul_assoc,
-        ENNReal.mul_inv_cancel hzero htop, one_mul]
+    _ ≤ ((2 ^ 122 : Nat) : ℝ≥0∞)⁻¹ :=
+      fewTimePattern_unionBound_le hsignatures
 
 noncomputable def FewTimeCover.transcriptViews {f : QueryImpl HashSpec Id}
     {cache : QueryCache HashSpec} {secretKey : SecretKey}

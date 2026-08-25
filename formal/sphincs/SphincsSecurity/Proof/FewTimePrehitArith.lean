@@ -46,6 +46,31 @@ theorem prehit_effective_slots_inflation_pow :
   simp only [ENNReal.toReal_pow, ENNReal.toReal_div]
   norm_num
 
+theorem prehit_origin_inflation_pow_le {q distinct : Nat}
+    (hq : q ≤ 2 ^ 120) (hdistinct : distinct ≤ 14) :
+    (1 + q * ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹) ^ distinct ≤ 2 := by
+  have hbase : 1 + (q : ℝ≥0∞) * ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹ ≤
+      129 / 128 := by
+    have hq' : (q : ℝ≥0∞) ≤ ((2 ^ 120 : Nat) : ℝ≥0∞) := by
+      exact_mod_cast hq
+    calc
+      1 + (q : ℝ≥0∞) * ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹ ≤
+          1 + ((2 ^ 120 : Nat) : ℝ≥0∞) *
+            ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹ := by gcongr
+      _ = 129 / 128 := by
+        apply (ENNReal.toReal_eq_toReal_iff' (by finiteness) (by finiteness)).mp
+        rw [ENNReal.toReal_add (by finiteness) (by finiteness)]
+        simp only [ENNReal.toReal_mul, ENNReal.toReal_inv, ENNReal.toReal_div,
+          ENNReal.toReal_natCast, ENNReal.toReal_one]
+        norm_num
+  calc
+    (1 + q * ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹) ^ distinct ≤
+        (129 / 128 : ℝ≥0∞) ^ distinct := ENNReal.pow_le_pow_left hbase
+    _ ≤ (129 / 128 : ℝ≥0∞) ^ 14 := by
+      exact pow_le_pow_right₀ ((by simp : (1 : ℝ≥0∞) ≤
+        1 + q * ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹).trans hbase) hdistinct
+    _ ≤ 2 := prehit_effective_slots_inflation_pow
+
 theorem prehit_effective_slots_pow_le {q : Nat} (hq : q ≤ 2 ^ 120) :
     ((signatureLimit : ℝ≥0∞) *
         (1 + q * ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹)) ^ 14 ≤

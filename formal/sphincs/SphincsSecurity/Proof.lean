@@ -70,6 +70,7 @@ import SphincsSecurity.Proof.FewTimeSourceCount
 import SphincsSecurity.Proof.FewTimePrehitArith
 import SphincsSecurity.Proof.FewTimeRace
 import SphincsSecurity.Proof.FewTimeOrigins
+import SphincsSecurity.Proof.FewTimeWeightedCount
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
