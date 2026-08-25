@@ -1483,6 +1483,179 @@ theorem OriginTargetMonitorState.valid_eq_candidateIntervalAllowed
   rw [hfixed.2, hexact.2 position hcandidate]
   rfl
 
+theorem ProperFewTimeLeak.direct_target_not_configured_source
+    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec}
+    {secretKey : SecretKey} {signingLog : QueryLog SigningSpec} {index : Index}
+    {targetLeaves : DigestTree → FtsLeaf}
+    (hproper : ProperFewTimeLeak f cache secretKey signingLog index targetLeaves)
+    (forgery : Forgery) (forgedDigest : MessageDigest)
+    (hforgedDigest : evalWithAnswerFn f
+      (messageDigest secretKey.parameter secretKey.root forgery.message
+        forgery.signature.randomness) = forgedDigest)
+    (hleaves : targetLeaves = digestLeaves forgedDigest)
+    {q limit : Nat} (hle : signingLog.length ≤ limit)
+    (configuration : OriginConfiguration (hproper.1.cover.pattern.pad hle) q)
+    (trace : FullAdversaryTrace)
+    (hlog : trace.signing.toSigningLog = signingLog)
+    (hrealized : configuration.PaddedRealizedBy hproper.1.cover hle trace hlog)
+    (hvalid : trace.ValidIntervals secretKey)
+    (position : Fin trace.intervals.length) (output : HashOutput)
+    (initialCache finalCache : QueryCache HashSpec)
+    (hinterval : trace.intervals.get position =
+      ⟨.inl (.inr (tweakableHashInput secretKey.parameter .message
+        (messageDigestPayload secretKey.root forgery.message
+          forgery.signature.randomness))), output, initialCache, finalCache⟩) :
+    configuration.sourceAt?
+      (directIntervalCount (trace.intervals.take position.val)) = none := by
+  classical
+  cases hsource : configuration.sourceAt?
+      (directIntervalCount (trace.intervals.take position.val)) with
+  | none => rfl
+  | some selected =>
+      exfalso
+      have hgood := configuration.paddedRealized_direct_good hrealized hvalid position
+        (tweakableHashInput secretKey.parameter .message
+          (messageDigestPayload secretKey.root forgery.message
+            forgery.signature.randomness))
+        output initialCache finalCache hinterval
+        (directIntervalCount (trace.intervals.take position.val)) rfl selected hsource
+      have hne := hproper.forged_digest_input_ne_entryDigestInput forgery forgedDigest
+        hforgedDigest hleaves (hproper.1.cover.paddedEntry hle selected.1)
+      apply hne
+      simpa only [FewTimeCover.paddedExpectedInputs] using hgood.1
+
+theorem FewTimeCover.failed_signer_not_selectedAt
+    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec}
+    {secretKey : SecretKey} {signingLog : QueryLog SigningSpec} {index : Index}
+    {targetLeaves : DigestTree → FtsLeaf}
+    (cover : FewTimeCover f cache secretKey signingLog index targetLeaves)
+    (state : ViewedFullTraceState)
+    (hlog : state.trace.signing.toSigningLog = signingLog)
+    (hvalid : state.ValidViews secretKey) (hconsistent : state.trace.Consistent)
+    (hcaches : state.trace.signing.CachesLe cache) (hf : cache.AgreesWithFn f)
+    {limit : Nat} (hle : signingLog.length ≤ limit)
+    (position : Fin state.trace.intervals.length) (request : SignRequest)
+    (initialCache finalCache : QueryCache HashSpec)
+    (hinterval : state.trace.intervals.get position =
+      ⟨.inr request, none, initialCache, finalCache⟩) :
+    (cover.pattern.pad hle).selectedAt?
+      (signerIntervalCount (state.trace.intervals.take position.val)) = none := by
+  classical
+  cases hselected : (cover.pattern.pad hle).selectedAt?
+      (signerIntervalCount (state.trace.intervals.take position.val)) with
+  | none => rfl
+  | some selected =>
+      exfalso
+      have hrank : signerIntervalCount (state.trace.intervals.take position.val) =
+          selected.1.val :=
+        ((cover.pattern.pad hle).selectedAt?_eq_some_iff _ selected).mp hselected |>.symm
+      have hsigner := cover.originReplayEvents_get_signer state hlog hvalid hconsistent
+        hcaches hf hle selected position request none initialCache finalCache hinterval hrank
+      let entry := cover.paddedEntry hle selected
+      have hfields := cover.cacheEntry_request_signature state.trace.signing hlog entry
+      have hsignature := congrArg SigningCacheEntry.signature hsigner.2
+      change none = (cover.cacheEntry state.trace.signing hlog entry).signature at hsignature
+      rw [hfields.2] at hsignature
+      simp at hsignature
+
+theorem ProperFewTimeLeak.signer_target_not_selectedAt
+    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec}
+    {secretKey : SecretKey} {signingLog : QueryLog SigningSpec} {index : Index}
+    {targetLeaves : DigestTree → FtsLeaf}
+    (hproper : ProperFewTimeLeak f cache secretKey signingLog index targetLeaves)
+    (state : ViewedFullTraceState)
+    (hlog : state.trace.signing.toSigningLog = signingLog)
+    (hvalidViews : state.ValidViews secretKey)
+    (hconsistent : state.trace.Consistent)
+    (hvalidRuns : state.trace.signing.ValidRuns secretKey)
+    (hcaches : state.trace.signing.CachesLe cache) (hf : cache.AgreesWithFn f)
+    {limit : Nat} (hle : signingLog.length ≤ limit)
+    (position : Fin state.trace.intervals.length)
+    (request : SignRequest) (signature : Option Signature)
+    (initialCache finalCache : QueryCache HashSpec)
+    (hinterval : state.trace.intervals.get position =
+      ⟨.inr request, signature, initialCache, finalCache⟩)
+    (targetPayload : HashInput) (output : HashOutput)
+    (hbefore : initialCache
+      (tweakableHashInput secretKey.parameter .message targetPayload) = none)
+    (hafter : finalCache
+      (tweakableHashInput secretKey.parameter .message targetPayload) = some output)
+    (houtput : signAttemptResultOfOutput output = some (index, targetLeaves)) :
+    (hproper.1.cover.pattern.pad hle).selectedAt?
+      (signerIntervalCount (state.trace.intervals.take position.val)) = none := by
+  have hsignature := hproper.signer_target_signature_eq_none state hlog hvalidViews
+    hconsistent hvalidRuns hcaches hf position request signature initialCache finalCache
+      hinterval targetPayload output hbefore hafter houtput
+  subst signature
+  exact hproper.1.cover.failed_signer_not_selectedAt state hlog hvalidViews hconsistent
+    hcaches hf hle position request initialCache finalCache hinterval
+
+theorem ProperFewTimeLeak.target_source_interval_allowed
+    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec}
+    {secretKey : SecretKey} {signingLog : QueryLog SigningSpec} {index : Index}
+    {targetLeaves : DigestTree → FtsLeaf}
+    (hproper : ProperFewTimeLeak f cache secretKey signingLog index targetLeaves)
+    (forgery : Forgery) (forgedDigest : MessageDigest)
+    (hforgedDigest : evalWithAnswerFn f
+      (messageDigest secretKey.parameter secretKey.root forgery.message
+        forgery.signature.randomness) = forgedDigest)
+    (hleaves : targetLeaves = digestLeaves forgedDigest)
+    (state : ViewedFullTraceState)
+    (hlog : state.trace.signing.toSigningLog = signingLog)
+    (hvalidViews : state.ValidViews secretKey)
+    (hconsistent : state.trace.Consistent)
+    (hvalidRuns : state.trace.signing.ValidRuns secretKey)
+    (hcaches : state.trace.signing.CachesLe cache) (hf : cache.AgreesWithFn f)
+    {q limit : Nat} (hle : signingLog.length ≤ limit)
+    (configuration : OriginConfiguration (hproper.1.cover.pattern.pad hle) q)
+    (hrealized : configuration.PaddedRealizedBy hproper.1.cover hle state.trace hlog)
+    (hvalidIntervals : state.trace.ValidIntervals secretKey)
+    (position : Fin state.trace.intervals.length) (output : HashOutput)
+    (hbefore : (state.trace.intervals.get position).initialCache
+      (tweakableHashInput secretKey.parameter .message
+        (messageDigestPayload secretKey.root forgery.message
+          forgery.signature.randomness)) = none)
+    (hafter : (state.trace.intervals.get position).finalCache
+      (tweakableHashInput secretKey.parameter .message
+        (messageDigestPayload secretKey.root forgery.message
+          forgery.signature.randomness)) = some output)
+    (houtput : signAttemptResultOfOutput output = some (index, targetLeaves))
+    (hkind : (state.trace.intervals.get position).input = .inl (.inr
+        (tweakableHashInput secretKey.parameter .message
+          (messageDigestPayload secretKey.root forgery.message
+            forgery.signature.randomness))) ∨
+      ∃ request, (state.trace.intervals.get position).input = .inr request) :
+    targetCandidateIntervalAllowed configuration state position = true := by
+  let entry := state.trace.intervals.get position
+  have hentry : state.trace.intervals.get position = entry := rfl
+  rcases entry with ⟨entryInput, entryOutput, initialCache, finalCache⟩
+  rw [hentry] at hbefore hafter hkind
+  change initialCache _ = none at hbefore
+  change finalCache _ = some output at hafter
+  rcases hkind with hdirect | ⟨request, hsigner⟩
+  · change entryInput = .inl (.inr _) at hdirect
+    subst entryInput
+    have hnone := hproper.direct_target_not_configured_source forgery forgedDigest
+      hforgedDigest hleaves hle configuration state.trace hlog hrealized hvalidIntervals
+        position entryOutput initialCache finalCache hentry
+    have hinputElem : state.trace.intervals[position.val].input = .inl (.inr
+        (tweakableHashInput secretKey.parameter .message
+          (messageDigestPayload secretKey.root forgery.message
+            forgery.signature.randomness))) := by
+      simpa only [List.get_eq_getElem] using
+        congrArg AdversaryCacheEntry.input hentry
+    simp [targetCandidateIntervalAllowed, hinputElem, hnone]
+  · change entryInput = .inr request at hsigner
+    subst entryInput
+    have hnone := hproper.signer_target_not_selectedAt state hlog hvalidViews hconsistent
+      hvalidRuns hcaches hf hle position request entryOutput initialCache finalCache hentry
+        (messageDigestPayload secretKey.root forgery.message
+          forgery.signature.randomness) output hbefore hafter houtput
+    have hinputElem : state.trace.intervals[position.val].input = .inr request := by
+      simpa only [List.get_eq_getElem] using
+        congrArg AdversaryCacheEntry.input hentry
+    simp [targetCandidateIntervalAllowed, hinputElem, hnone]
+
 end Concrete
 
 end SphincsSecurity
