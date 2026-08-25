@@ -62,6 +62,30 @@ theorem exists_originTargetMonitored_of_viewed_support
   refine ⟨monitored, hmonitored, ?_⟩
   exact Prod.mk.inj heq
 
+theorem probEvent_viewed_le_originTargetMonitoredAdversaryImpl
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
+    (targetOrdinal : Nat) (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialState : OriginTargetMonitorState configuration)
+    (viewedEvent : α × ViewedFullTraceState → Prop)
+    (monitoredEvent : α × OriginTargetMonitorState configuration → Prop)
+    (himp : ∀ result ∈ support
+      ((simulateQ
+        (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal)
+        computation).run initialState),
+      viewedEvent (result.1, result.2.origin.viewed) → monitoredEvent result) :
+    Pr[viewedEvent |
+      (simulateQ (viewedFullTracedMappedAdversaryImpl secretKey)
+        computation).run initialState.origin.viewed] ≤
+      Pr[monitoredEvent |
+        (simulateQ
+          (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal)
+          computation).run initialState] := by
+  classical
+  rw [← originTargetMonitoredAdversaryImpl_viewed_projection configuration secretKey
+    targetOrdinal computation initialState, probEvent_map]
+  exact probEvent_mono himp
+
 theorem gameAfterSecretsWithViewTrace_support_adversary_state
     (adversary : Adversary) (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
@@ -2051,6 +2075,127 @@ theorem OriginConfiguration.paddedRealized_target_complete_and_hit
       exact Option.some.inj (htarget'.symm.trans htarget)
     rw [htargetEq]
     exact horigin.2
+
+theorem probEvent_originConfiguration_hit_eq_pattern_mul
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) :
+    Pr[configuration.Hit |
+      ($ᵗ configuration.Sample : ProbComp configuration.Sample)] =
+      Pr[FixedFewTimePatternHit pattern.assignment |
+        ($ᵗ ((pattern.selected → FewTimeView) × FewTimeView) :
+          ProbComp ((pattern.selected → FewTimeView) × FewTimeView))] *
+        ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹ ^ configuration.prehit.card := by
+  change Pr[configuration.Hit |
+    Prod.mk <$>
+      ($ᵗ ((pattern.selected → FewTimeView) × FewTimeView) :
+        ProbComp ((pattern.selected → FewTimeView) × FewTimeView)) <*>
+      ($ᵗ BitVec (127 * configuration.prehit.card) :
+        ProbComp (BitVec (127 * configuration.prehit.card)))] = _
+  calc
+    _ = Pr[FixedFewTimePatternHit pattern.assignment |
+          ($ᵗ ((pattern.selected → FewTimeView) × FewTimeView) :
+            ProbComp ((pattern.selected → FewTimeView) × FewTimeView))] *
+        Pr[fun value : BitVec (127 * configuration.prehit.card) => value = 0 |
+          ($ᵗ BitVec (127 * configuration.prehit.card) :
+            ProbComp (BitVec (127 * configuration.prehit.card)))] := by
+      apply probEvent_seq_map_eq_mul
+      intro views _ activations _
+      rfl
+    _ = _ := by rw [probEvent_uniformOriginActivation_zero]
+
+theorem probEvent_originTargetMonitored_complete_fixedPattern_le_ideal
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
+    (targetOrdinal : Nat) (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialCache : QueryCache HashSpec) (q : Nat) (hq : q ≤ 2 ^ 120)
+    (hcache : QueryCache.enncard initialCache ≤ q) :
+    Pr[fun result : α × OriginTargetMonitorState configuration =>
+        result.2.Complete ∧
+          (∀ target, result.2.targetView = some target →
+            FixedFewTimePatternHit pattern.assignment
+              (result.2.origin.observation.views, target)) ∧
+          QueryCache.enncard result.2.origin.viewed.cache ≤ q |
+      (simulateQ
+        (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal)
+        computation).run (OriginTargetMonitorState.initial configuration initialCache)] ≤
+      Pr[configuration.Hit |
+        ($ᵗ configuration.Sample : ProbComp configuration.Sample)] := by
+  calc
+    _ ≤ ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹ ^ configuration.prehit.card *
+        Pr[FixedFewTimePatternHit pattern.assignment |
+          ($ᵗ ((pattern.selected → FewTimeView) × FewTimeView) :
+            ProbComp ((pattern.selected → FewTimeView) × FewTimeView))] :=
+      probEvent_originTargetMonitored_complete_le_ideal configuration secretKey
+        targetOrdinal computation initialCache
+          (FixedFewTimePatternHit pattern.assignment) q hq hcache
+    _ = Pr[configuration.Hit |
+        ($ᵗ configuration.Sample : ProbComp configuration.Sample)] := by
+      rw [probEvent_originConfiguration_hit_eq_pattern_mul]
+      ac_rfl
+
+theorem probEvent_exists_fixedOrdinal_viewedEvent_le_ideal
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialCache : QueryCache HashSpec) (q : Nat) (hq : q ≤ 2 ^ 120)
+    (hcache : QueryCache.enncard initialCache ≤ q) (candidates : Nat)
+    (viewedEvent : Fin candidates → α × ViewedFullTraceState → Prop)
+    (himp : ∀ (candidate : Fin candidates)
+      (result : α × OriginTargetMonitorState configuration),
+      result ∈ support
+        ((simulateQ
+          (originTargetMonitoredAdversaryImpl configuration secretKey candidate.val)
+          computation).run (OriginTargetMonitorState.initial configuration initialCache)) →
+      viewedEvent candidate (result.1, result.2.origin.viewed) →
+        result.2.Complete ∧
+          (∀ target, result.2.targetView = some target →
+            FixedFewTimePatternHit pattern.assignment
+              (result.2.origin.observation.views, target)) ∧
+          QueryCache.enncard result.2.origin.viewed.cache ≤ q) :
+    Pr[fun result => ∃ candidate : Fin candidates, viewedEvent candidate result |
+      (simulateQ (viewedFullTracedMappedAdversaryImpl secretKey)
+        computation).run
+          (OriginTargetMonitorState.initial configuration initialCache).origin.viewed] ≤
+      candidates * Pr[configuration.Hit |
+        ($ᵗ configuration.Sample : ProbComp configuration.Sample)] := by
+  classical
+  let run := (simulateQ (viewedFullTracedMappedAdversaryImpl secretKey)
+    computation).run
+      (OriginTargetMonitorState.initial configuration initialCache).origin.viewed
+  calc
+    Pr[fun result => ∃ candidate : Fin candidates, viewedEvent candidate result | run] =
+        Pr[fun result => ∃ candidate ∈ (Finset.univ : Finset (Fin candidates)),
+          viewedEvent candidate result | run] := by
+      congr 1
+      funext result
+      simp
+    _ ≤ ∑ candidate ∈ (Finset.univ : Finset (Fin candidates)),
+        Pr[viewedEvent candidate | run] :=
+      probEvent_exists_finset_le_sum Finset.univ run viewedEvent
+    _ ≤ ∑ _candidate ∈ (Finset.univ : Finset (Fin candidates)),
+        Pr[configuration.Hit |
+          ($ᵗ configuration.Sample : ProbComp configuration.Sample)] := by
+      apply Finset.sum_le_sum
+      intro candidate _
+      calc
+        Pr[viewedEvent candidate | run] ≤
+            Pr[fun result : α × OriginTargetMonitorState configuration =>
+                result.2.Complete ∧
+                  (∀ target, result.2.targetView = some target →
+                    FixedFewTimePatternHit pattern.assignment
+                      (result.2.origin.observation.views, target)) ∧
+                  QueryCache.enncard result.2.origin.viewed.cache ≤ q |
+              (simulateQ
+                (originTargetMonitoredAdversaryImpl configuration secretKey candidate.val)
+                computation).run
+                  (OriginTargetMonitorState.initial configuration initialCache)] :=
+          probEvent_viewed_le_originTargetMonitoredAdversaryImpl configuration secretKey
+            candidate.val computation (OriginTargetMonitorState.initial configuration initialCache)
+              (viewedEvent candidate) _ (himp candidate)
+        _ ≤ _ := probEvent_originTargetMonitored_complete_fixedPattern_le_ideal
+          configuration secretKey candidate.val computation initialCache q hq hcache
+    _ = _ := by
+      rw [Finset.sum_const, Finset.card_univ, Fintype.card_fin, nsmul_eq_mul]
 
 theorem gameAfterSecretsWithViewTrace_proper_target_bridge
     (adversary : Adversary) (parameter : PublicParameter)
