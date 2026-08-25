@@ -36,6 +36,8 @@ Origin configurations now pad from the execution's actual signing-log length int
 
 The padded configuration now has unique lookups by chronological ordinal. `sourceAt?` identifies the prehit assigned to a direct-query slot, and `selectedAt?` identifies the pattern entry assigned to a signer slot. An `OriginObservation` records the source input and view or the fresh signer view at those slots, with update and noninterference lemmas ready for the recursive probability invariant.
 
+A proof-only origin monitor now follows one padded configuration through the viewed adversary handler. At configured direct slots it records only fresh admissible source answers; at configured fresh signer slots it records the selected view; at configured prehit signer slots it checks reuse of the recorded exact input and view. Forgetting the observation, ordinals and validity bit projects query by query, and through every simulated adversary computation, exactly to the existing viewed full trace.
+
 ## The shape of the proof
 
 The whole probabilistic side is one lemma, `Amortized.probEvent_bad_le_amortized`. Give it a predicate `Bad` on the random oracle's cache, a potential `Nat` on caches and a constant `c`, prove that a fresh answer on an uncached input turns the cache bad only by landing in a finite set of digests whose size the potential pays for up to `c` per query, and it returns `(c * q + potential) * eps`. Nothing else about the oracle is needed: no presampling, no reprogramming, no hybrid.
