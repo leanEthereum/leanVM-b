@@ -106,6 +106,7 @@ structure OriginTargetMonitorState {signatures distinct sources : Nat}
     (configuration : OriginConfiguration pattern sources) where
   origin : OriginMonitorState configuration
   candidateOrdinal : Nat
+  candidateViews : List FewTimeView
   targetView : Option FewTimeView
   valid : Bool
 
@@ -113,7 +114,7 @@ noncomputable def OriginTargetMonitorState.initial
     {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
     (configuration : OriginConfiguration pattern sources)
     (cache : QueryCache HashSpec) : OriginTargetMonitorState configuration :=
-  ⟨OriginMonitorState.initial configuration cache, 0, none, true⟩
+  ⟨OriginMonitorState.initial configuration cache, 0, [], none, true⟩
 
 def OriginTargetMonitorState.recordCandidate
     {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
@@ -122,6 +123,7 @@ def OriginTargetMonitorState.recordCandidate
     (allowed : Bool) (view : FewTimeView) : OriginTargetMonitorState configuration :=
   { state with
     candidateOrdinal := state.candidateOrdinal + 1
+    candidateViews := state.candidateViews ++ [view]
     targetView := if state.candidateOrdinal = targetOrdinal then some view else state.targetView
     valid := if state.candidateOrdinal = targetOrdinal then state.valid && allowed else state.valid }
 
@@ -150,6 +152,60 @@ def OriginTargetMonitorState.TargetScheduleCoherent
     {configuration : OriginConfiguration pattern sources}
     (targetOrdinal : Nat) (state : OriginTargetMonitorState configuration) : Prop :=
   (state.targetView = none) ↔ state.candidateOrdinal ≤ targetOrdinal
+
+def OriginTargetMonitorState.CandidateViewsCoherent
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (targetOrdinal : Nat) (state : OriginTargetMonitorState configuration) : Prop :=
+  state.candidateOrdinal = state.candidateViews.length ∧
+    state.targetView = state.candidateViews[targetOrdinal]?
+
+theorem OriginTargetMonitorState.candidateViewsCoherent_initial
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (cache : QueryCache HashSpec)
+    (targetOrdinal : Nat) :
+    (OriginTargetMonitorState.initial configuration cache).CandidateViewsCoherent
+      targetOrdinal := by
+  simp [OriginTargetMonitorState.CandidateViewsCoherent,
+    OriginTargetMonitorState.initial]
+
+theorem OriginTargetMonitorState.candidateViewsCoherent_advanceOrigin
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (targetOrdinal : Nat) (state : OriginTargetMonitorState configuration)
+    (origin : OriginMonitorState configuration)
+    (hcoherent : state.CandidateViewsCoherent targetOrdinal) :
+    (state.advanceOrigin origin).CandidateViewsCoherent targetOrdinal := hcoherent
+
+theorem OriginTargetMonitorState.candidateViewsCoherent_recordCandidate
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (targetOrdinal : Nat) (state : OriginTargetMonitorState configuration)
+    (allowed : Bool) (view : FewTimeView)
+    (hcoherent : state.CandidateViewsCoherent targetOrdinal) :
+    (state.recordCandidate targetOrdinal allowed view).CandidateViewsCoherent
+      targetOrdinal := by
+  rcases hcoherent with ⟨hcount, hview⟩
+  by_cases heq : state.candidateOrdinal = targetOrdinal
+  · constructor
+    · change state.candidateOrdinal + 1 = (state.candidateViews ++ [view]).length
+      simpa only [List.length_append, List.length_singleton] using
+        congrArg (fun value => value + 1) hcount
+    · simp [OriginTargetMonitorState.recordCandidate, heq, ← hcount]
+  · constructor
+    · change state.candidateOrdinal + 1 = (state.candidateViews ++ [view]).length
+      simpa only [List.length_append, List.length_singleton] using
+        congrArg (fun value => value + 1) hcount
+    · by_cases hlt : targetOrdinal < state.candidateViews.length
+      · simp only [OriginTargetMonitorState.recordCandidate, heq, if_false]
+        rw [hview, List.getElem?_append_left hlt]
+      · have hgt : state.candidateViews.length < targetOrdinal := by
+          omega
+        simp only [OriginTargetMonitorState.recordCandidate, heq, if_false]
+        change state.targetView = (state.candidateViews ++ [view])[targetOrdinal]?
+        rw [hview, List.getElem?_append_right hgt.le]
+        simp [hlt]
+        omega
 
 theorem OriginTargetMonitorState.targetScheduleCoherent_initial
     {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}

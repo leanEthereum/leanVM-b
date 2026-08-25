@@ -310,6 +310,87 @@ theorem originTargetMonitoredAdversaryImpl_candidateCountCoherent
         configuration secretKey targetOrdinal input state queryResult hstate hquery)
     computation initialState hcoherent result hmem
 
+theorem originTargetMonitoredAdversaryImpl_query_candidateViewsCoherent
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
+    (targetOrdinal : Nat) (input : (OracleWorld + SigningSpec).Domain)
+    (state : OriginTargetMonitorState configuration)
+    (result : (OracleWorld + SigningSpec).Range input ×
+      OriginTargetMonitorState configuration)
+    (hcoherent : state.CandidateViewsCoherent targetOrdinal)
+    (hmem : result ∈ support
+      ((originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal input).run
+        state)) : result.2.CandidateViewsCoherent targetOrdinal := by
+  classical
+  cases input with
+  | inl worldInput =>
+      rw [originTargetMonitoredAdversaryImpl] at hmem
+      simp only [StateT.run, mem_support_bind_iff] at hmem
+      obtain ⟨⟨output, origin⟩, _, hpure⟩ := hmem
+      cases worldInput with
+      | inl uniformInput =>
+          simp only [support_pure, Set.mem_singleton_iff] at hpure
+          have hstateEq := congrArg Prod.snd hpure
+          rw [hstateEq]
+          exact state.candidateViewsCoherent_advanceOrigin targetOrdinal origin hcoherent
+      | inr hashInput =>
+          by_cases hfresh : state.origin.viewed.cache hashInput = none
+          · simp only [hfresh, if_true, support_pure, Set.mem_singleton_iff] at hpure
+            have hstateEq := congrArg Prod.snd hpure
+            rw [hstateEq]
+            exact OriginTargetMonitorState.candidateViewsCoherent_recordCandidate
+              targetOrdinal (state.advanceOrigin origin) _ _
+                (state.candidateViewsCoherent_advanceOrigin targetOrdinal origin hcoherent)
+          · simp only [hfresh, if_false, support_pure, Set.mem_singleton_iff] at hpure
+            have hstateEq := congrArg Prod.snd hpure
+            rw [hstateEq]
+            exact state.candidateViewsCoherent_advanceOrigin targetOrdinal origin hcoherent
+  | inr request =>
+      rw [originTargetMonitoredAdversaryImpl] at hmem
+      simp only [StateT.run, mem_support_bind_iff] at hmem
+      obtain ⟨targetRun, _, hpure⟩ := hmem
+      cases hselection : targetRun.1.2 with
+      | none =>
+          simp only [hselection, support_pure, Set.mem_singleton_iff] at hpure
+          have hstateEq := congrArg Prod.snd hpure
+          rw [hstateEq]
+          exact state.candidateViewsCoherent_advanceOrigin targetOrdinal _ hcoherent
+      | some selection =>
+          rcases selection with ⟨selectedInput, view⟩
+          by_cases hfresh : state.origin.viewed.cache selectedInput = none
+          · simp only [hselection, hfresh, if_true, support_pure,
+              Set.mem_singleton_iff] at hpure
+            have hstateEq := congrArg Prod.snd hpure
+            rw [hstateEq]
+            exact OriginTargetMonitorState.candidateViewsCoherent_recordCandidate
+              targetOrdinal _ _ _
+                (state.candidateViewsCoherent_advanceOrigin targetOrdinal _ hcoherent)
+          · simp only [hselection, hfresh, if_false, support_pure,
+              Set.mem_singleton_iff] at hpure
+            have hstateEq := congrArg Prod.snd hpure
+            rw [hstateEq]
+            exact state.candidateViewsCoherent_advanceOrigin targetOrdinal _ hcoherent
+
+theorem originTargetMonitoredAdversaryImpl_candidateViewsCoherent
+    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
+    (targetOrdinal : Nat) (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (initialState : OriginTargetMonitorState configuration)
+    (result : α × OriginTargetMonitorState configuration)
+    (hcoherent : initialState.CandidateViewsCoherent targetOrdinal)
+    (hmem : result ∈ support
+      ((simulateQ
+        (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal)
+        computation).run initialState)) : result.2.CandidateViewsCoherent targetOrdinal := by
+  exact OracleComp.simulateQ_run_preservesInv
+    (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal)
+    (OriginTargetMonitorState.CandidateViewsCoherent targetOrdinal)
+    (by
+      intro input state hstate queryResult hquery
+      exact originTargetMonitoredAdversaryImpl_query_candidateViewsCoherent
+        configuration secretKey targetOrdinal input state queryResult hstate hquery)
+    computation initialState hcoherent result hmem
+
 end Concrete
 
 end SphincsSecurity
