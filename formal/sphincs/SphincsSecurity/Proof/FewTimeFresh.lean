@@ -113,6 +113,24 @@ theorem probEvent_uniformHashOutput_admissible_view
         simpa only [coordinates] using evalDist_hashOutput_digestCoordinates_uniform)
     _ = _ := probEvent_uniformDigestCoordinates_admissible_view P
 
+theorem probEvent_randomOracle_fresh_admissible_view
+    (input : HashInput) (cache : QueryCache HashSpec) (hcache : cache input = none)
+    (P : FewTimeView → Prop) :
+    Pr[fun result : HashOutput × QueryCache HashSpec =>
+      signAttemptResultOfOutput result.1 ≠ none ∧
+        P (hashOutputFewTimeView result.1) |
+      (randomOracle input).run cache] =
+      ((2 ^ ftsTreeHeight : Nat) : ℝ≥0∞)⁻¹ *
+        Pr[P | ($ᵗ FewTimeView : ProbComp FewTimeView)] := by
+  rw [OracleSpec.randomOracle, QueryImpl.withCaching_run_none _ hcache]
+  change Pr[fun result : HashOutput × QueryCache HashSpec =>
+      signAttemptResultOfOutput result.1 ≠ none ∧
+        P (hashOutputFewTimeView result.1) |
+    (fun output : HashOutput => (output, cache.cacheQuery input output)) <$>
+      ($ᵗ HashOutput : ProbComp HashOutput)] = _
+  rw [probEvent_map]
+  exact probEvent_uniformHashOutput_admissible_view P
+
 def OnlyRejectedNewMessageEntries (referenceCache workingCache : QueryCache HashSpec)
     (secretKey : SecretKey) (message : Message) : Prop :=
   ∀ randomness output,

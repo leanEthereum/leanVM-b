@@ -76,6 +76,7 @@ import SphincsSecurity.Proof.FewTimeNumberedSources
 import SphincsSecurity.Proof.FewTimeFixedPrehit
 import SphincsSecurity.Proof.DirectQueryBudget
 import SphincsSecurity.Proof.FewTimeOriginRealization
+import SphincsSecurity.Proof.FewTimeOriginProbability
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
