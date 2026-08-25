@@ -157,6 +157,8 @@ theorem FewTimeCover.precached_entries_have_injective_numbered_sources
             ∧ AdversaryCacheEntry.signingEntry?
               (result.2.2.intervals.get (selectedInterval entry)) =
                 some (cover.cacheEntry result.2.2.signing rfl entry.1)
+            ∧ ((result.2.2.intervals.take (selectedInterval entry).val).filterMap
+              AdversaryCacheEntry.signingEntry?).length = (cover.logIndex entry.1).val
             ∧ (result.2.2.intervals.get (intervalSource entry)).input =
               .inl (.inr (cover.entryDigestInput entry.1))
             ∧ (result.2.2.intervals.get (intervalSource entry)).initialCache
@@ -174,7 +176,7 @@ theorem FewTimeCover.precached_entries_have_injective_numbered_sources
   let directSource : cover.PrecachedEntries result.2.2.signing rfl →
       {position : Fin result.2.2.intervals.length //
         isDirectHashQuery (result.2.2.intervals.get position).input} :=
-    fun entry => ⟨intervalSource entry, by rw [(hinterval entry).2.2.1]; trivial⟩
+    fun entry => ⟨intervalSource entry, by rw [(hinterval entry).2.2.2.1]; trivial⟩
   have hdirectInjective : Function.Injective directSource := by
     intro left right heq
     exact hintervalInjective (congrArg Subtype.val heq)
@@ -282,7 +284,7 @@ theorem FewTimeCover.precached_entries_have_numbered_source_entries
         ∧ signAttemptResultOfOutput (output entry) ≠ none
         ∧ hashOutputFewTimeView (output entry) = cover.entryView entry.1 := by
     intro entry
-    exact (hnumbered entry).choose_spec.2.2.2
+    exact (hnumbered entry).choose_spec.2.2.2.2
   have hvalid := gameAfterSecretsWithFullTrace_support_validIntervals adversary parameter
     otsSecret ftsSecret result hresult
   have hconsistent := (gameAfterSecretsWithFullTrace_support_interval_invariants adversary

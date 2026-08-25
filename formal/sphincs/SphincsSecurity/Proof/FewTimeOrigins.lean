@@ -156,7 +156,7 @@ theorem FewTimeCover.selected_entries_have_injective_origins
   · intro entry hfresh
     exact cover.originEmbedding_apply_fresh result.2.2.signing rfl sourceEmbedding entry hfresh
   · intro entry
-    exact (hsource entry).2.2
+    exact (hsource entry).2.2.2
 
 end Concrete
 

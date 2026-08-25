@@ -50,7 +50,7 @@ theorem FewTimeCover.precachedEntryCount_le_queryBudget
               some (output selected) :=
             randomOracle_run_output_cached (cover.entryDigestInput selected.1)
               interval.initialCache interval.finalCache (output selected)
-                (hsource selected).2.2.2.2.1
+                (hsource selected).2.2.2.2.2.1
           exact (hintervals.2.1 interval (List.get_mem _ (source selected))).2 hcached⟩,
       by
         intro left right heq

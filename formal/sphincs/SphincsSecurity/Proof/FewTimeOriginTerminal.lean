@@ -15,6 +15,37 @@ open OracleComp OracleSpec
 
 namespace Concrete
 
+theorem Fin.encodeSubtype_val_lt_of_val_lt {n : Nat} (P : Fin n → Prop)
+    [DecidablePred P] (left right : {position : Fin n // P position})
+    (hlt : left.1.val < right.1.val) :
+    (Fin.encodeSubtype P left).val < (Fin.encodeSubtype P right).val := by
+  induction n with
+  | zero => exact Fin.elim0 left.1
+  | succ n ih =>
+      rcases left with ⟨left, hleft⟩
+      rcases right with ⟨right, hright⟩
+      cases left using Fin.cases with
+      | zero =>
+          cases right using Fin.cases with
+          | zero => omega
+          | succ right =>
+              rw [Fin.encodeSubtype_zero_pos hleft,
+                Fin.encodeSubtype_succ_pos hleft hright]
+              simp
+      | succ left =>
+          cases right using Fin.cases with
+          | zero => simp at hlt
+          | succ right =>
+              by_cases hzero : P 0
+              · rw [Fin.encodeSubtype_succ_pos hzero hleft,
+                  Fin.encodeSubtype_succ_pos hzero hright]
+                simpa using ih (fun position => P position.succ)
+                  ⟨left, hleft⟩ ⟨right, hright⟩ (by simpa using hlt)
+              · rw [Fin.encodeSubtype_succ_neg hzero hleft,
+                  Fin.encodeSubtype_succ_neg hzero hright]
+                simpa using ih (fun position => P position.succ)
+                  ⟨left, hleft⟩ ⟨right, hright⟩ (by simpa using hlt)
+
 inductive OriginReplayEvent where
   | uniform
   | direct (input : HashInput) (output : HashOutput)
@@ -308,6 +339,258 @@ theorem originMonitoredAdversaryImpl_replayConsistent
         state queryResult hstate hquery)
     computation initialState hconsistent result hmem
 
+def OriginReplayState.Expected {signatures distinct sources : Nat}
+    {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (state : OriginReplayState configuration)
+    (expectedViews : pattern.selected → FewTimeView)
+    (expectedInputs : ↑configuration.prehit → HashInput) : Prop :=
+  (state.asMonitor ∅).ScheduleCoherent
+    ∧ state.valid = true
+    ∧ (∀ selected ∈ state.observation.seenSources,
+      state.observation.sourceInputs selected = expectedInputs selected
+        ∧ state.observation.views selected.1 = expectedViews selected.1)
+    ∧ ∀ selected ∈ state.observation.seenViews,
+      state.observation.views selected = expectedViews selected
+
+def OriginReplayEvent.Good {signatures distinct sources : Nat}
+    {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (event : OriginReplayEvent) (secretKey : SecretKey)
+    (directOrdinal signerOrdinal : Nat)
+    (expectedViews : pattern.selected → FewTimeView)
+    (expectedInputs : ↑configuration.prehit → HashInput) : Prop :=
+  match event with
+  | .uniform => True
+  | .direct input output initialCache _ =>
+      ∀ selected, configuration.sourceAt? directOrdinal = some selected →
+        input = expectedInputs selected
+          ∧ initialCache input = none
+          ∧ signAttemptResultOfOutput output ≠ none
+          ∧ hashOutputFewTimeView output = expectedViews selected.1
+  | .signer request signature view initialCache finalCache =>
+      ∀ selected, pattern.selectedAt? signerOrdinal = some selected →
+        if hprehit : selected ∈ configuration.prehit then
+          (configuration.source.1 ⟨selected, hprehit⟩).val < directOrdinal
+            ∧ PrehitSuccessfulSignerView
+              (onlyInputCache initialCache (expectedInputs ⟨selected, hprehit⟩))
+              secretKey request (fun value => value = expectedViews selected)
+              ((signature, view), finalCache)
+        else
+          FreshSuccessfulSignerView initialCache secretKey request
+            (fun value => value = expectedViews selected) ((signature, view), finalCache)
+
+theorem OriginReplayState.expected_initial {signatures distinct sources : Nat}
+    {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources)
+    (expectedViews : pattern.selected → FewTimeView)
+    (expectedInputs : ↑configuration.prehit → HashInput) :
+    (OriginReplayState.initial configuration).Expected expectedViews expectedInputs := by
+  refine ⟨?_, rfl, ?_, ?_⟩
+  · change (OriginMonitorState.initial configuration
+      (∅ : QueryCache HashSpec)).ScheduleCoherent
+    exact OriginMonitorState.scheduleCoherent_initial configuration ∅
+  · intro selected hseen
+    simp [OriginReplayState.initial, OriginObservation.empty] at hseen
+  · intro selected hseen
+    simp [OriginReplayState.initial, OriginObservation.empty] at hseen
+
+theorem OriginReplayState.expected_step {signatures distinct sources : Nat}
+    {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (state : OriginReplayState configuration) (secretKey : SecretKey)
+    (event : OriginReplayEvent)
+    (expectedViews : pattern.selected → FewTimeView)
+    (expectedInputs : ↑configuration.prehit → HashInput)
+    (hexpected : state.Expected expectedViews expectedInputs)
+    (hgood : event.Good secretKey state.directOrdinal state.signerOrdinal
+      expectedViews expectedInputs) :
+    (state.step secretKey event).Expected expectedViews expectedInputs := by
+  classical
+  obtain ⟨hcoherent, hvalid, hsources, hviews⟩ := hexpected
+  cases event with
+  | uniform => exact ⟨hcoherent, hvalid, hsources, hviews⟩
+  | direct input output initialCache finalCache =>
+      have hcoherentAt : (state.asMonitor initialCache).ScheduleCoherent := by
+        simpa [OriginMonitorState.ScheduleCoherent, OriginReplayState.asMonitor] using hcoherent
+      have hcoherentAfter := (state.asMonitor initialCache).scheduleCoherent_afterDirect
+        input output hcoherentAt
+      cases hsource : configuration.sourceAt? state.directOrdinal with
+      | none =>
+          have hstep : state.step secretKey
+              (.direct input output initialCache finalCache) =
+              ⟨state.observation, state.directOrdinal + 1, state.signerOrdinal,
+                state.valid⟩ := by
+            simp [OriginReplayState.step, OriginReplayState.asMonitor,
+              monitorDirectSource, hsource]
+          rw [hstep]
+          refine ⟨?_, hvalid, hsources, hviews⟩
+          simpa [OriginReplayState.asMonitor, OriginMonitorState.afterDirect,
+            OriginMonitorState.ScheduleCoherent, monitorDirectSource, hsource]
+            using hcoherentAfter
+      | some selected =>
+          obtain ⟨rfl, hmiss, hsuccess, houtputView⟩ := hgood selected hsource
+          have hcondition : initialCache (expectedInputs selected) = none ∧
+              signAttemptResultOfOutput output ≠ none := ⟨hmiss, hsuccess⟩
+          have hstep : state.step secretKey
+              (.direct (expectedInputs selected) output initialCache finalCache) =
+              ⟨state.observation.recordSource selected (expectedInputs selected)
+                  (hashOutputFewTimeView output),
+                state.directOrdinal + 1, state.signerOrdinal, state.valid⟩ := by
+            simp [OriginReplayState.step, OriginReplayState.asMonitor,
+              monitorDirectSource, hsource, hcondition]
+          rw [hstep]
+          refine ⟨?_, hvalid, ?_, ?_⟩
+          · simpa [OriginReplayState.asMonitor, OriginMonitorState.afterDirect,
+              OriginMonitorState.ScheduleCoherent, monitorDirectSource, hsource,
+              hcondition] using hcoherentAfter
+          · intro other hseen
+            simp only [OriginObservation.recordSource] at hseen ⊢
+            rw [Finset.mem_insert] at hseen
+            rcases hseen with rfl | hseen
+            · simp [houtputView]
+            · by_cases heq : other = selected
+              · subst other
+                simp [houtputView]
+              · have hval : other.1 ≠ selected.1 :=
+                  fun h => heq (Subtype.ext h)
+                simpa [heq, hval] using hsources other hseen
+          · intro other hseen
+            simp only [OriginObservation.recordSource] at hseen ⊢
+            rw [Finset.mem_insert] at hseen
+            rcases hseen with rfl | hseen
+            · simp [houtputView]
+            · by_cases heq : other = selected.1
+              · subst other
+                simp [houtputView]
+              · simpa [heq] using hviews other hseen
+  | signer request signature view initialCache finalCache =>
+      have hcoherentAt : (state.asMonitor initialCache).ScheduleCoherent := by
+        simpa [OriginMonitorState.ScheduleCoherent, OriginReplayState.asMonitor] using hcoherent
+      have hcoherentAfter := (state.asMonitor initialCache).scheduleCoherent_afterSigner
+        secretKey request ((signature, view), finalCache) hcoherentAt
+      cases hselected : pattern.selectedAt? state.signerOrdinal with
+      | none =>
+          have hstep : state.step secretKey
+              (.signer request signature view initialCache finalCache) =
+              ⟨state.observation, state.directOrdinal, state.signerOrdinal + 1,
+                state.valid⟩ := by
+            simp [OriginReplayState.step, OriginReplayState.asMonitor,
+              monitorSigner, hselected]
+          rw [hstep]
+          refine ⟨?_, hvalid, hsources, hviews⟩
+          simpa [OriginReplayState.asMonitor, OriginMonitorState.afterSigner,
+            OriginMonitorState.ScheduleCoherent, monitorSigner, hselected]
+            using hcoherentAfter
+      | some selected =>
+          by_cases hprehit : selected ∈ configuration.prehit
+          · let prehit : ↑configuration.prehit := ⟨selected, hprehit⟩
+            obtain ⟨hsourceBefore, hsuccess⟩ := by
+              simpa [hprehit] using hgood selected hselected
+            have hseenSource : prehit ∈ state.observation.seenSources :=
+              (hcoherentAt hvalid).1 prehit |>.2 hsourceBefore
+            obtain ⟨hinput, hsourceView⟩ := hsources prehit hseenSource
+            have hsuccess' : PrehitSuccessfulSignerView
+                (onlyInputCache initialCache (state.observation.sourceInputs prehit))
+                secretKey request (fun value => value = state.observation.views selected)
+                ((signature, view), finalCache) := by
+              simpa [prehit, hinput, hsourceView] using hsuccess
+            have hcondition : prehit ∈ state.observation.seenSources ∧
+                PrehitSuccessfulSignerView
+                  (onlyInputCache initialCache (state.observation.sourceInputs prehit))
+                  secretKey request (fun value => value = state.observation.views selected)
+                  ((signature, view), finalCache) := ⟨hseenSource, hsuccess'⟩
+            have hstep : state.step secretKey
+                (.signer request signature view initialCache finalCache) =
+                ⟨state.observation, state.directOrdinal, state.signerOrdinal + 1,
+                  state.valid⟩ := by
+              simp [OriginReplayState.step, OriginReplayState.asMonitor, monitorSigner,
+                hselected, hprehit, prehit, hcondition]
+            rw [hstep]
+            refine ⟨?_, hvalid, hsources, hviews⟩
+            simpa [OriginReplayState.asMonitor, OriginMonitorState.afterSigner,
+              OriginMonitorState.ScheduleCoherent, monitorSigner, hselected,
+              hprehit, prehit, hcondition] using hcoherentAfter
+          · have hsuccess : FreshSuccessfulSignerView initialCache secretKey request
+                (fun value => value = expectedViews selected)
+                ((signature, view), finalCache) := by
+              simpa [hprehit] using hgood selected hselected
+            have hfresh : freshSuccessfulView? initialCache secretKey request
+                ((signature, view), finalCache) = some (expectedViews selected) :=
+              (freshSuccessfulView?_eq_some_iff initialCache secretKey request
+                ((signature, view), finalCache) (expectedViews selected)).2 hsuccess
+            have hstep : state.step secretKey
+                (.signer request signature view initialCache finalCache) =
+                ⟨state.observation.recordFresh selected (expectedViews selected),
+                  state.directOrdinal, state.signerOrdinal + 1, state.valid⟩ := by
+              simp [OriginReplayState.step, OriginReplayState.asMonitor, monitorSigner,
+                hselected, hprehit, hfresh]
+            rw [hstep]
+            refine ⟨?_, hvalid, ?_, ?_⟩
+            · simpa [OriginReplayState.asMonitor, OriginMonitorState.afterSigner,
+                OriginMonitorState.ScheduleCoherent, monitorSigner, hselected,
+                hprehit, hfresh] using hcoherentAfter
+            · intro other hseen
+              have hne : other.1 ≠ selected := by
+                intro heq
+                subst selected
+                exact hprehit other.2
+              simpa [OriginObservation.recordFresh, hne] using hsources other hseen
+            · intro other hseen
+              simp only [OriginObservation.recordFresh] at hseen ⊢
+              rw [Finset.mem_insert] at hseen
+              rcases hseen with rfl | hseen
+              · simp
+              · by_cases heq : other = selected
+                · subst other
+                  simp
+                · simpa [heq] using hviews other hseen
+
+noncomputable def OriginReplayEvents.Good {signatures distinct sources : Nat}
+    {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (secretKey : SecretKey)
+    (expectedViews : pattern.selected → FewTimeView)
+    (expectedInputs : ↑configuration.prehit → HashInput) :
+    OriginReplayState configuration → List OriginReplayEvent → Prop
+  | _, [] => True
+  | state, event :: events =>
+      event.Good secretKey state.directOrdinal state.signerOrdinal
+          expectedViews expectedInputs
+        ∧ OriginReplayEvents.Good secretKey expectedViews expectedInputs
+          (state.step secretKey event) events
+
+theorem OriginReplayState.expected_foldl {signatures distinct sources : Nat}
+    {pattern : FewTimePattern signatures distinct}
+    {configuration : OriginConfiguration pattern sources}
+    (state : OriginReplayState configuration) (secretKey : SecretKey)
+    (events : List OriginReplayEvent)
+    (expectedViews : pattern.selected → FewTimeView)
+    (expectedInputs : ↑configuration.prehit → HashInput)
+    (hexpected : state.Expected expectedViews expectedInputs)
+    (hgood : OriginReplayEvents.Good secretKey expectedViews expectedInputs state events) :
+    (events.foldl (OriginReplayState.step secretKey) state).Expected
+      expectedViews expectedInputs := by
+  induction events generalizing state with
+  | nil => exact hexpected
+  | cons event events ih =>
+      exact ih (state.step secretKey event)
+        (state.expected_step secretKey event expectedViews expectedInputs
+          hexpected hgood.1) hgood.2
+
+theorem replayOriginEvents_expected {signatures distinct sources : Nat}
+    {pattern : FewTimePattern signatures distinct}
+    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
+    (events : List OriginReplayEvent)
+    (expectedViews : pattern.selected → FewTimeView)
+    (expectedInputs : ↑configuration.prehit → HashInput)
+    (hgood : OriginReplayEvents.Good secretKey expectedViews expectedInputs
+      (OriginReplayState.initial configuration) events) :
+    (replayOriginEvents configuration secretKey events).Expected
+      expectedViews expectedInputs := by
+  exact OriginReplayState.expected_foldl (OriginReplayState.initial configuration)
+    secretKey events expectedViews expectedInputs
+    (OriginReplayState.expected_initial configuration expectedViews expectedInputs) hgood
 end Concrete
 
 end SphincsSecurity

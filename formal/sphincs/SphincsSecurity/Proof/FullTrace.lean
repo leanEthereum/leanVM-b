@@ -601,6 +601,7 @@ private theorem filterMap_getElem?_preimage_with_earlier {α β : Type}
     ∃ (selectedSource : Nat) (sourceElement : α),
       list[selectedSource]? = some sourceElement
         ∧ filter sourceElement = some selectedValue
+        ∧ ((list.take selectedSource).filterMap filter).length = selected
         ∧ ∀ (source : Nat) (sourceElement : α) (sourceValue : β), source < selectedSource →
           list[source]? = some sourceElement → filter sourceElement = some sourceValue →
             ∃ source', source' < selected
@@ -611,9 +612,11 @@ private theorem filterMap_getElem?_preimage_with_earlier {α β : Type}
       cases hhead : filter head with
       | none =>
           simp only [List.filterMap_cons, hhead] at hselected
-          obtain ⟨selectedSource, sourceElement, hsourceElement, hsourceValue, hearlier⟩ :=
+          obtain ⟨selectedSource, sourceElement, hsourceElement, hsourceValue, hrank,
+              hearlier⟩ :=
             ih selected hselected
-          refine ⟨selectedSource + 1, sourceElement, by simpa, hsourceValue, ?_⟩
+          refine ⟨selectedSource + 1, sourceElement, by simpa, hsourceValue, ?_, ?_⟩
+          · simpa [List.filterMap_cons, hhead] using hrank
           intro source earlierElement earlierValue hlt helement hvalue
           cases source with
           | zero =>
@@ -631,14 +634,16 @@ private theorem filterMap_getElem?_preimage_with_earlier {α β : Type}
           | zero =>
               simp only [List.getElem?_cons_zero, Option.some.injEq] at hselected
               subst selectedValue
-              refine ⟨0, head, by simp, hhead, ?_⟩
+              refine ⟨0, head, by simp, hhead, by simp, ?_⟩
               intro source _ _ hlt
               omega
           | succ selected =>
               simp only [List.getElem?_cons_succ] at hselected
-              obtain ⟨selectedSource, sourceElement, hsourceElement, hsourceValue, hearlier⟩ :=
+              obtain ⟨selectedSource, sourceElement, hsourceElement, hsourceValue, hrank,
+                  hearlier⟩ :=
                 ih selected hselected
-              refine ⟨selectedSource + 1, sourceElement, by simpa, hsourceValue, ?_⟩
+              refine ⟨selectedSource + 1, sourceElement, by simpa, hsourceValue, ?_, ?_⟩
+              · simp [hhead, hrank]
               intro source earlierElement earlierValue hlt helement hvalue
               cases source with
               | zero =>
@@ -659,6 +664,8 @@ theorem FullAdversaryTrace.signingIndex_interval
     ∃ selectedSource : Fin trace.intervals.length,
       AdversaryCacheEntry.signingEntry? (trace.intervals.get selectedSource) =
           some (trace.signing.get selected)
+        ∧ ((trace.intervals.take selectedSource.val).filterMap
+          AdversaryCacheEntry.signingEntry?).length = selected.val
         ∧ ∀ source : Fin trace.intervals.length, source.val < selectedSource.val →
           ∀ sourceEntry : SigningCacheEntry,
             AdversaryCacheEntry.signingEntry? (trace.intervals.get source) = some sourceEntry →
@@ -676,7 +683,8 @@ theorem FullAdversaryTrace.signingIndex_interval
         some ((trace.intervals.filterMap
           AdversaryCacheEntry.signingEntry?).get selected') := by
     exact List.getElem?_eq_getElem selected'.isLt
-  obtain ⟨selectedSourceNat, selectedInterval, hselectedInterval, hselectedSource, hearlier⟩ :=
+  obtain ⟨selectedSourceNat, selectedInterval, hselectedInterval, hselectedSource,
+      hselectedRank, hearlier⟩ :=
     filterMap_getElem?_preimage_with_earlier AdversaryCacheEntry.signingEntry?
       trace.intervals selected'.val
       ((trace.intervals.filterMap AdversaryCacheEntry.signingEntry?).get selected') hselectedGet
@@ -695,7 +703,7 @@ theorem FullAdversaryTrace.signingIndex_interval
     (List.getElem?_eq_some_iff.1 hselectedInterval).2
   refine ⟨selectedSource, by
     rw [hselectedIntervalGet]
-    exact hselectedSource.trans (congrArg some hselectedValue), ?_⟩
+    exact hselectedSource.trans (congrArg some hselectedValue), hselectedRank, ?_⟩
   intro source hlt sourceEntry hsource
   have hsourceGet : trace.intervals[source.val]? = some (trace.intervals.get source) :=
     List.getElem?_eq_getElem source.isLt

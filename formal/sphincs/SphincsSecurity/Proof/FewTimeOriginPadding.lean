@@ -117,6 +117,8 @@ def OriginConfiguration.PaddedRealizedBy {f : QueryImpl HashSpec Id}
           ∧ AdversaryCacheEntry.signingEntry?
             (trace.intervals.get selectedIntervalPosition) =
               some (cover.cacheEntry trace.signing hlog entry.1)
+          ∧ ((trace.intervals.take selectedIntervalPosition.val).filterMap
+            AdversaryCacheEntry.signingEntry?).length = (cover.logIndex entry.1).val
           ∧ (trace.intervals.get intervalPosition).input =
             .inl (.inr (cover.entryDigestInput entry.1))
           ∧ (trace.intervals.get intervalPosition).initialCache
