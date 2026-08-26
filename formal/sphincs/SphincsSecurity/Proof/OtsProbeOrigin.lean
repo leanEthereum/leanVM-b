@@ -307,6 +307,76 @@ def CachesOrdinaryInput (input : HashInput)
       support (LazyRevealProbe.runRaw state fuel (computation.run cache)) →
     finalCache (.ordinary input) ≠ none
 
+def ReturnsCachedOrdinary (input : HashInput)
+    (computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) HashOutput) : Prop :=
+  ∀ state cache fuel finalState remaining output finalCache,
+    LazyRevealProbe.RawResult.done finalState remaining (output, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel (computation.run cache)) →
+    finalCache (.ordinary input) = some output
+
+def PreservesOrdinaryPresence (input : HashInput)
+    (computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha) : Prop :=
+  ∀ state cache fuel finalState remaining value finalCache,
+    cache (.ordinary input) ≠ none →
+    LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel (computation.run cache)) →
+    finalCache (.ordinary input) ≠ none
+
+theorem ReturnsCachedOrdinary.bind_right
+    {input : HashInput}
+    {left : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    {next : alpha → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) HashOutput}
+    (hnext : ∀ value, ReturnsCachedOrdinary input (next value)) :
+    ReturnsCachedOrdinary input (left >>= next) := by
+  intro state cache fuel finalState remaining output finalCache hresult
+  change LazyRevealProbe.RawResult.done finalState remaining (output, finalCache) ∈
+    support (LazyRevealProbe.runRaw state fuel
+      (left.run cache >>= fun leftResult => (next leftResult.1).run leftResult.2)) at hresult
+  rw [LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨raw, _, hrest⟩ := hresult
+  cases raw with
+  | stopped hit => simp at hrest
+  | done middleState middleRemaining leftResult =>
+      rcases leftResult with ⟨leftValue, middleCache⟩
+      exact hnext leftValue middleState middleCache middleRemaining finalState remaining output
+        finalCache hrest
+
+theorem PreservesOrdinaryPresence.pure (input : HashInput) (value : alpha) :
+    PreservesOrdinaryPresence input
+      (pure value : StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate)) alpha) := by
+  intro state cache fuel finalState remaining result finalCache hcached hresult
+  simp [LazyRevealProbe.runRaw] at hresult
+  rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+  exact hcached
+
+theorem PreservesOrdinaryPresence.bind
+    {input : HashInput}
+    {left : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    {next : alpha → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) beta}
+    (hleft : PreservesOrdinaryPresence input left)
+    (hnext : ∀ value, PreservesOrdinaryPresence input (next value)) :
+    PreservesOrdinaryPresence input (left >>= next) := by
+  intro state cache fuel finalState remaining result finalCache hcached hresult
+  change LazyRevealProbe.RawResult.done finalState remaining (result, finalCache) ∈
+    support (LazyRevealProbe.runRaw state fuel
+      (left.run cache >>= fun leftResult => (next leftResult.1).run leftResult.2)) at hresult
+  rw [LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨raw, hraw, hrest⟩ := hresult
+  cases raw with
+  | stopped hit => simp at hrest
+  | done middleState middleRemaining leftResult =>
+      rcases leftResult with ⟨leftValue, middleCache⟩
+      exact hnext leftValue middleState middleCache middleRemaining finalState remaining result
+        finalCache (hleft state cache fuel middleState middleRemaining leftValue middleCache
+          hcached hraw) hrest
+
 theorem CachesOrdinaryInput.bind_right
     {input : HashInput}
     {left : StateT SplitHashCache
@@ -352,6 +422,29 @@ theorem CachesOrdinaryInput.bind_preserving
       exact Option.ne_none_iff_exists'.2 ⟨output,
         hnext leftValue middleState middleCache middleRemaining finalState remaining result
           finalCache output hcached hrest⟩
+
+theorem CachesOrdinaryInput.bind_presence
+    {input : HashInput}
+    {left : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    {next : alpha → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) beta}
+    (hleft : CachesOrdinaryInput input left)
+    (hnext : ∀ value, PreservesOrdinaryPresence input (next value)) :
+    CachesOrdinaryInput input (left >>= next) := by
+  intro state cache fuel finalState remaining result finalCache hresult
+  change LazyRevealProbe.RawResult.done finalState remaining (result, finalCache) ∈
+    support (LazyRevealProbe.runRaw state fuel
+      (left.run cache >>= fun leftResult => (next leftResult.1).run leftResult.2)) at hresult
+  rw [LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨raw, hraw, hrest⟩ := hresult
+  cases raw with
+  | stopped hit => simp at hrest
+  | done middleState middleRemaining leftResult =>
+      rcases leftResult with ⟨leftValue, middleCache⟩
+      exact hnext leftValue middleState middleCache middleRemaining finalState remaining result
+        finalCache (hleft state cache fuel middleState middleRemaining leftValue middleCache hraw)
+          hrest
 
 def StableOrdinaryInput (parameter : PublicParameter) (input : HashInput) : Prop :=
   decodeProbe? parameter input = none ∧
@@ -591,8 +684,8 @@ theorem ordinaryCacheIncreasing_splitHashQuery_ordinary (input : HashInput) :
     (liftM (HashSpec.query input) : OracleComp HashSpec HashOutput)
   simpa [ordinaryHashImpl] using hincreasing
 
-theorem cachesOrdinaryInput_splitHashQuery (input : HashInput) :
-    CachesOrdinaryInput input (splitHashQuery (.ordinary input)) := by
+theorem returnsCachedOrdinary_splitHashQuery (input : HashInput) :
+    ReturnsCachedOrdinary input (splitHashQuery (.ordinary input)) := by
   intro state cache fuel finalState remaining output finalCache hresult
   rw [splitHashQuery_run_eq] at hresult
   cases hlookup : cache (.ordinary input) with
@@ -614,6 +707,13 @@ theorem cachesOrdinaryInput_splitHashQuery (input : HashInput) :
       simp [LazyRevealProbe.runRaw] at hdone
       rcases hdone with ⟨rfl, rfl, rfl, rfl⟩
       simp [Function.update]
+
+theorem cachesOrdinaryInput_splitHashQuery (input : HashInput) :
+    CachesOrdinaryInput input (splitHashQuery (.ordinary input)) := by
+  intro state cache fuel finalState remaining output finalCache hresult
+  rw [returnsCachedOrdinary_splitHashQuery input state cache fuel finalState remaining output
+    finalCache hresult]
+  simp
 
 theorem ordinaryCacheIncreasing_simulateQ_splitUniformImpl
     (computation : ProbComp alpha) :
@@ -1634,6 +1734,17 @@ theorem cachesOrdinaryInput_modifyOrdinary
   rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
   simp [Function.update]
 
+theorem returnsCachedOrdinary_modify_pure
+    (input : HashInput) (answer : HashOutput) :
+    ReturnsCachedOrdinary input (do
+      modify fun cache : SplitHashCache =>
+        Function.update cache (.ordinary input) (some answer)
+      pure answer) := by
+  intro state cache fuel finalState remaining output finalCache hresult
+  simp [StateT.run_modify, LazyRevealProbe.runRaw] at hresult
+  rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+  simp [Function.update]
+
 theorem ordinaryEntryPreserving_probe (input : HashInput) (candidate : Probe) :
     OrdinaryEntryPreserving input (probe candidate) := by
   intro state cache fuel finalState remaining value finalCache output hcached hresult
@@ -1709,6 +1820,26 @@ theorem cachesOrdinaryInput_resolveKnownInput
       · rw [if_neg hexact]
         exact cachesOrdinaryInput_splitHashQuery input
 
+theorem returnsCachedOrdinary_resolveKnownInput
+    (parameter : PublicParameter) (coordinate : Coordinate) (input : HashInput) :
+    ReturnsCachedOrdinary input (resolveKnownInput parameter coordinate input) := by
+  unfold resolveKnownInput
+  apply ReturnsCachedOrdinary.bind_right
+  intro knownInput
+  cases knownInput with
+  | none => exact returnsCachedOrdinary_splitHashQuery input
+  | some knownInput =>
+      simp only
+      by_cases hexact : knownInput = input
+      · rw [if_pos hexact]
+        apply ReturnsCachedOrdinary.bind_right
+        intro answer
+        apply ReturnsCachedOrdinary.bind_right
+        intro _
+        exact returnsCachedOrdinary_modify_pure input answer
+      · rw [if_neg hexact]
+        exact returnsCachedOrdinary_splitHashQuery input
+
 theorem cachesOrdinaryInput_probingHashQuery
     (parameter : PublicParameter) (input : HashInput) :
     CachesOrdinaryInput input (probingHashQuery parameter input) := by
@@ -1732,6 +1863,35 @@ theorem cachesOrdinaryInput_probingHashQuery
               exact cachesOrdinaryInput_resolveKnownInput parameter
                 (.position (.node lay tree level nodeIdx)) input
           | ftsLeaf | ftsNode | ftsRoots => exact cachesOrdinaryInput_splitHashQuery input
+
+theorem returnsCachedOrdinary_probingHashQuery
+    (parameter : PublicParameter) (input : HashInput) :
+    ReturnsCachedOrdinary input (probingHashQuery parameter input) := by
+  unfold probingHashQuery
+  cases hprobe : decodeProbe? parameter input with
+  | some candidate =>
+      exact ReturnsCachedOrdinary.bind_right fun _ =>
+        returnsCachedOrdinary_resolveKnownInput parameter candidate.outputCoordinate input
+  | none =>
+      cases hposition : decodePosition? parameter input with
+      | none => exact returnsCachedOrdinary_splitHashQuery input
+      | some position =>
+          cases position with
+          | chain lay tree leafIdx chainIdx step =>
+              exact returnsCachedOrdinary_resolveKnownInput parameter
+                (.position (.chain lay tree leafIdx chainIdx step)) input
+          | leaf lay tree leafIdx =>
+              exact returnsCachedOrdinary_resolveKnownInput parameter
+                (.position (.leaf lay tree leafIdx)) input
+          | node lay tree level nodeIdx =>
+              exact returnsCachedOrdinary_resolveKnownInput parameter
+                (.position (.node lay tree level nodeIdx)) input
+          | ftsLeaf | ftsNode | ftsRoots => exact returnsCachedOrdinary_splitHashQuery input
+
+theorem returnsCachedOrdinary_probingHashImpl
+    (parameter : PublicParameter) (input : HashInput) :
+    ReturnsCachedOrdinary input (probingHashImpl parameter input) :=
+  returnsCachedOrdinary_probingHashQuery parameter input
 
 theorem ordinaryEntryPreserving_probingHashQuery_self
     (parameter : PublicParameter) (input : HashInput)
@@ -1786,6 +1946,108 @@ theorem ordinaryEntryPreserving_probingHashQuery
     exact ordinaryEntryPreserving_probingHashQuery_self parameter input hstable
   · exact ordinaryEntryPreserving_probingHashQuery_of_ne parameter input query heq
 
+theorem preservesOrdinaryPresence_probingHashQuery
+    (parameter : PublicParameter) (input query : HashInput) :
+    PreservesOrdinaryPresence input (probingHashQuery parameter query) := by
+  intro state cache fuel finalState remaining output finalCache hcached hresult
+  by_cases heq : input = query
+  · subst query
+    rw [returnsCachedOrdinary_probingHashQuery parameter input state cache fuel finalState
+      remaining output finalCache hresult]
+    simp
+  · exact Option.ne_none_iff_exists'.2 <| by
+      obtain ⟨cached, hvalue⟩ := Option.ne_none_iff_exists'.1 hcached
+      exact ⟨cached, ordinaryEntryPreserving_probingHashQuery_of_ne parameter input query heq
+        state cache fuel finalState remaining output finalCache cached hvalue hresult⟩
+
+def PreservesOrdinaryPresenceImpl {spec : OracleSpec ι} (input : HashInput)
+    (impl : QueryImpl spec
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate)))) : Prop :=
+  ∀ query, PreservesOrdinaryPresence input (impl query)
+
+theorem PreservesOrdinaryPresenceImpl.simulateQ {spec : OracleSpec ι}
+    {input : HashInput}
+    {impl : QueryImpl spec
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate)))}
+    (himpl : PreservesOrdinaryPresenceImpl input impl)
+    (computation : OracleComp spec alpha) :
+    PreservesOrdinaryPresence input (simulateQ impl computation) := by
+  induction computation using OracleComp.inductionOn with
+  | pure value => exact PreservesOrdinaryPresence.pure input value
+  | query_bind query next ih =>
+      rw [simulateQ_query_bind]
+      exact (himpl query).bind ih
+
+theorem preservesOrdinaryPresenceImpl_probingHashImpl
+    (parameter : PublicParameter) (input : HashInput) :
+    PreservesOrdinaryPresenceImpl input (probingHashImpl parameter) :=
+  fun query => preservesOrdinaryPresence_probingHashQuery parameter input query
+
+theorem cachesOrdinaryInput_simulateQ_tweakableHash
+    (parameter : PublicParameter) (domain : HashDomain) (payload : HashInput) :
+    CachesOrdinaryInput (tweakableHashInput parameter domain payload)
+      (simulateQ (probingHashImpl parameter)
+        (tweakableHash parameter domain payload)) := by
+  unfold tweakableHash oracleHash
+  rw [simulateQ_bind]
+  simp only [HasQuery.instOfMonadLift_query, simulateQ_spec_query, simulateQ_pure]
+  exact (cachesOrdinaryInput_probingHashQuery parameter
+    (tweakableHashInput parameter domain payload)).bind_preserving fun _ =>
+      OrdinaryEntryPreserving.pure _ _
+
+theorem cachesOrdinaryInput_simulateQ_chainWalk_first
+    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) (start steps : Nat)
+    (value : Digest) (hpositive : 0 < steps)
+    (hrange : start + steps ≤ chainLength - 1) :
+    CachesOrdinaryInput
+      (tweakableHashInput parameter
+        (.chain lay tree leafIdx chainIdx ⟨start, by omega⟩) (digestBytes value))
+      (simulateQ (probingHashImpl parameter)
+        (chainWalk parameter lay tree leafIdx chainIdx start steps value)) := by
+  induction steps with
+  | zero => omega
+  | succ steps ih =>
+      rw [chainWalk]
+      have hstep : start + steps < chainLength - 1 := by omega
+      rw [simulateQ_bind]
+      simp only [dif_pos hstep]
+      cases steps with
+      | zero =>
+          simp only [chainWalk, simulateQ_pure, pure_bind, Nat.add_zero]
+          exact cachesOrdinaryInput_simulateQ_tweakableHash parameter
+            (.chain lay tree leafIdx chainIdx ⟨start, by omega⟩) (digestBytes value)
+      | succ previous =>
+          have hleft := ih (by omega) (by omega)
+          exact hleft.bind_presence fun _ =>
+            (preservesOrdinaryPresenceImpl_probingHashImpl parameter _).simulateQ _
+
+theorem cachesOrdinaryInput_simulateQ_sequenceFin_component
+    (parameter : PublicParameter) (input : HashInput) {n : Nat}
+    (computation : Fin n → OracleComp HashSpec alpha) (index : Fin n)
+    (hcomponent : CachesOrdinaryInput input
+      (simulateQ (probingHashImpl parameter) (computation index))) :
+    CachesOrdinaryInput input
+      (simulateQ (probingHashImpl parameter) (sequenceFin computation)) := by
+  induction n with
+  | zero => exact index.elim0
+  | succ n ih =>
+      rw [sequenceFin, simulateQ_bind]
+      cases index using Fin.cases with
+      | zero =>
+          apply hcomponent.bind_presence
+          intro _
+          rw [simulateQ_bind]
+          exact ((preservesOrdinaryPresenceImpl_probingHashImpl parameter input).simulateQ
+            (sequenceFin fun index : Fin n => computation index.succ)).bind fun _ =>
+              PreservesOrdinaryPresence.pure input _
+      | succ index =>
+          apply CachesOrdinaryInput.bind_right
+          intro _
+          rw [simulateQ_bind]
+          have htail := ih (fun index : Fin n => computation index.succ) index hcomponent
+          exact htail.bind_presence fun _ => PreservesOrdinaryPresence.pure input _
+
 def OrdinaryEntryPreservingImpl {spec : OracleSpec ι} (input : HashInput)
     (impl : QueryImpl spec
       (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate)))) : Prop :=
@@ -1826,6 +2088,151 @@ theorem ordinaryEntryPreservingImpl_probingRomImpl
   | inl query => exact ordinaryEntryPreservingImpl_splitUniformImpl input query
   | inr query =>
       exact ordinaryEntryPreservingImpl_probingHashImpl parameter input hstable query
+
+set_option maxRecDepth 10000 in
+theorem replay_of_mem_runRaw_probingHashImpl_of_stable
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
+    (computation : OracleComp HashSpec alpha)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (value : alpha)
+    (hf : StableCacheAgreesWithFn parameter finalCache f)
+    (hstable : QueriesStable parameter f computation)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((simulateQ (probingHashImpl parameter) computation).run cache))) :
+    evalWithAnswerFn f computation = value ∧
+      CachedRun (ordinaryQueryCache finalCache) f computation := by
+  induction computation using OracleComp.inductionOn generalizing
+      state cache finalState finalCache fuel remaining value with
+  | pure result =>
+      simp [LazyRevealProbe.runRaw] at hresult
+      rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+      exact ⟨rfl, by simp [CachedRun]⟩
+  | query_bind input next ih =>
+      rw [simulateQ_query_bind, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+        mem_support_bind_iff] at hresult
+      obtain ⟨raw, hquery, hrest⟩ := hresult
+      cases raw with
+      | stopped hit => simp at hrest
+      | done queryState queryRemaining queryResult =>
+          rcases queryResult with ⟨answer, queryCache⟩
+          have hinputStable : StableOrdinaryInput parameter input := by
+            apply hstable input
+            rw [queriedInputs_query_bind]
+            exact List.mem_cons_self
+          have hqueryProperty : ReturnsCachedOrdinary input
+              (probingHashImpl parameter input) :=
+            returnsCachedOrdinary_probingHashImpl parameter input
+          have hqueryCached : queryCache (.ordinary input) = some answer :=
+            hqueryProperty state cache fuel queryState queryRemaining answer queryCache hquery
+          have hfinalCached : finalCache (.ordinary input) = some answer :=
+            (ordinaryEntryPreservingImpl_probingHashImpl parameter input hinputStable).simulateQ
+              (next answer) queryState queryCache queryRemaining finalState remaining value
+                finalCache answer hqueryCached hrest
+          have hfinput : f input = answer := hf input answer hinputStable hfinalCached
+          have htailStable : QueriesStable parameter f (next answer) := by
+            intro other hother
+            apply hstable other
+            rw [queriedInputs_query_bind, hfinput]
+            exact List.mem_cons_of_mem input hother
+          obtain ⟨heval, hqueries⟩ := ih answer queryState finalState queryCache finalCache
+            queryRemaining remaining value hf htailStable hrest
+          constructor
+          · rw [evalWithAnswerFn_bind,
+              show evalWithAnswerFn f (liftM (HashSpec.query input)) = f input from
+                simulateQ_spec_query f input, hfinput]
+            exact heval
+          · intro other hother
+            rw [queriedInputs_query_bind, hfinput] at hother
+            simp only [List.mem_cons] at hother
+            rcases hother with rfl | htail
+            · simp [ordinaryQueryCache, hfinalCached]
+            · exact hqueries other htail
+
+set_option maxRecDepth 10000 in
+theorem cached_forged_chain_query_of_mem_runRaw_otsLeaf
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (message : Digest) (counter : Counter) (values : ChainIndex → Digest)
+    (codeword : Encoding)
+    (hencode : evalWithAnswerFn f
+      (encode parameter lay tree leafIdx message counter) = some codeword)
+    (chainIdx : ChainIndex)
+    (hdigit : (codeword chainIdx).val < chainLength - 1)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat)
+    (result : Option Digest)
+    (hf : StableCacheAgreesWithFn parameter finalCache f)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (result, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((simulateQ (probingHashImpl parameter)
+          (otsLeaf parameter lay tree leafIdx message counter values)).run cache))) :
+    finalCache (.ordinary (tweakableHashInput parameter
+      (.chain lay tree leafIdx chainIdx ⟨(codeword chainIdx).val, hdigit⟩)
+      (digestBytes (values chainIdx)))) ≠ none := by
+  let target := tweakableHashInput parameter
+    (.chain lay tree leafIdx chainIdx ⟨(codeword chainIdx).val, hdigit⟩)
+    (digestBytes (values chainIdx))
+  unfold otsLeaf at hresult
+  rw [simulateQ_bind, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+    mem_support_bind_iff] at hresult
+  obtain ⟨encodeRaw, hencodeRaw, hrest⟩ := hresult
+  cases encodeRaw with
+  | stopped hit => simp at hrest
+  | done encodeState encodeRemaining encodeResult =>
+      rcases encodeResult with ⟨encoded, encodeCache⟩
+      have hfEncode : StableCacheAgreesWithFn parameter encodeCache f :=
+        StableCacheAgreesWithFn.of_run
+          (fun input hstable =>
+            (ordinaryEntryPreservingImpl_probingHashImpl parameter input hstable).simulateQ _)
+          encodeState finalState encodeCache finalCache encodeRemaining remaining result hf hrest
+      have hencoded := (replay_of_mem_runRaw_probingHashImpl_of_stable f parameter
+        (encode parameter lay tree leafIdx message counter) state encodeState cache encodeCache
+          fuel encodeRemaining encoded hfEncode
+            (queriesStable_encode f parameter lay tree leafIdx message counter) hencodeRaw).1
+      rw [hencode] at hencoded
+      subst encoded
+      simp only at hrest
+      let chains : ChainIndex → OracleComp HashSpec Digest := fun chainIdx =>
+        recoverChain parameter lay tree leafIdx chainIdx (codeword chainIdx) (values chainIdx)
+      have hcomponent : CachesOrdinaryInput target
+          (simulateQ (probingHashImpl parameter) (chains chainIdx)) := by
+        simpa only [target, chains, recoverChain] using
+          (cachesOrdinaryInput_simulateQ_chainWalk_first parameter lay tree leafIdx chainIdx
+            (codeword chainIdx).val (chainLength - 1 - (codeword chainIdx).val)
+              (values chainIdx) (by omega) (by omega))
+      have hchains : CachesOrdinaryInput target
+          (simulateQ (probingHashImpl parameter) (sequenceFin chains)) :=
+        cachesOrdinaryInput_simulateQ_sequenceFin_component parameter target chains chainIdx
+          hcomponent
+      have htail : CachesOrdinaryInput target
+          (simulateQ (probingHashImpl parameter) (do
+            let endpoints ← sequenceFin chains
+            let value ← leafHash parameter lay tree leafIdx endpoints
+            pure (some value))) := by
+        rw [simulateQ_bind]
+        exact hchains.bind_presence fun endpoints =>
+          (preservesOrdinaryPresenceImpl_probingHashImpl parameter target).simulateQ _
+      exact htail encodeState encodeCache encodeRemaining finalState remaining result finalCache
+        hrest
+
+theorem TargetSum.Valid.exists_digit_lt_last
+    {codeword : Encoding} (hvalid : TargetSum.Valid codeword) :
+    ∃ chainIdx : ChainIndex, (codeword chainIdx).val < chainLength - 1 := by
+  by_contra hnone
+  have hall : ∀ chainIdx : ChainIndex,
+      (codeword chainIdx).val = chainLength - 1 := by
+    intro chainIdx
+    have hge := not_lt.mp (not_exists.mp hnone chainIdx)
+    have hle := (codeword chainIdx).isLt
+    simp only [chainLength, winternitzBits] at hge hle ⊢
+    omega
+  have hsum : TargetSum.sum codeword = numChains * (chainLength - 1) := by
+    unfold TargetSum.sum
+    simp_rw [hall]
+    simp
+  rw [hvalid] at hsum
+  norm_num [targetSum, numChains, chainLength, winternitzBits] at hsum
 
 theorem chainInvariant_splitHashQuery_ordinary_of_decoded_secured
     (parameter : PublicParameter) (allowed : Coordinate → Prop)
@@ -5146,6 +5553,64 @@ theorem ForgedFreshLayerOpening.exists_uncovered_matching_probe
   have hparts := chainValueCoordinate_injective
     (hcoordinate.symm.trans (toProbe_coordinate valueProbe))
   exact hnotSigned (hparts.1 ▸ hparts.2.1 ▸ hparts.2.2.1 ▸ hsigned)
+
+theorem ForgedFreshLayerOpening.exists_uncovered_matching_chain_probe
+    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
+    {signingLog : QueryLog SigningSpec} {index : Index} {signature : Signature}
+    (hfresh : ForgedFreshLayerOpening f cache secretKey signingLog index signature) :
+    ∃ (lay : Layer) (message : Digest) (codeword : Encoding)
+        (chainIdx : ChainIndex) (_hdigit : (codeword chainIdx).val < chainLength - 1)
+        (probe : Probe) (input : HashInput),
+      evalWithAnswerFn f (encode secretKey.parameter lay (treeIndexAt index lay)
+          (leafIndexAt index lay) message (signature.counter lay)) = some codeword
+        ∧ probe.Hits f secretKey.parameter secretKey.otsSecret secretKey.ftsSecret
+        ∧ probe.MatchesInput secretKey.parameter input
+        ∧ cache input ≠ none
+        ∧ ¬CoveredChainCoordinate f cache secretKey signingLog probe.coordinate := by
+  obtain ⟨lay, message, hopening, hforgedRun, hnotSigned⟩ := hfresh
+  obtain ⟨codeword, hencode, hvalues, _⟩ := hopening
+  have hvalid := valid_of_eval_encode_eq_some f secretKey.parameter lay
+    (treeIndexAt index lay) (leafIndexAt index lay) message (signature.counter lay)
+      codeword hencode
+  obtain ⟨chainIdx, hdigit⟩ := TargetSum.Valid.exists_digit_lt_last hvalid
+  let valueProbe : OtsValueProbe :=
+    ⟨lay, treeIndexAt index lay, leafIndexAt index lay, chainIdx,
+      codeword chainIdx, signature.chainValue lay chainIdx⟩
+  let step : ChainStep := ⟨(codeword chainIdx).val, hdigit⟩
+  let input := tweakableHashInput secretKey.parameter
+    (.chain lay (treeIndexAt index lay) (leafIndexAt index lay) chainIdx step)
+    (digestBytes (signature.chainValue lay chainIdx))
+  have hquery : input ∈ queriedInputs f
+      (otsLeaf secretKey.parameter lay (treeIndexAt index lay) (leafIndexAt index lay)
+        message (signature.counter lay) (signature.chainValue lay)) := by
+    simpa only [input, step, Nat.add_zero, walkValue, chainWalk,
+      evalWithAnswerFn_pure] using
+      otsLeaf_chain_query_mem f secretKey.parameter lay (treeIndexAt index lay)
+        (leafIndexAt index lay) message (signature.counter lay) (signature.chainValue lay)
+          codeword hencode chainIdx 0 (by omega) hdigit
+  have hhit : valueProbe.Hits f secretKey.parameter secretKey.otsSecret := by
+    simpa only [OtsValueProbe.Hits, OtsValueProbe.target, valueProbe] using hvalues chainIdx
+  have hmatch : (toProbe valueProbe).MatchesInput secretKey.parameter input := by
+    apply toProbe_matchesInput secretKey.parameter valueProbe input
+    exact Or.inl ⟨step, by simp [valueProbe, step], rfl⟩
+  refine ⟨lay, message, codeword, chainIdx, hdigit, toProbe valueProbe, input, hencode,
+    toProbe_hits hhit, hmatch, hforgedRun input hquery, ?_⟩
+  intro hcovered
+  obtain ⟨entry, publishedSignature, publishedIndex, leaves, publishedLay,
+    publishedChainIdx, publishedCodeword, targetDigit, hentry, hresponse, hrun, hdigest,
+    hpublishedEncode, hle, hcoordinate⟩ := hcovered
+  obtain ⟨hmessage, hopening⟩ := hrun.honest_layer_at_of_digest hdigest publishedLay
+  have hcachedEncode := hrun.signed_encode_cached_of_digest hdigest publishedLay
+  have hsigned : SignedLayerAt f cache secretKey signingLog publishedLay
+      (treeIndexAt publishedIndex publishedLay) (leafIndexAt publishedIndex publishedLay) :=
+    ⟨entry, publishedSignature, publishedIndex, leaves, hentry, hresponse, hrun, hdigest,
+      rfl, rfl, hmessage, hcachedEncode, hopening⟩
+  have hparts := chainValueCoordinate_injective
+    (hcoordinate.symm.trans (toProbe_coordinate valueProbe))
+  dsimp only [valueProbe] at hparts
+  obtain ⟨rfl, htree, hleaf, _, _⟩ := hparts
+  rw [htree, hleaf] at hsigned
+  exact hnotSigned hsigned
 
 theorem ForgedBackwardChainOpening.exists_uncovered_matching_probe
     {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
