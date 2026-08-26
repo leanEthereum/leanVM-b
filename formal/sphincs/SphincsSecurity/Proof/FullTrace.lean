@@ -1178,6 +1178,8 @@ theorem gameAfterSecretsWithFullTrace_support_cacheChain (adversary : Adversary)
       (gameAfterSecretsWithFullTrace adversary parameter otsSecret ftsSecret)) :
     ∃ rootCache adversaryCache,
       (∀ payload, rootCache (tweakableHashInput parameter .message payload) = none)
+        ∧ (∀ lay tree leafIdx payload,
+          rootCache (tweakableHashInput parameter (.encoding lay tree leafIdx) payload) = none)
         ∧ FullAdversaryTrace.CacheChain rootCache result.2.2.intervals adversaryCache
         ∧ adversaryCache ≤ result.2.1 := by
   rw [gameAfterSecretsWithFullTrace, mem_support_bind_iff] at hmem
@@ -1197,6 +1199,8 @@ theorem gameAfterSecretsWithFullTrace_support_cacheChain (adversary : Adversary)
   exact ⟨rootCache, adversaryCache,
     fun payload => treeRoot_cache_message_none parameter topLayer rootTree
       (otsSecret topLayer rootTree) root rootCache hroot' payload,
+    fun lay tree leafIdx payload => treeRoot_cache_encoding_none parameter topLayer rootTree
+      (otsSecret topLayer rootTree) root rootCache hroot' lay tree leafIdx payload,
     hchain, hle⟩
 
 end Concrete

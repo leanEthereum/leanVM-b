@@ -103,7 +103,7 @@ theorem FewTimeCover.precached_entry_has_earlier_source
     adversary parameter otsSecret ftsSecret result hresult
   have hvalid := gameAfterSecretsWithFullTrace_support_validIntervals
     adversary parameter otsSecret ftsSecret result hresult
-  obtain ⟨rootCache, adversaryCache, hrootNone, hchain, _⟩ :=
+  obtain ⟨rootCache, adversaryCache, hrootNone, _, hchain, _⟩ :=
     gameAfterSecretsWithFullTrace_support_cacheChain
       adversary parameter otsSecret ftsSecret result hresult
   have hstart : rootCache (cover.entryDigestInput entry) = none := by
@@ -154,7 +154,7 @@ theorem FewTimeCover.precached_entry_has_earlier_exact_source
     adversary parameter otsSecret ftsSecret result hresult
   have hvalid := gameAfterSecretsWithFullTrace_support_validIntervals
     adversary parameter otsSecret ftsSecret result hresult
-  obtain ⟨rootCache, adversaryCache, hrootNone, hchain, _⟩ :=
+  obtain ⟨rootCache, adversaryCache, hrootNone, _, hchain, _⟩ :=
     gameAfterSecretsWithFullTrace_support_cacheChain
       adversary parameter otsSecret ftsSecret result hresult
   let selectedSigning : Fin result.2.2.signing.length :=

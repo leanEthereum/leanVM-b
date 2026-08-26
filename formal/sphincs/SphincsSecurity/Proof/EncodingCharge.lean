@@ -1649,6 +1649,54 @@ theorem encodingBad_of_hasTarget_of_cached_hit
   have hfInitial : initialCache.AgreesWithFn f := fun _ _ hcached => hf (hle hcached)
   exact encodingBad_of_cached_target_hit hfInitial hinitialTarget hother hne hvalue
 
+theorem direct_source_before_signingEntry_of_clean_encoding_collision
+    {rootCache adversaryCache finalCache : QueryCache HashSpec}
+    {secretKey : SecretKey} {trace : FullAdversaryTrace}
+    (hchain : FullAdversaryTrace.CacheChain rootCache trace.intervals adversaryCache)
+    (hconsistent : trace.Consistent)
+    (hchronological : FullAdversaryTrace.Chronological trace.intervals)
+    (hvalidIntervals : trace.ValidIntervals secretKey)
+    (hintervals : trace.IntervalsLe finalCache)
+    (f : QueryImpl HashSpec Id) (hf : finalCache.AgreesWithFn f)
+    (hclean : ¬ EncodingBad finalCache secretKey)
+    (entry : SigningCacheEntry) (hentry : entry ∈ trace.signing)
+    (position : EncodingPosition) (targetPayload otherPayload : HashInput)
+    (hroot : rootCache
+      (tweakableHashInput secretKey.parameter position.domain targetPayload) = none)
+    (htargetInitial : entry.initialCache
+      (tweakableHashInput secretKey.parameter position.domain targetPayload) ≠ none)
+    (hother : entry.initialCache
+      (tweakableHashInput secretKey.parameter position.domain otherPayload) ≠ none)
+    (htargetFinal : CachedSignedEncodingPayloadAt finalCache secretKey position.lay
+      position.tree position.leafIdx targetPayload)
+    (hne : tweakableHashInput secretKey.parameter position.domain targetPayload ≠
+      tweakableHashInput secretKey.parameter position.domain otherPayload)
+    (hvalue : truncateHash
+        (f (tweakableHashInput secretKey.parameter position.domain targetPayload)) =
+      truncateHash
+        (f (tweakableHashInput secretKey.parameter position.domain otherPayload))) :
+    ∃ (source selected : Fin trace.intervals.length),
+      source.val < selected.val
+        ∧ AdversaryCacheEntry.signingEntry? (trace.intervals.get selected) = some entry
+        ∧ (trace.intervals.get source).input = .inl (.inr
+          (tweakableHashInput secretKey.parameter position.domain targetPayload)) := by
+  have htargetValid := htargetFinal.target_valid
+  rcases FullAdversaryTrace.CacheChain.hasEncodingTarget_or_direct_source_before_signingEntry
+      hchain hconsistent
+      hchronological hvalidIntervals hintervals (fromCache finalCache)
+      (agreesWithFn_fromCache finalCache) entry hentry position targetPayload hroot
+      htargetInitial htargetValid with htarget | hdirect
+  · have hentryLe : entry.initialCache ≤ finalCache := by
+      obtain ⟨selected, hselected⟩ :=
+        trace.exists_intervalPosition_of_signingEntry hconsistent entry hentry
+      rw [← (trace.intervals.get selected).initialCache_eq_of_signingEntry?_eq_some
+        hselected]
+      exact (hintervals (trace.intervals.get selected) (List.get_mem _ selected)).1
+    have hbad := encodingBad_of_hasTarget_of_cached_hit hentryLe hf htargetFinal htarget
+      hother hne hvalue
+    exact (hclean (hbad.mono hentryLe)).elim
+  · exact hdirect
+
 theorem clean_encodingBad_cacheQuery_of_existing_target
     {cache : QueryCache HashSpec} {secretKey : SecretKey} {input : HashInput}
     {answer : HashOutput} {position : EncodingPosition} {targetPayload : HashInput}
