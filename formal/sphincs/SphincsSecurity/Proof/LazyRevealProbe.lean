@@ -4,10 +4,10 @@ import VCVio.OracleComp.QueryTracking.RandomOracle.DeferredSampling
 /-!
 # Lazy hidden values with selective reveals
 
-An honest computation may reserve an opaque cell without sampling its value. A later reveal samples
-the cell, checks every earlier probe, and then makes the value public. Cells that remain hidden are
-sampled only when the experiment finishes. Thus the construction stays lazy: no random-oracle table
-is sampled in advance.
+An honest computation may reserve an opaque cell without sampling its value. A later materialization
+samples the cell and checks every earlier probe. A separate publication marks values returned by a
+successful computation as public. Cells that remain hidden are sampled only when the experiment
+finishes. Thus the construction stays lazy: no random-oracle table is sampled in advance.
 
 Every probe against a hidden cell contributes one candidate. Reveals and finalization consume all
 candidates at a cell against one fresh uniform hash output, so the total hit probability is at most
@@ -60,6 +60,16 @@ def State.install (state : State Coordinate) (coordinate : Coordinate)
     values := Function.update state.values coordinate (some output)
     revealed := insert coordinate state.revealed
     ensured := insert coordinate state.ensured }
+
+def State.materialize (state : State Coordinate) (coordinate : Coordinate)
+    (output : HashOutput) : State Coordinate :=
+  { state with
+    pending := state.pendingAway coordinate
+    values := Function.update state.values coordinate (some output)
+    ensured := insert coordinate state.ensured }
+
+def State.publish (state : State Coordinate) (coordinate : Coordinate) : State Coordinate :=
+  { state with revealed := insert coordinate state.revealed }
 
 def State.complete (state : State Coordinate) (coordinate : Coordinate)
     (output : HashOutput) : State Coordinate :=
@@ -156,6 +166,11 @@ theorem State.pending_card_install (state : State Coordinate) (coordinate : Coor
     (output : HashOutput) :
     (state.install coordinate output).pending.card = (state.pendingAway coordinate).card := rfl
 
+theorem State.pending_card_materialize (state : State Coordinate) (coordinate : Coordinate)
+    (output : HashOutput) :
+    (state.materialize coordinate output).pending.card =
+      (state.pendingAway coordinate).card := rfl
+
 theorem State.pending_card_complete (state : State Coordinate) (coordinate : Coordinate)
     (output : HashOutput) :
     (state.complete coordinate output).pending.card = (state.pendingAway coordinate).card := rfl
@@ -182,6 +197,7 @@ inductive Query (Coordinate : Type) where
   | ensure (coordinate : Coordinate)
   | probe (coordinate : Coordinate) (candidate : Digest)
   | peek (coordinate : Coordinate)
+  | publish (coordinate : Coordinate)
   | reveal (coordinate : Coordinate)
 
 @[reducible] def World (Coordinate : Type) : OracleSpec (Query Coordinate) :=
@@ -191,6 +207,7 @@ inductive Query (Coordinate : Type) where
   | .ensure _ => Unit
   | .probe _ _ => Unit
   | .peek _ => Option HashOutput
+  | .publish _ => Unit
   | .reveal _ => HashOutput
 
 def IsProbe : (World Coordinate).Domain → Prop
@@ -199,6 +216,7 @@ def IsProbe : (World Coordinate).Domain → Prop
   | .ensure _ => False
   | .probe _ _ => True
   | .peek _ => False
+  | .publish _ => False
   | .reveal _ => False
 
 noncomputable instance : DecidablePred (IsProbe (Coordinate := Coordinate)) :=
@@ -208,6 +226,7 @@ noncomputable instance : DecidablePred (IsProbe (Coordinate := Coordinate)) :=
   | .ensure _ => isFalse (by simp [IsProbe])
   | .probe _ _ => isTrue (by simp [IsProbe])
   | .peek _ => isFalse (by simp [IsProbe])
+  | .publish _ => isFalse (by simp [IsProbe])
   | .reveal _ => isFalse (by simp [IsProbe])
 
 def uniformQuery (n : Nat) : OracleComp (World Coordinate) (Fin (n + 1)) :=
@@ -226,6 +245,9 @@ def probeQuery (coordinate : Coordinate) (candidate : Digest) :
 def peekQuery (coordinate : Coordinate) :
     OracleComp (World Coordinate) (Option HashOutput) :=
   liftM ((World Coordinate).query (.peek coordinate))
+
+def publishQuery (coordinate : Coordinate) : OracleComp (World Coordinate) Unit :=
+  liftM ((World Coordinate).query (.publish coordinate))
 
 def revealQuery (coordinate : Coordinate) : OracleComp (World Coordinate) HashOutput :=
   liftM ((World Coordinate).query (.reveal coordinate))
@@ -267,6 +289,12 @@ omit [DecidableEq Coordinate] in
 theorem peekQuery_isProbeBound (coordinate : Coordinate) (fuel : Nat) :
     (peekQuery coordinate).IsQueryBoundP IsProbe fuel := by
   rw [peekQuery, OracleComp.isQueryBoundP_query_iff]
+  simp [IsProbe]
+
+omit [DecidableEq Coordinate] in
+theorem publishQuery_isProbeBound (coordinate : Coordinate) (fuel : Nat) :
+    (publishQuery coordinate).IsQueryBoundP IsProbe fuel := by
+  rw [publishQuery, OracleComp.isQueryBoundP_query_iff]
   simp [IsProbe]
 
 omit [DecidableEq Coordinate] in
@@ -422,6 +450,8 @@ noncomputable def runRaw (state : State Coordinate) (fuel : Nat)
                 recursivelyRun () (state.addPending coordinate candidate) remaining
       | .peek coordinate =>
           recursivelyRun (state.values coordinate) state fuel
+      | .publish coordinate =>
+          recursivelyRun () (state.publish coordinate) fuel
       | .reveal coordinate =>
           match state.values coordinate with
           | some output => recursivelyRun output state fuel
@@ -430,7 +460,7 @@ noncomputable def runRaw (state : State Coordinate) (fuel : Nat)
               if state.hitAt coordinate output then
                 pure (.stopped true)
               else
-                recursivelyRun output (state.install coordinate output) fuel)
+                recursivelyRun output (state.materialize coordinate output) fuel)
     computation state fuel
 
 theorem runRaw_uniform_query_bind (state : State Coordinate) (fuel n : Nat)
@@ -488,6 +518,15 @@ theorem runRaw_peek_query_bind (state : State Coordinate) (fuel : Nat)
   rw [runRaw, OracleComp.construct_query_bind]
   rfl
 
+theorem runRaw_publish_query_bind (state : State Coordinate) (fuel : Nat)
+    (coordinate : Coordinate) (next : Unit → OracleComp (World Coordinate) alpha) :
+    runRaw state fuel
+        ((liftM (OracleSpec.query (spec := World Coordinate) (.publish coordinate)) :
+          OracleComp (World Coordinate) Unit) >>= next) =
+      runRaw (state.publish coordinate) fuel (next ()) := by
+  rw [runRaw, OracleComp.construct_query_bind]
+  rfl
+
 theorem runRaw_reveal_query_bind (state : State Coordinate) (fuel : Nat)
     (coordinate : Coordinate) (next : HashOutput → OracleComp (World Coordinate) alpha) :
     runRaw state fuel
@@ -500,7 +539,7 @@ theorem runRaw_reveal_query_bind (state : State Coordinate) (fuel : Nat)
           if state.hitAt coordinate output then
             pure (.stopped true)
           else
-            runRaw (state.install coordinate output) fuel (next output)) := by
+            runRaw (state.materialize coordinate output) fuel (next output)) := by
   rw [runRaw, OracleComp.construct_query_bind]
   rfl
 
@@ -545,6 +584,9 @@ theorem runRaw_bind (state : State Coordinate) (fuel : Nat)
       | peek coordinate =>
           rw [bind_assoc, runRaw_peek_query_bind, runRaw_peek_query_bind]
           exact ih (state.values coordinate) state fuel
+      | publish coordinate =>
+          rw [bind_assoc, runRaw_publish_query_bind, runRaw_publish_query_bind]
+          exact ih () (state.publish coordinate) fuel
       | reveal coordinate =>
           rw [bind_assoc, runRaw_reveal_query_bind, runRaw_reveal_query_bind]
           cases hvalue : state.values coordinate with
@@ -556,7 +598,7 @@ theorem runRaw_bind (state : State Coordinate) (fuel : Nat)
               by_cases hhit : state.hitAt coordinate output
               · simp [hhit]
               · simp only [hhit, ↓reduceIte]
-                exact ih output (state.install coordinate output) fuel
+                exact ih output (state.materialize coordinate output) fuel
 
 inductive DetailedResult (Coordinate : Type) (alpha : Type) where
   | stopped (hit : Bool)
@@ -615,6 +657,8 @@ noncomputable def experiment (state : State Coordinate) (fuel : Nat)
                 recursivelyRun () (state.addPending coordinate candidate) remaining
       | .peek coordinate =>
           recursivelyRun (state.values coordinate) state fuel
+      | .publish coordinate =>
+          recursivelyRun () (state.publish coordinate) fuel
       | .reveal coordinate =>
           match state.values coordinate with
           | some output => recursivelyRun output state fuel
@@ -623,7 +667,7 @@ noncomputable def experiment (state : State Coordinate) (fuel : Nat)
               if state.hitAt coordinate output then
                 pure true
               else
-                recursivelyRun output (state.install coordinate output) fuel)
+                recursivelyRun output (state.materialize coordinate output) fuel)
     computation state fuel
 
 theorem experiment_uniform_query_bind (state : State Coordinate) (fuel n : Nat)
@@ -681,6 +725,15 @@ theorem experiment_peek_query_bind (state : State Coordinate) (fuel : Nat)
   rw [experiment, OracleComp.construct_query_bind]
   rfl
 
+theorem experiment_publish_query_bind (state : State Coordinate) (fuel : Nat)
+    (coordinate : Coordinate) (next : Unit → OracleComp (World Coordinate) alpha) :
+    experiment state fuel
+        ((liftM (OracleSpec.query (spec := World Coordinate) (.publish coordinate)) :
+          OracleComp (World Coordinate) Unit) >>= next) =
+      experiment (state.publish coordinate) fuel (next ()) := by
+  rw [experiment, OracleComp.construct_query_bind]
+  rfl
+
 theorem experiment_reveal_query_bind (state : State Coordinate) (fuel : Nat)
     (coordinate : Coordinate) (next : HashOutput → OracleComp (World Coordinate) alpha) :
     experiment state fuel
@@ -693,7 +746,7 @@ theorem experiment_reveal_query_bind (state : State Coordinate) (fuel : Nat)
           if state.hitAt coordinate output then
             pure true
           else
-            experiment (state.install coordinate output) fuel (next output)) := by
+            experiment (state.materialize coordinate output) fuel (next output)) := by
   rw [experiment, OracleComp.construct_query_bind]
   rfl
 
@@ -739,6 +792,10 @@ theorem experiment_eq_runRaw_finish (state : State Coordinate) (fuel : Nat)
           rw [experiment_peek_query_bind, runRaw_peek_query_bind]
           exact ih (state.values coordinate) state fuel
             (by simpa [IsProbe] using hbound.2 (state.values coordinate))
+      | publish coordinate =>
+          rw [experiment_publish_query_bind, runRaw_publish_query_bind]
+          exact ih () (state.publish coordinate) fuel
+            (by simpa [IsProbe] using hbound.2 ())
       | reveal coordinate =>
           rw [experiment_reveal_query_bind, runRaw_reveal_query_bind]
           cases hvalue : state.values coordinate with
@@ -752,7 +809,7 @@ theorem experiment_eq_runRaw_finish (state : State Coordinate) (fuel : Nat)
               by_cases hhit : state.hitAt coordinate output
               · simp [hhit, RawResult.finish]
               · simp only [hhit, ↓reduceIte]
-                exact ih output (state.install coordinate output) fuel
+                exact ih output (state.materialize coordinate output) fuel
                   (by simpa [IsProbe] using hbound.2 output)
 
 theorem detailedExperiment_hit_eq_experiment (state : State Coordinate) (fuel : Nat)
@@ -811,6 +868,9 @@ theorem experiment_probability_le (state : State Coordinate) (fuel : Nat)
       | peek coordinate =>
           rw [experiment_peek_query_bind]
           exact ih (state.values coordinate) state fuel
+      | publish coordinate =>
+          rw [experiment_publish_query_bind]
+          exact ih () (state.publish coordinate) fuel
       | reveal coordinate =>
           rw [experiment_reveal_query_bind]
           cases hvalue : state.values coordinate with
@@ -820,15 +880,15 @@ theorem experiment_probability_le (state : State Coordinate) (fuel : Nat)
                 (mx := sampleHashOutput)
                 (my := fun output =>
                   if state.hitAt coordinate output then pure true
-                  else experiment (state.install coordinate output) fuel (next output))
+                  else experiment (state.materialize coordinate output) fuel (next output))
                 (q := fun hit : Bool => hit = true)
                 (p := state.hitAt coordinate)
                 (ε := ((fuel + (state.pendingAway coordinate).card : Nat) : ℝ≥0∞) *
                   ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹) ?_).trans ?_
               · intro output _ hmiss
                 simp only [hmiss, ↓reduceIte]
-                simpa only [State.pending_card_install] using
-                  ih output (state.install coordinate output) fuel
+                simpa only [State.pending_card_materialize] using
+                  ih output (state.materialize coordinate output) fuel
               · refine add_le_add
                   (probEvent_sampleHashOutput_hitAt_le state coordinate) le_rfl |>.trans ?_
                 calc

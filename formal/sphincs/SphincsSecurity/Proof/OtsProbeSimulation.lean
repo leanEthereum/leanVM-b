@@ -616,6 +616,11 @@ noncomputable def revealCoordinate (coordinate : Coordinate) :
   let output ← revealCoordinateOutput coordinate
   pure (truncateHash output)
 
+noncomputable def publishCoordinate (coordinate : Coordinate) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) Unit :=
+  liftM (LazyRevealProbe.publishQuery coordinate)
+
 noncomputable def revealPosition (position : Position) :
     StateT SplitHashCache
       (OracleComp (LazyRevealProbe.World Coordinate)) Digest :=
@@ -753,6 +758,18 @@ noncomputable def maskedTreePath (lay : Layer) (tree : TreeIndex)
     else
       pure 0
 
+noncomputable def ensureTreePath (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) Unit := do
+  let _ ← sequenceFin fun level : Fin maxLayerHeight =>
+    if level.val < layerHeight lay then
+      ensureTreeNode lay tree level.val
+        (Nat.xor (leafIdx.val / 2 ^ level.val) 1)
+    else
+      pure ()
+  pure ()
+
 noncomputable def maskedChainValue (lay : Layer) (tree : TreeIndex)
     (leafIdx : LeafIndex) (chainIdx : ChainIndex) (digit : Digit) :
     StateT SplitHashCache
@@ -771,7 +788,7 @@ noncomputable def maskedOtsSignFrom (parameter : PublicParameter) (lay : Layer)
     Nat → Nat →
       StateT SplitHashCache
         (OracleComp (LazyRevealProbe.World Coordinate))
-          (Option (Counter × (ChainIndex → Digest)))
+          (Option (Counter × (ChainIndex → Digit)))
   | 0, _ => pure none
   | attempts + 1, counter => do
       let encoded ← simulateQ ordinaryHashImpl
@@ -779,9 +796,9 @@ noncomputable def maskedOtsSignFrom (parameter : PublicParameter) (lay : Layer)
           (BitVec.ofNat counterBits counter))
       match encoded with
       | some encoding => do
-          let values ← sequenceFin fun chainIdx =>
-            maskedChainValue lay tree leafIdx chainIdx (encoding chainIdx)
-          pure (some (BitVec.ofNat counterBits counter, values))
+          let _ ← sequenceFin fun chainIdx =>
+            ensureChainPrefix lay tree leafIdx chainIdx (encoding chainIdx)
+          pure (some (BitVec.ofNat counterBits counter, encoding))
       | none =>
           maskedOtsSignFrom parameter lay tree leafIdx message attempts (counter + 1)
 
@@ -789,7 +806,7 @@ noncomputable def maskedOtsSign (parameter : PublicParameter) (lay : Layer)
     (tree : TreeIndex) (leafIdx : LeafIndex) (message : Digest) :
     StateT SplitHashCache
       (OracleComp (LazyRevealProbe.World Coordinate))
-        (Option (Counter × (ChainIndex → Digest))) :=
+        (Option (Counter × (ChainIndex → Digit))) :=
   maskedOtsSignFrom parameter lay tree leafIdx message encodingAttemptLimit 0
 
 noncomputable def maskedLayerMessage (parameter : PublicParameter)
@@ -808,16 +825,54 @@ noncomputable def maskedSignLayer (parameter : PublicParameter)
     (lay : Layer) :
     StateT SplitHashCache
       (OracleComp (LazyRevealProbe.World Coordinate))
-        (Option (Counter × (ChainIndex → Digest) ×
-          (Fin maxLayerHeight → Digest))) := do
+        (Option (Counter × (ChainIndex → Digit))) := do
   let tree := treeIndexAt index lay
   let leafIdx := leafIndexAt index lay
   let message ← maskedLayerMessage parameter ftsSecret index lay
   match ← maskedOtsSign parameter lay tree leafIdx message with
   | none => pure none
-  | some (counter, values) => do
-      let path ← maskedTreePath lay tree leafIdx
-      pure (some (counter, values, path))
+  | some (counter, encoding) => do
+      ensureTreePath lay tree leafIdx
+      pure (some (counter, encoding))
+
+noncomputable def chainValueCoordinate (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) (digit : Digit) : Coordinate :=
+  if hzero : digit.val = 0 then
+    .chainStart lay tree leafIdx chainIdx
+  else
+    .position (.chain lay tree leafIdx chainIdx ⟨digit.val - 1, by
+      have := digit.isLt
+      omega⟩)
+
+noncomputable def revealPublishedCoordinate (coordinate : Coordinate) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) Digest := do
+  let value ← revealCoordinate coordinate
+  publishCoordinate coordinate
+  pure value
+
+noncomputable def revealLayerValues (index : Index) (lay : Layer)
+    (encoding : ChainIndex → Digit) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate))
+        ((ChainIndex → Digest) × (Fin maxLayerHeight → Digest)) := do
+  let tree := treeIndexAt index lay
+  let leafIdx := leafIndexAt index lay
+  let values ← sequenceFin fun chainIdx =>
+    revealPublishedCoordinate
+      (chainValueCoordinate lay tree leafIdx chainIdx (encoding chainIdx))
+  let path ← sequenceFin fun level : Fin maxLayerHeight =>
+    if level.val < layerHeight lay then
+      match level.val with
+      | 0 => revealPublishedCoordinate (.position (.leaf lay tree
+          (leafOfNat (Nat.xor leafIdx.val 1))))
+      | current + 1 =>
+          if hlevel : current < maxLayerHeight then
+            revealPublishedCoordinate (.position (.node lay tree ⟨current, hlevel⟩
+              (leafOfNat (Nat.xor (leafIdx.val / 2 ^ (current + 1)) 1))))
+          else pure 0
+    else pure 0
+  pure (values, path)
 
 noncomputable def maskedSignAfterDigest (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
@@ -831,13 +886,14 @@ noncomputable def maskedSignAfterDigest (parameter : PublicParameter)
   match traverseOption layers with
   | none => pure none
   | some parts =>
+      let revealed ← sequenceFin fun lay => revealLayerValues index lay (parts lay).2
       pure (some
         { randomness := randomness
           ftsSecret := fun tree => ftsSecret index tree (leaves (ftsIndexOf tree))
           ftsPath := ftsPath
           counter := fun lay => (parts lay).1
-          chainValue := fun lay => (parts lay).2.1
-          authPath := flattenPaths fun lay => (parts lay).2.2 })
+          chainValue := fun lay => (revealed lay).1
+          authPath := flattenPaths fun lay => (revealed lay).2 })
 
 noncomputable def maskedSign (parameter : PublicParameter) (root : Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message) :
@@ -864,6 +920,7 @@ noncomputable def resolveKnownInput (parameter : PublicParameter)
   | some knownInput =>
       if knownInput = input then
         let output ← revealCoordinateOutput coordinate
+        publishCoordinate coordinate
         modify fun cache : SplitHashCache =>
           Function.update cache (.ordinary input) (some output)
         pure output
@@ -920,6 +977,8 @@ noncomputable def maskedGameAfterFtsSecrets (adversary : Adversary)
     StateT SplitHashCache
       (OracleComp (LazyRevealProbe.World Coordinate)) Bool := do
   let root ← maskedTreeRoot topLayer rootTree
+  publishCoordinate (.position (.node topLayer rootTree
+    ⟨layerHeight topLayer - 1, by norm_num [layerHeight, topLayer, maxLayerHeight]⟩ 0))
   let (forgery, log) ←
     (simulateQ (QueryImpl.withTraceAppend
       (maskedExpandedAdversaryImpl parameter root ftsSecret) signingLogFragment)

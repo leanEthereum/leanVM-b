@@ -82,6 +82,12 @@ theorem HiddenConsistent.addPending
     HiddenConsistent (state.addPending coordinate candidate) cache := by
   simpa [HiddenConsistent, LazyRevealProbe.State.addPending] using hconsistent
 
+theorem HiddenConsistent.publish
+    {state : LazyRevealProbe.State Coordinate} {cache : SplitHashCache}
+    (hconsistent : HiddenConsistent state cache) (coordinate : Coordinate) :
+    HiddenConsistent (state.publish coordinate) cache := by
+  simpa [HiddenConsistent, LazyRevealProbe.State.publish] using hconsistent
+
 theorem HiddenConsistent.install_of_none
     {state : LazyRevealProbe.State Coordinate} {cache : SplitHashCache}
     (hconsistent : HiddenConsistent state cache) (coordinate : Coordinate)
@@ -94,6 +100,26 @@ theorem HiddenConsistent.install_of_none
     rw [hvalue] at this
     simp at this
   · simp [LazyRevealProbe.State.install, Function.update, heq]
+    exact hconsistent other hiddenOutput hhidden
+
+theorem HiddenConsistent.clearPending
+    {state : LazyRevealProbe.State Coordinate} {cache : SplitHashCache}
+    (hconsistent : HiddenConsistent state cache) (coordinate : Coordinate) :
+    HiddenConsistent (state.clearPending coordinate) cache := by
+  simpa [HiddenConsistent, LazyRevealProbe.State.clearPending] using hconsistent
+
+theorem HiddenConsistent.complete_of_none
+    {state : LazyRevealProbe.State Coordinate} {cache : SplitHashCache}
+    (hconsistent : HiddenConsistent state cache) (coordinate : Coordinate)
+    (output : HashOutput) (hvalue : state.values coordinate = none) :
+    HiddenConsistent (state.complete coordinate output) cache := by
+  intro other hiddenOutput hhidden
+  by_cases heq : other = coordinate
+  · subst other
+    have := hconsistent coordinate hiddenOutput hhidden
+    rw [hvalue] at this
+    simp at this
+  · simp [LazyRevealProbe.State.complete, Function.update, heq]
     exact hconsistent other hiddenOutput hhidden
 
 theorem HiddenConsistent.updateHidden_of_value
@@ -160,6 +186,19 @@ def PreservesHidden
       LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈
         support (LazyRevealProbe.runRaw state fuel (computation.run cache)) →
       HiddenConsistent finalState finalCache
+
+theorem PreservesHidden.done
+    {computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    (hcomputation : PreservesHidden computation)
+    {state : LazyRevealProbe.State Coordinate} {cache : SplitHashCache} {fuel : Nat}
+    {finalState : LazyRevealProbe.State Coordinate} {remaining : Nat}
+    {value : alpha} {finalCache : SplitHashCache}
+    (hconsistent : HiddenConsistent state cache)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel (computation.run cache))) :
+    HiddenConsistent finalState finalCache :=
+  hcomputation state cache fuel finalState remaining value finalCache hconsistent hresult
 
 theorem preservesHidden_pure (value : alpha) :
     PreservesHidden (pure value : StateT SplitHashCache
@@ -274,6 +313,17 @@ theorem preservesHidden_peekCoordinate (coordinate : Coordinate) :
   simp [LazyRevealProbe.runRaw] at hresult
   rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
   exact hconsistent
+
+theorem preservesHidden_publishCoordinate (coordinate : Coordinate) :
+    PreservesHidden (publishCoordinate coordinate) := by
+  intro state cache fuel finalState remaining value finalCache hconsistent hresult
+  change LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈ support
+    (LazyRevealProbe.runRaw state fuel
+      (LazyRevealProbe.publishQuery coordinate >>= fun output => pure (output, cache))) at hresult
+  rw [LazyRevealProbe.publishQuery, LazyRevealProbe.runRaw_publish_query_bind] at hresult
+  simp [LazyRevealProbe.runRaw] at hresult
+  rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+  exact hconsistent.publish coordinate
 
 theorem revealCoordinateOutput_run (coordinate : Coordinate) (cache : SplitHashCache) :
     (revealCoordinateOutput coordinate).run cache =
@@ -543,9 +593,9 @@ theorem preservesHidden_maskedOtsSignFrom (parameter : PublicParameter)
             | none => ih (counter + 1)
             | some encoding =>
                 (preservesHidden_sequenceFin _ fun chainIdx =>
-                  preservesHidden_maskedChainValue lay tree leafIdx chainIdx
-                    (encoding chainIdx)).bind fun values => preservesHidden_pure
-                      (some (BitVec.ofNat counterBits counter, values))
+                  preservesHidden_ensureChainPrefix lay tree leafIdx chainIdx
+                    (encoding chainIdx)).bind fun _ => preservesHidden_pure
+                      (some (BitVec.ofNat counterBits counter, encoding))
 
 theorem preservesHidden_maskedOtsSign (parameter : PublicParameter)
     (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (message : Digest) :
@@ -563,6 +613,15 @@ theorem preservesHidden_maskedLayerMessage (parameter : PublicParameter)
   · exact preservesHiddenImpl_ordinaryHashImpl.simulateQ
       (ftsKey parameter index (ftsSecret index))
 
+theorem preservesHidden_ensureTreePath (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) :
+    PreservesHidden (ensureTreePath lay tree leafIdx) := by
+  unfold ensureTreePath
+  exact (preservesHidden_sequenceFin _ fun level => by
+    split
+    · exact preservesHidden_ensureTreeNode _ _ _ _
+    · exact preservesHidden_pure ()).bind fun _ => preservesHidden_pure ()
+
 theorem preservesHidden_maskedSignLayer (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
     (lay : Layer) :
@@ -574,9 +633,42 @@ theorem preservesHidden_maskedSignLayer (parameter : PublicParameter)
         match result with
         | none => preservesHidden_pure none
         | some part =>
-            (preservesHidden_maskedTreePath lay (treeIndexAt index lay)
-              (leafIndexAt index lay)).bind fun path =>
-                preservesHidden_pure (some (part.1, part.2, path))
+            (preservesHidden_ensureTreePath lay (treeIndexAt index lay)
+              (leafIndexAt index lay)).bind fun _ =>
+                preservesHidden_pure (some part)
+
+theorem preservesHidden_revealPublishedCoordinate (coordinate : Coordinate) :
+    PreservesHidden (revealPublishedCoordinate coordinate) := by
+  unfold revealPublishedCoordinate
+  exact (preservesHidden_revealCoordinate coordinate).bind fun value =>
+    (preservesHidden_publishCoordinate coordinate).bind fun _ => preservesHidden_pure value
+
+theorem preservesHidden_revealLayerValues (index : Index) (lay : Layer)
+    (encoding : ChainIndex → Digit) :
+    PreservesHidden (revealLayerValues index lay encoding) := by
+  unfold revealLayerValues
+  exact (preservesHidden_sequenceFin _ fun chainIdx =>
+    preservesHidden_revealPublishedCoordinate
+      (chainValueCoordinate lay (treeIndexAt index lay) (leafIndexAt index lay)
+        chainIdx (encoding chainIdx))).bind fun values =>
+      (preservesHidden_sequenceFin _ fun level => by
+        split
+        · cases hlevelValue : level.val with
+          | zero => exact preservesHidden_revealPublishedCoordinate _
+          | succ current =>
+              rw [show current + 1 = Nat.succ current by omega]
+              change PreservesHidden
+                (if hlevel : current < maxLayerHeight then
+                  revealPublishedCoordinate (.position (.node lay (treeIndexAt index lay)
+                    ⟨current, hlevel⟩ (leafOfNat
+                      (Nat.xor ((leafIndexAt index lay).val / 2 ^ (current + 1)) 1))))
+                else pure 0)
+              by_cases hlevel : current < maxLayerHeight
+              · rw [dif_pos hlevel]
+                exact preservesHidden_revealPublishedCoordinate _
+              · rw [dif_neg hlevel]
+                exact preservesHidden_pure 0
+        · exact preservesHidden_pure 0).bind fun path => preservesHidden_pure (values, path)
 
 theorem preservesHidden_maskedSignAfterDigest (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
@@ -593,7 +685,9 @@ theorem preservesHidden_maskedSignAfterDigest (parameter : PublicParameter)
             | none =>
                 exact preservesHidden_pure (none : Option Signature)
             | some parts =>
-                exact preservesHidden_pure _
+                exact (preservesHidden_sequenceFin _ fun lay =>
+                  preservesHidden_revealLayerValues index lay (parts lay).2).bind fun _ =>
+                    preservesHidden_pure _
 
 theorem preservesHidden_maskedSign (parameter : PublicParameter) (root : Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message) :
@@ -627,6 +721,7 @@ theorem preservesHidden_resolveKnownInput (parameter : PublicParameter)
         change PreservesHidden
           (if knownInput = input then do
             let output ← revealCoordinateOutput coordinate
+            publishCoordinate coordinate
             modify fun cache : SplitHashCache =>
               Function.update cache (.ordinary input) (some output)
             pure output
@@ -634,8 +729,9 @@ theorem preservesHidden_resolveKnownInput (parameter : PublicParameter)
         by_cases heq : knownInput = input
         · rw [if_pos heq]
           exact (preservesHidden_revealCoordinateOutput coordinate).bind fun output =>
-            (preservesHidden_modifyOrdinary input output).bind fun _ =>
-              preservesHidden_pure output
+            (preservesHidden_publishCoordinate coordinate).bind fun _ =>
+              (preservesHidden_modifyOrdinary input output).bind fun _ =>
+                preservesHidden_pure output
         · rw [if_neg heq]
           exact preservesHidden_splitHashQuery_ordinary input
 
@@ -687,6 +783,200 @@ theorem preservesHiddenImpl_maskedExpandedAdversaryImpl (parameter : PublicParam
   cases query with
   | inl query => exact preservesHiddenImpl_probingRomImpl parameter query
   | inr query => exact preservesHiddenImpl_maskedSigningImpl parameter root ftsSecret query
+
+theorem PreservesHidden.map {computation : StateT SplitHashCache
+    (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    (hcomputation : PreservesHidden computation) (transform : alpha → beta) :
+    PreservesHidden (transform <$> computation) := by
+  rw [map_eq_bind_pure_comp]
+  exact hcomputation.bind fun value => preservesHidden_pure (transform value)
+
+def WriterPreservesHidden [EmptyCollection ω] [Append ω]
+    (computation : WriterT ω
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))) alpha) : Prop :=
+  PreservesHidden computation.run
+
+theorem writerPreservesHidden_pure [EmptyCollection ω] [Append ω]
+    [LawfulAppend ω] (value : alpha) :
+    WriterPreservesHidden (pure value : WriterT ω
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))) alpha) := by
+  rw [WriterPreservesHidden, WriterT.run_pure']
+  exact preservesHidden_pure (value, ∅)
+
+theorem WriterPreservesHidden.bind [EmptyCollection ω] [Append ω]
+    [LawfulAppend ω]
+    {left : WriterT ω
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))) alpha}
+    {next : alpha → WriterT ω
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))) beta}
+    (hleft : WriterPreservesHidden left)
+    (hnext : ∀ value, WriterPreservesHidden (next value)) :
+    WriterPreservesHidden (left >>= next) := by
+  rw [WriterPreservesHidden, WriterT.bind_def']
+  exact PreservesHidden.bind hleft fun leftResult =>
+    PreservesHidden.map (hnext leftResult.1) fun rightResult =>
+      (rightResult.1, leftResult.2 ++ rightResult.2)
+
+theorem writerPreservesHidden_lift [EmptyCollection ω] [Append ω]
+    [LawfulAppend ω]
+    {computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    (hcomputation : PreservesHidden computation) :
+    WriterPreservesHidden
+      (monadLift computation : WriterT ω
+        (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))) alpha) := by
+  rw [WriterPreservesHidden, WriterT.run_monadLift']
+  exact hcomputation.map fun value => (value, ∅)
+
+theorem writerPreservesHidden_tell [EmptyCollection ω] [Append ω]
+    [LawfulAppend ω] (trace : ω) :
+    WriterPreservesHidden
+      (tell trace : WriterT ω
+        (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))) PUnit) := by
+  rw [WriterPreservesHidden, WriterT.run_tell]
+  exact preservesHidden_pure (PUnit.unit, trace)
+
+theorem writerPreservesHidden_withTraceAppend [EmptyCollection ω] [Append ω]
+    [LawfulAppend ω]
+    {spec : OracleSpec ι}
+    (impl : QueryImpl spec
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))))
+    (traceFn : (query : spec.Domain) → spec.Range query → ω)
+    (himpl : PreservesHiddenImpl impl) (query : spec.Domain) :
+    WriterPreservesHidden (QueryImpl.withTraceAppend impl traceFn query) := by
+  rw [QueryImpl.withTraceAppend_apply]
+  exact (writerPreservesHidden_lift (himpl query)).bind fun output =>
+    (writerPreservesHidden_tell (traceFn query output)).bind fun _ =>
+      writerPreservesHidden_pure output
+
+theorem writerPreservesHidden_simulateQ [EmptyCollection ω] [Append ω]
+    [LawfulAppend ω]
+    {spec : OracleSpec ι}
+    (impl : QueryImpl spec
+      (WriterT ω
+        (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate)))))
+    (himpl : ∀ query, WriterPreservesHidden (impl query))
+    (computation : OracleComp spec alpha) :
+    WriterPreservesHidden (simulateQ impl computation) := by
+  induction computation using OracleComp.inductionOn with
+  | pure value => exact writerPreservesHidden_pure value
+  | query_bind query next ih =>
+      rw [simulateQ_query_bind]
+      exact (himpl query).bind ih
+
+theorem preservesHidden_simulateQ_withTraceAppend_run [EmptyCollection ω] [Append ω]
+    [LawfulAppend ω]
+    {spec : OracleSpec ι}
+    (impl : QueryImpl spec
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))))
+    (traceFn : (query : spec.Domain) → spec.Range query → ω)
+    (himpl : PreservesHiddenImpl impl) (computation : OracleComp spec alpha) :
+    PreservesHidden (simulateQ (QueryImpl.withTraceAppend impl traceFn) computation).run :=
+  writerPreservesHidden_simulateQ _
+    (writerPreservesHidden_withTraceAppend impl traceFn himpl) computation
+
+theorem preservesHidden_maskedGameAfterFtsSecrets (adversary : Adversary)
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    PreservesHidden (maskedGameAfterFtsSecrets adversary parameter ftsSecret) := by
+  unfold maskedGameAfterFtsSecrets
+  exact (preservesHidden_maskedTreeRoot topLayer rootTree).bind fun root =>
+    (preservesHidden_publishCoordinate (.position (.node topLayer rootTree
+      ⟨layerHeight topLayer - 1, by norm_num [layerHeight, topLayer, maxLayerHeight]⟩ 0))).bind
+        fun _ =>
+          (preservesHidden_simulateQ_withTraceAppend_run
+            (maskedExpandedAdversaryImpl parameter root ftsSecret) signingLogFragment
+            (preservesHiddenImpl_maskedExpandedAdversaryImpl parameter root ftsSecret)
+            (adversary.main ⟨root, parameter⟩)).bind fun adversaryResult =>
+              (preservesHiddenImpl_probingRomImpl parameter).simulateQ
+                (scheme.verify ⟨root, parameter⟩ adversaryResult.1.message
+                  adversaryResult.1.signature) |>.bind fun verified =>
+                    preservesHidden_pure (decide
+                      (SigningTranscript.Valid adversaryResult.2 ∧
+                        ¬SigningTranscript.Contains adversaryResult.2 adversaryResult.1) &&
+                          verified)
+
+noncomputable def maskedGameComputation (adversary : Adversary)
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate)) Bool :=
+  maskedGameAfterFtsSecrets adversary parameter ftsSecret
+
+theorem preservesHidden_maskedGameComputation (adversary : Adversary)
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    PreservesHidden (maskedGameComputation adversary parameter ftsSecret) := by
+  rw [maskedGameComputation]
+  exact preservesHidden_maskedGameAfterFtsSecrets adversary parameter ftsSecret
+
+theorem finalizeDetailedFrom_preservesHidden (coordinates : List Coordinate)
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
+    (hconsistent : HiddenConsistent state cache) (finalState : LazyRevealProbe.State Coordinate)
+    (hresult : (false, finalState) ∈ support
+      (LazyRevealProbe.finalizeDetailedFrom coordinates state)) :
+    HiddenConsistent finalState cache := by
+  induction coordinates generalizing state with
+  | nil =>
+      simp [LazyRevealProbe.finalizeDetailedFrom] at hresult
+      rcases hresult with ⟨rfl, rfl⟩
+      exact hconsistent
+  | cons coordinate remaining ih =>
+      rw [LazyRevealProbe.finalizeDetailedFrom] at hresult
+      cases hvalue : state.values coordinate with
+      | some output =>
+          rw [hvalue] at hresult
+          exact ih (state.clearPending coordinate) (hconsistent.clearPending coordinate) hresult
+      | none =>
+          rw [hvalue] at hresult
+          rw [mem_support_bind_iff] at hresult
+          obtain ⟨output, _, hrest⟩ := hresult
+          by_cases hhit : state.hitAt coordinate output
+          · rw [if_pos hhit] at hrest
+            simp at hrest
+          · rw [if_neg hhit] at hrest
+            exact ih (state.complete coordinate output)
+              (hconsistent.complete_of_none coordinate output hvalue) hrest
+
+theorem finalizeDetailed_preservesHidden (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache) (hconsistent : HiddenConsistent state cache)
+    (finalState : LazyRevealProbe.State Coordinate)
+    (hresult : (false, finalState) ∈ support (LazyRevealProbe.finalizeDetailed state)) :
+    HiddenConsistent finalState cache :=
+  finalizeDetailedFrom_preservesHidden state.coordinates.toList state cache hconsistent
+    finalState hresult
+
+theorem detailedExperiment_hiddenConsistent
+    (computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha)
+    (hpreserves : PreservesHidden computation)
+    (initialState : LazyRevealProbe.State Coordinate) (initialCache : SplitHashCache)
+    (hinitial : HiddenConsistent initialState initialCache) (fuel : Nat)
+    (finalState : LazyRevealProbe.State Coordinate) (remaining : Nat)
+    (value : alpha) (finalCache : SplitHashCache)
+    (hresult : LazyRevealProbe.DetailedResult.done false finalState remaining
+      (value, finalCache) ∈ support
+        (LazyRevealProbe.detailedExperiment initialState fuel
+          (computation.run initialCache))) :
+    HiddenConsistent finalState finalCache := by
+  rw [LazyRevealProbe.detailedExperiment, mem_support_bind_iff] at hresult
+  obtain ⟨raw, hraw, hfinish⟩ := hresult
+  cases raw with
+  | stopped hit =>
+      simp [LazyRevealProbe.RawResult.finishDetailed] at hfinish
+  | done state remainingFuel result =>
+      rcases result with ⟨resultValue, cache⟩
+      have hmiddle : HiddenConsistent state cache := by
+        exact PreservesHidden.done
+          (computation := computation) hpreserves
+          (state := initialState) (cache := initialCache)
+          (fuel := fuel) (finalState := state) (remaining := remainingFuel)
+          (value := resultValue) (finalCache := cache) hinitial hraw
+      rw [LazyRevealProbe.RawResult.finishDetailed, mem_support_bind_iff] at hfinish
+      obtain ⟨finished, hfinished, hdone⟩ := hfinish
+      rcases finished with ⟨hit, completedState⟩
+      simp at hdone
+      rcases hdone with ⟨rfl, rfl, rfl, rfl, rfl⟩
+      exact finalizeDetailed_preservesHidden state finalCache hmiddle finalState hfinished
 
 theorem mergeDecodedPosition_eq_some_imp_tableAnswerDecoded
     (parameter : PublicParameter)
