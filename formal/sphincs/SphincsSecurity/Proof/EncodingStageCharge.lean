@@ -365,7 +365,7 @@ inductive LatentEncodingStepOutcome (cache : QueryCache HashSpec) (hfinite : Fin
       (stillNotTarget : ¬ HasEncodingTarget
         (cache.cacheQuery input answer) secretKey position)
       (hit : truncateHash answer ∈
-        encodingAnswerTargets secretKey.parameter cache hfinite position)
+        encodingValidAnswerTargets secretKey.parameter cache hfinite position)
   | paid (targets : Finset Digest)
       (hit : truncateHash answer ∈ targets)
       (drop : encodingStructuralPotential (cache.cacheQuery input answer) secretKey +
@@ -395,7 +395,7 @@ theorem latentEncodingBad_step_paid_or_provisional
             (fun structuralPosition hat =>
               hposition.not_atPosition structuralPosition hat)).2
         exact .paid (encodingAnswerTargets secretKey.parameter cache hfinite position)
-          hhit
+          (Finset.mem_filter.mp hhit).1
           (encodingStructuralPotential_add_answerTargets_card_le_of_new_target
             hfinite huncached hposition htarget htargetAfter hstructural)
       · exact .provisional position hposition htarget htargetAfter hhit

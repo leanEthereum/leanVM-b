@@ -158,6 +158,68 @@ theorem EncodingBad.latent {cache : QueryCache HashSpec} {secretKey : SecretKey}
     rwa [hfromCache] at hinvalid
   · simpa only [position, EncodingPosition.domain] using hotherAnswer
 
+theorem LatentEncodingBadAt.encodingBad_of_hasTarget
+    {cache : QueryCache HashSpec} {secretKey : SecretKey}
+    {position : EncodingPosition}
+    (hlatent : LatentEncodingBadAt cache secretKey position)
+    (htarget : HasEncodingTarget cache secretKey position) :
+    EncodingBad cache secretKey := by
+  obtain ⟨index, counter, targetPayload, otherPayload, targetAnswer, otherAnswer,
+    htree, hleaf, hsettled, hpayload, htargetAnswer, htargetValid, hbefore,
+    hpayloadNe, hotherAnswer, hcollision⟩ := hlatent
+  obtain ⟨signedPayload, hsigned⟩ := htarget
+  have hsignedData := hsigned
+  obtain ⟨_, _, _, _, _, _, _, _, signedCached⟩ := hsignedData
+  obtain ⟨signedAnswer, hsignedAnswer⟩ :=
+    Option.ne_none_iff_exists'.mp signedCached
+  obtain ⟨signedIndex, signedCounter, signedTree, signedLeaf, signedPayloadEq,
+    signedValid, signedBefore⟩ := hsigned.target_least_valid
+  have hmessagePosition : layerMessagePosition index position.lay =
+      layerMessagePosition signedIndex position.lay :=
+    layerMessagePosition_eq_of_position_eq index signedIndex position.lay
+      (htree.trans signedTree.symm) (hleaf.trans signedLeaf.symm)
+  have htargetFromCache : fromCache cache
+      (tweakableHashInput secretKey.parameter position.domain targetPayload) =
+        targetAnswer := by
+    simp [fromCache, htargetAnswer]
+  have hsignedFromCache : fromCache cache
+      (tweakableHashInput secretKey.parameter
+        (.encoding position.lay position.tree position.leafIdx) signedPayload) =
+        signedAnswer := by
+    simp only [fromCache, hsignedAnswer, Option.getD_some]
+  have hcounter : counter = signedCounter := by
+    apply BitVec.eq_of_toNat_eq
+    by_contra hne
+    have hcases : counter.toNat < signedCounter.toNat ∨
+        signedCounter.toNat < counter.toNat := by omega
+    rcases hcases with hcounterLt | hsignedLt
+    · apply signedBefore counter hcounterLt
+      have hvalid := htargetValid
+      rw [← htargetFromCache] at hvalid
+      rw [hpayload, hmessagePosition, EncodingPosition.domain, ← signedTree,
+        ← signedLeaf] at hvalid
+      exact hvalid
+    · have hsignedCachedAtLatent : cache
+          (tweakableHashInput secretKey.parameter position.domain
+            (digestBytes (honestValue (fromCache cache) secretKey.parameter
+              secretKey.otsSecret secretKey.ftsSecret
+              (layerMessagePosition index position.lay)) ++
+              counterBytes signedCounter)) = some signedAnswer := by
+        rw [hmessagePosition, ← signedPayloadEq]
+        simpa only [EncodingPosition.domain] using hsignedAnswer
+      have hinvalid := hbefore signedCounter hsignedLt signedAnswer
+        hsignedCachedAtLatent
+      apply hinvalid
+      rw [hsignedFromCache] at signedValid
+      exact signedValid
+  have hpayloadEq : targetPayload = signedPayload := by
+    rw [hpayload, signedPayloadEq, hmessagePosition, hcounter]
+  rw [hpayloadEq] at hpayloadNe htargetAnswer
+  exact ⟨position.lay, position.tree, position.leafIdx, signedPayload,
+    otherPayload, targetAnswer, otherAnswer, hsigned, hpayloadNe,
+    by simpa only [EncodingPosition.domain] using htargetAnswer,
+    by simpa only [EncodingPosition.domain] using hotherAnswer, hcollision⟩
+
 theorem LatentEncodingBad.of_cacheQuery_of_invalid_encoding
     {cache : QueryCache HashSpec} {secretKey : SecretKey}
     {input : HashInput} {answer : HashOutput} {queriedPosition : EncodingPosition}
@@ -336,6 +398,23 @@ theorem latentEncodingBad_answer_hit_of_encoding_query
           rwa [QueryCache.cacheQuery_of_ne _ _ hcandidateInputNe]
         exact hbefore candidate hcandidate candidateAnswer hcandidateAfter
 
+theorem latentEncodingBad_validAnswer_hit_of_encoding_query
+    {cache : QueryCache HashSpec} (hfinite : Finite cache)
+    {secretKey : SecretKey} {input : HashInput} {answer : HashOutput}
+    {queriedPosition : EncodingPosition}
+    (hclean : ¬ LatentEncodingBad cache secretKey)
+    (huncached : cache input = none)
+    (hqueried : AtEncodingPosition secretKey.parameter input queriedPosition)
+    (hbad : LatentEncodingBad (cache.cacheQuery input answer) secretKey) :
+    truncateHash answer ∈
+      encodingValidAnswerTargets secretKey.parameter cache hfinite queriedPosition := by
+  have hhit := latentEncodingBad_answer_hit_of_encoding_query hfinite hclean huncached
+    hqueried hbad
+  have hvalid : TargetSum.ValidDigest (truncateHash answer) := by
+    by_contra hinvalid
+    exact hclean (hbad.of_cacheQuery_of_invalid_encoding huncached hqueried hinvalid)
+  exact Finset.mem_filter.mpr ⟨hhit, hvalid⟩
+
 theorem latentEncodingBadAt_message_hit_of_settling_query
     {cache : QueryCache HashSpec} (hfinite : Finite cache)
     {secretKey : SecretKey} {input : HashInput} {answer : HashOutput}
@@ -472,7 +551,7 @@ theorem latentEncodingBad_step_classify
     (∃ position : EncodingPosition,
       AtEncodingPosition secretKey.parameter input position ∧
         truncateHash answer ∈
-          encodingAnswerTargets secretKey.parameter cache hfinite position)
+          encodingValidAnswerTargets secretKey.parameter cache hfinite position)
       ∨ (∃ (position : EncodingPosition) (index : Index),
         treeIndexAt index position.lay = position.tree ∧
           leafIndexAt index position.lay = position.leafIdx ∧
@@ -490,7 +569,7 @@ theorem latentEncodingBad_step_classify
       AtEncodingPosition secretKey.parameter input position
   · obtain ⟨position, hposition⟩ := hencoding
     exact Or.inl ⟨position, hposition,
-      latentEncodingBad_answer_hit_of_encoding_query hfinite hclean huncached
+      latentEncodingBad_validAnswer_hit_of_encoding_query hfinite hclean huncached
         hposition hbad⟩
   · right
     obtain ⟨position, index, counter, targetPayload, otherPayload, targetAnswer,
@@ -637,7 +716,7 @@ theorem latentEncodingBad_step_targets
     (∃ position : EncodingPosition,
       AtEncodingPosition secretKey.parameter input position ∧
         truncateHash answer ∈
-          encodingAnswerTargets secretKey.parameter cache hfinite position)
+          encodingValidAnswerTargets secretKey.parameter cache hfinite position)
       ∨ (∃ position : EncodingPosition,
         truncateHash answer ∈
           encodingMessageTargets secretKey.parameter cache hfinite position)
