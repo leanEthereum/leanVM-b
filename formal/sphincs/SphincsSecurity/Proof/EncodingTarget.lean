@@ -186,6 +186,90 @@ theorem mem_queriedInputs_encodingSearch (f : QueryImpl HashSpec Id)
   exact mem_queriedInputs_encodingSearchFrom f parameter lay tree leafIdx message
     encodingAttemptLimit 0 input (by simpa only [encodingSearch] using hinput)
 
+theorem encodingSearchFrom_selected_mem (f : QueryImpl HashSpec Id)
+    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (message : Digest) (attempts counter : Nat) (selected : Counter)
+    (hselected : evalWithAnswerFn f
+      (encodingSearchFrom parameter lay tree leafIdx message attempts counter) = some selected) :
+    tweakableHashInput parameter (.encoding lay tree leafIdx)
+        (digestBytes message ++ counterBytes selected) ∈
+      queriedInputs f
+        (encodingSearchFrom parameter lay tree leafIdx message attempts counter) := by
+  induction attempts generalizing counter with
+  | zero => simp [encodingSearchFrom] at hselected
+  | succ attempts ih =>
+      rw [encodingSearchFrom, evalWithAnswerFn_bind] at hselected
+      cases hencode : evalWithAnswerFn f
+          (encode parameter lay tree leafIdx message (BitVec.ofNat counterBits counter)) with
+      | none =>
+          simp only [hencode] at hselected
+          rw [encodingSearchFrom, queriedInputs_bind]
+          apply List.mem_append_right
+          simp only [hencode]
+          exact ih (counter + 1) hselected
+      | some codeword =>
+          simp only [hencode, evalWithAnswerFn_pure, Option.some.injEq] at hselected
+          subst selected
+          rw [encodingSearchFrom, queriedInputs_bind]
+          apply List.mem_append_left
+          simp only [encode, queriedInputs_bind, queriedInputs_tweakableHash,
+            queriedInputs_pure, List.append_nil, List.mem_singleton]
+
+theorem encodingSearch_selected_mem (f : QueryImpl HashSpec Id)
+    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (message : Digest) (selected : Counter)
+    (hselected : evalWithAnswerFn f
+      (encodingSearch parameter lay tree leafIdx message) = some selected) :
+    tweakableHashInput parameter (.encoding lay tree leafIdx)
+        (digestBytes message ++ counterBytes selected) ∈
+      queriedInputs f (encodingSearch parameter lay tree leafIdx message) := by
+  exact encodingSearchFrom_selected_mem f parameter lay tree leafIdx message
+    encodingAttemptLimit 0 selected (by simpa only [encodingSearch] using hselected)
+
+theorem otsSignFrom_selected_encoding_mem (f : QueryImpl HashSpec Id)
+    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (secret : ChainIndex → Digest) (message : Digest) (attempts counter : Nat)
+    (selected : Counter) (values : ChainIndex → Digest)
+    (hselected : evalWithAnswerFn f
+      (otsSignFrom parameter lay tree leafIdx secret message attempts counter) =
+        some (selected, values)) :
+    tweakableHashInput parameter (.encoding lay tree leafIdx)
+        (digestBytes message ++ counterBytes selected) ∈
+      queriedInputs f (otsSignFrom parameter lay tree leafIdx secret message attempts counter) := by
+  induction attempts generalizing counter with
+  | zero => simp [otsSignFrom] at hselected
+  | succ attempts ih =>
+      rw [otsSignFrom, evalWithAnswerFn_bind] at hselected
+      cases hencode : evalWithAnswerFn f
+          (encode parameter lay tree leafIdx message (BitVec.ofNat counterBits counter)) with
+      | none =>
+          simp only [hencode] at hselected
+          rw [otsSignFrom, queriedInputs_bind]
+          apply List.mem_append_right
+          simp only [hencode]
+          exact ih (counter + 1) hselected
+      | some codeword =>
+          simp only [hencode, evalWithAnswerFn_bind, evalWithAnswerFn_sequenceFin,
+            evalWithAnswerFn_pure, Option.some.injEq, Prod.mk.injEq] at hselected
+          have hcounter : BitVec.ofNat counterBits counter = selected := hselected.1
+          subst selected
+          rw [otsSignFrom, queriedInputs_bind]
+          apply List.mem_append_left
+          simp only [encode, queriedInputs_bind, queriedInputs_tweakableHash,
+            queriedInputs_pure, List.append_nil, List.mem_singleton]
+
+theorem otsSign_selected_encoding_mem (f : QueryImpl HashSpec Id)
+    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (secret : ChainIndex → Digest) (message : Digest) (selected : Counter)
+    (values : ChainIndex → Digest)
+    (hselected : evalWithAnswerFn f (otsSign parameter lay tree leafIdx secret message) =
+      some (selected, values)) :
+    tweakableHashInput parameter (.encoding lay tree leafIdx)
+        (digestBytes message ++ counterBytes selected) ∈
+      queriedInputs f (otsSign parameter lay tree leafIdx secret message) := by
+  exact otsSignFrom_selected_encoding_mem f parameter lay tree leafIdx secret message
+    encodingAttemptLimit 0 selected values (by simpa only [otsSign] using hselected)
+
 theorem otsSignFrom_encodingSearchFrom_some_cached (f : QueryImpl HashSpec Id)
     (cache : QueryCache HashSpec) (parameter : PublicParameter) (lay : Layer)
     (tree : TreeIndex) (leafIdx : LeafIndex) (secret : ChainIndex → Digest)
