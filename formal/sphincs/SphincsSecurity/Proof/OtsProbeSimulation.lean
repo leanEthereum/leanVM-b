@@ -217,7 +217,8 @@ theorem cleanFreshEvent_exists_matching_probe
         probe.MatchesInput parameter input ∧ result.2.cache input ≠ none := by
   obtain ⟨f, digest, hf, hvalid, hnotContains, hdigest, hadmissible, hfresh⟩ := hevent.2
   obtain ⟨probe, input, hhit, hmatch, hcached⟩ :=
-    SphincsSecurity.Concrete.OtsProbeSimulation.FreshLayerOpening.exists_matching_probe hfresh
+    SphincsSecurity.Concrete.OtsProbeSimulation.FreshLayerOpening.exists_matching_probe
+      hfresh.toFreshLayerOpening
   refine ⟨f, probe, input, hf, ?_, hmatch, hcached⟩
   rw [Probe.Hits] at hhit ⊢
   rw [← probe.target_ftsSecret_irrel_of_matchesInput f parameter otsSecret
@@ -237,7 +238,7 @@ theorem cleanBackwardEvent_exists_matching_probe
   obtain ⟨f, digest, hf, hvalid, hnotContains, hdigest, hadmissible, hbackward⟩ := hevent.2
   obtain ⟨probe, input, hhit, hmatch, hcached⟩ :=
     SphincsSecurity.Concrete.OtsProbeSimulation.BackwardChainOpening.exists_matching_probe
-      hbackward
+      hbackward.toBackwardChainOpening
   refine ⟨f, probe, input, hf, ?_, hmatch, hcached⟩
   rw [Probe.Hits] at hhit ⊢
   rw [← probe.target_ftsSecret_irrel_of_matchesInput f parameter otsSecret

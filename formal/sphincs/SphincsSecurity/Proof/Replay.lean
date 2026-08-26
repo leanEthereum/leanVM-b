@@ -61,8 +61,8 @@ theorem fullyHonest_layers_exact_or_obstacle (f : QueryImpl HashSpec Id)
           ∧ signature.chainValue lay = forgery.signature.chainValue lay
           ∧ ∀ level, level < layerHeight lay →
             signaturePath signature lay level = signaturePath forgery.signature lay level)
-      ∨ LayerObstacle f cache secretKey signingLog := by
-  by_cases hobstacle : LayerObstacle f cache secretKey signingLog
+      ∨ ForgedLayerObstacle f cache secretKey signingLog index forgery.signature := by
+  by_cases hobstacle : ForgedLayerObstacle f cache secretKey signingLog index forgery.signature
   · exact Or.inr hobstacle
   · left
     intro lay
@@ -78,16 +78,12 @@ theorem fullyHonest_layers_exact_or_obstacle (f : QueryImpl HashSpec Id)
         (signaturePath forgery.signature lay) hsignedOpening (hfull.1 lay).1 with
       hexact | hencoding | hearlier
     · exact ⟨hexact.2.1, hexact.2.2.1, hexact.2.2.2⟩
-    · exact (hobstacle ⟨lay, treeIndexAt index lay, leafIndexAt index lay,
-        evalWithAnswerFn f (layerMessage secretKey index lay), forgery.signature.counter lay,
-        forgery.signature.chainValue lay, signaturePath forgery.signature lay, (hfull.1 lay).1,
-        (hfull.1 lay).2,
+    · exact (hobstacle ⟨lay, evalWithAnswerFn f (layerMessage secretKey index lay),
+        (hfull.1 lay).1, (hfull.1 lay).2,
         Or.inr ⟨entry, signature, index, leaves, hentry, hresponse, hrun, hsignedFts.1,
           rfl, rfl, hsignedMessage, hsignedOpening, hsignedEncoding, Or.inl hencoding⟩⟩).elim
-    · exact (hobstacle ⟨lay, treeIndexAt index lay, leafIndexAt index lay,
-        evalWithAnswerFn f (layerMessage secretKey index lay), forgery.signature.counter lay,
-        forgery.signature.chainValue lay, signaturePath forgery.signature lay, (hfull.1 lay).1,
-        (hfull.1 lay).2,
+    · exact (hobstacle ⟨lay, evalWithAnswerFn f (layerMessage secretKey index lay),
+        (hfull.1 lay).1, (hfull.1 lay).2,
         Or.inr ⟨entry, signature, index, leaves, hentry, hresponse, hrun, hsignedFts.1,
           rfl, rfl, hsignedMessage, hsignedOpening, hsignedEncoding, Or.inr hearlier⟩⟩).elim
 
@@ -107,7 +103,7 @@ theorem fullyHonest_replay_or_digestCollision (f : QueryImpl HashSpec Id)
     (hsignedFts : HonestFtsSignAt f cache secretKey entry.1 signature index leaves) :
     SigningTranscript.Contains signingLog forgery
       ∨ MessageDigestCollision f cache secretKey signingLog forgery
-      ∨ LayerObstacle f cache secretKey signingLog := by
+      ∨ ForgedLayerObstacle f cache secretKey signingLog index forgery.signature := by
   obtain ⟨_, signedDigest, hsignedDigest, _, hsignedIndex, hsignedLeaves, _⟩ :=
     hsignedFts.1.extract
   have hdigest : signedDigest = forgedDigest := by
@@ -122,7 +118,7 @@ theorem fullyHonest_replay_or_digestCollision (f : QueryImpl HashSpec Id)
   · have hpayload := (tweakableHashInput_injective secretKey.parameter (by trivial) (by trivial)
       hinput).2
     obtain ⟨hmessage, hrandomness⟩ := messageDigestPayload_injective secretKey.root hpayload
-    by_cases hobstacle : LayerObstacle f cache secretKey signingLog
+    by_cases hobstacle : ForgedLayerObstacle f cache secretKey signingLog index forgery.signature
     · exact Or.inr (Or.inr hobstacle)
     have hlayers := (fullyHonest_layers_exact_or_obstacle f cache secretKey signingLog forgery
       index leaves hfull entry signature hentry hresponse hrun hsignedFts).resolve_right hobstacle
@@ -177,7 +173,7 @@ theorem fullyHonest_leak_classify (f : QueryImpl HashSpec Id) (cache : QueryCach
     (hnotContains : ¬ SigningTranscript.Contains signingLog forgery)
     (hleak : FewTimeLeak f cache secretKey signingLog index leaves) :
     MessageDigestCollision f cache secretKey signingLog forgery
-      ∨ LayerObstacle f cache secretKey signingLog
+      ∨ ForgedLayerObstacle f cache secretKey signingLog index forgery.signature
       ∨ ProperFewTimeLeak f cache secretKey signingLog index leaves := by
   by_cases hfullEntry : ∃ (entry : (request : SignRequest) × SigningSpec.Range request)
       (signature : Signature),

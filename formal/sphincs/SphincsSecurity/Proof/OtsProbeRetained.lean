@@ -310,13 +310,15 @@ def RetainedFreshLayerOpeningWitness (parameter : PublicParameter)
     (table : Coordinate → HashOutput)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :=
   RetainedWitnessFor parameter table ftsSecret
-    fun f cache secretKey log _ _ _ => FreshLayerOpening f cache secretKey log
+    fun f cache secretKey log forgery index _ =>
+      ForgedFreshLayerOpening f cache secretKey log index forgery.signature
 
 def RetainedBackwardChainOpeningWitness (parameter : PublicParameter)
     (table : Coordinate → HashOutput)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :=
   RetainedWitnessFor parameter table ftsSecret
-    fun f cache secretKey log _ _ _ => BackwardChainOpening f cache secretKey log
+    fun f cache secretKey log forgery index _ =>
+      ForgedBackwardChainOpening f cache secretKey log index forgery.signature
 
 theorem probEvent_cleanFresh_le_actualRetained
     (adversary : Adversary) (parameter : PublicParameter)
@@ -328,7 +330,8 @@ theorem probEvent_cleanFresh_le_actualRetained
         actualRetainedGameAfterTable adversary parameter ftsSecret table] := by
   apply le_trans (probEvent_mono fun _ _ hevent => hevent.2)
   exact probEvent_viewedWitness_le_actualRetained adversary parameter table ftsSecret
-    (fun f cache secretKey log _ _ _ => FreshLayerOpening f cache secretKey log)
+    (fun f cache secretKey log forgery index _ =>
+      ForgedFreshLayerOpening f cache secretKey log index forgery.signature)
 
 theorem probEvent_cleanBackward_le_actualRetained
     (adversary : Adversary) (parameter : PublicParameter)
@@ -340,6 +343,7 @@ theorem probEvent_cleanBackward_le_actualRetained
         actualRetainedGameAfterTable adversary parameter ftsSecret table] := by
   apply le_trans (probEvent_mono fun _ _ hevent => hevent.2)
   exact probEvent_viewedWitness_le_actualRetained adversary parameter table ftsSecret
-    (fun f cache secretKey log _ _ _ => BackwardChainOpening f cache secretKey log)
+    (fun f cache secretKey log forgery index _ =>
+      ForgedBackwardChainOpening f cache secretKey log index forgery.signature)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

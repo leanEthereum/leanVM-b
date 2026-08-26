@@ -62,8 +62,8 @@ def ViewedFreshLayerOpeningWitness (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :=
   ViewedTerminalWitnessFor parameter otsSecret ftsSecret
-    fun f cache secretKey signingLog _ _ _ =>
-      FreshLayerOpening f cache secretKey signingLog
+    fun f cache secretKey signingLog forgery index _ =>
+      ForgedFreshLayerOpening f cache secretKey signingLog index forgery.signature
 
 def ViewedEncodingCollisionWitness (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
@@ -76,8 +76,8 @@ def ViewedBackwardChainOpeningWitness (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :=
   ViewedTerminalWitnessFor parameter otsSecret ftsSecret
-    fun f cache secretKey signingLog _ _ _ =>
-      BackwardChainOpening f cache secretKey signingLog
+    fun f cache secretKey signingLog forgery index _ =>
+      ForgedBackwardChainOpening f cache secretKey signingLog index forgery.signature
 
 def ViewedMessageDigestCollisionWitness (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
@@ -204,8 +204,9 @@ theorem gameAfterSecretsWithViewTrace_winning_terminal_classify
         htop hftsRun
     rcases hclassified with hbad | hobstacle | hfull
     · exact Or.inl hbad
-    · rcases layerObstacle_classify f finalCache secretKey state.trace.signing.toSigningLog
-          hobstacle with hfresh | hencoding | hbackward
+    · rcases forgedLayerObstacle_classify f finalCache secretKey
+          state.trace.signing.toSigningLog index forgery.signature hobstacle with
+        hfresh | hencoding | hbackward
       · exact Or.inr ⟨f, digest, hf, htranscript.1, htranscript.2, hdigest,
           hadmissible, Or.inl hfresh⟩
       · exact Or.inr ⟨f, digest, hf, htranscript.1, htranscript.2, hdigest,
@@ -219,8 +220,9 @@ theorem gameAfterSecretsWithViewTrace_winning_terminal_classify
               hfull htranscript.2 hleak with hcollision | hobstacle | hproper
         · exact Or.inr ⟨f, digest, hf, htranscript.1, htranscript.2, hdigest,
             hadmissible, Or.inr (Or.inr (Or.inr (Or.inl ⟨hcollision, hleak⟩)))⟩
-        · rcases layerObstacle_classify f finalCache secretKey state.trace.signing.toSigningLog
-              hobstacle with hfresh | hencoding | hbackward
+        · rcases forgedLayerObstacle_classify f finalCache secretKey
+              state.trace.signing.toSigningLog index forgery.signature hobstacle with
+            hfresh | hencoding | hbackward
           · exact Or.inr ⟨f, digest, hf, htranscript.1, htranscript.2, hdigest,
               hadmissible, Or.inl hfresh⟩
           · exact Or.inr ⟨f, digest, hf, htranscript.1, htranscript.2, hdigest,

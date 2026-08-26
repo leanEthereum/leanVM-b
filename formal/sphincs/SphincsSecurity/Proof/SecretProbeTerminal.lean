@@ -191,7 +191,7 @@ theorem ViewedFreshLayerOpeningWitness.exists_hit_probe
     ∃ (f : QueryImpl HashSpec Id) (probe : OtsValueProbe),
       result.2.cache.AgreesWithFn f ∧ probe.Hits f parameter otsSecret := by
   obtain ⟨f, digest, hf, hvalid, hnotContains, hdigest, hadmissible, hfresh⟩ := hwitness
-  obtain ⟨probe, hhit, _⟩ := hfresh.exists_hit_probe
+  obtain ⟨probe, hhit, _⟩ := hfresh.toFreshLayerOpening.exists_hit_probe
   exact ⟨f, probe, hf, hhit⟩
 
 theorem ViewedBackwardChainOpeningWitness.exists_hit_probe
@@ -204,7 +204,8 @@ theorem ViewedBackwardChainOpeningWitness.exists_hit_probe
       result.2.cache.AgreesWithFn f ∧ probe.Hits f parameter otsSecret
         ∧ probe.digit.val < signedDigit.val := by
   obtain ⟨f, digest, hf, hvalid, hnotContains, hdigest, hadmissible, hbackward⟩ := hwitness
-  obtain ⟨probe, signedDigit, hhit, hlt⟩ := hbackward.exists_hit_probe
+  obtain ⟨probe, signedDigit, hhit, hlt⟩ :=
+    hbackward.toBackwardChainOpening.exists_hit_probe
   exact ⟨f, probe, signedDigit, hf, hhit, hlt⟩
 
 theorem cleanFreshEvent_exists_hit_probe

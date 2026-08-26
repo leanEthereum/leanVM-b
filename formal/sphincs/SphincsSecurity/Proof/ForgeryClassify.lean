@@ -21,6 +21,31 @@ def LayerObstacle (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
       ∧ (¬ SignedLayerAt f cache secretKey signingLog lay tree leafIdx
         ∨ LayerComparisonFailure f cache secretKey signingLog lay tree leafIdx message counter)
 
+def ForgedLayerObstacle (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
+    (secretKey : SecretKey) (signingLog : QueryLog SigningSpec) (index : Index)
+    (signature : Signature) : Prop :=
+  ∃ (lay : Layer) (message : Digest),
+    HonestLayerOpening f secretKey.parameter secretKey.otsSecret lay
+        (treeIndexAt index lay) (leafIndexAt index lay) message (signature.counter lay)
+        (signature.chainValue lay) (signaturePath signature lay)
+      ∧ CachedRun cache f (otsLeaf secretKey.parameter lay (treeIndexAt index lay)
+        (leafIndexAt index lay) message (signature.counter lay) (signature.chainValue lay))
+      ∧ (¬ SignedLayerAt f cache secretKey signingLog lay
+          (treeIndexAt index lay) (leafIndexAt index lay)
+        ∨ LayerComparisonFailure f cache secretKey signingLog lay
+          (treeIndexAt index lay) (leafIndexAt index lay) message (signature.counter lay))
+
+theorem ForgedLayerObstacle.toLayerObstacle
+    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec}
+    {secretKey : SecretKey} {signingLog : QueryLog SigningSpec} {index : Index}
+    {signature : Signature}
+    (hobstacle : ForgedLayerObstacle f cache secretKey signingLog index signature) :
+    LayerObstacle f cache secretKey signingLog := by
+  obtain ⟨lay, message, hopening, hcached, hfailure⟩ := hobstacle
+  exact ⟨lay, treeIndexAt index lay, leafIndexAt index lay, message,
+    signature.counter lay, signature.chainValue lay, signaturePath signature lay,
+    hopening, hcached, hfailure⟩
+
 def UncoveredFtsSecret (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
     (secretKey : SecretKey) (signingLog : QueryLog SigningSpec) (index : Index)
     (leaves : DigestTree → FtsLeaf) (secrets : FtsTree → Digest) : Prop :=
@@ -122,7 +147,7 @@ theorem accepted_forgery_classify (f : QueryImpl HashSpec Id) (cache : QueryCach
     (hftsRun : CachedRun cache f
       (ftsRecover secretKey.parameter index leaves signature.ftsSecret signature.ftsPath)) :
     Bad secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache
-      ∨ LayerObstacle f cache secretKey signingLog
+      ∨ ForgedLayerObstacle f cache secretKey signingLog index signature
       ∨ FullyHonestOpening f cache secretKey index leaves signature := by
   obtain ⟨bottomLeaf, hbottom, middleLeaf, hmiddle, htopOpening, htopRun⟩ := htop
   let middleMessage := foldValue f secretKey.parameter bottomLayer
@@ -247,27 +272,17 @@ theorem accepted_forgery_classify (f : QueryImpl HashSpec Id) (cache : QueryCach
                         simpa only [middleLayer] using hmiddleRun'⟩
                     · exact ⟨by simpa only [bottomLayer, numLayers] using hbottomOpening', by
                         simpa only [bottomLayer, numLayers] using hbottomRun'⟩
-                · exact Or.inr (Or.inl ⟨bottomLayer, _, _, ftsPublicKey,
-                    signature.counter bottomLayer, signature.chainValue bottomLayer,
-                    signaturePath signature bottomLayer, hbottomOpening, hbottom.2.2.1,
-                    Or.inr hfailure⟩)
-              · exact Or.inr (Or.inl ⟨bottomLayer, _, _, ftsPublicKey,
-                  signature.counter bottomLayer, signature.chainValue bottomLayer,
-                  signaturePath signature bottomLayer, hbottomOpening, hbottom.2.2.1,
-                  Or.inl hsignedBottom⟩)
-          · exact Or.inr (Or.inl ⟨middleLayer, _, _, middleMessage,
-              signature.counter middleLayer, signature.chainValue middleLayer,
-              signaturePath signature middleLayer, hmiddleOpening, hmiddle.2.2.1,
-              Or.inr hfailure⟩)
-        · exact Or.inr (Or.inl ⟨middleLayer, _, _, middleMessage,
-            signature.counter middleLayer, signature.chainValue middleLayer,
-            signaturePath signature middleLayer, hmiddleOpening, hmiddle.2.2.1,
-            Or.inl hsignedMiddle⟩)
-    · exact Or.inr (Or.inl ⟨topLayer, _, _, topMessage, signature.counter topLayer,
-        signature.chainValue topLayer, signaturePath signature topLayer, htopOpening, htopRun,
+                · exact Or.inr (Or.inl ⟨bottomLayer, ftsPublicKey, hbottomOpening,
+                    hbottom.2.2.1, Or.inr hfailure⟩)
+              · exact Or.inr (Or.inl ⟨bottomLayer, ftsPublicKey, hbottomOpening,
+                  hbottom.2.2.1, Or.inl hsignedBottom⟩)
+          · exact Or.inr (Or.inl ⟨middleLayer, middleMessage, hmiddleOpening,
+              hmiddle.2.2.1, Or.inr hfailure⟩)
+        · exact Or.inr (Or.inl ⟨middleLayer, middleMessage, hmiddleOpening,
+            hmiddle.2.2.1, Or.inl hsignedMiddle⟩)
+    · exact Or.inr (Or.inl ⟨topLayer, topMessage, htopOpening, htopRun,
         Or.inr hfailure⟩)
-  · exact Or.inr (Or.inl ⟨topLayer, _, _, topMessage, signature.counter topLayer,
-      signature.chainValue topLayer, signaturePath signature topLayer, htopOpening, htopRun,
+  · exact Or.inr (Or.inl ⟨topLayer, topMessage, htopOpening, htopRun,
       Or.inl hsignedTop⟩)
 
 theorem winning_support_classify (adversary : Adversary) (parameter : PublicParameter)
@@ -305,7 +320,7 @@ theorem winning_support_classify (adversary : Adversary) (parameter : PublicPara
     rcases hclassified with hbad | hobstacle | hfts
     · exact Or.inl hbad
     · exact Or.inr ⟨root, forgery, signingLog, f, digest, hf, hvalid, hnotContains, hdigest,
-        hadmissible, Or.inl hobstacle⟩
+        hadmissible, Or.inl hobstacle.toLayerObstacle⟩
     · rcases fewTimeLeak_or_uncovered f finalCache
           (⟨parameter, root, otsSecret, ftsSecret⟩ : SecretKey) signingLog index leaves with
         hleak | ⟨tree, huncovered⟩
