@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.EncodingTarget
+import SphincsSecurity.Proof.NoMessage
 import SphincsSecurity.Proof.RootCache
 
 /-!
@@ -55,6 +56,168 @@ theorem AtEncodingPosition.not_atPosition {parameter : PublicParameter} {input :
   have hdomain := (tweakableHashInput_injective parameter (by trivial)
     position.domain_inRange (hencodingInput.symm.trans hstructural)).1
   cases position <;> simp [EncodingPosition.domain, Position.domain] at hdomain
+
+def AvoidsEncodingQueries {alpha : Type} (parameter : PublicParameter)
+    (f : QueryImpl HashSpec Id) (oa : OracleComp HashSpec alpha) : Prop :=
+  ∀ (position : EncodingPosition) (payload : HashInput),
+    tweakableHashInput parameter position.domain payload ∉ queriedInputs f oa
+
+theorem AvoidsEncodingQueries.pure {alpha : Type} (parameter : PublicParameter)
+    (f : QueryImpl HashSpec Id) (value : alpha) :
+    AvoidsEncodingQueries parameter f (pure value) := by
+  simp [AvoidsEncodingQueries]
+
+theorem AvoidsEncodingQueries.bind {alpha beta : Type} {parameter : PublicParameter}
+    {f : QueryImpl HashSpec Id} {oa : OracleComp HashSpec alpha}
+    {next : alpha → OracleComp HashSpec beta}
+    (hleft : AvoidsEncodingQueries parameter f oa)
+    (hright : AvoidsEncodingQueries parameter f (next (evalWithAnswerFn f oa))) :
+    AvoidsEncodingQueries parameter f (oa >>= next) := by
+  intro position payload hinput
+  rw [queriedInputs_bind] at hinput
+  rcases List.mem_append.mp hinput with hinput | hinput
+  · exact hleft position payload hinput
+  · exact hright position payload hinput
+
+theorem AvoidsEncodingQueries.tweakableHash (parameter : PublicParameter)
+    (f : QueryImpl HashSpec Id) (domain : HashDomain)
+    (hdomain : ∀ position : EncodingPosition, domain ≠ position.domain)
+    (payload : HashInput) : AvoidsEncodingQueries parameter f
+      (tweakableHash parameter domain payload) := by
+  intro position encodingPayload hinput
+  simp only [queriedInputs_tweakableHash, List.mem_singleton] at hinput
+  simp only [tweakableHashInput] at hinput
+  obtain ⟨hprefix, _⟩ := List.append_inj hinput
+    (by simp [tweakBytes_length, bytesLE_length])
+  obtain ⟨htweak, _⟩ := List.append_inj' hprefix (by simp [bytesLE_length])
+  cases domain with
+  | encoding lay tree leafIdx =>
+      apply hdomain position
+      exact (tweakBytes_injective (by trivial) (by trivial) htweak).symm
+  | chain | leaf | node | ftsLeaf | ftsNode | ftsRoots | message =>
+      rw [tweakBytes_eq_iff] at htweak
+      simp [hashDomainFields, EncodingPosition.domain, TweakFields.mk.injEq] at htweak
+
+theorem QueriesAtPositions.avoidsEncoding {alpha : Type} {parameter : PublicParameter}
+    {f : QueryImpl HashSpec Id} {oa : OracleComp HashSpec alpha}
+    (hrun : QueriesAtPositions parameter f oa) : AvoidsEncodingQueries parameter f oa := by
+  intro position payload hinput
+  obtain ⟨structuralPosition, structuralPayload, heq⟩ := hrun _ hinput
+  exact (show AtEncodingPosition parameter
+    (tweakableHashInput parameter position.domain payload) position from ⟨_, rfl⟩).not_atPosition
+      structuralPosition ⟨structuralPayload, heq⟩
+
+theorem avoidsEncodingQueries_sequenceFin {alpha : Type} {n : Nat}
+    (parameter : PublicParameter) (f : QueryImpl HashSpec Id)
+    (computation : Fin n → OracleComp HashSpec alpha)
+    (hcomputation : ∀ index, AvoidsEncodingQueries parameter f (computation index)) :
+    AvoidsEncodingQueries parameter f (sequenceFin computation) := by
+  induction n with
+  | zero => exact AvoidsEncodingQueries.pure parameter f _
+  | succ n ih =>
+      rw [sequenceFin]
+      apply AvoidsEncodingQueries.bind (hcomputation 0)
+      apply AvoidsEncodingQueries.bind
+      · exact ih (fun index : Fin n => computation index.succ)
+          (fun index => hcomputation index.succ)
+      · exact AvoidsEncodingQueries.pure parameter f _
+
+theorem not_mem_queriedInputs_sequenceFin {alpha : Type} {n : Nat}
+    (f : QueryImpl HashSpec Id) (computation : Fin n → OracleComp HashSpec alpha)
+    (input : HashInput) (hcomputation : ∀ index, input ∉ queriedInputs f (computation index)) :
+    input ∉ queriedInputs f (sequenceFin computation) := by
+  induction n with
+  | zero => simp [sequenceFin]
+  | succ n ih =>
+      rw [sequenceFin, queriedInputs_bind]
+      intro hinput
+      rcases List.mem_append.mp hinput with hhead | hrest
+      · exact hcomputation 0 hhead
+      · rw [queriedInputs_bind] at hrest
+        rcases List.mem_append.mp hrest with htail | hpure
+        · exact ih (fun index : Fin n => computation index.succ)
+            (fun index : Fin n => hcomputation index.succ) htail
+        · simp at hpure
+
+theorem avoidsEncodingQueries_treeNode (parameter : PublicParameter)
+    (f : QueryImpl HashSpec Id) (lay : Layer) (tree : TreeIndex)
+    (secret : LeafIndex → ChainIndex → Digest) (level nodeIdx : Nat) :
+    AvoidsEncodingQueries parameter f (treeNode parameter lay tree secret level nodeIdx) := by
+  induction level generalizing nodeIdx with
+  | zero =>
+      rw [treeNode_zero_eq]
+      apply AvoidsEncodingQueries.bind
+      · exact QueriesAtPositions.avoidsEncoding
+          (queriesAtPositions_oneTimePublicKey parameter f lay tree (leafOfNat nodeIdx)
+            (secret (leafOfNat nodeIdx)))
+      · apply AvoidsEncodingQueries.tweakableHash
+        intro position
+        simp [EncodingPosition.domain]
+  | succ level ih =>
+      rw [treeNode_succ_eq]
+      apply AvoidsEncodingQueries.bind (ih (2 * nodeIdx))
+      apply AvoidsEncodingQueries.bind (ih (2 * nodeIdx + 1))
+      apply AvoidsEncodingQueries.tweakableHash
+      intro position
+      simp [EncodingPosition.domain]
+
+theorem avoidsEncodingQueries_treePath (parameter : PublicParameter)
+    (f : QueryImpl HashSpec Id) (lay : Layer) (tree : TreeIndex)
+    (secret : LeafIndex → ChainIndex → Digest) (leafIdx : LeafIndex) :
+    AvoidsEncodingQueries parameter f (treePath parameter lay tree secret leafIdx) := by
+  apply avoidsEncodingQueries_sequenceFin
+  intro level
+  split
+  · exact avoidsEncodingQueries_treeNode parameter f lay tree secret _ _
+  · exact AvoidsEncodingQueries.pure parameter f _
+
+theorem avoidsEncodingQueries_ftsNode (parameter : PublicParameter)
+    (f : QueryImpl HashSpec Id) (index : Index) (tree : FtsTree)
+    (secret : FtsLeaf → Digest) (level nodeIdx : Nat) :
+    AvoidsEncodingQueries parameter f (ftsNode parameter index tree secret level nodeIdx) := by
+  induction level generalizing nodeIdx with
+  | zero =>
+      rw [ftsNode_zero_eq]
+      apply AvoidsEncodingQueries.tweakableHash
+      intro position
+      simp [EncodingPosition.domain]
+  | succ level ih =>
+      rw [ftsNode_succ_eq]
+      apply AvoidsEncodingQueries.bind (ih (2 * nodeIdx))
+      apply AvoidsEncodingQueries.bind (ih (2 * nodeIdx + 1))
+      apply AvoidsEncodingQueries.tweakableHash
+      intro position
+      simp [EncodingPosition.domain]
+
+theorem avoidsEncodingQueries_ftsKey (parameter : PublicParameter)
+    (f : QueryImpl HashSpec Id) (index : Index) (secret : FtsTree → FtsLeaf → Digest) :
+    AvoidsEncodingQueries parameter f (ftsKey parameter index secret) := by
+  rw [ftsKey]
+  apply AvoidsEncodingQueries.bind
+  · apply avoidsEncodingQueries_sequenceFin
+    intro tree
+    exact avoidsEncodingQueries_ftsNode parameter f index tree (secret tree) ftsTreeHeight 0
+  · apply AvoidsEncodingQueries.tweakableHash
+    intro position
+    simp [EncodingPosition.domain]
+
+theorem avoidsEncodingQueries_ftsOpen (parameter : PublicParameter)
+    (f : QueryImpl HashSpec Id) (index : Index) (leaves : DigestTree → FtsLeaf)
+    (secret : FtsTree → FtsLeaf → Digest) :
+    AvoidsEncodingQueries parameter f (ftsOpen parameter index leaves secret) := by
+  apply avoidsEncodingQueries_sequenceFin
+  intro tree
+  apply avoidsEncodingQueries_sequenceFin
+  intro level
+  exact avoidsEncodingQueries_ftsNode parameter f index tree (secret tree) level.val _
+
+theorem avoidsEncodingQueries_layerMessage (f : QueryImpl HashSpec Id)
+    (secretKey : SecretKey) (index : Index) (lay : Layer) :
+    AvoidsEncodingQueries secretKey.parameter f (layerMessage secretKey index lay) := by
+  rw [layerMessage]
+  split
+  · exact avoidsEncodingQueries_treeNode secretKey.parameter f _ _ _ _ _
+  · exact avoidsEncodingQueries_ftsKey secretKey.parameter f index (secretKey.ftsSecret index)
 
 def QueriesAtEncodingPositionOrPositions {alpha : Type} (parameter : PublicParameter)
     (f : QueryImpl HashSpec Id) (position : EncodingPosition)
@@ -143,6 +306,251 @@ theorem encodingPosition_eq_of_mem_otsSign {parameter : PublicParameter}
       input hinput with hrun | ⟨structuralPosition, hstructural⟩
   · exact atEncodingPosition_unique hposition hrun
   · exact absurd hstructural (hposition.not_atPosition structuralPosition)
+
+theorem encodingInput_mem_signLayer_otsSign {f : QueryImpl HashSpec Id}
+    {secretKey : SecretKey} {index : Index} {lay : Layer} {input : HashInput}
+    {position : EncodingPosition} (hposition : AtEncodingPosition secretKey.parameter input position)
+    (hinput : input ∈ queriedInputs f (signLayer secretKey index lay)) :
+    position = ⟨lay, treeIndexAt index lay, leafIndexAt index lay⟩
+      ∧ input ∈ queriedInputs f
+        (otsSign secretKey.parameter lay (treeIndexAt index lay) (leafIndexAt index lay)
+          (secretKey.otsSecret lay (treeIndexAt index lay) (leafIndexAt index lay))
+          (evalWithAnswerFn f (layerMessage secretKey index lay))) := by
+  obtain ⟨payload, hpayload⟩ := hposition
+  rw [signLayer, queriedInputs_bind] at hinput
+  rcases List.mem_append.mp hinput with hmessage | hrest
+  · exact absurd hmessage (by
+      rw [hpayload]
+      exact avoidsEncodingQueries_layerMessage f secretKey index lay position payload)
+  · rw [queriedInputs_bind] at hrest
+    rcases List.mem_append.mp hrest with hots | hafter
+    · exact ⟨encodingPosition_eq_of_mem_otsSign ⟨payload, hpayload⟩ hots, hots⟩
+    · let signed := evalWithAnswerFn f
+        (otsSign secretKey.parameter lay (treeIndexAt index lay) (leafIndexAt index lay)
+          (secretKey.otsSecret lay (treeIndexAt index lay) (leafIndexAt index lay))
+          (evalWithAnswerFn f (layerMessage secretKey index lay)))
+      have havoidAfter : AvoidsEncodingQueries secretKey.parameter f
+          (match signed with
+          | none => pure none
+          | some (counter, values) => do
+              let path ← treePath secretKey.parameter lay (treeIndexAt index lay)
+                (secretKey.otsSecret lay (treeIndexAt index lay)) (leafIndexAt index lay)
+              pure (some (counter, values, path))) := by
+        cases signed with
+        | none => exact AvoidsEncodingQueries.pure secretKey.parameter f _
+        | some part =>
+            apply AvoidsEncodingQueries.bind
+            · exact avoidsEncodingQueries_treePath secretKey.parameter f lay
+                (treeIndexAt index lay) (secretKey.otsSecret lay (treeIndexAt index lay))
+                (leafIndexAt index lay)
+            · exact AvoidsEncodingQueries.pure secretKey.parameter f _
+      dsimp only [signed] at havoidAfter
+      rw [hpayload] at hafter
+      exact (havoidAfter position payload hafter).elim
+
+theorem other_valid_encoding_not_mem_otsSignFrom (f : QueryImpl HashSpec Id)
+    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (secret : ChainIndex → Digest) (message otherMessage : Digest) (attempts counter : Nat)
+    (resultCounter otherCounter : Counter) (values : ChainIndex → Digest)
+    (otherCodeword : Encoding)
+    (hsign : evalWithAnswerFn f
+      (otsSignFrom parameter lay tree leafIdx secret message attempts counter) =
+        some (resultCounter, values))
+    (hother : evalWithAnswerFn f
+      (encode parameter lay tree leafIdx otherMessage otherCounter) = some otherCodeword)
+    (hne : tweakableHashInput parameter (.encoding lay tree leafIdx)
+        (digestBytes message ++ counterBytes resultCounter) ≠
+      tweakableHashInput parameter (.encoding lay tree leafIdx)
+        (digestBytes otherMessage ++ counterBytes otherCounter)) :
+    tweakableHashInput parameter (.encoding lay tree leafIdx)
+        (digestBytes otherMessage ++ counterBytes otherCounter) ∉
+      queriedInputs f
+        (otsSignFrom parameter lay tree leafIdx secret message attempts counter) := by
+  induction attempts generalizing counter with
+  | zero => simp [otsSignFrom]
+  | succ attempts ih =>
+      rw [otsSignFrom, evalWithAnswerFn_bind] at hsign
+      rw [otsSignFrom, queriedInputs_bind]
+      cases hencode : evalWithAnswerFn f
+          (encode parameter lay tree leafIdx message (BitVec.ofNat counterBits counter)) with
+      | none =>
+          simp only [hencode] at hsign
+          intro hmem
+          rcases List.mem_append.mp hmem with hcurrent | hrest
+          · simp only [encode, queriedInputs_bind, queriedInputs_tweakableHash,
+              queriedInputs_pure, List.append_nil, List.mem_singleton] at hcurrent
+            have hdecodeNone := hencode
+            have hdecodeSome := hother
+            simp only [encode, evalWithAnswerFn_bind, evalWithAnswerFn_pure,
+              eval_tweakableHash] at hdecodeNone hdecodeSome
+            rw [hcurrent] at hdecodeSome
+            rw [hdecodeNone] at hdecodeSome
+            simp at hdecodeSome
+          · exact ih (counter + 1) hsign hrest
+      | some codeword =>
+          simp only [hencode, evalWithAnswerFn_bind, evalWithAnswerFn_sequenceFin,
+            evalWithAnswerFn_pure, Option.some.injEq, Prod.mk.injEq] at hsign
+          have hcounter : BitVec.ofNat counterBits counter = resultCounter := hsign.1
+          intro hmem
+          rcases List.mem_append.mp hmem with hcurrent | hrest
+          · simp only [encode, queriedInputs_bind, queriedInputs_tweakableHash,
+              queriedInputs_pure, List.append_nil, List.mem_singleton] at hcurrent
+            apply hne
+            rw [← hcounter]
+            exact hcurrent.symm
+          · have hstructural : QueriesAtPositions parameter f (do
+                let signedValues ← sequenceFin fun chainIdx =>
+                  chainWalk parameter lay tree leafIdx chainIdx 0 (codeword chainIdx).val
+                    (secret chainIdx)
+                pure (some (BitVec.ofNat counterBits counter, signedValues))) := by
+              apply QueriesAtPositions.bind
+              · apply queriesAtPositions_sequenceFin
+                intro chainIdx
+                exact queriesAtPositions_chainWalk parameter f lay tree leafIdx chainIdx 0 _ _
+              · exact QueriesAtPositions.pure parameter f _
+            obtain ⟨position, payload, hinput⟩ := hstructural _ hrest
+            exact (show AtEncodingPosition parameter
+              (tweakableHashInput parameter (.encoding lay tree leafIdx)
+                (digestBytes otherMessage ++ counterBytes otherCounter))
+              ⟨lay, tree, leafIdx⟩ from ⟨_, rfl⟩).not_atPosition position ⟨payload, hinput⟩
+
+theorem other_valid_encoding_not_mem_otsSign (f : QueryImpl HashSpec Id)
+    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (secret : ChainIndex → Digest) (message otherMessage : Digest)
+    (resultCounter otherCounter : Counter) (values : ChainIndex → Digest)
+    (otherCodeword : Encoding)
+    (hsign : evalWithAnswerFn f (otsSign parameter lay tree leafIdx secret message) =
+      some (resultCounter, values))
+    (hother : evalWithAnswerFn f
+      (encode parameter lay tree leafIdx otherMessage otherCounter) = some otherCodeword)
+    (hne : tweakableHashInput parameter (.encoding lay tree leafIdx)
+        (digestBytes message ++ counterBytes resultCounter) ≠
+      tweakableHashInput parameter (.encoding lay tree leafIdx)
+        (digestBytes otherMessage ++ counterBytes otherCounter)) :
+    tweakableHashInput parameter (.encoding lay tree leafIdx)
+        (digestBytes otherMessage ++ counterBytes otherCounter) ∉
+      queriedInputs f (otsSign parameter lay tree leafIdx secret message) := by
+  exact other_valid_encoding_not_mem_otsSignFrom f parameter lay tree leafIdx secret message
+    otherMessage encodingAttemptLimit 0 resultCounter otherCounter values otherCodeword
+    (by simpa only [otsSign] using hsign) hother hne
+
+theorem EncodingCollision.forged_encoding_not_mem_signed_otsSign
+    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
+    {signingLog : QueryLog SigningSpec}
+    (hcollision : EncodingCollision f cache secretKey signingLog) :
+    ∃ (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+        (forgedMessage : Digest) (forgedCounter : Counter) (index : Index),
+      treeIndexAt index lay = tree
+        ∧ leafIndexAt index lay = leafIdx
+        ∧ tweakableHashInput secretKey.parameter (.encoding lay tree leafIdx)
+            (digestBytes forgedMessage ++ counterBytes forgedCounter) ∉
+          queriedInputs f
+            (otsSign secretKey.parameter lay tree leafIdx
+              (secretKey.otsSecret lay tree leafIdx)
+              (evalWithAnswerFn f (layerMessage secretKey index lay))) := by
+  obtain ⟨lay, tree, leafIdx, forgedMessage, forgedCounter, _, _, _, signature, index,
+    leaves, _, hforgedOpening, _, _, hrun, hdigest, htree, hleaf, _, _, _, hhit⟩ := hcollision
+  obtain ⟨forgedCodeword, hforgedEncode, _, _⟩ := hforgedOpening
+  obtain ⟨part, hcounter, _, hlayer⟩ := hrun.layerRun_of_digest hdigest lay
+  obtain ⟨hots, _⟩ := hlayer.otsSign_eval_cached
+  have hnotMem := other_valid_encoding_not_mem_otsSign f secretKey.parameter lay
+    (treeIndexAt index lay) (leafIndexAt index lay)
+    (secretKey.otsSecret lay (treeIndexAt index lay) (leafIndexAt index lay))
+    (evalWithAnswerFn f (layerMessage secretKey index lay)) forgedMessage part.1 forgedCounter
+    part.2.1 forgedCodeword hots (by simpa only [htree, hleaf] using hforgedEncode) (by
+      rw [← hcounter, htree, hleaf]
+      exact hhit.1)
+  exact ⟨lay, tree, leafIdx, forgedMessage, forgedCounter, index, htree, hleaf,
+    by simpa only [htree, hleaf] using hnotMem⟩
+
+theorem EncodingCollision.forged_encoding_not_mem_signLayers
+    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
+    {signingLog : QueryLog SigningSpec}
+    (hcollision : EncodingCollision f cache secretKey signingLog) :
+    ∃ (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+        (forgedMessage : Digest) (forgedCounter : Counter) (index : Index),
+      treeIndexAt index lay = tree
+        ∧ leafIndexAt index lay = leafIdx
+        ∧ ∀ otherLayer : Layer,
+          tweakableHashInput secretKey.parameter (.encoding lay tree leafIdx)
+              (digestBytes forgedMessage ++ counterBytes forgedCounter) ∉
+            queriedInputs f (signLayer secretKey index otherLayer) := by
+  obtain ⟨lay, tree, leafIdx, forgedMessage, forgedCounter, _, _, _, _, index, leaves, _,
+    hforgedOpening, _, _, hrun, hdigest, htree, hleaf, _, _, _, hhit⟩ := hcollision
+  obtain ⟨forgedCodeword, hforgedEncode, _, _⟩ := hforgedOpening
+  obtain ⟨part, hcounter, _, hlayer⟩ := hrun.layerRun_of_digest hdigest lay
+  obtain ⟨hots, _⟩ := hlayer.otsSign_eval_cached
+  have hnotOts := other_valid_encoding_not_mem_otsSign f secretKey.parameter lay
+    (treeIndexAt index lay) (leafIndexAt index lay)
+    (secretKey.otsSecret lay (treeIndexAt index lay) (leafIndexAt index lay))
+    (evalWithAnswerFn f (layerMessage secretKey index lay)) forgedMessage part.1 forgedCounter
+    part.2.1 forgedCodeword hots (by simpa only [htree, hleaf] using hforgedEncode) (by
+      rw [← hcounter, htree, hleaf]
+      exact hhit.1)
+  refine ⟨lay, tree, leafIdx, forgedMessage, forgedCounter, index, htree, hleaf, ?_⟩
+  intro otherLayer hmem
+  have hlocated := encodingInput_mem_signLayer_otsSign
+    (show AtEncodingPosition secretKey.parameter
+      (tweakableHashInput secretKey.parameter (.encoding lay tree leafIdx)
+        (digestBytes forgedMessage ++ counterBytes forgedCounter)) ⟨lay, tree, leafIdx⟩ from
+      ⟨_, rfl⟩) hmem
+  have hlayer : lay = otherLayer := congrArg EncodingPosition.lay hlocated.1
+  subst otherLayer
+  rw [htree, hleaf] at hnotOts
+  rw [htree, hleaf] at hlocated
+  exact hnotOts hlocated.2
+
+theorem EncodingCollision.forged_encoding_not_mem_signAfterDigest
+    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
+    {signingLog : QueryLog SigningSpec}
+    (hcollision : EncodingCollision f cache secretKey signingLog) :
+    ∃ (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+        (forgedMessage : Digest) (forgedCounter : Counter) (signature : Signature)
+        (index : Index) (leaves : DigestTree → FtsLeaf),
+      treeIndexAt index lay = tree
+        ∧ leafIndexAt index lay = leafIdx
+        ∧ tweakableHashInput secretKey.parameter (.encoding lay tree leafIdx)
+            (digestBytes forgedMessage ++ counterBytes forgedCounter) ∉
+          queriedInputs f (signAfterDigest secretKey signature.randomness index leaves) := by
+  obtain ⟨lay, tree, leafIdx, forgedMessage, forgedCounter, _, _, _, signature, index,
+    leaves, _, hforgedOpening, _, _, hrun, hdigest, htree, hleaf, _, _, _, hhit⟩ := hcollision
+  obtain ⟨forgedCodeword, hforgedEncode, _, _⟩ := hforgedOpening
+  obtain ⟨part, hcounter, _, hlayer⟩ := hrun.layerRun_of_digest hdigest lay
+  obtain ⟨hots, _⟩ := hlayer.otsSign_eval_cached
+  have hnotOts := other_valid_encoding_not_mem_otsSign f secretKey.parameter lay
+    (treeIndexAt index lay) (leafIndexAt index lay)
+    (secretKey.otsSecret lay (treeIndexAt index lay) (leafIndexAt index lay))
+    (evalWithAnswerFn f (layerMessage secretKey index lay)) forgedMessage part.1 forgedCounter
+    part.2.1 forgedCodeword hots (by simpa only [htree, hleaf] using hforgedEncode) (by
+      rw [← hcounter, htree, hleaf]
+      exact hhit.1)
+  let forgedInput := tweakableHashInput secretKey.parameter (.encoding lay tree leafIdx)
+    (digestBytes forgedMessage ++ counterBytes forgedCounter)
+  have hnotLayers : ∀ otherLayer : Layer,
+      forgedInput ∉ queriedInputs f (signLayer secretKey index otherLayer) := by
+    intro otherLayer hmem
+    have hlocated := encodingInput_mem_signLayer_otsSign
+      (show AtEncodingPosition secretKey.parameter forgedInput ⟨lay, tree, leafIdx⟩ from
+        ⟨_, rfl⟩) hmem
+    have hlayer : lay = otherLayer := congrArg EncodingPosition.lay hlocated.1
+    subst otherLayer
+    rw [htree, hleaf] at hnotOts hlocated
+    exact hnotOts hlocated.2
+  have hnotAfter : forgedInput ∉
+      queriedInputs f (signAfterDigest secretKey signature.randomness index leaves) := by
+    rw [signAfterDigest, queriedInputs_bind]
+    intro hmem
+    rcases List.mem_append.mp hmem with hfts | hrest
+    · exact avoidsEncodingQueries_ftsOpen secretKey.parameter f index leaves
+        (secretKey.ftsSecret index) ⟨lay, tree, leafIdx⟩
+          (digestBytes forgedMessage ++ counterBytes forgedCounter) hfts
+    · rw [queriedInputs_bind] at hrest
+      rcases List.mem_append.mp hrest with hlayers | hfinal
+      · exact not_mem_queriedInputs_sequenceFin f (fun otherLayer =>
+          signLayer secretKey index otherLayer) forgedInput hnotLayers hlayers
+      · split at hfinal <;> simp at hfinal
+  exact ⟨lay, tree, leafIdx, forgedMessage, forgedCounter, signature, index, leaves,
+    htree, hleaf, by simpa only [forgedInput] using hnotAfter⟩
 
 def encodingCachedAt (parameter : PublicParameter) (cache : QueryCache HashSpec)
     (position : EncodingPosition) : Set HashInput :=
