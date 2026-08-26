@@ -142,4 +142,74 @@ theorem uniformHashOutput_valid_scaled_bonus_sum_eq (scale : Nat) :
       · simp only [hvalid, ↓reduceIte, mul_zero]
     _ = _ := by rw [uniformHashOutput_valid_bonus_sum_eq]
 
+theorem uniformHashOutput_select_bonus_sum_le (targets : Finset Digest) :
+    ∑' output : HashOutput,
+        Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
+          (if TargetSum.ValidDigest (truncateHash output) then
+            if truncateHash output ∈ targets then 1 else 0
+          else
+            (targets.card : ℝ≥0∞) *
+              (TargetSum.validDigests.card : ℝ≥0∞)⁻¹) ≤
+      (targets.card : ℝ≥0∞) *
+        (TargetSum.validDigests.card : ℝ≥0∞)⁻¹ := by
+  let removed := (targets.card : ℝ≥0∞) *
+    (TargetSum.validDigests.card : ℝ≥0∞)⁻¹
+  calc
+    _ ≤ ∑' output : HashOutput,
+        Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
+          ((if truncateHash output ∈ targets then 1 else 0) +
+            if TargetSum.ValidDigest (truncateHash output) then 0 else removed) := by
+      apply ENNReal.tsum_le_tsum
+      intro output
+      apply mul_le_mul_right
+      by_cases hvalid : TargetSum.ValidDigest (truncateHash output)
+      · by_cases hmem : truncateHash output ∈ targets <;>
+          simp only [hvalid, hmem, if_true, if_false, add_zero, le_refl]
+      · by_cases hmem : truncateHash output ∈ targets
+        · simp only [hvalid, hmem, if_true, if_false]
+          exact le_add_left le_rfl
+        · simp only [hvalid, hmem, if_false, zero_add]
+          exact le_rfl
+    _ = (∑' output : HashOutput,
+          Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
+            (if truncateHash output ∈ targets then 1 else 0)) +
+        ∑' output : HashOutput,
+          Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
+            (if TargetSum.ValidDigest (truncateHash output) then 0 else removed) := by
+      simp_rw [mul_add]
+      rw [ENNReal.tsum_add]
+    _ = (∑' output : HashOutput,
+          Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
+            (if TargetSum.ValidDigest (truncateHash output) then removed else 0)) +
+        ∑' output : HashOutput,
+          Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
+            (if TargetSum.ValidDigest (truncateHash output) then 0 else removed) := by
+      congr 1
+      calc
+        (∑' output : HashOutput,
+            Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
+              (if truncateHash output ∈ targets then 1 else 0)) =
+            (targets.card : ℝ≥0∞) *
+              (Fintype.card Digest : ℝ≥0∞)⁻¹ :=
+          uniformHashOutput_mem_bonus_sum_eq targets
+        _ = ∑' output : HashOutput,
+            Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
+              (if TargetSum.ValidDigest (truncateHash output) then removed else 0) := by
+          dsimp only [removed]
+          exact (uniformHashOutput_valid_scaled_bonus_sum_eq targets.card).symm
+    _ = ∑' output : HashOutput,
+        Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] * removed := by
+      rw [← ENNReal.tsum_add]
+      apply tsum_congr
+      intro output
+      rw [← mul_add]
+      by_cases hvalid : TargetSum.ValidDigest (truncateHash output) <;>
+        simp only [hvalid, if_true, if_false, add_zero, zero_add]
+    _ = removed := by
+      rw [ENNReal.tsum_mul_right]
+      have hmass : ∑' output : HashOutput,
+          Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] = 1 :=
+        tsum_probOutput_of_liftM_PMF ($ᵗ HashOutput : ProbComp HashOutput)
+      rw [hmass, one_mul]
+
 end SphincsSecurity

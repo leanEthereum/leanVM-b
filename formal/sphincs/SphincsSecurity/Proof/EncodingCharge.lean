@@ -993,6 +993,51 @@ theorem encodingAnswerTargets_card_le {parameter : PublicParameter}
     (encodingCachedAt_finite (parameter := parameter) (cache := cache) hfinite position)]
   exact Finset.card_image_le
 
+noncomputable def encodingValidAnswerTargets (parameter : PublicParameter)
+    (cache : QueryCache HashSpec) (hfinite : Finite cache)
+    (position : EncodingPosition) : Finset Digest :=
+  (encodingAnswerTargets parameter cache hfinite position).filter TargetSum.ValidDigest
+
+theorem cachedValidAnswer_mem_encodingValidAnswerTargets {parameter : PublicParameter}
+    {cache : QueryCache HashSpec} (hfinite : Finite cache) {position : EncodingPosition}
+    {input : HashInput} {answer : HashOutput} (hcached : cache input = some answer)
+    (hposition : AtEncodingPosition parameter input position)
+    (hvalid : TargetSum.ValidDigest (truncateHash answer)) :
+    truncateHash answer ∈ encodingValidAnswerTargets parameter cache hfinite position := by
+  rw [encodingValidAnswerTargets, Finset.mem_filter]
+  exact ⟨cachedAnswer_mem_encodingAnswerTargets hfinite hcached hposition, hvalid⟩
+
+theorem encodingValidAnswerTargets_card_le {parameter : PublicParameter}
+    {cache : QueryCache HashSpec} (hfinite : Finite cache) (position : EncodingPosition) :
+    (encodingValidAnswerTargets parameter cache hfinite position).card ≤
+      (encodingCachedAt parameter cache position).ncard := by
+  exact (Finset.card_filter_le _ _).trans (encodingAnswerTargets_card_le hfinite position)
+
+theorem CachedSignedEncodingPayloadAt.target_mem_encodingValidAnswerTargets
+    {cache : QueryCache HashSpec} (hfinite : Finite cache)
+    {secretKey : SecretKey} {position : EncodingPosition} {payload : HashInput}
+    (htarget : CachedSignedEncodingPayloadAt cache secretKey position.lay position.tree
+      position.leafIdx payload) :
+    truncateHash (fromCache cache
+      (tweakableHashInput secretKey.parameter position.domain payload)) ∈
+        encodingValidAnswerTargets secretKey.parameter cache hfinite position := by
+  have htargetData := htarget
+  obtain ⟨_, _, _, _, _, _, _, _, hcached⟩ := htargetData
+  obtain ⟨answer, hanswer⟩ := Option.ne_none_iff_exists'.mp hcached
+  have hanswer' : cache
+      (tweakableHashInput secretKey.parameter position.domain payload) = some answer := by
+    simpa only [EncodingPosition.domain] using hanswer
+  have hfromCache : fromCache cache
+      (tweakableHashInput secretKey.parameter position.domain payload) = answer := by
+    simp [fromCache, hanswer']
+  rw [hfromCache]
+  apply cachedValidAnswer_mem_encodingValidAnswerTargets hfinite hanswer'
+  · exact ⟨payload, rfl⟩
+  · have hvalid := htarget.target_valid
+    rwa [show HashDomain.encoding position.lay position.tree position.leafIdx = position.domain by
+      cases position
+      rfl, hfromCache] at hvalid
+
 theorem signedLayerMessage_mem_encodingMessageTargets
     {cache : QueryCache HashSpec} (hfinite : Finite cache) {f : QueryImpl HashSpec Id}
     {secretKey : SecretKey} {index : Index} {lay : Layer} {tree : TreeIndex}
@@ -1264,6 +1309,31 @@ theorem encodingBad_answer_hit_of_fresh_target_query
         ⟨lay, tree, leafIdx⟩ from ⟨otherPayload, rfl⟩)
   rw [← hcollision, htargetAnswerEq] at hmem
   exact hmem
+
+theorem encodingBad_valid_answer_hit_of_fresh_target_query
+    {cache : QueryCache HashSpec} (hfinite : Finite cache)
+    {secretKey : SecretKey} {input : HashInput} {answer : HashOutput}
+    {position : EncodingPosition} {targetPayload : HashInput}
+    (hclean : ¬ EncodingBad cache secretKey) (huncached : cache input = none)
+    (hinput : input = tweakableHashInput secretKey.parameter position.domain targetPayload)
+    (htarget : CachedSignedEncodingPayloadAt (cache.cacheQuery input answer) secretKey
+      position.lay position.tree position.leafIdx targetPayload)
+    (hbad : EncodingBad (cache.cacheQuery input answer) secretKey) :
+    truncateHash answer ∈
+      encodingValidAnswerTargets secretKey.parameter cache hfinite position := by
+  rw [encodingValidAnswerTargets, Finset.mem_filter]
+  refine ⟨encodingBad_answer_hit_of_fresh_target_query hfinite hclean huncached hinput
+    htarget hbad, ?_⟩
+  have hvalid := htarget.target_valid
+  have hanswer : fromCache (cache.cacheQuery input answer)
+      (tweakableHashInput secretKey.parameter position.domain targetPayload) = answer := by
+    rw [← hinput]
+    simp [fromCache]
+  have hanswer' : fromCache (cache.cacheQuery input answer)
+      (tweakableHashInput secretKey.parameter
+        (.encoding position.lay position.tree position.leafIdx) targetPayload) = answer := by
+    simpa only [EncodingPosition.domain] using hanswer
+  rwa [hanswer'] at hvalid
 
 theorem encodingBad_of_cached_target_hit
     {cache : QueryCache HashSpec} {secretKey : SecretKey} {position : EncodingPosition}
@@ -1543,6 +1613,100 @@ theorem encodingPotential_cacheQuery_le_of_target {cache : QueryCache HashSpec}
   · apply encodingContribution_cacheQuery_le_of_not_atPosition huncached
     intro hother
     exact heq (atEncodingPosition_unique hother hposition)
+
+theorem encodingPotential_add_cachedAt_le_of_new_target
+    {cache : QueryCache HashSpec} {secretKey : SecretKey} {input : HashInput}
+    {answer : HashOutput} {position : EncodingPosition}
+    (hnotTarget : ¬ HasEncodingTarget cache secretKey position)
+    (htarget : HasEncodingTarget (cache.cacheQuery input answer) secretKey position)
+    (hother : ∀ otherPosition : EncodingPosition, otherPosition ≠ position →
+      encodingContribution (cache.cacheQuery input answer) secretKey otherPosition ≤
+        encodingContribution cache secretKey otherPosition) :
+    encodingPotential (cache.cacheQuery input answer) secretKey +
+        (encodingCachedAt secretKey.parameter cache position).ncard ≤
+      encodingPotential cache secretKey := by
+  classical
+  rw [encodingPotential, encodingPotential]
+  calc
+    (∑ otherPosition : EncodingPosition,
+        encodingContribution (cache.cacheQuery input answer) secretKey otherPosition) +
+        (encodingCachedAt secretKey.parameter cache position).ncard =
+      ∑ otherPosition : EncodingPosition,
+        (encodingContribution (cache.cacheQuery input answer) secretKey otherPosition +
+          if otherPosition = position then
+            (encodingCachedAt secretKey.parameter cache position).ncard else 0) := by
+      rw [Finset.sum_add_distrib, Fintype.sum_ite_eq']
+    _ ≤ ∑ otherPosition : EncodingPosition,
+        encodingContribution cache secretKey otherPosition := by
+      apply Finset.sum_le_sum
+      intro otherPosition _
+      by_cases heq : otherPosition = position
+      · rw [if_pos heq, heq, encodingContribution, encodingContribution,
+          if_pos htarget, if_neg hnotTarget, zero_add]
+      · rw [if_neg heq, Nat.add_zero]
+        exact hother otherPosition heq
+
+theorem encodingPotential_add_cachedAt_le_of_new_target_atPosition
+    {cache : QueryCache HashSpec} {secretKey : SecretKey} {input : HashInput}
+    {answer : HashOutput} {position : EncodingPosition}
+    (huncached : cache input = none)
+    (hposition : AtEncodingPosition secretKey.parameter input position)
+    (hnotTarget : ¬ HasEncodingTarget cache secretKey position)
+    (htarget : HasEncodingTarget (cache.cacheQuery input answer) secretKey position) :
+    encodingPotential (cache.cacheQuery input answer) secretKey +
+        (encodingCachedAt secretKey.parameter cache position).ncard ≤
+      encodingPotential cache secretKey := by
+  apply encodingPotential_add_cachedAt_le_of_new_target hnotTarget htarget
+  intro otherPosition hne
+  apply encodingContribution_cacheQuery_le_of_not_atPosition huncached
+  intro hother
+  exact hne (atEncodingPosition_unique hother hposition)
+
+theorem encodingPotential_add_cachedAt_le_of_new_target_not_atEncoding
+    {cache : QueryCache HashSpec} {secretKey : SecretKey} {input : HashInput}
+    {answer : HashOutput} {position : EncodingPosition}
+    (huncached : cache input = none)
+    (hnotAt : ∀ otherPosition : EncodingPosition,
+      ¬ AtEncodingPosition secretKey.parameter input otherPosition)
+    (hnotTarget : ¬ HasEncodingTarget cache secretKey position)
+    (htarget : HasEncodingTarget (cache.cacheQuery input answer) secretKey position) :
+    encodingPotential (cache.cacheQuery input answer) secretKey +
+        (encodingCachedAt secretKey.parameter cache position).ncard ≤
+      encodingPotential cache secretKey := by
+  apply encodingPotential_add_cachedAt_le_of_new_target hnotTarget htarget
+  intro otherPosition _
+  exact encodingContribution_cacheQuery_le_of_not_atPosition huncached (hnotAt otherPosition)
+
+theorem encodingPotential_add_validAnswerTargets_card_le_of_new_target_atPosition
+    {cache : QueryCache HashSpec} (hfinite : Finite cache)
+    {secretKey : SecretKey} {input : HashInput} {answer : HashOutput}
+    {position : EncodingPosition}
+    (huncached : cache input = none)
+    (hposition : AtEncodingPosition secretKey.parameter input position)
+    (hnotTarget : ¬ HasEncodingTarget cache secretKey position)
+    (htarget : HasEncodingTarget (cache.cacheQuery input answer) secretKey position) :
+    encodingPotential (cache.cacheQuery input answer) secretKey +
+        (encodingValidAnswerTargets secretKey.parameter cache hfinite position).card ≤
+      encodingPotential cache secretKey := by
+  exact (Nat.add_le_add_left (encodingValidAnswerTargets_card_le hfinite position) _).trans
+    (encodingPotential_add_cachedAt_le_of_new_target_atPosition huncached hposition
+      hnotTarget htarget)
+
+theorem encodingPotential_add_messageTargets_card_le_of_new_target_not_atEncoding
+    {cache : QueryCache HashSpec} (hfinite : Finite cache)
+    {secretKey : SecretKey} {input : HashInput} {answer : HashOutput}
+    {position : EncodingPosition}
+    (huncached : cache input = none)
+    (hnotAt : ∀ otherPosition : EncodingPosition,
+      ¬ AtEncodingPosition secretKey.parameter input otherPosition)
+    (hnotTarget : ¬ HasEncodingTarget cache secretKey position)
+    (htarget : HasEncodingTarget (cache.cacheQuery input answer) secretKey position) :
+    encodingPotential (cache.cacheQuery input answer) secretKey +
+        (encodingMessageTargets secretKey.parameter cache hfinite position).card ≤
+      encodingPotential cache secretKey := by
+  exact (Nat.add_le_add_left (encodingMessageTargets_card_le hfinite position) _).trans
+    (encodingPotential_add_cachedAt_le_of_new_target_not_atEncoding huncached hnotAt
+      hnotTarget htarget)
 
 theorem encodingBad_step_of_existing_target {cache : QueryCache HashSpec}
     {secretKey : SecretKey} {input : HashInput} {position : EncodingPosition}

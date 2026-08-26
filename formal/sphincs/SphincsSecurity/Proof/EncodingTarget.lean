@@ -226,6 +226,36 @@ theorem encodingSearch_selected_mem (f : QueryImpl HashSpec Id)
   exact encodingSearchFrom_selected_mem f parameter lay tree leafIdx message
     encodingAttemptLimit 0 selected (by simpa only [encodingSearch] using hselected)
 
+theorem encodingSearchFrom_selected_encode_ne_none (f : QueryImpl HashSpec Id)
+    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (message : Digest) (attempts counter : Nat) (selected : Counter)
+    (hselected : evalWithAnswerFn f
+      (encodingSearchFrom parameter lay tree leafIdx message attempts counter) = some selected) :
+    evalWithAnswerFn f (encode parameter lay tree leafIdx message selected) ≠ none := by
+  induction attempts generalizing counter with
+  | zero => simp [encodingSearchFrom] at hselected
+  | succ attempts ih =>
+      rw [encodingSearchFrom, evalWithAnswerFn_bind] at hselected
+      cases hencode : evalWithAnswerFn f
+          (encode parameter lay tree leafIdx message (BitVec.ofNat counterBits counter)) with
+      | none =>
+          simp only [hencode] at hselected
+          exact ih (counter + 1) hselected
+      | some codeword =>
+          simp only [hencode, evalWithAnswerFn_pure, Option.some.injEq] at hselected
+          subst selected
+          rw [hencode]
+          simp
+
+theorem encodingSearch_selected_encode_ne_none (f : QueryImpl HashSpec Id)
+    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (message : Digest) (selected : Counter)
+    (hselected : evalWithAnswerFn f
+      (encodingSearch parameter lay tree leafIdx message) = some selected) :
+    evalWithAnswerFn f (encode parameter lay tree leafIdx message selected) ≠ none := by
+  exact encodingSearchFrom_selected_encode_ne_none f parameter lay tree leafIdx message
+    encodingAttemptLimit 0 selected (by simpa only [encodingSearch] using hselected)
+
 theorem otsSignFrom_selected_encoding_mem (f : QueryImpl HashSpec Id)
     (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
     (secret : ChainIndex → Digest) (message : Digest) (attempts counter : Nat)
@@ -351,6 +381,23 @@ def CachedSignedEncodingPayloadAt (cache : QueryCache HashSpec) (secretKey : Sec
           secretKey.otsSecret secretKey.ftsSecret (layerMessagePosition index lay)) ++
         counterBytes counter
       ∧ cache (tweakableHashInput secretKey.parameter (.encoding lay tree leafIdx) payload) ≠ none
+
+theorem CachedSignedEncodingPayloadAt.target_valid
+    {cache : QueryCache HashSpec} {secretKey : SecretKey}
+    {lay : Layer} {tree : TreeIndex} {leafIdx : LeafIndex} {payload : HashInput}
+    (htarget : CachedSignedEncodingPayloadAt cache secretKey lay tree leafIdx payload) :
+    TargetSum.ValidDigest (truncateHash (fromCache cache
+      (tweakableHashInput secretKey.parameter (.encoding lay tree leafIdx) payload))) := by
+  obtain ⟨index, counter, htree, hleaf, _, _, heval, hpayload, _⟩ := htarget
+  have hselected := encodingSearch_selected_encode_ne_none (fromCache cache)
+    secretKey.parameter lay (treeIndexAt index lay) (leafIndexAt index lay)
+    (honestValue (fromCache cache) secretKey.parameter secretKey.otsSecret secretKey.ftsSecret
+      (layerMessagePosition index lay)) counter heval
+  have hvalid := (eval_encode_ne_none_iff_validDigest (fromCache cache)
+    secretKey.parameter lay (treeIndexAt index lay) (leafIndexAt index lay)
+    (honestValue (fromCache cache) secretKey.parameter secretKey.otsSecret secretKey.ftsSecret
+      (layerMessagePosition index lay)) counter).mp hselected
+  rwa [htree, hleaf, ← hpayload] at hvalid
 
 theorem SignedLayerAt.signedEncodingPayload {f : QueryImpl HashSpec Id}
     {cache : QueryCache HashSpec} {secretKey : SecretKey} {signingLog : QueryLog SigningSpec}
