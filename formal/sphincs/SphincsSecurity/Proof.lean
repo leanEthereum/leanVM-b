@@ -52,6 +52,7 @@ import SphincsSecurity.Proof.ForgeryClassify
 import SphincsSecurity.Proof.Replay
 import SphincsSecurity.Proof.Sampling
 import SphincsSecurity.Proof.SecretProbe
+import SphincsSecurity.Proof.AdaptiveRevealProbe
 import SphincsSecurity.Proof.OneTimeEvents
 import SphincsSecurity.Proof.TerminalCache
 import SphincsSecurity.Proof.EncodingTarget
