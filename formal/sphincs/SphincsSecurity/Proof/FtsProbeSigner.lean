@@ -553,4 +553,33 @@ theorem coupledAt_maskedSignWithView
       unfold CoupledAt
       simp [AdaptiveRevealProbe.runDetailed, projectDetailedCache, hsignatureClean]
 
+set_option maxRecDepth 10000 in
+theorem coupledAt_maskedSigningImpl
+    (secretKey : SecretKey) (table : Coordinate → Digest)
+    (state : AdaptiveRevealProbe.State Coordinate) (fuel : Nat)
+    (cache : SplitHashCache) (message : Message)
+    (hclean : AdaptiveRevealProbe.tableHits state table = false)
+    (hsynced : RevealedSynced secretKey.parameter table state cache) :
+    CoupledAt secretKey.parameter table state fuel
+      (maskedSigningImpl secretKey message)
+      (simulateQ romImpl (scheme.sign (secretKeyWithFtsTable secretKey table) message))
+      cache := by
+  change CoupledAt secretKey.parameter table state fuel
+    (maskedSigningImpl secretKey message)
+    (simulateQ romImpl (sign (secretKeyWithFtsTable secretKey table) message)) cache
+  rw [← signWithView_fst]
+  unfold maskedSigningImpl
+  rw [simulateQ_map, map_eq_bind_pure_comp, map_eq_bind_pure_comp]
+  apply CoupledAt.bind_probeFree hclean
+    (maskedSignWithView_probeFree secretKey message)
+    (coupledAt_maskedSignWithView secretKey table state fuel cache message hclean hsynced)
+  intro finalState result finalCache hresult
+  have hfinalClean : AdaptiveRevealProbe.tableHits finalState table = false :=
+    tableHits_false_of_mem_runDetailed_probeFree table state finalState fuel
+      ((maskedSignWithView secretKey message).run cache)
+      (maskedSignWithView_probeFree secretKey message cache) hclean
+      (result, finalCache) hresult
+  unfold CoupledAt
+  simp [AdaptiveRevealProbe.runDetailed, projectDetailedCache, hfinalClean]
+
 end SphincsSecurity.Concrete.FtsProbeSimulation
