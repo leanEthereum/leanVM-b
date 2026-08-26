@@ -91,7 +91,7 @@ Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = 2,000,000
 ### Batch proving BLAKE2s
 
 ```bash
-BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=18 cargo test --release -p flock --test hash_batch -- --ignored --nocapture
+BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=18 cargo test --release --package flock --test batch_proving_hashes -- hash_batch_prove_verify --exact --nocapture --include-ignored
 ```
 
 ```
