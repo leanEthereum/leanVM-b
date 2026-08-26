@@ -845,6 +845,40 @@ noncomputable def chainValueCoordinate (lay : Layer) (tree : TreeIndex)
       have := digit.isLt
       omega⟩)
 
+@[simp] theorem toProbe_coordinate (probe : OtsValueProbe) :
+    (toProbe probe).coordinate =
+      chainValueCoordinate probe.lay probe.tree probe.leafIdx probe.chainIdx probe.digit := by
+  unfold toProbe chainValueCoordinate
+  split_ifs <;> rfl
+
+theorem chainValueCoordinate_injective
+    {leftLay rightLay : Layer} {leftTree rightTree : TreeIndex}
+    {leftLeaf rightLeaf : LeafIndex} {leftChain rightChain : ChainIndex}
+    {leftDigit rightDigit : Digit}
+    (heq : chainValueCoordinate leftLay leftTree leftLeaf leftChain leftDigit =
+      chainValueCoordinate rightLay rightTree rightLeaf rightChain rightDigit) :
+    leftLay = rightLay ∧ leftTree = rightTree ∧ leftLeaf = rightLeaf ∧
+      leftChain = rightChain ∧ leftDigit = rightDigit := by
+  by_cases hleft : leftDigit.val = 0
+  · by_cases hright : rightDigit.val = 0
+    · simp only [chainValueCoordinate, hleft, hright, ↓reduceDIte,
+        Coordinate.chainStart.injEq] at heq
+      exact ⟨heq.1, heq.2.1, heq.2.2.1, heq.2.2.2,
+        Fin.ext (hleft.trans hright.symm)⟩
+    · simp [chainValueCoordinate, hleft, hright] at heq
+  · by_cases hright : rightDigit.val = 0
+    · simp [chainValueCoordinate, hleft, hright] at heq
+    · simp only [chainValueCoordinate, hleft, hright, ↓reduceDIte,
+        Coordinate.position.injEq, Position.chain.injEq] at heq
+      refine ⟨heq.1, heq.2.1, heq.2.2.1, heq.2.2.2.1, Fin.ext ?_⟩
+      have hleftLt := leftDigit.isLt
+      have hrightLt := rightDigit.isLt
+      have hleftPos : 0 < leftDigit.val := Nat.pos_of_ne_zero hleft
+      have hrightPos : 0 < rightDigit.val := Nat.pos_of_ne_zero hright
+      have hsub : leftDigit.val - 1 = rightDigit.val - 1 := by
+        simpa using congrArg Fin.val heq.2.2.2.2
+      omega
+
 noncomputable def revealPublishedCoordinate (coordinate : Coordinate) :
     StateT SplitHashCache
       (OracleComp (LazyRevealProbe.World Coordinate)) Digest := do
