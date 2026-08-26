@@ -67,6 +67,7 @@ import SphincsSecurity.Proof.EncodingRetry
 import SphincsSecurity.Proof.EncodingRetryCharge
 import SphincsSecurity.Proof.EncodingLatent
 import SphincsSecurity.Proof.EncodingStageCharge
+import SphincsSecurity.Proof.EncodingRisk
 import SphincsSecurity.Proof.EncodingSignerLatent
 import SphincsSecurity.Proof.FirstBad
 import SphincsSecurity.Proof.EncodingTraceLatent

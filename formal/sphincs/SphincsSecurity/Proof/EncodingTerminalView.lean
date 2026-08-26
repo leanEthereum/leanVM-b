@@ -1,5 +1,6 @@
 import SphincsSecurity.Proof.EncodingTerminalLatent
-import SphincsSecurity.Proof.FewTimeViewTrace
+import SphincsSecurity.Proof.EncodingRisk
+import SphincsSecurity.Proof.TerminalView
 
 /-!
 # Encoding chronology in the viewed terminal game
@@ -9,9 +10,53 @@ The generic final-continuation classifier is instantiated with the exact adversa
 
 namespace SphincsSecurity
 
-open OracleComp OracleSpec
+open OracleComp OracleSpec ENNReal
 
 namespace Concrete
+
+theorem ViewedEncodingCollisionWitness.encodingBad
+    {parameter : PublicParameter}
+    {otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest}
+    {ftsSecret : Index → FtsTree → FtsLeaf → Digest}
+    {result : (Digest × Forgery × Bool) × ViewedFullTraceState}
+    (hwitness : ViewedEncodingCollisionWitness parameter otsSecret ftsSecret result) :
+    EncodingBad result.2.cache
+      ⟨parameter, result.1.1, otsSecret, ftsSecret⟩ := by
+  obtain ⟨f, digest, hf, hvalid, hnovel, hdigest, hadmissible, hcollision⟩ := hwitness
+  exact hcollision.encodingBad hf
+
+noncomputable def viewedCleanEncodingRisk
+    (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (result : (Digest × Forgery × Bool) × ViewedFullTraceState) : ℝ≥0∞ :=
+  open Classical in
+    if Bad parameter otsSecret ftsSecret result.2.cache then
+      0
+    else
+      encodingTotalRiskPotential result.2.cache
+        ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+
+theorem probEvent_clean_viewedEncodingCollision_le_expectedRisk
+    (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (oa : ProbComp ((Digest × Forgery × Bool) × ViewedFullTraceState)) :
+    Pr[fun result => ¬ Bad parameter otsSecret ftsSecret result.2.cache ∧
+        ViewedEncodingCollisionWitness parameter otsSecret ftsSecret result | oa] ≤
+      ∑' result, Pr[= result | oa] *
+        viewedCleanEncodingRisk parameter otsSecret ftsSecret result := by
+  classical
+  rw [probEvent_eq_tsum_ite]
+  apply ENNReal.tsum_le_tsum
+  intro result
+  by_cases hevent : ¬ Bad parameter otsSecret ftsSecret result.2.cache ∧
+      ViewedEncodingCollisionWitness parameter otsSecret ftsSecret result
+  · rw [if_pos hevent, viewedCleanEncodingRisk, if_neg hevent.1]
+    exact le_mul_of_one_le_right bot_le
+      (one_le_encodingTotalRiskPotential_of_encodingBad hevent.2.encodingBad)
+  · rw [if_neg hevent]
+    exact bot_le
 
 theorem gameAfterSecretsWithViewTrace_encodingBad_finalOutcome
     (adversary : Adversary) (parameter : PublicParameter)
@@ -86,6 +131,37 @@ theorem gameAfterSecretsWithViewTrace_encodingBad_finalOutcome
   obtain ⟨position, htarget, houtcome⟩ := encodingBad_finalOutcome hchain hvalid
     hintervals hfinite hstructuralClean hrootEncodingNone hverify hbad
   exact ⟨state.cache, position, htarget, houtcome⟩
+
+theorem gameAfterSecretsWithViewTrace_encodingBad_finalOutcome_of_queryBound
+    (adversary : Adversary) (q : Nat)
+    (hq : HasHashQueryBound scheme adversary q)
+    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (hots : otsSecret ∈ support sampleOtsSecrets)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (hfts : ftsSecret ∈ support sampleFtsSecrets)
+    (result : (Digest × Forgery × Bool) × ViewedFullTraceState)
+    (hmem : result ∈ support
+      (gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret))
+    (hstructuralClean : ¬ Bad parameter otsSecret ftsSecret result.2.cache)
+    (hbad : EncodingBad result.2.cache
+      ⟨parameter, result.1.1, otsSecret, ftsSecret⟩) :
+    ∃ (adversaryCache : QueryCache HashSpec) (position : EncodingPosition),
+      HasEncodingTarget result.2.cache
+          ⟨parameter, result.1.1, otsSecret, ftsSecret⟩ position
+        ∧ FinalLatentEncodingAtOutcome
+          ⟨parameter, result.1.1, otsSecret, ftsSecret⟩ position result.2.trace
+            adversaryCache result.2.cache := by
+  have hbase : (result.1, result.2.base) ∈ support
+      (gameAfterSecretsWithFullTrace adversary parameter otsSecret ftsSecret) := by
+    rw [← gameAfterSecretsWithViewTrace_projection adversary parameter otsSecret ftsSecret,
+      support_map]
+    exact ⟨result, hmem, rfl⟩
+  have hcard : QueryCache.enncard result.2.cache ≤ q :=
+    gameAfterSecretsWithFullTrace_support_enncard_le adversary q hq parameter hparameter
+      otsSecret hots ftsSecret hfts (result.1, result.2.base) hbase
+  exact gameAfterSecretsWithViewTrace_encodingBad_finalOutcome adversary parameter otsSecret
+    ftsSecret result hmem (Finite.of_enncard_le hcard) hstructuralClean hbad
 
 end Concrete
 

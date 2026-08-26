@@ -19,7 +19,7 @@ input can become settled, unless its parent does.
 
 namespace SphincsSecurity
 
-open OracleComp OracleSpec
+open OracleComp OracleSpec ENNReal
 
 variable (parameter : PublicParameter)
   (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
@@ -294,6 +294,21 @@ theorem Finite.of_le {cache cache' : QueryCache HashSpec}
   intro input hcached
   obtain ⟨answer, hanswer⟩ := Option.ne_none_iff_exists'.mp hcached
   exact Option.ne_none_iff_exists'.mpr ⟨answer, hle hanswer⟩
+
+theorem Finite.of_enncard_le {cache : QueryCache HashSpec} {q : Nat}
+    (hle : QueryCache.enncard cache ≤ (q : ℝ≥0∞)) : Finite cache := by
+  rw [QueryCache.enncard] at hle
+  have hfiniteToSet : cache.toSet.Finite := by
+    rw [← Set.encard_ne_top_iff]
+    intro htop
+    rw [htop] at hle
+    exact not_top_le_coe hle
+  let cachedInputs : Set HashInput := {input | cache input ≠ none}
+  have hsubset : cachedInputs ⊆ Sigma.fst '' cache.toSet := by
+    intro input hcached
+    obtain ⟨answer, hanswer⟩ := Option.ne_none_iff_exists'.mp hcached
+    exact ⟨⟨input, answer⟩, hanswer, rfl⟩
+  exact (hfiniteToSet.image Sigma.fst).subset hsubset
 
 theorem not_bad_empty : ¬ Bad parameter otsSecret ftsSecret (∅ : QueryCache HashSpec) := by
   rintro ⟨p, _, input, ax, ay, _, _, hcached, _⟩
