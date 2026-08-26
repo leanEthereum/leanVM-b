@@ -58,6 +58,7 @@ import SphincsSecurity.Proof.FtsProbeLift
 import SphincsSecurity.Proof.FtsProbeGame
 import SphincsSecurity.Proof.FtsProbeSigner
 import SphincsSecurity.Proof.FtsProbeAdversary
+import SphincsSecurity.Proof.FtsProbeOrigin
 import SphincsSecurity.Proof.OneTimeEvents
 import SphincsSecurity.Proof.TerminalCache
 import SphincsSecurity.Proof.EncodingTarget
