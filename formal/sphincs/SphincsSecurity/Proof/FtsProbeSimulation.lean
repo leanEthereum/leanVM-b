@@ -1,6 +1,7 @@
 import SphincsSecurity.Proof.AdaptiveRevealProbe
 import SphincsSecurity.Proof.ExtractFts
 import SphincsSecurity.Proof.FewTimeSignerView
+import SphincsSecurity.Proof.SigningTrace
 
 /-!
 # Split random-oracle keys for hidden few-time leaves
@@ -30,9 +31,6 @@ deriving DecidableEq
 abbrev SplitHashCache := SplitHashKey → Option HashOutput
 
 def emptySplitHashCache : SplitHashCache := fun _ => none
-
-noncomputable local instance : SampleableType HashOutput :=
-  SampleableType.ofFintype HashOutput
 
 noncomputable def splitHashQuery (key : SplitHashKey) :
     StateT SplitHashCache
@@ -193,6 +191,12 @@ noncomputable def splitRomImpl :
         (OracleComp (AdaptiveRevealProbe.World Coordinate))) :=
   splitUniformImpl + ordinaryHashImpl
 
+noncomputable def probingRomImpl (parameter : PublicParameter) :
+    QueryImpl OracleWorld
+      (StateT SplitHashCache
+        (OracleComp (AdaptiveRevealProbe.World Coordinate))) :=
+  splitUniformImpl + probingHashImpl parameter
+
 noncomputable def maskedLayerMessage (secretKey : SecretKey) (index : Index)
     (lay : Layer) :
     StateT SplitHashCache
@@ -250,6 +254,37 @@ noncomputable def maskedSignWithView (secretKey : SecretKey) (message : Message)
   | some (randomness, index, leaves) => do
       let signature ← maskedSignAfterDigest secretKey randomness index leaves
       pure (signature, some (selectedFewTimeView index leaves))
+
+noncomputable def maskedSigningImpl (secretKey : SecretKey) :
+    QueryImpl SigningSpec
+      (StateT SplitHashCache
+        (OracleComp (AdaptiveRevealProbe.World Coordinate))) :=
+  fun request => Prod.fst <$> maskedSignWithView secretKey request
+
+noncomputable def maskedExpandedAdversaryImpl (parameter : PublicParameter)
+    (secretKey : SecretKey) :
+    QueryImpl (OracleWorld + SigningSpec)
+      (StateT SplitHashCache
+        (OracleComp (AdaptiveRevealProbe.World Coordinate))) :=
+  probingRomImpl parameter + maskedSigningImpl secretKey
+
+noncomputable def maskedGameAfterSecrets (adversary : Adversary)
+    (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest) :
+    StateT SplitHashCache
+      (OracleComp (AdaptiveRevealProbe.World Coordinate)) Bool := do
+  let root ← simulateQ ordinaryHashImpl
+    (treeRoot parameter topLayer rootTree (otsSecret topLayer rootTree))
+  let secretKey : SecretKey :=
+    ⟨parameter, root, otsSecret, fun _index _tree _leafIdx => 0⟩
+  let (forgery, log) ←
+    (simulateQ (QueryImpl.withTraceAppend
+      (maskedExpandedAdversaryImpl parameter secretKey) signingLogFragment)
+      (adversary.main ⟨root, parameter⟩)).run
+  let verified ← simulateQ (probingRomImpl parameter)
+    (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)
+  pure (decide (SigningTranscript.Valid log ∧
+    ¬SigningTranscript.Contains log forgery) && verified)
 
 def tableProbe (table : Coordinate → Digest) (coordinate : Coordinate) :
     FtsSecretProbe :=
@@ -350,6 +385,32 @@ def IsOrdinaryInput (parameter : PublicParameter) (table : Coordinate → Digest
   ∀ probe : FtsSecretProbe, decodeProbe? parameter input = some probe →
     probe.candidate ≠ table (probe.index, probe.tree, probe.leafIdx)
 
+theorem isOrdinaryInput_of_decode_none (parameter : PublicParameter)
+    (table : Coordinate → Digest) (input : HashInput)
+    (hdecode : decodeProbe? parameter input = none) :
+    IsOrdinaryInput parameter table input := by
+  intro probe hsome
+  rw [hdecode] at hsome
+  simp at hsome
+
+theorem isOrdinaryInput_of_decode_miss (parameter : PublicParameter)
+    (table : Coordinate → Digest) (input : HashInput) (probe : FtsSecretProbe)
+    (hdecode : decodeProbe? parameter input = some probe)
+    (hmiss : probe.candidate ≠ table (probe.index, probe.tree, probe.leafIdx)) :
+    IsOrdinaryInput parameter table input := by
+  intro other hother
+  have heq : other = probe := Option.some.inj (hother.symm.trans hdecode)
+  subst other
+  exact hmiss
+
+theorem isOrdinaryInput_of_not_hit (parameter : PublicParameter)
+    (table : Coordinate → Digest) (input : HashInput)
+    (hmiss : ∀ probe : FtsSecretProbe, decodeProbe? parameter input = some probe →
+      table (probe.index, probe.tree, probe.leafIdx) ≠ probe.candidate) :
+    IsOrdinaryInput parameter table input := by
+  intro probe hdecode
+  exact (hmiss probe hdecode).symm
+
 theorem mergedCache_eq_ordinary_of_isOrdinary (parameter : PublicParameter)
     (table : Coordinate → Digest) (cache : SplitHashCache) (input : HashInput)
     (hordinary : IsOrdinaryInput parameter table input) :
@@ -391,6 +452,13 @@ theorem mergedCache_update_ordinary (parameter : PublicParameter)
           · intro hkey
             exact heq (SplitHashKey.ordinary.inj hkey)
 
+noncomputable def projectDetailedCache (parameter : PublicParameter) (table : Coordinate → Digest) :
+    AdaptiveRevealProbe.DetailedResult (alpha × SplitHashCache) →
+      Option (alpha × QueryCache HashSpec)
+  | .stopped _ => none
+  | .done true _ => none
+  | .done false (value, cache) => some (value, mergedCache parameter table cache)
+
 def fullSplitCache (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
     (table : Coordinate → Digest) : SplitHashCache
   | .ordinary input => some (f input)
@@ -422,6 +490,107 @@ theorem splitHashQuery_run_eq (key : SplitHashKey) (cache : SplitHashCache) :
       | none => (AdaptiveRevealProbe.hashOutputQuery (Coordinate := Coordinate)) >>= fun output =>
           pure (output, Function.update cache key (some output)) := by
   cases hlookup : cache key <;> simp [splitHashQuery, hlookup]
+
+theorem runDetailed_splitHashQuery_hiddenLeaf
+    (parameter : PublicParameter) (table : Coordinate → Digest)
+    (state : AdaptiveRevealProbe.State Coordinate) (fuel : Nat)
+    (cache : SplitHashCache) (coordinate : Coordinate)
+    (hclean : AdaptiveRevealProbe.tableHits state table = false) :
+    projectDetailedCache parameter table <$>
+        AdaptiveRevealProbe.runDetailed table state fuel
+          ((splitHashQuery (.hiddenLeaf coordinate)).run cache) =
+      some <$> (randomOracle (hiddenInput parameter table coordinate)).run
+        (mergedCache parameter table cache) := by
+  rw [splitHashQuery_run_eq]
+  cases hlookup : cache (.hiddenLeaf coordinate) with
+  | some output =>
+      have hmerged : mergedCache parameter table cache
+          (hiddenInput parameter table coordinate) = some output := by
+        rw [mergedCache_hiddenInput, hlookup]
+      rw [OracleSpec.randomOracle, QueryImpl.withCaching_run_some _ hmerged]
+      simp [AdaptiveRevealProbe.runDetailed, projectDetailedCache, hclean]
+  | none =>
+      have hmerged : mergedCache parameter table cache
+          (hiddenInput parameter table coordinate) = none := by
+        rw [mergedCache_hiddenInput, hlookup]
+      rw [OracleSpec.randomOracle, QueryImpl.withCaching_run_none _ hmerged,
+        AdaptiveRevealProbe.hashOutputQuery,
+        AdaptiveRevealProbe.runDetailed_hashOutput_query_bind]
+      have hsampler :
+          uniformSampleImpl (spec := HashSpec)
+            (hiddenInput parameter table coordinate) =
+            AdaptiveRevealProbe.sampleHashOutput := by
+        unfold AdaptiveRevealProbe.sampleHashOutput uniformSampleImpl
+        rfl
+      let finish := fun output : HashOutput =>
+        (output, (mergedCache parameter table cache).cacheQuery
+          (hiddenInput parameter table coordinate) output)
+      calc
+        projectDetailedCache parameter table <$>
+            (do
+              let output ← liftM AdaptiveRevealProbe.sampleHashOutput
+              AdaptiveRevealProbe.runDetailed table state fuel
+                (pure (output, Function.update cache (.hiddenLeaf coordinate) (some output)))) =
+          some <$> finish <$> AdaptiveRevealProbe.sampleHashOutput := by
+            simp only [AdaptiveRevealProbe.runDetailed,
+              OracleComp.construct_pure, hclean, map_eq_bind_pure_comp, bind_assoc,
+              pure_bind]
+            apply bind_congr
+            intro output
+            simp only [Function.comp_apply, projectDetailedCache, pure_bind, finish]
+            rw [mergedCache_update_hiddenLeaf]
+        _ = some <$> finish <$>
+            uniformSampleImpl (spec := HashSpec)
+              (hiddenInput parameter table coordinate) := by
+          rw [hsampler]
+
+theorem runDetailed_splitHashQuery_ordinary
+    (parameter : PublicParameter) (table : Coordinate → Digest)
+    (state : AdaptiveRevealProbe.State Coordinate) (fuel : Nat)
+    (cache : SplitHashCache) (input : HashInput)
+    (hclean : AdaptiveRevealProbe.tableHits state table = false)
+    (hordinary : IsOrdinaryInput parameter table input) :
+    projectDetailedCache parameter table <$>
+        AdaptiveRevealProbe.runDetailed table state fuel
+          ((splitHashQuery (.ordinary input)).run cache) =
+      some <$> (randomOracle input).run (mergedCache parameter table cache) := by
+  rw [splitHashQuery_run_eq]
+  cases hlookup : cache (.ordinary input) with
+  | some output =>
+      have hmerged : mergedCache parameter table cache input = some output := by
+        rw [mergedCache_eq_ordinary_of_isOrdinary parameter table cache input hordinary,
+          hlookup]
+      rw [OracleSpec.randomOracle, QueryImpl.withCaching_run_some _ hmerged]
+      simp [AdaptiveRevealProbe.runDetailed, projectDetailedCache, hclean]
+  | none =>
+      have hmerged : mergedCache parameter table cache input = none := by
+        rw [mergedCache_eq_ordinary_of_isOrdinary parameter table cache input hordinary,
+          hlookup]
+      rw [OracleSpec.randomOracle, QueryImpl.withCaching_run_none _ hmerged,
+        AdaptiveRevealProbe.hashOutputQuery,
+        AdaptiveRevealProbe.runDetailed_hashOutput_query_bind]
+      have hsampler :
+          uniformSampleImpl (spec := HashSpec) input =
+            AdaptiveRevealProbe.sampleHashOutput := by
+        unfold AdaptiveRevealProbe.sampleHashOutput uniformSampleImpl
+        rfl
+      let finish := fun output : HashOutput =>
+        (output, (mergedCache parameter table cache).cacheQuery input output)
+      calc
+        projectDetailedCache parameter table <$>
+            (do
+              let output ← liftM AdaptiveRevealProbe.sampleHashOutput
+              AdaptiveRevealProbe.runDetailed table state fuel
+                (pure (output, Function.update cache (.ordinary input) (some output)))) =
+          some <$> finish <$> AdaptiveRevealProbe.sampleHashOutput := by
+            simp only [AdaptiveRevealProbe.runDetailed, OracleComp.construct_pure,
+              hclean, map_eq_bind_pure_comp, bind_assoc, pure_bind]
+            apply bind_congr
+            intro output
+            simp only [Function.comp_apply, projectDetailedCache, pure_bind, finish]
+            rw [mergedCache_update_ordinary parameter table cache input output hordinary]
+        _ = some <$> finish <$> uniformSampleImpl (spec := HashSpec) input := by
+          rw [hsampler]
 
 @[simp] theorem splitHashQuery_run_fullSplitCache
     (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
@@ -611,6 +780,48 @@ theorem probingHashQuery_run_eq (parameter : PublicParameter) (input : HashInput
       | none => (splitHashQuery (.ordinary input)).run cache := by
   cases hdecode : decodeProbe? parameter input <;>
     simp [probingHashQuery, probeFtsSecret, hdecode]
+
+theorem runDetailed_probingHashQuery_hidden_miss
+    (parameter : PublicParameter) (table : Coordinate → Digest)
+    (state : AdaptiveRevealProbe.State Coordinate) (remaining : Nat)
+    (cache : SplitHashCache) (input : HashInput) (probe : FtsSecretProbe)
+    (hdecode : decodeProbe? parameter input = some probe)
+    (hrevealed : state.revealed (probe.index, probe.tree, probe.leafIdx) = none)
+    (hclean : AdaptiveRevealProbe.tableHits state table = false)
+    (hmiss : table (probe.index, probe.tree, probe.leafIdx) ≠ probe.candidate) :
+    projectDetailedCache parameter table <$>
+        AdaptiveRevealProbe.runDetailed table state (remaining + 1)
+          ((probingHashQuery parameter input).run cache) =
+      some <$> (randomOracle input).run (mergedCache parameter table cache) := by
+  rw [probingHashQuery_run_eq, hdecode]
+  change projectDetailedCache parameter table <$>
+      AdaptiveRevealProbe.runDetailed table state (remaining + 1)
+        ((liftM (OracleSpec.query
+          (spec := AdaptiveRevealProbe.World Coordinate)
+          (.probe (probe.index, probe.tree, probe.leafIdx) probe.candidate)) :
+            OracleComp (AdaptiveRevealProbe.World Coordinate) Unit) >>= fun _ =>
+          (splitHashQuery (.ordinary input)).run cache) = _
+  rw [AdaptiveRevealProbe.runDetailed_probe_query_bind, hrevealed]
+  exact runDetailed_splitHashQuery_ordinary parameter table
+    (state.addPending (probe.index, probe.tree, probe.leafIdx) probe.candidate)
+    remaining cache input
+    (AdaptiveRevealProbe.tableHits_addPending_eq_false state table
+      (probe.index, probe.tree, probe.leafIdx) probe.candidate hclean hmiss)
+    (isOrdinaryInput_of_decode_miss parameter table input probe hdecode hmiss.symm)
+
+theorem runDetailed_probingHashQuery_decode_none
+    (parameter : PublicParameter) (table : Coordinate → Digest)
+    (state : AdaptiveRevealProbe.State Coordinate) (fuel : Nat)
+    (cache : SplitHashCache) (input : HashInput)
+    (hdecode : decodeProbe? parameter input = none)
+    (hclean : AdaptiveRevealProbe.tableHits state table = false) :
+    projectDetailedCache parameter table <$>
+        AdaptiveRevealProbe.runDetailed table state fuel
+          ((probingHashQuery parameter input).run cache) =
+      some <$> (randomOracle input).run (mergedCache parameter table cache) := by
+  rw [probingHashQuery_run_eq, hdecode]
+  exact runDetailed_splitHashQuery_ordinary parameter table state fuel cache input hclean
+    (isOrdinaryInput_of_decode_none parameter table input hdecode)
 
 theorem probingHashQuery_run_isProbeBound (parameter : PublicParameter)
     (input : HashInput) (cache : SplitHashCache) :
@@ -894,6 +1105,47 @@ theorem maskedSignWithView_probeFree (secretKey : SecretKey) (message : Message)
           exact (maskedSignAfterDigest_probeFree secretKey data.1 data.2.1 data.2.2).bind
             fun signature => ProbeFree.pure
               (signature, some (selectedFewTimeView data.2.1 data.2.2))
+
+theorem simulateQ_probingRomImpl_run_isProbeBound
+    (parameter : PublicParameter) (computation : OracleComp OracleWorld alpha)
+    (q : Nat)
+    (hbound : computation.IsQueryBoundP (· matches Sum.inr _) q)
+    (cache : SplitHashCache) :
+    ((simulateQ (probingRomImpl parameter) computation).run cache).IsQueryBoundP
+      (AdaptiveRevealProbe.IsProbe (Coordinate := Coordinate)) q := by
+  apply hbound.simulateQ_run_StateT_of_step
+  intro input workingCache
+  cases input with
+  | inl n =>
+      exact splitUniformImpl_probeFree n workingCache
+  | inr hashInput =>
+      exact probingHashQuery_run_isProbeBound parameter hashInput workingCache
+
+theorem simulateQ_probingRomImpl_run'_isProbeBound
+    (parameter : PublicParameter) (computation : OracleComp OracleWorld alpha)
+    (q : Nat)
+    (hbound : computation.IsQueryBoundP (· matches Sum.inr _) q)
+    (cache : SplitHashCache) :
+    ((simulateQ (probingRomImpl parameter) computation).run' cache).IsQueryBoundP
+      (AdaptiveRevealProbe.IsProbe (Coordinate := Coordinate)) q := by
+  rw [StateT.run'_eq, isQueryBoundP_map_iff]
+  exact simulateQ_probingRomImpl_run_isProbeBound parameter computation q hbound cache
+
+theorem probEvent_maskedGame_hit_le (adversary : Adversary)
+    (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (q : Nat)
+    (hbound : ((maskedGameAfterSecrets adversary parameter otsSecret).run'
+      emptySplitHashCache).IsQueryBoundP
+        (AdaptiveRevealProbe.IsProbe (Coordinate := Coordinate)) q) :
+    Pr[fun hit : Bool => hit = true |
+        AdaptiveRevealProbe.experiment
+          (AdaptiveRevealProbe.State.empty : AdaptiveRevealProbe.State Coordinate) q
+          ((maskedGameAfterSecrets adversary parameter otsSecret).run'
+            emptySplitHashCache)] ≤
+      (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  apply AdaptiveRevealProbe.experiment_empty_probability_le
+  exact hbound
 
 @[simp] theorem hiddenFtsLeafHash_parameter_irrelevant
     (left right : PublicParameter) (coordinate : Coordinate) :

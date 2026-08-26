@@ -144,6 +144,30 @@ theorem extendTable_update_eq_install (state : State Coordinate)
 def tableHits (state : State Coordinate) (table : Coordinate → Digest) : Bool :=
   decide (∃ coordinate, table coordinate ∈ state.pending coordinate)
 
+theorem tableHits_addPending_eq_false (state : State Coordinate)
+    (table : Coordinate → Digest) (coordinate : Coordinate) (candidate : Digest)
+    (hclean : tableHits state table = false)
+    (hmiss : table coordinate ≠ candidate) :
+    tableHits (state.addPending coordinate candidate) table = false := by
+  classical
+  unfold tableHits at hclean ⊢
+  simp only [decide_eq_false_iff_not] at hclean ⊢
+  rintro ⟨other, hmem⟩
+  by_cases heq : other = coordinate
+  · subst other
+    simp only [State.addPending, Function.update_self, Finset.mem_insert] at hmem
+    exact hmem.elim hmiss (fun hold => hclean ⟨coordinate, hold⟩)
+  · simp only [State.addPending, Function.update_of_ne heq] at hmem
+    exact hclean ⟨other, hmem⟩
+
+theorem tableHits_addPending_eq_true (state : State Coordinate)
+    (table : Coordinate → Digest) (coordinate : Coordinate) (candidate : Digest)
+    (hhit : table coordinate = candidate) :
+    tableHits (state.addPending coordinate candidate) table = true := by
+  classical
+  rw [tableHits, decide_eq_true_eq]
+  exact ⟨coordinate, by simp [State.addPending, hhit]⟩
+
 omit [DecidableEq Coordinate] in
 theorem tableHits_extendTable_eq_true_iff (state : State Coordinate)
     (hvalid : state.Valid) (base : Coordinate → Digest) :
@@ -311,6 +335,9 @@ def uniformQuery (n : Nat) : OracleComp (World Coordinate) (Fin (n + 1)) :=
 def hashOutputQuery : OracleComp (World Coordinate) HashOutput :=
   liftM ((World Coordinate).query .hashOutput)
 
+noncomputable def sampleHashOutput : ProbComp HashOutput :=
+  uniformSampleImpl (spec := HashSpec) ([] : HashInput)
+
 def probeQuery (coordinate : Coordinate) (candidate : Digest) :
     OracleComp (World Coordinate) Unit :=
   liftM ((World Coordinate).query (.probe coordinate candidate))
@@ -368,7 +395,7 @@ noncomputable def run (table : Coordinate → Digest) (state : State Coordinate)
           let output ← liftM (unifSpec.query n)
           recursivelyRun output state fuel
       | .hashOutput => do
-          let output ← liftM ($ᵗ HashOutput : ProbComp HashOutput)
+          let output ← liftM sampleHashOutput
           recursivelyRun output state fuel
       | .probe coordinate candidate =>
           match fuel with
@@ -385,6 +412,101 @@ noncomputable def run (table : Coordinate → Digest) (state : State Coordinate)
               if value ∈ state.pending coordinate then pure true
               else recursivelyRun value (state.install coordinate value) fuel)
     computation state fuel
+
+inductive DetailedResult (alpha : Type) where
+  | stopped (hit : Bool)
+  | done (hit : Bool) (value : alpha)
+
+def DetailedResult.hit : DetailedResult alpha → Bool
+  | .stopped hit => hit
+  | .done hit _ => hit
+
+def DetailedResult.value? : DetailedResult alpha → Option alpha
+  | .stopped _ => none
+  | .done _ value => some value
+
+noncomputable def runDetailed (table : Coordinate → Digest) (state : State Coordinate)
+    (fuel : Nat) (computation : OracleComp (World Coordinate) alpha) :
+    ProbComp (DetailedResult alpha) :=
+  OracleComp.construct
+    (C := fun _ : OracleComp (World Coordinate) alpha =>
+      State Coordinate → Nat → ProbComp (DetailedResult alpha))
+    (fun result state _ => pure (.done (tableHits state table) result))
+    (fun input _next recursivelyRun state fuel =>
+      match input with
+      | .uniform n => do
+          let output ← liftM (unifSpec.query n)
+          recursivelyRun output state fuel
+      | .hashOutput => do
+          let output ← liftM sampleHashOutput
+          recursivelyRun output state fuel
+      | .probe coordinate candidate =>
+          match fuel with
+          | 0 => pure (.stopped (tableHits state table))
+          | remaining + 1 =>
+              match state.revealed coordinate with
+              | some _ => recursivelyRun () state remaining
+              | none => recursivelyRun () (state.addPending coordinate candidate) remaining
+      | .reveal coordinate =>
+          match state.revealed coordinate with
+          | some value => recursivelyRun value state fuel
+          | none =>
+              let value := table coordinate
+              if value ∈ state.pending coordinate then pure (.stopped true)
+              else recursivelyRun value (state.install coordinate value) fuel)
+    computation state fuel
+
+theorem runDetailed_uniform_query_bind (table : Coordinate → Digest)
+    (state : State Coordinate) (fuel n : Nat)
+    (next : Fin (n + 1) → OracleComp (World Coordinate) alpha) :
+    runDetailed table state fuel
+        ((liftM (OracleSpec.query (spec := World Coordinate) (.uniform n)) :
+          OracleComp (World Coordinate) (Fin (n + 1))) >>= next) = (do
+      let output ← liftM (unifSpec.query n)
+      runDetailed table state fuel (next output)) := by
+  rw [runDetailed, OracleComp.construct_query_bind]
+  rfl
+
+theorem runDetailed_hashOutput_query_bind (table : Coordinate → Digest)
+    (state : State Coordinate) (fuel : Nat)
+    (next : HashOutput → OracleComp (World Coordinate) alpha) :
+    runDetailed table state fuel
+        ((liftM (OracleSpec.query (spec := World Coordinate) .hashOutput) :
+          OracleComp (World Coordinate) HashOutput) >>= next) = (do
+      let output ← liftM sampleHashOutput
+      runDetailed table state fuel (next output)) := by
+  rw [runDetailed, OracleComp.construct_query_bind]
+  rfl
+
+theorem runDetailed_probe_query_bind (table : Coordinate → Digest)
+    (state : State Coordinate) (fuel : Nat) (coordinate : Coordinate)
+    (candidate : Digest) (next : Unit → OracleComp (World Coordinate) alpha) :
+    runDetailed table state fuel
+        ((liftM (OracleSpec.query (spec := World Coordinate) (.probe coordinate candidate)) :
+          OracleComp (World Coordinate) Unit) >>= next) =
+      match fuel with
+      | 0 => pure (.stopped (tableHits state table))
+      | remaining + 1 =>
+          match state.revealed coordinate with
+          | some _ => runDetailed table state remaining (next ())
+          | none => runDetailed table (state.addPending coordinate candidate) remaining (next ()) := by
+  rw [runDetailed, OracleComp.construct_query_bind]
+  rfl
+
+theorem runDetailed_reveal_query_bind (table : Coordinate → Digest)
+    (state : State Coordinate) (fuel : Nat) (coordinate : Coordinate)
+    (next : Digest → OracleComp (World Coordinate) alpha) :
+    runDetailed table state fuel
+        ((liftM (OracleSpec.query (spec := World Coordinate) (.reveal coordinate)) :
+          OracleComp (World Coordinate) Digest) >>= next) =
+      match state.revealed coordinate with
+      | some value => runDetailed table state fuel (next value)
+      | none =>
+          let value := table coordinate
+          if value ∈ state.pending coordinate then pure (.stopped true)
+          else runDetailed table (state.install coordinate value) fuel (next value) := by
+  rw [runDetailed, OracleComp.construct_query_bind]
+  rfl
 
 theorem run_uniform_query_bind (table : Coordinate → Digest) (state : State Coordinate)
     (fuel n : Nat)
@@ -417,7 +539,7 @@ theorem run_hashOutput_query_bind (table : Coordinate → Digest) (state : State
     run table state fuel
         ((liftM (OracleSpec.query (spec := World Coordinate) .hashOutput) :
           OracleComp (World Coordinate) HashOutput) >>= next) = (do
-      let output ← liftM ($ᵗ HashOutput : ProbComp HashOutput)
+      let output ← liftM sampleHashOutput
       run table state fuel (next output)) := by
   rw [run, OracleComp.construct_query_bind]
   rfl
@@ -437,10 +559,113 @@ theorem run_reveal_query_bind (table : Coordinate → Digest) (state : State Coo
   rw [run, OracleComp.construct_query_bind]
   rfl
 
+theorem runDetailed_hit_eq_run (table : Coordinate → Digest)
+    (state : State Coordinate) (fuel : Nat)
+    (computation : OracleComp (World Coordinate) alpha) :
+    DetailedResult.hit <$> runDetailed table state fuel computation =
+      run table state fuel computation := by
+  induction computation using OracleComp.inductionOn generalizing state fuel with
+  | pure result =>
+      simp [runDetailed, run, DetailedResult.hit]
+  | query_bind input next ih =>
+      cases input with
+      | uniform n =>
+          rw [runDetailed_uniform_query_bind, run_uniform_query_bind,
+            map_bind]
+          apply bind_congr
+          intro output
+          exact ih output _ _
+      | hashOutput =>
+          rw [runDetailed_hashOutput_query_bind, run_hashOutput_query_bind,
+            map_bind]
+          apply bind_congr
+          intro output
+          exact ih output _ _
+      | probe coordinate candidate =>
+          rw [runDetailed_probe_query_bind, run_probe_query_bind]
+          cases fuel with
+          | zero => simp [DetailedResult.hit]
+          | succ remaining =>
+              cases hrevealed : state.revealed coordinate with
+              | none => exact ih () (state.addPending coordinate candidate) remaining
+              | some value => exact ih () state remaining
+      | reveal coordinate =>
+          rw [runDetailed_reveal_query_bind, run_reveal_query_bind]
+          cases hrevealed : state.revealed coordinate with
+          | some value => exact ih value state fuel
+          | none =>
+              by_cases hhit : table coordinate ∈ state.pending coordinate
+              · simp [hhit, DetailedResult.hit]
+              · simp only [hhit, ↓reduceIte]
+                exact ih (table coordinate) (state.install coordinate (table coordinate)) fuel
+
+theorem stopped_false_not_mem_support_runDetailed
+    (table : Coordinate → Digest) (state : State Coordinate) (fuel : Nat)
+    (computation : OracleComp (World Coordinate) alpha)
+    (hbound : computation.IsQueryBoundP IsProbe fuel) :
+    DetailedResult.stopped false ∉ support (runDetailed table state fuel computation) := by
+  induction computation using OracleComp.inductionOn generalizing state fuel with
+  | pure result =>
+      simp [runDetailed]
+  | query_bind input next ih =>
+      rw [isQueryBoundP_query_bind_iff] at hbound
+      cases input with
+      | uniform n =>
+          rw [runDetailed_uniform_query_bind, mem_support_bind_iff]
+          rintro ⟨output, houtput, hrest⟩
+          exact ih output state fuel (hbound.2 output) hrest
+      | hashOutput =>
+          rw [runDetailed_hashOutput_query_bind, mem_support_bind_iff]
+          rintro ⟨output, houtput, hrest⟩
+          exact ih output state fuel (hbound.2 output) hrest
+      | probe coordinate candidate =>
+          have hpositive : 0 < fuel := by
+            simpa [IsProbe] using hbound.1
+          cases fuel with
+          | zero => omega
+          | succ remaining =>
+              rw [runDetailed_probe_query_bind]
+              cases hrevealed : state.revealed coordinate with
+              | none =>
+                  exact ih () (state.addPending coordinate candidate) remaining
+                    (by simpa [IsProbe] using hbound.2 ())
+              | some value =>
+                  exact ih () state remaining (by simpa [IsProbe] using hbound.2 ())
+      | reveal coordinate =>
+          rw [runDetailed_reveal_query_bind]
+          cases hrevealed : state.revealed coordinate with
+          | some value =>
+              exact ih value state fuel (by simpa [IsProbe] using hbound.2 value)
+          | none =>
+              by_cases hhit : table coordinate ∈ state.pending coordinate
+              · simp [hhit]
+              · simp only [hhit, ↓reduceIte]
+                exact ih (table coordinate) (state.install coordinate (table coordinate)) fuel
+                  (by simpa [IsProbe] using hbound.2 (table coordinate))
+
 noncomputable def experiment (state : State Coordinate) (fuel : Nat)
     (computation : OracleComp (World Coordinate) alpha) : ProbComp Bool := do
   let base ← sampleTable
   run (extendTable state base) state fuel computation
+
+noncomputable def detailedExperiment (state : State Coordinate) (fuel : Nat)
+    (computation : OracleComp (World Coordinate) alpha) :
+    ProbComp ((Coordinate → Digest) × DetailedResult alpha) := do
+  let base ← sampleTable
+  let table := extendTable state base
+  let result ← runDetailed table state fuel computation
+  pure (table, result)
+
+theorem detailedExperiment_hit_eq_experiment (state : State Coordinate) (fuel : Nat)
+    (computation : OracleComp (World Coordinate) alpha) :
+    (fun result => result.2.hit) <$> detailedExperiment state fuel computation =
+      experiment state fuel computation := by
+  unfold detailedExperiment experiment
+  simp only [map_bind]
+  apply bind_congr
+  intro base
+  rw [← runDetailed_hit_eq_run]
+  simp [map_eq_bind_pure_comp]
 
 noncomputable def applyReveal (state : State Coordinate) (coordinate : Coordinate)
     (resume : Digest → State Coordinate → ProbComp Bool) : ProbComp Bool := do
@@ -580,7 +805,7 @@ theorem experiment_hashOutput_query_bind (state : State Coordinate) (fuel : Nat)
         ((liftM (OracleSpec.query (spec := World Coordinate) .hashOutput) :
           OracleComp (World Coordinate) HashOutput) >>= next) =
       sampleTable >>= fun base => (do
-        let output ← liftM ($ᵗ HashOutput : ProbComp HashOutput)
+        let output ← liftM sampleHashOutput
         run (extendTable state base) state fuel (next output)) := by
   unfold experiment
   apply bind_congr
@@ -644,12 +869,12 @@ theorem experiment_probability_le [Nonempty Coordinate]
               evalDist (experiment state fuel
                 ((liftM (OracleSpec.query (spec := World Coordinate) .hashOutput) :
                   OracleComp (World Coordinate) HashOutput) >>= next)) =
-              evalDist (($ᵗ HashOutput : ProbComp HashOutput) >>= fun output =>
+              evalDist (sampleHashOutput >>= fun output =>
                 experiment state fuel (next output)) := by
             rw [experiment_hashOutput_query_bind]
             exact OracleComp.DeferredSampling.evalDist_bind_comm _ _ _
           refine (probEvent_congr' (oa' :=
-            ($ᵗ HashOutput : ProbComp HashOutput) >>= fun output =>
+            sampleHashOutput >>= fun output =>
               experiment state fuel (next output)) (fun _ _ => Iff.rfl) hdist).le.trans ?_
           exact probEvent_bind_le_of_forall_le fun output _ =>
             ih output state hvalid fuel (by simpa [IsProbe] using hbound.2 output)
