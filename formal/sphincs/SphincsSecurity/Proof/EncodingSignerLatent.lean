@@ -129,4 +129,85 @@ theorem latentEncodingBad_signerInterval_paid_or_pinned
   · exact .pinned position htarget
   · exact .paid cache input answer targets hinitial hfinal hhit hdrop
 
+theorem hasEncodingTarget_of_latentAt_creation_during_sign
+    {secretKey : SecretKey} {message : Message}
+    {initialCache cache finalCache : QueryCache HashSpec}
+    {result : Option Signature} {input : HashInput} {answer : HashOutput}
+    {position : EncodingPosition}
+    (hfinite : Finite cache)
+    (hrun : (result, finalCache) ∈ support
+      ((simulateQ romImpl (sign secretKey message)).run initialCache))
+    (hinitial : initialCache ≤ cache)
+    (hfinal : cache.cacheQuery input answer ≤ finalCache)
+    (hclean : ¬ LatentEncodingBadAt cache secretKey position)
+    (huncached : cache input = none)
+    (hposition : AtEncodingPosition secretKey.parameter input position)
+    (hbad : LatentEncodingBadAt
+      (cache.cacheQuery input answer) secretKey position) :
+    HasEncodingTarget finalCache secretKey position := by
+  obtain ⟨payload, hpayload⟩ := hposition
+  have hinitialMiss : initialCache
+      (tweakableHashInput secretKey.parameter position.domain payload) = none := by
+    rw [← hpayload]
+    by_contra hcached
+    obtain ⟨cachedAnswer, hcachedAnswer⟩ := Option.ne_none_iff_exists'.mp hcached
+    have := hinitial hcachedAnswer
+    rw [huncached] at this
+    simp at this
+  have hfinalCached : finalCache
+      (tweakableHashInput secretKey.parameter position.domain payload) = some answer := by
+    rw [← hpayload]
+    exact hfinal (by simp)
+  have hvalid : TargetSum.ValidDigest (truncateHash answer) :=
+    (Finset.mem_filter.mp (latentEncodingBadAt_answer_hit_of_encoding_query
+      hfinite hclean huncached ⟨payload, hpayload⟩ hbad)).2
+  apply hasEncodingTarget_of_sign_transition secretKey message initialCache finalCache result
+    hrun position payload hinitialMiss
+  · simp [hfinalCached]
+  · simpa [fromCache, hfinalCached] using hvalid
+
+inductive LatentEncodingAtSignerIntervalOutcome
+    (initialCache finalCache : QueryCache HashSpec) (secretKey : SecretKey)
+    (position : EncodingPosition) : Prop where
+  | pinned (target : HasEncodingTarget finalCache secretKey position)
+  | paid (cache : QueryCache HashSpec) (input : HashInput) (answer : HashOutput)
+      (targets : Finset Digest)
+      (initialLe : initialCache ≤ cache)
+      (finalLe : cache.cacheQuery input answer ≤ finalCache)
+      (hit : truncateHash answer ∈ targets)
+      (drop : encodingStructuralPotential (cache.cacheQuery input answer) secretKey +
+          targets.card ≤ encodingStructuralPotential cache secretKey)
+
+theorem latentEncodingBadAt_signerInterval_paid_or_pinned
+    {secretKey : SecretKey} {message : Message}
+    {initialCache finalCache : QueryCache HashSpec} {result : Option Signature}
+    {position : EncodingPosition}
+    (hfinite : Finite finalCache)
+    (hrun : (result, finalCache) ∈ support
+      ((simulateQ romImpl (sign secretKey message)).run initialCache))
+    (hstructuralClean : ¬ Bad secretKey.parameter secretKey.otsSecret
+      secretKey.ftsSecret finalCache)
+    (hclean : ¬ LatentEncodingBadAt initialCache secretKey position)
+    (hbad : LatentEncodingBadAt finalCache secretKey position) :
+    LatentEncodingAtSignerIntervalOutcome initialCache finalCache secretKey position := by
+  obtain ⟨cache, input, answer, hinitial, hstepClean, huncached, hstepBad,
+    hfinal⟩ := freshBadStep_of_mem_support
+      (fun cache => LatentEncodingBadAt cache secretKey position)
+      (sign secretKey message) initialCache result finalCache hrun hclean hbad
+  have hfiniteCache : Finite cache := hfinite.of_le
+    ((le_cacheQuery huncached).trans hfinal)
+  have hstepStructuralClean : ¬ Bad secretKey.parameter secretKey.otsSecret
+      secretKey.ftsSecret cache := by
+    intro hbadCache
+    exact hstructuralClean (Bad.mono secretKey.parameter secretKey.otsSecret
+      secretKey.ftsSecret ((le_cacheQuery huncached).trans hfinal) hbadCache)
+  rcases latentEncodingBadAt_step_paid_or_provisional hfiniteCache
+    hstepStructuralClean hstepClean huncached hstepBad with
+    ⟨htarget⟩ | ⟨hposition, hnotTarget, hstillNotTarget, hhit⟩ |
+      ⟨targets, hhit, hdrop⟩
+  · exact .pinned (htarget.mono ((le_cacheQuery huncached).trans hfinal))
+  · exact .pinned (hasEncodingTarget_of_latentAt_creation_during_sign
+      hfiniteCache hrun hinitial hfinal hstepClean huncached hposition hstepBad)
+  · exact .paid cache input answer targets hinitial hfinal hhit hdrop
+
 end SphincsSecurity.Concrete

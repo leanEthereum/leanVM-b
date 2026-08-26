@@ -435,4 +435,86 @@ theorem latentEncodingBad_step_paid_or_provisional
       (encodingStructuralPotential_add_settlingTargets_card_le hfinite huncached
         hposition hunsettled hsettled)
 
+inductive LatentEncodingAtStepOutcome (cache : QueryCache HashSpec)
+    (hfinite : Finite cache) (secretKey : SecretKey)
+    (input : HashInput) (answer : HashOutput) (position : EncodingPosition) : Prop where
+  | existingTarget
+      (target : HasEncodingTarget cache secretKey position)
+  | provisional
+      (atPosition : AtEncodingPosition secretKey.parameter input position)
+      (notTarget : ¬ HasEncodingTarget cache secretKey position)
+      (stillNotTarget : ¬ HasEncodingTarget
+        (cache.cacheQuery input answer) secretKey position)
+      (hit : truncateHash answer ∈
+        encodingValidAnswerTargets secretKey.parameter cache hfinite position)
+  | paid (targets : Finset Digest)
+      (hit : truncateHash answer ∈ targets)
+      (drop : encodingStructuralPotential (cache.cacheQuery input answer) secretKey +
+          targets.card ≤ encodingStructuralPotential cache secretKey)
+
+theorem latentEncodingBadAt_step_paid_or_provisional
+    {cache : QueryCache HashSpec} (hfinite : Finite cache)
+    {secretKey : SecretKey} {input : HashInput} {answer : HashOutput}
+    {position : EncodingPosition}
+    (hstructuralClean : ¬ Bad secretKey.parameter secretKey.otsSecret
+      secretKey.ftsSecret cache)
+    (hclean : ¬ LatentEncodingBadAt cache secretKey position)
+    (huncached : cache input = none)
+    (hbad : LatentEncodingBadAt
+      (cache.cacheQuery input answer) secretKey position) :
+    LatentEncodingAtStepOutcome cache hfinite secretKey input answer position := by
+  classical
+  rcases latentEncodingBadAt_step_classify hfinite hclean huncached hbad with
+    hencoding | hmessage | hpremature
+  · obtain ⟨hposition, hhit⟩ := hencoding
+    by_cases htarget : HasEncodingTarget cache secretKey position
+    · exact .existingTarget htarget
+    · by_cases htargetAfter : HasEncodingTarget
+          (cache.cacheQuery input answer) secretKey position
+      · have hstructural :=
+          (clean_and_potential_cacheQuery_of_not_atPosition secretKey.parameter
+            secretKey.otsSecret secretKey.ftsSecret (answer := answer)
+            hstructuralClean huncached
+            (fun structuralPosition hat =>
+              hposition.not_atPosition structuralPosition hat)).2
+        exact .paid (encodingAnswerTargets secretKey.parameter cache hfinite position)
+          (Finset.mem_filter.mp hhit).1
+          (encodingStructuralPotential_add_answerTargets_card_le_of_new_target
+            hfinite huncached hposition htarget htargetAfter hstructural)
+      · exact .provisional hposition htarget htargetAfter hhit
+  · obtain ⟨index, htree, hleaf, hunsettled, hsettled, hposition, hhit⟩ := hmessage
+    have hnotEncoding : ∀ candidate : EncodingPosition,
+        ¬ AtEncodingPosition secretKey.parameter input candidate := by
+      intro candidate hcandidate
+      exact hcandidate.not_atPosition (layerMessagePosition index position.lay)
+        hposition
+    have hmessageUnsettled : ¬ EncodingMessageSettledAt cache secretKey position := by
+      rintro ⟨candidate, hcandidateTree, hcandidateLeaf, hcandidateSettled⟩
+      have hpositionEq := layerMessagePosition_eq_of_position_eq index candidate
+        position.lay (htree.trans hcandidateTree.symm)
+        (hleaf.trans hcandidateLeaf.symm)
+      apply hunsettled
+      rwa [hpositionEq]
+    have hmessageSettled : EncodingMessageSettledAt
+        (cache.cacheQuery input answer) secretKey position :=
+      ⟨index, htree, hleaf, hsettled⟩
+    have hstructuralPaid := potential_add_settlingTargets_card_le
+      secretKey.parameter secretKey.otsSecret secretKey.ftsSecret hfinite huncached
+      hposition hunsettled hsettled
+    have hstructural : potential secretKey.parameter secretKey.otsSecret
+        secretKey.ftsSecret (cache.cacheQuery input answer) ≤
+          potential secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache :=
+      (Nat.le_add_right _
+        (settlingTargets secretKey.parameter cache hfinite
+          (layerMessagePosition index position.lay)).card).trans hstructuralPaid
+    exact .paid (encodingMessageTargets secretKey.parameter cache hfinite position)
+      hhit
+      (encodingStructuralPotential_add_messageTargets_card_le_of_new_message
+        hfinite huncached hnotEncoding hmessageUnsettled hmessageSettled hstructural)
+  · obtain ⟨structuralPosition, hposition, hunsettled, hsettled, hhit⟩ :=
+      PrematureLayerMessageSettlement.mem_settlingTargets hfinite huncached hpremature
+    exact .paid (settlingTargets secretKey.parameter cache hfinite structuralPosition)
+      hhit (encodingStructuralPotential_add_settlingTargets_card_le hfinite huncached
+        hposition hunsettled hsettled)
+
 end SphincsSecurity.Concrete
