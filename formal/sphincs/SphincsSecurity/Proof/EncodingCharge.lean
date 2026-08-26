@@ -967,6 +967,32 @@ theorem encodingMessageTargets_card_le {parameter : PublicParameter}
     (encodingCachedAt_finite (parameter := parameter) (cache := cache) hfinite position)]
   exact Finset.card_image_le
 
+noncomputable def encodingAnswerTargets (parameter : PublicParameter)
+    (cache : QueryCache HashSpec) (hfinite : Finite cache)
+    (position : EncodingPosition) : Finset Digest :=
+  open Classical in
+  (encodingCachedAt_finite (parameter := parameter) (cache := cache) hfinite position).toFinset.image
+    fun input => truncateHash (fromCache cache input)
+
+theorem cachedAnswer_mem_encodingAnswerTargets {parameter : PublicParameter}
+    {cache : QueryCache HashSpec} (hfinite : Finite cache) {position : EncodingPosition}
+    {input : HashInput} {answer : HashOutput} (hcached : cache input = some answer)
+    (hposition : AtEncodingPosition parameter input position) :
+    truncateHash answer ∈ encodingAnswerTargets parameter cache hfinite position := by
+  rw [encodingAnswerTargets, Finset.mem_image]
+  refine ⟨input, ?_, ?_⟩
+  · rw [Set.Finite.mem_toFinset]
+    exact ⟨by simp [hcached], hposition⟩
+  · simp [fromCache, hcached]
+
+theorem encodingAnswerTargets_card_le {parameter : PublicParameter}
+    {cache : QueryCache HashSpec} (hfinite : Finite cache) (position : EncodingPosition) :
+    (encodingAnswerTargets parameter cache hfinite position).card ≤
+      (encodingCachedAt parameter cache position).ncard := by
+  rw [encodingAnswerTargets, Set.ncard_eq_toFinset_card _
+    (encodingCachedAt_finite (parameter := parameter) (cache := cache) hfinite position)]
+  exact Finset.card_image_le
+
 theorem signedLayerMessage_mem_encodingMessageTargets
     {cache : QueryCache HashSpec} (hfinite : Finite cache) {f : QueryImpl HashSpec Id}
     {secretKey : SecretKey} {index : Index} {lay : Layer} {tree : TreeIndex}
@@ -986,6 +1012,60 @@ theorem signedLayerMessage_mem_encodingMessageTargets
         (digestBytes (evalWithAnswerFn f (layerMessage secretKey index lay)) ++
           counterBytes counter)) position from ⟨_, rfl⟩)
   rw [slotDigest_zero_encodingInput] at hmem
+  exact hmem
+
+theorem CachedSignedEncodingPayloadAt.message_hit_of_cacheQuery_of_unsettled
+    {cache : QueryCache HashSpec} (hfinite : Finite cache)
+    {secretKey : SecretKey} {input : HashInput} {answer : HashOutput}
+    {lay : Layer} {tree : TreeIndex} {leafIdx : LeafIndex} {payload : HashInput}
+    {queryIndex : Index} (huncached : cache input = none)
+    (htree : treeIndexAt queryIndex lay = tree)
+    (hleaf : leafIndexAt queryIndex lay = leafIdx)
+    (hposition : AtPosition secretKey.parameter input (layerMessagePosition queryIndex lay))
+    (hunsettled : ¬ Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache
+      (layerMessagePosition queryIndex lay))
+    (htarget : CachedSignedEncodingPayloadAt (cache.cacheQuery input answer) secretKey
+      lay tree leafIdx payload) :
+    truncateHash answer ∈
+      encodingMessageTargets secretKey.parameter cache hfinite ⟨lay, tree, leafIdx⟩ := by
+  obtain ⟨targetIndex, counter, htargetTree, htargetLeaf, hsettled, _, _, hpayload,
+    hcached⟩ := htarget
+  have hmessagePosition := layerMessagePosition_eq_of_position_eq queryIndex targetIndex lay
+    (htree.trans htargetTree.symm) (hleaf.trans htargetLeaf.symm)
+  have htargetUnsettled :
+      ¬ Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache
+        (layerMessagePosition targetIndex lay) := by
+    rwa [← hmessagePosition]
+  have htargetPosition : AtPosition secretKey.parameter input
+      (layerMessagePosition targetIndex lay) := by
+    rwa [← hmessagePosition]
+  have hmessage := honestValue_cacheQuery_self_of_settled secretKey.parameter
+    secretKey.otsSecret secretKey.ftsSecret huncached htargetPosition htargetUnsettled hsettled
+  let position : EncodingPosition := ⟨lay, tree, leafIdx⟩
+  let targetInput := tweakableHashInput secretKey.parameter position.domain payload
+  have htargetInputNe : targetInput ≠ input := by
+    intro heq
+    exact (show AtEncodingPosition secretKey.parameter targetInput position from ⟨payload, rfl⟩).not_atPosition
+      (layerMessagePosition targetIndex lay) (heq ▸ htargetPosition)
+  have hcachedOld : cache targetInput ≠ none := by
+    change cache.cacheQuery input answer targetInput ≠ none at hcached
+    rwa [QueryCache.cacheQuery_of_ne _ _ htargetInputNe] at hcached
+  have hmem := slotDigest_mem_encodingMessageTargets hfinite hcachedOld
+    (show AtEncodingPosition secretKey.parameter targetInput position from ⟨payload, rfl⟩)
+  dsimp only [targetInput, position, EncodingPosition.domain] at hmem
+  rw [hpayload] at hmem
+  have hslot : slotDigest 0
+      (tweakableHashInput secretKey.parameter (.encoding lay tree leafIdx)
+        (digestBytes (honestValue (fromCache (cache.cacheQuery input answer))
+          secretKey.parameter secretKey.otsSecret secretKey.ftsSecret
+          (layerMessagePosition targetIndex lay)) ++ counterBytes counter)) =
+      honestValue (fromCache (cache.cacheQuery input answer)) secretKey.parameter
+        secretKey.otsSecret secretKey.ftsSecret (layerMessagePosition targetIndex lay) := by
+    simpa only [EncodingPosition.domain] using slotDigest_zero_encodingInput
+      secretKey.parameter (show EncodingPosition from ⟨lay, tree, leafIdx⟩)
+      (honestValue (fromCache (cache.cacheQuery input answer)) secretKey.parameter
+        secretKey.otsSecret secretKey.ftsSecret (layerMessagePosition targetIndex lay)) counter
+  rw [hslot, hmessage] at hmem
   exact hmem
 
 def HasEncodingTarget (cache : QueryCache HashSpec) (secretKey : SecretKey)
@@ -1113,6 +1193,77 @@ theorem HasEncodingTarget.of_cacheQuery_of_settled_of_not_atPosition
   obtain ⟨payload, hpayload⟩ := htarget
   exact ⟨payload, hpayload.of_cacheQuery_of_settled_of_not_atPosition huncached hsettledAt
     hnotAt⟩
+
+theorem encodingBad_answer_hit_of_fresh_target_query
+    {cache : QueryCache HashSpec} (hfinite : Finite cache)
+    {secretKey : SecretKey} {input : HashInput} {answer : HashOutput}
+    {position : EncodingPosition} {targetPayload : HashInput}
+    (hclean : ¬ EncodingBad cache secretKey) (huncached : cache input = none)
+    (hinput : input = tweakableHashInput secretKey.parameter position.domain targetPayload)
+    (htarget : CachedSignedEncodingPayloadAt (cache.cacheQuery input answer) secretKey
+      position.lay position.tree position.leafIdx targetPayload)
+    (hbad : EncodingBad (cache.cacheQuery input answer) secretKey) :
+    truncateHash answer ∈
+      encodingAnswerTargets secretKey.parameter cache hfinite position := by
+  obtain ⟨lay, tree, leafIdx⟩ := position
+  obtain ⟨badLay, badTree, badLeaf, badTargetPayload, otherPayload, targetAnswer,
+    otherAnswer, hbadTarget, hpayloadNe, htargetAnswer, hotherAnswer, hcollision⟩ := hbad
+  let badPosition : EncodingPosition := ⟨badLay, badTree, badLeaf⟩
+  have hinputAt : AtEncodingPosition secretKey.parameter input ⟨lay, tree, leafIdx⟩ :=
+    ⟨targetPayload, hinput⟩
+  have hpositionEq : (⟨lay, tree, leafIdx⟩ : EncodingPosition) = badPosition := by
+    by_contra hne
+    have hbadTargetOld := hbadTarget.of_cacheQuery_of_other_encodingPosition huncached
+      hinputAt hne
+    have htargetInputNe :
+        tweakableHashInput secretKey.parameter badPosition.domain badTargetPayload ≠ input :=
+      atEncodingPosition_ne
+        (show AtEncodingPosition secretKey.parameter
+          (tweakableHashInput secretKey.parameter badPosition.domain badTargetPayload)
+            badPosition from ⟨badTargetPayload, rfl⟩) hinputAt (fun heq => hne heq.symm)
+    have hotherInputNe :
+        tweakableHashInput secretKey.parameter badPosition.domain otherPayload ≠ input :=
+      atEncodingPosition_ne
+        (show AtEncodingPosition secretKey.parameter
+          (tweakableHashInput secretKey.parameter badPosition.domain otherPayload)
+            badPosition from ⟨otherPayload, rfl⟩) hinputAt (fun heq => hne heq.symm)
+    apply hclean
+    refine ⟨badLay, badTree, badLeaf, badTargetPayload, otherPayload, targetAnswer,
+      otherAnswer, hbadTargetOld, hpayloadNe, ?_, ?_, hcollision⟩
+    · have htargetInputNe' : tweakableHashInput secretKey.parameter
+          (.encoding badLay badTree badLeaf) badTargetPayload ≠ input := by
+        simpa only [badPosition, EncodingPosition.domain] using htargetInputNe
+      rwa [QueryCache.cacheQuery_of_ne _ _ htargetInputNe'] at htargetAnswer
+    · have hotherInputNe' : tweakableHashInput secretKey.parameter
+          (.encoding badLay badTree badLeaf) otherPayload ≠ input := by
+        simpa only [badPosition, EncodingPosition.domain] using hotherInputNe
+      rwa [QueryCache.cacheQuery_of_ne _ _ hotherInputNe'] at hotherAnswer
+  simp only [badPosition, EncodingPosition.mk.injEq] at hpositionEq
+  obtain ⟨rfl, rfl, rfl⟩ := hpositionEq
+  have hpayload : targetPayload = badTargetPayload :=
+    cachedSignedEncodingPayloadAt_unique htarget hbadTarget
+  subst badTargetPayload
+  have htargetInput : tweakableHashInput secretKey.parameter (.encoding lay tree leafIdx)
+      targetPayload = input := hinput.symm
+  have htargetAnswerEq : targetAnswer = answer := by
+    rw [htargetInput, QueryCache.cacheQuery_self] at htargetAnswer
+    exact Option.some.inj htargetAnswer.symm
+  have hotherInputNe : tweakableHashInput secretKey.parameter (.encoding lay tree leafIdx)
+      otherPayload ≠ input := by
+    intro heq
+    apply hpayloadNe
+    exact (tweakableHashInput_injective secretKey.parameter (by trivial) (by trivial)
+      (htargetInput.trans heq.symm)).2
+  have hotherOld : cache
+      (tweakableHashInput secretKey.parameter (.encoding lay tree leafIdx) otherPayload) =
+        some otherAnswer := by
+    rwa [QueryCache.cacheQuery_of_ne _ _ hotherInputNe] at hotherAnswer
+  have hmem := cachedAnswer_mem_encodingAnswerTargets hfinite hotherOld
+    (show AtEncodingPosition secretKey.parameter
+      (tweakableHashInput secretKey.parameter (.encoding lay tree leafIdx) otherPayload)
+        ⟨lay, tree, leafIdx⟩ from ⟨otherPayload, rfl⟩)
+  rw [← hcollision, htargetAnswerEq] at hmem
+  exact hmem
 
 theorem encodingBad_of_cached_target_hit
     {cache : QueryCache HashSpec} {secretKey : SecretKey} {position : EncodingPosition}
