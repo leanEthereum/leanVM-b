@@ -34,6 +34,13 @@ theorem ordinaryQueryCache_update (cache : SplitHashCache) (input : HashInput)
     simp [ordinaryQueryCache, QueryCache.cacheQuery, Function.update]
   · simp [ordinaryQueryCache, QueryCache.cacheQuery, Function.update, heq]
 
+theorem ordinaryQueryCache_update_hidden (cache : SplitHashCache)
+    (coordinate : Coordinate) (output : HashOutput) :
+    ordinaryQueryCache (Function.update cache (.hidden coordinate) (some output)) =
+      ordinaryQueryCache cache := by
+  funext input
+  simp [ordinaryQueryCache, Function.update]
+
 theorem mem_runRaw_splitHashQuery_ordinary_projects
     (input : HashInput) (state finalState : LazyRevealProbe.State Coordinate)
     (cache finalCache : SplitHashCache) (fuel remaining : Nat) (output : HashOutput)
@@ -128,6 +135,54 @@ def SplitCachePreserving
       support (LazyRevealProbe.runRaw state fuel (computation.run cache)) →
     finalCache = cache
 
+def OrdinaryCacheIncreasing
+    (computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha) : Prop :=
+  ∀ state cache fuel finalState remaining value finalCache,
+    LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel (computation.run cache)) →
+    ordinaryQueryCache cache ≤ ordinaryQueryCache finalCache
+
+theorem OrdinaryCacheIncreasing.pure (value : alpha) :
+    OrdinaryCacheIncreasing
+      (pure value : StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate)) alpha) := by
+  intro state cache fuel finalState remaining result finalCache hresult
+  simp [LazyRevealProbe.runRaw] at hresult
+  rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+  exact le_rfl
+
+theorem OrdinaryCacheIncreasing.bind
+    {left : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    {next : alpha → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) beta}
+    (hleft : OrdinaryCacheIncreasing left)
+    (hnext : ∀ value, OrdinaryCacheIncreasing (next value)) :
+    OrdinaryCacheIncreasing (left >>= next) := by
+  intro state cache fuel finalState remaining result finalCache hresult
+  change LazyRevealProbe.RawResult.done finalState remaining (result, finalCache) ∈
+    support (LazyRevealProbe.runRaw state fuel
+      (left.run cache >>= fun leftResult => (next leftResult.1).run leftResult.2)) at hresult
+  rw [LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨raw, hraw, hrest⟩ := hresult
+  cases raw with
+  | stopped hit => simp at hrest
+  | done middleState middleRemaining leftResult =>
+      rcases leftResult with ⟨leftValue, middleCache⟩
+      exact (hleft state cache fuel middleState middleRemaining leftValue middleCache hraw).trans
+        (hnext leftValue middleState middleCache middleRemaining finalState remaining result
+          finalCache hrest)
+
+theorem ordinaryCacheIncreasing_simulateQ_ordinaryHashImpl
+    (computation : OracleComp HashSpec alpha) :
+    OrdinaryCacheIncreasing (simulateQ ordinaryHashImpl computation) := by
+  intro state cache fuel finalState remaining value finalCache hresult
+  have hprojection := mem_runRaw_simulateQ_ordinaryHashImpl_projects computation state
+    finalState cache finalCache fuel remaining value hresult
+  exact FtsProbeSimulation.simulateQ_randomOracle_cache_le computation
+    (ordinaryQueryCache cache) (ordinaryQueryCache finalCache) value hprojection.2.2
+
 theorem SplitCachePreserving.pure (value : alpha) :
     SplitCachePreserving
       (pure value : StateT SplitHashCache
@@ -157,6 +212,14 @@ theorem SplitCachePreserving.bind
       exact (hnext leftValue middleState middleCache middleRemaining finalState remaining result
         finalCache hrest).trans (hleft state cache fuel middleState middleRemaining leftValue
           middleCache hraw)
+
+theorem SplitCachePreserving.ordinaryCacheIncreasing
+    {computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    (hpreserves : SplitCachePreserving computation) :
+    OrdinaryCacheIncreasing computation := by
+  intro state cache fuel finalState remaining value finalCache hresult
+  rw [hpreserves state cache fuel finalState remaining value finalCache hresult]
 
 theorem splitCachePreserving_ensureCoordinate (coordinate : Coordinate) :
     SplitCachePreserving (ensureCoordinate coordinate) := by
@@ -193,6 +256,58 @@ theorem splitCachePreserving_ensureChainPrefix
     split
     · exact splitCachePreserving_ensureCoordinate _
     · exact SplitCachePreserving.pure ()).bind fun _ => SplitCachePreserving.pure ()
+
+theorem splitCachePreserving_ensureFullChain
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex) :
+    SplitCachePreserving (ensureFullChain lay tree leafIdx chainIdx) := by
+  unfold ensureFullChain
+  exact (splitCachePreserving_sequenceFin _ fun _ =>
+    splitCachePreserving_ensureCoordinate _).bind fun _ => SplitCachePreserving.pure ()
+
+theorem splitCachePreserving_ensureOtsLeaf
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) :
+    SplitCachePreserving (ensureOtsLeaf lay tree leafIdx) := by
+  unfold ensureOtsLeaf
+  exact (splitCachePreserving_sequenceFin _ fun chainIdx =>
+    splitCachePreserving_ensureFullChain lay tree leafIdx chainIdx).bind fun _ =>
+      splitCachePreserving_ensureCoordinate _
+
+theorem splitCachePreserving_ensureTreeNode (lay : Layer) (tree : TreeIndex) :
+    ∀ level nodeIdx, SplitCachePreserving (ensureTreeNode lay tree level nodeIdx)
+  | 0, nodeIdx => splitCachePreserving_ensureOtsLeaf lay tree (leafOfNat nodeIdx)
+  | level + 1, nodeIdx => by
+      rw [ensureTreeNode]
+      exact (splitCachePreserving_ensureTreeNode lay tree level (2 * nodeIdx)).bind fun _ =>
+        (splitCachePreserving_ensureTreeNode lay tree level (2 * nodeIdx + 1)).bind fun _ => by
+          split
+          · exact splitCachePreserving_ensureCoordinate _
+          · exact SplitCachePreserving.pure ()
+
+theorem splitCachePreserving_ensureTreePath
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) :
+    SplitCachePreserving (ensureTreePath lay tree leafIdx) := by
+  unfold ensureTreePath
+  exact (splitCachePreserving_sequenceFin _ fun level => by
+    split
+    · exact splitCachePreserving_ensureTreeNode lay tree level.val
+        (Nat.xor (leafIdx.val / 2 ^ level.val) 1)
+    · exact SplitCachePreserving.pure ()).bind fun _ => SplitCachePreserving.pure ()
+
+theorem ordinaryCacheIncreasing_sequenceFin {n : Nat}
+    (computation : Fin n → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha)
+    (hcomputation : ∀ index, OrdinaryCacheIncreasing (computation index)) :
+    OrdinaryCacheIncreasing (sequenceFin computation) := by
+  induction n with
+  | zero =>
+      simp only [sequenceFin]
+      exact OrdinaryCacheIncreasing.pure Fin.elim0
+  | succ n ih =>
+      rw [sequenceFin]
+      exact (hcomputation 0).bind fun _ =>
+        (ih (fun index => computation index.succ)
+          (fun index => hcomputation index.succ)).bind fun _ =>
+            OrdinaryCacheIncreasing.pure _
 
 theorem maskedOtsSignFrom_some_eval
     (f : QueryImpl HashSpec Id) (parameter : PublicParameter) (lay : Layer)
@@ -1876,6 +1991,19 @@ theorem preservesChainInvariant_ordinaryFtsKey
         preservesChainInvariant_ordinaryTweakableHash parameter allowed (.ftsRoots index)
           (ftsRootsPayload roots) (by trivial) (by simp) (by simp)
 
+theorem preservesChainInvariant_ordinaryFtsOpen
+    (parameter : PublicParameter) (allowed : Coordinate → Prop)
+    (index : Index) (leaves : DigestTree → FtsLeaf)
+    (secret : FtsTree → FtsLeaf → Digest) :
+    PreservesChainInvariant parameter allowed
+      (simulateQ ordinaryHashImpl (ftsOpen parameter index leaves secret)) := by
+  unfold ftsOpen
+  exact preservesChainInvariant_simulateQ_sequenceFin parameter allowed ordinaryHashImpl _
+    fun tree => preservesChainInvariant_simulateQ_sequenceFin parameter allowed ordinaryHashImpl _
+      fun level => preservesChainInvariant_ordinaryFtsNode parameter allowed index tree
+        (secret tree) level.val
+          (Nat.xor ((leaves (ftsIndexOf tree)).val / 2 ^ level.val) 1)
+
 theorem preservesChainValid_resolveKnownInput
     (allowed : Coordinate → Prop) (hclosed : ChainForwardClosed allowed)
     (parameter : PublicParameter) (coordinate : Coordinate) (input : HashInput) :
@@ -2055,6 +2183,45 @@ theorem mem_runRaw_revealCoordinate_state
         simp [LazyRevealProbe.runRaw] at hsampled
         rcases hsampled with ⟨rfl, rfl, rfl, rfl⟩
         exact Or.inr ⟨sampled, rfl⟩
+
+theorem ordinaryCacheIncreasing_revealCoordinate (coordinate : Coordinate) :
+    OrdinaryCacheIncreasing (revealCoordinate coordinate) := by
+  intro state cache fuel finalState remaining value finalCache hresult
+  rw [revealCoordinate_run, LazyRevealProbe.revealQuery,
+    LazyRevealProbe.runRaw_reveal_query_bind] at hresult
+  cases hvalue : state.values coordinate with
+  | some existing =>
+      rw [hvalue] at hresult
+      simp [LazyRevealProbe.runRaw] at hresult
+      rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+      rw [ordinaryQueryCache_update_hidden]
+  | none =>
+      rw [hvalue, mem_support_bind_iff] at hresult
+      obtain ⟨output, _, hsampled⟩ := hresult
+      by_cases hhit : state.hitAt coordinate output
+      · rw [if_pos hhit] at hsampled
+        simp at hsampled
+      · rw [if_neg hhit] at hsampled
+        simp [LazyRevealProbe.runRaw] at hsampled
+        rcases hsampled with ⟨rfl, rfl, rfl, rfl⟩
+        rw [ordinaryQueryCache_update_hidden]
+
+theorem splitCachePreserving_publishCoordinate (coordinate : Coordinate) :
+    SplitCachePreserving (publishCoordinate coordinate) := by
+  intro state cache fuel finalState remaining value finalCache hresult
+  change LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈ support
+    (LazyRevealProbe.runRaw state fuel
+      (LazyRevealProbe.publishQuery coordinate >>= fun output => pure (output, cache))) at hresult
+  rw [LazyRevealProbe.publishQuery, LazyRevealProbe.runRaw_publish_query_bind] at hresult
+  simp [LazyRevealProbe.runRaw] at hresult
+  exact hresult.2.2
+
+theorem ordinaryCacheIncreasing_revealPublishedCoordinate (coordinate : Coordinate) :
+    OrdinaryCacheIncreasing (revealPublishedCoordinate coordinate) := by
+  unfold revealPublishedCoordinate
+  exact (ordinaryCacheIncreasing_revealCoordinate coordinate).bind fun _ =>
+    (splitCachePreserving_publishCoordinate coordinate).ordinaryCacheIncreasing.bind fun _ =>
+      OrdinaryCacheIncreasing.pure _
 
 theorem preservesChainValid_revealCoordinate_of_not_chain
     (allowed : Coordinate → Prop) (coordinate : Coordinate)
@@ -2374,6 +2541,232 @@ theorem preservesChainInvariant_maskedSignLayer
               (preservesChainInvariant_ensureTreePath parameter allowed lay
                 (treeIndexAt index lay) (leafIndexAt index lay)).bind fun _ =>
                   preservesChainInvariant_pure parameter allowed (some part)
+
+theorem ordinaryCacheIncreasing_maskedTreeNode
+    (lay : Layer) (tree : TreeIndex) (level nodeIdx : Nat) :
+    OrdinaryCacheIncreasing (maskedTreeNode lay tree level nodeIdx) := by
+  cases level with
+  | zero =>
+      rw [maskedTreeNode]
+      exact (SplitCachePreserving.ordinaryCacheIncreasing
+        (splitCachePreserving_ensureTreeNode lay tree 0 nodeIdx)).bind fun _ =>
+          ordinaryCacheIncreasing_revealCoordinate _
+  | succ current =>
+      rw [maskedTreeNode]
+      exact (SplitCachePreserving.ordinaryCacheIncreasing
+        (splitCachePreserving_ensureTreeNode lay tree (current + 1) nodeIdx)).bind fun _ => by
+          by_cases hlevel : current < maxLayerHeight
+          · rw [dif_pos hlevel]
+            exact ordinaryCacheIncreasing_revealCoordinate _
+          · rw [dif_neg hlevel]
+            exact OrdinaryCacheIncreasing.pure 0
+
+theorem ordinaryCacheIncreasing_maskedTreeRoot (lay : Layer) (tree : TreeIndex) :
+    OrdinaryCacheIncreasing (maskedTreeRoot lay tree) :=
+  ordinaryCacheIncreasing_maskedTreeNode lay tree (layerHeight lay) 0
+
+def maskedTreeRootLevel (lay : Layer) : Fin maxLayerHeight :=
+  ⟨layerHeight lay - 1, by
+    have hpos : 0 < layerHeight lay := by
+      unfold layerHeight
+      split <;> norm_num [maxLayerHeight]
+    have hle := layerHeight_le lay
+    omega⟩
+
+def maskedTreeRootCoordinate (lay : Layer) (tree : TreeIndex) : Coordinate :=
+  .position (.node lay tree (maskedTreeRootLevel lay) 0)
+
+theorem mem_runRaw_maskedTreeRoot_hidden
+    (lay : Layer) (tree : TreeIndex)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (value : Digest)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel ((maskedTreeRoot lay tree).run cache))) :
+    ∃ output : HashOutput,
+      value = truncateHash output ∧
+        finalCache (.hidden (maskedTreeRootCoordinate lay tree)) = some output := by
+  have hpos : 0 < layerHeight lay := by
+    unfold layerHeight
+    split <;> norm_num [maxLayerHeight]
+  have hlevel : layerHeight lay - 1 < maxLayerHeight := by
+    have hle := layerHeight_le lay
+    omega
+  unfold maskedTreeRoot at hresult
+  rw [show layerHeight lay = (layerHeight lay - 1) + 1 by omega, maskedTreeNode,
+    dif_pos hlevel] at hresult
+  rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨raw, hensured, hreveal⟩ := hresult
+  cases raw with
+  | stopped hit => simp at hreveal
+  | done ensuredState ensuredRemaining ensuredResult =>
+      rcases ensuredResult with ⟨ensuredUnit, ensuredCache⟩
+      have hcache := splitCachePreserving_ensureTreeNode lay tree (layerHeight lay - 1 + 1) 0
+        state cache fuel ensuredState ensuredRemaining ensuredUnit ensuredCache hensured
+      subst ensuredCache
+      simp only at hreveal
+      rw [revealPosition_run, LazyRevealProbe.revealQuery,
+        LazyRevealProbe.runRaw_reveal_query_bind] at hreveal
+      let coordinate : Coordinate :=
+        .position (.node lay tree ⟨layerHeight lay - 1, hlevel⟩ (leafOfNat 0))
+      cases hvalue : ensuredState.values coordinate with
+      | some output =>
+          rw [hvalue] at hreveal
+          simp [LazyRevealProbe.runRaw] at hreveal
+          rcases hreveal with ⟨rfl, rfl, rfl, rfl⟩
+          have hleaf : leafOfNat 0 = (0 : LeafIndex) := by
+            apply Fin.ext
+            simp [leafOfNat]
+          exact ⟨output, rfl, by
+            simp [Function.update, maskedTreeRootCoordinate, maskedTreeRootLevel, hleaf]⟩
+      | none =>
+          rw [hvalue, mem_support_bind_iff] at hreveal
+          obtain ⟨output, _, hsampled⟩ := hreveal
+          by_cases hhit : ensuredState.hitAt coordinate output
+          · rw [if_pos hhit] at hsampled
+            simp at hsampled
+          · rw [if_neg hhit] at hsampled
+            simp [LazyRevealProbe.runRaw] at hsampled
+            rcases hsampled with ⟨rfl, rfl, rfl, rfl⟩
+            have hleaf : leafOfNat 0 = (0 : LeafIndex) := by
+              apply Fin.ext
+              simp [leafOfNat]
+            exact ⟨output, rfl, by
+              simp [Function.update, maskedTreeRootCoordinate, maskedTreeRootLevel, hleaf]⟩
+
+theorem maskedTreeRoot_eq_actual
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
+    (table : Coordinate → HashOutput)
+    (lay : Layer) (tree : TreeIndex)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (value : Digest)
+    (hhidden : HiddenConsistent finalState finalCache)
+    (htable : ∀ coordinate output, finalState.values coordinate = some output →
+      output = table coordinate)
+    (hrealizes : ∀ position : Position, IsOtsPosition position →
+      f (tableInput parameter table (.position position)) = table (.position position))
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((maskedTreeRoot lay tree).run cache))) :
+    value = evalWithAnswerFn f
+      (treeRoot parameter lay tree (tableOtsSecret table lay tree)) := by
+  obtain ⟨output, hvalue, hcached⟩ := mem_runRaw_maskedTreeRoot_hidden lay tree state
+    finalState cache finalCache fuel remaining value hresult
+  have hstateValue := hhidden _ output hcached
+  have houtput := htable _ output hstateValue
+  have hpositive : 0 < layerHeight lay := by
+    unfold layerHeight
+    split <;> norm_num [maxLayerHeight]
+  have hlevel : layerHeight lay - 1 < maxLayerHeight := by
+    have hle := layerHeight_le lay
+    omega
+  have hspan : 2 ^ ((layerHeight lay - 1) + 1) * (0 + 1) ≤
+      2 ^ maxLayerHeight := by
+    rw [show layerHeight lay - 1 + 1 = layerHeight lay by omega]
+    simpa only [Nat.zero_add, Nat.mul_one] using
+      Nat.pow_le_pow_right (by omega : 0 < 2) (layerHeight_le lay)
+  have hnode := honestNode_eq_table_succ f parameter table lay tree hrealizes
+    (layerHeight lay - 1) 0 hlevel hspan
+  rw [show layerHeight lay - 1 + 1 = layerHeight lay by omega] at hnode
+  change value = honestNode f parameter lay tree (tableOtsSecret table lay tree)
+    (layerHeight lay) 0
+  rw [hvalue, houtput]
+  simpa [tableValue, maskedTreeRootCoordinate, maskedTreeRootLevel, leafOfNat] using hnode.symm
+
+theorem ordinaryCacheIncreasing_maskedOtsSignFrom
+    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (message : Digest) : ∀ attempts counter,
+    OrdinaryCacheIncreasing
+      (maskedOtsSignFrom parameter lay tree leafIdx message attempts counter)
+  | 0, counter => OrdinaryCacheIncreasing.pure none
+  | attempts + 1, counter => by
+      rw [maskedOtsSignFrom]
+      exact (ordinaryCacheIncreasing_simulateQ_ordinaryHashImpl
+        (encode parameter lay tree leafIdx message
+          (BitVec.ofNat counterBits counter))).bind fun encoded =>
+            match encoded with
+            | none => ordinaryCacheIncreasing_maskedOtsSignFrom parameter lay tree leafIdx
+                message attempts (counter + 1)
+            | some encoding =>
+                (ordinaryCacheIncreasing_sequenceFin _ fun chainIdx =>
+                  (splitCachePreserving_ensureChainPrefix lay tree leafIdx chainIdx
+                    (encoding chainIdx)).ordinaryCacheIncreasing).bind fun _ =>
+                      OrdinaryCacheIncreasing.pure _
+
+theorem ordinaryCacheIncreasing_maskedOtsSign
+    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (message : Digest) :
+    OrdinaryCacheIncreasing (maskedOtsSign parameter lay tree leafIdx message) :=
+  ordinaryCacheIncreasing_maskedOtsSignFrom parameter lay tree leafIdx message
+    encodingAttemptLimit 0
+
+theorem ordinaryCacheIncreasing_maskedLayerMessage
+    (parameter : PublicParameter) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (index : Index) (lay : Layer) :
+    OrdinaryCacheIncreasing (maskedLayerMessage parameter ftsSecret index lay) := by
+  unfold maskedLayerMessage
+  split
+  · exact ordinaryCacheIncreasing_maskedTreeRoot _ _
+  · exact ordinaryCacheIncreasing_simulateQ_ordinaryHashImpl
+      (ftsKey parameter index (ftsSecret index))
+
+theorem ordinaryCacheIncreasing_maskedSignLayer
+    (parameter : PublicParameter) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (index : Index) (lay : Layer) :
+    OrdinaryCacheIncreasing (maskedSignLayer parameter ftsSecret index lay) := by
+  unfold maskedSignLayer
+  exact (ordinaryCacheIncreasing_maskedLayerMessage parameter ftsSecret index lay).bind
+    fun _ => (ordinaryCacheIncreasing_maskedOtsSign parameter lay (treeIndexAt index lay)
+      (leafIndexAt index lay) _).bind fun result =>
+        match result with
+        | none => OrdinaryCacheIncreasing.pure none
+        | some part =>
+            ((splitCachePreserving_ensureTreePath lay (treeIndexAt index lay)
+              (leafIndexAt index lay)).ordinaryCacheIncreasing).bind fun _ =>
+                OrdinaryCacheIncreasing.pure (some part)
+
+theorem ordinaryCacheIncreasing_revealLayerValues
+    (index : Index) (lay : Layer) (encoding : ChainIndex → Digit) :
+    OrdinaryCacheIncreasing (revealLayerValues index lay encoding) := by
+  unfold revealLayerValues
+  exact (ordinaryCacheIncreasing_sequenceFin _ fun chainIdx =>
+    ordinaryCacheIncreasing_revealPublishedCoordinate
+      (chainValueCoordinate lay (treeIndexAt index lay) (leafIndexAt index lay)
+        chainIdx (encoding chainIdx))).bind fun _ =>
+      (ordinaryCacheIncreasing_sequenceFin _ fun level => by
+        split
+        · cases hlevelValue : level.val with
+          | zero => exact ordinaryCacheIncreasing_revealPublishedCoordinate _
+          | succ current =>
+              rw [show current + 1 = Nat.succ current by omega]
+              change OrdinaryCacheIncreasing
+                (if hlevel : current < maxLayerHeight then
+                  revealPublishedCoordinate (.position (.node lay (treeIndexAt index lay)
+                    ⟨current, hlevel⟩ (leafOfNat
+                      (Nat.xor ((leafIndexAt index lay).val / 2 ^ (current + 1)) 1))))
+                else pure 0)
+              by_cases hlevel : current < maxLayerHeight
+              · rw [dif_pos hlevel]
+                exact ordinaryCacheIncreasing_revealPublishedCoordinate _
+              · rw [dif_neg hlevel]
+                exact OrdinaryCacheIncreasing.pure 0
+        · exact OrdinaryCacheIncreasing.pure 0).bind fun _ => OrdinaryCacheIncreasing.pure _
+
+theorem ordinaryCacheIncreasing_maskedSignAfterDigest
+    (parameter : PublicParameter) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    OrdinaryCacheIncreasing
+      (maskedSignAfterDigest parameter ftsSecret randomness index leaves) := by
+  unfold maskedSignAfterDigest
+  exact (ordinaryCacheIncreasing_simulateQ_ordinaryHashImpl
+    (ftsOpen parameter index leaves (ftsSecret index))).bind fun _ =>
+      (ordinaryCacheIncreasing_sequenceFin _ fun lay =>
+        ordinaryCacheIncreasing_maskedSignLayer parameter ftsSecret index lay).bind fun layers =>
+          match hparts : traverseOption layers with
+          | none => OrdinaryCacheIncreasing.pure none
+          | some parts =>
+              (ordinaryCacheIncreasing_sequenceFin _ fun lay =>
+                ordinaryCacheIncreasing_revealLayerValues index lay (parts lay).2).bind fun _ =>
+                  OrdinaryCacheIncreasing.pure _
 
 theorem preservesChainValid_revealPublishedCoordinate
     (allowed : Coordinate → Prop) (coordinate : Coordinate)
