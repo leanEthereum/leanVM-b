@@ -164,4 +164,39 @@ theorem encodingRetry_cachedBuildThenSelect_sum_probability_le
   rw [hfinite.cachedInputs_ncard_toENNReal_eq_enncard] at hbound
   exact hbound
 
+theorem encodingRetryPotential_le_enncard
+    {cache : QueryCache HashSpec} (hfinite : Finite cache)
+    (secretKey : SecretKey) :
+    encodingRetryPotential cache secretKey ≤
+      QueryCache.enncard cache *
+        (TargetSum.validDigests.card : ℝ≥0∞)⁻¹ := by
+  classical
+  calc
+    encodingRetryPotential cache secretKey ≤
+        (∑ position : EncodingPosition,
+          ((encodingCachedAt secretKey.parameter cache position).ncard : ℝ≥0∞)) *
+            (TargetSum.validDigests.card : ℝ≥0∞)⁻¹ := by
+      rw [encodingRetryPotential, Finset.sum_mul]
+      apply Finset.sum_le_sum
+      intro position _
+      rw [encodingRetryContribution]
+      split
+      · exact bot_le
+      · exact mul_le_mul_left
+          (by
+            rw [encodingValidAnswers_ncard_eq_validAnswerTargets_card hfinite position]
+            exact_mod_cast encodingValidAnswerTargets_card_le hfinite position)
+          _
+    _ = ((∑ position : EncodingPosition,
+          (encodingCachedAt secretKey.parameter cache position).ncard : Nat) : ℝ≥0∞) *
+            (TargetSum.validDigests.card : ℝ≥0∞)⁻¹ := by
+      rw [Nat.cast_sum]
+    _ ≤ ({input | cache input ≠ none}.ncard : ℝ≥0∞) *
+          (TargetSum.validDigests.card : ℝ≥0∞)⁻¹ := by
+      exact mul_le_mul_left
+        (by exact_mod_cast sum_encodingCachedAt_ncard_le hfinite) _
+    _ = QueryCache.enncard cache *
+          (TargetSum.validDigests.card : ℝ≥0∞)⁻¹ := by
+      rw [hfinite.cachedInputs_ncard_toENNReal_eq_enncard]
+
 end SphincsSecurity.Concrete
