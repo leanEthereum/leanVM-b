@@ -813,6 +813,56 @@ theorem HasEncodingTarget.payload_unique {cache : QueryCache HashSpec} {secretKe
       position.leafIdx rightPayload) : leftPayload = rightPayload :=
   cachedSignedEncodingPayloadAt_unique left right
 
+theorem CachedSignedEncodingPayloadAt.of_cacheQuery_of_settled_of_not_atPosition
+    {cache : QueryCache HashSpec} {secretKey : SecretKey} {input : HashInput}
+    {answer : HashOutput} {lay : Layer}
+    {tree : TreeIndex} {leafIdx : LeafIndex} {payload : HashInput}
+    (huncached : cache input = none)
+    (hsettledAt : ∀ index : Index, treeIndexAt index lay = tree →
+      leafIndexAt index lay = leafIdx →
+        Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache
+          (layerMessagePosition index lay))
+    (hnotAt : ¬ AtEncodingPosition secretKey.parameter input ⟨lay, tree, leafIdx⟩)
+    (htarget : CachedSignedEncodingPayloadAt (cache.cacheQuery input answer) secretKey
+      lay tree leafIdx payload) :
+    CachedSignedEncodingPayloadAt cache secretKey lay tree leafIdx payload := by
+  obtain ⟨targetIndex, counter, htree, hleaf, _, hrunAfter, hevalAfter, hpayload,
+    hcachedAfter⟩ := htarget
+  have hle := le_cacheQuery (cache := cache) (input := input) (answer := answer) huncached
+  have hsettled := hsettledAt targetIndex htree hleaf
+  have hmessage := honestValue_eq_of_settled (agreesWithFn_fromCache_of_le hle) hsettled
+  have hnotMem : input ∉ queriedInputs (fromCache (cache.cacheQuery input answer))
+      (encodingSearch secretKey.parameter lay (treeIndexAt targetIndex lay)
+        (leafIndexAt targetIndex lay)
+        (honestValue (fromCache (cache.cacheQuery input answer)) secretKey.parameter
+          secretKey.otsSecret secretKey.ftsSecret (layerMessagePosition targetIndex lay))) := by
+    intro hmem
+    obtain ⟨selectedCounter, hinput⟩ := mem_queriedInputs_encodingSearch
+      (fromCache (cache.cacheQuery input answer)) secretKey.parameter lay
+      (treeIndexAt targetIndex lay) (leafIndexAt targetIndex lay)
+      (honestValue (fromCache (cache.cacheQuery input answer)) secretKey.parameter
+        secretKey.otsSecret secretKey.ftsSecret (layerMessagePosition targetIndex lay)) input hmem
+    apply hnotAt
+    simpa only [htree, hleaf] using
+      (show AtEncodingPosition secretKey.parameter input
+        ⟨lay, treeIndexAt targetIndex lay, leafIndexAt targetIndex lay⟩ from ⟨_, hinput⟩)
+  have hrunOldAnswer := hrunAfter.of_cacheQuery_of_not_mem hnotMem
+  rw [hmessage] at hrunOldAnswer hevalAfter
+  have hrun := hrunOldAnswer.changeAnswerFn
+    (agreesWithFn_fromCache_of_le hle) (agreesWithFn_fromCache cache)
+  have hevalEq := hrunOldAnswer.eval_eq
+    (agreesWithFn_fromCache_of_le hle) (agreesWithFn_fromCache cache)
+  have htargetNe : tweakableHashInput secretKey.parameter (.encoding lay tree leafIdx) payload ≠
+      input := by
+    intro heq
+    exact hnotAt ⟨payload, heq.symm⟩
+  have hcached : cache
+      (tweakableHashInput secretKey.parameter (.encoding lay tree leafIdx) payload) ≠ none := by
+    rwa [QueryCache.cacheQuery_of_ne _ _ htargetNe] at hcachedAfter
+  refine ⟨targetIndex, counter, htree, hleaf, hsettled, hrun, ?_, ?_, hcached⟩
+  · exact hevalEq.symm.trans hevalAfter
+  · rwa [hmessage] at hpayload
+
 theorem CachedSignedEncodingPayloadAt.of_cacheQuery_of_other_encodingPosition
     {cache : QueryCache HashSpec} {secretKey : SecretKey} {input : HashInput}
     {answer : HashOutput} {queriedPosition : EncodingPosition} {lay : Layer}
@@ -823,9 +873,8 @@ theorem CachedSignedEncodingPayloadAt.of_cacheQuery_of_other_encodingPosition
     (htarget : CachedSignedEncodingPayloadAt (cache.cacheQuery input answer) secretKey
       lay tree leafIdx payload) :
     CachedSignedEncodingPayloadAt cache secretKey lay tree leafIdx payload := by
-  obtain ⟨index, part, htree, hleaf, hsettledAfter, hrunAfter, hevalAfter, hpayload,
-    hcachedAfter⟩ := htarget
-  have hle := le_cacheQuery (cache := cache) (input := input) (answer := answer) huncached
+  have htargetData := htarget
+  obtain ⟨index, _, htree, hleaf, hsettledAfter, _, _, _, _⟩ := htargetData
   have hsettled : Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache
       (layerMessagePosition index lay) := by
     exact settled_of_settled_cacheQuery secretKey.parameter secretKey.otsSecret
@@ -833,45 +882,16 @@ theorem CachedSignedEncodingPayloadAt.of_cacheQuery_of_other_encodingPosition
       (fun position hposition => absurd hposition (hqueried.not_atPosition position))
       (by simp) ((layerMessagePosition index lay).depth + 1)
       (layerMessagePosition index lay) (by omega) (by simp) hsettledAfter
-  have hmessage := honestValue_eq_of_settled (agreesWithFn_fromCache_of_le hle) hsettled
-  have hnotMem : input ∉ queriedInputs (fromCache (cache.cacheQuery input answer))
-      (otsSign secretKey.parameter lay (treeIndexAt index lay) (leafIndexAt index lay)
-        (secretKey.otsSecret lay (treeIndexAt index lay) (leafIndexAt index lay))
-        (honestValue (fromCache (cache.cacheQuery input answer)) secretKey.parameter
-          secretKey.otsSecret secretKey.ftsSecret (layerMessagePosition index lay))) := by
-    intro hmem
-    apply hne
-    have hposition := encodingPosition_eq_of_mem_otsSign
-      (parameter := secretKey.parameter)
-      (f := fromCache (cache.cacheQuery input answer))
-      (queriedPosition := queriedPosition)
-      (runPosition := ⟨lay, treeIndexAt index lay, leafIndexAt index lay⟩)
-      (input := input)
-      (secret := secretKey.otsSecret lay (treeIndexAt index lay) (leafIndexAt index lay))
-      (message := honestValue (fromCache (cache.cacheQuery input answer))
-        secretKey.parameter secretKey.otsSecret secretKey.ftsSecret
-          (layerMessagePosition index lay)) hqueried hmem
-    simpa only [htree, hleaf] using hposition
-  have hrunOldAnswer := hrunAfter.of_cacheQuery_of_not_mem hnotMem
-  rw [hmessage] at hrunOldAnswer hevalAfter
-  have hrun := hrunOldAnswer.changeAnswerFn
-    (agreesWithFn_fromCache_of_le hle) (agreesWithFn_fromCache cache)
-  have hevalEq := hrunOldAnswer.eval_eq
-    (agreesWithFn_fromCache_of_le hle) (agreesWithFn_fromCache cache)
-  have htargetNe : tweakableHashInput secretKey.parameter (.encoding lay tree leafIdx) payload ≠
-      input := by
-    intro heq
-    apply hne
-    have hposition := atEncodingPosition_unique hqueried
-      (show AtEncodingPosition secretKey.parameter input ⟨lay, tree, leafIdx⟩ from
-        ⟨payload, heq.symm⟩)
-    exact hposition
-  have hcached : cache
-      (tweakableHashInput secretKey.parameter (.encoding lay tree leafIdx) payload) ≠ none := by
-    rwa [QueryCache.cacheQuery_of_ne _ _ htargetNe] at hcachedAfter
-  refine ⟨index, part, htree, hleaf, hsettled, hrun, ?_, ?_, hcached⟩
-  · exact hevalEq.symm.trans hevalAfter
-  · rwa [hmessage] at hpayload
+  have hsettledAt : ∀ targetIndex : Index, treeIndexAt targetIndex lay = tree →
+      leafIndexAt targetIndex lay = leafIdx →
+        Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache
+          (layerMessagePosition targetIndex lay) := by
+    intro targetIndex htree' hleaf'
+    have hpositionEq := layerMessagePosition_eq_of_position_eq index targetIndex lay
+      (htree.trans htree'.symm) (hleaf.trans hleaf'.symm)
+    rwa [← hpositionEq]
+  exact htarget.of_cacheQuery_of_settled_of_not_atPosition huncached hsettledAt
+    (fun htargetPosition => hne (atEncodingPosition_unique hqueried htargetPosition))
 
 theorem HasEncodingTarget.of_cacheQuery_of_other_encodingPosition
     {cache : QueryCache HashSpec} {secretKey : SecretKey} {input : HashInput}
@@ -883,6 +903,21 @@ theorem HasEncodingTarget.of_cacheQuery_of_other_encodingPosition
     HasEncodingTarget cache secretKey targetPosition := by
   obtain ⟨payload, hpayload⟩ := htarget
   exact ⟨payload, hpayload.of_cacheQuery_of_other_encodingPosition huncached hqueried hne⟩
+
+theorem HasEncodingTarget.of_cacheQuery_of_settled_of_not_atPosition
+    {cache : QueryCache HashSpec} {secretKey : SecretKey} {input : HashInput}
+    {answer : HashOutput} {position : EncodingPosition}
+    (huncached : cache input = none)
+    (hsettledAt : ∀ index : Index, treeIndexAt index position.lay = position.tree →
+      leafIndexAt index position.lay = position.leafIdx →
+        Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache
+          (layerMessagePosition index position.lay))
+    (hnotAt : ¬ AtEncodingPosition secretKey.parameter input position)
+    (htarget : HasEncodingTarget (cache.cacheQuery input answer) secretKey position) :
+    HasEncodingTarget cache secretKey position := by
+  obtain ⟨payload, hpayload⟩ := htarget
+  exact ⟨payload, hpayload.of_cacheQuery_of_settled_of_not_atPosition huncached hsettledAt
+    hnotAt⟩
 
 theorem clean_encodingBad_cacheQuery_of_existing_target
     {cache : QueryCache HashSpec} {secretKey : SecretKey} {input : HashInput}
