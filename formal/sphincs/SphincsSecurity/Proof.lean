@@ -67,6 +67,7 @@ import SphincsSecurity.Proof.EncodingRetry
 import SphincsSecurity.Proof.EncodingSelection
 import SphincsSecurity.Proof.EncodingSelectionCache
 import SphincsSecurity.Proof.EncodingSelectionPotential
+import SphincsSecurity.Proof.EncodingSelectionLift
 import SphincsSecurity.Proof.EncodingRetryCharge
 import SphincsSecurity.Proof.EncodingLatent
 import SphincsSecurity.Proof.EncodingStageCharge
@@ -116,6 +117,7 @@ import SphincsSecurity.Proof.MandatoryQueries
 import SphincsSecurity.Proof.TerminalArith
 import SphincsSecurity.Proof.TerminalBudget
 import SphincsSecurity.Proof.TerminalSampling
+import SphincsSecurity.Proof.EncodingSelectionSampling
 import SphincsSecurity.Proof.TerminalFinish
 
 /-!
