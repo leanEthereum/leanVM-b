@@ -181,6 +181,7 @@ inductive Query (Coordinate : Type) where
   | hashOutput
   | ensure (coordinate : Coordinate)
   | probe (coordinate : Coordinate) (candidate : Digest)
+  | peek (coordinate : Coordinate)
   | reveal (coordinate : Coordinate)
 
 @[reducible] def World (Coordinate : Type) : OracleSpec (Query Coordinate) :=
@@ -189,6 +190,7 @@ inductive Query (Coordinate : Type) where
   | .hashOutput => HashOutput
   | .ensure _ => Unit
   | .probe _ _ => Unit
+  | .peek _ => Option HashOutput
   | .reveal _ => HashOutput
 
 def IsProbe : (World Coordinate).Domain → Prop
@@ -196,6 +198,7 @@ def IsProbe : (World Coordinate).Domain → Prop
   | .hashOutput => False
   | .ensure _ => False
   | .probe _ _ => True
+  | .peek _ => False
   | .reveal _ => False
 
 noncomputable instance : DecidablePred (IsProbe (Coordinate := Coordinate)) :=
@@ -204,6 +207,7 @@ noncomputable instance : DecidablePred (IsProbe (Coordinate := Coordinate)) :=
   | .hashOutput => isFalse (by simp [IsProbe])
   | .ensure _ => isFalse (by simp [IsProbe])
   | .probe _ _ => isTrue (by simp [IsProbe])
+  | .peek _ => isFalse (by simp [IsProbe])
   | .reveal _ => isFalse (by simp [IsProbe])
 
 def uniformQuery (n : Nat) : OracleComp (World Coordinate) (Fin (n + 1)) :=
@@ -218,6 +222,10 @@ def ensureQuery (coordinate : Coordinate) : OracleComp (World Coordinate) Unit :
 def probeQuery (coordinate : Coordinate) (candidate : Digest) :
     OracleComp (World Coordinate) Unit :=
   liftM ((World Coordinate).query (.probe coordinate candidate))
+
+def peekQuery (coordinate : Coordinate) :
+    OracleComp (World Coordinate) (Option HashOutput) :=
+  liftM ((World Coordinate).query (.peek coordinate))
 
 def revealQuery (coordinate : Coordinate) : OracleComp (World Coordinate) HashOutput :=
   liftM ((World Coordinate).query (.reveal coordinate))
@@ -253,6 +261,12 @@ omit [DecidableEq Coordinate] in
 theorem probeQuery_isProbeBound (coordinate : Coordinate) (candidate : Digest) :
     (probeQuery coordinate candidate).IsQueryBoundP IsProbe 1 := by
   rw [probeQuery, OracleComp.isQueryBoundP_query_iff]
+  simp [IsProbe]
+
+omit [DecidableEq Coordinate] in
+theorem peekQuery_isProbeBound (coordinate : Coordinate) (fuel : Nat) :
+    (peekQuery coordinate).IsQueryBoundP IsProbe fuel := by
+  rw [peekQuery, OracleComp.isQueryBoundP_query_iff]
   simp [IsProbe]
 
 omit [DecidableEq Coordinate] in
@@ -366,6 +380,8 @@ noncomputable def runRaw (state : State Coordinate) (fuel : Nat)
                 recursivelyRun () state remaining
               else
                 recursivelyRun () (state.addPending coordinate candidate) remaining
+      | .peek coordinate =>
+          recursivelyRun (state.values coordinate) state fuel
       | .reveal coordinate =>
           match state.values coordinate with
           | some output => recursivelyRun output state fuel
@@ -419,6 +435,16 @@ theorem runRaw_probe_query_bind (state : State Coordinate) (fuel : Nat)
             runRaw state remaining (next ())
           else
             runRaw (state.addPending coordinate candidate) remaining (next ()) := by
+  rw [runRaw, OracleComp.construct_query_bind]
+  rfl
+
+theorem runRaw_peek_query_bind (state : State Coordinate) (fuel : Nat)
+    (coordinate : Coordinate)
+    (next : Option HashOutput → OracleComp (World Coordinate) alpha) :
+    runRaw state fuel
+        ((liftM (OracleSpec.query (spec := World Coordinate) (.peek coordinate)) :
+          OracleComp (World Coordinate) (Option HashOutput)) >>= next) =
+      runRaw state fuel (next (state.values coordinate)) := by
   rw [runRaw, OracleComp.construct_query_bind]
   rfl
 
@@ -476,6 +502,9 @@ theorem runRaw_bind (state : State Coordinate) (fuel : Nat)
                 exact ih () state remaining
               · simp only [hrevealed, ↓reduceIte]
                 exact ih () (state.addPending coordinate candidate) remaining
+      | peek coordinate =>
+          rw [bind_assoc, runRaw_peek_query_bind, runRaw_peek_query_bind]
+          exact ih (state.values coordinate) state fuel
       | reveal coordinate =>
           rw [bind_assoc, runRaw_reveal_query_bind, runRaw_reveal_query_bind]
           cases hvalue : state.values coordinate with
@@ -512,6 +541,8 @@ noncomputable def experiment (state : State Coordinate) (fuel : Nat)
                 recursivelyRun () state remaining
               else
                 recursivelyRun () (state.addPending coordinate candidate) remaining
+      | .peek coordinate =>
+          recursivelyRun (state.values coordinate) state fuel
       | .reveal coordinate =>
           match state.values coordinate with
           | some output => recursivelyRun output state fuel
@@ -565,6 +596,16 @@ theorem experiment_probe_query_bind (state : State Coordinate) (fuel : Nat)
             experiment state remaining (next ())
           else
             experiment (state.addPending coordinate candidate) remaining (next ()) := by
+  rw [experiment, OracleComp.construct_query_bind]
+  rfl
+
+theorem experiment_peek_query_bind (state : State Coordinate) (fuel : Nat)
+    (coordinate : Coordinate)
+    (next : Option HashOutput → OracleComp (World Coordinate) alpha) :
+    experiment state fuel
+        ((liftM (OracleSpec.query (spec := World Coordinate) (.peek coordinate)) :
+          OracleComp (World Coordinate) (Option HashOutput)) >>= next) =
+      experiment state fuel (next (state.values coordinate)) := by
   rw [experiment, OracleComp.construct_query_bind]
   rfl
 
@@ -627,6 +668,9 @@ theorem experiment_probability_le (state : State Coordinate) (fuel : Nat)
                     have := state.pending_card_addPending_le coordinate candidate
                     omega
                 exact mul_le_mul_of_nonneg_right (by exact_mod_cast hnat) zero_le
+      | peek coordinate =>
+          rw [experiment_peek_query_bind]
+          exact ih (state.values coordinate) state fuel
       | reveal coordinate =>
           rw [experiment_reveal_query_bind]
           cases hvalue : state.values coordinate with

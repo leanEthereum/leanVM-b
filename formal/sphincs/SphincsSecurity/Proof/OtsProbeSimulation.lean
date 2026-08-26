@@ -448,6 +448,33 @@ theorem decodeProbe?_eq_some_iff (parameter : PublicParameter) (input : HashInpu
     · intro hmatch
       exact (hexists ⟨probe, hmatch⟩).elim
 
+noncomputable def decodePosition? (parameter : PublicParameter) (input : HashInput) :
+    Option Position := by
+  classical
+  exact if hexists : ∃ position : Position, AtPosition parameter input position then
+    some hexists.choose
+  else none
+
+theorem decodePosition?_eq_some_iff (parameter : PublicParameter) (input : HashInput)
+    (position : Position) :
+    decodePosition? parameter input = some position ↔
+      AtPosition parameter input position := by
+  classical
+  unfold decodePosition?
+  split_ifs with hexists
+  · constructor
+    · intro heq
+      have hchosen : hexists.choose = position := by simpa using heq
+      simpa [← hchosen] using hexists.choose_spec
+    · intro hposition
+      have hchosen : hexists.choose = position :=
+        atPosition_unique parameter hexists.choose_spec hposition
+      simp [hchosen]
+  · constructor
+    · simp
+    · intro hposition
+      exact (hexists ⟨position, hposition⟩).elim
+
 inductive SplitHashKey where
   | ordinary (input : HashInput)
   | hidden (coordinate : Coordinate)
@@ -457,47 +484,76 @@ abbrev SplitHashCache := SplitHashKey → Option HashOutput
 
 def emptySplitHashCache : SplitHashCache := fun _ => none
 
+noncomputable def tableValue (table : Coordinate → HashOutput)
+    (position : Position) : Digest :=
+  truncateHash (table (.position position))
+
+noncomputable def tablePayload (table : Coordinate → HashOutput) :
+    Position → HashInput
+  | position@(.chain lay tree leafIdx chainIdx step) =>
+      if step.val = 0 then
+        digestBytes (truncateHash (table (.chainStart lay tree leafIdx chainIdx)))
+      else
+        (position.children.map (tableValue table)).flatMap digestBytes
+  | position => (position.children.map (tableValue table)).flatMap digestBytes
+
+noncomputable def tableInput (parameter : PublicParameter)
+    (table : Coordinate → HashOutput) : Coordinate → HashInput
+  | .chainStart _ _ _ _ => []
+  | .position position =>
+      tweakableHashInput parameter position.domain (tablePayload table position)
+
 noncomputable def completedSplitHashCache (table : Coordinate → HashOutput)
-    (cache : SplitHashCache) : SplitHashCache
+    (ensured : Finset Coordinate) (cache : SplitHashCache) : SplitHashCache
   | .ordinary input => cache (.ordinary input)
   | .hidden coordinate =>
       match cache (.hidden coordinate) with
       | some output => some output
-      | none => some (table coordinate)
+      | none => if coordinate ∈ ensured then some (table coordinate) else none
 
 noncomputable def mergedCache (parameter : PublicParameter)
-    (table : Coordinate → HashOutput) (cache : SplitHashCache) : QueryCache HashSpec :=
+    (table : Coordinate → HashOutput) (ensured : Finset Coordinate)
+    (cache : SplitHashCache) : QueryCache HashSpec :=
   fun input =>
     match decodeProbe? parameter input with
     | some candidate =>
-        if candidate.candidate = truncateHash (table candidate.coordinate) then
-          completedSplitHashCache table cache (.hidden candidate.outputCoordinate)
+        if candidate.candidate = truncateHash (table candidate.coordinate) ∧
+            input = tableInput parameter table candidate.outputCoordinate then
+          completedSplitHashCache table ensured cache (.hidden candidate.outputCoordinate)
         else
           cache (.ordinary input)
     | none => cache (.ordinary input)
 
 @[simp] theorem mergedCache_empty_ordinary (parameter : PublicParameter)
-    (table : Coordinate → HashOutput) (input : HashInput)
+    (table : Coordinate → HashOutput) (ensured : Finset Coordinate) (input : HashInput)
     (hdecode : decodeProbe? parameter input = none) :
-    mergedCache parameter table emptySplitHashCache input = none := by
+    mergedCache parameter table ensured emptySplitHashCache input = none := by
   simp [mergedCache, hdecode, emptySplitHashCache]
 
 theorem mergedCache_matching_probe (parameter : PublicParameter)
-    (table : Coordinate → HashOutput) (cache : SplitHashCache)
+    (table : Coordinate → HashOutput) (ensured : Finset Coordinate)
+    (cache : SplitHashCache)
     (candidate : Probe) (input : HashInput)
     (hmatch : candidate.MatchesInput parameter input)
-    (hhit : candidate.candidate = truncateHash (table candidate.coordinate)) :
-    mergedCache parameter table cache input =
-      completedSplitHashCache table cache (.hidden candidate.outputCoordinate) := by
-  simp [mergedCache, (decodeProbe?_eq_some_iff parameter input candidate).2 hmatch, hhit]
+    (hhit : candidate.candidate = truncateHash (table candidate.coordinate))
+    (hinput : input = tableInput parameter table candidate.outputCoordinate) :
+    mergedCache parameter table ensured cache input =
+      completedSplitHashCache table ensured cache (.hidden candidate.outputCoordinate) := by
+  unfold mergedCache
+  rw [(decodeProbe?_eq_some_iff parameter input candidate).2 hmatch]
+  simp [hhit, hinput]
 
 theorem mergedCache_nonmatching_probe (parameter : PublicParameter)
-    (table : Coordinate → HashOutput) (cache : SplitHashCache)
+    (table : Coordinate → HashOutput) (ensured : Finset Coordinate)
+    (cache : SplitHashCache)
     (candidate : Probe) (input : HashInput)
     (hmatch : candidate.MatchesInput parameter input)
-    (hmiss : candidate.candidate ≠ truncateHash (table candidate.coordinate)) :
-    mergedCache parameter table cache input = cache (.ordinary input) := by
-  simp [mergedCache, (decodeProbe?_eq_some_iff parameter input candidate).2 hmatch, hmiss]
+    (hmiss : ¬(candidate.candidate = truncateHash (table candidate.coordinate) ∧
+      input = tableInput parameter table candidate.outputCoordinate)) :
+    mergedCache parameter table ensured cache input = cache (.ordinary input) := by
+  unfold mergedCache
+  rw [(decodeProbe?_eq_some_iff parameter input candidate).2 hmatch]
+  simp [hmiss]
 
 noncomputable def splitHashQuery (key : SplitHashKey) :
     StateT SplitHashCache
@@ -509,25 +565,6 @@ noncomputable def splitHashQuery (key : SplitHashKey) :
       let output ← liftM (LazyRevealProbe.hashOutputQuery (Coordinate := Coordinate))
       set (Function.update cache key (some output))
       pure output
-
-noncomputable def probe (candidate : Probe) :
-    StateT SplitHashCache
-      (OracleComp (LazyRevealProbe.World Coordinate)) Unit :=
-  liftM (LazyRevealProbe.probeQuery candidate.coordinate candidate.candidate)
-
-noncomputable def probingHashQuery (parameter : PublicParameter) (input : HashInput) :
-    StateT SplitHashCache
-      (OracleComp (LazyRevealProbe.World Coordinate)) HashOutput := do
-  match decodeProbe? parameter input with
-  | some candidate => probe candidate
-  | none => pure ()
-  splitHashQuery (.ordinary input)
-
-noncomputable def probingHashImpl (parameter : PublicParameter) :
-    QueryImpl HashSpec
-      (StateT SplitHashCache
-        (OracleComp (LazyRevealProbe.World Coordinate))) :=
-  fun input => probingHashQuery parameter input
 
 noncomputable def ordinaryHashImpl :
     QueryImpl HashSpec
@@ -541,16 +578,342 @@ noncomputable def splitUniformImpl :
         (OracleComp (LazyRevealProbe.World Coordinate))) :=
   fun n => liftM (LazyRevealProbe.uniformQuery (Coordinate := Coordinate) n)
 
-noncomputable def probingRomImpl (parameter : PublicParameter) :
-    QueryImpl OracleWorld
-      (StateT SplitHashCache
-        (OracleComp (LazyRevealProbe.World Coordinate))) :=
-  splitUniformImpl + probingHashImpl parameter
-
 noncomputable def ordinaryRomImpl :
     QueryImpl OracleWorld
       (StateT SplitHashCache
         (OracleComp (LazyRevealProbe.World Coordinate))) :=
   splitUniformImpl + ordinaryHashImpl
+
+noncomputable def ensureCoordinate (coordinate : Coordinate) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) Unit :=
+  liftM (LazyRevealProbe.ensureQuery coordinate)
+
+noncomputable def revealCoordinateOutput (coordinate : Coordinate) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) HashOutput := do
+  let output ← liftM (LazyRevealProbe.revealQuery coordinate)
+  modify fun cache : SplitHashCache =>
+    Function.update cache (.hidden coordinate) (some output)
+  pure output
+
+noncomputable def revealCoordinate (coordinate : Coordinate) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) Digest := do
+  let output ← revealCoordinateOutput coordinate
+  pure (truncateHash output)
+
+noncomputable def revealPosition (position : Position) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) Digest :=
+  revealCoordinate (.position position)
+
+noncomputable def revealChainStart (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) Digest :=
+  revealCoordinate (.chainStart lay tree leafIdx chainIdx)
+
+theorem revealCoordinate_run (coordinate : Coordinate) (cache : SplitHashCache) :
+    (revealCoordinate coordinate).run cache = (do
+      let output ← LazyRevealProbe.revealQuery coordinate
+      pure (truncateHash output,
+        Function.update cache (.hidden coordinate) (some output))) := by
+  simp [revealCoordinate, revealCoordinateOutput, StateT.run_modify]
+
+theorem revealPosition_run (position : Position) (cache : SplitHashCache) :
+    (revealPosition position).run cache = (do
+      let output ← LazyRevealProbe.revealQuery (.position position)
+      pure (truncateHash output,
+        Function.update cache (.hidden (.position position)) (some output))) := by
+  rw [revealPosition, revealCoordinate_run]
+
+noncomputable def peekCoordinate (coordinate : Coordinate) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) (Option Digest) := do
+  let output ← liftM (LazyRevealProbe.peekQuery coordinate)
+  pure (truncateHash <$> output)
+
+noncomputable def peekPositionValues : List Position →
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) (Option (List Digest))
+  | [] => pure (some [])
+  | position :: remaining => do
+      match ← peekCoordinate (.position position) with
+      | none => pure none
+      | some value =>
+          match ← peekPositionValues remaining with
+          | none => pure none
+          | some values => pure (some (value :: values))
+
+noncomputable def peekTableInput (parameter : PublicParameter) : Coordinate →
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) (Option HashInput)
+  | .chainStart _ _ _ _ => pure none
+  | .position position@(.chain lay tree leafIdx chainIdx step) => do
+      if step.val = 0 then
+        match ← peekCoordinate (.chainStart lay tree leafIdx chainIdx) with
+        | none => pure none
+        | some value =>
+            pure (some (tweakableHashInput parameter position.domain (digestBytes value)))
+      else
+        match ← peekPositionValues position.children with
+        | none => pure none
+        | some values =>
+            pure (some (tweakableHashInput parameter position.domain
+              (values.flatMap digestBytes)))
+  | .position position => do
+      match ← peekPositionValues position.children with
+      | none => pure none
+      | some values =>
+          pure (some (tweakableHashInput parameter position.domain
+            (values.flatMap digestBytes)))
+
+noncomputable def ensureFullChain (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) Unit := do
+  let _ ← sequenceFin fun step : ChainStep =>
+    ensureCoordinate (.position (.chain lay tree leafIdx chainIdx step))
+  pure ()
+
+noncomputable def ensureChainPrefix (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) (digit : Digit) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) Unit := do
+  let _ ← sequenceFin fun step : ChainStep =>
+    if step.val < digit.val then
+      ensureCoordinate (.position (.chain lay tree leafIdx chainIdx step))
+    else
+      pure ()
+  pure ()
+
+noncomputable def ensureOtsLeaf (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) Unit := do
+  let _ ← sequenceFin fun chainIdx : ChainIndex =>
+    ensureFullChain lay tree leafIdx chainIdx
+  ensureCoordinate (.position (.leaf lay tree leafIdx))
+
+noncomputable def ensureTreeNode (lay : Layer) (tree : TreeIndex) :
+    Nat → Nat →
+      StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate)) Unit
+  | 0, nodeIdx => ensureOtsLeaf lay tree (leafOfNat nodeIdx)
+  | level + 1, nodeIdx => do
+      ensureTreeNode lay tree level (2 * nodeIdx)
+      ensureTreeNode lay tree level (2 * nodeIdx + 1)
+      if hlevel : level < maxLayerHeight then
+        ensureCoordinate (.position
+          (.node lay tree ⟨level, hlevel⟩ (leafOfNat nodeIdx)))
+      else
+        pure ()
+
+noncomputable def maskedTreeNode (lay : Layer) (tree : TreeIndex)
+    (level nodeIdx : Nat) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) Digest := do
+  ensureTreeNode lay tree level nodeIdx
+  match level with
+  | 0 => revealPosition (.leaf lay tree (leafOfNat nodeIdx))
+  | current + 1 =>
+      if hlevel : current < maxLayerHeight then
+        revealPosition (.node lay tree ⟨current, hlevel⟩ (leafOfNat nodeIdx))
+      else
+        pure 0
+
+noncomputable def maskedTreeRoot (lay : Layer) (tree : TreeIndex) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) Digest :=
+  maskedTreeNode lay tree (layerHeight lay) 0
+
+noncomputable def maskedTreePath (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate))
+        (Fin maxLayerHeight → Digest) :=
+  sequenceFin fun level =>
+    if level.val < layerHeight lay then
+      maskedTreeNode lay tree level.val
+        (Nat.xor (leafIdx.val / 2 ^ level.val) 1)
+    else
+      pure 0
+
+noncomputable def maskedChainValue (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) (digit : Digit) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) Digest := do
+  ensureChainPrefix lay tree leafIdx chainIdx digit
+  if hzero : digit.val = 0 then
+    revealChainStart lay tree leafIdx chainIdx
+  else
+    let step : ChainStep := ⟨digit.val - 1, by
+      have := digit.isLt
+      omega⟩
+    revealPosition (.chain lay tree leafIdx chainIdx step)
+
+noncomputable def maskedOtsSignFrom (parameter : PublicParameter) (lay : Layer)
+    (tree : TreeIndex) (leafIdx : LeafIndex) (message : Digest) :
+    Nat → Nat →
+      StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate))
+          (Option (Counter × (ChainIndex → Digest)))
+  | 0, _ => pure none
+  | attempts + 1, counter => do
+      let encoded ← simulateQ ordinaryHashImpl
+        (encode parameter lay tree leafIdx message
+          (BitVec.ofNat counterBits counter))
+      match encoded with
+      | some encoding => do
+          let values ← sequenceFin fun chainIdx =>
+            maskedChainValue lay tree leafIdx chainIdx (encoding chainIdx)
+          pure (some (BitVec.ofNat counterBits counter, values))
+      | none =>
+          maskedOtsSignFrom parameter lay tree leafIdx message attempts (counter + 1)
+
+noncomputable def maskedOtsSign (parameter : PublicParameter) (lay : Layer)
+    (tree : TreeIndex) (leafIdx : LeafIndex) (message : Digest) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate))
+        (Option (Counter × (ChainIndex → Digest))) :=
+  maskedOtsSignFrom parameter lay tree leafIdx message encodingAttemptLimit 0
+
+noncomputable def maskedLayerMessage (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) Digest :=
+  if hbelow : lay.val + 1 < numLayers then
+    let below : Layer := ⟨lay.val + 1, hbelow⟩
+    maskedTreeRoot below (treeIndexAt index below)
+  else
+    simulateQ ordinaryHashImpl (ftsKey parameter index (ftsSecret index))
+
+noncomputable def maskedSignLayer (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate))
+        (Option (Counter × (ChainIndex → Digest) ×
+          (Fin maxLayerHeight → Digest))) := do
+  let tree := treeIndexAt index lay
+  let leafIdx := leafIndexAt index lay
+  let message ← maskedLayerMessage parameter ftsSecret index lay
+  match ← maskedOtsSign parameter lay tree leafIdx message with
+  | none => pure none
+  | some (counter, values) => do
+      let path ← maskedTreePath lay tree leafIdx
+      pure (some (counter, values, path))
+
+noncomputable def maskedSignAfterDigest (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) (Option Signature) := do
+  let ftsPath ← simulateQ ordinaryHashImpl
+    (ftsOpen parameter index leaves (ftsSecret index))
+  let layers ← sequenceFin fun lay =>
+    maskedSignLayer parameter ftsSecret index lay
+  match traverseOption layers with
+  | none => pure none
+  | some parts =>
+      pure (some
+        { randomness := randomness
+          ftsSecret := fun tree => ftsSecret index tree (leaves (ftsIndexOf tree))
+          ftsPath := ftsPath
+          counter := fun lay => (parts lay).1
+          chainValue := fun lay => (parts lay).2.1
+          authPath := flattenPaths fun lay => (parts lay).2.2 })
+
+noncomputable def maskedSign (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) (Option Signature) := do
+  let secretKey : SecretKey :=
+    ⟨parameter, root, fun _ _ _ _ => 0, ftsSecret⟩
+  match ← simulateQ ordinaryRomImpl
+      (signDigestLoop digestAttemptLimit secretKey message) with
+  | none => pure none
+  | some (randomness, index, leaves) =>
+      maskedSignAfterDigest parameter ftsSecret randomness index leaves
+
+noncomputable def probe (candidate : Probe) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) Unit :=
+  liftM (LazyRevealProbe.probeQuery candidate.coordinate candidate.candidate)
+
+noncomputable def resolveKnownInput (parameter : PublicParameter)
+    (coordinate : Coordinate) (input : HashInput) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) HashOutput := do
+  match ← peekTableInput parameter coordinate with
+  | some knownInput =>
+      if knownInput = input then
+        let output ← revealCoordinateOutput coordinate
+        modify fun cache : SplitHashCache =>
+          Function.update cache (.ordinary input) (some output)
+        pure output
+      else
+        splitHashQuery (.ordinary input)
+  | none => splitHashQuery (.ordinary input)
+
+noncomputable def probingHashQuery (parameter : PublicParameter) (input : HashInput) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) HashOutput := do
+  match decodeProbe? parameter input with
+  | some candidate => do
+      probe candidate
+      resolveKnownInput parameter candidate.outputCoordinate input
+  | none =>
+      match decodePosition? parameter input with
+      | some position@(.chain _ _ _ _ _) =>
+          resolveKnownInput parameter (.position position) input
+      | some position@(.leaf _ _ _) =>
+          resolveKnownInput parameter (.position position) input
+      | some position@(.node _ _ _ _) =>
+          resolveKnownInput parameter (.position position) input
+      | _ => splitHashQuery (.ordinary input)
+
+noncomputable def probingHashImpl (parameter : PublicParameter) :
+    QueryImpl HashSpec
+      (StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate))) :=
+  fun input => probingHashQuery parameter input
+
+noncomputable def probingRomImpl (parameter : PublicParameter) :
+    QueryImpl OracleWorld
+      (StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate))) :=
+  splitUniformImpl + probingHashImpl parameter
+
+noncomputable def maskedSigningImpl (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    QueryImpl SigningSpec
+      (StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate))) :=
+  fun message => maskedSign parameter root ftsSecret message
+
+noncomputable def maskedExpandedAdversaryImpl (parameter : PublicParameter)
+    (root : Digest) (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    QueryImpl (OracleWorld + SigningSpec)
+      (StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate))) :=
+  probingRomImpl parameter + maskedSigningImpl parameter root ftsSecret
+
+noncomputable def maskedGameAfterFtsSecrets (adversary : Adversary)
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) Bool := do
+  let root ← maskedTreeRoot topLayer rootTree
+  let (forgery, log) ←
+    (simulateQ (QueryImpl.withTraceAppend
+      (maskedExpandedAdversaryImpl parameter root ftsSecret) signingLogFragment)
+      (adversary.main ⟨root, parameter⟩)).run
+  let verified ← simulateQ (probingRomImpl parameter)
+    (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)
+  pure (decide (SigningTranscript.Valid log ∧
+    ¬SigningTranscript.Contains log forgery) && verified)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

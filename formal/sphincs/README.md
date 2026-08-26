@@ -68,6 +68,8 @@ The frame splits the game at the secret sampling rather than after key generatio
 
 ## What remains
 
+The one-time branch now has a complete masked signer and game skeleton. It performs the concrete digest and counter searches, reserves the exact chain prefixes and Merkle subtrees queried by signing, reveals only returned chain and path values, handles adaptive signing requests, and runs verification through an injective probing decoder. The lazy world has a probability-neutral read-only query for already public cells, allowing exact public chain, leaf and node inputs to resolve to their hidden successor without sampling opaque cells. The remaining work is the exact cache coupling, the one-time secret-sampler transport, and the sampled probability lift for fresh and backward openings.
+
 The probabilistic side is finished as a tool and half-instantiated. What is in place: `Position` (the finite index set, with `mem_children_iff`, so children and parent agree and no position has two parents), `Honest` (payload, input and value at a position, every payload being the values below it at sixteen bytes each, hence `honestPayload_congr` and `slots_injective`), `Settled` (the positions a cache pins, monotone), `Slot` (`slotDigest_flatMap`, reading the block of a payload a value lands in), and `Charge` (`Bad`, `cachedAt`, `unsettledChildren`, `potential`, and `settled_of_settled_cacheQuery`: one query settles no position but the one its input is at, unless it settles that position's parent).
 
 In order:
