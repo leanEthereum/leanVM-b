@@ -1,6 +1,10 @@
 import SphincsSecurity.Proof.EncodingTarget
+import SphincsSecurity.Proof.FullTrace
+import SphincsSecurity.Proof.MessagePrehit
 import SphincsSecurity.Proof.NoMessage
 import SphincsSecurity.Proof.RootCache
+import SphincsSecurity.Proof.SignerDigestSource
+import SphincsSecurity.Proof.SigningTrace
 
 /-!
 # Amortized charge for encoding collisions
@@ -218,6 +222,112 @@ theorem avoidsEncodingQueries_layerMessage (f : QueryImpl HashSpec Id)
   split
   · exact avoidsEncodingQueries_treeNode secretKey.parameter f _ _ _ _ _
   · exact avoidsEncodingQueries_ftsKey secretKey.parameter f index (secretKey.ftsSecret index)
+
+theorem signDigestLoop_cache_encoding_none (attempts : Nat) (secretKey : SecretKey)
+    (message : Message) (beforeCache afterCache : QueryCache HashSpec)
+    (result : Option (Randomness × Index × (DigestTree → FtsLeaf)))
+    (hmem : (result, afterCache) ∈ support
+      ((simulateQ romImpl (signDigestLoop attempts secretKey message)).run beforeCache))
+    (target : HashInput) (position : EncodingPosition)
+    (hposition : AtEncodingPosition secretKey.parameter target position)
+    (hbefore : beforeCache target = none) : afterCache target = none := by
+  induction attempts generalizing beforeCache afterCache result with
+  | zero =>
+      simp only [signDigestLoop, simulateQ_pure, StateT.run_pure, support_pure,
+        Set.mem_singleton_iff, Prod.mk.injEq] at hmem
+      obtain ⟨rfl, rfl⟩ := hmem
+      exact hbefore
+  | succ attempts ih =>
+      rw [signDigestLoop, simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hmem
+      obtain ⟨⟨randomness, sampleCache⟩, hsample, hrest⟩ := hmem
+      have hsampleRun : (randomness, sampleCache) ∈ support
+          ((simulateQ (unifFwdImpl HashSpec) sampleRandomness).run beforeCache) := by
+        simpa only [romImpl, QueryImpl.simulateQ_add_liftM_left] using hsample
+      rw [unifFwdImpl.simulateQ_run, support_map] at hsampleRun
+      obtain ⟨sampledRandomness, _, heq⟩ := hsampleRun
+      obtain ⟨rfl, rfl⟩ := heq
+      rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hrest
+      obtain ⟨⟨attempt, attemptCache⟩, hattempt, hfinish⟩ := hrest
+      have hattempt' : (attempt, attemptCache) ∈ support
+          ((simulateQ (randomOracle : QueryImpl HashSpec _)
+            (signAttempt secretKey message randomness)).run beforeCache) := by
+        simpa only [simulateQ_romImpl_liftM] using hattempt
+      have hne : target ≠ tweakableHashInput secretKey.parameter .message
+          (messageDigestPayload secretKey.root message randomness) := by
+        intro heq
+        obtain ⟨payload, htarget⟩ := hposition
+        have hdomain := (tweakableHashInput_injective secretKey.parameter (by trivial)
+          (by trivial) (htarget.symm.trans heq)).1
+        cases position
+        simp [EncodingPosition.domain] at hdomain
+      have hattemptNone : attemptCache target = none :=
+        signAttempt_cache_other_none secretKey message randomness beforeCache attemptCache
+          attempt hattempt' target hbefore hne
+      cases attempt with
+      | none => exact ih attemptCache afterCache result hfinish hattemptNone
+      | some selected =>
+          simp only [simulateQ_pure, StateT.run_pure, support_pure, Set.mem_singleton_iff,
+            Prod.mk.injEq] at hfinish
+          obtain ⟨rfl, rfl⟩ := hfinish
+          exact hattemptNone
+
+theorem sign_cache_encoding_none_of_digest_eval
+    (secretKey : SecretKey) (message : Message) (signature : Signature)
+    (beforeCache afterCache : QueryCache HashSpec)
+    (hmem : (some signature, afterCache) ∈ support
+      ((simulateQ romImpl (sign secretKey message)).run beforeCache))
+    (f : QueryImpl HashSpec Id) (hf : afterCache.AgreesWithFn f)
+    (index : Index) (leaves : DigestTree → FtsLeaf)
+    (hdigest : evalWithAnswerFn f
+      (signAttempt secretKey message signature.randomness) = some (index, leaves))
+    (target : HashInput) (position : EncodingPosition)
+    (hposition : AtEncodingPosition secretKey.parameter target position)
+    (hbefore : beforeCache target = none)
+    (havoid : target ∉ queriedInputs f
+      (signAfterDigest secretKey signature.randomness index leaves)) :
+    afterCache target = none := by
+  rw [sign_eq_digestLoop_afterDigest, simulateQ_bind, StateT.run_bind,
+    mem_support_bind_iff] at hmem
+  obtain ⟨⟨loopResult, loopCache⟩, hloop, hfinish⟩ := hmem
+  cases loopResult with
+  | none =>
+      simp only [simulateQ_pure, StateT.run_pure, support_pure, Set.mem_singleton_iff,
+        Prod.mk.injEq] at hfinish
+      cases hfinish.1
+  | some selected =>
+      obtain ⟨randomness, actualIndex, actualLeaves⟩ := selected
+      have hloopNone := signDigestLoop_cache_encoding_none digestAttemptLimit secretKey message
+        beforeCache loopCache (some (randomness, actualIndex, actualLeaves)) hloop target
+        position hposition hbefore
+      have hfinish' : (some signature, afterCache) ∈ support
+          ((simulateQ (randomOracle : QueryImpl HashSpec _)
+            (signAfterDigest secretKey randomness actualIndex actualLeaves)).run loopCache) := by
+        simpa only [simulateQ_romImpl_liftM] using hfinish
+      have hloopLe : loopCache ≤ afterCache :=
+        simulateQ_romImpl_cache_le
+          (liftM (signAfterDigest secretKey randomness actualIndex actualLeaves) :
+            OracleComp OracleWorld (Option Signature)) loopCache _ hfinish
+      have hfLoop : loopCache.AgreesWithFn f := fun _ _ hcached => hf (hloopLe hcached)
+      have hloopReplay := replayRom_of_mem_support
+        (signDigestLoop digestAttemptLimit secretKey message) beforeCache
+        (some (randomness, actualIndex, actualLeaves)) loopCache hloop f hfLoop
+      have hactualDigest := successfulDigestLoop_of_mem_support f secretKey message
+        digestAttemptLimit randomness actualIndex actualLeaves beforeCache loopCache afterCache
+        hloopReplay hloopLe hf
+      have hrandomness : randomness = signature.randomness :=
+        (signAfterDigest_support_some_randomness secretKey randomness actualIndex actualLeaves
+          loopCache afterCache signature hfinish').symm
+      have hselected : actualIndex = index ∧ actualLeaves = leaves := by
+        have hactual := hactualDigest.2.1
+        have hexpected := hdigest
+        rw [hrandomness] at hactual
+        exact Prod.mk.inj (Option.some.inj (hactual.symm.trans hexpected))
+      rw [hselected.1, hselected.2] at hfinish'
+      subst randomness
+      apply cache_eq_none_of_not_mem_queriedInputs
+        (signAfterDigest secretKey signature.randomness index leaves) loopCache
+        (some signature) afterCache hfinish' f hf target hloopNone
+      exact havoid
 
 def QueriesAtEncodingPositionOrPositions {alpha : Type} (parameter : PublicParameter)
     (f : QueryImpl HashSpec Id) (position : EncodingPosition)
@@ -505,15 +615,24 @@ theorem EncodingCollision.forged_encoding_not_mem_signAfterDigest
     {signingLog : QueryLog SigningSpec}
     (hcollision : EncodingCollision f cache secretKey signingLog) :
     ∃ (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
-        (forgedMessage : Digest) (forgedCounter : Counter) (signature : Signature)
-        (index : Index) (leaves : DigestTree → FtsLeaf),
-      treeIndexAt index lay = tree
+        (forgedMessage : Digest) (forgedCounter : Counter)
+        (entry : (request : SignRequest) × SigningSpec.Range request)
+        (signature : Signature) (index : Index) (leaves : DigestTree → FtsLeaf),
+      entry ∈ signingLog
+        ∧ entry.2 = some signature
+        ∧ SuccessfulSignRun f cache secretKey entry.1 signature
+        ∧ SuccessfulDigestRun f cache secretKey entry.1 signature.randomness index leaves
+        ∧ treeIndexAt index lay = tree
         ∧ leafIndexAt index lay = leafIdx
+        ∧ cache (tweakableHashInput secretKey.parameter (.encoding lay tree leafIdx)
+            (digestBytes forgedMessage ++ counterBytes forgedCounter)) ≠ none
         ∧ tweakableHashInput secretKey.parameter (.encoding lay tree leafIdx)
             (digestBytes forgedMessage ++ counterBytes forgedCounter) ∉
           queriedInputs f (signAfterDigest secretKey signature.randomness index leaves) := by
-  obtain ⟨lay, tree, leafIdx, forgedMessage, forgedCounter, _, _, _, signature, index,
-    leaves, _, hforgedOpening, _, _, hrun, hdigest, htree, hleaf, _, _, _, hhit⟩ := hcollision
+  obtain ⟨lay, tree, leafIdx, forgedMessage, forgedCounter, _, _, entry, signature, index,
+    leaves, hforgedRun, hforgedOpening, hentry, hresponse, hrun, hdigest, htree, hleaf, _, _, _,
+    hhit⟩ :=
+    hcollision
   obtain ⟨forgedCodeword, hforgedEncode, _, _⟩ := hforgedOpening
   obtain ⟨part, hcounter, _, hlayer⟩ := hrun.layerRun_of_digest hdigest lay
   obtain ⟨hots, _⟩ := hlayer.otsSign_eval_cached
@@ -549,8 +668,121 @@ theorem EncodingCollision.forged_encoding_not_mem_signAfterDigest
       · exact not_mem_queriedInputs_sequenceFin f (fun otherLayer =>
           signLayer secretKey index otherLayer) forgedInput hnotLayers hlayers
       · split at hfinal <;> simp at hfinal
-  exact ⟨lay, tree, leafIdx, forgedMessage, forgedCounter, signature, index, leaves,
-    htree, hleaf, by simpa only [forgedInput] using hnotAfter⟩
+  exact ⟨lay, tree, leafIdx, forgedMessage, forgedCounter, entry, signature, index, leaves,
+    hentry, hresponse, hrun, hdigest, htree, hleaf,
+    CachedRun.otsLeaf_encode_cached hforgedRun,
+    by simpa only [forgedInput] using hnotAfter⟩
+
+theorem SigningCacheTrace.exists_cacheEntry_of_mem_toSigningLog
+    {trace : SigningCacheTrace}
+    {entry : (request : SignRequest) × SigningSpec.Range request}
+    (hentry : entry ∈ trace.toSigningLog) :
+    ∃ cacheEntry : SigningCacheEntry, cacheEntry ∈ trace
+      ∧ (⟨cacheEntry.request, cacheEntry.signature⟩ :
+        (request : SignRequest) × SigningSpec.Range request) = entry := by
+  rw [SigningCacheTrace.toSigningLog, List.mem_map] at hentry
+  obtain ⟨cacheEntry, hcacheEntry, heq⟩ := hentry
+  exact ⟨cacheEntry, hcacheEntry, heq⟩
+
+theorem EncodingCollision.signingInterval_prehit_or_final_miss
+    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
+    {trace : SigningCacheTrace} {signingLog : QueryLog SigningSpec}
+    (hcollision : EncodingCollision f cache secretKey signingLog)
+    (hlog : trace.toSigningLog = signingLog) (hvalid : trace.ValidRuns secretKey)
+    (hcaches : trace.CachesLe cache) (hf : cache.AgreesWithFn f) :
+    ∃ (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+        (forgedMessage : Digest) (forgedCounter : Counter)
+        (cacheEntry : SigningCacheEntry) (signature : Signature)
+        (index : Index),
+      cacheEntry ∈ trace
+        ∧ cacheEntry.signature = some signature
+        ∧ treeIndexAt index lay = tree
+        ∧ leafIndexAt index lay = leafIdx
+        ∧ let forgedInput := tweakableHashInput secretKey.parameter
+            (.encoding lay tree leafIdx)
+            (digestBytes forgedMessage ++ counterBytes forgedCounter)
+          cache forgedInput ≠ none ∧
+            (cacheEntry.initialCache forgedInput ≠ none ∨
+              cacheEntry.finalCache forgedInput = none) := by
+  obtain ⟨lay, tree, leafIdx, forgedMessage, forgedCounter, entry, signature, index,
+    leaves, hentry, hresponse, _, hdigest, htree, hleaf, hforgedCached, havoid⟩ :=
+    hcollision.forged_encoding_not_mem_signAfterDigest
+  have hentry' : entry ∈ trace.toSigningLog := by rwa [hlog]
+  obtain ⟨cacheEntry, hcacheEntry, heq⟩ :=
+    SigningCacheTrace.exists_cacheEntry_of_mem_toSigningLog hentry'
+  subst entry
+  have hfinalLe := (hcaches cacheEntry hcacheEntry).2
+  have hfinalAgree : cacheEntry.finalCache.AgreesWithFn f :=
+    fun _ _ hcached => hf (hfinalLe hcached)
+  let forgedInput := tweakableHashInput secretKey.parameter (.encoding lay tree leafIdx)
+    (digestBytes forgedMessage ++ counterBytes forgedCounter)
+  have hposition : AtEncodingPosition secretKey.parameter forgedInput ⟨lay, tree, leafIdx⟩ :=
+    ⟨_, rfl⟩
+  refine ⟨lay, tree, leafIdx, forgedMessage, forgedCounter, cacheEntry, signature, index,
+    hcacheEntry, hresponse, htree, hleaf, hforgedCached, ?_⟩
+  by_cases hinitial : cacheEntry.initialCache forgedInput = none
+  · right
+    have hvalidRun := hvalid cacheEntry hcacheEntry
+    change cacheEntry.signature = some signature at hresponse
+    rw [SigningCacheEntry.ValidRun, hresponse] at hvalidRun
+    exact sign_cache_encoding_none_of_digest_eval secretKey cacheEntry.request signature
+      cacheEntry.initialCache cacheEntry.finalCache hvalidRun f hfinalAgree index leaves
+      hdigest.2.1 forgedInput ⟨lay, tree, leafIdx⟩ hposition hinitial (by
+        simpa only [forgedInput] using havoid)
+  · exact Or.inl hinitial
+
+theorem EncodingCollision.signingInterval_prehit_or_later_source
+    {f : QueryImpl HashSpec Id} {cache rootCache adversaryCache : QueryCache HashSpec}
+    {secretKey : SecretKey} {trace : FullAdversaryTrace}
+    (hcollision : EncodingCollision f cache secretKey trace.signing.toSigningLog)
+    (hvalidRuns : trace.signing.ValidRuns secretKey)
+    (hcaches : trace.signing.CachesLe cache) (hf : cache.AgreesWithFn f)
+    (hconsistent : trace.Consistent)
+    (hchain : FullAdversaryTrace.CacheChain rootCache trace.intervals adversaryCache)
+    (hchronological : FullAdversaryTrace.Chronological trace.intervals)
+    (hvalidIntervals : trace.ValidIntervals secretKey) :
+    ∃ (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+        (forgedMessage : Digest) (forgedCounter : Counter)
+        (cacheEntry : SigningCacheEntry) (signature : Signature) (index : Index)
+        (selected : Fin trace.intervals.length),
+      cacheEntry ∈ trace.signing
+        ∧ cacheEntry.signature = some signature
+        ∧ treeIndexAt index lay = tree
+        ∧ leafIndexAt index lay = leafIdx
+        ∧ AdversaryCacheEntry.signingEntry? (trace.intervals.get selected) = some cacheEntry
+        ∧ let forgedInput := tweakableHashInput secretKey.parameter
+            (.encoding lay tree leafIdx)
+            (digestBytes forgedMessage ++ counterBytes forgedCounter)
+          cache forgedInput ≠ none ∧
+            (cacheEntry.initialCache forgedInput ≠ none ∨
+              (∃ source : Fin trace.intervals.length,
+                selected.val < source.val
+                  ∧ (trace.intervals.get source).initialCache forgedInput = none
+                  ∧ (trace.intervals.get source).finalCache forgedInput ≠ none) ∨
+              (adversaryCache forgedInput = none ∧ cache forgedInput ≠ none)) := by
+  obtain ⟨lay, tree, leafIdx, forgedMessage, forgedCounter, cacheEntry, signature, index,
+    hcacheEntry, hresponse, htree, hleaf, hforgedCached, hcase⟩ :=
+    hcollision.signingInterval_prehit_or_final_miss rfl hvalidRuns hcaches hf
+  obtain ⟨selected, hselected⟩ :=
+    trace.exists_intervalPosition_of_signingEntry hconsistent cacheEntry hcacheEntry
+  refine ⟨lay, tree, leafIdx, forgedMessage, forgedCounter, cacheEntry, signature, index,
+    selected, hcacheEntry, hresponse, htree, hleaf, hselected, hforgedCached, ?_⟩
+  rcases hcase with hprehit | hfinalMiss
+  · exact Or.inl hprehit
+  · right
+    by_cases hadversary : adversaryCache (tweakableHashInput secretKey.parameter
+        (.encoding lay tree leafIdx)
+        (digestBytes forgedMessage ++ counterBytes forgedCounter)) = none
+    · exact Or.inr ⟨hadversary, hforgedCached⟩
+    · left
+      have hmono : ∀ entry ∈ trace.intervals,
+          entry.initialCache ≤ entry.finalCache := by
+        intro entry hentry
+        exact unloggedMappedAdversaryImpl_cache_le secretKey entry.input entry.initialCache
+          (entry.output, entry.finalCache) (hvalidIntervals entry hentry)
+      apply hchain.transition_after hchronological hmono selected
+      · rwa [(trace.intervals.get selected).finalCache_eq_of_signingEntry?_eq_some hselected]
+      · exact hadversary
 
 def encodingCachedAt (parameter : PublicParameter) (cache : QueryCache HashSpec)
     (position : EncodingPosition) : Set HashInput :=

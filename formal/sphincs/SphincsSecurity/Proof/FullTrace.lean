@@ -156,6 +156,59 @@ theorem FullAdversaryTrace.CacheChain.transition_to_finish
           by simpa only [List.get_eq_getElem, List.getElem_cons_zero, hhead] using hstart,
           by simpa only [List.get_eq_getElem, List.getElem_cons_zero] using hnext⟩
 
+theorem FullAdversaryTrace.CacheChain.start_le_get_initialCache
+    {start finish : QueryCache HashSpec} {intervals : List AdversaryCacheEntry}
+    (hchain : FullAdversaryTrace.CacheChain start intervals finish)
+    (hmono : ∀ entry ∈ intervals, entry.initialCache ≤ entry.finalCache)
+    (position : Fin intervals.length) :
+    start ≤ (intervals.get position).initialCache := by
+  induction intervals generalizing start finish with
+  | nil => exact Fin.elim0 position
+  | cons head rest ih =>
+      rcases hchain with ⟨hhead, hrest⟩
+      cases position using Fin.cases with
+      | zero => exact le_of_eq hhead.symm
+      | succ position =>
+          rw [← hhead]
+          exact (hmono head (by simp)).trans
+            (ih hrest (fun entry hentry => hmono entry (by simp [hentry])) position)
+
+theorem FullAdversaryTrace.CacheChain.transition_after
+    {start finish : QueryCache HashSpec} {intervals : List AdversaryCacheEntry}
+    (hchain : FullAdversaryTrace.CacheChain start intervals finish)
+    (hchronological : FullAdversaryTrace.Chronological intervals)
+    (hmono : ∀ entry ∈ intervals, entry.initialCache ≤ entry.finalCache)
+    (selected : Fin intervals.length) (input : HashInput)
+    (hselected : (intervals.get selected).finalCache input = none)
+    (hfinish : finish input ≠ none) :
+    ∃ source : Fin intervals.length,
+      selected.val < source.val
+        ∧ (intervals.get source).initialCache input = none
+        ∧ (intervals.get source).finalCache input ≠ none := by
+  have hstart : start input = none := by
+    by_contra hcached
+    obtain ⟨answer, hanswer⟩ := Option.ne_none_iff_exists'.mp hcached
+    have hle := hchain.start_le_get_initialCache hmono selected
+    have hinitial := hle hanswer
+    have hfinal := hmono (intervals.get selected) (List.get_mem _ selected) hinitial
+    rw [hselected] at hfinal
+    simp at hfinal
+  obtain ⟨source, hsourceInitial, hsourceFinal⟩ :=
+    hchain.transition_to_finish input hstart hfinish
+  refine ⟨source, ?_, hsourceInitial, hsourceFinal⟩
+  by_contra hnotAfter
+  have hle : source.val ≤ selected.val := Nat.le_of_not_gt hnotAfter
+  rcases hle.eq_or_lt with heq | hlt
+  · have hsame : source = selected := Fin.ext heq
+    subst source
+    exact hsourceFinal hselected
+  · have hcacheLe := hchronological.get_finalCache_le_initialCache source selected hlt
+    obtain ⟨answer, hanswer⟩ := Option.ne_none_iff_exists'.mp hsourceFinal
+    have hfinal := hmono (intervals.get selected) (List.get_mem _ selected)
+      (hcacheLe hanswer)
+    rw [hselected] at hfinal
+    simp at hfinal
+
 theorem FullAdversaryTrace.Chronological.append_singleton
     {intervals : List AdversaryCacheEntry} {entry : AdversaryCacheEntry}
     (hchronological : FullAdversaryTrace.Chronological intervals)
