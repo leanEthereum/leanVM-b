@@ -62,6 +62,10 @@ def SuccessfulLayerRun (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
           (secretKey.otsSecret lay (treeIndexAt index lay)) level.val
           (Nat.xor ((leafIndexAt index lay).val / 2 ^ level.val) 1)
         else 0)
+      ∧ evalWithAnswerFn f
+        (otsSign secretKey.parameter lay (treeIndexAt index lay) (leafIndexAt index lay)
+          (secretKey.otsSecret lay (treeIndexAt index lay) (leafIndexAt index lay))
+          (evalWithAnswerFn f (layerMessage secretKey index lay))) = some (part.1, part.2.1)
       ∧ CachedRun cache f (layerMessage secretKey index lay)
       ∧ CachedRun cache f
         (otsSign secretKey.parameter lay (treeIndexAt index lay) (leafIndexAt index lay)
@@ -106,7 +110,7 @@ theorem successfulLayerRun_of_eval (f : QueryImpl HashSpec Id) (cache : QueryCac
         (secretKey.otsSecret lay (treeIndexAt index lay) (leafIndexAt index lay))
         (evalWithAnswerFn f (layerMessage secretKey index lay)) encodingAttemptLimit 0 counter
         values (by simpa only [otsSign] using hots)
-      refine ⟨codeword, ?_, ?_, ?_, hmessageRun, hotsRun, hpathRun⟩
+      refine ⟨codeword, ?_, ?_, ?_, ?_, hmessageRun, hotsRun, hpathRun⟩
       · rwa [← hcounter]
       · intro chainIdx
         rw [← hvalues]
@@ -115,6 +119,7 @@ theorem successfulLayerRun_of_eval (f : QueryImpl HashSpec Id) (cache : QueryCac
         rw [← hpath]
         simp only [treePath, evalWithAnswerFn_sequenceFin]
         split <;> rfl
+      · simpa only [hcounter, hvalues] using hots
 
 theorem traverseOption_eq_some_apply {alpha : Type} {n : Nat}
     (family : Fin n → Option alpha) (values : Fin n → alpha)
@@ -383,8 +388,22 @@ theorem SuccessfulLayerRun.message_cached {f : QueryImpl HashSpec Id}
     {cache : QueryCache HashSpec} {secretKey : SecretKey} {index : Index} {lay : Layer}
     {part : LayerPart} (hrun : SuccessfulLayerRun f cache secretKey index lay part) :
     CachedRun cache f (layerMessage secretKey index lay) := by
-  obtain ⟨_, _, _, _, hmessage, _, _⟩ := hrun
+  obtain ⟨_, _, _, _, _, hmessage, _, _⟩ := hrun
   exact hmessage
+
+theorem SuccessfulLayerRun.otsSign_eval_cached {f : QueryImpl HashSpec Id}
+    {cache : QueryCache HashSpec} {secretKey : SecretKey} {index : Index} {lay : Layer}
+    {part : LayerPart} (hrun : SuccessfulLayerRun f cache secretKey index lay part) :
+    evalWithAnswerFn f
+        (otsSign secretKey.parameter lay (treeIndexAt index lay) (leafIndexAt index lay)
+          (secretKey.otsSecret lay (treeIndexAt index lay) (leafIndexAt index lay))
+          (evalWithAnswerFn f (layerMessage secretKey index lay))) = some (part.1, part.2.1)
+      ∧ CachedRun cache f
+        (otsSign secretKey.parameter lay (treeIndexAt index lay) (leafIndexAt index lay)
+          (secretKey.otsSecret lay (treeIndexAt index lay) (leafIndexAt index lay))
+          (evalWithAnswerFn f (layerMessage secretKey index lay))) := by
+  obtain ⟨_, _, _, _, heval, _, hcached, _⟩ := hrun
+  exact ⟨heval, hcached⟩
 
 theorem SuccessfulSignRun.honest_openings {f : QueryImpl HashSpec Id}
     {cache : QueryCache HashSpec} {secretKey : SecretKey} {message : Message}
@@ -395,7 +414,7 @@ theorem SuccessfulSignRun.honest_openings {f : QueryImpl HashSpec Id}
       (signature.chainValue lay) (signaturePath signature lay) := by
   obtain ⟨index, _, parts, _, _, _, hcounter, hvalues, hauth, _, hlayers⟩ := hrun.indexed
   refine ⟨index, fun lay => ?_⟩
-  obtain ⟨codeword, hencode, hchains, hpath, _, _, _⟩ := hlayers lay
+  obtain ⟨codeword, hencode, hchains, hpath, _, _, _, _⟩ := hlayers lay
   refine ⟨codeword, ?_, ?_, ?_⟩
   · simpa only [congrFun hcounter lay] using hencode
   · intro chainIdx
@@ -421,7 +440,7 @@ theorem SuccessfulSignRun.honest_layer_at {f : QueryImpl HashSpec Id}
           (evalWithAnswerFn f (layerMessage secretKey index lay)) (signature.counter lay)
           (signature.chainValue lay) (signaturePath signature lay) := by
   obtain ⟨index, _, parts, _, _, _, hcounter, hvalues, hauth, _, hlayers⟩ := hrun.indexed
-  obtain ⟨codeword, hencode, hchains, hpath, hmessage, _, _⟩ := hlayers lay
+  obtain ⟨codeword, hencode, hchains, hpath, _, hmessage, _, _⟩ := hlayers lay
   refine ⟨index, hmessage, codeword, ?_, ?_, ?_⟩
   · simpa only [congrFun hcounter lay] using hencode
   · intro chainIdx
@@ -453,7 +472,7 @@ theorem SuccessfulSignRun.honest_layer_at_of_digest {f : QueryImpl HashSpec Id}
   obtain ⟨_, digest', hdigestEval, _, hdigestIndex, _, _⟩ := hdigest.extract
   have hdigests : digest = digest' := by rw [← hrunEval, ← hdigestEval]
   have hindex : runIndex = index := by rw [hrunIndex, hdigestIndex, hdigests]
-  obtain ⟨codeword, hencode, hchains, hpath, hmessage, _, _⟩ := hlayers lay
+  obtain ⟨codeword, hencode, hchains, hpath, _, hmessage, _, _⟩ := hlayers lay
   refine ⟨?_, codeword, ?_, ?_, ?_⟩
   · simpa only [hindex] using hmessage
   · simpa only [hindex, congrFun hcounter lay] using hencode
@@ -486,6 +505,36 @@ theorem SuccessfulSignRun.signature_part_of_digest {f : QueryImpl HashSpec Id}
   have hindex : runIndex = index := by rw [hrunIndex, hdigestIndex, hdigests]
   refine ⟨parts lay, ?_, congrFun hcounter lay, congrFun hvalues lay⟩
   simpa only [hindex] using heval lay
+
+theorem SuccessfulSignRun.layerRun_of_digest {f : QueryImpl HashSpec Id}
+    {cache : QueryCache HashSpec} {secretKey : SecretKey} {message : Message}
+    {signature : Signature} (hrun : SuccessfulSignRun f cache secretKey message signature)
+    {index : Index} {leaves : DigestTree → FtsLeaf}
+    (hdigest : SuccessfulDigestRun f cache secretKey message signature.randomness index leaves)
+    (lay : Layer) :
+    ∃ part : LayerPart, signature.counter lay = part.1
+      ∧ signature.chainValue lay = part.2.1
+      ∧ SuccessfulLayerRun f cache secretKey index lay part := by
+  obtain ⟨runIndex, _, parts, hrunDigest, _, _, hcounter, hvalues, _, _, hlayers⟩ := hrun.indexed
+  obtain ⟨_, digest, hrunEval, _, hrunIndex, _, _⟩ := hrunDigest.extract
+  obtain ⟨_, digest', hdigestEval, _, hdigestIndex, _, _⟩ := hdigest.extract
+  have hdigests : digest = digest' := by rw [← hrunEval, ← hdigestEval]
+  have hindex : runIndex = index := by rw [hrunIndex, hdigestIndex, hdigests]
+  refine ⟨parts lay, congrFun hcounter lay, congrFun hvalues lay, ?_⟩
+  simpa only [hindex] using hlayers lay
+
+theorem SuccessfulSignRun.signLayer_cached_of_digest {f : QueryImpl HashSpec Id}
+    {cache : QueryCache HashSpec} {secretKey : SecretKey} {message : Message}
+    {signature : Signature} (hrun : SuccessfulSignRun f cache secretKey message signature)
+    {index : Index} {leaves : DigestTree → FtsLeaf}
+    (hdigest : SuccessfulDigestRun f cache secretKey message signature.randomness index leaves)
+    (lay : Layer) : CachedRun cache f (signLayer secretKey index lay) := by
+  obtain ⟨runIndex, _, _, hrunDigest, _, _, _, _, _, _, _, hcached⟩ := hrun
+  obtain ⟨_, digest, hrunEval, _, hrunIndex, _, _⟩ := hrunDigest.extract
+  obtain ⟨_, digest', hdigestEval, _, hdigestIndex, _, _⟩ := hdigest.extract
+  have hdigests : digest = digest' := by rw [← hrunEval, ← hdigestEval]
+  have hindex : runIndex = index := by rw [hrunIndex, hdigestIndex, hdigests]
+  simpa only [hindex] using hcached lay
 
 theorem SuccessfulSignRun.honest_fts_opening {f : QueryImpl HashSpec Id}
     {cache : QueryCache HashSpec} {secretKey : SecretKey} {message : Message}

@@ -39,6 +39,62 @@ theorem CachedRun.mono {alpha : Type} {cache cache' : QueryCache HashSpec}
   rw [hle hanswer]
   simp
 
+theorem CachedRun.eval_eq {alpha : Type} {cache : QueryCache HashSpec}
+    {f g : QueryImpl HashSpec Id} {oa : OracleComp HashSpec alpha}
+    (hf : cache.AgreesWithFn f) (hg : cache.AgreesWithFn g)
+    (hrun : CachedRun cache f oa) :
+    evalWithAnswerFn f oa = evalWithAnswerFn g oa := by
+  induction oa using OracleComp.inductionOn with
+  | pure value => rfl
+  | query_bind input next ih =>
+      have hcached : cache input ≠ none := by
+        apply hrun input
+        rw [queriedInputs_query_bind]
+        exact List.mem_cons_self
+      obtain ⟨answer, hanswer⟩ := Option.ne_none_iff_exists'.mp hcached
+      have hfg : f input = g input := (hf hanswer).trans (hg hanswer).symm
+      rw [evalWithAnswerFn_bind, evalWithAnswerFn_bind,
+        show evalWithAnswerFn f (liftM (HashSpec.query input)) = f input from
+          simulateQ_spec_query f input,
+        show evalWithAnswerFn g (liftM (HashSpec.query input)) = g input from
+          simulateQ_spec_query g input, hfg]
+      apply ih (g input)
+      intro queried hqueried
+      rw [← hfg] at hqueried
+      apply hrun queried
+      rw [queriedInputs_query_bind]
+      exact List.mem_cons_of_mem input hqueried
+
+theorem CachedRun.queriedInputs_eq {alpha : Type} {cache : QueryCache HashSpec}
+    {f g : QueryImpl HashSpec Id} {oa : OracleComp HashSpec alpha}
+    (hf : cache.AgreesWithFn f) (hg : cache.AgreesWithFn g)
+    (hrun : CachedRun cache f oa) : queriedInputs f oa = queriedInputs g oa := by
+  induction oa using OracleComp.inductionOn with
+  | pure value => rfl
+  | query_bind input next ih =>
+      have hcached : cache input ≠ none := by
+        apply hrun input
+        rw [queriedInputs_query_bind]
+        exact List.mem_cons_self
+      obtain ⟨answer, hanswer⟩ := Option.ne_none_iff_exists'.mp hcached
+      have hfg : f input = g input := (hf hanswer).trans (hg hanswer).symm
+      rw [queriedInputs_query_bind, queriedInputs_query_bind, ← hfg]
+      congr 1
+      apply ih (f input)
+      intro queried hqueried
+      apply hrun queried
+      rw [queriedInputs_query_bind]
+      exact List.mem_cons_of_mem input hqueried
+
+theorem CachedRun.changeAnswerFn {alpha : Type} {cache : QueryCache HashSpec}
+    {f g : QueryImpl HashSpec Id} {oa : OracleComp HashSpec alpha}
+    (hf : cache.AgreesWithFn f) (hg : cache.AgreesWithFn g)
+    (hrun : CachedRun cache f oa) : CachedRun cache g oa := by
+  intro input hinput
+  apply hrun input
+  rw [hrun.queriedInputs_eq hf hg]
+  exact hinput
+
 theorem CachedRun.sequenceFin_component {alpha : Type} {n : Nat}
     {cache : QueryCache HashSpec} {f : QueryImpl HashSpec Id}
     (computation : Fin n → OracleComp HashSpec alpha)
