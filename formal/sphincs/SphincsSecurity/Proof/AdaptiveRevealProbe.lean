@@ -169,6 +169,30 @@ theorem tableHits_addPending_eq_true (state : State Coordinate)
   exact ⟨coordinate, by simp [State.addPending, hhit]⟩
 
 omit [DecidableEq Coordinate] in
+theorem not_mem_pending_of_tableHits_eq_false (state : State Coordinate)
+    (table : Coordinate → Digest) (coordinate : Coordinate)
+    (hclean : tableHits state table = false) :
+    table coordinate ∉ state.pending coordinate := by
+  intro hmem
+  unfold tableHits at hclean
+  rw [decide_eq_false_iff_not] at hclean
+  exact hclean ⟨coordinate, hmem⟩
+
+theorem tableHits_install_eq_false (state : State Coordinate)
+    (table : Coordinate → Digest) (coordinate : Coordinate) (value : Digest)
+    (hclean : tableHits state table = false) :
+    tableHits (state.install coordinate value) table = false := by
+  classical
+  unfold tableHits at hclean ⊢
+  simp only [decide_eq_false_iff_not] at hclean ⊢
+  rintro ⟨other, hmem⟩
+  by_cases heq : other = coordinate
+  · subst other
+    simp [State.install] at hmem
+  · simp only [State.install, Function.update_of_ne heq] at hmem
+    exact hclean ⟨other, hmem⟩
+
+omit [DecidableEq Coordinate] in
 theorem tableHits_extendTable_eq_true_iff (state : State Coordinate)
     (hvalid : state.Valid) (base : Coordinate → Digest) :
     tableHits state (extendTable state base) = true ↔
@@ -322,12 +346,25 @@ def IsProbe : (World Coordinate).Domain → Prop
   | .probe _ _ => True
   | .reveal _ => False
 
+def IsStateful : (World Coordinate).Domain → Prop
+  | .uniform _ => False
+  | .hashOutput => False
+  | .probe _ _ => True
+  | .reveal _ => True
+
 noncomputable instance : DecidablePred (IsProbe (Coordinate := Coordinate)) :=
   fun input => match input with
   | .uniform _ => isFalse (by simp [IsProbe])
   | .hashOutput => isFalse (by simp [IsProbe])
   | .probe _ _ => isTrue (by simp [IsProbe])
   | .reveal _ => isFalse (by simp [IsProbe])
+
+noncomputable instance : DecidablePred (IsStateful (Coordinate := Coordinate)) :=
+  fun input => match input with
+  | .uniform _ => isFalse (by simp [IsStateful])
+  | .hashOutput => isFalse (by simp [IsStateful])
+  | .probe _ _ => isTrue (by simp [IsStateful])
+  | .reveal _ => isTrue (by simp [IsStateful])
 
 def uniformQuery (n : Nat) : OracleComp (World Coordinate) (Fin (n + 1)) :=
   liftM ((World Coordinate).query (.uniform n))
@@ -413,25 +450,25 @@ noncomputable def run (table : Coordinate → Digest) (state : State Coordinate)
               else recursivelyRun value (state.install coordinate value) fuel)
     computation state fuel
 
-inductive DetailedResult (alpha : Type) where
+inductive DetailedResult (Coordinate : Type) (alpha : Type) where
   | stopped (hit : Bool)
-  | done (hit : Bool) (value : alpha)
+  | done (hit : Bool) (state : State Coordinate) (value : alpha)
 
-def DetailedResult.hit : DetailedResult alpha → Bool
+def DetailedResult.hit : DetailedResult Coordinate alpha → Bool
   | .stopped hit => hit
-  | .done hit _ => hit
+  | .done hit _ _ => hit
 
-def DetailedResult.value? : DetailedResult alpha → Option alpha
+def DetailedResult.value? : DetailedResult Coordinate alpha → Option alpha
   | .stopped _ => none
-  | .done _ value => some value
+  | .done _ _ value => some value
 
 noncomputable def runDetailed (table : Coordinate → Digest) (state : State Coordinate)
     (fuel : Nat) (computation : OracleComp (World Coordinate) alpha) :
-    ProbComp (DetailedResult alpha) :=
+    ProbComp (DetailedResult Coordinate alpha) :=
   OracleComp.construct
     (C := fun _ : OracleComp (World Coordinate) alpha =>
-      State Coordinate → Nat → ProbComp (DetailedResult alpha))
-    (fun result state _ => pure (.done (tableHits state table) result))
+      State Coordinate → Nat → ProbComp (DetailedResult Coordinate alpha))
+    (fun result state _ => pure (.done (tableHits state table) state result))
     (fun input _next recursivelyRun state fuel =>
       match input with
       | .uniform n => do
@@ -643,6 +680,72 @@ theorem stopped_false_not_mem_support_runDetailed
                 exact ih (table coordinate) (state.install coordinate (table coordinate)) fuel
                   (by simpa [IsProbe] using hbound.2 (table coordinate))
 
+theorem runDetailed_stateFree_support
+    (table : Coordinate → Digest) (state : State Coordinate)
+    (fuel : Nat)
+    (computation : OracleComp (World Coordinate) alpha)
+    (hbound : computation.IsQueryBoundP IsStateful 0)
+    (hclean : tableHits state table = false)
+    (result : DetailedResult Coordinate alpha)
+    (hresult : result ∈ support (runDetailed table state fuel computation)) :
+    ∃ value, result = .done false state value := by
+  induction computation using OracleComp.inductionOn generalizing state fuel result with
+  | pure value =>
+      simp [runDetailed, hclean] at hresult
+      exact ⟨value, hresult⟩
+  | query_bind input next ih =>
+      rw [isQueryBoundP_query_bind_iff] at hbound
+      cases input with
+      | uniform n =>
+          rw [runDetailed_uniform_query_bind, mem_support_bind_iff] at hresult
+          obtain ⟨output, houtput, hrest⟩ := hresult
+          exact ih output state fuel (by simpa [IsStateful] using hbound.2 output)
+            hclean result hrest
+      | hashOutput =>
+          rw [runDetailed_hashOutput_query_bind, mem_support_bind_iff] at hresult
+          obtain ⟨output, houtput, hrest⟩ := hresult
+          exact ih output state fuel (by simpa [IsStateful] using hbound.2 output)
+            hclean result hrest
+      | probe coordinate candidate =>
+          simp [IsStateful] at hbound
+      | reveal coordinate =>
+          simp [IsStateful] at hbound
+
+theorem runDetailed_bind_stateFree
+    (table : Coordinate → Digest) (state : State Coordinate) (fuel : Nat)
+    (left : OracleComp (World Coordinate) alpha) (next : alpha →
+      OracleComp (World Coordinate) beta)
+    (hbound : left.IsQueryBoundP IsStateful 0) :
+    runDetailed table state fuel (left >>= next) =
+      runDetailed table state fuel left >>= fun result =>
+        match result with
+        | .stopped hit => pure (.stopped hit)
+        | .done _ finalState value => runDetailed table finalState fuel (next value) := by
+  induction left using OracleComp.inductionOn generalizing state with
+  | pure value =>
+      simp [runDetailed]
+  | query_bind input continuation ih =>
+      rw [isQueryBoundP_query_bind_iff] at hbound
+      cases input with
+      | uniform n =>
+          rw [bind_assoc, runDetailed_uniform_query_bind,
+            runDetailed_uniform_query_bind]
+          simp only [bind_assoc]
+          apply bind_congr
+          intro output
+          exact ih output state (by simpa [IsStateful] using hbound.2 output)
+      | hashOutput =>
+          rw [bind_assoc, runDetailed_hashOutput_query_bind,
+            runDetailed_hashOutput_query_bind]
+          simp only [bind_assoc]
+          apply bind_congr
+          intro output
+          exact ih output state (by simpa [IsStateful] using hbound.2 output)
+      | probe coordinate candidate =>
+          simp [IsStateful] at hbound
+      | reveal coordinate =>
+          simp [IsStateful] at hbound
+
 noncomputable def experiment (state : State Coordinate) (fuel : Nat)
     (computation : OracleComp (World Coordinate) alpha) : ProbComp Bool := do
   let base ← sampleTable
@@ -650,7 +753,7 @@ noncomputable def experiment (state : State Coordinate) (fuel : Nat)
 
 noncomputable def detailedExperiment (state : State Coordinate) (fuel : Nat)
     (computation : OracleComp (World Coordinate) alpha) :
-    ProbComp ((Coordinate → Digest) × DetailedResult alpha) := do
+    ProbComp ((Coordinate → Digest) × DetailedResult Coordinate alpha) := do
   let base ← sampleTable
   let table := extendTable state base
   let result ← runDetailed table state fuel computation
