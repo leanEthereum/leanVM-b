@@ -223,8 +223,12 @@ theorem tableHits_extendTable_eq_true_iff (state : State Coordinate)
 noncomputable local instance sampleableDigest : SampleableType Digest :=
   SampleableType.ofFintype Digest
 
-noncomputable local instance sampleableTable : SampleableType (Coordinate → Digest) :=
+@[implicit_reducible] noncomputable def tableSampleableType :
+    SampleableType (Coordinate → Digest) :=
   SampleableType.ofFintype (Coordinate → Digest)
+
+noncomputable local instance sampleableTable : SampleableType (Coordinate → Digest) :=
+  tableSampleableType
 
 noncomputable def sampleTable : ProbComp (Coordinate → Digest) :=
   $ᵗ (Coordinate → Digest)
@@ -462,6 +466,98 @@ def DetailedResult.value? : DetailedResult Coordinate alpha → Option alpha
   | .stopped _ => none
   | .done _ _ value => some value
 
+inductive RawResult (Coordinate : Type) (alpha : Type) where
+  | stopped (hit : Bool)
+  | done (state : State Coordinate) (remaining : Nat) (value : alpha)
+
+def RawResult.finalize (table : Coordinate → Digest) :
+    RawResult Coordinate alpha → DetailedResult Coordinate alpha
+  | .stopped hit => .stopped hit
+  | .done state _ value => .done (tableHits state table) state value
+
+noncomputable def runRaw (table : Coordinate → Digest) (state : State Coordinate)
+    (fuel : Nat) (computation : OracleComp (World Coordinate) alpha) :
+    ProbComp (RawResult Coordinate alpha) :=
+  OracleComp.construct
+    (C := fun _ : OracleComp (World Coordinate) alpha =>
+      State Coordinate → Nat → ProbComp (RawResult Coordinate alpha))
+    (fun result state remaining => pure (.done state remaining result))
+    (fun input _next recursivelyRun state fuel =>
+      match input with
+      | .uniform n => do
+          let output ← liftM (unifSpec.query n)
+          recursivelyRun output state fuel
+      | .hashOutput => do
+          let output ← liftM sampleHashOutput
+          recursivelyRun output state fuel
+      | .probe coordinate candidate =>
+          match fuel with
+          | 0 => pure (.stopped (tableHits state table))
+          | remaining + 1 =>
+              match state.revealed coordinate with
+              | some _ => recursivelyRun () state remaining
+              | none => recursivelyRun () (state.addPending coordinate candidate) remaining
+      | .reveal coordinate =>
+          match state.revealed coordinate with
+          | some value => recursivelyRun value state fuel
+          | none =>
+              let value := table coordinate
+              if value ∈ state.pending coordinate then pure (.stopped true)
+              else recursivelyRun value (state.install coordinate value) fuel)
+    computation state fuel
+
+theorem runRaw_uniform_query_bind (table : Coordinate → Digest)
+    (state : State Coordinate) (fuel n : Nat)
+    (next : Fin (n + 1) → OracleComp (World Coordinate) alpha) :
+    runRaw table state fuel
+        ((liftM (OracleSpec.query (spec := World Coordinate) (.uniform n)) :
+          OracleComp (World Coordinate) (Fin (n + 1))) >>= next) = (do
+      let output ← liftM (unifSpec.query n)
+      runRaw table state fuel (next output)) := by
+  rw [runRaw, OracleComp.construct_query_bind]
+  rfl
+
+theorem runRaw_hashOutput_query_bind (table : Coordinate → Digest)
+    (state : State Coordinate) (fuel : Nat)
+    (next : HashOutput → OracleComp (World Coordinate) alpha) :
+    runRaw table state fuel
+        ((liftM (OracleSpec.query (spec := World Coordinate) .hashOutput) :
+          OracleComp (World Coordinate) HashOutput) >>= next) = (do
+      let output ← liftM sampleHashOutput
+      runRaw table state fuel (next output)) := by
+  rw [runRaw, OracleComp.construct_query_bind]
+  rfl
+
+theorem runRaw_probe_query_bind (table : Coordinate → Digest)
+    (state : State Coordinate) (fuel : Nat) (coordinate : Coordinate)
+    (candidate : Digest) (next : Unit → OracleComp (World Coordinate) alpha) :
+    runRaw table state fuel
+        ((liftM (OracleSpec.query (spec := World Coordinate) (.probe coordinate candidate)) :
+          OracleComp (World Coordinate) Unit) >>= next) =
+      match fuel with
+      | 0 => pure (.stopped (tableHits state table))
+      | remaining + 1 =>
+          match state.revealed coordinate with
+          | some _ => runRaw table state remaining (next ())
+          | none => runRaw table (state.addPending coordinate candidate) remaining (next ()) := by
+  rw [runRaw, OracleComp.construct_query_bind]
+  rfl
+
+theorem runRaw_reveal_query_bind (table : Coordinate → Digest)
+    (state : State Coordinate) (fuel : Nat) (coordinate : Coordinate)
+    (next : Digest → OracleComp (World Coordinate) alpha) :
+    runRaw table state fuel
+        ((liftM (OracleSpec.query (spec := World Coordinate) (.reveal coordinate)) :
+          OracleComp (World Coordinate) Digest) >>= next) =
+      match state.revealed coordinate with
+      | some value => runRaw table state fuel (next value)
+      | none =>
+          let value := table coordinate
+          if value ∈ state.pending coordinate then pure (.stopped true)
+          else runRaw table (state.install coordinate value) fuel (next value) := by
+  rw [runRaw, OracleComp.construct_query_bind]
+  rfl
+
 noncomputable def runDetailed (table : Coordinate → Digest) (state : State Coordinate)
     (fuel : Nat) (computation : OracleComp (World Coordinate) alpha) :
     ProbComp (DetailedResult Coordinate alpha) :=
@@ -544,6 +640,100 @@ theorem runDetailed_reveal_query_bind (table : Coordinate → Digest)
           else runDetailed table (state.install coordinate value) fuel (next value) := by
   rw [runDetailed, OracleComp.construct_query_bind]
   rfl
+
+theorem finalize_runRaw_eq_runDetailed (table : Coordinate → Digest)
+    (state : State Coordinate) (fuel : Nat)
+    (computation : OracleComp (World Coordinate) alpha) :
+    RawResult.finalize table <$> runRaw table state fuel computation =
+      runDetailed table state fuel computation := by
+  induction computation using OracleComp.inductionOn generalizing state fuel with
+  | pure value =>
+      simp [runRaw, runDetailed, RawResult.finalize]
+  | query_bind input next ih =>
+      cases input with
+      | uniform n =>
+          rw [runRaw_uniform_query_bind, runDetailed_uniform_query_bind, map_bind]
+          apply bind_congr
+          intro output
+          exact ih output state fuel
+      | hashOutput =>
+          rw [runRaw_hashOutput_query_bind, runDetailed_hashOutput_query_bind, map_bind]
+          apply bind_congr
+          intro output
+          exact ih output state fuel
+      | probe coordinate candidate =>
+          rw [runRaw_probe_query_bind, runDetailed_probe_query_bind]
+          cases fuel with
+          | zero => simp [RawResult.finalize]
+          | succ remaining =>
+              cases hrevealed : state.revealed coordinate with
+              | none => exact ih () (state.addPending coordinate candidate) remaining
+              | some value => exact ih () state remaining
+      | reveal coordinate =>
+          rw [runRaw_reveal_query_bind, runDetailed_reveal_query_bind]
+          cases hrevealed : state.revealed coordinate with
+          | some value => exact ih value state fuel
+          | none =>
+              by_cases hhit : table coordinate ∈ state.pending coordinate
+              · simp [hhit, RawResult.finalize]
+              · simp only [hhit, ↓reduceIte]
+                exact ih (table coordinate) (state.install coordinate (table coordinate)) fuel
+
+theorem runRaw_bind (table : Coordinate → Digest) (state : State Coordinate)
+    (fuel : Nat) (left : OracleComp (World Coordinate) alpha)
+    (next : alpha → OracleComp (World Coordinate) beta) :
+    runRaw table state fuel (left >>= next) =
+      runRaw table state fuel left >>= fun result =>
+        match result with
+        | .stopped hit => pure (.stopped hit)
+        | .done finalState remaining value =>
+            runRaw table finalState remaining (next value) := by
+  induction left using OracleComp.inductionOn generalizing state fuel with
+  | pure value => simp [runRaw]
+  | query_bind input continuation ih =>
+      cases input with
+      | uniform n =>
+          rw [bind_assoc, runRaw_uniform_query_bind, runRaw_uniform_query_bind]
+          simp only [bind_assoc]
+          apply bind_congr
+          intro output
+          exact ih output state fuel
+      | hashOutput =>
+          rw [bind_assoc, runRaw_hashOutput_query_bind, runRaw_hashOutput_query_bind]
+          simp only [bind_assoc]
+          apply bind_congr
+          intro output
+          exact ih output state fuel
+      | probe coordinate candidate =>
+          rw [bind_assoc, runRaw_probe_query_bind, runRaw_probe_query_bind]
+          cases fuel with
+          | zero => simp
+          | succ remaining =>
+              cases hrevealed : state.revealed coordinate with
+              | none => exact ih () (state.addPending coordinate candidate) remaining
+              | some value => exact ih () state remaining
+      | reveal coordinate =>
+          rw [bind_assoc, runRaw_reveal_query_bind, runRaw_reveal_query_bind]
+          cases hrevealed : state.revealed coordinate with
+          | some value => exact ih value state fuel
+          | none =>
+              by_cases hhit : table coordinate ∈ state.pending coordinate
+              · simp [hhit]
+              · simp only [hhit, ↓reduceIte]
+                exact ih (table coordinate) (state.install coordinate (table coordinate)) fuel
+
+theorem exists_mem_support_runRaw_of_mem_runDetailed
+    (table : Coordinate → Digest) (state : State Coordinate) (fuel : Nat)
+    (computation : OracleComp (World Coordinate) alpha)
+    (result : DetailedResult Coordinate alpha)
+    (hresult : result ∈ support (runDetailed table state fuel computation)) :
+    ∃ rawResult ∈ support (runRaw table state fuel computation),
+      rawResult.finalize table = result := by
+  have hmapped : result ∈ support
+      (RawResult.finalize table <$> runRaw table state fuel computation) := by
+    rwa [finalize_runRaw_eq_runDetailed]
+  rw [support_map] at hmapped
+  exact hmapped
 
 theorem run_uniform_query_bind (table : Coordinate → Digest) (state : State Coordinate)
     (fuel n : Nat)

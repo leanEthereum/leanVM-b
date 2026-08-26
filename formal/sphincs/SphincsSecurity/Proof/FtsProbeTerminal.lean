@@ -365,7 +365,8 @@ set_option maxRecDepth 20000 in
 theorem clean_trace_verify_not_uncoveredFtsSecret
     (secretKey : SecretKey) (table : Coordinate → Digest)
     (computation : OracleComp (OracleWorld + SigningSpec) Forgery)
-    (fuel : Nat) (initialCache prefixCache finalCache : SplitHashCache)
+    (prefixFuel verifyFuel : Nat)
+    (initialCache prefixCache finalCache : SplitHashCache)
     (prefixState finalState : AdaptiveRevealProbe.State Coordinate)
     (forgery : Forgery) (log : QueryLog SigningSpec) (verified : Bool)
     (f : QueryImpl HashSpec Id)
@@ -378,11 +379,11 @@ theorem clean_trace_verify_not_uncoveredFtsSecret
     (hsynced : RevealedSynced secretKey.parameter table
       AdaptiveRevealProbe.State.empty initialCache)
     (hprefix : .done false prefixState ((forgery, log), prefixCache) ∈ support
-      (AdaptiveRevealProbe.runDetailed table AdaptiveRevealProbe.State.empty fuel
+      (AdaptiveRevealProbe.runDetailed table AdaptiveRevealProbe.State.empty prefixFuel
         ((simulateQ (maskedExpandedAdversaryImpl secretKey.parameter secretKey)
           (signingTraceComputation computation)).run initialCache)))
     (hverify : .done false finalState (verified, finalCache) ∈ support
-      (AdaptiveRevealProbe.runDetailed table prefixState fuel
+      (AdaptiveRevealProbe.runDetailed table prefixState verifyFuel
         ((simulateQ (probingHashImpl secretKey.parameter)
           (verify (m := OracleComp HashSpec)
             ⟨secretKey.root, secretKey.parameter⟩ forgery.message
@@ -395,10 +396,10 @@ theorem clean_trace_verify_not_uncoveredFtsSecret
       (AdaptiveRevealProbe.State.empty : AdaptiveRevealProbe.State Coordinate) table = false := by
     simp [AdaptiveRevealProbe.tableHits, AdaptiveRevealProbe.State.empty]
   have hprefixLift := simulateQ_maskedExpandedAdversaryImpl_done_false secretKey table
-    (signingTraceComputation computation) AdaptiveRevealProbe.State.empty prefixState fuel
+    (signingTraceComputation computation) AdaptiveRevealProbe.State.empty prefixState prefixFuel
     initialCache prefixCache (forgery, log) hinitialClean hsynced hprefix
   have hrawVerify := AdaptiveRevealProbe.mem_support_of_mem_runDetailed_done table
-    prefixState finalState fuel
+    prefixState finalState verifyFuel
     ((simulateQ (probingHashImpl secretKey.parameter)
       (verify (m := OracleComp HashSpec)
         ⟨secretKey.root, secretKey.parameter⟩ forgery.message forgery.signature)).run
@@ -413,11 +414,11 @@ theorem clean_trace_verify_not_uncoveredFtsSecret
   obtain ⟨probe, revealedValue, _, hrevealed, hnotSigned⟩ :=
     uncoveredFtsSecret_revealed_of_clean_verify secretKey.parameter table f
       secretKey.root secretKey.otsSecret forgery.message forgery.signature log digest
-      hdigest hadmissible prefixState finalState fuel prefixCache finalCache verified
+      hdigest hadmissible prefixState finalState verifyFuel prefixCache finalCache verified
       hprefixLift.2.1 hprefixLift.2.2 hf hverify (by
         simpa [secretKeyWithFtsTable] using huncovered)
   have hsigned := signedFtsLeaf_of_revealed_signingTraceComputation_at_reference
-    secretKey table computation fuel initialCache prefixCache prefixState forgery log hsynced
+    secretKey table computation prefixFuel initialCache prefixCache prefixState forgery log hsynced
     (mergedCache secretKey.parameter table finalCache) hle f hf hprefix
     (probe.index, probe.tree, probe.leafIdx) revealedValue hrevealed
   exact hnotSigned hsigned

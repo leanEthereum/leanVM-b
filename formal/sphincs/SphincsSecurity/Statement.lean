@@ -611,12 +611,20 @@ attribute [irreducible] verify
 noncomputable local instance : SampleableType PublicParameter :=
   SampleableType.ofFintype PublicParameter
 
-noncomputable local instance :
+noncomputable opaque otsSecretsSampleableType :
     SampleableType (Layer → TreeIndex → LeafIndex → ChainIndex → Digest) :=
   SampleableType.ofFintype (Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
 
-noncomputable local instance : SampleableType (Index → FtsTree → FtsLeaf → Digest) :=
+noncomputable local instance :
+    SampleableType (Layer → TreeIndex → LeafIndex → ChainIndex → Digest) :=
+  otsSecretsSampleableType
+
+noncomputable opaque ftsSecretsSampleableType :
+    SampleableType (Index → FtsTree → FtsLeaf → Digest) :=
   SampleableType.ofFintype (Index → FtsTree → FtsLeaf → Digest)
+
+noncomputable local instance : SampleableType (Index → FtsTree → FtsLeaf → Digest) :=
+  ftsSecretsSampleableType
 
 noncomputable local instance : SampleableType Randomness :=
   SampleableType.ofFintype Randomness
