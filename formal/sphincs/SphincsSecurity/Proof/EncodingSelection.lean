@@ -105,6 +105,18 @@ theorem selectionRisk_cons_some_of_invalid {ι : Type} [DecidableEq ι]
       selectionRisk rest targets := by
   simp [selectionRisk, selectFirst, hinvalid]
 
+theorem selectionRisk_cons_some_of_valid_suffix_eq
+    {ι : Type} [DecidableEq ι] (identifier : ι) (digest : Digest)
+    (left right : List (ι × Option Digest)) (targets : Finset (ι × Digest))
+    (hvalid : TargetSum.ValidDigest digest) :
+    selectionRisk ((identifier, some digest) :: left) targets =
+      selectionRisk ((identifier, some digest) :: right) targets := by
+  by_cases hhit : selectedHits targets (some (identifier, digest))
+  · rw [selectionRisk_cons_some_of_valid_of_hit _ _ _ _ hvalid hhit,
+      selectionRisk_cons_some_of_valid_of_hit _ _ _ _ hvalid hhit]
+  · rw [selectionRisk_cons_some_of_valid_of_miss _ _ _ _ hvalid hhit,
+      selectionRisk_cons_some_of_valid_of_miss _ _ _ _ hvalid hhit]
+
 theorem selectionRisk_cons_none_eq {ι : Type} [DecidableEq ι]
     (identifier : ι) (rest : List (ι × Option Digest))
     (targets : Finset (ι × Digest)) :
@@ -121,6 +133,51 @@ theorem selectionRisk_cons_none_eq {ι : Type} [DecidableEq ι]
     rw [selectFirst]
   rw [selectionRisk, hselect, probEvent_bind_eq_tsum]
   rfl
+
+theorem uniform_reveal_append_sum_eq {ι : Type} [DecidableEq ι]
+    (initial : List (ι × Option Digest)) (identifier : ι)
+    (rest : List (ι × Option Digest)) (targets : Finset (ι × Digest)) :
+    (∑' output : HashOutput,
+      Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
+        selectionRisk
+          (initial ++ (identifier, some (truncateHash output)) :: rest) targets) =
+      selectionRisk (initial ++ (identifier, none) :: rest) targets := by
+  induction initial with
+  | nil =>
+      exact (selectionRisk_cons_none_eq identifier rest targets).symm
+  | cons head initial ih =>
+      obtain ⟨headIdentifier, headDigest⟩ := head
+      cases headDigest with
+      | some digest =>
+          by_cases hvalid : TargetSum.ValidDigest digest
+          · by_cases hhit : selectedHits targets (some (headIdentifier, digest))
+            · simp_rw [List.cons_append,
+                selectionRisk_cons_some_of_valid_of_hit _ _ _ _ hvalid hhit]
+              rw [ENNReal.tsum_mul_right, tsum_probOutput_of_liftM_PMF, one_mul]
+            · simp_rw [List.cons_append,
+                selectionRisk_cons_some_of_valid_of_miss _ _ _ _ hvalid hhit]
+              simp
+          · simp_rw [List.cons_append,
+              selectionRisk_cons_some_of_invalid _ _ _ _ hvalid]
+            exact ih
+      | none =>
+          simp_rw [List.cons_append, selectionRisk_cons_none_eq]
+          simp_rw [← ENNReal.tsum_mul_left]
+          rw [ENNReal.tsum_comm]
+          apply tsum_congr
+          intro headOutput
+          simp_rw [mul_left_comm]
+          rw [ENNReal.tsum_mul_left]
+          congr 1
+          by_cases hvalid : TargetSum.ValidDigest (truncateHash headOutput)
+          · by_cases hhit : selectedHits targets
+                (some (headIdentifier, truncateHash headOutput))
+            · simp_rw [selectionRisk_cons_some_of_valid_of_hit _ _ _ _ hvalid hhit]
+              rw [ENNReal.tsum_mul_right, tsum_probOutput_of_liftM_PMF, one_mul]
+            · simp_rw [selectionRisk_cons_some_of_valid_of_miss _ _ _ _ hvalid hhit]
+              simp
+          · simp_rw [selectionRisk_cons_some_of_invalid _ _ _ _ hvalid]
+            exact ih
 
 inductive FirstValid {ι : Type} [DecidableEq ι] :
     List (ι × Option Digest) → ι → Digest → Prop where
@@ -185,6 +242,44 @@ def candidateMatches {ι : Type} [DecidableEq ι] (identifier : ι)
     pair.2 = some (selectedIdentifier, truncateHash pair.1)
       ∧ identifier ≠ selectedIdentifier
 
+theorem selectedHits_mono {ι : Type} [DecidableEq ι]
+    {left right : Finset (ι × Digest)} (hsubset : left ⊆ right)
+    {selected : Option (ι × Digest)}
+    (hhit : selectedHits left selected) : selectedHits right selected := by
+  cases selected with
+  | none => exact hhit
+  | some selected =>
+      obtain ⟨candidate, hcandidate, hidentifier, hdigest⟩ := hhit
+      exact ⟨candidate, hsubset hcandidate, hidentifier, hdigest⟩
+
+theorem candidateTargets_subset {ι : Type} [DecidableEq ι]
+    (identifier : ι) (targets : Finset (ι × Digest)) (output : HashOutput) :
+    targets ⊆ candidateTargets identifier targets output := by
+  intro candidate hcandidate
+  rw [candidateTargets]
+  split
+  · exact Finset.mem_insert_of_mem hcandidate
+  · exact hcandidate
+
+theorem selectedHits_candidateTargets_self_iff
+    {ι : Type} [DecidableEq ι] (identifier : ι)
+    (targets : Finset (ι × Digest)) (output : HashOutput) :
+    selectedHits (candidateTargets identifier targets output)
+        (some (identifier, truncateHash output)) ↔
+      selectedHits targets (some (identifier, truncateHash output)) := by
+  constructor
+  · intro hhit
+    obtain ⟨candidate, hcandidate, hidentifier, hdigest⟩ := hhit
+    rw [candidateTargets] at hcandidate
+    split at hcandidate
+    · rw [Finset.mem_insert] at hcandidate
+      rcases hcandidate with heq | hold
+      · subst candidate
+        exact (hidentifier rfl).elim
+      · exact ⟨candidate, hold, hidentifier, hdigest⟩
+    · exact ⟨candidate, hcandidate, hidentifier, hdigest⟩
+  · exact selectedHits_mono (candidateTargets_subset identifier targets output)
+
 theorem candidatePair_oldRisk_eq {ι : Type} [DecidableEq ι]
     (schedule : List (ι × Option Digest)) (targets : Finset (ι × Digest)) :
     Pr[fun pair => selectedHits targets pair.2 | candidatePair schedule] =
@@ -196,6 +291,79 @@ theorem candidatePair_oldRisk_eq {ι : Type} [DecidableEq ι]
       Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
         selectionRisk schedule targets) = selectionRisk schedule targets
   rw [ENNReal.tsum_mul_right, tsum_probOutput_of_liftM_PMF, one_mul]
+
+theorem candidatePair_oldRisk_le_newRisk {ι : Type} [DecidableEq ι]
+    (identifier : ι) (schedule : List (ι × Option Digest))
+    (targets : Finset (ι × Digest)) :
+    selectionRisk schedule targets ≤
+      Pr[fun pair => selectedHits
+          (candidateTargets identifier targets pair.1) pair.2 |
+        candidatePair schedule] := by
+  rw [← candidatePair_oldRisk_eq schedule targets]
+  apply probEvent_mono
+  intro pair _ hold
+  exact selectedHits_mono (candidateTargets_subset identifier targets pair.1) hold
+
+theorem selectionRisk_reveal_head_candidate_eq
+    {ι : Type} [DecidableEq ι] (identifier : ι)
+    (rest : List (ι × Option Digest)) (targets : Finset (ι × Digest))
+    (output : HashOutput) :
+    selectionRisk ((identifier, some (truncateHash output)) :: rest)
+        (candidateTargets identifier targets output) =
+      selectionRisk ((identifier, some (truncateHash output)) :: rest) targets := by
+  by_cases hvalid : TargetSum.ValidDigest (truncateHash output)
+  · by_cases hhit : selectedHits targets (some (identifier, truncateHash output))
+    · rw [selectionRisk_cons_some_of_valid_of_hit _ _ _ _ hvalid hhit,
+        selectionRisk_cons_some_of_valid_of_hit _ _ _ _ hvalid
+          ((selectedHits_candidateTargets_self_iff identifier targets output).2 hhit)]
+    · rw [selectionRisk_cons_some_of_valid_of_miss _ _ _ _ hvalid hhit,
+        selectionRisk_cons_some_of_valid_of_miss _ _ _ _ hvalid
+          (fun hnew => hhit
+            ((selectedHits_candidateTargets_self_iff identifier targets output).1 hnew))]
+  · rw [selectionRisk_cons_some_of_invalid _ _ _ _ hvalid,
+      selectionRisk_cons_some_of_invalid _ _ _ _ hvalid,
+      candidateTargets, if_neg hvalid]
+
+theorem uniform_reveal_head_candidate_sum_le_independent
+    {ι : Type} [DecidableEq ι] (identifier : ι)
+    (rest : List (ι × Option Digest)) (targets : Finset (ι × Digest)) :
+    (∑' output : HashOutput,
+      Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
+        selectionRisk ((identifier, some (truncateHash output)) :: rest)
+          (candidateTargets identifier targets output)) ≤
+      Pr[fun pair => selectedHits
+          (candidateTargets identifier targets pair.1) pair.2 |
+        candidatePair ((identifier, none) :: rest)] := by
+  rw [show (∑' output : HashOutput,
+      Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
+        selectionRisk ((identifier, some (truncateHash output)) :: rest)
+          (candidateTargets identifier targets output)) =
+      selectionRisk ((identifier, none) :: rest) targets by
+        rw [selectionRisk_cons_none_eq]
+        apply tsum_congr
+        intro output
+        rw [selectionRisk_reveal_head_candidate_eq]]
+  exact candidatePair_oldRisk_le_newRisk identifier
+    ((identifier, none) :: rest) targets
+
+inductive InvalidPrefix {ι : Type} [DecidableEq ι] :
+    List (ι × Option Digest) → Prop where
+  | nil : InvalidPrefix []
+  | cons (identifier : ι) (digest : Digest)
+      (rest : List (ι × Option Digest))
+      (invalid : ¬ TargetSum.ValidDigest digest)
+      (tail : InvalidPrefix rest) :
+      InvalidPrefix ((identifier, some digest) :: rest)
+
+theorem InvalidPrefix.selectionRisk_append {ι : Type} [DecidableEq ι]
+    {initial : List (ι × Option Digest)} (hinitial : InvalidPrefix initial)
+    (suffix : List (ι × Option Digest)) (targets : Finset (ι × Digest)) :
+    selectionRisk (initial ++ suffix) targets = selectionRisk suffix targets := by
+  induction hinitial with
+  | nil => rfl
+  | cons identifier digest rest hinvalid htail ih =>
+      rw [List.cons_append,
+        selectionRisk_cons_some_of_invalid identifier digest _ targets hinvalid, ih]
 
 theorem candidatePair_matchesSelection_le {ι : Type} [DecidableEq ι]
     (identifier : ι) (schedule : List (ι × Option Digest)) :
@@ -315,5 +483,127 @@ theorem uniform_candidateTargets_selectionRisk_sum_le
         (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
   rw [← candidatePair_newRisk_eq_sum]
   exact candidatePair_newRisk_le identifier schedule targets
+
+theorem uniform_reveal_after_invalidPrefix_candidate_sum_le
+    {ι : Type} [DecidableEq ι]
+    {initial : List (ι × Option Digest)} (hinitial : InvalidPrefix initial)
+    (identifier : ι) (rest : List (ι × Option Digest))
+    (targets : Finset (ι × Digest)) :
+    (∑' output : HashOutput,
+      Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
+        selectionRisk
+          (initial ++ (identifier, some (truncateHash output)) :: rest)
+          (candidateTargets identifier targets output)) ≤
+      selectionRisk (initial ++ (identifier, none) :: rest) targets +
+        (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
+  simp_rw [hinitial.selectionRisk_append]
+  exact (uniform_reveal_head_candidate_sum_le_independent identifier rest targets).trans
+    (candidatePair_newRisk_le identifier ((identifier, none) :: rest) targets)
+
+theorem uniform_reveal_append_candidate_sum_le
+    {ι : Type} [DecidableEq ι]
+    (initial : List (ι × Option Digest)) (identifier : ι)
+    (rest : List (ι × Option Digest)) (targets : Finset (ι × Digest)) :
+    (∑' output : HashOutput,
+      Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
+        selectionRisk
+          (initial ++ (identifier, some (truncateHash output)) :: rest)
+          (candidateTargets identifier targets output)) ≤
+      selectionRisk (initial ++ (identifier, none) :: rest) targets +
+        (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
+  induction initial with
+  | nil =>
+      simpa using uniform_reveal_after_invalidPrefix_candidate_sum_le
+        (InvalidPrefix.nil : InvalidPrefix ([] : List (ι × Option Digest)))
+        identifier rest targets
+  | cons head initial ih =>
+      obtain ⟨headIdentifier, headDigest⟩ := head
+      have validBound (digest : Digest) (hvalid : TargetSum.ValidDigest digest) :
+          (∑' output : HashOutput,
+            Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
+              selectionRisk
+                ((headIdentifier, some digest) ::
+                  (initial ++ (identifier, some (truncateHash output)) :: rest))
+                (candidateTargets identifier targets output)) ≤
+            selectionRisk
+                ((headIdentifier, some digest) ::
+                  (initial ++ (identifier, none) :: rest)) targets +
+              (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
+        calc
+          _ = ∑' output : HashOutput,
+              Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
+                selectionRisk [(headIdentifier, some digest)]
+                  (candidateTargets identifier targets output) := by
+              apply tsum_congr
+              intro output
+              congr 1
+              exact selectionRisk_cons_some_of_valid_suffix_eq
+                headIdentifier digest _ _ _ hvalid
+          _ ≤ selectionRisk [(headIdentifier, some digest)] targets +
+                (Fintype.card Digest : ℝ≥0∞)⁻¹ :=
+              uniform_candidateTargets_selectionRisk_sum_le identifier
+                [(headIdentifier, some digest)] targets
+          _ = _ := by
+              congr 1
+              exact selectionRisk_cons_some_of_valid_suffix_eq
+                headIdentifier digest _ _ _ hvalid
+      cases headDigest with
+      | some digest =>
+          by_cases hvalid : TargetSum.ValidDigest digest
+          · simpa only [List.cons_append] using validBound digest hvalid
+          · simp_rw [List.cons_append,
+              selectionRisk_cons_some_of_invalid _ _ _ _ hvalid]
+            exact ih
+      | none =>
+          have conditionalBound (headOutput : HashOutput) :
+              (∑' output : HashOutput,
+                Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
+                  selectionRisk
+                    ((headIdentifier, some (truncateHash headOutput)) ::
+                      (initial ++ (identifier, some (truncateHash output)) :: rest))
+                    (candidateTargets identifier targets output)) ≤
+                selectionRisk
+                    ((headIdentifier, some (truncateHash headOutput)) ::
+                      (initial ++ (identifier, none) :: rest)) targets +
+                  (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
+            by_cases hvalid : TargetSum.ValidDigest (truncateHash headOutput)
+            · exact validBound (truncateHash headOutput) hvalid
+            · simp_rw [selectionRisk_cons_some_of_invalid _ _ _ _ hvalid]
+              exact ih
+          simp_rw [List.cons_append, selectionRisk_cons_none_eq]
+          calc
+            _ = ∑' headOutput : HashOutput,
+                Pr[= headOutput | ($ᵗ HashOutput : ProbComp HashOutput)] *
+                  (∑' output : HashOutput,
+                    Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
+                      selectionRisk
+                        ((headIdentifier, some (truncateHash headOutput)) ::
+                          (initial ++
+                            (identifier, some (truncateHash output)) :: rest))
+                        (candidateTargets identifier targets output)) := by
+                simp_rw [← ENNReal.tsum_mul_left]
+                rw [ENNReal.tsum_comm]
+                apply tsum_congr
+                intro headOutput
+                simp_rw [mul_left_comm]
+            _ ≤ ∑' headOutput : HashOutput,
+                Pr[= headOutput | ($ᵗ HashOutput : ProbComp HashOutput)] *
+                  (selectionRisk
+                      ((headIdentifier, some (truncateHash headOutput)) ::
+                        (initial ++ (identifier, none) :: rest)) targets +
+                    (Fintype.card Digest : ℝ≥0∞)⁻¹) := by
+                apply ENNReal.tsum_le_tsum
+                intro headOutput
+                exact mul_le_mul_right (conditionalBound headOutput) _
+            _ = (∑' headOutput : HashOutput,
+                  Pr[= headOutput | ($ᵗ HashOutput : ProbComp HashOutput)] *
+                    selectionRisk
+                      ((headIdentifier, some (truncateHash headOutput)) ::
+                        (initial ++ (identifier, none) :: rest)) targets) +
+                  (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
+                simp_rw [mul_add]
+                rw [ENNReal.tsum_add, ENNReal.tsum_mul_right,
+                  tsum_probOutput_of_liftM_PMF, one_mul]
+            _ = _ := rfl
 
 end SphincsSecurity.EncodingSelection

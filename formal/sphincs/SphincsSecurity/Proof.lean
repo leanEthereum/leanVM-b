@@ -65,6 +65,7 @@ import SphincsSecurity.Proof.FewTimeUniform
 import SphincsSecurity.Proof.EncodingProbability
 import SphincsSecurity.Proof.EncodingRetry
 import SphincsSecurity.Proof.EncodingSelection
+import SphincsSecurity.Proof.EncodingSelectionCache
 import SphincsSecurity.Proof.EncodingRetryCharge
 import SphincsSecurity.Proof.EncodingLatent
 import SphincsSecurity.Proof.EncodingStageCharge
