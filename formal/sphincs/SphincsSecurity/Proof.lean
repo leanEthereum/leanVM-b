@@ -70,10 +70,12 @@ import SphincsSecurity.Proof.EncodingStageCharge
 import SphincsSecurity.Proof.EncodingSignerLatent
 import SphincsSecurity.Proof.FirstBad
 import SphincsSecurity.Proof.EncodingTraceLatent
+import SphincsSecurity.Proof.EncodingTerminalLatent
 import SphincsSecurity.Proof.FewTimeLoop
 import SphincsSecurity.Proof.FewTimeSignerView
 import SphincsSecurity.Proof.FewTimeTargetSigner
 import SphincsSecurity.Proof.FewTimeViewTrace
+import SphincsSecurity.Proof.EncodingTerminalView
 import SphincsSecurity.Proof.FewTimeTargetSource
 import SphincsSecurity.Proof.FewTimeTargetCount
 import SphincsSecurity.Proof.FewTimeTargetView

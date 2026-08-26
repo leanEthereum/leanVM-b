@@ -169,7 +169,33 @@ theorem hasEncodingTarget_of_latentAt_creation_during_sign
 inductive LatentEncodingAtSignerIntervalOutcome
     (initialCache finalCache : QueryCache HashSpec) (secretKey : SecretKey)
     (position : EncodingPosition) : Prop where
-  | pinned (target : HasEncodingTarget finalCache secretKey position)
+  | existingTarget (cache : QueryCache HashSpec) (input : HashInput)
+      (answer : HashOutput) (finiteCache : Finite cache)
+      (initialLe : initialCache ≤ cache)
+      (finalLe : cache.cacheQuery input answer ≤ finalCache)
+      (stepClean : ¬ LatentEncodingBadAt cache secretKey position)
+      (uncached : cache input = none)
+      (stepBad : LatentEncodingBadAt
+        (cache.cacheQuery input answer) secretKey position)
+      (atPosition : AtEncodingPosition secretKey.parameter input position)
+      (hit : truncateHash answer ∈
+        encodingValidAnswerTargets secretKey.parameter cache finiteCache position)
+      (target : HasEncodingTarget cache secretKey position)
+  | provisionalPinned (cache : QueryCache HashSpec) (input : HashInput)
+      (answer : HashOutput) (finiteCache : Finite cache)
+      (initialLe : initialCache ≤ cache)
+      (finalLe : cache.cacheQuery input answer ≤ finalCache)
+      (stepClean : ¬ LatentEncodingBadAt cache secretKey position)
+      (uncached : cache input = none)
+      (stepBad : LatentEncodingBadAt
+        (cache.cacheQuery input answer) secretKey position)
+      (atPosition : AtEncodingPosition secretKey.parameter input position)
+      (notTarget : ¬ HasEncodingTarget cache secretKey position)
+      (stillNotTarget : ¬ HasEncodingTarget
+        (cache.cacheQuery input answer) secretKey position)
+      (hit : truncateHash answer ∈
+        encodingValidAnswerTargets secretKey.parameter cache finiteCache position)
+      (target : HasEncodingTarget finalCache secretKey position)
   | paid (cache : QueryCache HashSpec) (input : HashInput) (answer : HashOutput)
       (targets : Finset Digest)
       (initialLe : initialCache ≤ cache)
@@ -201,13 +227,18 @@ theorem latentEncodingBadAt_signerInterval_paid_or_pinned
     intro hbadCache
     exact hstructuralClean (Bad.mono secretKey.parameter secretKey.otsSecret
       secretKey.ftsSecret ((le_cacheQuery huncached).trans hfinal) hbadCache)
-  rcases latentEncodingBadAt_step_paid_or_provisional hfiniteCache
-    hstepStructuralClean hstepClean huncached hstepBad with
-    ⟨htarget⟩ | ⟨hposition, hnotTarget, hstillNotTarget, hhit⟩ |
-      ⟨targets, hhit, hdrop⟩
-  · exact .pinned (htarget.mono ((le_cacheQuery huncached).trans hfinal))
-  · exact .pinned (hasEncodingTarget_of_latentAt_creation_during_sign
-      hfiniteCache hrun hinitial hfinal hstepClean huncached hposition hstepBad)
-  · exact .paid cache input answer targets hinitial hfinal hhit hdrop
+  have houtcome := latentEncodingBadAt_step_paid_or_provisional hfiniteCache
+    hstepStructuralClean hstepClean huncached hstepBad
+  cases houtcome with
+  | existingTarget atPosition hit target =>
+      exact .existingTarget cache input answer hfiniteCache hinitial hfinal hstepClean
+        huncached hstepBad atPosition hit target
+  | provisional atPosition notTarget stillNotTarget hit =>
+      exact .provisionalPinned cache input answer hfiniteCache hinitial hfinal hstepClean
+        huncached hstepBad atPosition notTarget stillNotTarget hit
+        (hasEncodingTarget_of_latentAt_creation_during_sign
+          hfiniteCache hrun hinitial hfinal hstepClean huncached atPosition hstepBad)
+  | paid targets hit drop =>
+      exact .paid cache input answer targets hinitial hfinal hit drop
 
 end SphincsSecurity.Concrete

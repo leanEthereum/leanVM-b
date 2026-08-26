@@ -439,6 +439,9 @@ inductive LatentEncodingAtStepOutcome (cache : QueryCache HashSpec)
     (hfinite : Finite cache) (secretKey : SecretKey)
     (input : HashInput) (answer : HashOutput) (position : EncodingPosition) : Prop where
   | existingTarget
+      (atPosition : AtEncodingPosition secretKey.parameter input position)
+      (hit : truncateHash answer ∈
+        encodingValidAnswerTargets secretKey.parameter cache hfinite position)
       (target : HasEncodingTarget cache secretKey position)
   | provisional
       (atPosition : AtEncodingPosition secretKey.parameter input position)
@@ -468,7 +471,7 @@ theorem latentEncodingBadAt_step_paid_or_provisional
     hencoding | hmessage | hpremature
   · obtain ⟨hposition, hhit⟩ := hencoding
     by_cases htarget : HasEncodingTarget cache secretKey position
-    · exact .existingTarget htarget
+    · exact .existingTarget hposition hhit htarget
     · by_cases htargetAfter : HasEncodingTarget
           (cache.cacheQuery input answer) secretKey position
       · have hstructural :=
