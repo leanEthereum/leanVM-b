@@ -128,6 +128,306 @@ noncomputable def actualRetainedGameAfterSecrets (adversary : Adversary)
       (retainedGameRestComputation adversary ⟨root, parameter⟩)).run rootCache
   pure ((root, result), finalCache)
 
+theorem simulateQ_unloggedMapped_signingTraceComputation_run
+    (secretKey : SecretKey)
+    (computation : OracleComp (OracleWorld + SigningSpec) alpha)
+    (initialCache : QueryCache HashSpec) :
+    (simulateQ (unloggedMappedAdversaryImpl secretKey)
+        (signingTraceComputation computation)).run initialCache =
+      (((simulateQ (mappedAdversaryImpl secretKey) computation).run).run initialCache) := by
+  rw [simulateQ_unloggedMapped_signingTraceComputation]
+  rw [mappedAdversaryImpl, QueryImpl.simulateQ_writerTMapBase_run]
+
+theorem simulateQ_unloggedMapped_retainedGameRestComputation
+    (adversary : Adversary) (secretKey : SecretKey) (publicKey : PublicKey) :
+    simulateQ (unloggedMappedAdversaryImpl secretKey)
+        (retainedGameRestComputation adversary publicKey) = (do
+      let (forgery, log) ←
+        simulateQ (unloggedMappedAdversaryImpl secretKey)
+          (signingTraceComputation
+            (adversary.main publicKey))
+      let verified ← simulateQ romImpl
+        (scheme.verify publicKey forgery.message forgery.signature)
+      pure ((forgery, log), verified)) := by
+  unfold retainedGameRestComputation
+  rw [simulateQ_bind]
+  apply bind_congr
+  intro result
+  rcases result with ⟨forgery, log⟩
+  rw [simulateQ_bind, simulateQ_unloggedMapped_liftOracleWorldLeft]
+  simp
+
+abbrev RetainedLogResult :=
+  (Forgery × Bool) × (QueryCache HashSpec × QueryLog SigningSpec)
+
+def retainedRestLogProjection :
+    (RetainedRestResult × QueryCache HashSpec) → RetainedLogResult
+  | (((forgery, log), verified), cache) =>
+      ((forgery, decide (SigningTranscript.Valid log ∧
+        ¬SigningTranscript.Contains log forgery) && verified), (cache, log))
+
+def signingRestLogProjection :
+    ((Forgery × Bool) × (QueryCache HashSpec × SigningCacheTrace)) → RetainedLogResult
+  | ((forgery, verdict), (cache, trace)) =>
+      ((forgery, verdict), (cache, trace.toSigningLog))
+
+theorem retainedGameRest_signing_projection
+    (adversary : Adversary) (publicKey : PublicKey) (secretKey : SecretKey)
+    (initialCache : QueryCache HashSpec) :
+    retainedRestLogProjection <$>
+        (simulateQ (unloggedMappedAdversaryImpl secretKey)
+          (retainedGameRestComputation adversary publicKey)).run initialCache =
+      signingRestLogProjection <$>
+        gameRestWithSigningTrace adversary publicKey secretKey initialCache := by
+  let traceRun := (simulateQ (cacheTracedMappedAdversaryImpl secretKey)
+    (adversary.main publicKey)).run (initialCache, [])
+  let retainedRun := (simulateQ (unloggedMappedAdversaryImpl secretKey)
+    (signingTraceComputation (adversary.main publicKey))).run initialCache
+  let prefixProjection :
+      (Forgery × QueryLog SigningSpec) × QueryCache HashSpec →
+        Forgery × (QueryCache HashSpec × QueryLog SigningSpec) :=
+    fun result => (result.1.1, (result.2, result.1.2))
+  let traceProjection :
+      Forgery × (QueryCache HashSpec × SigningCacheTrace) →
+        Forgery × (QueryCache HashSpec × QueryLog SigningSpec) :=
+    fun result => (result.1, (result.2.1, result.2.2.toSigningLog))
+  let finish : Forgery × (QueryCache HashSpec × QueryLog SigningSpec) →
+      ProbComp RetainedLogResult := fun result => do
+    let (verified, finalCache) ←
+      (simulateQ romImpl
+        (scheme.verify publicKey result.1.message result.1.signature)).run result.2.1
+    pure ((result.1, decide (SigningTranscript.Valid result.2.2 ∧
+      ¬SigningTranscript.Contains result.2.2 result.1) && verified),
+        (finalCache, result.2.2))
+  have hprefix : traceProjection <$> traceRun = prefixProjection <$> retainedRun := by
+    rw [show traceProjection = Prod.map id
+        (fun state : QueryCache HashSpec × SigningCacheTrace =>
+          (state.1, state.2.toSigningLog)) from rfl]
+    rw [show prefixProjection = fun result :
+        (Forgery × QueryLog SigningSpec) × QueryCache HashSpec =>
+          (result.1.1, (result.2, result.1.2)) from rfl]
+    rw [show traceRun = (simulateQ (cacheTracedMappedAdversaryImpl secretKey)
+      (adversary.main publicKey)).run (initialCache, []) from rfl]
+    rw [cacheTracedMappedAdversaryImpl_log_projection_eq_mapped]
+    rw [show retainedRun = (simulateQ (unloggedMappedAdversaryImpl secretKey)
+      (signingTraceComputation (adversary.main publicKey))).run initialCache from rfl]
+    rw [simulateQ_unloggedMapped_signingTraceComputation_run]
+  rw [simulateQ_unloggedMapped_retainedGameRestComputation adversary secretKey publicKey]
+  calc
+    retainedRestLogProjection <$>
+        (do
+          let result ← retainedRun
+          let (verified, finalCache) ←
+            (simulateQ romImpl
+              (scheme.verify publicKey result.1.1.message result.1.1.signature)).run result.2
+          pure ((result.1, verified), finalCache)) =
+      (prefixProjection <$> retainedRun) >>= finish := by
+        simp [retainedRestLogProjection, prefixProjection, retainedRun, finish,
+          bind_map_left, map_bind]
+    _ = (traceProjection <$> traceRun) >>= finish := by rw [hprefix]
+    _ = signingRestLogProjection <$>
+        gameRestWithSigningTrace adversary publicKey secretKey initialCache := by
+      simp [gameRestWithSigningTrace, traceRun, traceProjection, finish,
+        signingRestLogProjection, bind_map_left, map_bind]
+
+abbrev RetainedGameLogResult :=
+  (Digest × Forgery × Bool) × (QueryCache HashSpec × QueryLog SigningSpec)
+
+def retainedGameLogProjection :
+    (RetainedGameResult × QueryCache HashSpec) → RetainedGameLogResult
+  | ((root, ((forgery, log), verified)), cache) =>
+      ((root, forgery, decide (SigningTranscript.Valid log ∧
+        ¬SigningTranscript.Contains log forgery) && verified), (cache, log))
+
+def signingGameLogProjection :
+    ((Digest × Forgery × Bool) × (QueryCache HashSpec × SigningCacheTrace)) →
+      RetainedGameLogResult
+  | ((root, forgery, verdict), (cache, trace)) =>
+      ((root, forgery, verdict), (cache, trace.toSigningLog))
+
+def viewedGameLogProjection :
+    ((Digest × Forgery × Bool) × ViewedFullTraceState) → RetainedGameLogResult
+  | ((root, forgery, verdict), state) =>
+      ((root, forgery, verdict), (state.cache, state.trace.signing.toSigningLog))
+
+theorem actualRetainedGameAfterSecrets_signing_projection
+    (adversary : Adversary) (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (table : Coordinate → Digest) :
+    retainedGameLogProjection <$>
+        actualRetainedGameAfterSecrets adversary parameter otsSecret table =
+      signingGameLogProjection <$>
+        gameAfterSecretsWithSigningTrace adversary parameter otsSecret
+          (fun index tree leafIdx => table (index, tree, leafIdx)) := by
+  let rootComputation : OracleComp HashSpec Digest :=
+    treeRoot parameter topLayer rootTree (otsSecret topLayer rootTree)
+  have hroot : simulateQ romImpl
+      (liftM rootComputation : OracleComp OracleWorld Digest) =
+      simulateQ (randomOracle : QueryImpl HashSpec _ ) rootComputation := by
+    change simulateQ (unifFwdImpl HashSpec + randomOracle)
+      (liftM rootComputation : OracleComp OracleWorld Digest) = _
+    exact QueryImpl.simulateQ_add_liftM_right _ _ _
+  unfold actualRetainedGameAfterSecrets gameAfterSecretsWithSigningTrace
+  rw [show treeRoot parameter topLayer rootTree (otsSecret topLayer rootTree) =
+    rootComputation from rfl, hroot]
+  simp only [map_bind]
+  apply bind_congr
+  intro rootResult
+  let secretKey : SecretKey :=
+    ⟨parameter, rootResult.1, otsSecret,
+      fun index tree leafIdx => table (index, tree, leafIdx)⟩
+  have hrest := congrArg
+    (Functor.map fun result : RetainedLogResult =>
+      ((rootResult.1, result.1.1, result.1.2), result.2))
+    (retainedGameRest_signing_projection adversary
+      (⟨rootResult.1, parameter⟩ : PublicKey) secretKey rootResult.2)
+  simpa [retainedGameLogProjection, signingGameLogProjection,
+    retainedRestLogProjection, signingRestLogProjection, secretKey,
+    Functor.map_map, map_bind, bind_map_left] using hrest
+
+theorem gameAfterSecretsWithViewTrace_log_projection
+    (adversary : Adversary) (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    viewedGameLogProjection <$>
+        gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret =
+      signingGameLogProjection <$>
+        gameAfterSecretsWithSigningTrace adversary parameter otsSecret ftsSecret := by
+  let viewBase := fun result : (Digest × Forgery × Bool) × ViewedFullTraceState =>
+    (result.1, result.2.base)
+  let fullSigning := fun result : (Digest × Forgery × Bool) ×
+      (QueryCache HashSpec × FullAdversaryTrace) =>
+    (result.1, (result.2.1, result.2.2.signing))
+  have hprojection : viewedGameLogProjection =
+      signingGameLogProjection ∘ fullSigning ∘ viewBase := by
+    funext result
+    rcases result with ⟨⟨⟨root, forgery⟩, verdict⟩, state⟩
+    rfl
+  calc
+    viewedGameLogProjection <$>
+        gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret =
+      signingGameLogProjection <$>
+        (fullSigning <$> (viewBase <$>
+          gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret)) := by
+            rw [hprojection]
+            simp [Functor.map_map, Function.comp_def]
+    _ = signingGameLogProjection <$>
+        (fullSigning <$>
+          gameAfterSecretsWithFullTrace adversary parameter otsSecret ftsSecret) := by
+      rw [gameAfterSecretsWithViewTrace_projection]
+    _ = signingGameLogProjection <$>
+        gameAfterSecretsWithSigningTrace adversary parameter otsSecret ftsSecret := by
+      rw [gameAfterSecretsWithFullTrace_signing_projection]
+
+theorem gameAfterSecretsWithViewTrace_actualRetained_projection
+    (adversary : Adversary) (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (table : Coordinate → Digest) :
+    viewedGameLogProjection <$>
+        gameAfterSecretsWithViewTrace adversary parameter otsSecret
+          (fun index tree leafIdx => table (index, tree, leafIdx)) =
+      retainedGameLogProjection <$>
+        actualRetainedGameAfterSecrets adversary parameter otsSecret table := by
+  rw [gameAfterSecretsWithViewTrace_log_projection]
+  exact (actualRetainedGameAfterSecrets_signing_projection adversary parameter
+    otsSecret table).symm
+
+def RetainedUncoveredFtsSecretWitness (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (table : Coordinate → Digest)
+    (result : RetainedGameResult × QueryCache HashSpec) : Prop :=
+  let root := result.1.1
+  let forgery := result.1.2.1.1
+  let log := result.1.2.1.2
+  ∃ (f : QueryImpl HashSpec Id) (digest : MessageDigest),
+    result.2.AgreesWithFn f ∧
+      evalWithAnswerFn f
+        (messageDigest parameter root forgery.message forgery.signature.randomness) = digest ∧
+      Admissible digest ∧
+      UncoveredFtsSecret f result.2
+        ⟨parameter, root, otsSecret,
+          fun index tree leafIdx => table (index, tree, leafIdx)⟩
+        log (digestIndex digest) (digestLeaves digest) forgery.signature.ftsSecret
+
+def RetainedLogUncoveredFtsSecretWitness (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (table : Coordinate → Digest) (result : RetainedGameLogResult) : Prop :=
+  let root := result.1.1
+  let forgery := result.1.2.1
+  let cache := result.2.1
+  let log := result.2.2
+  ∃ (f : QueryImpl HashSpec Id) (digest : MessageDigest),
+    cache.AgreesWithFn f ∧ SigningTranscript.Valid log ∧
+      ¬SigningTranscript.Contains log forgery ∧
+      evalWithAnswerFn f
+        (messageDigest parameter root forgery.message forgery.signature.randomness) = digest ∧
+      Admissible digest ∧
+      UncoveredFtsSecret f cache
+        ⟨parameter, root, otsSecret,
+          fun index tree leafIdx => table (index, tree, leafIdx)⟩
+        log (digestIndex digest) (digestLeaves digest) forgery.signature.ftsSecret
+
+theorem viewedUncovered_iff_logProjection
+    (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (table : Coordinate → Digest)
+    (result : (Digest × Forgery × Bool) × ViewedFullTraceState) :
+    ViewedUncoveredFtsSecretWitness parameter otsSecret
+        (fun index tree leafIdx => table (index, tree, leafIdx)) result ↔
+      RetainedLogUncoveredFtsSecretWitness parameter otsSecret table
+        (viewedGameLogProjection result) := by
+  rfl
+
+theorem logProjection_uncovered_imp_retained
+    (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (table : Coordinate → Digest)
+    (result : RetainedGameResult × QueryCache HashSpec)
+    (hwitness : RetainedLogUncoveredFtsSecretWitness parameter otsSecret table
+      (retainedGameLogProjection result)) :
+    RetainedUncoveredFtsSecretWitness parameter otsSecret table result := by
+  rcases result with ⟨⟨root, ⟨⟨forgery, log⟩, verified⟩⟩, cache⟩
+  rcases hwitness with
+    ⟨f, digest, hf, _hvalid, _hnotContains, hdigest, hadmissible, huncovered⟩
+  exact ⟨f, digest, hf, hdigest, hadmissible, huncovered⟩
+
+theorem probEvent_gameAfterSecretsWithViewTrace_uncovered_le_actualRetained
+    (adversary : Adversary) (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (table : Coordinate → Digest) :
+    Pr[ViewedUncoveredFtsSecretWitness parameter otsSecret
+        (fun index tree leafIdx => table (index, tree, leafIdx)) |
+      gameAfterSecretsWithViewTrace adversary parameter otsSecret
+        (fun index tree leafIdx => table (index, tree, leafIdx))] ≤
+      Pr[RetainedUncoveredFtsSecretWitness parameter otsSecret table |
+        actualRetainedGameAfterSecrets adversary parameter otsSecret table] := by
+  calc
+    Pr[ViewedUncoveredFtsSecretWitness parameter otsSecret
+        (fun index tree leafIdx => table (index, tree, leafIdx)) |
+      gameAfterSecretsWithViewTrace adversary parameter otsSecret
+        (fun index tree leafIdx => table (index, tree, leafIdx))] =
+      Pr[RetainedLogUncoveredFtsSecretWitness parameter otsSecret table |
+        viewedGameLogProjection <$>
+          gameAfterSecretsWithViewTrace adversary parameter otsSecret
+            (fun index tree leafIdx => table (index, tree, leafIdx))] := by
+      rw [probEvent_map]
+      apply probEvent_congr'
+      · intro result _hresult
+        exact viewedUncovered_iff_logProjection parameter otsSecret table result
+      · rfl
+    _ = Pr[RetainedLogUncoveredFtsSecretWitness parameter otsSecret table |
+        retainedGameLogProjection <$>
+          actualRetainedGameAfterSecrets adversary parameter otsSecret table] := by
+      apply probEvent_congr' (fun _ _ => Iff.rfl)
+      exact congrArg evalDist
+        (gameAfterSecretsWithViewTrace_actualRetained_projection adversary parameter
+          otsSecret table)
+    _ ≤ Pr[RetainedUncoveredFtsSecretWitness parameter otsSecret table |
+        actualRetainedGameAfterSecrets adversary parameter otsSecret table] := by
+      rw [probEvent_map]
+      exact probEvent_mono fun result _hresult hwitness =>
+        logProjection_uncovered_imp_retained parameter otsSecret table result hwitness
+
 set_option maxRecDepth 30000 in
 theorem relTriple_maskedRetainedGameAfterSecrets
     (adversary : Adversary) (parameter : PublicParameter)
@@ -476,23 +776,6 @@ theorem runDetailed_maskedRetainedGameAfterSecrets_not_uncoveredFtsSecret
             simpa [restRun, maskedSecretKey] using hrestResult)
       simpa [maskedSecretKey, secretKeyWithFtsTable] using hnot
 
-def RetainedUncoveredFtsSecretWitness (parameter : PublicParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (table : Coordinate → Digest)
-    (result : RetainedGameResult × QueryCache HashSpec) : Prop :=
-  let root := result.1.1
-  let forgery := result.1.2.1.1
-  let log := result.1.2.1.2
-  ∃ (f : QueryImpl HashSpec Id) (digest : MessageDigest),
-    result.2.AgreesWithFn f ∧
-      evalWithAnswerFn f
-        (messageDigest parameter root forgery.message forgery.signature.randomness) = digest ∧
-      Admissible digest ∧
-      UncoveredFtsSecret f result.2
-        ⟨parameter, root, otsSecret,
-          fun index tree leafIdx => table (index, tree, leafIdx)⟩
-        log (digestIndex digest) (digestLeaves digest) forgery.signature.ftsSecret
-
 theorem probEvent_actualRetained_uncovered_le_detailed_hit
     (adversary : Adversary) (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
@@ -626,6 +909,106 @@ theorem evalDist_uncurry_sampleFtsSecrets :
   exact probOutput_map_bijective_uniform_cross
     (Index → FtsTree → FtsLeaf → Digest) curryFtsTableEquiv
     curryFtsTableEquiv.bijective table
+
+noncomputable def sampledConcreteActualRetainedFts (adversary : Adversary)
+    (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest) :
+    ProbComp ((Coordinate → Digest) × (RetainedGameResult × QueryCache HashSpec)) := do
+  let ftsSecret ← sampleFtsSecrets
+  let table := curryFtsTableEquiv ftsSecret
+  let result ← actualRetainedGameAfterSecrets adversary parameter otsSecret table
+  pure (table, result)
+
+theorem evalDist_sampledConcreteActualRetainedFts_eq
+    (adversary : Adversary) (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest) :
+    𝒟[sampledConcreteActualRetainedFts adversary parameter otsSecret] =
+      𝒟[sampledActualRetainedFts adversary parameter otsSecret] := by
+  have hsource : sampledConcreteActualRetainedFts adversary parameter otsSecret =
+      (curryFtsTableEquiv <$> sampleFtsSecrets) >>= fun table =>
+      actualRetainedGameAfterSecrets adversary parameter otsSecret table >>= fun result =>
+        pure (table, result) := by
+    simp [sampledConcreteActualRetainedFts, bind_map_left]
+  rw [hsource]
+  unfold sampledActualRetainedFts
+  change 𝒟[(curryFtsTableEquiv <$> sampleFtsSecrets) >>= fun table =>
+      actualRetainedGameAfterSecrets adversary parameter otsSecret table >>= fun result =>
+        pure (table, result)] =
+    𝒟[AdaptiveRevealProbe.sampleTable (Coordinate := Coordinate) >>= fun table =>
+      actualRetainedGameAfterSecrets adversary parameter otsSecret table >>= fun result =>
+        pure (table, result)]
+  rw [evalDist_bind, evalDist_bind, evalDist_uncurry_sampleFtsSecrets]
+
+noncomputable def sampledFtsViewedGame (adversary : Adversary)
+    (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest) :
+    ProbComp ((Index → FtsTree → FtsLeaf → Digest) ×
+      ((Digest × Forgery × Bool) × ViewedFullTraceState)) := do
+  let ftsSecret ← sampleFtsSecrets
+  let result ← gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret
+  pure (ftsSecret, result)
+
+def SampledFtsViewedUncoveredWitness (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (result : (Index → FtsTree → FtsLeaf → Digest) ×
+      ((Digest × Forgery × Bool) × ViewedFullTraceState)) : Prop :=
+  ViewedUncoveredFtsSecretWitness parameter otsSecret result.1 result.2
+
+theorem probEvent_sampledFtsViewedGame_uncovered_le
+    (adversary : Adversary) (parameter : PublicParameter)
+    (hparameter : parameter ∈ support sampleParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (hots : otsSecret ∈ support sampleOtsSecrets) (q : Nat)
+    (hq : HasHashQueryBound scheme adversary q) :
+    Pr[SampledFtsViewedUncoveredWitness parameter otsSecret |
+        sampledFtsViewedGame adversary parameter otsSecret] ≤
+      (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  calc
+    Pr[SampledFtsViewedUncoveredWitness parameter otsSecret |
+        sampledFtsViewedGame adversary parameter otsSecret] ≤
+      Pr[SampledRetainedUncoveredFtsSecretWitness parameter otsSecret |
+        sampledConcreteActualRetainedFts adversary parameter otsSecret] := by
+      unfold sampledFtsViewedGame sampledConcreteActualRetainedFts
+      apply probEvent_bind_le_bind_of_forall_le
+      intro ftsSecret _hfts
+      let table := curryFtsTableEquiv ftsSecret
+      simpa [SampledFtsViewedUncoveredWitness,
+        SampledRetainedUncoveredFtsSecretWitness, table, curryFtsTableEquiv,
+        probEvent_map, Function.comp_def] using
+        (probEvent_gameAfterSecretsWithViewTrace_uncovered_le_actualRetained
+          adversary parameter otsSecret table)
+    _ = Pr[SampledRetainedUncoveredFtsSecretWitness parameter otsSecret |
+        sampledActualRetainedFts adversary parameter otsSecret] := by
+      apply probEvent_congr' (fun _ _ => Iff.rfl)
+      exact evalDist_sampledConcreteActualRetainedFts_eq adversary parameter otsSecret
+    _ ≤ (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ :=
+      probEvent_sampledActualRetainedFts_uncovered_le adversary parameter hparameter
+        otsSecret hots q hq
+
+set_option maxRecDepth 30000 in
+theorem probEvent_sampledViewedGame_cleanUncovered_le
+    (adversary : Adversary) (q : Nat)
+    (hq : HasHashQueryBound scheme adversary q) :
+    Pr[SampledViewedEvent cleanUncoveredEvent | sampledViewedGame adversary] ≤
+      (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  rw [sampledViewedGame, sampleSecrets]
+  simp only [bind_assoc, pure_bind]
+  apply probEvent_bind_le_of_forall_le
+  intro parameter hparameter
+  apply probEvent_bind_le_of_forall_le
+  intro otsSecret hots
+  let pack : ((Index → FtsTree → FtsLeaf → Digest) ×
+      ((Digest × Forgery × Bool) × ViewedFullTraceState)) → SampledViewedResult :=
+    fun result => ⟨⟨parameter, otsSecret, result.1⟩, result.2⟩
+  have hrun : (sampleFtsSecrets >>= fun ftsSecret =>
+      gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret >>= fun result =>
+        pure (⟨⟨parameter, otsSecret, ftsSecret⟩, result⟩ : SampledViewedResult)) =
+      pack <$> sampledFtsViewedGame adversary parameter otsSecret := by
+    simp [sampledFtsViewedGame, pack]
+  rw [hrun, probEvent_map]
+  apply le_trans (probEvent_mono fun result _hresult hevent => hevent.2)
+  exact probEvent_sampledFtsViewedGame_uncovered_le adversary parameter hparameter
+    otsSecret hots q hq
 
 end Concrete.FtsProbeSimulation
 

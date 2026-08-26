@@ -133,6 +133,7 @@ import SphincsSecurity.Proof.EncodingSelectionSampling
 import SphincsSecurity.Proof.TerminalFinish
 import SphincsSecurity.Proof.TerminalResidual
 import SphincsSecurity.Proof.FtsProbeSampling
+import SphincsSecurity.Proof.LazyRevealProbe
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
