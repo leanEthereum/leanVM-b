@@ -488,6 +488,17 @@ noncomputable def tableValue (table : Coordinate → HashOutput)
     (position : Position) : Digest :=
   truncateHash (table (.position position))
 
+def IsOtsPosition : Position → Prop
+  | .chain _ _ _ _ _ => True
+  | .leaf _ _ _ => True
+  | .node _ _ _ _ => True
+  | _ => False
+
+noncomputable def tableOtsSecret (table : Coordinate → HashOutput) :
+    Layer → TreeIndex → LeafIndex → ChainIndex → Digest :=
+  fun lay tree leafIdx chainIdx =>
+    truncateHash (table (.chainStart lay tree leafIdx chainIdx))
+
 noncomputable def tablePayload (table : Coordinate → HashOutput) :
     Position → HashInput
   | position@(.chain lay tree leafIdx chainIdx step) =>
@@ -503,6 +514,29 @@ noncomputable def tableInput (parameter : PublicParameter)
   | .position position =>
       tweakableHashInput parameter position.domain (tablePayload table position)
 
+noncomputable def tableAnswerDecoded (parameter : PublicParameter)
+    (table : Coordinate → HashOutput) (fallback : QueryImpl HashSpec Id)
+    (input : HashInput) : Option Position → HashOutput
+  | some position@(.chain _ _ _ _ _) =>
+      if input = tableInput parameter table (.position position) then
+        table (.position position)
+      else fallback input
+  | some position@(.leaf _ _ _) =>
+      if input = tableInput parameter table (.position position) then
+        table (.position position)
+      else fallback input
+  | some position@(.node _ _ _ _) =>
+      if input = tableInput parameter table (.position position) then
+        table (.position position)
+      else fallback input
+  | _ => fallback input
+
+noncomputable def tableAnswer (parameter : PublicParameter)
+    (table : Coordinate → HashOutput) (fallback : QueryImpl HashSpec Id) :
+    QueryImpl HashSpec Id :=
+  fun input => tableAnswerDecoded parameter table fallback input
+    (decodePosition? parameter input)
+
 noncomputable def completedSplitHashCache (table : Coordinate → HashOutput)
     (ensured : Finset Coordinate) (cache : SplitHashCache) : SplitHashCache
   | .ordinary input => cache (.ordinary input)
@@ -511,49 +545,28 @@ noncomputable def completedSplitHashCache (table : Coordinate → HashOutput)
       | some output => some output
       | none => if coordinate ∈ ensured then some (table coordinate) else none
 
+noncomputable def mergeDecodedPosition (parameter : PublicParameter)
+    (table : Coordinate → HashOutput) (ensured : Finset Coordinate)
+    (cache : SplitHashCache) (input : HashInput) : Option Position → Option HashOutput
+  | some position@(.chain _ _ _ _ _) =>
+      if input = tableInput parameter table (.position position) then
+        completedSplitHashCache table ensured cache (.hidden (.position position))
+      else cache (.ordinary input)
+  | some position@(.leaf _ _ _) =>
+      if input = tableInput parameter table (.position position) then
+        completedSplitHashCache table ensured cache (.hidden (.position position))
+      else cache (.ordinary input)
+  | some position@(.node _ _ _ _) =>
+      if input = tableInput parameter table (.position position) then
+        completedSplitHashCache table ensured cache (.hidden (.position position))
+      else cache (.ordinary input)
+  | _ => cache (.ordinary input)
+
 noncomputable def mergedCache (parameter : PublicParameter)
     (table : Coordinate → HashOutput) (ensured : Finset Coordinate)
     (cache : SplitHashCache) : QueryCache HashSpec :=
-  fun input =>
-    match decodeProbe? parameter input with
-    | some candidate =>
-        if candidate.candidate = truncateHash (table candidate.coordinate) ∧
-            input = tableInput parameter table candidate.outputCoordinate then
-          completedSplitHashCache table ensured cache (.hidden candidate.outputCoordinate)
-        else
-          cache (.ordinary input)
-    | none => cache (.ordinary input)
-
-@[simp] theorem mergedCache_empty_ordinary (parameter : PublicParameter)
-    (table : Coordinate → HashOutput) (ensured : Finset Coordinate) (input : HashInput)
-    (hdecode : decodeProbe? parameter input = none) :
-    mergedCache parameter table ensured emptySplitHashCache input = none := by
-  simp [mergedCache, hdecode, emptySplitHashCache]
-
-theorem mergedCache_matching_probe (parameter : PublicParameter)
-    (table : Coordinate → HashOutput) (ensured : Finset Coordinate)
-    (cache : SplitHashCache)
-    (candidate : Probe) (input : HashInput)
-    (hmatch : candidate.MatchesInput parameter input)
-    (hhit : candidate.candidate = truncateHash (table candidate.coordinate))
-    (hinput : input = tableInput parameter table candidate.outputCoordinate) :
-    mergedCache parameter table ensured cache input =
-      completedSplitHashCache table ensured cache (.hidden candidate.outputCoordinate) := by
-  unfold mergedCache
-  rw [(decodeProbe?_eq_some_iff parameter input candidate).2 hmatch]
-  simp [hhit, hinput]
-
-theorem mergedCache_nonmatching_probe (parameter : PublicParameter)
-    (table : Coordinate → HashOutput) (ensured : Finset Coordinate)
-    (cache : SplitHashCache)
-    (candidate : Probe) (input : HashInput)
-    (hmatch : candidate.MatchesInput parameter input)
-    (hmiss : ¬(candidate.candidate = truncateHash (table candidate.coordinate) ∧
-      input = tableInput parameter table candidate.outputCoordinate)) :
-    mergedCache parameter table ensured cache input = cache (.ordinary input) := by
-  unfold mergedCache
-  rw [(decodeProbe?_eq_some_iff parameter input candidate).2 hmatch]
-  simp [hmiss]
+  fun input => mergeDecodedPosition parameter table ensured cache input
+    (decodePosition? parameter input)
 
 noncomputable def splitHashQuery (key : SplitHashKey) :
     StateT SplitHashCache

@@ -351,6 +351,46 @@ theorem finalize_probability_le (state : State Coordinate) :
       (state.pending.card : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ :=
   finalizeFrom_probability_le state.coordinates.toList state
 
+noncomputable def finalizeDetailedFrom :
+    List Coordinate → State Coordinate → ProbComp (Bool × State Coordinate)
+  | [], state => pure (false, state)
+  | coordinate :: remaining, state =>
+      match state.values coordinate with
+      | some _ => finalizeDetailedFrom remaining (state.clearPending coordinate)
+      | none => do
+          let output ← sampleHashOutput
+          if state.hitAt coordinate output then
+            pure (true, state)
+          else
+            finalizeDetailedFrom remaining (state.complete coordinate output)
+
+noncomputable def finalizeDetailed (state : State Coordinate) :
+    ProbComp (Bool × State Coordinate) :=
+  finalizeDetailedFrom state.coordinates.toList state
+
+theorem finalizeDetailedFrom_fst (coordinates : List Coordinate)
+    (state : State Coordinate) :
+    Prod.fst <$> finalizeDetailedFrom coordinates state =
+      finalizeFrom coordinates state := by
+  induction coordinates generalizing state with
+  | nil => simp [finalizeDetailedFrom, finalizeFrom]
+  | cons coordinate remaining ih =>
+      rw [finalizeDetailedFrom, finalizeFrom]
+      cases hvalue : state.values coordinate with
+      | some output => exact ih (state.clearPending coordinate)
+      | none =>
+          simp only [map_bind]
+          apply bind_congr
+          intro output
+          by_cases hhit : state.hitAt coordinate output
+          · simp [hhit]
+          · simp only [hhit, ↓reduceIte]
+            exact ih (state.complete coordinate output)
+
+theorem finalizeDetailed_fst (state : State Coordinate) :
+    Prod.fst <$> finalizeDetailed state = finalize state :=
+  finalizeDetailedFrom_fst state.coordinates.toList state
+
 inductive RawResult (Coordinate : Type) (alpha : Type) where
   | stopped (hit : Bool)
   | done (state : State Coordinate) (remaining : Nat) (value : alpha)
@@ -518,6 +558,38 @@ theorem runRaw_bind (state : State Coordinate) (fuel : Nat)
               · simp only [hhit, ↓reduceIte]
                 exact ih output (state.install coordinate output) fuel
 
+inductive DetailedResult (Coordinate : Type) (alpha : Type) where
+  | stopped (hit : Bool)
+  | done (hit : Bool) (state : State Coordinate) (remaining : Nat) (value : alpha)
+
+def DetailedResult.hit : DetailedResult Coordinate alpha → Bool
+  | .stopped hit => hit
+  | .done hit _ _ _ => hit
+
+noncomputable def RawResult.finish : RawResult Coordinate alpha → ProbComp Bool
+  | .stopped hit => pure hit
+  | .done state _ _ => finalize state
+
+noncomputable def RawResult.finishDetailed :
+    RawResult Coordinate alpha → ProbComp (DetailedResult Coordinate alpha)
+  | .stopped hit => pure (.stopped hit)
+  | .done state remaining value => do
+      let (hit, finalState) ← finalizeDetailed state
+      pure (.done hit finalState remaining value)
+
+theorem RawResult.finishDetailed_hit (result : RawResult Coordinate alpha) :
+    DetailedResult.hit <$> result.finishDetailed = result.finish := by
+  cases result with
+  | stopped hit => simp [RawResult.finishDetailed, RawResult.finish, DetailedResult.hit]
+  | done state remaining value =>
+      simpa [RawResult.finishDetailed, RawResult.finish, DetailedResult.hit] using
+        finalizeDetailed_fst state
+
+noncomputable def detailedExperiment (state : State Coordinate) (fuel : Nat)
+    (computation : OracleComp (World Coordinate) alpha) :
+    ProbComp (DetailedResult Coordinate alpha) :=
+  runRaw state fuel computation >>= RawResult.finishDetailed
+
 noncomputable def experiment (state : State Coordinate) (fuel : Nat)
     (computation : OracleComp (World Coordinate) alpha) : ProbComp Bool :=
   OracleComp.construct
@@ -624,6 +696,74 @@ theorem experiment_reveal_query_bind (state : State Coordinate) (fuel : Nat)
             experiment (state.install coordinate output) fuel (next output)) := by
   rw [experiment, OracleComp.construct_query_bind]
   rfl
+
+theorem experiment_eq_runRaw_finish (state : State Coordinate) (fuel : Nat)
+    (computation : OracleComp (World Coordinate) alpha)
+    (hbound : computation.IsQueryBoundP IsProbe fuel) :
+    experiment state fuel computation =
+      runRaw state fuel computation >>= RawResult.finish := by
+  induction computation using OracleComp.inductionOn generalizing state fuel with
+  | pure value => simp [experiment, runRaw, RawResult.finish]
+  | query_bind input next ih =>
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
+      cases input with
+      | uniform n =>
+          rw [experiment_uniform_query_bind, runRaw_uniform_query_bind, bind_assoc]
+          apply bind_congr
+          intro output
+          exact ih output state fuel (by simpa [IsProbe] using hbound.2 output)
+      | hashOutput =>
+          rw [experiment_hashOutput_query_bind, runRaw_hashOutput_query_bind, bind_assoc]
+          apply bind_congr
+          intro output
+          exact ih output state fuel (by simpa [IsProbe] using hbound.2 output)
+      | ensure coordinate =>
+          rw [experiment_ensure_query_bind, runRaw_ensure_query_bind]
+          exact ih () (state.ensure coordinate) fuel
+            (by simpa [IsProbe] using hbound.2 ())
+      | probe coordinate candidate =>
+          have hpositive : 0 < fuel := by
+            simpa [IsProbe] using hbound.1
+          cases fuel with
+          | zero => omega
+          | succ remaining =>
+              rw [experiment_probe_query_bind, runRaw_probe_query_bind]
+              by_cases hrevealed : coordinate ∈ state.revealed
+              · simp only [hrevealed, ↓reduceIte]
+                exact ih () state remaining
+                  (by simpa [IsProbe] using hbound.2 ())
+              · simp only [hrevealed, ↓reduceIte]
+                exact ih () (state.addPending coordinate candidate) remaining
+                  (by simpa [IsProbe] using hbound.2 ())
+      | peek coordinate =>
+          rw [experiment_peek_query_bind, runRaw_peek_query_bind]
+          exact ih (state.values coordinate) state fuel
+            (by simpa [IsProbe] using hbound.2 (state.values coordinate))
+      | reveal coordinate =>
+          rw [experiment_reveal_query_bind, runRaw_reveal_query_bind]
+          cases hvalue : state.values coordinate with
+          | some output =>
+              exact ih output state fuel
+                (by simpa [IsProbe] using hbound.2 output)
+          | none =>
+              simp only [bind_assoc]
+              apply bind_congr
+              intro output
+              by_cases hhit : state.hitAt coordinate output
+              · simp [hhit, RawResult.finish]
+              · simp only [hhit, ↓reduceIte]
+                exact ih output (state.install coordinate output) fuel
+                  (by simpa [IsProbe] using hbound.2 output)
+
+theorem detailedExperiment_hit_eq_experiment (state : State Coordinate) (fuel : Nat)
+    (computation : OracleComp (World Coordinate) alpha)
+    (hbound : computation.IsQueryBoundP IsProbe fuel) :
+    DetailedResult.hit <$> detailedExperiment state fuel computation =
+      experiment state fuel computation := by
+  rw [detailedExperiment, map_bind, experiment_eq_runRaw_finish state fuel computation hbound]
+  apply bind_congr
+  intro result
+  exact result.finishDetailed_hit
 
 set_option maxRecDepth 100000 in
 theorem experiment_probability_le (state : State Coordinate) (fuel : Nat)
