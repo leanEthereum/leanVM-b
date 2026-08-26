@@ -875,6 +875,36 @@ theorem preservesHidden_simulateQ_withTraceAppend_run [EmptyCollection ω] [Appe
   writerPreservesHidden_simulateQ _
     (writerPreservesHidden_withTraceAppend impl traceFn himpl) computation
 
+theorem preservesHidden_retainedGameRestComputation (adversary : Adversary)
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    PreservesHidden
+      (simulateQ (maskedExpandedAdversaryImpl parameter root ftsSecret)
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)) := by
+  rw [simulateQ_maskedExpanded_retainedGameRestComputation,
+    ← simulateQ_withTraceAppend_run_eq_signingTraceComputation]
+  exact (preservesHidden_simulateQ_withTraceAppend_run
+    (maskedExpandedAdversaryImpl parameter root ftsSecret) signingLogFragment
+    (preservesHiddenImpl_maskedExpandedAdversaryImpl parameter root ftsSecret)
+    (adversary.main ⟨root, parameter⟩)).bind fun adversaryResult =>
+      (preservesHiddenImpl_probingRomImpl parameter).simulateQ
+        (scheme.verify ⟨root, parameter⟩ adversaryResult.1.message
+          adversaryResult.1.signature) |>.bind fun verified =>
+            preservesHidden_pure ((adversaryResult.1, adversaryResult.2), verified)
+
+theorem preservesHidden_maskedRetainedGameAfterFtsSecrets (adversary : Adversary)
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    PreservesHidden
+      (maskedRetainedGameAfterFtsSecrets adversary parameter ftsSecret) := by
+  unfold maskedRetainedGameAfterFtsSecrets
+  exact (preservesHidden_maskedTreeRoot topLayer rootTree).bind fun root =>
+    (preservesHidden_publishCoordinate (.position (.node topLayer rootTree
+      ⟨layerHeight topLayer - 1, by norm_num [layerHeight, topLayer, maxLayerHeight]⟩ 0))).bind
+        fun _ =>
+          (preservesHidden_retainedGameRestComputation adversary parameter root ftsSecret).bind
+            fun result => preservesHidden_pure (root, result)
+
 theorem preservesHidden_maskedGameAfterFtsSecrets (adversary : Adversary)
     (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
