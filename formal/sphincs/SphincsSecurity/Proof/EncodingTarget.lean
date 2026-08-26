@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.TerminalCache
+import SphincsSecurity.Proof.RootCache
 
 /-!
 # Canonical signed encoding targets
@@ -76,16 +77,12 @@ theorem eval_layerMessage_eq_honestValue (f : QueryImpl HashSpec Id)
     rw [layerMessagePosition_bottom, honestValue_ftsRoots]
     rfl
 
-theorem SuccessfulSignRun.layerMessagePosition_settled {f : QueryImpl HashSpec Id}
-    {cache : QueryCache HashSpec} {secretKey : SecretKey} {message : Message}
-    {signature : Signature} (hf : cache.AgreesWithFn f)
-    (hrun : SuccessfulSignRun f cache secretKey message signature)
-    {index : Index} {leaves : DigestTree → FtsLeaf}
-    (hdigest : SuccessfulDigestRun f cache secretKey message signature.randomness index leaves)
-    (lay : Layer) :
+theorem layerMessagePosition_settled_of_cachedRun {f : QueryImpl HashSpec Id}
+    {cache : QueryCache HashSpec} {secretKey : SecretKey} {index : Index} {lay : Layer}
+    (hf : cache.AgreesWithFn f)
+    (hmessage : CachedRun cache f (layerMessage secretKey index lay)) :
     Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache
       (layerMessagePosition index lay) := by
-  obtain ⟨hmessage, _⟩ := hrun.honest_layer_at_of_digest hdigest lay
   have hlayer : lay = topLayer ∨ lay = middleLayer ∨ lay = bottomLayer := by
     fin_cases lay
     · exact Or.inl (Fin.ext rfl)
@@ -107,6 +104,18 @@ theorem SuccessfulSignRun.layerMessagePosition_settled {f : QueryImpl HashSpec I
   · rw [layerMessage_bottomLayer secretKey index] at hmessage
     rw [layerMessagePosition_bottom]
     exact settled_ftsRoots_of_cachedRun (otsSecret := secretKey.otsSecret) hf index hmessage
+
+theorem SuccessfulSignRun.layerMessagePosition_settled {f : QueryImpl HashSpec Id}
+    {cache : QueryCache HashSpec} {secretKey : SecretKey} {message : Message}
+    {signature : Signature} (hf : cache.AgreesWithFn f)
+    (hrun : SuccessfulSignRun f cache secretKey message signature)
+    {index : Index} {leaves : DigestTree → FtsLeaf}
+    (hdigest : SuccessfulDigestRun f cache secretKey message signature.randomness index leaves)
+    (lay : Layer) :
+    Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache
+      (layerMessagePosition index lay) := by
+  exact layerMessagePosition_settled_of_cachedRun hf
+    (hrun.honest_layer_at_of_digest hdigest lay).1
 
 theorem layerMessagePosition_eq_of_position_eq (left right : Index) (lay : Layer)
     (htree : treeIndexAt left lay = treeIndexAt right lay)
@@ -296,6 +305,77 @@ theorem encodingSearch_rejected_before (f : QueryImpl HashSpec Id)
     encodingAttemptLimit 0 selected (by norm_num [encodingAttemptLimit, counterBits])
     (by simpa only [encodingSearch] using hselected) candidate.toNat (by omega) hbefore
   simpa using hrejected
+
+theorem otsSignFrom_eq_some_of_valid_query (f : QueryImpl HashSpec Id)
+    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (secret : ChainIndex → Digest) (message : Digest) (attempts counter : Nat)
+    (selected : Counter)
+    (hquery : tweakableHashInput parameter (.encoding lay tree leafIdx)
+        (digestBytes message ++ counterBytes selected) ∈
+      queriedInputs f
+        (otsSignFrom parameter lay tree leafIdx secret message attempts counter))
+    (hvalid : evalWithAnswerFn f
+      (encode parameter lay tree leafIdx message selected) ≠ none) :
+    ∃ values : ChainIndex → Digest,
+      evalWithAnswerFn f
+        (otsSignFrom parameter lay tree leafIdx secret message attempts counter) =
+          some (selected, values) := by
+  induction attempts generalizing counter with
+  | zero => simp [otsSignFrom] at hquery
+  | succ attempts ih =>
+      rw [otsSignFrom, queriedInputs_bind] at hquery
+      cases hencode : evalWithAnswerFn f
+          (encode parameter lay tree leafIdx message (BitVec.ofNat counterBits counter)) with
+      | none =>
+          rcases List.mem_append.mp hquery with hcurrent | hrest
+          · simp only [encode, queriedInputs_bind, queriedInputs_tweakableHash,
+              queriedInputs_pure, List.append_nil, List.mem_singleton] at hcurrent
+            have hpayload :=
+              (tweakableHashInput_injective parameter (by trivial) (by trivial) hcurrent).2
+            obtain ⟨_, hcounterBytes⟩ :=
+              List.append_inj hpayload (by simp [digestBytes_length])
+            have hselected : selected = BitVec.ofNat counterBits counter :=
+              bytesLE_injective hcounterBytes
+            rw [hselected] at hvalid
+            exact (hvalid hencode).elim
+          · simp only [hencode] at hrest
+            obtain ⟨values, hvalues⟩ := ih (counter + 1) hrest
+            exact ⟨values, by simp only [otsSignFrom, evalWithAnswerFn_bind, hencode, hvalues]⟩
+      | some codeword =>
+          have hcurrent : tweakableHashInput parameter (.encoding lay tree leafIdx)
+              (digestBytes message ++ counterBytes selected) =
+            tweakableHashInput parameter (.encoding lay tree leafIdx)
+              (digestBytes message ++ counterBytes (BitVec.ofNat counterBits counter)) := by
+            rcases List.mem_append.mp hquery with hcurrent | hrest
+            · simpa only [encode, queriedInputs_bind, queriedInputs_tweakableHash,
+                queriedInputs_pure, List.append_nil, List.mem_singleton] using hcurrent
+            · have hstructural : QueriesAtPositions parameter f (do
+                  let values ← sequenceFin fun chainIdx =>
+                    chainWalk parameter lay tree leafIdx chainIdx 0
+                      (codeword chainIdx).val (secret chainIdx)
+                  pure (some (BitVec.ofNat counterBits counter, values))) := by
+                  apply QueriesAtPositions.bind
+                  · apply queriesAtPositions_sequenceFin
+                    intro chainIdx
+                    exact queriesAtPositions_chainWalk parameter f lay tree leafIdx chainIdx
+                      0 _ _
+                  · exact QueriesAtPositions.pure parameter f _
+              simp only [hencode] at hrest
+              obtain ⟨position, payload, hpayload⟩ := hstructural _ hrest
+              exact False.elim ((encodingInput_ne_positionInput parameter lay tree leafIdx
+                (digestBytes message ++ counterBytes selected) position payload) hpayload)
+          have hpayload :=
+            (tweakableHashInput_injective parameter (by trivial) (by trivial) hcurrent).2
+          obtain ⟨_, hcounterBytes⟩ :=
+            List.append_inj hpayload (by simp [digestBytes_length])
+          have hselected : selected = BitVec.ofNat counterBits counter :=
+            bytesLE_injective hcounterBytes
+          subst selected
+          refine ⟨fun chainIdx => evalWithAnswerFn f
+            (chainWalk parameter lay tree leafIdx chainIdx 0 (codeword chainIdx).val
+              (secret chainIdx)), ?_⟩
+          simp only [otsSignFrom, evalWithAnswerFn_bind, hencode,
+            evalWithAnswerFn_sequenceFin, evalWithAnswerFn_pure]
 
 theorem otsSignFrom_selected_encoding_mem (f : QueryImpl HashSpec Id)
     (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)

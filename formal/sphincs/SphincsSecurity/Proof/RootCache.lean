@@ -46,6 +46,18 @@ theorem QueriesAtPositions.tweakableHash (parameter : PublicParameter)
   subst input
   exact ⟨p, payload, rfl⟩
 
+theorem encodingInput_ne_positionInput (parameter : PublicParameter)
+    (encodingLay : Layer) (encodingTree : TreeIndex)
+    (encodingLeaf : LeafIndex) (encodingPayload : HashInput)
+    (position : Position) (payload : HashInput) :
+    tweakableHashInput parameter
+        (.encoding encodingLay encodingTree encodingLeaf) encodingPayload ≠
+      tweakableHashInput parameter position.domain payload := by
+  intro heq
+  have hdomain := (tweakableHashInput_injective parameter (by trivial)
+    position.domain_inRange heq).1
+  cases position <;> simp [Position.domain] at hdomain
+
 namespace Concrete
 
 theorem queriesAtPositions_sequenceFin {alpha : Type} {n : Nat}
@@ -150,6 +162,20 @@ theorem messageInput_not_mem_queriedInputs_treeRoot (parameter : PublicParameter
     (show HashDomain.message.InRange from trivial) p.domain_inRange heq).1
   cases p <;> simp [Position.domain] at hdomain
 
+theorem encodingInput_not_mem_queriedInputs_treeRoot (parameter : PublicParameter)
+    (f : QueryImpl HashSpec Id) (lay : Layer) (tree : TreeIndex)
+    (secret : LeafIndex → ChainIndex → Digest) (encodingLay : Layer)
+    (encodingTree : TreeIndex) (encodingLeaf : LeafIndex) (payload : HashInput) :
+    tweakableHashInput parameter (.encoding encodingLay encodingTree encodingLeaf) payload ∉
+      queriedInputs f (treeRoot parameter lay tree secret) := by
+  intro hmem
+  obtain ⟨p, structuralPayload, heq⟩ :=
+    queriesAtPositions_treeRoot parameter f lay tree secret _ hmem
+  have hdomain := (tweakableHashInput_injective parameter
+    (show (HashDomain.encoding encodingLay encodingTree encodingLeaf).InRange from trivial)
+    p.domain_inRange heq).1
+  cases p <;> simp [Position.domain] at hdomain
+
 theorem treeRoot_cache_message_none (parameter : PublicParameter)
     (lay : Layer) (tree : TreeIndex) (secret : LeafIndex → ChainIndex → Digest)
     (root : Digest) (rootCache : QueryCache HashSpec)
@@ -163,6 +189,24 @@ theorem treeRoot_cache_message_none (parameter : PublicParameter)
     (treeRoot parameter lay tree secret) ∅ root rootCache hroot f hf
   · simp
   · exact messageInput_not_mem_queriedInputs_treeRoot parameter f lay tree secret payload
+
+theorem treeRoot_cache_encoding_none (parameter : PublicParameter)
+    (lay : Layer) (tree : TreeIndex) (secret : LeafIndex → ChainIndex → Digest)
+    (root : Digest) (rootCache : QueryCache HashSpec)
+    (hroot : (root, rootCache) ∈ support
+      ((simulateQ (randomOracle : QueryImpl HashSpec _)
+        (treeRoot parameter lay tree secret)).run ∅))
+    (encodingLay : Layer) (encodingTree : TreeIndex) (encodingLeaf : LeafIndex)
+    (payload : HashInput) :
+    rootCache
+      (tweakableHashInput parameter (.encoding encodingLay encodingTree encodingLeaf) payload) =
+        none := by
+  obtain ⟨f, hf⟩ := QueryCache.exists_agreesWithFn (spec := HashSpec) rootCache
+  apply cache_eq_none_of_not_mem_queriedInputs
+    (treeRoot parameter lay tree secret) ∅ root rootCache hroot f hf
+  · simp
+  · exact encodingInput_not_mem_queriedInputs_treeRoot parameter f lay tree secret
+      encodingLay encodingTree encodingLeaf payload
 
 end Concrete
 

@@ -457,6 +457,66 @@ theorem queriesAtEncodingPositionOrPositions_otsSign (parameter : PublicParamete
   exact queriesAtEncodingPositionOrPositions_otsSignFrom parameter f position secret message
     encodingAttemptLimit 0
 
+theorem encodingPayload_of_mem_otsSignFrom (parameter : PublicParameter)
+    (f : QueryImpl HashSpec Id) (position : EncodingPosition)
+    (secret : ChainIndex → Digest) (message : Digest) (attempts counter : Nat)
+    (payload : HashInput)
+    (hinput : tweakableHashInput parameter position.domain payload ∈
+      queriedInputs f
+        (otsSignFrom parameter position.lay position.tree position.leafIdx secret message
+          attempts counter)) :
+    ∃ selected : Counter, payload = digestBytes message ++ counterBytes selected := by
+  induction attempts generalizing counter with
+  | zero => simp [otsSignFrom] at hinput
+  | succ attempts ih =>
+      rw [otsSignFrom, queriedInputs_bind] at hinput
+      cases hencode : evalWithAnswerFn f
+          (encode parameter position.lay position.tree position.leafIdx message
+            (BitVec.ofNat counterBits counter)) with
+      | none =>
+          rcases List.mem_append.mp hinput with hcurrent | hrest
+          · simp only [encode, queriedInputs_bind, queriedInputs_tweakableHash,
+              queriedInputs_pure, List.append_nil, List.mem_singleton] at hcurrent
+            have hpayload :=
+              (tweakableHashInput_injective parameter (by trivial) (by trivial) hcurrent).2
+            exact ⟨BitVec.ofNat counterBits counter, hpayload⟩
+          · simp only [hencode] at hrest
+            exact ih (counter + 1) hrest
+      | some codeword =>
+          rcases List.mem_append.mp hinput with hcurrent | hrest
+          · simp only [encode, queriedInputs_bind, queriedInputs_tweakableHash,
+              queriedInputs_pure, List.append_nil, List.mem_singleton] at hcurrent
+            have hpayload :=
+              (tweakableHashInput_injective parameter (by trivial) (by trivial) hcurrent).2
+            exact ⟨BitVec.ofNat counterBits counter, hpayload⟩
+          · have hstructural : QueriesAtPositions parameter f (do
+                let values ← sequenceFin fun chainIdx =>
+                  chainWalk parameter position.lay position.tree position.leafIdx chainIdx 0
+                    (codeword chainIdx).val (secret chainIdx)
+                pure (some (BitVec.ofNat counterBits counter, values))) := by
+                apply QueriesAtPositions.bind
+                · apply queriesAtPositions_sequenceFin
+                  intro chainIdx
+                  exact queriesAtPositions_chainWalk parameter f position.lay position.tree
+                    position.leafIdx chainIdx 0 _ _
+                · exact QueriesAtPositions.pure parameter f _
+            simp only [hencode] at hrest
+            obtain ⟨structuralPosition, structuralPayload, hstructuralInput⟩ :=
+              hstructural _ hrest
+            exact False.elim ((encodingInput_ne_positionInput parameter position.lay
+              position.tree position.leafIdx payload structuralPosition structuralPayload)
+                hstructuralInput)
+
+theorem encodingPayload_of_mem_otsSign (parameter : PublicParameter)
+    (f : QueryImpl HashSpec Id) (position : EncodingPosition)
+    (secret : ChainIndex → Digest) (message : Digest) (payload : HashInput)
+    (hinput : tweakableHashInput parameter position.domain payload ∈
+      queriedInputs f
+        (otsSign parameter position.lay position.tree position.leafIdx secret message)) :
+    ∃ selected : Counter, payload = digestBytes message ++ counterBytes selected := by
+  exact encodingPayload_of_mem_otsSignFrom parameter f position secret message
+    encodingAttemptLimit 0 payload (by simpa only [otsSign] using hinput)
+
 theorem encodingPosition_eq_of_mem_otsSign {parameter : PublicParameter}
     {f : QueryImpl HashSpec Id} {queriedPosition runPosition : EncodingPosition}
     {input : HashInput} {secret : ChainIndex → Digest} {message : Digest}
@@ -1132,6 +1192,211 @@ theorem HasEncodingTarget.payload_unique {cache : QueryCache HashSpec} {secretKe
     (right : CachedSignedEncodingPayloadAt cache secretKey position.lay position.tree
       position.leafIdx rightPayload) : leftPayload = rightPayload :=
   cachedSignedEncodingPayloadAt_unique left right
+
+theorem hasEncodingTarget_of_sign_transition
+    (secretKey : SecretKey) (message : Message)
+    (beforeCache afterCache : QueryCache HashSpec) (result : Option Signature)
+    (hmem : (result, afterCache) ∈ support
+      ((simulateQ romImpl (sign secretKey message)).run beforeCache))
+    (position : EncodingPosition) (payload : HashInput)
+    (hbefore : beforeCache
+      (tweakableHashInput secretKey.parameter position.domain payload) = none)
+    (hafter : afterCache
+      (tweakableHashInput secretKey.parameter position.domain payload) ≠ none)
+    (hvalid : TargetSum.ValidDigest (truncateHash (fromCache afterCache
+      (tweakableHashInput secretKey.parameter position.domain payload)))) :
+    HasEncodingTarget afterCache secretKey position := by
+  let targetInput := tweakableHashInput secretKey.parameter position.domain payload
+  let f := fromCache afterCache
+  have hf : afterCache.AgreesWithFn f := agreesWithFn_fromCache afterCache
+  rw [sign_eq_digestLoop_afterDigest, simulateQ_bind, StateT.run_bind,
+    mem_support_bind_iff] at hmem
+  obtain ⟨⟨loopResult, loopCache⟩, hloop, hfinish⟩ := hmem
+  have hloopNone : loopCache targetInput = none :=
+    signDigestLoop_cache_encoding_none digestAttemptLimit secretKey message beforeCache
+      loopCache loopResult hloop targetInput position ⟨payload, rfl⟩ (by
+        simpa only [targetInput] using hbefore)
+  cases loopResult with
+  | none =>
+      simp only [simulateQ_pure, StateT.run_pure, support_pure, Set.mem_singleton_iff,
+        Prod.mk.injEq] at hfinish
+      obtain ⟨rfl, rfl⟩ := hfinish
+      exact (hafter hloopNone).elim
+  | some selected =>
+      obtain ⟨randomness, index, leaves⟩ := selected
+      have hfinish' : (result, afterCache) ∈ support
+          ((simulateQ (randomOracle : QueryImpl HashSpec _)
+            (signAfterDigest secretKey randomness index leaves)).run loopCache) := by
+        simpa only [simulateQ_romImpl_liftM] using hfinish
+      obtain ⟨_, hafterEval, hafterRun⟩ := replay_of_mem_support
+        (signAfterDigest secretKey randomness index leaves) loopCache result afterCache
+          hfinish' f hf
+      have hquery : targetInput ∈
+          queriedInputs f (signAfterDigest secretKey randomness index leaves) := by
+        by_contra hnot
+        have hnone := cache_eq_none_of_not_mem_queriedInputs
+          (signAfterDigest secretKey randomness index leaves) loopCache result afterCache
+            hfinish' f hf targetInput hloopNone hnot
+        exact hafter (by simpa only [targetInput] using hnone)
+      rw [signAfterDigest, queriedInputs_bind] at hquery
+      rcases List.mem_append.mp hquery with hfts | hrest
+      · exact False.elim (avoidsEncodingQueries_ftsOpen secretKey.parameter f index leaves
+          (secretKey.ftsSecret index) position payload (by simpa only [targetInput] using hfts))
+      · rw [queriedInputs_bind] at hrest
+        rcases List.mem_append.mp hrest with hlayers | hpure
+        · have hexists : ∃ lay : Layer,
+              targetInput ∈ queriedInputs f (signLayer secretKey index lay) := by
+              by_contra hnone
+              apply not_mem_queriedInputs_sequenceFin f
+                (fun lay => signLayer secretKey index lay) targetInput
+                (fun lay hmem => hnone ⟨lay, hmem⟩)
+              exact hlayers
+          obtain ⟨lay, hlayerQuery⟩ := hexists
+          have hlocated := encodingInput_mem_signLayer_otsSign
+            (show AtEncodingPosition secretKey.parameter targetInput position from
+              ⟨payload, rfl⟩) hlayerQuery
+          have hposition : position =
+              ⟨lay, treeIndexAt index lay, leafIndexAt index lay⟩ := hlocated.1
+          subst position
+          obtain ⟨counter, hpayload⟩ := encodingPayload_of_mem_otsSign
+            secretKey.parameter f
+              ⟨lay, treeIndexAt index lay, leafIndexAt index lay⟩
+              (secretKey.otsSecret lay (treeIndexAt index lay) (leafIndexAt index lay))
+              (evalWithAnswerFn f (layerMessage secretKey index lay)) payload
+              (by simpa only [targetInput, EncodingPosition.domain] using hlocated.2)
+          have htargetInput : targetInput = tweakableHashInput secretKey.parameter
+              (.encoding lay (treeIndexAt index lay) (leafIndexAt index lay))
+              (digestBytes (evalWithAnswerFn f (layerMessage secretKey index lay)) ++
+                counterBytes counter) := by
+            simp only [targetInput, EncodingPosition.domain, hpayload]
+          have hvalidEncode : evalWithAnswerFn f
+              (encode secretKey.parameter lay (treeIndexAt index lay)
+                (leafIndexAt index lay)
+                (evalWithAnswerFn f (layerMessage secretKey index lay)) counter) ≠ none := by
+            apply (eval_encode_ne_none_iff_validDigest f secretKey.parameter lay
+              (treeIndexAt index lay) (leafIndexAt index lay)
+              (evalWithAnswerFn f (layerMessage secretKey index lay)) counter).mpr
+            dsimp only [EncodingPosition.domain] at hvalid
+            rw [hpayload] at hvalid
+            simpa only [f] using hvalid
+          obtain ⟨values, hotsEval⟩ := otsSignFrom_eq_some_of_valid_query f
+            secretKey.parameter lay (treeIndexAt index lay) (leafIndexAt index lay)
+            (secretKey.otsSecret lay (treeIndexAt index lay) (leafIndexAt index lay))
+            (evalWithAnswerFn f (layerMessage secretKey index lay)) encodingAttemptLimit 0
+            counter (by simpa only [otsSign, htargetInput] using hlocated.2) hvalidEncode
+          have hlayerRun : CachedRun afterCache f (signLayer secretKey index lay) := by
+            intro input hinput
+            apply hafterRun input
+            rw [signAfterDigest, queriedInputs_bind]
+            apply List.mem_append_right
+            rw [queriedInputs_bind]
+            apply List.mem_append_left
+            exact sequenceFin_component_query_mem f
+              (fun otherLayer => signLayer secretKey index otherLayer) lay hinput
+          rw [signLayer] at hlayerRun
+          have hmessageRun := hlayerRun.bind_left
+          have hotsRun : CachedRun afterCache f
+              (otsSign secretKey.parameter lay (treeIndexAt index lay)
+                (leafIndexAt index lay)
+                (secretKey.otsSecret lay (treeIndexAt index lay) (leafIndexAt index lay))
+                (evalWithAnswerFn f (layerMessage secretKey index lay))) :=
+            hlayerRun.bind_right.bind_left
+          have hselection := otsSign_encodingSearch_some_cached f afterCache
+            secretKey.parameter lay (treeIndexAt index lay) (leafIndexAt index lay)
+            (secretKey.otsSecret lay (treeIndexAt index lay) (leafIndexAt index lay))
+            (evalWithAnswerFn f (layerMessage secretKey index lay)) counter values
+            (by simpa only [otsSign] using hotsEval) hotsRun
+          have hsettled := layerMessagePosition_settled_of_cachedRun hf hmessageRun
+          have hmessage := eval_layerMessage_eq_honestValue (fromCache afterCache)
+            secretKey index lay
+          dsimp only [f] at hpayload hselection
+          rw [hmessage] at hpayload hselection
+          refine ⟨payload, index, counter, rfl, rfl, hsettled, ?_, ?_, hpayload, ?_⟩
+          · exact hselection.2
+          · exact hselection.1
+          · simpa only [targetInput, EncodingPosition.domain] using hafter
+        · split at hpure <;> simp at hpure
+
+theorem hasEncodingTarget_of_signing_interval
+    (secretKey : SecretKey) (entry : AdversaryCacheEntry)
+    (hsigner : ∃ request, entry.input = .inr request)
+    (hvalidInterval : (entry.output, entry.finalCache) ∈ support
+      ((unloggedMappedAdversaryImpl secretKey entry.input).run entry.initialCache))
+    (position : EncodingPosition) (payload : HashInput)
+    (hbefore : entry.initialCache
+      (tweakableHashInput secretKey.parameter position.domain payload) = none)
+    (hafter : entry.finalCache
+      (tweakableHashInput secretKey.parameter position.domain payload) ≠ none)
+    (hvalid : TargetSum.ValidDigest (truncateHash (fromCache entry.finalCache
+      (tweakableHashInput secretKey.parameter position.domain payload)))) :
+    HasEncodingTarget entry.finalCache secretKey position := by
+  rcases entry with ⟨input, output, initialCache, finalCache⟩
+  cases input with
+  | inl worldInput =>
+      obtain ⟨request, hfalse⟩ := hsigner
+      simp at hfalse
+  | inr request =>
+      change Option Signature at output
+      change (output, finalCache) ∈ support
+        ((simulateQ romImpl (sign secretKey request)).run initialCache) at hvalidInterval
+      exact hasEncodingTarget_of_sign_transition secretKey request initialCache finalCache
+        output hvalidInterval position payload hbefore hafter hvalid
+
+theorem FullAdversaryTrace.CacheChain.hasEncodingTarget_or_direct_source_before_signingEntry
+    {rootCache adversaryCache finalCache : QueryCache HashSpec}
+    {secretKey : SecretKey} {trace : FullAdversaryTrace}
+    (hchain : FullAdversaryTrace.CacheChain rootCache trace.intervals adversaryCache)
+    (hconsistent : trace.Consistent)
+    (hchronological : FullAdversaryTrace.Chronological trace.intervals)
+    (hvalidIntervals : trace.ValidIntervals secretKey)
+    (hintervals : trace.IntervalsLe finalCache)
+    (f : QueryImpl HashSpec Id) (hf : finalCache.AgreesWithFn f)
+    (entry : SigningCacheEntry) (hentry : entry ∈ trace.signing)
+    (position : EncodingPosition) (payload : HashInput)
+    (hroot : rootCache
+      (tweakableHashInput secretKey.parameter position.domain payload) = none)
+    (hcached : entry.initialCache
+      (tweakableHashInput secretKey.parameter position.domain payload) ≠ none)
+    (hvalid : TargetSum.ValidDigest (truncateHash
+      (f (tweakableHashInput secretKey.parameter position.domain payload)))) :
+    HasEncodingTarget entry.initialCache secretKey position ∨
+      ∃ (source selected : Fin trace.intervals.length),
+        source.val < selected.val
+          ∧ AdversaryCacheEntry.signingEntry? (trace.intervals.get selected) = some entry
+          ∧ (trace.intervals.get source).input = .inl (.inr
+            (tweakableHashInput secretKey.parameter position.domain payload)) := by
+  let targetInput := tweakableHashInput secretKey.parameter position.domain payload
+  obtain ⟨source, selected, hsourceLt, hselected, hsourceInitial, hsourceFinal⟩ :=
+    hchain.source_before_signingEntry hconsistent entry hentry targetInput
+      (by simpa only [targetInput] using hroot) (by simpa only [targetInput] using hcached)
+  have hsourceMem : trace.intervals.get source ∈ trace.intervals :=
+    List.get_mem trace.intervals source
+  rcases trace.transition_source_kind hvalidIntervals (trace.intervals.get source)
+      hsourceMem targetInput hsourceInitial hsourceFinal with hdirect | hsigner
+  · exact Or.inr ⟨source, selected, hsourceLt, hselected, by
+      simpa only [targetInput] using hdirect⟩
+  · obtain ⟨request, hsourceInput⟩ := hsigner
+    obtain ⟨answer, hanswer⟩ := Option.ne_none_iff_exists'.mp hsourceFinal
+    have hsourceLe : (trace.intervals.get source).finalCache ≤ finalCache :=
+      (hintervals (trace.intervals.get source) hsourceMem).2
+    have hfAnswer : f targetInput = answer := hf (hsourceLe hanswer)
+    have hsourceValid : TargetSum.ValidDigest (truncateHash
+        (fromCache (trace.intervals.get source).finalCache targetInput)) := by
+      change TargetSum.ValidDigest (truncateHash (f targetInput)) at hvalid
+      rw [hfAnswer] at hvalid
+      simpa only [fromCache, hanswer, Option.getD_some] using hvalid
+    have htargetSource := hasEncodingTarget_of_signing_interval secretKey
+      (trace.intervals.get source) ⟨request, hsourceInput⟩
+      (hvalidIntervals (trace.intervals.get source) hsourceMem) position payload
+      (by simpa only [targetInput] using hsourceInitial)
+      (by simpa only [targetInput] using hsourceFinal)
+      (by simpa only [targetInput] using hsourceValid)
+    have hsourceLeSelected :=
+      hchronological.get_finalCache_le_initialCache source selected hsourceLt
+    have htargetSelected := htargetSource.mono hsourceLeSelected
+    rw [(trace.intervals.get selected).initialCache_eq_of_signingEntry?_eq_some hselected]
+      at htargetSelected
+    exact Or.inl htargetSelected
 
 theorem CachedSignedEncodingPayloadAt.of_cacheQuery_of_settled_of_not_atPosition
     {cache : QueryCache HashSpec} {secretKey : SecretKey} {input : HashInput}
