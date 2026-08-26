@@ -100,6 +100,7 @@ import SphincsSecurity.Proof.MandatoryQueries
 import SphincsSecurity.Proof.TerminalArith
 import SphincsSecurity.Proof.TerminalBudget
 import SphincsSecurity.Proof.TerminalSampling
+import SphincsSecurity.Proof.TerminalFinish
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
