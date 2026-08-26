@@ -25,12 +25,14 @@ theorem probEvent_win_le_reserved_add_remaining
     Pr[= true | (simulateQ romImpl
         (gameAfterSecrets adversary parameter otsSecret ftsSecret)).run' ∅] ≤
       ((24 * q : Nat) : ℝ≥0∞) * ((2 ^ 125 : Nat) : ℝ≥0∞)⁻¹ +
-      (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
-          ViewedFreshLayerOpeningWitness parameter otsSecret ftsSecret result | run] +
+      (Pr[fun result =>
+          (¬Bad parameter otsSecret ftsSecret result.2.cache ∧ result.1.2.2 = true) ∧
+            ViewedFreshLayerOpeningWitness parameter otsSecret ftsSecret result | run] +
       (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
           ViewedEncodingCollisionWitness parameter otsSecret ftsSecret result | run] +
-      (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
-          ViewedBackwardChainOpeningWitness parameter otsSecret ftsSecret result | run] +
+      (Pr[fun result =>
+          (¬Bad parameter otsSecret ftsSecret result.2.cache ∧ result.1.2.2 = true) ∧
+            ViewedBackwardChainOpeningWitness parameter otsSecret ftsSecret result | run] +
       (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
           ViewedMessageDigestCollisionWitness parameter otsSecret ftsSecret result | run] +
        Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
@@ -46,12 +48,14 @@ theorem probEvent_win_le_reserved_add_remaining
     parameter hparameter otsSecret hots ftsSecret hfts
   calc
     _ ≤ Pr[fun result => Bad parameter otsSecret ftsSecret result.2.cache | run] +
-        (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
-          ViewedFreshLayerOpeningWitness parameter otsSecret ftsSecret result | run] +
+        (Pr[fun result =>
+          (¬Bad parameter otsSecret ftsSecret result.2.cache ∧ result.1.2.2 = true) ∧
+            ViewedFreshLayerOpeningWitness parameter otsSecret ftsSecret result | run] +
         (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
           ViewedEncodingCollisionWitness parameter otsSecret ftsSecret result | run] +
-        (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
-          ViewedBackwardChainOpeningWitness parameter otsSecret ftsSecret result | run] +
+        (Pr[fun result =>
+          (¬Bad parameter otsSecret ftsSecret result.2.cache ∧ result.1.2.2 = true) ∧
+            ViewedBackwardChainOpeningWitness parameter otsSecret ftsSecret result | run] +
         (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
           ViewedMessageDigestCollisionWitness parameter otsSecret ftsSecret result | run] +
         (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
@@ -60,12 +64,14 @@ theorem probEvent_win_le_reserved_add_remaining
           ViewedUncoveredFtsSecretWitness parameter otsSecret ftsSecret result | run]))))) :=
       probEvent_win_le_viewed_bad_add_terminal_cases adversary parameter otsSecret ftsSecret
     _ ≤ (((44 * q : Nat) : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹) +
-        (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
-          ViewedFreshLayerOpeningWitness parameter otsSecret ftsSecret result | run] +
+        (Pr[fun result =>
+          (¬Bad parameter otsSecret ftsSecret result.2.cache ∧ result.1.2.2 = true) ∧
+            ViewedFreshLayerOpeningWitness parameter otsSecret ftsSecret result | run] +
         (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
           ViewedEncodingCollisionWitness parameter otsSecret ftsSecret result | run] +
-        (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
-          ViewedBackwardChainOpeningWitness parameter otsSecret ftsSecret result | run] +
+        (Pr[fun result =>
+          (¬Bad parameter otsSecret ftsSecret result.2.cache ∧ result.1.2.2 = true) ∧
+            ViewedBackwardChainOpeningWitness parameter otsSecret ftsSecret result | run] +
         (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
           ViewedMessageDigestCollisionWitness parameter otsSecret ftsSecret result | run] +
         (((2 * q + 1 : Nat) : ℝ≥0∞) * (9 * ((2 ^ 125 : Nat) : ℝ≥0∞)⁻¹) +
@@ -74,12 +80,14 @@ theorem probEvent_win_le_reserved_add_remaining
       gcongr
     _ = ((((44 * q : Nat) : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹) +
           ((2 * q + 1 : Nat) : ℝ≥0∞) * (9 * ((2 ^ 125 : Nat) : ℝ≥0∞)⁻¹)) +
-        (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
-          ViewedFreshLayerOpeningWitness parameter otsSecret ftsSecret result | run] +
+        (Pr[fun result =>
+          (¬Bad parameter otsSecret ftsSecret result.2.cache ∧ result.1.2.2 = true) ∧
+            ViewedFreshLayerOpeningWitness parameter otsSecret ftsSecret result | run] +
         (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
           ViewedEncodingCollisionWitness parameter otsSecret ftsSecret result | run] +
-        (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
-          ViewedBackwardChainOpeningWitness parameter otsSecret ftsSecret result | run] +
+        (Pr[fun result =>
+          (¬Bad parameter otsSecret ftsSecret result.2.cache ∧ result.1.2.2 = true) ∧
+            ViewedBackwardChainOpeningWitness parameter otsSecret ftsSecret result | run] +
         (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
           ViewedMessageDigestCollisionWitness parameter otsSecret ftsSecret result | run] +
         Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
