@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.EncodingStageCharge
+import SphincsSecurity.Proof.FirstBad
 
 /-!
 # Latent encoding collisions inside a signer
@@ -86,5 +87,46 @@ theorem latentEncodingBad_step_paid_or_pinned_by_sign
       (hasEncodingTarget_of_latent_creation_during_sign hrun hinitial hfinal hclean
         huncached hposition hbad)
   · exact .paid targets hhit hdrop
+
+inductive LatentEncodingSignerIntervalOutcome
+    (initialCache finalCache : QueryCache HashSpec) (secretKey : SecretKey) : Prop where
+  | pinned (position : EncodingPosition)
+      (target : HasEncodingTarget finalCache secretKey position)
+  | paid (cache : QueryCache HashSpec) (input : HashInput) (answer : HashOutput)
+      (targets : Finset Digest)
+      (initialLe : initialCache ≤ cache)
+      (finalLe : cache.cacheQuery input answer ≤ finalCache)
+      (hit : truncateHash answer ∈ targets)
+      (drop : encodingStructuralPotential (cache.cacheQuery input answer) secretKey +
+          targets.card ≤ encodingStructuralPotential cache secretKey)
+
+theorem latentEncodingBad_signerInterval_paid_or_pinned
+    {secretKey : SecretKey} {message : Message}
+    {initialCache finalCache : QueryCache HashSpec} {result : Option Signature}
+    (hfinite : Finite finalCache)
+    (hrun : (result, finalCache) ∈ support
+      ((simulateQ romImpl (sign secretKey message)).run initialCache))
+    (hstructuralClean : ¬ Bad secretKey.parameter secretKey.otsSecret
+      secretKey.ftsSecret finalCache)
+    (hclean : ¬ LatentEncodingBad initialCache secretKey)
+    (hbad : LatentEncodingBad finalCache secretKey) :
+    LatentEncodingSignerIntervalOutcome initialCache finalCache secretKey := by
+  obtain ⟨cache, input, answer, hinitial, hstepClean, huncached, hstepBad,
+    hfinal⟩ := freshBadStep_of_mem_support (LatentEncodingBad · secretKey)
+      (sign secretKey message) initialCache result finalCache hrun hclean hbad
+  have hfiniteCache : Finite cache := hfinite.of_le
+    ((le_cacheQuery huncached).trans hfinal)
+  have hstepStructuralClean : ¬ Bad secretKey.parameter secretKey.otsSecret
+      secretKey.ftsSecret cache := by
+    intro hbadCache
+    exact hstructuralClean (Bad.mono secretKey.parameter secretKey.otsSecret
+      secretKey.ftsSecret ((le_cacheQuery huncached).trans hfinal) hbadCache)
+  rcases latentEncodingBad_step_paid_or_pinned_by_sign hfiniteCache hrun hinitial
+    hfinal hstepStructuralClean hstepClean huncached hstepBad with
+    ⟨position, hposition, htarget⟩ | ⟨position, hposition, htarget⟩ |
+      ⟨targets, hhit, hdrop⟩
+  · exact .pinned position (htarget.mono ((le_cacheQuery huncached).trans hfinal))
+  · exact .pinned position htarget
+  · exact .paid cache input answer targets hinitial hfinal hhit hdrop
 
 end SphincsSecurity.Concrete

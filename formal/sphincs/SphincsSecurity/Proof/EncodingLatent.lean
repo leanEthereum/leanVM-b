@@ -305,6 +305,16 @@ theorem not_latentEncodingBad_empty (secretKey : SecretKey) :
     otherAnswer, htree, hleaf, hsettled, hpayload, htargetAnswer, hrest⟩
   simp at htargetAnswer
 
+theorem not_latentEncodingBad_of_encoding_none
+    {cache : QueryCache HashSpec} {secretKey : SecretKey}
+    (hnone : ∀ (position : EncodingPosition) (payload : HashInput),
+      cache (tweakableHashInput secretKey.parameter position.domain payload) = none) :
+    ¬ LatentEncodingBad cache secretKey := by
+  rintro ⟨position, index, counter, targetPayload, otherPayload, targetAnswer,
+    otherAnswer, htree, hleaf, hsettled, hpayload, htargetAnswer, hrest⟩
+  rw [hnone position targetPayload] at htargetAnswer
+  simp at htargetAnswer
+
 theorem latentEncodingBad_answer_hit_of_encoding_query
     {cache : QueryCache HashSpec} (hfinite : Finite cache)
     {secretKey : SecretKey} {input : HashInput} {answer : HashOutput}

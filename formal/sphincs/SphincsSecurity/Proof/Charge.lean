@@ -58,6 +58,18 @@ def Bad (cache : QueryCache HashSpec) : Prop :=
       ∧ cache (cachedInput parameter otsSecret ftsSecret cache p) = some ay
       ∧ truncateHash ax = truncateHash ay
 
+theorem Bad.mono {cache cache' : QueryCache HashSpec} (hle : cache ≤ cache')
+    (hbad : Bad parameter otsSecret ftsSecret cache) :
+    Bad parameter otsSecret ftsSecret cache' := by
+  obtain ⟨position, hsettled, input, inputAnswer, honestAnswer, hposition,
+    hne, hinput, hhonest, hcollision⟩ := hbad
+  have hpinned := cachedInput_eq_of_settled hle hsettled
+  refine ⟨position, hsettled.mono hle, input, inputAnswer, honestAnswer,
+    hposition, ?_, hle hinput, ?_, hcollision⟩
+  · rwa [hpinned]
+  · rw [hpinned]
+    exact hle hhonest
+
 /-- A cached collision with the honest value at a settled position is `Bad`. -/
 theorem bad_of_settled_collision {cache : QueryCache HashSpec} {f : QueryImpl HashSpec Id}
     (hf : cache.AgreesWithFn f) {p : Position}
@@ -275,6 +287,13 @@ def Finite (cache : QueryCache HashSpec) : Prop := {input | cache input ≠ none
 
 theorem finite_empty : Finite (∅ : QueryCache HashSpec) := by
   simp [Finite]
+
+theorem Finite.of_le {cache cache' : QueryCache HashSpec}
+    (hfinite : Finite cache') (hle : cache ≤ cache') : Finite cache := by
+  apply hfinite.subset
+  intro input hcached
+  obtain ⟨answer, hanswer⟩ := Option.ne_none_iff_exists'.mp hcached
+  exact Option.ne_none_iff_exists'.mpr ⟨answer, hle hanswer⟩
 
 theorem not_bad_empty : ¬ Bad parameter otsSecret ftsSecret (∅ : QueryCache HashSpec) := by
   rintro ⟨p, _, input, ax, ay, _, _, hcached, _⟩
