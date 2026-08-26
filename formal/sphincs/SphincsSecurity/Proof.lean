@@ -119,6 +119,7 @@ import SphincsSecurity.Proof.TerminalBudget
 import SphincsSecurity.Proof.TerminalSampling
 import SphincsSecurity.Proof.EncodingSelectionSampling
 import SphincsSecurity.Proof.TerminalFinish
+import SphincsSecurity.Proof.TerminalResidual
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
