@@ -129,4 +129,25 @@ theorem probEvent_encodingBad_le_expected_totalRisk
   · rw [if_neg hbad]
     exact bot_le
 
+theorem encodingRetry_buildThenSelect_sum_probability_le
+    (steps : EncodingPosition → Nat) (q : Nat)
+    (hsteps : (∑ position, steps position) ≤ q) :
+    (∑ position,
+      Pr[(· = true) | EncodingRetry.buildThenSelect (steps position) ∅]) ≤
+        (q : ℝ≥0∞) * (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
+  calc
+    (∑ position,
+        Pr[(· = true) | EncodingRetry.buildThenSelect (steps position) ∅]) ≤
+      ∑ position, (steps position : ℝ≥0∞) *
+        (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
+          apply Finset.sum_le_sum
+          intro position _
+          exact EncodingRetry.buildThenSelect_empty_true_probability_le (steps position)
+    _ = ((∑ position, steps position : Nat) : ℝ≥0∞) *
+        (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
+      rw [Nat.cast_sum, Finset.sum_mul]
+    _ ≤ (q : ℝ≥0∞) * (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
+      exact mul_le_mul_left (by exact_mod_cast hsteps)
+        (Fintype.card Digest : ℝ≥0∞)⁻¹
+
 end SphincsSecurity.Concrete

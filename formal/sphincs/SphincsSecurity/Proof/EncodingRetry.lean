@@ -147,4 +147,40 @@ theorem applySelect_true_probability_le
       gcongr
       exact SphincsSecurity.uniformHashOutput_select_bonus_sum_le targets
 
+noncomputable def buildThenSelect : Nat → Finset Digest → ProbComp Bool
+  | 0, targets => applySelect targets fun _ _ => pure false
+  | steps + 1, targets =>
+      applyQuery targets fun _ nextTargets => buildThenSelect steps nextTargets
+
+theorem buildThenSelect_true_probability_le
+    (steps : Nat) (targets : Finset Digest) :
+    Pr[(· = true) | buildThenSelect steps targets] ≤
+      (steps : ℝ≥0∞) * (Fintype.card Digest : ℝ≥0∞)⁻¹ +
+        pendingRisk targets := by
+  induction steps generalizing targets with
+  | zero =>
+      rw [buildThenSelect]
+      simpa using applySelect_true_probability_le targets
+        (fun _ _ => pure false) 0 (by simp)
+  | succ steps ih =>
+      rw [buildThenSelect]
+      calc
+        Pr[(· = true) |
+            applyQuery targets fun _ nextTargets => buildThenSelect steps nextTargets] ≤
+          (steps : ℝ≥0∞) * (Fintype.card Digest : ℝ≥0∞)⁻¹ +
+            (Fintype.card Digest : ℝ≥0∞)⁻¹ + pendingRisk targets :=
+          applyQuery_true_probability_le targets
+            (fun _ nextTargets => buildThenSelect steps nextTargets)
+            ((steps : ℝ≥0∞) * (Fintype.card Digest : ℝ≥0∞)⁻¹)
+            (fun _ nextTargets => ih nextTargets)
+        _ = ((steps + 1 : Nat) : ℝ≥0∞) *
+              (Fintype.card Digest : ℝ≥0∞)⁻¹ + pendingRisk targets := by
+          push_cast
+          rw [add_mul, one_mul]
+
+theorem buildThenSelect_empty_true_probability_le (steps : Nat) :
+    Pr[(· = true) | buildThenSelect steps ∅] ≤
+      (steps : ℝ≥0∞) * (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
+  simpa using buildThenSelect_true_probability_le steps ∅
+
 end SphincsSecurity.EncodingRetry
