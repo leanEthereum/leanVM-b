@@ -208,6 +208,136 @@ theorem treeRoot_cache_encoding_none (parameter : PublicParameter)
   · exact encodingInput_not_mem_queriedInputs_treeRoot parameter f lay tree secret
       encodingLay encodingTree encodingLeaf payload
 
+def AvoidsFtsLeafQueries {alpha : Type} (parameter : PublicParameter)
+    (f : QueryImpl HashSpec Id) (oa : OracleComp HashSpec alpha) : Prop :=
+  ∀ index tree leafIdx payload,
+    tweakableHashInput parameter (.ftsLeaf index tree leafIdx) payload ∉ queriedInputs f oa
+
+theorem AvoidsFtsLeafQueries.pure {alpha : Type} (parameter : PublicParameter)
+    (f : QueryImpl HashSpec Id) (value : alpha) :
+    AvoidsFtsLeafQueries parameter f (pure value) := by
+  simp [AvoidsFtsLeafQueries]
+
+theorem AvoidsFtsLeafQueries.bind {alpha beta : Type} {parameter : PublicParameter}
+    {f : QueryImpl HashSpec Id} {oa : OracleComp HashSpec alpha}
+    {next : alpha → OracleComp HashSpec beta}
+    (hleft : AvoidsFtsLeafQueries parameter f oa)
+    (hright : AvoidsFtsLeafQueries parameter f (next (evalWithAnswerFn f oa))) :
+    AvoidsFtsLeafQueries parameter f (oa >>= next) := by
+  intro index tree leafIdx payload hinput
+  rw [queriedInputs_bind] at hinput
+  rcases List.mem_append.mp hinput with hinput | hinput
+  · exact hleft index tree leafIdx payload hinput
+  · exact hright index tree leafIdx payload hinput
+
+theorem AvoidsFtsLeafQueries.tweakableHash (parameter : PublicParameter)
+    (f : QueryImpl HashSpec Id) (domain : HashDomain) (payload : HashInput)
+    (hinRange : domain.InRange)
+    (hdomain : ∀ index tree leafIdx, domain ≠ .ftsLeaf index tree leafIdx) :
+    AvoidsFtsLeafQueries parameter f (Concrete.tweakableHash parameter domain payload) := by
+  intro index tree leafIdx candidate hinput
+  simp only [queriedInputs_tweakableHash, List.mem_singleton] at hinput
+  apply hdomain index tree leafIdx
+  exact (tweakableHashInput_injective parameter hinRange (by trivial) hinput.symm).1
+
+theorem avoidsFtsLeafQueries_sequenceFin {alpha : Type} {n : Nat}
+    (parameter : PublicParameter) (f : QueryImpl HashSpec Id)
+    (computation : Fin n → OracleComp HashSpec alpha)
+    (hcomputation : ∀ index, AvoidsFtsLeafQueries parameter f (computation index)) :
+    AvoidsFtsLeafQueries parameter f (sequenceFin computation) := by
+  induction n with
+  | zero => exact AvoidsFtsLeafQueries.pure parameter f _
+  | succ n ih =>
+      rw [sequenceFin]
+      apply AvoidsFtsLeafQueries.bind (hcomputation 0)
+      apply AvoidsFtsLeafQueries.bind
+      · exact ih (fun index : Fin n => computation index.succ)
+          (fun index => hcomputation index.succ)
+      · exact AvoidsFtsLeafQueries.pure parameter f _
+
+theorem avoidsFtsLeafQueries_chainWalk (parameter : PublicParameter)
+    (f : QueryImpl HashSpec Id) (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (chainIdx : ChainIndex) (start steps : Nat) (value : Digest) :
+    AvoidsFtsLeafQueries parameter f
+      (chainWalk parameter lay tree leafIdx chainIdx start steps value) := by
+  induction steps with
+  | zero => exact AvoidsFtsLeafQueries.pure parameter f value
+  | succ steps ih =>
+      rw [chainWalk]
+      apply AvoidsFtsLeafQueries.bind ih
+      split_ifs with hstep
+      · apply AvoidsFtsLeafQueries.tweakableHash
+        · trivial
+        intro _ _ _ hdomain
+        exact HashDomain.noConfusion hdomain
+      · exact AvoidsFtsLeafQueries.pure parameter f _
+
+theorem avoidsFtsLeafQueries_oneTimePublicKey (parameter : PublicParameter)
+    (f : QueryImpl HashSpec Id) (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (secret : ChainIndex → Digest) :
+    AvoidsFtsLeafQueries parameter f
+      (oneTimePublicKey parameter lay tree leafIdx secret) := by
+  apply avoidsFtsLeafQueries_sequenceFin
+  intro chainIdx
+  exact avoidsFtsLeafQueries_chainWalk parameter f lay tree leafIdx chainIdx 0
+    (chainLength - 1) (secret chainIdx)
+
+theorem avoidsFtsLeafQueries_treeNode (parameter : PublicParameter)
+    (f : QueryImpl HashSpec Id) (lay : Layer) (tree : TreeIndex)
+    (secret : LeafIndex → ChainIndex → Digest) (level nodeIdx : Nat)
+    (hlevel : level ≤ maxLayerHeight) (hrange : RootTreeRange level nodeIdx) :
+    AvoidsFtsLeafQueries parameter f (treeNode parameter lay tree secret level nodeIdx) := by
+  induction level generalizing nodeIdx with
+  | zero =>
+      rw [treeNode_zero_eq]
+      apply AvoidsFtsLeafQueries.bind
+      · exact avoidsFtsLeafQueries_oneTimePublicKey parameter f lay tree (leafOfNat nodeIdx)
+          (secret (leafOfNat nodeIdx))
+      · apply AvoidsFtsLeafQueries.tweakableHash
+        · trivial
+        intro _ _ _ hdomain
+        exact HashDomain.noConfusion hdomain
+  | succ level ih =>
+      rw [treeNode_succ_eq]
+      apply AvoidsFtsLeafQueries.bind
+      · exact ih (2 * nodeIdx) (by omega) (RootTreeRange.left hrange)
+      apply AvoidsFtsLeafQueries.bind
+      · exact ih (2 * nodeIdx + 1) (by omega) (RootTreeRange.right hrange)
+      · apply AvoidsFtsLeafQueries.tweakableHash
+        · simp only [HashDomain.InRange]
+          constructor
+          · norm_num [maxLayerHeight] at hlevel ⊢
+            omega
+          · have hnode := hrange.index_lt
+            norm_num [maxLayerHeight] at hnode ⊢
+            omega
+        intro _ _ _ hdomain
+        exact HashDomain.noConfusion hdomain
+
+theorem avoidsFtsLeafQueries_treeRoot (parameter : PublicParameter)
+    (f : QueryImpl HashSpec Id) (lay : Layer) (tree : TreeIndex)
+    (secret : LeafIndex → ChainIndex → Digest) :
+    AvoidsFtsLeafQueries parameter f (treeRoot parameter lay tree secret) := by
+  apply avoidsFtsLeafQueries_treeNode parameter f lay tree secret (layerHeight lay) 0
+  · exact layerHeight_le lay
+  · simp only [RootTreeRange, zero_add, mul_one]
+    exact pow_le_pow_right' (by omega) (layerHeight_le lay)
+
+theorem treeRoot_cache_ftsLeaf_none (parameter : PublicParameter)
+    (lay : Layer) (tree : TreeIndex) (secret : LeafIndex → ChainIndex → Digest)
+    (root : Digest) (rootCache : QueryCache HashSpec)
+    (hroot : (root, rootCache) ∈ support
+      ((simulateQ (randomOracle : QueryImpl HashSpec _)
+        (treeRoot parameter lay tree secret)).run ∅))
+    (index : Index) (ftsTree : FtsTree) (leafIdx : FtsLeaf) (payload : HashInput) :
+    rootCache (tweakableHashInput parameter (.ftsLeaf index ftsTree leafIdx) payload) = none := by
+  obtain ⟨f, hf⟩ := QueryCache.exists_agreesWithFn (spec := HashSpec) rootCache
+  apply cache_eq_none_of_not_mem_queriedInputs
+    (treeRoot parameter lay tree secret) ∅ root rootCache hroot f hf
+  · simp
+  · exact avoidsFtsLeafQueries_treeRoot parameter f lay tree secret
+      index ftsTree leafIdx payload
+
 end Concrete
 
 end SphincsSecurity

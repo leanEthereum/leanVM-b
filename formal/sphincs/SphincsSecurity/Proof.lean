@@ -51,6 +51,7 @@ import SphincsSecurity.Proof.FewTimeCompare
 import SphincsSecurity.Proof.ForgeryClassify
 import SphincsSecurity.Proof.Replay
 import SphincsSecurity.Proof.Sampling
+import SphincsSecurity.Proof.SecretProbe
 import SphincsSecurity.Proof.OneTimeEvents
 import SphincsSecurity.Proof.TerminalCache
 import SphincsSecurity.Proof.EncodingTarget
@@ -117,6 +118,7 @@ import SphincsSecurity.Proof.MandatoryQueries
 import SphincsSecurity.Proof.TerminalArith
 import SphincsSecurity.Proof.TerminalBudget
 import SphincsSecurity.Proof.TerminalSampling
+import SphincsSecurity.Proof.SecretProbeTerminal
 import SphincsSecurity.Proof.EncodingSelectionSampling
 import SphincsSecurity.Proof.TerminalFinish
 import SphincsSecurity.Proof.TerminalResidual
