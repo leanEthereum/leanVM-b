@@ -53,17 +53,61 @@ def ViewedTerminalWitnessFor (parameter : PublicParameter)
         result.2.trace.signing.toSigningLog result.1.2.1
           (digestIndex digest) (digestLeaves digest)
 
+def ViewedWinningTerminalWitnessFor (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (event : QueryImpl HashSpec Id → QueryCache HashSpec → SecretKey →
+      QueryLog SigningSpec → Forgery → Index → (DigestTree → FtsLeaf) → Prop)
+    (result : (Digest × Forgery × Bool) × ViewedFullTraceState) : Prop :=
+  ∃ (f : QueryImpl HashSpec Id) (digest : MessageDigest),
+    result.2.cache.AgreesWithFn f
+      ∧ SigningTranscript.Valid result.2.trace.signing.toSigningLog
+      ∧ ¬SigningTranscript.Contains result.2.trace.signing.toSigningLog result.1.2.1
+      ∧ evalWithAnswerFn f
+          (messageDigest parameter result.1.1 result.1.2.1.message
+            result.1.2.1.signature.randomness) = digest
+      ∧ Admissible digest
+      ∧ evalWithAnswerFn f
+          (verify ⟨result.1.1, parameter⟩ result.1.2.1.message result.1.2.1.signature) = true
+      ∧ event f result.2.cache ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+        result.2.trace.signing.toSigningLog result.1.2.1
+          (digestIndex digest) (digestLeaves digest)
+
+theorem ViewedWinningTerminalWitnessFor.toViewed
+    {parameter : PublicParameter}
+    {otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest}
+    {ftsSecret : Index → FtsTree → FtsLeaf → Digest}
+    {event : QueryImpl HashSpec Id → QueryCache HashSpec → SecretKey →
+      QueryLog SigningSpec → Forgery → Index → (DigestTree → FtsLeaf) → Prop}
+    {result : (Digest × Forgery × Bool) × ViewedFullTraceState}
+    (hwitness : ViewedWinningTerminalWitnessFor parameter otsSecret ftsSecret event result) :
+    ViewedTerminalWitnessFor parameter otsSecret ftsSecret event result := by
+  obtain ⟨f, digest, hf, hvalid, hnotContains, hdigest, hadmissible, _, hevent⟩ := hwitness
+  exact ⟨f, digest, hf, hvalid, hnotContains, hdigest, hadmissible, hevent⟩
+
 def ViewedTerminalWitness (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :=
   ViewedTerminalWitnessFor parameter otsSecret ftsSecret TerminalForgeryEvent
 
+def ViewedWinningTerminalWitness (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :=
+  ViewedWinningTerminalWitnessFor parameter otsSecret ftsSecret TerminalForgeryEvent
+
 def ViewedFreshLayerOpeningWitness (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :=
   ViewedTerminalWitnessFor parameter otsSecret ftsSecret
-    fun f cache secretKey signingLog forgery index _ =>
-      ForgedFreshLayerOpening f cache secretKey signingLog index forgery.signature
+    fun f cache secretKey signingLog forgery index leaves =>
+      ForgedFreshLayerOpening f cache secretKey signingLog index leaves forgery.signature
+
+def ViewedWinningFreshLayerOpeningWitness (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :=
+  ViewedWinningTerminalWitnessFor parameter otsSecret ftsSecret
+    fun f cache secretKey signingLog forgery index leaves =>
+      ForgedFreshLayerOpening f cache secretKey signingLog index leaves forgery.signature
 
 def ViewedEncodingCollisionWitness (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
@@ -76,8 +120,15 @@ def ViewedBackwardChainOpeningWitness (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :=
   ViewedTerminalWitnessFor parameter otsSecret ftsSecret
-    fun f cache secretKey signingLog forgery index _ =>
-      ForgedBackwardChainOpening f cache secretKey signingLog index forgery.signature
+    fun f cache secretKey signingLog forgery index leaves =>
+      ForgedBackwardChainOpening f cache secretKey signingLog index leaves forgery.signature
+
+def ViewedWinningBackwardChainOpeningWitness (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :=
+  ViewedWinningTerminalWitnessFor parameter otsSecret ftsSecret
+    fun f cache secretKey signingLog forgery index leaves =>
+      ForgedBackwardChainOpening f cache secretKey signingLog index leaves forgery.signature
 
 def ViewedMessageDigestCollisionWitness (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
@@ -110,7 +161,7 @@ theorem gameAfterSecretsWithViewTrace_winning_terminal_classify
       (gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret))
     (hwin : result.1.2.2 = true) :
     Bad parameter otsSecret ftsSecret result.2.cache ∨
-      ViewedTerminalWitness parameter otsSecret ftsSecret result := by
+      ViewedWinningTerminalWitness parameter otsSecret ftsSecret result := by
   rw [gameAfterSecretsWithViewTrace, mem_support_bind_iff] at hresult
   obtain ⟨⟨root, rootCache⟩, hroot, hrest⟩ := hresult
   rw [mem_support_bind_iff] at hrest
@@ -205,34 +256,34 @@ theorem gameAfterSecretsWithViewTrace_winning_terminal_classify
     rcases hclassified with hbad | hobstacle | hfull
     · exact Or.inl hbad
     · rcases forgedLayerObstacle_classify f finalCache secretKey
-          state.trace.signing.toSigningLog index forgery.signature hobstacle with
+          state.trace.signing.toSigningLog index leaves forgery.signature hobstacle with
         hfresh | hencoding | hbackward
       · exact Or.inr ⟨f, digest, hf, htranscript.1, htranscript.2, hdigest,
-          hadmissible, Or.inl hfresh⟩
+          hadmissible, heval, Or.inl hfresh⟩
       · exact Or.inr ⟨f, digest, hf, htranscript.1, htranscript.2, hdigest,
-          hadmissible, Or.inr (Or.inl hencoding)⟩
+          hadmissible, heval, Or.inr (Or.inl hencoding)⟩
       · exact Or.inr ⟨f, digest, hf, htranscript.1, htranscript.2, hdigest,
-          hadmissible, Or.inr (Or.inr (Or.inl hbackward))⟩
+          hadmissible, heval, Or.inr (Or.inr (Or.inl hbackward))⟩
     · rcases fewTimeLeak_or_uncovered f finalCache secretKey state.trace.signing.toSigningLog
           index leaves with hleak | ⟨tree, huncovered⟩
       · rcases fullyHonest_leak_classify f finalCache secretKey
             state.trace.signing.toSigningLog forgery digest index leaves hdigest hdigestRun rfl rfl
               hfull htranscript.2 hleak with hcollision | hobstacle | hproper
         · exact Or.inr ⟨f, digest, hf, htranscript.1, htranscript.2, hdigest,
-            hadmissible, Or.inr (Or.inr (Or.inr (Or.inl ⟨hcollision, hleak⟩)))⟩
+            hadmissible, heval, Or.inr (Or.inr (Or.inr (Or.inl ⟨hcollision, hleak⟩)))⟩
         · rcases forgedLayerObstacle_classify f finalCache secretKey
-              state.trace.signing.toSigningLog index forgery.signature hobstacle with
+              state.trace.signing.toSigningLog index leaves forgery.signature hobstacle with
             hfresh | hencoding | hbackward
           · exact Or.inr ⟨f, digest, hf, htranscript.1, htranscript.2, hdigest,
-              hadmissible, Or.inl hfresh⟩
+              hadmissible, heval, Or.inl hfresh⟩
           · exact Or.inr ⟨f, digest, hf, htranscript.1, htranscript.2, hdigest,
-              hadmissible, Or.inr (Or.inl hencoding)⟩
+              hadmissible, heval, Or.inr (Or.inl hencoding)⟩
           · exact Or.inr ⟨f, digest, hf, htranscript.1, htranscript.2, hdigest,
-              hadmissible, Or.inr (Or.inr (Or.inl hbackward))⟩
+              hadmissible, heval, Or.inr (Or.inr (Or.inl hbackward))⟩
         · exact Or.inr ⟨f, digest, hf, htranscript.1, htranscript.2, hdigest,
-            hadmissible, Or.inr (Or.inr (Or.inr (Or.inr (Or.inl hproper))))⟩
+            hadmissible, heval, Or.inr (Or.inr (Or.inr (Or.inr (Or.inl hproper))))⟩
       · exact Or.inr ⟨f, digest, hf, htranscript.1, htranscript.2, hdigest,
-          hadmissible, Or.inr (Or.inr (Or.inr (Or.inr (Or.inr
+          hadmissible, heval, Or.inr (Or.inr (Or.inr (Or.inr (Or.inr
             ⟨tree, huncovered, (hfull.2.1 tree).1, by
               apply hftsRun
               exact ftsRecover_leaf_query_mem f parameter index leaves
@@ -256,6 +307,32 @@ theorem viewedTerminalWitness_cases (parameter : PublicParameter)
       ⟨f, digest, hf, hvalid, hnotContains, hdigest, hadmissible, hencoding⟩)
   · exact Or.inr (Or.inr (Or.inl
       ⟨f, digest, hf, hvalid, hnotContains, hdigest, hadmissible, hbackward⟩))
+  · exact Or.inr (Or.inr (Or.inr (Or.inl
+      ⟨f, digest, hf, hvalid, hnotContains, hdigest, hadmissible, hmessage⟩)))
+  · exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inl
+      ⟨f, digest, hf, hvalid, hnotContains, hdigest, hadmissible, hfewTime⟩))))
+  · exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr
+      ⟨f, digest, hf, hvalid, hnotContains, hdigest, hadmissible, huncovered⟩))))
+
+theorem viewedWinningTerminalWitness_cases (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (result : (Digest × Forgery × Bool) × ViewedFullTraceState)
+    (hwitness : ViewedWinningTerminalWitness parameter otsSecret ftsSecret result) :
+    ViewedWinningFreshLayerOpeningWitness parameter otsSecret ftsSecret result
+      ∨ ViewedEncodingCollisionWitness parameter otsSecret ftsSecret result
+      ∨ ViewedWinningBackwardChainOpeningWitness parameter otsSecret ftsSecret result
+      ∨ ViewedMessageDigestCollisionWitness parameter otsSecret ftsSecret result
+      ∨ ViewedProperFewTimeLeakWitness parameter otsSecret ftsSecret result
+      ∨ ViewedUncoveredFtsSecretWitness parameter otsSecret ftsSecret result := by
+  obtain ⟨f, digest, hf, hvalid, hnotContains, hdigest, hadmissible, hverified,
+    hterminal⟩ := hwitness
+  rcases hterminal with hfresh | hencoding | hbackward | hmessage | hfewTime | huncovered
+  · exact Or.inl ⟨f, digest, hf, hvalid, hnotContains, hdigest, hadmissible, hverified, hfresh⟩
+  · exact Or.inr (Or.inl
+      ⟨f, digest, hf, hvalid, hnotContains, hdigest, hadmissible, hencoding⟩)
+  · exact Or.inr (Or.inr (Or.inl
+      ⟨f, digest, hf, hvalid, hnotContains, hdigest, hadmissible, hverified, hbackward⟩))
   · exact Or.inr (Or.inr (Or.inr (Or.inl
       ⟨f, digest, hf, hvalid, hnotContains, hdigest, hadmissible, hmessage⟩)))
   · exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inl
@@ -335,15 +412,15 @@ theorem probEvent_winning_clean_viewedTerminalWitness_le (parameter : PublicPara
     (run : ProbComp ((Digest × Forgery × Bool) × ViewedFullTraceState)) :
     Pr[fun result =>
         (¬Bad parameter otsSecret ftsSecret result.2.cache ∧ result.1.2.2 = true) ∧
-          ViewedTerminalWitness parameter otsSecret ftsSecret result | run] ≤
+          ViewedWinningTerminalWitness parameter otsSecret ftsSecret result | run] ≤
       Pr[fun result =>
           (¬Bad parameter otsSecret ftsSecret result.2.cache ∧ result.1.2.2 = true) ∧
-            ViewedFreshLayerOpeningWitness parameter otsSecret ftsSecret result | run] +
+            ViewedWinningFreshLayerOpeningWitness parameter otsSecret ftsSecret result | run] +
       (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
           ViewedEncodingCollisionWitness parameter otsSecret ftsSecret result | run] +
       (Pr[fun result =>
           (¬Bad parameter otsSecret ftsSecret result.2.cache ∧ result.1.2.2 = true) ∧
-            ViewedBackwardChainOpeningWitness parameter otsSecret ftsSecret result | run] +
+            ViewedWinningBackwardChainOpeningWitness parameter otsSecret ftsSecret result | run] +
       (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
           ViewedMessageDigestCollisionWitness parameter otsSecret ftsSecret result | run] +
       (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
@@ -353,9 +430,9 @@ theorem probEvent_winning_clean_viewedTerminalWitness_le (parameter : PublicPara
   classical
   let guard := fun result : (Digest × Forgery × Bool) × ViewedFullTraceState =>
     ¬Bad parameter otsSecret ftsSecret result.2.cache ∧ result.1.2.2 = true
-  let fresh := ViewedFreshLayerOpeningWitness parameter otsSecret ftsSecret
+  let fresh := ViewedWinningFreshLayerOpeningWitness parameter otsSecret ftsSecret
   let encoding := ViewedEncodingCollisionWitness parameter otsSecret ftsSecret
-  let backward := ViewedBackwardChainOpeningWitness parameter otsSecret ftsSecret
+  let backward := ViewedWinningBackwardChainOpeningWitness parameter otsSecret ftsSecret
   let message := ViewedMessageDigestCollisionWitness parameter otsSecret ftsSecret
   let proper := ViewedProperFewTimeLeakWitness parameter otsSecret ftsSecret
   let uncovered := ViewedUncoveredFtsSecretWitness parameter otsSecret ftsSecret
@@ -365,7 +442,8 @@ theorem probEvent_winning_clean_viewedTerminalWitness_le (parameter : PublicPara
             uncovered result) | run] := by
       apply probEvent_mono
       intro result _ hresult
-      exact ⟨hresult.1, viewedTerminalWitness_cases parameter otsSecret ftsSecret result hresult.2⟩
+      exact ⟨hresult.1,
+        viewedWinningTerminalWitness_cases parameter otsSecret ftsSecret result hresult.2⟩
     _ ≤ Pr[fun result => guard result ∧ fresh result | run] +
         (Pr[fun result => guard result ∧ encoding result | run] +
         (Pr[fun result => guard result ∧ backward result | run] +
@@ -622,12 +700,12 @@ theorem probEvent_win_le_viewed_bad_add_terminal_cases (adversary : Adversary)
       Pr[fun result => Bad parameter otsSecret ftsSecret result.2.cache | run] +
       (Pr[fun result =>
         (¬Bad parameter otsSecret ftsSecret result.2.cache ∧ result.1.2.2 = true) ∧
-          ViewedFreshLayerOpeningWitness parameter otsSecret ftsSecret result | run] +
+          ViewedWinningFreshLayerOpeningWitness parameter otsSecret ftsSecret result | run] +
       (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
         ViewedEncodingCollisionWitness parameter otsSecret ftsSecret result | run] +
       (Pr[fun result =>
         (¬Bad parameter otsSecret ftsSecret result.2.cache ∧ result.1.2.2 = true) ∧
-          ViewedBackwardChainOpeningWitness parameter otsSecret ftsSecret result | run] +
+          ViewedWinningBackwardChainOpeningWitness parameter otsSecret ftsSecret result | run] +
       (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
         ViewedMessageDigestCollisionWitness parameter otsSecret ftsSecret result | run] +
       (Pr[fun result => ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
@@ -648,7 +726,7 @@ theorem probEvent_win_le_viewed_bad_add_terminal_cases (adversary : Adversary)
       rfl
     _ ≤ Pr[fun result => Bad parameter otsSecret ftsSecret result.2.cache ∨
           ((¬Bad parameter otsSecret ftsSecret result.2.cache ∧ result.1.2.2 = true) ∧
-            ViewedTerminalWitness parameter otsSecret ftsSecret result) | run] := by
+            ViewedWinningTerminalWitness parameter otsSecret ftsSecret result) | run] := by
       apply probEvent_mono
       intro result hresult hwin
       rcases gameAfterSecretsWithViewTrace_winning_terminal_classify adversary parameter
@@ -660,7 +738,7 @@ theorem probEvent_win_le_viewed_bad_add_terminal_cases (adversary : Adversary)
     _ ≤ Pr[fun result => Bad parameter otsSecret ftsSecret result.2.cache | run] +
         Pr[fun result =>
           (¬Bad parameter otsSecret ftsSecret result.2.cache ∧ result.1.2.2 = true) ∧
-            ViewedTerminalWitness parameter otsSecret ftsSecret result | run] :=
+            ViewedWinningTerminalWitness parameter otsSecret ftsSecret result | run] :=
       probEvent_or_le _ _ _
     _ ≤ _ := by
       gcongr

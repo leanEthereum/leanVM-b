@@ -21,11 +21,35 @@ def LayerObstacle (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
       ∧ (¬ SignedLayerAt f cache secretKey signingLog lay tree leafIdx
         ∨ LayerComparisonFailure f cache secretKey signingLog lay tree leafIdx message counter)
 
+def VerifierLayerMessage (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
+    (index : Index) (leaves : DigestTree → FtsLeaf) (signature : Signature)
+    (lay : Layer) (message : Digest) : Prop :=
+  let ftsPublicKey := evalWithAnswerFn f
+    (ftsRecover parameter index leaves signature.ftsSecret signature.ftsPath)
+  ∃ bottomLeaf,
+    evalWithAnswerFn f (otsLeaf parameter bottomLayer (treeIndexAt index bottomLayer)
+        (leafIndexAt index bottomLayer) ftsPublicKey (signature.counter bottomLayer)
+        (signature.chainValue bottomLayer)) = some bottomLeaf
+      ∧ let middleMessage := foldValue f parameter bottomLayer
+          (treeIndexAt index bottomLayer) (leafIndexAt index bottomLayer)
+          (signaturePath signature bottomLayer) bottomLeaf (layerHeight bottomLayer)
+        ∃ middleLeaf,
+          evalWithAnswerFn f (otsLeaf parameter middleLayer (treeIndexAt index middleLayer)
+              (leafIndexAt index middleLayer) middleMessage (signature.counter middleLayer)
+              (signature.chainValue middleLayer)) = some middleLeaf
+            ∧ let topMessage := foldValue f parameter middleLayer
+                (treeIndexAt index middleLayer) (leafIndexAt index middleLayer)
+                (signaturePath signature middleLayer) middleLeaf (layerHeight middleLayer)
+              (lay = bottomLayer ∧ message = ftsPublicKey)
+                ∨ (lay = middleLayer ∧ message = middleMessage)
+                ∨ (lay = topLayer ∧ message = topMessage)
+
 def ForgedLayerObstacle (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
     (secretKey : SecretKey) (signingLog : QueryLog SigningSpec) (index : Index)
-    (signature : Signature) : Prop :=
+    (leaves : DigestTree → FtsLeaf) (signature : Signature) : Prop :=
   ∃ (lay : Layer) (message : Digest),
-    HonestLayerOpening f secretKey.parameter secretKey.otsSecret lay
+    VerifierLayerMessage f secretKey.parameter index leaves signature lay message
+      ∧ HonestLayerOpening f secretKey.parameter secretKey.otsSecret lay
         (treeIndexAt index lay) (leafIndexAt index lay) message (signature.counter lay)
         (signature.chainValue lay) (signaturePath signature lay)
       ∧ CachedRun cache f (otsLeaf secretKey.parameter lay (treeIndexAt index lay)
@@ -38,10 +62,10 @@ def ForgedLayerObstacle (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec
 theorem ForgedLayerObstacle.toLayerObstacle
     {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec}
     {secretKey : SecretKey} {signingLog : QueryLog SigningSpec} {index : Index}
-    {signature : Signature}
-    (hobstacle : ForgedLayerObstacle f cache secretKey signingLog index signature) :
+    {leaves : DigestTree → FtsLeaf} {signature : Signature}
+    (hobstacle : ForgedLayerObstacle f cache secretKey signingLog index leaves signature) :
     LayerObstacle f cache secretKey signingLog := by
-  obtain ⟨lay, message, hopening, hcached, hfailure⟩ := hobstacle
+  obtain ⟨lay, message, _, hopening, hcached, hfailure⟩ := hobstacle
   exact ⟨lay, treeIndexAt index lay, leafIndexAt index lay, message,
     signature.counter lay, signature.chainValue lay, signaturePath signature lay,
     hopening, hcached, hfailure⟩
@@ -71,6 +95,8 @@ def FullyHonestOpening (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
             (Nat.xor ((leaves (ftsIndexOf tree)).val / 2 ^ level) 1))
     ∧ CachedRun cache f
       (ftsRecover secretKey.parameter index leaves signature.ftsSecret signature.ftsPath)
+    ∧ ∀ lay, VerifierLayerMessage f secretKey.parameter index leaves signature lay
+      (evalWithAnswerFn f (layerMessage secretKey index lay))
 
 theorem middleTree_eq_of_top_position_eq (leftIndex rightIndex : Index)
     (htree : treeIndexAt leftIndex topLayer = treeIndexAt rightIndex topLayer)
@@ -147,7 +173,7 @@ theorem accepted_forgery_classify (f : QueryImpl HashSpec Id) (cache : QueryCach
     (hftsRun : CachedRun cache f
       (ftsRecover secretKey.parameter index leaves signature.ftsSecret signature.ftsPath)) :
     Bad secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache
-      ∨ ForgedLayerObstacle f cache secretKey signingLog index signature
+      ∨ ForgedLayerObstacle f cache secretKey signingLog index leaves signature
       ∨ FullyHonestOpening f cache secretKey index leaves signature := by
   obtain ⟨bottomLeaf, hbottom, middleLeaf, hmiddle, htopOpening, htopRun⟩ := htop
   let middleMessage := foldValue f secretKey.parameter bottomLayer
@@ -156,6 +182,20 @@ theorem accepted_forgery_classify (f : QueryImpl HashSpec Id) (cache : QueryCach
   let topMessage := foldValue f secretKey.parameter middleLayer
     (treeIndexAt index middleLayer) (leafIndexAt index middleLayer)
     (signaturePath signature middleLayer) middleLeaf (layerHeight middleLayer)
+  have hverifierBottom : VerifierLayerMessage f secretKey.parameter index leaves signature
+      bottomLayer ftsPublicKey := by
+    simp only [VerifierLayerMessage, hftsPublicKey]
+    exact ⟨bottomLeaf, hbottom.1, middleLeaf, hmiddle.1, Or.inl ⟨trivial, trivial⟩⟩
+  have hverifierMiddle : VerifierLayerMessage f secretKey.parameter index leaves signature
+      middleLayer middleMessage := by
+    simp only [VerifierLayerMessage, hftsPublicKey]
+    exact ⟨bottomLeaf, hbottom.1, middleLeaf, hmiddle.1,
+      Or.inr (Or.inl ⟨trivial, rfl⟩)⟩
+  have hverifierTop : VerifierLayerMessage f secretKey.parameter index leaves signature
+      topLayer topMessage := by
+    simp only [VerifierLayerMessage, hftsPublicKey]
+    exact ⟨bottomLeaf, hbottom.1, middleLeaf, hmiddle.1,
+      Or.inr (Or.inr ⟨trivial, rfl⟩)⟩
   by_cases hsignedTop : SignedLayerAt f cache secretKey signingLog topLayer
       (treeIndexAt index topLayer) (leafIndexAt index topLayer)
   · rcases hsignedTop.exact_or_failure topMessage (signature.counter topLayer)
@@ -263,26 +303,34 @@ theorem accepted_forgery_classify (f : QueryImpl HashSpec Id) (cache : QueryCach
                         (signature.counter bottomLayer) (signature.chainValue bottomLayer)) := by
                       rw [hbottomEval]
                       exact hbottom.2.2.1
-                    refine ⟨?_, hhonest, hftsRun⟩
-                    intro lay
-                    fin_cases lay
-                    · exact ⟨by simpa only [topLayer] using htopOpening', by
-                        simpa only [topLayer] using htopRun'⟩
-                    · exact ⟨by simpa only [middleLayer] using hmiddleOpening', by
-                        simpa only [middleLayer] using hmiddleRun'⟩
-                    · exact ⟨by simpa only [bottomLayer, numLayers] using hbottomOpening', by
-                        simpa only [bottomLayer, numLayers] using hbottomRun'⟩
-                · exact Or.inr (Or.inl ⟨bottomLayer, ftsPublicKey, hbottomOpening,
+                    refine ⟨?_, hhonest, hftsRun, ?_⟩
+                    · intro lay
+                      fin_cases lay
+                      · exact ⟨by simpa only [topLayer] using htopOpening', by
+                          simpa only [topLayer] using htopRun'⟩
+                      · exact ⟨by simpa only [middleLayer] using hmiddleOpening', by
+                          simpa only [middleLayer] using hmiddleRun'⟩
+                      · exact ⟨by simpa only [bottomLayer, numLayers] using hbottomOpening', by
+                          simpa only [bottomLayer, numLayers] using hbottomRun'⟩
+                    · intro lay
+                      fin_cases lay
+                      · rw [show (⟨0, by decide⟩ : Layer) = topLayer by rfl, htopEval]
+                        exact hverifierTop
+                      · rw [show (⟨1, by decide⟩ : Layer) = middleLayer by rfl, hmiddleEval]
+                        exact hverifierMiddle
+                      · rw [show (⟨2, by decide⟩ : Layer) = bottomLayer by rfl, hbottomEval]
+                        exact hverifierBottom
+                · exact Or.inr (Or.inl ⟨bottomLayer, ftsPublicKey, hverifierBottom, hbottomOpening,
                     hbottom.2.2.1, Or.inr hfailure⟩)
-              · exact Or.inr (Or.inl ⟨bottomLayer, ftsPublicKey, hbottomOpening,
+              · exact Or.inr (Or.inl ⟨bottomLayer, ftsPublicKey, hverifierBottom, hbottomOpening,
                   hbottom.2.2.1, Or.inl hsignedBottom⟩)
-          · exact Or.inr (Or.inl ⟨middleLayer, middleMessage, hmiddleOpening,
+          · exact Or.inr (Or.inl ⟨middleLayer, middleMessage, hverifierMiddle, hmiddleOpening,
               hmiddle.2.2.1, Or.inr hfailure⟩)
-        · exact Or.inr (Or.inl ⟨middleLayer, middleMessage, hmiddleOpening,
+        · exact Or.inr (Or.inl ⟨middleLayer, middleMessage, hverifierMiddle, hmiddleOpening,
             hmiddle.2.2.1, Or.inl hsignedMiddle⟩)
-    · exact Or.inr (Or.inl ⟨topLayer, topMessage, htopOpening, htopRun,
+    · exact Or.inr (Or.inl ⟨topLayer, topMessage, hverifierTop, htopOpening, htopRun,
         Or.inr hfailure⟩)
-  · exact Or.inr (Or.inl ⟨topLayer, topMessage, htopOpening, htopRun,
+  · exact Or.inr (Or.inl ⟨topLayer, topMessage, hverifierTop, htopOpening, htopRun,
       Or.inl hsignedTop⟩)
 
 theorem winning_support_classify (adversary : Adversary) (parameter : PublicParameter)

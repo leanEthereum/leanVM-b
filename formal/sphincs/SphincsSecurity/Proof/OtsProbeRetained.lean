@@ -254,7 +254,21 @@ def WinningRetainedWitnessFor (parameter : PublicParameter)
     (event : QueryImpl HashSpec Id → QueryCache HashSpec → SecretKey →
       QueryLog SigningSpec → Forgery → Index → (DigestTree → FtsLeaf) → Prop)
     (result : RetainedGameResult × QueryCache HashSpec) : Prop :=
-  result.1.2.2 = true ∧ RetainedWitnessFor parameter table ftsSecret event result
+  let root := result.1.1
+  let forgery := result.1.2.1.1
+  let log := result.1.2.1.2
+  result.1.2.2 = true ∧
+    ∃ (f : QueryImpl HashSpec Id) (digest : MessageDigest),
+      result.2.AgreesWithFn f
+        ∧ SigningTranscript.Valid log
+        ∧ ¬SigningTranscript.Contains log forgery
+        ∧ evalWithAnswerFn f
+            (messageDigest parameter root forgery.message forgery.signature.randomness) = digest
+        ∧ Admissible digest
+        ∧ evalWithAnswerFn f
+            (verify ⟨root, parameter⟩ forgery.message forgery.signature) = true
+        ∧ event f result.2 ⟨parameter, root, tableOtsSecret table, ftsSecret⟩
+          log forgery (digestIndex digest) (digestLeaves digest)
 
 def WinningRetainedLogWitnessFor (parameter : PublicParameter)
     (table : Coordinate → HashOutput)
@@ -262,7 +276,22 @@ def WinningRetainedLogWitnessFor (parameter : PublicParameter)
     (event : QueryImpl HashSpec Id → QueryCache HashSpec → SecretKey →
       QueryLog SigningSpec → Forgery → Index → (DigestTree → FtsLeaf) → Prop)
     (result : RetainedGameLogResult) : Prop :=
-  result.1.2.2 = true ∧ RetainedLogWitnessFor parameter table ftsSecret event result
+  let root := result.1.1
+  let forgery := result.1.2.1
+  let cache := result.2.1
+  let log := result.2.2
+  result.1.2.2 = true ∧
+    ∃ (f : QueryImpl HashSpec Id) (digest : MessageDigest),
+      cache.AgreesWithFn f
+        ∧ SigningTranscript.Valid log
+        ∧ ¬SigningTranscript.Contains log forgery
+        ∧ evalWithAnswerFn f
+            (messageDigest parameter root forgery.message forgery.signature.randomness) = digest
+        ∧ Admissible digest
+        ∧ evalWithAnswerFn f
+            (verify ⟨root, parameter⟩ forgery.message forgery.signature) = true
+        ∧ event f cache ⟨parameter, root, tableOtsSecret table, ftsSecret⟩
+          log forgery (digestIndex digest) (digestLeaves digest)
 
 theorem viewedWitness_iff_logProjection
     (parameter : PublicParameter) (table : Coordinate → HashOutput)
@@ -282,7 +311,7 @@ theorem viewedWinningWitness_iff_logProjection
       QueryLog SigningSpec → Forgery → Index → (DigestTree → FtsLeaf) → Prop)
     (result : (Digest × Forgery × Bool) × ViewedFullTraceState) :
     (result.1.2.2 = true ∧
-      ViewedTerminalWitnessFor parameter (tableOtsSecret table) ftsSecret event result) ↔
+      ViewedWinningTerminalWitnessFor parameter (tableOtsSecret table) ftsSecret event result) ↔
       WinningRetainedLogWitnessFor parameter table ftsSecret event
         (viewedGameLogProjection result) := by
   rfl
@@ -356,7 +385,7 @@ theorem probEvent_viewedWinningWitness_le_actualRetained
     (event : QueryImpl HashSpec Id → QueryCache HashSpec → SecretKey →
       QueryLog SigningSpec → Forgery → Index → (DigestTree → FtsLeaf) → Prop) :
     Pr[fun result => result.1.2.2 = true ∧
-      ViewedTerminalWitnessFor parameter (tableOtsSecret table) ftsSecret event result |
+      ViewedWinningTerminalWitnessFor parameter (tableOtsSecret table) ftsSecret event result |
         gameAfterSecretsWithViewTrace adversary parameter (tableOtsSecret table) ftsSecret] ≤
       Pr[WinningRetainedWitnessFor parameter table ftsSecret event |
         actualRetainedGameAfterTable adversary parameter ftsSecret table] := by
@@ -387,29 +416,29 @@ def RetainedFreshLayerOpeningWitness (parameter : PublicParameter)
     (table : Coordinate → HashOutput)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :=
   RetainedWitnessFor parameter table ftsSecret
-    fun f cache secretKey log forgery index _ =>
-      ForgedFreshLayerOpening f cache secretKey log index forgery.signature
+    fun f cache secretKey log forgery index leaves =>
+      ForgedFreshLayerOpening f cache secretKey log index leaves forgery.signature
 
 def RetainedBackwardChainOpeningWitness (parameter : PublicParameter)
     (table : Coordinate → HashOutput)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :=
   RetainedWitnessFor parameter table ftsSecret
-    fun f cache secretKey log forgery index _ =>
-      ForgedBackwardChainOpening f cache secretKey log index forgery.signature
+    fun f cache secretKey log forgery index leaves =>
+      ForgedBackwardChainOpening f cache secretKey log index leaves forgery.signature
 
 def WinningRetainedFreshLayerOpeningWitness (parameter : PublicParameter)
     (table : Coordinate → HashOutput)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :=
   WinningRetainedWitnessFor parameter table ftsSecret
-    fun f cache secretKey log forgery index _ =>
-      ForgedFreshLayerOpening f cache secretKey log index forgery.signature
+    fun f cache secretKey log forgery index leaves =>
+      ForgedFreshLayerOpening f cache secretKey log index leaves forgery.signature
 
 def WinningRetainedBackwardChainOpeningWitness (parameter : PublicParameter)
     (table : Coordinate → HashOutput)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :=
   WinningRetainedWitnessFor parameter table ftsSecret
-    fun f cache secretKey log forgery index _ =>
-      ForgedBackwardChainOpening f cache secretKey log index forgery.signature
+    fun f cache secretKey log forgery index leaves =>
+      ForgedBackwardChainOpening f cache secretKey log index leaves forgery.signature
 
 theorem probEvent_cleanFresh_le_actualRetained
     (adversary : Adversary) (parameter : PublicParameter)
@@ -421,13 +450,13 @@ theorem probEvent_cleanFresh_le_actualRetained
         actualRetainedGameAfterTable adversary parameter ftsSecret table] := by
   calc
     _ ≤ Pr[fun result => result.1.2.2 = true ∧
-        ViewedFreshLayerOpeningWitness parameter (tableOtsSecret table) ftsSecret result |
+        ViewedWinningFreshLayerOpeningWitness parameter (tableOtsSecret table) ftsSecret result |
           gameAfterSecretsWithViewTrace adversary parameter (tableOtsSecret table)
             ftsSecret] := by
       exact probEvent_mono fun _ _ hevent => ⟨hevent.1.2, hevent.2⟩
     _ ≤ _ := probEvent_viewedWinningWitness_le_actualRetained adversary parameter table ftsSecret
-      (fun f cache secretKey log forgery index _ =>
-        ForgedFreshLayerOpening f cache secretKey log index forgery.signature)
+      (fun f cache secretKey log forgery index leaves =>
+        ForgedFreshLayerOpening f cache secretKey log index leaves forgery.signature)
 
 theorem probEvent_cleanBackward_le_actualRetained
     (adversary : Adversary) (parameter : PublicParameter)
@@ -439,12 +468,12 @@ theorem probEvent_cleanBackward_le_actualRetained
         actualRetainedGameAfterTable adversary parameter ftsSecret table] := by
   calc
     _ ≤ Pr[fun result => result.1.2.2 = true ∧
-        ViewedBackwardChainOpeningWitness parameter (tableOtsSecret table) ftsSecret result |
+        ViewedWinningBackwardChainOpeningWitness parameter (tableOtsSecret table) ftsSecret result |
           gameAfterSecretsWithViewTrace adversary parameter (tableOtsSecret table)
             ftsSecret] := by
       exact probEvent_mono fun _ _ hevent => ⟨hevent.1.2, hevent.2⟩
     _ ≤ _ := probEvent_viewedWinningWitness_le_actualRetained adversary parameter table ftsSecret
-      (fun f cache secretKey log forgery index _ =>
-        ForgedBackwardChainOpening f cache secretKey log index forgery.signature)
+      (fun f cache secretKey log forgery index leaves =>
+        ForgedBackwardChainOpening f cache secretKey log index leaves forgery.signature)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

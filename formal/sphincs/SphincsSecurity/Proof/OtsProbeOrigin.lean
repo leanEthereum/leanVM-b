@@ -5527,10 +5527,91 @@ theorem PublishedChainCoordinate.signedLayerAt
   exact ⟨lay, treeIndexAt index lay, leafIndexAt index lay, entry, signature, index, leaves,
     hentry, hresponse, hrun, hdigest, rfl, rfl, hmessage, hcached, hopening⟩
 
+theorem VerifierLayerMessage.otsLeaf_query_mem_verifyLayers
+    {f : QueryImpl HashSpec Id} {parameter : PublicParameter} {index : Index}
+    {leaves : DigestTree → FtsLeaf} {signature : Signature} {lay : Layer}
+    {message : Digest} {input : HashInput}
+    (hmessage : VerifierLayerMessage f parameter index leaves signature lay message)
+    (hquery : input ∈ queriedInputs f
+      (otsLeaf parameter lay (treeIndexAt index lay) (leafIndexAt index lay) message
+        (signature.counter lay) (signature.chainValue lay))) :
+    input ∈ queriedInputs f
+      (verifyLayers parameter index signature numLayers
+        (evalWithAnswerFn f
+          (ftsRecover parameter index leaves signature.ftsSecret signature.ftsPath))) := by
+  simp only [VerifierLayerMessage] at hmessage
+  obtain ⟨bottomLeaf, hbottom, middleLeaf, hmiddle, hposition⟩ := hmessage
+  rcases hposition with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩
+  · rw [show numLayers = bottomLayer.val + 1 by rfl, verifyLayers_succ_eq,
+      dif_pos bottomLayer.isLt]
+    exact queriedInputs_mono_bind_left f _ _ hquery
+  · rw [show numLayers = bottomLayer.val + 1 by rfl, verifyLayers_succ_eq,
+      dif_pos bottomLayer.isLt]
+    apply queriedInputs_mono_bind_right
+    rw [hbottom]
+    apply queriedInputs_mono_bind_right
+    change input ∈ queriedInputs f
+      (verifyLayers parameter index signature (middleLayer.val + 1)
+        (foldValue f parameter bottomLayer (treeIndexAt index bottomLayer)
+          (leafIndexAt index bottomLayer) (signaturePath signature bottomLayer) bottomLeaf
+          (layerHeight bottomLayer)))
+    rw [verifyLayers_succ_eq, dif_pos middleLayer.isLt]
+    simp only [show (⟨middleLayer.val, by exact middleLayer.isLt⟩ : Layer) = middleLayer by
+      exact Fin.ext rfl]
+    exact queriedInputs_mono_bind_left f _ _ hquery
+  · rw [show numLayers = bottomLayer.val + 1 by rfl, verifyLayers_succ_eq,
+      dif_pos bottomLayer.isLt]
+    apply queriedInputs_mono_bind_right
+    rw [hbottom]
+    apply queriedInputs_mono_bind_right
+    change input ∈ queriedInputs f
+      (verifyLayers parameter index signature (middleLayer.val + 1)
+        (foldValue f parameter bottomLayer (treeIndexAt index bottomLayer)
+          (leafIndexAt index bottomLayer) (signaturePath signature bottomLayer) bottomLeaf
+          (layerHeight bottomLayer)))
+    rw [verifyLayers_succ_eq, dif_pos middleLayer.isLt]
+    simp only [show (⟨middleLayer.val, by exact middleLayer.isLt⟩ : Layer) = middleLayer by
+      exact Fin.ext rfl]
+    apply queriedInputs_mono_bind_right
+    rw [hmiddle]
+    apply queriedInputs_mono_bind_right
+    change input ∈ queriedInputs f
+      (verifyLayers parameter index signature (topLayer.val + 1)
+        (foldValue f parameter middleLayer (treeIndexAt index middleLayer)
+          (leafIndexAt index middleLayer) (signaturePath signature middleLayer) middleLeaf
+          (layerHeight middleLayer)))
+    rw [verifyLayers_succ_eq, dif_pos topLayer.isLt]
+    simp only [show (⟨topLayer.val, by exact topLayer.isLt⟩ : Layer) = topLayer by
+      exact Fin.ext rfl]
+    exact queriedInputs_mono_bind_left f _ _ hquery
+
+theorem VerifierLayerMessage.otsLeaf_query_mem_verify
+    {f : QueryImpl HashSpec Id} {publicKey : PublicKey} {message : Message}
+    {signature : Signature} {digest : MessageDigest} {lay : Layer}
+    {layerMessage : Digest} {input : HashInput}
+    (hdigest : evalWithAnswerFn f
+      (messageDigest publicKey.parameter publicKey.root message signature.randomness) = digest)
+    (hadmissible : Admissible digest)
+    (hlayer : VerifierLayerMessage f publicKey.parameter (digestIndex digest)
+      (digestLeaves digest) signature lay layerMessage)
+    (hquery : input ∈ queriedInputs f
+      (otsLeaf publicKey.parameter lay (treeIndexAt (digestIndex digest) lay)
+        (leafIndexAt (digestIndex digest) lay) layerMessage (signature.counter lay)
+        (signature.chainValue lay))) :
+    input ∈ queriedInputs f (verify publicKey message signature) := by
+  rw [verify_eq, queriedInputs_bind]
+  apply List.mem_append_right
+  rw [hdigest]
+  simp only [hadmissible, not_true_eq_false, if_false, queriedInputs_bind]
+  apply List.mem_append_right
+  apply List.mem_append_left
+  exact VerifierLayerMessage.otsLeaf_query_mem_verifyLayers hlayer hquery
+
 theorem ForgedFreshLayerOpening.exists_uncovered_matching_probe
     {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
-    {signingLog : QueryLog SigningSpec} {index : Index} {signature : Signature}
-    (hfresh : ForgedFreshLayerOpening f cache secretKey signingLog index signature) :
+    {signingLog : QueryLog SigningSpec} {index : Index} {leaves : DigestTree → FtsLeaf}
+    {signature : Signature}
+    (hfresh : ForgedFreshLayerOpening f cache secretKey signingLog index leaves signature) :
     ∃ (probe : Probe) (input : HashInput),
       probe.Hits f secretKey.parameter secretKey.otsSecret secretKey.ftsSecret
         ∧ probe.MatchesInput secretKey.parameter input
@@ -5556,18 +5637,23 @@ theorem ForgedFreshLayerOpening.exists_uncovered_matching_probe
 
 theorem ForgedFreshLayerOpening.exists_uncovered_matching_chain_probe
     {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
-    {signingLog : QueryLog SigningSpec} {index : Index} {signature : Signature}
-    (hfresh : ForgedFreshLayerOpening f cache secretKey signingLog index signature) :
+    {signingLog : QueryLog SigningSpec} {index : Index} {leaves : DigestTree → FtsLeaf}
+    {signature : Signature}
+    (hfresh : ForgedFreshLayerOpening f cache secretKey signingLog index leaves signature) :
     ∃ (lay : Layer) (message : Digest) (codeword : Encoding)
         (chainIdx : ChainIndex) (_hdigit : (codeword chainIdx).val < chainLength - 1)
         (probe : Probe) (input : HashInput),
       evalWithAnswerFn f (encode secretKey.parameter lay (treeIndexAt index lay)
-          (leafIndexAt index lay) message (signature.counter lay)) = some codeword
+        (leafIndexAt index lay) message (signature.counter lay)) = some codeword
+        ∧ VerifierLayerMessage f secretKey.parameter index leaves signature lay message
+        ∧ input ∈ queriedInputs f
+          (otsLeaf secretKey.parameter lay (treeIndexAt index lay) (leafIndexAt index lay)
+            message (signature.counter lay) (signature.chainValue lay))
         ∧ probe.Hits f secretKey.parameter secretKey.otsSecret secretKey.ftsSecret
         ∧ probe.MatchesInput secretKey.parameter input
         ∧ cache input ≠ none
         ∧ ¬CoveredChainCoordinate f cache secretKey signingLog probe.coordinate := by
-  obtain ⟨lay, message, hopening, hforgedRun, hnotSigned⟩ := hfresh
+  obtain ⟨lay, message, hverifierMessage, hopening, hforgedRun, hnotSigned⟩ := hfresh
   obtain ⟨codeword, hencode, hvalues, _⟩ := hopening
   have hvalid := valid_of_eval_encode_eq_some f secretKey.parameter lay
     (treeIndexAt index lay) (leafIndexAt index lay) message (signature.counter lay)
@@ -5594,7 +5680,7 @@ theorem ForgedFreshLayerOpening.exists_uncovered_matching_chain_probe
     apply toProbe_matchesInput secretKey.parameter valueProbe input
     exact Or.inl ⟨step, by simp [valueProbe, step], rfl⟩
   refine ⟨lay, message, codeword, chainIdx, hdigit, toProbe valueProbe, input, hencode,
-    toProbe_hits hhit, hmatch, hforgedRun input hquery, ?_⟩
+    hverifierMessage, hquery, toProbe_hits hhit, hmatch, hforgedRun input hquery, ?_⟩
   intro hcovered
   obtain ⟨entry, publishedSignature, publishedIndex, leaves, publishedLay,
     publishedChainIdx, publishedCodeword, targetDigit, hentry, hresponse, hrun, hdigest,
@@ -5615,16 +5701,25 @@ theorem ForgedFreshLayerOpening.exists_uncovered_matching_chain_probe
 theorem ForgedBackwardChainOpening.exists_uncovered_matching_probe
     {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
     {signingLog : QueryLog SigningSpec} {forgedIndex : Index}
+    {forgedLeaves : DigestTree → FtsLeaf}
     {forgedSignature : Signature}
     (hbackward : ForgedBackwardChainOpening f cache secretKey signingLog forgedIndex
-      forgedSignature) :
+      forgedLeaves forgedSignature) :
     ∃ (probe : Probe) (input : HashInput),
-      probe.Hits f secretKey.parameter secretKey.otsSecret secretKey.ftsSecret
+      ∃ (lay : Layer) (forgedMessage : Digest),
+      VerifierLayerMessage f secretKey.parameter forgedIndex forgedLeaves forgedSignature lay
+          forgedMessage
+        ∧ input ∈ queriedInputs f
+          (otsLeaf secretKey.parameter lay (treeIndexAt forgedIndex lay)
+            (leafIndexAt forgedIndex lay) forgedMessage (forgedSignature.counter lay)
+            (forgedSignature.chainValue lay))
+        ∧ probe.Hits f secretKey.parameter secretKey.otsSecret secretKey.ftsSecret
         ∧ probe.MatchesInput secretKey.parameter input
         ∧ cache input ≠ none
         ∧ ¬CoveredChainCoordinate f cache secretKey signingLog probe.coordinate := by
   obtain ⟨lay, forgedMessage, entry, signedSignature, signedIndex, leaves, signedCodeword,
-    forgedCodeword, hforgedOpening, hforgedRun, hentry, hresponse, hsignRun, hdigest,
+    forgedCodeword, hverifierMessage, hforgedOpening, hforgedRun, hentry, hresponse, hsignRun,
+    hdigest,
     htree, hleaf, hmessage, hsignedOpening, hsignedCached, hsigned, hforged,
     chainIdx, hlt⟩ := hbackward
   obtain ⟨openingCodeword, hopeningEncode, hforgedValues, hpath⟩ := hforgedOpening
@@ -5659,7 +5754,8 @@ theorem ForgedBackwardChainOpening.exists_uncovered_matching_probe
   have hmatch : (toProbe valueProbe).MatchesInput secretKey.parameter input := by
     apply toProbe_matchesInput secretKey.parameter valueProbe input
     exact Or.inl ⟨step, by simp [valueProbe, step, hopeningCodeword], rfl⟩
-  refine ⟨toProbe valueProbe, input, toProbe_hits hhit, hmatch, hforgedRun input hquery, ?_⟩
+  refine ⟨toProbe valueProbe, input, lay, forgedMessage, hverifierMessage, hquery,
+    toProbe_hits hhit, hmatch, hforgedRun input hquery, ?_⟩
   intro hcovered
   obtain ⟨publishedEntry, publishedSignature, publishedIndex, publishedLeaves, publishedLay,
     publishedChain, publishedCodeword, targetDigit, hpublishedEntry, hpublishedResponse,

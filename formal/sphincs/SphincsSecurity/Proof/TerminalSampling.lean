@@ -119,7 +119,7 @@ def cleanFreshEvent (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
     (result : (Digest × Forgery × Bool) × ViewedFullTraceState) : Prop :=
   (¬Bad parameter otsSecret ftsSecret result.2.cache ∧ result.1.2.2 = true) ∧
-    ViewedFreshLayerOpeningWitness parameter otsSecret ftsSecret result
+    ViewedWinningFreshLayerOpeningWitness parameter otsSecret ftsSecret result
 
 def cleanEncodingEvent (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
@@ -133,7 +133,7 @@ def cleanBackwardEvent (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
     (result : (Digest × Forgery × Bool) × ViewedFullTraceState) : Prop :=
   (¬Bad parameter otsSecret ftsSecret result.2.cache ∧ result.1.2.2 = true) ∧
-    ViewedBackwardChainOpeningWitness parameter otsSecret ftsSecret result
+    ViewedWinningBackwardChainOpeningWitness parameter otsSecret ftsSecret result
 
 def cleanMessageEvent (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
@@ -205,7 +205,7 @@ theorem forgeAdvantage_le_reserved_add_sampled_remaining
           Pr[fun result =>
               (¬Bad secrets.parameter secrets.otsSecret secrets.ftsSecret result.2.cache ∧
                 result.1.2.2 = true) ∧
-              ViewedFreshLayerOpeningWitness secrets.parameter secrets.otsSecret
+              ViewedWinningFreshLayerOpeningWitness secrets.parameter secrets.otsSecret
                 secrets.ftsSecret result | run] +
           (Pr[fun result => ¬Bad secrets.parameter secrets.otsSecret secrets.ftsSecret
               result.2.cache ∧ ViewedEncodingCollisionWitness secrets.parameter
@@ -213,7 +213,7 @@ theorem forgeAdvantage_le_reserved_add_sampled_remaining
           (Pr[fun result =>
               (¬Bad secrets.parameter secrets.otsSecret secrets.ftsSecret result.2.cache ∧
                 result.1.2.2 = true) ∧
-              ViewedBackwardChainOpeningWitness secrets.parameter secrets.otsSecret
+              ViewedWinningBackwardChainOpeningWitness secrets.parameter secrets.otsSecret
                 secrets.ftsSecret result | run] +
           (Pr[fun result => ¬Bad secrets.parameter secrets.otsSecret secrets.ftsSecret
               result.2.cache ∧ ViewedMessageDigestCollisionWitness secrets.parameter

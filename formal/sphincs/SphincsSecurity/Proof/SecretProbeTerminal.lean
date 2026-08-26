@@ -216,7 +216,7 @@ theorem cleanFreshEvent_exists_hit_probe
     (hevent : cleanFreshEvent parameter otsSecret ftsSecret result) :
     ∃ (f : QueryImpl HashSpec Id) (probe : OtsValueProbe),
       result.2.cache.AgreesWithFn f ∧ probe.Hits f parameter otsSecret :=
-  hevent.2.exists_hit_probe
+  ViewedFreshLayerOpeningWitness.exists_hit_probe hevent.2.toViewed
 
 theorem cleanBackwardEvent_exists_hit_probe
     {parameter : PublicParameter}
@@ -227,6 +227,6 @@ theorem cleanBackwardEvent_exists_hit_probe
     ∃ (f : QueryImpl HashSpec Id) (probe : OtsValueProbe) (signedDigit : Digit),
       result.2.cache.AgreesWithFn f ∧ probe.Hits f parameter otsSecret
         ∧ probe.digit.val < signedDigit.val :=
-  hevent.2.exists_hit_probe
+  ViewedBackwardChainOpeningWitness.exists_hit_probe hevent.2.toViewed
 
 end SphincsSecurity.Concrete

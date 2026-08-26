@@ -113,9 +113,10 @@ def BackwardChainOpening (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpe
 
 def ForgedFreshLayerOpening (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
     (secretKey : SecretKey) (signingLog : QueryLog SigningSpec) (index : Index)
-    (signature : Signature) : Prop :=
+    (leaves : DigestTree → FtsLeaf) (signature : Signature) : Prop :=
   ∃ (lay : Layer) (message : Digest),
-    HonestLayerOpening f secretKey.parameter secretKey.otsSecret lay
+    VerifierLayerMessage f secretKey.parameter index leaves signature lay message
+      ∧ HonestLayerOpening f secretKey.parameter secretKey.otsSecret lay
         (treeIndexAt index lay) (leafIndexAt index lay) message (signature.counter lay)
         (signature.chainValue lay) (signaturePath signature lay)
       ∧ CachedRun cache f (otsLeaf secretKey.parameter lay (treeIndexAt index lay)
@@ -125,12 +126,14 @@ def ForgedFreshLayerOpening (f : QueryImpl HashSpec Id) (cache : QueryCache Hash
 
 def ForgedBackwardChainOpening (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
     (secretKey : SecretKey) (signingLog : QueryLog SigningSpec) (forgedIndex : Index)
-    (forgedSignature : Signature) : Prop :=
+    (forgedLeaves : DigestTree → FtsLeaf) (forgedSignature : Signature) : Prop :=
   ∃ (lay : Layer) (forgedMessage : Digest)
       (entry : (request : SignRequest) × SigningSpec.Range request) (signature : Signature)
       (index : Index) (leaves : DigestTree → FtsLeaf)
       (signedCodeword forgedCodeword : Encoding),
-    HonestLayerOpening f secretKey.parameter secretKey.otsSecret lay
+    VerifierLayerMessage f secretKey.parameter forgedIndex forgedLeaves forgedSignature lay
+        forgedMessage
+      ∧ HonestLayerOpening f secretKey.parameter secretKey.otsSecret lay
         (treeIndexAt forgedIndex lay) (leafIndexAt forgedIndex lay) forgedMessage
         (forgedSignature.counter lay) (forgedSignature.chainValue lay)
         (signaturePath forgedSignature lay)
@@ -162,13 +165,14 @@ def ForgedBackwardChainOpening (f : QueryImpl HashSpec Id) (cache : QueryCache H
 
 theorem forgedLayerObstacle_classify (f : QueryImpl HashSpec Id)
     (cache : QueryCache HashSpec) (secretKey : SecretKey)
-    (signingLog : QueryLog SigningSpec) (index : Index) (signature : Signature)
-    (hobstacle : ForgedLayerObstacle f cache secretKey signingLog index signature) :
-    ForgedFreshLayerOpening f cache secretKey signingLog index signature
+    (signingLog : QueryLog SigningSpec) (index : Index) (leaves : DigestTree → FtsLeaf)
+    (signature : Signature)
+    (hobstacle : ForgedLayerObstacle f cache secretKey signingLog index leaves signature) :
+    ForgedFreshLayerOpening f cache secretKey signingLog index leaves signature
       ∨ EncodingCollision f cache secretKey signingLog
-      ∨ ForgedBackwardChainOpening f cache secretKey signingLog index signature := by
-  obtain ⟨lay, message, hopening, hcached, hfresh | hfailure⟩ := hobstacle
-  · exact Or.inl ⟨lay, message, hopening, hcached, hfresh⟩
+      ∨ ForgedBackwardChainOpening f cache secretKey signingLog index leaves signature := by
+  obtain ⟨lay, message, hverifierMessage, hopening, hcached, hfresh | hfailure⟩ := hobstacle
+  · exact Or.inl ⟨lay, message, hverifierMessage, hopening, hcached, hfresh⟩
   · obtain ⟨entry, signedSignature, signedIndex, leaves, hentry, hresponse, hsignRun,
         hdigest, htree, hleaf, hmessage, hsignedOpening, hsignedCached,
         hencoding | hbackward⟩ := hfailure
@@ -178,25 +182,28 @@ theorem forgedLayerObstacle_classify (f : QueryImpl HashSpec Id)
         hsignRun, hdigest, htree, hleaf, hmessage, hsignedOpening, hsignedCached, hencoding⟩)
     · obtain ⟨signedCodeword, forgedCodeword, hsigned, hforged, hlt⟩ := hbackward
       exact Or.inr (Or.inr ⟨lay, message, entry, signedSignature, signedIndex, leaves,
-        signedCodeword, forgedCodeword, hopening, hcached, hentry, hresponse, hsignRun,
+        signedCodeword, forgedCodeword, hverifierMessage, hopening, hcached, hentry, hresponse,
+        hsignRun,
         hdigest, htree, hleaf, hmessage, hsignedOpening, hsignedCached, hsigned, hforged, hlt⟩)
 
 theorem ForgedFreshLayerOpening.toFreshLayerOpening
     {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
-    {signingLog : QueryLog SigningSpec} {index : Index} {signature : Signature}
-    (hfresh : ForgedFreshLayerOpening f cache secretKey signingLog index signature) :
+    {signingLog : QueryLog SigningSpec} {index : Index} {leaves : DigestTree → FtsLeaf}
+    {signature : Signature}
+    (hfresh : ForgedFreshLayerOpening f cache secretKey signingLog index leaves signature) :
     FreshLayerOpening f cache secretKey signingLog := by
-  obtain ⟨lay, message, hopening, hcached, hnotSigned⟩ := hfresh
+  obtain ⟨lay, message, _, hopening, hcached, hnotSigned⟩ := hfresh
   exact ⟨lay, treeIndexAt index lay, leafIndexAt index lay, message, signature.counter lay,
     signature.chainValue lay, signaturePath signature lay, hopening, hcached, hnotSigned⟩
 
 theorem ForgedBackwardChainOpening.toBackwardChainOpening
     {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
-    {signingLog : QueryLog SigningSpec} {index : Index} {signature : Signature}
-    (hbackward : ForgedBackwardChainOpening f cache secretKey signingLog index signature) :
+    {signingLog : QueryLog SigningSpec} {index : Index} {leaves : DigestTree → FtsLeaf}
+    {signature : Signature}
+    (hbackward : ForgedBackwardChainOpening f cache secretKey signingLog index leaves signature) :
     BackwardChainOpening f cache secretKey signingLog := by
   obtain ⟨lay, message, entry, signedSignature, signedIndex, leaves, signedCodeword,
-    forgedCodeword, hopening, hcached, hentry, hresponse, hsignRun, hdigest, htree, hleaf,
+    forgedCodeword, _, hopening, hcached, hentry, hresponse, hsignRun, hdigest, htree, hleaf,
     hmessage, hsignedOpening, hsignedCached, hsigned, hforged, hlt⟩ := hbackward
   exact ⟨lay, treeIndexAt index lay, leafIndexAt index lay, message, signature.counter lay,
     signature.chainValue lay, signaturePath signature lay, entry, signedSignature, signedIndex,
@@ -227,9 +234,9 @@ theorem layerObstacle_classify (f : QueryImpl HashSpec Id) (cache : QueryCache H
 def TerminalForgeryEvent (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
     (secretKey : SecretKey) (signingLog : QueryLog SigningSpec) (forgery : Forgery)
     (index : Index) (leaves : DigestTree → FtsLeaf) : Prop :=
-  ForgedFreshLayerOpening f cache secretKey signingLog index forgery.signature
+  ForgedFreshLayerOpening f cache secretKey signingLog index leaves forgery.signature
     ∨ EncodingCollision f cache secretKey signingLog
-    ∨ ForgedBackwardChainOpening f cache secretKey signingLog index forgery.signature
+    ∨ ForgedBackwardChainOpening f cache secretKey signingLog index leaves forgery.signature
     ∨ (MessageDigestCollision f cache secretKey signingLog forgery ∧
       FewTimeLeak f cache secretKey signingLog index leaves)
     ∨ ProperFewTimeLeak f cache secretKey signingLog index leaves
@@ -266,7 +273,7 @@ theorem winning_support_terminal_classify (adversary : Adversary)
       forgery.signature leaves ftsPublicKey root hf rfl htop hftsRun
     rcases hclassified with hbad | hobstacle | hfull
     · exact Or.inl hbad
-    · rcases forgedLayerObstacle_classify f finalCache secretKey signingLog index
+    · rcases forgedLayerObstacle_classify f finalCache secretKey signingLog index leaves
           forgery.signature hobstacle with
         hfresh | hencoding | hbackward
       · exact Or.inr ⟨root, forgery, signingLog, f, digest, hf, hvalid, hnotContains, hdigest,
@@ -282,7 +289,7 @@ theorem winning_support_terminal_classify (adversary : Adversary)
           hcollision | hobstacle | hproper
         · exact Or.inr ⟨root, forgery, signingLog, f, digest, hf, hvalid, hnotContains, hdigest,
             hadmissible, Or.inr (Or.inr (Or.inr (Or.inl ⟨hcollision, hleak⟩)))⟩
-        · rcases forgedLayerObstacle_classify f finalCache secretKey signingLog index
+        · rcases forgedLayerObstacle_classify f finalCache secretKey signingLog index leaves
               forgery.signature hobstacle with
             hfresh | hencoding | hbackward
           · exact Or.inr ⟨root, forgery, signingLog, f, digest, hf, hvalid, hnotContains, hdigest,
@@ -296,7 +303,7 @@ theorem winning_support_terminal_classify (adversary : Adversary)
       · exact Or.inr ⟨root, forgery, signingLog, f, digest, hf, hvalid, hnotContains, hdigest,
           hadmissible, Or.inr (Or.inr (Or.inr (Or.inr (Or.inr
             ⟨tree, huncovered, (hfull.2.1 tree).1, by
-              apply hfull.2.2
+              apply hfull.2.2.1
               exact ftsRecover_leaf_query_mem f parameter index leaves forgery.signature.ftsSecret
                 forgery.signature.ftsPath tree⟩))))⟩
 
