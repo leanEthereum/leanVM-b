@@ -65,6 +65,7 @@ import SphincsSecurity.Proof.FewTimeUniform
 import SphincsSecurity.Proof.EncodingProbability
 import SphincsSecurity.Proof.EncodingRetry
 import SphincsSecurity.Proof.EncodingRetryCharge
+import SphincsSecurity.Proof.EncodingLatent
 import SphincsSecurity.Proof.FewTimeLoop
 import SphincsSecurity.Proof.FewTimeSignerView
 import SphincsSecurity.Proof.FewTimeTargetSigner
