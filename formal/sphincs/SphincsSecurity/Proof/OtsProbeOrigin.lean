@@ -3480,6 +3480,23 @@ theorem preservesChainInvariant_maskedTreeRoot
     PreservesChainInvariant parameter allowed (maskedTreeRoot lay tree) :=
   preservesChainInvariant_maskedTreeNode parameter allowed lay tree (layerHeight lay) 0
 
+theorem chainInvariant_maskedTreeRoot_empty
+    (parameter : PublicParameter) (allowed : Coordinate → Prop)
+    (lay : Layer) (tree : TreeIndex) (fuel remaining : Nat)
+    (finalState : LazyRevealProbe.State Coordinate) (value : Digest)
+    (finalCache : SplitHashCache)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining
+        (value, finalCache) ∈ support
+      (LazyRevealProbe.runRaw (LazyRevealProbe.State.empty :
+          LazyRevealProbe.State Coordinate) fuel
+        ((maskedTreeRoot lay tree).run emptySplitHashCache))) :
+    ChainInvariant parameter allowed finalState finalCache := by
+  have hpreserves : PreservesChainInvariant parameter allowed (maskedTreeRoot lay tree) :=
+    preservesChainInvariant_maskedTreeRoot parameter allowed lay tree
+  exact hpreserves (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+    emptySplitHashCache fuel finalState remaining value finalCache
+      ⟨ChainState.validFor_empty allowed, chainProbeAccounted_empty parameter allowed⟩ hresult
+
 theorem preservesChainInvariant_ensureTreePath
     (parameter : PublicParameter) (allowed : Coordinate → Prop)
     (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) :
@@ -5233,5 +5250,344 @@ theorem chainInvariant_signingTraceComputation
                 exact hsub entry (List.mem_append_right _ hentry)
               · exact hqueryInvariant
               · exact htail
+
+theorem chainInvariant_retainedGameRestComputation
+    (adversary : Adversary) (f : QueryImpl HashSpec Id)
+    (parameter : PublicParameter) (root : Digest) (table : Coordinate → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (targetCache : QueryCache HashSpec)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat)
+    (forgery : Forgery) (signingLog : QueryLog SigningSpec) (verified : Bool)
+    (hlogRuns : ∀ (entry : (request : SignRequest) × SigningSpec.Range request)
+      (signature : Signature), entry ∈ signingLog → entry.2 = some signature →
+        SuccessfulSignRun f targetCache
+          (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey)
+            entry.1 signature)
+    (hf : StableCacheAgreesWithFn parameter finalCache f)
+    (htable : ∀ coordinate output, finalState.values coordinate = some output →
+      output = table coordinate)
+    (hrealizes : ∀ position : Position, IsOtsPosition position →
+      f (tableInput parameter table (.position position)) = table (.position position))
+    (hinvariant : ChainInvariant parameter
+      (CoveredChainCoordinate f targetCache
+        (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) signingLog)
+      state cache)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining
+        (((forgery, signingLog), verified), finalCache) ∈ support
+      (LazyRevealProbe.runRaw state fuel
+        ((simulateQ (maskedExpandedAdversaryImpl parameter root ftsSecret)
+          (retainedGameRestComputation adversary ⟨root, parameter⟩)).run cache))) :
+    ChainInvariant parameter
+      (CoveredChainCoordinate f targetCache
+        (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) signingLog)
+      finalState finalCache := by
+  rw [simulateQ_maskedExpanded_retainedGameRestComputation, StateT.run_bind,
+    LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨prefixRaw, hprefix, hrest⟩ := hresult
+  cases prefixRaw with
+  | stopped hit => simp at hrest
+  | done prefixState prefixRemaining prefixResult =>
+      rcases prefixResult with ⟨⟨prefixForgery, prefixLog⟩, prefixCache⟩
+      simp only at hrest
+      rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hrest
+      obtain ⟨verifyRaw, hverify, hfinish⟩ := hrest
+      cases verifyRaw with
+      | stopped hit => simp at hfinish
+      | done verifyState verifyRemaining verifyResult =>
+          rcases verifyResult with ⟨prefixVerified, verifyCache⟩
+          simp [LazyRevealProbe.runRaw] at hfinish
+          rcases hfinish with ⟨rfl, rfl, houtputs, rfl⟩
+          rcases houtputs with ⟨hprefixOutput, rfl⟩
+          rcases hprefixOutput with ⟨rfl, rfl⟩
+          have hvaluesLE := LazyRevealProbe.valuesLE_of_mem_runRaw_done
+            ((simulateQ (probingRomImpl parameter)
+              (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)).run
+                prefixCache) prefixState finalState prefixRemaining remaining
+                  (verified, finalCache) hverify
+          have htablePrefix : ∀ coordinate output,
+              prefixState.values coordinate = some output → output = table coordinate :=
+            fun coordinate output hcached =>
+              htable coordinate output (hvaluesLE coordinate output hcached)
+          have hfPrefix : StableCacheAgreesWithFn parameter prefixCache f :=
+            StableCacheAgreesWithFn.of_run
+              (fun input hstable =>
+                (ordinaryEntryPreservingImpl_probingRomImpl parameter input hstable).simulateQ
+                  (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature))
+              prefixState finalState prefixCache finalCache prefixRemaining remaining verified hf
+                hverify
+          have hprefixInvariant := chainInvariant_signingTraceComputation f parameter root table
+            ftsSecret targetCache signingLog signingLog hlogRuns
+              (adversary.main ⟨root, parameter⟩) state prefixState cache prefixCache fuel
+                prefixRemaining forgery (fun entry => id) hfPrefix htablePrefix hrealizes
+                  hinvariant hprefix
+          exact (preservesChainInvariantImpl_probingRomImpl
+            (CoveredChainCoordinate f targetCache
+              (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) signingLog)
+            (coveredChainCoordinate_forwardClosed f targetCache
+              (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) signingLog)
+            parameter).simulateQ
+              (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)
+                prefixState prefixCache prefixRemaining finalState remaining verified finalCache
+                  hprefixInvariant hverify
+
+theorem preservesChainInvariant_publishCoordinate_of_not_chain
+    (parameter : PublicParameter) (allowed : Coordinate → Prop) (coordinate : Coordinate)
+    (hnotChain : ¬IsChainCoordinate coordinate) :
+    PreservesChainInvariant parameter allowed (publishCoordinate coordinate) := by
+  intro state cache fuel finalState remaining value finalCache hinvariant hresult
+  change LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈ support
+    (LazyRevealProbe.runRaw state fuel
+      (LazyRevealProbe.publishQuery coordinate >>= fun output => pure (output, cache))) at hresult
+  rw [LazyRevealProbe.publishQuery, LazyRevealProbe.runRaw_publish_query_bind] at hresult
+  simp [LazyRevealProbe.runRaw] at hresult
+  rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+  refine ⟨?_, hinvariant.2.publish coordinate⟩
+  intro other hchain
+  have hne : other ≠ coordinate := by
+    intro heq
+    exact hnotChain (heq ▸ hchain)
+  simpa [LazyRevealProbe.State.publish, hne] using hinvariant.1 other hchain
+
+theorem finalizeDetailedFrom_preserves_value
+    (coordinates : List Coordinate) :
+    ∀ (state finalState : LazyRevealProbe.State Coordinate) (coordinate : Coordinate)
+      (output : HashOutput), state.values coordinate = some output →
+      (false, finalState) ∈ support
+        (LazyRevealProbe.finalizeDetailedFrom coordinates state) →
+      finalState.values coordinate = some output := by
+  induction coordinates with
+  | nil =>
+      intro state finalState coordinate output hvalue hresult
+      simp [LazyRevealProbe.finalizeDetailedFrom] at hresult
+      subst finalState
+      exact hvalue
+  | cons current remaining ih =>
+      intro state finalState coordinate output hvalue hresult
+      rw [LazyRevealProbe.finalizeDetailedFrom] at hresult
+      cases hcurrent : state.values current with
+      | some currentOutput =>
+          rw [hcurrent] at hresult
+          apply ih (state.clearPending current) finalState coordinate output
+          · exact hvalue
+          · exact hresult
+      | none =>
+          rw [hcurrent, mem_support_bind_iff] at hresult
+          obtain ⟨sampled, _, hrest⟩ := hresult
+          by_cases hhit : state.hitAt current sampled
+          · rw [if_pos hhit] at hrest
+            simp at hrest
+          · rw [if_neg hhit] at hrest
+            apply ih (state.complete current sampled) finalState coordinate output
+            · have hne : coordinate ≠ current := by
+                intro heq
+                subst current
+                rw [hcurrent] at hvalue
+                simp at hvalue
+              simpa [LazyRevealProbe.State.complete, Function.update, hne] using hvalue
+            · exact hrest
+
+theorem finalizeDetailedFrom_false_of_pending_hit
+    (table : Coordinate → HashOutput) :
+    ∀ (coordinates : List Coordinate) (state finalState : LazyRevealProbe.State Coordinate)
+      (coordinate : Coordinate), coordinate ∈ coordinates →
+      state.values coordinate = none → state.hitAt coordinate (table coordinate) →
+      (∀ output, finalState.values coordinate = some output → output = table coordinate) →
+      (false, finalState) ∈ support
+        (LazyRevealProbe.finalizeDetailedFrom coordinates state) → False := by
+  intro coordinates
+  induction coordinates with
+  | nil =>
+      intro state finalState coordinate hmem
+      simp at hmem
+  | cons current remaining ih =>
+      intro state finalState coordinate hmem hvalue hhit htable hresult
+      rw [LazyRevealProbe.finalizeDetailedFrom] at hresult
+      by_cases heq : current = coordinate
+      · subst current
+        rw [hvalue, mem_support_bind_iff] at hresult
+        obtain ⟨sampled, _, hrest⟩ := hresult
+        by_cases hsampledHit : state.hitAt coordinate sampled
+        · rw [if_pos hsampledHit] at hrest
+          simp at hrest
+        · rw [if_neg hsampledHit] at hrest
+          have hcompleted : (state.complete coordinate sampled).values coordinate =
+              some sampled := by
+            simp [LazyRevealProbe.State.complete]
+          have hfinalValue := finalizeDetailedFrom_preserves_value remaining
+            (state.complete coordinate sampled) finalState coordinate sampled hcompleted hrest
+          have hsampled := htable sampled hfinalValue
+          subst sampled
+          exact hsampledHit hhit
+      · have htailMem : coordinate ∈ remaining := by
+          simp only [List.mem_cons] at hmem
+          rcases hmem with hcurrentEq | htail
+          · exact (heq hcurrentEq.symm).elim
+          · exact htail
+        have hne : coordinate ≠ current := fun hcoordinate => heq hcoordinate.symm
+        have hpending : (coordinate, truncateHash (table coordinate)) ∈ state.pending := by
+          simpa [LazyRevealProbe.State.hitAt, LazyRevealProbe.State.pendingAt] using hhit
+        cases hcurrent : state.values current with
+        | some currentOutput =>
+            rw [hcurrent] at hresult
+            apply ih (state.clearPending current) finalState coordinate htailMem
+            · exact hvalue
+            · simpa [LazyRevealProbe.State.hitAt, LazyRevealProbe.State.pendingAt,
+                LazyRevealProbe.State.clearPending, LazyRevealProbe.State.pendingAway,
+                hne] using And.intro hpending hne
+            · exact htable
+            · exact hresult
+        | none =>
+            rw [hcurrent, mem_support_bind_iff] at hresult
+            obtain ⟨sampled, _, hrest⟩ := hresult
+            by_cases hsampledHit : state.hitAt current sampled
+            · rw [if_pos hsampledHit] at hrest
+              simp at hrest
+            · rw [if_neg hsampledHit] at hrest
+              apply ih (state.complete current sampled) finalState coordinate htailMem
+              · simp [LazyRevealProbe.State.complete, Function.update, hne, hvalue]
+              · simpa [LazyRevealProbe.State.hitAt, LazyRevealProbe.State.pendingAt,
+                  LazyRevealProbe.State.complete, LazyRevealProbe.State.pendingAway,
+                  hne] using And.intro hpending hne
+              · exact htable
+              · exact hrest
+
+theorem finalizeDetailed_false_of_pending_hit
+    (table : Coordinate → HashOutput) (state finalState : LazyRevealProbe.State Coordinate)
+    (coordinate : Coordinate) (hvalue : state.values coordinate = none)
+    (hhit : state.hitAt coordinate (table coordinate))
+    (htable : ∀ output, finalState.values coordinate = some output →
+      output = table coordinate)
+    (hresult : (false, finalState) ∈ support
+      (LazyRevealProbe.finalizeDetailed state)) : False := by
+  apply finalizeDetailedFrom_false_of_pending_hit table state.coordinates.toList state finalState
+    coordinate
+  · have hpending : ∃ candidate, (coordinate, candidate) ∈ state.pending := by
+      rw [LazyRevealProbe.State.hitAt, LazyRevealProbe.State.pendingAt] at hhit
+      simp only [Finset.mem_image, Finset.mem_filter] at hhit
+      obtain ⟨entry, ⟨hentry, hcoordinate⟩, _⟩ := hhit
+      exact ⟨entry.2, hcoordinate ▸ hentry⟩
+    simp [LazyRevealProbe.State.coordinates, hpending]
+  · exact hvalue
+  · exact hhit
+  · exact htable
+  · exact hresult
+
+theorem ChainInvariant.not_finalized_false_of_uncovered_probe
+    {f : QueryImpl HashSpec Id} {parameter : PublicParameter}
+    {table : Coordinate → HashOutput}
+    {ftsSecret : Index → FtsTree → FtsLeaf → Digest}
+    {allowed : Coordinate → Prop} {state finalState : LazyRevealProbe.State Coordinate}
+    {cache : SplitHashCache} (hinvariant : ChainInvariant parameter allowed state cache)
+    (probe : Probe) (input : HashInput)
+    (hhits : probe.Hits f parameter (tableOtsSecret table) ftsSecret)
+    (hmatches : probe.MatchesInput parameter input)
+    (hcached : cache (.ordinary input) ≠ none) (hnotAllowed : ¬allowed probe.coordinate)
+    (htable : ∀ output, finalState.values probe.coordinate = some output →
+      output = table probe.coordinate)
+    (hrealizes : ∀ position : Position, IsOtsPosition position →
+      f (tableInput parameter table (.position position)) = table (.position position))
+    (hfinalize : (false, finalState) ∈ support
+      (LazyRevealProbe.finalizeDetailed state)) : False := by
+  have hchain := probe.isChainCoordinate_of_matchesInput hmatches
+  have hhit := hinvariant.2.hitAt f table ftsSecret probe input hchain hrealizes hhits hmatches
+    hcached hnotAllowed
+  have hvalue := hinvariant.1.value_eq_none_of_not_allowed hchain hnotAllowed
+  exact finalizeDetailed_false_of_pending_hit table state finalState probe.coordinate hvalue hhit
+    htable hfinalize
+
+set_option maxRecDepth 10000 in
+set_option linter.constructorNameAsVariable false in
+theorem chainInvariant_maskedRetainedGameAfterFtsSecrets
+    (adversary : Adversary) (f : QueryImpl HashSpec Id)
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (targetCache : QueryCache HashSpec) (fuel remaining : Nat)
+    (finalState : LazyRevealProbe.State Coordinate) (finalCache : SplitHashCache)
+    (root : Digest) (forgery : Forgery) (signingLog : QueryLog SigningSpec)
+    (verified : Bool)
+    (hlogRuns : ∀ (entry : (request : SignRequest) × SigningSpec.Range request)
+      (signature : Signature), entry ∈ signingLog → entry.2 = some signature →
+        SuccessfulSignRun f targetCache
+          (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey)
+            entry.1 signature)
+    (hf : StableCacheAgreesWithFn parameter finalCache f)
+    (htable : ∀ coordinate output, finalState.values coordinate = some output →
+      output = table coordinate)
+    (hrealizes : ∀ position : Position, IsOtsPosition position →
+      f (tableInput parameter table (.position position)) = table (.position position))
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining
+        ((root, ((forgery, signingLog), verified)), finalCache) ∈ support
+      (LazyRevealProbe.runRaw (LazyRevealProbe.State.empty :
+          LazyRevealProbe.State Coordinate) fuel
+        ((maskedRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
+          emptySplitHashCache))) :
+    ChainInvariant parameter
+      (CoveredChainCoordinate f targetCache
+        (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) signingLog)
+      finalState finalCache := by
+  let rootCoordinate : Coordinate := .position (.node topLayer rootTree
+    ⟨layerHeight topLayer - 1, by norm_num [layerHeight, topLayer, maxLayerHeight]⟩ 0)
+  unfold maskedRetainedGameAfterFtsSecrets at hresult
+  rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨rootRaw, hroot, hafterRoot⟩ := hresult
+  cases rootRaw with
+  | stopped hit => simp at hafterRoot
+  | done rootState rootRemaining rootResult =>
+      rcases rootResult with ⟨sampledRoot, rootCache⟩
+      change LazyRevealProbe.RawResult.done rootState rootRemaining
+          (sampledRoot, rootCache) ∈ support
+        (LazyRevealProbe.runRaw (LazyRevealProbe.State.empty :
+            LazyRevealProbe.State Coordinate) fuel
+          ((maskedTreeRoot topLayer rootTree).run emptySplitHashCache)) at hroot
+      generalize topLayer = rootLay at hroot
+      generalize rootTree = rootTreeIndex at hroot
+      simp only at hafterRoot
+      rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hafterRoot
+      obtain ⟨publishRaw, hpublish, hafterPublish⟩ := hafterRoot
+      cases publishRaw with
+      | stopped hit => simp at hafterPublish
+      | done publishState publishRemaining publishResult =>
+          rcases publishResult with ⟨publishedUnit, publishCache⟩
+          simp only at hafterPublish
+          rw [StateT.run_bind, LazyRevealProbe.runRaw_bind,
+            mem_support_bind_iff] at hafterPublish
+          obtain ⟨restRaw, hrest, hfinish⟩ := hafterPublish
+          cases restRaw with
+          | stopped hit => simp at hfinish
+          | done restState restRemaining restResult =>
+              rcases restResult with ⟨result, restCache⟩
+              simp [LazyRevealProbe.runRaw] at hfinish
+              rcases hfinish with ⟨rfl, rfl, houtput, rfl⟩
+              obtain ⟨hrootEq, hresultEq⟩ := houtput
+              rw [← hresultEq] at hrest
+              have hlogRunsSampled :
+                  ∀ (entry : (request : SignRequest) × SigningSpec.Range request)
+                    (signature : Signature), entry ∈ signingLog →
+                      entry.2 = some signature →
+                        SuccessfulSignRun f targetCache
+                          (⟨parameter, sampledRoot, tableOtsSecret table,
+                            ftsSecret⟩ : SecretKey) entry.1 signature := by
+                simpa only [hrootEq] using hlogRuns
+              let allowed := CoveredChainCoordinate f targetCache
+                (⟨parameter, sampledRoot, tableOtsSecret table,
+                  ftsSecret⟩ : SecretKey) signingLog
+              have hrootInvariantEmpty := chainInvariant_maskedTreeRoot_empty
+                (parameter := parameter) (allowed := fun _ => False) (lay := rootLay)
+                  (tree := rootTreeIndex) fuel rootRemaining rootState sampledRoot rootCache hroot
+              have hrootInvariant : ChainInvariant parameter allowed rootState rootCache :=
+                hrootInvariantEmpty.mono (by simp)
+              have hpublishInvariant :=
+                preservesChainInvariant_publishCoordinate_of_not_chain parameter allowed
+                  rootCoordinate (by simp [rootCoordinate, IsChainCoordinate])
+                    (state := rootState) (cache := rootCache) (fuel := rootRemaining)
+                    (finalState := publishState) (remaining := publishRemaining)
+                    (value := publishedUnit) (finalCache := publishCache) hrootInvariant
+                      (by simpa [rootCoordinate] using hpublish)
+              have hfinal := chainInvariant_retainedGameRestComputation adversary f parameter
+                sampledRoot table ftsSecret targetCache publishState finalState publishCache
+                  finalCache publishRemaining remaining forgery signingLog verified
+                    hlogRunsSampled hf htable hrealizes hpublishInvariant hrest
+              simpa only [hrootEq] using hfinal
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
