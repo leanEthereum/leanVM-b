@@ -119,6 +119,7 @@ import SphincsSecurity.Proof.TerminalArith
 import SphincsSecurity.Proof.TerminalBudget
 import SphincsSecurity.Proof.TerminalSampling
 import SphincsSecurity.Proof.SecretProbeTerminal
+import SphincsSecurity.Proof.MessageCollision
 import SphincsSecurity.Proof.EncodingSelectionSampling
 import SphincsSecurity.Proof.TerminalFinish
 import SphincsSecurity.Proof.TerminalResidual
