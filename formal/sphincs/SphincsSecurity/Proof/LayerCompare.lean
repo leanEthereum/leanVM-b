@@ -38,6 +38,15 @@ theorem valid_of_eval_encode_eq_some (f : QueryImpl HashSpec Id) (parameter : Pu
   TargetSum.valid_of_decodeDigest_eq_some
     (decode_of_eval_encode_eq_some f parameter lay tree leafIdx message counter codeword hencode)
 
+theorem eval_encode_ne_none_iff_validDigest (f : QueryImpl HashSpec Id)
+    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (message : Digest) (counter : Counter) :
+    evalWithAnswerFn f (encode parameter lay tree leafIdx message counter) ≠ none ↔
+      TargetSum.ValidDigest (truncateHash (f (tweakableHashInput parameter
+        (.encoding lay tree leafIdx) (digestBytes message ++ counterBytes counter)))) := by
+  simp only [encode, evalWithAnswerFn_bind, evalWithAnswerFn_pure, eval_tweakableHash]
+  exact TargetSum.validDigest_iff_decodeDigest_ne_none.symm
+
 theorem honestLayerOpening_compare (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
     (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (leftMessage rightMessage : Digest)

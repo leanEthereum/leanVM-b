@@ -117,6 +117,47 @@ theorem eq_of_le_of_valid {x y : Encoding} (hx : Valid x) (hy : Valid y)
     (hle : ∀ i, (x i).val ≤ (y i).val) : x = y :=
   eq_of_le_of_sum_eq hle (hx.trans hy.symm)
 
+def ValidDigest (digest : Digest) : Prop :=
+  ∃ encoding, decodeDigest digest = some encoding
+
+noncomputable instance : DecidablePred ValidDigest :=
+  Classical.decPred _
+
+noncomputable def validDigests : Finset Digest :=
+  Finset.univ.filter ValidDigest
+
+theorem validDigest_iff_decodeDigest_ne_none {digest : Digest} :
+    ValidDigest digest ↔ decodeDigest digest ≠ none := by
+  constructor
+  · rintro ⟨encoding, hencoding⟩
+    rw [hencoding]
+    simp
+  · intro hdecode
+    obtain ⟨encoding, hencoding⟩ := Option.ne_none_iff_exists'.mp hdecode
+    exact ⟨encoding, hencoding⟩
+
+@[simp] theorem mem_validDigests {digest : Digest} :
+    digest ∈ validDigests ↔ ValidDigest digest := by
+  simp [validDigests]
+
+theorem ValidDigest.of_eq {left right : Digest} (hleft : ValidDigest left)
+    (heq : left = right) : ValidDigest right := by
+  rwa [← heq]
+
+def exampleValidDigest : Digest :=
+  BitVec.ofNat digestBits 0x00000000000bffff7fffffffffffffff
+
+theorem exampleValidDigest_valid : ValidDigest exampleValidDigest := by
+  refine ⟨digestEncoding exampleValidDigest, ?_⟩
+  native_decide
+
+theorem validDigests_nonempty : validDigests.Nonempty := by
+  exact ⟨exampleValidDigest, Finset.mem_filter.mpr
+    ⟨Finset.mem_univ _, exampleValidDigest_valid⟩⟩
+
+theorem validDigests_card_pos : 0 < validDigests.card :=
+  Finset.card_pos.mpr validDigests_nonempty
+
 /-- A concatenation of fixed-length blocks determines the blocks. -/
 theorem flatMap_ofFn_injective {α β : Type} (g : α → List β) (len : Nat)
     (hlen : ∀ a, (g a).length = len) (hinj : ∀ a b, g a = g b → a = b) :
