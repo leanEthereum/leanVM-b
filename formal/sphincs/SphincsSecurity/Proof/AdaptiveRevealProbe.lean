@@ -1095,10 +1095,9 @@ theorem experiment_reveal_query_bind (state : State Coordinate) (fuel : Nat)
   exact run_reveal_query_bind _ _ _ _ _
 
 set_option maxRecDepth 100000 in
-theorem experiment_probability_le [Nonempty Coordinate]
+theorem experiment_probability_le_unbounded [Nonempty Coordinate]
     (state : State Coordinate) (hvalid : state.Valid)
-    (fuel : Nat) (computation : OracleComp (World Coordinate) alpha)
-    (hbound : computation.IsQueryBoundP IsProbe fuel) :
+    (fuel : Nat) (computation : OracleComp (World Coordinate) alpha) :
     Pr[fun hit : Bool => hit = true | experiment state fuel computation] ≤
       ((fuel + state.pendingCount : Nat) : ℝ≥0∞) *
         ((Fintype.card Digest : Nat) : ℝ≥0∞)⁻¹ := by
@@ -1111,7 +1110,6 @@ theorem experiment_probability_le [Nonempty Coordinate]
       apply mul_le_mul_left
       exact_mod_cast Nat.le_add_left state.pendingCount fuel
   | query_bind input next ih =>
-      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
       cases input with
       | uniform n =>
           have hdist :
@@ -1126,7 +1124,7 @@ theorem experiment_probability_le [Nonempty Coordinate]
             (liftM (unifSpec.query n) : ProbComp _) >>= fun output =>
               experiment state fuel (next output)) (fun _ _ => Iff.rfl) hdist).le.trans ?_
           exact probEvent_bind_le_of_forall_le fun output _ =>
-            ih output state hvalid fuel (by simpa [IsProbe] using hbound.2 output)
+            ih output state hvalid fuel
       | hashOutput =>
           have hdist :
               evalDist (experiment state fuel
@@ -1140,10 +1138,15 @@ theorem experiment_probability_le [Nonempty Coordinate]
             sampleHashOutput >>= fun output =>
               experiment state fuel (next output)) (fun _ _ => Iff.rfl) hdist).le.trans ?_
           exact probEvent_bind_le_of_forall_le fun output _ =>
-            ih output state hvalid fuel (by simpa [IsProbe] using hbound.2 output)
+            ih output state hvalid fuel
       | probe coordinate candidate =>
           cases fuel with
-          | zero => simp [IsProbe] at hbound
+          | zero =>
+              rw [experiment_probe_query_bind]
+              change Pr[fun hit : Bool => hit = true |
+                (fun base : Coordinate → Digest =>
+                  tableHits state (extendTable state base)) <$> sampleTable] ≤ _
+              simpa using finalize_probability_le state hvalid
           | succ remaining =>
               cases hrevealed : state.revealed coordinate with
               | some value =>
@@ -1151,8 +1154,7 @@ theorem experiment_probability_le [Nonempty Coordinate]
                   simp only [hrevealed]
                   change Pr[fun hit : Bool => hit = true |
                     experiment state remaining (next ())] ≤ _
-                  refine (ih () state hvalid remaining
-                    (by simpa [IsProbe] using hbound.2 ())).trans ?_
+                  refine (ih () state hvalid remaining).trans ?_
                   apply mul_le_mul_left
                   have hnat : remaining + state.pendingCount ≤
                       remaining + 1 + state.pendingCount := by omega
@@ -1164,8 +1166,7 @@ theorem experiment_probability_le [Nonempty Coordinate]
                     experiment (state.addPending coordinate candidate) remaining
                       (next ())] ≤ _
                   refine (ih () (state.addPending coordinate candidate)
-                    (hvalid.addPending coordinate candidate hrevealed) remaining
-                    (by simpa [IsProbe] using hbound.2 ())).trans ?_
+                    (hvalid.addPending coordinate candidate hrevealed) remaining).trans ?_
                   apply mul_le_mul_left
                   exact_mod_cast (show remaining +
                       (state.addPending coordinate candidate).pendingCount ≤
@@ -1180,7 +1181,6 @@ theorem experiment_probability_le [Nonempty Coordinate]
               change Pr[fun hit : Bool => hit = true |
                 experiment state fuel (next value)] ≤ _
               exact ih value state hvalid fuel
-                (by simpa [IsProbe] using hbound.2 value)
           | none =>
               let resume := fun value nextState => experiment nextState fuel (next value)
               have hdist :
@@ -1200,7 +1200,24 @@ theorem experiment_probability_le [Nonempty Coordinate]
               intro value
               exact ih value (state.install coordinate value)
                 (hvalid.install coordinate value) fuel
-                (by simpa [IsProbe] using hbound.2 value)
+
+theorem experiment_probability_le [Nonempty Coordinate]
+    (state : State Coordinate) (hvalid : state.Valid)
+    (fuel : Nat) (computation : OracleComp (World Coordinate) alpha)
+    (_hbound : computation.IsQueryBoundP IsProbe fuel) :
+    Pr[fun hit : Bool => hit = true | experiment state fuel computation] ≤
+      ((fuel + state.pendingCount : Nat) : ℝ≥0∞) *
+        ((Fintype.card Digest : Nat) : ℝ≥0∞)⁻¹ :=
+  experiment_probability_le_unbounded state hvalid fuel computation
+
+theorem experiment_empty_probability_le_unbounded [Nonempty Coordinate] (fuel : Nat)
+    (computation : OracleComp (World Coordinate) alpha) :
+    Pr[fun hit : Bool => hit = true |
+        experiment (State.empty : State Coordinate) fuel computation] ≤
+      (fuel : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  simpa [show Fintype.card Digest = 2 ^ digestBits by simp] using
+    experiment_probability_le_unbounded
+      (State.empty : State Coordinate) State.valid_empty fuel computation
 
 theorem experiment_empty_probability_le [Nonempty Coordinate] (fuel : Nat)
     (computation : OracleComp (World Coordinate) alpha)

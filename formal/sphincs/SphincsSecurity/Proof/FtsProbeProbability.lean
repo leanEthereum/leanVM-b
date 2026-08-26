@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.FtsProbeTerminal
+import SphincsSecurity.Proof.DirectQueryBudget
 import VCVio.ProgramLogic.Relational.Basic
 
 namespace SphincsSecurity.Concrete.FtsProbeSimulation
@@ -108,6 +109,22 @@ theorem relTriple_and_left_support
     rw [support_map]
     exact ⟨result, hresult, rfl⟩
   rwa [coupling.2.map_fst] at hmap
+
+theorem relTriple_and_right_support
+    {left : ProbComp alpha} {right : ProbComp beta}
+    {relation : alpha → beta → Prop} (hrel : RelTriple left right relation) :
+    RelTriple left right fun leftResult rightResult =>
+      relation leftResult rightResult ∧ rightResult ∈ support right := by
+  rw [relTriple_iff_relWP, relWP_iff_couplingPost] at hrel ⊢
+  obtain ⟨coupling, hrelation⟩ := hrel
+  refine ⟨coupling, fun result hresult => ⟨hrelation result hresult, ?_⟩⟩
+  rw [mem_support_iff_evalDist_apply_ne_zero]
+  rw [← SPMF.mem_support_iff]
+  have hmap : result.2 ∈ support
+      (Prod.snd <$> coupling.1 : SPMF beta) := by
+    rw [support_map]
+    exact ⟨result, hresult, rfl⟩
+  rwa [coupling.2.map_snd] at hmap
 
 theorem relTriple_of_project_eq_some
     (project : alpha → Option beta) (fallback : beta)
@@ -329,6 +346,7 @@ theorem relTriple_runDetailed_bind_cleanOnly
     (hnext : ∀ finalState value finalCache,
       AdaptiveRevealProbe.tableHits finalState table = false →
       RevealedSynced parameter table finalState finalCache →
+      (value, mergedCache parameter table finalCache) ∈ support ordinaryLeft →
       RelTriple
         (AdaptiveRevealProbe.runDetailed table finalState fuel
           (next (value, finalCache)))
@@ -339,15 +357,44 @@ theorem relTriple_runDetailed_bind_cleanOnly
       (ordinaryLeft >>= ordinaryNext)
       (CleanStepRel parameter table) := by
   rw [AdaptiveRevealProbe.runDetailed_bind_probeFree table state fuel left next hprobeFree]
-  apply relTriple_bind hleft
+  apply relTriple_bind (relTriple_and_right_support hleft)
   intro leftResult rightResult hresult
+  obtain ⟨hresult, hright⟩ := hresult
   cases leftResult with
   | stopped hit => simp [CleanResultRel] at hresult
   | done hit finalState valueCache =>
       rcases valueCache with ⟨value, finalCache⟩
       simp only [CleanResultRel] at hresult
       obtain ⟨rfl, rfl, hclean, hsynced⟩ := hresult
-      exact hnext finalState value finalCache hclean hsynced
+      exact hnext finalState value finalCache hclean hsynced hright
+
+theorem simulateQ_expanded_liftOracleWorldLeft
+    (secretKey : SecretKey) (computation : OracleComp OracleWorld alpha) :
+    simulateQ (expandedAdversaryImpl secretKey)
+        (liftOracleWorldLeft computation) = computation := by
+  have hhandler : expandedAdversaryImpl secretKey =
+      QueryImpl.id' OracleWorld +
+        (fun request => scheme.sign secretKey request) := by
+    funext input
+    cases input <;> rfl
+  rw [hhandler, simulateQ_liftOracleWorldLeft, simulateQ_id']
+
+theorem simulateQ_expanded_tracedGameRestComputation
+    (adversary : Adversary) (secretKey : SecretKey) :
+    simulateQ (expandedAdversaryImpl secretKey)
+        (tracedGameRestComputation adversary
+          ⟨secretKey.root, secretKey.parameter⟩) =
+      gameRest scheme adversary ⟨secretKey.root, secretKey.parameter⟩ secretKey := by
+  unfold tracedGameRestComputation gameRest
+  rw [simulateQ_bind,
+    ← simulateQ_withTraceAppend_run_eq_signingTraceComputation,
+    ← forwardOracles_add_signingOracle_eq_withTraceAppend]
+  apply bind_congr
+  intro result
+  rcases result with ⟨forgery, log⟩
+  rw [simulateQ_bind,
+    simulateQ_expanded_liftOracleWorldLeft]
+  simp [simulateQ_pure]
 
 set_option maxRecDepth 10000 in
 theorem relTriple_maskedExpandedAdversaryImpl_step
@@ -489,7 +536,9 @@ theorem relTriple_simulateQ_maskedExpandedAdversaryImpl
     (computation : OracleComp (OracleWorld + SigningSpec) alpha)
     (state : AdaptiveRevealProbe.State Coordinate) (fuel : Nat)
     (cache : SplitHashCache)
-    (hbound : computation.IsQueryBoundP isDirectHashQuery fuel)
+    (hbound : (simulateQ
+      (expandedAdversaryImpl (secretKeyWithFtsTable secretKey table))
+      computation).IsQueryBoundP (· matches Sum.inr _) fuel)
     (hclean : AdaptiveRevealProbe.tableHits state table = false)
     (hsynced : RevealedSynced secretKey.parameter table state cache) :
     RelTriple
@@ -505,11 +554,12 @@ theorem relTriple_simulateQ_maskedExpandedAdversaryImpl
       simp [simulateQ_pure, AdaptiveRevealProbe.runDetailed, hclean,
         CleanStepRel, CleanResultRel, hsynced]
   | query_bind input next ih =>
-      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
       cases input with
       | inl worldInput =>
           cases worldInput with
           | inl n =>
+              rw [simulateQ_expandedAdversaryImpl_query_bind_inl,
+                OracleComp.isQueryBoundP_query_bind_iff] at hbound
               rw [simulateQ_query_bind, simulateQ_query_bind,
                 StateT.run_bind, StateT.run_bind]
               change RelTriple
@@ -542,14 +592,16 @@ theorem relTriple_simulateQ_maskedExpandedAdversaryImpl
                   ((coupled_splitUniformImpl secretKey.parameter table state fuel n hclean).coupledAt
                     cache) hclean hsynced (splitUniformImpl_stateFree n)
                   (splitUniformImpl_cachePreserving n)
-              · intro finalState output finalCache hfinalClean hfinalSynced
+              · intro finalState output finalCache hfinalClean hfinalSynced _hright
                 exact ih output finalState fuel finalCache
-                  (by simpa [isDirectHashQuery] using hbound.2 output)
+                  (hbound.2 output)
                   hfinalClean hfinalSynced
           | inr hashInput =>
               change HashOutput → OracleComp (OracleWorld + SigningSpec) alpha at next
+              rw [simulateQ_expandedAdversaryImpl_query_bind_inl,
+                OracleComp.isQueryBoundP_query_bind_iff] at hbound
               have hpositive : 0 < fuel := by
-                simpa [isDirectHashQuery] using hbound.1
+                simpa using hbound.1
               cases fuel with
               | zero => omega
               | succ remaining =>
@@ -599,10 +651,13 @@ theorem relTriple_simulateQ_maskedExpandedAdversaryImpl
                             (remaining + 1) cache hashInput hdecode hclean)
                           hclean hsynced hstateFree
                           (probingHashQuery_cachePreserving secretKey.parameter hashInput)
-                      · intro finalState output finalCache hfinalClean hfinalSynced
-                        have htail : (next output).IsQueryBoundP
-                            isDirectHashQuery remaining := by
-                          simpa [isDirectHashQuery] using hbound.2 output
+                      · intro finalState output finalCache hfinalClean hfinalSynced _hright
+                        have htail : (simulateQ
+                            (expandedAdversaryImpl
+                              (secretKeyWithFtsTable secretKey table))
+                            (next output)).IsQueryBoundP
+                              (fun input => input matches Sum.inr _) remaining :=
+                          hbound.2 output
                         exact ih output finalState (remaining + 1) finalCache
                           (htail.mono (Nat.le_succ remaining)) hfinalClean hfinalSynced
                   | some probe =>
@@ -663,15 +718,19 @@ theorem relTriple_simulateQ_maskedExpandedAdversaryImpl
                                     simpa [AdaptiveRevealProbe.State.addPending] using hvalue))
                                 (splitHashQuery_stateFree (.ordinary hashInput))
                                 (splitHashQuery_cachePreserving (.ordinary hashInput))
-                            · intro finalState output finalCache hfinalClean hfinalSynced
+                            · intro finalState output finalCache hfinalClean hfinalSynced _hright
                               exact ih output finalState remaining finalCache
-                                (by simpa [isDirectHashQuery] using hbound.2 output)
+                                (hbound.2 output)
                                 hfinalClean hfinalSynced
                       | some revealedValue =>
                           have htailBound : ∀ output,
-                              (next output).IsQueryBoundP isDirectHashQuery remaining := by
+                              (simulateQ
+                                (expandedAdversaryImpl
+                                  (secretKeyWithFtsTable secretKey table))
+                                (next output)).IsQueryBoundP
+                                  (· matches Sum.inr _) remaining := by
                             intro output
-                            simpa [isDirectHashQuery] using hbound.2 output
+                            exact hbound.2 output
                           by_cases hhit : table (probe.index, probe.tree, probe.leafIdx) =
                               probe.candidate
                           · have hcoupled := runDetailed_probingHashQuery_revealed_hit
@@ -722,7 +781,7 @@ theorem relTriple_simulateQ_maskedExpandedAdversaryImpl
                                         AdaptiveRevealProbe.runDetailed_probe_query_bind,
                                         hrevealed]
                                       exact hresult)⟩
-                            · intro finalState output finalCache hfinalClean hfinalSynced
+                            · intro finalState output finalCache hfinalClean hfinalSynced _hright
                               exact ih output finalState remaining finalCache
                                 (htailBound output) hfinalClean hfinalSynced
                           · have hordinary : IsOrdinaryInput secretKey.parameter table hashInput :=
@@ -747,10 +806,11 @@ theorem relTriple_simulateQ_maskedExpandedAdversaryImpl
                                   remaining cache hashInput hclean hordinary)
                                 hclean hsynced (splitHashQuery_stateFree (.ordinary hashInput))
                                 (splitHashQuery_cachePreserving (.ordinary hashInput))
-                            · intro finalState output finalCache hfinalClean hfinalSynced
+                            · intro finalState output finalCache hfinalClean hfinalSynced _hright
                               exact ih output finalState remaining finalCache
                                 (htailBound output) hfinalClean hfinalSynced
       | inr message =>
+          rw [simulateQ_expandedAdversaryImpl_query_bind_inr] at hbound
           rw [simulateQ_query_bind, simulateQ_query_bind,
             StateT.run_bind, StateT.run_bind]
           change RelTriple
@@ -789,10 +849,93 @@ theorem relTriple_simulateQ_maskedExpandedAdversaryImpl
                     hclean (output, finalCache) hresult,
                   revealedSynced_of_mem_runDetailed_maskedSigningImpl secretKey table state
                     finalState fuel cache finalCache message hclean hsynced output hresult⟩
-          · intro finalState output finalCache hfinalClean hfinalSynced
+          · intro finalState output finalCache hfinalClean hfinalSynced hright
+            have houtput := unloggedMappedAdversaryImpl_output_mem_support_expanded
+              (secretKeyWithFtsTable secretKey table) (.inr message)
+              (mergedCache secretKey.parameter table cache)
+              (mergedCache secretKey.parameter table finalCache) output hright
             exact ih output finalState fuel finalCache
-              (by simpa [isDirectHashQuery] using hbound.2 output)
-              hfinalClean hfinalSynced
+              (isQueryBoundP_of_bind hbound output houtput) hfinalClean hfinalSynced
+
+set_option maxRecDepth 30000 in
+theorem relTriple_maskedGameAfterSecrets
+    (adversary : Adversary) (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (table : Coordinate → Digest) (q : Nat)
+    (hbound : (gameAfterSecrets adversary parameter otsSecret
+      (fun index tree leafIdx => table (index, tree, leafIdx))).IsQueryBoundP
+        (· matches Sum.inr _) q) :
+    RelTriple
+      (AdaptiveRevealProbe.runDetailed table AdaptiveRevealProbe.State.empty q
+        ((maskedGameAfterSecrets adversary parameter otsSecret).run
+          emptySplitHashCache))
+      ((simulateQ romImpl
+        (gameAfterSecrets adversary parameter otsSecret
+          (fun index tree leafIdx => table (index, tree, leafIdx)))).run ∅)
+      (CleanStepRel parameter table) := by
+  let rootComputation : OracleComp HashSpec Digest :=
+    treeRoot parameter topLayer rootTree (otsSecret topLayer rootTree)
+  have hinitialClean : AdaptiveRevealProbe.tableHits
+      (AdaptiveRevealProbe.State.empty : AdaptiveRevealProbe.State Coordinate) table = false := by
+    simp [AdaptiveRevealProbe.tableHits, AdaptiveRevealProbe.State.empty]
+  rw [maskedGameAfterSecrets_eq_tracedGameRestComputation,
+    simulateQ_romImpl_gameAfterSecrets_eq_tracedGameRestComputation,
+    StateT.run_bind, StateT.run_bind]
+  apply relTriple_runDetailed_bind_cleanOnly parameter table
+    AdaptiveRevealProbe.State.empty q
+    ((simulateQ ordinaryHashImpl rootComputation).run emptySplitHashCache)
+    (fun result =>
+      let secretKey : SecretKey :=
+        ⟨parameter, result.1, otsSecret, fun _index _tree _leafIdx => 0⟩
+      (simulateQ (maskedExpandedAdversaryImpl parameter secretKey)
+        (tracedGameRestComputation adversary ⟨result.1, parameter⟩)).run result.2)
+    ((simulateQ (randomOracle : QueryImpl HashSpec _) rootComputation).run ∅)
+    (fun result =>
+      let secretKey : SecretKey :=
+        ⟨parameter, result.1, otsSecret,
+          fun index tree leafIdx => table (index, tree, leafIdx)⟩
+      (simulateQ (unloggedMappedAdversaryImpl secretKey)
+        (tracedGameRestComputation adversary ⟨result.1, parameter⟩)).run result.2)
+    (simulateQ_ordinaryHashImpl_probeFree rootComputation emptySplitHashCache)
+  · simpa using (relTriple_of_coupledAt_stateFree
+      ((coupled_simulateQ_ordinaryHashImpl parameter table
+        AdaptiveRevealProbe.State.empty q rootComputation hinitialClean
+        (ordinaryOnly_treeRoot parameter table topLayer rootTree
+          (otsSecret topLayer rootTree))).coupledAt emptySplitHashCache)
+      hinitialClean (revealedSynced_empty parameter table)
+      (simulateQ_ordinaryHashImpl_stateFree rootComputation)
+      (simulateQ_ordinaryHashImpl_cachePreserving rootComputation))
+  · intro finalState root finalCache hfinalClean hfinalSynced hright
+    let maskedSecretKey : SecretKey :=
+      ⟨parameter, root, otsSecret, fun _index _tree _leafIdx => 0⟩
+    let actualSecretKey : SecretKey := secretKeyWithFtsTable maskedSecretKey table
+    have hrootRun : root ∈ support
+        ((simulateQ (randomOracle : QueryImpl HashSpec _) rootComputation).run' ∅) := by
+      rw [StateT.run'_eq, support_map]
+      exact ⟨(root, mergedCache parameter table finalCache), hright, rfl⟩
+    have hroot : root ∈ support rootComputation :=
+      OracleComp.support_simulateQ_run'_subset
+        (randomOracle : QueryImpl HashSpec _) rootComputation ∅ hrootRun
+    have hrootLift : root ∈ support
+        (liftM rootComputation : OracleComp OracleWorld Digest) :=
+      by
+        rw [← OracleComp.liftComp_eq_liftM,
+          OracleComp.mem_support_liftComp_iff]
+        exact hroot
+    have hrest : (gameRest scheme adversary ⟨root, parameter⟩ actualSecretKey).IsQueryBoundP
+        (· matches Sum.inr _) q := by
+      apply isQueryBoundP_of_bind hbound root
+      exact hrootLift
+    apply relTriple_simulateQ_maskedExpandedAdversaryImpl maskedSecretKey table
+      (tracedGameRestComputation adversary ⟨root, parameter⟩)
+      finalState q finalCache
+    · change (simulateQ (expandedAdversaryImpl actualSecretKey)
+        (tracedGameRestComputation adversary
+          ⟨actualSecretKey.root, actualSecretKey.parameter⟩)).IsQueryBoundP
+            (· matches Sum.inr _) q
+      rwa [simulateQ_expanded_tracedGameRestComputation adversary actualSecretKey]
+    · exact hfinalClean
+    · exact hfinalSynced
 
 theorem probEvent_right_le_projected_or_missing
     (project : alpha → Option beta) (left : ProbComp alpha) (right : ProbComp beta)
