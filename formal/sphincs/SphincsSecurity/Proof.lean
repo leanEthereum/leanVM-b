@@ -134,6 +134,7 @@ import SphincsSecurity.Proof.TerminalFinish
 import SphincsSecurity.Proof.TerminalResidual
 import SphincsSecurity.Proof.FtsProbeSampling
 import SphincsSecurity.Proof.LazyRevealProbe
+import SphincsSecurity.Proof.OtsProbeSimulation
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to

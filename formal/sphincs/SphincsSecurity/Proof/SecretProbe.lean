@@ -1,5 +1,6 @@
 import SphincsSecurity.Proof.Sampling
 import SphincsSecurity.Proof.Honest
+import SphincsSecurity.Proof.Slot
 
 /-!
 # Adaptive probes into a sampled secret table
@@ -216,6 +217,19 @@ def OtsValueProbe.Hits (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
     (probe : OtsValueProbe) : Prop :=
   probe.candidate = probe.target f parameter otsSecret
+
+def OtsValueProbe.MatchesInput (parameter : PublicParameter)
+    (probe : OtsValueProbe) (input : HashInput) : Prop :=
+  (∃ step : ChainStep,
+      probe.digit.val = step.val ∧
+        input = tweakableHashInput parameter
+          (.chain probe.lay probe.tree probe.leafIdx probe.chainIdx step)
+          (digestBytes probe.candidate)) ∨
+    (probe.digit.val = chainLength - 1 ∧ probe.chainIdx.val = 0 ∧
+      ∃ payload : HashInput,
+        input = tweakableHashInput parameter
+          (.leaf probe.lay probe.tree probe.leafIdx) payload ∧
+        slotDigest 0 input = probe.candidate)
 
 theorem OtsValueProbe.target_zero {f : QueryImpl HashSpec Id} {parameter : PublicParameter}
     {otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest}

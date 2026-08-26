@@ -84,6 +84,104 @@ theorem BackwardChainOpening.exists_hit_probe
   simpa only [OtsValueProbe.Hits, OtsValueProbe.target, probe, hcodeword] using
     hforgedValues chainIdx
 
+theorem slotDigest_leafPayload_zero (parameter : PublicParameter)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (endpoints : ChainIndex → Digest) (chainIdx : ChainIndex) (hzero : chainIdx.val = 0) :
+    slotDigest 0 (tweakableHashInput parameter (.leaf lay tree leafIdx)
+      (leafPayload endpoints)) = endpoints chainIdx := by
+  unfold leafPayload
+  rw [slotDigest_flatMap parameter (.leaf lay tree leafIdx) (List.ofFn endpoints) 0
+    (by norm_num [numChains])]
+  simp only [List.getElem_ofFn]
+  congr 1
+  exact Fin.ext (by simpa using hzero.symm)
+
+theorem FreshLayerOpening.exists_hit_probe_cached
+    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
+    {signingLog : QueryLog SigningSpec}
+    (hfresh : FreshLayerOpening f cache secretKey signingLog) :
+    ∃ (probe : OtsValueProbe) (input : HashInput),
+      probe.Hits f secretKey.parameter secretKey.otsSecret ∧
+        ¬ SignedLayerAt f cache secretKey signingLog probe.lay probe.tree probe.leafIdx ∧
+        probe.MatchesInput secretKey.parameter input ∧ cache input ≠ none := by
+  obtain ⟨lay, tree, leafIdx, message, counter, values, path, hopening, hcached,
+      hnotSigned⟩ := hfresh
+  obtain ⟨codeword, hencode, hvalues, hpath⟩ := hopening
+  let chainIdx : ChainIndex := ⟨0, by decide⟩
+  let probe : OtsValueProbe :=
+    ⟨lay, tree, leafIdx, chainIdx, codeword chainIdx, values chainIdx⟩
+  have hhit : probe.Hits f secretKey.parameter secretKey.otsSecret := hvalues chainIdx
+  by_cases hdigit : (codeword chainIdx).val < chainLength - 1
+  · let step : ChainStep := ⟨(codeword chainIdx).val, hdigit⟩
+    let input := tweakableHashInput secretKey.parameter
+      (.chain lay tree leafIdx chainIdx step) (digestBytes (values chainIdx))
+    have hquery : input ∈ queriedInputs f
+        (otsLeaf secretKey.parameter lay tree leafIdx message counter values) := by
+      simpa only [input, step, Nat.add_zero, walkValue, chainWalk,
+        evalWithAnswerFn_pure] using
+        otsLeaf_chain_query_mem f secretKey.parameter lay tree leafIdx message counter values
+          codeword hencode chainIdx 0 (by omega) hdigit
+    refine ⟨probe, input, hhit, hnotSigned, Or.inl ⟨step, rfl, rfl⟩, hcached input hquery⟩
+  · have hdigitLast : (codeword chainIdx).val = chainLength - 1 := by
+      have := (codeword chainIdx).isLt
+      omega
+    let endpoints := fun otherChain : ChainIndex =>
+      walkValue f secretKey.parameter lay tree leafIdx otherChain
+        (codeword otherChain).val (values otherChain)
+        (chainLength - 1 - (codeword otherChain).val)
+    let input := tweakableHashInput secretKey.parameter (.leaf lay tree leafIdx)
+      (leafPayload endpoints)
+    have hquery : input ∈ queriedInputs f
+        (otsLeaf secretKey.parameter lay tree leafIdx message counter values) := by
+      exact otsLeaf_leaf_query_mem f secretKey.parameter lay tree leafIdx message counter values
+        codeword hencode
+    have hslot : slotDigest 0 input = probe.candidate := by
+      rw [show slotDigest 0 input = endpoints chainIdx from
+        slotDigest_leafPayload_zero secretKey.parameter lay tree leafIdx endpoints chainIdx rfl]
+      simp only [endpoints, probe, chainIdx, hdigitLast, Nat.sub_self, walkValue, chainWalk,
+        evalWithAnswerFn_pure]
+    refine ⟨probe, input, hhit, hnotSigned, Or.inr ⟨hdigitLast, rfl, ?_⟩,
+      hcached input hquery⟩
+    exact ⟨leafPayload endpoints, rfl, hslot⟩
+
+theorem BackwardChainOpening.exists_hit_probe_cached
+    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
+    {signingLog : QueryLog SigningSpec}
+    (hbackward : BackwardChainOpening f cache secretKey signingLog) :
+    ∃ (probe : OtsValueProbe) (signedDigit : Digit) (input : HashInput),
+      probe.Hits f secretKey.parameter secretKey.otsSecret ∧
+        probe.digit.val < signedDigit.val ∧
+        probe.MatchesInput secretKey.parameter input ∧ cache input ≠ none := by
+  obtain ⟨lay, tree, leafIdx, forgedMessage, forgedCounter, forgedValues, forgedPath,
+      entry, signature, index, leaves, signedCodeword, forgedCodeword, hforgedOpening,
+      hforgedRun, hentry, hresponse, hsignRun, hdigest, htree, hleaf, hmessage,
+      hsignedOpening, hsignedCached, hsigned, hforged, chainIdx, hlt⟩ := hbackward
+  obtain ⟨openingCodeword, hopeningEncode, hforgedValues, hpath⟩ := hforgedOpening
+  have hcodeword : openingCodeword = forgedCodeword :=
+    Option.some.inj (hopeningEncode.symm.trans hforged)
+  let probe : OtsValueProbe :=
+    ⟨lay, tree, leafIdx, chainIdx, forgedCodeword chainIdx, forgedValues chainIdx⟩
+  have hhit : probe.Hits f secretKey.parameter secretKey.otsSecret := by
+    simpa only [OtsValueProbe.Hits, OtsValueProbe.target, probe, hcodeword] using
+      hforgedValues chainIdx
+  have hdigit : (forgedCodeword chainIdx).val < chainLength - 1 := by
+    have hsignedLt := (signedCodeword chainIdx).isLt
+    omega
+  have hdigitOpening : (openingCodeword chainIdx).val < chainLength - 1 := by
+    rw [hcodeword]
+    exact hdigit
+  let step : ChainStep := ⟨(openingCodeword chainIdx).val, hdigitOpening⟩
+  let input := tweakableHashInput secretKey.parameter
+    (.chain lay tree leafIdx chainIdx step) (digestBytes (forgedValues chainIdx))
+  have hquery : input ∈ queriedInputs f
+      (otsLeaf secretKey.parameter lay tree leafIdx forgedMessage forgedCounter forgedValues) := by
+    simpa only [input, step, Nat.add_zero, walkValue, chainWalk,
+      evalWithAnswerFn_pure] using
+      otsLeaf_chain_query_mem f secretKey.parameter lay tree leafIdx forgedMessage forgedCounter
+        forgedValues openingCodeword hopeningEncode chainIdx 0 (by omega) hdigitOpening
+  exact ⟨probe, signedCodeword chainIdx, input, hhit, hlt,
+    Or.inl ⟨step, by simp [probe, step, hcodeword], rfl⟩, hforgedRun input hquery⟩
+
 theorem ViewedFreshLayerOpeningWitness.exists_hit_probe
     {parameter : PublicParameter}
     {otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest}
