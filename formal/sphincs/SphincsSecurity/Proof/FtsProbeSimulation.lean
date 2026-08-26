@@ -452,6 +452,35 @@ theorem mergedCache_update_ordinary (parameter : PublicParameter)
           · intro hkey
             exact heq (SplitHashKey.ordinary.inj hkey)
 
+theorem mergedCache_update_hiddenInput_ordinary
+    (parameter : PublicParameter) (table : Coordinate → Digest)
+    (cache : SplitHashCache) (coordinate : Coordinate) (output : HashOutput) :
+    mergedCache parameter table
+        (Function.update cache (.ordinary (hiddenInput parameter table coordinate))
+          (some output)) =
+      mergedCache parameter table cache := by
+  funext input
+  by_cases heq : input = hiddenInput parameter table coordinate
+  · subst input
+    rw [mergedCache_hiddenInput, mergedCache_hiddenInput,
+      Function.update_of_ne (by simp)]
+  · unfold mergedCache
+    cases hdecode : decodeProbe? parameter input with
+    | none =>
+        rw [Function.update_of_ne]
+        intro hkey
+        exact heq (SplitHashKey.ordinary.inj hkey)
+    | some probe =>
+        simp only
+        by_cases hcandidate :
+            probe.candidate = table (probe.index, probe.tree, probe.leafIdx)
+        · rw [if_pos hcandidate, Function.update_of_ne (by simp)]
+          simp [hcandidate]
+        · rw [if_neg hcandidate, Function.update_of_ne]
+          · simp [hcandidate]
+          · intro hkey
+            exact heq (SplitHashKey.ordinary.inj hkey)
+
 noncomputable def projectDetailedCache (parameter : PublicParameter) (table : Coordinate → Digest) :
     AdaptiveRevealProbe.DetailedResult Coordinate (alpha × SplitHashCache) →
       Option (alpha × QueryCache HashSpec)
@@ -1479,6 +1508,128 @@ def Coupled (parameter : PublicParameter) (table : Coordinate → Digest)
         AdaptiveRevealProbe.runDetailed table state fuel (masked.run cache) =
       some <$> ordinary.run (mergedCache parameter table cache)
 
+def CoupledAt (parameter : PublicParameter) (table : Coordinate → Digest)
+    (state : AdaptiveRevealProbe.State Coordinate) (fuel : Nat)
+    (masked : StateT SplitHashCache
+      (OracleComp (AdaptiveRevealProbe.World Coordinate)) alpha)
+    (ordinary : StateT (QueryCache HashSpec) ProbComp alpha)
+    (cache : SplitHashCache) : Prop :=
+  projectDetailedCache parameter table <$>
+      AdaptiveRevealProbe.runDetailed table state fuel (masked.run cache) =
+    some <$> ordinary.run (mergedCache parameter table cache)
+
+theorem Coupled.coupledAt
+    {parameter : PublicParameter} {table : Coordinate → Digest}
+    {state : AdaptiveRevealProbe.State Coordinate} {fuel : Nat}
+    {masked : StateT SplitHashCache
+      (OracleComp (AdaptiveRevealProbe.World Coordinate)) alpha}
+    {ordinary : StateT (QueryCache HashSpec) ProbComp alpha}
+    (hcoupled : Coupled parameter table state fuel masked ordinary)
+    (cache : SplitHashCache) :
+    CoupledAt parameter table state fuel masked ordinary cache :=
+  hcoupled cache
+
+theorem CoupledAt.bind_probeFree
+    {parameter : PublicParameter} {table : Coordinate → Digest}
+    {state : AdaptiveRevealProbe.State Coordinate} {fuel : Nat}
+    {left : StateT SplitHashCache
+      (OracleComp (AdaptiveRevealProbe.World Coordinate)) alpha}
+    {next : alpha → StateT SplitHashCache
+      (OracleComp (AdaptiveRevealProbe.World Coordinate)) beta}
+    {ordinaryLeft : StateT (QueryCache HashSpec) ProbComp alpha}
+    {ordinaryNext : alpha → StateT (QueryCache HashSpec) ProbComp beta}
+    {cache : SplitHashCache}
+    (hclean : AdaptiveRevealProbe.tableHits state table = false)
+    (hprobeFree : ProbeFree left)
+    (hleft : CoupledAt parameter table state fuel left ordinaryLeft cache)
+    (hnext : ∀ finalState value finalCache,
+      .done false finalState (value, finalCache) ∈
+          support (AdaptiveRevealProbe.runDetailed table state fuel (left.run cache)) →
+        CoupledAt parameter table finalState fuel (next value) (ordinaryNext value)
+          finalCache) :
+    CoupledAt parameter table state fuel (left >>= next)
+      (ordinaryLeft >>= ordinaryNext) cache := by
+  let resume : Option (alpha × QueryCache HashSpec) →
+      ProbComp (Option (beta × QueryCache HashSpec))
+    | none => pure none
+    | some (value, ordinaryCache) => some <$> (ordinaryNext value).run ordinaryCache
+  unfold CoupledAt at hleft ⊢
+  rw [StateT.run_bind, StateT.run_bind,
+    AdaptiveRevealProbe.runDetailed_bind_probeFree table state fuel
+      (left.run cache) (fun result => (next result.1).run result.2)
+      (hprobeFree cache)]
+  simp only [map_bind]
+  refine (OracleComp.bind_congr_of_forall_mem_support
+    (AdaptiveRevealProbe.runDetailed table state fuel (left.run cache))
+    (g := fun result => resume (projectDetailedCache parameter table result)) ?_).trans ?_
+  · intro result hresult
+    obtain ⟨finalState, value, hresultEq, hfinalClean⟩ :=
+      AdaptiveRevealProbe.runDetailed_probeFree_support table state fuel
+        (left.run cache) (hprobeFree cache) hclean result hresult
+    subst result
+    simp only [projectDetailedCache, resume]
+    exact hnext finalState value.1 value.2 hresult
+  · rw [← bind_map_left, hleft]
+    simp only [map_eq_bind_pure_comp, bind_assoc, Function.comp_apply, pure_bind, resume]
+
+theorem coupledAt_revealFtsSecret
+    (parameter : PublicParameter) (table : Coordinate → Digest)
+    (state : AdaptiveRevealProbe.State Coordinate) (fuel : Nat)
+    (cache : SplitHashCache) (coordinate : Coordinate)
+    (hclean : AdaptiveRevealProbe.tableHits state table = false)
+    (hsynced : RevealedSynced parameter table state cache)
+    (hhidden : ∃ output, cache (.hiddenLeaf coordinate) = some output) :
+    CoupledAt parameter table state fuel (revealFtsSecret parameter coordinate)
+      (pure (table coordinate) : StateT (QueryCache HashSpec) ProbComp Digest) cache := by
+  unfold CoupledAt
+  cases hrevealed : state.revealed coordinate with
+  | none =>
+      obtain ⟨output, hhidden⟩ := hhidden
+      rw [runDetailed_revealFtsSecret_hidden parameter table state fuel cache coordinate output
+        hrevealed hclean hhidden]
+      simp only [map_pure, projectDetailedCache, StateT.run_pure]
+      rw [mergedCache_update_hiddenInput_ordinary]
+  | some value =>
+      obtain ⟨hvalue, output, hhiddenCache, hordinaryCache⟩ :=
+        hsynced coordinate value hrevealed
+      rw [runDetailed_revealFtsSecret_revealed parameter table state fuel cache coordinate
+        value output hrevealed hvalue hhiddenCache hordinaryCache hclean]
+      simp [projectDetailedCache]
+
+theorem revealedSynced_of_mem_runDetailed_revealFtsSecret
+    (parameter : PublicParameter) (table : Coordinate → Digest)
+    (state finalState : AdaptiveRevealProbe.State Coordinate) (fuel : Nat)
+    (cache finalCache : SplitHashCache) (coordinate : Coordinate) (value : Digest)
+    (hclean : AdaptiveRevealProbe.tableHits state table = false)
+    (hsynced : RevealedSynced parameter table state cache)
+    (hhidden : ∃ output, cache (.hiddenLeaf coordinate) = some output)
+    (hresult : .done false finalState (value, finalCache) ∈ support
+      (AdaptiveRevealProbe.runDetailed table state fuel
+        ((revealFtsSecret parameter coordinate).run cache))) :
+    RevealedSynced parameter table finalState finalCache := by
+  cases hrevealed : state.revealed coordinate with
+  | none =>
+      obtain ⟨output, hhiddenCache⟩ := hhidden
+      rw [runDetailed_revealFtsSecret_hidden parameter table state fuel cache coordinate output
+        hrevealed hclean hhiddenCache] at hresult
+      simp only [support_pure, Set.mem_singleton_iff,
+        AdaptiveRevealProbe.DetailedResult.done.injEq] at hresult
+      obtain ⟨hfinalState, hvalueCache⟩ := hresult.2
+      subst finalState
+      cases hvalueCache
+      exact RevealedSynced.install hsynced coordinate (table coordinate) output rfl hhiddenCache
+  | some revealedValue =>
+      obtain ⟨hvalue, output, hhiddenCache, hordinaryCache⟩ :=
+        hsynced coordinate revealedValue hrevealed
+      rw [runDetailed_revealFtsSecret_revealed parameter table state fuel cache coordinate
+        revealedValue output hrevealed hvalue hhiddenCache hordinaryCache hclean] at hresult
+      simp only [support_pure, Set.mem_singleton_iff,
+        AdaptiveRevealProbe.DetailedResult.done.injEq] at hresult
+      obtain ⟨hfinalState, hvalueCache⟩ := hresult.2
+      subst finalState
+      cases hvalueCache
+      exact hsynced
+
 theorem Coupled.bind
     {parameter : PublicParameter} {table : Coordinate → Digest}
     {state : AdaptiveRevealProbe.State Coordinate} {fuel : Nat}
@@ -1515,6 +1666,46 @@ theorem Coupled.bind
     subst result
     simp only [projectDetailedCache, resume]
     exact hnext value.1 value.2
+  · rw [← bind_map_left, hleft cache]
+    simp only [map_eq_bind_pure_comp, bind_assoc, Function.comp_apply, pure_bind, resume]
+
+theorem Coupled.bind_probeFree
+    {parameter : PublicParameter} {table : Coordinate → Digest}
+    {state : AdaptiveRevealProbe.State Coordinate} {fuel : Nat}
+    {left : StateT SplitHashCache
+      (OracleComp (AdaptiveRevealProbe.World Coordinate)) alpha}
+    {next : alpha → StateT SplitHashCache
+      (OracleComp (AdaptiveRevealProbe.World Coordinate)) beta}
+    {ordinaryLeft : StateT (QueryCache HashSpec) ProbComp alpha}
+    {ordinaryNext : alpha → StateT (QueryCache HashSpec) ProbComp beta}
+    (hclean : AdaptiveRevealProbe.tableHits state table = false)
+    (hprobeFree : ProbeFree left)
+    (hleft : Coupled parameter table state fuel left ordinaryLeft)
+    (hnext : ∀ finalState value,
+      AdaptiveRevealProbe.tableHits finalState table = false →
+        Coupled parameter table finalState fuel (next value) (ordinaryNext value)) :
+    Coupled parameter table state fuel (left >>= next)
+      (ordinaryLeft >>= ordinaryNext) := by
+  intro cache
+  let resume : Option (alpha × QueryCache HashSpec) →
+      ProbComp (Option (beta × QueryCache HashSpec))
+    | none => pure none
+    | some (value, ordinaryCache) => some <$> (ordinaryNext value).run ordinaryCache
+  rw [StateT.run_bind, StateT.run_bind,
+    AdaptiveRevealProbe.runDetailed_bind_probeFree table state fuel
+      (left.run cache) (fun result => (next result.1).run result.2)
+      (hprobeFree cache)]
+  simp only [map_bind]
+  refine (OracleComp.bind_congr_of_forall_mem_support
+    (AdaptiveRevealProbe.runDetailed table state fuel (left.run cache))
+    (g := fun result => resume (projectDetailedCache parameter table result)) ?_).trans ?_
+  · intro result hresult
+    obtain ⟨finalState, value, hresultEq, hfinalClean⟩ :=
+      AdaptiveRevealProbe.runDetailed_probeFree_support table state fuel
+        (left.run cache) (hprobeFree cache) hclean result hresult
+    subst result
+    simp only [projectDetailedCache, resume]
+    exact hnext finalState value.1 hfinalClean value.2
   · rw [← bind_map_left, hleft cache]
     simp only [map_eq_bind_pure_comp, bind_assoc, Function.comp_apply, pure_bind, resume]
 
