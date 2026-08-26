@@ -60,6 +60,7 @@ import SphincsSecurity.Proof.FtsProbeSigner
 import SphincsSecurity.Proof.FtsProbeAdversary
 import SphincsSecurity.Proof.FtsProbeOrigin
 import SphincsSecurity.Proof.FtsProbeTerminal
+import SphincsSecurity.Proof.FtsProbeProbability
 import SphincsSecurity.Proof.OneTimeEvents
 import SphincsSecurity.Proof.TerminalCache
 import SphincsSecurity.Proof.EncodingTarget
