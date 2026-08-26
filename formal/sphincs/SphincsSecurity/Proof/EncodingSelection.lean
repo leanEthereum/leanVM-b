@@ -43,6 +43,19 @@ noncomputable def selectionRisk {ι : Type} [DecidableEq ι]
     (schedule : List (ι × Option Digest)) (targets : Finset (ι × Digest)) : ℝ≥0∞ :=
   Pr[selectedHits targets | selectFirst schedule]
 
+noncomputable def targetDigests {ι : Type} [DecidableEq ι]
+    (targets : Finset (ι × Digest)) : Finset Digest :=
+  targets.image Prod.snd
+
+theorem digest_mem_targetDigests_of_selectedHits
+    {ι : Type} [DecidableEq ι] {targets : Finset (ι × Digest)}
+    {identifier : ι} {digest : Digest}
+    (hhit : selectedHits targets (some (identifier, digest))) :
+    digest ∈ targetDigests targets := by
+  obtain ⟨candidate, hcandidate, _, hdigest⟩ := hhit
+  rw [targetDigests, Finset.mem_image]
+  exact ⟨candidate, hcandidate, hdigest⟩
+
 theorem selectFirst_support_some_valid {ι : Type} [DecidableEq ι]
     {schedule : List (ι × Option Digest)} {identifier : ι} {digest : Digest}
     (hmem : some (identifier, digest) ∈ support (selectFirst schedule)) :
@@ -134,6 +147,50 @@ theorem selectionRisk_cons_none_eq {ι : Type} [DecidableEq ι]
   rw [selectionRisk, hselect, probEvent_bind_eq_tsum]
   rfl
 
+inductive AllMissing {ι : Type} [DecidableEq ι] :
+    List (ι × Option Digest) → Prop where
+  | nil : AllMissing []
+  | cons (identifier : ι) (rest : List (ι × Option Digest))
+      (tail : AllMissing rest) :
+      AllMissing ((identifier, none) :: rest)
+
+theorem AllMissing.selectionRisk_le_pendingRisk
+    {ι : Type} [DecidableEq ι]
+    {schedule : List (ι × Option Digest)} (hmissing : AllMissing schedule)
+    (targets : Finset (ι × Digest)) :
+    selectionRisk schedule targets ≤
+      EncodingRetry.pendingRisk (targetDigests targets) := by
+  induction hmissing with
+  | nil =>
+      rw [selectionRisk_nil]
+      exact bot_le
+  | cons identifier rest _ ih =>
+      rw [selectionRisk_cons_none_eq]
+      calc
+        _ ≤ ∑' output : HashOutput,
+            Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
+              (if TargetSum.ValidDigest (truncateHash output) then
+                if truncateHash output ∈ targetDigests targets then 1 else 0
+              else EncodingRetry.pendingRisk (targetDigests targets)) := by
+            apply ENNReal.tsum_le_tsum
+            intro output
+            apply mul_le_mul_right
+            by_cases hvalid : TargetSum.ValidDigest (truncateHash output)
+            · by_cases hhit : selectedHits targets
+                  (some (identifier, truncateHash output))
+              · have hmem := digest_mem_targetDigests_of_selectedHits hhit
+                rw [selectionRisk_cons_some_of_valid_of_hit _ _ _ _ hvalid hhit,
+                  if_pos hvalid, if_pos hmem]
+              · rw [selectionRisk_cons_some_of_valid_of_miss _ _ _ _ hvalid hhit,
+                  if_pos hvalid]
+                split <;> simp
+            · rw [selectionRisk_cons_some_of_invalid _ _ _ _ hvalid,
+                if_neg hvalid]
+              exact ih
+        _ ≤ EncodingRetry.pendingRisk (targetDigests targets) := by
+          exact SphincsSecurity.uniformHashOutput_select_bonus_sum_le
+            (targetDigests targets)
+
 theorem uniform_reveal_append_sum_eq {ι : Type} [DecidableEq ι]
     (initial : List (ι × Option Digest)) (identifier : ι)
     (rest : List (ι × Option Digest)) (targets : Finset (ι × Digest)) :
@@ -190,6 +247,57 @@ inductive FirstValid {ι : Type} [DecidableEq ι] :
       (tail : FirstValid rest identifier digest) :
       FirstValid ((headIdentifier, some headDigest) :: rest) identifier digest
 
+inductive ReachableCachedValid {ι : Type} [DecidableEq ι] :
+    List (ι × Option Digest) → ι → Digest → Prop where
+  | here (identifier : ι) (digest : Digest) (rest : List (ι × Option Digest))
+      (valid : TargetSum.ValidDigest digest) :
+      ReachableCachedValid ((identifier, some digest) :: rest) identifier digest
+  | thereSome (headIdentifier : ι) (headDigest : Digest)
+      (rest : List (ι × Option Digest)) (identifier : ι) (digest : Digest)
+      (invalid : ¬ TargetSum.ValidDigest headDigest)
+      (tail : ReachableCachedValid rest identifier digest) :
+      ReachableCachedValid ((headIdentifier, some headDigest) :: rest) identifier digest
+  | thereNone (headIdentifier : ι) (rest : List (ι × Option Digest))
+      (identifier : ι) (digest : Digest)
+      (tail : ReachableCachedValid rest identifier digest) :
+      ReachableCachedValid ((headIdentifier, none) :: rest) identifier digest
+
+theorem reachableCachedValid_cons_none_iff
+    {ι : Type} [DecidableEq ι] (headIdentifier identifier : ι)
+    (rest : List (ι × Option Digest)) (digest : Digest) :
+    ReachableCachedValid ((headIdentifier, none) :: rest) identifier digest ↔
+      ReachableCachedValid rest identifier digest := by
+  constructor
+  · intro hreach
+    cases hreach with
+    | thereNone _ _ _ _ htail => exact htail
+  · exact ReachableCachedValid.thereNone headIdentifier rest identifier digest
+
+theorem reachableCachedValid_cons_some_iff
+    {ι : Type} [DecidableEq ι] (headIdentifier identifier : ι)
+    (headDigest : Digest) (rest : List (ι × Option Digest)) (digest : Digest) :
+    ReachableCachedValid ((headIdentifier, some headDigest) :: rest)
+        identifier digest ↔
+      (identifier = headIdentifier ∧ digest = headDigest ∧
+        TargetSum.ValidDigest headDigest)
+        ∨ (¬ TargetSum.ValidDigest headDigest ∧
+          ReachableCachedValid rest identifier digest) := by
+  constructor
+  · intro hreach
+    cases hreach with
+    | here _ _ _ hvalid => exact Or.inl ⟨rfl, rfl, hvalid⟩
+    | thereSome _ _ _ _ _ hinvalid htail => exact Or.inr ⟨hinvalid, htail⟩
+  · rintro (⟨rfl, rfl, hvalid⟩ | ⟨hinvalid, htail⟩)
+    · exact .here _ _ _ hvalid
+    · exact .thereSome _ _ _ _ _ hinvalid htail
+
+def HasCachedHit {ι : Type} [DecidableEq ι]
+    (schedule : List (ι × Option Digest))
+    (targets : Finset (ι × Digest)) : Prop :=
+  ∃ identifier digest,
+    ReachableCachedValid schedule identifier digest ∧
+      selectedHits targets (some (identifier, digest))
+
 theorem FirstValid.selectFirst_eq_pure {ι : Type} [DecidableEq ι]
     {schedule : List (ι × Option Digest)} {identifier : ι} {digest : Digest}
     (hfirst : FirstValid schedule identifier digest) :
@@ -208,6 +316,64 @@ theorem selectionRisk_eq_one_of_firstValid_hit {ι : Type} [DecidableEq ι]
     selectionRisk schedule targets = 1 := by
   classical
   rw [selectionRisk, hfirst.selectFirst_eq_pure, probEvent_pure, if_pos hhit]
+
+theorem selectionRisk_le_pendingRisk_of_not_hasCachedHit
+    {ι : Type} [DecidableEq ι]
+    (schedule : List (ι × Option Digest)) (targets : Finset (ι × Digest))
+    (hclean : ¬ HasCachedHit schedule targets) :
+    selectionRisk schedule targets ≤
+      EncodingRetry.pendingRisk (targetDigests targets) := by
+  induction schedule with
+  | nil =>
+      rw [selectionRisk_nil]
+      exact bot_le
+  | cons head rest ih =>
+      obtain ⟨identifier, digest⟩ := head
+      cases digest with
+      | some digest =>
+          by_cases hvalid : TargetSum.ValidDigest digest
+          · have hmiss : ¬ selectedHits targets (some (identifier, digest)) := by
+              intro hhit
+              exact hclean ⟨identifier, digest,
+                .here identifier digest rest hvalid, hhit⟩
+            rw [selectionRisk_cons_some_of_valid_of_miss _ _ _ _ hvalid hmiss]
+            exact bot_le
+          · rw [selectionRisk_cons_some_of_invalid _ _ _ _ hvalid]
+            apply ih
+            rintro ⟨selectedIdentifier, selectedDigest, hfirst, hhit⟩
+            exact hclean ⟨selectedIdentifier, selectedDigest,
+              .thereSome identifier digest rest selectedIdentifier selectedDigest
+                hvalid hfirst, hhit⟩
+      | none =>
+          rw [selectionRisk_cons_none_eq]
+          have htail : ¬ HasCachedHit rest targets := by
+            rintro ⟨selectedIdentifier, selectedDigest, hfirst, hhit⟩
+            exact hclean ⟨selectedIdentifier, selectedDigest,
+              .thereNone identifier rest selectedIdentifier selectedDigest hfirst, hhit⟩
+          calc
+            _ ≤ ∑' output : HashOutput,
+                Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
+                  (if TargetSum.ValidDigest (truncateHash output) then
+                    if truncateHash output ∈ targetDigests targets then 1 else 0
+                  else EncodingRetry.pendingRisk (targetDigests targets)) := by
+                apply ENNReal.tsum_le_tsum
+                intro output
+                apply mul_le_mul_right
+                by_cases hvalid : TargetSum.ValidDigest (truncateHash output)
+                · by_cases hhit : selectedHits targets
+                      (some (identifier, truncateHash output))
+                  · have hmem := digest_mem_targetDigests_of_selectedHits hhit
+                    rw [selectionRisk_cons_some_of_valid_of_hit _ _ _ _ hvalid hhit,
+                      if_pos hvalid, if_pos hmem]
+                  · rw [selectionRisk_cons_some_of_valid_of_miss _ _ _ _ hvalid hhit,
+                      if_pos hvalid]
+                    split <;> simp
+                · rw [selectionRisk_cons_some_of_invalid _ _ _ _ hvalid,
+                    if_neg hvalid]
+                  exact ih htail
+            _ ≤ EncodingRetry.pendingRisk (targetDigests targets) :=
+              SphincsSecurity.uniformHashOutput_select_bonus_sum_le
+                (targetDigests targets)
 
 @[simp] theorem selectionRisk_empty_targets {ι : Type} [DecidableEq ι]
     (schedule : List (ι × Option Digest)) :
@@ -354,6 +520,17 @@ inductive InvalidPrefix {ι : Type} [DecidableEq ι] :
       (invalid : ¬ TargetSum.ValidDigest digest)
       (tail : InvalidPrefix rest) :
       InvalidPrefix ((identifier, some digest) :: rest)
+
+theorem InvalidPrefix.firstValid_append {ι : Type} [DecidableEq ι]
+    {initial : List (ι × Option Digest)} (hinitial : InvalidPrefix initial)
+    (identifier : ι) (digest : Digest) (rest : List (ι × Option Digest))
+    (hvalid : TargetSum.ValidDigest digest) :
+    FirstValid (initial ++ (identifier, some digest) :: rest) identifier digest := by
+  induction hinitial with
+  | nil => exact .here identifier digest rest hvalid
+  | cons headIdentifier headDigest initial hinvalid _ ih =>
+      rw [List.cons_append]
+      exact .there headIdentifier headDigest _ identifier digest hinvalid ih
 
 theorem InvalidPrefix.selectionRisk_append {ι : Type} [DecidableEq ι]
     {initial : List (ι × Option Digest)} (hinitial : InvalidPrefix initial)
