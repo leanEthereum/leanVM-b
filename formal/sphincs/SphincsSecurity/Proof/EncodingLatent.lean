@@ -15,6 +15,21 @@ open OracleComp OracleSpec
 
 set_option maxRecDepth 100000
 
+def EncodingMessageSettledAt (cache : QueryCache HashSpec) (secretKey : SecretKey)
+    (position : EncodingPosition) : Prop :=
+  ∃ index : Index,
+    treeIndexAt index position.lay = position.tree
+      ∧ leafIndexAt index position.lay = position.leafIdx
+      ∧ Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache
+        (layerMessagePosition index position.lay)
+
+theorem EncodingMessageSettledAt.mono {cache cache' : QueryCache HashSpec}
+    {secretKey : SecretKey} {position : EncodingPosition} (hle : cache ≤ cache')
+    (hsettled : EncodingMessageSettledAt cache secretKey position) :
+    EncodingMessageSettledAt cache' secretKey position := by
+  obtain ⟨index, htree, hleaf, hposition⟩ := hsettled
+  exact ⟨index, htree, hleaf, hposition.mono hle⟩
+
 def LatentEncodingBadAt (cache : QueryCache HashSpec) (secretKey : SecretKey)
     (position : EncodingPosition) : Prop :=
   ∃ (index : Index) (counter : Counter)
@@ -458,9 +473,17 @@ theorem latentEncodingBad_step_classify
       AtEncodingPosition secretKey.parameter input position ∧
         truncateHash answer ∈
           encodingAnswerTargets secretKey.parameter cache hfinite position)
-      ∨ (∃ position : EncodingPosition,
-        truncateHash answer ∈
-          encodingMessageTargets secretKey.parameter cache hfinite position)
+      ∨ (∃ (position : EncodingPosition) (index : Index),
+        treeIndexAt index position.lay = position.tree ∧
+          leafIndexAt index position.lay = position.leafIdx ∧
+          ¬ Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache
+            (layerMessagePosition index position.lay) ∧
+          Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret
+            (cache.cacheQuery input answer) (layerMessagePosition index position.lay) ∧
+          AtPosition secretKey.parameter input
+            (layerMessagePosition index position.lay) ∧
+          truncateHash answer ∈
+            encodingMessageTargets secretKey.parameter cache hfinite position)
       ∨ PrematureLayerMessageSettlement cache secretKey input answer := by
   classical
   by_cases hencoding : ∃ position,
@@ -492,7 +515,8 @@ theorem latentEncodingBad_step_classify
     · by_cases hposition : AtPosition secretKey.parameter input
           (layerMessagePosition index position.lay)
       · left
-        refine ⟨position, ?_⟩
+        refine ⟨position, index, htree, hleaf, hsettled, hsettledAfter,
+          hposition, ?_⟩
         apply latentEncodingBadAt_message_hit_of_settling_query hfinite huncached
           htree hleaf hposition hsettled
         exact ⟨index, counter, targetPayload, otherPayload, targetAnswer,
@@ -508,6 +532,10 @@ theorem PrematureLayerMessageSettlement.mem_settlingTargets
     (hpremature : PrematureLayerMessageSettlement cache secretKey input answer) :
     ∃ queriedPosition : Position,
       AtPosition secretKey.parameter input queriedPosition ∧
+        ¬ Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret
+          cache queriedPosition ∧
+        Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret
+          (cache.cacheQuery input answer) queriedPosition ∧
         truncateHash answer ∈
           settlingTargets secretKey.parameter cache hfinite queriedPosition := by
   obtain ⟨encodingPosition, index, htree, hleaf, htargetUnsettled,
@@ -596,7 +624,7 @@ theorem PrematureLayerMessageSettlement.mem_settlingTargets
     exact (not_settled_parent_of_avoids_slotTargets secretKey.parameter
       secretKey.otsSecret secretKey.ftsSecret hfinite huncached hqueried
       hqueriedUnsettled hqueriedSettled hchild havoid) hparentSettled
-  refine ⟨queriedPosition, hqueried, ?_⟩
+  refine ⟨queriedPosition, hqueried, hqueriedUnsettled, hqueriedSettled, ?_⟩
   rw [settlingTargets, hparent]
   exact Finset.mem_union_right _ hslot
 
@@ -620,8 +648,11 @@ theorem latentEncodingBad_step_targets
   rcases latentEncodingBad_step_classify hfinite hclean huncached hbad with
     hencoding | hmessage | hpremature
   · exact Or.inl hencoding
-  · exact Or.inr (Or.inl hmessage)
-  · exact Or.inr (Or.inr
-      (PrematureLayerMessageSettlement.mem_settlingTargets hfinite huncached hpremature))
+  · obtain ⟨position, index, htree, hleaf, hunsettled, hsettled,
+      hposition, hmem⟩ := hmessage
+    exact Or.inr (Or.inl ⟨position, hmem⟩)
+  · obtain ⟨position, hposition, hunsettled, hsettled, hmem⟩ :=
+      PrematureLayerMessageSettlement.mem_settlingTargets hfinite huncached hpremature
+    exact Or.inr (Or.inr ⟨position, hposition, hmem⟩)
 
 end SphincsSecurity.Concrete
