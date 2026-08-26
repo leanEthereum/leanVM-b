@@ -310,6 +310,38 @@ theorem Finite.of_enncard_le {cache : QueryCache HashSpec} {q : Nat}
     exact ⟨⟨input, answer⟩, hanswer, rfl⟩
   exact (hfiniteToSet.image Sigma.fst).subset hsubset
 
+theorem Finite.cachedInputs_ncard_toENNReal_eq_enncard
+    {cache : QueryCache HashSpec} (hfinite : Finite cache) :
+    ({input | cache input ≠ none}.ncard : ℝ≥0∞) = QueryCache.enncard cache := by
+  let cachedInputs : Set HashInput := {input | cache input ≠ none}
+  have himage : Sigma.fst '' cache.toSet = cachedInputs := by
+    ext input
+    constructor
+    · rintro ⟨⟨cachedInput, answer⟩, hcached, heq⟩
+      subst input
+      change cache cachedInput = some answer at hcached
+      exact Option.ne_none_iff_exists'.mpr ⟨answer, hcached⟩
+    · intro hcached
+      obtain ⟨answer, hanswer⟩ := Option.ne_none_iff_exists'.mp hcached
+      exact ⟨⟨input, answer⟩, hanswer, rfl⟩
+  have hinjective : Set.InjOn Sigma.fst cache.toSet := by
+    rintro ⟨leftInput, leftAnswer⟩ hleft ⟨rightInput, rightAnswer⟩ hright heq
+    simp only at heq
+    subst rightInput
+    change cache leftInput = some leftAnswer at hleft
+    change cache leftInput = some rightAnswer at hright
+    have hanswer : leftAnswer = rightAnswer := by
+      rw [hleft] at hright
+      exact Option.some.inj hright
+    subst rightAnswer
+    rfl
+  have hencard : cachedInputs.encard = cache.toSet.encard := by
+    rw [← himage]
+    exact hinjective.encard_image
+  have hcast := hfinite.cast_ncard_eq.trans hencard
+  simpa only [cachedInputs, QueryCache.enncard, ENat.toENNReal_coe] using
+    congrArg ENat.toENNReal hcast
+
 theorem not_bad_empty : ¬ Bad parameter otsSecret ftsSecret (∅ : QueryCache HashSpec) := by
   rintro ⟨p, _, input, ax, ay, _, _, hcached, _⟩
   simp at hcached

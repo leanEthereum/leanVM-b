@@ -150,4 +150,18 @@ theorem encodingRetry_buildThenSelect_sum_probability_le
       exact mul_le_mul_left (by exact_mod_cast hsteps)
         (Fintype.card Digest : ℝ≥0∞)⁻¹
 
+theorem encodingRetry_cachedBuildThenSelect_sum_probability_le
+    {cache : QueryCache HashSpec} (hfinite : Finite cache)
+    (parameter : PublicParameter) :
+    (∑ position : EncodingPosition,
+      Pr[(· = true) | EncodingRetry.buildThenSelect
+        (encodingCachedAt parameter cache position).ncard ∅]) ≤
+      QueryCache.enncard cache * (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
+  have hbound := encodingRetry_buildThenSelect_sum_probability_le
+    (fun position => (encodingCachedAt parameter cache position).ncard)
+    {input | cache input ≠ none}.ncard
+    (sum_encodingCachedAt_ncard_le hfinite)
+  rw [hfinite.cachedInputs_ncard_toENNReal_eq_enncard] at hbound
+  exact hbound
+
 end SphincsSecurity.Concrete

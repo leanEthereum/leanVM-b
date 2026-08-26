@@ -1002,6 +1002,40 @@ theorem encodingCachedAt_finite {parameter : PublicParameter} {cache : QueryCach
     (encodingCachedAt parameter cache position).Finite :=
   hfinite.subset fun _ hinput => hinput.1
 
+theorem sum_encodingCachedAt_ncard_le
+    {parameter : PublicParameter} {cache : QueryCache HashSpec}
+    (hfinite : Finite cache) :
+    (∑ position : EncodingPosition,
+      (encodingCachedAt parameter cache position).ncard) ≤
+        {input | cache input ≠ none}.ncard := by
+  have hdisjoint : Pairwise (Function.onFun Disjoint
+      fun position : EncodingPosition => encodingCachedAt parameter cache position) := by
+    intro left right hne
+    change Disjoint (encodingCachedAt parameter cache left)
+      (encodingCachedAt parameter cache right)
+    rw [Set.disjoint_left]
+    intro input hleft hright
+    exact hne (atEncodingPosition_unique hleft.2 hright.2)
+  have hsubset : (⋃ position : EncodingPosition,
+      encodingCachedAt parameter cache position) ⊆ {input | cache input ≠ none} := by
+    intro input hinput
+    rw [Set.mem_iUnion] at hinput
+    obtain ⟨position, hposition⟩ := hinput
+    exact hposition.1
+  calc
+    (∑ position : EncodingPosition,
+        (encodingCachedAt parameter cache position).ncard) =
+      ∑ᶠ position : EncodingPosition,
+        (encodingCachedAt parameter cache position).ncard := by
+          exact (finsum_eq_sum_of_fintype _).symm
+    _ = (⋃ position : EncodingPosition,
+        encodingCachedAt parameter cache position).ncard :=
+      (Set.ncard_iUnion_of_finite
+        (fun position => encodingCachedAt_finite
+          (parameter := parameter) hfinite position) hdisjoint).symm
+    _ ≤ {input | cache input ≠ none}.ncard :=
+      Set.ncard_le_ncard hsubset hfinite
+
 noncomputable def encodingMessageTargets (parameter : PublicParameter)
     (cache : QueryCache HashSpec) (hfinite : Finite cache)
     (position : EncodingPosition) : Finset Digest :=
