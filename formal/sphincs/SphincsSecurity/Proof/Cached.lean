@@ -39,6 +39,19 @@ theorem CachedRun.mono {alpha : Type} {cache cache' : QueryCache HashSpec}
   rw [hle hanswer]
   simp
 
+/-- A fresh cache insertion that the computation does not query cannot be needed to cache that
+computation. -/
+theorem CachedRun.of_cacheQuery_of_not_mem {alpha : Type} {cache : QueryCache HashSpec}
+    {f : QueryImpl HashSpec Id} {oa : OracleComp HashSpec alpha} {input₀ : HashInput}
+    {answer : HashOutput} (hrun : CachedRun (cache.cacheQuery input₀ answer) f oa)
+    (hnotMem : input₀ ∉ queriedInputs f oa) : CachedRun cache f oa := by
+  intro input hinput
+  have hne : input ≠ input₀ := by
+    intro heq
+    exact hnotMem (heq ▸ hinput)
+  have hcached := hrun input hinput
+  rwa [QueryCache.cacheQuery_of_ne _ _ hne] at hcached
+
 theorem CachedRun.eval_eq {alpha : Type} {cache : QueryCache HashSpec}
     {f g : QueryImpl HashSpec Id} {oa : OracleComp HashSpec alpha}
     (hf : cache.AgreesWithFn f) (hg : cache.AgreesWithFn g)

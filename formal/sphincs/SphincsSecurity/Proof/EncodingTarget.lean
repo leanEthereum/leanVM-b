@@ -159,6 +159,7 @@ def CachedSignedEncodingPayloadAt (cache : QueryCache HashSpec) (secretKey : Sec
       ∧ payload = digestBytes (honestValue (fromCache cache) secretKey.parameter
           secretKey.otsSecret secretKey.ftsSecret (layerMessagePosition index lay)) ++
         counterBytes part.1
+      ∧ cache (tweakableHashInput secretKey.parameter (.encoding lay tree leafIdx) payload) ≠ none
 
 theorem SignedLayerAt.signedEncodingPayload {f : QueryImpl HashSpec Id}
     {cache : QueryCache HashSpec} {secretKey : SecretKey} {signingLog : QueryLog SigningSpec}
@@ -186,10 +187,14 @@ theorem SignedEncodingPayloadAt.cached {f : QueryImpl HashSpec Id}
     exact honestValue_eq_of_settled hf hsettled
   rw [hmessage] at hotsEval hotsCached
   have heval := hotsCached.eval_eq hf (agreesWithFn_fromCache cache)
+  have htargetCached := hrun.signed_encode_cached_of_digest hdigest lay
   refine ⟨index, part, htree, hleaf, hsettled,
-    hotsCached.changeAnswerFn hf (agreesWithFn_fromCache cache), ?_, ?_⟩
+    hotsCached.changeAnswerFn hf (agreesWithFn_fromCache cache), ?_, ?_, ?_⟩
   · exact heval.symm.trans hotsEval
   · rw [hpayload, hmessage, hcounter]
+  · rw [hpayload]
+    rw [htree, hleaf] at htargetCached
+    exact htargetCached
 
 theorem cachedSignedEncodingPayloadAt_unique {cache : QueryCache HashSpec}
     {secretKey : SecretKey} {lay : Layer} {tree : TreeIndex} {leafIdx : LeafIndex}
@@ -197,8 +202,8 @@ theorem cachedSignedEncodingPayloadAt_unique {cache : QueryCache HashSpec}
     (left : CachedSignedEncodingPayloadAt cache secretKey lay tree leafIdx leftPayload)
     (right : CachedSignedEncodingPayloadAt cache secretKey lay tree leafIdx rightPayload) :
     leftPayload = rightPayload := by
-  obtain ⟨leftIndex, leftPart, leftTree, leftLeaf, _, _, leftEval, rfl⟩ := left
-  obtain ⟨rightIndex, rightPart, rightTree, rightLeaf, _, _, rightEval, rfl⟩ := right
+  obtain ⟨leftIndex, leftPart, leftTree, leftLeaf, _, _, leftEval, rfl, _⟩ := left
+  obtain ⟨rightIndex, rightPart, rightTree, rightLeaf, _, _, rightEval, rfl, _⟩ := right
   have htree : treeIndexAt leftIndex lay = treeIndexAt rightIndex lay :=
     leftTree.trans rightTree.symm
   have hleaf : leafIndexAt leftIndex lay = leafIndexAt rightIndex lay :=
@@ -215,14 +220,17 @@ theorem CachedSignedEncodingPayloadAt.mono {cache cache' : QueryCache HashSpec}
     {payload : HashInput} (hle : cache ≤ cache')
     (htarget : CachedSignedEncodingPayloadAt cache secretKey lay tree leafIdx payload) :
     CachedSignedEncodingPayloadAt cache' secretKey lay tree leafIdx payload := by
-  obtain ⟨index, part, htree, hleaf, hsettled, hrun, heval, hpayload⟩ := htarget
+  obtain ⟨index, part, htree, hleaf, hsettled, hrun, heval, hpayload, hcached⟩ := htarget
   have hagrees : cache.AgreesWithFn (fromCache cache') := agreesWithFn_fromCache_of_le hle
   have hvalue := honestValue_eq_of_settled hagrees hsettled
   rw [← hvalue] at hrun heval
   have hevalEq := hrun.eval_eq (agreesWithFn_fromCache cache) hagrees
   have hrun' := (hrun.changeAnswerFn (agreesWithFn_fromCache cache) hagrees).mono hle
-  refine ⟨index, part, htree, hleaf, hsettled.mono hle, hrun', hevalEq.symm.trans heval, ?_⟩
-  rw [hpayload, hvalue]
+  refine ⟨index, part, htree, hleaf, hsettled.mono hle, hrun', hevalEq.symm.trans heval, ?_, ?_⟩
+  · rw [hpayload, hvalue]
+  · obtain ⟨answer, hanswer⟩ := Option.ne_none_iff_exists'.mp hcached
+    rw [hle hanswer]
+    simp
 
 theorem signedEncodingPayloadAt_unique {f : QueryImpl HashSpec Id}
     {cache : QueryCache HashSpec} {secretKey : SecretKey} {signingLog : QueryLog SigningSpec}
