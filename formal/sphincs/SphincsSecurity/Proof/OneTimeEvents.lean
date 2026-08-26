@@ -135,7 +135,8 @@ def TerminalForgeryEvent (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpe
   FreshLayerOpening f cache secretKey signingLog
     ∨ EncodingCollision f cache secretKey signingLog
     ∨ BackwardChainOpening f cache secretKey signingLog
-    ∨ MessageDigestCollision f cache secretKey signingLog forgery
+    ∨ (MessageDigestCollision f cache secretKey signingLog forgery ∧
+      FewTimeLeak f cache secretKey signingLog index leaves)
     ∨ ProperFewTimeLeak f cache secretKey signingLog index leaves
     ∨ UncoveredFtsSecret f cache secretKey signingLog index leaves forgery.signature.ftsSecret
 
@@ -184,7 +185,7 @@ theorem winning_support_terminal_classify (adversary : Adversary)
             leaves hdigest hdigestRun rfl rfl hfull hnotContains hleak with
           hcollision | hobstacle | hproper
         · exact Or.inr ⟨root, forgery, signingLog, f, digest, hf, hvalid, hnotContains, hdigest,
-            hadmissible, Or.inr (Or.inr (Or.inr (Or.inl hcollision)))⟩
+            hadmissible, Or.inr (Or.inr (Or.inr (Or.inl ⟨hcollision, hleak⟩)))⟩
         · rcases layerObstacle_classify f finalCache secretKey signingLog hobstacle with
             hfresh | hencoding | hbackward
           · exact Or.inr ⟨root, forgery, signingLog, f, digest, hf, hvalid, hnotContains, hdigest,

@@ -755,6 +755,41 @@ theorem gameAfterSecretsWithViewTrace_targetView_eq
       digestLeaves digest (ftsIndexOf tree)
     rw [hdigest']
 
+theorem gameAfterSecretsWithViewTrace_fewTimeLeak_patternHit
+    (adversary : Adversary) (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (result : (Digest × Forgery × Bool) × ViewedFullTraceState)
+    (hmem : result ∈ support
+      (gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret))
+    (f : QueryImpl HashSpec Id) (hf : result.2.cache.AgreesWithFn f)
+    (digest : MessageDigest)
+    (hdigest : evalWithAnswerFn f
+      (messageDigest parameter result.1.1 result.1.2.1.message
+        result.1.2.1.signature.randomness) = digest)
+    (hleak : FewTimeLeak f result.2.cache
+      (⟨parameter, result.1.1, otsSecret, ftsSecret⟩ : SecretKey)
+      result.2.trace.signing.toSigningLog (digestIndex digest) (digestLeaves digest)) :
+    SomeFewTimePatternHit result.2.trace.signing.toSigningLog.length
+      ((gameAfterSecretsWithViewTrace_support_validViews adversary parameter otsSecret ftsSecret
+          result hmem).signingViewsForLog rfl,
+        result.2.targetView.getD default) := by
+  let secretKey : SecretKey := ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
+  have hbase : (result.1, result.2.base) ∈ support
+      (gameAfterSecretsWithFullTrace adversary parameter otsSecret ftsSecret) := by
+    rw [← gameAfterSecretsWithViewTrace_projection adversary parameter otsSecret ftsSecret,
+      support_map]
+    exact ⟨result, hmem, rfl⟩
+  have hinvariants := gameAfterSecretsWithFullTrace_support_invariants adversary parameter
+    otsSecret ftsSecret (result.1, result.2.base) hbase
+  have hvalid := gameAfterSecretsWithViewTrace_support_validViews adversary parameter
+    otsSecret ftsSecret result hmem
+  have htarget := gameAfterSecretsWithViewTrace_targetView_eq adversary parameter otsSecret
+    ftsSecret result hmem f hf digest hdigest
+  have hpattern := hleak.cover.viewedSomePatternHit result.2 rfl hvalid
+    hinvariants.2.1 hf
+  simpa only [htarget, Option.getD_some] using hpattern
+
 theorem gameAfterSecretsWithViewTrace_properLeak_patternHit
     (adversary : Adversary) (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
@@ -774,21 +809,8 @@ theorem gameAfterSecretsWithViewTrace_properLeak_patternHit
       ((gameAfterSecretsWithViewTrace_support_validViews adversary parameter otsSecret ftsSecret
           result hmem).signingViewsForLog rfl,
         result.2.targetView.getD default) := by
-  let secretKey : SecretKey := ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
-  have hbase : (result.1, result.2.base) ∈ support
-      (gameAfterSecretsWithFullTrace adversary parameter otsSecret ftsSecret) := by
-    rw [← gameAfterSecretsWithViewTrace_projection adversary parameter otsSecret ftsSecret,
-      support_map]
-    exact ⟨result, hmem, rfl⟩
-  have hinvariants := gameAfterSecretsWithFullTrace_support_invariants adversary parameter
-    otsSecret ftsSecret (result.1, result.2.base) hbase
-  have hvalid := gameAfterSecretsWithViewTrace_support_validViews adversary parameter
-    otsSecret ftsSecret result hmem
-  have htarget := gameAfterSecretsWithViewTrace_targetView_eq adversary parameter otsSecret
-    ftsSecret result hmem f hf digest hdigest
-  have hpattern := hproper.1.cover.viewedSomePatternHit result.2 rfl hvalid
-    hinvariants.2.1 hf
-  simpa only [htarget, Option.getD_some] using hpattern
+  exact gameAfterSecretsWithViewTrace_fewTimeLeak_patternHit adversary parameter otsSecret
+    ftsSecret result hmem f hf digest hdigest hproper.1
 
 end Concrete
 

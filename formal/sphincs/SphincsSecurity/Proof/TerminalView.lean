@@ -83,8 +83,9 @@ def ViewedMessageDigestCollisionWitness (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :=
   ViewedTerminalWitnessFor parameter otsSecret ftsSecret
-    fun f cache secretKey signingLog forgery _ _ =>
-      MessageDigestCollision f cache secretKey signingLog forgery
+    fun f cache secretKey signingLog forgery index leaves =>
+      MessageDigestCollision f cache secretKey signingLog forgery ∧
+        FewTimeLeak f cache secretKey signingLog index leaves
 
 def ViewedUncoveredFtsSecretWitness (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
@@ -217,7 +218,7 @@ theorem gameAfterSecretsWithViewTrace_winning_terminal_classify
             state.trace.signing.toSigningLog forgery digest index leaves hdigest hdigestRun rfl rfl
               hfull htranscript.2 hleak with hcollision | hobstacle | hproper
         · exact Or.inr ⟨f, digest, hf, htranscript.1, htranscript.2, hdigest,
-            hadmissible, Or.inr (Or.inr (Or.inr (Or.inl hcollision)))⟩
+            hadmissible, Or.inr (Or.inr (Or.inr (Or.inl ⟨hcollision, hleak⟩)))⟩
         · rcases layerObstacle_classify f finalCache secretKey state.trace.signing.toSigningLog
               hobstacle with hfresh | hencoding | hbackward
           · exact Or.inr ⟨f, digest, hf, htranscript.1, htranscript.2, hdigest,
@@ -478,6 +479,22 @@ theorem probEvent_clean_properFewTimeLeak_le_nine_mul_inv
   apply le_trans (probEvent_mono fun _ _ event => event.2)
   exact probEvent_gameAfterSecretsWithViewTrace_proper_leak_le_nine_mul_inv adversary q hq
     hqMax parameter hparameter otsSecret hots ftsSecret hfts
+
+theorem viewedMessageDigestCollisionWitness_patternHit
+    (adversary : Adversary) (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (result : (Digest × Forgery × Bool) × ViewedFullTraceState)
+    (hresult : result ∈ support
+      (gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret))
+    (hwitness : ViewedMessageDigestCollisionWitness parameter otsSecret ftsSecret result) :
+    SomeFewTimePatternHit result.2.trace.signing.toSigningLog.length
+      ((gameAfterSecretsWithViewTrace_support_validViews adversary parameter otsSecret ftsSecret
+          result hresult).signingViewsForLog rfl,
+        result.2.targetView.getD default) := by
+  obtain ⟨f, digest, hf, _, _, hdigest, _, _, hleak⟩ := hwitness
+  exact gameAfterSecretsWithViewTrace_fewTimeLeak_patternHit adversary parameter otsSecret
+    ftsSecret result hresult f hf digest hdigest hleak
 
 theorem probEvent_win_le_viewed_bad_add_terminal_cases (adversary : Adversary)
     (parameter : PublicParameter)

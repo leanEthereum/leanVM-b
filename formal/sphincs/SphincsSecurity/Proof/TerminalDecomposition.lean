@@ -63,8 +63,10 @@ def MessageDigestCollisionWitness (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
     Bool × QueryCache HashSpec → Prop :=
-  TerminalWitnessFor parameter otsSecret ftsSecret fun f cache secretKey signingLog forgery _ _ =>
-    MessageDigestCollision f cache secretKey signingLog forgery
+  TerminalWitnessFor parameter otsSecret ftsSecret
+    fun f cache secretKey signingLog forgery index leaves =>
+      MessageDigestCollision f cache secretKey signingLog forgery ∧
+        FewTimeLeak f cache secretKey signingLog index leaves
 
 def ProperFewTimeLeakWitness (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
