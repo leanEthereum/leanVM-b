@@ -222,6 +222,44 @@ theorem mem_runRaw_simulateQ_ordinaryHashImpl_projects
           rw [simulateQ_query_bind, StateT.run_bind, mem_support_bind_iff]
           exact ⟨(answer, ordinaryQueryCache queryCache), hqueryActual, htailActual⟩
 
+theorem mem_runRaw_simulateQ_splitUniformImpl_projects
+    (computation : ProbComp alpha)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (value : alpha)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((simulateQ splitUniformImpl computation).run cache))) :
+    finalState = state ∧ remaining = fuel ∧ finalCache = cache ∧
+      value ∈ support computation := by
+  induction computation using OracleComp.inductionOn generalizing
+      state cache finalState finalCache fuel remaining value with
+  | pure result =>
+      simp [LazyRevealProbe.runRaw] at hresult
+      rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+      exact ⟨rfl, rfl, rfl, by simp⟩
+  | query_bind n next ih =>
+      rw [simulateQ_query_bind, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+        mem_support_bind_iff] at hresult
+      obtain ⟨raw, hquery, hrest⟩ := hresult
+      cases raw with
+      | stopped hit => simp at hrest
+      | done queryState queryRemaining queryResult =>
+          rcases queryResult with ⟨output, queryCache⟩
+          change Fin (n + 1) at output
+          change LazyRevealProbe.RawResult.done queryState queryRemaining
+              (output, queryCache) ∈ support
+            ((liftM (unifSpec.query n) : ProbComp (Fin (n + 1))) >>= fun sampled =>
+              pure (LazyRevealProbe.RawResult.done state fuel (sampled, cache))) at hquery
+          rw [mem_support_bind_iff] at hquery
+          obtain ⟨sampled, hsampled, hdone⟩ := hquery
+          simp at hdone
+          rcases hdone with ⟨rfl, rfl, rfl, rfl⟩
+          obtain ⟨rfl, rfl, rfl, htail⟩ := ih output queryState finalState queryCache
+            finalCache queryRemaining remaining value hrest
+          refine ⟨rfl, rfl, rfl, ?_⟩
+          rw [mem_support_bind_iff]
+          exact ⟨output, hsampled, htail⟩
+
 theorem evalWithAnswerFn_eq_of_mem_runRaw_ordinaryHashImpl
     (f : QueryImpl HashSpec Id) (computation : OracleComp HashSpec alpha)
     (state finalState : LazyRevealProbe.State Coordinate)
@@ -2036,15 +2074,125 @@ theorem chainInvariant_sequenceFin_of_done
     (parameter : PublicParameter) (allowed : Coordinate → Prop) {n : Nat}
     (computation : Fin n → StateT SplitHashCache
       (OracleComp (LazyRevealProbe.World Coordinate)) alpha)
-    (hcomputation : ∀ index, PreservesChainInvariant parameter allowed (computation index))
+    (hcomputation : ∀ index state cache fuel finalState remaining value finalCache,
+      ChainInvariant parameter allowed state cache →
+      LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈
+        support (LazyRevealProbe.runRaw state fuel ((computation index).run cache)) →
+      ChainInvariant parameter allowed finalState finalCache)
     (state finalState : LazyRevealProbe.State Coordinate)
     (cache finalCache : SplitHashCache) (fuel remaining : Nat) (values : Fin n → alpha)
     (hinvariant : ChainInvariant parameter allowed state cache)
     (hresult : LazyRevealProbe.RawResult.done finalState remaining (values, finalCache) ∈
       support (LazyRevealProbe.runRaw state fuel ((sequenceFin computation).run cache))) :
+    ChainInvariant parameter allowed finalState finalCache := by
+  induction n generalizing state finalState cache finalCache fuel remaining with
+  | zero =>
+      simp [sequenceFin, LazyRevealProbe.runRaw] at hresult
+      rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+      exact hinvariant
+  | succ n ih =>
+      rw [sequenceFin, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+        mem_support_bind_iff] at hresult
+      obtain ⟨headRaw, hhead, hafterHead⟩ := hresult
+      cases headRaw with
+      | stopped stoppedHit => simp at hafterHead
+      | done headState headRemaining headResult =>
+          rcases headResult with ⟨head, headCache⟩
+          simp only at hafterHead
+          rw [StateT.run_bind, LazyRevealProbe.runRaw_bind,
+            mem_support_bind_iff] at hafterHead
+          obtain ⟨tailRaw, htail, hfinish⟩ := hafterHead
+          cases tailRaw with
+          | stopped stoppedHit => simp at hfinish
+          | done tailState tailRemaining tailResult =>
+              rcases tailResult with ⟨tail, tailCache⟩
+              have hheadInvariant := hcomputation 0 state cache fuel headState headRemaining
+                head headCache hinvariant hhead
+              have htailInvariant := ih
+                (computation := fun index => computation index.succ)
+                (hcomputation := fun index => hcomputation index.succ)
+                (values := tail) (state := headState) (finalState := tailState)
+                (cache := headCache) (finalCache := tailCache) (fuel := headRemaining)
+                (remaining := tailRemaining) hheadInvariant htail
+              simp [LazyRevealProbe.runRaw] at hfinish
+              rcases hfinish with ⟨rfl, rfl, rfl, rfl⟩
+              exact htailInvariant
+
+theorem chainInvariant_layerSequence_of_done
+    (parameter : PublicParameter) (allowed : Coordinate → Prop)
+    (computation : Layer → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha)
+    (hcomputation : ∀ index state cache fuel finalState remaining value finalCache,
+      ChainInvariant parameter allowed state cache →
+      LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈
+        support (LazyRevealProbe.runRaw state fuel ((computation index).run cache)) →
+      ChainInvariant parameter allowed finalState finalCache)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (values : Layer → alpha)
+    (hinvariant : ChainInvariant parameter allowed state cache)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (values, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel ((sequenceFin computation).run cache))) :
     ChainInvariant parameter allowed finalState finalCache :=
-  preservesChainInvariant_sequenceFin parameter allowed computation hcomputation state cache fuel
-    finalState remaining values finalCache hinvariant hresult
+  chainInvariant_sequenceFin_of_done (n := numLayers) parameter allowed computation hcomputation
+    state finalState cache finalCache fuel remaining values hinvariant hresult
+
+theorem sequenceFin_component_run_of_done {n : Nat}
+    (computation : Fin n → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha)
+    (hincreasing : ∀ index, OrdinaryCacheIncreasing (computation index))
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (values : Fin n → alpha)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (values, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel ((sequenceFin computation).run cache)))
+    (position : Fin n) :
+    ∃ (componentState componentFinalState : LazyRevealProbe.State Coordinate)
+        (componentCache componentFinalCache : SplitHashCache)
+        (componentFuel componentRemaining : Nat) (componentValue : alpha),
+      LazyRevealProbe.RawResult.done componentFinalState componentRemaining
+          (componentValue, componentFinalCache) ∈ support
+        (LazyRevealProbe.runRaw componentState componentFuel
+          ((computation position).run componentCache))
+        ∧ values position = componentValue
+        ∧ LazyRevealProbe.ValuesLE componentFinalState finalState
+        ∧ ordinaryQueryCache componentFinalCache ≤ ordinaryQueryCache finalCache := by
+  induction n generalizing state finalState cache finalCache fuel remaining with
+  | zero => exact position.elim0
+  | succ n ih =>
+      rw [sequenceFin, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+        mem_support_bind_iff] at hresult
+      obtain ⟨headRaw, hhead, hafterHead⟩ := hresult
+      cases headRaw with
+      | stopped stoppedHit => simp at hafterHead
+      | done headState headRemaining headResult =>
+          rcases headResult with ⟨head, headCache⟩
+          simp only at hafterHead
+          rw [StateT.run_bind, LazyRevealProbe.runRaw_bind,
+            mem_support_bind_iff] at hafterHead
+          obtain ⟨tailRaw, htail, hfinish⟩ := hafterHead
+          cases tailRaw with
+          | stopped stoppedHit => simp at hfinish
+          | done tailState tailRemaining tailResult =>
+              rcases tailResult with ⟨tail, tailCache⟩
+              have htailValues := LazyRevealProbe.valuesLE_of_mem_runRaw_done
+                ((sequenceFin fun tailPosition => computation tailPosition.succ).run headCache)
+                headState tailState headRemaining tailRemaining (tail, tailCache) htail
+              have htailCache := ordinaryCacheIncreasing_sequenceFin
+                (fun tailPosition => computation tailPosition.succ)
+                (fun tailPosition => hincreasing tailPosition.succ)
+                headState headCache headRemaining tailState tailRemaining tail tailCache htail
+              simp [LazyRevealProbe.runRaw] at hfinish
+              rcases hfinish with ⟨rfl, rfl, rfl, rfl⟩
+              cases position using Fin.cases with
+              | zero =>
+                  exact ⟨state, headState, cache, headCache, fuel, headRemaining, head,
+                    hhead, rfl, htailValues, htailCache⟩
+              | succ tailPosition =>
+                  exact ih
+                    (computation := fun position => computation position.succ)
+                    (hincreasing := fun position => hincreasing position.succ)
+                    (values := tail) (state := headState) (finalState := finalState)
+                    (cache := headCache) (finalCache := finalCache) (fuel := headRemaining)
+                    (remaining := remaining) htail tailPosition
 
 theorem preservesChainInvariant_ordinaryEncode
     (parameter : PublicParameter) (allowed : Coordinate → Prop)
@@ -2076,6 +2224,124 @@ theorem preservesChainInvariant_ordinaryMessageDigest
   exact (preservesChainInvariant_splitHashQuery_ordinary_of_decode_none parameter allowed _
     (decodeProbe?_tweakableHashInput_of_not_chain_leaf parameter .message _ (by trivial)
       (by simp) (by simp))).bind fun _ => preservesChainInvariant_pure parameter allowed _
+
+theorem preservesChainInvariant_ordinarySignAttempt
+    (allowed : Coordinate → Prop) (secretKey : SecretKey)
+    (message : Message) (randomness : Randomness) :
+    PreservesChainInvariant secretKey.parameter allowed
+      (simulateQ ordinaryHashImpl (signAttempt secretKey message randomness)) := by
+  rw [signAttempt, simulateQ_bind]
+  exact (preservesChainInvariant_ordinaryMessageDigest secretKey.parameter allowed secretKey.root message
+    randomness).bind fun digest => by
+      split <;> simpa only [simulateQ_pure] using
+        (preservesChainInvariant_pure secretKey.parameter allowed _)
+
+theorem preservesChainInvariant_ordinarySignDigestLoop
+    (allowed : Coordinate → Prop) (attempts : Nat)
+    (secretKey : SecretKey) (message : Message) :
+    PreservesChainInvariant secretKey.parameter allowed
+      (simulateQ ordinaryRomImpl (signDigestLoop attempts secretKey message)) := by
+  induction attempts with
+  | zero =>
+      rw [signDigestLoop, simulateQ_pure]
+      exact preservesChainInvariant_pure secretKey.parameter allowed none
+  | succ attempts ih =>
+      rw [signDigestLoop, simulateQ_bind]
+      have hrandomness : PreservesChainInvariant secretKey.parameter allowed
+          (simulateQ ordinaryRomImpl (liftM sampleRandomness)) := by
+        rw [ordinaryRomImpl, QueryImpl.simulateQ_add_liftM_left]
+        exact (preservesChainInvariantImpl_splitUniformImpl secretKey.parameter allowed).simulateQ
+          sampleRandomness
+      exact hrandomness.bind fun randomness => by
+        rw [simulateQ_bind]
+        have hattempt : PreservesChainInvariant secretKey.parameter allowed
+            (simulateQ ordinaryRomImpl
+              (liftM (signAttempt secretKey message randomness :
+                OracleComp HashSpec (Option (Index × (DigestTree → FtsLeaf)))))) := by
+          rw [ordinaryRomImpl, QueryImpl.simulateQ_add_liftM_right]
+          exact preservesChainInvariant_ordinarySignAttempt allowed secretKey message randomness
+        exact hattempt.bind fun attempt => by
+          cases attempt with
+          | none => exact ih
+          | some selected => exact preservesChainInvariant_pure secretKey.parameter allowed _
+
+theorem successfulDigestLoop_of_mem_runRaw_ordinaryRomImpl
+    (f : QueryImpl HashSpec Id) (secretKey : SecretKey) (message : Message)
+    (attempts : Nat) (randomness : Randomness) (index : Index)
+    (leaves : DigestTree → FtsLeaf)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat)
+    (targetCache : QueryCache HashSpec)
+    (hleFinal : ordinaryQueryCache finalCache ≤ targetCache)
+    (hf : targetCache.AgreesWithFn f)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining
+        (some (randomness, index, leaves), finalCache) ∈ support
+      (LazyRevealProbe.runRaw state fuel
+        ((simulateQ ordinaryRomImpl
+          (signDigestLoop attempts secretKey message)).run cache))) :
+    SuccessfulDigestRun f targetCache secretKey message randomness index leaves := by
+  induction attempts generalizing state cache finalState finalCache fuel remaining randomness
+      index leaves with
+  | zero =>
+      simp [signDigestLoop, LazyRevealProbe.runRaw] at hresult
+  | succ attempts ih =>
+      rw [signDigestLoop, simulateQ_bind, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+        mem_support_bind_iff] at hresult
+      obtain ⟨randomnessRaw, hsample, hrest⟩ := hresult
+      cases randomnessRaw with
+      | stopped hit => simp at hrest
+      | done randomnessState randomnessRemaining randomnessResult =>
+          rcases randomnessResult with ⟨sampledRandomness, randomnessCache⟩
+          have hsample' : LazyRevealProbe.RawResult.done randomnessState randomnessRemaining
+              (sampledRandomness, randomnessCache) ∈ support
+            (LazyRevealProbe.runRaw state fuel
+              ((simulateQ splitUniformImpl sampleRandomness).run cache)) := by
+            simpa only [ordinaryRomImpl, QueryImpl.simulateQ_add_liftM_left] using hsample
+          obtain ⟨_, _, _, hsampled⟩ :=
+            mem_runRaw_simulateQ_splitUniformImpl_projects sampleRandomness state
+              randomnessState cache randomnessCache fuel randomnessRemaining sampledRandomness
+                hsample'
+          simp only at hrest
+          rw [simulateQ_bind, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+            mem_support_bind_iff] at hrest
+          obtain ⟨attemptRaw, hattempt, hfinish⟩ := hrest
+          cases attemptRaw with
+          | stopped hit => simp at hfinish
+          | done attemptState attemptRemaining attemptResult =>
+              rcases attemptResult with ⟨attempt, attemptCache⟩
+              have hattempt' : LazyRevealProbe.RawResult.done attemptState attemptRemaining
+                    (attempt, attemptCache) ∈ support
+                  (LazyRevealProbe.runRaw randomnessState randomnessRemaining
+                    ((simulateQ ordinaryHashImpl
+                      (signAttempt secretKey message sampledRandomness)).run randomnessCache)) := by
+                simpa only [ordinaryRomImpl, QueryImpl.simulateQ_add_liftM_right] using hattempt
+              have hattemptProjection := mem_runRaw_simulateQ_ordinaryHashImpl_projects
+                (signAttempt secretKey message sampledRandomness) randomnessState attemptState
+                  randomnessCache attemptCache randomnessRemaining attemptRemaining attempt
+                    hattempt'
+              obtain ⟨_, _, hattemptSupport⟩ := hattemptProjection
+              cases attempt with
+              | none =>
+                  exact ih randomness index leaves attemptState finalState attemptCache finalCache
+                    attemptRemaining remaining hleFinal hfinish
+              | some selected =>
+                  obtain ⟨selectedIndex, selectedLeaves⟩ := selected
+                  simp [LazyRevealProbe.runRaw] at hfinish
+                  rcases hfinish with ⟨hfinalState, hfinalRemaining, hselected, hfinalCache⟩
+                  subst finalState
+                  subst remaining
+                  subst finalCache
+                  obtain ⟨hrandomness, hindex, hleaves⟩ := hselected
+                  subst randomness
+                  subst index
+                  subst leaves
+                  have hfAttempt : (ordinaryQueryCache attemptCache).AgreesWithFn f :=
+                    fun _ _ hcached => hf (hleFinal hcached)
+                  obtain ⟨_, heval, hcached⟩ := replay_of_mem_support
+                    (signAttempt secretKey message sampledRandomness)
+                      (ordinaryQueryCache randomnessCache) (some (selectedIndex, selectedLeaves))
+                        (ordinaryQueryCache attemptCache) hattemptSupport f hfAttempt
+                  exact ⟨hsampled, heval, CachedRun.mono hleFinal hcached⟩
 
 theorem preservesChainInvariant_simulateQ_sequenceFin {spec : OracleSpec ι}
     (parameter : PublicParameter) (allowed : Coordinate → Prop)
@@ -2707,13 +2973,77 @@ theorem chainInvariant_of_mem_runRaw_maskedSignLayer
   preservesChainInvariant_maskedSignLayer parameter allowed ftsSecret index lay state cache fuel
     finalState remaining part finalCache hinvariant hresult
 
+@[irreducible] noncomputable def maskedSignLayerAt
+    (parameter : PublicParameter) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (index : Index) (lay : Layer) :
+    StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))
+      (Option (Counter × (ChainIndex → Digit))) :=
+  maskedSignLayer parameter ftsSecret index lay
+
+theorem maskedSignLayerAt_eq
+    (parameter : PublicParameter) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (index : Index) (lay : Layer) :
+    maskedSignLayerAt parameter ftsSecret index lay =
+      maskedSignLayer parameter ftsSecret index lay := by
+  unfold maskedSignLayerAt
+  rfl
+
+@[irreducible] noncomputable def maskedSignLayers
+    (parameter : PublicParameter) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (index : Index) :
+    StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))
+      (Layer → Option (Counter × (ChainIndex → Digit))) :=
+  sequenceFin (maskedSignLayerAt parameter ftsSecret index)
+
+theorem maskedSignLayers_eq
+    (parameter : PublicParameter) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (index : Index) :
+    maskedSignLayers parameter ftsSecret index =
+      sequenceFin (maskedSignLayerAt parameter ftsSecret index) := by
+  unfold maskedSignLayers
+  rfl
+
+theorem maskedSignLayers_eq_sequenceFin
+    (parameter : PublicParameter) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (index : Index) :
+    maskedSignLayers parameter ftsSecret index =
+      sequenceFin fun lay => maskedSignLayer parameter ftsSecret index lay := by
+  rw [maskedSignLayers_eq]
+  congr 1
+  funext lay
+  exact maskedSignLayerAt_eq parameter ftsSecret index lay
+
+theorem preservesChainInvariant_maskedSignLayerAt
+    (parameter : PublicParameter) (allowed : Coordinate → Prop)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index) (lay : Layer) :
+    PreservesChainInvariant parameter allowed
+      (maskedSignLayerAt parameter ftsSecret index lay) := by
+  rw [maskedSignLayerAt_eq]
+  exact preservesChainInvariant_maskedSignLayer parameter allowed ftsSecret index lay
+
 theorem preservesChainInvariant_maskedSignLayers
     (parameter : PublicParameter) (allowed : Coordinate → Prop)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index) :
     PreservesChainInvariant parameter allowed
-      (sequenceFin fun lay => maskedSignLayer parameter ftsSecret index lay) :=
-  preservesChainInvariant_sequenceFin parameter allowed _ fun lay =>
-    preservesChainInvariant_maskedSignLayer parameter allowed ftsSecret index lay
+      (maskedSignLayers parameter ftsSecret index) := by
+  rw [maskedSignLayers_eq]
+  exact preservesChainInvariant_sequenceFin parameter allowed _
+    (preservesChainInvariant_maskedSignLayerAt parameter allowed ftsSecret index)
+
+theorem chainInvariant_of_mem_runRaw_maskedSignLayers
+    (parameter : PublicParameter) (allowed : Coordinate → Prop)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat)
+    (layers : Layer → Option (Counter × (ChainIndex → Digit)))
+    (hinvariant : ChainInvariant parameter allowed state cache)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (layers, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((maskedSignLayers parameter ftsSecret index).run cache))) :
+    ChainInvariant parameter allowed finalState finalCache := by
+  have hpreserves := preservesChainInvariant_maskedSignLayers parameter allowed ftsSecret index
+  unfold PreservesChainInvariant at hpreserves
+  exact hpreserves state cache fuel finalState remaining layers finalCache hinvariant hresult
 
 theorem ordinaryCacheIncreasing_maskedTreeNode
     (lay : Layer) (tree : TreeIndex) (level nodeIdx : Nat) :
@@ -2899,6 +3229,43 @@ theorem ordinaryCacheIncreasing_maskedSignLayer
             ((splitCachePreserving_ensureTreePath lay (treeIndexAt index lay)
               (leafIndexAt index lay)).ordinaryCacheIncreasing).bind fun _ =>
                 OrdinaryCacheIncreasing.pure (some part)
+
+theorem ordinaryCacheIncreasing_maskedSignLayers
+    (parameter : PublicParameter) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (index : Index) : OrdinaryCacheIncreasing (maskedSignLayers parameter ftsSecret index) := by
+  rw [maskedSignLayers_eq]
+  exact ordinaryCacheIncreasing_sequenceFin _ fun lay => by
+    rw [maskedSignLayerAt_eq]
+    exact ordinaryCacheIncreasing_maskedSignLayer parameter ftsSecret index lay
+
+theorem maskedSignLayers_component_run
+    (parameter : PublicParameter) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (index : Index) (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat)
+    (layers : Layer → Option (Counter × (ChainIndex → Digit)))
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (layers, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((maskedSignLayers parameter ftsSecret index).run cache)))
+    (lay : Layer) :
+    ∃ (componentState componentFinalState : LazyRevealProbe.State Coordinate)
+        (componentCache componentFinalCache : SplitHashCache)
+        (componentFuel componentRemaining : Nat)
+        (part : Option (Counter × (ChainIndex → Digit))),
+      LazyRevealProbe.RawResult.done componentFinalState componentRemaining
+          (part, componentFinalCache) ∈ support
+        (LazyRevealProbe.runRaw componentState componentFuel
+          ((maskedSignLayerAt parameter ftsSecret index lay).run componentCache))
+        ∧ layers lay = part
+        ∧ LazyRevealProbe.ValuesLE componentFinalState finalState
+        ∧ ordinaryQueryCache componentFinalCache ≤ ordinaryQueryCache finalCache := by
+  rw [maskedSignLayers_eq] at hresult
+  exact sequenceFin_component_run_of_done
+    (computation := maskedSignLayerAt parameter ftsSecret index)
+    (hincreasing := fun position => by
+      rw [maskedSignLayerAt_eq]
+      exact ordinaryCacheIncreasing_maskedSignLayer parameter ftsSecret index position)
+    (state := state) (finalState := finalState) (cache := cache) (finalCache := finalCache)
+    (fuel := fuel) (remaining := remaining) (values := layers) hresult lay
 
 noncomputable def maskedOtsLayerAfterMessage
     (parameter : PublicParameter) (index : Index) (lay : Layer) (message : Digest) :
@@ -3207,6 +3574,56 @@ theorem maskedSignLayer_some_eval_of_not_lt
         finalState messageCache finalCache messageRemaining remaining counter encoding hf
           hmessageActual hafterMessage
 
+def HonestLayerParts (f : QueryImpl HashSpec Id) (secretKey : SecretKey) (index : Index)
+    (parts : Layer → Counter × (ChainIndex → Digit)) : Prop :=
+  ∀ lay, evalWithAnswerFn f
+    (encode secretKey.parameter lay (treeIndexAt index lay) (leafIndexAt index lay)
+      (evalWithAnswerFn f (layerMessage secretKey index lay)) (parts lay).1) =
+        some (parts lay).2
+
+theorem maskedSignLayers_parts_eval
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter) (root : Digest)
+    (table : Coordinate → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (index : Index) (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat)
+    (layers : Layer → Option (Counter × (ChainIndex → Digit)))
+    (parts : Layer → Counter × (ChainIndex → Digit))
+    (hf : (ordinaryQueryCache finalCache).AgreesWithFn f)
+    (htable : ∀ coordinate output, finalState.values coordinate = some output →
+      output = table coordinate)
+    (hrealizes : ∀ position : Position, IsOtsPosition position →
+      f (tableInput parameter table (.position position)) = table (.position position))
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (layers, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((maskedSignLayers parameter ftsSecret index).run cache)))
+    (hparts : traverseOption layers = some parts) :
+    HonestLayerParts f
+      (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) index parts := by
+  intro lay
+  obtain ⟨componentState, componentFinalState, componentCache, componentFinalCache,
+    componentFuel, componentRemaining, part, hcomponent, hselected, hvaluesLE, hcacheLE⟩ :=
+      maskedSignLayers_component_run parameter ftsSecret index state finalState cache finalCache
+        fuel remaining layers hresult lay
+  have hpartsAt := traverseOption_eq_some_apply layers parts hparts lay
+  have hpart : part = some (parts lay) := hselected.symm.trans hpartsAt
+  have hcomponent' := hcomponent
+  rw [hpart, maskedSignLayerAt_eq] at hcomponent'
+  have hfComponent : (ordinaryQueryCache componentFinalCache).AgreesWithFn f :=
+    fun _ _ hcached => hf (hcacheLE hcached)
+  have htableComponent : ∀ coordinate output,
+      componentFinalState.values coordinate = some output → output = table coordinate :=
+    fun coordinate output hvalue => htable coordinate output
+      (hvaluesLE coordinate output hvalue)
+  by_cases hbelow : lay.val + 1 < numLayers
+  · exact maskedSignLayer_some_eval_of_lt f parameter root table ftsSecret index lay hbelow
+      componentState componentFinalState componentCache componentFinalCache componentFuel
+        componentRemaining (parts lay).1 (parts lay).2 hfComponent htableComponent hrealizes
+          hcomponent'
+  · exact maskedSignLayer_some_eval_of_not_lt f parameter root table ftsSecret index lay hbelow
+      componentState componentFinalState componentCache componentFinalCache componentFuel
+        componentRemaining (parts lay).1 (parts lay).2 hfComponent hcomponent'
+
 theorem ordinaryCacheIncreasing_revealLayerValues
     (index : Index) (lay : Layer) (encoding : ChainIndex → Digit) :
     OrdinaryCacheIncreasing (revealLayerValues index lay encoding) := by
@@ -3476,6 +3893,176 @@ theorem chainInvariant_revealLayersForParts
       (parts lay).2 fun chainIdx => Or.inr (publishedByParts_selected index parts lay chainIdx))
     state cache fuel finalState remaining values finalCache hinvariantAllowed hresult
 
+set_option linter.constructorNameAsVariable false in
+theorem chainInvariant_maskedSignAfterDigest
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter) (root : Digest)
+    (table : Coordinate → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf)
+    (initial : Coordinate → Prop)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat)
+    (result : Option Signature)
+    (hf : (ordinaryQueryCache finalCache).AgreesWithFn f)
+    (htable : ∀ coordinate output, finalState.values coordinate = some output →
+      output = table coordinate)
+    (hrealizes : ∀ position : Position, IsOtsPosition position →
+      f (tableInput parameter table (.position position)) = table (.position position))
+    (hinvariant : ChainInvariant parameter initial state cache)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (result, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((maskedSignAfterDigest parameter ftsSecret randomness index leaves).run cache))) :
+    (result = none ∧ ChainInvariant parameter initial finalState finalCache) ∨
+      ∃ (signature : Signature) (parts : Layer → Counter × (ChainIndex → Digit)),
+        result = some signature
+          ∧ signature.randomness = randomness
+          ∧ signature.counter = (fun lay => (parts lay).1)
+          ∧ HonestLayerParts f
+            (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) index parts
+          ∧ ChainInvariant parameter
+            (fun coordinate => initial coordinate ∨ PublishedByParts index parts coordinate)
+            finalState finalCache := by
+  unfold maskedSignAfterDigest at hresult
+  rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨pathRaw, hpath, hafterPath⟩ := hresult
+  cases pathRaw with
+  | stopped stoppedHit => simp at hafterPath
+  | done pathState pathRemaining pathResult =>
+      rcases pathResult with ⟨ftsPath, pathCache⟩
+      have hpathInvariant := preservesChainInvariant_ordinaryFtsOpen parameter initial index leaves
+        (ftsSecret index) state cache fuel pathState pathRemaining ftsPath pathCache hinvariant hpath
+      simp only at hafterPath
+      rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hafterPath
+      obtain ⟨layersRaw, hlayers, hafterLayers⟩ := hafterPath
+      cases layersRaw with
+      | stopped stoppedHit => simp at hafterLayers
+      | done layersState layersRemaining layersResult =>
+          rcases layersResult with ⟨layers, layersCache⟩
+          rw [← maskedSignLayers_eq_sequenceFin parameter ftsSecret index] at hlayers
+          have hlayersInvariant := chainInvariant_of_mem_runRaw_maskedSignLayers
+            (parameter := parameter) (allowed := initial) (ftsSecret := ftsSecret)
+            (index := index) (state := pathState) (finalState := layersState)
+            (cache := pathCache) (finalCache := layersCache) (fuel := pathRemaining)
+            (remaining := layersRemaining) (layers := layers) hpathInvariant hlayers
+          simp only at hafterLayers
+          cases hparts : traverseOption layers with
+          | none =>
+              rw [hparts] at hafterLayers
+              simp [LazyRevealProbe.runRaw] at hafterLayers
+              rcases hafterLayers with ⟨rfl, rfl, rfl, rfl⟩
+              exact Or.inl ⟨rfl, hlayersInvariant⟩
+          | some parts =>
+              rw [hparts, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+                mem_support_bind_iff] at hafterLayers
+              obtain ⟨revealedRaw, hrevealed, hfinish⟩ := hafterLayers
+              cases revealedRaw with
+              | stopped stoppedHit => simp at hfinish
+              | done revealedState revealedRemaining revealedResult =>
+                  rcases revealedResult with ⟨revealed, revealedCache⟩
+                  have hrevealedValues := LazyRevealProbe.valuesLE_of_mem_runRaw_done
+                    ((sequenceFin fun lay => revealLayerValues index lay (parts lay).2).run
+                      layersCache) layersState revealedState layersRemaining revealedRemaining
+                        (revealed, revealedCache) hrevealed
+                  have hrevealedCache := ordinaryCacheIncreasing_sequenceFin
+                    (fun lay => revealLayerValues index lay (parts lay).2)
+                    (fun lay => ordinaryCacheIncreasing_revealLayerValues index lay (parts lay).2)
+                    layersState layersCache layersRemaining revealedState revealedRemaining
+                      revealed revealedCache hrevealed
+                  have hrevealedInvariant := chainInvariant_revealLayersForParts parameter initial
+                    index parts layersState revealedState layersCache revealedCache layersRemaining
+                      revealedRemaining revealed hlayersInvariant hrevealed
+                  simp [LazyRevealProbe.runRaw] at hfinish
+                  rcases hfinish with ⟨rfl, rfl, rfl, rfl⟩
+                  have hfLayers : (ordinaryQueryCache layersCache).AgreesWithFn f :=
+                    fun _ _ hcached => hf (hrevealedCache hcached)
+                  have htableLayers : ∀ coordinate output,
+                      layersState.values coordinate = some output → output = table coordinate :=
+                    fun coordinate output hvalue => htable coordinate output
+                      (hrevealedValues coordinate output hvalue)
+                  have hhonestParts := maskedSignLayers_parts_eval f parameter root table ftsSecret
+                    index pathState layersState pathCache layersCache pathRemaining layersRemaining
+                      layers parts hfLayers htableLayers hrealizes hlayers hparts
+                  exact Or.inr ⟨_, parts, rfl, rfl, rfl, hhonestParts, hrevealedInvariant⟩
+
+theorem chainInvariant_maskedSign
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter) (root : Digest)
+    (table : Coordinate → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (message : Message) (initial : Coordinate → Prop)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat)
+    (result : Option Signature)
+    (hf : (ordinaryQueryCache finalCache).AgreesWithFn f)
+    (htable : ∀ coordinate output, finalState.values coordinate = some output →
+      output = table coordinate)
+    (hrealizes : ∀ position : Position, IsOtsPosition position →
+      f (tableInput parameter table (.position position)) = table (.position position))
+    (hinvariant : ChainInvariant parameter initial state cache)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (result, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((maskedSign parameter root ftsSecret message).run cache))) :
+    (result = none ∧ ChainInvariant parameter initial finalState finalCache) ∨
+      ∃ (signature : Signature) (index : Index) (leaves : DigestTree → FtsLeaf)
+          (parts : Layer → Counter × (ChainIndex → Digit)),
+        result = some signature
+          ∧ SuccessfulDigestRun f (ordinaryQueryCache finalCache)
+            (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey)
+              message signature.randomness index leaves
+          ∧ signature.counter = (fun lay => (parts lay).1)
+          ∧ HonestLayerParts f
+            (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) index parts
+          ∧ ChainInvariant parameter
+            (fun coordinate => initial coordinate ∨ PublishedByParts index parts coordinate)
+            finalState finalCache := by
+  let secretKey : SecretKey :=
+    ⟨parameter, root, tableOtsSecret table, ftsSecret⟩
+  let digestSecretKey : SecretKey :=
+    ⟨parameter, root, fun _ _ _ _ => 0, ftsSecret⟩
+  unfold maskedSign at hresult
+  rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨loopRaw, hloop, hrest⟩ := hresult
+  cases loopRaw with
+  | stopped stoppedHit => simp at hrest
+  | done loopState loopRemaining loopResult =>
+      rcases loopResult with ⟨selected, loopCache⟩
+      have hloopInvariant := preservesChainInvariant_ordinarySignDigestLoop initial
+        digestAttemptLimit digestSecretKey message state cache fuel loopState loopRemaining
+          selected loopCache hinvariant hloop
+      simp only at hrest
+      cases selected with
+      | none =>
+          simp [LazyRevealProbe.runRaw] at hrest
+          rcases hrest with ⟨rfl, rfl, rfl, rfl⟩
+          exact Or.inl ⟨rfl, hloopInvariant⟩
+      | some selected =>
+          obtain ⟨randomness, index, leaves⟩ := selected
+          have hcacheLE := ordinaryCacheIncreasing_maskedSignAfterDigest parameter ftsSecret
+            randomness index leaves loopState loopCache loopRemaining finalState remaining result
+              finalCache hrest
+          have hfLoop : (ordinaryQueryCache loopCache).AgreesWithFn f :=
+            fun _ _ hcached => hf (hcacheLE hcached)
+          have hdigestLoop := successfulDigestLoop_of_mem_runRaw_ordinaryRomImpl f
+            digestSecretKey message digestAttemptLimit randomness index leaves state loopState
+              cache loopCache fuel loopRemaining (ordinaryQueryCache finalCache) hcacheLE hf hloop
+          have hdigest : SuccessfulDigestRun f (ordinaryQueryCache finalCache) secretKey message
+              randomness index leaves := by
+            simpa only [SuccessfulDigestRun, signAttempt, digestSecretKey, secretKey] using
+              hdigestLoop
+          have hafter := chainInvariant_maskedSignAfterDigest f parameter root table ftsSecret
+            randomness index leaves initial loopState finalState loopCache finalCache loopRemaining
+              remaining result hf htable hrealizes hloopInvariant hrest
+          rcases hafter with ⟨rfl, hfinalInvariant⟩ |
+              ⟨signature, parts, hsignature, hrandomness, hcounter, hhonest,
+                hfinalInvariant⟩
+          · exact Or.inl ⟨rfl, hfinalInvariant⟩
+          · subst result
+            have hdigestSignature : SuccessfulDigestRun f (ordinaryQueryCache finalCache)
+                secretKey message signature.randomness index leaves := by
+              rw [hrandomness]
+              exact hdigest
+            exact Or.inr ⟨signature, index, leaves, parts, rfl, hdigestSignature, hcounter,
+              hhonest, hfinalInvariant⟩
+
 def PublishedChainCoordinate (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
     (secretKey : SecretKey) (signingLog : QueryLog SigningSpec) (coordinate : Coordinate) : Prop :=
   ∃ (entry : (request : SignRequest) × SigningSpec.Range request) (signature : Signature)
@@ -3490,6 +4077,26 @@ def PublishedChainCoordinate (f : QueryImpl HashSpec Id) (cache : QueryCache Has
         (signature.counter lay)) = some codeword
       ∧ coordinate = chainValueCoordinate lay (treeIndexAt index lay)
         (leafIndexAt index lay) chainIdx (codeword chainIdx)
+
+theorem PublishedByParts.toPublishedChainCoordinate
+    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
+    {signingLog : QueryLog SigningSpec} {index : Index}
+    {parts : Layer → Counter × (ChainIndex → Digit)} {coordinate : Coordinate}
+    (entry : (request : SignRequest) × SigningSpec.Range request)
+    (signature : Signature) (leaves : DigestTree → FtsLeaf)
+    (hentry : entry ∈ signingLog) (hresponse : entry.2 = some signature)
+    (hrun : SuccessfulSignRun f cache secretKey entry.1 signature)
+    (hdigest : SuccessfulDigestRun f cache secretKey entry.1 signature.randomness index leaves)
+    (hcounter : signature.counter = fun lay => (parts lay).1)
+    (hhonest : HonestLayerParts f secretKey index parts)
+    (hpublished : PublishedByParts index parts coordinate) :
+    PublishedChainCoordinate f cache secretKey signingLog coordinate := by
+  obtain ⟨lay, chainIdx, hcoordinate⟩ := hpublished
+  have hcounterAt := congrFun hcounter lay
+  have hencode := hhonest lay
+  rw [← hcounterAt] at hencode
+  exact ⟨entry, signature, index, leaves, lay, chainIdx, (parts lay).2, hentry, hresponse,
+    hrun, hdigest, hencode, hcoordinate⟩
 
 theorem successfulDigestRun_mono_cache
     {f : QueryImpl HashSpec Id} {initial final : QueryCache HashSpec}
