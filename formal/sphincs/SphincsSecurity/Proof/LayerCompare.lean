@@ -133,10 +133,11 @@ def SignedLayerAt (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
     (secretKey : SecretKey) (signingLog : QueryLog SigningSpec) (lay : Layer)
     (tree : TreeIndex) (leafIdx : LeafIndex) : Prop :=
   ∃ (entry : (request : SignRequest) × SigningSpec.Range request) (signature : Signature)
-      (index : Index),
+      (index : Index) (leaves : DigestTree → FtsLeaf),
     entry ∈ signingLog
       ∧ entry.2 = some signature
       ∧ SuccessfulSignRun f cache secretKey entry.1 signature
+      ∧ SuccessfulDigestRun f cache secretKey entry.1 signature.randomness index leaves
       ∧ treeIndexAt index lay = tree
       ∧ leafIndexAt index lay = leafIdx
       ∧ CachedRun cache f (layerMessage secretKey index lay)
@@ -154,10 +155,11 @@ def LayerComparisonFailure (f : QueryImpl HashSpec Id) (cache : QueryCache HashS
     (tree : TreeIndex) (leafIdx : LeafIndex) (forgedMessage : Digest)
     (forgedCounter : Counter) : Prop :=
   ∃ (entry : (request : SignRequest) × SigningSpec.Range request) (signature : Signature)
-      (index : Index),
+      (index : Index) (leaves : DigestTree → FtsLeaf),
     entry ∈ signingLog
       ∧ entry.2 = some signature
       ∧ SuccessfulSignRun f cache secretKey entry.1 signature
+      ∧ SuccessfulDigestRun f cache secretKey entry.1 signature.randomness index leaves
       ∧ treeIndexAt index lay = tree
       ∧ leafIndexAt index lay = leafIdx
       ∧ CachedRun cache f (layerMessage secretKey index lay)
@@ -197,7 +199,7 @@ theorem signedLayerAt_of_signing_entry (f : QueryImpl HashSpec Id)
   obtain ⟨index, leaves, hfts⟩ := hrun.honest_fts_at
   obtain ⟨hmessage, hopening⟩ := hrun.honest_layer_at_of_digest hfts.1 lay
   have hencoding := hrun.signed_encode_cached_of_digest hfts.1 lay
-  exact ⟨index, entry, signature, index, hentry, hresponse, hrun, rfl, rfl, hmessage,
+  exact ⟨index, entry, signature, index, leaves, hentry, hresponse, hrun, hfts.1, rfl, rfl, hmessage,
     hencoding, hopening⟩
 
 theorem SignedLayerAt.compare_forgery {f : QueryImpl HashSpec Id}
@@ -209,10 +211,11 @@ theorem SignedLayerAt.compare_forgery {f : QueryImpl HashSpec Id}
     (hforged : HonestLayerOpening f secretKey.parameter secretKey.otsSecret lay tree leafIdx
       forgedMessage forgedCounter forgedValues forgedPath) :
     ∃ (entry : (request : SignRequest) × SigningSpec.Range request) (signature : Signature)
-        (index : Index),
+        (index : Index) (leaves : DigestTree → FtsLeaf),
       entry ∈ signingLog
         ∧ entry.2 = some signature
         ∧ SuccessfulSignRun f cache secretKey entry.1 signature
+        ∧ SuccessfulDigestRun f cache secretKey entry.1 signature.randomness index leaves
         ∧ treeIndexAt index lay = tree
         ∧ leafIndexAt index lay = leafIdx
         ∧ CachedRun cache f (layerMessage secretKey index lay)
@@ -237,15 +240,15 @@ theorem SignedLayerAt.compare_forgery {f : QueryImpl HashSpec Id}
               ∧ evalWithAnswerFn f (encode secretKey.parameter lay tree leafIdx
                 forgedMessage forgedCounter) = some forgedCodeword
               ∧ ∃ chainIdx, (forgedCodeword chainIdx).val < (signedCodeword chainIdx).val) := by
-  obtain ⟨entry, signature, index, hentry, hresponse, hrun, htree, hleaf, hmessage, hencoding,
-    hopening⟩ := hsigned
+  obtain ⟨entry, signature, index, leaves, hentry, hresponse, hrun, hdigest, htree, hleaf,
+    hmessage, hencoding, hopening⟩ := hsigned
   have hopening' : HonestLayerOpening f secretKey.parameter secretKey.otsSecret lay tree leafIdx
       (evalWithAnswerFn f (layerMessage secretKey index lay)) (signature.counter lay)
       (signature.chainValue lay) (signaturePath signature lay) := by
     simpa only [htree, hleaf] using hopening
   rw [htree, hleaf] at hencoding
-  exact ⟨entry, signature, index, hentry, hresponse, hrun, htree, hleaf, hmessage, hopening',
-    hencoding,
+  exact ⟨entry, signature, index, leaves, hentry, hresponse, hrun, hdigest, htree, hleaf,
+    hmessage, hopening', hencoding,
     honestLayerOpening_compare f secretKey.parameter secretKey.otsSecret lay tree leafIdx
       (evalWithAnswerFn f (layerMessage secretKey index lay)) forgedMessage
       (signature.counter lay) forgedCounter (signature.chainValue lay) forgedValues
@@ -260,10 +263,11 @@ theorem SignedLayerAt.exact_or_failure {f : QueryImpl HashSpec Id}
     (hforged : HonestLayerOpening f secretKey.parameter secretKey.otsSecret lay tree leafIdx
       forgedMessage forgedCounter forgedValues forgedPath) :
     (∃ (entry : (request : SignRequest) × SigningSpec.Range request)
-        (signature : Signature) (index : Index),
+        (signature : Signature) (index : Index) (leaves : DigestTree → FtsLeaf),
       entry ∈ signingLog
         ∧ entry.2 = some signature
         ∧ SuccessfulSignRun f cache secretKey entry.1 signature
+        ∧ SuccessfulDigestRun f cache secretKey entry.1 signature.randomness index leaves
         ∧ treeIndexAt index lay = tree
         ∧ leafIndexAt index lay = leafIdx
         ∧ evalWithAnswerFn f (layerMessage secretKey index lay) = forgedMessage
@@ -273,14 +277,15 @@ theorem SignedLayerAt.exact_or_failure {f : QueryImpl HashSpec Id}
           signaturePath signature lay level = forgedPath level)
       ∨ LayerComparisonFailure f cache secretKey signingLog lay tree leafIdx
         forgedMessage forgedCounter := by
-  obtain ⟨entry, signature, index, hentry, hresponse, hrun, htree, hleaf, hmessage,
-    hopening, hcached, hresult⟩ :=
+  obtain ⟨entry, signature, index, leaves, hentry, hresponse, hrun, hdigest, htree, hleaf,
+    hmessage, hopening, hcached, hresult⟩ :=
     hsigned.compare_forgery forgedMessage forgedCounter forgedValues forgedPath hforged
   rcases hresult with hexact | hencoding | hearlier
-  · exact Or.inl ⟨entry, signature, index, hentry, hresponse, hrun, htree, hleaf, hexact⟩
-  · exact Or.inr ⟨entry, signature, index, hentry, hresponse, hrun,
+  · exact Or.inl ⟨entry, signature, index, leaves, hentry, hresponse, hrun, hdigest,
+      htree, hleaf, hexact⟩
+  · exact Or.inr ⟨entry, signature, index, leaves, hentry, hresponse, hrun, hdigest,
       htree, hleaf, hmessage, hopening, hcached, Or.inl hencoding⟩
-  · exact Or.inr ⟨entry, signature, index, hentry, hresponse, hrun,
+  · exact Or.inr ⟨entry, signature, index, leaves, hentry, hresponse, hrun, hdigest,
       htree, hleaf, hmessage, hopening, hcached, Or.inr hearlier⟩
 
 theorem SignedLayerAt.settles_middle {f : QueryImpl HashSpec Id}
@@ -292,7 +297,7 @@ theorem SignedLayerAt.settles_middle {f : QueryImpl HashSpec Id}
     Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache
       (.node middleLayer (treeIndexAt forgedIndex middleLayer)
         ⟨layerHeight middleLayer - 1, by decide⟩ ⟨0, by positivity⟩) := by
-  obtain ⟨_, _, signedIndex, _, _, _, htree, hleaf, hcached, _⟩ := hsigned
+  obtain ⟨_, _, signedIndex, _, _, _, _, _, htree, hleaf, hcached, _⟩ := hsigned
   have hnext : treeIndexAt signedIndex middleLayer = treeIndexAt forgedIndex middleLayer := by
     apply Fin.ext
     rw [layers_link_top signedIndex, layers_link_top forgedIndex]
@@ -312,7 +317,7 @@ theorem SignedLayerAt.settles_bottom {f : QueryImpl HashSpec Id}
     Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache
       (.node bottomLayer (treeIndexAt forgedIndex bottomLayer)
         ⟨layerHeight bottomLayer - 1, by decide⟩ ⟨0, by positivity⟩) := by
-  obtain ⟨_, _, signedIndex, _, _, _, htree, hleaf, hcached, _⟩ := hsigned
+  obtain ⟨_, _, signedIndex, _, _, _, _, _, htree, hleaf, hcached, _⟩ := hsigned
   have hnext : treeIndexAt signedIndex bottomLayer = treeIndexAt forgedIndex bottomLayer := by
     apply Fin.ext
     rw [layers_link_middle signedIndex, layers_link_middle forgedIndex]
@@ -331,7 +336,7 @@ theorem SignedLayerAt.settles_fts {f : QueryImpl HashSpec Id}
       (treeIndexAt forgedIndex bottomLayer) (leafIndexAt forgedIndex bottomLayer)) :
     Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache
       (.ftsRoots forgedIndex) := by
-  obtain ⟨_, _, signedIndex, _, _, _, htree, hleaf, hcached, _⟩ := hsigned
+  obtain ⟨_, _, signedIndex, _, _, _, _, _, htree, hleaf, hcached, _⟩ := hsigned
   have hindex := index_eq_of_bottom_position_eq htree hleaf
   subst signedIndex
   rw [layerMessage_bottomLayer secretKey forgedIndex] at hcached

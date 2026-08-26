@@ -616,4 +616,38 @@ theorem layerMessage_eq_of_position_eq (secretKey : SecretKey) (left right : Ind
     subst right
     rfl
 
+theorem signLayer_eq_of_position_eq (secretKey : SecretKey) (left right : Index)
+    (lay : Layer) (htree : treeIndexAt left lay = treeIndexAt right lay)
+    (hleaf : leafIndexAt left lay = leafIndexAt right lay) :
+    signLayer (m := OracleComp HashSpec) secretKey left lay =
+      signLayer secretKey right lay := by
+  simp only [signLayer]
+  rw [htree, hleaf,
+    layerMessage_eq_of_position_eq secretKey left right lay htree hleaf]
+
+theorem successfulSignRun_layer_ots_eq_of_position_eq {f : QueryImpl HashSpec Id}
+    {cache : QueryCache HashSpec} {secretKey : SecretKey}
+    {leftMessage rightMessage : Message} {leftSignature rightSignature : Signature}
+    (left : SuccessfulSignRun f cache secretKey leftMessage leftSignature)
+    (right : SuccessfulSignRun f cache secretKey rightMessage rightSignature)
+    {leftIndex rightIndex : Index}
+    {leftLeaves rightLeaves : DigestTree → FtsLeaf}
+    (leftDigest : SuccessfulDigestRun f cache secretKey leftMessage leftSignature.randomness
+      leftIndex leftLeaves)
+    (rightDigest : SuccessfulDigestRun f cache secretKey rightMessage rightSignature.randomness
+      rightIndex rightLeaves)
+    (lay : Layer) (htree : treeIndexAt leftIndex lay = treeIndexAt rightIndex lay)
+    (hleaf : leafIndexAt leftIndex lay = leafIndexAt rightIndex lay) :
+    leftSignature.counter lay = rightSignature.counter lay
+      ∧ leftSignature.chainValue lay = rightSignature.chainValue lay := by
+  obtain ⟨leftPart, hleftEval, hleftCounter, hleftValues⟩ :=
+    left.signature_part_of_digest leftDigest lay
+  obtain ⟨rightPart, hrightEval, hrightCounter, hrightValues⟩ :=
+    right.signature_part_of_digest rightDigest lay
+  have hpart : leftPart = rightPart := by
+    rw [signLayer_eq_of_position_eq secretKey leftIndex rightIndex lay htree hleaf] at hleftEval
+    exact Option.some.inj (hleftEval.symm.trans hrightEval)
+  subst rightPart
+  exact ⟨hleftCounter.trans hrightCounter.symm, hleftValues.trans hrightValues.symm⟩
+
 end SphincsSecurity.Concrete

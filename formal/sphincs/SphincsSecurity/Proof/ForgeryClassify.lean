@@ -135,7 +135,7 @@ theorem accepted_forgery_classify (f : QueryImpl HashSpec Id) (cache : QueryCach
       (treeIndexAt index topLayer) (leafIndexAt index topLayer)
   · rcases hsignedTop.exact_or_failure topMessage (signature.counter topLayer)
         (signature.chainValue topLayer) (signaturePath signature topLayer) htopOpening with
-      ⟨_, _, signedTopIndex, _, _, _, htopTree, htopLeaf, htopMessage, _⟩ | hfailure
+      ⟨_, _, signedTopIndex, _, _, _, _, _, htopTree, htopLeaf, htopMessage, _⟩ | hfailure
     · have hmiddleRoot := exact_top_message_eq_middle_root f secretKey signedTopIndex index
         topMessage htopTree htopLeaf htopMessage
       have htopEval : evalWithAnswerFn f (layerMessage secretKey index topLayer) = topMessage := by
@@ -156,7 +156,8 @@ theorem accepted_forgery_classify (f : QueryImpl HashSpec Id) (cache : QueryCach
         · rcases hsignedMiddle.exact_or_failure middleMessage (signature.counter middleLayer)
               (signature.chainValue middleLayer) (signaturePath signature middleLayer)
               hmiddleOpening with
-            ⟨_, _, signedMiddleIndex, _, _, _, hmiddleTree, hmiddleLeaf, hmiddleMessage, _⟩ | hfailure
+            ⟨_, _, signedMiddleIndex, _, _, _, _, _, hmiddleTree, hmiddleLeaf, hmiddleMessage, _⟩ |
+              hfailure
           · have hbottomRoot := exact_middle_message_eq_bottom_root f secretKey signedMiddleIndex index
               middleMessage hmiddleTree hmiddleLeaf hmiddleMessage
             have hmiddleEval : evalWithAnswerFn f (layerMessage secretKey index middleLayer)
@@ -178,8 +179,8 @@ theorem accepted_forgery_classify (f : QueryImpl HashSpec Id) (cache : QueryCach
               · rcases hsignedBottom.exact_or_failure ftsPublicKey (signature.counter bottomLayer)
                     (signature.chainValue bottomLayer) (signaturePath signature bottomLayer)
                     hbottomOpening with
-                  ⟨_, _, signedBottomIndex, _, _, _, hbottomTree, hbottomLeaf, hbottomMessage, _⟩ |
-                    hfailure
+                  ⟨_, _, signedBottomIndex, _, _, _, _, _, hbottomTree, hbottomLeaf,
+                    hbottomMessage, _⟩ | hfailure
                 · have hftsKey := exact_bottom_message_eq_fts_key f secretKey signedBottomIndex index
                     ftsPublicKey hbottomTree hbottomLeaf hbottomMessage
                   have hbottomEval : evalWithAnswerFn f (layerMessage secretKey index bottomLayer)

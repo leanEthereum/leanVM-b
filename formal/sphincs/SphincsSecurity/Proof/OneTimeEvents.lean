@@ -26,7 +26,7 @@ def EncodingCollision (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
       (forgedCounter : Counter) (forgedValues : ChainIndex → Digest)
       (forgedPath : Nat → Digest)
       (entry : (request : SignRequest) × SigningSpec.Range request) (signature : Signature)
-      (index : Index),
+      (index : Index) (leaves : DigestTree → FtsLeaf),
     CachedRun cache f (otsLeaf secretKey.parameter lay tree leafIdx forgedMessage forgedCounter
         forgedValues)
       ∧ HonestLayerOpening f secretKey.parameter secretKey.otsSecret lay tree leafIdx
@@ -34,6 +34,7 @@ def EncodingCollision (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
       ∧ entry ∈ signingLog
       ∧ entry.2 = some signature
       ∧ SuccessfulSignRun f cache secretKey entry.1 signature
+      ∧ SuccessfulDigestRun f cache secretKey entry.1 signature.randomness index leaves
       ∧ treeIndexAt index lay = tree
       ∧ leafIndexAt index lay = leafIdx
       ∧ CachedRun cache f (layerMessage secretKey index lay)
@@ -62,8 +63,8 @@ theorem EncodingCollision.reuses_values_and_path {f : QueryImpl HashSpec Id}
         ∧ ∀ level, level < layerHeight lay →
           signaturePath signature lay level = forgedPath level := by
   obtain ⟨lay, tree, leafIdx, forgedMessage, forgedCounter, forgedValues, forgedPath, _,
-    signature, index, _, hforgedOpening, _, _, _, htree, hleaf, _, hsignedOpening, _, hhit⟩ :=
-    hcollision
+    signature, index, _, _, hforgedOpening, _, _, _, _, htree, hleaf, _, hsignedOpening, _,
+    hhit⟩ := hcollision
   have hreused := honestLayerOpening_values_path_eq_of_encodingHit f secretKey.parameter
     secretKey.otsSecret lay tree leafIdx
     (evalWithAnswerFn f (layerMessage secretKey index lay)) forgedMessage
@@ -83,7 +84,8 @@ def BackwardChainOpening (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpe
   ∃ (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (forgedMessage : Digest)
       (forgedCounter : Counter) (forgedValues : ChainIndex → Digest) (forgedPath : Nat → Digest)
       (entry : (request : SignRequest) × SigningSpec.Range request) (signature : Signature)
-      (index : Index) (signedCodeword forgedCodeword : Encoding),
+      (index : Index) (leaves : DigestTree → FtsLeaf)
+      (signedCodeword forgedCodeword : Encoding),
     HonestLayerOpening f secretKey.parameter secretKey.otsSecret lay tree leafIdx forgedMessage
         forgedCounter forgedValues forgedPath
       ∧ CachedRun cache f (otsLeaf secretKey.parameter lay tree leafIdx forgedMessage forgedCounter
@@ -91,6 +93,7 @@ def BackwardChainOpening (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpe
       ∧ entry ∈ signingLog
       ∧ entry.2 = some signature
       ∧ SuccessfulSignRun f cache secretKey entry.1 signature
+      ∧ SuccessfulDigestRun f cache secretKey entry.1 signature.randomness index leaves
       ∧ treeIndexAt index lay = tree
       ∧ leafIndexAt index lay = leafIdx
       ∧ CachedRun cache f (layerMessage secretKey index lay)
@@ -118,16 +121,16 @@ theorem layerObstacle_classify (f : QueryImpl HashSpec Id) (cache : QueryCache H
       hfresh | hfailure⟩ :=
     hobstacle
   · exact Or.inl ⟨lay, tree, leafIdx, message, counter, values, path, hopening, hforgedRun, hfresh⟩
-  · obtain ⟨entry, signature, index, hentry, hresponse, hsignRun, htree, hleaf,
+  · obtain ⟨entry, signature, index, leaves, hentry, hresponse, hsignRun, hdigest, htree, hleaf,
         hmessage, hsignedOpening, hsignedCached, hencoding | hearlier⟩ := hfailure
     · exact Or.inr (Or.inl ⟨lay, tree, leafIdx, message, counter, values, path, entry, signature,
-        index, hforgedRun, hopening, hentry, hresponse, hsignRun, htree, hleaf,
+        index, leaves, hforgedRun, hopening, hentry, hresponse, hsignRun, hdigest, htree, hleaf,
         hmessage, hsignedOpening, hsignedCached, hencoding⟩)
     · obtain ⟨signedCodeword, forgedCodeword, hsigned, hforged, hchain⟩ := hearlier
       exact Or.inr (Or.inr ⟨lay, tree, leafIdx, message, counter, values, path, entry,
-        signature, index, signedCodeword, forgedCodeword, hopening, hforgedRun, hentry, hresponse,
-        hsignRun, htree, hleaf, hmessage, hsignedOpening, hsignedCached, hsigned, hforged,
-        hchain⟩)
+        signature, index, leaves, signedCodeword, forgedCodeword, hopening, hforgedRun, hentry,
+        hresponse, hsignRun, hdigest, htree, hleaf, hmessage, hsignedOpening, hsignedCached,
+        hsigned, hforged, hchain⟩)
 
 def TerminalForgeryEvent (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
     (secretKey : SecretKey) (signingLog : QueryLog SigningSpec) (forgery : Forgery)

@@ -33,8 +33,8 @@ theorem encodingCollision_cacheCollision {f : QueryImpl HashSpec Id}
     {signingLog : QueryLog SigningSpec} (hf : cache.AgreesWithFn f)
     (hcollision : EncodingCollision f cache secretKey signingLog) :
     EncodingCacheCollision secretKey.parameter cache := by
-  obtain ⟨lay, tree, leafIdx, forgedMessage, forgedCounter, _, _, entry, signature, index,
-    hforgedCached, _, _, _, _, _, _, _, _, hsignedCached, hhit⟩ := hcollision
+  obtain ⟨lay, tree, leafIdx, forgedMessage, forgedCounter, _, _, entry, signature, index, _,
+    hforgedCached, _, _, _, _, _, _, _, _, _, hsignedCached, hhit⟩ := hcollision
   let signedPayload := digestBytes (evalWithAnswerFn f (layerMessage secretKey index lay)) ++
     counterBytes (signature.counter lay)
   let forgedPayload := digestBytes forgedMessage ++ counterBytes forgedCounter

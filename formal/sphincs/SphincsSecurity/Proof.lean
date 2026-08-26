@@ -53,6 +53,7 @@ import SphincsSecurity.Proof.Replay
 import SphincsSecurity.Proof.Sampling
 import SphincsSecurity.Proof.OneTimeEvents
 import SphincsSecurity.Proof.TerminalCache
+import SphincsSecurity.Proof.EncodingTarget
 import SphincsSecurity.Proof.FewTimeWitness
 import SphincsSecurity.Proof.FewTimePatterns
 import SphincsSecurity.Proof.FewTimeProbability
