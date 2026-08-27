@@ -11,6 +11,7 @@ probe fuel and table needed by finalization.
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
 open OracleComp OracleSpec
+open OracleComp.ProgramLogic.Relational
 
 noncomputable local instance runSampleableOtsHashTable :
     SampleableType (OtsSecretIndex → HashOutput) :=
@@ -542,6 +543,144 @@ def projectCleanOrdinary :
   | none => none
   | some result => some (result.value.1, ordinaryQueryCache result.value.2)
 
+def CleanOrdinaryStepRel :
+    Option (CleanRunResult (alpha × SplitHashCache)) →
+      (alpha × QueryCache HashSpec) → Prop :=
+  fun cleanResult ordinaryResult => cleanResult = none ∨
+    projectCleanOrdinary cleanResult = some ordinaryResult
+
+def StartTableAgrees (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput) : Prop :=
+  ∀ index output, state.values index.coordinate = some output → output = table index
+
+theorem startTableAgrees_empty (table : OtsSecretIndex → HashOutput) :
+    StartTableAgrees (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) table := by
+  intro index output hvalue
+  simp [LazyRevealProbe.State.empty] at hvalue
+
+theorem StartTableAgrees.lookup
+    {state : LazyRevealProbe.State Coordinate}
+    {table : OtsSecretIndex → HashOutput} (hagrees : StartTableAgrees state table)
+    (index : OtsSecretIndex) :
+    state.values index.coordinate = none ∨
+      state.values index.coordinate = some (table index) := by
+  cases hvalue : state.values index.coordinate with
+  | none => exact Or.inl rfl
+  | some output => exact Or.inr (congrArg some (hagrees index output hvalue))
+
+theorem StartTableAgrees.ensure
+    {state : LazyRevealProbe.State Coordinate}
+    {table : OtsSecretIndex → HashOutput} (hagrees : StartTableAgrees state table)
+    (coordinate : Coordinate) : StartTableAgrees (state.ensure coordinate) table := by
+  exact hagrees
+
+theorem StartTableAgrees.addPending
+    {state : LazyRevealProbe.State Coordinate}
+    {table : OtsSecretIndex → HashOutput} (hagrees : StartTableAgrees state table)
+    (coordinate : Coordinate) (candidate : Digest) :
+    StartTableAgrees (state.addPending coordinate candidate) table := by
+  exact hagrees
+
+theorem StartTableAgrees.publish
+    {state : LazyRevealProbe.State Coordinate}
+    {table : OtsSecretIndex → HashOutput} (hagrees : StartTableAgrees state table)
+    (coordinate : Coordinate) : StartTableAgrees (state.publish coordinate) table := by
+  exact hagrees
+
+theorem StartTableAgrees.materialize_start
+    {state : LazyRevealProbe.State Coordinate}
+    {table : OtsSecretIndex → HashOutput} (hagrees : StartTableAgrees state table)
+    (index : OtsSecretIndex) :
+    StartTableAgrees (state.materialize index.coordinate (table index)) table := by
+  intro other output hvalue
+  by_cases heq : other = index
+  · subst other
+    simpa [LazyRevealProbe.State.materialize] using hvalue.symm
+  · have hcoordinate : other.coordinate ≠ index.coordinate :=
+      fun h => heq (OtsSecretIndex.coordinate_injective h)
+    apply hagrees other output
+    simpa [LazyRevealProbe.State.materialize, hcoordinate] using hvalue
+
+theorem StartTableAgrees.materialize_position
+    {state : LazyRevealProbe.State Coordinate}
+    {table : OtsSecretIndex → HashOutput} (hagrees : StartTableAgrees state table)
+    (position : Position) (output : HashOutput) :
+    StartTableAgrees (state.materialize (.position position) output) table := by
+  intro index cached hvalue
+  apply hagrees index cached
+  simpa [LazyRevealProbe.State.materialize, OtsSecretIndex.coordinate] using hvalue
+
+theorem startTableAgrees_of_mem_runCleanFromTable
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (hagrees : StartTableAgrees state table)
+    (result : CleanRunResult alpha)
+    (hresult : some result ∈ support
+      (runCleanFromTable state fuel table computation)) :
+    result.table = table ∧ StartTableAgrees result.state table := by
+  induction computation using OracleComp.inductionOn generalizing state fuel with
+  | pure value =>
+      simp [runCleanFromTable] at hresult
+      subst result
+      exact ⟨rfl, hagrees⟩
+  | query_bind input next ih =>
+      cases input with
+      | uniform n =>
+          rw [runCleanFromTable_uniform_query_bind, mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, hrest⟩ := hresult
+          exact ih output state fuel hagrees hrest
+      | hashOutput =>
+          rw [runCleanFromTable_hashOutput_query_bind, mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, hrest⟩ := hresult
+          exact ih output state fuel hagrees hrest
+      | ensure coordinate =>
+          rw [runCleanFromTable_ensure_query_bind] at hresult
+          exact ih () (state.ensure coordinate) fuel (hagrees.ensure coordinate) hresult
+      | probe coordinate candidate =>
+          rw [runCleanFromTable_probe_query_bind] at hresult
+          cases fuel with
+          | zero => simp at hresult
+          | succ remaining =>
+              by_cases hrevealed : coordinate ∈ state.revealed
+              · exact ih () state remaining hagrees (by simpa [hrevealed] using hresult)
+              · exact ih () (state.addPending coordinate candidate) remaining
+                  (hagrees.addPending coordinate candidate) (by simpa [hrevealed] using hresult)
+      | peek coordinate =>
+          rw [runCleanFromTable_peek_query_bind] at hresult
+          exact ih (state.values coordinate) state fuel hagrees hresult
+      | publish coordinate =>
+          rw [runCleanFromTable_publish_query_bind] at hresult
+          exact ih () (state.publish coordinate) fuel (hagrees.publish coordinate) hresult
+      | reveal coordinate =>
+          rw [runCleanFromTable_reveal_query_bind] at hresult
+          cases hvalue : state.values coordinate with
+          | some output =>
+              rw [hvalue] at hresult
+              exact ih output state fuel hagrees hresult
+          | none =>
+              rw [hvalue] at hresult
+              cases coordinate with
+              | chainStart lay tree leafIdx chainIdx =>
+                  simp only at hresult
+                  let index : OtsSecretIndex := ⟨lay, tree, leafIdx, chainIdx⟩
+                  by_cases hhit : state.hitAt (.chainStart lay tree leafIdx chainIdx)
+                      (table ⟨lay, tree, leafIdx, chainIdx⟩)
+                  · rw [if_pos hhit] at hresult
+                    simp at hresult
+                  · rw [if_neg hhit] at hresult
+                    exact ih (table index)
+                      (state.materialize (.chainStart lay tree leafIdx chainIdx) (table index))
+                      fuel (by simpa [index, OtsSecretIndex.coordinate] using
+                        hagrees.materialize_start index) (by simpa [index] using hresult)
+              | position position =>
+                  rw [mem_support_bind_iff] at hresult
+                  obtain ⟨output, _houtput, hrest⟩ := hresult
+                  by_cases hhit : state.hitAt (.position position) output
+                  · simp [hhit] at hrest
+                  · exact ih output (state.materialize (.position position) output) fuel
+                      (hagrees.materialize_position position output)
+                      (by simpa [hhit] using hrest)
+
 theorem projectCleanOrdinary_splitHashQuery
     (input : HashInput) (state : LazyRevealProbe.State Coordinate)
     (cache : SplitHashCache) (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
@@ -620,6 +759,72 @@ theorem projectCleanOrdinary_simulateQ_ordinaryHashImpl
           intro output
           rw [← ordinaryQueryCache_update]
           exact ih output state (Function.update cache (.ordinary input) (some output)) fuel
+
+theorem relTriple_runCleanFromTable_simulateQ_ordinaryHashImpl
+    [Inhabited alpha] (computation : OracleComp HashSpec alpha)
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
+    RelTriple
+      (runCleanFromTable state fuel table
+        ((simulateQ ordinaryHashImpl computation).run cache))
+      ((simulateQ (randomOracle : QueryImpl HashSpec _) computation).run
+        (ordinaryQueryCache cache))
+      fun cleanResult ordinaryResult =>
+        projectCleanOrdinary cleanResult = some ordinaryResult := by
+  exact SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_of_project_eq_some_exact
+    projectCleanOrdinary (default, ∅)
+    (runCleanFromTable state fuel table
+      ((simulateQ ordinaryHashImpl computation).run cache))
+    ((simulateQ (randomOracle : QueryImpl HashSpec _) computation).run
+      (ordinaryQueryCache cache))
+    (projectCleanOrdinary_simulateQ_ordinaryHashImpl computation state cache fuel table)
+
+theorem projectCleanOrdinary_revealChainStart
+    (index : OtsSecretIndex) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache) (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (hagrees : state.values index.coordinate = none ∨
+      state.values index.coordinate = some (table index))
+    (hclean : ¬state.hitAt index.coordinate (table index)) :
+    projectCleanOrdinary <$>
+        runCleanFromTable state fuel table
+          ((revealChainStart index.lay index.tree index.leafIdx index.chainIdx).run cache) =
+      pure (some (truncateHash (table index), ordinaryQueryCache cache)) := by
+  rcases index with ⟨lay, tree, leafIdx, chainIdx⟩
+  simp only [OtsSecretIndex.coordinate] at hagrees hclean ⊢
+  rw [revealChainStart, revealCoordinate_run, LazyRevealProbe.revealQuery,
+    runCleanFromTable_reveal_query_bind]
+  rcases hagrees with hmissing | hvalue
+  · rw [hmissing]
+    simp [hclean, runCleanFromTable, projectCleanOrdinary,
+      ordinaryQueryCache_update_hidden]
+  · rw [hvalue]
+    simp [runCleanFromTable, projectCleanOrdinary, ordinaryQueryCache_update_hidden]
+
+theorem relTriple_runCleanFromTable_revealChainStart
+    (index : OtsSecretIndex) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache) (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (hagrees : state.values index.coordinate = none ∨
+      state.values index.coordinate = some (table index)) :
+    RelTriple
+      (runCleanFromTable state fuel table
+        ((revealChainStart index.lay index.tree index.leafIdx index.chainIdx).run cache))
+      (pure (truncateHash (table index), ordinaryQueryCache cache) :
+        ProbComp (Digest × QueryCache HashSpec))
+      CleanOrdinaryStepRel := by
+  rcases index with ⟨lay, tree, leafIdx, chainIdx⟩
+  simp only [OtsSecretIndex.coordinate] at hagrees ⊢
+  rw [revealChainStart, revealCoordinate_run, LazyRevealProbe.revealQuery,
+    runCleanFromTable_reveal_query_bind]
+  rcases hagrees with hmissing | hvalue
+  · rw [hmissing]
+    by_cases hhit : state.hitAt (.chainStart lay tree leafIdx chainIdx)
+        (table ⟨lay, tree, leafIdx, chainIdx⟩)
+    · simp [hhit, CleanOrdinaryStepRel]
+    · simp [hhit, runCleanFromTable, CleanOrdinaryStepRel, projectCleanOrdinary,
+        ordinaryQueryCache_update_hidden]
+  · rw [hvalue]
+    simp [runCleanFromTable, CleanOrdinaryStepRel, projectCleanOrdinary,
+      ordinaryQueryCache_update_hidden]
 
 noncomputable def finishCleanRunFromTable :
     Option (CleanRunResult alpha) → ProbComp (Option (CleanRunResult alpha))
