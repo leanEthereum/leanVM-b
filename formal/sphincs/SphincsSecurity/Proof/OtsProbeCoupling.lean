@@ -10562,4 +10562,265 @@ theorem simulateQ_verifierHashImpl_run_isProbeBound (parameter : PublicParameter
   intro input workingCache
   exact verifierHashQuery_run_isProbeBound parameter input workingCache
 
+theorem simulateQ_ordinaryHashImpl_probeFree
+    (computation : OracleComp HashSpec alpha) :
+    ProbeFree (simulateQ ordinaryHashImpl computation) := by
+  intro cache
+  apply (OracleComp.isQueryBoundP_false computation 0).simulateQ_run_StateT_of_step
+  intro input workingCache
+  exact splitHashQuery_run_isProbeBound (.ordinary input) workingCache 0
+
+theorem simulateQ_ordinaryRomImpl_probeFree
+    (computation : OracleComp OracleWorld alpha) :
+    ProbeFree (simulateQ ordinaryRomImpl computation) := by
+  intro cache
+  apply (OracleComp.isQueryBoundP_false computation 0).simulateQ_run_StateT_of_step
+  intro input workingCache
+  cases input with
+  | inl n => exact splitUniformImpl_probeFree n workingCache
+  | inr hashInput => exact splitHashQuery_run_isProbeBound (.ordinary hashInput) workingCache 0
+
+theorem ensureCoordinate_probeFree (coordinate : Coordinate) :
+    ProbeFree (ensureCoordinate coordinate) := by
+  intro cache
+  unfold ensureCoordinate
+  change (((fun value : Unit => (value, cache)) <$>
+    LazyRevealProbe.ensureQuery coordinate).IsQueryBoundP
+      (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) 0)
+  rw [OracleComp.isQueryBoundP_map_iff]
+  exact LazyRevealProbe.ensureQuery_isProbeBound coordinate 0
+
+theorem sequenceFin_probeFree {n : Nat}
+    (computation : Fin n → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha)
+    (hcomputation : ∀ index, ProbeFree (computation index)) :
+    ProbeFree (sequenceFin computation) := by
+  induction n with
+  | zero =>
+      simp only [sequenceFin]
+      exact ProbeFree.pure Fin.elim0
+  | succ n ih =>
+      rw [sequenceFin]
+      exact (hcomputation 0).bind fun head =>
+        (ih (fun index => computation index.succ)
+          (fun index => hcomputation index.succ)).bind fun tail =>
+            ProbeFree.pure (Fin.cases head tail : Fin (n + 1) → alpha)
+
+theorem ensureFullChain_probeFree (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) :
+    ProbeFree (ensureFullChain lay tree leafIdx chainIdx) := by
+  unfold ensureFullChain
+  exact (sequenceFin_probeFree _ fun step =>
+    ensureCoordinate_probeFree (.position (.chain lay tree leafIdx chainIdx step))).bind
+      fun _ => ProbeFree.pure ()
+
+theorem ensureChainPrefix_probeFree (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) (digit : Digit) :
+    ProbeFree (ensureChainPrefix lay tree leafIdx chainIdx digit) := by
+  unfold ensureChainPrefix
+  exact (sequenceFin_probeFree _ fun step => by
+    split
+    · exact ensureCoordinate_probeFree (.position (.chain lay tree leafIdx chainIdx step))
+    · exact ProbeFree.pure ()).bind fun _ => ProbeFree.pure ()
+
+theorem ensureOtsLeaf_probeFree (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) : ProbeFree (ensureOtsLeaf lay tree leafIdx) := by
+  unfold ensureOtsLeaf
+  exact (sequenceFin_probeFree _ fun chainIdx =>
+    ensureFullChain_probeFree lay tree leafIdx chainIdx).bind fun _ =>
+      ensureCoordinate_probeFree (.position (.leaf lay tree leafIdx))
+
+theorem ensureTreeNode_probeFree (lay : Layer) (tree : TreeIndex) :
+    ∀ level nodeIdx, ProbeFree (ensureTreeNode lay tree level nodeIdx)
+  | 0, nodeIdx => ensureOtsLeaf_probeFree lay tree (leafOfNat nodeIdx)
+  | level + 1, nodeIdx => by
+      rw [ensureTreeNode]
+      exact (ensureTreeNode_probeFree lay tree level (2 * nodeIdx)).bind fun _ =>
+        (ensureTreeNode_probeFree lay tree level (2 * nodeIdx + 1)).bind fun _ => by
+          split
+          · exact ensureCoordinate_probeFree (.position
+              (.node lay tree ⟨level, by assumption⟩ (leafOfNat nodeIdx)))
+          · exact ProbeFree.pure ()
+
+theorem maskedTreeNode_probeFree (lay : Layer) (tree : TreeIndex)
+    (level nodeIdx : Nat) : ProbeFree (maskedTreeNode lay tree level nodeIdx) := by
+  cases level with
+  | zero =>
+      rw [maskedTreeNode]
+      exact (ensureTreeNode_probeFree lay tree 0 nodeIdx).bind fun _ =>
+        revealPosition_probeFree (.leaf lay tree (leafOfNat nodeIdx))
+  | succ current =>
+      rw [maskedTreeNode]
+      exact (ensureTreeNode_probeFree lay tree (current + 1) nodeIdx).bind fun _ => by
+        split
+        · exact revealPosition_probeFree
+            (.node lay tree ⟨current, by assumption⟩ (leafOfNat nodeIdx))
+        · exact ProbeFree.pure 0
+
+theorem maskedTreeRoot_probeFree (lay : Layer) (tree : TreeIndex) :
+    ProbeFree (maskedTreeRoot lay tree) :=
+  maskedTreeNode_probeFree lay tree (layerHeight lay) 0
+
+theorem maskedTreePath_probeFree (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) : ProbeFree (maskedTreePath lay tree leafIdx) := by
+  unfold maskedTreePath
+  apply sequenceFin_probeFree
+  intro level
+  split
+  · exact maskedTreeNode_probeFree lay tree level.val
+      (Nat.xor (leafIdx.val / 2 ^ level.val) 1)
+  · exact ProbeFree.pure 0
+
+theorem ensureTreePath_probeFree (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) : ProbeFree (ensureTreePath lay tree leafIdx) := by
+  unfold ensureTreePath
+  exact (sequenceFin_probeFree _ fun level => by
+    split
+    · exact ensureTreeNode_probeFree lay tree level.val
+        (Nat.xor (leafIdx.val / 2 ^ level.val) 1)
+    · exact ProbeFree.pure ()).bind fun _ => ProbeFree.pure ()
+
+theorem maskedChainValue_probeFree (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) (digit : Digit) :
+    ProbeFree (maskedChainValue lay tree leafIdx chainIdx digit) := by
+  unfold maskedChainValue
+  exact (ensureChainPrefix_probeFree lay tree leafIdx chainIdx digit).bind fun _ => by
+    split
+    · exact revealCoordinate_probeFree (.chainStart lay tree leafIdx chainIdx)
+    · exact revealPosition_probeFree (.chain lay tree leafIdx chainIdx ⟨digit.val - 1, by
+          have := digit.isLt
+          omega⟩)
+
+theorem maskedOtsSignFrom_probeFree (parameter : PublicParameter) (lay : Layer)
+    (tree : TreeIndex) (leafIdx : LeafIndex) (message : Digest) :
+    ∀ attempts counter,
+      ProbeFree (maskedOtsSignFrom parameter lay tree leafIdx message attempts counter)
+  | 0, _ => ProbeFree.pure none
+  | attempts + 1, counter => by
+      rw [maskedOtsSignFrom]
+      exact (simulateQ_ordinaryHashImpl_probeFree
+        (encode parameter lay tree leafIdx message
+          (BitVec.ofNat counterBits counter))).bind fun encoded => by
+            cases encoded with
+            | none =>
+                exact maskedOtsSignFrom_probeFree parameter lay tree leafIdx message attempts
+                  (counter + 1)
+            | some encoding =>
+                exact (sequenceFin_probeFree _ fun chainIdx =>
+                  ensureChainPrefix_probeFree lay tree leafIdx chainIdx
+                    (encoding chainIdx)).bind fun _ => ProbeFree.pure _
+
+theorem maskedOtsSign_probeFree (parameter : PublicParameter) (lay : Layer)
+    (tree : TreeIndex) (leafIdx : LeafIndex) (message : Digest) :
+    ProbeFree (maskedOtsSign parameter lay tree leafIdx message) :=
+  maskedOtsSignFrom_probeFree parameter lay tree leafIdx message encodingAttemptLimit 0
+
+theorem maskedLayerMessage_probeFree (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index) (lay : Layer) :
+    ProbeFree (maskedLayerMessage parameter ftsSecret index lay) := by
+  unfold maskedLayerMessage
+  split
+  · exact maskedTreeRoot_probeFree _ _
+  · exact simulateQ_ordinaryHashImpl_probeFree _
+
+theorem maskedSignLayer_probeFree (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index) (lay : Layer) :
+    ProbeFree (maskedSignLayer parameter ftsSecret index lay) := by
+  unfold maskedSignLayer
+  exact (maskedLayerMessage_probeFree parameter ftsSecret index lay).bind fun message =>
+    (maskedOtsSign_probeFree parameter lay (treeIndexAt index lay)
+      (leafIndexAt index lay) message).bind fun signed => by
+        cases signed with
+        | none => exact ProbeFree.pure none
+        | some part =>
+            exact (ensureTreePath_probeFree lay (treeIndexAt index lay)
+              (leafIndexAt index lay)).bind fun _ => ProbeFree.pure (some part)
+
+theorem revealPublishedCoordinate_probeFree (coordinate : Coordinate) :
+    ProbeFree (revealPublishedCoordinate coordinate) := by
+  unfold revealPublishedCoordinate
+  exact (revealCoordinate_probeFree coordinate).bind fun value =>
+    (publishCoordinate_probeFree coordinate).bind fun _ => ProbeFree.pure value
+
+theorem revealLayerPathValue_probeFree (index : Index) (lay : Layer)
+    (level : Fin maxLayerHeight) :
+    ProbeFree (if level.val < layerHeight lay then
+      match level.val with
+      | 0 => revealPublishedCoordinate (.position (.leaf lay (treeIndexAt index lay)
+          (leafOfNat (Nat.xor (leafIndexAt index lay).val 1))))
+      | current + 1 =>
+          if hlevel : current < maxLayerHeight then
+            revealPublishedCoordinate (.position (.node lay (treeIndexAt index lay)
+              ⟨current, hlevel⟩
+              (leafOfNat (Nat.xor ((leafIndexAt index lay).val / 2 ^ (current + 1)) 1))))
+          else pure 0
+    else pure 0) := by
+  by_cases hbelow : level.val < layerHeight lay
+  · rw [if_pos hbelow]
+    cases hvalue : level.val with
+    | zero =>
+        exact revealPublishedCoordinate_probeFree (.position (.leaf lay
+          (treeIndexAt index lay) (leafOfNat (Nat.xor (leafIndexAt index lay).val 1))))
+    | succ current =>
+        simp only
+        split
+        · exact revealPublishedCoordinate_probeFree (.position (.node lay
+            (treeIndexAt index lay) ⟨current, by assumption⟩
+            (leafOfNat (Nat.xor ((leafIndexAt index lay).val / 2 ^ (current + 1)) 1))))
+        · exact ProbeFree.pure 0
+  · rw [if_neg hbelow]
+    exact ProbeFree.pure 0
+
+theorem revealLayerValues_probeFree (index : Index) (lay : Layer)
+    (encoding : ChainIndex → Digit) :
+    ProbeFree (revealLayerValues index lay encoding) := by
+  unfold revealLayerValues
+  exact (sequenceFin_probeFree _ fun chainIdx =>
+    revealPublishedCoordinate_probeFree
+      (chainValueCoordinate lay (treeIndexAt index lay) (leafIndexAt index lay)
+        chainIdx (encoding chainIdx))).bind fun values =>
+          (sequenceFin_probeFree _ fun level =>
+            revealLayerPathValue_probeFree index lay level).bind fun path =>
+              ProbeFree.pure (values, path)
+
+theorem maskedSignAfterDigest_probeFree (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    ProbeFree (maskedSignAfterDigest parameter ftsSecret randomness index leaves) := by
+  unfold maskedSignAfterDigest
+  exact (simulateQ_ordinaryHashImpl_probeFree
+    (ftsOpen parameter index leaves (ftsSecret index))).bind fun ftsPath =>
+      (sequenceFin_probeFree _ fun lay =>
+        maskedSignLayer_probeFree parameter ftsSecret index lay).bind fun layers => by
+          cases hparts : traverseOption layers with
+          | none => exact ProbeFree.pure none
+          | some parts =>
+              exact (sequenceFin_probeFree _ fun lay =>
+                revealLayerValues_probeFree index lay (parts lay).2).bind fun revealed =>
+                  ProbeFree.pure (some
+                    (show Signature from
+                    { randomness := randomness
+                      ftsSecret := fun tree => ftsSecret index tree (leaves (ftsIndexOf tree))
+                      ftsPath := ftsPath
+                      counter := fun lay => (parts lay).1
+                      chainValue := fun lay => (revealed lay).1
+                      authPath := flattenPaths fun lay => (revealed lay).2 }))
+
+theorem maskedSign_probeFree (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message) :
+    ProbeFree (maskedSign parameter root ftsSecret message) := by
+  unfold maskedSign
+  exact (simulateQ_ordinaryRomImpl_probeFree
+    (signDigestLoop digestAttemptLimit
+      ⟨parameter, root, fun _ _ _ _ => 0, ftsSecret⟩ message)).bind fun selected => by
+        cases selected with
+        | none => exact ProbeFree.pure none
+        | some data =>
+            exact maskedSignAfterDigest_probeFree parameter ftsSecret data.1 data.2.1 data.2.2
+
+theorem maskedSigningImpl_probeFree (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message) :
+    ProbeFree (maskedSigningImpl parameter root ftsSecret message) :=
+  maskedSign_probeFree parameter root ftsSecret message
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
