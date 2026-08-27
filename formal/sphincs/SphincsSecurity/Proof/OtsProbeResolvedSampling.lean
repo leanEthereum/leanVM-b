@@ -1671,6 +1671,70 @@ noncomputable def finalizeResolvedCoordinates
                   values := resolved.values }
                 table
 
+@[simp] theorem clearPending_complete_self
+    (state : LazyRevealProbe.State Coordinate) (coordinate : Coordinate)
+    (output : HashOutput) :
+    (state.clearPending coordinate).complete coordinate output =
+      state.complete coordinate output := by
+  rcases state with ⟨pending, values, revealed, ensured⟩
+  simp [LazyRevealProbe.State.clearPending, LazyRevealProbe.State.complete,
+    LazyRevealProbe.State.pendingAway]
+
+theorem finalizeResolvedCoordinates_cons_of_state_value
+    (coordinate : Coordinate) (remaining : List Coordinate)
+    (context : DeferredContext) (table : OtsSecretIndex → HashOutput)
+    (output : HashOutput) (hvalue : context.state.values coordinate = some output) :
+    finalizeResolvedCoordinates (coordinate :: remaining) context table =
+      finalizeResolvedCoordinates remaining
+        { context with state := context.state.clearPending coordinate } table := by
+  rw [finalizeResolvedCoordinates]
+  simp [hvalue]
+
+theorem finalizeResolvedCoordinates_cons_position_of_deferred_value
+    (position : Position) (remaining : List Coordinate)
+    (context : DeferredContext) (table : OtsSecretIndex → HashOutput)
+    (output : HashOutput)
+    (hstate : context.state.values (.position position) = none)
+    (hvalue : context.values position = some output) :
+    finalizeResolvedCoordinates (.position position :: remaining) context table =
+      if context.state.hitAt (.position position) output then
+        (pure none : ProbComp (Option DeferredContext))
+      else finalizeResolvedCoordinates remaining
+        { state := context.state.complete (.position position) output
+          values := context.values }
+        table := by
+  rw [finalizeResolvedCoordinates]
+  simp only [hstate]
+  rw [resolveDeferredPositionValue_of_deferred_value position context output hstate hvalue]
+  by_cases hhit : context.state.hitAt (.position position) output
+  · simp [hhit]
+  · simp only [hhit, ↓reduceIte, pure_bind]
+    rw [clearPending_complete_self]
+
+theorem finalizeResolvedCoordinates_cons_position_fresh
+    (position : Position) (remaining : List Coordinate)
+    (context : DeferredContext) (table : OtsSecretIndex → HashOutput)
+    (hstate : context.state.values (.position position) = none)
+    (hvalue : context.values position = none) :
+    finalizeResolvedCoordinates (.position position :: remaining) context table = (do
+      let output ← LazyRevealProbe.sampleHashOutput
+      (if context.state.hitAt (.position position) output then
+        (pure none : ProbComp (Option DeferredContext))
+      else finalizeResolvedCoordinates remaining
+        ({ state := context.state.complete (.position position) output
+           values := context.values.install position output } : DeferredContext)
+        table)) := by
+  rw [finalizeResolvedCoordinates]
+  simp only [hstate]
+  rw [resolveDeferredPositionValue_fresh position context hstate hvalue]
+  simp only [bind_assoc]
+  apply bind_congr
+  intro output
+  by_cases hhit : context.state.hitAt (.position position) output
+  · simp [hhit]
+  · simp only [hhit, ↓reduceIte, pure_bind]
+    rw [clearPending_complete_self]
+
 def DeferredFreshOn (coordinates : List Coordinate) (context : DeferredContext) : Prop :=
   ∀ position : Position, Coordinate.position position ∈ coordinates →
     context.values position = none
@@ -1686,15 +1750,6 @@ theorem resolveDeferredChainStart_of_missing
           values := context.values },
         table index⟩ := by
   simp [resolveDeferredChainStart, hmissing]
-
-@[simp] theorem clearPending_complete_self
-    (state : LazyRevealProbe.State Coordinate) (coordinate : Coordinate)
-    (output : HashOutput) :
-    (state.clearPending coordinate).complete coordinate output =
-      state.complete coordinate output := by
-  rcases state with ⟨pending, values, revealed, ensured⟩
-  simp [LazyRevealProbe.State.clearPending, LazyRevealProbe.State.complete,
-    LazyRevealProbe.State.pendingAway]
 
 theorem finalizeResolvedCoordinates_projects_to_clean
     (coordinates : List Coordinate) (context : DeferredContext)
@@ -1763,6 +1818,28 @@ theorem finalizeResolvedCoordinates_projects_to_clean
                     simp [DeferredStructuralValues.install, hne,
                       hfresh other (List.mem_cons_of_mem _ hmem)])
 
+theorem finalizeResolvedCoordinates_empty_projects_to_clean
+    (coordinates : List Coordinate) (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput) (hnodup : coordinates.Nodup) :
+    (fun result => result.map fun finalContext => (finalContext.state, table)) <$>
+        finalizeResolvedCoordinates coordinates
+          { state := state, values := emptyDeferredStructuralValues } table =
+      finalizeCleanFromTable coordinates state table := by
+  apply finalizeResolvedCoordinates_projects_to_clean coordinates
+    { state := state, values := emptyDeferredStructuralValues } table hnodup
+  intro position hmem
+  rfl
+
+theorem finalizeResolvedCoordinates_empty_finset_projects_to_clean
+    (coordinates : Finset Coordinate) (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput) :
+    (fun result => result.map fun finalContext => (finalContext.state, table)) <$>
+        finalizeResolvedCoordinates coordinates.toList
+          { state := state, values := emptyDeferredStructuralValues } table =
+      finalizeCleanFromTable coordinates.toList state table :=
+  finalizeResolvedCoordinates_empty_projects_to_clean coordinates.toList state table
+    coordinates.nodup_toList
+
 noncomputable def finishResolvedRun :
     Option (ResolvedRunResult alpha) → ProbComp (Option (ResolvedRunResult alpha))
   | none => pure none
@@ -1772,5 +1849,26 @@ noncomputable def finishResolvedRun :
       match finalized with
       | none => pure none
       | some context => pure (some ⟨context, result.remaining, result.value, result.table⟩)
+
+def projectResolvedRunResult :
+    Option (ResolvedRunResult alpha) → Option (CleanRunResult alpha)
+  | none => none
+  | some result => some ⟨result.context.state, result.remaining, result.value, result.table⟩
+
+theorem finishResolvedRun_empty_projects_to_clean
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (value : alpha) (table : OtsSecretIndex → HashOutput) :
+    projectResolvedRunResult <$>
+        finishResolvedRun (some ⟨
+          { state := state, values := emptyDeferredStructuralValues },
+          fuel, value, table⟩) =
+      finishCleanRunFromTable (some ⟨state, fuel, value, table⟩) := by
+  simp only [finishResolvedRun, finishCleanRunFromTable]
+  rw [← finalizeResolvedCoordinates_empty_finset_projects_to_clean
+    state.coordinates state table]
+  simp only [map_eq_bind_pure_comp, bind_assoc]
+  apply bind_congr
+  intro finalized
+  cases finalized <;> simp [projectResolvedRunResult]
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
