@@ -139,6 +139,7 @@ import SphincsSecurity.Proof.OtsProbeRealization
 import SphincsSecurity.Proof.OtsProbeRetained
 import SphincsSecurity.Proof.OtsProbeOrigin
 import SphincsSecurity.Proof.OtsProbeTerminal
+import SphincsSecurity.Proof.OtsProbeSampling
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
