@@ -980,6 +980,18 @@ theorem runRaw_peekCoordinate_of_value
   rw [LazyRevealProbe.peekQuery, LazyRevealProbe.runRaw_peek_query_bind]
   simp [hvalue, LazyRevealProbe.runRaw]
 
+theorem runRaw_peekCoordinate_of_none
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
+    (fuel : Nat) (coordinate : Coordinate)
+    (hvalue : state.values coordinate = none) :
+    LazyRevealProbe.runRaw state fuel ((peekCoordinate coordinate).run cache) =
+      pure (.done state fuel (none, cache)) := by
+  change LazyRevealProbe.runRaw state fuel
+      (LazyRevealProbe.peekQuery coordinate >>= fun value =>
+        pure (truncateHash <$> value, cache)) = _
+  rw [LazyRevealProbe.peekQuery, LazyRevealProbe.runRaw_peek_query_bind]
+  simp [hvalue, LazyRevealProbe.runRaw]
+
 theorem mem_runRaw_peekPositionValues_of_values
     (table : Coordinate → HashOutput) (state : LazyRevealProbe.State Coordinate)
     (cache : SplitHashCache) (fuel : Nat) : ∀ positions : List Position,
@@ -1022,6 +1034,75 @@ theorem runRaw_peekPositionValues_of_values
           (fun other hother => hvalues other (by simp [hother]))]
       simp [LazyRevealProbe.runRaw, tableValue]
 
+theorem runRaw_peekPositionValues_of_prefix_values_of_missing
+    (table : Coordinate → HashOutput) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache) (fuel : Nat) (prior remaining : List Position)
+    (position : Position)
+    (hvalues : ∀ other, other ∈ prior →
+      state.values (.position other) = some (table (.position other)))
+    (hmissing : state.values (.position position) = none) :
+    LazyRevealProbe.runRaw state fuel
+        ((peekPositionValues (prior ++ position :: remaining)).run cache) =
+      pure (.done state fuel (none, cache)) := by
+  induction prior with
+  | nil =>
+      rw [List.nil_append, peekPositionValues, StateT.run_bind,
+        LazyRevealProbe.runRaw_bind,
+        runRaw_peekCoordinate_of_none state cache fuel (.position position) hmissing,
+        pure_bind]
+      simp [LazyRevealProbe.runRaw]
+  | cons head tail ih =>
+      rw [List.cons_append, peekPositionValues, StateT.run_bind,
+        LazyRevealProbe.runRaw_bind,
+        runRaw_peekCoordinate_of_value state cache fuel (.position head)
+          (table (.position head)) (hvalues head (by simp))]
+      simp only [pure_bind]
+      rw [StateT.run_bind, LazyRevealProbe.runRaw_bind,
+        ih (fun other hother => hvalues other (by simp [hother])), pure_bind]
+      simp [LazyRevealProbe.runRaw]
+
+theorem positionValues_or_first_missing
+    (table : Coordinate → HashOutput) (state : LazyRevealProbe.State Coordinate)
+    (positions : List Position)
+    (htable : ∀ position output,
+      state.values (.position position) = some output →
+        output = table (.position position)) :
+    (∀ position, position ∈ positions →
+      state.values (.position position) = some (table (.position position))) ∨
+      ∃ prior position remaining,
+        positions = prior ++ position :: remaining ∧
+        (∀ other, other ∈ prior →
+          state.values (.position other) = some (table (.position other))) ∧
+        state.values (.position position) = none := by
+  induction positions with
+  | nil =>
+      left
+      simp
+  | cons head tail ih =>
+      cases hvalue : state.values (.position head) with
+      | none =>
+          right
+          exact ⟨[], head, tail, by simp, by simp, hvalue⟩
+      | some output =>
+          have hhead : state.values (.position head) =
+              some (table (.position head)) := by
+            rw [hvalue, htable head output hvalue]
+          rcases ih with htail | ⟨prior, position, remaining, htail, hprior, hmissing⟩
+          · left
+            intro position hposition
+            simp only [List.mem_cons] at hposition
+            rcases hposition with rfl | hposition
+            · exact hhead
+            · exact htail position hposition
+          · right
+            exact ⟨head :: prior, position, remaining, by simp [htail],
+              fun other hother => by
+                simp only [List.mem_cons] at hother
+                rcases hother with rfl | hother
+                · exact hhead
+                · exact hprior other hother,
+              hmissing⟩
+
 def TableInputAvailable (table : Coordinate → HashOutput)
     (state : LazyRevealProbe.State Coordinate) : Coordinate → Prop
   | .chainStart _ _ _ _ => False
@@ -1035,6 +1116,44 @@ def TableInputAvailable (table : Coordinate → HashOutput)
   | .position position =>
       ∀ child, child ∈ position.children →
         state.values (.position child) = some (table (.position child))
+
+theorem slotDigest_tableInput_node_child
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (level : Fin maxLayerHeight)
+    (nodeIdx : LeafIndex) (child : Position)
+    (hchild : child ∈ (Position.node lay tree level nodeIdx).children) :
+    slotDigest ((Position.node lay tree level nodeIdx).children.idxOf child)
+        (tableInput parameter table
+          (.position (.node lay tree level nodeIdx))) =
+      truncateHash (table (.position child)) := by
+  let children := (Position.node lay tree level nodeIdx).children
+  have hidx : children.idxOf child < children.length :=
+    List.idxOf_lt_length_iff.mpr hchild
+  change slotDigest (children.idxOf child)
+      (tweakableHashInput parameter (Position.node lay tree level nodeIdx).domain
+        ((children.map (tableValue table)).flatMap digestBytes)) = _
+  rw [slotDigest_flatMap parameter (Position.node lay tree level nodeIdx).domain
+    (children.map (tableValue table)) (children.idxOf child) (by simpa using hidx)]
+  simp [List.getElem_idxOf hidx, tableValue]
+
+theorem slotDigest_tableInput_node_getElem
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (level : Fin maxLayerHeight)
+    (nodeIdx : LeafIndex) (slot : Nat)
+    (hslot : slot < (Position.node lay tree level nodeIdx).children.length) :
+    slotDigest slot
+        (tableInput parameter table
+          (.position (.node lay tree level nodeIdx))) =
+      truncateHash (table (.position
+        (Position.node lay tree level nodeIdx).children[slot])) := by
+  change slotDigest slot
+      (tweakableHashInput parameter (Position.node lay tree level nodeIdx).domain
+        ((((Position.node lay tree level nodeIdx).children.map
+          (tableValue table))).flatMap digestBytes)) = _
+  rw [slotDigest_flatMap parameter (Position.node lay tree level nodeIdx).domain
+    ((Position.node lay tree level nodeIdx).children.map (tableValue table)) slot
+      (by simpa using hslot)]
+  simp [tableValue]
 
 theorem TableInputAvailable.monoValues
     {table : Coordinate → HashOutput}
@@ -1080,6 +1199,77 @@ theorem runRaw_probeFirstMissingInputCoordinate_of_values
       simp only [pure_bind]
       exact runRaw_probeFirstMissingInputCoordinate_of_values table input state cache fuel
         (slot + 1) remaining (fun other hother => hvalues other (by simp [hother]))
+
+set_option maxRecDepth 10000 in
+theorem runRaw_probeFirstMissingInputCoordinate_of_prefix_values_of_missing
+    (table : Coordinate → HashOutput) (input : HashInput)
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
+    (fuel slot : Nat) (prior remaining : List Coordinate) (coordinate : Coordinate)
+    (hvalues : ∀ other, other ∈ prior →
+      state.values other = some (table other))
+    (hmissing : state.values coordinate = none)
+    (hnotRevealed : coordinate ∉ state.revealed) :
+    LazyRevealProbe.runRaw state (fuel + 1)
+        ((probeFirstMissingInputCoordinate input slot
+          (prior ++ coordinate :: remaining)).run cache) =
+      pure (.done
+        (state.addPending coordinate (slotDigest (slot + prior.length) input)) fuel
+        ((), cache)) := by
+  induction prior generalizing slot with
+  | nil =>
+      rw [List.nil_append, probeFirstMissingInputCoordinate, StateT.run_bind,
+        LazyRevealProbe.runRaw_bind,
+        runRaw_peekCoordinate_of_none state cache (fuel + 1) coordinate hmissing,
+        pure_bind]
+      change LazyRevealProbe.runRaw state (fuel + 1)
+          (LazyRevealProbe.probeQuery coordinate (slotDigest slot input) >>= fun result =>
+            pure (result, cache)) = _
+      rw [LazyRevealProbe.probeQuery, LazyRevealProbe.runRaw_probe_query_bind,
+        show fuel + 1 = Nat.succ fuel by omega]
+      simp [hnotRevealed, LazyRevealProbe.runRaw]
+  | cons head tail ih =>
+      rw [List.cons_append, probeFirstMissingInputCoordinate, StateT.run_bind,
+        LazyRevealProbe.runRaw_bind,
+        runRaw_peekCoordinate_of_value state cache (fuel + 1) head (table head)
+          (hvalues head (by simp))]
+      simp only [pure_bind]
+      have htailValues : ∀ other, other ∈ tail →
+          state.values other = some (table other) := by
+        intro other hother
+        exact hvalues other (by simp [hother])
+      rw [ih (slot + 1) htailValues]
+      congr 4
+      simp only [List.length_cons]
+      omega
+
+set_option maxRecDepth 10000 in
+theorem runRaw_probeFirstMissingInputCoordinate_zero_of_prefix_values_of_missing
+    (table : Coordinate → HashOutput) (input : HashInput)
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
+    (slot : Nat) (prior remaining : List Coordinate) (coordinate : Coordinate)
+    (hvalues : ∀ other, other ∈ prior →
+      state.values other = some (table other))
+    (hmissing : state.values coordinate = none) :
+    LazyRevealProbe.runRaw state 0
+        ((probeFirstMissingInputCoordinate input slot
+          (prior ++ coordinate :: remaining)).run cache) =
+      pure (.stopped false) := by
+  induction prior generalizing slot with
+  | nil =>
+      rw [List.nil_append, probeFirstMissingInputCoordinate, StateT.run_bind,
+        LazyRevealProbe.runRaw_bind,
+        runRaw_peekCoordinate_of_none state cache 0 coordinate hmissing, pure_bind]
+      change LazyRevealProbe.runRaw state 0
+          (LazyRevealProbe.probeQuery coordinate (slotDigest slot input) >>= fun result =>
+            pure (result, cache)) = _
+      rw [LazyRevealProbe.probeQuery, LazyRevealProbe.runRaw_probe_query_bind]
+  | cons head tail ih =>
+      rw [List.cons_append, probeFirstMissingInputCoordinate, StateT.run_bind,
+        LazyRevealProbe.runRaw_bind,
+        runRaw_peekCoordinate_of_value state cache 0 head (table head)
+          (hvalues head (by simp))]
+      simp only [pure_bind]
+      exact ih (slot + 1) (fun other hother => hvalues other (by simp [hother]))
 
 theorem runRaw_peekTableInput_of_available
     (parameter : PublicParameter) (table : Coordinate → HashOutput)
@@ -1131,6 +1321,112 @@ theorem runRaw_peekTableInput_of_available
             StateT.run_bind, LazyRevealProbe.runRaw_bind,
             runRaw_peekPositionValues_of_values table state cache fuel _ havailable]
           simp [LazyRevealProbe.runRaw, tableInput, tablePayload]
+
+theorem runRaw_peekTableInput_node_of_prefix_values_of_missing
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (level : Fin maxLayerHeight)
+    (nodeIdx : LeafIndex) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache) (fuel : Nat) (prior remaining : List Position)
+    (child : Position)
+    (hchildren : (Position.node lay tree level nodeIdx).children =
+      prior ++ child :: remaining)
+    (hvalues : ∀ other, other ∈ prior →
+      state.values (.position other) = some (table (.position other)))
+    (hmissing : state.values (.position child) = none) :
+    LazyRevealProbe.runRaw state fuel
+        ((peekTableInput parameter
+          (.position (.node lay tree level nodeIdx))).run cache) =
+      pure (.done state fuel (none, cache)) := by
+  rw [peekTableInput.eq_3 parameter (.node lay tree level nodeIdx) (by simp),
+    hchildren, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+    runRaw_peekPositionValues_of_prefix_values_of_missing table state cache fuel prior
+      remaining child hvalues hmissing, pure_bind]
+  simp [LazyRevealProbe.runRaw]
+
+set_option maxRecDepth 10000 in
+theorem probingHashQuery_node_pending_of_prefix_values_of_missing
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (level : Fin maxLayerHeight)
+    (nodeIdx : LeafIndex) (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remainingFuel : Nat)
+    (prior remaining : List Position) (child : Position) (output : HashOutput)
+    (hchildren : (Position.node lay tree level nodeIdx).children =
+      prior ++ child :: remaining)
+    (hvalues : ∀ other, other ∈ prior →
+      state.values (.position other) = some (table (.position other)))
+    (hmissing : state.values (.position child) = none)
+    (hnotRevealed : .position child ∉ state.revealed)
+    (hresult : LazyRevealProbe.RawResult.done finalState remainingFuel
+        (output, finalCache) ∈ support
+      (LazyRevealProbe.runRaw state (fuel + 1)
+        ((probingHashQuery parameter
+          (tableInput parameter table
+            (.position (.node lay tree level nodeIdx)))).run cache))) :
+    finalState = state.addPending (.position child)
+        (truncateHash (table (.position child))) ∧
+      remainingFuel = fuel := by
+  let position : Position := .node lay tree level nodeIdx
+  let input := tableInput parameter table (.position position)
+  have hposition : decodePosition? parameter input = some position :=
+    (decodePosition?_eq_some_iff parameter input position).2
+      ⟨tablePayload table position, rfl⟩
+  have hprobe : decodeProbe? parameter input = none := by
+    apply decodeProbe?_tweakableHashInput_of_not_chain_leaf parameter position.domain
+      (tablePayload table position) position.domain_inRange
+    · intro otherLay otherTree otherLeaf otherChain otherStep heq
+      simp [position, Position.domain] at heq
+    · intro otherLay otherTree otherLeaf heq
+      simp [position, Position.domain] at heq
+  let priorCoordinates := prior.map Coordinate.position
+  let remainingCoordinates := remaining.map Coordinate.position
+  have hcoordinates : position.children.map Coordinate.position =
+      priorCoordinates ++ .position child :: remainingCoordinates := by
+    simp only [position, hchildren, priorCoordinates, remainingCoordinates, List.map_append,
+      List.map_cons]
+  have hcoordinateValues : ∀ coordinate, coordinate ∈ priorCoordinates →
+      state.values coordinate = some (table coordinate) := by
+    intro coordinate hcoordinate
+    obtain ⟨other, hother, rfl⟩ := List.mem_map.1 hcoordinate
+    exact hvalues other hother
+  have hslot : prior.length < position.children.length := by
+    simp [position, hchildren]
+  have hcandidate : slotDigest prior.length input =
+      truncateHash (table (.position child)) := by
+    have hread := slotDigest_tableInput_node_getElem parameter table lay tree level nodeIdx
+      prior.length (by simpa [position] using hslot)
+    have hget : position.children[prior.length] = child := by
+      simp [position, hchildren]
+    simpa [input, position, hget] using hread
+  have hscan :=
+    runRaw_probeFirstMissingInputCoordinate_of_prefix_values_of_missing table input state cache
+      fuel 0 priorCoordinates remainingCoordinates (.position child) hcoordinateValues hmissing
+        hnotRevealed
+  have hcandidateCoordinates : slotDigest (0 + priorCoordinates.length) input =
+      truncateHash (table (.position child)) := by
+    simpa [priorCoordinates] using hcandidate
+  rw [hcandidateCoordinates] at hscan
+  change LazyRevealProbe.RawResult.done finalState remainingFuel (output, finalCache) ∈ support
+    (LazyRevealProbe.runRaw state (fuel + 1)
+      ((probingHashQuery parameter input).run cache)) at hresult
+  unfold probingHashQuery at hresult
+  rw [hprobe, hposition] at hresult
+  simp only [position] at hresult
+  rw [hcoordinates, StateT.run_bind, LazyRevealProbe.runRaw_bind, hscan, pure_bind] at hresult
+  let probeState := state.addPending (.position child)
+    (truncateHash (table (.position child)))
+  have hpeek := runRaw_peekTableInput_node_of_prefix_values_of_missing parameter table lay tree
+    level nodeIdx probeState cache fuel prior remaining child hchildren (by
+      intro other hother
+      simpa [probeState, LazyRevealProbe.State.addPending] using hvalues other hother) (by
+        simpa [probeState, LazyRevealProbe.State.addPending] using hmissing)
+  change LazyRevealProbe.RawResult.done finalState remainingFuel (output, finalCache) ∈ support
+    (LazyRevealProbe.runRaw probeState fuel
+      ((resolveKnownInput parameter (.position position) input).run cache)) at hresult
+  unfold resolveKnownInput at hresult
+  rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, hpeek, pure_bind] at hresult
+  have hprojection := mem_runRaw_splitHashQuery_ordinary_projects input probeState finalState
+    cache finalCache fuel remainingFuel output hresult
+  exact ⟨hprojection.1, hprojection.2.1⟩
 
 theorem mem_runRaw_revealCoordinateOutput_value
     (coordinate : Coordinate) (state finalState : LazyRevealProbe.State Coordinate)
@@ -5314,6 +5610,46 @@ theorem ordinaryCacheQuerying_resolveKnownInput
       · rw [if_neg hexact]
         exact ordinaryCacheQuerying_splitHashQuery input
 
+theorem ordinaryCacheQuerying_probingHashQuery
+    (parameter : PublicParameter) (input : HashInput) :
+    OrdinaryCacheQuerying input (probingHashQuery parameter input) := by
+  unfold probingHashQuery
+  cases hprobe : decodeProbe? parameter input with
+  | some candidate =>
+      exact (OrdinaryCachePreserving.of_splitCachePreserving
+        (splitCachePreserving_probe candidate)).bind_querying fun _ =>
+          ordinaryCacheQuerying_resolveKnownInput parameter candidate.outputCoordinate input
+  | none =>
+      cases hposition : decodePosition? parameter input with
+      | none => exact ordinaryCacheQuerying_splitHashQuery input
+      | some position =>
+          cases position with
+          | chain lay tree leafIdx chainIdx step =>
+              exact ordinaryCacheQuerying_resolveKnownInput parameter
+                (.position (.chain lay tree leafIdx chainIdx step)) input
+          | leaf lay tree leafIdx =>
+              exact ordinaryCacheQuerying_resolveKnownInput parameter
+                (.position (.leaf lay tree leafIdx)) input
+          | node lay tree level nodeIdx =>
+              exact (OrdinaryCachePreserving.of_splitCachePreserving
+                (splitCachePreserving_probeFirstMissingInputCoordinate input 0
+                  ((Position.node lay tree level nodeIdx).children.map
+                    Coordinate.position))).bind_querying fun _ =>
+                      ordinaryCacheQuerying_resolveKnownInput parameter
+                        (.position (.node lay tree level nodeIdx)) input
+          | ftsLeaf | ftsNode | ftsRoots => exact ordinaryCacheQuerying_splitHashQuery input
+
+theorem ordinaryQueryCache_eq_cacheQuery_of_mem_runRaw_probingHashImpl
+    (parameter : PublicParameter) (input : HashInput)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (output : HashOutput)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (output, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((probingHashImpl parameter input).run cache))) :
+    ordinaryQueryCache finalCache = (ordinaryQueryCache cache).cacheQuery input output := by
+  exact ordinaryCacheQuerying_probingHashQuery parameter input state cache fuel finalState
+    remaining output finalCache hresult
+
 theorem ordinaryCacheQuerying_resolveVerifierInput
     (parameter : PublicParameter) (coordinate : Coordinate) (input : HashInput) :
     OrdinaryCacheQuerying input (resolveVerifierInput parameter coordinate input) := by
@@ -5619,6 +5955,90 @@ theorem probingHashQuery_returns_table_of_available
             (.position (.node lay tree level nodeIdx)) state finalState cache finalCache fuel
               remaining output havailable htable hresult
       | ftsLeaf | ftsNode | ftsRoots => simp [IsOtsPosition] at hots
+
+set_option maxRecDepth 10000 in
+theorem probingHashQuery_node_returns_table_or_pending
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (level : Fin maxLayerHeight)
+    (nodeIdx : LeafIndex) (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remainingFuel : Nat)
+    (output : HashOutput)
+    (hstateTable : ∀ position cached,
+      state.values (.position position) = some cached →
+        cached = table (.position position))
+    (hfinalTable : ∀ coordinate cached,
+      finalState.values coordinate = some cached → cached = table coordinate)
+    (hrevealed : ∀ coordinate, coordinate ∈ state.revealed →
+      state.values coordinate ≠ none)
+    (hresult : LazyRevealProbe.RawResult.done finalState remainingFuel
+        (output, finalCache) ∈ support
+      (LazyRevealProbe.runRaw state fuel
+        ((probingHashQuery parameter
+          (tableInput parameter table
+            (.position (.node lay tree level nodeIdx)))).run cache))) :
+    output = table (.position (.node lay tree level nodeIdx)) ∨
+      ∃ child : Position,
+        finalState.values (.position child) = none ∧
+          finalState.hitAt (.position child) (table (.position child)) := by
+  let position : Position := .node lay tree level nodeIdx
+  let input := tableInput parameter table (.position position)
+  rcases positionValues_or_first_missing table state position.children hstateTable with
+      havailable | ⟨prior, child, remaining, hchildren, hprior, hmissing⟩
+  · left
+    exact (probingHashQuery_returns_table_of_available parameter table position (by trivial)
+      state finalState cache finalCache fuel remainingFuel output (by
+        intro child hchild
+        exact havailable child hchild) hfinalTable (by simpa [input, position] using hresult)).1
+  · have hnotRevealed : .position child ∉ state.revealed := by
+      intro hchild
+      exact (hrevealed (.position child) hchild) hmissing
+    cases fuel with
+    | zero =>
+        have hposition : decodePosition? parameter input = some position :=
+          (decodePosition?_eq_some_iff parameter input position).2
+            ⟨tablePayload table position, rfl⟩
+        have hprobe : decodeProbe? parameter input = none := by
+          apply decodeProbe?_tweakableHashInput_of_not_chain_leaf parameter position.domain
+            (tablePayload table position) position.domain_inRange
+          · intro otherLay otherTree otherLeaf otherChain otherStep heq
+            simp [position, Position.domain] at heq
+          · intro otherLay otherTree otherLeaf heq
+            simp [position, Position.domain] at heq
+        let priorCoordinates := prior.map Coordinate.position
+        let remainingCoordinates := remaining.map Coordinate.position
+        have hcoordinates : position.children.map Coordinate.position =
+            priorCoordinates ++ .position child :: remainingCoordinates := by
+          simp only [hchildren, priorCoordinates, remainingCoordinates, List.map_append,
+            List.map_cons]
+        have hcoordinateValues : ∀ coordinate, coordinate ∈ priorCoordinates →
+            state.values coordinate = some (table coordinate) := by
+          intro coordinate hcoordinate
+          obtain ⟨other, hother, rfl⟩ := List.mem_map.1 hcoordinate
+          exact hprior other hother
+        have hscan :=
+          runRaw_probeFirstMissingInputCoordinate_zero_of_prefix_values_of_missing table input
+            state cache 0 priorCoordinates remainingCoordinates (.position child)
+              hcoordinateValues hmissing
+        change LazyRevealProbe.RawResult.done finalState remainingFuel (output, finalCache) ∈
+          support (LazyRevealProbe.runRaw state 0
+            ((probingHashQuery parameter input).run cache)) at hresult
+        unfold probingHashQuery at hresult
+        rw [hprobe, hposition] at hresult
+        simp only [position] at hresult
+        rw [hcoordinates, StateT.run_bind, LazyRevealProbe.runRaw_bind, hscan] at hresult
+        simp at hresult
+    | succ fuel =>
+        have hpending := probingHashQuery_node_pending_of_prefix_values_of_missing parameter table
+          lay tree level nodeIdx state finalState cache finalCache fuel remainingFuel prior
+            remaining child output hchildren hprior hmissing hnotRevealed (by
+              simpa [input, position, Nat.succ_eq_add_one] using hresult)
+        right
+        refine ⟨child, ?_, ?_⟩
+        · rw [hpending.1]
+          simpa [LazyRevealProbe.State.addPending] using hmissing
+        · rw [hpending.1, LazyRevealProbe.State.hitAt]
+          exact LazyRevealProbe.State.pendingAt_addPending_self state (.position child)
+            (truncateHash (table (.position child)))
 theorem simulateQ_probingHashImpl_tweakableHash_eq_ordinaryHashImpl
     (parameter : PublicParameter) (domain : HashDomain) (payload : HashInput)
     (hinRange : domain.InRange)
