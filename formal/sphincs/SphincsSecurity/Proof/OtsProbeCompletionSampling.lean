@@ -180,4 +180,67 @@ theorem probEvent_sampledActualRetainedOtsHashTable_eq_secrets
     rw [hrelation.1, hrelation.2]
     exact hevent
 
+noncomputable def hashOutputOfDigest (digest : Digest) : HashOutput :=
+  (splitHashOutputEquiv digestBits (by decide)).symm (digest, 0)
+
+@[simp] theorem truncateHash_hashOutputOfDigest (digest : Digest) :
+    truncateHash (hashOutputOfDigest digest) = digest := by
+  change (splitHashOutput digestBits
+    ((splitHashOutputEquiv digestBits (by decide)).symm (digest, 0))).1 = digest
+  rw [show splitHashOutput digestBits = splitHashOutputEquiv digestBits (by decide) from rfl,
+    Equiv.apply_symm_apply]
+
+noncomputable def tableOfOtsSecret
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest) :
+    Coordinate → HashOutput :=
+  extendStartTable fun index => hashOutputOfDigest (otsSecretTableEquiv otsSecret index)
+
+@[simp] theorem tableOtsSecret_tableOfOtsSecret
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest) :
+    tableOtsSecret (tableOfOtsSecret otsSecret) = otsSecret := by
+  rw [tableOfOtsSecret, tableOtsSecret_extendStartTable]
+  simp
+
+theorem winningRetainedVerifyProbe_congr_tableOtsSecret
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (left right : Coordinate → HashOutput)
+    (hsecret : tableOtsSecret left = tableOtsSecret right)
+    (result : RetainedGameResult × QueryCache HashSpec) :
+    WinningRetainedVerifyProbeWitness parameter left ftsSecret result ↔
+      WinningRetainedVerifyProbeWitness parameter right ftsSecret result := by
+  unfold WinningRetainedVerifyProbeWitness WinningRetainedWitnessFor
+  rw [hsecret]
+
+def WinningRetainedVerifyProbeAfterOtsSecret
+    (parameter : PublicParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (result : RetainedGameResult × QueryCache HashSpec) : Prop :=
+  WinningRetainedVerifyProbeWitness parameter (tableOfOtsSecret otsSecret) ftsSecret result
+
+theorem probEvent_sampledWinningRetainedVerifyProbe_eq_secrets
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    Pr[fun result => WinningRetainedVerifyProbeWitness parameter
+        (extendStartTable result.1) ftsSecret result.2 |
+      sampledActualRetainedOtsHashTable adversary parameter ftsSecret] =
+    Pr[fun result => WinningRetainedVerifyProbeAfterOtsSecret parameter result.1
+        ftsSecret result.2 |
+      sampledActualRetainedOtsSecrets adversary parameter ftsSecret] := by
+  let toSecret := fun table : OtsSecretIndex → HashOutput =>
+    otsSecretTableEquiv.symm (fun index => truncateHash (table index))
+  calc
+    _ = Pr[fun result => WinningRetainedVerifyProbeAfterOtsSecret parameter
+          (toSecret result.1) ftsSecret result.2 |
+        sampledActualRetainedOtsHashTable adversary parameter ftsSecret] := by
+      apply OracleComp.probEvent_congr' fun result _ =>
+        winningRetainedVerifyProbe_congr_tableOtsSecret parameter ftsSecret
+          (extendStartTable result.1) (tableOfOtsSecret (toSecret result.1))
+          (by simp [toSecret]) result.2
+      rfl
+    _ = _ := probEvent_sampledActualRetainedOtsHashTable_eq_secrets adversary parameter
+      ftsSecret (fun otsSecret result =>
+        WinningRetainedVerifyProbeAfterOtsSecret parameter otsSecret ftsSecret result)
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
