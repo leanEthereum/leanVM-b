@@ -128,6 +128,387 @@ theorem mergedCache_extendTable_agreesWith_tableAnswer
   apply mergedCache_agreesWith_tableAnswer
   exact completedSplitHashCache_extendTable_consistent state cache base hconsistent
 
+noncomputable def realizedOtsSecret
+    (chainStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput) :
+    Layer → TreeIndex → LeafIndex → ChainIndex → Digest :=
+  fun lay tree leafIdx chainIdx => truncateHash (chainStarts lay tree leafIdx chainIdx)
+
+noncomputable def realizedTable
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
+    (chainStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput) :
+    Coordinate → HashOutput
+  | .chainStart lay tree leafIdx chainIdx => chainStarts lay tree leafIdx chainIdx
+  | .position position =>
+      f (honestInput f parameter (realizedOtsSecret chainStarts) (fun _ _ _ => 0) position)
+
+theorem tableInput_realizedTable
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
+    (chainStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (position : Position) (hots : IsOtsPosition position) (hvalid : position.Valid) :
+    f (tableInput parameter (realizedTable f parameter chainStarts) (.position position)) =
+      realizedTable f parameter chainStarts (.position position) := by
+  let table := realizedTable f parameter chainStarts
+  let otsSecret := realizedOtsSecret chainStarts
+  let ftsSecret : Index → FtsTree → FtsLeaf → Digest := fun _ _ _ => 0
+  have hvalue (child : Position) :
+      tableValue table child = honestValue f parameter otsSecret ftsSecret child := by
+    simp [tableValue, table, realizedTable, honestValue, otsSecret, ftsSecret]
+  have hpayload :
+      tablePayload table position = honestPayload f parameter otsSecret ftsSecret position := by
+    cases position with
+    | chain lay tree leafIdx chainIdx step =>
+        by_cases hstep : step.val = 0
+        · simp [tablePayload, hstep, honestPayload, Concrete.honestChain_zero, table,
+            realizedTable, otsSecret, realizedOtsSecret]
+        · rw [tablePayload, if_neg hstep]
+          rw [honestPayload_eq_slots (f := f) (parameter := parameter)
+            (otsSecret := otsSecret) (ftsSecret := ftsSecret) hvalid]
+          simp only [slots, hstep, if_false, childValues]
+          rfl
+    | leaf | node =>
+        rw [honestPayload_eq_slots (f := f) (parameter := parameter)
+          (otsSecret := otsSecret) (ftsSecret := ftsSecret) hvalid]
+        simp only [tablePayload, slots, childValues]
+        rfl
+    | ftsLeaf | ftsNode | ftsRoots => simp [IsOtsPosition] at hots
+  change f (tweakableHashInput parameter position.domain (tablePayload table position)) =
+    f (honestInput f parameter otsSecret ftsSecret position)
+  rw [hpayload]
+  rfl
+
+theorem mem_runRaw_peekCoordinate_of_value
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
+    (fuel : Nat) (coordinate : Coordinate) (output : HashOutput)
+    (hvalue : state.values coordinate = some output) :
+    LazyRevealProbe.RawResult.done state fuel
+        (some (truncateHash output), cache) ∈ support
+      (LazyRevealProbe.runRaw state fuel ((peekCoordinate coordinate).run cache)) := by
+  change LazyRevealProbe.RawResult.done state fuel
+      (some (truncateHash output), cache) ∈ support
+    (LazyRevealProbe.runRaw state fuel
+      (LazyRevealProbe.peekQuery coordinate >>= fun value =>
+        pure (truncateHash <$> value, cache)))
+  rw [LazyRevealProbe.peekQuery, LazyRevealProbe.runRaw_peek_query_bind]
+  simp [hvalue, LazyRevealProbe.runRaw]
+
+theorem runRaw_peekCoordinate_of_value
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
+    (fuel : Nat) (coordinate : Coordinate) (output : HashOutput)
+    (hvalue : state.values coordinate = some output) :
+    LazyRevealProbe.runRaw state fuel ((peekCoordinate coordinate).run cache) =
+      pure (.done state fuel (some (truncateHash output), cache)) := by
+  change LazyRevealProbe.runRaw state fuel
+      (LazyRevealProbe.peekQuery coordinate >>= fun value =>
+        pure (truncateHash <$> value, cache)) = _
+  rw [LazyRevealProbe.peekQuery, LazyRevealProbe.runRaw_peek_query_bind]
+  simp [hvalue, LazyRevealProbe.runRaw]
+
+theorem mem_runRaw_peekPositionValues_of_values
+    (table : Coordinate → HashOutput) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache) (fuel : Nat) : ∀ positions : List Position,
+    (∀ position, position ∈ positions →
+      state.values (.position position) = some (table (.position position))) →
+    LazyRevealProbe.RawResult.done state fuel
+        (some (positions.map (tableValue table)), cache) ∈ support
+      (LazyRevealProbe.runRaw state fuel ((peekPositionValues positions).run cache))
+  | [], _ => by simp [peekPositionValues, LazyRevealProbe.runRaw]
+  | position :: remaining, hvalues => by
+      rw [peekPositionValues, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+        mem_support_bind_iff]
+      refine ⟨.done state fuel
+        (some (tableValue table position), cache), ?_, ?_⟩
+      · exact mem_runRaw_peekCoordinate_of_value state cache fuel (.position position)
+          (table (.position position)) (hvalues position (by simp))
+      · simp only
+        rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff]
+        refine ⟨.done state fuel
+          (some (remaining.map (tableValue table)), cache), ?_, ?_⟩
+        · exact mem_runRaw_peekPositionValues_of_values table state cache fuel remaining
+            (fun other hother => hvalues other (by simp [hother]))
+        · simp [LazyRevealProbe.runRaw]
+
+theorem runRaw_peekPositionValues_of_values
+    (table : Coordinate → HashOutput) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache) (fuel : Nat) : ∀ positions : List Position,
+    (∀ position, position ∈ positions →
+      state.values (.position position) = some (table (.position position))) →
+    LazyRevealProbe.runRaw state fuel ((peekPositionValues positions).run cache) =
+      pure (.done state fuel (some (positions.map (tableValue table)), cache))
+  | [], _ => by simp [peekPositionValues, LazyRevealProbe.runRaw]
+  | position :: remaining, hvalues => by
+      rw [peekPositionValues, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+        runRaw_peekCoordinate_of_value state cache fuel (.position position)
+          (table (.position position)) (hvalues position (by simp))]
+      simp only [pure_bind]
+      rw [StateT.run_bind, LazyRevealProbe.runRaw_bind,
+        runRaw_peekPositionValues_of_values table state cache fuel remaining
+          (fun other hother => hvalues other (by simp [hother]))]
+      simp [LazyRevealProbe.runRaw, tableValue]
+
+def TableInputAvailable (table : Coordinate → HashOutput)
+    (state : LazyRevealProbe.State Coordinate) : Coordinate → Prop
+  | .chainStart _ _ _ _ => False
+  | .position position@(.chain lay tree leafIdx chainIdx step) =>
+      if step.val = 0 then
+        state.values (.chainStart lay tree leafIdx chainIdx) =
+          some (table (.chainStart lay tree leafIdx chainIdx))
+      else
+        ∀ child, child ∈ position.children →
+          state.values (.position child) = some (table (.position child))
+  | .position position =>
+      ∀ child, child ∈ position.children →
+        state.values (.position child) = some (table (.position child))
+
+theorem TableInputAvailable.monoValues
+    {table : Coordinate → HashOutput}
+    {state finalState : LazyRevealProbe.State Coordinate} {coordinate : Coordinate}
+    (havailable : TableInputAvailable table state coordinate)
+    (hle : LazyRevealProbe.ValuesLE state finalState) :
+    TableInputAvailable table finalState coordinate := by
+  cases coordinate with
+  | chainStart lay tree leafIdx chainIdx =>
+      simp [TableInputAvailable] at havailable
+  | position position =>
+      cases position with
+      | chain lay tree leafIdx chainIdx step =>
+          simp only [TableInputAvailable]
+          by_cases hzero : step.val = 0
+          · rw [if_pos hzero]
+            exact hle _ _ (by simpa [TableInputAvailable, hzero] using havailable)
+          · rw [if_neg hzero]
+            have havailable' : ∀ child,
+                child ∈ (Position.chain lay tree leafIdx chainIdx step).children →
+                  state.values (.position child) = some (table (.position child)) := by
+              simpa [TableInputAvailable, hzero] using havailable
+            intro child hchild
+            exact hle _ _ (havailable' child hchild)
+      | leaf | node | ftsLeaf | ftsNode | ftsRoots =>
+          intro child hchild
+          exact hle _ _ (havailable child hchild)
+
+theorem runRaw_peekTableInput_of_available
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
+    (fuel : Nat) (coordinate : Coordinate)
+    (havailable : TableInputAvailable table state coordinate) :
+    LazyRevealProbe.runRaw state fuel ((peekTableInput parameter coordinate).run cache) =
+      pure (.done state fuel (some (tableInput parameter table coordinate), cache)) := by
+  cases coordinate with
+  | chainStart lay tree leafIdx chainIdx =>
+      simp [TableInputAvailable] at havailable
+  | position position =>
+      cases position with
+      | chain lay tree leafIdx chainIdx step =>
+          rw [peekTableInput.eq_2]
+          by_cases hzero : step.val = 0
+          · rw [if_pos hzero, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+              runRaw_peekCoordinate_of_value state cache fuel
+                (.chainStart lay tree leafIdx chainIdx)
+                (table (.chainStart lay tree leafIdx chainIdx))
+                (by simpa [TableInputAvailable, hzero] using havailable)]
+            simp [LazyRevealProbe.runRaw, tableInput, tablePayload, hzero]
+          · rw [if_neg hzero, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+              runRaw_peekPositionValues_of_values table state cache fuel _
+                (by simpa [TableInputAvailable, hzero] using havailable)]
+            simp [LazyRevealProbe.runRaw, tableInput, tablePayload, hzero]
+      | leaf lay tree leafIdx =>
+          rw [peekTableInput.eq_3 parameter (.leaf lay tree leafIdx) (by simp),
+            StateT.run_bind, LazyRevealProbe.runRaw_bind,
+            runRaw_peekPositionValues_of_values table state cache fuel _ havailable]
+          simp [LazyRevealProbe.runRaw, tableInput, tablePayload]
+      | node lay tree level nodeIdx =>
+          rw [peekTableInput.eq_3 parameter (.node lay tree level nodeIdx) (by simp),
+            StateT.run_bind, LazyRevealProbe.runRaw_bind,
+            runRaw_peekPositionValues_of_values table state cache fuel _ havailable]
+          simp [LazyRevealProbe.runRaw, tableInput, tablePayload]
+      | ftsLeaf index tree leafIdx =>
+          rw [peekTableInput.eq_3 parameter (.ftsLeaf index tree leafIdx) (by simp),
+            StateT.run_bind, LazyRevealProbe.runRaw_bind,
+            runRaw_peekPositionValues_of_values table state cache fuel _ havailable]
+          simp [LazyRevealProbe.runRaw, tableInput, tablePayload]
+      | ftsNode index tree level nodeIdx =>
+          rw [peekTableInput.eq_3 parameter (.ftsNode index tree level nodeIdx) (by simp),
+            StateT.run_bind, LazyRevealProbe.runRaw_bind,
+            runRaw_peekPositionValues_of_values table state cache fuel _ havailable]
+          simp [LazyRevealProbe.runRaw, tableInput, tablePayload]
+      | ftsRoots index =>
+          rw [peekTableInput.eq_3 parameter (.ftsRoots index) (by simp),
+            StateT.run_bind, LazyRevealProbe.runRaw_bind,
+            runRaw_peekPositionValues_of_values table state cache fuel _ havailable]
+          simp [LazyRevealProbe.runRaw, tableInput, tablePayload]
+
+theorem mem_runRaw_revealCoordinateOutput_value
+    (coordinate : Coordinate) (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (output : HashOutput)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (output, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((revealCoordinateOutput coordinate).run cache))) :
+    finalState.values coordinate = some output ∧
+      finalCache (.hidden coordinate) = some output := by
+  rw [revealCoordinateOutput_run, LazyRevealProbe.revealQuery,
+    LazyRevealProbe.runRaw_reveal_query_bind] at hresult
+  cases hvalue : state.values coordinate with
+  | some cached =>
+      rw [hvalue] at hresult
+      simp [LazyRevealProbe.runRaw] at hresult
+      rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+      exact ⟨hvalue, by simp [Function.update]⟩
+  | none =>
+      rw [hvalue, mem_support_bind_iff] at hresult
+      obtain ⟨sampled, _, hrest⟩ := hresult
+      by_cases hhit : state.hitAt coordinate sampled
+      · rw [if_pos hhit] at hrest
+        simp at hrest
+      · rw [if_neg hhit] at hrest
+        simp [LazyRevealProbe.runRaw] at hrest
+        rcases hrest with ⟨rfl, rfl, rfl, rfl⟩
+        exact ⟨by simp [LazyRevealProbe.State.materialize, Function.update],
+          by simp [Function.update]⟩
+
+theorem resolveKnownInput_returns_table_of_available
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (coordinate : Coordinate) (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (output : HashOutput)
+    (havailable : TableInputAvailable table state coordinate)
+    (htable : ∀ other cached, finalState.values other = some cached →
+      cached = table other)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (output, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((resolveKnownInput parameter coordinate
+          (tableInput parameter table coordinate)).run cache))) :
+    output = table coordinate ∧
+      finalCache (.ordinary (tableInput parameter table coordinate)) = some output := by
+  have hcached := returnsCachedOrdinary_resolveKnownInput parameter coordinate
+    (tableInput parameter table coordinate) state cache fuel finalState remaining output
+      finalCache hresult
+  unfold resolveKnownInput at hresult
+  rw [StateT.run_bind, LazyRevealProbe.runRaw_bind,
+    runRaw_peekTableInput_of_available parameter table state cache fuel coordinate havailable]
+    at hresult
+  simp only [pure_bind, ↓reduceIte] at hresult
+  rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨revealRaw, hreveal, hrest⟩ := hresult
+  cases revealRaw with
+  | stopped hit => simp at hrest
+  | done revealState revealRemaining revealResult =>
+      rcases revealResult with ⟨revealed, revealCache⟩
+      have hrevealed := mem_runRaw_revealCoordinateOutput_value coordinate state revealState
+        cache revealCache fuel revealRemaining revealed hreveal
+      have hvaluesLE := LazyRevealProbe.valuesLE_of_mem_runRaw_done
+        (((publishCoordinate coordinate >>= fun _ => do
+          modify fun workingCache : SplitHashCache =>
+            Function.update workingCache
+              (.ordinary (tableInput parameter table coordinate)) (some revealed)
+          pure revealed).run revealCache))
+        revealState finalState revealRemaining remaining (output, finalCache) hrest
+      have hfinalValue := hvaluesLE coordinate revealed hrevealed.1
+      have hrevealedTable := htable coordinate revealed hfinalValue
+      have houtput : output = revealed := by
+        simp [publishCoordinate, LazyRevealProbe.publishQuery,
+          StateT.run_modify, LazyRevealProbe.runRaw] at hrest
+        exact congrArg Prod.fst (LazyRevealProbe.RawResult.done.inj hrest).2.2
+      exact ⟨houtput.trans hrevealedTable, hcached⟩
+
+theorem Probe.outputCoordinate_eq_position_of_matchesInput
+    (parameter : PublicParameter) (probe : Probe) (input : HashInput)
+    (position : Position) (hmatches : probe.MatchesInput parameter input)
+    (hposition : AtPosition parameter input position) :
+    probe.outputCoordinate = .position position := by
+  have hat : ∃ outputPosition,
+      probe.outputCoordinate = .position outputPosition ∧
+        AtPosition parameter input outputPosition := by
+    rcases probe with ⟨coordinate, candidate⟩
+    cases coordinate with
+    | chainStart lay tree leafIdx chainIdx =>
+        obtain ⟨step, hzero, hinput⟩ := hmatches
+        let first : ChainStep := ⟨0, by norm_num [chainLength, winternitzBits]⟩
+        have hstep : step = first := Fin.ext hzero
+        subst step
+        exact ⟨.chain lay tree leafIdx chainIdx first, rfl,
+          ⟨digestBytes candidate, hinput⟩⟩
+    | position source =>
+        cases source with
+        | chain lay tree leafIdx chainIdx step =>
+            simp only [Probe.MatchesInput] at hmatches
+            by_cases hnext : step.val + 1 < chainLength - 1
+            · rw [dif_pos hnext] at hmatches
+              obtain ⟨nextStep, hnextValue, hinput⟩ := hmatches
+              have hstep : nextStep = ⟨step.val + 1, hnext⟩ := Fin.ext hnextValue
+              subst nextStep
+              exact ⟨.chain lay tree leafIdx chainIdx ⟨step.val + 1, hnext⟩,
+                by simp [Probe.outputCoordinate, hnext], ⟨digestBytes candidate, hinput⟩⟩
+            · rw [dif_neg hnext] at hmatches
+              obtain ⟨_, payload, hinput, _⟩ := hmatches
+              exact ⟨.leaf lay tree leafIdx,
+                by simp [Probe.outputCoordinate, hnext], ⟨payload, hinput⟩⟩
+        | leaf | node | ftsLeaf | ftsNode | ftsRoots =>
+            simp [Probe.MatchesInput] at hmatches
+  obtain ⟨outputPosition, houtput, hatOutput⟩ := hat
+  rw [houtput]
+  exact congrArg Coordinate.position (atPosition_unique parameter hatOutput hposition)
+
+theorem decodeProbe?_outputCoordinate_eq_position
+    (parameter : PublicParameter) (input : HashInput) (probe : Probe)
+    (position : Position) (hprobe : decodeProbe? parameter input = some probe)
+    (hposition : decodePosition? parameter input = some position) :
+    probe.outputCoordinate = .position position := by
+  exact probe.outputCoordinate_eq_position_of_matchesInput parameter input position
+    ((decodeProbe?_eq_some_iff parameter input probe).1 hprobe)
+    ((decodePosition?_eq_some_iff parameter input position).1 hposition)
+
+theorem probingHashQuery_eq_resolveKnownInput_of_decodeProbe_none
+    (parameter : PublicParameter) (input : HashInput) (position : Position)
+    (hprobe : decodeProbe? parameter input = none)
+    (hposition : decodePosition? parameter input = some position)
+    (hots : IsOtsPosition position) :
+    probingHashQuery parameter input = resolveKnownInput parameter (.position position) input := by
+  unfold probingHashQuery
+  rw [hprobe, hposition]
+  cases position <;> simp [IsOtsPosition] at hots ⊢
+
+set_option maxRecDepth 10000 in
+theorem probingHashQuery_returns_table_of_available
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (position : Position) (hots : IsOtsPosition position)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (output : HashOutput)
+    (havailable : TableInputAvailable table state (.position position))
+    (htable : ∀ other cached, finalState.values other = some cached →
+      cached = table other)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (output, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((probingHashQuery parameter
+          (tableInput parameter table (.position position))).run cache))) :
+    output = table (.position position) ∧
+      finalCache (.ordinary (tableInput parameter table (.position position))) = some output := by
+  let input := tableInput parameter table (.position position)
+  have hposition : decodePosition? parameter input = some position :=
+    (decodePosition?_eq_some_iff parameter input position).2 ⟨tablePayload table position, rfl⟩
+  cases hprobe : decodeProbe? parameter input with
+  | some candidate =>
+      unfold probingHashQuery at hresult
+      rw [hprobe, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+        mem_support_bind_iff] at hresult
+      obtain ⟨probeRaw, hprobeRun, hrest⟩ := hresult
+      cases probeRaw with
+      | stopped hit => simp at hrest
+      | done probeState probeRemaining probeResult =>
+          rcases probeResult with ⟨probed, probeCache⟩
+          have hvaluesLE := LazyRevealProbe.valuesLE_of_mem_runRaw_done
+            ((probe candidate).run cache) state probeState fuel probeRemaining
+              (probed, probeCache) hprobeRun
+          have havailableProbe := havailable.monoValues hvaluesLE
+          have houtputCoordinate := decodeProbe?_outputCoordinate_eq_position parameter input
+            candidate position hprobe hposition
+          rw [houtputCoordinate] at hrest
+          exact resolveKnownInput_returns_table_of_available parameter table (.position position)
+            probeState finalState probeCache finalCache probeRemaining remaining output
+              havailableProbe htable hrest
+  | none =>
+      rw [probingHashQuery_eq_resolveKnownInput_of_decodeProbe_none parameter input position
+        hprobe hposition hots] at hresult
+      exact resolveKnownInput_returns_table_of_available parameter table (.position position)
+        state finalState cache finalCache fuel remaining output havailable htable hresult
 theorem simulateQ_probingHashImpl_tweakableHash_eq_ordinaryHashImpl
     (parameter : PublicParameter) (domain : HashDomain) (payload : HashInput)
     (hinRange : domain.InRange)
