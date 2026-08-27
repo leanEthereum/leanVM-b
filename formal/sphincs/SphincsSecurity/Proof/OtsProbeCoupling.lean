@@ -7510,6 +7510,686 @@ theorem probingHashQuery_leaf_returns_table_or_pending
         · rw [hpending.1, LazyRevealProbe.State.hitAt]
           exact LazyRevealProbe.State.pendingAt_addPending_self state (.position child)
             (truncateHash (table (.position child)))
+
+def IsLeafOrNode : Position → Prop
+  | .leaf _ _ _ | .node _ _ _ _ => True
+  | _ => False
+
+def CanonicalInputProtected (table : Coordinate → HashOutput)
+    (input : HashInput) (position : Position)
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache) : Prop :=
+  cache (.ordinary input) = none ∨
+    cache (.ordinary input) = some (table (.position position)) ∨
+      ∃ child : Position,
+        state.values (.position child) = none ∧
+          state.hitAt (.position child) (table (.position child))
+
+set_option maxRecDepth 10000 in
+theorem canonicalInputProtected_probingHashQuery
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (input query : HashInput) (position : Position) (hkind : IsLeafOrNode position)
+    (hinput : input = tableInput parameter table (.position position))
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (output : HashSpec query)
+    (hprotected : CanonicalInputProtected table input position state cache)
+    (hstateTable : ∀ coordinate cached,
+      state.values coordinate = some cached → cached = table coordinate)
+    (hfinalTable : ∀ coordinate cached,
+      finalState.values coordinate = some cached → cached = table coordinate)
+    (hrevealed : PublishedValues state)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (output, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((probingHashQuery parameter query).run cache))) :
+    CanonicalInputProtected table input position finalState finalCache := by
+  rcases hprotected with hnone | hexact | ⟨child, hmissing, hhit⟩
+  · by_cases heq : query = input
+    · subst query
+      have hlocal : output = table (.position position) ∨
+          ∃ child : Position,
+            finalState.values (.position child) = none ∧
+              finalState.hitAt (.position child) (table (.position child)) := by
+        subst input
+        cases position with
+        | leaf lay tree leafIdx =>
+            exact probingHashQuery_leaf_returns_table_or_pending parameter table lay tree leafIdx
+              state finalState cache finalCache fuel remaining output (by
+                intro child cached hcached
+                exact hstateTable (.position child) cached hcached) hfinalTable hrevealed hresult
+        | node lay tree level nodeIdx =>
+            exact probingHashQuery_node_returns_table_or_pending parameter table lay tree level
+              nodeIdx state finalState cache finalCache fuel remaining output (by
+                intro child cached hcached
+                exact hstateTable (.position child) cached hcached) hfinalTable hrevealed hresult
+        | chain | ftsLeaf | ftsNode | ftsRoots => simp [IsLeafOrNode] at hkind
+      rcases hlocal with houtput | hpending
+      · right
+        left
+        have hcache := ordinaryQueryCache_eq_cacheQuery_of_mem_runRaw_probingHashImpl parameter
+          input state finalState cache finalCache fuel remaining output hresult
+        change finalCache (.ordinary input) = some (table (.position position))
+        change ordinaryQueryCache finalCache input = some (table (.position position))
+        rw [hcache]
+        simp [QueryCache.cacheQuery, houtput]
+      · exact Or.inr (Or.inr hpending)
+    · left
+      have hcache := ordinaryQueryCache_eq_cacheQuery_of_mem_runRaw_probingHashImpl parameter
+        query state finalState cache finalCache fuel remaining output hresult
+      change finalCache (.ordinary input) = none
+      change ordinaryQueryCache finalCache input = none
+      rw [hcache]
+      rw [QueryCache.cacheQuery_of_ne _ _ (Ne.symm heq)]
+      exact hnone
+  · by_cases heq : query = input
+    · subst query
+      have hlocal : output = table (.position position) ∨
+          ∃ child : Position,
+            finalState.values (.position child) = none ∧
+              finalState.hitAt (.position child) (table (.position child)) := by
+        subst input
+        cases position with
+        | leaf lay tree leafIdx =>
+            exact probingHashQuery_leaf_returns_table_or_pending parameter table lay tree leafIdx
+              state finalState cache finalCache fuel remaining output (by
+                intro child cached hcached
+                exact hstateTable (.position child) cached hcached) hfinalTable hrevealed hresult
+        | node lay tree level nodeIdx =>
+            exact probingHashQuery_node_returns_table_or_pending parameter table lay tree level
+              nodeIdx state finalState cache finalCache fuel remaining output (by
+                intro child cached hcached
+                exact hstateTable (.position child) cached hcached) hfinalTable hrevealed hresult
+        | chain | ftsLeaf | ftsNode | ftsRoots => simp [IsLeafOrNode] at hkind
+      rcases hlocal with houtput | hpending
+      · right
+        left
+        have hcache := ordinaryQueryCache_eq_cacheQuery_of_mem_runRaw_probingHashImpl parameter
+          input state finalState cache finalCache fuel remaining output hresult
+        change finalCache (.ordinary input) = some (table (.position position))
+        change ordinaryQueryCache finalCache input = some (table (.position position))
+        rw [hcache]
+        simp [QueryCache.cacheQuery, houtput]
+      · exact Or.inr (Or.inr hpending)
+    · right
+      left
+      have hcache := ordinaryQueryCache_eq_cacheQuery_of_mem_runRaw_probingHashImpl parameter
+        query state finalState cache finalCache fuel remaining output hresult
+      change finalCache (.ordinary input) = some (table (.position position))
+      change ordinaryQueryCache finalCache input = some (table (.position position))
+      rw [hcache]
+      rw [QueryCache.cacheQuery_of_ne _ _ (Ne.symm heq)]
+      exact hexact
+  · right
+    right
+    have hpersist := LazyRevealProbe.pendingHit_preserved_of_mem_runRaw_done
+      ((probingHashQuery parameter query).run cache) (.position child)
+        (table (.position child)) state finalState fuel remaining (output, finalCache)
+          hmissing hhit (hfinalTable (.position child)) hresult
+    exact ⟨child, hpersist⟩
+
+theorem canonicalInputProtected_of_cache_status_preserved
+    (table : Coordinate → HashOutput) (input : HashInput) (position : Position)
+    (computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha)
+    (habsence : PreservesOrdinaryAbsence input computation)
+    (hentry : OrdinaryEntryPreserving input computation)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (value : alpha)
+    (hprotected : CanonicalInputProtected table input position state cache)
+    (hfinalTable : ∀ coordinate cached,
+      finalState.values coordinate = some cached → cached = table coordinate)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel (computation.run cache))) :
+    CanonicalInputProtected table input position finalState finalCache := by
+  rcases hprotected with hnone | hexact | ⟨child, hmissing, hhit⟩
+  · left
+    exact habsence state cache fuel finalState remaining value finalCache hnone hresult
+  · right
+    left
+    exact hentry state cache fuel finalState remaining value finalCache
+      (table (.position position)) hexact hresult
+  · right
+    right
+    have hpersist := LazyRevealProbe.pendingHit_preserved_of_mem_runRaw_done
+      (computation.run cache) (.position child) (table (.position child)) state finalState fuel
+        remaining (value, finalCache) hmissing hhit (hfinalTable (.position child)) hresult
+    exact ⟨child, hpersist⟩
+
+theorem OrdinaryCachePreserving.entryPreserving
+    {computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    (hpreserves : OrdinaryCachePreserving computation) (input : HashInput) :
+    OrdinaryEntryPreserving input computation := by
+  intro state cache fuel finalState remaining value finalCache output hcached hresult
+  change ordinaryQueryCache finalCache input = some output
+  rw [hpreserves state cache fuel finalState remaining value finalCache hresult]
+  exact hcached
+
+theorem not_stableOrdinaryInput_of_tableInput_leaf_or_node
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (position : Position) (hkind : IsLeafOrNode position) :
+    ¬StableOrdinaryInput parameter
+      (tableInput parameter table (.position position)) := by
+  intro hstable
+  have hposition : decodePosition? parameter
+      (tableInput parameter table (.position position)) = some position :=
+    (decodePosition?_eq_some_iff parameter _ position).2
+      ⟨tablePayload table position, rfl⟩
+  apply hstable.2 position hposition
+  cases position <;> simp [IsLeafOrNode, IsOtsPosition] at hkind ⊢
+
+theorem canonicalInputProtected_splitUniformImpl
+    (table : Coordinate → HashOutput) (input : HashInput) (position : Position)
+    (n : Nat) (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (output : unifSpec n)
+    (hprotected : CanonicalInputProtected table input position state cache)
+    (hfinalTable : ∀ coordinate cached,
+      finalState.values coordinate = some cached → cached = table coordinate)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (output, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel ((splitUniformImpl n).run cache))) :
+    CanonicalInputProtected table input position finalState finalCache := by
+  have hpreserves : OrdinaryCachePreserving (splitUniformImpl n) := by
+    have hbase := ordinaryCachePreserving_simulateQ_splitUniformImpl
+      (liftM (unifSpec.query n) : ProbComp (Fin (n + 1)))
+    simpa [splitUniformImpl] using hbase
+  exact canonicalInputProtected_of_cache_status_preserved table input position
+    (splitUniformImpl n) (hpreserves.preservesAbsence input) (hpreserves.entryPreserving input)
+      state finalState cache finalCache fuel remaining output hprotected hfinalTable hresult
+
+theorem canonicalInputProtected_maskedSigningImpl
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (root : Digest) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (input : HashInput) (position : Position) (hkind : IsLeafOrNode position)
+    (hinput : input = tableInput parameter table (.position position))
+    (message : SignRequest) (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat)
+    (output : SigningSpec message)
+    (hprotected : CanonicalInputProtected table input position state cache)
+    (hfinalTable : ∀ coordinate cached,
+      finalState.values coordinate = some cached → cached = table coordinate)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (output, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((maskedSigningImpl parameter root ftsSecret message).run cache))) :
+    CanonicalInputProtected table input position finalState finalCache := by
+  have hnotStable : ¬StableOrdinaryInput parameter input := by
+    subst input
+    exact not_stableOrdinaryInput_of_tableInput_leaf_or_node parameter table position hkind
+  exact canonicalInputProtected_of_cache_status_preserved table input position
+    (maskedSigningImpl parameter root ftsSecret message)
+      (preservesOrdinaryAbsence_maskedSigningImpl parameter root ftsSecret input hnotStable message)
+      (ordinaryEntryPreservingImpl_maskedSigningImpl parameter root ftsSecret input message)
+      state finalState cache finalCache fuel remaining output hprotected hfinalTable hresult
+
+def PreservesCanonicalInputProtected
+    (table : Coordinate → HashOutput) (input : HashInput) (position : Position)
+    (computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha) : Prop :=
+  ∀ state cache fuel finalState remaining value finalCache,
+    CanonicalInputProtected table input position state cache →
+    (∀ coordinate cached,
+      state.values coordinate = some cached → cached = table coordinate) →
+    (∀ coordinate cached,
+      finalState.values coordinate = some cached → cached = table coordinate) →
+    PublishedValues state →
+    LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel (computation.run cache)) →
+    PublishedValues finalState ∧
+      CanonicalInputProtected table input position finalState finalCache
+
+theorem PreservesCanonicalInputProtected.pure
+    (table : Coordinate → HashOutput) (input : HashInput) (position : Position)
+    (value : alpha) :
+    PreservesCanonicalInputProtected table input position
+      (pure value : StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate)) alpha) := by
+  intro state cache fuel finalState remaining result finalCache hprotected _ _ hpublished hresult
+  simp [LazyRevealProbe.runRaw] at hresult
+  rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+  exact ⟨hpublished, hprotected⟩
+
+theorem PreservesCanonicalInputProtected.bind
+    {table : Coordinate → HashOutput} {input : HashInput} {position : Position}
+    {left : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    {next : alpha → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) beta}
+    (hleft : PreservesCanonicalInputProtected table input position left)
+    (hnext : ∀ value, PreservesCanonicalInputProtected table input position (next value)) :
+    PreservesCanonicalInputProtected table input position (left >>= next) := by
+  intro state cache fuel finalState remaining value finalCache hprotected hstateTable hfinalTable
+    hpublished hresult
+  change LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈ support
+    (LazyRevealProbe.runRaw state fuel
+      (left.run cache >>= fun result => (next result.1).run result.2)) at hresult
+  rw [LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨raw, hraw, hrest⟩ := hresult
+  cases raw with
+  | stopped hit => simp at hrest
+  | done middleState middleRemaining middleResult =>
+      rcases middleResult with ⟨middleValue, middleCache⟩
+      have hvaluesLE := LazyRevealProbe.valuesLE_of_mem_runRaw_done
+        ((next middleValue).run middleCache) middleState finalState middleRemaining remaining
+          (value, finalCache) hrest
+      have hmiddleTable : ∀ coordinate cached,
+          middleState.values coordinate = some cached → cached = table coordinate := by
+        intro coordinate cached hcached
+        exact hfinalTable coordinate cached (hvaluesLE coordinate cached hcached)
+      have hmiddle := hleft state cache fuel middleState middleRemaining middleValue middleCache
+        hprotected hstateTable hmiddleTable hpublished hraw
+      exact hnext middleValue middleState middleCache middleRemaining finalState remaining value
+        finalCache hmiddle.2 hmiddleTable hfinalTable hmiddle.1 hrest
+
+def PreservesCanonicalInputProtectedImpl {spec : OracleSpec ι}
+    (table : Coordinate → HashOutput) (input : HashInput) (position : Position)
+    (impl : QueryImpl spec
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate)))) : Prop :=
+  ∀ query, PreservesCanonicalInputProtected table input position (impl query)
+
+theorem PreservesCanonicalInputProtectedImpl.simulateQ {spec : OracleSpec ι}
+    {table : Coordinate → HashOutput} {input : HashInput} {position : Position}
+    {impl : QueryImpl spec
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate)))}
+    (himpl : PreservesCanonicalInputProtectedImpl table input position impl)
+    (computation : OracleComp spec alpha) :
+    PreservesCanonicalInputProtected table input position (simulateQ impl computation) := by
+  induction computation using OracleComp.inductionOn with
+  | pure value => exact PreservesCanonicalInputProtected.pure table input position value
+  | query_bind query next ih =>
+      rw [simulateQ_query_bind]
+      exact (himpl query).bind ih
+
+theorem preservesCanonicalInputProtectedImpl_maskedExpandedAdversaryImpl
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (root : Digest) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (input : HashInput) (position : Position) (hkind : IsLeafOrNode position)
+    (hinput : input = tableInput parameter table (.position position)) :
+    PreservesCanonicalInputProtectedImpl table input position
+      (maskedExpandedAdversaryImpl parameter root ftsSecret) := by
+  intro query
+  cases query with
+  | inl query =>
+      cases query with
+      | inl n =>
+          intro state cache fuel finalState remaining output finalCache hprotected _ hfinalTable
+            hpublished hresult
+          refine ⟨(preservesPublishedValuesImpl_splitUniformImpl n state cache fuel finalState
+            remaining output finalCache hpublished hresult), ?_⟩
+          exact canonicalInputProtected_splitUniformImpl table input position n state finalState
+            cache finalCache fuel remaining output hprotected hfinalTable hresult
+      | inr query =>
+          intro state cache fuel finalState remaining output finalCache hprotected hstateTable
+            hfinalTable hpublished hresult
+          refine ⟨(preservesPublishedValues_probingHashQuery parameter query state cache fuel
+            finalState remaining output finalCache hpublished hresult), ?_⟩
+          exact canonicalInputProtected_probingHashQuery parameter table input query position hkind
+            hinput state finalState cache finalCache fuel remaining output hprotected hstateTable
+              hfinalTable hpublished hresult
+  | inr message =>
+      intro state cache fuel finalState remaining output finalCache hprotected _ hfinalTable
+        hpublished hresult
+      refine ⟨(preservesPublishedValues_maskedSigningImpl parameter root ftsSecret message
+        state cache fuel finalState remaining output finalCache hpublished hresult), ?_⟩
+      exact canonicalInputProtected_maskedSigningImpl parameter table root ftsSecret input position
+        hkind hinput message state finalState cache finalCache fuel remaining output hprotected
+          hfinalTable hresult
+
+theorem canonicalInputProtected_simulateQ_maskedExpandedAdversaryImpl
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (root : Digest) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (input : HashInput) (position : Position) (hkind : IsLeafOrNode position)
+    (hinput : input = tableInput parameter table (.position position))
+    (computation : OracleComp (OracleWorld + SigningSpec) alpha)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (value : alpha)
+    (hprotected : CanonicalInputProtected table input position state cache)
+    (hstateTable : ∀ coordinate cached,
+      state.values coordinate = some cached → cached = table coordinate)
+    (hfinalTable : ∀ coordinate cached,
+      finalState.values coordinate = some cached → cached = table coordinate)
+    (hrevealed : PublishedValues state)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((simulateQ (maskedExpandedAdversaryImpl parameter root ftsSecret)
+          computation).run cache))) :
+    CanonicalInputProtected table input position finalState finalCache :=
+  ((preservesCanonicalInputProtectedImpl_maskedExpandedAdversaryImpl parameter table root
+    ftsSecret input position hkind hinput).simulateQ computation state cache fuel finalState
+      remaining value finalCache hprotected hstateTable hfinalTable hrevealed hresult).2
+
+set_option maxRecDepth 10000 in
+theorem canonicalInputProtected_before_verifier_of_mem_runRaw_maskedRetainedGame
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : Coordinate → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (input : HashInput) (position : Position) (hkind : IsLeafOrNode position)
+    (hinput : input = tableInput parameter table (.position position))
+    (fuel remaining : Nat) (rawState : LazyRevealProbe.State Coordinate)
+    (rawCache : SplitHashCache) (root : Digest) (forgery : Forgery)
+    (signingLog : QueryLog SigningSpec) (verified : Bool)
+    (htable : ∀ coordinate output, rawState.values coordinate = some output →
+      output = table coordinate)
+    (hresult : LazyRevealProbe.RawResult.done rawState remaining
+        ((root, ((forgery, signingLog), verified)), rawCache) ∈ support
+      (LazyRevealProbe.runRaw (LazyRevealProbe.State.empty :
+          LazyRevealProbe.State Coordinate) fuel
+        ((maskedRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
+          emptySplitHashCache))) :
+    ∃ verifierState verifierFuel verifierCache,
+      CanonicalInputProtected table input position verifierState verifierCache ∧
+      PublishedValues verifierState ∧
+      LazyRevealProbe.RawResult.done rawState remaining (verified, rawCache) ∈ support
+        (LazyRevealProbe.runRaw verifierState verifierFuel
+          ((simulateQ (verifierRomImpl parameter)
+            (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)).run
+              verifierCache)) := by
+  let rootCoordinate : Coordinate := .position (.node topLayer rootTree
+    ⟨layerHeight topLayer - 1, by norm_num [layerHeight, topLayer, maxLayerHeight]⟩ 0)
+  unfold maskedRetainedGameAfterFtsSecrets at hresult
+  rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨rootRaw, hroot, hafterRoot⟩ := hresult
+  cases rootRaw with
+  | stopped hit => simp at hafterRoot
+  | done rootState rootRemaining rootResult =>
+      rcases rootResult with ⟨sampledRoot, rootCache⟩
+      simp only at hafterRoot
+      rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hafterRoot
+      obtain ⟨publishRaw, hpublish, hafterPublish⟩ := hafterRoot
+      cases publishRaw with
+      | stopped hit => simp at hafterPublish
+      | done publishState publishRemaining publishResult =>
+          rcases publishResult with ⟨publishedUnit, publishCache⟩
+          simp only at hafterPublish
+          rw [StateT.run_bind, LazyRevealProbe.runRaw_bind,
+            mem_support_bind_iff] at hafterPublish
+          obtain ⟨restRaw, hrest, hfinish⟩ := hafterPublish
+          cases restRaw with
+          | stopped hit => simp at hfinish
+          | done restState restRemaining restResult =>
+              rcases restResult with ⟨⟨prefixForgery, prefixLog⟩, restCache⟩
+              simp only at hfinish
+              rw [StateT.run_bind, LazyRevealProbe.runRaw_bind,
+                mem_support_bind_iff] at hfinish
+              obtain ⟨verifyRaw, hverify, hreturn⟩ := hfinish
+              cases verifyRaw with
+              | stopped hit => simp at hreturn
+              | done verifyState verifyRemaining verifyResult =>
+                  rcases verifyResult with ⟨prefixVerified, verifyCache⟩
+                  simp [LazyRevealProbe.runRaw] at hreturn
+                  rcases hreturn with ⟨rfl, rfl, houtput, rfl⟩
+                  rcases houtput with ⟨hrootEq, hrestEq, rfl⟩
+                  rcases hrestEq with ⟨rfl, rfl⟩
+                  have hvaluesRestRaw := LazyRevealProbe.valuesLE_of_mem_runRaw_done
+                    ((simulateQ (verifierRomImpl parameter)
+                      (scheme.verify ⟨sampledRoot, parameter⟩ forgery.message
+                        forgery.signature)).run restCache)
+                    restState rawState restRemaining remaining (verified, rawCache) hverify
+                  have htableRest : ∀ coordinate output,
+                      restState.values coordinate = some output →
+                        output = table coordinate := by
+                    intro coordinate output hvalue
+                    exact htable coordinate output (hvaluesRestRaw coordinate output hvalue)
+                  have hvaluesPublishRest := LazyRevealProbe.valuesLE_of_mem_runRaw_done
+                    ((simulateQ (maskedExpandedAdversaryImpl parameter sampledRoot ftsSecret)
+                      (signingTraceComputation
+                        (adversary.main ⟨sampledRoot, parameter⟩))).run publishCache)
+                    publishState restState publishRemaining restRemaining
+                      ((forgery, signingLog), restCache) hrest
+                  have htablePublish : ∀ coordinate output,
+                      publishState.values coordinate = some output →
+                        output = table coordinate := by
+                    intro coordinate output hvalue
+                    exact htableRest coordinate output
+                      (hvaluesPublishRest coordinate output hvalue)
+                  have hpublishedEmpty : PublishedValues
+                      (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) := by
+                    intro coordinate hcoordinate
+                    simp [LazyRevealProbe.State.empty] at hcoordinate
+                  have hpublishedRoot := preservesPublishedValues_maskedTreeRoot topLayer rootTree
+                    (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+                      emptySplitHashCache fuel rootState rootRemaining sampledRoot rootCache
+                        hpublishedEmpty hroot
+                  obtain ⟨rootOutput, _, hrootValue, _⟩ :=
+                    mem_runRaw_maskedTreeRoot_hidden topLayer rootTree
+                      (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) rootState
+                        emptySplitHashCache rootCache fuel rootRemaining sampledRoot hroot
+                  have hrootCoordinate :
+                      maskedTreeRootCoordinate topLayer rootTree = rootCoordinate := by
+                    simp [maskedTreeRootCoordinate, maskedTreeRootLevel, rootCoordinate,
+                      layerHeight, topLayer, maxLayerHeight]
+                  have hrootValue' : rootState.values rootCoordinate ≠ none := by
+                    rw [← hrootCoordinate, hrootValue]
+                    simp
+                  have hpublishedPublish := publishedValues_of_mem_runRaw_publishCoordinate
+                    rootCoordinate rootState publishState rootCache publishCache rootRemaining
+                      publishRemaining publishedUnit hpublishedRoot hrootValue'
+                        (by simpa [rootCoordinate] using hpublish)
+                  have hrootOrdinary := ordinaryCachePreserving_maskedTreeRoot topLayer rootTree
+                    (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+                      emptySplitHashCache fuel rootState rootRemaining sampledRoot rootCache hroot
+                  have hpublishCache := splitCachePreserving_publishCoordinate rootCoordinate
+                    rootState rootCache rootRemaining publishState publishRemaining publishedUnit
+                      publishCache (by simpa [rootCoordinate] using hpublish)
+                  have hinitialProtected : CanonicalInputProtected table input position
+                      publishState publishCache := by
+                    left
+                    rw [hpublishCache]
+                    change ordinaryQueryCache rootCache input = none
+                    rw [hrootOrdinary]
+                    simp [ordinaryQueryCache, emptySplitHashCache]
+                  have hprotectedRest :=
+                    canonicalInputProtected_simulateQ_maskedExpandedAdversaryImpl parameter table
+                      sampledRoot ftsSecret input position hkind hinput
+                        (signingTraceComputation
+                          (adversary.main ⟨sampledRoot, parameter⟩))
+                        publishState restState publishCache restCache publishRemaining
+                          restRemaining (forgery, signingLog) hinitialProtected htablePublish
+                            htableRest hpublishedPublish hrest
+                  exact ⟨restState, restRemaining, restCache, hprotectedRest,
+                    (preservesPublishedValuesImpl_maskedExpandedAdversaryImpl parameter sampledRoot
+                      ftsSecret).simulateQ
+                        (signingTraceComputation (adversary.main ⟨sampledRoot, parameter⟩))
+                          publishState publishCache publishRemaining restState restRemaining
+                            (forgery, signingLog) restCache hpublishedPublish hrest,
+                    by simpa only [hrootEq] using hverify⟩
+
+def CanonicalCacheExactOrAbsent (table : Coordinate → HashOutput)
+    (input : HashInput) (position : Position) (cache : SplitHashCache) : Prop :=
+  cache (.ordinary input) = none ∨
+    cache (.ordinary input) = some (table (.position position))
+
+theorem canonicalCacheExactOrAbsent_verifierHashQuery
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (input query : HashInput) (position : Position) (hkind : IsLeafOrNode position)
+    (hinput : input = tableInput parameter table (.position position))
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (output : HashSpec query)
+    (hinitial : CanonicalCacheExactOrAbsent table input position cache)
+    (hfinalTable : ∀ coordinate cached,
+      finalState.values coordinate = some cached → cached = table coordinate)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (output, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((verifierHashQuery parameter query).run cache))) :
+    CanonicalCacheExactOrAbsent table input position finalCache := by
+  rcases hinitial with hnone | hexact
+  · by_cases heq : query = input
+    · subst query
+      subst input
+      right
+      have hots : IsOtsPosition position := by
+        cases position <;> simp [IsLeafOrNode, IsOtsPosition] at hkind ⊢
+      have hreturns := verifierHashQuery_returns_table_of_uncached parameter table position hots
+        state finalState cache finalCache fuel remaining output hnone hfinalTable hresult
+      simpa [hreturns.1] using hreturns.2
+    · left
+      have hcache := ordinaryQueryCache_eq_cacheQuery_of_mem_runRaw_verifierHashImpl parameter
+        query state finalState cache finalCache fuel remaining output (by
+          simpa only [verifierHashImpl] using hresult)
+      change ordinaryQueryCache finalCache input = none
+      rw [hcache, QueryCache.cacheQuery_of_ne _ _ (Ne.symm heq)]
+      exact hnone
+  · right
+    exact ordinaryEntryPreserving_verifierHashQuery parameter input query state cache fuel
+      finalState remaining output finalCache (table (.position position)) hexact hresult
+
+def PreservesCanonicalCacheExactOrAbsent
+    (table : Coordinate → HashOutput) (input : HashInput) (position : Position)
+    (computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha) : Prop :=
+  ∀ state cache fuel finalState remaining value finalCache,
+    CanonicalCacheExactOrAbsent table input position cache →
+    (∀ coordinate cached,
+      finalState.values coordinate = some cached → cached = table coordinate) →
+    LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel (computation.run cache)) →
+    CanonicalCacheExactOrAbsent table input position finalCache
+
+theorem PreservesCanonicalCacheExactOrAbsent.pure
+    (table : Coordinate → HashOutput) (input : HashInput) (position : Position)
+    (value : alpha) :
+    PreservesCanonicalCacheExactOrAbsent table input position
+      (pure value : StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate)) alpha) := by
+  intro state cache fuel finalState remaining result finalCache hinitial _ hresult
+  simp [LazyRevealProbe.runRaw] at hresult
+  rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+  exact hinitial
+
+theorem PreservesCanonicalCacheExactOrAbsent.bind
+    {table : Coordinate → HashOutput} {input : HashInput} {position : Position}
+    {left : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    {next : alpha → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) beta}
+    (hleft : PreservesCanonicalCacheExactOrAbsent table input position left)
+    (hnext : ∀ value, PreservesCanonicalCacheExactOrAbsent table input position (next value)) :
+    PreservesCanonicalCacheExactOrAbsent table input position (left >>= next) := by
+  intro state cache fuel finalState remaining value finalCache hinitial hfinalTable hresult
+  change LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈ support
+    (LazyRevealProbe.runRaw state fuel
+      (left.run cache >>= fun result => (next result.1).run result.2)) at hresult
+  rw [LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨raw, hraw, hrest⟩ := hresult
+  cases raw with
+  | stopped hit => simp at hrest
+  | done middleState middleRemaining middleResult =>
+      rcases middleResult with ⟨middleValue, middleCache⟩
+      have hvaluesLE := LazyRevealProbe.valuesLE_of_mem_runRaw_done
+        ((next middleValue).run middleCache) middleState finalState middleRemaining remaining
+          (value, finalCache) hrest
+      have hmiddleTable : ∀ coordinate cached,
+          middleState.values coordinate = some cached → cached = table coordinate := by
+        intro coordinate cached hcached
+        exact hfinalTable coordinate cached (hvaluesLE coordinate cached hcached)
+      exact hnext middleValue middleState middleCache middleRemaining finalState remaining value
+        finalCache (hleft state cache fuel middleState middleRemaining middleValue middleCache
+          hinitial hmiddleTable hraw) hfinalTable hrest
+
+def PreservesCanonicalCacheExactOrAbsentImpl {spec : OracleSpec ι}
+    (table : Coordinate → HashOutput) (input : HashInput) (position : Position)
+    (impl : QueryImpl spec
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate)))) : Prop :=
+  ∀ query, PreservesCanonicalCacheExactOrAbsent table input position (impl query)
+
+theorem PreservesCanonicalCacheExactOrAbsentImpl.simulateQ {spec : OracleSpec ι}
+    {table : Coordinate → HashOutput} {input : HashInput} {position : Position}
+    {impl : QueryImpl spec
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate)))}
+    (himpl : PreservesCanonicalCacheExactOrAbsentImpl table input position impl)
+    (computation : OracleComp spec alpha) :
+    PreservesCanonicalCacheExactOrAbsent table input position (simulateQ impl computation) := by
+  induction computation using OracleComp.inductionOn with
+  | pure value => exact PreservesCanonicalCacheExactOrAbsent.pure table input position value
+  | query_bind query next ih =>
+      rw [simulateQ_query_bind]
+      exact (himpl query).bind ih
+
+theorem preservesCanonicalCacheExactOrAbsentImpl_verifierRomImpl
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (input : HashInput) (position : Position) (hkind : IsLeafOrNode position)
+    (hinput : input = tableInput parameter table (.position position)) :
+    PreservesCanonicalCacheExactOrAbsentImpl table input position
+      (verifierRomImpl parameter) := by
+  intro query
+  cases query with
+  | inl n =>
+      intro state cache fuel finalState remaining output finalCache hinitial hfinalTable hresult
+      have hpreserves : OrdinaryCachePreserving (splitUniformImpl n) := by
+        have hbase := ordinaryCachePreserving_simulateQ_splitUniformImpl
+          (liftM (unifSpec.query n) : ProbComp (Fin (n + 1)))
+        simpa [splitUniformImpl] using hbase
+      rcases hinitial with hnone | hexact
+      · left
+        exact hpreserves.preservesAbsence input state cache fuel finalState remaining output
+          finalCache hnone hresult
+      · right
+        exact hpreserves.entryPreserving input state cache fuel finalState remaining output
+          finalCache (table (.position position)) hexact hresult
+  | inr query =>
+      intro state cache fuel finalState remaining output finalCache hinitial hfinalTable hresult
+      exact canonicalCacheExactOrAbsent_verifierHashQuery parameter table input query position
+        hkind hinput state finalState cache finalCache fuel remaining output hinitial hfinalTable
+          hresult
+
+set_option maxRecDepth 10000 in
+theorem cached_tableInput_eq_of_leaf_or_node_of_clean_finalize
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : Coordinate → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (input : HashInput) (position : Position) (hkind : IsLeafOrNode position)
+    (hinput : input = tableInput parameter table (.position position))
+    (fuel remaining : Nat)
+    (rawState completedState : LazyRevealProbe.State Coordinate)
+    (rawCache : SplitHashCache) (root : Digest) (forgery : Forgery)
+    (signingLog : QueryLog SigningSpec) (verified : Bool) (output : HashOutput)
+    (hcompletedTable : ∀ coordinate cached,
+      completedState.values coordinate = some cached → cached = table coordinate)
+    (hresult : LazyRevealProbe.RawResult.done rawState remaining
+        ((root, ((forgery, signingLog), verified)), rawCache) ∈ support
+      (LazyRevealProbe.runRaw (LazyRevealProbe.State.empty :
+          LazyRevealProbe.State Coordinate) fuel
+        ((maskedRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
+          emptySplitHashCache)))
+    (hfinalize : (false, completedState) ∈ support
+      (LazyRevealProbe.finalizeDetailed rawState))
+    (hcached : rawCache (.ordinary input) = some output) :
+    output = table (.position position) := by
+  have hrawTable : ∀ coordinate cached,
+      rawState.values coordinate = some cached → cached = table coordinate := by
+    intro coordinate cached hvalue
+    exact hcompletedTable coordinate cached
+      (finalizeDetailedFrom_preserves_value rawState.coordinates.toList rawState completedState
+        coordinate cached hvalue hfinalize)
+  obtain ⟨verifierState, verifierFuel, verifierCache, hprotected, _, hverify⟩ :=
+    canonicalInputProtected_before_verifier_of_mem_runRaw_maskedRetainedGame adversary parameter
+      table ftsSecret input position hkind hinput fuel remaining rawState rawCache root forgery
+        signingLog verified hrawTable hresult
+  rcases hprotected with hnone | hexact | ⟨child, hmissing, hhit⟩
+  · have hterminal :=
+      (preservesCanonicalCacheExactOrAbsentImpl_verifierRomImpl parameter table input position
+        hkind hinput).simulateQ
+          (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)
+            verifierState verifierCache verifierFuel rawState remaining verified rawCache
+              (Or.inl hnone) hrawTable hverify
+    rcases hterminal with hterminal | hterminal
+    · rw [hcached] at hterminal
+      simp at hterminal
+    · exact Option.some.inj (hcached.symm.trans hterminal)
+  · have hterminal :=
+      (preservesCanonicalCacheExactOrAbsentImpl_verifierRomImpl parameter table input position
+        hkind hinput).simulateQ
+          (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)
+            verifierState verifierCache verifierFuel rawState remaining verified rawCache
+              (Or.inr hexact) hrawTable hverify
+    rcases hterminal with hterminal | hterminal
+    · rw [hcached] at hterminal
+      simp at hterminal
+    · exact Option.some.inj (hcached.symm.trans hterminal)
+  · have hpersist := LazyRevealProbe.pendingHit_preserved_of_mem_runRaw_done
+      ((simulateQ (verifierRomImpl parameter)
+        (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)).run
+          verifierCache)
+        (.position child) (table (.position child)) verifierState rawState verifierFuel remaining
+          (verified, rawCache) hmissing hhit (hrawTable (.position child)) hverify
+    exact (finalizeDetailed_false_of_pending_hit table rawState completedState (.position child)
+      hpersist.1 hpersist.2 (hcompletedTable (.position child)) hfinalize).elim
 theorem simulateQ_probingHashImpl_tweakableHash_eq_ordinaryHashImpl
     (parameter : PublicParameter) (domain : HashDomain) (payload : HashInput)
     (hinRange : domain.InRange)
