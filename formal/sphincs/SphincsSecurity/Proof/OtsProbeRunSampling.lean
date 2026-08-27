@@ -1389,6 +1389,267 @@ theorem startTableAgrees_of_mem_runThenFinalizeCleanFromTable
       exact startTableAgrees_of_mem_finishCleanRunFromTable runResult finalResult
         hrunAgrees hfinish
 
+theorem pendingAt_clearPending_of_ne
+    (state : LazyRevealProbe.State Coordinate) (left right : Coordinate)
+    (hne : right ≠ left) :
+    (state.clearPending left).pendingAt right = state.pendingAt right := by
+  ext candidate
+  simp [LazyRevealProbe.State.pendingAt, LazyRevealProbe.State.clearPending,
+    LazyRevealProbe.State.pendingAway, hne]
+
+theorem pendingAt_complete_of_ne
+    (state : LazyRevealProbe.State Coordinate) (left right : Coordinate)
+    (output : HashOutput) (hne : right ≠ left) :
+    (state.complete left output).pendingAt right = state.pendingAt right := by
+  exact pendingAt_clearPending_of_ne state left right hne
+
+theorem hitAt_clearPending_of_ne
+    (state : LazyRevealProbe.State Coordinate) (left right : Coordinate)
+    (output : HashOutput) (hne : right ≠ left) :
+    (state.clearPending left).hitAt right output ↔ state.hitAt right output := by
+  unfold LazyRevealProbe.State.hitAt
+  rw [pendingAt_clearPending_of_ne state left right hne]
+
+theorem hitAt_complete_of_ne
+    (state : LazyRevealProbe.State Coordinate) (left right : Coordinate)
+    (leftOutput rightOutput : HashOutput) (hne : right ≠ left) :
+    (state.complete left leftOutput).hitAt right rightOutput ↔
+      state.hitAt right rightOutput := by
+  unfold LazyRevealProbe.State.hitAt
+  rw [pendingAt_complete_of_ne state left right leftOutput hne]
+
+@[simp] theorem values_clearPending
+    (state : LazyRevealProbe.State Coordinate) (left right : Coordinate) :
+    (state.clearPending left).values right = state.values right := rfl
+
+theorem values_complete_of_ne
+    (state : LazyRevealProbe.State Coordinate) (left right : Coordinate)
+    (output : HashOutput) (hne : right ≠ left) :
+    (state.complete left output).values right = state.values right := by
+  simp [LazyRevealProbe.State.complete, Function.update, hne]
+
+theorem clearPending_comm
+    (state : LazyRevealProbe.State Coordinate) (left right : Coordinate) :
+    (state.clearPending left).clearPending right =
+      (state.clearPending right).clearPending left := by
+  rcases state with ⟨pending, values, revealed, ensured⟩
+  simp [LazyRevealProbe.State.clearPending, LazyRevealProbe.State.pendingAway, and_comm]
+  exact Finset.filter_comm (fun x : Coordinate × Digest => ¬ x.1 = left)
+    (fun x => ¬ x.1 = right) pending
+
+theorem clearPending_complete_comm
+    (state : LazyRevealProbe.State Coordinate) (left right : Coordinate)
+    (output : HashOutput) :
+    (state.clearPending left).complete right output =
+      (state.complete right output).clearPending left := by
+  rcases state with ⟨pending, values, revealed, ensured⟩
+  simp [LazyRevealProbe.State.clearPending, LazyRevealProbe.State.complete,
+    LazyRevealProbe.State.pendingAway, and_comm]
+  exact Finset.filter_comm (fun x : Coordinate × Digest => ¬ x.1 = left)
+    (fun x => ¬ x.1 = right) pending
+
+theorem complete_comm
+    (state : LazyRevealProbe.State Coordinate) (left right : Coordinate)
+    (leftOutput rightOutput : HashOutput) (hne : left ≠ right) :
+    (state.complete left leftOutput).complete right rightOutput =
+      (state.complete right rightOutput).complete left leftOutput := by
+  rcases state with ⟨pending, values, revealed, ensured⟩
+  simp [LazyRevealProbe.State.complete, LazyRevealProbe.State.pendingAway,
+    Function.update_comm hne, and_comm]
+  exact Finset.filter_comm (fun x : Coordinate × Digest => ¬ x.1 = left)
+    (fun x => ¬ x.1 = right) pending
+
+set_option maxRecDepth 100000 in
+theorem evalDist_finalizeCleanFromTable_swap_of_some_none
+    (left right : Coordinate) (remaining : List Coordinate)
+    (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput) (leftOutput : HashOutput)
+    (hne : left ≠ right) (hleft : state.values left = some leftOutput)
+    (hright : state.values right = none) :
+    𝒟[finalizeCleanFromTable (left :: right :: remaining) state table] =
+      𝒟[finalizeCleanFromTable (right :: left :: remaining) state table] := by
+  have hrightClear : (state.clearPending left).values right = none := by
+    simpa only [values_clearPending] using hright
+  cases right with
+  | chainStart lay tree leafIdx chainIdx =>
+      let right : Coordinate := .chainStart lay tree leafIdx chainIdx
+      let output := table ⟨lay, tree, leafIdx, chainIdx⟩
+      have hrightNe : right ≠ left := hne.symm
+      have hhitClear : (state.clearPending left).hitAt right output ↔
+          state.hitAt right output :=
+        hitAt_clearPending_of_ne state left right output hrightNe
+      have hleftComplete : (state.complete right output).values left =
+          some leftOutput := by
+        rw [values_complete_of_ne state right left output hne, hleft]
+      simp only [finalizeCleanFromTable, hleft, hrightClear, hright]
+      by_cases hhit : state.hitAt right output
+      · rw [if_pos (hhitClear.mpr hhit), if_pos hhit]
+      · rw [if_neg (mt hhitClear.mp hhit), if_neg hhit, hleftComplete,
+          clearPending_complete_comm]
+
+  | position position =>
+      let right : Coordinate := .position position
+      have hrightNe : right ≠ left := hne.symm
+      simp only [finalizeCleanFromTable, hleft, hrightClear, hright]
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro output
+      have hhitClear : (state.clearPending left).hitAt right output ↔
+          state.hitAt right output :=
+        hitAt_clearPending_of_ne state left right output hrightNe
+      have hleftComplete : (state.complete right output).values left =
+          some leftOutput := by
+        rw [values_complete_of_ne state right left output hne, hleft]
+      by_cases hhit : state.hitAt right output
+      · rw [if_pos (hhitClear.mpr hhit), if_pos hhit]
+      · rw [if_neg (mt hhitClear.mp hhit), if_neg hhit, hleftComplete,
+          clearPending_complete_comm]
+
+noncomputable def completionOutputFromTable
+    (coordinate : Coordinate) (table : OtsSecretIndex → HashOutput) :
+    ProbComp HashOutput :=
+  match coordinate with
+  | .chainStart lay tree leafIdx chainIdx => pure (table ⟨lay, tree, leafIdx, chainIdx⟩)
+  | .position _ => LazyRevealProbe.sampleHashOutput
+
+theorem completionOutputFromTable_neverFails
+    (coordinate : Coordinate) (table : OtsSecretIndex → HashOutput) :
+    Pr[⊥ | completionOutputFromTable coordinate table] = 0 := by
+  cases coordinate <;> simp [completionOutputFromTable, LazyRevealProbe.sampleHashOutput]
+
+theorem finalizeCleanFromTable_cons_of_none
+    (coordinate : Coordinate) (remaining : List Coordinate)
+    (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput)
+    (hvalue : state.values coordinate = none) :
+    finalizeCleanFromTable (coordinate :: remaining) state table = (do
+      let output ← completionOutputFromTable coordinate table
+      if state.hitAt coordinate output then
+        pure none
+      else
+        finalizeCleanFromTable remaining (state.complete coordinate output) table) := by
+  cases coordinate <;> simp [finalizeCleanFromTable, completionOutputFromTable, hvalue]
+
+theorem finalizeCleanFromTable_cons_of_some
+    (coordinate : Coordinate) (remaining : List Coordinate)
+    (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput) (output : HashOutput)
+    (hvalue : state.values coordinate = some output) :
+    finalizeCleanFromTable (coordinate :: remaining) state table =
+      finalizeCleanFromTable remaining (state.clearPending coordinate) table := by
+  rw [finalizeCleanFromTable.eq_def]
+  simp only
+  rw [hvalue]
+
+set_option maxRecDepth 100000 in
+theorem evalDist_finalizeCleanFromTable_two_none
+    (left right : Coordinate) (remaining : List Coordinate)
+    (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput) (hne : left ≠ right)
+    (hleft : state.values left = none) (hright : state.values right = none) :
+    𝒟[finalizeCleanFromTable (left :: right :: remaining) state table] =
+      𝒟[do
+        let leftOutput ← completionOutputFromTable left table
+        let rightOutput ← completionOutputFromTable right table
+        if state.hitAt left leftOutput then
+          pure none
+        else if state.hitAt right rightOutput then
+          pure none
+        else
+          finalizeCleanFromTable remaining
+            ((state.complete left leftOutput).complete right rightOutput) table] := by
+  rw [finalizeCleanFromTable_cons_of_none left (right :: remaining) state table hleft]
+  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+  intro leftOutput
+  by_cases hleftHit : state.hitAt left leftOutput
+  · rw [if_pos hleftHit]
+    simp only [hleftHit, ↓reduceIte]
+    exact (OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+      (completionOutputFromTable right table)
+      (completionOutputFromTable_neverFails right table) (pure none)).symm
+  · rw [if_neg hleftHit]
+    simp only [hleftHit, ↓reduceIte]
+    have hrightValue : (state.complete left leftOutput).values right = none := by
+      rw [values_complete_of_ne state left right leftOutput hne.symm, hright]
+    rw [finalizeCleanFromTable_cons_of_none right remaining
+      (state.complete left leftOutput) table hrightValue]
+    apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+    intro rightOutput
+    have hrightHit : (state.complete left leftOutput).hitAt right rightOutput ↔
+        state.hitAt right rightOutput :=
+      hitAt_complete_of_ne state left right leftOutput rightOutput hne.symm
+    by_cases hhit : state.hitAt right rightOutput
+    · rw [if_pos (hrightHit.mpr hhit), if_pos hhit]
+    · rw [if_neg (mt hrightHit.mp hhit), if_neg hhit]
+
+set_option maxRecDepth 100000 in
+theorem evalDist_finalizeCleanFromTable_swap
+    (left right : Coordinate) (remaining : List Coordinate)
+    (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput) (hne : left ≠ right) :
+    𝒟[finalizeCleanFromTable (left :: right :: remaining) state table] =
+      𝒟[finalizeCleanFromTable (right :: left :: remaining) state table] := by
+  cases hleft : state.values left with
+  | some leftOutput =>
+      cases hright : state.values right with
+      | some rightOutput =>
+          simp [finalizeCleanFromTable, hleft, hright, clearPending_comm]
+      | none =>
+          exact evalDist_finalizeCleanFromTable_swap_of_some_none left right remaining state
+            table leftOutput hne hleft hright
+  | none =>
+      cases hright : state.values right with
+      | some rightOutput =>
+          exact (evalDist_finalizeCleanFromTable_swap_of_some_none right left remaining state
+            table rightOutput hne.symm hright hleft).symm
+      | none =>
+          rw [evalDist_finalizeCleanFromTable_two_none left right remaining state table hne
+            hleft hright,
+            evalDist_finalizeCleanFromTable_two_none right left remaining state table hne.symm
+              hright hleft]
+          rw [OracleComp.DeferredSampling.evalDist_bind_comm
+            (completionOutputFromTable left table) (completionOutputFromTable right table)]
+          apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+          intro rightOutput
+          apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+          intro leftOutput
+          by_cases hleftHit : state.hitAt left leftOutput
+          · simp [hleftHit]
+          · by_cases hrightHit : state.hitAt right rightOutput
+            · simp [hleftHit, hrightHit]
+            · simp only [hleftHit, hrightHit, ↓reduceIte]
+              rw [complete_comm state left right leftOutput rightOutput hne]
+
+set_option maxRecDepth 100000 in
+theorem evalDist_finalizeCleanFromTable_perm
+    {left right : List Coordinate} (hperm : left.Perm right)
+    (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput) :
+    𝒟[finalizeCleanFromTable left state table] =
+      𝒟[finalizeCleanFromTable right state table] := by
+  induction hperm generalizing state with
+  | nil => rfl
+  | cons coordinate hperm ih =>
+      cases hvalue : state.values coordinate with
+      | some output =>
+          rw [finalizeCleanFromTable_cons_of_some coordinate _ state table output hvalue,
+            finalizeCleanFromTable_cons_of_some coordinate _ state table output hvalue]
+          exact ih (state.clearPending coordinate)
+      | none =>
+          rw [finalizeCleanFromTable_cons_of_none coordinate _ state table hvalue,
+            finalizeCleanFromTable_cons_of_none coordinate _ state table hvalue]
+          apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+          intro output
+          by_cases hhit : state.hitAt coordinate output
+          · rw [if_pos hhit, if_pos hhit]
+          · rw [if_neg hhit, if_neg hhit]
+            exact ih (state.complete coordinate output)
+  | swap left right remaining =>
+      by_cases heq : left = right
+      · subst right
+        rfl
+      · exact (evalDist_finalizeCleanFromTable_swap left right remaining state table heq).symm
+  | trans _ _ ihLeft ihRight => exact ihLeft state |>.trans (ihRight state)
+
 noncomputable def detailedExperimentCleanWithCompletionTable
     (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
     (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha) :
