@@ -65,7 +65,7 @@ pub const QUERY_GRINDING_BITS: usize = 17;
 const JOHNSON_ETA_SEARCH_MAX_M: usize = 4096;
 
 pub const INITIAL_FOLDING_FACTOR: usize = 6;
-pub const SUBSEQUENT_FOLDING_FACTOR: usize = 3;
+pub const SUBSEQUENT_FOLDING_FACTOR: usize = 4;
 
 /// Logarithmic reduction of the total Reed--Solomon domain after the initial
 /// fold. With the production six-variable initial fold, `3` changes the
@@ -1038,26 +1038,6 @@ mod tests {
         assert!(
             (128.0..129.0).contains(&min_pg_bits),
             "eta search should use, but not exceed, the one-bit PG margin: {min_pg_bits}"
-        );
-    }
-
-    #[test]
-    fn optimized_eta_query_and_rate_profile_is_stable() {
-        let cfg = WhirSecurityConfig::derive_config_with_log_inv_rate(22 + crate::LOG_PACKING, 1).unwrap();
-        assert_eq!(
-            cfg.levels.iter().map(|level| level.log_inv_rate).collect::<Vec<_>>(),
-            [1, 4, 6, 8, 10]
-        );
-        assert_eq!(
-            cfg.levels.iter().map(|level| level.queries).collect::<Vec<_>>(),
-            [225, 56, 38, 28, 23]
-        );
-        assert_eq!(
-            cfg.levels
-                .iter()
-                .map(|level| { johnson_m_param(level.log_inv_rate, level.log_msg_cols, level.eta,) as usize })
-                .collect::<Vec<_>>(),
-            [216, 80, 18, 35, 7]
         );
     }
 

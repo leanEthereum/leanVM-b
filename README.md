@@ -10,8 +10,8 @@
 
 <p align="center">
   <a href="#xmss-aggregation"><img src="https://img.shields.io/badge/Aggregation-1100%20XMSS%2Fs-brightgreen?style=for-the-badge"></a>
-  <a href="#sphincs-aggregation"><img src="https://img.shields.io/badge/Aggregation-200%20SPHINCS%2Fs-green?style=for-the-badge"></a>
-  <a href="#recursion"><img src="https://img.shields.io/badge/2%20to%201%20recursion-0.45s-orange?style=for-the-badge"></a>
+  <a href="#sphincs-aggregation"><img src="https://img.shields.io/badge/Aggregation-205%20SPHINCS%2Fs-green?style=for-the-badge"></a>
+  <a href="#recursion"><img src="https://img.shields.io/badge/2%20to%201%20recursion-0.42s-orange?style=for-the-badge"></a>
 </p>
 
 Warning: highly experimental.
@@ -32,10 +32,10 @@ cargo run --release -- aggregate --xmss 900 --log-inv-rate 1 --repeat 3
 aggregation, 900 XMSS signatures
   cycles (VM steps)           : 1,542,871 = 2^20.557
     details                   : DEREF 2^18.988 (33.7%)  SET 2^18.402 (22.4%)  MUL 2^18.199 (19.5%)  BLAKE2S 2^16.995 (8.5%)  XOR 2^16.961 (8.3%)  JUMP 2^16.843 (7.6%)  MEMORY 2^21.724  TOTAL_COMMITTED 2^26.195
-  proof size                  : 304.5 KiB
-  proving time                : 0.821 s ± 2.6%      peak memory 13.956 GiB
-  per signature               : 1,096.508 signatures/s
-  verifying                   : 0.0135 s
+  proof size                  : 295.0 KiB
+  proving time                : 0.815 s ± 2.7%      peak memory 9.071 GiB
+  per signature               : 1,104.043 signatures/s
+  verifying                   : 0.0141 s
 ```
 
 ### SPHINCS aggregation
@@ -50,10 +50,10 @@ cargo run --release -- aggregate --sphincs 245 --log-inv-rate 1 --repeat 3
 aggregation, 245 SPHINCS signatures
   cycles (VM steps)           : 2,677,883 = 2^21.353
     details                   : DEREF 2^19.45 (26.7%)  XOR 2^19.306 (24.2%)  MUL 2^19.212 (22.7%)  SET 2^18.866 (17.8%)  BLAKE2S 2^16.996 (4.9%)  JUMP 2^16.568 (3.6%)  MEMORY 2^22.089  TOTAL_COMMITTED 2^26.875
-  proof size                  : 345.8 KiB
-  proving time                : 1.219 s ± 5.2%      peak memory 20.119 GiB
-  per signature               : 201.022 signatures/s
-  verifying                   : 0.0177 s
+  proof size                  : 335.6 KiB
+  proving time                : 1.194 s ± 4.9%      peak memory 14.653 GiB
+  per signature               : 205.145 signatures/s
+  verifying                   : 0.0171 s
 ```
 
 ### Recursion
@@ -65,11 +65,11 @@ cargo run --release -- recursion --n 2 --xmss-per-leaf 900 --log-inv-rate 2 --re
 
 ```
 recursion 2→1, over leaves of 900 XMSS signatures
-  cycles (VM steps)           : 807,861 = 2^19.624
-    details                   : DEREF 2^18.109 (35.0%)  MUL 2^17.876 (29.8%)  XOR 2^17.503 (23.0%)  SET 2^15.539 (5.9%)  JUMP 2^14.826 (3.6%)  BLAKE2S 2^14.437 (2.7%)  MEMORY 2^19.911  TOTAL_COMMITTED 2^24.856
-  proof size                  : 212.7 KiB
-  proving time                : 0.453 s ± 4.9%      peak memory 17.287 GiB
-  verifying                   : 0.0161 s
+  cycles (VM steps)           : 746,499 = 2^19.51
+    details                   : DEREF 2^18.002 (35.2%)  MUL 2^17.779 (30.1%)  XOR 2^17.37 (22.7%)  SET 2^15.317 (5.5%)  JUMP 2^14.802 (3.8%)  BLAKE2S 2^14.309 (2.7%)  MEMORY 2^19.805  TOTAL_COMMITTED 2^24.856
+  proof size                  : 211.6 KiB
+  proving time                : 0.417 s ± 4.0%      peak memory 10.491 GiB
+  verifying                   : 0.0153 s
 ```
 
 ### Fibonacci
@@ -83,9 +83,9 @@ cargo run --release -- fibonacci --n 2000000 --log-inv-rate 1 --repeat 3
 Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = 2,000,000
   cycles (VM steps)           : 2,127,880
     details                   : MUL 2^20.937 (98.7%)  DEREF 2^13.967 (0.8%)  SET 2^12.552 (0.3%)  JUMP 2^10.968 (0.1%)  XOR 2^10.966 (0.1%)  MEMORY 2^20.964  TOTAL_COMMITTED 2^25.263
-  proof size                  : 286.2 KiB
-  proving                     : 0.425 s ± 6.9%   5,009,971 cycles/s      peak memory 7.523 GiB
-  verifying                   : 0.00315 s
+  proof size                  : 285.4 KiB
+  proving                     : 0.401 s ± 2.7%   5,303,239 cycles/s      peak memory 5.126 GiB
+  verifying                   : 0.00281 s
 ```
 
 ### Batch proving BLAKE2s

@@ -65,7 +65,7 @@ fn whir_query_table_matches_rust() {
             .unwrap_or_else(|e| panic!("rate {rate}, log_n {log_n}: {e}"));
         assert_eq!(
             config.queries, tabulated,
-            "rate {rate}, log_n {log_n}: WHIR_QUERIES is stale, rerun the search and update the table"
+            "rate {rate}, log_n {log_n}: WHIR_QUERIES is stale, regenerate it with print_whir_query_table"
         );
         // Hardcoded on the Python side, so it must hold wherever the table does.
         let expected_ood: Vec<usize> = std::iter::once(0)
@@ -82,4 +82,28 @@ fn whir_query_table_matches_rust() {
         4 * (max_log - min_log + 1),
         "the table is not the range it claims"
     );
+}
+
+/// Regenerates the literal the pin above checks: paste its output over `WHIR_QUERIES` in
+/// `python-verifier/verifier.py`.
+/// `cargo test --release -p lean_vm --test verifiers print_whir_query_table -- --ignored --nocapture`
+#[test]
+#[ignore = "manual table regeneration"]
+fn print_whir_query_table() {
+    let rates: Vec<String> = (1..=4)
+        .map(|rate| {
+            let rows: Vec<String> = (lean_vm::pcs::MIN_MU..=lean_vm::pcs::MAX_MU)
+                .map(|log_n| {
+                    let (config, _) = WhirSecurityConfig::derive_config_with_log_inv_rate(log_n + LOG_PACKING, rate)
+                        .unwrap()
+                        .to_prover_verifier_configs()
+                        .unwrap();
+                    let queries: Vec<String> = config.queries.iter().map(usize::to_string).collect();
+                    format!("({})", queries.join(","))
+                })
+                .collect();
+            format!("({})", rows.join(", "))
+        })
+        .collect();
+    println!("WHIR_QUERIES = ({})  # fmt: skip", rates.join(", "));
 }
