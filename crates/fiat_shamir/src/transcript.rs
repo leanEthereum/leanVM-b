@@ -117,10 +117,19 @@ pub struct ProverState {
 }
 
 impl ProverState {
-    /// `statement` is the public input, seeded into the Fiat-Shamir state (see [`FiatShamirState::new`]).
-    pub fn new(label: &[u8], statement: &[F192]) -> Self {
+    /// `iv` and `public_input` seed the Fiat-Shamir state (see [`FiatShamirState::new`]).
+    pub fn new(iv: [F64; 4], public_input: [F64; 4]) -> Self {
+        Self::from_fs(FiatShamirState::new(iv, public_input))
+    }
+
+    /// A protocol with no public input of its own, seeded from `label` alone.
+    pub fn from_label(label: &[u8]) -> Self {
+        Self::from_fs(FiatShamirState::from_label(label))
+    }
+
+    fn from_fs(fs: FiatShamirState) -> Self {
         Self {
-            fs: FiatShamirState::new(label, statement),
+            fs,
             stream: Vec::new(),
             merkle: Vec::new(),
         }
@@ -146,11 +155,20 @@ pub struct VerifierState<'a> {
 }
 
 impl<'a> VerifierState<'a> {
-    /// `statement` is the public input, seeded into the Fiat-Shamir state (see [`FiatShamirState::new`]).
-    /// It must match the prover's, or the two states diverge and verification fails.
-    pub fn new(label: &[u8], proof: &'a Proof, statement: &[F192]) -> Self {
+    /// `iv` and `public_input` seed the Fiat-Shamir state (see [`FiatShamirState::new`]).
+    /// They must match the prover's, or the two states diverge and verification fails.
+    pub fn new(iv: [F64; 4], proof: &'a Proof, public_input: [F64; 4]) -> Self {
+        Self::from_fs(FiatShamirState::new(iv, public_input), proof)
+    }
+
+    /// A protocol with no public input of its own, seeded from `label` alone.
+    pub fn from_label(label: &[u8], proof: &'a Proof) -> Self {
+        Self::from_fs(FiatShamirState::from_label(label), proof)
+    }
+
+    fn from_fs(fs: FiatShamirState, proof: &'a Proof) -> Self {
         Self {
-            fs: FiatShamirState::new(label, statement),
+            fs,
             stream: &proof.stream,
             offset: 0,
             merkle: &proof.merkle,
@@ -333,15 +351,16 @@ mod tests {
 
     #[test]
     fn prover_verifier_lockstep() {
-        let stmt = [f(7)];
-        let mut ps = ProverState::new(b"lbl", &stmt);
+        let iv = crate::digest_words(&primitives::hash::hash(b"lbl"));
+        let pi = std::array::from_fn(|i| F64(7 + i as u64));
+        let mut ps = ProverState::new(iv, pi);
         let c1 = ps.sample();
         ps.add_scalar(f(42));
         ps.grind(8);
         let c2 = ps.sample();
         let proof = ps.into_proof();
 
-        let mut vs = VerifierState::new(b"lbl", &proof, &stmt);
+        let mut vs = VerifierState::new(iv, &proof, pi);
         assert_eq!(vs.sample(), c1);
         assert_eq!(vs.next_scalar().unwrap(), f(42));
         assert!(vs.grind_check(8).is_ok());

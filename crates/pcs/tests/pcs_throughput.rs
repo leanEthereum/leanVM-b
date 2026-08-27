@@ -78,7 +78,7 @@ fn pcs_throughput() {
             });
             commit_times.push(elapsed);
 
-            let mut ch = fiat_shamir::transcript::ProverState::new(b"pcs-throughput", &[]);
+            let mut ch = fiat_shamir::transcript::ProverState::from_label(b"pcs-throughput");
             let elapsed = tracing::info_span!("PCS open").in_scope(|| {
                 let t = Instant::now();
                 recursive_prover_with_basis(

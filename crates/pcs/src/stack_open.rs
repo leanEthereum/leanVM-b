@@ -666,7 +666,7 @@ mod tests {
             "test shape must keep the residual cube above q_flock (yr_log_n = {yr_log_n})"
         );
         let (cm, pd) = commit(&stack, log_n, pc.initial_k, pc.log_inv_rates[0]);
-        let mut ps = fiat_shamir::transcript::ProverState::new(DOMAIN, &[]);
+        let mut ps = fiat_shamir::transcript::ProverState::from_label(DOMAIN);
         open_batch_mixed_whir_stacked(&mut ps, log_n, &stack, &pd, &pc, &point_claims, &ring);
 
         Instance {
@@ -691,7 +691,7 @@ mod tests {
             qflock_vars: inst.ring.qflock_vars,
             claims: ring_claims.to_vec(),
         };
-        let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, fs, &[]);
+        let mut vs = fiat_shamir::transcript::VerifierState::from_label(DOMAIN, fs);
         verify_opening_batch_mixed_whir_stacked(
             &mut vs,
             &inst.vc,
@@ -816,7 +816,7 @@ mod tests {
             qflock_vars,
             claims,
         };
-        let mut ps = fiat_shamir::transcript::ProverState::new(DOMAIN, &[]);
+        let mut ps = fiat_shamir::transcript::ProverState::from_label(DOMAIN);
         open_batch_mixed_whir_stacked(&mut ps, log_n, &stack, &pd, &pc, &point_claims, &ring);
         let fs = ps.into_proof();
 
@@ -825,7 +825,7 @@ mod tests {
             qflock_vars,
             claims: ring.claims.clone(),
         };
-        let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, &fs, &[]);
+        let mut vs = fiat_shamir::transcript::VerifierState::from_label(DOMAIN, &fs);
         assert!(
             verify_opening_batch_mixed_whir_stacked(
                 &mut vs,
@@ -842,7 +842,7 @@ mod tests {
         // And the crossing-regime ring claim is still bound: flip a slice.
         let mut bad_ring = ring_v;
         bad_ring.claims[0].s_hat_v.as_mut().unwrap()[7] += F192::ONE;
-        let mut vs = fiat_shamir::transcript::VerifierState::new(DOMAIN, &fs, &[]);
+        let mut vs = fiat_shamir::transcript::VerifierState::from_label(DOMAIN, &fs);
         assert!(
             !verify_opening_batch_mixed_whir_stacked(
                 &mut vs,

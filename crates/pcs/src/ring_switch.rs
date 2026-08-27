@@ -940,7 +940,7 @@ mod tests {
 
         // Drive the production two-phase API with a single claim: prepare the
         // slices, sample the shared map, finish with a batching scalar of one.
-        let mut ps = fiat_shamir::transcript::ProverState::new(E2E_DOMAIN, &[]);
+        let mut ps = fiat_shamir::transcript::ProverState::from_label(E2E_DOMAIN);
         let state = prove_prepare(&packed, &suffix_point, None);
         let rs_s_hat_v = state.s_hat_v.clone();
         let coordinate_weights = build_coordinate_weights(&sample_map_challenges(&mut ps));
@@ -986,7 +986,7 @@ mod tests {
     /// Dense verification: rebuild `rs_eq_ind` and hand it to the dense whir
     /// verifier as `b_initial`.
     fn verify_e2e_dense(e: &E2e) -> bool {
-        let mut vs = fiat_shamir::transcript::VerifierState::new(E2E_DOMAIN, &e.fs, &[]);
+        let mut vs = fiat_shamir::transcript::VerifierState::from_label(E2E_DOMAIN, &e.fs);
         let Some((coordinate_weights, sumcheck_claim)) = verify_e2e_reduction(e, &mut vs) else {
             return false;
         };
@@ -997,7 +997,7 @@ mod tests {
     /// Succinct verification: no `rs_eq_ind`, the succinct whir verifier's
     /// terminal closure evaluates its MLE once via `eval_rs_eq`.
     fn verify_e2e_succinct(e: &E2e) -> bool {
-        let mut vs = fiat_shamir::transcript::VerifierState::new(E2E_DOMAIN, &e.fs, &[]);
+        let mut vs = fiat_shamir::transcript::VerifierState::from_label(E2E_DOMAIN, &e.fs);
         let Some((coordinate_weights, sumcheck_claim)) = verify_e2e_reduction(e, &mut vs) else {
             return false;
         };

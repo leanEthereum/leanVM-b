@@ -63,7 +63,7 @@ const MAX_LOG_ROWS: usize = 32;
 /// `2^32` instructions.
 const MAX_LOG_BYTECODE: usize = 32;
 
-/// The Fiat-Shamir seed: ONE 32-byte digest, as two field words, committing to
+/// The Fiat-Shamir IV: ONE 32-byte digest, as two field words, committing to
 /// everything fixed about the proving environment.
 ///
 /// Two things go in. [`flock::hash::R1CS_DIGEST`] names the flock BLAKE2s
@@ -75,12 +75,16 @@ const MAX_LOG_BYTECODE: usize = 32;
 /// verifier holding only that polynomial reproduces the seed; that inner hash is
 /// cached, so the table is walked once per program rather than once per proof.
 ///
-/// The seed leads every transcript, so all challenges depend on the circuit
-/// version and the program before anything else; a recursion guest carries the
-/// INNER program's seed in its public input, pinning both with one word pair.
+/// The IV IS the transcript's starting chaining value ([`fiat_shamir::FiatShamirState::new`]),
+/// so all challenges depend on the circuit version and the program before
+/// anything else; a recursion guest carries the INNER program's IV in its public
+/// input, pinning both with one word pair.
 pub fn fs_seed(program: &Program) -> [F192; 2] {
     let mut h = primitives::hash::Hasher::new();
-    h.update(b"leanvm-b-fs-seed-v2-blake2s");
+    h.update(b"leanvm-b");
+    // Length-framed so the preimage parses one way: the domain and the bytecode
+    // hash are fixed-width, so framing the digest between them is all it takes.
+    h.update(&(flock::hash::R1CS_DIGEST.len() as u64).to_le_bytes());
     h.update(&flock::hash::R1CS_DIGEST);
     h.update(&program.bytecode_hash);
     let d = h.finalize();
@@ -88,17 +92,23 @@ pub fn fs_seed(program: &Program) -> [F192; 2] {
     [F192::new(word(0), word(8), 0), F192::new(word(16), word(24), 0)]
 }
 
-/// The transcript seed: the public statement bound before any challenge, the
-/// public input `pi` prefixed by the [`fs_seed`]. Both sides build it identically.
-fn transcript_seed(program: &Program, pi: &[F192; 2]) -> [F192; 4] {
-    let seed = fs_seed(program);
-    [seed[0], seed[1], pi[0], pi[1]]
+/// The two 128-bit halves a digest travels in, as the four words the
+/// Fiat-Shamir chain runs on. Only defined for a real digest, whose halves have
+/// no third limb; [`read_public`] rejects a public input that has one, so a
+/// third limb can never be silently dropped from what the transcript binds.
+fn digest_words(halves: &[F192; 2]) -> [F64; 4] {
+    [
+        F64(halves[0].c0),
+        F64(halves[0].c1),
+        F64(halves[1].c0),
+        F64(halves[1].c1),
+    ]
 }
 
 /// Announce the prover's sizes (`log_mem`, every table's log height, the PCS rate)
 /// by writing them onto the scalar stream, which binds them into the state and lets
 /// the verifier reconstruct the layout. The public statement (program + input) is not
-/// announced here; it seeds the transcript at construction (see [`transcript_seed`]).
+/// announced here; it seeds the transcript at construction (see [`fs_seed`]).
 /// The boundary states are derived from the program, so they need no binding.
 ///
 /// Log heights, not row counts: every table's rows are real rows, the fill blocks
@@ -126,6 +136,11 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2])
         usize::try_from(word.c0).map_err(|_| Error::PublicInput)
     };
 
+    // The transcript binds a public input as two 128-bit halves, so a third limb
+    // would be dropped and two statements would share a transcript.
+    if public_input.iter().any(|half| half.c2 != 0) {
+        return Err(Error::PublicInput);
+    }
     let log_mem = read_size(vs)?;
     let mut taus = [0usize; tables::N_TABLES];
     for t in &mut taus {
@@ -519,7 +534,11 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     let committed_size = w.committed_size();
     // The public statement (program digest + input) seeds the transcript, so
     // every challenge depends on the exact program and public input.
-    let mut ps = ProverState::new(b"leanvm-b", &transcript_seed(program, &public_input));
+    debug_assert!(
+        public_input.iter().all(|h| h.c2 == 0),
+        "a public input is a 256-bit digest"
+    );
+    let mut ps = ProverState::new(digest_words(&fs_seed(program)), digest_words(&public_input));
 
     // Announce the prover's sizes, then commit, before sampling any challenge.
     announce_public(&mut ps, w.log_mem, w.layout.taus, log_inv_rate);
@@ -673,7 +692,7 @@ pub struct VerifySummary {
 /// was fully consumed. Takes only public inputs, never the prover's witness.
 #[tracing::instrument(name = "Verify", skip_all)]
 pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Result<VerifySummary, Error> {
-    let mut vs = VerifierState::new(b"leanvm-b", proof, &transcript_seed(program, public_input));
+    let mut vs = VerifierState::new(digest_words(&fs_seed(program)), proof, digest_words(public_input));
     let (l, log_inv_rate) = read_public(&mut vs, program, public_input)?;
     let root = pcs::read_commitment(&mut vs).map_err(Error::Transcript)?;
 

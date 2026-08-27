@@ -486,7 +486,7 @@ mod tests {
             let expected_roots = leaves
                 .each_ref()
                 .map(|lane| lane.iter().copied().fold(F192::ONE, |product, value| product * value));
-            let mut ps = ProverState::new(b"radix-four-gkr-test", &[]);
+            let mut ps = ProverState::from_label(b"radix-four-gkr-test");
             let proved = prove_product_triple(
                 leaves.each_ref().map(|l| ArenaVec::from_slice(l.as_slice())),
                 &mut ps,
@@ -498,7 +498,7 @@ mod tests {
             }
 
             let proof = ps.into_proof();
-            let mut vs = VerifierState::new(b"radix-four-gkr-test", &proof, &[]);
+            let mut vs = VerifierState::from_label(b"radix-four-gkr-test", &proof);
             let verified = verify_product_triple(mu, &mut vs, RootShape::Distinct).expect("GKR verifies");
             assert_eq!(verified.roots, proved.roots);
             assert_eq!(verified.point, proved.point);
@@ -521,7 +521,7 @@ mod tests {
                 padded.resize(1 << mu, F192::ONE);
                 padded
             });
-            let mut sparse_ps = ProverState::new(b"sparse-radix-four-gkr-test", &[]);
+            let mut sparse_ps = ProverState::from_label(b"sparse-radix-four-gkr-test");
             let proved = prove_product_triple(
                 leaves.each_ref().map(|l| ArenaVec::from_slice(l.as_slice())),
                 &mut sparse_ps,
@@ -538,7 +538,7 @@ mod tests {
                 );
             }
             let proof = sparse_ps.into_proof();
-            let mut dense_ps = ProverState::new(b"sparse-radix-four-gkr-test", &[]);
+            let mut dense_ps = ProverState::from_label(b"sparse-radix-four-gkr-test");
             let dense_proved = prove_product_triple(
                 dense.each_ref().map(|l| ArenaVec::from_slice(l.as_slice())),
                 &mut dense_ps,
@@ -548,7 +548,7 @@ mod tests {
             assert_eq!(dense_proved.point, proved.point);
             assert_eq!(dense_proved.values, proved.values);
             assert_eq!(dense_ps.into_proof().stream, proof.stream);
-            let mut vs = VerifierState::new(b"sparse-radix-four-gkr-test", &proof, &[]);
+            let mut vs = VerifierState::from_label(b"sparse-radix-four-gkr-test", &proof);
             let verified = verify_product_triple(mu, &mut vs, RootShape::Distinct).expect("GKR verifies");
             assert_eq!(verified.roots, proved.roots);
             assert_eq!(verified.point, proved.point);

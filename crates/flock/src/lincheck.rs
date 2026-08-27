@@ -1672,11 +1672,11 @@ mod tests {
                 b_0: b_0.clone(),
                 pin: PIN_COL,
             };
-            let mut ch_p = pcs::ProverState::new(b"flock-test-v0", &[]);
+            let mut ch_p = pcs::ProverState::from_label(b"flock-test-v0");
             let claim_p = prove(&z_packed, m, k_log, k_skip, &circuit, &x_ab, &mut ch_p);
 
             let proof_t = ch_p.into_proof();
-            let mut ch_v = pcs::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
+            let mut ch_v = pcs::VerifierState::from_label(b"flock-test-v0", &proof_t);
             let claim_v = verify(m, k_log, k_skip, &circuit, &x_ab, v_a, v_b, v_c, &mut ch_v).unwrap_or_else(|e| {
                 panic!("verify rejected honest proof at m={m},k_log={k_log},k_skip={k_skip}: {e:?}")
             });
@@ -1737,7 +1737,7 @@ mod tests {
             b_0: b_0.clone(),
             pin: PIN_COL,
         };
-        let mut ch_p = pcs::ProverState::new(b"flock-test-v0", &[]);
+        let mut ch_p = pcs::ProverState::from_label(b"flock-test-v0");
         let _ = prove(&z_packed, m, k_log, k_skip, &circuit, &x_ab, &mut ch_p);
         let proof_t = ch_p.into_proof();
 
@@ -1766,7 +1766,7 @@ mod tests {
             } else {
                 bad.stream[zp_word].c0 ^= 1;
             }
-            let mut ch = pcs::VerifierState::new(b"flock-test-v0", &bad, &[]);
+            let mut ch = pcs::VerifierState::from_label(b"flock-test-v0", &bad);
             let res = verify(m, k_log, k_skip, &circuit, &x_ab, v_a, v_b, v_c, &mut ch);
             assert!(
                 matches!(res, Err(VerifyError::ConsistencyFailed { .. })),
@@ -1799,21 +1799,21 @@ mod tests {
             b_0: b_0.clone(),
             pin: PIN_COL,
         };
-        let mut ch_p = pcs::ProverState::new(b"flock-test-v0", &[]);
+        let mut ch_p = pcs::ProverState::from_label(b"flock-test-v0");
         let _ = prove(&z_packed, m, k_log, k_skip, &circuit, &x_ab, &mut ch_p);
         let proof_t = ch_p.into_proof();
 
         // Truncated stream (dropped last z_partial word): a clean Transcript error.
         let mut bad = proof_t.clone();
         bad.stream.pop();
-        let mut ch = pcs::VerifierState::new(b"flock-test-v0", &bad, &[]);
+        let mut ch = pcs::VerifierState::from_label(b"flock-test-v0", &bad);
         assert!(matches!(
             verify(m, k_log, k_skip, &circuit, &x_ab, v_a, v_b, v_c, &mut ch),
             Err(VerifyError::Transcript(_))
         ));
 
         // Wrong x_inner_rest length.
-        let mut ch = pcs::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
+        let mut ch = pcs::VerifierState::from_label(b"flock-test-v0", &proof_t);
         let bad_x_ab = QuirkyPoint {
             z_skip: x_ab.z_skip,
             x_inner_rest: x_ab.x_inner_rest[..x_ab.x_inner_rest.len() - 1].to_vec(),
@@ -1825,7 +1825,7 @@ mod tests {
         ));
 
         // k_skip > k_log.
-        let mut ch = pcs::VerifierState::new(b"flock-test-v0", &proof_t, &[]);
+        let mut ch = pcs::VerifierState::from_label(b"flock-test-v0", &proof_t);
         assert!(matches!(
             verify(m, k_log, k_log + 1, &circuit, &x_ab, v_a, v_b, v_c, &mut ch),
             Err(VerifyError::KSkipExceedsKLog { .. })

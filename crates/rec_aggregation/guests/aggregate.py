@@ -219,8 +219,6 @@ DEFER_STMT_BC_VALUE = BYTECODE_VARS
 DEFER_STMT_MAT_POINT = BYTECODE_VARS + 1
 DEFER_STMT_A_VALUE = BYTECODE_VARS + 1 + 2 * K_LOG
 DEFER_STMT_B_VALUE = BYTECODE_VARS + 2 + 2 * K_LOG
-TRANSCRIPT_SEED_0 = TRANSCRIPT_SEED_0_PLACEHOLDER
-TRANSCRIPT_SEED_1 = TRANSCRIPT_SEED_1_PLACEHOLDER
 AGG_SEED_0 = AGG_SEED_0_PLACEHOLDER
 AGG_SEED_1 = AGG_SEED_1_PLACEHOLDER
 # The statement digest's preimage: a 32-byte domain tag, the nine header values
@@ -239,14 +237,13 @@ STMT_BLOCKS = STMT_BLOCKS_PLACEHOLDER
 PK_IV_0 = PK_IV_0_PLACEHOLDER
 PK_IV_1 = PK_IV_1_PLACEHOLDER
 
-# Fiat-Shamir domain tags: every block carries its tag in lane 3, which is exactly
-# `fs_compress`'s `tail` argument, so a role is never smuggled through the
-# data lanes. (DS_BYTE/DS_LEN are absorb_bytes-only, so the guest never needs
-# them: it starts from the seed state the statement carries.)
+# Fiat-Shamir domain tags: every absorbed block carries its tag in lane 3, which
+# is exactly `fs_compress`'s `tail` argument, so a role is never smuggled through
+# the data lanes. The seeding block has none, being fixed at the head of the chain.
 DS_SCALAR = 1
-DS_SQ = 4
-DS_POW_BASE = 5
-DS_POW_NONCE = 6
+DS_SQ = 2
+DS_POW_BASE = 3
+DS_POW_NONCE = 4
 
 # Field structure: GF(2^192), represented as three GF(2^64) tower limbs.
 # Six challenges define the F2-linear map that batches the 192 transposed
@@ -1147,11 +1144,14 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # The ONE shared GKR leaf point (all three trees reduce to it).
 
     # ---- seed (statement pre-bound: hinted sub pi + baked program digest) ----
-    fs = [TRANSCRIPT_SEED_0, TRANSCRIPT_SEED_1]
-    fs = obs(fs, seed_0)  # the FS seed: H(flock BLAKE2s R1CS, inner program
-    fs = obs(fs, seed_1)  # bytecode, ...), from the recursion's public input
-    fs = obs(fs, pi_0)   # bind the sub-proof's statement (its public input)
-    fs = obs(fs, pi_1)
+    iv = StackBuf(2)
+    iv[0] = seed_0
+    iv[1] = seed_1
+    stmt = StackBuf(2)
+    stmt[0] = pi_0
+    stmt[1] = pi_1
+    fs = StackBuf(2)
+    blake2s(iv, stmt, fs)
     stream = HeapBuf(STREAM_CAP)
     hint_witness(stream[0:STREAM_CAP], "stream")
     cursor = stream  # the proof stream is replayed word by word; cursor walks it (advance = * g)

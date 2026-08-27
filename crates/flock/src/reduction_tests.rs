@@ -72,7 +72,7 @@ fn prove(n: usize, tamper: Option<usize>) -> (usize, fiat_shamir::transcript::Pr
     };
     let inner_rest_len = K_LOG - K_SKIP;
 
-    let mut ps = ProverState::new(LABEL, &[]);
+    let mut ps = ProverState::from_label(LABEL);
     let zc = crate::zerocheck::prove_packed_padded(
         packed_bytes(&a),
         packed_bytes(&b),
@@ -98,7 +98,7 @@ fn prove(n: usize, tamper: Option<usize>) -> (usize, fiat_shamir::transcript::Pr
 /// Replay a transcript through the reduction verifier.
 fn verify(m: usize, transcript: &fiat_shamir::transcript::Proof) -> bool {
     let inner_rest_len = K_LOG - K_SKIP;
-    let mut vs = VerifierState::new(LABEL, transcript, &[]);
+    let mut vs = VerifierState::from_label(LABEL, transcript);
     let Ok(zc_v) = crate::zerocheck::verify(m, &mut vs) else {
         return false;
     };

@@ -65,7 +65,7 @@ fn hash_batch_prove_verify() {
         let witness_s = t.elapsed().as_secs_f64();
         assert_eq!(q_flock.len(), 1 << mu);
 
-        let mut ps = ProverState::new(b"flock-blake2s-batch", &[]);
+        let mut ps = ProverState::from_label(b"flock-blake2s-batch");
         let t_prove = Instant::now();
 
         let t = Instant::now();
@@ -119,7 +119,7 @@ fn hash_batch_prove_verify() {
     });
 
     let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|_final_pass| {
-        let mut vs = VerifierState::new(b"flock-blake2s-batch", &transcript, &[]);
+        let mut vs = VerifierState::from_label(b"flock-blake2s-batch", &transcript);
         let root = vs.next_root().expect("commitment root");
         let replay = setup.verify_reduction(&mut vs).expect("Flock reduction verifies");
         let ring = ring_switch_verify(n, 0, &replay.claim);

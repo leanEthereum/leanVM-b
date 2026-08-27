@@ -149,7 +149,7 @@ fn compress2(state: [F192; 2], block: [F192; 2]) -> [F192; 2] {
 /// A domain-separated two-cell IV, so the guest's two plain BLAKE2s chains
 /// cannot be confused with each other or with a Fiat-Shamir state.
 fn chain_iv(label: &[u8]) -> [F192; 2] {
-    pack_state(FiatShamirState::new(label, &[]).state())
+    pack_state(FiatShamirState::from_label(label).state())
 }
 
 /// A 16-byte native value as one canonical 128-bit cell.
@@ -820,7 +820,7 @@ fn aggregate_deferred_claims(
     let kbcv = bytecode_vars();
     let klog = flock::hash::K_LOG;
 
-    let mut transcript = FiatShamirState::new(RECURSION_AGG_LABEL, &[]);
+    let mut transcript = FiatShamirState::from_label(RECURSION_AGG_LABEL);
     transcript.observe(count(child_count));
     for (subproof, carried) in subproofs.iter().zip(carried_claims) {
         transcript.observe(subproof.public_input[0]);
@@ -2558,10 +2558,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("LOG2_BYTECODE_COLS", log2_bc_cols.to_string());
     ps("DEFER_SIZE", (kbc + log2_bc_cols + 2 * lcrounds + 68).to_string());
     ps("BYTECODE_VARS", (kbc + log2_bc_cols).to_string());
-    let label_state = pack_state(FiatShamirState::new(b"leanvm-b", &[]).state());
-    ps("TRANSCRIPT_SEED_0", dsl_u128(label_state[0]).to_string());
-    ps("TRANSCRIPT_SEED_1", dsl_u128(label_state[1]).to_string());
-    let agg_state = pack_state(FiatShamirState::new(RECURSION_AGG_LABEL, &[]).state());
+    let agg_state = pack_state(FiatShamirState::from_label(RECURSION_AGG_LABEL).state());
     ps("AGG_SEED_0", dsl_u128(agg_state[0]).to_string());
     ps("AGG_SEED_1", dsl_u128(agg_state[1]).to_string());
     let tag = label_tag(RECURSION_STATEMENT_LABEL);

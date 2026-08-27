@@ -2419,7 +2419,7 @@ mod tests {
         let point: Vec<F192> = (0..log_n).map(|_| rng.ext()).collect();
         let b_initial = build_eq_table_ext(&point);
         let target = inner_product_base_ext(&witness, &b_initial);
-        let mut ps = fiat_shamir::transcript::ProverState::new(b"whir-test", &[]);
+        let mut ps = fiat_shamir::transcript::ProverState::from_label(b"whir-test");
         recursive_prover_with_basis(
             &pc,
             log_n,
@@ -2442,7 +2442,7 @@ mod tests {
     }
 
     fn verify_instance(inst: &Instance, fs: &fiat_shamir::transcript::Proof) -> bool {
-        let mut vs = fiat_shamir::transcript::VerifierState::new(b"whir-test", fs, &[]);
+        let mut vs = fiat_shamir::transcript::VerifierState::from_label(b"whir-test", fs);
         recursive_verifier_with_basis(
             &inst.vc,
             1 << inst.vc.initial_k,
@@ -2455,7 +2455,7 @@ mod tests {
 
     /// Succinct verify with the eq weight evaluated at the terminal fold point.
     fn verify_succinct_instance(inst: &Instance, fs: &fiat_shamir::transcript::Proof) -> bool {
-        let mut vs = fiat_shamir::transcript::VerifierState::new(b"whir-test", fs, &[]);
+        let mut vs = fiat_shamir::transcript::VerifierState::from_label(b"whir-test", fs);
         let point = &inst.point;
         recursive_verifier_with_basis_succinct(
             &inst.vc,
@@ -2642,7 +2642,7 @@ mod tests {
 
                 let prove = |msg: &[F64], b: &[F192]| {
                     let (cm, pd) = commit(msg, log_n, pc.initial_k, pc.log_inv_rates[0]);
-                    let mut ps = fiat_shamir::transcript::ProverState::new(b"whir-test", &[]);
+                    let mut ps = fiat_shamir::transcript::ProverState::from_label(b"whir-test");
                     recursive_prover_with_basis(
                         &pc,
                         log_n,
@@ -2677,7 +2677,7 @@ mod tests {
                     );
                 }
 
-                let mut vs = fiat_shamir::transcript::VerifierState::new(b"whir-test", &fs_trunc, &[]);
+                let mut vs = fiat_shamir::transcript::VerifierState::from_label(b"whir-test", &fs_trunc);
                 assert!(
                     recursive_verifier_with_basis(&pc, n_lanes, &b_initial, target, &root_trunc, &mut vs),
                     "dense verify failed at n_lanes = {n_lanes}"
@@ -2689,7 +2689,7 @@ mod tests {
                 if n_lanes < leaf_words {
                     let mut bad_fs = fs_trunc.clone();
                     bad_fs.merkle[0].leaf_data[0].push(F64::ZERO);
-                    let mut vs = fiat_shamir::transcript::VerifierState::new(b"whir-test", &bad_fs, &[]);
+                    let mut vs = fiat_shamir::transcript::VerifierState::from_label(b"whir-test", &bad_fs);
                     assert!(
                         !recursive_verifier_with_basis(&pc, n_lanes, &b_initial, target, &root_trunc, &mut vs),
                         "a wrong-width row was accepted at n_lanes = {n_lanes}"

@@ -335,8 +335,6 @@ mod tests {
             .collect()
     }
 
-    const SEED: [F192; 2] = [F192::ONE, F192::ZERO];
-
     /// The eq point and `η` are the caller's; the tests fix them.
     fn xi_zeta(taus: &[usize]) -> (F192, Vec<F192>) {
         let n = taus.iter().copied().max().unwrap_or(0);
@@ -351,11 +349,11 @@ mod tests {
         let airs = airs_for(taus, false);
         let (xi, zeta) = xi_zeta(taus);
         let zeros = vec![F192::ZERO; taus.len()];
-        let mut ps = ProverState::new(b"zc-test", &SEED);
+        let mut ps = ProverState::from_label(b"zc-test");
         let views: Vec<Vec<&[F64]>> = cols.iter().map(|t| t.iter().map(|c| &c[..]).collect()).collect();
         let pclaims = prove(&airs, &views, xi, &zeta, &zeros, &mut ps);
         let proof = ps.into_proof();
-        let mut vs = VerifierState::new(b"zc-test", &proof, &SEED);
+        let mut vs = VerifierState::from_label(b"zc-test", &proof);
         let vclaims = verify(&airs, xi, &zeta, F192::ZERO, &mut vs);
         if let Ok(vc) = &vclaims {
             assert_eq!(&pclaims, vc);
@@ -409,11 +407,11 @@ mod tests {
         let settle = |sig: &[F192], cols: Vec<Vec<Vec<F64>>>| -> Result<Vec<Claims>, Error> {
             let airs = airs_for(&taus, true);
             let target = sig.iter().fold(F192::ZERO, |a, &b| a + b);
-            let mut ps = ProverState::new(b"zc-test", &SEED);
+            let mut ps = ProverState::from_label(b"zc-test");
             let views: Vec<Vec<&[F64]>> = cols.iter().map(|t| t.iter().map(|c| &c[..]).collect()).collect();
             let pclaims = prove(&airs, &views, xi, &zeta, sig, &mut ps);
             let proof = ps.into_proof();
-            let mut vs = VerifierState::new(b"zc-test", &proof, &SEED);
+            let mut vs = VerifierState::from_label(b"zc-test", &proof);
             let out = verify(&airs, xi, &zeta, target, &mut vs);
             if let Ok(vc) = &out {
                 assert_eq!(&pclaims, vc);
@@ -444,7 +442,7 @@ mod tests {
         for i in 0..proof.stream.len() {
             let mut bad = proof.clone();
             bad.stream[i] += F192::ONE;
-            let mut vs = VerifierState::new(b"zc-test", &bad, &SEED);
+            let mut vs = VerifierState::from_label(b"zc-test", &bad);
             assert!(
                 verify(&airs, xi, &zeta, F192::ZERO, &mut vs).is_err(),
                 "tampered word {i} must be rejected"

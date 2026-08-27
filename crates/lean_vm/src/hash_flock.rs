@@ -374,7 +374,7 @@ mod tests {
         let offset = stacked.placements[0].offset;
 
         // Prover: commit, then run ONLY the reduction (no PCS open).
-        let mut ps = ProverState::new(b"reduce", &[]);
+        let mut ps = ProverState::from_label(b"reduce");
         let _committed = crate::pcs::commit(&mut ps, &stacked.q, stacked.shape, crate::pcs::LOG_INV_RATE);
         let (z_packed, reduced) = prove_reduction(&blocks, &mut ps);
         let bundle = ps.into_proof();
@@ -384,7 +384,7 @@ mod tests {
         assert_eq!(&stacked.q[offset..offset + z_packed.len()], z_packed.as_slice());
 
         // Verifier: replay the reduction and recover the claims.
-        let mut vs = VerifierState::new(b"reduce", &bundle, &[]);
+        let mut vs = VerifierState::from_label(b"reduce", &bundle);
         let _root = crate::pcs::read_commitment(&mut vs).unwrap();
         let replay = verify_reduction(blocks.len(), &mut vs).expect("reduction verifies");
 
@@ -393,7 +393,7 @@ mod tests {
 
         // A mismatched transcript domain diverges the state, so the recovered
         // claims must NOT match the prover's (the reduction is transcript-bound).
-        let mut vs_bad = VerifierState::new(b"different", &bundle, &[]);
+        let mut vs_bad = VerifierState::from_label(b"different", &bundle);
         let _root_b = crate::pcs::read_commitment(&mut vs_bad).unwrap();
         if let Ok(replay_b) = verify_reduction(blocks.len(), &mut vs_bad) {
             assert!(
@@ -430,7 +430,7 @@ mod tests {
             value: pd_value,
         }];
 
-        let mut ps = ProverState::new(b"vstack", &[]);
+        let mut ps = ProverState::from_label(b"vstack");
         let committed = crate::pcs::commit(&mut ps, &stacked.q, stacked.shape, crate::pcs::LOG_INV_RATE);
         let (_z, reduced) = prove_reduction(&blocks, &mut ps);
         let ring = ring_switch_open(blocks.len(), offset, &reduced);
@@ -438,7 +438,7 @@ mod tests {
         let bundle = ps.into_proof();
 
         let run = |label: &'static [u8], points: &[crate::pcs::SlotClaim]| -> Result<(), &'static str> {
-            let mut vs = VerifierState::new(label, &bundle, &[]);
+            let mut vs = VerifierState::from_label(label, &bundle);
             let root = crate::pcs::read_commitment(&mut vs).map_err(|_| "root")?;
             let replay = verify_reduction(blocks.len(), &mut vs).map_err(|_| "reduction")?;
             let ring = ring_switch_verify(blocks.len(), offset, &replay.claim);

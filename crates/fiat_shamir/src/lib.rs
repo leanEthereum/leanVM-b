@@ -20,20 +20,23 @@ pub fn compress(a: [F64; 4], b: [F64; 4]) -> [F64; 4] {
     for (slot, w) in input.as_chunks_mut::<8>().0.iter_mut().zip(a.into_iter().chain(b)) {
         *slot = w.0.to_le_bytes();
     }
-    let digest = primitives::hash::hash(&input);
+    digest_words(&primitives::hash::hash(&input))
+}
+
+/// A 32-byte digest as the four little-endian words the chain runs in.
+pub fn digest_words(digest: &[u8; 32]) -> [F64; 4] {
     std::array::from_fn(|index| F64(u64::from_le_bytes(digest[8 * index..8 * index + 8].try_into().unwrap())))
 }
 
-// Domain-separation tags. EVERY block puts its tag in lane 3 and its data in
-// lanes 0..=2, so one role is one constant in one place. The tag lane is never
-// adversary-controlled, so distinct constants are all it takes to make two roles
-// unable to alias.
+// Domain-separation tags. EVERY absorbed block puts its tag in lane 3 and its
+// data in lanes 0..=2, so one role is one constant in one place. The tag lane is
+// never adversary-controlled, so distinct constants are all it takes to make two
+// roles unable to alias. The seeding block ([`FiatShamirState::new`]) is the
+// exception: it is fixed at the head of the chain, so its position is its tag.
 const DS_SCALAR: F64 = F64(1);
-const DS_BYTE: F64 = F64(2);
-const DS_LEN: F64 = F64(3);
-const DS_SQUEEZE: F64 = F64(4);
-const DS_POW_BASE: F64 = F64(5);
-const DS_POW_NONCE: F64 = F64(6);
+const DS_SQUEEZE: F64 = F64(2);
+const DS_POW_BASE: F64 = F64(3);
+const DS_POW_NONCE: F64 = F64(4);
 
 /// `compress(base, (nonce.c0, nonce.c1, nonce.c2, DS_POW_NONCE))` has its low `bits`
 /// bits zero: the grinding predicate over the VM compression. A CONTIGUOUS
@@ -57,37 +60,30 @@ pub struct FiatShamirState {
 }
 
 impl FiatShamirState {
-    /// Seed with the domain `label` and the PUBLIC `statement` scalars (the public
-    /// input). Both sides seed identically, so the whole statement is bound before
-    /// any challenge; there is no mid-protocol "observe public data" step to get
-    /// wrong (or forget).
-    pub fn new(label: &[u8], statement: &[F192]) -> Self {
-        let mut s = Self { cv: [F64::ZERO; 4] };
-        s.absorb_bytes(b"leanvm-b/transcript/v4-blake2s");
-        s.absorb_bytes(label);
-        for &x in statement {
-            s.observe(x);
+    /// Seed from two 256-bit digests: `iv` names everything fixed about the
+    /// proving environment (the domain, the circuit, the program) and IS the
+    /// starting chaining value, and `public_input` is the one block absorbed
+    /// before any challenge. So a transcript opens on a single compression, and
+    /// the whole statement is bound before anything is sampled; there is no
+    /// mid-protocol "observe public data" step to get wrong (or forget).
+    pub fn new(iv: [F64; 4], public_input: [F64; 4]) -> Self {
+        Self {
+            cv: compress(iv, public_input),
         }
-        s
+    }
+
+    /// Seed a protocol that has no public input of its own: `BLAKE2s(label)` is
+    /// the chaining value, which is all a domain separator has to be.
+    pub fn from_label(label: &[u8]) -> Self {
+        Self {
+            cv: digest_words(&primitives::hash::hash(label)),
+        }
     }
 
     /// Absorb one 24-byte scalar (three little-endian `K` limbs):
     /// `cv ← compress(cv, (c0, c1, c2, DS_SCALAR))`.
     pub fn observe(&mut self, x: F192) {
         self.cv = compress(self.cv, [F64(x.c0), F64(x.c1), F64(x.c2), DS_SCALAR]);
-    }
-
-    /// Absorb a byte string (a protocol label, a Merkle root): a length frame,
-    /// then its 24-byte (three-word) chunks as `DS_BYTE` blocks, so a field
-    /// element, a raw integer, and a byte string cannot alias.
-    fn absorb_bytes(&mut self, bytes: &[u8]) {
-        self.cv = compress(self.cv, [F64(bytes.len() as u64), F64::ZERO, F64::ZERO, DS_LEN]);
-        for chunk in bytes.chunks(24) {
-            let mut buf = [0u8; 24];
-            buf[..chunk.len()].copy_from_slice(chunk);
-            let word_at = |offset: usize| F64(u64::from_le_bytes(buf[offset..offset + 8].try_into().unwrap()));
-            self.cv = compress(self.cv, [word_at(0), word_at(8), word_at(16), DS_BYTE]);
-        }
     }
 
     /// Squeeze a challenge and ratchet: the challenge's three limbs are the
@@ -186,41 +182,39 @@ mod tests {
         F192::new(k, k ^ 0x1234, k.rotate_left(17))
     }
 
+    fn pi(k: u64) -> [F64; 4] {
+        std::array::from_fn(|i| F64(k + i as u64))
+    }
+
     #[test]
-    fn fs_binds_observations() {
-        let mut a = FiatShamirState::new(b"t", &[f(1), f(2)]);
-        let mut b = FiatShamirState::new(b"t", &[f(1), f(3)]);
+    fn fs_binds_the_public_input() {
+        let iv = digest_words(&primitives::hash::hash(b"t"));
+        let mut a = FiatShamirState::new(iv, pi(1));
+        let mut b = FiatShamirState::new(iv, pi(2));
+        assert_ne!(a.sample(), b.sample());
+    }
+
+    #[test]
+    fn fs_binds_the_iv() {
+        let mut a = FiatShamirState::new(digest_words(&primitives::hash::hash(b"t")), pi(1));
+        let mut b = FiatShamirState::new(digest_words(&primitives::hash::hash(b"u")), pi(1));
         assert_ne!(a.sample(), b.sample());
     }
 
     #[test]
     fn fs_binds_order() {
-        let mut a = FiatShamirState::new(b"t", &[]);
+        let mut a = FiatShamirState::from_label(b"t");
         a.observe(f(1));
         a.observe(f(2));
-        let mut b = FiatShamirState::new(b"t", &[]);
+        let mut b = FiatShamirState::from_label(b"t");
         b.observe(f(2));
         b.observe(f(1));
         assert_ne!(a.sample(), b.sample());
     }
 
     #[test]
-    fn fs_domain_separation() {
-        let x = f(9);
-        let mut a = FiatShamirState::new(b"t", &[]);
-        a.observe(x);
-        let mut b = FiatShamirState::new(b"t", &[]);
-        let mut bytes = [0u8; 24];
-        bytes[..8].copy_from_slice(&x.c0.to_le_bytes());
-        bytes[8..16].copy_from_slice(&x.c1.to_le_bytes());
-        bytes[16..].copy_from_slice(&x.c2.to_le_bytes());
-        b.absorb_bytes(&bytes);
-        assert_ne!(a.sample(), b.sample());
-    }
-
-    #[test]
     fn pow_predicate() {
-        let sp = FiatShamirState::new(b"t", &[f(1)]);
+        let sp = FiatShamirState::new(digest_words(&primitives::hash::hash(b"t")), pi(1));
         let base = sp.pow_base();
         let good = {
             let mut clone = sp.clone();
@@ -237,7 +231,7 @@ mod tests {
 
     #[test]
     fn pow_accepts_and_binds_full_field_nonce() {
-        let mut verifier = FiatShamirState::new(b"t", &[f(1)]);
+        let mut verifier = FiatShamirState::new(digest_words(&primitives::hash::hash(b"t")), pi(1));
         let base = verifier.pow_base();
         let nonce = (0..u64::MAX)
             .map(|lo| F192::new(lo, 1, 2))
@@ -249,7 +243,7 @@ mod tests {
         assert!(verifier.verify_pow_field(nonce, 8));
         assert_eq!(verifier.state(), expected.state());
 
-        let mut zero_bits = FiatShamirState::new(b"t", &[f(1)]);
+        let mut zero_bits = FiatShamirState::new(digest_words(&primitives::hash::hash(b"t")), pi(1));
         assert!(!zero_bits.verify_pow_field(F192::new(0, 1, 0), 0));
     }
 }
