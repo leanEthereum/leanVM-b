@@ -144,6 +144,40 @@ theorem LazyRevealProbe.ValuesLE.trans
   intro coordinate output hvalue
   exact hright coordinate output (hleft coordinate output hvalue)
 
+def LazyRevealProbe.EnsuredLE (initial final : LazyRevealProbe.State Coordinate) : Prop :=
+  initial.ensured ⊆ final.ensured
+
+theorem LazyRevealProbe.EnsuredLE.refl (state : LazyRevealProbe.State Coordinate) :
+    LazyRevealProbe.EnsuredLE state state := by
+  exact fun _ hcoordinate => hcoordinate
+
+theorem LazyRevealProbe.EnsuredLE.trans
+    {first second third : LazyRevealProbe.State Coordinate}
+    (hleft : LazyRevealProbe.EnsuredLE first second)
+    (hright : LazyRevealProbe.EnsuredLE second third) :
+    LazyRevealProbe.EnsuredLE first third := by
+  exact fun coordinate hcoordinate => hright (hleft hcoordinate)
+
+theorem LazyRevealProbe.ensuredLE_ensure (state : LazyRevealProbe.State Coordinate)
+    (coordinate : Coordinate) : LazyRevealProbe.EnsuredLE state (state.ensure coordinate) := by
+  intro other hother
+  simp [LazyRevealProbe.State.ensure, hother]
+
+theorem LazyRevealProbe.ensuredLE_addPending (state : LazyRevealProbe.State Coordinate)
+    (coordinate : Coordinate) (candidate : Digest) :
+    LazyRevealProbe.EnsuredLE state (state.addPending coordinate candidate) := by
+  exact fun _ hcoordinate => hcoordinate
+
+theorem LazyRevealProbe.ensuredLE_publish (state : LazyRevealProbe.State Coordinate)
+    (coordinate : Coordinate) : LazyRevealProbe.EnsuredLE state (state.publish coordinate) := by
+  exact fun _ hcoordinate => hcoordinate
+
+theorem LazyRevealProbe.ensuredLE_materialize (state : LazyRevealProbe.State Coordinate)
+    (coordinate : Coordinate) (sampled : HashOutput) :
+    LazyRevealProbe.EnsuredLE state (state.materialize coordinate sampled) := by
+  intro other hother
+  simp [LazyRevealProbe.State.materialize, hother]
+
 theorem LazyRevealProbe.valuesLE_ensure (state : LazyRevealProbe.State Coordinate)
     (coordinate : Coordinate) : LazyRevealProbe.ValuesLE state (state.ensure coordinate) := by
   intro other output hvalue
@@ -235,6 +269,70 @@ theorem LazyRevealProbe.valuesLE_of_mem_runRaw_done
                 exact (LazyRevealProbe.valuesLE_materialize_of_none state coordinate output
                   hvalue).trans (ih output (state.materialize coordinate output) finalState fuel
                     remaining value htail)
+
+theorem LazyRevealProbe.ensuredLE_of_mem_runRaw_done
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (state finalState : LazyRevealProbe.State Coordinate) (fuel remaining : Nat)
+    (value : alpha)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining value ∈
+      support (LazyRevealProbe.runRaw state fuel computation)) :
+    LazyRevealProbe.EnsuredLE state finalState := by
+  induction computation using OracleComp.inductionOn generalizing
+      state finalState fuel remaining value with
+  | pure result =>
+      simp [LazyRevealProbe.runRaw] at hresult
+      rcases hresult with ⟨rfl, rfl, rfl⟩
+      exact fun _ hcoordinate => hcoordinate
+  | query_bind input next ih =>
+      cases input with
+      | uniform n =>
+          rw [LazyRevealProbe.runRaw_uniform_query_bind, mem_support_bind_iff] at hresult
+          obtain ⟨output, _, htail⟩ := hresult
+          exact ih output state finalState fuel remaining value htail
+      | hashOutput =>
+          rw [LazyRevealProbe.runRaw_hashOutput_query_bind, mem_support_bind_iff] at hresult
+          obtain ⟨output, _, htail⟩ := hresult
+          exact ih output state finalState fuel remaining value htail
+      | ensure coordinate =>
+          rw [LazyRevealProbe.runRaw_ensure_query_bind] at hresult
+          exact (LazyRevealProbe.ensuredLE_ensure state coordinate).trans
+            (ih () (state.ensure coordinate) finalState fuel remaining value hresult)
+      | probe coordinate candidate =>
+          rw [LazyRevealProbe.runRaw_probe_query_bind] at hresult
+          cases fuel with
+          | zero => simp at hresult
+          | succ remainingFuel =>
+              simp only at hresult
+              by_cases hrevealed : coordinate ∈ state.revealed
+              · rw [if_pos hrevealed] at hresult
+                exact ih () state finalState remainingFuel remaining value hresult
+              · rw [if_neg hrevealed] at hresult
+                exact (LazyRevealProbe.ensuredLE_addPending state coordinate candidate).trans
+                  (ih () (state.addPending coordinate candidate) finalState remainingFuel
+                    remaining value hresult)
+      | peek coordinate =>
+          rw [LazyRevealProbe.runRaw_peek_query_bind] at hresult
+          exact ih (state.values coordinate) state finalState fuel remaining value hresult
+      | publish coordinate =>
+          rw [LazyRevealProbe.runRaw_publish_query_bind] at hresult
+          exact (LazyRevealProbe.ensuredLE_publish state coordinate).trans
+            (ih () (state.publish coordinate) finalState fuel remaining value hresult)
+      | reveal coordinate =>
+          rw [LazyRevealProbe.runRaw_reveal_query_bind] at hresult
+          cases hvalue : state.values coordinate with
+          | some output =>
+              rw [hvalue] at hresult
+              exact ih output state finalState fuel remaining value hresult
+          | none =>
+              rw [hvalue, mem_support_bind_iff] at hresult
+              obtain ⟨output, _, htail⟩ := hresult
+              by_cases hhit : state.hitAt coordinate output
+              · rw [if_pos hhit] at htail
+                simp at htail
+              · rw [if_neg hhit] at htail
+                exact (LazyRevealProbe.ensuredLE_materialize state coordinate output).trans
+                  (ih output (state.materialize coordinate output) finalState fuel remaining
+                    value htail)
 
 theorem mem_runRaw_splitHashQuery_ordinary_projects
     (input : HashInput) (state finalState : LazyRevealProbe.State Coordinate)
@@ -3338,6 +3436,7 @@ theorem sequenceFin_component_run_of_done {n : Nat}
           ((computation position).run componentCache))
         ∧ values position = componentValue
         ∧ LazyRevealProbe.ValuesLE componentFinalState finalState
+        ∧ LazyRevealProbe.EnsuredLE componentFinalState finalState
         ∧ ordinaryQueryCache componentFinalCache ≤ ordinaryQueryCache finalCache := by
   induction n generalizing state finalState cache finalCache fuel remaining with
   | zero => exact position.elim0
@@ -3360,6 +3459,9 @@ theorem sequenceFin_component_run_of_done {n : Nat}
               have htailValues := LazyRevealProbe.valuesLE_of_mem_runRaw_done
                 ((sequenceFin fun tailPosition => computation tailPosition.succ).run headCache)
                 headState tailState headRemaining tailRemaining (tail, tailCache) htail
+              have htailEnsured := LazyRevealProbe.ensuredLE_of_mem_runRaw_done
+                ((sequenceFin fun tailPosition => computation tailPosition.succ).run headCache)
+                headState tailState headRemaining tailRemaining (tail, tailCache) htail
               have htailCache := ordinaryCacheIncreasing_sequenceFin
                 (fun tailPosition => computation tailPosition.succ)
                 (fun tailPosition => hincreasing tailPosition.succ)
@@ -3369,7 +3471,7 @@ theorem sequenceFin_component_run_of_done {n : Nat}
               cases position using Fin.cases with
               | zero =>
                   exact ⟨state, headState, cache, headCache, fuel, headRemaining, head,
-                    hhead, rfl, htailValues, htailCache⟩
+                    hhead, rfl, htailValues, htailEnsured, htailCache⟩
               | succ tailPosition =>
                   exact ih
                     (computation := fun position => computation position.succ)
@@ -4489,6 +4591,7 @@ theorem maskedSignLayers_component_run
           ((maskedSignLayerAt parameter ftsSecret index lay).run componentCache))
         ∧ layers lay = part
         ∧ LazyRevealProbe.ValuesLE componentFinalState finalState
+        ∧ LazyRevealProbe.EnsuredLE componentFinalState finalState
         ∧ ordinaryQueryCache componentFinalCache ≤ ordinaryQueryCache finalCache := by
   rw [maskedSignLayers_eq] at hresult
   exact sequenceFin_component_run_of_done
@@ -4834,7 +4937,7 @@ theorem maskedSignLayers_parts_eval
       (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) index parts := by
   intro lay
   obtain ⟨componentState, componentFinalState, componentCache, componentFinalCache,
-    componentFuel, componentRemaining, part, hcomponent, hselected, hvaluesLE, hcacheLE⟩ :=
+    componentFuel, componentRemaining, part, hcomponent, hselected, hvaluesLE, _, hcacheLE⟩ :=
       maskedSignLayers_component_run parameter ftsSecret index state finalState cache finalCache
         fuel remaining layers hresult lay
   have hpartsAt := traverseOption_eq_some_apply layers parts hparts lay

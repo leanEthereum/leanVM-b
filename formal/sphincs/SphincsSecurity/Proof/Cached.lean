@@ -16,6 +16,23 @@ def CachedRun {alpha : Type} (cache : QueryCache HashSpec) (f : QueryImpl HashSp
     (oa : OracleComp HashSpec alpha) : Prop :=
   ∀ input ∈ queriedInputs f oa, cache input ≠ none
 
+theorem CachedRun.pure {alpha : Type} (cache : QueryCache HashSpec)
+    (f : QueryImpl HashSpec Id) (value : alpha) :
+    CachedRun cache f (pure value) := by
+  simp [CachedRun]
+
+theorem CachedRun.bind {alpha beta : Type} {cache : QueryCache HashSpec}
+    {f : QueryImpl HashSpec Id} {oa : OracleComp HashSpec alpha}
+    {next : alpha → OracleComp HashSpec beta}
+    (hleft : CachedRun cache f oa)
+    (hright : CachedRun cache f (next (evalWithAnswerFn f oa))) :
+    CachedRun cache f (oa >>= next) := by
+  intro input hinput
+  rw [queriedInputs_bind] at hinput
+  rcases List.mem_append.mp hinput with hinput | hinput
+  · exact hleft input hinput
+  · exact hright input hinput
+
 theorem CachedRun.bind_left {alpha beta : Type} {cache : QueryCache HashSpec}
     {f : QueryImpl HashSpec Id} {oa : OracleComp HashSpec alpha}
     {next : alpha → OracleComp HashSpec beta} (h : CachedRun cache f (oa >>= next)) :
@@ -116,6 +133,19 @@ theorem CachedRun.sequenceFin_component {alpha : Type} {n : Nat}
   intro input hinput
   apply h input
   exact Concrete.sequenceFin_component_query_mem f computation index hinput
+
+theorem CachedRun.sequenceFin {alpha : Type} {n : Nat}
+    {cache : QueryCache HashSpec} {f : QueryImpl HashSpec Id}
+    (computation : Fin n → OracleComp HashSpec alpha)
+    (hcomponent : ∀ index, CachedRun cache f (computation index)) :
+    CachedRun cache f (Concrete.sequenceFin computation) := by
+  induction n with
+  | zero => exact CachedRun.pure cache f _
+  | succ n ih =>
+      rw [Concrete.sequenceFin]
+      exact (hcomponent 0).bind <| (ih
+        (fun index : Fin n => computation index.succ)
+        (fun index => hcomponent index.succ)).bind <| CachedRun.pure cache f _
 
 namespace Concrete
 
