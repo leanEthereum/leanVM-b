@@ -10131,4 +10131,435 @@ theorem mem_runRaw_simulateQ_ordinaryRomImpl_projects
       (relTriple_runRaw_simulateQ_ordinaryRomImpl computation state cache fuel) hresult
   exact ⟨hrelation.1, hrelation.2.1, hrelation.2.2 ▸ hordinary⟩
 
+def ProbeFree
+    (computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha) : Prop :=
+  ∀ cache, (computation.run cache).IsQueryBoundP
+    (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) 0
+
+theorem ProbeFree.pure (value : alpha) :
+    ProbeFree (pure value : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha) := by
+  intro cache
+  simp
+
+theorem ProbeFree.modify (update : SplitHashCache → SplitHashCache) :
+    ProbeFree (modify update : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) Unit) := by
+  intro cache
+  simp
+
+theorem ProbeFree.get :
+    ProbeFree (get : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) SplitHashCache) := by
+  intro cache
+  simp
+
+theorem ProbeFree.bind
+    {left : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    {next : alpha → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) beta}
+    (hleft : ProbeFree left) (hnext : ∀ value, ProbeFree (next value)) :
+    ProbeFree (left >>= next) := by
+  intro cache
+  rw [StateT.run_bind]
+  have hbound := OracleComp.isQueryBoundP_bind (n := 0) (m := 0) (hleft cache)
+    (fun result _ => hnext result.1 result.2)
+  simpa using hbound
+
+theorem ProbeFree.map
+    {computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    (hcomputation : ProbeFree computation) (transform : alpha → beta) :
+    ProbeFree (transform <$> computation) := by
+  rw [map_eq_bind_pure_comp]
+  exact hcomputation.bind fun value => ProbeFree.pure (transform value)
+
+theorem splitHashQuery_run_isProbeBound (key : SplitHashKey)
+    (cache : SplitHashCache) (fuel : Nat) :
+    ((splitHashQuery key).run cache).IsQueryBoundP
+      (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) fuel := by
+  rw [splitHashQuery_run_eq]
+  cases hlookup : cache key with
+  | some output => simp
+  | none =>
+      change (LazyRevealProbe.hashOutputQuery (Coordinate := Coordinate) >>= fun output =>
+        pure (output, Function.update cache key (some output))).IsQueryBoundP
+          (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) fuel
+      exact OracleComp.isQueryBoundP_bind (n := fuel) (m := 0)
+        (LazyRevealProbe.hashOutputQuery_isProbeBound fuel) (fun _ _ => by simp)
+
+theorem splitHashQuery_probeFree (key : SplitHashKey) :
+    ProbeFree (splitHashQuery key) :=
+  fun cache => splitHashQuery_run_isProbeBound key cache 0
+
+theorem splitUniformImpl_probeFree (n : unifSpec.Domain) :
+    ProbeFree (splitUniformImpl n) := by
+  intro cache
+  change (((fun output : Fin (n + 1) => (output, cache)) <$>
+    LazyRevealProbe.uniformQuery (Coordinate := Coordinate) n).IsQueryBoundP
+      (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) 0)
+  rw [OracleComp.isQueryBoundP_map_iff, LazyRevealProbe.uniformQuery,
+    OracleComp.isQueryBoundP_query_iff]
+  simp [LazyRevealProbe.IsProbe]
+
+theorem peekCoordinate_probeFree (coordinate : Coordinate) :
+    ProbeFree (peekCoordinate coordinate) := by
+  intro cache
+  unfold peekCoordinate
+  rw [StateT.run_bind]
+  exact OracleComp.isQueryBoundP_bind (n := 0) (m := 0)
+    (by
+      change (LazyRevealProbe.peekQuery coordinate).IsQueryBoundP
+        (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) 0
+      exact LazyRevealProbe.peekQuery_isProbeBound coordinate 0)
+    (fun _ _ => by simp)
+
+theorem peekPositionValues_probeFree : ∀ positions,
+    ProbeFree (peekPositionValues positions)
+  | [] => ProbeFree.pure (some [])
+  | position :: remaining => by
+      rw [peekPositionValues]
+      exact (peekCoordinate_probeFree (.position position)).bind fun value => by
+        cases value with
+        | none => exact ProbeFree.pure none
+        | some value =>
+            exact (peekPositionValues_probeFree remaining).bind fun values => by
+              cases values with
+              | none => exact ProbeFree.pure none
+              | some values => exact ProbeFree.pure (some (value :: values))
+
+theorem peekTableInput_probeFree (parameter : PublicParameter) : ∀ coordinate,
+    ProbeFree (peekTableInput parameter coordinate)
+  | .chainStart _ _ _ _ => ProbeFree.pure none
+  | .position position => by
+      cases position with
+      | chain lay tree leafIdx chainIdx step =>
+          rw [peekTableInput]
+          split
+          · exact (peekCoordinate_probeFree (.chainStart lay tree leafIdx chainIdx)).bind
+              fun value => by
+                cases value with
+                | none => exact ProbeFree.pure none
+                | some value => exact ProbeFree.pure _
+          · exact (peekPositionValues_probeFree
+              (Position.chain lay tree leafIdx chainIdx step).children).bind fun values => by
+                cases values with
+                | none => exact ProbeFree.pure none
+                | some values => exact ProbeFree.pure _
+      | leaf lay tree leafIdx =>
+          rw [peekTableInput]
+          exact (peekPositionValues_probeFree
+            (Position.leaf lay tree leafIdx).children).bind fun values => by
+            cases values with
+            | none => exact ProbeFree.pure none
+            | some values => exact ProbeFree.pure _
+          all_goals simp
+      | node lay tree level nodeIdx =>
+          rw [peekTableInput]
+          exact (peekPositionValues_probeFree
+            (Position.node lay tree level nodeIdx).children).bind fun values => by
+              cases values with
+              | none => exact ProbeFree.pure none
+              | some values => exact ProbeFree.pure _
+          all_goals simp
+      | ftsLeaf index tree leafIdx =>
+          rw [peekTableInput]
+          exact (peekPositionValues_probeFree
+            (Position.ftsLeaf index tree leafIdx).children).bind fun values => by
+              cases values with
+              | none => exact ProbeFree.pure none
+              | some values => exact ProbeFree.pure _
+          all_goals simp
+      | ftsNode index tree level nodeIdx =>
+          rw [peekTableInput]
+          exact (peekPositionValues_probeFree
+            (Position.ftsNode index tree level nodeIdx).children).bind fun values => by
+              cases values with
+              | none => exact ProbeFree.pure none
+              | some values => exact ProbeFree.pure _
+          all_goals simp
+      | ftsRoots index =>
+          rw [peekTableInput]
+          exact (peekPositionValues_probeFree
+            (Position.ftsRoots index).children).bind fun values => by
+              cases values with
+              | none => exact ProbeFree.pure none
+              | some values => exact ProbeFree.pure _
+          all_goals simp
+
+theorem revealCoordinateOutput_probeFree (coordinate : Coordinate) :
+    ProbeFree (revealCoordinateOutput coordinate) := by
+  intro cache
+  change (LazyRevealProbe.revealQuery coordinate >>= fun output =>
+    pure (output, Function.update cache (.hidden coordinate) (some output))).IsQueryBoundP
+      (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) 0
+  exact OracleComp.isQueryBoundP_bind (n := 0) (m := 0)
+    (LazyRevealProbe.revealQuery_isProbeBound coordinate 0) (fun _ _ => by simp)
+
+theorem publishCoordinate_probeFree (coordinate : Coordinate) :
+    ProbeFree (publishCoordinate coordinate) := by
+  intro cache
+  unfold publishCoordinate
+  change (((fun value : Unit => (value, cache)) <$>
+    LazyRevealProbe.publishQuery coordinate).IsQueryBoundP
+      (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) 0)
+  rw [OracleComp.isQueryBoundP_map_iff]
+  exact LazyRevealProbe.publishQuery_isProbeBound coordinate 0
+
+theorem resolveKnownInput_probeFree (parameter : PublicParameter)
+    (coordinate : Coordinate) (input : HashInput) :
+    ProbeFree (resolveKnownInput parameter coordinate input) := by
+  unfold resolveKnownInput
+  exact (peekTableInput_probeFree parameter coordinate).bind fun knownInput => by
+    cases knownInput with
+    | none => exact splitHashQuery_probeFree (.ordinary input)
+    | some knownInput =>
+        change ProbeFree (if knownInput = input then do
+          let output ← revealCoordinateOutput coordinate
+          publishCoordinate coordinate
+          modify fun cache : SplitHashCache =>
+            Function.update cache (.ordinary input) (some output)
+          pure output
+        else splitHashQuery (.ordinary input))
+        by_cases hknown : knownInput = input
+        · rw [if_pos hknown]
+          exact (revealCoordinateOutput_probeFree coordinate).bind fun output =>
+            (publishCoordinate_probeFree coordinate).bind fun _ => by
+              exact (ProbeFree.modify fun cache : SplitHashCache =>
+                Function.update cache (.ordinary input) (some output)).bind fun _ =>
+                  ProbeFree.pure output
+        · rw [if_neg hknown]
+          exact splitHashQuery_probeFree (.ordinary input)
+
+theorem probe_run_isProbeBound (candidate : Probe) (cache : SplitHashCache) :
+    ((probe candidate).run cache).IsQueryBoundP
+      (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) 1 := by
+  unfold probe
+  change (((fun value : Unit => (value, cache)) <$>
+    LazyRevealProbe.probeQuery candidate.coordinate candidate.candidate).IsQueryBoundP
+      (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) 1)
+  rw [OracleComp.isQueryBoundP_map_iff]
+  exact LazyRevealProbe.probeQuery_isProbeBound candidate.coordinate candidate.candidate
+
+theorem probeFirstMissingInputCoordinate_run_isProbeBound
+    (input : HashInput) (slot : Nat) (coordinates : List Coordinate)
+    (cache : SplitHashCache) :
+    ((probeFirstMissingInputCoordinate input slot coordinates).run cache).IsQueryBoundP
+      (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) 1 := by
+  induction coordinates generalizing slot cache with
+  | nil => simp [probeFirstMissingInputCoordinate]
+  | cons coordinate remaining ih =>
+      rw [probeFirstMissingInputCoordinate, StateT.run_bind]
+      apply OracleComp.isQueryBoundP_bind (n := 0) (m := 1)
+      · exact peekCoordinate_probeFree coordinate cache
+      · intro result _
+        cases result.1 with
+        | none => exact probe_run_isProbeBound ⟨coordinate, slotDigest slot input⟩ result.2
+        | some value => exact ih (slot + 1) result.2
+
+theorem prepareLeafInputProbe_run_isProbeBound
+    (input : HashInput) (candidate : Probe) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (cache : SplitHashCache) :
+    ((prepareLeafInputProbe input candidate lay tree leafIdx).run cache).IsQueryBoundP
+      (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) 1 := by
+  unfold prepareLeafInputProbe
+  rw [StateT.run_bind]
+  apply OracleComp.isQueryBoundP_bind (n := 0) (m := 1)
+  · exact peekCoordinate_probeFree candidate.coordinate cache
+  · intro result _
+    cases result.1 with
+    | none => exact probe_run_isProbeBound candidate result.2
+    | some value =>
+        exact probeFirstMissingInputCoordinate_run_isProbeBound input 0
+          ((Position.leaf lay tree leafIdx).children.map Coordinate.position) result.2
+
+theorem probingHashQuery_run_isProbeBound (parameter : PublicParameter)
+    (input : HashInput) (cache : SplitHashCache) :
+    ((probingHashQuery parameter input).run cache).IsQueryBoundP
+      (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) 1 := by
+  unfold probingHashQuery
+  cases hprobe : decodeProbe? parameter input with
+  | some candidate =>
+      cases hposition : decodePosition? parameter input with
+      | none =>
+          apply OracleComp.isQueryBoundP_bind (n := 1) (m := 0)
+          · exact probe_run_isProbeBound candidate cache
+          · intro result _
+            exact resolveKnownInput_probeFree parameter candidate.outputCoordinate input result.2
+      | some position =>
+          cases position with
+          | leaf lay tree leafIdx =>
+              apply OracleComp.isQueryBoundP_bind (n := 1) (m := 0)
+              · exact prepareLeafInputProbe_run_isProbeBound input candidate lay tree leafIdx cache
+              · intro result _
+                exact resolveKnownInput_probeFree parameter candidate.outputCoordinate input result.2
+          | chain | node | ftsLeaf | ftsNode | ftsRoots =>
+              apply OracleComp.isQueryBoundP_bind (n := 1) (m := 0)
+              · exact probe_run_isProbeBound candidate cache
+              · intro result _
+                exact resolveKnownInput_probeFree parameter candidate.outputCoordinate input result.2
+  | none =>
+      cases hposition : decodePosition? parameter input with
+      | none => exact splitHashQuery_run_isProbeBound (.ordinary input) cache 1
+      | some position =>
+          cases position with
+          | chain lay tree leafIdx chainIdx step =>
+              change ((resolveKnownInput parameter
+                (.position (.chain lay tree leafIdx chainIdx step)) input).run cache).IsQueryBoundP
+                  (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) 1
+              exact (resolveKnownInput_probeFree parameter
+                (.position (.chain lay tree leafIdx chainIdx step)) input cache).mono (by omega)
+          | leaf lay tree leafIdx =>
+              change ((resolveKnownInput parameter
+                (.position (.leaf lay tree leafIdx)) input).run cache).IsQueryBoundP
+                  (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) 1
+              exact (resolveKnownInput_probeFree parameter
+                (.position (.leaf lay tree leafIdx)) input cache).mono (by omega)
+          | node lay tree level nodeIdx =>
+              change ((do
+                probeFirstMissingInputCoordinate input 0
+                  ((Position.node lay tree level nodeIdx).children.map Coordinate.position)
+                resolveKnownInput parameter (.position (.node lay tree level nodeIdx)) input).run
+                  cache).IsQueryBoundP
+                    (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) 1
+              apply OracleComp.isQueryBoundP_bind (n := 1) (m := 0)
+              · exact probeFirstMissingInputCoordinate_run_isProbeBound input 0
+                  ((Position.node lay tree level nodeIdx).children.map Coordinate.position) cache
+              · intro result _
+                exact resolveKnownInput_probeFree parameter
+                  (.position (.node lay tree level nodeIdx)) input result.2
+          | ftsLeaf | ftsNode | ftsRoots =>
+              exact splitHashQuery_run_isProbeBound (.ordinary input) cache 1
+
+theorem simulateQ_probingHashImpl_run_isProbeBound (parameter : PublicParameter)
+    (computation : OracleComp HashSpec alpha) (q : Nat)
+    (hbound : computation.IsQueryBoundP (fun _ => True) q)
+    (cache : SplitHashCache) :
+    ((simulateQ (probingHashImpl parameter) computation).run cache).IsQueryBoundP
+      (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) q := by
+  apply hbound.simulateQ_run_StateT_of_step
+    (q := LazyRevealProbe.IsProbe (Coordinate := Coordinate))
+  intro input workingCache
+  exact probingHashQuery_run_isProbeBound parameter input workingCache
+
+theorem revealCoordinate_probeFree (coordinate : Coordinate) :
+    ProbeFree (revealCoordinate coordinate) := by
+  unfold revealCoordinate
+  exact (revealCoordinateOutput_probeFree coordinate).bind fun output =>
+    ProbeFree.pure (truncateHash output)
+
+theorem revealPosition_probeFree (position : Position) :
+    ProbeFree (revealPosition position) :=
+  revealCoordinate_probeFree (.position position)
+
+theorem revealPositionValues_probeFree : ∀ positions,
+    ProbeFree (revealPositionValues positions)
+  | [] => ProbeFree.pure []
+  | position :: remaining => by
+      rw [revealPositionValues]
+      exact (revealPosition_probeFree position).bind fun value =>
+        (revealPositionValues_probeFree remaining).bind fun values =>
+          ProbeFree.pure (value :: values)
+
+theorem revealTableInputChildren_probeFree : ∀ coordinate,
+    ProbeFree (revealTableInputChildren coordinate)
+  | .chainStart _ _ _ _ => ProbeFree.pure ()
+  | .position position => by
+      cases position with
+      | chain lay tree leafIdx chainIdx step =>
+          rw [revealTableInputChildren]
+          split
+          · exact (revealCoordinate_probeFree
+                (.chainStart lay tree leafIdx chainIdx)).bind fun _ =>
+              ProbeFree.pure ()
+          · exact (revealPositionValues_probeFree
+                (Position.chain lay tree leafIdx chainIdx step).children).bind fun _ =>
+              ProbeFree.pure ()
+      | leaf lay tree leafIdx =>
+          rw [revealTableInputChildren]
+          exact (revealPositionValues_probeFree
+              (Position.leaf lay tree leafIdx).children).bind fun _ => ProbeFree.pure ()
+          all_goals simp
+      | node lay tree level nodeIdx =>
+          rw [revealTableInputChildren]
+          exact (revealPositionValues_probeFree
+              (Position.node lay tree level nodeIdx).children).bind fun _ => ProbeFree.pure ()
+          all_goals simp
+      | ftsLeaf index tree leafIdx =>
+          rw [revealTableInputChildren]
+          exact (revealPositionValues_probeFree
+              (Position.ftsLeaf index tree leafIdx).children).bind fun _ => ProbeFree.pure ()
+          all_goals simp
+      | ftsNode index tree level nodeIdx =>
+          rw [revealTableInputChildren]
+          exact (revealPositionValues_probeFree
+              (Position.ftsNode index tree level nodeIdx).children).bind fun _ => ProbeFree.pure ()
+          all_goals simp
+      | ftsRoots index =>
+          rw [revealTableInputChildren]
+          exact (revealPositionValues_probeFree
+              (Position.ftsRoots index).children).bind fun _ => ProbeFree.pure ()
+          all_goals simp
+
+theorem resolveVerifierInput_probeFree (parameter : PublicParameter)
+    (coordinate : Coordinate) (input : HashInput) :
+    ProbeFree (resolveVerifierInput parameter coordinate input) := by
+  unfold resolveVerifierInput
+  exact ProbeFree.get.bind fun cache => by
+    cases hcached : cache (.ordinary input) with
+    | some output => exact ProbeFree.pure output
+    | none =>
+        exact (revealTableInputChildren_probeFree coordinate).bind fun _ =>
+          resolveKnownInput_probeFree parameter coordinate input
+
+theorem verifierHashQuery_run_isProbeBound (parameter : PublicParameter)
+    (input : HashInput) (cache : SplitHashCache) :
+    ((verifierHashQuery parameter input).run cache).IsQueryBoundP
+      (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) 1 := by
+  unfold verifierHashQuery
+  cases hprobe : decodeProbe? parameter input with
+  | some candidate =>
+      apply OracleComp.isQueryBoundP_bind (n := 1) (m := 0)
+      · exact probe_run_isProbeBound candidate cache
+      · intro result _
+        exact resolveVerifierInput_probeFree parameter candidate.outputCoordinate input result.2
+  | none =>
+      cases hposition : decodePosition? parameter input with
+      | none => exact splitHashQuery_run_isProbeBound (.ordinary input) cache 1
+      | some position =>
+          cases position with
+          | chain lay tree leafIdx chainIdx step =>
+              change ((resolveVerifierInput parameter
+                (.position (.chain lay tree leafIdx chainIdx step)) input).run cache).IsQueryBoundP
+                  (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) 1
+              exact (resolveVerifierInput_probeFree parameter
+                (.position (.chain lay tree leafIdx chainIdx step)) input cache).mono (by omega)
+          | leaf lay tree leafIdx =>
+              change ((resolveVerifierInput parameter
+                (.position (.leaf lay tree leafIdx)) input).run cache).IsQueryBoundP
+                  (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) 1
+              exact (resolveVerifierInput_probeFree parameter
+                (.position (.leaf lay tree leafIdx)) input cache).mono (by omega)
+          | node lay tree level nodeIdx =>
+              change ((resolveVerifierInput parameter
+                (.position (.node lay tree level nodeIdx)) input).run cache).IsQueryBoundP
+                  (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) 1
+              exact (resolveVerifierInput_probeFree parameter
+                (.position (.node lay tree level nodeIdx)) input cache).mono (by omega)
+          | ftsLeaf | ftsNode | ftsRoots =>
+              exact splitHashQuery_run_isProbeBound (.ordinary input) cache 1
+
+theorem simulateQ_verifierHashImpl_run_isProbeBound (parameter : PublicParameter)
+    (computation : OracleComp HashSpec alpha) (q : Nat)
+    (hbound : computation.IsQueryBoundP (fun _ => True) q)
+    (cache : SplitHashCache) :
+    ((simulateQ (verifierHashImpl parameter) computation).run cache).IsQueryBoundP
+      (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) q := by
+  apply hbound.simulateQ_run_StateT_of_step
+    (q := LazyRevealProbe.IsProbe (Coordinate := Coordinate))
+  intro input workingCache
+  exact verifierHashQuery_run_isProbeBound parameter input workingCache
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
