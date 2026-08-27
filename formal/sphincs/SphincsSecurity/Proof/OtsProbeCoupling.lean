@@ -10823,4 +10823,140 @@ theorem maskedSigningImpl_probeFree (parameter : PublicParameter) (root : Digest
     ProbeFree (maskedSigningImpl parameter root ftsSecret message) :=
   maskedSign_probeFree parameter root ftsSecret message
 
+def IsOuterHash : (OracleWorld + SigningSpec).Domain → Prop
+  | .inl (.inr _) => True
+  | _ => False
+
+instance : DecidablePred IsOuterHash
+  | .inl (.inl _) => isFalse id
+  | .inl (.inr _) => isTrue trivial
+  | .inr _ => isFalse id
+
+theorem maskedExpandedAdversaryImpl_step_isProbeBound
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (input : (OracleWorld + SigningSpec).Domain) (cache : SplitHashCache) :
+    ((maskedExpandedAdversaryImpl parameter root ftsSecret input).run cache).IsQueryBoundP
+      (LazyRevealProbe.IsProbe (Coordinate := Coordinate))
+        (if IsOuterHash input then 1 else 0) := by
+  cases input with
+  | inl worldInput =>
+      cases worldInput with
+      | inl n =>
+          simpa [maskedExpandedAdversaryImpl, probingRomImpl, IsOuterHash] using
+            splitUniformImpl_probeFree n cache
+      | inr hashInput =>
+          simpa [maskedExpandedAdversaryImpl, probingRomImpl, probingHashImpl,
+            IsOuterHash] using probingHashQuery_run_isProbeBound parameter hashInput cache
+  | inr message =>
+      simpa [maskedExpandedAdversaryImpl, maskedSigningImpl, IsOuterHash] using
+        maskedSign_probeFree parameter root ftsSecret message cache
+
+theorem simulateQ_maskedExpandedAdversaryImpl_run_isProbeBound
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) alpha) (q : Nat)
+    (hbound : computation.IsQueryBoundP IsOuterHash q)
+    (cache : SplitHashCache) :
+    ((simulateQ (maskedExpandedAdversaryImpl parameter root ftsSecret)
+      computation).run cache).IsQueryBoundP
+        (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) q := by
+  apply hbound.simulateQ_run_StateT_of_step
+    (q := LazyRevealProbe.IsProbe (Coordinate := Coordinate))
+  exact maskedExpandedAdversaryImpl_step_isProbeBound parameter root ftsSecret
+
+noncomputable def maskedVerifierExpandedImpl (parameter : PublicParameter)
+    (root : Digest) (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    QueryImpl (OracleWorld + SigningSpec)
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))) :=
+  verifierRomImpl parameter + maskedSigningImpl parameter root ftsSecret
+
+theorem maskedVerifierExpandedImpl_step_isProbeBound
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (input : (OracleWorld + SigningSpec).Domain) (cache : SplitHashCache) :
+    ((maskedVerifierExpandedImpl parameter root ftsSecret input).run cache).IsQueryBoundP
+      (LazyRevealProbe.IsProbe (Coordinate := Coordinate))
+        (if IsOuterHash input then 1 else 0) := by
+  cases input with
+  | inl worldInput =>
+      cases worldInput with
+      | inl n =>
+          simpa [maskedVerifierExpandedImpl, verifierRomImpl, IsOuterHash] using
+            splitUniformImpl_probeFree n cache
+      | inr hashInput =>
+          simpa [maskedVerifierExpandedImpl, verifierRomImpl, verifierHashImpl,
+            IsOuterHash] using verifierHashQuery_run_isProbeBound parameter hashInput cache
+  | inr message =>
+      simpa [maskedVerifierExpandedImpl, maskedSigningImpl, IsOuterHash] using
+        maskedSign_probeFree parameter root ftsSecret message cache
+
+theorem isQueryBoundP_simulateQ_run_StateT_then_of_steps
+    {ι ι' : Type} {spec : OracleSpec ι} {spec' : OracleSpec ι'}
+    {stateType : Type} {sourcePredicate : ι → Prop} [DecidablePred sourcePredicate]
+    {targetPredicate : ι' → Prop} [DecidablePred targetPredicate]
+    {leftImpl rightImpl : QueryImpl spec (StateT stateType (OracleComp spec'))}
+    {left : OracleComp spec alpha} {next : alpha → OracleComp spec beta} {q : Nat}
+    (hbound : (left >>= next).IsQueryBoundP sourcePredicate q)
+    (hleftStep : ∀ input state,
+      ((leftImpl input).run state).IsQueryBoundP targetPredicate
+        (if sourcePredicate input then 1 else 0))
+    (hrightStep : ∀ input state,
+      ((rightImpl input).run state).IsQueryBoundP targetPredicate
+        (if sourcePredicate input then 1 else 0))
+    (initialState : stateType) :
+    ((simulateQ leftImpl left).run initialState >>= fun result =>
+      (simulateQ rightImpl (next result.1)).run result.2).IsQueryBoundP
+        targetPredicate q := by
+  induction left using OracleComp.inductionOn generalizing q initialState with
+  | pure value =>
+      simp only [pure_bind] at hbound
+      simpa [simulateQ_pure] using
+        hbound.simulateQ_run_StateT_of_step hrightStep initialState
+  | query_bind input continuation ih =>
+      rw [bind_assoc, OracleComp.isQueryBoundP_query_bind_iff] at hbound
+      rw [simulateQ_query_bind, StateT.run_bind, bind_assoc]
+      have hrest : ∀ result ∈ support ((leftImpl input).run initialState),
+          (((simulateQ leftImpl (continuation result.1)).run result.2) >>= fun nextResult =>
+            (simulateQ rightImpl (next nextResult.1)).run nextResult.2).IsQueryBoundP
+              targetPredicate
+                (if sourcePredicate input then q - 1 else q) := by
+        intro result _
+        exact ih result.1 (hbound.2 result.1) result.2
+      have hcombined := OracleComp.isQueryBoundP_bind
+        (hleftStep input initialState) hrest
+      refine hcombined.mono ?_
+      grind
+
+theorem maskedRetainedGameRest_run_isProbeBound
+    (adversary : Adversary) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (hbound : (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
+      IsOuterHash q) (cache : SplitHashCache) :
+    ((do
+      let (forgery, log) ←
+        simulateQ (maskedExpandedAdversaryImpl parameter root ftsSecret)
+          (signingTraceComputation (adversary.main ⟨root, parameter⟩))
+      let verified ← simulateQ (verifierRomImpl parameter)
+        (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)
+      pure ((forgery, log), verified)).run cache).IsQueryBoundP
+        (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) q := by
+  let adversaryPrefix := signingTraceComputation
+    (adversary.main (⟨root, parameter⟩ : PublicKey))
+  let finish : (Forgery × QueryLog SigningSpec) →
+      OracleComp (OracleWorld + SigningSpec) RetainedRestResult := fun result => do
+    let verified ← liftOracleWorldLeft
+      (scheme.verify ⟨root, parameter⟩ result.1.message result.1.signature)
+    pure (result, verified)
+  have hsource : (adversaryPrefix >>= finish).IsQueryBoundP IsOuterHash q := by
+    simpa [adversaryPrefix, finish, retainedGameRestComputation] using hbound
+  have hmixed := isQueryBoundP_simulateQ_run_StateT_then_of_steps
+    (leftImpl := maskedExpandedAdversaryImpl parameter root ftsSecret)
+    (rightImpl := maskedVerifierExpandedImpl parameter root ftsSecret)
+    hsource
+    (maskedExpandedAdversaryImpl_step_isProbeBound parameter root ftsSecret)
+    (maskedVerifierExpandedImpl_step_isProbeBound parameter root ftsSecret) cache
+  simpa [adversaryPrefix, finish, maskedVerifierExpandedImpl, simulateQ_bind,
+    simulateQ_liftOracleWorldLeft, StateT.run_bind] using hmixed
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
