@@ -5882,6 +5882,86 @@ theorem completionOrdinaryInput_of_pending_leaf_child
   rw [heq]
   exact hslot.symm
 
+theorem completionOrdinaryInput_of_pending_node_child
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {context : DeferredContext} {input : HashInput}
+    {lay : Layer} {tree : TreeIndex} {level : Fin maxLayerHeight}
+    {nodeIdx : LeafIndex} {prior remaining : List Position} {child : Position}
+    (hposition : decodePosition? parameter input = some (.node lay tree level nodeIdx))
+    (hchildren : (Position.node lay tree level nodeIdx).children =
+      prior ++ child :: remaining)
+    (hpending : (.position child, slotDigest prior.length input) ∈ context.state.pending) :
+    CompletionOrdinaryInput parameter table context input := by
+  intro completion hcompletion other _hots heq
+  have hdecodeOther : decodePosition? parameter input = some other := by
+    rw [heq]
+    exact (decodePosition?_eq_some_iff parameter _ other).2
+      ⟨tablePayload completion other, rfl⟩
+  have hother : other = .node lay tree level nodeIdx := by
+    rw [hposition] at hdecodeOther
+    exact Option.some.inj hdecodeOther.symm
+  subst other
+  have hslotLt : prior.length < (Position.node lay tree level nodeIdx).children.length := by
+    simp [hchildren]
+  have hslot := slotDigest_tableInput_node_getElem parameter completion lay tree level nodeIdx
+    prior.length hslotLt
+  have hchild : (Position.node lay tree level nodeIdx).children[prior.length] = child := by
+    simp [hchildren]
+  rw [hchild] at hslot
+  have havoids := hcompletion.2.2.1 (.position child) (slotDigest prior.length input) hpending
+  apply havoids
+  rw [heq]
+  exact hslot.symm
+
+theorem completionOrdinaryInput_of_decodeProbe_none_chain
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {context : DeferredContext} {input : HashInput}
+    {lay : Layer} {tree : TreeIndex} {leafIdx : LeafIndex}
+    {chainIdx : ChainIndex} {step : ChainStep}
+    (hprobe : decodeProbe? parameter input = none)
+    (hposition : decodePosition? parameter input =
+      some (.chain lay tree leafIdx chainIdx step)) :
+    CompletionOrdinaryInput parameter table context input := by
+  intro completion _hcompletion other _hots heq
+  have hdecodeOther : decodePosition? parameter input = some other := by
+    rw [heq]
+    exact (decodePosition?_eq_some_iff parameter _ other).2
+      ⟨tablePayload completion other, rfl⟩
+  have hother : other = .chain lay tree leafIdx chainIdx step := by
+    rw [hposition] at hdecodeOther
+    exact Option.some.inj hdecodeOther.symm
+  subst other
+  have hmatches := chainInputProbe_matchesInput parameter completion lay tree leafIdx chainIdx step
+  apply ((decodeProbe?_eq_none_iff parameter input).1 hprobe
+    (chainInputProbe completion lay tree leafIdx chainIdx step))
+  simpa [heq] using hmatches
+
+set_option maxRecDepth 100000 in
+theorem completionOrdinaryInput_of_decodeProbe_none_leaf
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {context : DeferredContext} {input : HashInput}
+    {lay : Layer} {tree : TreeIndex} {leafIdx : LeafIndex}
+    (hprobe : decodeProbe? parameter input = none)
+    (hposition : decodePosition? parameter input = some (.leaf lay tree leafIdx)) :
+    CompletionOrdinaryInput parameter table context input := by
+  intro completion _hcompletion other _hots heq
+  have hdecodeOther : decodePosition? parameter input = some other := by
+    rw [heq]
+    exact (decodePosition?_eq_some_iff parameter _ other).2
+      ⟨tablePayload completion other, rfl⟩
+  have hother : other = .leaf lay tree leafIdx := by
+    rw [hposition] at hdecodeOther
+    exact Option.some.inj hdecodeOther.symm
+  subst other
+  let candidate : Probe :=
+    ⟨.position (.chain lay tree leafIdx ⟨0, by norm_num [numChains]⟩
+      Position.lastChainStep), slotDigest 0 input⟩
+  apply ((decodeProbe?_eq_none_iff parameter input).1 hprobe candidate)
+  simp only [candidate, Probe.MatchesInput]
+  rw [dif_neg (by simp [Position.lastChainStep, chainLength, winternitzBits])]
+  exact ⟨trivial, tablePayload completion (.leaf lay tree leafIdx),
+    (by simpa [tableInput, Position.domain] using heq), trivial⟩
+
 theorem ChronologicalCacheAgrees.of_coreEq
     {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
     {left right : DeferredContext} {cache : QueryCache HashSpec}
@@ -7783,6 +7863,27 @@ noncomputable def resolvedRevealComputation
         let output ← oracleHash input
         pure (truncateHash output)
 
+theorem resolvedRevealComputation_run_eq_finalQuery_of_available
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (completion : Coordinate → HashOutput) (context : DeferredContext)
+    (cache : QueryCache HashSpec) (position : Position) (input : HashInput)
+    (hcompletion : DeferredCompletion table context completion)
+    (havailable : TableInputAvailable completion context.state (.position position))
+    (hclosed : VisibleResolvedComputationsCached parameter table context cache)
+    (hinput : input = tableInput parameter completion (.position position)) :
+    (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (resolvedRevealComputation parameter table position input)).run cache =
+      ((randomOracle input).run cache >>= fun result =>
+        pure (truncateHash result.1, result.2)) := by
+  classical
+  by_cases hresolvable : ResolvableOtsPosition position
+  · simpa [resolvedRevealComputation, hresolvable] using
+      resolvedPositionComputation_run_eq_finalQuery_of_available parameter table completion
+        context cache position input hcompletion hresolvable havailable hclosed hinput
+  · simp only [resolvedRevealComputation, hresolvable, ↓reduceIte, oracleHash,
+      simulateQ_bind, HasQuery.instOfMonadLift_query, simulateQ_spec_query, simulateQ_pure,
+      StateT.run_bind, StateT.run_pure]
+
 set_option maxRecDepth 100000 in
 theorem relTriple_resolveDeferredPosition_chronological
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
@@ -9020,6 +9121,134 @@ theorem relTriple_runResolvedFromTable_revealResolvablePositionOutput_chronologi
   rw [hrecover] at hmapped
   simpa [resolveDeferredReveal, hresolvable, materializeResolvedPosition] using hmapped
 
+set_option maxRecDepth 100000 in
+theorem relTriple_runResolvedFromTable_revealPositionOutput_chronological
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (completion : Coordinate → HashOutput) (position : Position) (input : HashInput)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (concreteCache : QueryCache HashSpec)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache)
+    (hcompletion : DeferredCompletion table context completion)
+    (hots : IsOtsPosition position)
+    (havailable : TableInputAvailable completion context.state (.position position))
+    (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hpublished : PublishedValues context.state)
+    (hinput : input = tableInput parameter completion (.position position)) :
+    RelTriple
+      (runResolvedFromTable context fuel table
+        ((revealCoordinateOutput (.position position)).run cache))
+      ((randomOracle input).run concreteCache)
+      (ReachableResolvedRunRel parameter table) := by
+  classical
+  by_cases hresolvable : ResolvableOtsPosition position
+  · exact relTriple_runResolvedFromTable_revealResolvablePositionOutput_chronological
+      parameter table completion position input context fuel cache concreteCache hinvariant
+        hcompletion hots hresolvable havailable hclosed hpublished hinput
+  · rw [runResolvedFromTable_revealCoordinateOutput]
+    have hcanonical : ∀ otherCompletion, DeferredCompletion table context otherCompletion →
+        input = tableInput parameter otherCompletion (.position position) := by
+      intro otherCompletion hotherCompletion
+      have hotherAvailable := havailable.changeTable hotherCompletion.1
+      exact hinput.trans (tableInput_eq_of_available parameter completion otherCompletion
+        context.state (.position position) havailable hotherAvailable)
+    have hresolve := relTriple_resolveDeferredReveal_chronological parameter table position input
+      context (ordinaryQueryCache cache) concreteCache hinvariant hots hcanonical
+    have hrun := resolvedRevealComputation_run_eq_finalQuery_of_available parameter table
+      completion context concreteCache position input hcompletion havailable hclosed hinput
+    rw [hrun] at hresolve
+    have hsupportedLeft :=
+      SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hresolve
+        (fun resolved => resolved ∈ support (resolveDeferredReveal table position context))
+        (fun resolved hresolved => hresolved)
+    have hsupported :=
+      SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hsupportedLeft
+    let recover : Digest × QueryCache HashSpec → HashOutput × QueryCache HashSpec :=
+      fun result => ((result.2 input).getD 0, result.2)
+    have hcore : RelTriple
+        (resolveDeferredReveal table position context >>= fun resolved =>
+          match resolved with
+          | none => pure none
+          | some resolved =>
+              pure (some ⟨materializeResolvedPosition context position resolved, fuel,
+                (resolved.output,
+                  Function.update cache (.hidden (.position position)) (some resolved.output)),
+                table⟩))
+        (((randomOracle input).run concreteCache >>= fun result =>
+          pure (truncateHash result.1, result.2)) >>= fun result => pure result)
+        (fun left right => ReachableResolvedRunRel parameter table left (recover right)) := by
+      apply relTriple_bind hsupported
+      intro resolved queryResult hrelation
+      rcases hrelation with ⟨⟨hresolvedRel, hresultSupport⟩, hrightSupport⟩
+      cases resolved with
+      | none =>
+          apply relTriple_pure_pure
+          trivial
+      | some resolved =>
+          apply relTriple_pure_pure
+          rcases queryResult with ⟨value, finalCache⟩
+          rcases hresolvedRel with ⟨_hvalue, hresultInvariant, hposition⟩
+          have hpositionSupport : (value, finalCache) ∈ support
+              ((simulateQ (randomOracle : QueryImpl HashSpec _)
+                (resolvedRevealComputation parameter table position input)).run concreteCache) := by
+            rw [hrun]
+            exact hrightSupport
+          have hreplay := replay_of_mem_support
+            (resolvedRevealComputation parameter table position input) concreteCache value finalCache
+              hpositionSupport (fromCache finalCache) (agreesWithFn_fromCache finalCache)
+          have hclosedFinal := hclosed.mono hreplay.1
+          have hvisible : VisibleResolvedComputationsCached parameter table
+              (materializeResolvedPosition context position resolved) finalCache := by
+            intro other output hotherResolvable hvisibleValue
+            by_cases heq : other = position
+            · subst other
+              exact (hresolvable hotherResolvable).elim
+            · apply hclosedFinal other output hotherResolvable
+              simpa [materializeResolvedPosition, LazyRevealProbe.State.materialize, heq] using
+                hvisibleValue
+          by_cases hcompletable : DeferredCompletable table
+              (materializeResolvedPosition context position resolved)
+          · have hcanonicalAfter : ∀ otherCompletion,
+                DeferredCompletion table resolved.toDeferredContext otherCompletion →
+                  input = tableInput parameter otherCompletion (.position position) := by
+              intro otherCompletion hotherCompletion
+              have horiginal := hotherCompletion.of_resolveDeferredReveal
+                hinvariant.2.1.valuesConsistent hinvariant.2.2.1 position resolved hresultSupport
+              have hotherAvailable := havailable.changeTable horiginal.1
+              exact hinput.trans (tableInput_eq_of_available parameter completion otherCompletion
+                context.state (.position position) havailable hotherAvailable)
+            have hcached : finalCache input = some resolved.output :=
+              hresultInvariant.concreteCache_eq_of_positionValue position hots resolved.output
+                hposition input hcanonicalAfter
+            refine Or.inl ⟨rfl, ?_, ?_, hvisible, ?_⟩
+            · simp [hcached]
+            · rw [ordinaryQueryCache_update_hidden]
+              exact hinvariant.materialize_resolvedReveal position resolved hresultSupport
+                hresultInvariant hcompletable
+            · simpa [materializeResolvedPosition] using
+                hpublished.materialize (.position position) resolved.output
+          · refine Or.inr ⟨rfl, ?_⟩
+            exact ⟨
+              hinvariant.2.1.valuesConsistent.materializeResolvedPosition_of table position
+                resolved hresultSupport,
+              by simpa [materializeResolvedPosition] using
+                hinvariant.2.2.1.materialize_position position resolved.output,
+              hcompletable⟩
+    have hmapped := relTriple_map
+      (R := ReachableResolvedRunRel parameter table) (f := id) (g := recover) hcore
+    have hrecover : recover <$> (((randomOracle input).run concreteCache >>= fun result =>
+          pure (truncateHash result.1, result.2)) >>= fun result => pure result) =
+        (randomOracle input).run concreteCache := by
+      cases hcache : concreteCache input with
+      | none =>
+          rw [QueryImpl.withCaching_run_none uniformSampleImpl hcache]
+          simp [recover, QueryCache.cacheQuery_self]
+      | some output =>
+          rw [QueryImpl.withCaching_run_some uniformSampleImpl hcache]
+          simp [recover, hcache]
+    rw [hrecover] at hmapped
+    simpa [materializeResolvedPosition] using hmapped
+
 theorem relTriple_runResolvedFromTable_revealChainStart_chronological
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
     (index : OtsSecretIndex) (context : DeferredContext) (fuel : Nat)
@@ -9723,6 +9952,83 @@ theorem relTriple_runResolvedFromTable_resolveKnownInput_completionCanonical_rea
             (publishOrdinaryInput (.position position) input result.value.1)
             (pure rightResult) result.context result.remaining result.value.2 hdoomed.2)
 
+set_option maxRecDepth 100000 in
+theorem relTriple_runResolvedFromTable_resolveKnownInput_completionCanonicalAny_reachable
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (completion : Coordinate → HashOutput) (position : Position) (input : HashInput)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (concreteCache : QueryCache HashSpec)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache)
+    (hcompletion : DeferredCompletion table context completion)
+    (hots : IsOtsPosition position)
+    (havailable : TableInputAvailable completion context.state (.position position))
+    (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hpublished : PublishedValues context.state)
+    (hinput : input = tableInput parameter completion (.position position)) :
+    RelTriple
+      (runResolvedFromTable context fuel table
+        ((resolveKnownInput parameter (.position position) input).run cache))
+      ((randomOracle input).run concreteCache)
+      (ReachableResolvedRunRel parameter table) := by
+  classical
+  by_cases hresolvable : ResolvableOtsPosition position
+  · exact relTriple_runResolvedFromTable_resolveKnownInput_completionCanonical_reachable
+      parameter table completion position input context fuel cache concreteCache hinvariant
+        hcompletion hots hresolvable havailable hclosed hpublished hinput
+  · unfold resolveKnownInput
+    rw [StateT.run_bind, runResolvedFromTable_bind,
+      runResolvedFromTable_peekTableInput_of_available parameter completion context fuel table
+        cache (.position position) havailable]
+    simp only [pure_bind]
+    rw [if_pos hinput.symm]
+    change RelTriple
+        (runResolvedFromTable context fuel table
+          ((revealCoordinateOutput (.position position) >>= fun output =>
+            publishOrdinaryInput (.position position) input output).run cache))
+        ((randomOracle input).run concreteCache)
+        (ReachableResolvedRunRel parameter table)
+    rw [StateT.run_bind, runResolvedFromTable_bind]
+    have hreveal :=
+      relTriple_runResolvedFromTable_revealPositionOutput_chronological parameter table
+        completion position input context fuel cache concreteCache hinvariant hcompletion hots
+          havailable hclosed hpublished hinput
+    have hsupportedLeft :=
+      SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hreveal
+        (fun result => result ∈ support
+          (runResolvedFromTable context fuel table
+            ((revealCoordinateOutput (.position position)).run cache)))
+        (fun result hresult => hresult)
+    have hsupported :=
+      SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hsupportedLeft
+    rw [show (randomOracle input).run concreteCache =
+        ((randomOracle input).run concreteCache >>= fun result => pure result) by simp]
+    apply relTriple_bind hsupported
+    intro leftResult rightResult hrelation
+    rcases hrelation with ⟨⟨hrelation, hleftSupport⟩, hrightSupport⟩
+    cases leftResult with
+    | none =>
+        apply relTriple_pure_pure
+        trivial
+    | some result =>
+        rcases hrelation with hclean | hdoomed
+        · have hcached : rightResult.2 input = some rightResult.1 :=
+            randomOracle_run_output_cached input concreteCache rightResult.2 rightResult.1
+              hrightSupport
+          simpa [hclean.1, hclean.2.1] using
+            (relTriple_runResolvedFromTable_publishOrdinaryInput_reachable parameter table
+              (.position position) input rightResult.1 result.context result.remaining
+                result.value.2 rightResult.2 hclean.2.2.1 hclean.2.2.2.1 hclean.2.2.2.2
+                  (by
+                    rw [value_of_mem_runResolvedFromTable_revealCoordinateOutput context fuel table
+                      (.position position) cache result hleftSupport]
+                    simp)
+                  hcached)
+        · simpa [hdoomed.1] using
+            (relTriple_runResolvedFromTable_of_doomed_reachable parameter table
+              (publishOrdinaryInput (.position position) input result.value.1)
+              (pure rightResult) result.context result.remaining result.value.2 hdoomed.2)
+
 theorem relTriple_runResolvedFromTable_resolveKnownInput_completionOrdinary_reachable
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
     (coordinate : Coordinate) (input : HashInput)
@@ -9814,6 +10120,35 @@ theorem relTriple_runResolvedFromTable_resolveKnownInput_availableDecoded_reacha
         hpublished (fun other heq => by cases heq; exact hots)
         (completionOrdinaryInput_of_available_decoded_ne hdecode havailable hinput)
 
+set_option maxRecDepth 100000 in
+theorem relTriple_runResolvedFromTable_resolveKnownInput_availableDecodedAny_reachable
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (position : Position) (input : HashInput)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (concreteCache : QueryCache HashSpec)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache)
+    (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hpublished : PublishedValues context.state)
+    (hots : IsOtsPosition position)
+    (hdecode : decodePosition? parameter input = some position)
+    (completion : Coordinate → HashOutput)
+    (hcompletion : DeferredCompletion table context completion)
+    (havailable : TableInputAvailable completion context.state (.position position)) :
+    RelTriple
+      (runResolvedFromTable context fuel table
+        ((resolveKnownInput parameter (.position position) input).run cache))
+      ((randomOracle input).run concreteCache)
+      (ReachableResolvedRunRel parameter table) := by
+  by_cases hinput : tableInput parameter completion (.position position) = input
+  · exact relTriple_runResolvedFromTable_resolveKnownInput_completionCanonicalAny_reachable
+      parameter table completion position input context fuel cache concreteCache hinvariant
+        hcompletion hots havailable hclosed hpublished hinput.symm
+  · exact relTriple_runResolvedFromTable_resolveKnownInput_completionOrdinary_reachable
+      parameter table (.position position) input context fuel cache concreteCache hinvariant hclosed
+        hpublished (fun other heq => by cases heq; exact hots)
+        (completionOrdinaryInput_of_available_decoded_ne hdecode havailable hinput)
+
 theorem tableInputAvailable_chain_of_probe_revealed
     {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
     {context : DeferredContext} {completion : Coordinate → HashOutput}
@@ -9866,6 +10201,74 @@ theorem decodeProbe?_leaf_eq
     obtain ⟨payload, hinput⟩ :=
       (decodePosition?_eq_some_iff parameter input (.leaf lay tree leafIdx)).1 hposition
     exact ⟨trivial, payload, hinput, trivial⟩
+
+theorem exists_decodePosition?_of_decodeProbe?
+    (parameter : PublicParameter) (input : HashInput) (candidate : Probe)
+    (hprobe : decodeProbe? parameter input = some candidate) :
+    ∃ position : Position,
+      decodePosition? parameter input = some position ∧
+        candidate.outputCoordinate = .position position := by
+  have hmatches := (decodeProbe?_eq_some_iff parameter input candidate).1 hprobe
+  rcases candidate with ⟨coordinate, candidateDigest⟩
+  cases coordinate with
+  | chainStart lay tree leafIdx chainIdx =>
+      rcases hmatches with ⟨step, hstep, hinput⟩
+      have hzero : step = ⟨0, by norm_num [chainLength, winternitzBits]⟩ := Fin.ext hstep
+      subst step
+      refine ⟨.chain lay tree leafIdx chainIdx
+        ⟨0, by norm_num [chainLength, winternitzBits]⟩, ?_, rfl⟩
+      exact (decodePosition?_eq_some_iff parameter _ _).2 ⟨digestBytes candidateDigest, hinput⟩
+  | position source =>
+      cases source with
+      | chain lay tree leafIdx chainIdx step =>
+          simp only [Probe.MatchesInput] at hmatches
+          by_cases hnext : step.val + 1 < chainLength - 1
+          · rw [dif_pos hnext] at hmatches
+            rcases hmatches with ⟨nextStep, hnextStep, hinput⟩
+            have hstepEq : nextStep = ⟨step.val + 1, hnext⟩ := Fin.ext hnextStep
+            subst nextStep
+            refine ⟨.chain lay tree leafIdx chainIdx ⟨step.val + 1, hnext⟩, ?_, ?_⟩
+            · exact (decodePosition?_eq_some_iff parameter _ _).2
+                ⟨digestBytes candidateDigest, hinput⟩
+            · simp [Probe.outputCoordinate, hnext]
+          · rw [dif_neg hnext] at hmatches
+            rcases hmatches with ⟨_hchain, payload, hinput, _hslot⟩
+            refine ⟨.leaf lay tree leafIdx, ?_, ?_⟩
+            · exact (decodePosition?_eq_some_iff parameter _ _).2 ⟨payload, hinput⟩
+            · simp [Probe.outputCoordinate, hnext]
+      | leaf | node | ftsLeaf | ftsNode | ftsRoots =>
+          simp [Probe.MatchesInput] at hmatches
+
+theorem decodePosition?_chain_or_leaf_of_decodeProbe?
+    (parameter : PublicParameter) (input : HashInput) (candidate : Probe)
+    (hprobe : decodeProbe? parameter input = some candidate) :
+    (∃ lay tree leafIdx chainIdx step,
+      decodePosition? parameter input = some (.chain lay tree leafIdx chainIdx step)) ∨
+    ∃ lay tree leafIdx,
+      decodePosition? parameter input = some (.leaf lay tree leafIdx) := by
+  have hmatches := (decodeProbe?_eq_some_iff parameter input candidate).1 hprobe
+  rcases candidate with ⟨coordinate, candidateDigest⟩
+  cases coordinate with
+  | chainStart lay tree leafIdx chainIdx =>
+      rcases hmatches with ⟨step, _hstep, hinput⟩
+      exact Or.inl ⟨lay, tree, leafIdx, chainIdx, step,
+        (decodePosition?_eq_some_iff parameter _ _).2 ⟨digestBytes candidateDigest, hinput⟩⟩
+  | position source =>
+      cases source with
+      | chain lay tree leafIdx chainIdx step =>
+          simp only [Probe.MatchesInput] at hmatches
+          by_cases hnext : step.val + 1 < chainLength - 1
+          · rw [dif_pos hnext] at hmatches
+            rcases hmatches with ⟨nextStep, _hnextStep, hinput⟩
+            exact Or.inl ⟨lay, tree, leafIdx, chainIdx, nextStep,
+              (decodePosition?_eq_some_iff parameter _ _).2
+                ⟨digestBytes candidateDigest, hinput⟩⟩
+          · rw [dif_neg hnext] at hmatches
+            rcases hmatches with ⟨_hchain, payload, hinput, _hslot⟩
+            exact Or.inr ⟨lay, tree, leafIdx,
+              (decodePosition?_eq_some_iff parameter _ _).2 ⟨payload, hinput⟩⟩
+      | leaf | node | ftsLeaf | ftsNode | ftsRoots =>
+          simp [Probe.MatchesInput] at hmatches
 
 set_option maxRecDepth 100000 in
 theorem relTriple_runResolvedFromTable_probingHashQuery_chain_reachable
@@ -10127,6 +10530,196 @@ theorem relTriple_runResolvedFromTable_probingHashQuery_leaf_reachable
               exact relTriple_runResolvedFromTable_of_doomed_reachable parameter table
                 (resolveKnownInput parameter (.position (.leaf lay tree leafIdx)) input)
                   ((randomOracle input).run concreteCache) probeContext remainingFuel cache hdoomed
+
+set_option maxHeartbeats 800000 in
+set_option maxRecDepth 100000 in
+theorem relTriple_runResolvedFromTable_probingHashQuery_node_reachable
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (input : HashInput) (lay : Layer) (tree : TreeIndex)
+    (level : Fin maxLayerHeight) (nodeIdx : LeafIndex)
+    (hprobe : decodeProbe? parameter input = none)
+    (hposition : decodePosition? parameter input = some (.node lay tree level nodeIdx))
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (concreteCache : QueryCache HashSpec)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache)
+    (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hpublished : PublishedValues context.state) :
+    RelTriple
+      (runResolvedFromTable context fuel table
+        ((probingHashQuery parameter input).run cache))
+      ((randomOracle input).run concreteCache)
+      (ReachableResolvedRunRel parameter table) := by
+  unfold probingHashQuery
+  rw [hprobe, hposition]
+  simp only
+  rw [StateT.run_bind, runResolvedFromTable_bind]
+  obtain ⟨completion, hcompletion⟩ := hinvariant.2.2.2.1
+  rcases positionValues_or_first_missing completion context.state
+    (Position.node lay tree level nodeIdx).children
+    (fun other output hvalue => (hcompletion.1 (.position other) output hvalue).symm) with
+    havailable | ⟨prior, child, remaining, hchildren, hvalues, hmissing⟩
+  · let coordinates := (Position.node lay tree level nodeIdx).children.map Coordinate.position
+    have hcoordinateValues : ∀ coordinate, coordinate ∈ coordinates →
+        context.state.values coordinate = some (completion coordinate) := by
+      intro coordinate hcoordinate
+      obtain ⟨position, hpositionMem, rfl⟩ := List.mem_map.1 hcoordinate
+      exact havailable position hpositionMem
+    rw [runResolvedFromTable_probeFirstMissingInputCoordinate_of_values completion input
+      context cache fuel table 0 coordinates hcoordinateValues]
+    simp only [pure_bind]
+    exact relTriple_runResolvedFromTable_resolveKnownInput_availableDecodedAny_reachable
+      parameter table (.node lay tree level nodeIdx) input context fuel cache concreteCache
+        hinvariant hclosed hpublished (by simp [IsOtsPosition]) hposition completion hcompletion
+          havailable
+  · let priorCoordinates := prior.map Coordinate.position
+    let remainingCoordinates := remaining.map Coordinate.position
+    have hcoordinates : (Position.node lay tree level nodeIdx).children.map Coordinate.position =
+        priorCoordinates ++ .position child :: remainingCoordinates := by
+      simp [hchildren, priorCoordinates, remainingCoordinates]
+    have hcoordinateValues : ∀ coordinate, coordinate ∈ priorCoordinates →
+        context.state.values coordinate = some (completion coordinate) := by
+      intro coordinate hcoordinate
+      obtain ⟨position, hpositionMem, rfl⟩ := List.mem_map.1 hcoordinate
+      exact hvalues position hpositionMem
+    have hnotRevealed : .position child ∉ context.state.revealed := by
+      intro hrevealed
+      exact (hpublished (.position child) hrevealed) hmissing
+    rw [hcoordinates]
+    cases fuel with
+    | zero =>
+        rw [runResolvedFromTable_probeFirstMissingInputCoordinate_zero_of_prefix_values_of_missing
+          completion input context cache 0 priorCoordinates remainingCoordinates
+            (.position child) table hcoordinateValues hmissing]
+        have hbase := relTriple_true
+          (pure (none : Option (ResolvedRunResult (HashOutput × SplitHashCache))) :
+            ProbComp (Option (ResolvedRunResult (HashOutput × SplitHashCache))))
+          ((randomOracle input).run concreteCache)
+        have hsupported :=
+          SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+            (fun result => result = none) (by
+              intro result hresult
+              simpa using hresult)
+        apply relTriple_post_mono hsupported
+        intro leftResult _ hrelation
+        rw [hrelation.2]
+        trivial
+    | succ remainingFuel =>
+        rw [runResolvedFromTable_probeFirstMissingInputCoordinate_of_prefix_values_of_missing
+            completion input context cache remainingFuel 0 priorCoordinates
+              remainingCoordinates (.position child) table hcoordinateValues hmissing
+                hnotRevealed]
+        simp only [pure_bind]
+        let probeContext : DeferredContext :=
+          { context with state := (context.state.addPending (.position child)
+              (slotDigest prior.length input)) }
+        have hlength : priorCoordinates.length = prior.length := by simp [priorCoordinates]
+        simp only [Nat.zero_add, hlength]
+        by_cases hcompletable : DeferredCompletable table probeContext
+        · have hprobeInvariant := hinvariant.addPending_of_completable (.position child)
+              (slotDigest prior.length input) hcompletable
+          have hprobeClosed : VisibleResolvedComputationsCached parameter table probeContext
+              concreteCache := hclosed.of_state_values_eq rfl
+          have hprobePublished : PublishedValues probeContext.state := by
+            simpa [probeContext, PublishedValues, LazyRevealProbe.State.addPending] using
+              hpublished
+          have hpending : (.position child, slotDigest prior.length input) ∈
+              probeContext.state.pending := by
+            simp [probeContext, LazyRevealProbe.State.addPending]
+          have hordinary := completionOrdinaryInput_of_pending_node_child (table := table)
+            hposition hchildren hpending
+          exact relTriple_runResolvedFromTable_resolveKnownInput_completionOrdinary_reachable
+            parameter table (.position (.node lay tree level nodeIdx)) input probeContext
+              remainingFuel cache concreteCache hprobeInvariant hprobeClosed hprobePublished
+                (fun position heq => by cases heq; simp [IsOtsPosition]) hordinary
+        · have hdoomed : DoomedResolvedContext table probeContext := ⟨
+            hinvariant.2.1.valuesConsistent.addPending (.position child)
+              (slotDigest prior.length input),
+            hinvariant.2.2.1.addPending (.position child) (slotDigest prior.length input),
+            hcompletable⟩
+          exact relTriple_runResolvedFromTable_of_doomed_reachable parameter table
+            (resolveKnownInput parameter (.position (.node lay tree level nodeIdx)) input)
+              ((randomOracle input).run concreteCache) probeContext remainingFuel cache hdoomed
+
+set_option maxRecDepth 100000 in
+theorem reachableResolvedCouples_probingHashQuery
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (input : HashInput) :
+    ReachableResolvedCouples parameter table (probingHashQuery parameter input)
+      (randomOracle input) := by
+  intro context fuel cache concreteCache hinvariant hclosed hpublished
+  cases hprobe : decodeProbe? parameter input with
+  | some candidate =>
+      rcases decodePosition?_chain_or_leaf_of_decodeProbe? parameter input candidate hprobe with
+        ⟨lay, tree, leafIdx, chainIdx, step, hposition⟩ |
+          ⟨lay, tree, leafIdx, hposition⟩
+      · exact relTriple_runResolvedFromTable_probingHashQuery_chain_reachable parameter table
+          input candidate lay tree leafIdx chainIdx step hprobe hposition context fuel cache
+            concreteCache hinvariant hclosed hpublished
+      · exact relTriple_runResolvedFromTable_probingHashQuery_leaf_reachable parameter table
+          input candidate lay tree leafIdx hprobe hposition context fuel cache concreteCache
+            hinvariant hclosed hpublished
+  | none =>
+      cases hposition : decodePosition? parameter input with
+      | none =>
+          have hstable : StableOrdinaryInput parameter input := ⟨hprobe, by
+            intro position hdecode _hots
+            rw [hposition] at hdecode
+            simp at hdecode⟩
+          exact reachableResolvedCouples_probingHashQuery_of_stable parameter table input hstable
+            context fuel cache concreteCache hinvariant hclosed hpublished
+      | some position =>
+          cases position with
+          | chain lay tree leafIdx chainIdx step =>
+              have hordinary := completionOrdinaryInput_of_decodeProbe_none_chain
+                (table := table) (context := context) hprobe hposition
+              unfold probingHashQuery
+              rw [hprobe, hposition]
+              exact relTriple_runResolvedFromTable_resolveKnownInput_completionOrdinary_reachable
+                parameter table (.position (.chain lay tree leafIdx chainIdx step)) input
+                  context fuel cache concreteCache hinvariant hclosed hpublished
+                    (fun other heq => by cases heq; simp [IsOtsPosition]) hordinary
+          | leaf lay tree leafIdx =>
+              have hordinary := completionOrdinaryInput_of_decodeProbe_none_leaf
+                (table := table) (context := context) hprobe hposition
+              unfold probingHashQuery
+              rw [hprobe, hposition]
+              exact relTriple_runResolvedFromTable_resolveKnownInput_completionOrdinary_reachable
+                parameter table (.position (.leaf lay tree leafIdx)) input context fuel cache
+                  concreteCache hinvariant hclosed hpublished
+                    (fun other heq => by cases heq; simp [IsOtsPosition]) hordinary
+          | node lay tree level nodeIdx =>
+              exact relTriple_runResolvedFromTable_probingHashQuery_node_reachable parameter table
+                input lay tree level nodeIdx hprobe hposition context fuel cache concreteCache
+                  hinvariant hclosed hpublished
+          | ftsLeaf index tree leafIdx =>
+              have hstable : StableOrdinaryInput parameter input := ⟨hprobe, by
+                intro other hdecode hots
+                rw [hposition] at hdecode
+                have heq : other = .ftsLeaf index tree leafIdx := Option.some.inj hdecode.symm
+                subst other
+                simpa [IsOtsPosition] using hots⟩
+              exact reachableResolvedCouples_probingHashQuery_of_stable parameter table input
+                hstable context fuel cache concreteCache hinvariant hclosed hpublished
+          | ftsNode index tree level nodeIdx =>
+              have hstable : StableOrdinaryInput parameter input := ⟨hprobe, by
+                intro other hdecode hots
+                rw [hposition] at hdecode
+                have heq : other = .ftsNode index tree level nodeIdx :=
+                  Option.some.inj hdecode.symm
+                subst other
+                simpa [IsOtsPosition] using hots⟩
+              exact reachableResolvedCouples_probingHashQuery_of_stable parameter table input
+                hstable context fuel cache concreteCache hinvariant hclosed hpublished
+          | ftsRoots index =>
+              have hstable : StableOrdinaryInput parameter input := ⟨hprobe, by
+                intro other hdecode hots
+                rw [hposition] at hdecode
+                have heq : other = .ftsRoots index := Option.some.inj hdecode.symm
+                subst other
+                simpa [IsOtsPosition] using hots⟩
+              exact reachableResolvedCouples_probingHashQuery_of_stable parameter table input
+                hstable context fuel cache concreteCache hinvariant hclosed hpublished
 
 theorem resolvedCouples_revealChainStart
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
