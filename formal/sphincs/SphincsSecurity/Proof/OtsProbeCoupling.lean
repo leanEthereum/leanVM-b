@@ -4357,6 +4357,226 @@ theorem RawReadOnly.preservesCoordinate
   obtain ⟨rfl, _, _⟩ := hreadonly state cache fuel finalState remaining value finalCache hresult
   exact ⟨rfl, Iff.rfl⟩
 
+def PublishedValues (state : LazyRevealProbe.State Coordinate) : Prop :=
+  ∀ coordinate, coordinate ∈ state.revealed → state.values coordinate ≠ none
+
+def PreservesPublishedValues
+    (computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha) : Prop :=
+  ∀ state cache fuel finalState remaining value finalCache,
+    PublishedValues state →
+    LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel (computation.run cache)) →
+    PublishedValues finalState
+
+theorem PreservesPublishedValues.pure (value : alpha) :
+    PreservesPublishedValues
+      (pure value : StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate)) alpha) := by
+  intro state cache fuel finalState remaining result finalCache hpublished hresult
+  simp [LazyRevealProbe.runRaw] at hresult
+  rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+  exact hpublished
+
+theorem PreservesPublishedValues.bind
+    {left : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    {next : alpha → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) beta}
+    (hleft : PreservesPublishedValues left)
+    (hnext : ∀ value, PreservesPublishedValues (next value)) :
+    PreservesPublishedValues (left >>= next) := by
+  intro state cache fuel finalState remaining value finalCache hpublished hresult
+  change LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈ support
+    (LazyRevealProbe.runRaw state fuel
+      (left.run cache >>= fun result => (next result.1).run result.2)) at hresult
+  rw [LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨raw, hraw, hrest⟩ := hresult
+  cases raw with
+  | stopped hit => simp at hrest
+  | done middleState middleRemaining middleResult =>
+      rcases middleResult with ⟨middleValue, middleCache⟩
+      exact hnext middleValue middleState middleCache middleRemaining finalState remaining value
+        finalCache (hleft state cache fuel middleState middleRemaining middleValue middleCache
+          hpublished hraw) hrest
+
+theorem PreservesPublishedValues.sequenceFin {n : Nat}
+    (computation : Fin n → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha)
+    (hcomputation : ∀ index, PreservesPublishedValues (computation index)) :
+    PreservesPublishedValues (sequenceFin computation) := by
+  induction n with
+  | zero => exact PreservesPublishedValues.pure Fin.elim0
+  | succ n ih =>
+      rw [SphincsSecurity.Concrete.sequenceFin]
+      exact (hcomputation 0).bind fun _ =>
+        (ih (fun index => computation index.succ)
+          (fun index => hcomputation index.succ)).bind fun _ =>
+            PreservesPublishedValues.pure _
+
+def PreservesPublishedValuesImpl {spec : OracleSpec ι}
+    (impl : QueryImpl spec
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate)))) : Prop :=
+  ∀ query, PreservesPublishedValues (impl query)
+
+theorem PreservesPublishedValuesImpl.simulateQ {spec : OracleSpec ι}
+    {impl : QueryImpl spec
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate)))}
+    (himpl : PreservesPublishedValuesImpl impl)
+    (computation : OracleComp spec alpha) :
+    PreservesPublishedValues (simulateQ impl computation) := by
+  induction computation using OracleComp.inductionOn with
+  | pure value => exact PreservesPublishedValues.pure value
+  | query_bind query next ih =>
+      rw [simulateQ_query_bind]
+      exact (himpl query).bind ih
+
+theorem PreservesPublishedValues.of_preservesCoordinate
+    {computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    (hpreserves : ∀ coordinate, PreservesCoordinate coordinate computation) :
+    PreservesPublishedValues computation := by
+  intro state cache fuel finalState remaining value finalCache hpublished hresult coordinate
+    hrevealed
+  have hcoordinate := hpreserves coordinate state cache fuel finalState remaining value finalCache
+    hresult
+  rw [hcoordinate.1]
+  exact hpublished coordinate (hcoordinate.2.1 hrevealed)
+
+theorem RawReadOnly.preservesPublishedValues
+    {computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    (hreadonly : RawReadOnly computation) : PreservesPublishedValues computation :=
+  PreservesPublishedValues.of_preservesCoordinate hreadonly.preservesCoordinate
+
+theorem preservesPublishedValues_ensureCoordinate (coordinate : Coordinate) :
+    PreservesPublishedValues (ensureCoordinate coordinate) := by
+  intro state cache fuel finalState remaining value finalCache hpublished hresult
+  change LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈ support
+    (LazyRevealProbe.runRaw state fuel
+      (LazyRevealProbe.ensureQuery coordinate >>= fun result => pure (result, cache))) at hresult
+  rw [LazyRevealProbe.ensureQuery, LazyRevealProbe.runRaw_ensure_query_bind] at hresult
+  simp [LazyRevealProbe.runRaw] at hresult
+  rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+  simpa [PublishedValues, LazyRevealProbe.State.ensure] using hpublished
+
+theorem preservesPublishedValues_simulateQ_ordinaryHashImpl
+    (computation : OracleComp HashSpec alpha) :
+    PreservesPublishedValues (simulateQ ordinaryHashImpl computation) := by
+  intro state cache fuel finalState remaining value finalCache hpublished hresult
+  rw [(mem_runRaw_simulateQ_ordinaryHashImpl_projects computation state finalState cache
+    finalCache fuel remaining value hresult).1]
+  exact hpublished
+
+theorem preservesPublishedValues_simulateQ_splitUniformImpl
+    (computation : ProbComp alpha) :
+    PreservesPublishedValues (simulateQ splitUniformImpl computation) := by
+  intro state cache fuel finalState remaining value finalCache hpublished hresult
+  rw [(mem_runRaw_simulateQ_splitUniformImpl_projects computation state finalState cache
+    finalCache fuel remaining value hresult).1]
+  exact hpublished
+
+theorem preservesPublishedValues_revealCoordinateOutput (coordinate : Coordinate) :
+    PreservesPublishedValues (revealCoordinateOutput coordinate) := by
+  intro state cache fuel finalState remaining value finalCache hpublished hresult
+  rw [revealCoordinateOutput_run, LazyRevealProbe.revealQuery,
+    LazyRevealProbe.runRaw_reveal_query_bind] at hresult
+  cases hvalue : state.values coordinate with
+  | some output =>
+      rw [hvalue] at hresult
+      simp [LazyRevealProbe.runRaw] at hresult
+      rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+      exact hpublished
+  | none =>
+      rw [hvalue, mem_support_bind_iff] at hresult
+      obtain ⟨output, _, hrest⟩ := hresult
+      by_cases hhit : state.hitAt coordinate output
+      · rw [if_pos hhit] at hrest
+        simp at hrest
+      · rw [if_neg hhit] at hrest
+        simp [LazyRevealProbe.runRaw] at hrest
+        rcases hrest with ⟨rfl, rfl, rfl, rfl⟩
+        intro other hrevealed
+        have hvalueOther := hpublished other (by
+          simpa [LazyRevealProbe.State.materialize] using hrevealed)
+        by_cases heq : other = coordinate
+        · subst other
+          simp [LazyRevealProbe.State.materialize]
+        · simpa [LazyRevealProbe.State.materialize, Function.update, heq] using hvalueOther
+
+theorem preservesPublishedValues_revealCoordinate (coordinate : Coordinate) :
+    PreservesPublishedValues (revealCoordinate coordinate) := by
+  unfold revealCoordinate
+  exact (preservesPublishedValues_revealCoordinateOutput coordinate).bind fun _ =>
+    PreservesPublishedValues.pure _
+
+theorem preservesPublishedValues_revealPublishedCoordinate (coordinate : Coordinate) :
+    PreservesPublishedValues (revealPublishedCoordinate coordinate) := by
+  intro state cache fuel finalState remaining value finalCache hpublished hresult
+  unfold revealPublishedCoordinate at hresult
+  rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨revealRaw, hreveal, hrest⟩ := hresult
+  cases revealRaw with
+  | stopped hit => simp at hrest
+  | done revealState revealRemaining revealResult =>
+      rcases revealResult with ⟨revealedValue, revealCache⟩
+      have hpublishedReveal := preservesPublishedValues_revealCoordinate coordinate state cache
+        fuel revealState revealRemaining revealedValue revealCache hpublished hreveal
+      obtain ⟨coordinateOutput, _, hcoordinateValue⟩ :=
+        mem_runRaw_revealCoordinate_value coordinate state revealState cache revealCache fuel
+          revealRemaining revealedValue hreveal
+      change LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈ support
+        (LazyRevealProbe.runRaw revealState revealRemaining
+          ((publishCoordinate coordinate).run revealCache >>= fun publishResult =>
+            (pure revealedValue : StateT SplitHashCache
+              (OracleComp (LazyRevealProbe.World Coordinate)) Digest).run publishResult.2)) at hrest
+      rw [LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hrest
+      obtain ⟨publishRaw, hpublish, hreturn⟩ := hrest
+      cases publishRaw with
+      | stopped hit => simp at hreturn
+      | done publishState publishRemaining publishResult =>
+          rcases publishResult with ⟨publishedUnit, publishCache⟩
+          change LazyRevealProbe.RawResult.done publishState publishRemaining
+              (publishedUnit, publishCache) ∈ support
+            (LazyRevealProbe.runRaw revealState revealRemaining
+              (LazyRevealProbe.publishQuery coordinate >>= fun result =>
+                pure (result, revealCache))) at hpublish
+          rw [LazyRevealProbe.publishQuery, LazyRevealProbe.runRaw_publish_query_bind] at hpublish
+          simp [LazyRevealProbe.runRaw] at hpublish
+          rcases hpublish with ⟨rfl, rfl, rfl, rfl⟩
+          simp [LazyRevealProbe.runRaw] at hreturn
+          rcases hreturn with ⟨rfl, rfl, rfl, rfl⟩
+          intro other hother
+          by_cases heq : other = coordinate
+          · subst other
+            change revealState.values coordinate ≠ none
+            rw [hcoordinateValue]
+            simp
+          · apply hpublishedReveal other
+            simpa [LazyRevealProbe.State.publish, heq] using hother
+
+theorem publishedValues_of_mem_runRaw_publishCoordinate
+    (coordinate : Coordinate) (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (value : Unit)
+    (hpublished : PublishedValues state)
+    (hvalue : state.values coordinate ≠ none)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel ((publishCoordinate coordinate).run cache))) :
+    PublishedValues finalState := by
+  change LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈ support
+    (LazyRevealProbe.runRaw state fuel
+      (LazyRevealProbe.publishQuery coordinate >>= fun result => pure (result, cache))) at hresult
+  rw [LazyRevealProbe.publishQuery, LazyRevealProbe.runRaw_publish_query_bind] at hresult
+  simp [LazyRevealProbe.runRaw] at hresult
+  rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+  intro other hother
+  by_cases heq : other = coordinate
+  · subst other
+    change state.values coordinate ≠ none
+    exact hvalue
+  · apply hpublished other
+    simpa [LazyRevealProbe.State.publish, heq] using hother
+
 theorem preservesCoordinate_get (coordinate : Coordinate) :
     PreservesCoordinate coordinate
       (get : StateT SplitHashCache
@@ -4395,6 +4615,228 @@ theorem preservesCoordinate_resolveKnownInput_of_ne
                   preservesCoordinate_pure coordinate _
         · rw [if_neg heq]
           exact preservesCoordinate_splitHashQuery coordinate (.ordinary input)
+
+theorem preservesPublishedValues_revealCoordinateOutput_publish (coordinate : Coordinate) :
+    PreservesPublishedValues (do
+      let output ← revealCoordinateOutput coordinate
+      publishCoordinate coordinate
+      pure output) := by
+  intro state cache fuel finalState remaining value finalCache hpublished hresult
+  rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨revealRaw, hreveal, hrest⟩ := hresult
+  cases revealRaw with
+  | stopped hit => simp at hrest
+  | done revealState revealRemaining revealResult =>
+      rcases revealResult with ⟨revealedOutput, revealCache⟩
+      have hpublishedReveal := preservesPublishedValues_revealCoordinateOutput coordinate state
+        cache fuel revealState revealRemaining revealedOutput revealCache hpublished hreveal
+      have hcoordinateValue := (mem_runRaw_revealCoordinateOutput_value coordinate state
+        revealState cache revealCache fuel revealRemaining revealedOutput hreveal).1
+      simp [publishCoordinate, LazyRevealProbe.publishQuery,
+        LazyRevealProbe.runRaw] at hrest
+      rcases hrest with ⟨rfl, rfl, rfl, rfl⟩
+      intro other hother
+      by_cases heq : other = coordinate
+      · subst other
+        change revealState.values coordinate ≠ none
+        rw [hcoordinateValue]
+        simp
+      · apply hpublishedReveal other
+        simpa [LazyRevealProbe.State.publish, heq] using hother
+
+theorem preservesPublishedValues_resolveKnownInput
+    (parameter : PublicParameter) (coordinate : Coordinate) (input : HashInput) :
+    PreservesPublishedValues (resolveKnownInput parameter coordinate input) := by
+  unfold resolveKnownInput
+  exact (rawReadOnly_peekTableInput parameter coordinate).preservesPublishedValues.bind
+    fun known => match known with
+    | none => PreservesPublishedValues.of_preservesCoordinate fun other =>
+        preservesCoordinate_splitHashQuery other (.ordinary input)
+    | some knownInput => by
+        simp only
+        by_cases heq : knownInput = input
+        · rw [if_pos heq]
+          have hpreserves :=
+            (preservesPublishedValues_revealCoordinateOutput_publish coordinate).bind
+              fun output =>
+                (PreservesPublishedValues.of_preservesCoordinate fun other =>
+                  preservesCoordinate_modify other fun cache =>
+                    Function.update cache (.ordinary input) (some output)).bind fun _ =>
+                      PreservesPublishedValues.pure output
+          simpa only [bind_assoc, pure_bind] using hpreserves
+        · rw [if_neg heq]
+          exact PreservesPublishedValues.of_preservesCoordinate fun other =>
+            preservesCoordinate_splitHashQuery other (.ordinary input)
+
+theorem preservesPublishedValues_probeFirstMissingInputCoordinate (input : HashInput) :
+    ∀ slot coordinates,
+      PreservesPublishedValues (probeFirstMissingInputCoordinate input slot coordinates)
+  | _, [] => PreservesPublishedValues.pure ()
+  | slot, coordinate :: remaining => by
+      rw [probeFirstMissingInputCoordinate]
+      exact (rawReadOnly_peekCoordinate coordinate).preservesPublishedValues.bind fun value =>
+        match value with
+        | none => PreservesPublishedValues.of_preservesCoordinate fun other =>
+            preservesCoordinate_probe other ⟨coordinate, slotDigest slot input⟩
+        | some _ => preservesPublishedValues_probeFirstMissingInputCoordinate input
+            (slot + 1) remaining
+
+theorem preservesPublishedValues_probingHashQuery
+    (parameter : PublicParameter) (input : HashInput) :
+    PreservesPublishedValues (probingHashQuery parameter input) := by
+  unfold probingHashQuery
+  cases hprobe : decodeProbe? parameter input with
+  | some candidate =>
+      exact (PreservesPublishedValues.of_preservesCoordinate fun coordinate =>
+        preservesCoordinate_probe coordinate candidate).bind fun _ =>
+          preservesPublishedValues_resolveKnownInput parameter candidate.outputCoordinate input
+  | none =>
+      cases hposition : decodePosition? parameter input with
+      | none => exact PreservesPublishedValues.of_preservesCoordinate fun coordinate =>
+          preservesCoordinate_splitHashQuery coordinate (.ordinary input)
+      | some position =>
+          cases position with
+          | chain | leaf => exact preservesPublishedValues_resolveKnownInput parameter _ input
+          | node lay tree level nodeIdx =>
+              exact (preservesPublishedValues_probeFirstMissingInputCoordinate input 0
+                ((Position.node lay tree level nodeIdx).children.map Coordinate.position)).bind
+                  fun _ => preservesPublishedValues_resolveKnownInput parameter _ input
+          | ftsLeaf | ftsNode | ftsRoots =>
+              exact PreservesPublishedValues.of_preservesCoordinate fun coordinate =>
+                preservesCoordinate_splitHashQuery coordinate (.ordinary input)
+
+theorem preservesPublishedValues_ensureFullChain
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex) :
+    PreservesPublishedValues (ensureFullChain lay tree leafIdx chainIdx) := by
+  unfold ensureFullChain
+  exact (PreservesPublishedValues.sequenceFin _ fun step =>
+    preservesPublishedValues_ensureCoordinate
+      (.position (.chain lay tree leafIdx chainIdx step))).bind fun _ =>
+        PreservesPublishedValues.pure ()
+
+theorem preservesPublishedValues_ensureChainPrefix
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex)
+    (digit : Digit) :
+    PreservesPublishedValues (ensureChainPrefix lay tree leafIdx chainIdx digit) := by
+  unfold ensureChainPrefix
+  exact (PreservesPublishedValues.sequenceFin _ fun step => by
+    split
+    · exact preservesPublishedValues_ensureCoordinate
+        (.position (.chain lay tree leafIdx chainIdx step))
+    · exact PreservesPublishedValues.pure ()).bind fun _ =>
+        PreservesPublishedValues.pure ()
+
+theorem preservesPublishedValues_ensureOtsLeaf
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) :
+    PreservesPublishedValues (ensureOtsLeaf lay tree leafIdx) := by
+  unfold ensureOtsLeaf
+  exact (PreservesPublishedValues.sequenceFin _ fun chainIdx =>
+    preservesPublishedValues_ensureFullChain lay tree leafIdx chainIdx).bind fun _ =>
+      preservesPublishedValues_ensureCoordinate (.position (.leaf lay tree leafIdx))
+
+theorem preservesPublishedValues_ensureTreeNode (lay : Layer) (tree : TreeIndex) :
+    ∀ level nodeIdx, PreservesPublishedValues (ensureTreeNode lay tree level nodeIdx)
+  | 0, nodeIdx => by
+      rw [ensureTreeNode]
+      exact preservesPublishedValues_ensureOtsLeaf lay tree (leafOfNat nodeIdx)
+  | level + 1, nodeIdx => by
+      rw [ensureTreeNode]
+      exact (preservesPublishedValues_ensureTreeNode lay tree level (2 * nodeIdx)).bind fun _ =>
+        (preservesPublishedValues_ensureTreeNode lay tree level (2 * nodeIdx + 1)).bind fun _ => by
+          split
+          · exact preservesPublishedValues_ensureCoordinate _
+          · exact PreservesPublishedValues.pure ()
+
+theorem preservesPublishedValues_maskedTreeNode
+    (lay : Layer) (tree : TreeIndex) (level nodeIdx : Nat) :
+    PreservesPublishedValues (maskedTreeNode lay tree level nodeIdx) := by
+  cases level with
+  | zero =>
+      rw [maskedTreeNode]
+      exact (preservesPublishedValues_ensureTreeNode lay tree 0 nodeIdx).bind fun _ =>
+        preservesPublishedValues_revealCoordinate _
+  | succ current =>
+      rw [maskedTreeNode]
+      exact (preservesPublishedValues_ensureTreeNode lay tree (current + 1) nodeIdx).bind fun _ => by
+        by_cases hlevel : current < maxLayerHeight
+        · rw [dif_pos hlevel]
+          exact preservesPublishedValues_revealCoordinate _
+        · rw [dif_neg hlevel]
+          exact PreservesPublishedValues.pure 0
+
+theorem preservesPublishedValues_maskedTreeRoot (lay : Layer) (tree : TreeIndex) :
+    PreservesPublishedValues (maskedTreeRoot lay tree) :=
+  preservesPublishedValues_maskedTreeNode lay tree (layerHeight lay) 0
+
+theorem preservesPublishedValues_ensureTreePath
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) :
+    PreservesPublishedValues (ensureTreePath lay tree leafIdx) := by
+  unfold ensureTreePath
+  exact (PreservesPublishedValues.sequenceFin _ fun level => by
+    split
+    · exact preservesPublishedValues_ensureTreeNode lay tree level.val
+        (Nat.xor (leafIdx.val / 2 ^ level.val) 1)
+    · exact PreservesPublishedValues.pure ()).bind fun _ =>
+        PreservesPublishedValues.pure ()
+
+theorem preservesPublishedValues_revealPositionValues :
+    ∀ positions, PreservesPublishedValues (revealPositionValues positions)
+  | [] => PreservesPublishedValues.pure []
+  | position :: remaining => by
+      rw [revealPositionValues]
+      exact (preservesPublishedValues_revealCoordinate (.position position)).bind fun value =>
+        (preservesPublishedValues_revealPositionValues remaining).bind fun values =>
+          PreservesPublishedValues.pure (value :: values)
+
+theorem preservesPublishedValues_revealTableInputChildren (coordinate : Coordinate) :
+    PreservesPublishedValues (revealTableInputChildren coordinate) := by
+  cases coordinate with
+  | chainStart => exact PreservesPublishedValues.pure ()
+  | position position =>
+      cases position with
+      | chain lay tree leafIdx chainIdx step =>
+          by_cases hzero : step.val = 0
+          · simp only [revealTableInputChildren, hzero, ↓reduceIte]
+            exact (preservesPublishedValues_revealCoordinate
+              (.chainStart lay tree leafIdx chainIdx)).bind fun _ =>
+                PreservesPublishedValues.pure ()
+          · simp only [revealTableInputChildren, hzero, ↓reduceIte]
+            exact (preservesPublishedValues_revealPositionValues _).bind fun _ =>
+              PreservesPublishedValues.pure ()
+      | leaf | node | ftsLeaf | ftsNode | ftsRoots =>
+          simp only [revealTableInputChildren]
+          exact (preservesPublishedValues_revealPositionValues _).bind fun _ =>
+            PreservesPublishedValues.pure ()
+
+theorem preservesPublishedValues_resolveVerifierInput
+    (parameter : PublicParameter) (coordinate : Coordinate) (input : HashInput) :
+    PreservesPublishedValues (resolveVerifierInput parameter coordinate input) := by
+  unfold resolveVerifierInput
+  exact (PreservesPublishedValues.of_preservesCoordinate preservesCoordinate_get).bind fun cache =>
+    match cache (.ordinary input) with
+    | some output => PreservesPublishedValues.pure output
+    | none => (preservesPublishedValues_revealTableInputChildren coordinate).bind fun _ =>
+        preservesPublishedValues_resolveKnownInput parameter coordinate input
+
+theorem preservesPublishedValues_verifierHashQuery
+    (parameter : PublicParameter) (input : HashInput) :
+    PreservesPublishedValues (verifierHashQuery parameter input) := by
+  unfold verifierHashQuery
+  cases decodeProbe? parameter input with
+  | some candidate =>
+      exact (PreservesPublishedValues.of_preservesCoordinate fun coordinate =>
+        preservesCoordinate_probe coordinate candidate).bind fun _ =>
+          preservesPublishedValues_resolveVerifierInput parameter candidate.outputCoordinate input
+  | none =>
+      cases decodePosition? parameter input with
+      | none => exact PreservesPublishedValues.of_preservesCoordinate fun coordinate =>
+          preservesCoordinate_splitHashQuery coordinate (.ordinary input)
+      | some position =>
+          cases position with
+          | chain | leaf | node => exact preservesPublishedValues_resolveVerifierInput parameter _ input
+          | ftsLeaf | ftsNode | ftsRoots =>
+              exact PreservesPublishedValues.of_preservesCoordinate fun coordinate =>
+                preservesCoordinate_splitHashQuery coordinate (.ordinary input)
 
 def CoordinateChildrenAvoid (coordinate : Coordinate) : Coordinate → Prop
   | .chainStart _ _ _ _ => True
@@ -5493,6 +5935,90 @@ theorem OrdinaryCachePreserving.bind
         finalCache hrest).trans
           (hleft state cache fuel middleState middleRemaining middleValue middleCache hraw)
 
+def PreservesOrdinaryAbsence (input : HashInput)
+    (computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha) : Prop :=
+  ∀ state cache fuel finalState remaining value finalCache,
+    cache (.ordinary input) = none →
+    LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel (computation.run cache)) →
+    finalCache (.ordinary input) = none
+
+theorem PreservesOrdinaryAbsence.pure (input : HashInput) (value : alpha) :
+    PreservesOrdinaryAbsence input
+      (pure value : StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate)) alpha) := by
+  intro state cache fuel finalState remaining result finalCache hnone hresult
+  simp [LazyRevealProbe.runRaw] at hresult
+  rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+  exact hnone
+
+theorem PreservesOrdinaryAbsence.bind
+    {input : HashInput}
+    {left : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    {next : alpha → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) beta}
+    (hleft : PreservesOrdinaryAbsence input left)
+    (hnext : ∀ value, PreservesOrdinaryAbsence input (next value)) :
+    PreservesOrdinaryAbsence input (left >>= next) := by
+  intro state cache fuel finalState remaining value finalCache hnone hresult
+  change LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈ support
+    (LazyRevealProbe.runRaw state fuel
+      (left.run cache >>= fun result => (next result.1).run result.2)) at hresult
+  rw [LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨raw, hraw, hrest⟩ := hresult
+  cases raw with
+  | stopped hit => simp at hrest
+  | done middleState middleRemaining middleResult =>
+      rcases middleResult with ⟨middleValue, middleCache⟩
+      exact hnext middleValue middleState middleCache middleRemaining finalState remaining value
+        finalCache (hleft state cache fuel middleState middleRemaining middleValue middleCache
+          hnone hraw) hrest
+
+theorem PreservesOrdinaryAbsence.sequenceFin
+    {input : HashInput} {n : Nat}
+    (computation : Fin n → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha)
+    (hcomputation : ∀ index, PreservesOrdinaryAbsence input (computation index)) :
+    PreservesOrdinaryAbsence input (sequenceFin computation) := by
+  induction n with
+  | zero => exact PreservesOrdinaryAbsence.pure input Fin.elim0
+  | succ n ih =>
+      rw [SphincsSecurity.Concrete.sequenceFin]
+      exact (hcomputation 0).bind fun _ =>
+        (ih (fun index => computation index.succ)
+          (fun index => hcomputation index.succ)).bind fun _ =>
+            PreservesOrdinaryAbsence.pure input _
+
+theorem OrdinaryCachePreserving.preservesAbsence
+    {computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    (hpreserves : OrdinaryCachePreserving computation) (input : HashInput) :
+    PreservesOrdinaryAbsence input computation := by
+  intro state cache fuel finalState remaining value finalCache hnone hresult
+  change ordinaryQueryCache finalCache input = none
+  change ordinaryQueryCache cache input = none at hnone
+  rw [hpreserves state cache fuel finalState remaining value finalCache hresult]
+  exact hnone
+
+theorem preservesOrdinaryAbsence_simulateQ_ordinaryHashImpl_of_stable
+    (parameter : PublicParameter) (input : HashInput)
+    (hnotStable : ¬StableOrdinaryInput parameter input)
+    (computation : OracleComp HashSpec alpha)
+    (hstable : ∀ f : QueryImpl HashSpec Id, QueriesStable parameter f computation) :
+    PreservesOrdinaryAbsence input (simulateQ ordinaryHashImpl computation) := by
+  intro state cache fuel finalState remaining value finalCache hnone hresult
+  have hprojection := mem_runRaw_simulateQ_ordinaryHashImpl_projects computation state
+    finalState cache finalCache fuel remaining value hresult
+  obtain ⟨_, f, hf, _, _⟩ := exists_answerFn_replay_of_mem_support computation
+    (ordinaryQueryCache cache) value (ordinaryQueryCache finalCache) hprojection.2.2
+  have hnot : input ∉ queriedInputs f computation := by
+    intro hinput
+    exact hnotStable (hstable f input hinput)
+  exact cache_eq_none_of_not_mem_queriedInputs computation (ordinaryQueryCache cache) value
+    (ordinaryQueryCache finalCache) hprojection.2.2 f hf input hnone hnot
+
 theorem OrdinaryCachePreserving.bind_querying
     {left : StateT SplitHashCache
       (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
@@ -5574,6 +6100,496 @@ theorem ordinaryCachePreserving_revealTableInputChildren (coordinate : Coordinat
           simp only [revealTableInputChildren]
           exact (ordinaryCachePreserving_revealPositionValues _).bind fun _ =>
             OrdinaryCachePreserving.of_splitCachePreserving (SplitCachePreserving.pure ())
+
+theorem OrdinaryCachePreserving.sequenceFin {n : Nat}
+    (computation : Fin n → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha)
+    (hcomputation : ∀ index, OrdinaryCachePreserving (computation index)) :
+    OrdinaryCachePreserving (sequenceFin computation) := by
+  induction n with
+  | zero =>
+      simp only [SphincsSecurity.Concrete.sequenceFin]
+      exact OrdinaryCachePreserving.of_splitCachePreserving
+        (SplitCachePreserving.pure Fin.elim0)
+  | succ n ih =>
+      rw [SphincsSecurity.Concrete.sequenceFin]
+      exact (hcomputation 0).bind fun _ =>
+        (ih (fun index => computation index.succ)
+          (fun index => hcomputation index.succ)).bind fun _ =>
+            OrdinaryCachePreserving.of_splitCachePreserving (SplitCachePreserving.pure _)
+
+theorem ordinaryCachePreserving_simulateQ_splitUniformImpl
+    (computation : ProbComp alpha) :
+    OrdinaryCachePreserving (simulateQ splitUniformImpl computation) := by
+  intro state cache fuel finalState remaining value finalCache hresult
+  exact congrArg ordinaryQueryCache
+    (mem_runRaw_simulateQ_splitUniformImpl_projects computation state finalState cache
+      finalCache fuel remaining value hresult).2.2.1
+
+theorem ordinaryCachePreserving_maskedTreeNode
+    (lay : Layer) (tree : TreeIndex) (level nodeIdx : Nat) :
+    OrdinaryCachePreserving (maskedTreeNode lay tree level nodeIdx) := by
+  cases level with
+  | zero =>
+      rw [maskedTreeNode]
+      exact (OrdinaryCachePreserving.of_splitCachePreserving
+        (splitCachePreserving_ensureTreeNode lay tree 0 nodeIdx)).bind fun _ =>
+          ordinaryCachePreserving_revealCoordinate _
+  | succ current =>
+      rw [maskedTreeNode]
+      exact (OrdinaryCachePreserving.of_splitCachePreserving
+        (splitCachePreserving_ensureTreeNode lay tree (current + 1) nodeIdx)).bind fun _ => by
+          by_cases hlevel : current < maxLayerHeight
+          · rw [dif_pos hlevel]
+            exact ordinaryCachePreserving_revealCoordinate _
+          · rw [dif_neg hlevel]
+            exact OrdinaryCachePreserving.of_splitCachePreserving
+              (SplitCachePreserving.pure 0)
+
+theorem ordinaryCachePreserving_maskedTreeRoot (lay : Layer) (tree : TreeIndex) :
+    OrdinaryCachePreserving (maskedTreeRoot lay tree) :=
+  ordinaryCachePreserving_maskedTreeNode lay tree (layerHeight lay) 0
+
+theorem ordinaryCachePreserving_revealPublishedCoordinate (coordinate : Coordinate) :
+    OrdinaryCachePreserving (revealPublishedCoordinate coordinate) := by
+  unfold revealPublishedCoordinate
+  exact (ordinaryCachePreserving_revealCoordinate coordinate).bind fun _ =>
+    (OrdinaryCachePreserving.of_splitCachePreserving
+      (splitCachePreserving_publishCoordinate coordinate)).bind fun _ =>
+        OrdinaryCachePreserving.of_splitCachePreserving (SplitCachePreserving.pure _)
+
+theorem preservesOrdinaryAbsence_maskedLayerMessage
+    (parameter : PublicParameter) (input : HashInput)
+    (hnotStable : ¬StableOrdinaryInput parameter input)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index) (lay : Layer) :
+    PreservesOrdinaryAbsence input (maskedLayerMessage parameter ftsSecret index lay) := by
+  unfold maskedLayerMessage
+  split
+  · exact (ordinaryCachePreserving_maskedTreeRoot _ _).preservesAbsence input
+  · exact preservesOrdinaryAbsence_simulateQ_ordinaryHashImpl_of_stable parameter input
+      hnotStable _ (fun f => queriesStable_ftsKey f parameter index (ftsSecret index))
+
+theorem preservesOrdinaryAbsence_maskedOtsSignFrom
+    (parameter : PublicParameter) (input : HashInput)
+    (hnotStable : ¬StableOrdinaryInput parameter input)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (message : Digest) :
+    ∀ attempts counter,
+      PreservesOrdinaryAbsence input
+        (maskedOtsSignFrom parameter lay tree leafIdx message attempts counter)
+  | 0, _ => PreservesOrdinaryAbsence.pure input none
+  | attempts + 1, counter => by
+      rw [maskedOtsSignFrom]
+      exact (preservesOrdinaryAbsence_simulateQ_ordinaryHashImpl_of_stable parameter input
+        hnotStable _ (fun f => queriesStable_encode f parameter lay tree leafIdx message
+          (BitVec.ofNat counterBits counter))).bind fun encoded =>
+            match encoded with
+            | none => preservesOrdinaryAbsence_maskedOtsSignFrom parameter input hnotStable
+                lay tree leafIdx message attempts (counter + 1)
+            | some encoding =>
+                ((OrdinaryCachePreserving.of_splitCachePreserving
+                  (splitCachePreserving_sequenceFin _ fun chainIdx =>
+                    splitCachePreserving_ensureChainPrefix lay tree leafIdx chainIdx
+                      (encoding chainIdx))).bind fun _ =>
+                        OrdinaryCachePreserving.of_splitCachePreserving
+                          (SplitCachePreserving.pure _)).preservesAbsence input
+
+theorem preservesOrdinaryAbsence_maskedOtsSign
+    (parameter : PublicParameter) (input : HashInput)
+    (hnotStable : ¬StableOrdinaryInput parameter input)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (message : Digest) :
+    PreservesOrdinaryAbsence input
+      (maskedOtsSign parameter lay tree leafIdx message) :=
+  preservesOrdinaryAbsence_maskedOtsSignFrom parameter input hnotStable lay tree leafIdx message
+    encodingAttemptLimit 0
+
+theorem preservesOrdinaryAbsence_maskedSignLayer
+    (parameter : PublicParameter) (input : HashInput)
+    (hnotStable : ¬StableOrdinaryInput parameter input)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index) (lay : Layer) :
+    PreservesOrdinaryAbsence input (maskedSignLayer parameter ftsSecret index lay) := by
+  unfold maskedSignLayer
+  exact (preservesOrdinaryAbsence_maskedLayerMessage parameter input hnotStable ftsSecret index
+    lay).bind fun message =>
+      (preservesOrdinaryAbsence_maskedOtsSign parameter input hnotStable lay
+        (treeIndexAt index lay) (leafIndexAt index lay) message).bind fun result =>
+          match result with
+          | none => PreservesOrdinaryAbsence.pure input none
+          | some _ =>
+              ((OrdinaryCachePreserving.of_splitCachePreserving
+                (splitCachePreserving_ensureTreePath lay (treeIndexAt index lay)
+                  (leafIndexAt index lay))).bind fun _ =>
+                    OrdinaryCachePreserving.of_splitCachePreserving
+                      (SplitCachePreserving.pure _)).preservesAbsence input
+
+theorem ordinaryCachePreserving_revealLayerValues
+    (index : Index) (lay : Layer) (encoding : ChainIndex → Digit) :
+    OrdinaryCachePreserving (revealLayerValues index lay encoding) := by
+  unfold revealLayerValues
+  exact (OrdinaryCachePreserving.sequenceFin _ fun chainIdx =>
+    ordinaryCachePreserving_revealPublishedCoordinate
+      (chainValueCoordinate lay (treeIndexAt index lay) (leafIndexAt index lay) chainIdx
+        (encoding chainIdx))).bind fun _ =>
+          (OrdinaryCachePreserving.sequenceFin _ fun level => by
+            split
+            · cases hlevelValue : level.val with
+              | zero => exact ordinaryCachePreserving_revealPublishedCoordinate _
+              | succ current =>
+                  rw [show current + 1 = Nat.succ current by omega]
+                  change OrdinaryCachePreserving
+                    (if hlevel : current < maxLayerHeight then
+                      revealPublishedCoordinate (.position (.node lay (treeIndexAt index lay)
+                        ⟨current, hlevel⟩ (leafOfNat
+                          (Nat.xor ((leafIndexAt index lay).val / 2 ^ (current + 1)) 1))))
+                    else pure 0)
+                  by_cases hlevel : current < maxLayerHeight
+                  · rw [dif_pos hlevel]
+                    exact ordinaryCachePreserving_revealPublishedCoordinate _
+                  · rw [dif_neg hlevel]
+                    exact OrdinaryCachePreserving.of_splitCachePreserving
+                      (SplitCachePreserving.pure 0)
+            · exact OrdinaryCachePreserving.of_splitCachePreserving
+                (SplitCachePreserving.pure 0)).bind fun _ =>
+                  OrdinaryCachePreserving.of_splitCachePreserving
+                    (SplitCachePreserving.pure _)
+
+theorem preservesOrdinaryAbsence_ordinarySignDigestLoop
+    (secretKey : SecretKey) (input : HashInput)
+    (hnotStable : ¬StableOrdinaryInput secretKey.parameter input)
+    (attempts : Nat) (message : Message) :
+    PreservesOrdinaryAbsence input
+      (simulateQ ordinaryRomImpl (signDigestLoop attempts secretKey message)) := by
+  induction attempts with
+  | zero =>
+      rw [signDigestLoop, simulateQ_pure]
+      exact PreservesOrdinaryAbsence.pure input none
+  | succ attempts ih =>
+      rw [signDigestLoop, simulateQ_bind]
+      have hrandomness : PreservesOrdinaryAbsence input
+          (simulateQ ordinaryRomImpl (liftM sampleRandomness)) := by
+        rw [ordinaryRomImpl, QueryImpl.simulateQ_add_liftM_left]
+        exact (ordinaryCachePreserving_simulateQ_splitUniformImpl sampleRandomness).preservesAbsence
+          input
+      exact hrandomness.bind fun randomness => by
+        rw [simulateQ_bind]
+        have hattempt : PreservesOrdinaryAbsence input
+            (simulateQ ordinaryRomImpl
+              (liftM (signAttempt secretKey message randomness :
+                OracleComp HashSpec (Option (Index × (DigestTree → FtsLeaf)))))) := by
+          rw [ordinaryRomImpl, QueryImpl.simulateQ_add_liftM_right]
+          exact preservesOrdinaryAbsence_simulateQ_ordinaryHashImpl_of_stable
+            secretKey.parameter input hnotStable _
+              (fun f => queriesStable_signAttempt f secretKey message randomness)
+        exact hattempt.bind fun attempt => by
+          cases attempt with
+          | none => exact ih
+          | some selected => exact PreservesOrdinaryAbsence.pure input _
+
+theorem preservesOrdinaryAbsence_maskedSignAfterDigest
+    (parameter : PublicParameter) (input : HashInput)
+    (hnotStable : ¬StableOrdinaryInput parameter input)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    PreservesOrdinaryAbsence input
+      (maskedSignAfterDigest parameter ftsSecret randomness index leaves) := by
+  unfold maskedSignAfterDigest
+  exact (preservesOrdinaryAbsence_simulateQ_ordinaryHashImpl_of_stable parameter input
+    hnotStable _ (fun f => queriesStable_ftsOpen f parameter index leaves
+      (ftsSecret index))).bind fun _ =>
+        (PreservesOrdinaryAbsence.sequenceFin _ fun lay =>
+          preservesOrdinaryAbsence_maskedSignLayer parameter input hnotStable ftsSecret index
+            lay).bind fun layers =>
+              match hparts : traverseOption layers with
+              | none => PreservesOrdinaryAbsence.pure input none
+              | some parts =>
+                  ((OrdinaryCachePreserving.sequenceFin _ fun lay =>
+                    ordinaryCachePreserving_revealLayerValues index lay
+                      (parts lay).2).bind fun _ =>
+                        OrdinaryCachePreserving.of_splitCachePreserving
+                          (SplitCachePreserving.pure _)).preservesAbsence input
+
+theorem preservesOrdinaryAbsence_maskedSign
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (input : HashInput) (hnotStable : ¬StableOrdinaryInput parameter input)
+    (message : Message) :
+    PreservesOrdinaryAbsence input (maskedSign parameter root ftsSecret message) := by
+  unfold maskedSign
+  exact (preservesOrdinaryAbsence_ordinarySignDigestLoop
+    (⟨parameter, root, fun _ _ _ _ => 0, ftsSecret⟩ : SecretKey) input hnotStable
+      digestAttemptLimit message).bind fun selected =>
+      match selected with
+      | none => PreservesOrdinaryAbsence.pure input none
+      | some data => preservesOrdinaryAbsence_maskedSignAfterDigest parameter input hnotStable
+          ftsSecret data.1 data.2.1 data.2.2
+
+theorem preservesOrdinaryAbsence_maskedSigningImpl
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (input : HashInput) (hnotStable : ¬StableOrdinaryInput parameter input) :
+    ∀ message, PreservesOrdinaryAbsence input
+      (maskedSigningImpl parameter root ftsSecret message) :=
+  fun message => preservesOrdinaryAbsence_maskedSign parameter root ftsSecret input hnotStable
+    message
+
+theorem preservesPublishedValues_maskedLayerMessage
+    (parameter : PublicParameter) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (index : Index) (lay : Layer) :
+    PreservesPublishedValues (maskedLayerMessage parameter ftsSecret index lay) := by
+  unfold maskedLayerMessage
+  split
+  · exact preservesPublishedValues_maskedTreeRoot _ _
+  · exact preservesPublishedValues_simulateQ_ordinaryHashImpl _
+
+theorem preservesPublishedValues_maskedOtsSignFrom
+    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (message : Digest) :
+    ∀ attempts counter,
+      PreservesPublishedValues
+        (maskedOtsSignFrom parameter lay tree leafIdx message attempts counter)
+  | 0, _ => PreservesPublishedValues.pure none
+  | attempts + 1, counter => by
+      rw [maskedOtsSignFrom]
+      exact (preservesPublishedValues_simulateQ_ordinaryHashImpl _).bind fun encoded =>
+        match encoded with
+        | none => preservesPublishedValues_maskedOtsSignFrom parameter lay tree leafIdx message
+            attempts (counter + 1)
+        | some encoding =>
+            (PreservesPublishedValues.sequenceFin _ fun chainIdx =>
+              preservesPublishedValues_ensureChainPrefix lay tree leafIdx chainIdx
+                (encoding chainIdx)).bind fun _ => PreservesPublishedValues.pure _
+
+theorem preservesPublishedValues_maskedOtsSign
+    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (message : Digest) :
+    PreservesPublishedValues (maskedOtsSign parameter lay tree leafIdx message) :=
+  preservesPublishedValues_maskedOtsSignFrom parameter lay tree leafIdx message
+    encodingAttemptLimit 0
+
+theorem preservesPublishedValues_maskedSignLayer
+    (parameter : PublicParameter) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (index : Index) (lay : Layer) :
+    PreservesPublishedValues (maskedSignLayer parameter ftsSecret index lay) := by
+  unfold maskedSignLayer
+  exact (preservesPublishedValues_maskedLayerMessage parameter ftsSecret index lay).bind
+    fun message =>
+      (preservesPublishedValues_maskedOtsSign parameter lay (treeIndexAt index lay)
+        (leafIndexAt index lay) message).bind fun result =>
+          match result with
+          | none => PreservesPublishedValues.pure none
+          | some _ => (preservesPublishedValues_ensureTreePath lay (treeIndexAt index lay)
+              (leafIndexAt index lay)).bind fun _ => PreservesPublishedValues.pure _
+
+theorem preservesPublishedValues_revealLayerValues
+    (index : Index) (lay : Layer) (encoding : ChainIndex → Digit) :
+    PreservesPublishedValues (revealLayerValues index lay encoding) := by
+  unfold revealLayerValues
+  exact (PreservesPublishedValues.sequenceFin _ fun chainIdx =>
+    preservesPublishedValues_revealPublishedCoordinate
+      (chainValueCoordinate lay (treeIndexAt index lay) (leafIndexAt index lay) chainIdx
+        (encoding chainIdx))).bind fun _ =>
+          (PreservesPublishedValues.sequenceFin _ fun level => by
+            split
+            · cases hlevelValue : level.val with
+              | zero => exact preservesPublishedValues_revealPublishedCoordinate _
+              | succ current =>
+                  rw [show current + 1 = Nat.succ current by omega]
+                  change PreservesPublishedValues
+                    (if hlevel : current < maxLayerHeight then
+                      revealPublishedCoordinate (.position (.node lay (treeIndexAt index lay)
+                        ⟨current, hlevel⟩ (leafOfNat
+                          (Nat.xor ((leafIndexAt index lay).val / 2 ^ (current + 1)) 1))))
+                    else pure 0)
+                  by_cases hlevel : current < maxLayerHeight
+                  · rw [dif_pos hlevel]
+                    exact preservesPublishedValues_revealPublishedCoordinate _
+                  · rw [dif_neg hlevel]
+                    exact PreservesPublishedValues.pure 0
+            · exact PreservesPublishedValues.pure 0).bind fun _ =>
+                  PreservesPublishedValues.pure _
+
+theorem preservesPublishedValues_ordinarySignDigestLoop
+    (secretKey : SecretKey) (attempts : Nat) (message : Message) :
+    PreservesPublishedValues
+      (simulateQ ordinaryRomImpl (signDigestLoop attempts secretKey message)) := by
+  induction attempts with
+  | zero =>
+      rw [signDigestLoop, simulateQ_pure]
+      exact PreservesPublishedValues.pure none
+  | succ attempts ih =>
+      rw [signDigestLoop, simulateQ_bind]
+      have hrandomness : PreservesPublishedValues
+          (simulateQ ordinaryRomImpl (liftM sampleRandomness)) := by
+        rw [ordinaryRomImpl, QueryImpl.simulateQ_add_liftM_left]
+        exact preservesPublishedValues_simulateQ_splitUniformImpl sampleRandomness
+      exact hrandomness.bind fun randomness => by
+        rw [simulateQ_bind]
+        have hattempt : PreservesPublishedValues
+            (simulateQ ordinaryRomImpl
+              (liftM (signAttempt secretKey message randomness :
+                OracleComp HashSpec (Option (Index × (DigestTree → FtsLeaf)))))) := by
+          rw [ordinaryRomImpl, QueryImpl.simulateQ_add_liftM_right]
+          exact preservesPublishedValues_simulateQ_ordinaryHashImpl _
+        exact hattempt.bind fun attempt => by
+          cases attempt with
+          | none => exact ih
+          | some selected => exact PreservesPublishedValues.pure _
+
+theorem preservesPublishedValues_maskedSignAfterDigest
+    (parameter : PublicParameter) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    PreservesPublishedValues
+      (maskedSignAfterDigest parameter ftsSecret randomness index leaves) := by
+  unfold maskedSignAfterDigest
+  exact (preservesPublishedValues_simulateQ_ordinaryHashImpl _).bind fun _ =>
+    (PreservesPublishedValues.sequenceFin _ fun lay =>
+      preservesPublishedValues_maskedSignLayer parameter ftsSecret index lay).bind fun layers =>
+        match traverseOption layers with
+        | none => PreservesPublishedValues.pure none
+        | some parts => (PreservesPublishedValues.sequenceFin _ fun lay =>
+            preservesPublishedValues_revealLayerValues index lay (parts lay).2).bind fun _ =>
+              PreservesPublishedValues.pure _
+
+theorem preservesPublishedValues_maskedSign
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message) :
+    PreservesPublishedValues (maskedSign parameter root ftsSecret message) := by
+  unfold maskedSign
+  exact (preservesPublishedValues_ordinarySignDigestLoop
+    (⟨parameter, root, fun _ _ _ _ => 0, ftsSecret⟩ : SecretKey) digestAttemptLimit
+      message).bind fun selected => match selected with
+        | none => PreservesPublishedValues.pure none
+        | some data => preservesPublishedValues_maskedSignAfterDigest parameter ftsSecret
+            data.1 data.2.1 data.2.2
+
+theorem preservesPublishedValues_maskedSigningImpl
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    ∀ message, PreservesPublishedValues (maskedSigningImpl parameter root ftsSecret message) :=
+  fun message => preservesPublishedValues_maskedSign parameter root ftsSecret message
+
+theorem preservesPublishedValuesImpl_splitUniformImpl :
+    PreservesPublishedValuesImpl splitUniformImpl := by
+  intro n
+  simpa [splitUniformImpl] using preservesPublishedValues_simulateQ_splitUniformImpl
+    (liftM (unifSpec.query n) : ProbComp (Fin (n + 1)))
+
+theorem preservesPublishedValuesImpl_probingHashImpl (parameter : PublicParameter) :
+    PreservesPublishedValuesImpl (probingHashImpl parameter) :=
+  fun input => preservesPublishedValues_probingHashQuery parameter input
+
+theorem preservesPublishedValuesImpl_probingRomImpl (parameter : PublicParameter) :
+    PreservesPublishedValuesImpl (probingRomImpl parameter) := by
+  intro query
+  cases query with
+  | inl query => exact preservesPublishedValuesImpl_splitUniformImpl query
+  | inr query => exact preservesPublishedValuesImpl_probingHashImpl parameter query
+
+theorem preservesPublishedValuesImpl_verifierHashImpl (parameter : PublicParameter) :
+    PreservesPublishedValuesImpl (verifierHashImpl parameter) :=
+  fun input => preservesPublishedValues_verifierHashQuery parameter input
+
+theorem preservesPublishedValuesImpl_verifierRomImpl (parameter : PublicParameter) :
+    PreservesPublishedValuesImpl (verifierRomImpl parameter) := by
+  intro query
+  cases query with
+  | inl query => exact preservesPublishedValuesImpl_splitUniformImpl query
+  | inr query => exact preservesPublishedValuesImpl_verifierHashImpl parameter query
+
+theorem preservesPublishedValuesImpl_maskedSigningImpl
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    PreservesPublishedValuesImpl (maskedSigningImpl parameter root ftsSecret) :=
+  preservesPublishedValues_maskedSigningImpl parameter root ftsSecret
+
+theorem preservesPublishedValuesImpl_maskedExpandedAdversaryImpl
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    PreservesPublishedValuesImpl (maskedExpandedAdversaryImpl parameter root ftsSecret) := by
+  intro query
+  cases query with
+  | inl query => exact preservesPublishedValuesImpl_probingRomImpl parameter query
+  | inr query => exact preservesPublishedValuesImpl_maskedSigningImpl parameter root ftsSecret query
+
+theorem publishedValues_of_mem_runRaw_maskedRetainedGameAfterFtsSecrets
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (fuel remaining : Nat) (rawState : LazyRevealProbe.State Coordinate)
+    (rawCache : SplitHashCache) (root : Digest) (forgery : Forgery)
+    (signingLog : QueryLog SigningSpec) (verified : Bool)
+    (hresult : LazyRevealProbe.RawResult.done rawState remaining
+        ((root, ((forgery, signingLog), verified)), rawCache) ∈ support
+      (LazyRevealProbe.runRaw (LazyRevealProbe.State.empty :
+          LazyRevealProbe.State Coordinate) fuel
+        ((maskedRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
+          emptySplitHashCache))) :
+    PublishedValues rawState := by
+  let rootCoordinate : Coordinate := .position (.node topLayer rootTree
+    ⟨layerHeight topLayer - 1, by norm_num [layerHeight, topLayer, maxLayerHeight]⟩ 0)
+  unfold maskedRetainedGameAfterFtsSecrets at hresult
+  rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨rootRaw, hroot, hafterRoot⟩ := hresult
+  cases rootRaw with
+  | stopped hit => simp at hafterRoot
+  | done rootState rootRemaining rootResult =>
+      rcases rootResult with ⟨sampledRoot, rootCache⟩
+      simp only at hafterRoot
+      rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hafterRoot
+      obtain ⟨publishRaw, hpublish, hafterPublish⟩ := hafterRoot
+      cases publishRaw with
+      | stopped hit => simp at hafterPublish
+      | done publishState publishRemaining publishResult =>
+          rcases publishResult with ⟨publishedUnit, publishCache⟩
+          simp only at hafterPublish
+          rw [StateT.run_bind, LazyRevealProbe.runRaw_bind,
+            mem_support_bind_iff] at hafterPublish
+          obtain ⟨restRaw, hrest, hfinish⟩ := hafterPublish
+          cases restRaw with
+          | stopped hit => simp at hfinish
+          | done restState restRemaining restResult =>
+              rcases restResult with ⟨⟨prefixForgery, prefixLog⟩, restCache⟩
+              simp only at hfinish
+              rw [StateT.run_bind, LazyRevealProbe.runRaw_bind,
+                mem_support_bind_iff] at hfinish
+              obtain ⟨verifyRaw, hverify, hreturn⟩ := hfinish
+              cases verifyRaw with
+              | stopped hit => simp at hreturn
+              | done verifyState verifyRemaining verifyResult =>
+                  rcases verifyResult with ⟨prefixVerified, verifyCache⟩
+                  simp [LazyRevealProbe.runRaw] at hreturn
+                  rcases hreturn with ⟨rfl, rfl, _, rfl⟩
+                  have hpublishedEmpty : PublishedValues
+                      (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) := by
+                    intro coordinate hcoordinate
+                    simp [LazyRevealProbe.State.empty] at hcoordinate
+                  have hpublishedRoot := preservesPublishedValues_maskedTreeRoot topLayer rootTree
+                    (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+                      emptySplitHashCache fuel rootState rootRemaining sampledRoot rootCache
+                        hpublishedEmpty hroot
+                  obtain ⟨rootOutput, _, hrootValue, _⟩ :=
+                    mem_runRaw_maskedTreeRoot_hidden topLayer rootTree
+                      (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) rootState
+                        emptySplitHashCache rootCache fuel rootRemaining sampledRoot hroot
+                  have hrootCoordinate :
+                      maskedTreeRootCoordinate topLayer rootTree = rootCoordinate := by
+                    simp [maskedTreeRootCoordinate, maskedTreeRootLevel, rootCoordinate,
+                      layerHeight, topLayer, maxLayerHeight]
+                  have hrootValue' : rootState.values rootCoordinate ≠ none := by
+                    rw [← hrootCoordinate, hrootValue]
+                    simp
+                  have hpublishedPublish := publishedValues_of_mem_runRaw_publishCoordinate
+                    rootCoordinate rootState publishState rootCache publishCache rootRemaining
+                      publishRemaining publishedUnit hpublishedRoot hrootValue'
+                        (by simpa [rootCoordinate] using hpublish)
+                  have hpublishedRest :=
+                    (preservesPublishedValuesImpl_maskedExpandedAdversaryImpl parameter sampledRoot
+                      ftsSecret).simulateQ
+                        (signingTraceComputation (adversary.main ⟨sampledRoot, parameter⟩))
+                          publishState publishCache publishRemaining restState restRemaining
+                            (prefixForgery, prefixLog) restCache hpublishedPublish hrest
+                  exact (preservesPublishedValuesImpl_verifierRomImpl parameter).simulateQ
+                    (scheme.verify ⟨sampledRoot, parameter⟩ prefixForgery.message
+                      prefixForgery.signature) restState restCache restRemaining rawState
+                        remaining prefixVerified rawCache hpublishedRest hverify
 
 theorem ordinaryCacheQuerying_modifyOrdinary_pure (input : HashInput) (answer : HashOutput) :
     OrdinaryCacheQuerying input (do
