@@ -16,6 +16,10 @@ noncomputable local instance runSampleableOtsHashTable :
     SampleableType (OtsSecretIndex → HashOutput) :=
   SampleableType.ofFintype (OtsSecretIndex → HashOutput)
 
+noncomputable def sampleOtsHashTable :
+    ProbComp (OtsSecretIndex → HashOutput) :=
+  $ᵗ (OtsSecretIndex → HashOutput)
+
 structure CleanRunResult (alpha : Type) where
   state : LazyRevealProbe.State Coordinate
   remaining : Nat
@@ -476,11 +480,9 @@ noncomputable def detailedExperimentCleanWithCompletionTable
   | .done hit finalState remaining value =>
       if hit then
         pure none
-      else do
-        let base ← ($ᵗ (OtsSecretIndex → HashOutput) :
-          ProbComp (OtsSecretIndex → HashOutput))
-        pure (some ⟨finalState, remaining, value,
-          completedStartTable finalState base⟩)
+      else
+        (fun base => some ⟨finalState, remaining, value,
+          completedStartTable finalState base⟩) <$> sampleOtsHashTable
 
 set_option maxRecDepth 100000 in
 theorem evalDist_runThenFinalizeCleanFromTable_eq_detailed
@@ -543,7 +545,7 @@ theorem evalDist_runThenFinalizeCleanFromTable_eq_detailed
               intro finalized
               rcases finalized with ⟨hit, finalState⟩
               by_cases hhit : hit
-              · simp [hhit, finish]
-              · simp [hhit, finish]
+              · simp [hhit, finish, sampleOtsHashTable]
+              · simp [hhit, finish, sampleOtsHashTable]
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

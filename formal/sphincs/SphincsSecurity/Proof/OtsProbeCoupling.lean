@@ -9907,6 +9907,21 @@ theorem not_verifyProbe_of_retainedCompletion_of_clean_finalize
           hcompletedTable hresult hfinalize
   · exact hprobe
 
+def RetainedCompletionVerifyProbe (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (completedState : LazyRevealProbe.State Coordinate) (rawCache : SplitHashCache)
+    (root : Digest) (forgery : Forgery) (signingLog : QueryLog SigningSpec) : Prop :=
+  VerifyProbeWitness
+    (retainedCompletionAnswer parameter completedState rawCache baseStarts)
+    (mergedCache parameter
+      (retainedCompletionTable parameter completedState rawCache baseStarts)
+      completedState.ensured rawCache)
+    ⟨parameter, root,
+      tableOtsSecret (retainedCompletionTable parameter completedState rawCache baseStarts),
+      ftsSecret⟩
+    signingLog forgery.message forgery.signature
+
 set_option maxRecDepth 10000 in
 theorem detailedExperiment_maskedRetainedGame_not_verifyProbe
     (adversary : Adversary) (parameter : PublicParameter)
@@ -9921,15 +9936,17 @@ theorem detailedExperiment_maskedRetainedGame_not_verifyProbe
         (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel
         ((maskedRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
           emptySplitHashCache)))
-    (hprobe : VerifyProbeWitness
-      (retainedCompletionAnswer parameter completedState rawCache baseStarts)
-      (mergedCache parameter
-        (retainedCompletionTable parameter completedState rawCache baseStarts)
-        completedState.ensured rawCache)
-      (⟨parameter, root,
-        tableOtsSecret (retainedCompletionTable parameter completedState rawCache baseStarts),
-        ftsSecret⟩ : SecretKey)
-      signingLog forgery.message forgery.signature) : False := by
+    (hprobe : RetainedCompletionVerifyProbe parameter ftsSecret baseStarts completedState
+      rawCache root forgery signingLog) : False := by
+  change VerifyProbeWitness
+    (retainedCompletionAnswer parameter completedState rawCache baseStarts)
+    (mergedCache parameter
+      (retainedCompletionTable parameter completedState rawCache baseStarts)
+      completedState.ensured rawCache)
+    (⟨parameter, root,
+      tableOtsSecret (retainedCompletionTable parameter completedState rawCache baseStarts),
+      ftsSecret⟩ : SecretKey)
+    signingLog forgery.message forgery.signature at hprobe
   rw [LazyRevealProbe.detailedExperiment, mem_support_bind_iff] at hresult
   obtain ⟨raw, hraw, hfinish⟩ := hresult
   cases raw with
@@ -9957,6 +9974,46 @@ theorem detailedExperiment_maskedRetainedGame_not_verifyProbe
       exact not_verifyProbe_of_retainedCompletion_of_clean_finalize adversary parameter
         ftsSecret baseStarts fuel remaining rawState completedState finalCache rawRoot rawForgery
           rawLog rawVerified hconsistent hraw hfinalize hprobe'
+
+theorem detailedExperiment_maskedRetainedGame_excludes_completionVerifyProbe
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (fuel remaining : Nat) (completedState : LazyRevealProbe.State Coordinate)
+    (rawCache : SplitHashCache) (root : Digest) (forgery : Forgery)
+    (signingLog : QueryLog SigningSpec) (verified : Bool)
+    (hresult : LazyRevealProbe.DetailedResult.done false completedState remaining
+        ((root, ((forgery, signingLog), verified)), rawCache) ∈ support
+      (LazyRevealProbe.detailedExperiment
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel
+        ((maskedRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
+          emptySplitHashCache))) :
+    ¬RetainedCompletionVerifyProbe parameter ftsSecret baseStarts completedState rawCache
+      root forgery signingLog := by
+  exact fun hprobe => detailedExperiment_maskedRetainedGame_not_verifyProbe adversary parameter
+    ftsSecret baseStarts fuel remaining completedState rawCache root forgery signingLog verified
+      hresult hprobe
+
+theorem detailedExperiment_maskedRetainedGame_excludes_completionVerifyProbe_of_hit_eq_false
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (fuel remaining : Nat) (hit : Bool)
+    (completedState : LazyRevealProbe.State Coordinate)
+    (rawCache : SplitHashCache) (root : Digest) (forgery : Forgery)
+    (signingLog : QueryLog SigningSpec) (verified : Bool) (hhit : hit = false)
+    (hresult : LazyRevealProbe.DetailedResult.done hit completedState remaining
+        ((root, ((forgery, signingLog), verified)), rawCache) ∈ support
+      (LazyRevealProbe.detailedExperiment
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel
+        ((maskedRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
+          emptySplitHashCache))) :
+    ¬RetainedCompletionVerifyProbe parameter ftsSecret baseStarts completedState rawCache
+      root forgery signingLog := by
+  subst hit
+  exact detailedExperiment_maskedRetainedGame_excludes_completionVerifyProbe adversary parameter
+    ftsSecret baseStarts fuel remaining completedState rawCache root forgery signingLog verified
+      hresult
 
 theorem relTriple_runRaw_splitUniformImpl
     (n : Nat) (state : LazyRevealProbe.State Coordinate)
