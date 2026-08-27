@@ -128,6 +128,200 @@ theorem mergedCache_extendTable_agreesWith_tableAnswer
   apply mergedCache_agreesWith_tableAnswer
   exact completedSplitHashCache_extendTable_consistent state cache base hconsistent
 
+private theorem attach_flatMap_val {α β : Type*} (xs : List α) (g : α → List β) :
+    xs.attach.flatMap (fun x => g x.1) = xs.flatMap g := by
+  calc
+    _ = (xs.attach.map Subtype.val).flatMap g := by rw [List.flatMap_map]
+    _ = xs.flatMap g := by rw [List.attach_map_subtype_val]
+
+private theorem positionDepth_wf :
+    WellFounded (fun child parent : Position => child.depth < parent.depth) :=
+  (measure Position.depth).wf
+
+private noncomputable def completedRealizedPositionBody
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
+    (state : LazyRevealProbe.State Coordinate)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (position : Position)
+    (recurse : ∀ child : Position, child.depth < position.depth → HashOutput) : HashOutput :=
+  match state.values (.position position) with
+  | some output => output
+  | none =>
+      show HashOutput from f (tweakableHashInput parameter position.domain <|
+        match position with
+        | .chain lay tree leafIdx chainIdx step =>
+            if step.val = 0 then
+              digestBytes (truncateHash ((state.values
+                (.chainStart lay tree leafIdx chainIdx)).getD
+                  (baseStarts lay tree leafIdx chainIdx)))
+            else
+              (Position.chain lay tree leafIdx chainIdx step).children.attach.flatMap fun child =>
+                digestBytes (truncateHash (recurse child.1
+                  (Position.depth_lt_of_mem_children child.2)))
+        | .leaf lay tree leafIdx =>
+            (Position.leaf lay tree leafIdx).children.attach.flatMap fun child =>
+              digestBytes (truncateHash (recurse child.1
+                (Position.depth_lt_of_mem_children child.2)))
+        | .node lay tree level nodeIdx =>
+            (Position.node lay tree level nodeIdx).children.attach.flatMap fun child =>
+              digestBytes (truncateHash (recurse child.1
+                (Position.depth_lt_of_mem_children child.2)))
+        | .ftsLeaf index tree leafIdx =>
+            (Position.ftsLeaf index tree leafIdx).children.attach.flatMap fun child =>
+              digestBytes (truncateHash (recurse child.1
+                (Position.depth_lt_of_mem_children child.2)))
+        | .ftsNode index tree level nodeIdx =>
+            (Position.ftsNode index tree level nodeIdx).children.attach.flatMap fun child =>
+              digestBytes (truncateHash (recurse child.1
+                (Position.depth_lt_of_mem_children child.2)))
+        | .ftsRoots index =>
+            (Position.ftsRoots index).children.attach.flatMap fun child =>
+              digestBytes (truncateHash (recurse child.1
+                (Position.depth_lt_of_mem_children child.2))))
+
+noncomputable def completedRealizedPositionOutput
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
+    (state : LazyRevealProbe.State Coordinate)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput) :
+    Position → HashOutput :=
+  positionDepth_wf.fix (completedRealizedPositionBody f parameter state baseStarts)
+
+theorem completedRealizedPositionOutput_eq
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
+    (state : LazyRevealProbe.State Coordinate)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (position : Position) :
+    completedRealizedPositionOutput f parameter state baseStarts position =
+      completedRealizedPositionBody f parameter state baseStarts position
+        (fun child _ => completedRealizedPositionOutput f parameter state baseStarts child) := by
+  rw [completedRealizedPositionOutput, WellFounded.fix_eq]
+
+noncomputable def completedRealizedTable
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
+    (state : LazyRevealProbe.State Coordinate)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput) :
+    Coordinate → HashOutput
+  | coordinate@(.chainStart lay tree leafIdx chainIdx) =>
+      (state.values coordinate).getD (baseStarts lay tree leafIdx chainIdx)
+  | .position position =>
+      completedRealizedPositionOutput f parameter state baseStarts position
+
+private theorem completedChildrenPayload_eq
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
+    (state : LazyRevealProbe.State Coordinate)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (positions : List Position) :
+    (positions.map (tableValue (completedRealizedTable f parameter state baseStarts))).flatMap
+        digestBytes =
+      positions.attach.flatMap fun child =>
+        digestBytes (truncateHash
+          (completedRealizedPositionOutput f parameter state baseStarts child.1)) := by
+  let payload := fun position : Position =>
+    digestBytes (truncateHash
+      (completedRealizedPositionOutput f parameter state baseStarts position))
+  calc
+    _ = positions.flatMap payload := by
+      simp [payload, tableValue, completedRealizedTable, List.flatMap_map]
+    _ = positions.attach.flatMap (fun child => payload child.1) :=
+      (attach_flatMap_val positions payload).symm
+
+theorem completedRealizedTable_of_value
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
+    (state : LazyRevealProbe.State Coordinate)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (coordinate : Coordinate) (output : HashOutput)
+    (hvalue : state.values coordinate = some output) :
+    completedRealizedTable f parameter state baseStarts coordinate = output := by
+  cases coordinate with
+  | chainStart => simp [completedRealizedTable, hvalue]
+  | position position =>
+      rw [completedRealizedTable, completedRealizedPositionOutput_eq]
+      unfold completedRealizedPositionBody
+      rw [hvalue]
+
+theorem extendTable_completedRealizedTable
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
+    (state : LazyRevealProbe.State Coordinate)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput) :
+    extendTable state (completedRealizedTable f parameter state baseStarts) =
+      completedRealizedTable f parameter state baseStarts := by
+  funext coordinate
+  unfold extendTable
+  cases hvalue : state.values coordinate with
+  | none => simp
+  | some output =>
+      rw [completedRealizedTable_of_value f parameter state baseStarts coordinate output hvalue]
+      simp
+
+theorem mergedCache_completedRealizedTable_agreesWith_tableAnswer
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (hconsistent : HiddenConsistent state cache) :
+    (mergedCache parameter (completedRealizedTable f parameter state baseStarts)
+      state.ensured cache).AgreesWithFn
+        (tableAnswer parameter (completedRealizedTable f parameter state baseStarts)
+          (splitFallback cache)) := by
+  have hagrees := mergedCache_extendTable_agreesWith_tableAnswer parameter state
+    (completedRealizedTable f parameter state baseStarts) cache hconsistent
+  rw [extendTable_completedRealizedTable] at hagrees
+  exact hagrees
+
+theorem completedRealizedTable_realizes_of_missing
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
+    (state : LazyRevealProbe.State Coordinate)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (position : Position) (hmissing : state.values (.position position) = none) :
+    f (tableInput parameter (completedRealizedTable f parameter state baseStarts)
+        (.position position)) =
+      completedRealizedTable f parameter state baseStarts (.position position) := by
+  rw [completedRealizedTable, completedRealizedPositionOutput_eq]
+  unfold completedRealizedPositionBody
+  rw [hmissing]
+  cases position with
+  | chain lay tree leafIdx chainIdx step =>
+      simp only [tableInput, tablePayload, Position.domain, completedRealizedTable]
+      rw [completedChildrenPayload_eq]
+  | leaf | node | ftsLeaf | ftsNode | ftsRoots =>
+      simp only [tableInput, tablePayload, Position.domain]
+      rw [completedChildrenPayload_eq]
+
+theorem tableAnswer_completedRealizedTable_eq_of_missing
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
+    (state : LazyRevealProbe.State Coordinate)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (position : Position) (hots : IsOtsPosition position)
+    (hmissing : state.values (.position position) = none) :
+    tableAnswer parameter (completedRealizedTable f parameter state baseStarts) f
+        (tableInput parameter (completedRealizedTable f parameter state baseStarts)
+          (.position position)) =
+      f (tableInput parameter (completedRealizedTable f parameter state baseStarts)
+        (.position position)) := by
+  rw [tableAnswer_tableInput parameter _ f position hots]
+  exact (completedRealizedTable_realizes_of_missing f parameter state baseStarts position
+    hmissing).symm
+
+theorem tableAnswer_completedRealizedTable_eq_of_decoded_missing
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
+    (state : LazyRevealProbe.State Coordinate)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (input : HashInput) (position : Position) (hots : IsOtsPosition position)
+    (hposition : decodePosition? parameter input = some position)
+    (hmissing : state.values (.position position) = none) :
+    tableAnswer parameter (completedRealizedTable f parameter state baseStarts) f input =
+      f input := by
+  unfold tableAnswer
+  rw [hposition]
+  cases position with
+  | chain | leaf | node =>
+      simp only [tableAnswerDecoded]
+      split_ifs with hexact
+      · subst input
+        exact (completedRealizedTable_realizes_of_missing f parameter state baseStarts _
+          hmissing).symm
+      · rfl
+  | ftsLeaf | ftsNode | ftsRoots => simp [IsOtsPosition] at hots
+
 noncomputable def realizedOtsSecret
     (chainStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput) :
     Layer → TreeIndex → LeafIndex → ChainIndex → Digest :=
