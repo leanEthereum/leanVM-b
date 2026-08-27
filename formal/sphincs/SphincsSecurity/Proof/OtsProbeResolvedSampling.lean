@@ -12005,6 +12005,145 @@ theorem reachableResolvedCouples_maskedSign
       exact reachableResolvedCouples_maskedSignAfterDigest parameter table ftsSecret randomness
         index leaves
 
+noncomputable def resolvedSigningImpl
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    QueryImpl SigningSpec (StateT (QueryCache HashSpec) ProbComp) :=
+  fun message => resolvedSign parameter root table ftsSecret message
+
+noncomputable def resolvedExpandedAdversaryImpl
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    QueryImpl (OracleWorld + SigningSpec)
+      (StateT (QueryCache HashSpec) ProbComp) :=
+  romImpl + resolvedSigningImpl parameter root table ftsSecret
+
+theorem reachableResolvedCouples_maskedExpandedAdversaryImpl
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (query) :
+    ReachableResolvedCouples parameter table
+      (maskedExpandedAdversaryImpl parameter root ftsSecret query)
+      (resolvedExpandedAdversaryImpl parameter root table ftsSecret query) := by
+  cases query with
+  | inl oracleQuery =>
+      cases oracleQuery with
+      | inl n =>
+          exact reachableResolvedCouples_splitUniform parameter table n
+      | inr input =>
+          exact reachableResolvedCouples_probingHashQuery parameter table input
+  | inr message =>
+      exact reachableResolvedCouples_maskedSign parameter root table ftsSecret message
+
+theorem reachableResolvedCouples_adversaryPrefix
+    (adversary : Adversary) (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    ReachableResolvedCouples parameter table
+      (simulateQ (maskedExpandedAdversaryImpl parameter root ftsSecret)
+        (signingTraceComputation (adversary.main ⟨root, parameter⟩)))
+      (simulateQ (resolvedExpandedAdversaryImpl parameter root table ftsSecret)
+        (signingTraceComputation (adversary.main ⟨root, parameter⟩))) := by
+  exact reachableResolvedCouples_simulateQ
+    (maskedExpandedAdversaryImpl parameter root ftsSecret)
+    (resolvedExpandedAdversaryImpl parameter root table ftsSecret)
+    (reachableResolvedCouples_maskedExpandedAdversaryImpl parameter root table ftsSecret)
+    (signingTraceComputation (adversary.main ⟨root, parameter⟩))
+
+noncomputable def maskedPublishedTreeRoot :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) Digest := do
+  ensureTreeNode topLayer rootTree (layerHeight topLayer) 0
+  revealPublishedCoordinate (.position (.node topLayer rootTree
+    ⟨layerHeight topLayer - 1, by norm_num [layerHeight, topLayer, maxLayerHeight]⟩ 0))
+
+theorem maskedPublishedTreeRoot_eq :
+    maskedPublishedTreeRoot = (do
+      let root ← maskedTreeRoot topLayer rootTree
+      publishCoordinate (.position (.node topLayer rootTree
+        ⟨layerHeight topLayer - 1,
+          by norm_num [layerHeight, topLayer, maxLayerHeight]⟩ 0))
+      pure root) := by
+  unfold maskedPublishedTreeRoot maskedTreeRoot maskedTreeNode revealPublishedCoordinate
+  simp [revealPosition, layerHeight, topLayer, maxLayerHeight, leafOfNat]
+  all_goals rfl
+
+noncomputable def maskedRetainedPrefixAfterFtsSecrets
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate))
+      (Digest × (Forgery × QueryLog SigningSpec)) := do
+  let root ← maskedPublishedTreeRoot
+  let forgeryLog ←
+    simulateQ (maskedExpandedAdversaryImpl parameter root ftsSecret)
+      (signingTraceComputation (adversary.main ⟨root, parameter⟩))
+  pure (root, forgeryLog)
+
+noncomputable def resolvedRetainedPrefixAfterFtsSecrets
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    StateT (QueryCache HashSpec) ProbComp
+      (Digest × (Forgery × QueryLog SigningSpec)) := do
+  let root ← simulateQ (randomOracle : QueryImpl HashSpec _)
+    (treeNode parameter topLayer rootTree
+      (fun leafIdx chainIdx =>
+        truncateHash (table ⟨topLayer, rootTree, leafIdx, chainIdx⟩))
+      (layerHeight topLayer) 0)
+  let forgeryLog ←
+    simulateQ (resolvedExpandedAdversaryImpl parameter root table ftsSecret)
+      (signingTraceComputation (adversary.main ⟨root, parameter⟩))
+  pure (root, forgeryLog)
+
+set_option maxRecDepth 100000 in
+theorem reachableResolvedCouples_maskedPublishedTreeRoot
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput) :
+    ReachableResolvedCouples parameter table
+      maskedPublishedTreeRoot
+      (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (treeNode parameter topLayer rootTree
+          (fun leafIdx chainIdx =>
+            truncateHash (table ⟨topLayer, rootTree, leafIdx, chainIdx⟩))
+          (layerHeight topLayer) 0)) := by
+  unfold maskedPublishedTreeRoot
+  change ReachableResolvedCouples parameter table
+    (ensureTreeNode topLayer rootTree (layerHeight topLayer) 0 >>= fun _ =>
+      revealPublishedCoordinate (.position (.node topLayer rootTree
+        ⟨layerHeight topLayer - 1,
+          by norm_num [layerHeight, topLayer, maxLayerHeight]⟩ 0)))
+    (pure () >>= fun _ => simulateQ (randomOracle : QueryImpl HashSpec _)
+      (treeNode parameter topLayer rootTree
+        (fun leafIdx chainIdx =>
+          truncateHash (table ⟨topLayer, rootTree, leafIdx, chainIdx⟩))
+        (layerHeight topLayer) 0))
+  apply (reachableResolvedCouples_of_administrative
+    (resolvedAdministrative_ensureTreeNode topLayer rootTree (layerHeight topLayer) 0)
+    (resolvedPreservesPublished_ensureTreeNode topLayer rootTree
+      (layerHeight topLayer) 0)).bind
+  intro _
+  convert reachableResolvedCouples_revealPublishedTreeNode parameter table topLayer rootTree
+    (layerHeight topLayer) 0 (layerHeight_le topLayer) (by norm_num [layerHeight, topLayer]) using 1
+  all_goals simp [layerHeight, topLayer, maxLayerHeight, leafOfNat, revealPublishedCoordinate]
+  all_goals rfl
+
+set_option maxRecDepth 100000 in
+theorem reachableResolvedCouples_retainedPrefixAfterFtsSecrets
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    ReachableResolvedCouples parameter table
+      (maskedRetainedPrefixAfterFtsSecrets adversary parameter ftsSecret)
+      (resolvedRetainedPrefixAfterFtsSecrets adversary parameter table ftsSecret) := by
+  unfold maskedRetainedPrefixAfterFtsSecrets resolvedRetainedPrefixAfterFtsSecrets
+  apply (reachableResolvedCouples_maskedPublishedTreeRoot parameter table).bind
+  intro root
+  apply (reachableResolvedCouples_adversaryPrefix adversary parameter root table ftsSecret).bind
+  intro forgeryLog
+  exact reachableResolvedCouples_pure parameter table (root, forgeryLog)
+
 def DeferredFreshOn (coordinates : List Coordinate) (context : DeferredContext) : Prop :=
   ∀ position : Position, Coordinate.position position ∈ coordinates →
     context.values position = none
