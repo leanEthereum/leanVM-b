@@ -82,6 +82,52 @@ theorem probingHashImpl_eq_ordinaryHashImpl_of_stable
     probingHashImpl parameter input = ordinaryHashImpl input :=
   probingHashQuery_eq_splitHashQuery_of_stable parameter input hstable
 
+theorem tableAnswer_eq_fallback_of_stable
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (fallback : QueryImpl HashSpec Id) (input : HashInput)
+    (hstable : StableOrdinaryInput parameter input) :
+    tableAnswer parameter table fallback input = fallback input := by
+  unfold tableAnswer
+  cases hposition : decodePosition? parameter input with
+  | none => rfl
+  | some position =>
+      cases position with
+      | chain lay tree leafIdx chainIdx step =>
+          exact (hstable.2 _ hposition (by trivial)).elim
+      | leaf lay tree leafIdx =>
+          exact (hstable.2 _ hposition (by trivial)).elim
+      | node lay tree level nodeIdx =>
+          exact (hstable.2 _ hposition (by trivial)).elim
+      | ftsLeaf | ftsNode | ftsRoots => rfl
+
+theorem stableCacheAgreesWithFn_tableAnswer
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (cache : SplitHashCache) :
+    StableCacheAgreesWithFn parameter cache
+      (tableAnswer parameter table (splitFallback cache)) := by
+  intro input output hstable hcached
+  rw [tableAnswer_eq_fallback_of_stable parameter table _ input hstable]
+  simp [splitFallback, hcached]
+
+theorem tableAnswer_realizes_otsPositions
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (fallback : QueryImpl HashSpec Id) :
+    ∀ position : Position, IsOtsPosition position →
+      tableAnswer parameter table fallback
+          (tableInput parameter table (.position position)) =
+        table (.position position) := by
+  intro position hposition
+  exact tableAnswer_tableInput parameter table fallback position hposition
+
+theorem mergedCache_extendTable_agreesWith_tableAnswer
+    (parameter : PublicParameter) (state : LazyRevealProbe.State Coordinate)
+    (base : Coordinate → HashOutput) (cache : SplitHashCache)
+    (hconsistent : HiddenConsistent state cache) :
+    (mergedCache parameter (extendTable state base) state.ensured cache).AgreesWithFn
+      (tableAnswer parameter (extendTable state base) (splitFallback cache)) := by
+  apply mergedCache_agreesWith_tableAnswer
+  exact completedSplitHashCache_extendTable_consistent state cache base hconsistent
+
 theorem simulateQ_probingHashImpl_tweakableHash_eq_ordinaryHashImpl
     (parameter : PublicParameter) (domain : HashDomain) (payload : HashInput)
     (hinRange : domain.InRange)
