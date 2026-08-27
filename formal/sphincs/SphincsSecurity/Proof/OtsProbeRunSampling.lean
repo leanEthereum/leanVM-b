@@ -1911,6 +1911,179 @@ theorem relTriple_finalizeCleanFromTable_state_of_value
   · exact Finset.nodup_toList state.coordinates
   · exact hvalue
 
+def FinalizeQueryRel (coordinate : Coordinate) (input : HashInput)
+    (cache : QueryCache HashSpec) :
+    Option (LazyRevealProbe.State Coordinate × (OtsSecretIndex → HashOutput)) →
+      HashOutput × QueryCache HashSpec → Prop
+  | none, _ => True
+  | some (state, _), (output, finalCache) =>
+      state.values coordinate = some output ∧
+        finalCache = cache.cacheQuery input output
+
+theorem relTriple_finalizeCleanFromTable_position_freshQuery
+    (position : Position) (coordinates : List Coordinate)
+    (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput) (input : HashInput)
+    (cache : QueryCache HashSpec)
+    (hmem : Coordinate.position position ∈ coordinates)
+    (hnodup : coordinates.Nodup)
+    (hmissing : state.values (.position position) = none)
+    (hcache : cache input = none) :
+    RelTriple
+      (finalizeCleanFromTable coordinates state table)
+      ((randomOracle (spec := HashSpec) input).run cache)
+      (FinalizeQueryRel (.position position) input cache) := by
+  have hposition := relTriple_finalizeCleanFromTable_position_missing position coordinates
+    state table hmem hnodup hmissing
+  have hmapped : RelTriple
+      (id <$> finalizeCleanFromTable coordinates state table)
+      ((fun output => (output, cache.cacheQuery input output)) <$>
+        LazyRevealProbe.sampleHashOutput)
+      (FinalizeQueryRel (.position position) input cache) := by
+    apply relTriple_map
+    apply relTriple_post_mono hposition
+    intro leftResult rightOutput hrelation
+    cases leftResult with
+    | none => trivial
+    | some value =>
+        rcases value with ⟨finalState, finalTable⟩
+        exact ⟨hrelation, rfl⟩
+  rw [QueryImpl.withCaching_run_none uniformSampleImpl hcache]
+  unfold LazyRevealProbe.sampleHashOutput at hmapped
+  unfold uniformSampleImpl
+  simpa using hmapped
+
+theorem relTriple_finalizeCleanFromTable_position_cachedQuery
+    (position : Position) (coordinates : List Coordinate)
+    (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput) (input : HashInput)
+    (cache : QueryCache HashSpec) (output : HashOutput)
+    (hmem : Coordinate.position position ∈ coordinates)
+    (hnodup : coordinates.Nodup)
+    (hvalue : state.values (.position position) = some output)
+    (hcache : cache input = some output) :
+    RelTriple
+      (finalizeCleanFromTable coordinates state table)
+      ((randomOracle (spec := HashSpec) input).run cache)
+      (FinalizeQueryRel (.position position) input cache) := by
+  have hposition := relTriple_finalizeCleanFromTable_of_value (.position position) coordinates
+    state table output hmem hnodup hvalue
+  have hsupported :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hposition
+  have hmapped : RelTriple
+      (id <$> finalizeCleanFromTable coordinates state table)
+      ((fun result => (result, cache)) <$> (pure output : ProbComp HashOutput))
+      (FinalizeQueryRel (.position position) input cache) := by
+    apply relTriple_map
+    apply relTriple_post_mono hsupported
+    intro leftResult rightOutput hrelation
+    cases leftResult with
+    | none => trivial
+    | some value =>
+        rcases value with ⟨finalState, finalTable⟩
+        have hright : rightOutput = output := by
+          simpa using hrelation.2
+        subst rightOutput
+        have hfinalValue :
+            finalState.values (.position position) = some output := by
+          simpa [FinalizePositionRel] using hrelation.1
+        have hcacheQuery : cache = cache.cacheQuery input output := by
+          apply QueryCache.ext
+          intro query
+          by_cases hquery : query = input
+          · subst query
+            simpa [QueryCache.cacheQuery_self] using hcache
+          · simp [QueryCache.cacheQuery_of_ne cache output hquery]
+        exact ⟨hfinalValue, hcacheQuery⟩
+  rw [QueryImpl.withCaching_run_some uniformSampleImpl hcache]
+  simpa using hmapped
+
+theorem relTriple_finalizeCleanFromTable_position_freshQuery_bind
+    (position : Position) (coordinates : List Coordinate)
+    (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput) (input : HashInput)
+    (cache : QueryCache HashSpec)
+    (leftNext : Option
+      (LazyRevealProbe.State Coordinate × (OtsSecretIndex → HashOutput)) → ProbComp alpha)
+    (rightNext : HashOutput × QueryCache HashSpec → ProbComp beta)
+    (relation : alpha → beta → Prop)
+    (hmem : Coordinate.position position ∈ coordinates)
+    (hmissing : state.values (.position position) = none)
+    (hcache : cache input = none)
+    (hnext : ∀ output,
+      RelTriple
+        ((if state.hitAt (.position position) output then
+            pure none
+          else
+            finalizeCleanFromTable
+              (coordinates.erase (.position position))
+              (state.complete (.position position) output) table) >>= leftNext)
+        (rightNext (output, cache.cacheQuery input output)) relation) :
+    RelTriple
+      (finalizeCleanFromTable coordinates state table >>= leftNext)
+      (((randomOracle (spec := HashSpec) input).run cache) >>= rightNext)
+      relation := by
+  have hexpose := evalDist_finalizeCleanFromTable_expose_missing
+    (.position position) coordinates state table hmem hmissing
+  have hleft :
+      𝒟[finalizeCleanFromTable coordinates state table >>= leftNext] =
+        𝒟[(LazyRevealProbe.sampleHashOutput >>= fun output =>
+          if state.hitAt (.position position) output then
+            pure none
+          else
+            finalizeCleanFromTable
+              (coordinates.erase (.position position))
+              (state.complete (.position position) output) table) >>= leftNext] := by
+    rw [evalDist_bind, hexpose, ← evalDist_bind]
+    simp [completionOutputFromTable]
+  apply relTriple_of_evalDist_eq_left hleft
+  rw [QueryImpl.withCaching_run_none uniformSampleImpl hcache]
+  unfold uniformSampleImpl LazyRevealProbe.sampleHashOutput
+  simp only [map_eq_bind_pure_comp, bind_assoc]
+  apply relTriple_bind (relTriple_refl ($ᵗ HashOutput : ProbComp HashOutput))
+  intro leftOutput rightOutput heq
+  subst rightOutput
+  exact hnext leftOutput
+
+theorem relTriple_finalizeCleanFromTable_position_cachedQuery_bind
+    (position : Position) (coordinates : List Coordinate)
+    (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput) (input : HashInput)
+    (cache : QueryCache HashSpec) (output : HashOutput)
+    (leftNext : Option
+      (LazyRevealProbe.State Coordinate × (OtsSecretIndex → HashOutput)) → ProbComp alpha)
+    (rightNext : HashOutput × QueryCache HashSpec → ProbComp beta)
+    (relation : alpha → beta → Prop)
+    (hmem : Coordinate.position position ∈ coordinates)
+    (hvalue : state.values (.position position) = some output)
+    (hcache : cache input = some output)
+    (hnext : RelTriple
+      (finalizeCleanFromTable (coordinates.erase (.position position))
+          (state.clearPending (.position position)) table >>= leftNext)
+      (rightNext (output, cache)) relation) :
+    RelTriple
+      (finalizeCleanFromTable coordinates state table >>= leftNext)
+      (((randomOracle (spec := HashSpec) input).run cache) >>= rightNext)
+      relation := by
+  have hleft :
+      𝒟[finalizeCleanFromTable coordinates state table >>= leftNext] =
+        𝒟[finalizeCleanFromTable (coordinates.erase (.position position))
+          (state.clearPending (.position position)) table >>= leftNext] := by
+    rw [evalDist_bind]
+    calc
+      _ = 𝒟[finalizeCleanFromTable
+          (.position position :: coordinates.erase (.position position)) state table] >>=
+            fun result => 𝒟[leftNext result] := by
+        rw [evalDist_finalizeCleanFromTable_move_to_front (.position position)
+          coordinates state table hmem]
+      _ = _ := by
+        rw [finalizeCleanFromTable_cons_of_some (.position position)
+          (coordinates.erase (.position position)) state table output hvalue]
+        rw [← evalDist_bind]
+  apply relTriple_of_evalDist_eq_left hleft
+  rw [QueryImpl.withCaching_run_some uniformSampleImpl hcache]
+  simpa using hnext
+
 noncomputable def detailedExperimentCleanWithCompletionTable
     (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
     (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha) :
