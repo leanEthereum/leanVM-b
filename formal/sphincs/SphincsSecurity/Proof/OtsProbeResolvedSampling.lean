@@ -33,6 +33,44 @@ def DeferredContext.Valid (context : DeferredContext) : Prop :=
       context.state.values coordinate = some output →
         ¬context.state.hitAt coordinate output
 
+def DeferredContext.ValuesConsistent (context : DeferredContext) : Prop :=
+  ∀ position output,
+    context.state.values (.position position) = some output →
+      context.values position = some output
+
+theorem DeferredContext.Valid.valuesConsistent {context : DeferredContext}
+    (hvalid : context.Valid) : context.ValuesConsistent :=
+  hvalid.1
+
+theorem DeferredContext.ValuesConsistent.of_state_values_eq
+    {left right : DeferredContext} (hconsistent : left.ValuesConsistent)
+    (hstate : right.state.values = left.state.values)
+    (hvalues : right.values = left.values) : right.ValuesConsistent := by
+  intro position output hvalue
+  rw [hvalues]
+  apply hconsistent position output
+  rw [← hstate]
+  exact hvalue
+
+theorem DeferredContext.ValuesConsistent.ensure
+    {context : DeferredContext} (hconsistent : context.ValuesConsistent)
+    (coordinate : Coordinate) :
+    ({ context with state := context.state.ensure coordinate } : DeferredContext).ValuesConsistent :=
+  hconsistent
+
+theorem DeferredContext.ValuesConsistent.addPending
+    {context : DeferredContext} (hconsistent : context.ValuesConsistent)
+    (coordinate : Coordinate) (candidate : Digest) :
+    ({ context with state := context.state.addPending coordinate candidate } :
+      DeferredContext).ValuesConsistent :=
+  hconsistent
+
+theorem DeferredContext.ValuesConsistent.publish
+    {context : DeferredContext} (hconsistent : context.ValuesConsistent)
+    (coordinate : Coordinate) :
+    ({ context with state := context.state.publish coordinate } : DeferredContext).ValuesConsistent :=
+  hconsistent
+
 def DeferredContext.positionValue (context : DeferredContext)
     (position : Position) : Option HashOutput :=
   match context.state.values (.position position) with
@@ -2496,6 +2534,29 @@ theorem DeferredContext.Valid.of_resolveDeferredPositionValue
             rw [hstate] at hexisting
             contradiction
 
+theorem DeferredContext.ValuesConsistent.of_resolveDeferredPositionValue
+    {context : DeferredContext} (hconsistent : context.ValuesConsistent)
+    (position : Position) (result : DeferredResolution)
+    (hresult : some result ∈ support
+      (resolveDeferredPositionValue position context)) :
+    result.toDeferredContext.ValuesConsistent := by
+  intro other output hvalue
+  have hstateValues := resolveDeferredPositionValue_preserves_state_values
+    position context result hresult
+  have horiginal : context.state.values (.position other) = some output := by
+    rw [← hstateValues]
+    exact hvalue
+  by_cases heq : other = position
+  · subst other
+    have hresolved := resolveDeferredPositionValue_resolves position context result hresult
+    unfold DeferredContext.positionValue at hresolved
+    rw [hvalue] at hresolved
+    have hsame : output = result.output := Option.some.inj hresolved
+    rw [hsame]
+    exact resolveDeferredPositionValue_installs position context result hresult
+  · rw [resolveDeferredPositionValue_preserves_other position other context result heq hresult]
+    exact hconsistent other output horiginal
+
 set_option maxRecDepth 100000 in
 theorem evalDist_resolveDeferredChainStart_then_finalize
     (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
@@ -2657,6 +2718,143 @@ theorem DeferredContext.Valid.of_resolveDeferredChainStart
         subst result
         exact hvalid.clearPending index.coordinate
 
+theorem DeferredContext.ValuesConsistent.of_resolveDeferredChainStart
+    {context : DeferredContext} (hconsistent : context.ValuesConsistent)
+    (table : OtsSecretIndex → HashOutput) (index : OtsSecretIndex)
+    (result : DeferredResolution)
+    (hresult : resolveDeferredChainStart table index context = some result) :
+    result.toDeferredContext.ValuesConsistent := by
+  unfold resolveDeferredChainStart at hresult
+  cases hstate : context.state.values index.coordinate with
+  | some output =>
+      simp only [hstate] at hresult
+      by_cases hhit : context.state.hitAt index.coordinate output
+      · simp [hhit] at hresult
+      · simp [hhit] at hresult
+        subst result
+        exact hconsistent
+  | none =>
+      simp only [hstate] at hresult
+      by_cases hhit : context.state.hitAt index.coordinate (table index)
+      · simp [hhit] at hresult
+      · simp [hhit] at hresult
+        subst result
+        exact hconsistent
+
+theorem DeferredContext.ValuesConsistent.of_resolveDeferredChainPrefix
+    {context : DeferredContext} (hconsistent : context.ValuesConsistent)
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) :
+    ∀ steps hsteps result,
+      some result ∈ support
+        (resolveDeferredChainPrefix table lay tree leafIdx chainIdx steps hsteps context) →
+      result.toDeferredContext.ValuesConsistent
+  | 0, hsteps, result, hresult => by
+      simp only [resolveDeferredChainPrefix, support_pure, Set.mem_singleton_iff] at hresult
+      exact hconsistent.of_resolveDeferredChainStart table ⟨lay, tree, leafIdx, chainIdx⟩
+        result hresult.symm
+  | steps + 1, hsteps, result, hresult => by
+      rw [resolveDeferredChainPrefix, mem_support_bind_iff] at hresult
+      obtain ⟨previousOption, hprevious, hrest⟩ := hresult
+      cases previousOption with
+      | none => simp at hrest
+      | some previous =>
+          have hmiddle := hconsistent.of_resolveDeferredChainPrefix table lay tree leafIdx
+            chainIdx steps (by omega) previous hprevious
+          exact hmiddle.of_resolveDeferredPositionValue
+            (.chain lay tree leafIdx chainIdx ⟨steps, by omega⟩) result (by simpa using hrest)
+
+theorem DeferredContext.ValuesConsistent.of_resolveDeferredChains
+    {context : DeferredContext} (hconsistent : context.ValuesConsistent)
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) : ∀ chains result,
+      some result ∈ support
+        (resolveDeferredChains table lay tree leafIdx chains context) →
+      result.ValuesConsistent
+  | [], result, hresult => by
+      simp [resolveDeferredChains] at hresult
+      subst result
+      exact hconsistent
+  | chainIdx :: remaining, result, hresult => by
+      rw [resolveDeferredChains, mem_support_bind_iff] at hresult
+      obtain ⟨resolvedOption, hresolved, hrest⟩ := hresult
+      cases resolvedOption with
+      | none => simp at hrest
+      | some resolved =>
+          have hmiddle := hconsistent.of_resolveDeferredChainPrefix table lay tree leafIdx
+            chainIdx (chainLength - 1) (by omega) resolved hresolved
+          exact hmiddle.of_resolveDeferredChains table lay tree leafIdx remaining result
+            (by simpa using hrest)
+
+theorem DeferredContext.ValuesConsistent.of_resolveDeferredOtsLeaf
+    {context : DeferredContext} (hconsistent : context.ValuesConsistent)
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (result : DeferredResolution)
+    (hresult : some result ∈ support
+      (resolveDeferredOtsLeaf table lay tree leafIdx context)) :
+    result.toDeferredContext.ValuesConsistent := by
+  rw [resolveDeferredOtsLeaf, mem_support_bind_iff] at hresult
+  obtain ⟨chainsOption, hchains, hrest⟩ := hresult
+  cases chainsOption with
+  | none => simp at hrest
+  | some chains =>
+      have hmiddle := hconsistent.of_resolveDeferredChains table lay tree leafIdx
+        (List.ofFn fun chainIdx : ChainIndex => chainIdx) chains hchains
+      exact hmiddle.of_resolveDeferredPositionValue (.leaf lay tree leafIdx) result
+        (by simpa using hrest)
+
+theorem DeferredContext.ValuesConsistent.of_resolveDeferredTreeNode
+    {context : DeferredContext} (hconsistent : context.ValuesConsistent)
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex) :
+    ∀ level nodeIdx hlevel result,
+      some result ∈ support
+        (resolveDeferredTreeNode table lay tree level nodeIdx hlevel context) →
+      result.toDeferredContext.ValuesConsistent
+  | 0, nodeIdx, hlevel, result, hresult =>
+      hconsistent.of_resolveDeferredOtsLeaf table lay tree (leafOfNat nodeIdx) result hresult
+  | level + 1, nodeIdx, hlevel, result, hresult => by
+      rw [resolveDeferredTreeNode, mem_support_bind_iff] at hresult
+      obtain ⟨leftOption, hleft, hafterLeft⟩ := hresult
+      cases leftOption with
+      | none => simp at hafterLeft
+      | some left =>
+          rw [mem_support_bind_iff] at hafterLeft
+          obtain ⟨rightOption, hright, hafterRight⟩ := hafterLeft
+          cases rightOption with
+          | none => simp at hafterRight
+          | some right =>
+              have hleftConsistent := hconsistent.of_resolveDeferredTreeNode table lay tree level
+                (2 * nodeIdx) (by omega) left hleft
+              have hrightConsistent := hleftConsistent.of_resolveDeferredTreeNode table lay tree
+                level (2 * nodeIdx + 1) (by omega) right hright
+              exact hrightConsistent.of_resolveDeferredPositionValue
+                (.node lay tree ⟨level, by omega⟩ (leafOfNat nodeIdx)) result
+                (by simpa using hafterRight)
+
+theorem DeferredContext.ValuesConsistent.of_resolveDeferredPosition
+    {context : DeferredContext} (hconsistent : context.ValuesConsistent)
+    (table : OtsSecretIndex → HashOutput) (position : Position)
+    (result : DeferredResolution)
+    (hresult : some result ∈ support
+      (resolveDeferredPosition table position context)) :
+    result.toDeferredContext.ValuesConsistent := by
+  cases position with
+  | chain lay tree leafIdx chainIdx step =>
+      exact hconsistent.of_resolveDeferredChainPrefix table lay tree leafIdx chainIdx
+        (step.val + 1) (by have := step.isLt; omega) result hresult
+  | leaf lay tree leafIdx =>
+      exact hconsistent.of_resolveDeferredOtsLeaf table lay tree leafIdx result hresult
+  | node lay tree level nodeIdx =>
+      exact hconsistent.of_resolveDeferredTreeNode table lay tree (level.val + 1) nodeIdx
+        (by have := level.isLt; omega) result hresult
+  | ftsLeaf index tree leafIdx =>
+      exact hconsistent.of_resolveDeferredPositionValue (.ftsLeaf index tree leafIdx) result
+        hresult
+  | ftsNode index tree level nodeIdx =>
+      exact hconsistent.of_resolveDeferredPositionValue (.ftsNode index tree level nodeIdx) result
+        hresult
+  | ftsRoots index =>
+      exact hconsistent.of_resolveDeferredPositionValue (.ftsRoots index) result hresult
 theorem DeferredContext.Valid.of_resolveDeferredChainPrefix
     {context : DeferredContext} (hvalid : context.Valid)
     (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
@@ -3187,6 +3385,20 @@ theorem DeferredContext.Valid.of_resolveDeferredReveal
   · apply hvalid.of_resolveDeferredPosition table position result
     simpa [resolveDeferredReveal, hresolvable] using hresult
   · apply hvalid.of_resolveDeferredPositionValue position result
+    simpa [resolveDeferredReveal, hresolvable] using hresult
+
+theorem DeferredContext.ValuesConsistent.of_resolveDeferredReveal
+    {context : DeferredContext} (hconsistent : context.ValuesConsistent)
+    (table : OtsSecretIndex → HashOutput) (position : Position)
+    (result : DeferredResolution)
+    (hresult : some result ∈ support
+      (resolveDeferredReveal table position context)) :
+    result.toDeferredContext.ValuesConsistent := by
+  classical
+  by_cases hresolvable : ResolvableOtsPosition position
+  · apply hconsistent.of_resolveDeferredPosition table position result
+    simpa [resolveDeferredReveal, hresolvable] using hresult
+  · apply hconsistent.of_resolveDeferredPositionValue position result
     simpa [resolveDeferredReveal, hresolvable] using hresult
 
 theorem DeferredContext.Valid.materialize_position
@@ -4113,6 +4325,16 @@ theorem StartTableAgrees.of_coreEq
   rw [heq.2.1]
   exact hvalue
 
+theorem StartTableAgrees.of_state_values_eq
+    {table : OtsSecretIndex → HashOutput} {left right : DeferredContext}
+    (hagrees : StartTableAgrees left.state table)
+    (hvalues : right.state.values = left.state.values) :
+    StartTableAgrees right.state table := by
+  intro index output hvalue
+  apply hagrees index output
+  rw [← hvalues]
+  exact hvalue
+
 theorem DeferredCompletion.of_coreEq
     {table : OtsSecretIndex → HashOutput} {left right : DeferredContext}
     {completion : Coordinate → HashOutput} (heq : left.CoreEq right)
@@ -4131,6 +4353,19 @@ theorem DeferredCompletion.of_coreEq
     apply hcompletion.2.2.1 coordinate candidate
     rw [heq.1]
     exact hmember
+
+theorem DeferredCompletion.of_addPending
+    {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
+    {completion : Coordinate → HashOutput} (coordinate : Coordinate)
+    (candidate : Digest)
+    (hcompletion : DeferredCompletion table
+      { context with state := context.state.addPending coordinate candidate } completion) :
+    DeferredCompletion table context completion := by
+  refine ⟨hcompletion.1, hcompletion.2.1, ?_, hcompletion.2.2.2⟩
+  intro other otherCandidate hmember
+  apply hcompletion.2.2.1 other otherCandidate
+  simp only [LazyRevealProbe.State.addPending, Finset.mem_insert]
+  exact Or.inr hmember
 
 theorem DeferredCompletion.eq_positionValue
     {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
@@ -4170,6 +4405,37 @@ theorem materializeResolvedPosition_positionValue_eq
       Function.update_of_ne,
       show Coordinate.position other ≠ Coordinate.position position by simpa using heq]
 
+theorem DeferredContext.ValuesConsistent.materializeResolvedPosition_of
+    {context : DeferredContext} (hconsistent : context.ValuesConsistent)
+    (table : OtsSecretIndex → HashOutput) (position : Position)
+    (result : DeferredResolution)
+    (hresult : some result ∈ support (resolveDeferredReveal table position context)) :
+    (materializeResolvedPosition context position result).ValuesConsistent := by
+  have hresultConsistent := hconsistent.of_resolveDeferredReveal table position result hresult
+  have hstateValues := resolveDeferredReveal_preserves_state_values table position context result
+    hresult
+  intro other output hvalue
+  by_cases heq : other = position
+  · subst other
+    have hsame : output = result.output := by
+      simpa [materializeResolvedPosition, LazyRevealProbe.State.materialize] using hvalue.symm
+    rw [hsame]
+    change result.values position = some result.output
+    have hresolved := resolveDeferredReveal_resolves table position context result hresult
+    unfold DeferredContext.positionValue at hresolved
+    cases hstate : result.state.values (.position position) with
+    | none => simpa [hstate] using hresolved
+    | some cached =>
+        have hprivate := hresultConsistent position cached hstate
+        have hcached : cached = result.output := by simpa [hstate] using hresolved
+        simpa [hcached] using hprivate
+  · apply hresultConsistent other output
+    rw [hstateValues]
+    simpa [materializeResolvedPosition, LazyRevealProbe.State.materialize,
+      Function.update_of_ne,
+      show Coordinate.position other ≠ Coordinate.position position by simpa using heq]
+      using hvalue
+
 theorem DeferredCompletion.of_materializeResolvedPosition
     {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
     {completion : Coordinate → HashOutput} (position : Position)
@@ -4202,10 +4468,10 @@ theorem DeferredCompletion.of_materializeResolvedPosition
     have haway := hpending hmember
     simpa [materializeResolvedPosition, LazyRevealProbe.State.materialize] using haway
 
-theorem DeferredCompletion.of_resolveDeferredPositionValue
+theorem DeferredCompletion.of_resolveDeferredPositionValue_of_valuesConsistent
     {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
     {completion : Coordinate → HashOutput}
-    (hvalid : context.Valid) (position : Position) (result : DeferredResolution)
+    (hconsistent : context.ValuesConsistent) (position : Position) (result : DeferredResolution)
     (hresult : some result ∈ support
       (resolveDeferredPositionValue position context))
     (hcompletion : DeferredCompletion table result.toDeferredContext completion) :
@@ -4225,7 +4491,7 @@ theorem DeferredCompletion.of_resolveDeferredPositionValue
       unfold DeferredContext.positionValue
       cases hstate : context.state.values (.position other) with
       | some cached =>
-          have hsame := hvalid.1 other cached hstate
+          have hsame := hconsistent other cached hstate
           have : cached = output := by
             rw [hsame] at hvalue
             exact Option.some.inj hvalue
@@ -4246,6 +4512,17 @@ theorem DeferredCompletion.of_resolveDeferredPositionValue
     · apply hcompletion.2.2.1 coordinate candidate
       rw [hpending]
       simpa [LazyRevealProbe.State.pendingAway, heq] using hmember
+
+theorem DeferredCompletion.of_resolveDeferredPositionValue
+    {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
+    {completion : Coordinate → HashOutput}
+    (hvalid : context.Valid) (position : Position) (result : DeferredResolution)
+    (hresult : some result ∈ support
+      (resolveDeferredPositionValue position context))
+    (hcompletion : DeferredCompletion table result.toDeferredContext completion) :
+    DeferredCompletion table context completion :=
+  hcompletion.of_resolveDeferredPositionValue_of_valuesConsistent hvalid.valuesConsistent
+    position result hresult
 
 theorem DeferredCompletion.of_resolveDeferredChainStart
     {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
@@ -4293,6 +4570,177 @@ theorem DeferredCompletion.of_resolveDeferredChainStart
         · apply hcompletion.2.2.1 coordinate candidate
           simpa [LazyRevealProbe.State.clearPending, LazyRevealProbe.State.pendingAway,
             heq] using hmember
+
+theorem DeferredCompletion.of_resolveDeferredChainPrefix
+    {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
+    {completion : Coordinate → HashOutput}
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex) :
+    ∀ steps hsteps result,
+      some result ∈ support
+        (resolveDeferredChainPrefix table lay tree leafIdx chainIdx steps hsteps context) →
+      DeferredCompletion table result.toDeferredContext completion →
+      DeferredCompletion table context completion
+  | 0, hsteps, result, hresult, hcompletion => by
+      simp only [resolveDeferredChainPrefix, support_pure, Set.mem_singleton_iff] at hresult
+      exact hcompletion.of_resolveDeferredChainStart hstarts ⟨lay, tree, leafIdx, chainIdx⟩
+        result hresult.symm
+  | steps + 1, hsteps, result, hresult, hcompletion => by
+      rw [resolveDeferredChainPrefix, mem_support_bind_iff] at hresult
+      obtain ⟨previousOption, hprevious, hrest⟩ := hresult
+      cases previousOption with
+      | none => simp at hrest
+      | some previous =>
+          have hpreviousConsistent := hconsistent.of_resolveDeferredChainPrefix table lay tree
+            leafIdx chainIdx steps (by omega) previous hprevious
+          have hbeforeLast := hcompletion.of_resolveDeferredPositionValue_of_valuesConsistent
+            hpreviousConsistent (.chain lay tree leafIdx chainIdx ⟨steps, by omega⟩) result
+              (by simpa using hrest)
+          exact hbeforeLast.of_resolveDeferredChainPrefix hconsistent hstarts lay tree leafIdx
+            chainIdx steps (by omega) previous hprevious
+
+theorem DeferredCompletion.of_resolveDeferredChains
+    {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
+    {completion : Coordinate → HashOutput}
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) : ∀ chains result,
+      some result ∈ support
+        (resolveDeferredChains table lay tree leafIdx chains context) →
+      DeferredCompletion table result completion →
+      DeferredCompletion table context completion
+  | [], result, hresult, hcompletion => by
+      simp [resolveDeferredChains] at hresult
+      subst result
+      exact hcompletion
+  | chainIdx :: remaining, result, hresult, hcompletion => by
+      rw [resolveDeferredChains, mem_support_bind_iff] at hresult
+      obtain ⟨resolvedOption, hresolved, hrest⟩ := hresult
+      cases resolvedOption with
+      | none => simp at hrest
+      | some resolved =>
+          have hresolvedConsistent := hconsistent.of_resolveDeferredChainPrefix table lay tree
+            leafIdx chainIdx (chainLength - 1) (by omega) resolved hresolved
+          have hstateValues := resolveDeferredChainPrefix_preserves_state_values table lay tree
+            leafIdx chainIdx (chainLength - 1) (by omega) context resolved hresolved
+          have hresolvedStarts := hstarts.of_state_values_eq hstateValues
+          have hbeforeTail := hcompletion.of_resolveDeferredChains hresolvedConsistent
+            hresolvedStarts lay tree leafIdx remaining result (by simpa using hrest)
+          exact hbeforeTail.of_resolveDeferredChainPrefix hconsistent hstarts lay tree leafIdx
+            chainIdx (chainLength - 1) (by omega) resolved hresolved
+
+theorem DeferredCompletion.of_resolveDeferredOtsLeaf
+    {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
+    {completion : Coordinate → HashOutput}
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (result : DeferredResolution)
+    (hresult : some result ∈ support
+      (resolveDeferredOtsLeaf table lay tree leafIdx context))
+    (hcompletion : DeferredCompletion table result.toDeferredContext completion) :
+    DeferredCompletion table context completion := by
+  rw [resolveDeferredOtsLeaf, mem_support_bind_iff] at hresult
+  obtain ⟨chainsOption, hchains, hrest⟩ := hresult
+  cases chainsOption with
+  | none => simp at hrest
+  | some chains =>
+      have hchainsConsistent := hconsistent.of_resolveDeferredChains table lay tree leafIdx
+        (List.ofFn fun chainIdx : ChainIndex => chainIdx) chains hchains
+      have hbeforeLeaf := hcompletion.of_resolveDeferredPositionValue_of_valuesConsistent
+        hchainsConsistent (.leaf lay tree leafIdx) result (by simpa using hrest)
+      exact hbeforeLeaf.of_resolveDeferredChains hconsistent hstarts lay tree leafIdx
+        (List.ofFn fun chainIdx : ChainIndex => chainIdx) chains hchains
+
+theorem DeferredCompletion.of_resolveDeferredTreeNode
+    {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
+    {completion : Coordinate → HashOutput}
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table) (lay : Layer) (tree : TreeIndex) :
+    ∀ level nodeIdx hlevel result,
+      some result ∈ support
+        (resolveDeferredTreeNode table lay tree level nodeIdx hlevel context) →
+      DeferredCompletion table result.toDeferredContext completion →
+      DeferredCompletion table context completion
+  | 0, nodeIdx, hlevel, result, hresult, hcompletion =>
+      hcompletion.of_resolveDeferredOtsLeaf hconsistent hstarts lay tree (leafOfNat nodeIdx)
+        result hresult
+  | level + 1, nodeIdx, hlevel, result, hresult, hcompletion => by
+      rw [resolveDeferredTreeNode, mem_support_bind_iff] at hresult
+      obtain ⟨leftOption, hleft, hafterLeft⟩ := hresult
+      cases leftOption with
+      | none => simp at hafterLeft
+      | some left =>
+          rw [mem_support_bind_iff] at hafterLeft
+          obtain ⟨rightOption, hright, hafterRight⟩ := hafterLeft
+          cases rightOption with
+          | none => simp at hafterRight
+          | some right =>
+              have hleftConsistent := hconsistent.of_resolveDeferredTreeNode table lay tree level
+                (2 * nodeIdx) (by omega) left hleft
+              have hleftState := resolveDeferredTreeNode_preserves_state_values table lay tree level
+                (2 * nodeIdx) (by omega) context left hleft
+              have hleftStarts := hstarts.of_state_values_eq hleftState
+              have hrightConsistent := hleftConsistent.of_resolveDeferredTreeNode table lay tree
+                level (2 * nodeIdx + 1) (by omega) right hright
+              have hrightState := resolveDeferredTreeNode_preserves_state_values table lay tree
+                level (2 * nodeIdx + 1) (by omega) left.toDeferredContext right hright
+              have hrightStarts := hleftStarts.of_state_values_eq hrightState
+              have hbeforeNode :=
+                hcompletion.of_resolveDeferredPositionValue_of_valuesConsistent
+                  hrightConsistent (.node lay tree ⟨level, by omega⟩ (leafOfNat nodeIdx))
+                    result (by simpa using hafterRight)
+              have hbeforeRight := hbeforeNode.of_resolveDeferredTreeNode hleftConsistent
+                hleftStarts lay tree level (2 * nodeIdx + 1) (by omega) right hright
+              exact hbeforeRight.of_resolveDeferredTreeNode hconsistent hstarts lay tree level
+                (2 * nodeIdx) (by omega) left hleft
+
+theorem DeferredCompletion.of_resolveDeferredPosition
+    {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
+    {completion : Coordinate → HashOutput}
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table) (position : Position)
+    (result : DeferredResolution)
+    (hresult : some result ∈ support (resolveDeferredPosition table position context))
+    (hcompletion : DeferredCompletion table result.toDeferredContext completion) :
+    DeferredCompletion table context completion := by
+  cases position with
+  | chain lay tree leafIdx chainIdx step =>
+      exact hcompletion.of_resolveDeferredChainPrefix hconsistent hstarts lay tree leafIdx chainIdx
+        (step.val + 1) (by have := step.isLt; omega) result hresult
+  | leaf lay tree leafIdx =>
+      exact hcompletion.of_resolveDeferredOtsLeaf hconsistent hstarts lay tree leafIdx result
+        hresult
+  | node lay tree level nodeIdx =>
+      exact hcompletion.of_resolveDeferredTreeNode hconsistent hstarts lay tree
+        (level.val + 1) nodeIdx (by have := level.isLt; omega) result hresult
+  | ftsLeaf index tree leafIdx =>
+      exact hcompletion.of_resolveDeferredPositionValue_of_valuesConsistent hconsistent
+        (.ftsLeaf index tree leafIdx) result hresult
+  | ftsNode index tree level nodeIdx =>
+      exact hcompletion.of_resolveDeferredPositionValue_of_valuesConsistent hconsistent
+        (.ftsNode index tree level nodeIdx) result hresult
+  | ftsRoots index =>
+      exact hcompletion.of_resolveDeferredPositionValue_of_valuesConsistent hconsistent
+        (.ftsRoots index) result hresult
+
+theorem DeferredCompletion.of_resolveDeferredReveal
+    {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
+    {completion : Coordinate → HashOutput}
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table) (position : Position)
+    (result : DeferredResolution)
+    (hresult : some result ∈ support (resolveDeferredReveal table position context))
+    (hcompletion : DeferredCompletion table result.toDeferredContext completion) :
+    DeferredCompletion table context completion := by
+  classical
+  by_cases hresolvable : ResolvableOtsPosition position
+  · apply hcompletion.of_resolveDeferredPosition hconsistent hstarts position result
+    simpa [resolveDeferredReveal, hresolvable] using hresult
+  · apply hcompletion.of_resolveDeferredPositionValue_of_valuesConsistent hconsistent
+      position result
+    simpa [resolveDeferredReveal, hresolvable] using hresult
 
 theorem resolveDeferredChainStart_positionValue_eq
     (table : OtsSecretIndex → HashOutput) (index : OtsSecretIndex)
@@ -4395,6 +4843,19 @@ theorem materializeResolvedChainStart_positionValue_eq
   rw [resolveDeferredChainStart_deferred_values_eq table index context result hresult]
   simp [LazyRevealProbe.State.materialize, OtsSecretIndex.coordinate]
 
+theorem DeferredContext.ValuesConsistent.materializeResolvedChainStart_of
+    {context : DeferredContext} (hconsistent : context.ValuesConsistent)
+    (table : OtsSecretIndex → HashOutput) (index : OtsSecretIndex)
+    (result : DeferredResolution)
+    (hresult : resolveDeferredChainStart table index context = some result) :
+    (materializeResolvedChainStart context index result).ValuesConsistent := by
+  intro position output hvalue
+  change result.values position = some output
+  rw [resolveDeferredChainStart_deferred_values_eq table index context result hresult]
+  apply hconsistent position output
+  simpa [materializeResolvedChainStart, LazyRevealProbe.State.materialize,
+    OtsSecretIndex.coordinate] using hvalue
+
 theorem DeferredCompletion.of_materializeResolvedChainStart
     {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
     {completion : Coordinate → HashOutput}
@@ -4496,6 +4957,119 @@ theorem DeferredCompletion.of_materializeResolvedChainStart'
         Finset.mem_filter.2 ⟨hmember, heq⟩
       simpa [materializeResolvedChainStart, LazyRevealProbe.State.materialize] using haway
 
+set_option maxRecDepth 100000 in
+theorem deferredCompletable_of_mem_runResolvedFromTable
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (result : ResolvedRunResult alpha)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table)
+    (hresult : some result ∈ support
+      (runResolvedFromTable context fuel table computation))
+    (hfinal : ∃ completion, DeferredCompletion table result.context completion) :
+    ∃ completion, DeferredCompletion table context completion := by
+  induction computation using OracleComp.inductionOn generalizing context fuel with
+  | pure value =>
+      simp [runResolvedFromTable] at hresult
+      subst result
+      exact hfinal
+  | query_bind input next ih =>
+      cases input with
+      | uniform n =>
+          rw [runResolvedFromTable_uniform_query_bind, mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, hrest⟩ := hresult
+          exact ih output context fuel hconsistent hstarts hrest
+      | hashOutput =>
+          rw [runResolvedFromTable_hashOutput_query_bind, mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, hrest⟩ := hresult
+          exact ih output context fuel hconsistent hstarts hrest
+      | ensure coordinate =>
+          rw [runResolvedFromTable_ensure_query_bind] at hresult
+          have hcurrent := ih () { context with state := context.state.ensure coordinate } fuel
+            (hconsistent.ensure coordinate) (hstarts.ensure coordinate) hresult
+          obtain ⟨completion, hcompletion⟩ := hcurrent
+          exact ⟨completion, hcompletion.of_coreEq ⟨rfl, rfl, rfl⟩⟩
+      | probe coordinate candidate =>
+          rw [runResolvedFromTable_probe_query_bind] at hresult
+          cases fuel with
+          | zero => simp at hresult
+          | succ remaining =>
+              by_cases hrevealed : coordinate ∈ context.state.revealed
+              · exact ih () context remaining hconsistent hstarts
+                  (by simpa [hrevealed] using hresult)
+              · have hcurrent := ih ()
+                    { context with state := context.state.addPending coordinate candidate }
+                    remaining (hconsistent.addPending coordinate candidate)
+                    (hstarts.addPending coordinate candidate)
+                    (by simpa [hrevealed] using hresult)
+                obtain ⟨completion, hcompletion⟩ := hcurrent
+                exact ⟨completion, hcompletion.of_addPending coordinate candidate⟩
+      | peek coordinate =>
+          rw [runResolvedFromTable_peek_query_bind] at hresult
+          exact ih (context.state.values coordinate) context fuel hconsistent hstarts hresult
+      | publish coordinate =>
+          rw [runResolvedFromTable_publish_query_bind] at hresult
+          have hcurrent := ih () { context with state := context.state.publish coordinate } fuel
+            (hconsistent.publish coordinate) (hstarts.publish coordinate) hresult
+          obtain ⟨completion, hcompletion⟩ := hcurrent
+          exact ⟨completion, hcompletion.of_coreEq ⟨rfl, rfl, rfl⟩⟩
+      | reveal coordinate =>
+          rw [runResolvedFromTable_reveal_query_bind] at hresult
+          cases coordinate with
+          | chainStart lay tree leafIdx chainIdx =>
+              let index : OtsSecretIndex := ⟨lay, tree, leafIdx, chainIdx⟩
+              simp only [mem_support_bind_iff, support_pure, Set.mem_singleton_iff] at hresult
+              obtain ⟨resolvedOption, hresolved, hrest⟩ := hresult
+              cases resolvedOption with
+              | none => simp at hrest
+              | some resolved =>
+                  have hresolvedEq : resolveDeferredChainStart table index context =
+                      some resolved := by simpa [index] using hresolved.symm
+                  have hmaterializedConsistent :=
+                    hconsistent.materializeResolvedChainStart_of table index resolved hresolvedEq
+                  have houtput := resolveDeferredChainStart_output_of_agrees table index context
+                    resolved hstarts hresolvedEq
+                  have hmaterializedStarts : StartTableAgrees
+                      (context.state.materialize index.coordinate resolved.output) table := by
+                    rw [houtput]
+                    exact hstarts.materialize_start index
+                  have hcurrent := ih resolved.output
+                    (materializeResolvedChainStart context index resolved) fuel
+                    hmaterializedConsistent (by
+                      simpa [materializeResolvedChainStart] using hmaterializedStarts)
+                    (by simpa [index, OtsSecretIndex.coordinate, materializeResolvedChainStart]
+                      using hrest)
+                  obtain ⟨completion, hcompletion⟩ := hcurrent
+                  exact ⟨completion,
+                    hcompletion.of_materializeResolvedChainStart' hstarts index resolved hresolvedEq⟩
+          | position position =>
+              rw [mem_support_bind_iff] at hresult
+              obtain ⟨resolvedOption, hresolved, hrest⟩ := hresult
+              cases resolvedOption with
+              | none => simp at hrest
+              | some resolved =>
+                  have hmaterializedConsistent :=
+                    hconsistent.materializeResolvedPosition_of table position resolved hresolved
+                  have hmaterializedStarts : StartTableAgrees
+                      (context.state.materialize (.position position) resolved.output) table :=
+                    hstarts.materialize_position position resolved.output
+                  have hcurrent := ih resolved.output
+                    (materializeResolvedPosition context position resolved) fuel
+                    hmaterializedConsistent (by
+                      simpa [materializeResolvedPosition] using hmaterializedStarts)
+                    (by simpa [materializeResolvedPosition] using hrest)
+                  obtain ⟨completion, hcompletion⟩ := hcurrent
+                  have hstateValues := resolveDeferredReveal_preserves_state_values table position
+                    context resolved hresolved
+                  have hpending := resolveDeferredReveal_pendingAway_subset table position context
+                    resolved hresolved
+                  have hresolvedValue := resolveDeferredReveal_resolves table position context
+                    resolved hresolved
+                  have hbeforeMaterialize := hcompletion.of_materializeResolvedPosition position
+                    resolved hstateValues hpending hresolvedValue
+                  exact ⟨completion, hbeforeMaterialize.of_resolveDeferredReveal
+                    hconsistent hstarts position resolved hresolved⟩
+
 def ChronologicalCacheAgrees (parameter : PublicParameter)
     (table : OtsSecretIndex → HashOutput)
     (context : DeferredContext) (cache : QueryCache HashSpec) : Prop :=
@@ -4585,6 +5159,20 @@ theorem ChronologicalCacheAgrees.of_resolveDeferredPositionValue
 def DeferredCompletable (table : OtsSecretIndex → HashOutput)
     (context : DeferredContext) : Prop :=
   ∃ completion, DeferredCompletion table context completion
+
+theorem not_deferredCompletable_of_mem_runResolvedFromTable
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (result : ResolvedRunResult alpha)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table)
+    (hresult : some result ∈ support
+      (runResolvedFromTable context fuel table computation))
+    (hdoomed : ¬DeferredCompletable table context) :
+    ¬DeferredCompletable table result.context := by
+  intro hfinal
+  exact hdoomed (deferredCompletable_of_mem_runResolvedFromTable computation context fuel table
+    result hconsistent hstarts hresult hfinal)
 
 theorem deferredCompletable_iff_of_coreEq
     {table : OtsSecretIndex → HashOutput} {left right : DeferredContext}
