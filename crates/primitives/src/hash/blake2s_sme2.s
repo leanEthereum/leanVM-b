@@ -15,7 +15,7 @@
 //     const uint8_t *const *inputs,   // x0, sixteen pointers
 //     const uint32_t *state,          // x1, the chaining value, splatted
 //     uint64_t t_offset,              // x2
-//     uint64_t len,                   // x3, bytes per input, a multiple of 64
+//     uint64_t len,                   // x3, bytes per input, a nonzero multiple of 64
 //     uint8_t *out,                   // x4, sixteen 32-byte digests
 //     const uint32_t *iv);            // x5, the eight BLAKE2s IV words
 //

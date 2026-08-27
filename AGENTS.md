@@ -133,6 +133,7 @@ Understand the third before changing the verifier. `guests/aggregate.py` is zkDS
 | `LEANVM_NUM_THREADS` / `RAYON_NUM_THREADS`                                                              | performance-worker count; `1` = sequential       |
 | `LEANVM_PROFILE`                                                                                        | per-stage prover timings                         |
 | `LEANVM_NO_ARENA`                                                                                       | disable the arena (less memory, slower)          |
+| `LEANVM_SME_WORKERS`                                                                                    | workers on the SME2 BLAKE2s backend; `0` = NEON only |
 | `ZK_ALLOC_STATS`                                                                                        | arena bytes/phase, high water, overflow          |
 | `BENCH_REPEAT`, `BENCH_COOLDOWN`                                                                        | `--repeat`/`--cooldown` for `#[ignore]`d benches |
 | `LEANVM_XMSS_N`, `LEANVM_HASH_N`, `LEANVM_HASH_UNROLL`                                                  | workload sizes in tests                          |
