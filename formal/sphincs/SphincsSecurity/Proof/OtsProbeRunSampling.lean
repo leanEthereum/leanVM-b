@@ -1052,6 +1052,19 @@ theorem relTriple_runCleanFromTable_ensureCoordinate
     (pure ((), ordinaryQueryCache cache) : ProbComp (Unit × QueryCache HashSpec))
     (projectCleanOrdinary_ensureCoordinate coordinate state cache fuel table)
 
+theorem runCleanFromTable_revealCoordinate_of_value
+    (coordinate : Coordinate) (output : HashOutput)
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (hvalue : state.values coordinate = some output) :
+    runCleanFromTable state fuel table ((revealCoordinate coordinate).run cache) =
+      pure (some ⟨state, fuel,
+        (truncateHash output,
+          Function.update cache (.hidden coordinate) (some output)), table⟩) := by
+  rw [revealCoordinate_run, LazyRevealProbe.revealQuery,
+    runCleanFromTable_reveal_query_bind, hvalue]
+  simp [runCleanFromTable]
+
 theorem projectCleanOrdinary_revealCoordinate_of_value
     (coordinate : Coordinate) (output : HashOutput)
     (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
@@ -1060,9 +1073,9 @@ theorem projectCleanOrdinary_revealCoordinate_of_value
     projectCleanOrdinary <$>
         runCleanFromTable state fuel table ((revealCoordinate coordinate).run cache) =
       pure (some (truncateHash output, ordinaryQueryCache cache)) := by
-  rw [revealCoordinate_run, LazyRevealProbe.revealQuery,
-    runCleanFromTable_reveal_query_bind, hvalue]
-  simp [runCleanFromTable, projectCleanOrdinary, ordinaryQueryCache_update_hidden]
+  rw [runCleanFromTable_revealCoordinate_of_value coordinate output state cache fuel table
+    hvalue]
+  simp [projectCleanOrdinary, ordinaryQueryCache_update_hidden]
 
 theorem relTriple_runCleanFromTable_revealCoordinate_of_value
     (coordinate : Coordinate) (output : HashOutput)
@@ -1082,6 +1095,37 @@ theorem relTriple_runCleanFromTable_revealCoordinate_of_value
       ProbComp (Digest × QueryCache HashSpec))
     (projectCleanOrdinary_revealCoordinate_of_value coordinate output state cache fuel table
       hvalue)
+
+theorem runCleanFromTable_revealPublishedCoordinate_of_value
+    (coordinate : Coordinate) (output : HashOutput)
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (hvalue : state.values coordinate = some output) :
+    runCleanFromTable state fuel table
+        ((revealPublishedCoordinate coordinate).run cache) =
+      pure (some ⟨state.publish coordinate, fuel,
+        (truncateHash output,
+          Function.update cache (.hidden coordinate) (some output)), table⟩) := by
+  unfold revealPublishedCoordinate
+  rw [StateT.run_bind, runCleanFromTable_bind,
+    runCleanFromTable_revealCoordinate_of_value coordinate output state cache fuel table hvalue]
+  simp only [pure_bind]
+  rw [StateT.run_bind, runCleanFromTable_bind,
+    runCleanFromTable_publishCoordinate]
+  simp [runCleanFromTable]
+
+theorem projectCleanOrdinary_revealPublishedCoordinate_of_value
+    (coordinate : Coordinate) (output : HashOutput)
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (hvalue : state.values coordinate = some output) :
+    projectCleanOrdinary <$>
+        runCleanFromTable state fuel table
+          ((revealPublishedCoordinate coordinate).run cache) =
+      pure (some (truncateHash output, ordinaryQueryCache cache)) := by
+  rw [runCleanFromTable_revealPublishedCoordinate_of_value coordinate output state cache fuel
+    table hvalue]
+  simp [projectCleanOrdinary, ordinaryQueryCache_update_hidden]
 
 set_option maxRecDepth 10000 in
 theorem projectCleanOrdinary_simulateQ_ordinaryHashImpl
