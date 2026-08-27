@@ -150,6 +150,26 @@ fn pool() -> &'static Pool {
     })
 }
 
+/// Whether the calling thread is running a pool task right now.
+///
+/// This is what separates the dispatcher from every other thread in the
+/// process: both read as worker 0, but only the dispatcher inside a dispatch
+/// reads as being in a task.
+#[must_use]
+#[inline]
+pub fn in_task() -> bool {
+    IN_TASK.get()
+}
+
+/// Which worker the calling thread is: `0` for the dispatcher, `1..perf` for the
+/// performance workers, and `perf..` for the efficiency ones. Any thread
+/// outside the pool reads as `0`.
+#[must_use]
+#[inline]
+pub fn worker_id() -> usize {
+    WORKER_ID.get()
+}
+
 fn worker_main(pool: &'static Pool, id: usize, qos: Qos) {
     WORKER_ID.set(id);
     set_qos(qos);

@@ -639,6 +639,10 @@ mod x86 {
     }
 }
 
+/// The streaming-mode backend, for the workers that can reach an SME block.
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+mod sme2;
+
 #[cfg(target_arch = "aarch64")]
 mod arm {
     use super::{Lanes32, OUT_LEN};
@@ -1156,6 +1160,13 @@ pub fn hash_many_dyn_from_state(data: &[u8], len: usize, state: &[u32; 8], t_off
     unsafe {
         hash_many_with::<x86::Avx2>(data, len, state, t_offset, out)
     }
+    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+    if sme2::enabled() {
+        // SAFETY: the asserts above, and `sme2::enabled` has already checked
+        // that this machine runs the kernel at sixteen lanes.
+        unsafe { sme2::hash_many(data, len, state, t_offset, out) };
+        return;
+    }
     #[cfg(target_arch = "aarch64")]
     unsafe {
         hash_many_with::<arm::Neon>(data, len, state, t_offset, out)
@@ -1281,6 +1292,29 @@ mod tests {
                     h.update(chunk);
                 }
                 assert_eq!(h.finalize(), want, "{n} bytes in {split}-byte updates");
+            }
+        }
+    }
+
+    /// The streaming backend is the one place where the whole loop, transposes
+    /// and stores included, is hand-written, so it gets its own comparison
+    /// against the scalar reference across lane counts and block counts.
+    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+    #[test]
+    fn streaming_backend_matches_scalar() {
+        if !sme2::available() {
+            return;
+        }
+        for len in [64usize, 128, 320] {
+            for n in [16usize, 17, 33, 48] {
+                let data: Vec<u8> = (0..n * len).map(|i| (i * 31 + 7) as u8).collect();
+                let mut got = vec![0u8; n * OUT_LEN];
+                // SAFETY: `data` is `n * len` bytes and `len` is a multiple of 64.
+                unsafe { sme2::hash_many(&data, len, &PARAM_IV, 0, &mut got) };
+                for i in 0..n {
+                    let want = hash(&data[i * len..(i + 1) * len]);
+                    assert_eq!(&got[i * OUT_LEN..(i + 1) * OUT_LEN], &want[..], "len {len}, input {i}");
+                }
             }
         }
     }
