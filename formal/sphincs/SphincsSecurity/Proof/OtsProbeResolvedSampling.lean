@@ -3153,6 +3153,540 @@ theorem evalDist_map_resolveDeferredChainStart_then_finalize_of_not_mem
   rw [resolveDeferredChainStart_of_missing table index context hstate, if_neg hclean]
   simp [hclear]
 
+def PendingCovered (coordinates : List Coordinate) (context : DeferredContext) : Prop :=
+  ∀ entry, entry ∈ context.state.pending → entry.1 ∈ coordinates
+
+theorem PendingCovered.clearPending
+    {coordinates : List Coordinate} {context : DeferredContext}
+    (hcovered : PendingCovered coordinates context) (coordinate : Coordinate) :
+    PendingCovered coordinates
+      { context with state := context.state.clearPending coordinate } := by
+  intro entry hentry
+  apply hcovered entry
+  simp [LazyRevealProbe.State.clearPending, LazyRevealProbe.State.pendingAway] at hentry
+  exact hentry.1
+
+theorem clearPending_eq_self_of_pendingCovered_not_mem
+    (coordinates : List Coordinate) (context : DeferredContext)
+    (hcovered : PendingCovered coordinates context)
+    (coordinate : Coordinate) (hnotMem : coordinate ∉ coordinates) :
+    context.state.clearPending coordinate = context.state := by
+  rcases context with ⟨state, values⟩
+  rcases state with ⟨pending, stateValues, revealed, ensured⟩
+  simp only [LazyRevealProbe.State.clearPending]
+  congr 1
+  apply Finset.filter_eq_self.2
+  intro entry hentry
+  simp only [ne_eq]
+  intro heq
+  exact hnotMem (heq ▸ hcovered entry hentry)
+
+theorem PendingCovered.of_resolveDeferredPositionValue
+    {coordinates : List Coordinate} {context : DeferredContext}
+    (hcovered : PendingCovered coordinates context)
+    (position : Position) (result : DeferredResolution)
+    (hresult : some result ∈ support
+      (resolveDeferredPositionValue position context)) :
+    PendingCovered coordinates result.toDeferredContext := by
+  cases hstate : context.state.values (.position position) with
+  | some output =>
+      rw [resolveDeferredPositionValue_of_state_value position context output hstate] at hresult
+      by_cases hhit : context.state.hitAt (.position position) output
+      · simp [hhit] at hresult
+      · simp [hhit] at hresult
+        subst result
+        exact hcovered.clearPending (.position position)
+  | none =>
+      cases hvalue : context.values position with
+      | some output =>
+          rw [resolveDeferredPositionValue_of_deferred_value position context output hstate
+            hvalue] at hresult
+          by_cases hhit : context.state.hitAt (.position position) output
+          · simp [hhit] at hresult
+          · simp [hhit] at hresult
+            subst result
+            exact hcovered.clearPending (.position position)
+      | none =>
+          rw [resolveDeferredPositionValue_fresh position context hstate hvalue,
+            mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, hreturn⟩ := hresult
+          by_cases hhit : context.state.hitAt (.position position) output
+          · simp [hhit] at hreturn
+          · simp [hhit] at hreturn
+            subst result
+            exact hcovered.clearPending (.position position)
+
+theorem PendingCovered.of_resolveDeferredChainStart
+    {coordinates : List Coordinate} {context : DeferredContext}
+    (hcovered : PendingCovered coordinates context)
+    (table : OtsSecretIndex → HashOutput) (index : OtsSecretIndex)
+    (result : DeferredResolution)
+    (hresult : resolveDeferredChainStart table index context = some result) :
+    PendingCovered coordinates result.toDeferredContext := by
+  unfold resolveDeferredChainStart at hresult
+  cases hstate : context.state.values index.coordinate with
+  | some output =>
+      simp only [hstate] at hresult
+      by_cases hhit : context.state.hitAt index.coordinate output
+      · simp [hhit] at hresult
+      · simp [hhit] at hresult
+        subst result
+        exact hcovered.clearPending index.coordinate
+  | none =>
+      simp only [hstate] at hresult
+      by_cases hhit : context.state.hitAt index.coordinate (table index)
+      · simp [hhit] at hresult
+      · simp [hhit] at hresult
+        subst result
+        exact hcovered.clearPending index.coordinate
+
+theorem PendingCovered.of_resolveDeferredChainPrefix
+    {coordinates : List Coordinate} {context : DeferredContext}
+    (hcovered : PendingCovered coordinates context)
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) : ∀ steps hsteps result,
+      some result ∈ support
+        (resolveDeferredChainPrefix table lay tree leafIdx chainIdx steps hsteps context) →
+      PendingCovered coordinates result.toDeferredContext
+  | 0, hsteps, result, hresult => by
+      simp only [resolveDeferredChainPrefix, support_pure, Set.mem_singleton_iff] at hresult
+      exact hcovered.of_resolveDeferredChainStart table ⟨lay, tree, leafIdx, chainIdx⟩
+        result hresult.symm
+  | steps + 1, hsteps, result, hresult => by
+      rw [resolveDeferredChainPrefix, mem_support_bind_iff] at hresult
+      obtain ⟨previousOption, hprevious, hrest⟩ := hresult
+      cases previousOption with
+      | none => simp at hrest
+      | some previous =>
+          have hmiddle := hcovered.of_resolveDeferredChainPrefix table lay tree leafIdx chainIdx
+            steps (by omega) previous hprevious
+          exact hmiddle.of_resolveDeferredPositionValue
+            (.chain lay tree leafIdx chainIdx ⟨steps, by omega⟩) result (by simpa using hrest)
+
+theorem PendingCovered.of_resolveDeferredChains
+    {coordinates : List Coordinate} {context : DeferredContext}
+    (hcovered : PendingCovered coordinates context)
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) : ∀ chains result,
+      some result ∈ support
+        (resolveDeferredChains table lay tree leafIdx chains context) →
+      PendingCovered coordinates result
+  | [], result, hresult => by
+      simp [resolveDeferredChains] at hresult
+      subst result
+      exact hcovered
+  | chainIdx :: remaining, result, hresult => by
+      rw [resolveDeferredChains, mem_support_bind_iff] at hresult
+      obtain ⟨resolvedOption, hresolved, hrest⟩ := hresult
+      cases resolvedOption with
+      | none => simp at hrest
+      | some resolved =>
+          have hmiddle := hcovered.of_resolveDeferredChainPrefix table lay tree leafIdx chainIdx
+            (chainLength - 1) (by omega) resolved hresolved
+          exact hmiddle.of_resolveDeferredChains table lay tree leafIdx remaining result
+            (by simpa using hrest)
+
+theorem PendingCovered.of_resolveDeferredOtsLeaf
+    {coordinates : List Coordinate} {context : DeferredContext}
+    (hcovered : PendingCovered coordinates context)
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (result : DeferredResolution)
+    (hresult : some result ∈ support
+      (resolveDeferredOtsLeaf table lay tree leafIdx context)) :
+    PendingCovered coordinates result.toDeferredContext := by
+  rw [resolveDeferredOtsLeaf, mem_support_bind_iff] at hresult
+  obtain ⟨chainsOption, hchains, hrest⟩ := hresult
+  cases chainsOption with
+  | none => simp at hrest
+  | some chains =>
+      have hmiddle := hcovered.of_resolveDeferredChains table lay tree leafIdx
+        (List.ofFn fun chainIdx : ChainIndex => chainIdx) chains hchains
+      exact hmiddle.of_resolveDeferredPositionValue (.leaf lay tree leafIdx) result
+        (by simpa using hrest)
+
+theorem PendingCovered.of_resolveDeferredTreeNode
+    {coordinates : List Coordinate} {context : DeferredContext}
+    (hcovered : PendingCovered coordinates context)
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex) :
+    ∀ level nodeIdx hlevel result,
+      some result ∈ support
+        (resolveDeferredTreeNode table lay tree level nodeIdx hlevel context) →
+      PendingCovered coordinates result.toDeferredContext
+  | 0, nodeIdx, hlevel, result, hresult =>
+      hcovered.of_resolveDeferredOtsLeaf table lay tree (leafOfNat nodeIdx) result hresult
+  | level + 1, nodeIdx, hlevel, result, hresult => by
+      rw [resolveDeferredTreeNode, mem_support_bind_iff] at hresult
+      obtain ⟨leftOption, hleft, hafterLeft⟩ := hresult
+      cases leftOption with
+      | none => simp at hafterLeft
+      | some left =>
+          rw [mem_support_bind_iff] at hafterLeft
+          obtain ⟨rightOption, hright, hafterRight⟩ := hafterLeft
+          cases rightOption with
+          | none => simp at hafterRight
+          | some right =>
+              have hleftCovered := hcovered.of_resolveDeferredTreeNode table lay tree level
+                (2 * nodeIdx) (by omega) left hleft
+              have hrightCovered := hleftCovered.of_resolveDeferredTreeNode table lay tree level
+                (2 * nodeIdx + 1) (by omega) right hright
+              exact hrightCovered.of_resolveDeferredPositionValue
+                (.node lay tree ⟨level, by omega⟩ (leafOfNat nodeIdx)) result
+                (by simpa using hafterRight)
+
+theorem PendingCovered.of_resolveDeferredPosition
+    {coordinates : List Coordinate} {context : DeferredContext}
+    (hcovered : PendingCovered coordinates context)
+    (table : OtsSecretIndex → HashOutput) (position : Position)
+    (result : DeferredResolution)
+    (hresult : some result ∈ support
+      (resolveDeferredPosition table position context)) :
+    PendingCovered coordinates result.toDeferredContext := by
+  cases position with
+  | chain lay tree leafIdx chainIdx step =>
+      exact hcovered.of_resolveDeferredChainPrefix table lay tree leafIdx chainIdx
+        (step.val + 1) (by have := step.isLt; omega) result hresult
+  | leaf lay tree leafIdx =>
+      exact hcovered.of_resolveDeferredOtsLeaf table lay tree leafIdx result hresult
+  | node lay tree level nodeIdx =>
+      exact hcovered.of_resolveDeferredTreeNode table lay tree (level.val + 1) nodeIdx
+        (by have := level.isLt; omega) result hresult
+  | ftsLeaf index tree leafIdx =>
+      exact hcovered.of_resolveDeferredPositionValue (.ftsLeaf index tree leafIdx) result hresult
+  | ftsNode index tree level nodeIdx =>
+      exact hcovered.of_resolveDeferredPositionValue (.ftsNode index tree level nodeIdx) result
+        hresult
+  | ftsRoots index =>
+      exact hcovered.of_resolveDeferredPositionValue (.ftsRoots index) result hresult
+
+set_option maxRecDepth 100000 in
+theorem evalDist_map_resolveDeferredPositionValue_then_finalize
+    (position : Position) (coordinates : List Coordinate)
+    (context : DeferredContext) (table : OtsSecretIndex → HashOutput)
+    (hvalid : context.Valid) (hcovered : PendingCovered coordinates context) :
+    evalDist (do
+        let resolved ← resolveDeferredPositionValue position context
+        match resolved with
+        | none => (pure none : ProbComp
+            (Option (LazyRevealProbe.State Coordinate)))
+        | some resolved => projectDeferredState <$>
+            finalizeResolvedCoordinates coordinates resolved.toDeferredContext table) =
+      evalDist (projectDeferredState <$>
+        finalizeResolvedCoordinates coordinates context table) := by
+  by_cases hmem : Coordinate.position position ∈ coordinates
+  · have hbase := evalDist_resolveDeferredPositionValue_then_finalize position coordinates
+      context table hmem (fun output hvalue =>
+        ⟨hvalid.1 position output hvalue, hvalid.2 (.position position) output hvalue⟩)
+    calc
+      _ = evalDist (projectDeferredState <$> (do
+          let resolved ← resolveDeferredPositionValue position context
+          (match resolved with
+          | none => (pure none : ProbComp (Option DeferredContext))
+          | some resolved => finalizeResolvedCoordinates coordinates
+              resolved.toDeferredContext table))) := by
+        simp only [evalDist_bind, evalDist_map, map_bind]
+        congr 1
+        funext resolved
+        cases resolved <;> simp [projectDeferredState]
+      _ = evalDist (projectDeferredState <$>
+          finalizeResolvedCoordinates coordinates context table) := by
+        rw [evalDist_map, evalDist_map, hbase]
+  · have hclear := clearPending_eq_self_of_pendingCovered_not_mem coordinates context
+      hcovered (.position position) hmem
+    cases hstate : context.state.values (.position position) with
+    | none =>
+        exact evalDist_map_resolveDeferredPositionValue_then_finalize_of_not_mem position
+          coordinates context table hmem hstate hclear
+    | some output =>
+        have hprivate := hvalid.1 position output hstate
+        have hclean := hvalid.2 (.position position) output hstate
+        rw [resolveDeferredPositionValue_of_state_value position context output hstate,
+          if_neg hclean]
+        simp only [pure_bind, hclear]
+        have hinstall : context.values.install position output = context.values := by
+          funext other
+          by_cases heq : other = position
+          · subst other
+            simp [DeferredStructuralValues.install, hprivate]
+          · simp [DeferredStructuralValues.install, heq]
+        simp [hinstall]
+
+set_option maxRecDepth 100000 in
+theorem evalDist_map_resolveDeferredChainStart_then_finalize
+    (table : OtsSecretIndex → HashOutput) (index : OtsSecretIndex)
+    (coordinates : List Coordinate) (context : DeferredContext)
+    (hvalid : context.Valid) (hcovered : PendingCovered coordinates context) :
+    evalDist (match resolveDeferredChainStart table index context with
+        | none => (pure none : ProbComp
+            (Option (LazyRevealProbe.State Coordinate)))
+        | some resolved => projectDeferredState <$>
+            finalizeResolvedCoordinates coordinates resolved.toDeferredContext table) =
+      evalDist (projectDeferredState <$>
+        finalizeResolvedCoordinates coordinates context table) := by
+  rcases index with ⟨lay, tree, leafIdx, chainIdx⟩
+  let coordinate := Coordinate.chainStart lay tree leafIdx chainIdx
+  by_cases hmem : coordinate ∈ coordinates
+  · have hbase := evalDist_resolveDeferredChainStart_then_finalize table lay tree leafIdx
+      chainIdx coordinates context hmem hvalid
+    calc
+      _ = evalDist (projectDeferredState <$> (match
+          resolveDeferredChainStart table ⟨lay, tree, leafIdx, chainIdx⟩ context with
+          | none => (pure none : ProbComp (Option DeferredContext))
+          | some resolved => finalizeResolvedCoordinates coordinates
+              resolved.toDeferredContext table)) := by
+        cases resolveDeferredChainStart table ⟨lay, tree, leafIdx, chainIdx⟩ context <;>
+          simp [projectDeferredState]
+      _ = evalDist (projectDeferredState <$>
+          finalizeResolvedCoordinates coordinates context table) := by
+        rw [evalDist_map, evalDist_map, hbase]
+  · have hclear := clearPending_eq_self_of_pendingCovered_not_mem coordinates context
+      hcovered coordinate hmem
+    cases hstate : context.state.values coordinate with
+    | none =>
+        exact evalDist_map_resolveDeferredChainStart_then_finalize_of_not_mem table
+          ⟨lay, tree, leafIdx, chainIdx⟩ coordinates context
+          (by simpa [coordinate, OtsSecretIndex.coordinate] using hstate)
+          (by simpa [coordinate, OtsSecretIndex.coordinate] using hclear)
+    | some output =>
+        have hclean := hvalid.2 coordinate output hstate
+        unfold resolveDeferredChainStart
+        simp [coordinate, OtsSecretIndex.coordinate, hstate, hclean, hclear]
+
+set_option maxRecDepth 100000 in
+theorem evalDist_map_resolveDeferredChainPrefix_then_finalize
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex)
+    (coordinates : List Coordinate) (context : DeferredContext)
+    (hvalid : context.Valid) (hcovered : PendingCovered coordinates context) :
+    ∀ steps hsteps,
+      evalDist (do
+          let resolved ← resolveDeferredChainPrefix table lay tree leafIdx chainIdx
+            steps hsteps context
+          match resolved with
+          | none => (pure none : ProbComp
+              (Option (LazyRevealProbe.State Coordinate)))
+          | some resolved => projectDeferredState <$>
+              finalizeResolvedCoordinates coordinates resolved.toDeferredContext table) =
+        evalDist (projectDeferredState <$>
+          finalizeResolvedCoordinates coordinates context table)
+  | 0, hsteps => by
+      simpa [resolveDeferredChainPrefix] using
+        evalDist_map_resolveDeferredChainStart_then_finalize table
+          ⟨lay, tree, leafIdx, chainIdx⟩ coordinates context hvalid hcovered
+  | steps + 1, hsteps => by
+      rw [resolveDeferredChainPrefix]
+      simp only [bind_assoc]
+      calc
+        _ = evalDist
+            (resolveDeferredChainPrefix table lay tree leafIdx chainIdx steps (by omega) context
+              >>= fun previousOption =>
+                match previousOption with
+                | none => pure none
+                | some previous => projectDeferredState <$>
+                    finalizeResolvedCoordinates coordinates previous.toDeferredContext table) := by
+          apply evalDist_bind_congr
+          intro previousOption hprevious
+          cases previousOption with
+          | none => rfl
+          | some previous =>
+              have hmiddleValid := hvalid.of_resolveDeferredChainPrefix table lay tree leafIdx
+                chainIdx steps (by omega) previous hprevious
+              have hmiddleCovered := hcovered.of_resolveDeferredChainPrefix table lay tree leafIdx
+                chainIdx steps (by omega) previous hprevious
+              exact evalDist_map_resolveDeferredPositionValue_then_finalize
+                (.chain lay tree leafIdx chainIdx ⟨steps, by omega⟩)
+                coordinates previous.toDeferredContext table hmiddleValid hmiddleCovered
+        _ = evalDist (projectDeferredState <$>
+            finalizeResolvedCoordinates coordinates context table) :=
+          evalDist_map_resolveDeferredChainPrefix_then_finalize table lay tree leafIdx chainIdx
+            coordinates context hvalid hcovered steps (by omega)
+
+set_option maxRecDepth 100000 in
+theorem evalDist_map_resolveDeferredChains_then_finalize
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (coordinates : List Coordinate) :
+    ∀ chains context,
+      context.Valid → PendingCovered coordinates context →
+      evalDist (do
+          let resolved ← resolveDeferredChains table lay tree leafIdx chains context
+          match resolved with
+          | none => (pure none : ProbComp
+              (Option (LazyRevealProbe.State Coordinate)))
+          | some resolved => projectDeferredState <$>
+              finalizeResolvedCoordinates coordinates resolved table) =
+        evalDist (projectDeferredState <$>
+          finalizeResolvedCoordinates coordinates context table)
+  | [], context, hvalid, hcovered => by
+      simp [resolveDeferredChains]
+  | chainIdx :: remaining, context, hvalid, hcovered => by
+      rw [resolveDeferredChains]
+      simp only [bind_assoc]
+      calc
+        _ = evalDist
+            (resolveDeferredChainPrefix table lay tree leafIdx chainIdx
+                (chainLength - 1) (by omega) context >>= fun resolvedOption =>
+              match resolvedOption with
+              | none => pure none
+              | some resolved => projectDeferredState <$>
+                  finalizeResolvedCoordinates coordinates resolved.toDeferredContext table) := by
+          apply evalDist_bind_congr
+          intro resolvedOption hresolved
+          cases resolvedOption with
+          | none => rfl
+          | some resolved =>
+              have hmiddleValid := hvalid.of_resolveDeferredChainPrefix table lay tree leafIdx
+                chainIdx (chainLength - 1) (by omega) resolved hresolved
+              have hmiddleCovered := hcovered.of_resolveDeferredChainPrefix table lay tree leafIdx
+                chainIdx (chainLength - 1) (by omega) resolved hresolved
+              exact evalDist_map_resolveDeferredChains_then_finalize table lay tree leafIdx
+                coordinates remaining resolved.toDeferredContext hmiddleValid hmiddleCovered
+        _ = evalDist (projectDeferredState <$>
+            finalizeResolvedCoordinates coordinates context table) :=
+          evalDist_map_resolveDeferredChainPrefix_then_finalize table lay tree leafIdx chainIdx
+            coordinates context hvalid hcovered (chainLength - 1) (by omega)
+
+set_option maxRecDepth 100000 in
+theorem evalDist_map_resolveDeferredOtsLeaf_then_finalize
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (coordinates : List Coordinate) (context : DeferredContext)
+    (hvalid : context.Valid) (hcovered : PendingCovered coordinates context) :
+    evalDist (do
+        let resolved ← resolveDeferredOtsLeaf table lay tree leafIdx context
+        match resolved with
+        | none => (pure none : ProbComp
+            (Option (LazyRevealProbe.State Coordinate)))
+        | some resolved => projectDeferredState <$>
+            finalizeResolvedCoordinates coordinates resolved.toDeferredContext table) =
+      evalDist (projectDeferredState <$>
+        finalizeResolvedCoordinates coordinates context table) := by
+  rw [resolveDeferredOtsLeaf]
+  simp only [bind_assoc]
+  calc
+    _ = evalDist
+        (resolveDeferredChains table lay tree leafIdx
+            (List.ofFn fun chainIdx : ChainIndex => chainIdx) context >>= fun chainsOption =>
+          match chainsOption with
+          | none => pure none
+          | some chains => projectDeferredState <$>
+              finalizeResolvedCoordinates coordinates chains table) := by
+      apply evalDist_bind_congr
+      intro chainsOption hchains
+      cases chainsOption with
+      | none => rfl
+      | some chains =>
+          have hmiddleValid := hvalid.of_resolveDeferredChains table lay tree leafIdx
+            (List.ofFn fun chainIdx : ChainIndex => chainIdx) chains hchains
+          have hmiddleCovered := hcovered.of_resolveDeferredChains table lay tree leafIdx
+            (List.ofFn fun chainIdx : ChainIndex => chainIdx) chains hchains
+          exact evalDist_map_resolveDeferredPositionValue_then_finalize
+            (.leaf lay tree leafIdx) coordinates chains table hmiddleValid hmiddleCovered
+    _ = evalDist (projectDeferredState <$>
+        finalizeResolvedCoordinates coordinates context table) :=
+      evalDist_map_resolveDeferredChains_then_finalize table lay tree leafIdx coordinates
+        (List.ofFn fun chainIdx : ChainIndex => chainIdx) context hvalid hcovered
+
+set_option maxRecDepth 100000 in
+theorem evalDist_map_resolveDeferredTreeNode_then_finalize
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (coordinates : List Coordinate) : ∀ level nodeIdx hlevel context,
+      context.Valid → PendingCovered coordinates context →
+      evalDist (do
+          let resolved ← resolveDeferredTreeNode table lay tree level nodeIdx hlevel context
+          match resolved with
+          | none => (pure none : ProbComp
+              (Option (LazyRevealProbe.State Coordinate)))
+          | some resolved => projectDeferredState <$>
+              finalizeResolvedCoordinates coordinates resolved.toDeferredContext table) =
+        evalDist (projectDeferredState <$>
+          finalizeResolvedCoordinates coordinates context table)
+  | 0, nodeIdx, hlevel, context, hvalid, hcovered => by
+      simpa [resolveDeferredTreeNode] using
+        evalDist_map_resolveDeferredOtsLeaf_then_finalize table lay tree (leafOfNat nodeIdx)
+          coordinates context hvalid hcovered
+  | level + 1, nodeIdx, hlevel, context, hvalid, hcovered => by
+      rw [resolveDeferredTreeNode]
+      simp only [bind_assoc]
+      calc
+        _ = evalDist
+            (resolveDeferredTreeNode table lay tree level (2 * nodeIdx) (by omega) context
+              >>= fun leftOption =>
+                match leftOption with
+                | none => pure none
+                | some left => projectDeferredState <$>
+                    finalizeResolvedCoordinates coordinates left.toDeferredContext table) := by
+          apply evalDist_bind_congr
+          intro leftOption hleft
+          cases leftOption with
+          | none => rfl
+          | some left =>
+              simp only [bind_assoc]
+              have hleftValid := hvalid.of_resolveDeferredTreeNode table lay tree level
+                (2 * nodeIdx) (by omega) left hleft
+              have hleftCovered := hcovered.of_resolveDeferredTreeNode table lay tree level
+                (2 * nodeIdx) (by omega) left hleft
+              calc
+                _ = evalDist
+                    (resolveDeferredTreeNode table lay tree level (2 * nodeIdx + 1)
+                        (by omega) left.toDeferredContext >>= fun rightOption =>
+                      match rightOption with
+                      | none => pure none
+                      | some right => projectDeferredState <$>
+                          finalizeResolvedCoordinates coordinates right.toDeferredContext table) := by
+                    apply evalDist_bind_congr
+                    intro rightOption hright
+                    cases rightOption with
+                    | none => rfl
+                    | some right =>
+                        have hrightValid := hleftValid.of_resolveDeferredTreeNode table lay tree
+                          level (2 * nodeIdx + 1) (by omega) right hright
+                        have hrightCovered := hleftCovered.of_resolveDeferredTreeNode table lay tree
+                          level (2 * nodeIdx + 1) (by omega) right hright
+                        exact evalDist_map_resolveDeferredPositionValue_then_finalize
+                          (.node lay tree ⟨level, by omega⟩ (leafOfNat nodeIdx))
+                          coordinates right.toDeferredContext table hrightValid hrightCovered
+                _ = evalDist (projectDeferredState <$>
+                    finalizeResolvedCoordinates coordinates left.toDeferredContext table) :=
+                  evalDist_map_resolveDeferredTreeNode_then_finalize table lay tree coordinates
+                    level (2 * nodeIdx + 1) (by omega) left.toDeferredContext hleftValid
+                      hleftCovered
+        _ = evalDist (projectDeferredState <$>
+            finalizeResolvedCoordinates coordinates context table) :=
+          evalDist_map_resolveDeferredTreeNode_then_finalize table lay tree coordinates
+            level (2 * nodeIdx) (by omega) context hvalid hcovered
+
+set_option maxRecDepth 100000 in
+theorem evalDist_map_resolveDeferredPosition_then_finalize
+    (table : OtsSecretIndex → HashOutput) (position : Position)
+    (coordinates : List Coordinate) (context : DeferredContext)
+    (hvalid : context.Valid) (hcovered : PendingCovered coordinates context) :
+    evalDist (do
+        let resolved ← resolveDeferredPosition table position context
+        match resolved with
+        | none => (pure none : ProbComp
+            (Option (LazyRevealProbe.State Coordinate)))
+        | some resolved => projectDeferredState <$>
+            finalizeResolvedCoordinates coordinates resolved.toDeferredContext table) =
+      evalDist (projectDeferredState <$>
+        finalizeResolvedCoordinates coordinates context table) := by
+  cases position with
+  | chain lay tree leafIdx chainIdx step =>
+      exact evalDist_map_resolveDeferredChainPrefix_then_finalize table lay tree leafIdx chainIdx
+        coordinates context hvalid hcovered (step.val + 1) (by have := step.isLt; omega)
+  | leaf lay tree leafIdx =>
+      exact evalDist_map_resolveDeferredOtsLeaf_then_finalize table lay tree leafIdx coordinates
+        context hvalid hcovered
+  | node lay tree level nodeIdx =>
+      exact evalDist_map_resolveDeferredTreeNode_then_finalize table lay tree coordinates
+        (level.val + 1) nodeIdx (by have := level.isLt; omega) context hvalid hcovered
+  | ftsLeaf index tree leafIdx =>
+      exact evalDist_map_resolveDeferredPositionValue_then_finalize
+        (.ftsLeaf index tree leafIdx) coordinates context table hvalid hcovered
+  | ftsNode index tree level nodeIdx =>
+      exact evalDist_map_resolveDeferredPositionValue_then_finalize
+        (.ftsNode index tree level nodeIdx) coordinates context table hvalid hcovered
+  | ftsRoots index =>
+      exact evalDist_map_resolveDeferredPositionValue_then_finalize
+        (.ftsRoots index) coordinates context table hvalid hcovered
+
 def DeferredFreshOn (coordinates : List Coordinate) (context : DeferredContext) : Prop :=
   ∀ position : Position, Coordinate.position position ∈ coordinates →
     context.values position = none
