@@ -5607,16 +5607,37 @@ theorem VerifierLayerMessage.otsLeaf_query_mem_verify
   apply List.mem_append_left
   exact VerifierLayerMessage.otsLeaf_query_mem_verifyLayers hlayer hquery
 
-def VerifyProbeWitness (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
+def VerifyProbeWitnessAt (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
     (secretKey : SecretKey) (signingLog : QueryLog SigningSpec)
-    (forgedMessage : Message) (signature : Signature) : Prop :=
-  ∃ (probe : Probe) (input : HashInput),
-    probe.Hits f secretKey.parameter secretKey.otsSecret secretKey.ftsSecret
+    (forgedMessage : Message) (signature : Signature) (lay : Layer) : Prop :=
+  ∃ (digest : MessageDigest) (layerMessage : Digest)
+      (codeword : Encoding) (chainIdx : ChainIndex)
+      (_hdigit : (codeword chainIdx).val < chainLength - 1)
+      (probe : Probe) (input : HashInput),
+    input = tweakableHashInput secretKey.parameter
+        (.chain lay (treeIndexAt (digestIndex digest) lay)
+          (leafIndexAt (digestIndex digest) lay) chainIdx
+            ⟨(codeword chainIdx).val, _hdigit⟩)
+        (digestBytes (signature.chainValue lay chainIdx))
+      ∧ evalWithAnswerFn f (messageDigest secretKey.parameter secretKey.root
+        forgedMessage signature.randomness) = digest
+      ∧ Admissible digest
+      ∧ evalWithAnswerFn f (encode secretKey.parameter lay
+        (treeIndexAt (digestIndex digest) lay) (leafIndexAt (digestIndex digest) lay)
+          layerMessage (signature.counter lay)) = some codeword
+      ∧ VerifierLayerMessage f secretKey.parameter (digestIndex digest)
+        (digestLeaves digest) signature lay layerMessage
+      ∧ probe.Hits f secretKey.parameter secretKey.otsSecret secretKey.ftsSecret
       ∧ probe.MatchesInput secretKey.parameter input
       ∧ input ∈ queriedInputs f
         (verify ⟨secretKey.root, secretKey.parameter⟩ forgedMessage signature)
       ∧ cache input ≠ none
       ∧ ¬CoveredChainCoordinate f cache secretKey signingLog probe.coordinate
+
+def VerifyProbeWitness (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
+    (secretKey : SecretKey) (signingLog : QueryLog SigningSpec)
+    (forgedMessage : Message) (signature : Signature) : Prop :=
+  ∃ lay, VerifyProbeWitnessAt f cache secretKey signingLog forgedMessage signature lay
 
 theorem ForgedFreshLayerOpening.exists_uncovered_matching_probe
     {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
@@ -5654,7 +5675,11 @@ theorem ForgedFreshLayerOpening.exists_uncovered_matching_chain_probe
     ∃ (lay : Layer) (message : Digest) (codeword : Encoding)
         (chainIdx : ChainIndex) (_hdigit : (codeword chainIdx).val < chainLength - 1)
         (probe : Probe) (input : HashInput),
-      evalWithAnswerFn f (encode secretKey.parameter lay (treeIndexAt index lay)
+      input = tweakableHashInput secretKey.parameter
+          (.chain lay (treeIndexAt index lay) (leafIndexAt index lay) chainIdx
+            ⟨(codeword chainIdx).val, _hdigit⟩)
+          (digestBytes (signature.chainValue lay chainIdx))
+        ∧ evalWithAnswerFn f (encode secretKey.parameter lay (treeIndexAt index lay)
         (leafIndexAt index lay) message (signature.counter lay)) = some codeword
         ∧ VerifierLayerMessage f secretKey.parameter index leaves signature lay message
         ∧ input ∈ queriedInputs f
@@ -5690,7 +5715,7 @@ theorem ForgedFreshLayerOpening.exists_uncovered_matching_chain_probe
   have hmatch : (toProbe valueProbe).MatchesInput secretKey.parameter input := by
     apply toProbe_matchesInput secretKey.parameter valueProbe input
     exact Or.inl ⟨step, by simp [valueProbe, step], rfl⟩
-  refine ⟨lay, message, codeword, chainIdx, hdigit, toProbe valueProbe, input, hencode,
+  refine ⟨lay, message, codeword, chainIdx, hdigit, toProbe valueProbe, input, rfl, hencode,
     hverifierMessage, hquery, toProbe_hits hhit, hmatch, hforgedRun input hquery, ?_⟩
   intro hcovered
   obtain ⟨entry, publishedSignature, publishedIndex, leaves, publishedLay,
@@ -5720,10 +5745,12 @@ theorem ForgedFreshLayerOpening.toVerifyProbeWitness
     (hfresh : ForgedFreshLayerOpening f cache secretKey signingLog (digestIndex digest)
       (digestLeaves digest) signature) :
     VerifyProbeWitness f cache secretKey signingLog forgedMessage signature := by
-  obtain ⟨lay, message, codeword, chainIdx, hdigit, probe, input, hencode,
+  obtain ⟨lay, message, codeword, chainIdx, hdigit, probe, input, hinput, hencode,
     hverifierMessage, hquery, hhit, hmatch, hcached, huncovered⟩ :=
       ForgedFreshLayerOpening.exists_uncovered_matching_chain_probe hfresh
-  exact ⟨probe, input, hhit, hmatch,
+  exact ⟨lay, digest, message, codeword, chainIdx, hdigit, probe, input, hinput,
+    hdigest, hadmissible, hencode,
+    hverifierMessage, hhit, hmatch,
     VerifierLayerMessage.otsLeaf_query_mem_verify hdigest hadmissible hverifierMessage hquery,
     hcached, huncovered⟩
 
@@ -5734,10 +5761,19 @@ theorem ForgedBackwardChainOpening.exists_uncovered_matching_probe
     {forgedSignature : Signature}
     (hbackward : ForgedBackwardChainOpening f cache secretKey signingLog forgedIndex
       forgedLeaves forgedSignature) :
-    ∃ (probe : Probe) (input : HashInput),
-      ∃ (lay : Layer) (forgedMessage : Digest),
-      VerifierLayerMessage f secretKey.parameter forgedIndex forgedLeaves forgedSignature lay
-          forgedMessage
+    ∃ (lay : Layer) (forgedMessage : Digest) (codeword : Encoding)
+        (chainIdx : ChainIndex) (_hdigit : (codeword chainIdx).val < chainLength - 1)
+        (probe : Probe) (input : HashInput),
+      input = tweakableHashInput secretKey.parameter
+          (.chain lay (treeIndexAt forgedIndex lay) (leafIndexAt forgedIndex lay) chainIdx
+            ⟨(codeword chainIdx).val, _hdigit⟩)
+          (digestBytes (forgedSignature.chainValue lay chainIdx))
+        ∧ evalWithAnswerFn f
+          (encode secretKey.parameter lay (treeIndexAt forgedIndex lay)
+            (leafIndexAt forgedIndex lay) forgedMessage (forgedSignature.counter lay)) =
+              some codeword
+        ∧ VerifierLayerMessage f secretKey.parameter forgedIndex forgedLeaves forgedSignature lay
+            forgedMessage
         ∧ input ∈ queriedInputs f
           (otsLeaf secretKey.parameter lay (treeIndexAt forgedIndex lay)
             (leafIndexAt forgedIndex lay) forgedMessage (forgedSignature.counter lay)
@@ -5783,7 +5819,8 @@ theorem ForgedBackwardChainOpening.exists_uncovered_matching_probe
   have hmatch : (toProbe valueProbe).MatchesInput secretKey.parameter input := by
     apply toProbe_matchesInput secretKey.parameter valueProbe input
     exact Or.inl ⟨step, by simp [valueProbe, step, hopeningCodeword], rfl⟩
-  refine ⟨toProbe valueProbe, input, lay, forgedMessage, hverifierMessage, hquery,
+  refine ⟨lay, forgedMessage, openingCodeword, chainIdx, hopeningDigit,
+    toProbe valueProbe, input, rfl, hopeningEncode, hverifierMessage, hquery,
     toProbe_hits hhit, hmatch, hforgedRun input hquery, ?_⟩
   intro hcovered
   obtain ⟨publishedEntry, publishedSignature, publishedIndex, publishedLeaves, publishedLay,
@@ -5823,10 +5860,11 @@ theorem ForgedBackwardChainOpening.toVerifyProbeWitness
     (hbackward : ForgedBackwardChainOpening f cache secretKey signingLog (digestIndex digest)
       (digestLeaves digest) signature) :
     VerifyProbeWitness f cache secretKey signingLog forgedMessage signature := by
-  obtain ⟨probe, input, lay, layerMessage, hverifierMessage, hquery, hhit, hmatch,
-    hcached, huncovered⟩ :=
+  obtain ⟨lay, layerMessage, codeword, chainIdx, hdigit, probe, input, hinput, hencode,
+    hverifierMessage, hquery, hhit, hmatch, hcached, huncovered⟩ :=
       ForgedBackwardChainOpening.exists_uncovered_matching_probe hbackward
-  exact ⟨probe, input, hhit, hmatch,
+  exact ⟨lay, digest, layerMessage, codeword, chainIdx, hdigit, probe, input, hinput,
+    hdigest, hadmissible, hencode, hverifierMessage, hhit, hmatch,
     VerifierLayerMessage.otsLeaf_query_mem_verify hdigest hadmissible hverifierMessage hquery,
     hcached, huncovered⟩
 

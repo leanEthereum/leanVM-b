@@ -131,7 +131,9 @@ theorem ChainInvariant.not_finalized_false_of_verifyProbe
     (hprobe : VerifyProbeWitness f targetCache
       (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey)
       signingLog forgery.message forgery.signature) : False := by
-  obtain ⟨probe, input, hhits, hmatches, hquery, _, hnotCovered⟩ := hprobe
+  obtain ⟨lay, digest, layerMessage, codeword, chainIdx, hdigit, probe, input,
+    hinput, hdigest, hadmissible, hencode, hverifierMessage, hhits, hmatches, hquery,
+    _, hnotCovered⟩ := hprobe
   exact hinvariant.not_finalized_false_of_uncovered_probe probe input hhits hmatches
     (hqueries input hquery) hnotCovered (hcompletedTable probe.coordinate) hrealizes hfinalize
 
