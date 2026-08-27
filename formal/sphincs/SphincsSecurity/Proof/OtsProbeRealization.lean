@@ -208,6 +208,14 @@ theorem preservesHidden_pure (value : alpha) :
   rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
   exact hconsistent
 
+theorem preservesHidden_get :
+    PreservesHidden (get : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) SplitHashCache) := by
+  intro state cache fuel finalState remaining result finalCache hconsistent hresult
+  simp [StateT.run_get, LazyRevealProbe.runRaw] at hresult
+  rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+  exact hconsistent
+
 theorem PreservesHidden.bind
     {left : StateT SplitHashCache
       (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
@@ -771,6 +779,78 @@ theorem preservesHiddenImpl_probingRomImpl (parameter : PublicParameter) :
   | inl query => exact preservesHiddenImpl_splitUniformImpl query
   | inr query => exact preservesHiddenImpl_probingHashImpl parameter query
 
+theorem preservesHidden_revealPositionValues (positions : List Position) :
+    PreservesHidden (revealPositionValues positions) := by
+  induction positions with
+  | nil => exact preservesHidden_pure []
+  | cons position remaining ih =>
+      exact (preservesHidden_revealPosition position).bind fun value =>
+        ih.bind fun values => preservesHidden_pure (value :: values)
+
+theorem preservesHidden_revealTableInputChildren (coordinate : Coordinate) :
+    PreservesHidden (revealTableInputChildren coordinate) := by
+  cases coordinate with
+  | chainStart => exact preservesHidden_pure ()
+  | position position =>
+      cases position with
+      | chain lay tree leafIdx chainIdx step =>
+          by_cases hzero : step.val = 0
+          · simp only [revealTableInputChildren, hzero, ↓reduceIte]
+            exact (preservesHidden_revealChainStart lay tree leafIdx chainIdx).bind fun _ =>
+              preservesHidden_pure ()
+          · simp only [revealTableInputChildren, hzero, ↓reduceIte]
+            exact (preservesHidden_revealPositionValues _).bind fun _ =>
+              preservesHidden_pure ()
+      | leaf | node | ftsLeaf | ftsNode | ftsRoots =>
+          simp only [revealTableInputChildren]
+          exact (preservesHidden_revealPositionValues _).bind fun _ =>
+            preservesHidden_pure ()
+
+theorem preservesHidden_resolveVerifierInput (parameter : PublicParameter)
+    (coordinate : Coordinate) (input : HashInput) :
+    PreservesHidden (resolveVerifierInput parameter coordinate input) := by
+  unfold resolveVerifierInput
+  exact preservesHidden_get.bind fun cache =>
+    match cache (.ordinary input) with
+    | some output => preservesHidden_pure output
+    | none =>
+        (preservesHidden_revealTableInputChildren coordinate).bind fun _ =>
+          preservesHidden_resolveKnownInput parameter coordinate input
+
+theorem preservesHidden_verifierHashQuery (parameter : PublicParameter)
+    (input : HashInput) : PreservesHidden (verifierHashQuery parameter input) := by
+  unfold verifierHashQuery
+  cases hprobe : decodeProbe? parameter input with
+  | some candidate =>
+      exact (preservesHidden_probe candidate).bind fun _ =>
+        preservesHidden_resolveVerifierInput parameter candidate.outputCoordinate input
+  | none =>
+      cases hposition : decodePosition? parameter input with
+      | none => exact preservesHidden_splitHashQuery_ordinary input
+      | some position =>
+          cases position with
+          | chain lay tree leafIdx chainIdx step =>
+              exact preservesHidden_resolveVerifierInput parameter
+                (.position (.chain lay tree leafIdx chainIdx step)) input
+          | leaf lay tree leafIdx =>
+              exact preservesHidden_resolveVerifierInput parameter
+                (.position (.leaf lay tree leafIdx)) input
+          | node lay tree level nodeIdx =>
+              exact preservesHidden_resolveVerifierInput parameter
+                (.position (.node lay tree level nodeIdx)) input
+          | ftsLeaf | ftsNode | ftsRoots => exact preservesHidden_splitHashQuery_ordinary input
+
+theorem preservesHiddenImpl_verifierHashImpl (parameter : PublicParameter) :
+    PreservesHiddenImpl (verifierHashImpl parameter) :=
+  preservesHidden_verifierHashQuery parameter
+
+theorem preservesHiddenImpl_verifierRomImpl (parameter : PublicParameter) :
+    PreservesHiddenImpl (verifierRomImpl parameter) := by
+  intro query
+  cases query with
+  | inl query => exact preservesHiddenImpl_splitUniformImpl query
+  | inr query => exact preservesHiddenImpl_verifierHashImpl parameter query
+
 theorem preservesHiddenImpl_maskedSigningImpl (parameter : PublicParameter)
     (root : Digest) (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
     PreservesHiddenImpl (maskedSigningImpl parameter root ftsSecret) :=
@@ -902,8 +982,13 @@ theorem preservesHidden_maskedRetainedGameAfterFtsSecrets (adversary : Adversary
     (preservesHidden_publishCoordinate (.position (.node topLayer rootTree
       ⟨layerHeight topLayer - 1, by norm_num [layerHeight, topLayer, maxLayerHeight]⟩ 0))).bind
         fun _ =>
-          (preservesHidden_retainedGameRestComputation adversary parameter root ftsSecret).bind
-            fun result => preservesHidden_pure (root, result)
+          (preservesHiddenImpl_maskedExpandedAdversaryImpl parameter root ftsSecret).simulateQ
+            (signingTraceComputation (adversary.main ⟨root, parameter⟩)) |>.bind
+              fun adversaryResult =>
+                (preservesHiddenImpl_verifierRomImpl parameter).simulateQ
+                  (scheme.verify ⟨root, parameter⟩ adversaryResult.1.message
+                    adversaryResult.1.signature) |>.bind fun verified =>
+                      preservesHidden_pure (root, (adversaryResult, verified))
 
 theorem preservesHidden_maskedGameAfterFtsSecrets (adversary : Adversary)
     (parameter : PublicParameter)
@@ -918,7 +1003,7 @@ theorem preservesHidden_maskedGameAfterFtsSecrets (adversary : Adversary)
             (maskedExpandedAdversaryImpl parameter root ftsSecret) signingLogFragment
             (preservesHiddenImpl_maskedExpandedAdversaryImpl parameter root ftsSecret)
             (adversary.main ⟨root, parameter⟩)).bind fun adversaryResult =>
-              (preservesHiddenImpl_probingRomImpl parameter).simulateQ
+              (preservesHiddenImpl_verifierRomImpl parameter).simulateQ
                 (scheme.verify ⟨root, parameter⟩ adversaryResult.1.message
                   adversaryResult.1.signature) |>.bind fun verified =>
                     preservesHidden_pure (decide

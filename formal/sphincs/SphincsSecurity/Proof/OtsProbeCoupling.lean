@@ -1200,6 +1200,68 @@ theorem mergedCache_eq_ordinary_of_stable
       have hnots := hstable position hposition
       cases position <;> simp [mergeDecodedPosition, IsOtsPosition] at hnots ⊢
 
+theorem mergedCache_eq_ordinary_or_exact
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (ensured : Finset Coordinate) (cache : SplitHashCache) (input : HashInput) :
+    mergedCache parameter table ensured cache input = cache (.ordinary input) ∨
+      ∃ position : Position, IsOtsPosition position ∧
+        input = tableInput parameter table (.position position) := by
+  unfold mergedCache
+  cases hposition : decodePosition? parameter input with
+  | none => exact Or.inl rfl
+  | some position =>
+      cases position with
+      | chain lay tree leafIdx chainIdx step =>
+          by_cases hexact : input = tableInput parameter table
+              (.position (.chain lay tree leafIdx chainIdx step))
+          · refine Or.inr ⟨.chain lay tree leafIdx chainIdx step, ?_, hexact⟩
+            exact True.intro
+          · exact Or.inl (by simp [mergeDecodedPosition, hexact])
+      | leaf lay tree leafIdx =>
+          by_cases hexact : input = tableInput parameter table
+              (.position (.leaf lay tree leafIdx))
+          · refine Or.inr ⟨.leaf lay tree leafIdx, ?_, hexact⟩
+            exact True.intro
+          · exact Or.inl (by simp [mergeDecodedPosition, hexact])
+      | node lay tree level nodeIdx =>
+          by_cases hexact : input = tableInput parameter table
+              (.position (.node lay tree level nodeIdx))
+          · refine Or.inr ⟨.node lay tree level nodeIdx, ?_, hexact⟩
+            exact True.intro
+          · exact Or.inl (by simp [mergeDecodedPosition, hexact])
+      | ftsLeaf | ftsNode | ftsRoots => exact Or.inl (by simp [mergeDecodedPosition])
+
+theorem tableAnswer_eq_fallback_or_exact
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (fallback : QueryImpl HashSpec Id) (input : HashInput) :
+    tableAnswer parameter table fallback input = fallback input ∨
+      ∃ position : Position, IsOtsPosition position ∧
+        input = tableInput parameter table (.position position) := by
+  unfold tableAnswer
+  cases hposition : decodePosition? parameter input with
+  | none => exact Or.inl rfl
+  | some position =>
+      cases position with
+      | chain lay tree leafIdx chainIdx step =>
+          by_cases hexact : input = tableInput parameter table
+              (.position (.chain lay tree leafIdx chainIdx step))
+          · refine Or.inr ⟨.chain lay tree leafIdx chainIdx step, ?_, hexact⟩
+            exact True.intro
+          · exact Or.inl (by simp [tableAnswerDecoded, hexact])
+      | leaf lay tree leafIdx =>
+          by_cases hexact : input = tableInput parameter table
+              (.position (.leaf lay tree leafIdx))
+          · refine Or.inr ⟨.leaf lay tree leafIdx, ?_, hexact⟩
+            exact True.intro
+          · exact Or.inl (by simp [tableAnswerDecoded, hexact])
+      | node lay tree level nodeIdx =>
+          by_cases hexact : input = tableInput parameter table
+              (.position (.node lay tree level nodeIdx))
+          · refine Or.inr ⟨.node lay tree level nodeIdx, ?_, hexact⟩
+            exact True.intro
+          · exact Or.inl (by simp [tableAnswerDecoded, hexact])
+      | ftsLeaf | ftsNode | ftsRoots => exact Or.inl (by simp [tableAnswerDecoded])
+
 theorem cachedRun_mergedCache_of_stable
     (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
     (table : Coordinate → HashOutput) (state : LazyRevealProbe.State Coordinate)
@@ -2598,15 +2660,53 @@ theorem successfulSignRuns_maskedRetainedGameAfterFtsSecrets
           cases restRaw with
           | stopped hit => simp at hfinish
           | done restState restRemaining restResult =>
-              rcases restResult with ⟨result, restCache⟩
-              simp [LazyRevealProbe.runRaw] at hfinish
-              rcases hfinish with ⟨rfl, rfl, houtput, rfl⟩
-              rcases houtput with ⟨hrootEq, hresultEq⟩
-              rw [← hresultEq] at hrest
-              have hruns := successfulSignRuns_retainedGameRestComputation adversary f parameter
-                sampledRoot table ftsSecret publishState finalState publishCache finalCache
-                  publishRemaining remaining forgery signingLog verified hf htable hrealizes hrest
-              simpa only [hrootEq] using hruns
+              rcases restResult with ⟨⟨prefixForgery, prefixLog⟩, restCache⟩
+              simp only at hfinish
+              rw [StateT.run_bind, LazyRevealProbe.runRaw_bind,
+                mem_support_bind_iff] at hfinish
+              obtain ⟨verifyRaw, hverify, hreturn⟩ := hfinish
+              cases verifyRaw with
+              | stopped hit => simp at hreturn
+              | done verifyState verifyRemaining verifyResult =>
+                rcases verifyResult with ⟨prefixVerified, verifyCache⟩
+                simp [LazyRevealProbe.runRaw] at hreturn
+                rcases hreturn with ⟨rfl, rfl, houtput, rfl⟩
+                rcases houtput with ⟨hrootEq, hrestEq, rfl⟩
+                rcases hrestEq with ⟨rfl, rfl⟩
+                have hvaluesLE := LazyRevealProbe.valuesLE_of_mem_runRaw_done
+                  ((simulateQ (verifierRomImpl parameter)
+                    (scheme.verify ⟨sampledRoot, parameter⟩ forgery.message
+                      forgery.signature)).run restCache)
+                    restState finalState restRemaining remaining (verified, finalCache) hverify
+                have hensuredLE := LazyRevealProbe.ensuredLE_of_mem_runRaw_done
+                  ((simulateQ (verifierRomImpl parameter)
+                    (scheme.verify ⟨sampledRoot, parameter⟩ forgery.message
+                      forgery.signature)).run restCache)
+                    restState finalState restRemaining remaining (verified, finalCache) hverify
+                have hstableCacheLE : StableOrdinaryCacheLE parameter restCache finalCache := by
+                  intro input output _ hcached
+                  exact (ordinaryEntryPreservingImpl_verifierRomImpl parameter input).simulateQ
+                    (scheme.verify ⟨sampledRoot, parameter⟩ forgery.message
+                      forgery.signature) restState restCache restRemaining finalState remaining
+                        verified finalCache output hcached hverify
+                have htableRest : ∀ coordinate output,
+                    restState.values coordinate = some output → output = table coordinate :=
+                  fun coordinate output hcached =>
+                    htable coordinate output (hvaluesLE coordinate output hcached)
+                have hfRest : StableCacheAgreesWithFn parameter restCache f :=
+                  StableCacheAgreesWithFn.of_run
+                    (fun input _ =>
+                      (ordinaryEntryPreservingImpl_verifierRomImpl parameter input).simulateQ
+                        (scheme.verify ⟨sampledRoot, parameter⟩ forgery.message
+                          forgery.signature))
+                    restState finalState restCache finalCache restRemaining remaining verified hf
+                      hverify
+                have hruns := successfulSignRuns_signingTraceComputation f parameter sampledRoot
+                  table ftsSecret (adversary.main ⟨sampledRoot, parameter⟩) publishState restState
+                    publishCache restCache publishRemaining restRemaining forgery signingLog
+                      finalState finalCache hfRest htableRest hrealizes hrest hensuredLE
+                        hstableCacheLE
+                simpa only [hrootEq] using hruns
 
 set_option maxRecDepth 10000 in
 set_option linter.constructorNameAsVariable false in
@@ -2628,11 +2728,17 @@ theorem chainInvariant_maskedRetainedGameAfterFtsSecrets_mergedCache
           LazyRevealProbe.State Coordinate) fuel
         ((maskedRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
           emptySplitHashCache))) :
-    ChainInvariant parameter
-      (CoveredChainCoordinate f
-        (mergedCache parameter table finalState.ensured finalCache)
-        (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) signingLog)
-      finalState finalCache := by
+    ∃ verifierState verifierFuel verifierCache,
+      ChainInvariant parameter
+        (CoveredChainCoordinate f
+          (mergedCache parameter table finalState.ensured finalCache)
+          (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) signingLog)
+        verifierState verifierCache ∧
+      LazyRevealProbe.RawResult.done finalState remaining (verified, finalCache) ∈ support
+        (LazyRevealProbe.runRaw verifierState verifierFuel
+          ((simulateQ (verifierRomImpl parameter)
+            (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)).run
+              verifierCache)) := by
   exact chainInvariant_maskedRetainedGameAfterFtsSecrets adversary f parameter table ftsSecret
     (mergedCache parameter table finalState.ensured finalCache) fuel remaining finalState
       finalCache root forgery signingLog verified

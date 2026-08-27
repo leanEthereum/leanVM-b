@@ -1898,6 +1898,13 @@ theorem ordinaryEntryPreserving_revealCoordinateOutput
         rcases hsampled with ⟨rfl, rfl, rfl, rfl⟩
         simpa [Function.update] using hcached
 
+theorem ordinaryEntryPreserving_revealCoordinate
+    (input : HashInput) (coordinate : Coordinate) :
+    OrdinaryEntryPreserving input (revealCoordinate coordinate) := by
+  unfold revealCoordinate
+  exact (ordinaryEntryPreserving_revealCoordinateOutput input coordinate).bind fun output =>
+    OrdinaryEntryPreserving.pure input (truncateHash output)
+
 theorem ordinaryEntryPreserving_modifyOrdinary_of_ne
     (input other : HashInput) (answer : HashOutput) (hne : input ≠ other) :
     OrdinaryEntryPreserving input
@@ -1964,6 +1971,37 @@ theorem ordinaryEntryPreserving_publishCoordinate
   rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
   exact hcached
 
+theorem ordinaryEntryPreserving_revealPositionValues
+    (input : HashInput) (positions : List Position) :
+    OrdinaryEntryPreserving input (revealPositionValues positions) := by
+  induction positions with
+  | nil => exact OrdinaryEntryPreserving.pure input []
+  | cons position remaining ih =>
+      rw [revealPositionValues]
+      exact (ordinaryEntryPreserving_revealCoordinate input (.position position)).bind
+        fun value => ih.bind fun values => OrdinaryEntryPreserving.pure input (value :: values)
+
+theorem ordinaryEntryPreserving_revealTableInputChildren
+    (input : HashInput) (coordinate : Coordinate) :
+    OrdinaryEntryPreserving input (revealTableInputChildren coordinate) := by
+  cases coordinate with
+  | chainStart => exact OrdinaryEntryPreserving.pure input ()
+  | position position =>
+      cases position with
+      | chain lay tree leafIdx chainIdx step =>
+          by_cases hzero : step.val = 0
+          · simp only [revealTableInputChildren, hzero, ↓reduceIte]
+            exact (ordinaryEntryPreserving_revealCoordinate input
+              (.chainStart lay tree leafIdx chainIdx)).bind fun _ =>
+                OrdinaryEntryPreserving.pure input ()
+          · simp only [revealTableInputChildren, hzero, ↓reduceIte]
+            exact (ordinaryEntryPreserving_revealPositionValues input _).bind fun _ =>
+              OrdinaryEntryPreserving.pure input ()
+      | leaf | node | ftsLeaf | ftsNode | ftsRoots =>
+          simp only [revealTableInputChildren]
+          exact (ordinaryEntryPreserving_revealPositionValues input _).bind fun _ =>
+            OrdinaryEntryPreserving.pure input ()
+
 theorem ordinaryEntryPreserving_resolveKnownInput_of_ne
     (parameter : PublicParameter) (input query : HashInput) (coordinate : Coordinate)
     (hne : input ≠ query) :
@@ -1982,6 +2020,53 @@ theorem ordinaryEntryPreserving_resolveKnownInput_of_ne
                 fun _ => OrdinaryEntryPreserving.pure input answer
         · rw [if_neg hexact]
           exact (ordinaryCacheIncreasing_splitHashQuery_ordinary query).entryPreserving input
+
+theorem ordinaryEntryPreserving_resolveVerifierInput
+    (parameter : PublicParameter) (input query : HashInput) (coordinate : Coordinate) :
+    OrdinaryEntryPreserving input (resolveVerifierInput parameter coordinate query) := by
+  intro state cache fuel finalState remaining value finalCache output hcached hresult
+  unfold resolveVerifierInput at hresult
+  by_cases heq : input = query
+  · subst query
+    simp [StateT.run_get, hcached, LazyRevealProbe.runRaw] at hresult
+    rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+    exact hcached
+  · cases hquery : cache (.ordinary query) with
+    | some cached =>
+        simp [StateT.run_get, hquery, LazyRevealProbe.runRaw] at hresult
+        rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+        exact hcached
+    | none =>
+        simp [hquery] at hresult
+        exact ((ordinaryEntryPreserving_revealTableInputChildren input coordinate).bind fun _ =>
+          ordinaryEntryPreserving_resolveKnownInput_of_ne parameter input query coordinate heq)
+            state cache fuel finalState remaining value finalCache output hcached hresult
+
+theorem ordinaryEntryPreserving_verifierHashQuery
+    (parameter : PublicParameter) (input query : HashInput) :
+    OrdinaryEntryPreserving input (verifierHashQuery parameter query) := by
+  unfold verifierHashQuery
+  cases hprobe : decodeProbe? parameter query with
+  | some candidate =>
+      exact (ordinaryEntryPreserving_probe input candidate).bind fun _ =>
+        ordinaryEntryPreserving_resolveVerifierInput parameter input query
+          candidate.outputCoordinate
+  | none =>
+      cases hposition : decodePosition? parameter query with
+      | none => exact (ordinaryCacheIncreasing_splitHashQuery_ordinary query).entryPreserving input
+      | some position =>
+          cases position with
+          | chain lay tree leafIdx chainIdx step =>
+              exact ordinaryEntryPreserving_resolveVerifierInput parameter input query
+                (.position (.chain lay tree leafIdx chainIdx step))
+          | leaf lay tree leafIdx =>
+              exact ordinaryEntryPreserving_resolveVerifierInput parameter input query
+                (.position (.leaf lay tree leafIdx))
+          | node lay tree level nodeIdx =>
+              exact ordinaryEntryPreserving_resolveVerifierInput parameter input query
+                (.position (.node lay tree level nodeIdx))
+          | ftsLeaf | ftsNode | ftsRoots =>
+              exact (ordinaryCacheIncreasing_splitHashQuery_ordinary query).entryPreserving input
 
 theorem cachesOrdinaryInput_resolveKnownInput
     (parameter : PublicParameter) (coordinate : Coordinate) (input : HashInput) :
@@ -2272,6 +2357,19 @@ theorem ordinaryEntryPreservingImpl_probingRomImpl
   | inl query => exact ordinaryEntryPreservingImpl_splitUniformImpl input query
   | inr query =>
       exact ordinaryEntryPreservingImpl_probingHashImpl parameter input hstable query
+
+theorem ordinaryEntryPreservingImpl_verifierHashImpl
+    (parameter : PublicParameter) (input : HashInput) :
+    OrdinaryEntryPreservingImpl input (verifierHashImpl parameter) :=
+  fun query => ordinaryEntryPreserving_verifierHashQuery parameter input query
+
+theorem ordinaryEntryPreservingImpl_verifierRomImpl
+    (parameter : PublicParameter) (input : HashInput) :
+    OrdinaryEntryPreservingImpl input (verifierRomImpl parameter) := by
+  intro query
+  cases query with
+  | inl query => exact ordinaryEntryPreservingImpl_splitUniformImpl input query
+  | inr query => exact ordinaryEntryPreservingImpl_verifierHashImpl parameter input query
 
 set_option maxRecDepth 10000 in
 theorem replay_of_mem_runRaw_probingHashImpl_of_stable
@@ -6590,10 +6688,16 @@ theorem chainInvariant_maskedRetainedGameAfterFtsSecrets
           LazyRevealProbe.State Coordinate) fuel
         ((maskedRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
           emptySplitHashCache))) :
-    ChainInvariant parameter
-      (CoveredChainCoordinate f targetCache
-        (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) signingLog)
-      finalState finalCache := by
+    ∃ verifierState verifierFuel verifierCache,
+      ChainInvariant parameter
+        (CoveredChainCoordinate f targetCache
+          (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) signingLog)
+        verifierState verifierCache ∧
+      LazyRevealProbe.RawResult.done finalState remaining (verified, finalCache) ∈ support
+        (LazyRevealProbe.runRaw verifierState verifierFuel
+          ((simulateQ (verifierRomImpl parameter)
+            (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)).run
+              verifierCache)) := by
   let rootCoordinate : Coordinate := .position (.node topLayer rootTree
     ⟨layerHeight topLayer - 1, by norm_num [layerHeight, topLayer, maxLayerHeight]⟩ 0)
   unfold maskedRetainedGameAfterFtsSecrets at hresult
@@ -6624,38 +6728,66 @@ theorem chainInvariant_maskedRetainedGameAfterFtsSecrets
           cases restRaw with
           | stopped hit => simp at hfinish
           | done restState restRemaining restResult =>
-              rcases restResult with ⟨result, restCache⟩
-              simp [LazyRevealProbe.runRaw] at hfinish
-              rcases hfinish with ⟨rfl, rfl, houtput, rfl⟩
-              obtain ⟨hrootEq, hresultEq⟩ := houtput
-              rw [← hresultEq] at hrest
-              have hlogRunsSampled :
-                  ∀ (entry : (request : SignRequest) × SigningSpec.Range request)
-                    (signature : Signature), entry ∈ signingLog →
-                      entry.2 = some signature →
-                        SuccessfulSignRun f targetCache
-                          (⟨parameter, sampledRoot, tableOtsSecret table,
-                            ftsSecret⟩ : SecretKey) entry.1 signature := by
-                simpa only [hrootEq] using hlogRuns
-              let allowed := CoveredChainCoordinate f targetCache
-                (⟨parameter, sampledRoot, tableOtsSecret table,
-                  ftsSecret⟩ : SecretKey) signingLog
-              have hrootInvariantEmpty := chainInvariant_maskedTreeRoot_empty
-                (parameter := parameter) (allowed := fun _ => False) (lay := rootLay)
-                  (tree := rootTreeIndex) fuel rootRemaining rootState sampledRoot rootCache hroot
-              have hrootInvariant : ChainInvariant parameter allowed rootState rootCache :=
-                hrootInvariantEmpty.mono (by simp)
-              have hpublishInvariant :=
-                preservesChainInvariant_publishCoordinate_of_not_chain parameter allowed
-                  rootCoordinate (by simp [rootCoordinate, IsChainCoordinate])
-                    (state := rootState) (cache := rootCache) (fuel := rootRemaining)
-                    (finalState := publishState) (remaining := publishRemaining)
-                    (value := publishedUnit) (finalCache := publishCache) hrootInvariant
-                      (by simpa [rootCoordinate] using hpublish)
-              have hfinal := chainInvariant_retainedGameRestComputation adversary f parameter
-                sampledRoot table ftsSecret targetCache publishState finalState publishCache
-                  finalCache publishRemaining remaining forgery signingLog verified
-                    hlogRunsSampled hf htable hrealizes hpublishInvariant hrest
-              simpa only [hrootEq] using hfinal
+              rcases restResult with ⟨⟨prefixForgery, prefixLog⟩, restCache⟩
+              simp only at hfinish
+              rw [StateT.run_bind, LazyRevealProbe.runRaw_bind,
+                mem_support_bind_iff] at hfinish
+              obtain ⟨verifyRaw, hverify, hreturn⟩ := hfinish
+              cases verifyRaw with
+              | stopped hit => simp at hreturn
+              | done verifyState verifyRemaining verifyResult =>
+                rcases verifyResult with ⟨prefixVerified, verifyCache⟩
+                simp [LazyRevealProbe.runRaw] at hreturn
+                rcases hreturn with ⟨rfl, rfl, houtput, rfl⟩
+                rcases houtput with ⟨hrootEq, hrestEq, rfl⟩
+                rcases hrestEq with ⟨rfl, rfl⟩
+                have hvaluesLE := LazyRevealProbe.valuesLE_of_mem_runRaw_done
+                  ((simulateQ (verifierRomImpl parameter)
+                    (scheme.verify ⟨sampledRoot, parameter⟩ forgery.message
+                      forgery.signature)).run restCache)
+                    restState finalState restRemaining remaining (verified, finalCache) hverify
+                have htableRest : ∀ coordinate output,
+                    restState.values coordinate = some output → output = table coordinate :=
+                  fun coordinate output hcached =>
+                    htable coordinate output (hvaluesLE coordinate output hcached)
+                have hfRest : StableCacheAgreesWithFn parameter restCache f :=
+                  StableCacheAgreesWithFn.of_run
+                    (fun input _ =>
+                      (ordinaryEntryPreservingImpl_verifierRomImpl parameter input).simulateQ
+                        (scheme.verify ⟨sampledRoot, parameter⟩ forgery.message
+                          forgery.signature))
+                    restState finalState restCache finalCache restRemaining remaining verified hf
+                      hverify
+                have hlogRunsSampled :
+                    ∀ (entry : (request : SignRequest) × SigningSpec.Range request)
+                      (signature : Signature), entry ∈ signingLog →
+                        entry.2 = some signature →
+                          SuccessfulSignRun f targetCache
+                            (⟨parameter, sampledRoot, tableOtsSecret table,
+                              ftsSecret⟩ : SecretKey) entry.1 signature := by
+                  simpa only [hrootEq] using hlogRuns
+                let allowed := CoveredChainCoordinate f targetCache
+                  (⟨parameter, sampledRoot, tableOtsSecret table,
+                    ftsSecret⟩ : SecretKey) signingLog
+                have hrootInvariantEmpty := chainInvariant_maskedTreeRoot_empty
+                  (parameter := parameter) (allowed := fun _ => False) (lay := rootLay)
+                    (tree := rootTreeIndex) fuel rootRemaining rootState sampledRoot rootCache hroot
+                have hrootInvariant : ChainInvariant parameter allowed rootState rootCache :=
+                  hrootInvariantEmpty.mono (by simp)
+                have hpublishInvariant :=
+                  preservesChainInvariant_publishCoordinate_of_not_chain parameter allowed
+                    rootCoordinate (by simp [rootCoordinate, IsChainCoordinate])
+                      (state := rootState) (cache := rootCache) (fuel := rootRemaining)
+                      (finalState := publishState) (remaining := publishRemaining)
+                      (value := publishedUnit) (finalCache := publishCache) hrootInvariant
+                        (by simpa [rootCoordinate] using hpublish)
+                have hverifierInvariant := chainInvariant_signingTraceComputation f parameter
+                  sampledRoot table ftsSecret targetCache signingLog signingLog hlogRunsSampled
+                    (adversary.main ⟨sampledRoot, parameter⟩) publishState restState publishCache
+                      restCache publishRemaining restRemaining forgery (fun entry => id) hfRest
+                        htableRest hrealizes hpublishInvariant hrest
+                refine ⟨restState, restRemaining, restCache, ?_, ?_⟩
+                · simpa only [hrootEq] using hverifierInvariant
+                · simpa only [hrootEq] using hverify
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

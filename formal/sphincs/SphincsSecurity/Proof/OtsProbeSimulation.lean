@@ -994,6 +994,70 @@ noncomputable def probingRomImpl (parameter : PublicParameter) :
       (OracleComp (LazyRevealProbe.World Coordinate))) :=
   splitUniformImpl + probingHashImpl parameter
 
+noncomputable def revealPositionValues : List Position →
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) (List Digest)
+  | [] => pure []
+  | position :: remaining => do
+      let value ← revealPosition position
+      let values ← revealPositionValues remaining
+      pure (value :: values)
+
+noncomputable def revealTableInputChildren : Coordinate →
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) Unit
+  | .chainStart _ _ _ _ => pure ()
+  | .position position@(.chain lay tree leafIdx chainIdx step) => do
+      if step.val = 0 then
+        let _ ← revealChainStart lay tree leafIdx chainIdx
+        pure ()
+      else
+        let _ ← revealPositionValues position.children
+        pure ()
+  | .position position => do
+      let _ ← revealPositionValues position.children
+      pure ()
+
+noncomputable def resolveVerifierInput (parameter : PublicParameter)
+    (coordinate : Coordinate) (input : HashInput) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) HashOutput := do
+  let cache ← get
+  match cache (.ordinary input) with
+  | some output => pure output
+  | none =>
+      revealTableInputChildren coordinate
+      resolveKnownInput parameter coordinate input
+
+noncomputable def verifierHashQuery (parameter : PublicParameter) (input : HashInput) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) HashOutput := do
+  match decodeProbe? parameter input with
+  | some candidate => do
+      probe candidate
+      resolveVerifierInput parameter candidate.outputCoordinate input
+  | none =>
+      match decodePosition? parameter input with
+      | some position@(.chain _ _ _ _ _) =>
+          resolveVerifierInput parameter (.position position) input
+      | some position@(.leaf _ _ _) =>
+          resolveVerifierInput parameter (.position position) input
+      | some position@(.node _ _ _ _) =>
+          resolveVerifierInput parameter (.position position) input
+      | _ => splitHashQuery (.ordinary input)
+
+noncomputable def verifierHashImpl (parameter : PublicParameter) :
+    QueryImpl HashSpec
+      (StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate))) :=
+  fun input => verifierHashQuery parameter input
+
+noncomputable def verifierRomImpl (parameter : PublicParameter) :
+    QueryImpl OracleWorld
+      (StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate))) :=
+  splitUniformImpl + verifierHashImpl parameter
+
 noncomputable def maskedSigningImpl (parameter : PublicParameter) (root : Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
     QueryImpl SigningSpec
@@ -1095,9 +1159,12 @@ noncomputable def maskedRetainedGameAfterFtsSecrets (adversary : Adversary)
   let root ← maskedTreeRoot topLayer rootTree
   publishCoordinate (.position (.node topLayer rootTree
     ⟨layerHeight topLayer - 1, by norm_num [layerHeight, topLayer, maxLayerHeight]⟩ 0))
-  let result ← simulateQ (maskedExpandedAdversaryImpl parameter root ftsSecret)
-    (retainedGameRestComputation adversary ⟨root, parameter⟩)
-  pure (root, result)
+  let (forgery, log) ←
+    simulateQ (maskedExpandedAdversaryImpl parameter root ftsSecret)
+      (signingTraceComputation (adversary.main ⟨root, parameter⟩))
+  let verified ← simulateQ (verifierRomImpl parameter)
+    (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)
+  pure (root, ((forgery, log), verified))
 
 noncomputable def maskedGameAfterFtsSecrets (adversary : Adversary)
     (parameter : PublicParameter)
@@ -1111,7 +1178,7 @@ noncomputable def maskedGameAfterFtsSecrets (adversary : Adversary)
     (simulateQ (QueryImpl.withTraceAppend
       (maskedExpandedAdversaryImpl parameter root ftsSecret) signingLogFragment)
       (adversary.main ⟨root, parameter⟩)).run
-  let verified ← simulateQ (probingRomImpl parameter)
+  let verified ← simulateQ (verifierRomImpl parameter)
     (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)
   pure (decide (SigningTranscript.Valid log ∧
     ¬SigningTranscript.Contains log forgery) && verified)
