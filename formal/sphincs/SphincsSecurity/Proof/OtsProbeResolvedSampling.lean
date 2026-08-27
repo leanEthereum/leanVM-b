@@ -8566,7 +8566,7 @@ theorem relTriple_runResolvedFromTable_revealResolvablePositionOutput_chronologi
       (runResolvedFromTable context fuel table
         ((revealCoordinateOutput (.position position)).run cache))
       ((randomOracle input).run concreteCache)
-      (ResolvedRunRel parameter table) := by
+      (ReachableResolvedRunRel parameter table) := by
   rw [runResolvedFromTable_revealCoordinateOutput]
   have hresolve := relTriple_resolveDeferredPosition_chronological parameter table position
     context (ordinaryQueryCache cache) concreteCache hinvariant hresolvable
@@ -8574,10 +8574,12 @@ theorem relTriple_runResolvedFromTable_revealResolvablePositionOutput_chronologi
     completion context concreteCache position input hcompletion hresolvable havailable hclosed
       hinput
   rw [hrun] at hresolve
-  have hsupported :=
+  have hsupportedLeft :=
     SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hresolve
       (fun resolved => resolved ∈ support (resolveDeferredPosition table position context))
       (fun resolved hresolved => hresolved)
+  have hsupported :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hsupportedLeft
   let recover : Digest × QueryCache HashSpec → HashOutput × QueryCache HashSpec :=
     fun result => ((result.2 input).getD 0, result.2)
   have hcore : RelTriple
@@ -8591,10 +8593,10 @@ theorem relTriple_runResolvedFromTable_revealResolvablePositionOutput_chronologi
               table⟩))
       (((randomOracle input).run concreteCache >>= fun result =>
         pure (truncateHash result.1, result.2)) >>= fun result => pure result)
-      (fun left right => ResolvedRunRel parameter table left (recover right)) := by
+      (fun left right => ReachableResolvedRunRel parameter table left (recover right)) := by
     apply relTriple_bind hsupported
     intro resolved queryResult hrelation
-    rcases hrelation with ⟨hresolvedRel, hresultSupport⟩
+    rcases hrelation with ⟨⟨hresolvedRel, hresultSupport⟩, hrightSupport⟩
     cases resolved with
     | none =>
         apply relTriple_pure_pure
@@ -8603,6 +8605,30 @@ theorem relTriple_runResolvedFromTable_revealResolvablePositionOutput_chronologi
         apply relTriple_pure_pure
         rcases queryResult with ⟨value, finalCache⟩
         rcases hresolvedRel with ⟨_hvalue, hresultInvariant, hposition⟩
+        have hpositionSupport : (value, finalCache) ∈ support
+            ((simulateQ (randomOracle : QueryImpl HashSpec _)
+              (resolvedPositionComputation parameter table position)).run concreteCache) := by
+          rw [hrun]
+          exact hrightSupport
+        have hreplay := replay_of_mem_support
+          (resolvedPositionComputation parameter table position) concreteCache value finalCache
+            hpositionSupport (fromCache finalCache) (agreesWithFn_fromCache finalCache)
+        have hclosedFinal := hclosed.mono hreplay.1
+        have hvisible : VisibleResolvedComputationsCached parameter table
+            (materializeResolvedPosition context position resolved) finalCache := by
+          intro other output hotherResolvable hvisibleValue
+          by_cases heq : other = position
+          · subst other
+            have houtput : output = resolved.output := by
+              have houtput' : resolved.output = output := by
+                simpa [materializeResolvedPosition, LazyRevealProbe.State.materialize] using
+                  hvisibleValue
+              exact houtput'.symm
+            subst output
+            exact ⟨hreplay.2.2, hreplay.2.1.trans _hvalue⟩
+          · apply hclosedFinal other output hotherResolvable
+            simpa [materializeResolvedPosition, LazyRevealProbe.State.materialize, heq] using
+              hvisibleValue
         by_cases hcompletable : DeferredCompletable table
             (materializeResolvedPosition context position resolved)
         · have hcanonical : ∀ otherCompletion,
@@ -8617,7 +8643,7 @@ theorem relTriple_runResolvedFromTable_revealResolvablePositionOutput_chronologi
           have hcached : finalCache input = some resolved.output :=
             hresultInvariant.concreteCache_eq_of_positionValue position hots resolved.output
               hposition input hcanonical
-          refine Or.inl ⟨rfl, ?_, ?_⟩
+          refine Or.inl ⟨rfl, ?_, ?_, hvisible⟩
           · simp [hcached]
           · rw [ordinaryQueryCache_update_hidden]
             exact hinvariant.materialize_resolvedReveal position resolved
@@ -8631,7 +8657,7 @@ theorem relTriple_runResolvedFromTable_revealResolvablePositionOutput_chronologi
               hinvariant.2.2.1.materialize_position position resolved.output,
             hcompletable⟩
   have hmapped := relTriple_map
-    (R := ResolvedRunRel parameter table) (f := id) (g := recover) hcore
+    (R := ReachableResolvedRunRel parameter table) (f := id) (g := recover) hcore
   have hrecover : recover <$> (((randomOracle input).run concreteCache >>= fun result =>
         pure (truncateHash result.1, result.2)) >>= fun result => pure result) =
       (randomOracle input).run concreteCache := by
@@ -9101,7 +9127,7 @@ theorem relTriple_runResolvedFromTable_resolveKnownInput_completionCanonical
         simpa [hclean.1, hclean.2.1] using
           (relTriple_runResolvedFromTable_publishOrdinaryInput parameter table
             (.position position) input rightResult.1 result.context result.remaining
-              result.value.2 rightResult.2 hclean.2.2 hcached)
+              result.value.2 rightResult.2 hclean.2.2.1 hcached)
       · simpa [hdoomed.1] using
           (relTriple_runResolvedFromTable_of_doomed parameter table
             (publishOrdinaryInput (.position position) input result.value.1)
@@ -9143,6 +9169,132 @@ theorem relTriple_runResolvedFromTable_resolveKnownInput_completionOrdinary
     simp only [pure_bind]
     exact relTriple_runResolvedFromTable_splitHashQuery_completionOrdinary parameter table input
       context hordinary fuel cache concreteCache hinvariant
+
+theorem relTriple_runResolvedFromTable_publishOrdinaryInput_reachable
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (coordinate : Coordinate) (input : HashInput) (output : HashOutput)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (concreteCache : QueryCache HashSpec)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache)
+    (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hconcrete : concreteCache input = some output) :
+    RelTriple
+      (runResolvedFromTable context fuel table
+        ((publishOrdinaryInput coordinate input output).run cache))
+      (pure (output, concreteCache) : ProbComp (HashOutput × QueryCache HashSpec))
+      (ReachableResolvedRunRel parameter table) := by
+  obtain ⟨publishedContext, hpublish, hpending, hvalues, hprivate⟩ :=
+    (resolvedAdministrative_publishCoordinate coordinate).run context cache fuel table
+  have hcore : context.CoreEq publishedContext :=
+    ⟨hpending.symm, hvalues.symm, hprivate.symm⟩
+  have hpublishedInvariant := hinvariant.of_coreEq hcore
+  unfold publishOrdinaryInput
+  rw [StateT.run_bind, runResolvedFromTable_bind, hpublish]
+  simp only [StateT.run_pure, runResolvedFromTable]
+  apply relTriple_pure_pure
+  refine Or.inl ⟨rfl, rfl, ?_, hclosed.of_state_values_eq hvalues⟩
+  rw [ordinaryQueryCache_update]
+  exact hpublishedInvariant.cacheLeft_of_concrete input output hconcrete
+
+set_option maxRecDepth 100000 in
+theorem relTriple_runResolvedFromTable_resolveKnownInput_completionCanonical_reachable
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (completion : Coordinate → HashOutput) (position : Position) (input : HashInput)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (concreteCache : QueryCache HashSpec)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache)
+    (hcompletion : DeferredCompletion table context completion)
+    (hots : IsOtsPosition position)
+    (hresolvable : ResolvableOtsPosition position)
+    (havailable : TableInputAvailable completion context.state (.position position))
+    (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hinput : input = tableInput parameter completion (.position position)) :
+    RelTriple
+      (runResolvedFromTable context fuel table
+        ((resolveKnownInput parameter (.position position) input).run cache))
+      ((randomOracle input).run concreteCache)
+      (ReachableResolvedRunRel parameter table) := by
+  unfold resolveKnownInput
+  rw [StateT.run_bind, runResolvedFromTable_bind,
+    runResolvedFromTable_peekTableInput_of_available parameter completion context fuel table
+      cache (.position position) havailable]
+  simp only [pure_bind]
+  rw [if_pos hinput.symm]
+  change RelTriple
+      (runResolvedFromTable context fuel table
+        ((revealCoordinateOutput (.position position) >>= fun output =>
+          publishOrdinaryInput (.position position) input output).run cache))
+      ((randomOracle input).run concreteCache)
+      (ReachableResolvedRunRel parameter table)
+  rw [StateT.run_bind, runResolvedFromTable_bind]
+  have hreveal :=
+    relTriple_runResolvedFromTable_revealResolvablePositionOutput_chronological parameter table
+      completion position input context fuel cache concreteCache hinvariant hcompletion hots
+        hresolvable havailable hclosed hinput
+  have hsupported :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hreveal
+  rw [show (randomOracle input).run concreteCache =
+      ((randomOracle input).run concreteCache >>= fun result => pure result) by simp]
+  apply relTriple_bind hsupported
+  intro leftResult rightResult hrelation
+  rcases hrelation with ⟨hrelation, hrightSupport⟩
+  cases leftResult with
+  | none =>
+      apply relTriple_pure_pure
+      trivial
+  | some result =>
+      rcases hrelation with hclean | hdoomed
+      · have hcached : rightResult.2 input = some rightResult.1 :=
+          randomOracle_run_output_cached input concreteCache rightResult.2 rightResult.1
+            hrightSupport
+        simpa [hclean.1, hclean.2.1] using
+          (relTriple_runResolvedFromTable_publishOrdinaryInput_reachable parameter table
+            (.position position) input rightResult.1 result.context result.remaining
+              result.value.2 rightResult.2 hclean.2.2.1 hclean.2.2.2 hcached)
+      · simpa [hdoomed.1] using
+          (relTriple_runResolvedFromTable_of_doomed_reachable parameter table
+            (publishOrdinaryInput (.position position) input result.value.1)
+            (pure rightResult) result.context result.remaining result.value.2 hdoomed.2)
+
+theorem relTriple_runResolvedFromTable_resolveKnownInput_completionOrdinary_reachable
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (coordinate : Coordinate) (input : HashInput)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (concreteCache : QueryCache HashSpec)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache)
+    (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hots : ∀ position, coordinate = .position position → IsOtsPosition position)
+    (hordinary : CompletionOrdinaryInput parameter table context input) :
+    RelTriple
+      (runResolvedFromTable context fuel table
+        ((resolveKnownInput parameter coordinate input).run cache))
+      ((randomOracle input).run concreteCache)
+      (ReachableResolvedRunRel parameter table) := by
+  obtain ⟨completion, hcompletion⟩ := hinvariant.2.2.2.1
+  unfold resolveKnownInput
+  rw [StateT.run_bind, runResolvedFromTable_bind]
+  by_cases havailable : TableInputAvailable completion context.state coordinate
+  · rw [runResolvedFromTable_peekTableInput_of_available parameter completion context fuel table
+      cache coordinate havailable]
+    simp only [pure_bind]
+    have hne : tableInput parameter completion coordinate ≠ input := by
+      intro heq
+      cases coordinate with
+      | chainStart lay tree leafIdx chainIdx =>
+          simp [TableInputAvailable] at havailable
+      | position position =>
+          exact hordinary completion hcompletion position (hots position rfl) heq.symm
+    rw [if_neg hne]
+    exact relTriple_runResolvedFromTable_splitHashQuery_completionOrdinary_reachable parameter
+      table input context hordinary fuel cache concreteCache hinvariant hclosed
+  · rw [runResolvedFromTable_peekTableInput_of_unavailable parameter completion context fuel table
+      cache coordinate hcompletion hots havailable]
+    simp only [pure_bind]
+    exact relTriple_runResolvedFromTable_splitHashQuery_completionOrdinary_reachable parameter
+      table input context hordinary fuel cache concreteCache hinvariant hclosed
 
 theorem resolvedCouples_revealChainStart
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
@@ -9829,6 +9981,590 @@ theorem resolvedCouples_maskedSign
       rcases selected with ⟨randomness, index, leaves⟩
       exact resolvedCouples_maskedSignAfterDigest parameter table ftsSecret randomness index
         leaves
+
+theorem reachableResolvedCouples_oracleHash
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (input : HashInput) (hstable : StableOrdinaryInput parameter input) :
+    ReachableResolvedCouples parameter table
+      (simulateQ ordinaryHashImpl (oracleHash input))
+      (simulateQ (randomOracle : QueryImpl HashSpec _) (oracleHash input)) := by
+  simpa only [oracleHash, HasQuery.instOfMonadLift_query, simulateQ_spec_query,
+    ordinaryHashImpl] using
+    reachableResolvedCouples_splitHashQuery_stable parameter table input hstable
+
+theorem reachableResolvedCouples_tweakableHash
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (domain : HashDomain) (payload : HashInput)
+    (hstable : StableOrdinaryInput parameter
+      (tweakableHashInput parameter domain payload)) :
+    ReachableResolvedCouples parameter table
+      (simulateQ ordinaryHashImpl (tweakableHash parameter domain payload))
+      (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (tweakableHash parameter domain payload)) := by
+  unfold tweakableHash
+  rw [simulateQ_bind, simulateQ_bind]
+  exact (reachableResolvedCouples_oracleHash parameter table
+    (tweakableHashInput parameter domain payload) hstable).bind fun output =>
+      reachableResolvedCouples_pure parameter table (truncateHash output)
+
+theorem reachableResolvedCouples_ftsLeafHash
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (index : Index) (tree : FtsTree) (leafIdx : FtsLeaf) (secret : Digest) :
+    ReachableResolvedCouples parameter table
+      (simulateQ ordinaryHashImpl (ftsLeafHash parameter index tree leafIdx secret))
+      (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (ftsLeafHash parameter index tree leafIdx secret)) := by
+  unfold ftsLeafHash
+  exact reachableResolvedCouples_tweakableHash parameter table (.ftsLeaf index tree leafIdx) _
+    (stableOrdinaryInput_tweakableHashInput parameter (.ftsLeaf index tree leafIdx) _
+      (by trivial) (by simp) (by simp) (by simp))
+
+theorem reachableResolvedCouples_ftsNode
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (index : Index) (tree : FtsTree) (secret : FtsLeaf → Digest) :
+    ∀ level nodeIdx, level ≤ ftsTreeHeight →
+      2 ^ level * (nodeIdx + 1) ≤ 2 ^ ftsTreeHeight →
+      ReachableResolvedCouples parameter table
+        (simulateQ ordinaryHashImpl
+          (ftsNode parameter index tree secret level nodeIdx))
+        (simulateQ (randomOracle : QueryImpl HashSpec _)
+          (ftsNode parameter index tree secret level nodeIdx))
+  | 0, nodeIdx, hlevel, hspan => by
+      rw [ftsNode_zero_eq]
+      exact reachableResolvedCouples_ftsLeafHash parameter table index tree _ _
+  | level + 1, nodeIdx, hlevel, hspan => by
+      rw [ftsNode_succ_eq]
+      simp only [simulateQ_bind]
+      have hleftSpan : 2 ^ level * (2 * nodeIdx + 1) ≤ 2 ^ ftsTreeHeight := by
+        rw [pow_succ] at hspan
+        calc
+          2 ^ level * (2 * nodeIdx + 1) ≤ 2 ^ level * (2 * (nodeIdx + 1)) :=
+            Nat.mul_le_mul_left _ (by omega)
+          _ = 2 ^ level * 2 * (nodeIdx + 1) := by ring
+          _ ≤ 2 ^ ftsTreeHeight := hspan
+      have hrightSpan : 2 ^ level * (2 * nodeIdx + 1 + 1) ≤ 2 ^ ftsTreeHeight := by
+        rw [pow_succ] at hspan
+        calc
+          2 ^ level * (2 * nodeIdx + 1 + 1) = 2 ^ level * 2 * (nodeIdx + 1) := by
+            ring
+          _ ≤ 2 ^ ftsTreeHeight := hspan
+      have hinRange : (HashDomain.ftsNode index tree (level + 1) nodeIdx).InRange := by
+        show level + 1 < 2 ^ 32 ∧ nodeIdx < 2 ^ 32
+        constructor
+        · have : ftsTreeHeight < 2 ^ 32 := by norm_num [ftsTreeHeight]
+          omega
+        · have hnode : nodeIdx < 2 ^ ftsTreeHeight := by
+            have hpow : 0 < 2 ^ (level + 1) := Nat.two_pow_pos _
+            nlinarith
+          have : 2 ^ ftsTreeHeight ≤ 2 ^ 32 := Nat.pow_le_pow_right (by omega) (by
+            norm_num [ftsTreeHeight])
+          omega
+      exact (reachableResolvedCouples_ftsNode parameter table index tree secret level
+        (2 * nodeIdx) (by omega) hleftSpan).bind fun left =>
+          (reachableResolvedCouples_ftsNode parameter table index tree secret level
+            (2 * nodeIdx + 1) (by omega) hrightSpan).bind fun right =>
+              reachableResolvedCouples_tweakableHash parameter table
+                (.ftsNode index tree (level + 1) nodeIdx) (nodePayload left right)
+                (stableOrdinaryInput_tweakableHashInput parameter
+                  (.ftsNode index tree (level + 1) nodeIdx) _ hinRange
+                  (by simp) (by simp) (by simp))
+
+theorem reachableResolvedCouples_ftsKey
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (index : Index) (secret : FtsTree → FtsLeaf → Digest) :
+    ReachableResolvedCouples parameter table
+      (simulateQ ordinaryHashImpl (ftsKey parameter index secret))
+      (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (ftsKey parameter index secret)) := by
+  unfold ftsKey
+  rw [simulateQ_bind, simulateQ_bind, simulateQ_ordinaryHashImpl_sequenceFin,
+    FtsProbeSimulation.simulateQ_randomOracle_sequenceFin]
+  exact (reachableResolvedCouples_sequenceFin
+    (fun tree => simulateQ ordinaryHashImpl
+      (ftsNode parameter index tree (secret tree) ftsTreeHeight 0))
+    (fun tree => simulateQ (randomOracle : QueryImpl HashSpec _)
+      (ftsNode parameter index tree (secret tree) ftsTreeHeight 0))
+    (fun tree => reachableResolvedCouples_ftsNode parameter table index tree (secret tree)
+      ftsTreeHeight 0 le_rfl (by simp))).bind fun roots =>
+        reachableResolvedCouples_tweakableHash parameter table (.ftsRoots index)
+          (ftsRootsPayload roots)
+          (stableOrdinaryInput_tweakableHashInput parameter (.ftsRoots index) _
+            (by trivial) (by simp) (by simp) (by simp))
+
+theorem reachableResolvedCouples_ftsOpen
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (index : Index) (leaves : DigestTree → FtsLeaf)
+    (secret : FtsTree → FtsLeaf → Digest) :
+    ReachableResolvedCouples parameter table
+      (simulateQ ordinaryHashImpl (ftsOpen parameter index leaves secret))
+      (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (ftsOpen parameter index leaves secret)) := by
+  unfold ftsOpen
+  rw [simulateQ_ordinaryHashImpl_sequenceFin,
+    FtsProbeSimulation.simulateQ_randomOracle_sequenceFin]
+  exact reachableResolvedCouples_sequenceFin _ _ fun tree => by
+    rw [simulateQ_ordinaryHashImpl_sequenceFin,
+      FtsProbeSimulation.simulateQ_randomOracle_sequenceFin]
+    exact reachableResolvedCouples_sequenceFin _ _ fun level =>
+      reachableResolvedCouples_ftsNode parameter table index tree (secret tree) level.val
+        (Nat.xor ((leaves (ftsIndexOf tree)).val / 2 ^ level.val) 1)
+        (Nat.le_of_lt level.isLt)
+        (FtsProbeSimulation.ftsOpen_node_bound (leaves (ftsIndexOf tree)) level)
+
+theorem reachableResolvedCouples_encode
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (message : Digest) (counter : Counter) :
+    ReachableResolvedCouples parameter table
+      (simulateQ ordinaryHashImpl (encode parameter lay tree leafIdx message counter))
+      (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (encode parameter lay tree leafIdx message counter)) := by
+  unfold encode
+  rw [simulateQ_bind, simulateQ_bind]
+  exact (reachableResolvedCouples_tweakableHash parameter table (.encoding lay tree leafIdx) _
+    (stableOrdinaryInput_tweakableHashInput parameter (.encoding lay tree leafIdx) _
+      (by trivial) (by simp) (by simp) (by simp))).bind fun digest =>
+        reachableResolvedCouples_pure parameter table (TargetSum.decodeDigest digest)
+
+theorem reachableResolvedCouples_messageDigest
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (root : Digest) (message : Message) (randomness : Randomness) :
+    ReachableResolvedCouples parameter table
+      (simulateQ ordinaryHashImpl (messageDigest parameter root message randomness))
+      (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (messageDigest parameter root message randomness)) := by
+  unfold messageDigest
+  rw [simulateQ_bind, simulateQ_bind]
+  exact (reachableResolvedCouples_oracleHash parameter table
+    (tweakableHashInput parameter .message
+      (messageDigestPayload root message randomness))
+    (stableOrdinaryInput_tweakableHashInput parameter .message _
+      (by trivial) (by simp) (by simp) (by simp))).bind fun output =>
+        reachableResolvedCouples_pure parameter table (truncateMessageDigest output)
+
+theorem reachableResolvedCouples_signAttempt
+    (table : OtsSecretIndex → HashOutput) (secretKey : SecretKey)
+    (message : Message) (randomness : Randomness) :
+    ReachableResolvedCouples secretKey.parameter table
+      (simulateQ ordinaryHashImpl (signAttempt secretKey message randomness))
+      (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (signAttempt secretKey message randomness)) := by
+  unfold signAttempt
+  simp only [simulateQ_bind]
+  exact (reachableResolvedCouples_messageDigest secretKey.parameter table secretKey.root message
+    randomness).bind fun digest => by
+      split <;> exact reachableResolvedCouples_pure secretKey.parameter table _
+
+theorem reachableResolvedCouples_signDigestLoop
+    (table : OtsSecretIndex → HashOutput) (secretKey : SecretKey)
+    (message : Message) : ∀ attempts,
+    ReachableResolvedCouples secretKey.parameter table
+      (simulateQ ordinaryRomImpl (signDigestLoop attempts secretKey message))
+      (simulateQ romImpl (signDigestLoop attempts secretKey message))
+  | 0 => by
+      rw [signDigestLoop, simulateQ_pure, simulateQ_pure]
+      exact reachableResolvedCouples_pure secretKey.parameter table none
+  | attempts + 1 => by
+      rw [signDigestLoop, simulateQ_bind, simulateQ_bind]
+      have hrandomness : ReachableResolvedCouples secretKey.parameter table
+          (simulateQ ordinaryRomImpl (liftM sampleRandomness))
+          (simulateQ romImpl (liftM sampleRandomness)) := by
+        rw [ordinaryRomImpl, romImpl, QueryImpl.simulateQ_add_liftM_left,
+          QueryImpl.simulateQ_add_liftM_left]
+        exact reachableResolvedCouples_simulateQ splitUniformImpl (unifFwdImpl HashSpec)
+          (reachableResolvedCouples_splitUniform secretKey.parameter table) sampleRandomness
+      exact hrandomness.bind fun randomness => by
+        rw [simulateQ_bind, simulateQ_bind]
+        have hattempt : ReachableResolvedCouples secretKey.parameter table
+            (simulateQ ordinaryRomImpl
+              (liftM (signAttempt secretKey message randomness :
+                OracleComp HashSpec (Option (Index × (DigestTree → FtsLeaf))))))
+            (simulateQ romImpl
+              (liftM (signAttempt secretKey message randomness :
+                OracleComp HashSpec (Option (Index × (DigestTree → FtsLeaf)))))) := by
+          rw [ordinaryRomImpl, romImpl, QueryImpl.simulateQ_add_liftM_right,
+            QueryImpl.simulateQ_add_liftM_right]
+          exact reachableResolvedCouples_signAttempt table secretKey message randomness
+        exact hattempt.bind fun attempt => by
+          cases attempt with
+          | none => exact reachableResolvedCouples_signDigestLoop table secretKey message attempts
+          | some selected => exact reachableResolvedCouples_pure secretKey.parameter table _
+
+theorem reachableResolvedCouples_maskedOtsSignFrom
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (message : Digest) :
+    ∀ attempts counter,
+      ReachableResolvedCouples parameter table
+        (maskedOtsSignFrom parameter lay tree leafIdx message attempts counter)
+        (resolvedOtsSelectFrom parameter lay tree leafIdx message attempts counter)
+  | 0, counter => by
+      rw [maskedOtsSignFrom, resolvedOtsSelectFrom]
+      exact reachableResolvedCouples_pure parameter table none
+  | attempts + 1, counter => by
+      rw [maskedOtsSignFrom, resolvedOtsSelectFrom]
+      exact (reachableResolvedCouples_encode parameter table lay tree leafIdx message
+        (BitVec.ofNat counterBits counter)).bind fun encoded => by
+          cases encoded with
+          | none =>
+              exact reachableResolvedCouples_maskedOtsSignFrom parameter table lay tree leafIdx
+                message attempts (counter + 1)
+          | some encoding =>
+              have hreserve := resolvedAdministrative_sequenceFin
+                (fun chainIdx => ensureChainPrefix lay tree leafIdx chainIdx
+                  (encoding chainIdx))
+                (fun _ => ())
+                (fun chainIdx => resolvedAdministrative_ensureChainPrefix lay tree leafIdx
+                  chainIdx (encoding chainIdx))
+              exact (reachableResolvedCouples_of_administrative hreserve).bind fun _ =>
+                reachableResolvedCouples_pure parameter table
+                  (some (BitVec.ofNat counterBits counter, encoding))
+
+theorem reachableResolvedCouples_maskedOtsSign
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (message : Digest) :
+    ReachableResolvedCouples parameter table
+      (maskedOtsSign parameter lay tree leafIdx message)
+      (resolvedOtsSelect parameter lay tree leafIdx message) := by
+  exact reachableResolvedCouples_maskedOtsSignFrom parameter table lay tree leafIdx message
+    encodingAttemptLimit 0
+
+theorem reachableResolvedCouples_revealPublishedChainValue
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (chainIdx : ChainIndex) (digit : Digit) :
+    ReachableResolvedCouples parameter table
+      (revealPublishedCoordinate
+        (chainValueCoordinate lay tree leafIdx chainIdx digit))
+      (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (chainWalk parameter lay tree leafIdx chainIdx 0 digit.val
+          (truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩)))) := by
+  unfold revealPublishedCoordinate chainValueCoordinate
+  split
+  · have hbase := (reachableResolvedCouples_revealChainStart parameter table
+      ⟨lay, tree, leafIdx, chainIdx⟩).bind fun value =>
+        (reachableResolvedCouples_of_administrative
+          (resolvedAdministrative_publishCoordinate
+            (.chainStart lay tree leafIdx chainIdx))).bind fun _ =>
+            reachableResolvedCouples_pure parameter table value
+    simpa [revealChainStart, chainWalk, ‹digit.val = 0›] using hbase
+  · let step : ChainStep := ⟨digit.val - 1, by
+      have := digit.isLt
+      omega⟩
+    have hwalk : resolvedPositionComputation parameter table
+        (.chain lay tree leafIdx chainIdx step) =
+        chainWalk parameter lay tree leafIdx chainIdx 0 digit.val
+          (truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩)) := by
+      simp [resolvedPositionComputation, step]
+      have hpos : 0 < digit.val := Nat.pos_of_ne_zero ‹digit.val ≠ 0›
+      congr 1
+      omega
+    rw [← hwalk]
+    have hbase := (reachableResolvedCouples_revealResolvablePosition parameter table
+      (.chain lay tree leafIdx chainIdx step) (by simp [ResolvableOtsPosition])).bind fun value =>
+        (reachableResolvedCouples_of_administrative
+          (resolvedAdministrative_publishCoordinate
+            (.position (.chain lay tree leafIdx chainIdx step)))).bind fun _ =>
+            reachableResolvedCouples_pure parameter table value
+    simpa [revealPosition, step] using hbase
+
+theorem reachableResolvedCouples_revealPublishedTreeNode
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (level nodeIdx : Nat)
+    (hlevel : level ≤ maxLayerHeight)
+    (hspan : 2 ^ level * (nodeIdx + 1) ≤ 2 ^ maxLayerHeight) :
+    ReachableResolvedCouples parameter table
+      (match level with
+        | 0 => revealPublishedCoordinate (.position (.leaf lay tree (leafOfNat nodeIdx)))
+        | current + 1 =>
+            if hcurrent : current < maxLayerHeight then
+              revealPublishedCoordinate (.position
+                (.node lay tree ⟨current, hcurrent⟩ (leafOfNat nodeIdx)))
+            else pure 0)
+      (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (treeNode parameter lay tree
+          (fun leafIdx chainIdx =>
+            truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩))
+          level nodeIdx)) := by
+  cases level with
+  | zero =>
+      have hbase := (reachableResolvedCouples_revealResolvablePosition parameter table
+        (.leaf lay tree (leafOfNat nodeIdx)) (by simp [ResolvableOtsPosition])).bind fun value =>
+          (reachableResolvedCouples_of_administrative
+            (resolvedAdministrative_publishCoordinate
+              (.position (.leaf lay tree (leafOfNat nodeIdx))))).bind fun _ =>
+                reachableResolvedCouples_pure parameter table value
+      simpa [revealPublishedCoordinate, revealPosition, resolvedPositionComputation,
+        treeNode_zero_eq] using hbase
+  | succ current =>
+      have hcurrent : current < maxLayerHeight := by omega
+      simp only [hcurrent, ↓reduceDIte]
+      have hnodeLt : nodeIdx < 2 ^ maxLayerHeight := by
+        have hpow : 0 < 2 ^ (current + 1) := pow_pos (by omega) _
+        nlinarith
+      have hnodeVal : (leafOfNat nodeIdx).val = nodeIdx := by
+        simp [leafOfNat, Nat.mod_eq_of_lt hnodeLt]
+      have hresolvable : ResolvableOtsPosition
+          (.node lay tree ⟨current, hcurrent⟩ (leafOfNat nodeIdx)) := by
+        simp [ResolvableOtsPosition, hnodeVal]
+        exact hspan
+      have hbase := (reachableResolvedCouples_revealResolvablePosition parameter table
+        (.node lay tree ⟨current, hcurrent⟩ (leafOfNat nodeIdx)) hresolvable).bind fun value =>
+          (reachableResolvedCouples_of_administrative
+            (resolvedAdministrative_publishCoordinate
+              (.position (.node lay tree ⟨current, hcurrent⟩
+                (leafOfNat nodeIdx))))).bind fun _ =>
+                  reachableResolvedCouples_pure parameter table value
+      simpa [revealPublishedCoordinate, revealPosition, resolvedPositionComputation,
+        hnodeVal] using hbase
+
+theorem reachableResolvedCouples_revealLayerPathNode
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (index : Index) (lay : Layer) (level : Fin maxLayerHeight) :
+    ReachableResolvedCouples parameter table
+      (if level.val < layerHeight lay then
+        match level.val with
+        | 0 => revealPublishedCoordinate (.position (.leaf lay (treeIndexAt index lay)
+            (leafOfNat (Nat.xor (leafIndexAt index lay).val 1))))
+        | current + 1 =>
+            if hcurrent : current < maxLayerHeight then
+              revealPublishedCoordinate (.position (.node lay (treeIndexAt index lay)
+                ⟨current, hcurrent⟩ (leafOfNat
+                  (Nat.xor ((leafIndexAt index lay).val / 2 ^ (current + 1)) 1))))
+            else pure 0
+      else pure 0)
+      (if level.val < layerHeight lay then
+        simulateQ (randomOracle : QueryImpl HashSpec _)
+          (treeNode parameter lay (treeIndexAt index lay)
+            (fun sibling chainIdx =>
+              truncateHash (table ⟨lay, treeIndexAt index lay, sibling, chainIdx⟩))
+            level.val
+            (Nat.xor ((leafIndexAt index lay).val / 2 ^ level.val) 1))
+      else pure 0) := by
+  by_cases hinLayer : level.val < layerHeight lay
+  · rw [if_pos hinLayer, if_pos hinLayer]
+    cases hvalue : level.val with
+    | zero =>
+        simpa [hvalue] using
+          reachableResolvedCouples_revealPublishedTreeNode parameter table lay
+            (treeIndexAt index lay) 0
+            (Nat.xor (leafIndexAt index lay).val 1) (by omega)
+            (by
+              simpa using (FtsProbeSimulation.sibling_node_bound maxLayerHeight
+                (leafIndexAt index lay).val 0 (by omega) (leafIndexAt index lay).isLt))
+    | succ current =>
+        have hcurrent : current < maxLayerHeight := by
+          have := level.isLt
+          omega
+        simpa [hvalue, hcurrent] using
+          reachableResolvedCouples_revealPublishedTreeNode parameter table lay
+            (treeIndexAt index lay) (current + 1)
+            (Nat.xor ((leafIndexAt index lay).val / 2 ^ (current + 1)) 1)
+            (by omega)
+            (FtsProbeSimulation.sibling_node_bound maxLayerHeight
+              (leafIndexAt index lay).val (current + 1) (by omega)
+              (leafIndexAt index lay).isLt)
+  · rw [if_neg hinLayer, if_neg hinLayer]
+    exact reachableResolvedCouples_pure parameter table 0
+
+set_option maxHeartbeats 400000 in
+theorem reachableResolvedCouples_revealLayerValues
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (index : Index) (lay : Layer) (encoding : ChainIndex → Digit) :
+    ReachableResolvedCouples parameter table (revealLayerValues index lay encoding)
+      (do
+        let tree := treeIndexAt index lay
+        let leafIdx := leafIndexAt index lay
+        let values ← sequenceFin fun chainIdx =>
+          simulateQ (randomOracle : QueryImpl HashSpec _)
+            (chainWalk parameter lay tree leafIdx chainIdx 0 (encoding chainIdx).val
+              (truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩)))
+        let path ← sequenceFin fun level : Fin maxLayerHeight =>
+          if level.val < layerHeight lay then
+            simulateQ (randomOracle : QueryImpl HashSpec _)
+              (treeNode parameter lay tree
+                (fun sibling chainIdx =>
+                  truncateHash (table ⟨lay, tree, sibling, chainIdx⟩))
+                level.val (Nat.xor (leafIdx.val / 2 ^ level.val) 1))
+          else
+            pure 0
+        pure (values, path)) := by
+  unfold revealLayerValues
+  apply (reachableResolvedCouples_sequenceFin _ _ fun chainIdx =>
+    reachableResolvedCouples_revealPublishedChainValue parameter table lay
+      (treeIndexAt index lay) (leafIndexAt index lay) chainIdx (encoding chainIdx)).bind
+  intro values
+  apply (reachableResolvedCouples_sequenceFin _ _ fun level =>
+    reachableResolvedCouples_revealLayerPathNode parameter table index lay level).bind
+  intro path
+  exact reachableResolvedCouples_pure parameter table (values, path)
+
+theorem reachableResolvedCouples_resolvedRevealLayerValues
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (index : Index) (lay : Layer) (encoding : ChainIndex → Digit) :
+    ReachableResolvedCouples parameter table (revealLayerValues index lay encoding)
+      (resolvedRevealLayerValues parameter table index lay encoding) := by
+  unfold resolvedRevealLayerValues
+  exact reachableResolvedCouples_revealLayerValues parameter table index lay encoding
+
+theorem reachableResolvedCouples_maskedChainValue
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (chainIdx : ChainIndex) (digit : Digit) :
+    ReachableResolvedCouples parameter table (maskedChainValue lay tree leafIdx chainIdx digit)
+      (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (chainWalk parameter lay tree leafIdx chainIdx 0 digit.val
+          (truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩)))) := by
+  unfold maskedChainValue
+  by_cases hzero : digit.val = 0
+  · rw [dif_pos hzero]
+    have hbase := (reachableResolvedCouples_of_administrative
+      (resolvedAdministrative_ensureChainPrefix lay tree leafIdx chainIdx digit)).bind fun _ =>
+        reachableResolvedCouples_revealChainStart parameter table
+          ⟨lay, tree, leafIdx, chainIdx⟩
+    simpa [hzero, chainWalk] using hbase
+  · rw [dif_neg hzero]
+    let step : ChainStep := ⟨digit.val - 1, by
+      have := digit.isLt
+      omega⟩
+    have hsteps : step.val + 1 = digit.val := by
+      simp [step]
+      omega
+    have hbase := (reachableResolvedCouples_of_administrative
+      (resolvedAdministrative_ensureChainPrefix lay tree leafIdx chainIdx digit)).bind fun _ =>
+        reachableResolvedCouples_revealResolvablePosition parameter table
+          (.chain lay tree leafIdx chainIdx step) (by simp [ResolvableOtsPosition])
+    simpa [resolvedPositionComputation, step, hsteps] using hbase
+
+theorem reachableResolvedCouples_maskedTreeNode
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (level nodeIdx : Nat)
+    (hlevel : level ≤ maxLayerHeight)
+    (hspan : 2 ^ level * (nodeIdx + 1) ≤ 2 ^ maxLayerHeight) :
+    ReachableResolvedCouples parameter table (maskedTreeNode lay tree level nodeIdx)
+      (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (treeNode parameter lay tree
+          (fun leafIdx chainIdx =>
+            truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩))
+          level nodeIdx)) := by
+  unfold maskedTreeNode
+  cases level with
+  | zero =>
+      have hbase := (reachableResolvedCouples_of_administrative
+        (resolvedAdministrative_ensureTreeNode lay tree 0 nodeIdx)).bind fun _ =>
+          reachableResolvedCouples_revealResolvablePosition parameter table
+            (.leaf lay tree (leafOfNat nodeIdx)) (by simp [ResolvableOtsPosition])
+      simpa [resolvedPositionComputation, treeNode_zero_eq] using hbase
+  | succ current =>
+      have hcurrent : current < maxLayerHeight := by omega
+      simp only [hcurrent, ↓reduceDIte]
+      have hnodeLt : nodeIdx < 2 ^ maxLayerHeight := by
+        have hpow : 0 < 2 ^ (current + 1) := pow_pos (by omega) _
+        nlinarith
+      have hnodeVal : (leafOfNat nodeIdx).val = nodeIdx := by
+        simp [leafOfNat, Nat.mod_eq_of_lt hnodeLt]
+      have hresolvable : ResolvableOtsPosition
+          (.node lay tree ⟨current, hcurrent⟩ (leafOfNat nodeIdx)) := by
+        simp [ResolvableOtsPosition, hnodeVal]
+        exact hspan
+      have hbase := (reachableResolvedCouples_of_administrative
+        (resolvedAdministrative_ensureTreeNode lay tree (current + 1) nodeIdx)).bind fun _ =>
+          reachableResolvedCouples_revealResolvablePosition parameter table
+            (.node lay tree ⟨current, hcurrent⟩ (leafOfNat nodeIdx)) hresolvable
+      simpa [resolvedPositionComputation, hnodeVal] using hbase
+
+theorem reachableResolvedCouples_maskedTreeRoot
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) :
+    ReachableResolvedCouples parameter table (maskedTreeRoot lay tree)
+      (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (treeNode parameter lay tree
+          (fun leafIdx chainIdx =>
+            truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩))
+          (layerHeight lay) 0)) := by
+  unfold maskedTreeRoot
+  apply reachableResolvedCouples_maskedTreeNode parameter table lay tree (layerHeight lay) 0
+    (layerHeight_le lay)
+  simpa using Nat.pow_le_pow_right (n := 2) (by omega) (layerHeight_le lay)
+
+theorem reachableResolvedCouples_maskedLayerMessage
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) :
+    ReachableResolvedCouples parameter table (maskedLayerMessage parameter ftsSecret index lay)
+      (resolvedLayerMessage parameter table ftsSecret index lay) := by
+  unfold maskedLayerMessage resolvedLayerMessage
+  split
+  · exact reachableResolvedCouples_maskedTreeRoot parameter table _ _
+  · exact reachableResolvedCouples_ftsKey parameter table index (ftsSecret index)
+
+theorem reachableResolvedCouples_maskedSignLayer
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) :
+    ReachableResolvedCouples parameter table (maskedSignLayer parameter ftsSecret index lay)
+      (resolvedSignLayer parameter table ftsSecret index lay) := by
+  unfold maskedSignLayer resolvedSignLayer
+  apply (reachableResolvedCouples_maskedLayerMessage parameter table ftsSecret index lay).bind
+  intro message
+  apply (reachableResolvedCouples_maskedOtsSign parameter table lay (treeIndexAt index lay)
+    (leafIndexAt index lay) message).bind
+  intro selected
+  cases selected with
+  | none => exact reachableResolvedCouples_pure parameter table none
+  | some part =>
+      exact (reachableResolvedCouples_of_administrative
+        (resolvedAdministrative_ensureTreePath lay (treeIndexAt index lay)
+          (leafIndexAt index lay))).bind fun _ =>
+            reachableResolvedCouples_pure parameter table (some part)
+
+set_option maxHeartbeats 400000 in
+theorem reachableResolvedCouples_maskedSignAfterDigest
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    ReachableResolvedCouples parameter table
+      (maskedSignAfterDigest parameter ftsSecret randomness index leaves)
+      (resolvedSignAfterDigest parameter table ftsSecret randomness index leaves) := by
+  unfold maskedSignAfterDigest resolvedSignAfterDigest
+  apply (reachableResolvedCouples_ftsOpen parameter table index leaves (ftsSecret index)).bind
+  intro ftsPath
+  apply (reachableResolvedCouples_sequenceFin _ _ fun lay =>
+    reachableResolvedCouples_maskedSignLayer parameter table ftsSecret index lay).bind
+  intro layers
+  cases hparts : traverseOption layers with
+  | none => exact reachableResolvedCouples_pure parameter table none
+  | some parts =>
+      apply (reachableResolvedCouples_sequenceFin _ _ fun lay =>
+        reachableResolvedCouples_resolvedRevealLayerValues parameter table index lay
+          (parts lay).2).bind
+      intro revealed
+      let signature : Signature :=
+        { randomness := randomness
+          ftsSecret := fun tree => ftsSecret index tree (leaves (ftsIndexOf tree))
+          ftsPath := ftsPath
+          counter := fun lay => (parts lay).1
+          chainValue := fun lay => (revealed lay).1
+          authPath := flattenPaths fun lay => (revealed lay).2 }
+      exact reachableResolvedCouples_pure parameter table (some signature)
+
+set_option maxHeartbeats 400000 in
+theorem reachableResolvedCouples_maskedSign
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message) :
+    ReachableResolvedCouples parameter table (maskedSign parameter root ftsSecret message)
+      (resolvedSign parameter root table ftsSecret message) := by
+  unfold maskedSign resolvedSign
+  let secretKey : SecretKey :=
+    ⟨parameter, root, fun _ _ _ _ => 0, ftsSecret⟩
+  apply (reachableResolvedCouples_signDigestLoop table secretKey message digestAttemptLimit).bind
+  intro selected
+  cases selected with
+  | none => exact reachableResolvedCouples_pure parameter table none
+  | some selected =>
+      rcases selected with ⟨randomness, index, leaves⟩
+      exact reachableResolvedCouples_maskedSignAfterDigest parameter table ftsSecret randomness
+        index leaves
 
 def DeferredFreshOn (coordinates : List Coordinate) (context : DeferredContext) : Prop :=
   ∀ position : Position, Coordinate.position position ∈ coordinates →
