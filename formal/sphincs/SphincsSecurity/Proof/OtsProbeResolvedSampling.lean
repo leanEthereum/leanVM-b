@@ -347,6 +347,43 @@ theorem relTriple_resolveDeferredPositionValue_cachedQuery
             simp [hhit, ResolveQueryRel, hcacheQuery]
       | none => simp [DeferredContext.positionValue, hstate, hvalue] at hknown
 
+def ResolveInputAgrees (position : Position) (context : DeferredContext)
+    (input : HashInput) (cache : QueryCache HashSpec) : Prop :=
+  match context.positionValue position with
+  | none => cache input = none
+  | some output => cache input = some output
+
+theorem relTriple_resolveDeferredPositionValue_of_inputAgrees
+    (position : Position) (context : DeferredContext) (input : HashInput)
+    (cache : QueryCache HashSpec)
+    (hagrees : ResolveInputAgrees position context input cache) :
+    RelTriple
+      (resolveDeferredPositionValue position context)
+      ((randomOracle (spec := HashSpec) input).run cache)
+      (ResolveQueryRel input cache) := by
+  unfold ResolveInputAgrees at hagrees
+  cases hstate : context.state.values (.position position) with
+  | some output =>
+      have hknown : context.positionValue position = some output := by
+        simp [DeferredContext.positionValue, hstate]
+      rw [hknown] at hagrees
+      exact relTriple_resolveDeferredPositionValue_cachedQuery position context input cache
+        output hknown hagrees
+  | none =>
+      cases hvalue : context.values position with
+      | some output =>
+          have hknown : context.positionValue position = some output := by
+            simp [DeferredContext.positionValue, hstate, hvalue]
+          rw [hknown] at hagrees
+          exact relTriple_resolveDeferredPositionValue_cachedQuery position context input cache
+            output hknown hagrees
+      | none =>
+          have hmissing : context.positionValue position = none := by
+            simp [DeferredContext.positionValue, hstate, hvalue]
+          rw [hmissing] at hagrees
+          exact relTriple_resolveDeferredPositionValue_freshQuery position context input cache
+            hstate hvalue hagrees
+
 noncomputable def resolveDeferredChainStart (table : OtsSecretIndex → HashOutput)
     (index : OtsSecretIndex) (context : DeferredContext) :
     Option DeferredResolution :=
@@ -410,6 +447,59 @@ theorem resolveDeferredChainStart_preserves_positionValue
       · simp [hhit] at hresult
         subst result
         simpa [DeferredContext.positionValue, LazyRevealProbe.State.clearPending] using hknown
+
+theorem resolveDeferredChainStart_output_of_agrees
+    (table : OtsSecretIndex → HashOutput) (index : OtsSecretIndex)
+    (context : DeferredContext) (result : DeferredResolution)
+    (hagrees : StartTableAgrees context.state table)
+    (hresult : resolveDeferredChainStart table index context = some result) :
+    result.output = table index := by
+  unfold resolveDeferredChainStart at hresult
+  dsimp only at hresult
+  cases hvalue : context.state.values index.coordinate with
+  | some output =>
+      have hout := hagrees index output hvalue
+      rw [hvalue] at hresult
+      by_cases hhit : context.state.hitAt index.coordinate output
+      · simp [hhit] at hresult
+      · simp [hhit] at hresult
+        subst result
+        exact hout
+  | none =>
+      rw [hvalue] at hresult
+      by_cases hhit : context.state.hitAt index.coordinate (table index)
+      · simp [hhit] at hresult
+      · simp [hhit] at hresult
+        subst result
+        rfl
+
+def ResolveChainRel
+    (invariant : DeferredContext → QueryCache HashSpec → Prop) :
+    Option DeferredResolution → Digest × QueryCache HashSpec → Prop
+  | none, _ => True
+  | some resolved, (value, cache) =>
+      value = truncateHash resolved.output ∧ invariant resolved.toDeferredContext cache
+
+theorem relTriple_resolveDeferredChainStart
+    (table : OtsSecretIndex → HashOutput) (index : OtsSecretIndex)
+    (context : DeferredContext) (cache : QueryCache HashSpec)
+    (invariant : DeferredContext → QueryCache HashSpec → Prop)
+    (hagrees : StartTableAgrees context.state table)
+    (hpreserves : ∀ result,
+      resolveDeferredChainStart table index context = some result →
+      invariant result.toDeferredContext cache) :
+    RelTriple
+      (pure (resolveDeferredChainStart table index context) :
+        ProbComp (Option DeferredResolution))
+      (pure (truncateHash (table index), cache) : ProbComp (Digest × QueryCache HashSpec))
+      (ResolveChainRel invariant) := by
+  apply relTriple_pure_pure
+  cases hresult : resolveDeferredChainStart table index context with
+  | none => trivial
+  | some result =>
+      exact ⟨congrArg truncateHash
+        (resolveDeferredChainStart_output_of_agrees table index context result hagrees hresult) |>.symm,
+        hpreserves result hresult⟩
 
 noncomputable def resolveDeferredChainPrefix
     (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
@@ -566,6 +656,103 @@ theorem resolveDeferredChainPrefix_preserves_positionValue
           exact resolveDeferredPositionValue_preserves_positionValue
             (.chain lay tree leafIdx chainIdx ⟨steps, by omega⟩) position
             previous.toDeferredContext result output hmiddle (by simpa using hrest)
+
+theorem relTriple_resolveDeferredChainPrefix
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex)
+    (context : DeferredContext) (cache : QueryCache HashSpec)
+    (invariant : DeferredContext → QueryCache HashSpec → Prop)
+    (hagrees : StartTableAgrees context.state table)
+    (hstartPreserves : ∀ result,
+      resolveDeferredChainStart table ⟨lay, tree, leafIdx, chainIdx⟩ context = some result →
+      invariant result.toDeferredContext cache)
+    (hinput : ∀ (step : ChainStep) middleContext middleCache previousOutput,
+      invariant middleContext middleCache →
+      ResolveInputAgrees (.chain lay tree leafIdx chainIdx step) middleContext
+        (tweakableHashInput parameter (.chain lay tree leafIdx chainIdx step)
+          (digestBytes (truncateHash previousOutput))) middleCache)
+    (hqueryPreserves : ∀ (step : ChainStep) middleContext middleCache previousOutput
+        result output finalCache,
+      invariant middleContext middleCache →
+      ResolveQueryRel
+          (tweakableHashInput parameter (.chain lay tree leafIdx chainIdx step)
+            (digestBytes (truncateHash previousOutput))) middleCache
+          (some result) (output, finalCache) →
+      invariant result.toDeferredContext finalCache) :
+    ∀ steps hsteps,
+      RelTriple
+        (resolveDeferredChainPrefix table lay tree leafIdx chainIdx steps hsteps context)
+        ((simulateQ (randomOracle : QueryImpl HashSpec _)
+          (chainWalk parameter lay tree leafIdx chainIdx 0 steps
+            (truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩)))).run cache)
+        (ResolveChainRel invariant)
+  | 0, hsteps => by
+      simpa [resolveDeferredChainPrefix, chainWalk] using
+        relTriple_resolveDeferredChainStart table ⟨lay, tree, leafIdx, chainIdx⟩
+          context cache invariant hagrees hstartPreserves
+  | steps + 1, hsteps => by
+      rw [resolveDeferredChainPrefix, chainWalk, simulateQ_bind, StateT.run_bind]
+      apply relTriple_bind
+        (relTriple_resolveDeferredChainPrefix parameter table lay tree leafIdx chainIdx context
+          cache invariant hagrees hstartPreserves hinput hqueryPreserves steps (by omega))
+      intro previous rightResult hprefix
+      cases previous with
+      | none =>
+          have hbase := relTriple_true
+            (pure (none : Option DeferredResolution) : ProbComp (Option DeferredResolution))
+            ((simulateQ (randomOracle : QueryImpl HashSpec _)
+              (if hstep : 0 + steps < chainLength - 1 then
+                tweakableHash parameter
+                  (.chain lay tree leafIdx chainIdx ⟨0 + steps, hstep⟩)
+                  (digestBytes rightResult.1)
+              else pure 0)).run rightResult.2)
+          have hsupported :=
+            SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+              (fun result => result = none) (by
+                intro result hresult
+                simpa using hresult)
+          exact relTriple_post_mono hsupported (by
+            intro leftResult _ hrelation
+            rw [hrelation.2]
+            trivial)
+      | some previous =>
+          rcases rightResult with ⟨previousValue, middleCache⟩
+          rcases hprefix with ⟨hvalue, hinvariant⟩
+          subst previousValue
+          rw [dif_pos (show 0 + steps < chainLength - 1 by omega)]
+          let step : ChainStep := ⟨steps, by omega⟩
+          have hposition : (⟨0 + steps, by omega⟩ : ChainStep) = step := by
+            apply Fin.ext
+            simp [step]
+          rw [hposition]
+          unfold tweakableHash oracleHash
+          rw [simulateQ_bind, StateT.run_bind]
+          simp only [simulateQ_pure, StateT.run_pure]
+          let input := tweakableHashInput parameter
+            (.chain lay tree leafIdx chainIdx step) (digestBytes (truncateHash previous.output))
+          have hagreesInput : ResolveInputAgrees
+              (.chain lay tree leafIdx chainIdx step) previous.toDeferredContext input middleCache :=
+            hinput step previous.toDeferredContext middleCache previous.output hinvariant
+          have hquery := relTriple_resolveDeferredPositionValue_of_inputAgrees
+            (.chain lay tree leafIdx chainIdx step) previous.toDeferredContext input middleCache
+              hagreesInput
+          have hbound : RelTriple
+              (resolveDeferredPositionValue (.chain lay tree leafIdx chainIdx step)
+                previous.toDeferredContext >>= fun resolved => pure resolved)
+              ((randomOracle input).run middleCache >>= fun result =>
+                pure (truncateHash result.1, result.2))
+              (ResolveChainRel invariant) := by
+            apply relTriple_bind hquery
+            intro resolved queryResult hrelation
+            apply relTriple_pure_pure
+            cases resolved with
+            | none => trivial
+            | some resolved =>
+                rcases queryResult with ⟨queryOutput, finalCache⟩
+                refine ⟨?_, hqueryPreserves step previous.toDeferredContext middleCache
+                  previous.output resolved queryOutput finalCache hinvariant hrelation⟩
+                exact congrArg truncateHash hrelation.1 |>.symm
+          simpa [step, input] using hbound
 
 noncomputable def resolveDeferredChains
     (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
@@ -1466,18 +1653,115 @@ noncomputable def finalizeResolvedCoordinates
     ProbComp (Option DeferredContext) :=
   match coordinates with
   | [] => pure (some context)
-  | coordinate :: remaining => do
-      let resolved ← match coordinate with
-        | .chainStart lay tree leafIdx chainIdx =>
-            pure (resolveDeferredChainStart table ⟨lay, tree, leafIdx, chainIdx⟩ context)
-        | .position position => resolveDeferredPosition table position context
-      match resolved with
-      | none => pure none
-      | some resolved =>
+  | coordinate :: remaining =>
+      match context.state.values coordinate with
+      | some _ =>
           finalizeResolvedCoordinates remaining
-            { state := resolved.state.complete coordinate resolved.output
-              values := resolved.values }
-            table
+            { context with state := context.state.clearPending coordinate } table
+      | none => do
+          let resolved ← match coordinate with
+            | .chainStart lay tree leafIdx chainIdx =>
+                pure (resolveDeferredChainStart table ⟨lay, tree, leafIdx, chainIdx⟩ context)
+            | .position position => resolveDeferredPositionValue position context
+          match resolved with
+          | none => pure none
+          | some resolved =>
+              finalizeResolvedCoordinates remaining
+                { state := resolved.state.complete coordinate resolved.output
+                  values := resolved.values }
+                table
+
+def DeferredFreshOn (coordinates : List Coordinate) (context : DeferredContext) : Prop :=
+  ∀ position : Position, Coordinate.position position ∈ coordinates →
+    context.values position = none
+
+theorem resolveDeferredChainStart_of_missing
+    (table : OtsSecretIndex → HashOutput) (index : OtsSecretIndex)
+    (context : DeferredContext)
+    (hmissing : context.state.values index.coordinate = none) :
+    resolveDeferredChainStart table index context =
+      if context.state.hitAt index.coordinate (table index) then none
+      else some ⟨
+        { state := context.state.clearPending index.coordinate
+          values := context.values },
+        table index⟩ := by
+  simp [resolveDeferredChainStart, hmissing]
+
+@[simp] theorem clearPending_complete_self
+    (state : LazyRevealProbe.State Coordinate) (coordinate : Coordinate)
+    (output : HashOutput) :
+    (state.clearPending coordinate).complete coordinate output =
+      state.complete coordinate output := by
+  rcases state with ⟨pending, values, revealed, ensured⟩
+  simp [LazyRevealProbe.State.clearPending, LazyRevealProbe.State.complete,
+    LazyRevealProbe.State.pendingAway]
+
+theorem finalizeResolvedCoordinates_projects_to_clean
+    (coordinates : List Coordinate) (context : DeferredContext)
+    (table : OtsSecretIndex → HashOutput)
+    (hnodup : coordinates.Nodup) (hfresh : DeferredFreshOn coordinates context) :
+    (fun result => result.map fun finalContext => (finalContext.state, table)) <$>
+        finalizeResolvedCoordinates coordinates context table =
+      finalizeCleanFromTable coordinates context.state table := by
+  induction coordinates generalizing context with
+  | nil => simp [finalizeResolvedCoordinates, finalizeCleanFromTable]
+  | cons coordinate remaining ih =>
+      obtain ⟨hnotMem, htailNodup⟩ := List.nodup_cons.mp hnodup
+      cases hstate : context.state.values coordinate with
+      | some output =>
+          rw [finalizeResolvedCoordinates, finalizeCleanFromTable.eq_def]
+          simp only [hstate]
+          apply ih { context with state := context.state.clearPending coordinate }
+            htailNodup
+          intro position hmem
+          exact hfresh position (List.mem_cons_of_mem coordinate hmem)
+      | none =>
+          cases coordinate with
+          | chainStart lay tree leafIdx chainIdx =>
+              let index : OtsSecretIndex := ⟨lay, tree, leafIdx, chainIdx⟩
+              have hstate' : context.state.values index.coordinate = none := by
+                simpa [index, OtsSecretIndex.coordinate] using hstate
+              rw [finalizeResolvedCoordinates, finalizeCleanFromTable.eq_def]
+              simp only [hstate]
+              rw [resolveDeferredChainStart_of_missing table index context hstate']
+              by_cases hhit : context.state.hitAt
+                  (.chainStart lay tree leafIdx chainIdx) (table index)
+              · simp [index, OtsSecretIndex.coordinate, hhit]
+              · simp only [index, OtsSecretIndex.coordinate, hhit, ↓reduceIte,
+                  map_eq_bind_pure_comp, pure_bind]
+                rw [clearPending_complete_self]
+                simpa only [map_eq_bind_pure_comp] using ih
+                  { state := context.state.complete (.chainStart lay tree leafIdx chainIdx)
+                      (table index)
+                    values := context.values }
+                  htailNodup (by
+                    intro position hmem
+                    exact hfresh position (List.mem_cons_of_mem _ hmem))
+          | position position =>
+              have hvalue : context.values position = none :=
+                hfresh position (by simp)
+              rw [finalizeResolvedCoordinates, finalizeCleanFromTable.eq_def]
+              simp only [hstate]
+              rw [resolveDeferredPositionValue_fresh position context hstate hvalue]
+              simp only [map_eq_bind_pure_comp, bind_assoc]
+              apply bind_congr
+              intro output
+              by_cases hhit : context.state.hitAt (.position position) output
+              · simp [hhit]
+              · simp only [hhit, ↓reduceIte]
+                simp only [pure_bind]
+                rw [clearPending_complete_self]
+                simpa only [map_eq_bind_pure_comp] using ih
+                  { state := context.state.complete (.position position) output
+                    values := context.values.install position output }
+                  htailNodup (by
+                    intro other hmem
+                    have hne : other ≠ position := by
+                      intro heq
+                      subst other
+                      exact hnotMem hmem
+                    simp [DeferredStructuralValues.install, hne,
+                      hfresh other (List.mem_cons_of_mem _ hmem)])
 
 noncomputable def finishResolvedRun :
     Option (ResolvedRunResult alpha) → ProbComp (Option (ResolvedRunResult alpha))
