@@ -210,6 +210,33 @@ theorem evalDist_complete_missing_start
     _ = _ := by
       rw [evalDist_map, hupdate, ← evalDist_map]
 
+set_option maxRecDepth 10000 in
+theorem evalDist_materialize_missing_start
+    (state : LazyRevealProbe.State Coordinate) (index : OtsSecretIndex)
+    (hmissing : state.values index.coordinate = none) :
+    𝒟[do
+        let output ← LazyRevealProbe.sampleHashOutput
+        let base ← ($ᵗ (OtsSecretIndex → HashOutput) :
+          ProbComp (OtsSecretIndex → HashOutput))
+        pure (completedStartTable (state.materialize index.coordinate output) base)] =
+      𝒟[completedStartTable state <$>
+        ($ᵗ (OtsSecretIndex → HashOutput) :
+          ProbComp (OtsSecretIndex → HashOutput))] := by
+  calc
+    _ = 𝒟[do
+        let output ← LazyRevealProbe.sampleHashOutput
+        let base ← ($ᵗ (OtsSecretIndex → HashOutput) :
+          ProbComp (OtsSecretIndex → HashOutput))
+        pure (completedStartTable (state.complete index.coordinate output) base)] := by
+      apply congrArg evalDist
+      apply bind_congr
+      intro output
+      apply bind_congr
+      intro base
+      rw [completedStartTable_materialize_coordinate,
+        completedStartTable_complete_coordinate]
+    _ = _ := evalDist_complete_missing_start state index hmissing
+
 noncomputable def sampledActualRetainedOtsHashTable (adversary : Adversary)
     (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
