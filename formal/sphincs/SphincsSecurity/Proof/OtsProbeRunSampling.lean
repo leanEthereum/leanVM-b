@@ -549,6 +549,48 @@ def CleanOrdinaryStepRel :
   fun cleanResult ordinaryResult => cleanResult = none ∨
     projectCleanOrdinary cleanResult = some ordinaryResult
 
+theorem relTriple_runCleanFromTable_StateT_bind
+    (left : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha)
+    (next : alpha → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) beta)
+    (ordinaryLeft : StateT (QueryCache HashSpec) ProbComp alpha)
+    (ordinaryNext : alpha → StateT (QueryCache HashSpec) ProbComp beta)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (ordinaryCache : QueryCache HashSpec)
+    (hleft : RelTriple
+      (runCleanFromTable state fuel table (left.run cache))
+      (ordinaryLeft.run ordinaryCache) CleanOrdinaryStepRel)
+    (hnext : ∀ result ordinaryResult,
+      projectCleanOrdinary (some result) = some ordinaryResult →
+        RelTriple
+          (runCleanFromTable result.state result.remaining result.table
+            ((next result.value.1).run result.value.2))
+          ((ordinaryNext ordinaryResult.1).run ordinaryResult.2)
+          CleanOrdinaryStepRel) :
+    RelTriple
+      (runCleanFromTable state fuel table ((left >>= next).run cache))
+      ((ordinaryLeft >>= ordinaryNext).run ordinaryCache)
+      CleanOrdinaryStepRel := by
+  rw [StateT.run_bind, StateT.run_bind, runCleanFromTable_bind]
+  apply relTriple_bind hleft
+  intro leftResult rightResult hrelation
+  rcases hrelation with hstopped | hproject
+  · subst leftResult
+    have hbase := relTriple_true
+      (pure none : ProbComp (Option (CleanRunResult (beta × SplitHashCache))))
+      ((ordinaryNext rightResult.1).run rightResult.2)
+    have hsupported :=
+      SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+        (fun result => result = none) (by
+          intro result hresult
+          simpa using hresult)
+    exact relTriple_post_mono hsupported fun _ _ h => Or.inl h.2
+  · cases leftResult with
+    | none => simp [projectCleanOrdinary] at hproject
+    | some result => exact hnext result rightResult hproject
+
 def StartTableAgrees (state : LazyRevealProbe.State Coordinate)
     (table : OtsSecretIndex → HashOutput) : Prop :=
   ∀ index output, state.values index.coordinate = some output → output = table index
