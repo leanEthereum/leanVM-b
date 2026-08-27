@@ -793,6 +793,71 @@ def ExactMaterializedCacheConsistent
     state.values (.position position) ≠ none →
     cache (.ordinary input) = some output → output = table (.position position)
 
+def TraceExactMaterializedCacheConsistent
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
+    (f : QueryImpl HashSpec Id) (computation : OracleComp HashSpec alpha) : Prop :=
+  ∀ (input : HashInput), input ∈ queriedInputs f computation →
+    ∀ (position : Position) (output : HashOutput),
+      IsOtsPosition position →
+      decodePosition? parameter input = some position →
+      input = tableInput parameter table (.position position) →
+      state.values (.position position) ≠ none →
+      cache (.ordinary input) = some output → output = table (.position position)
+
+theorem cacheAnswersAgreeOnRun_retainedCompletionAnswer_of_trace_exact_materialized
+    (parameter : PublicParameter) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (computation : OracleComp HashSpec alpha)
+    (hexact : TraceExactMaterializedCacheConsistent parameter
+      (retainedCompletionTable parameter state cache baseStarts) state cache
+      (retainedCompletionAnswer parameter state cache baseStarts) computation) :
+    CacheAnswersAgreeOnRun (ordinaryQueryCache cache)
+      (retainedCompletionAnswer parameter state cache baseStarts) computation := by
+  intro input hquery output hcached
+  rcases retainedCompletionAnswer_eq_fallback_or_exact_materialized parameter state cache
+      baseStarts input with hfallback | ⟨position, hots, hposition, hinput, hvalue⟩
+  · rw [hfallback]
+    change cache (.ordinary input) = some output at hcached
+    simp [splitFallback, hcached]
+  · rw [hinput, retainedCompletionAnswer_realizes parameter state cache baseStarts position hots]
+    change cache (.ordinary input) = some output at hcached
+    exact (hexact input hquery position output hots hposition hinput hvalue hcached).symm
+
+theorem traceExactMaterializedCacheConsistent_of_cacheAnswersAgreeOnRun
+    (parameter : PublicParameter) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (computation : OracleComp HashSpec alpha)
+    (hagrees : CacheAnswersAgreeOnRun (ordinaryQueryCache cache)
+      (retainedCompletionAnswer parameter state cache baseStarts) computation) :
+    TraceExactMaterializedCacheConsistent parameter
+      (retainedCompletionTable parameter state cache baseStarts) state cache
+      (retainedCompletionAnswer parameter state cache baseStarts) computation := by
+  intro input hquery position output hots _hposition hinput _hvalue hcached
+  have hcached' : ordinaryQueryCache cache input = some output := hcached
+  have hanswer := hagrees input hquery output hcached'
+  rw [hinput, retainedCompletionAnswer_realizes parameter state cache baseStarts position hots]
+    at hanswer
+  exact hanswer.symm
+
+theorem cacheAnswersAgreeOnRun_retainedCompletionAnswer_iff
+    (parameter : PublicParameter) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (computation : OracleComp HashSpec alpha) :
+    CacheAnswersAgreeOnRun (ordinaryQueryCache cache)
+        (retainedCompletionAnswer parameter state cache baseStarts) computation ↔
+      TraceExactMaterializedCacheConsistent parameter
+        (retainedCompletionTable parameter state cache baseStarts) state cache
+        (retainedCompletionAnswer parameter state cache baseStarts) computation := by
+  constructor
+  · exact traceExactMaterializedCacheConsistent_of_cacheAnswersAgreeOnRun parameter state
+      cache baseStarts computation
+  · exact cacheAnswersAgreeOnRun_retainedCompletionAnswer_of_trace_exact_materialized
+      parameter state cache baseStarts computation
+
 theorem ordinaryQueryCache_agreesWithFn_retainedCompletionAnswer_of_exact_materialized
     (parameter : PublicParameter) (state : LazyRevealProbe.State Coordinate)
     (cache : SplitHashCache)
@@ -4875,7 +4940,7 @@ theorem simulateQ_verifierHashImpl_otsLeaf_pendingHit_of_correct_probe
     (hvalue : state.values probe.coordinate = none)
     (hnotRevealed : probe.coordinate ∉ state.revealed)
     (hf : CacheAnswersAgreeOnRun (ordinaryQueryCache finalCache) f
-      (otsLeaf parameter lay tree leafIdx message counter values))
+      (encode parameter lay tree leafIdx message counter))
     (htable : ∀ coordinate cached, finalState.values coordinate = some cached →
       cached = table coordinate)
     (hresult : LazyRevealProbe.RawResult.done finalState remaining (result, finalCache) ∈
@@ -4895,13 +4960,10 @@ theorem simulateQ_verifierHashImpl_otsLeaf_pendingHit_of_correct_probe
       have hfEncode : CacheAnswersAgreeOnRun (ordinaryQueryCache encodeCache) f
           (encode parameter lay tree leafIdx message counter) := by
         intro input hquery output hcached
-        apply hf input
-        · unfold otsLeaf
-          rw [queriedInputs_bind]
-          exact List.mem_append_left _ hquery
-        · exact (ordinaryEntryPreservingImpl_verifierHashImpl parameter input).simulateQ _
-            encodeState encodeCache encodeRemaining finalState remaining result finalCache output
-              hcached hrest
+        apply hf input hquery
+        exact (ordinaryEntryPreservingImpl_verifierHashImpl parameter input).simulateQ _
+          encodeState encodeCache encodeRemaining finalState remaining result finalCache output
+            hcached hrest
       have hencoded :=
         (replay_of_mem_runRaw_verifierHashImpl_of_cacheAnswersAgreeOnRun f parameter
         (encode parameter lay tree leafIdx message counter) state encodeState cache encodeCache
@@ -5004,6 +5066,435 @@ theorem verifierHashQuery_returns_table_of_uncached
         hprobe hposition hots] at hresult
       exact resolveVerifierInput_returns_table_of_uncached parameter table position state finalState
         cache finalCache fuel remaining output huncached htable hresult
+
+theorem verifierHashQuery_output_eq_retainedCompletionAnswer_of_uncached
+    (parameter : PublicParameter)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (input : HashInput)
+    (state queryState completedState : LazyRevealProbe.State Coordinate)
+    (cache queryCache rawCache : SplitHashCache) (fuel queryRemaining : Nat)
+    (output : HashOutput)
+    (huncached : cache (.ordinary input) = none)
+    (hquery : LazyRevealProbe.RawResult.done queryState queryRemaining
+        (output, queryCache) ∈ support
+      (LazyRevealProbe.runRaw state fuel ((verifierHashQuery parameter input).run cache)))
+    (hvalues : LazyRevealProbe.ValuesLE queryState completedState)
+    (hcached : rawCache (.ordinary input) = some output) :
+    output = retainedCompletionAnswer parameter completedState rawCache baseStarts input := by
+  let table := retainedCompletionTable parameter completedState rawCache baseStarts
+  have htableQuery : ∀ coordinate cached,
+      queryState.values coordinate = some cached → cached = table coordinate := by
+    intro coordinate cached hvalue
+    exact (completedRealizedTable_of_value (splitFallback rawCache) parameter completedState
+      baseStarts coordinate cached (hvalues coordinate cached hvalue)).symm
+  rcases retainedCompletionAnswer_eq_fallback_or_exact_materialized parameter completedState
+      rawCache baseStarts input with hfallback | ⟨position, hots, _hposition, hinput, _hvalue⟩
+  · rw [hfallback]
+    simp [splitFallback, hcached]
+  · subst input
+    have hreturns := verifierHashQuery_returns_table_of_uncached parameter table position hots
+      state queryState cache queryCache fuel queryRemaining output huncached htableQuery hquery
+    rw [retainedCompletionAnswer_realizes parameter completedState rawCache baseStarts position
+      hots]
+    exact hreturns.1
+
+theorem ordinaryQueryCache_eq_cacheQuery_of_mem_runRaw_splitHashQuery_ordinary
+    (input : HashInput) (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (output : HashOutput)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (output, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((splitHashQuery (.ordinary input)).run cache))) :
+    ordinaryQueryCache finalCache = (ordinaryQueryCache cache).cacheQuery input output := by
+  rw [splitHashQuery_run_eq] at hresult
+  cases hlookup : cache (.ordinary input) with
+  | some cached =>
+      rw [hlookup] at hresult
+      simp [LazyRevealProbe.runRaw] at hresult
+      rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+      funext other
+      by_cases heq : other = input
+      · subst other
+        simp [QueryCache.cacheQuery, ordinaryQueryCache, hlookup]
+      · simp [QueryCache.cacheQuery, heq]
+  | none =>
+      rw [hlookup] at hresult
+      dsimp only at hresult
+      rw [LazyRevealProbe.hashOutputQuery,
+        LazyRevealProbe.runRaw_hashOutput_query_bind, mem_support_bind_iff] at hresult
+      obtain ⟨sampled, _, hdone⟩ := hresult
+      simp [LazyRevealProbe.runRaw] at hdone
+      rcases hdone with ⟨rfl, rfl, rfl, rfl⟩
+      exact ordinaryQueryCache_update cache input output
+
+def OrdinaryCachePreserving
+    (computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha) : Prop :=
+  ∀ state cache fuel finalState remaining value finalCache,
+    LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel (computation.run cache)) →
+    ordinaryQueryCache finalCache = ordinaryQueryCache cache
+
+def OrdinaryCacheQuerying (input : HashInput)
+    (computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) HashOutput) : Prop :=
+  ∀ state cache fuel finalState remaining output finalCache,
+    LazyRevealProbe.RawResult.done finalState remaining (output, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel (computation.run cache)) →
+    ordinaryQueryCache finalCache = (ordinaryQueryCache cache).cacheQuery input output
+
+theorem OrdinaryCachePreserving.of_splitCachePreserving
+    {computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    (hpreserves : SplitCachePreserving computation) :
+    OrdinaryCachePreserving computation := by
+  intro state cache fuel finalState remaining value finalCache hresult
+  rw [hpreserves state cache fuel finalState remaining value finalCache hresult]
+
+theorem RawReadOnly.ordinaryCachePreserving
+    {computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    (hreadonly : RawReadOnly computation) : OrdinaryCachePreserving computation := by
+  intro state cache fuel finalState remaining value finalCache hresult
+  rw [(hreadonly state cache fuel finalState remaining value finalCache hresult).2.2]
+
+theorem OrdinaryCachePreserving.bind
+    {left : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    {next : alpha → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) beta}
+    (hleft : OrdinaryCachePreserving left)
+    (hnext : ∀ value, OrdinaryCachePreserving (next value)) :
+    OrdinaryCachePreserving (left >>= next) := by
+  intro state cache fuel finalState remaining value finalCache hresult
+  change LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈ support
+    (LazyRevealProbe.runRaw state fuel
+      (left.run cache >>= fun result => (next result.1).run result.2)) at hresult
+  rw [LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨raw, hraw, hrest⟩ := hresult
+  cases raw with
+  | stopped hit => simp at hrest
+  | done middleState middleRemaining middleResult =>
+      rcases middleResult with ⟨middleValue, middleCache⟩
+      exact (hnext middleValue middleState middleCache middleRemaining finalState remaining value
+        finalCache hrest).trans
+          (hleft state cache fuel middleState middleRemaining middleValue middleCache hraw)
+
+theorem OrdinaryCachePreserving.bind_querying
+    {left : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    {next : alpha → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) HashOutput}
+    {input : HashInput}
+    (hleft : OrdinaryCachePreserving left)
+    (hnext : ∀ value, OrdinaryCacheQuerying input (next value)) :
+    OrdinaryCacheQuerying input (left >>= next) := by
+  intro state cache fuel finalState remaining output finalCache hresult
+  change LazyRevealProbe.RawResult.done finalState remaining (output, finalCache) ∈ support
+    (LazyRevealProbe.runRaw state fuel
+      (left.run cache >>= fun result => (next result.1).run result.2)) at hresult
+  rw [LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨raw, hraw, hrest⟩ := hresult
+  cases raw with
+  | stopped hit => simp at hrest
+  | done middleState middleRemaining middleResult =>
+      rcases middleResult with ⟨middleValue, middleCache⟩
+      rw [hnext middleValue middleState middleCache middleRemaining finalState remaining output
+        finalCache hrest,
+        hleft state cache fuel middleState middleRemaining middleValue middleCache hraw]
+
+theorem ordinaryCachePreserving_revealCoordinateOutput (coordinate : Coordinate) :
+    OrdinaryCachePreserving (revealCoordinateOutput coordinate) := by
+  intro state cache fuel finalState remaining value finalCache hresult
+  rw [revealCoordinateOutput_run, LazyRevealProbe.revealQuery,
+    LazyRevealProbe.runRaw_reveal_query_bind] at hresult
+  cases hvalue : state.values coordinate with
+  | some existing =>
+      rw [hvalue] at hresult
+      simp [LazyRevealProbe.runRaw] at hresult
+      rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+      exact ordinaryQueryCache_update_hidden cache coordinate value
+  | none =>
+      rw [hvalue, mem_support_bind_iff] at hresult
+      obtain ⟨sampled, _, hsampled⟩ := hresult
+      by_cases hhit : state.hitAt coordinate sampled
+      · rw [if_pos hhit] at hsampled
+        simp at hsampled
+      · rw [if_neg hhit] at hsampled
+        simp [LazyRevealProbe.runRaw] at hsampled
+        rcases hsampled with ⟨rfl, rfl, rfl, rfl⟩
+        exact ordinaryQueryCache_update_hidden cache coordinate value
+
+theorem ordinaryCachePreserving_revealCoordinate (coordinate : Coordinate) :
+    OrdinaryCachePreserving (revealCoordinate coordinate) := by
+  unfold revealCoordinate
+  exact (ordinaryCachePreserving_revealCoordinateOutput coordinate).bind fun _ =>
+    OrdinaryCachePreserving.of_splitCachePreserving (SplitCachePreserving.pure _)
+
+theorem ordinaryCachePreserving_revealPositionValues (positions : List Position) :
+    OrdinaryCachePreserving (revealPositionValues positions) := by
+  induction positions with
+  | nil => exact OrdinaryCachePreserving.of_splitCachePreserving (SplitCachePreserving.pure [])
+  | cons position remaining ih =>
+      rw [revealPositionValues]
+      exact (ordinaryCachePreserving_revealCoordinate (.position position)).bind fun _ =>
+        ih.bind fun _ => OrdinaryCachePreserving.of_splitCachePreserving
+          (SplitCachePreserving.pure _)
+
+theorem ordinaryCachePreserving_revealTableInputChildren (coordinate : Coordinate) :
+    OrdinaryCachePreserving (revealTableInputChildren coordinate) := by
+  cases coordinate with
+  | chainStart =>
+      exact OrdinaryCachePreserving.of_splitCachePreserving (SplitCachePreserving.pure ())
+  | position position =>
+      cases position with
+      | chain lay tree leafIdx chainIdx step =>
+          by_cases hzero : step.val = 0
+          · simp only [revealTableInputChildren, hzero, ↓reduceIte]
+            exact (ordinaryCachePreserving_revealCoordinate
+              (.chainStart lay tree leafIdx chainIdx)).bind fun _ =>
+                OrdinaryCachePreserving.of_splitCachePreserving (SplitCachePreserving.pure ())
+          · simp only [revealTableInputChildren, hzero, ↓reduceIte]
+            exact (ordinaryCachePreserving_revealPositionValues _).bind fun _ =>
+              OrdinaryCachePreserving.of_splitCachePreserving (SplitCachePreserving.pure ())
+      | leaf | node | ftsLeaf | ftsNode | ftsRoots =>
+          simp only [revealTableInputChildren]
+          exact (ordinaryCachePreserving_revealPositionValues _).bind fun _ =>
+            OrdinaryCachePreserving.of_splitCachePreserving (SplitCachePreserving.pure ())
+
+theorem ordinaryCacheQuerying_modifyOrdinary_pure (input : HashInput) (answer : HashOutput) :
+    OrdinaryCacheQuerying input (do
+      modify fun cache : SplitHashCache =>
+        Function.update cache (.ordinary input) (some answer)
+      pure answer) := by
+  intro state cache fuel finalState remaining output finalCache hresult
+  simp [StateT.run_modify, LazyRevealProbe.runRaw] at hresult
+  rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+  exact ordinaryQueryCache_update cache input output
+
+theorem ordinaryCacheQuerying_splitHashQuery (input : HashInput) :
+    OrdinaryCacheQuerying input (splitHashQuery (.ordinary input)) := by
+  intro state cache fuel finalState remaining output finalCache hresult
+  exact ordinaryQueryCache_eq_cacheQuery_of_mem_runRaw_splitHashQuery_ordinary input state
+    finalState cache finalCache fuel remaining output hresult
+
+theorem ordinaryCacheQuerying_resolveKnownInput
+    (parameter : PublicParameter) (coordinate : Coordinate) (input : HashInput) :
+    OrdinaryCacheQuerying input (resolveKnownInput parameter coordinate input) := by
+  unfold resolveKnownInput
+  apply (rawReadOnly_peekTableInput parameter coordinate).ordinaryCachePreserving.bind_querying
+  intro knownInput
+  cases knownInput with
+  | none => exact ordinaryCacheQuerying_splitHashQuery input
+  | some knownInput =>
+      simp only
+      by_cases hexact : knownInput = input
+      · rw [if_pos hexact]
+        exact (ordinaryCachePreserving_revealCoordinateOutput coordinate).bind_querying fun answer =>
+          (OrdinaryCachePreserving.of_splitCachePreserving
+            (splitCachePreserving_publishCoordinate coordinate)).bind_querying fun _ =>
+              ordinaryCacheQuerying_modifyOrdinary_pure input answer
+      · rw [if_neg hexact]
+        exact ordinaryCacheQuerying_splitHashQuery input
+
+theorem ordinaryCacheQuerying_resolveVerifierInput
+    (parameter : PublicParameter) (coordinate : Coordinate) (input : HashInput) :
+    OrdinaryCacheQuerying input (resolveVerifierInput parameter coordinate input) := by
+  intro state cache fuel finalState remaining output finalCache hresult
+  unfold resolveVerifierInput at hresult
+  cases hcached : cache (.ordinary input) with
+  | some cached =>
+      simp [StateT.run_get, hcached, LazyRevealProbe.runRaw] at hresult
+      rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+      funext other
+      by_cases heq : other = input
+      · subst other
+        simp [QueryCache.cacheQuery, ordinaryQueryCache, hcached]
+      · simp [QueryCache.cacheQuery, heq]
+  | none =>
+      simp [StateT.run_get, hcached] at hresult
+      exact (ordinaryCachePreserving_revealTableInputChildren coordinate).bind_querying
+        (fun _ => ordinaryCacheQuerying_resolveKnownInput parameter coordinate input)
+          state cache fuel finalState remaining output finalCache hresult
+
+theorem ordinaryCacheQuerying_verifierHashQuery
+    (parameter : PublicParameter) (input : HashInput) :
+    OrdinaryCacheQuerying input (verifierHashQuery parameter input) := by
+  unfold verifierHashQuery
+  cases hprobe : decodeProbe? parameter input with
+  | some candidate =>
+      exact (OrdinaryCachePreserving.of_splitCachePreserving
+        (splitCachePreserving_probe candidate)).bind_querying fun _ =>
+          ordinaryCacheQuerying_resolveVerifierInput parameter candidate.outputCoordinate input
+  | none =>
+      cases hposition : decodePosition? parameter input with
+      | none => exact ordinaryCacheQuerying_splitHashQuery input
+      | some position =>
+          cases position with
+          | chain lay tree leafIdx chainIdx step =>
+              exact ordinaryCacheQuerying_resolveVerifierInput parameter
+                (.position (.chain lay tree leafIdx chainIdx step)) input
+          | leaf lay tree leafIdx =>
+              exact ordinaryCacheQuerying_resolveVerifierInput parameter
+                (.position (.leaf lay tree leafIdx)) input
+          | node lay tree level nodeIdx =>
+              exact ordinaryCacheQuerying_resolveVerifierInput parameter
+                (.position (.node lay tree level nodeIdx)) input
+          | ftsLeaf | ftsNode | ftsRoots => exact ordinaryCacheQuerying_splitHashQuery input
+
+theorem ordinaryQueryCache_eq_cacheQuery_of_mem_runRaw_verifierHashImpl
+    (parameter : PublicParameter) (input : HashInput)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (output : HashOutput)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (output, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((verifierHashImpl parameter input).run cache))) :
+    ordinaryQueryCache finalCache = (ordinaryQueryCache cache).cacheQuery input output := by
+  exact ordinaryCacheQuerying_verifierHashQuery parameter input state cache fuel finalState
+    remaining output finalCache hresult
+
+theorem verifierHashImpl_output_eq_of_cached
+    (parameter : PublicParameter) (input : HashInput)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat)
+    (output cached : HashOutput) (hcached : cache (.ordinary input) = some cached)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (output, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((verifierHashImpl parameter input).run cache))) :
+    output = cached := by
+  have hresult' : LazyRevealProbe.RawResult.done finalState remaining (output, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((verifierHashQuery parameter input).run cache)) := by
+    simpa only [verifierHashImpl] using hresult
+  have hreturned := returnsCachedOrdinary_verifierHashQuery parameter input state cache fuel
+    finalState remaining output finalCache hresult'
+  have hpreserved := ordinaryEntryPreserving_verifierHashQuery parameter input input state cache
+    fuel finalState remaining output finalCache cached hcached hresult'
+  exact Option.some.inj (hreturned.symm.trans hpreserved)
+
+theorem verifierHashImpl_output_eq_retainedCompletionAnswer_of_uncached
+    (parameter : PublicParameter)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (input : HashInput)
+    (state queryState completedState : LazyRevealProbe.State Coordinate)
+    (cache queryCache rawCache : SplitHashCache) (fuel queryRemaining : Nat)
+    (output : HashOutput)
+    (huncached : cache (.ordinary input) = none)
+    (hquery : LazyRevealProbe.RawResult.done queryState queryRemaining
+        (output, queryCache) ∈ support
+      (LazyRevealProbe.runRaw state fuel ((verifierHashImpl parameter input).run cache)))
+    (hvalues : LazyRevealProbe.ValuesLE queryState completedState)
+    (hcached : rawCache (.ordinary input) = some output) :
+    output = retainedCompletionAnswer parameter completedState rawCache baseStarts input := by
+  apply verifierHashQuery_output_eq_retainedCompletionAnswer_of_uncached parameter baseStarts
+    input state queryState completedState cache queryCache rawCache fuel queryRemaining output
+      huncached
+  · simpa only [verifierHashImpl] using hquery
+  · exact hvalues
+  · exact hcached
+
+set_option maxRecDepth 50000 in
+theorem replay_of_mem_runRaw_verifierHashImpl_of_initial_cacheAnswersAgreeOnRun
+    (parameter : PublicParameter)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (computation : OracleComp HashSpec alpha)
+    (state finalState completedState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (value : alpha)
+    (hcompleted : LazyRevealProbe.ValuesLE finalState completedState)
+    (hagrees : CacheAnswersAgreeOnRun (ordinaryQueryCache cache)
+      (retainedCompletionAnswer parameter completedState finalCache baseStarts) computation)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((simulateQ (verifierHashImpl parameter) computation).run cache))) :
+    evalWithAnswerFn (retainedCompletionAnswer parameter completedState finalCache baseStarts)
+        computation = value ∧
+      CachedRun (ordinaryQueryCache finalCache)
+          (retainedCompletionAnswer parameter completedState finalCache baseStarts) computation ∧
+      CacheAnswersAgreeOnRun (ordinaryQueryCache finalCache)
+        (retainedCompletionAnswer parameter completedState finalCache baseStarts) computation := by
+  let f := retainedCompletionAnswer parameter completedState finalCache baseStarts
+  change evalWithAnswerFn f computation = value ∧
+    CachedRun (ordinaryQueryCache finalCache) f computation ∧
+      CacheAnswersAgreeOnRun (ordinaryQueryCache finalCache) f computation
+  change CacheAnswersAgreeOnRun (ordinaryQueryCache cache) f computation at hagrees
+  induction computation using OracleComp.inductionOn generalizing
+      state cache finalState fuel remaining value with
+  | pure result =>
+      simp [LazyRevealProbe.runRaw] at hresult
+      rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+      exact ⟨rfl, by simp [CachedRun, CacheAnswersAgreeOnRun]⟩
+  | query_bind input next ih =>
+      rw [simulateQ_query_bind, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+        mem_support_bind_iff] at hresult
+      obtain ⟨queryRaw, hquery, hrest⟩ := hresult
+      cases queryRaw with
+      | stopped hit => simp at hrest
+      | done queryState queryRemaining queryResult =>
+          rcases queryResult with ⟨answer, queryCache⟩
+          have hcacheStep : ordinaryQueryCache queryCache =
+              (ordinaryQueryCache cache).cacheQuery input answer :=
+            ordinaryQueryCache_eq_cacheQuery_of_mem_runRaw_verifierHashImpl parameter input state
+              queryState cache queryCache fuel queryRemaining answer hquery
+          have hcachedQuery : queryCache (.ordinary input) = some answer := by
+            have hpoint := congrFun hcacheStep input
+            simpa [ordinaryQueryCache, QueryCache.cacheQuery] using hpoint
+          have hcachedFinal : finalCache (.ordinary input) = some answer :=
+            (ordinaryEntryPreservingImpl_verifierHashImpl parameter input).simulateQ
+              (next answer) queryState queryCache queryRemaining finalState remaining value
+                finalCache answer hcachedQuery hrest
+          have hfinput : f input = answer := by
+            cases hlookup : cache (.ordinary input) with
+            | some cached =>
+                have hanswer := verifierHashImpl_output_eq_of_cached parameter input state
+                  queryState cache queryCache fuel queryRemaining answer cached hlookup hquery
+                rw [hanswer]
+                exact hagrees input (by rw [queriedInputs_query_bind]; exact List.mem_cons_self)
+                  cached hlookup
+            | none =>
+                have hvaluesQueryFinal := LazyRevealProbe.valuesLE_of_mem_runRaw_done
+                  ((simulateQ (verifierHashImpl parameter) (next answer)).run queryCache)
+                    queryState finalState queryRemaining remaining (value, finalCache) hrest
+                exact (verifierHashImpl_output_eq_retainedCompletionAnswer_of_uncached parameter
+                  baseStarts input state queryState completedState cache queryCache finalCache fuel
+                    queryRemaining answer hlookup hquery (hvaluesQueryFinal.trans hcompleted)
+                      hcachedFinal).symm
+          have hagreesTail : CacheAnswersAgreeOnRun (ordinaryQueryCache queryCache) f
+              (next answer) := by
+            intro query hqueryTail output hcached
+            rw [hcacheStep] at hcached
+            by_cases heq : query = input
+            · subst query
+              have houtput : output = answer := by
+                exact (Option.some.inj
+                  (show some answer = some output by
+                    simpa [QueryCache.cacheQuery] using hcached)).symm
+              rw [houtput]
+              exact hfinput
+            · apply hagrees query
+              · rw [queriedInputs_query_bind, hfinput]
+                exact List.mem_cons_of_mem input hqueryTail
+              · simpa [QueryCache.cacheQuery, heq] using hcached
+          obtain ⟨htailEval, htailCached, htailAgrees⟩ := ih answer queryState finalState queryCache
+            queryRemaining remaining value hcompleted hrest hagreesTail
+          constructor
+          · rw [evalWithAnswerFn_bind,
+              show evalWithAnswerFn f (liftM (HashSpec.query input)) = f input from
+                simulateQ_spec_query f input, hfinput]
+            exact htailEval
+          · constructor
+            · intro other hother
+              rw [queriedInputs_query_bind, hfinput] at hother
+              simp only [List.mem_cons] at hother
+              rcases hother with rfl | htail
+              · simp [ordinaryQueryCache, hcachedFinal]
+              · exact htailCached other htail
+            · intro other hother output hcached
+              rw [queriedInputs_query_bind, hfinput] at hother
+              simp only [List.mem_cons] at hother
+              rcases hother with rfl | htail
+              · change finalCache (.ordinary other) = some output at hcached
+                rw [hcachedFinal] at hcached
+                exact hfinput.trans (Option.some.inj hcached)
+              · exact htailAgrees other htail output hcached
 
 theorem verifierHashQuery_returns_table
     (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
@@ -5461,20 +5952,23 @@ theorem ChainInvariant.not_finalized_false_of_bottom_verifyProbe_verifier
               | done otsState otsRemaining otsResult =>
                   rcases otsResult with ⟨leafResult, otsCache⟩
                   have hfOts : CacheAnswersAgreeOnRun (ordinaryQueryCache otsCache) f
-                      (otsLeaf parameter bottomLayer
+                      (encode parameter bottomLayer
                         (treeIndexAt (digestIndex digest) bottomLayer)
                         (leafIndexAt (digestIndex digest) bottomLayer)
                         (evalWithAnswerFn f
                           (ftsRecover parameter (digestIndex digest) (digestLeaves digest)
                             forgery.signature.ftsSecret forgery.signature.ftsPath))
-                        (forgery.signature.counter bottomLayer)
-                        (forgery.signature.chainValue bottomLayer)) := by
+                        (forgery.signature.counter bottomLayer)) := by
                     intro query hquery output hcached
                     apply hf query
                     · exact VerifierLayerMessage.otsLeaf_query_mem_verify
                         (publicKey := ⟨root, parameter⟩) (message := forgery.message)
                         (signature := forgery.signature) hdigest hadmissible hverifierMessage
-                          (by simpa only [hlayerMessage] using hquery)
+                          (by
+                            unfold otsLeaf
+                            rw [queriedInputs_bind]
+                            exact List.mem_append_left _
+                              (by simpa only [hlayerMessage] using hquery))
                     · have hcachedLayers :=
                         (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
                           otsState otsCache otsRemaining layersState layersRemaining verifiedRoot
@@ -5766,15 +6260,17 @@ theorem ChainInvariant.not_finalized_false_of_middle_verifyProbe_verifier
                           rcases middleOtsResult with ⟨middleResult, middleOtsCache⟩
                           have hfMiddleOts :
                               CacheAnswersAgreeOnRun (ordinaryQueryCache middleOtsCache) f
-                                (otsLeaf parameter middleLayer
+                                (encode parameter middleLayer
                                   (treeIndexAt (digestIndex digest) middleLayer)
                                   (leafIndexAt (digestIndex digest) middleLayer) layerMessage
-                                  (forgery.signature.counter middleLayer)
-                                  (forgery.signature.chainValue middleLayer)) := by
+                                  (forgery.signature.counter middleLayer)) := by
                             intro query hquery output hcached
                             apply hf query
                               (VerifierLayerMessage.otsLeaf_query_mem_verify hdigest hadmissible
-                                hverifierMessage hquery)
+                                hverifierMessage (by
+                                  unfold otsLeaf
+                                  rw [queriedInputs_bind]
+                                  exact List.mem_append_left _ hquery))
                             have hcachedLayers :=
                               (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
                                 middleOtsState middleOtsCache middleOtsRemaining layersState
@@ -6213,15 +6709,17 @@ theorem ChainInvariant.not_finalized_false_of_top_verifyProbe_verifier
                                   rcases topOtsResult with ⟨topResult, topOtsCache⟩
                                   have hfTopOts :
                                       CacheAnswersAgreeOnRun (ordinaryQueryCache topOtsCache) f
-                                        (otsLeaf parameter topLayer
+                                        (encode parameter topLayer
                                           (treeIndexAt (digestIndex digest) topLayer)
                                           (leafIndexAt (digestIndex digest) topLayer) layerMessage
-                                          (forgery.signature.counter topLayer)
-                                          (forgery.signature.chainValue topLayer)) := by
+                                          (forgery.signature.counter topLayer)) := by
                                     intro query hquery output hcached
                                     apply hf query
                                       (VerifierLayerMessage.otsLeaf_query_mem_verify hdigest
-                                        hadmissible hverifierMessage hquery)
+                                        hadmissible hverifierMessage (by
+                                          unfold otsLeaf
+                                          rw [queriedInputs_bind]
+                                          exact List.mem_append_left _ hquery))
                                     have hcachedLayers :=
                                       (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
                                         topOtsState topOtsCache topOtsRemaining layersState
@@ -6483,6 +6981,45 @@ theorem not_verifyProbe_of_retainedCompletion
     hfOrdinary hrawTable hcompletedTable hrealizes hresult hfinalize hprobe
 
 set_option maxRecDepth 10000 in
+theorem not_verifyProbe_of_retainedCompletion_of_trace_exact_materialized
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (fuel remaining : Nat) (rawState completedState : LazyRevealProbe.State Coordinate)
+    (rawCache : SplitHashCache) (root : Digest) (forgery : Forgery)
+    (signingLog : QueryLog SigningSpec) (verified : Bool)
+    (hconsistent : HiddenConsistent rawState rawCache)
+    (hresult : LazyRevealProbe.RawResult.done rawState remaining
+        ((root, ((forgery, signingLog), verified)), rawCache) ∈ support
+      (LazyRevealProbe.runRaw (LazyRevealProbe.State.empty :
+          LazyRevealProbe.State Coordinate) fuel
+        ((maskedRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
+          emptySplitHashCache)))
+    (hfinalize : (false, completedState) ∈ support
+      (LazyRevealProbe.finalizeDetailed rawState))
+    (hexact : TraceExactMaterializedCacheConsistent parameter
+      (retainedCompletionTable parameter completedState rawCache baseStarts)
+      completedState rawCache
+      (retainedCompletionAnswer parameter completedState rawCache baseStarts)
+      (verify ⟨root, parameter⟩ forgery.message forgery.signature))
+    (hprobe : VerifyProbeWitness
+      (retainedCompletionAnswer parameter completedState rawCache baseStarts)
+      (mergedCache parameter
+        (retainedCompletionTable parameter completedState rawCache baseStarts)
+        completedState.ensured rawCache)
+      (⟨parameter, root,
+        tableOtsSecret (retainedCompletionTable parameter completedState rawCache baseStarts),
+        ftsSecret⟩ : SecretKey)
+      signingLog forgery.message forgery.signature) : False := by
+  apply not_verifyProbe_of_retainedCompletion adversary parameter ftsSecret baseStarts fuel
+    remaining rawState completedState rawCache root forgery signingLog verified hconsistent
+    hresult hfinalize
+  · exact cacheAnswersAgreeOnRun_retainedCompletionAnswer_of_trace_exact_materialized
+      parameter completedState rawCache baseStarts
+        (verify ⟨root, parameter⟩ forgery.message forgery.signature) hexact
+  · exact hprobe
+
+set_option maxRecDepth 10000 in
 theorem not_verifyProbe_of_retainedCompletion_of_exact_materialized
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
@@ -6518,12 +7055,12 @@ theorem not_verifyProbe_of_retainedCompletion_of_exact_materialized
         tableOtsSecret (retainedCompletionTable parameter completedState rawCache baseStarts),
         ftsSecret⟩ : SecretKey)
       signingLog forgery.message forgery.signature) : False := by
-  apply not_verifyProbe_of_retainedCompletion adversary parameter ftsSecret baseStarts fuel
+  apply not_verifyProbe_of_retainedCompletion_of_trace_exact_materialized adversary parameter
+    ftsSecret baseStarts fuel
     remaining rawState completedState rawCache root forgery signingLog verified hconsistent
     hresult hfinalize
-  · intro input _ output hcached
-    exact ordinaryQueryCache_agreesWithFn_retainedCompletionAnswer_of_exact_materialized
-      parameter completedState rawCache baseStarts hexact hcached
+  · intro input _ position output hots hposition hinput hvalue hcached
+    exact hexact input position output hots hposition hinput hvalue hcached
   · exact hprobe
 
 theorem relTriple_runRaw_splitUniformImpl
