@@ -270,6 +270,100 @@ theorem LazyRevealProbe.valuesLE_of_mem_runRaw_done
                   hvalue).trans (ih output (state.materialize coordinate output) finalState fuel
                     remaining value htail)
 
+theorem LazyRevealProbe.pendingHit_preserved_of_mem_runRaw_done
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (coordinate : Coordinate) (target : HashOutput)
+    (state finalState : LazyRevealProbe.State Coordinate) (fuel remaining : Nat)
+    (value : alpha)
+    (hvalue : state.values coordinate = none)
+    (hhit : state.hitAt coordinate target)
+    (hfinal : ∀ output, finalState.values coordinate = some output → output = target)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining value ∈
+      support (LazyRevealProbe.runRaw state fuel computation)) :
+    finalState.values coordinate = none ∧ finalState.hitAt coordinate target := by
+  induction computation using OracleComp.inductionOn generalizing
+      state finalState fuel remaining value with
+  | pure result =>
+      simp [LazyRevealProbe.runRaw] at hresult
+      rcases hresult with ⟨rfl, rfl, rfl⟩
+      exact ⟨hvalue, hhit⟩
+  | query_bind input next ih =>
+      cases input with
+      | uniform n =>
+          rw [LazyRevealProbe.runRaw_uniform_query_bind, mem_support_bind_iff] at hresult
+          obtain ⟨output, _, htail⟩ := hresult
+          exact ih output state finalState fuel remaining value hvalue hhit hfinal htail
+      | hashOutput =>
+          rw [LazyRevealProbe.runRaw_hashOutput_query_bind, mem_support_bind_iff] at hresult
+          obtain ⟨output, _, htail⟩ := hresult
+          exact ih output state finalState fuel remaining value hvalue hhit hfinal htail
+      | ensure other =>
+          rw [LazyRevealProbe.runRaw_ensure_query_bind] at hresult
+          exact ih () (state.ensure other) finalState fuel remaining value hvalue hhit hfinal
+            hresult
+      | probe other candidate =>
+          rw [LazyRevealProbe.runRaw_probe_query_bind] at hresult
+          cases fuel with
+          | zero => simp at hresult
+          | succ remainingFuel =>
+              simp only at hresult
+              by_cases hrevealed : other ∈ state.revealed
+              · rw [if_pos hrevealed] at hresult
+                exact ih () state finalState remainingFuel remaining value hvalue hhit hfinal
+                  hresult
+              · rw [if_neg hrevealed] at hresult
+                have hhit' : (state.addPending other candidate).hitAt coordinate target := by
+                  simp [LazyRevealProbe.State.hitAt, LazyRevealProbe.State.pendingAt,
+                    LazyRevealProbe.State.addPending]
+                  exact Or.inr (by
+                    simpa [LazyRevealProbe.State.hitAt,
+                      LazyRevealProbe.State.pendingAt] using hhit)
+                exact ih () (state.addPending other candidate) finalState remainingFuel remaining
+                  value hvalue hhit' hfinal hresult
+      | peek other =>
+          rw [LazyRevealProbe.runRaw_peek_query_bind] at hresult
+          exact ih (state.values other) state finalState fuel remaining value hvalue hhit hfinal
+            hresult
+      | publish other =>
+          rw [LazyRevealProbe.runRaw_publish_query_bind] at hresult
+          exact ih () (state.publish other) finalState fuel remaining value hvalue hhit hfinal
+            hresult
+      | reveal other =>
+          rw [LazyRevealProbe.runRaw_reveal_query_bind] at hresult
+          cases hotherValue : state.values other with
+          | some output =>
+              rw [hotherValue] at hresult
+              exact ih output state finalState fuel remaining value hvalue hhit hfinal hresult
+          | none =>
+              rw [hotherValue, mem_support_bind_iff] at hresult
+              obtain ⟨output, _, htail⟩ := hresult
+              by_cases hsampledHit : state.hitAt other output
+              · rw [if_pos hsampledHit] at htail
+                simp at htail
+              · rw [if_neg hsampledHit] at htail
+                by_cases heq : other = coordinate
+                · subst other
+                  have hvaluesLE := LazyRevealProbe.valuesLE_of_mem_runRaw_done
+                    (next output) (state.materialize coordinate output) finalState fuel remaining
+                      value htail
+                  have hfinalValue : finalState.values coordinate = some output :=
+                    hvaluesLE coordinate output (by
+                      simp [LazyRevealProbe.State.materialize, Function.update])
+                  have : state.hitAt coordinate output := by
+                    rw [hfinal output hfinalValue]
+                    exact hhit
+                  exact (hsampledHit this).elim
+                · have hvalue' : (state.materialize other output).values coordinate = none := by
+                    have hne : coordinate ≠ other := Ne.symm heq
+                    simpa [LazyRevealProbe.State.materialize, Function.update, hne] using hvalue
+                  have hhit' : (state.materialize other output).hitAt coordinate target := by
+                    have hne : coordinate ≠ other := Ne.symm heq
+                    simpa [LazyRevealProbe.State.hitAt, LazyRevealProbe.State.pendingAt,
+                      LazyRevealProbe.State.materialize, LazyRevealProbe.State.pendingAway,
+                      hne] using hhit
+                  exact ih output (state.materialize other output) finalState fuel remaining value
+                    hvalue' hhit' hfinal htail
+
 theorem LazyRevealProbe.ensuredLE_of_mem_runRaw_done
     (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
     (state finalState : LazyRevealProbe.State Coordinate) (fuel remaining : Nat)
@@ -6772,6 +6866,47 @@ theorem ChainInvariant.not_finalized_false_of_uncovered_probe
   have hvalue := hinvariant.1.value_eq_none_of_not_allowed hchain hnotAllowed
   exact finalizeDetailed_false_of_pending_hit table state finalState probe.coordinate hvalue hhit
     htable hfinalize
+
+theorem ChainInvariant.not_finalized_false_of_uncovered_probe_through
+    {f : QueryImpl HashSpec Id} {parameter : PublicParameter}
+    {table : Coordinate → HashOutput}
+    {ftsSecret : Index → FtsTree → FtsLeaf → Digest}
+    {allowed : Coordinate → Prop}
+    {initialState rawState completedState : LazyRevealProbe.State Coordinate}
+    {initialCache rawCache : SplitHashCache}
+    {computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    {fuel remaining : Nat} {value : alpha}
+    (hinvariant : ChainInvariant parameter allowed initialState initialCache)
+    (probe : Probe) (input : HashInput)
+    (hhits : probe.Hits f parameter (tableOtsSecret table) ftsSecret)
+    (hmatches : probe.MatchesInput parameter input)
+    (hcached : initialCache (.ordinary input) ≠ none)
+    (hnotAllowed : ¬allowed probe.coordinate)
+    (hcompletedTable : ∀ output,
+      completedState.values probe.coordinate = some output →
+        output = table probe.coordinate)
+    (hrealizes : ∀ position : Position, IsOtsPosition position →
+      f (tableInput parameter table (.position position)) = table (.position position))
+    (htransition : LazyRevealProbe.RawResult.done rawState remaining (value, rawCache) ∈
+      support (LazyRevealProbe.runRaw initialState fuel (computation.run initialCache)))
+    (hfinalize : (false, completedState) ∈ support
+      (LazyRevealProbe.finalizeDetailed rawState)) : False := by
+  have hchain := probe.isChainCoordinate_of_matchesInput hmatches
+  have hhit := hinvariant.2.hitAt f table ftsSecret probe input hchain hrealizes hhits hmatches
+    hcached hnotAllowed
+  have hvalue := hinvariant.1.value_eq_none_of_not_allowed hchain hnotAllowed
+  have htableRaw : ∀ output, rawState.values probe.coordinate = some output →
+      output = table probe.coordinate := by
+    intro output hraw
+    apply hcompletedTable output
+    exact finalizeDetailedFrom_preserves_value rawState.coordinates.toList rawState completedState
+      probe.coordinate output hraw hfinalize
+  have hpersist := LazyRevealProbe.pendingHit_preserved_of_mem_runRaw_done
+    (computation.run initialCache) probe.coordinate (table probe.coordinate) initialState rawState
+      fuel remaining (value, rawCache) hvalue hhit htableRaw htransition
+  exact finalizeDetailed_false_of_pending_hit table rawState completedState probe.coordinate
+    hpersist.1 hpersist.2 hcompletedTable hfinalize
 
 set_option maxRecDepth 10000 in
 set_option linter.constructorNameAsVariable false in

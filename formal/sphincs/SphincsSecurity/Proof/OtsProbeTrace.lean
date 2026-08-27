@@ -377,4 +377,42 @@ theorem ChainInvariant.not_finalized_false_of_bottom_verifyProbe
   exact hinvariant.not_finalized_false_of_uncovered_probe probe input hhits hmatches
     hcachedInput hnotCovered (hcompletedTable probe.coordinate) hrealizes hfinalize
 
+theorem ChainInvariant.not_finalized_false_of_verifyProbe_of_cachedBefore
+    {f : QueryImpl HashSpec Id} {parameter : PublicParameter}
+    {table : Coordinate → HashOutput}
+    {ftsSecret : Index → FtsTree → FtsLeaf → Digest}
+    {targetCache : QueryCache HashSpec}
+    {initialState rawState completedState : LazyRevealProbe.State Coordinate}
+    {initialCache rawCache : SplitHashCache} {root : Digest} {forgery : Forgery}
+    {signingLog : QueryLog SigningSpec} {fuel remaining : Nat} {verified : Bool}
+    (hinvariant : ChainInvariant parameter
+      (CoveredChainCoordinate f targetCache
+        (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) signingLog)
+      initialState initialCache)
+    (hcompletedTable : ∀ coordinate output,
+      completedState.values coordinate = some output → output = table coordinate)
+    (hrealizes : ∀ position : Position, IsOtsPosition position →
+      f (tableInput parameter table (.position position)) = table (.position position))
+    (hfinalize : (false, completedState) ∈ support
+      (LazyRevealProbe.finalizeDetailed rawState))
+    (hverify : LazyRevealProbe.RawResult.done rawState remaining
+        (verified, rawCache) ∈ support
+      (LazyRevealProbe.runRaw initialState fuel
+        ((simulateQ (verifierRomImpl parameter)
+          (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)).run
+            initialCache)))
+    (hqueriesBefore : ∀ input,
+      input ∈ queriedInputs f
+        (verify ⟨root, parameter⟩ forgery.message forgery.signature) →
+      initialCache (.ordinary input) ≠ none)
+    (hprobe : VerifyProbeWitness f targetCache
+      (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey)
+      signingLog forgery.message forgery.signature) : False := by
+  obtain ⟨lay, digest, layerMessage, codeword, chainIdx, hdigit, probe, input,
+    hinput, hdigest, hadmissible, hencode, hverifierMessage, hhits, hmatches, hquery,
+    _, hnotCovered⟩ := hprobe
+  exact hinvariant.not_finalized_false_of_uncovered_probe_through probe input hhits hmatches
+    (hqueriesBefore input hquery) hnotCovered (hcompletedTable probe.coordinate) hrealizes
+      hverify hfinalize
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
