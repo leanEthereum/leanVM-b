@@ -3687,6 +3687,100 @@ theorem Probe.coordinate_ne_of_matches_chain_ne
     · intro otherStep heq
       exact hne (Position.chain.inj (Coordinate.position.inj heq)).2.2.2.1.symm
 
+theorem Probe.coordinate_ne_chainStart_of_matches_chain_layer_ne
+    (probe : Probe) (parameter : PublicParameter)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex)
+    (step : ChainStep) (payload : HashInput)
+    (hmatches : probe.MatchesInput parameter
+      (tweakableHashInput parameter (.chain lay tree leafIdx chainIdx step) payload))
+    (otherLay : Layer) (otherTree : TreeIndex) (otherLeaf : LeafIndex)
+    (otherChain : ChainIndex) (hne : otherLay ≠ lay) :
+    probe.coordinate ≠ .chainStart otherLay otherTree otherLeaf otherChain := by
+  rcases probe.coordinate_eq_chain_source_of_matchesInput parameter lay tree leafIdx chainIdx
+    step payload hmatches with hsource | ⟨previous, hsource⟩ <;> rw [hsource]
+  · intro heq
+    exact hne (Coordinate.chainStart.inj heq).1.symm
+  · intro heq
+    cases heq
+
+theorem Probe.coordinate_ne_position_chain_of_matches_chain_layer_ne
+    (probe : Probe) (parameter : PublicParameter)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex)
+    (step : ChainStep) (payload : HashInput)
+    (hmatches : probe.MatchesInput parameter
+      (tweakableHashInput parameter (.chain lay tree leafIdx chainIdx step) payload))
+    (otherLay : Layer) (otherTree : TreeIndex) (otherLeaf : LeafIndex)
+    (otherChain : ChainIndex) (otherStep : ChainStep) (hne : otherLay ≠ lay) :
+    probe.coordinate ≠ .position
+      (.chain otherLay otherTree otherLeaf otherChain otherStep) := by
+  rcases probe.coordinate_eq_chain_source_of_matchesInput parameter lay tree leafIdx chainIdx
+    step payload hmatches with hsource | ⟨previous, hsource⟩ <;> rw [hsource]
+  · intro heq
+    cases heq
+  · intro heq
+    exact hne (Position.chain.inj (Coordinate.position.inj heq)).1.symm
+
+theorem Probe.coordinate_ne_position_leaf_of_matches_chain_layer_ne
+    (probe : Probe) (parameter : PublicParameter)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex)
+    (step : ChainStep) (payload : HashInput)
+    (hmatches : probe.MatchesInput parameter
+      (tweakableHashInput parameter (.chain lay tree leafIdx chainIdx step) payload))
+    (otherLay : Layer) (otherTree : TreeIndex) (otherLeaf : LeafIndex)
+    (_hne : otherLay ≠ lay) :
+    probe.coordinate ≠ .position (.leaf otherLay otherTree otherLeaf) := by
+  rcases probe.coordinate_eq_chain_source_of_matchesInput parameter lay tree leafIdx chainIdx
+    step payload hmatches with hsource | ⟨previous, hsource⟩ <;> rw [hsource] <;>
+      intro heq <;> cases heq
+
+theorem Probe.coordinate_ne_position_node_of_matches_chain_layer_ne
+    (probe : Probe) (parameter : PublicParameter)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex)
+    (step : ChainStep) (payload : HashInput)
+    (hmatches : probe.MatchesInput parameter
+      (tweakableHashInput parameter (.chain lay tree leafIdx chainIdx step) payload))
+    (otherLay : Layer) (otherTree : TreeIndex) (level : Fin maxLayerHeight)
+    (nodeIdx : LeafIndex) (_hne : otherLay ≠ lay) :
+    probe.coordinate ≠ .position (.node otherLay otherTree level nodeIdx) := by
+  rcases probe.coordinate_eq_chain_source_of_matchesInput parameter lay tree leafIdx chainIdx
+    step payload hmatches with hsource | ⟨previous, hsource⟩ <;> rw [hsource] <;>
+      intro heq <;> cases heq
+
+theorem preservesCoordinate_verifierHashQuery_at_position
+    (parameter : PublicParameter) (coordinate : Coordinate)
+    (position : Position) (input : HashInput)
+    (hat : AtPosition parameter input position)
+    (hots : IsOtsPosition position)
+    (hchildren : CoordinateChildrenAvoid coordinate (.position position))
+    (hother : coordinate ≠ .position position) :
+    PreservesCoordinate coordinate (verifierHashQuery parameter input) := by
+  have hposition : decodePosition? parameter input = some position :=
+    (decodePosition?_eq_some_iff parameter input position).2 hat
+  cases hdecode : decodeProbe? parameter input with
+  | none =>
+      unfold verifierHashQuery
+      rw [hdecode, hposition]
+      cases position with
+      | chain lay tree leafIdx chainIdx step =>
+          exact preservesCoordinate_resolveVerifierInput parameter coordinate
+            (.position (.chain lay tree leafIdx chainIdx step)) input hchildren hother
+      | leaf lay tree leafIdx =>
+          exact preservesCoordinate_resolveVerifierInput parameter coordinate
+            (.position (.leaf lay tree leafIdx)) input hchildren hother
+      | node lay tree level nodeIdx =>
+          exact preservesCoordinate_resolveVerifierInput parameter coordinate
+            (.position (.node lay tree level nodeIdx)) input hchildren hother
+      | ftsLeaf | ftsNode | ftsRoots => simp [IsOtsPosition] at hots
+  | some candidate =>
+      have houtput := candidate.outputCoordinate_eq_position_of_matchesInput parameter input
+        position ((decodeProbe?_eq_some_iff parameter input candidate).1 hdecode) hat
+      unfold verifierHashQuery
+      rw [hdecode]
+      exact (preservesCoordinate_probe coordinate candidate).bind fun _ => by
+        rw [houtput]
+        exact preservesCoordinate_resolveVerifierInput parameter coordinate (.position position)
+          input hchildren hother
+
 theorem preservesCoordinate_verifierHashQuery_chain_of_ne
     (parameter : PublicParameter) (probe : Probe)
     (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
@@ -3748,6 +3842,105 @@ theorem preservesCoordinate_verifierHashQuery_chain_of_ne
             subst child
             exact htargetNe.2 _
         · exact htargetNe.2 _
+
+theorem preservesCoordinate_verifierHashQuery_chain_of_layer_ne
+    (parameter : PublicParameter) (probe : Probe)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex)
+    (targetStep : ChainStep) (targetValue : Digest)
+    (hmatches : probe.MatchesInput parameter
+      (tweakableHashInput parameter (.chain lay tree leafIdx chainIdx targetStep)
+        (digestBytes targetValue)))
+    (otherLay : Layer) (otherTree : TreeIndex) (otherLeaf : LeafIndex)
+    (otherChain : ChainIndex) (otherStep : ChainStep) (value : Digest)
+    (hne : otherLay ≠ lay) :
+    PreservesCoordinate probe.coordinate
+      (verifierHashQuery parameter
+        (tweakableHashInput parameter
+          (.chain otherLay otherTree otherLeaf otherChain otherStep) (digestBytes value))) := by
+  let position := Position.chain otherLay otherTree otherLeaf otherChain otherStep
+  apply preservesCoordinate_verifierHashQuery_at_position parameter probe.coordinate position _
+    ⟨digestBytes value, rfl⟩ (by trivial)
+  · unfold CoordinateChildrenAvoid position
+    by_cases hzero : otherStep.val = 0
+    · simp only [hzero, if_pos]
+      exact probe.coordinate_ne_chainStart_of_matches_chain_layer_ne parameter lay tree leafIdx
+        chainIdx targetStep (digestBytes targetValue) hmatches otherLay otherTree otherLeaf
+          otherChain hne
+    · have hpositive : 0 < otherStep.val := Nat.pos_of_ne_zero hzero
+      simp only [hzero]
+      intro child hchild
+      simp only [Position.children, dif_pos hpositive, List.mem_singleton] at hchild
+      subst child
+      exact probe.coordinate_ne_position_chain_of_matches_chain_layer_ne parameter lay tree
+        leafIdx chainIdx targetStep (digestBytes targetValue) hmatches otherLay otherTree
+          otherLeaf otherChain _ hne
+  · exact probe.coordinate_ne_position_chain_of_matches_chain_layer_ne parameter lay tree
+      leafIdx chainIdx targetStep (digestBytes targetValue) hmatches otherLay otherTree otherLeaf
+        otherChain otherStep hne
+
+theorem preservesCoordinate_verifierHashQuery_leaf_of_layer_ne
+    (parameter : PublicParameter) (probe : Probe)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex)
+    (targetStep : ChainStep) (targetValue : Digest)
+    (hmatches : probe.MatchesInput parameter
+      (tweakableHashInput parameter (.chain lay tree leafIdx chainIdx targetStep)
+        (digestBytes targetValue)))
+    (otherLay : Layer) (otherTree : TreeIndex) (otherLeaf : LeafIndex)
+    (payload : HashInput) (hne : otherLay ≠ lay) :
+    PreservesCoordinate probe.coordinate
+      (verifierHashQuery parameter
+        (tweakableHashInput parameter (.leaf otherLay otherTree otherLeaf) payload)) := by
+  let position := Position.leaf otherLay otherTree otherLeaf
+  apply preservesCoordinate_verifierHashQuery_at_position parameter probe.coordinate position _
+    ⟨payload, rfl⟩ (by trivial)
+  · unfold CoordinateChildrenAvoid position
+    intro child hchild
+    simp only [Position.children, List.mem_ofFn] at hchild
+    obtain ⟨otherChain, rfl⟩ := hchild
+    exact probe.coordinate_ne_position_chain_of_matches_chain_layer_ne parameter lay tree leafIdx
+      chainIdx targetStep (digestBytes targetValue) hmatches otherLay otherTree otherLeaf
+        otherChain Position.lastChainStep hne
+  · exact probe.coordinate_ne_position_leaf_of_matches_chain_layer_ne parameter lay tree leafIdx
+      chainIdx targetStep (digestBytes targetValue) hmatches otherLay otherTree otherLeaf hne
+
+theorem preservesCoordinate_verifierHashQuery_node_of_layer_ne
+    (parameter : PublicParameter) (probe : Probe)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex)
+    (targetStep : ChainStep) (targetValue : Digest)
+    (hmatches : probe.MatchesInput parameter
+      (tweakableHashInput parameter (.chain lay tree leafIdx chainIdx targetStep)
+        (digestBytes targetValue)))
+    (otherLay : Layer) (otherTree : TreeIndex) (level : Fin maxLayerHeight)
+    (nodeIdx : LeafIndex) (payload : HashInput) (hne : otherLay ≠ lay) :
+    PreservesCoordinate probe.coordinate
+      (verifierHashQuery parameter
+        (tweakableHashInput parameter
+          (.node otherLay otherTree (level.val + 1) nodeIdx.val) payload)) := by
+  let position := Position.node otherLay otherTree level nodeIdx
+  apply preservesCoordinate_verifierHashQuery_at_position parameter probe.coordinate position _
+    ⟨payload, by simp [position, Position.domain]⟩ (by trivial)
+  · unfold CoordinateChildrenAvoid position
+    intro child hchild
+    simp only [Position.children] at hchild
+    split_ifs at hchild with hidx hlevel
+    · rcases List.mem_pair.mp hchild with hleft | hright
+      · subst child
+        exact probe.coordinate_ne_position_node_of_matches_chain_layer_ne parameter lay tree
+          leafIdx chainIdx targetStep (digestBytes targetValue) hmatches otherLay otherTree _ _ hne
+      · subst child
+        exact probe.coordinate_ne_position_node_of_matches_chain_layer_ne parameter lay tree
+          leafIdx chainIdx targetStep (digestBytes targetValue) hmatches otherLay otherTree _ _ hne
+    · rcases List.mem_pair.mp hchild with hleft | hright
+      · subst child
+        exact probe.coordinate_ne_position_leaf_of_matches_chain_layer_ne parameter lay tree
+          leafIdx chainIdx targetStep (digestBytes targetValue) hmatches otherLay otherTree _ hne
+      · subst child
+        exact probe.coordinate_ne_position_leaf_of_matches_chain_layer_ne parameter lay tree
+          leafIdx chainIdx targetStep (digestBytes targetValue) hmatches otherLay otherTree _ hne
+    · simp at hchild
+  · simpa only [position] using
+      probe.coordinate_ne_position_node_of_matches_chain_layer_ne parameter lay tree leafIdx
+        chainIdx targetStep (digestBytes targetValue) hmatches otherLay otherTree level nodeIdx hne
 
 theorem verifierHashQuery_eq_splitHashQuery_of_stable
     (parameter : PublicParameter) (input : HashInput)
@@ -3826,6 +4019,95 @@ theorem preservesCoordinate_simulateQ_verifierHashImpl_recoverChain_of_chain_ne
   exact preservesCoordinate_simulateQ_verifierHashImpl_chainWalk_of_chain_ne parameter probe lay
     tree leafIdx chainIdx otherChain targetStep targetValue hmatches hne _ _ _
 
+theorem preservesCoordinate_simulateQ_sequenceFin
+    {spec : OracleSpec ι} (impl : QueryImpl spec
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))))
+    (coordinate : Coordinate) {n : Nat} (computation : Fin n → OracleComp spec alpha)
+    (hcomponent : ∀ index,
+      PreservesCoordinate coordinate (simulateQ impl (computation index))) :
+    PreservesCoordinate coordinate (simulateQ impl (sequenceFin computation)) := by
+  induction n with
+  | zero =>
+      simp only [sequenceFin, simulateQ_pure]
+      exact preservesCoordinate_pure coordinate Fin.elim0
+  | succ n ih =>
+      rw [sequenceFin, simulateQ_bind]
+      exact (hcomponent 0).bind fun head => by
+        rw [simulateQ_bind]
+        exact (ih (fun index : Fin n => computation index.succ)
+          (fun index => hcomponent index.succ)).bind fun tail => by
+            rw [simulateQ_pure]
+            exact preservesCoordinate_pure coordinate
+              (Fin.cases head tail : Fin (n + 1) → alpha)
+
+theorem preservesCoordinate_simulateQ_verifierHashImpl_chainWalk_of_layer_ne
+    (parameter : PublicParameter) (probe : Probe)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex)
+    (targetStep : ChainStep) (targetValue : Digest)
+    (hmatches : probe.MatchesInput parameter
+      (tweakableHashInput parameter (.chain lay tree leafIdx chainIdx targetStep)
+        (digestBytes targetValue)))
+    (otherLay : Layer) (otherTree : TreeIndex) (otherLeaf : LeafIndex)
+    (otherChain : ChainIndex) (hne : otherLay ≠ lay) :
+    ∀ start steps value,
+      PreservesCoordinate probe.coordinate
+        (simulateQ (verifierHashImpl parameter)
+          (chainWalk parameter otherLay otherTree otherLeaf otherChain start steps value)) := by
+  intro start steps value
+  induction steps with
+  | zero =>
+      rw [chainWalk, simulateQ_pure]
+      exact preservesCoordinate_pure probe.coordinate value
+  | succ steps ih =>
+      rw [chainWalk, simulateQ_bind]
+      exact ih.bind fun current => by
+        split
+        · exact (preservesCoordinate_verifierHashQuery_chain_of_layer_ne parameter probe lay tree
+            leafIdx chainIdx targetStep targetValue hmatches otherLay otherTree otherLeaf
+              otherChain _ current hne).bind fun output =>
+                preservesCoordinate_pure probe.coordinate (truncateHash output)
+        · exact preservesCoordinate_pure probe.coordinate 0
+
+theorem preservesCoordinate_simulateQ_verifierHashImpl_recoverChain_of_layer_ne
+    (parameter : PublicParameter) (probe : Probe)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex)
+    (targetStep : ChainStep) (targetValue : Digest)
+    (hmatches : probe.MatchesInput parameter
+      (tweakableHashInput parameter (.chain lay tree leafIdx chainIdx targetStep)
+        (digestBytes targetValue)))
+    (otherLay : Layer) (otherTree : TreeIndex) (otherLeaf : LeafIndex)
+    (otherChain : ChainIndex) (digit : Digit) (value : Digest) (hne : otherLay ≠ lay) :
+    PreservesCoordinate probe.coordinate
+      (simulateQ (verifierHashImpl parameter)
+        (recoverChain parameter otherLay otherTree otherLeaf otherChain digit value)) := by
+  unfold recoverChain
+  exact preservesCoordinate_simulateQ_verifierHashImpl_chainWalk_of_layer_ne parameter probe lay
+    tree leafIdx chainIdx targetStep targetValue hmatches otherLay otherTree otherLeaf otherChain
+      hne _ _ _
+
+theorem preservesCoordinate_simulateQ_verifierHashImpl_leafHash_of_layer_ne
+    (parameter : PublicParameter) (probe : Probe)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex)
+    (targetStep : ChainStep) (targetValue : Digest)
+    (hmatches : probe.MatchesInput parameter
+      (tweakableHashInput parameter (.chain lay tree leafIdx chainIdx targetStep)
+        (digestBytes targetValue)))
+    (otherLay : Layer) (otherTree : TreeIndex) (otherLeaf : LeafIndex)
+    (values : ChainIndex → Digest) (hne : otherLay ≠ lay) :
+    PreservesCoordinate probe.coordinate
+      (simulateQ (verifierHashImpl parameter)
+        (leafHash parameter otherLay otherTree otherLeaf values)) := by
+  unfold leafHash tweakableHash oracleHash
+  rw [simulateQ_bind]
+  simp only [HasQuery.instOfMonadLift_query, simulateQ_spec_query]
+  change PreservesCoordinate probe.coordinate
+    (verifierHashQuery parameter
+      (tweakableHashInput parameter (.leaf otherLay otherTree otherLeaf)
+        (leafPayload values)) >>= fun output => pure (truncateHash output))
+  exact (preservesCoordinate_verifierHashQuery_leaf_of_layer_ne parameter probe lay tree leafIdx
+    chainIdx targetStep targetValue hmatches otherLay otherTree otherLeaf (leafPayload values)
+      hne).bind fun _ => preservesCoordinate_pure probe.coordinate _
+
 theorem preservesCoordinate_simulateQ_verifierHashImpl_encode
     (parameter : PublicParameter) (coordinate : Coordinate)
     (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
@@ -3839,6 +4121,69 @@ theorem preservesCoordinate_simulateQ_verifierHashImpl_encode
       (stableOrdinaryInput_tweakableHashInput parameter (.encoding lay tree leafIdx) _
         (by trivial) (by simp) (by simp) (by simp))).bind fun _ =>
           preservesCoordinate_pure coordinate _
+
+theorem preservesCoordinate_simulateQ_verifierHashImpl_otsLeaf_of_layer_ne
+    (parameter : PublicParameter) (probe : Probe)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex)
+    (targetStep : ChainStep) (targetValue : Digest)
+    (hmatches : probe.MatchesInput parameter
+      (tweakableHashInput parameter (.chain lay tree leafIdx chainIdx targetStep)
+        (digestBytes targetValue)))
+    (otherLay : Layer) (otherTree : TreeIndex) (otherLeaf : LeafIndex)
+    (message : Digest) (counter : Counter) (values : ChainIndex → Digest)
+    (hne : otherLay ≠ lay) :
+    PreservesCoordinate probe.coordinate
+      (simulateQ (verifierHashImpl parameter)
+        (otsLeaf parameter otherLay otherTree otherLeaf message counter values)) := by
+  unfold otsLeaf
+  rw [simulateQ_bind]
+  exact (preservesCoordinate_simulateQ_verifierHashImpl_encode parameter probe.coordinate otherLay
+    otherTree otherLeaf message counter).bind fun encoded =>
+      match encoded with
+      | none => preservesCoordinate_pure probe.coordinate none
+      | some encoding => by
+          rw [simulateQ_bind]
+          exact (preservesCoordinate_simulateQ_sequenceFin (verifierHashImpl parameter)
+            probe.coordinate (fun index => recoverChain parameter otherLay otherTree otherLeaf
+              index (encoding index) (values index)) fun index =>
+                preservesCoordinate_simulateQ_verifierHashImpl_recoverChain_of_layer_ne parameter
+                  probe lay tree leafIdx chainIdx targetStep targetValue hmatches otherLay otherTree
+                    otherLeaf index (encoding index) (values index) hne).bind fun endpoints => by
+              rw [simulateQ_bind]
+              exact (preservesCoordinate_simulateQ_verifierHashImpl_leafHash_of_layer_ne parameter
+                probe lay tree leafIdx chainIdx targetStep targetValue hmatches otherLay otherTree
+                  otherLeaf endpoints hne).bind fun value =>
+                    preservesCoordinate_pure probe.coordinate (some value)
+
+theorem preservesCoordinate_simulateQ_verifierHashImpl_treeFold_of_layer_ne
+    (parameter : PublicParameter) (probe : Probe)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex)
+    (targetStep : ChainStep) (targetValue : Digest)
+    (hmatches : probe.MatchesInput parameter
+      (tweakableHashInput parameter (.chain lay tree leafIdx chainIdx targetStep)
+        (digestBytes targetValue)))
+    (otherLay : Layer) (otherTree : TreeIndex) (otherLeaf : LeafIndex)
+    (path : Nat → Digest) (hne : otherLay ≠ lay) :
+    ∀ levels value, levels ≤ maxLayerHeight →
+      PreservesCoordinate probe.coordinate
+        (simulateQ (verifierHashImpl parameter)
+          (treeFold parameter otherLay otherTree otherLeaf path levels value))
+  | 0, value, _ => by
+      rw [treeFold_zero_eq, simulateQ_pure]
+      exact preservesCoordinate_pure probe.coordinate value
+  | levels + 1, value, hlevels => by
+      rw [treeFold_succ_eq, simulateQ_bind]
+      exact (preservesCoordinate_simulateQ_verifierHashImpl_treeFold_of_layer_ne parameter probe
+        lay tree leafIdx chainIdx targetStep targetValue hmatches otherLay otherTree otherLeaf path
+          hne levels value (by omega)).bind fun current => by
+            let level : Fin maxLayerHeight := ⟨levels, by omega⟩
+            let nodeIdx : LeafIndex := ⟨otherLeaf.val / 2 ^ (levels + 1), by
+              exact lt_of_le_of_lt (Nat.div_le_self _ _) otherLeaf.isLt⟩
+            split <;>
+              exact (preservesCoordinate_verifierHashQuery_node_of_layer_ne parameter probe lay
+                tree leafIdx chainIdx targetStep targetValue hmatches otherLay otherTree level
+                  nodeIdx _ hne).bind fun output =>
+                    preservesCoordinate_pure probe.coordinate (truncateHash output)
 
 theorem verifierHashQuery_pendingHit_of_cached_correct_probe_of_opaque
     (parameter : PublicParameter) (table : Coordinate → HashOutput)
@@ -4406,6 +4751,582 @@ theorem simulateQ_probingHashImpl_ftsRecover_eq_ordinaryHashImpl
   exact simulateQ_probingHashImpl_tweakableHash_eq_ordinaryHashImpl parameter
     (.ftsRoots index) (ftsRootsPayload roots) (by trivial)
       (by simp) (by simp) (by simp)
+
+theorem simulateQ_verifierHashImpl_tweakableHash_eq_ordinaryHashImpl
+    (parameter : PublicParameter) (domain : HashDomain) (payload : HashInput)
+    (hinRange : domain.InRange)
+    (hchain : ∀ lay tree leafIdx chainIdx step,
+      domain ≠ .chain lay tree leafIdx chainIdx step)
+    (hleaf : ∀ lay tree leafIdx, domain ≠ .leaf lay tree leafIdx)
+    (hnode : ∀ lay tree level nodeIdx, domain ≠ .node lay tree level nodeIdx) :
+    simulateQ (verifierHashImpl parameter) (tweakableHash parameter domain payload) =
+      simulateQ ordinaryHashImpl (tweakableHash parameter domain payload) := by
+  unfold tweakableHash oracleHash
+  rw [simulateQ_bind, simulateQ_bind]
+  simp only [HasQuery.instOfMonadLift_query, simulateQ_spec_query, simulateQ_pure]
+  change (verifierHashQuery parameter (tweakableHashInput parameter domain payload) >>= _) = _
+  rw [verifierHashQuery_eq_splitHashQuery_of_stable parameter _
+    (stableOrdinaryInput_tweakableHashInput parameter domain payload hinRange
+      hchain hleaf hnode)]
+  rfl
+
+theorem simulateQ_verifierHashImpl_messageDigest_eq_ordinaryHashImpl
+    (parameter : PublicParameter) (root : Digest) (message : Message)
+    (randomness : Randomness) :
+    simulateQ (verifierHashImpl parameter)
+        (messageDigest parameter root message randomness) =
+      simulateQ ordinaryHashImpl
+        (messageDigest parameter root message randomness) := by
+  unfold messageDigest oracleHash
+  rw [simulateQ_bind, simulateQ_bind]
+  simp only [HasQuery.instOfMonadLift_query, simulateQ_spec_query, simulateQ_pure]
+  change (verifierHashQuery parameter
+    (tweakableHashInput parameter .message _) >>= _) = _
+  rw [verifierHashQuery_eq_splitHashQuery_of_stable parameter _
+    (stableOrdinaryInput_tweakableHashInput parameter .message _ (by trivial)
+      (by simp) (by simp) (by simp))]
+  rfl
+
+theorem simulateQ_verifierHashImpl_ftsLeafHash_eq_ordinaryHashImpl
+    (parameter : PublicParameter) (index : Index) (tree : FtsTree)
+    (leafIdx : FtsLeaf) (secret : Digest) :
+    simulateQ (verifierHashImpl parameter)
+        (ftsLeafHash parameter index tree leafIdx secret) =
+      simulateQ ordinaryHashImpl
+        (ftsLeafHash parameter index tree leafIdx secret) := by
+  unfold ftsLeafHash
+  exact simulateQ_verifierHashImpl_tweakableHash_eq_ordinaryHashImpl parameter
+    (.ftsLeaf index tree leafIdx) (digestBytes secret) (by trivial)
+      (by simp) (by simp) (by simp)
+
+theorem simulateQ_verifierHashImpl_ftsFold_eq_ordinaryHashImpl
+    (parameter : PublicParameter) (index : Index) (tree : FtsTree)
+    (leafIdx : FtsLeaf) (path : Fin ftsTreeHeight → Digest) :
+    ∀ levels value, levels ≤ ftsTreeHeight →
+      simulateQ (verifierHashImpl parameter)
+          (ftsFold parameter index tree leafIdx path levels value) =
+        simulateQ ordinaryHashImpl
+          (ftsFold parameter index tree leafIdx path levels value)
+  | 0, value, _ => by simp [ftsFold]
+  | levels + 1, value, hlevels => by
+      rw [ftsFold_succ_eq, simulateQ_bind, simulateQ_bind,
+        simulateQ_verifierHashImpl_ftsFold_eq_ordinaryHashImpl parameter index tree
+          leafIdx path levels value (by omega)]
+      apply bind_congr
+      intro current
+      split <;> split <;>
+        exact simulateQ_verifierHashImpl_tweakableHash_eq_ordinaryHashImpl parameter
+          (.ftsNode index tree (levels + 1) (leafIdx.val / 2 ^ (levels + 1))) _
+            (by
+              show levels + 1 < 2 ^ 32 ∧ leafIdx.val / 2 ^ (levels + 1) < 2 ^ 32
+              constructor
+              · have hheight : ftsTreeHeight < 2 ^ 32 := by
+                  norm_num [ftsTreeHeight]
+                omega
+              · have hleaf : leafIdx.val < 2 ^ 32 := by
+                  exact lt_of_lt_of_le leafIdx.isLt (by norm_num [ftsTreeHeight])
+                have hdiv := Nat.div_le_self leafIdx.val (2 ^ (levels + 1))
+                omega)
+            (by simp) (by simp) (by simp)
+
+theorem simulateQ_verifierHashImpl_sequenceFin_eq_ordinaryHashImpl
+    (parameter : PublicParameter) {n : Nat}
+    (computation : Fin n → OracleComp HashSpec alpha)
+    (hcomponent : ∀ position,
+      simulateQ (verifierHashImpl parameter) (computation position) =
+        simulateQ ordinaryHashImpl (computation position)) :
+    simulateQ (verifierHashImpl parameter) (sequenceFin computation) =
+      simulateQ ordinaryHashImpl (sequenceFin computation) := by
+  induction n with
+  | zero => simp [sequenceFin]
+  | succ n ih =>
+      rw [sequenceFin, simulateQ_bind, simulateQ_bind, hcomponent 0]
+      apply bind_congr
+      intro head
+      rw [simulateQ_bind, simulateQ_bind]
+      have htail := ih (fun position : Fin n => computation position.succ)
+        (fun position => hcomponent position.succ)
+      rw [htail]
+      simp only [simulateQ_pure]
+
+theorem simulateQ_verifierHashImpl_ftsRecover_eq_ordinaryHashImpl
+    (parameter : PublicParameter) (index : Index)
+    (leaves : DigestTree → FtsLeaf) (secrets : FtsTree → Digest)
+    (paths : FtsTree → Fin ftsTreeHeight → Digest) :
+    simulateQ (verifierHashImpl parameter)
+        (ftsRecover parameter index leaves secrets paths) =
+      simulateQ ordinaryHashImpl
+        (ftsRecover parameter index leaves secrets paths) := by
+  unfold ftsRecover
+  rw [simulateQ_bind, simulateQ_bind]
+  have hroots := simulateQ_verifierHashImpl_sequenceFin_eq_ordinaryHashImpl parameter
+    (fun tree => do
+      let leaf := leaves (ftsIndexOf tree)
+      let value ← ftsLeafHash parameter index tree leaf (secrets tree)
+      ftsFold parameter index tree leaf (paths tree) ftsTreeHeight value)
+    (fun tree => by
+      rw [simulateQ_bind, simulateQ_bind,
+        simulateQ_verifierHashImpl_ftsLeafHash_eq_ordinaryHashImpl]
+      apply bind_congr
+      intro value
+      exact simulateQ_verifierHashImpl_ftsFold_eq_ordinaryHashImpl parameter index tree
+        (leaves (ftsIndexOf tree)) (paths tree) ftsTreeHeight value le_rfl)
+  rw [hroots]
+  apply bind_congr
+  intro roots
+  exact simulateQ_verifierHashImpl_tweakableHash_eq_ordinaryHashImpl parameter
+    (.ftsRoots index) (ftsRootsPayload roots) (by trivial)
+      (by simp) (by simp) (by simp)
+
+set_option maxRecDepth 10000 in
+theorem ChainInvariant.not_finalized_false_of_bottom_verifyProbe_verifier
+    {f : QueryImpl HashSpec Id} {parameter : PublicParameter}
+    {table : Coordinate → HashOutput}
+    {ftsSecret : Index → FtsTree → FtsLeaf → Digest}
+    {targetCache : QueryCache HashSpec}
+    {initialState rawState completedState : LazyRevealProbe.State Coordinate}
+    {initialCache rawCache : SplitHashCache} {root : Digest} {forgery : Forgery}
+    {signingLog : QueryLog SigningSpec} {fuel remaining : Nat} {verified : Bool}
+    (hinvariant : ChainInvariant parameter
+      (CoveredChainCoordinate f targetCache
+        (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) signingLog)
+      initialState initialCache)
+    (hf : (ordinaryQueryCache rawCache).AgreesWithFn f)
+    (hcompletedTable : ∀ coordinate output,
+      completedState.values coordinate = some output → output = table coordinate)
+    (hrealizes : ∀ position : Position, IsOtsPosition position →
+      f (tableInput parameter table (.position position)) = table (.position position))
+    (hfinalize : (false, completedState) ∈ support
+      (LazyRevealProbe.finalizeDetailed rawState))
+    (hverify : LazyRevealProbe.RawResult.done rawState remaining
+        (verified, rawCache) ∈ support
+      (LazyRevealProbe.runRaw initialState fuel
+        ((simulateQ (verifierRomImpl parameter)
+          (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)).run
+            initialCache)))
+    (hprobe : VerifyProbeWitnessAt f targetCache
+      (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey)
+      signingLog forgery.message forgery.signature bottomLayer) : False := by
+  obtain ⟨digest, layerMessage, codeword, chainIdx, hdigit, probe, input, hinput,
+    hdigest, hadmissible, hencode, hverifierMessage, hhits, hmatches, _, _,
+    hnotCovered⟩ := hprobe
+  have hchain := probe.isChainCoordinate_of_matchesInput hmatches
+  have hcandidate : probe.candidate = truncateHash (table probe.coordinate) :=
+    hhits.trans (probe.target_eq_truncate_table_of_chain f parameter table ftsSecret hchain
+      hrealizes)
+  have hinitialValue := hinvariant.1.value_eq_none_of_not_allowed hchain hnotCovered
+  have hinitialNotRevealed := hinvariant.1.not_revealed_of_not_allowed hchain hnotCovered
+  have hrawTable : ∀ coordinate output, rawState.values coordinate = some output →
+      output = table coordinate := by
+    intro coordinate output hvalue
+    exact hcompletedTable coordinate output
+      (finalizeDetailedFrom_preserves_value rawState.coordinates.toList rawState completedState
+        coordinate output hvalue hfinalize)
+  rw [simulateQ_verifierRom_scheme_verify, verify_eq, simulateQ_bind,
+    StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hverify
+  obtain ⟨digestRaw, hdigestRaw, hafterDigest⟩ := hverify
+  cases digestRaw with
+  | stopped hit => simp at hafterDigest
+  | done digestState digestRemaining digestResult =>
+      rcases digestResult with ⟨sampledDigest, digestCache⟩
+      have hfDigest : (ordinaryQueryCache digestCache).AgreesWithFn f := by
+        intro query output hcached
+        apply hf
+        exact (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+          digestState digestCache digestRemaining rawState remaining verified rawCache output
+            hcached hafterDigest
+      have hdigestEval := (replay_of_mem_runRaw_verifierHashImpl f parameter
+        (messageDigest parameter root forgery.message forgery.signature.randomness)
+          initialState digestState initialCache digestCache fuel digestRemaining sampledDigest
+            hfDigest hdigestRaw).1
+      rw [hdigest] at hdigestEval
+      subst sampledDigest
+      have hdigestOrdinary := hdigestRaw
+      rw [simulateQ_verifierHashImpl_messageDigest_eq_ordinaryHashImpl] at hdigestOrdinary
+      have hdigestState := mem_runRaw_simulateQ_ordinaryHashImpl_projects
+        (messageDigest parameter root forgery.message forgery.signature.randomness)
+          initialState digestState initialCache digestCache fuel digestRemaining digest
+            hdigestOrdinary
+      simp only [hadmissible, not_true_eq_false, ↓reduceIte] at hafterDigest
+      rw [simulateQ_bind, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+        mem_support_bind_iff] at hafterDigest
+      obtain ⟨ftsRaw, hftsRaw, hafterFts⟩ := hafterDigest
+      cases ftsRaw with
+      | stopped hit => simp at hafterFts
+      | done ftsState ftsRemaining ftsResult =>
+          rcases ftsResult with ⟨ftsPublicKey, ftsCache⟩
+          have hfFts : (ordinaryQueryCache ftsCache).AgreesWithFn f := by
+            intro query output hcached
+            apply hf
+            exact (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+              ftsState ftsCache ftsRemaining rawState remaining verified rawCache output hcached
+                hafterFts
+          have hftsEval := (replay_of_mem_runRaw_verifierHashImpl f parameter
+            (ftsRecover parameter (digestIndex digest) (digestLeaves digest)
+              forgery.signature.ftsSecret forgery.signature.ftsPath)
+            digestState ftsState digestCache ftsCache digestRemaining ftsRemaining ftsPublicKey
+              hfFts hftsRaw).1
+          have hftsOrdinary := hftsRaw
+          rw [simulateQ_verifierHashImpl_ftsRecover_eq_ordinaryHashImpl] at hftsOrdinary
+          have hftsState := mem_runRaw_simulateQ_ordinaryHashImpl_projects
+            (ftsRecover parameter (digestIndex digest) (digestLeaves digest)
+              forgery.signature.ftsSecret forgery.signature.ftsPath)
+            digestState ftsState digestCache ftsCache digestRemaining ftsRemaining ftsPublicKey
+              hftsOrdinary
+          subst ftsPublicKey
+          simp only at hafterFts
+          rw [simulateQ_bind, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+            mem_support_bind_iff] at hafterFts
+          obtain ⟨layersRaw, hlayersRaw, hafterLayers⟩ := hafterFts
+          cases layersRaw with
+          | stopped hit => simp at hafterLayers
+          | done layersState layersRemaining layersResult =>
+              rcases layersResult with ⟨verifiedRoot, layersCache⟩
+              rw [show numLayers = bottomLayer.val + 1 by rfl, verifyLayers_succ_eq,
+                dif_pos bottomLayer.isLt, simulateQ_bind, StateT.run_bind,
+                LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hlayersRaw
+              obtain ⟨otsRaw, hotsRaw, hafterOts⟩ := hlayersRaw
+              cases otsRaw with
+              | stopped hit => simp at hafterOts
+              | done otsState otsRemaining otsResult =>
+                  rcases otsResult with ⟨leafResult, otsCache⟩
+                  have hfOts : (ordinaryQueryCache otsCache).AgreesWithFn f := by
+                    intro query output hcached
+                    apply hf
+                    have hcachedLayers :=
+                      (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+                        otsState otsCache otsRemaining layersState layersRemaining verifiedRoot
+                          layersCache output hcached hafterOts
+                    exact (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+                      layersState layersCache layersRemaining rawState remaining verified rawCache
+                        output hcachedLayers hafterLayers
+                  have hvaluesOtsLayers := LazyRevealProbe.valuesLE_of_mem_runRaw_done _ otsState
+                    layersState otsRemaining layersRemaining (verifiedRoot, layersCache) hafterOts
+                  have hvaluesLayersRaw := LazyRevealProbe.valuesLE_of_mem_runRaw_done _ layersState
+                    rawState layersRemaining remaining (verified, rawCache) hafterLayers
+                  have htableOts : ∀ coordinate output,
+                      otsState.values coordinate = some output → output = table coordinate := by
+                    intro coordinate output hvalue
+                    exact hrawTable coordinate output
+                      (hvaluesLayersRaw coordinate output
+                        (hvaluesOtsLayers coordinate output hvalue))
+                  have hlayerMessage := VerifierLayerMessage.bottom_message hverifierMessage
+                  rw [hlayerMessage] at hencode
+                  rw [hinput] at hmatches
+                  have hftsInitial : ftsState = initialState :=
+                    hftsState.1.trans hdigestState.1
+                  have hpendingOts :=
+                    simulateQ_verifierHashImpl_otsLeaf_pendingHit_of_correct_probe f parameter
+                      table probe bottomLayer (treeIndexAt (digestIndex digest) bottomLayer)
+                        (leafIndexAt (digestIndex digest) bottomLayer)
+                        (evalWithAnswerFn f
+                          (ftsRecover parameter (digestIndex digest) (digestLeaves digest)
+                            forgery.signature.ftsSecret forgery.signature.ftsPath))
+                        (forgery.signature.counter bottomLayer)
+                        (forgery.signature.chainValue bottomLayer) codeword chainIdx hdigit hencode
+                          ftsState otsState ftsCache otsCache ftsRemaining otsRemaining leafResult
+                            hmatches hcandidate (by simpa [hftsInitial] using hinitialValue)
+                            (by simpa [hftsInitial] using hinitialNotRevealed) hfOts htableOts
+                              hotsRaw
+                  have htableLayers : ∀ output,
+                      layersState.values probe.coordinate = some output →
+                        output = table probe.coordinate := by
+                    intro output hvalue
+                    exact hrawTable probe.coordinate output
+                      (hvaluesLayersRaw probe.coordinate output hvalue)
+                  have hpendingLayers := LazyRevealProbe.pendingHit_preserved_of_mem_runRaw_done _
+                    probe.coordinate (table probe.coordinate) otsState layersState otsRemaining
+                      layersRemaining (verifiedRoot, layersCache) hpendingOts.1 hpendingOts.2
+                        htableLayers hafterOts
+                  have hpendingRaw := LazyRevealProbe.pendingHit_preserved_of_mem_runRaw_done _
+                    probe.coordinate (table probe.coordinate) layersState rawState layersRemaining
+                      remaining (verified, rawCache) hpendingLayers.1 hpendingLayers.2
+                        (hrawTable probe.coordinate) hafterLayers
+                  exact finalizeDetailed_false_of_pending_hit table rawState completedState
+                    probe.coordinate hpendingRaw.1 hpendingRaw.2
+                      (hcompletedTable probe.coordinate) hfinalize
+
+set_option maxRecDepth 10000 in
+theorem ChainInvariant.not_finalized_false_of_middle_verifyProbe_verifier
+    {f : QueryImpl HashSpec Id} {parameter : PublicParameter}
+    {table : Coordinate → HashOutput}
+    {ftsSecret : Index → FtsTree → FtsLeaf → Digest}
+    {targetCache : QueryCache HashSpec}
+    {initialState rawState completedState : LazyRevealProbe.State Coordinate}
+    {initialCache rawCache : SplitHashCache} {root : Digest} {forgery : Forgery}
+    {signingLog : QueryLog SigningSpec} {fuel remaining : Nat} {verified : Bool}
+    (hinvariant : ChainInvariant parameter
+      (CoveredChainCoordinate f targetCache
+        (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) signingLog)
+      initialState initialCache)
+    (hf : (ordinaryQueryCache rawCache).AgreesWithFn f)
+    (hcompletedTable : ∀ coordinate output,
+      completedState.values coordinate = some output → output = table coordinate)
+    (hrealizes : ∀ position : Position, IsOtsPosition position →
+      f (tableInput parameter table (.position position)) = table (.position position))
+    (hfinalize : (false, completedState) ∈ support
+      (LazyRevealProbe.finalizeDetailed rawState))
+    (hverify : LazyRevealProbe.RawResult.done rawState remaining
+        (verified, rawCache) ∈ support
+      (LazyRevealProbe.runRaw initialState fuel
+        ((simulateQ (verifierRomImpl parameter)
+          (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)).run
+            initialCache)))
+    (hprobe : VerifyProbeWitnessAt f targetCache
+      (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey)
+      signingLog forgery.message forgery.signature middleLayer) : False := by
+  obtain ⟨digest, layerMessage, codeword, chainIdx, hdigit, probe, input, hinput,
+    hdigest, hadmissible, hencode, hverifierMessage, hhits, hmatches, _, _,
+    hnotCovered⟩ := hprobe
+  obtain ⟨bottomLeaf, hbottomLeaf, hlayerMessage⟩ :=
+    VerifierLayerMessage.middle_data hverifierMessage
+  rw [hinput] at hmatches
+  have hchain := probe.isChainCoordinate_of_matchesInput hmatches
+  have hcandidate : probe.candidate = truncateHash (table probe.coordinate) :=
+    hhits.trans (probe.target_eq_truncate_table_of_chain f parameter table ftsSecret hchain
+      hrealizes)
+  have hinitialValue := hinvariant.1.value_eq_none_of_not_allowed hchain hnotCovered
+  have hinitialNotRevealed := hinvariant.1.not_revealed_of_not_allowed hchain hnotCovered
+  have hrawTable : ∀ coordinate output, rawState.values coordinate = some output →
+      output = table coordinate := by
+    intro coordinate output hvalue
+    exact hcompletedTable coordinate output
+      (finalizeDetailedFrom_preserves_value rawState.coordinates.toList rawState completedState
+        coordinate output hvalue hfinalize)
+  rw [simulateQ_verifierRom_scheme_verify, verify_eq, simulateQ_bind,
+    StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hverify
+  obtain ⟨digestRaw, hdigestRaw, hafterDigest⟩ := hverify
+  cases digestRaw with
+  | stopped hit => simp at hafterDigest
+  | done digestState digestRemaining digestResult =>
+      rcases digestResult with ⟨sampledDigest, digestCache⟩
+      have hfDigest : (ordinaryQueryCache digestCache).AgreesWithFn f := by
+        intro query output hcached
+        apply hf
+        exact (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+          digestState digestCache digestRemaining rawState remaining verified rawCache output
+            hcached hafterDigest
+      have hdigestEval := (replay_of_mem_runRaw_verifierHashImpl f parameter
+        (messageDigest parameter root forgery.message forgery.signature.randomness)
+          initialState digestState initialCache digestCache fuel digestRemaining sampledDigest
+            hfDigest hdigestRaw).1
+      rw [hdigest] at hdigestEval
+      subst sampledDigest
+      have hdigestOrdinary := hdigestRaw
+      rw [simulateQ_verifierHashImpl_messageDigest_eq_ordinaryHashImpl] at hdigestOrdinary
+      have hdigestState := mem_runRaw_simulateQ_ordinaryHashImpl_projects
+        (messageDigest parameter root forgery.message forgery.signature.randomness)
+          initialState digestState initialCache digestCache fuel digestRemaining digest
+            hdigestOrdinary
+      simp only [hadmissible, not_true_eq_false, ↓reduceIte] at hafterDigest
+      rw [simulateQ_bind, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+        mem_support_bind_iff] at hafterDigest
+      obtain ⟨ftsRaw, hftsRaw, hafterFts⟩ := hafterDigest
+      cases ftsRaw with
+      | stopped hit => simp at hafterFts
+      | done ftsState ftsRemaining ftsResult =>
+          rcases ftsResult with ⟨ftsPublicKey, ftsCache⟩
+          have hfFts : (ordinaryQueryCache ftsCache).AgreesWithFn f := by
+            intro query output hcached
+            apply hf
+            exact (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+              ftsState ftsCache ftsRemaining rawState remaining verified rawCache output hcached
+                hafterFts
+          have hftsEval := (replay_of_mem_runRaw_verifierHashImpl f parameter
+            (ftsRecover parameter (digestIndex digest) (digestLeaves digest)
+              forgery.signature.ftsSecret forgery.signature.ftsPath)
+            digestState ftsState digestCache ftsCache digestRemaining ftsRemaining ftsPublicKey
+              hfFts hftsRaw).1
+          have hftsOrdinary := hftsRaw
+          rw [simulateQ_verifierHashImpl_ftsRecover_eq_ordinaryHashImpl] at hftsOrdinary
+          have hftsState := mem_runRaw_simulateQ_ordinaryHashImpl_projects
+            (ftsRecover parameter (digestIndex digest) (digestLeaves digest)
+              forgery.signature.ftsSecret forgery.signature.ftsPath)
+            digestState ftsState digestCache ftsCache digestRemaining ftsRemaining ftsPublicKey
+              hftsOrdinary
+          subst ftsPublicKey
+          simp only at hafterFts
+          rw [simulateQ_bind, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+            mem_support_bind_iff] at hafterFts
+          obtain ⟨layersRaw, hlayersRaw, hafterLayers⟩ := hafterFts
+          cases layersRaw with
+          | stopped hit => simp at hafterLayers
+          | done layersState layersRemaining layersResult =>
+              rcases layersResult with ⟨verifiedRoot, layersCache⟩
+              rw [show numLayers = bottomLayer.val + 1 by rfl, verifyLayers_succ_eq,
+                dif_pos bottomLayer.isLt, simulateQ_bind, StateT.run_bind,
+                LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hlayersRaw
+              obtain ⟨bottomOtsRaw, hbottomOtsRaw, hafterBottomOts⟩ := hlayersRaw
+              cases bottomOtsRaw with
+              | stopped hit => simp at hafterBottomOts
+              | done bottomOtsState bottomOtsRemaining bottomOtsResult =>
+                  rcases bottomOtsResult with ⟨bottomResult, bottomOtsCache⟩
+                  have hfBottomOts : (ordinaryQueryCache bottomOtsCache).AgreesWithFn f := by
+                    intro query output hcached
+                    apply hf
+                    have hcachedLayers :=
+                      (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+                        bottomOtsState bottomOtsCache bottomOtsRemaining layersState
+                          layersRemaining verifiedRoot layersCache output hcached hafterBottomOts
+                    exact (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+                      layersState layersCache layersRemaining rawState remaining verified rawCache
+                        output hcachedLayers hafterLayers
+                  have hbottomEval := (replay_of_mem_runRaw_verifierHashImpl f parameter
+                    (otsLeaf parameter bottomLayer
+                      (treeIndexAt (digestIndex digest) bottomLayer)
+                      (leafIndexAt (digestIndex digest) bottomLayer)
+                      (evalWithAnswerFn f
+                        (ftsRecover parameter (digestIndex digest) (digestLeaves digest)
+                          forgery.signature.ftsSecret forgery.signature.ftsPath))
+                      (forgery.signature.counter bottomLayer)
+                      (forgery.signature.chainValue bottomLayer))
+                    ftsState bottomOtsState ftsCache bottomOtsCache ftsRemaining
+                      bottomOtsRemaining bottomResult hfBottomOts hbottomOtsRaw).1
+                  rw [hbottomLeaf] at hbottomEval
+                  subst bottomResult
+                  have hbottomOtsCoordinate :=
+                    preservesCoordinate_simulateQ_verifierHashImpl_otsLeaf_of_layer_ne parameter
+                      probe middleLayer (treeIndexAt (digestIndex digest) middleLayer)
+                        (leafIndexAt (digestIndex digest) middleLayer) chainIdx
+                        ⟨(codeword chainIdx).val, hdigit⟩
+                        (forgery.signature.chainValue middleLayer chainIdx) hmatches bottomLayer
+                        (treeIndexAt (digestIndex digest) bottomLayer)
+                        (leafIndexAt (digestIndex digest) bottomLayer)
+                        (evalWithAnswerFn f
+                          (ftsRecover parameter (digestIndex digest) (digestLeaves digest)
+                            forgery.signature.ftsSecret forgery.signature.ftsPath))
+                        (forgery.signature.counter bottomLayer)
+                        (forgery.signature.chainValue bottomLayer) (by decide)
+                        ftsState ftsCache ftsRemaining bottomOtsState bottomOtsRemaining
+                          (some bottomLeaf) bottomOtsCache hbottomOtsRaw
+                  simp only at hafterBottomOts
+                  rw [simulateQ_bind, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+                    mem_support_bind_iff] at hafterBottomOts
+                  obtain ⟨bottomFoldRaw, hbottomFoldRaw, hafterBottomFold⟩ := hafterBottomOts
+                  cases bottomFoldRaw with
+                  | stopped hit => simp at hafterBottomFold
+                  | done bottomFoldState bottomFoldRemaining bottomFoldResult =>
+                      rcases bottomFoldResult with ⟨bottomRoot, bottomFoldCache⟩
+                      have hfBottomFold : (ordinaryQueryCache bottomFoldCache).AgreesWithFn f := by
+                        intro query output hcached
+                        apply hf
+                        have hcachedLayers :=
+                          (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+                            bottomFoldState bottomFoldCache bottomFoldRemaining layersState
+                              layersRemaining verifiedRoot layersCache output hcached
+                                hafterBottomFold
+                        exact
+                          (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+                            layersState layersCache layersRemaining rawState remaining verified
+                              rawCache output hcachedLayers hafterLayers
+                      have hbottomFoldEval :=
+                        (replay_of_mem_runRaw_verifierHashImpl f parameter
+                          (treeFold parameter bottomLayer
+                            (treeIndexAt (digestIndex digest) bottomLayer)
+                            (leafIndexAt (digestIndex digest) bottomLayer)
+                            (signaturePath forgery.signature bottomLayer)
+                            (layerHeight bottomLayer) bottomLeaf)
+                          bottomOtsState bottomFoldState bottomOtsCache bottomFoldCache
+                            bottomOtsRemaining bottomFoldRemaining bottomRoot hfBottomFold
+                              hbottomFoldRaw).1
+                      change foldValue f parameter bottomLayer
+                        (treeIndexAt (digestIndex digest) bottomLayer)
+                        (leafIndexAt (digestIndex digest) bottomLayer)
+                        (signaturePath forgery.signature bottomLayer) bottomLeaf
+                          (layerHeight bottomLayer) = bottomRoot at hbottomFoldEval
+                      rw [← hlayerMessage] at hbottomFoldEval
+                      subst bottomRoot
+                      have hbottomFoldCoordinate :=
+                        preservesCoordinate_simulateQ_verifierHashImpl_treeFold_of_layer_ne
+                          parameter probe middleLayer
+                          (treeIndexAt (digestIndex digest) middleLayer)
+                          (leafIndexAt (digestIndex digest) middleLayer) chainIdx
+                          ⟨(codeword chainIdx).val, hdigit⟩
+                          (forgery.signature.chainValue middleLayer chainIdx) hmatches bottomLayer
+                          (treeIndexAt (digestIndex digest) bottomLayer)
+                          (leafIndexAt (digestIndex digest) bottomLayer)
+                          (signaturePath forgery.signature bottomLayer) (by decide)
+                          (layerHeight bottomLayer) bottomLeaf (layerHeight_le bottomLayer)
+                          bottomOtsState bottomOtsCache bottomOtsRemaining bottomFoldState
+                            bottomFoldRemaining layerMessage bottomFoldCache hbottomFoldRaw
+                      simp only at hafterBottomFold
+                      rw [show bottomLayer.val = middleLayer.val + 1 by rfl,
+                        verifyLayers_succ_eq, dif_pos middleLayer.isLt, simulateQ_bind,
+                        StateT.run_bind, LazyRevealProbe.runRaw_bind,
+                        mem_support_bind_iff] at hafterBottomFold
+                      obtain ⟨middleOtsRaw, hmiddleOtsRaw, hafterMiddleOts⟩ :=
+                        hafterBottomFold
+                      cases middleOtsRaw with
+                      | stopped hit => simp at hafterMiddleOts
+                      | done middleOtsState middleOtsRemaining middleOtsResult =>
+                          rcases middleOtsResult with ⟨middleResult, middleOtsCache⟩
+                          have hfMiddleOts :
+                              (ordinaryQueryCache middleOtsCache).AgreesWithFn f := by
+                            intro query output hcached
+                            apply hf
+                            have hcachedLayers :=
+                              (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+                                middleOtsState middleOtsCache middleOtsRemaining layersState
+                                  layersRemaining verifiedRoot layersCache output hcached
+                                    hafterMiddleOts
+                            exact
+                              (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+                                layersState layersCache layersRemaining rawState remaining verified
+                                  rawCache output hcachedLayers hafterLayers
+                          have hvaluesMiddleLayers :=
+                            LazyRevealProbe.valuesLE_of_mem_runRaw_done _ middleOtsState
+                              layersState middleOtsRemaining layersRemaining
+                                (verifiedRoot, layersCache) hafterMiddleOts
+                          have hvaluesLayersRaw :=
+                            LazyRevealProbe.valuesLE_of_mem_runRaw_done _ layersState rawState
+                              layersRemaining remaining (verified, rawCache) hafterLayers
+                          have htableMiddle : ∀ coordinate output,
+                              middleOtsState.values coordinate = some output →
+                                output = table coordinate := by
+                            intro coordinate output hvalue
+                            exact hrawTable coordinate output
+                              (hvaluesLayersRaw coordinate output
+                                (hvaluesMiddleLayers coordinate output hvalue))
+                          have hftsInitial : ftsState = initialState :=
+                            hftsState.1.trans hdigestState.1
+                          have hmiddleInitialValue :
+                              bottomFoldState.values probe.coordinate = none := by
+                            rw [hbottomFoldCoordinate.1, hbottomOtsCoordinate.1, hftsInitial,
+                              hinitialValue]
+                          have hmiddleInitialNotRevealed :
+                              probe.coordinate ∉ bottomFoldState.revealed := by
+                            rw [hbottomFoldCoordinate.2, hbottomOtsCoordinate.2, hftsInitial]
+                            exact hinitialNotRevealed
+                          have hpendingMiddle :=
+                            simulateQ_verifierHashImpl_otsLeaf_pendingHit_of_correct_probe f
+                              parameter table probe middleLayer
+                                (treeIndexAt (digestIndex digest) middleLayer)
+                                (leafIndexAt (digestIndex digest) middleLayer) layerMessage
+                                (forgery.signature.counter middleLayer)
+                                (forgery.signature.chainValue middleLayer) codeword chainIdx hdigit
+                                hencode bottomFoldState middleOtsState bottomFoldCache
+                                middleOtsCache bottomFoldRemaining middleOtsRemaining middleResult
+                                hmatches hcandidate hmiddleInitialValue hmiddleInitialNotRevealed
+                                hfMiddleOts htableMiddle hmiddleOtsRaw
+                          have htableLayers : ∀ output,
+                              layersState.values probe.coordinate = some output →
+                                output = table probe.coordinate := by
+                            intro output hvalue
+                            exact hrawTable probe.coordinate output
+                              (hvaluesLayersRaw probe.coordinate output hvalue)
+                          have hpendingLayers :=
+                            LazyRevealProbe.pendingHit_preserved_of_mem_runRaw_done _
+                              probe.coordinate (table probe.coordinate) middleOtsState layersState
+                              middleOtsRemaining layersRemaining (verifiedRoot, layersCache)
+                              hpendingMiddle.1 hpendingMiddle.2 htableLayers hafterMiddleOts
+                          have hpendingRaw :=
+                            LazyRevealProbe.pendingHit_preserved_of_mem_runRaw_done _
+                              probe.coordinate (table probe.coordinate) layersState rawState
+                              layersRemaining remaining (verified, rawCache) hpendingLayers.1
+                              hpendingLayers.2 (hrawTable probe.coordinate) hafterLayers
+                          exact finalizeDetailed_false_of_pending_hit table rawState completedState
+                            probe.coordinate hpendingRaw.1 hpendingRaw.2
+                              (hcompletedTable probe.coordinate) hfinalize
 
 theorem relTriple_runRaw_splitUniformImpl
     (n : Nat) (state : LazyRevealProbe.State Coordinate)
