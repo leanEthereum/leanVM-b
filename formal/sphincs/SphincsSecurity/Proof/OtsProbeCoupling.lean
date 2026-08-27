@@ -391,6 +391,137 @@ theorem retainedCompletionAnswer_eq_fallback_of_decoded_missing
   exact tableAnswer_completedRealizedTable_eq_of_decoded_missing
     (splitFallback cache) parameter state baseStarts input position hots hposition hmissing
 
+theorem retainedCompletionAnswer_eq_fallback_or_exact_materialized
+    (parameter : PublicParameter) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (input : HashInput) :
+    retainedCompletionAnswer parameter state cache baseStarts input = splitFallback cache input ∨
+      ∃ position : Position,
+        IsOtsPosition position ∧
+          decodePosition? parameter input = some position ∧
+          input = tableInput parameter
+            (retainedCompletionTable parameter state cache baseStarts) (.position position) ∧
+          state.values (.position position) ≠ none := by
+  cases hposition : decodePosition? parameter input with
+  | none =>
+      left
+      unfold retainedCompletionAnswer tableAnswer
+      rw [hposition]
+      rfl
+  | some position =>
+      cases position with
+      | chain lay tree leafIdx chainIdx step =>
+          let position : Position := .chain lay tree leafIdx chainIdx step
+          by_cases hexact : input = tableInput parameter
+              (retainedCompletionTable parameter state cache baseStarts) (.position position)
+          · by_cases hvalue : state.values (.position position) = none
+            · left
+              exact retainedCompletionAnswer_eq_fallback_of_decoded_missing parameter state
+                cache baseStarts input position (by trivial) (by simp [position, hposition])
+                  hvalue
+            · right
+              exact ⟨position, by trivial, by simp [position], hexact, hvalue⟩
+          · left
+            unfold retainedCompletionAnswer tableAnswer
+            rw [hposition]
+            simp only [tableAnswerDecoded]
+            rw [if_neg hexact]
+      | leaf lay tree leafIdx =>
+          let position : Position := .leaf lay tree leafIdx
+          by_cases hexact : input = tableInput parameter
+              (retainedCompletionTable parameter state cache baseStarts) (.position position)
+          · by_cases hvalue : state.values (.position position) = none
+            · left
+              exact retainedCompletionAnswer_eq_fallback_of_decoded_missing parameter state
+                cache baseStarts input position (by trivial) (by simp [position, hposition])
+                  hvalue
+            · right
+              exact ⟨position, by trivial, by simp [position], hexact, hvalue⟩
+          · left
+            unfold retainedCompletionAnswer tableAnswer
+            rw [hposition]
+            simp only [tableAnswerDecoded]
+            rw [if_neg hexact]
+      | node lay tree level nodeIdx =>
+          let position : Position := .node lay tree level nodeIdx
+          by_cases hexact : input = tableInput parameter
+              (retainedCompletionTable parameter state cache baseStarts) (.position position)
+          · by_cases hvalue : state.values (.position position) = none
+            · left
+              exact retainedCompletionAnswer_eq_fallback_of_decoded_missing parameter state
+                cache baseStarts input position (by trivial) (by simp [position, hposition])
+                  hvalue
+            · right
+              exact ⟨position, by trivial, by simp [position], hexact, hvalue⟩
+          · left
+            unfold retainedCompletionAnswer tableAnswer
+            rw [hposition]
+            simp only [tableAnswerDecoded]
+            rw [if_neg hexact]
+      | ftsLeaf | ftsNode | ftsRoots =>
+          left
+          unfold retainedCompletionAnswer tableAnswer
+          rw [hposition]
+          rfl
+
+def ExactMaterializedCacheConsistent
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache) : Prop :=
+  ∀ (input : HashInput) (position : Position) (output : HashOutput),
+    IsOtsPosition position →
+    decodePosition? parameter input = some position →
+    input = tableInput parameter table (.position position) →
+    state.values (.position position) ≠ none →
+    cache (.ordinary input) = some output → output = table (.position position)
+
+theorem ordinaryQueryCache_agreesWithFn_retainedCompletionAnswer_of_exact_materialized
+    (parameter : PublicParameter) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (hexact : ExactMaterializedCacheConsistent parameter
+      (retainedCompletionTable parameter state cache baseStarts) state cache) :
+    (ordinaryQueryCache cache).AgreesWithFn
+      (retainedCompletionAnswer parameter state cache baseStarts) := by
+  intro input output hcached
+  rcases retainedCompletionAnswer_eq_fallback_or_exact_materialized parameter state cache
+      baseStarts input with hfallback | ⟨position, hots, hposition, hinput, hvalue⟩
+  · rw [hfallback]
+    change cache (.ordinary input) = some output at hcached
+    simp [splitFallback, hcached]
+  · rw [hinput, retainedCompletionAnswer_realizes parameter state cache baseStarts position hots]
+    change cache (.ordinary input) = some output at hcached
+    exact (hexact input position output hots hposition hinput hvalue hcached).symm
+
+theorem exactMaterializedCacheConsistent_of_ordinaryQueryCache_agreesWithFn
+    (parameter : PublicParameter) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (hagrees : (ordinaryQueryCache cache).AgreesWithFn
+      (retainedCompletionAnswer parameter state cache baseStarts)) :
+    ExactMaterializedCacheConsistent parameter
+      (retainedCompletionTable parameter state cache baseStarts) state cache := by
+  intro input position output hots _hposition hinput _hvalue hcached
+  have hcached' : ordinaryQueryCache cache input = some output := hcached
+  have hanswer := hagrees hcached'
+  rw [hinput, retainedCompletionAnswer_realizes parameter state cache baseStarts position hots]
+    at hanswer
+  exact hanswer.symm
+
+theorem ordinaryQueryCache_agreesWithFn_retainedCompletionAnswer_iff
+    (parameter : PublicParameter) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput) :
+    (ordinaryQueryCache cache).AgreesWithFn
+        (retainedCompletionAnswer parameter state cache baseStarts) ↔
+      ExactMaterializedCacheConsistent parameter
+        (retainedCompletionTable parameter state cache baseStarts) state cache := by
+  constructor
+  · exact exactMaterializedCacheConsistent_of_ordinaryQueryCache_agreesWithFn parameter state
+      cache baseStarts
+  · exact ordinaryQueryCache_agreesWithFn_retainedCompletionAnswer_of_exact_materialized
+      parameter state cache baseStarts
+
 noncomputable def realizedOtsSecret
     (chainStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput) :
     Layer → TreeIndex → LeafIndex → ChainIndex → Digest :=
@@ -5916,6 +6047,49 @@ theorem not_verifyProbe_of_retainedCompletion
     (retainedCompletionTable parameter completedState rawCache baseStarts) ftsSecret fuel
     remaining rawState completedState rawCache root forgery signingLog verified hfStable
     hfOrdinary hrawTable hcompletedTable hrealizes hresult hfinalize hprobe
+
+set_option maxRecDepth 10000 in
+theorem not_verifyProbe_of_retainedCompletion_of_exact_materialized
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (fuel remaining : Nat) (rawState completedState : LazyRevealProbe.State Coordinate)
+    (rawCache : SplitHashCache) (root : Digest) (forgery : Forgery)
+    (signingLog : QueryLog SigningSpec) (verified : Bool)
+    (hconsistent : HiddenConsistent rawState rawCache)
+    (hresult : LazyRevealProbe.RawResult.done rawState remaining
+        ((root, ((forgery, signingLog), verified)), rawCache) ∈ support
+      (LazyRevealProbe.runRaw (LazyRevealProbe.State.empty :
+          LazyRevealProbe.State Coordinate) fuel
+        ((maskedRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
+          emptySplitHashCache)))
+    (hfinalize : (false, completedState) ∈ support
+      (LazyRevealProbe.finalizeDetailed rawState))
+    (hexact : ∀ (input : HashInput) (position : Position) (output : HashOutput),
+      IsOtsPosition position →
+      decodePosition? parameter input = some position →
+      input = tableInput parameter
+        (retainedCompletionTable parameter completedState rawCache baseStarts)
+          (.position position) →
+      completedState.values (.position position) ≠ none →
+      rawCache (.ordinary input) = some output →
+      output = retainedCompletionTable parameter completedState rawCache baseStarts
+        (.position position))
+    (hprobe : VerifyProbeWitness
+      (retainedCompletionAnswer parameter completedState rawCache baseStarts)
+      (mergedCache parameter
+        (retainedCompletionTable parameter completedState rawCache baseStarts)
+        completedState.ensured rawCache)
+      (⟨parameter, root,
+        tableOtsSecret (retainedCompletionTable parameter completedState rawCache baseStarts),
+        ftsSecret⟩ : SecretKey)
+      signingLog forgery.message forgery.signature) : False := by
+  apply not_verifyProbe_of_retainedCompletion adversary parameter ftsSecret baseStarts fuel
+    remaining rawState completedState rawCache root forgery signingLog verified hconsistent
+    hresult hfinalize
+  · exact ordinaryQueryCache_agreesWithFn_retainedCompletionAnswer_of_exact_materialized
+      parameter completedState rawCache baseStarts hexact
+  · exact hprobe
 
 theorem relTriple_runRaw_splitUniformImpl
     (n : Nat) (state : LazyRevealProbe.State Coordinate)
