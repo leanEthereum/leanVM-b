@@ -94,6 +94,13 @@ theorem completedStartTable_update_base_of_missing
     completedStartTable (state.publish coordinate) base = completedStartTable state base := by
   rfl
 
+@[simp] theorem completedStartTable_addPending
+    (state : LazyRevealProbe.State Coordinate) (base : OtsSecretIndex → HashOutput)
+    (coordinate : Coordinate) (candidate : Digest) :
+    completedStartTable (state.addPending coordinate candidate) base =
+      completedStartTable state base := by
+  rfl
+
 def extendStartTable (table : OtsSecretIndex → HashOutput) : Coordinate → HashOutput
   | .chainStart lay tree leafIdx chainIdx => table ⟨lay, tree, leafIdx, chainIdx⟩
   | .position _ => 0
@@ -474,6 +481,69 @@ theorem evalDist_materialize_missing_start_clean
       apply bind_congr
       intro base
       simp [cont, completedStartTable, hmissing]
+    _ = 𝒟[do
+        let output ← ($ᵗ HashOutput : ProbComp HashOutput)
+        let base ← ($ᵗ (OtsSecretIndex → HashOutput) :
+          ProbComp (OtsSecretIndex → HashOutput))
+        cont (Function.update base index output) output] := hcell
+    _ = _ := by
+      apply congrArg evalDist
+      simp only [LazyRevealProbe.sampleHashOutput]
+      apply bind_congr
+      intro output
+      apply bind_congr
+      intro base
+      by_cases hhit : state.hitAt index.coordinate output
+      · simp [cont, hhit]
+      · simp only [cont, hhit, ↓reduceIte]
+        rw [completedStartTable_update_base_of_missing state base index output hmissing,
+          ← completedStartTable_materialize_coordinate]
+
+set_option maxRecDepth 100000 in
+theorem evalDist_materialize_missing_start_clean_cont {β : Type}
+    (state : LazyRevealProbe.State Coordinate) (index : OtsSecretIndex)
+    (hmissing : state.values index.coordinate = none)
+    (next : LazyRevealProbe.State Coordinate → (OtsSecretIndex → HashOutput) →
+      ProbComp (Option β)) :
+    𝒟[do
+        let base ← ($ᵗ (OtsSecretIndex → HashOutput) :
+          ProbComp (OtsSecretIndex → HashOutput))
+        let table := completedStartTable state base
+        let output := table index
+        if state.hitAt index.coordinate output then
+          pure none
+        else
+          next (state.materialize index.coordinate output) table] =
+      𝒟[do
+        let output ← LazyRevealProbe.sampleHashOutput
+        let base ← ($ᵗ (OtsSecretIndex → HashOutput) :
+          ProbComp (OtsSecretIndex → HashOutput))
+        if state.hitAt index.coordinate output then
+          pure none
+        else
+          next (state.materialize index.coordinate output)
+            (completedStartTable (state.materialize index.coordinate output) base)] := by
+  let cont := fun table : OtsSecretIndex → HashOutput => fun output : HashOutput =>
+    if state.hitAt index.coordinate output then
+      (pure none : ProbComp (Option β))
+    else
+      next (state.materialize index.coordinate output) (completedStartTable state table)
+  have hcell := evalDist_completionTable_bind_cell_extract
+    (β := Option β) index cont
+  calc
+    _ = 𝒟[do
+        let base ← ($ᵗ (OtsSecretIndex → HashOutput) :
+          ProbComp (OtsSecretIndex → HashOutput))
+        cont base (base index)] := by
+      apply congrArg evalDist
+      apply bind_congr
+      intro base
+      by_cases hhit : state.hitAt index.coordinate
+        (completedStartTable state base index)
+      · simp [cont, completedStartTable, hmissing]
+      · have hlookup : completedStartTable state base index = base index := by
+          simp [completedStartTable, hmissing]
+        simp only [cont, hlookup]
     _ = 𝒟[do
         let output ← ($ᵗ HashOutput : ProbComp HashOutput)
         let base ← ($ᵗ (OtsSecretIndex → HashOutput) :
