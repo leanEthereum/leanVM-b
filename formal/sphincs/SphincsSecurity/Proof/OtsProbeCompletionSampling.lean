@@ -157,4 +157,27 @@ theorem relTriple_sampledActualRetainedOtsHashTable_secrets
         left.2 = right.2)
     (f := fun result => (table, result)) (g := fun result => (otsSecret, result)) hpre
 
+theorem probEvent_sampledActualRetainedOtsHashTable_eq_secrets
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (event : (Layer → TreeIndex → LeafIndex → ChainIndex → Digest) →
+      (RetainedGameResult × QueryCache HashSpec) → Prop) :
+    Pr[fun result => event
+        (otsSecretTableEquiv.symm
+          (fun index => truncateHash (result.1 index))) result.2 |
+      sampledActualRetainedOtsHashTable adversary parameter ftsSecret] =
+    Pr[fun result => event result.1 result.2 |
+      sampledActualRetainedOtsSecrets adversary parameter ftsSecret] := by
+  have hrel := relTriple_sampledActualRetainedOtsHashTable_secrets
+    adversary parameter ftsSecret
+  apply le_antisymm
+  · apply probEvent_le_of_relTriple hrel
+    intro left right hrelation hevent
+    rw [hrelation.1, hrelation.2] at hevent
+    exact hevent
+  · apply probEvent_le_of_relTriple (relTriple_symm hrel)
+    intro right left hrelation hevent
+    rw [hrelation.1, hrelation.2]
+    exact hevent
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
