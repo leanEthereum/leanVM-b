@@ -7353,6 +7353,151 @@ theorem probingHashQuery_returns_table_of_available
               remaining output havailable htable hresult
       | ftsLeaf | ftsNode | ftsRoots => simp [IsOtsPosition] at hots
 
+noncomputable def chainInputSource (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) (step : ChainStep) : Coordinate :=
+  if hzero : step.val = 0 then
+    .chainStart lay tree leafIdx chainIdx
+  else
+    .position (.chain lay tree leafIdx chainIdx
+      ⟨step.val - 1, by have := step.isLt; omega⟩)
+
+noncomputable def chainInputProbe (table : Coordinate → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (chainIdx : ChainIndex) (step : ChainStep) : Probe :=
+  ⟨chainInputSource lay tree leafIdx chainIdx step,
+    truncateHash (table (chainInputSource lay tree leafIdx chainIdx step))⟩
+
+theorem chainInputProbe_matchesInput
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (chainIdx : ChainIndex) (step : ChainStep) :
+    (chainInputProbe table lay tree leafIdx chainIdx step).MatchesInput parameter
+      (tableInput parameter table
+        (.position (.chain lay tree leafIdx chainIdx step))) := by
+  by_cases hzero : step.val = 0
+  · simp only [chainInputProbe, chainInputSource, hzero, ↓reduceDIte, Probe.MatchesInput]
+    refine ⟨step, hzero, ?_⟩
+    simp [tableInput, tablePayload, hzero, Position.domain]
+  · have hpositive : 0 < step.val := Nat.pos_of_ne_zero hzero
+    let previous : ChainStep := ⟨step.val - 1, by have := step.isLt; omega⟩
+    have hnext : previous.val + 1 < chainLength - 1 := by
+      simp only [previous]
+      have := step.isLt
+      omega
+    simp only [chainInputProbe, chainInputSource, hzero, ↓reduceDIte, Probe.MatchesInput]
+    rw [dif_pos hnext]
+    refine ⟨step, ?_, ?_⟩
+    · omega
+    · simp [tableInput, tablePayload, hzero, Position.children, hpositive, tableValue,
+        Position.domain]
+
+@[simp] theorem chainInputProbe_candidate
+    (table : Coordinate → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) (step : ChainStep) :
+    (chainInputProbe table lay tree leafIdx chainIdx step).candidate =
+      truncateHash (table (chainInputSource lay tree leafIdx chainIdx step)) := rfl
+
+set_option maxRecDepth 10000 in
+theorem probingHashQuery_chain_returns_table_or_pending
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (chainIdx : ChainIndex) (step : ChainStep)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remainingFuel : Nat)
+    (output : HashOutput)
+    (hstateTable : ∀ coordinate cached,
+      state.values coordinate = some cached → cached = table coordinate)
+    (hfinalTable : ∀ coordinate cached,
+      finalState.values coordinate = some cached → cached = table coordinate)
+    (hrevealed : PublishedValues state)
+    (hresult : LazyRevealProbe.RawResult.done finalState remainingFuel
+        (output, finalCache) ∈ support
+      (LazyRevealProbe.runRaw state fuel
+        ((probingHashQuery parameter
+          (tableInput parameter table
+            (.position (.chain lay tree leafIdx chainIdx step)))).run cache))) :
+    output = table (.position (.chain lay tree leafIdx chainIdx step)) ∨
+      ∃ coordinate : Coordinate,
+        finalState.values coordinate = none ∧
+          finalState.hitAt coordinate (table coordinate) := by
+  let position : Position := .chain lay tree leafIdx chainIdx step
+  let input := tableInput parameter table (.position position)
+  let source := chainInputSource lay tree leafIdx chainIdx step
+  let candidate := chainInputProbe table lay tree leafIdx chainIdx step
+  have hmatches : candidate.MatchesInput parameter input := by
+    simpa [candidate, input, position] using
+      chainInputProbe_matchesInput parameter table lay tree leafIdx chainIdx step
+  have hdecode : decodeProbe? parameter input = some candidate :=
+    (decodeProbe?_eq_some_iff parameter input candidate).2 hmatches
+  have hposition : decodePosition? parameter input = some position :=
+    (decodePosition?_eq_some_iff parameter input position).2
+      ⟨tablePayload table position, rfl⟩
+  have hsource : candidate.coordinate = source := rfl
+  cases hvalue : state.values source with
+  | some value =>
+      left
+      have hvalue' : state.values source = some (table source) := by
+        rw [hvalue, hstateTable source value hvalue]
+      have havailable : TableInputAvailable table state (.position position) := by
+        by_cases hzero : step.val = 0
+        · simpa [TableInputAvailable, position, source, chainInputSource, hzero] using hvalue'
+        · have hpositive : 0 < step.val := Nat.pos_of_ne_zero hzero
+          simp only [position, TableInputAvailable, if_neg hzero]
+          intro child hchild
+          have hchildEq : .position child = source := by
+            simp only [Position.children, dif_pos hpositive,
+              List.mem_singleton] at hchild
+            subst child
+            simp [source, chainInputSource, hzero]
+          rw [hchildEq]
+          exact hvalue'
+      exact (probingHashQuery_returns_table_of_available parameter table position (by trivial)
+        state finalState cache finalCache fuel remainingFuel output havailable hfinalTable
+          (by simpa [input, position] using hresult)).1
+  | none =>
+      have hnotRevealed : source ∉ state.revealed := by
+        intro hsourceRevealed
+        exact (hrevealed source hsourceRevealed) hvalue
+      change LazyRevealProbe.RawResult.done finalState remainingFuel (output, finalCache) ∈
+        support (LazyRevealProbe.runRaw state fuel
+          ((probingHashQuery parameter input).run cache)) at hresult
+      unfold probingHashQuery at hresult
+      rw [hdecode, hposition, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+        mem_support_bind_iff] at hresult
+      obtain ⟨probeRaw, hprobe, hresolve⟩ := hresult
+      cases probeRaw with
+      | stopped hit => simp at hresolve
+      | done probeState probeRemaining probeResult =>
+          rcases probeResult with ⟨probed, probeCache⟩
+          change LazyRevealProbe.RawResult.done probeState probeRemaining
+              (probed, probeCache) ∈ support
+            (LazyRevealProbe.runRaw state fuel
+              (LazyRevealProbe.probeQuery candidate.coordinate candidate.candidate >>=
+                fun result => pure (result, cache))) at hprobe
+          rw [LazyRevealProbe.probeQuery,
+            LazyRevealProbe.runRaw_probe_query_bind] at hprobe
+          cases fuel with
+          | zero => simp at hprobe
+          | succ probeFuel =>
+              simp only at hprobe
+              rw [hsource, if_neg hnotRevealed] at hprobe
+              simp [LazyRevealProbe.runRaw] at hprobe
+              rcases hprobe with ⟨rfl, rfl, rfl, rfl⟩
+              right
+              refine ⟨source, ?_⟩
+              have hhit : (state.addPending source candidate.candidate).hitAt source
+                  (table source) := by
+                rw [LazyRevealProbe.State.hitAt, ← chainInputProbe_candidate table lay tree
+                  leafIdx chainIdx step]
+                exact LazyRevealProbe.State.pendingAt_addPending_self state source
+                  candidate.candidate
+              exact LazyRevealProbe.pendingHit_preserved_of_mem_runRaw_done
+                ((resolveKnownInput parameter candidate.outputCoordinate input).run cache)
+                  source (table source) (state.addPending source candidate.candidate) finalState
+                    probeRemaining remainingFuel (output, finalCache) (by
+                      simpa [LazyRevealProbe.State.addPending] using hvalue) hhit
+                        (hfinalTable source) hresolve
+
 set_option maxRecDepth 10000 in
 theorem probingHashQuery_node_returns_table_or_pending
     (parameter : PublicParameter) (table : Coordinate → HashOutput)
@@ -7511,8 +7656,8 @@ theorem probingHashQuery_leaf_returns_table_or_pending
           exact LazyRevealProbe.State.pendingAt_addPending_self state (.position child)
             (truncateHash (table (.position child)))
 
-def IsLeafOrNode : Position → Prop
-  | .leaf _ _ _ | .node _ _ _ _ => True
+def IsCanonicalOtsPosition : Position → Prop
+  | .chain _ _ _ _ _ | .leaf _ _ _ | .node _ _ _ _ => True
   | _ => False
 
 def CanonicalInputProtected (table : Coordinate → HashOutput)
@@ -7520,14 +7665,14 @@ def CanonicalInputProtected (table : Coordinate → HashOutput)
     (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache) : Prop :=
   cache (.ordinary input) = none ∨
     cache (.ordinary input) = some (table (.position position)) ∨
-      ∃ child : Position,
-        state.values (.position child) = none ∧
-          state.hitAt (.position child) (table (.position child))
+      ∃ coordinate : Coordinate,
+        state.values coordinate = none ∧
+          state.hitAt coordinate (table coordinate)
 
 set_option maxRecDepth 10000 in
 theorem canonicalInputProtected_probingHashQuery
     (parameter : PublicParameter) (table : Coordinate → HashOutput)
-    (input query : HashInput) (position : Position) (hkind : IsLeafOrNode position)
+    (input query : HashInput) (position : Position) (hkind : IsCanonicalOtsPosition position)
     (hinput : input = tableInput parameter table (.position position))
     (state finalState : LazyRevealProbe.State Coordinate)
     (cache finalCache : SplitHashCache) (fuel remaining : Nat) (output : HashSpec query)
@@ -7541,26 +7686,36 @@ theorem canonicalInputProtected_probingHashQuery
       support (LazyRevealProbe.runRaw state fuel
         ((probingHashQuery parameter query).run cache))) :
     CanonicalInputProtected table input position finalState finalCache := by
-  rcases hprotected with hnone | hexact | ⟨child, hmissing, hhit⟩
+  rcases hprotected with hnone | hexact | ⟨coordinate, hmissing, hhit⟩
   · by_cases heq : query = input
     · subst query
       have hlocal : output = table (.position position) ∨
-          ∃ child : Position,
-            finalState.values (.position child) = none ∧
-              finalState.hitAt (.position child) (table (.position child)) := by
+          ∃ coordinate : Coordinate,
+            finalState.values coordinate = none ∧
+              finalState.hitAt coordinate (table coordinate) := by
         subst input
         cases position with
+        | chain lay tree leafIdx chainIdx step =>
+            exact probingHashQuery_chain_returns_table_or_pending parameter table lay tree leafIdx
+              chainIdx step state finalState cache finalCache fuel remaining output hstateTable
+                hfinalTable hrevealed hresult
         | leaf lay tree leafIdx =>
-            exact probingHashQuery_leaf_returns_table_or_pending parameter table lay tree leafIdx
+            rcases probingHashQuery_leaf_returns_table_or_pending parameter table lay tree leafIdx
               state finalState cache finalCache fuel remaining output (by
                 intro child cached hcached
-                exact hstateTable (.position child) cached hcached) hfinalTable hrevealed hresult
+                exact hstateTable (.position child) cached hcached) hfinalTable hrevealed hresult with
+              houtput | ⟨child, hmissing, hhit⟩
+            · exact Or.inl houtput
+            · exact Or.inr ⟨.position child, hmissing, hhit⟩
         | node lay tree level nodeIdx =>
-            exact probingHashQuery_node_returns_table_or_pending parameter table lay tree level
+            rcases probingHashQuery_node_returns_table_or_pending parameter table lay tree level
               nodeIdx state finalState cache finalCache fuel remaining output (by
                 intro child cached hcached
-                exact hstateTable (.position child) cached hcached) hfinalTable hrevealed hresult
-        | chain | ftsLeaf | ftsNode | ftsRoots => simp [IsLeafOrNode] at hkind
+                exact hstateTable (.position child) cached hcached) hfinalTable hrevealed hresult with
+              houtput | ⟨child, hmissing, hhit⟩
+            · exact Or.inl houtput
+            · exact Or.inr ⟨.position child, hmissing, hhit⟩
+        | ftsLeaf | ftsNode | ftsRoots => simp [IsCanonicalOtsPosition] at hkind
       rcases hlocal with houtput | hpending
       · right
         left
@@ -7582,22 +7737,32 @@ theorem canonicalInputProtected_probingHashQuery
   · by_cases heq : query = input
     · subst query
       have hlocal : output = table (.position position) ∨
-          ∃ child : Position,
-            finalState.values (.position child) = none ∧
-              finalState.hitAt (.position child) (table (.position child)) := by
+          ∃ coordinate : Coordinate,
+            finalState.values coordinate = none ∧
+              finalState.hitAt coordinate (table coordinate) := by
         subst input
         cases position with
+        | chain lay tree leafIdx chainIdx step =>
+            exact probingHashQuery_chain_returns_table_or_pending parameter table lay tree leafIdx
+              chainIdx step state finalState cache finalCache fuel remaining output hstateTable
+                hfinalTable hrevealed hresult
         | leaf lay tree leafIdx =>
-            exact probingHashQuery_leaf_returns_table_or_pending parameter table lay tree leafIdx
+            rcases probingHashQuery_leaf_returns_table_or_pending parameter table lay tree leafIdx
               state finalState cache finalCache fuel remaining output (by
                 intro child cached hcached
-                exact hstateTable (.position child) cached hcached) hfinalTable hrevealed hresult
+                exact hstateTable (.position child) cached hcached) hfinalTable hrevealed hresult with
+              houtput | ⟨child, hmissing, hhit⟩
+            · exact Or.inl houtput
+            · exact Or.inr ⟨.position child, hmissing, hhit⟩
         | node lay tree level nodeIdx =>
-            exact probingHashQuery_node_returns_table_or_pending parameter table lay tree level
+            rcases probingHashQuery_node_returns_table_or_pending parameter table lay tree level
               nodeIdx state finalState cache finalCache fuel remaining output (by
                 intro child cached hcached
-                exact hstateTable (.position child) cached hcached) hfinalTable hrevealed hresult
-        | chain | ftsLeaf | ftsNode | ftsRoots => simp [IsLeafOrNode] at hkind
+                exact hstateTable (.position child) cached hcached) hfinalTable hrevealed hresult with
+              houtput | ⟨child, hmissing, hhit⟩
+            · exact Or.inl houtput
+            · exact Or.inr ⟨.position child, hmissing, hhit⟩
+        | ftsLeaf | ftsNode | ftsRoots => simp [IsCanonicalOtsPosition] at hkind
       rcases hlocal with houtput | hpending
       · right
         left
@@ -7620,10 +7785,10 @@ theorem canonicalInputProtected_probingHashQuery
   · right
     right
     have hpersist := LazyRevealProbe.pendingHit_preserved_of_mem_runRaw_done
-      ((probingHashQuery parameter query).run cache) (.position child)
-        (table (.position child)) state finalState fuel remaining (output, finalCache)
-          hmissing hhit (hfinalTable (.position child)) hresult
-    exact ⟨child, hpersist⟩
+      ((probingHashQuery parameter query).run cache) coordinate
+        (table coordinate) state finalState fuel remaining (output, finalCache)
+          hmissing hhit (hfinalTable coordinate) hresult
+    exact ⟨coordinate, hpersist⟩
 
 theorem canonicalInputProtected_of_cache_status_preserved
     (table : Coordinate → HashOutput) (input : HashInput) (position : Position)
@@ -7639,7 +7804,7 @@ theorem canonicalInputProtected_of_cache_status_preserved
     (hresult : LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈
       support (LazyRevealProbe.runRaw state fuel (computation.run cache))) :
     CanonicalInputProtected table input position finalState finalCache := by
-  rcases hprotected with hnone | hexact | ⟨child, hmissing, hhit⟩
+  rcases hprotected with hnone | hexact | ⟨coordinate, hmissing, hhit⟩
   · left
     exact habsence state cache fuel finalState remaining value finalCache hnone hresult
   · right
@@ -7649,9 +7814,9 @@ theorem canonicalInputProtected_of_cache_status_preserved
   · right
     right
     have hpersist := LazyRevealProbe.pendingHit_preserved_of_mem_runRaw_done
-      (computation.run cache) (.position child) (table (.position child)) state finalState fuel
-        remaining (value, finalCache) hmissing hhit (hfinalTable (.position child)) hresult
-    exact ⟨child, hpersist⟩
+      (computation.run cache) coordinate (table coordinate) state finalState fuel
+        remaining (value, finalCache) hmissing hhit (hfinalTable coordinate) hresult
+    exact ⟨coordinate, hpersist⟩
 
 theorem OrdinaryCachePreserving.entryPreserving
     {computation : StateT SplitHashCache
@@ -7663,9 +7828,9 @@ theorem OrdinaryCachePreserving.entryPreserving
   rw [hpreserves state cache fuel finalState remaining value finalCache hresult]
   exact hcached
 
-theorem not_stableOrdinaryInput_of_tableInput_leaf_or_node
+theorem not_stableOrdinaryInput_of_canonical_ots_tableInput
     (parameter : PublicParameter) (table : Coordinate → HashOutput)
-    (position : Position) (hkind : IsLeafOrNode position) :
+    (position : Position) (hkind : IsCanonicalOtsPosition position) :
     ¬StableOrdinaryInput parameter
       (tableInput parameter table (.position position)) := by
   intro hstable
@@ -7674,7 +7839,7 @@ theorem not_stableOrdinaryInput_of_tableInput_leaf_or_node
     (decodePosition?_eq_some_iff parameter _ position).2
       ⟨tablePayload table position, rfl⟩
   apply hstable.2 position hposition
-  cases position <;> simp [IsLeafOrNode, IsOtsPosition] at hkind ⊢
+  cases position <;> simp [IsCanonicalOtsPosition, IsOtsPosition] at hkind ⊢
 
 theorem canonicalInputProtected_splitUniformImpl
     (table : Coordinate → HashOutput) (input : HashInput) (position : Position)
@@ -7697,7 +7862,7 @@ theorem canonicalInputProtected_splitUniformImpl
 theorem canonicalInputProtected_maskedSigningImpl
     (parameter : PublicParameter) (table : Coordinate → HashOutput)
     (root : Digest) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (input : HashInput) (position : Position) (hkind : IsLeafOrNode position)
+    (input : HashInput) (position : Position) (hkind : IsCanonicalOtsPosition position)
     (hinput : input = tableInput parameter table (.position position))
     (message : SignRequest) (state finalState : LazyRevealProbe.State Coordinate)
     (cache finalCache : SplitHashCache) (fuel remaining : Nat)
@@ -7711,7 +7876,7 @@ theorem canonicalInputProtected_maskedSigningImpl
     CanonicalInputProtected table input position finalState finalCache := by
   have hnotStable : ¬StableOrdinaryInput parameter input := by
     subst input
-    exact not_stableOrdinaryInput_of_tableInput_leaf_or_node parameter table position hkind
+    exact not_stableOrdinaryInput_of_canonical_ots_tableInput parameter table position hkind
   exact canonicalInputProtected_of_cache_status_preserved table input position
     (maskedSigningImpl parameter root ftsSecret message)
       (preservesOrdinaryAbsence_maskedSigningImpl parameter root ftsSecret input hnotStable message)
@@ -7799,7 +7964,7 @@ theorem PreservesCanonicalInputProtectedImpl.simulateQ {spec : OracleSpec ι}
 theorem preservesCanonicalInputProtectedImpl_maskedExpandedAdversaryImpl
     (parameter : PublicParameter) (table : Coordinate → HashOutput)
     (root : Digest) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (input : HashInput) (position : Position) (hkind : IsLeafOrNode position)
+    (input : HashInput) (position : Position) (hkind : IsCanonicalOtsPosition position)
     (hinput : input = tableInput parameter table (.position position)) :
     PreservesCanonicalInputProtectedImpl table input position
       (maskedExpandedAdversaryImpl parameter root ftsSecret) := by
@@ -7834,7 +7999,7 @@ theorem preservesCanonicalInputProtectedImpl_maskedExpandedAdversaryImpl
 theorem canonicalInputProtected_simulateQ_maskedExpandedAdversaryImpl
     (parameter : PublicParameter) (table : Coordinate → HashOutput)
     (root : Digest) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (input : HashInput) (position : Position) (hkind : IsLeafOrNode position)
+    (input : HashInput) (position : Position) (hkind : IsCanonicalOtsPosition position)
     (hinput : input = tableInput parameter table (.position position))
     (computation : OracleComp (OracleWorld + SigningSpec) alpha)
     (state finalState : LazyRevealProbe.State Coordinate)
@@ -7859,7 +8024,7 @@ theorem canonicalInputProtected_before_verifier_of_mem_runRaw_maskedRetainedGame
     (adversary : Adversary) (parameter : PublicParameter)
     (table : Coordinate → HashOutput)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (input : HashInput) (position : Position) (hkind : IsLeafOrNode position)
+    (input : HashInput) (position : Position) (hkind : IsCanonicalOtsPosition position)
     (hinput : input = tableInput parameter table (.position position))
     (fuel remaining : Nat) (rawState : LazyRevealProbe.State Coordinate)
     (rawCache : SplitHashCache) (root : Digest) (forgery : Forgery)
@@ -7997,7 +8162,7 @@ def CanonicalCacheExactOrAbsent (table : Coordinate → HashOutput)
 
 theorem canonicalCacheExactOrAbsent_verifierHashQuery
     (parameter : PublicParameter) (table : Coordinate → HashOutput)
-    (input query : HashInput) (position : Position) (hkind : IsLeafOrNode position)
+    (input query : HashInput) (position : Position) (hkind : IsCanonicalOtsPosition position)
     (hinput : input = tableInput parameter table (.position position))
     (state finalState : LazyRevealProbe.State Coordinate)
     (cache finalCache : SplitHashCache) (fuel remaining : Nat) (output : HashSpec query)
@@ -8014,7 +8179,7 @@ theorem canonicalCacheExactOrAbsent_verifierHashQuery
       subst input
       right
       have hots : IsOtsPosition position := by
-        cases position <;> simp [IsLeafOrNode, IsOtsPosition] at hkind ⊢
+        cases position <;> simp [IsCanonicalOtsPosition, IsOtsPosition] at hkind ⊢
       have hreturns := verifierHashQuery_returns_table_of_uncached parameter table position hots
         state finalState cache finalCache fuel remaining output hnone hfinalTable hresult
       simpa [hreturns.1] using hreturns.2
@@ -8103,7 +8268,7 @@ theorem PreservesCanonicalCacheExactOrAbsentImpl.simulateQ {spec : OracleSpec ι
 
 theorem preservesCanonicalCacheExactOrAbsentImpl_verifierRomImpl
     (parameter : PublicParameter) (table : Coordinate → HashOutput)
-    (input : HashInput) (position : Position) (hkind : IsLeafOrNode position)
+    (input : HashInput) (position : Position) (hkind : IsCanonicalOtsPosition position)
     (hinput : input = tableInput parameter table (.position position)) :
     PreservesCanonicalCacheExactOrAbsentImpl table input position
       (verifierRomImpl parameter) := by
@@ -8129,11 +8294,11 @@ theorem preservesCanonicalCacheExactOrAbsentImpl_verifierRomImpl
           hresult
 
 set_option maxRecDepth 10000 in
-theorem cached_tableInput_eq_of_leaf_or_node_of_clean_finalize
+theorem cached_tableInput_eq_of_canonical_ots_of_clean_finalize
     (adversary : Adversary) (parameter : PublicParameter)
     (table : Coordinate → HashOutput)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (input : HashInput) (position : Position) (hkind : IsLeafOrNode position)
+    (input : HashInput) (position : Position) (hkind : IsCanonicalOtsPosition position)
     (hinput : input = tableInput parameter table (.position position))
     (fuel remaining : Nat)
     (rawState completedState : LazyRevealProbe.State Coordinate)
@@ -8161,7 +8326,7 @@ theorem cached_tableInput_eq_of_leaf_or_node_of_clean_finalize
     canonicalInputProtected_before_verifier_of_mem_runRaw_maskedRetainedGame adversary parameter
       table ftsSecret input position hkind hinput fuel remaining rawState rawCache root forgery
         signingLog verified hrawTable hresult
-  rcases hprotected with hnone | hexact | ⟨child, hmissing, hhit⟩
+  rcases hprotected with hnone | hexact | ⟨coordinate, hmissing, hhit⟩
   · have hterminal :=
       (preservesCanonicalCacheExactOrAbsentImpl_verifierRomImpl parameter table input position
         hkind hinput).simulateQ
@@ -8186,10 +8351,38 @@ theorem cached_tableInput_eq_of_leaf_or_node_of_clean_finalize
       ((simulateQ (verifierRomImpl parameter)
         (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)).run
           verifierCache)
-        (.position child) (table (.position child)) verifierState rawState verifierFuel remaining
-          (verified, rawCache) hmissing hhit (hrawTable (.position child)) hverify
-    exact (finalizeDetailed_false_of_pending_hit table rawState completedState (.position child)
-      hpersist.1 hpersist.2 (hcompletedTable (.position child)) hfinalize).elim
+        coordinate (table coordinate) verifierState rawState verifierFuel remaining
+          (verified, rawCache) hmissing hhit (hrawTable coordinate) hverify
+    exact (finalizeDetailed_false_of_pending_hit table rawState completedState coordinate
+      hpersist.1 hpersist.2 (hcompletedTable coordinate) hfinalize).elim
+
+set_option maxRecDepth 10000 in
+theorem exactMaterializedCacheConsistent_of_clean_finalize
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : Coordinate → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (fuel remaining : Nat)
+    (rawState completedState : LazyRevealProbe.State Coordinate)
+    (rawCache : SplitHashCache) (root : Digest) (forgery : Forgery)
+    (signingLog : QueryLog SigningSpec) (verified : Bool)
+    (hcompletedTable : ∀ coordinate cached,
+      completedState.values coordinate = some cached → cached = table coordinate)
+    (hresult : LazyRevealProbe.RawResult.done rawState remaining
+        ((root, ((forgery, signingLog), verified)), rawCache) ∈ support
+      (LazyRevealProbe.runRaw (LazyRevealProbe.State.empty :
+          LazyRevealProbe.State Coordinate) fuel
+        ((maskedRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
+          emptySplitHashCache)))
+    (hfinalize : (false, completedState) ∈ support
+      (LazyRevealProbe.finalizeDetailed rawState)) :
+    ExactMaterializedCacheConsistent parameter table completedState rawCache := by
+  intro input position output hots _ hinput _ hcached
+  have hkind : IsCanonicalOtsPosition position := by
+    cases position <;> simp [IsOtsPosition, IsCanonicalOtsPosition] at hots ⊢
+  exact cached_tableInput_eq_of_canonical_ots_of_clean_finalize adversary parameter table
+    ftsSecret input position hkind hinput fuel remaining rawState completedState rawCache root
+      forgery signingLog verified output hcompletedTable hresult hfinalize hcached
+
 theorem simulateQ_probingHashImpl_tweakableHash_eq_ordinaryHashImpl
     (parameter : PublicParameter) (domain : HashDomain) (payload : HashInput)
     (hinRange : domain.InRange)
@@ -9674,6 +9867,44 @@ theorem not_verifyProbe_of_retainedCompletion_of_exact_materialized
     hresult hfinalize
   · intro input _ position output hots hposition hinput hvalue hcached
     exact hexact input position output hots hposition hinput hvalue hcached
+  · exact hprobe
+
+set_option maxRecDepth 10000 in
+theorem not_verifyProbe_of_retainedCompletion_of_clean_finalize
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (fuel remaining : Nat) (rawState completedState : LazyRevealProbe.State Coordinate)
+    (rawCache : SplitHashCache) (root : Digest) (forgery : Forgery)
+    (signingLog : QueryLog SigningSpec) (verified : Bool)
+    (hconsistent : HiddenConsistent rawState rawCache)
+    (hresult : LazyRevealProbe.RawResult.done rawState remaining
+        ((root, ((forgery, signingLog), verified)), rawCache) ∈ support
+      (LazyRevealProbe.runRaw (LazyRevealProbe.State.empty :
+          LazyRevealProbe.State Coordinate) fuel
+        ((maskedRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
+          emptySplitHashCache)))
+    (hfinalize : (false, completedState) ∈ support
+      (LazyRevealProbe.finalizeDetailed rawState))
+    (hprobe : VerifyProbeWitness
+      (retainedCompletionAnswer parameter completedState rawCache baseStarts)
+      (mergedCache parameter
+        (retainedCompletionTable parameter completedState rawCache baseStarts)
+        completedState.ensured rawCache)
+      (⟨parameter, root,
+        tableOtsSecret (retainedCompletionTable parameter completedState rawCache baseStarts),
+        ftsSecret⟩ : SecretKey)
+      signingLog forgery.message forgery.signature) : False := by
+  obtain ⟨_, _, _, hcompletedTable, _⟩ :=
+    retainedCompletion_of_finalize parameter rawState completedState rawCache baseStarts
+      hconsistent hfinalize
+  apply not_verifyProbe_of_retainedCompletion_of_exact_materialized adversary parameter
+    ftsSecret baseStarts fuel remaining rawState completedState rawCache root forgery signingLog
+      verified hconsistent hresult hfinalize
+  · exact exactMaterializedCacheConsistent_of_clean_finalize adversary parameter
+      (retainedCompletionTable parameter completedState rawCache baseStarts) ftsSecret fuel
+        remaining rawState completedState rawCache root forgery signingLog verified
+          hcompletedTable hresult hfinalize
   · exact hprobe
 
 theorem relTriple_runRaw_splitUniformImpl
