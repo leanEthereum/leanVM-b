@@ -6793,7 +6793,7 @@ def ResolvedRunRel (parameter : PublicParameter)
       (result.table = table ∧ result.value.1 = value ∧
         ResolvedContextInvariant parameter table result.context
           (ordinaryQueryCache result.value.2) concreteCache) ∨
-      DoomedResolvedContext table result.context
+      (result.table = table ∧ DoomedResolvedContext table result.context)
 
 theorem relTriple_runResolvedFromTable_splitHashQuery_stable
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
@@ -6844,6 +6844,184 @@ def ResolvedStructuralRunRel (parameter : PublicParameter)
         (ResolvedContextInvariant parameter table result.context
             (ordinaryQueryCache result.value.2) concreteCache ∨
           DoomedResolvedContext table result.context)
+
+theorem ResolvedOrdinaryRunRel.to_resolvedRunRel
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {left : Option (ResolvedRunResult (alpha × SplitHashCache))}
+    {right : alpha × QueryCache HashSpec}
+    (hrelation : ResolvedOrdinaryRunRel parameter table left right) :
+    ResolvedRunRel parameter table left right := by
+  cases left with
+  | none => trivial
+  | some result => exact Or.inl hrelation
+
+theorem ResolvedStructuralRunRel.to_resolvedRunRel
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {left : Option (ResolvedRunResult (Digest × SplitHashCache))}
+    {right : Digest × QueryCache HashSpec}
+    (hrelation : ResolvedStructuralRunRel parameter table left right) :
+    ResolvedRunRel parameter table left right := by
+  cases left with
+  | none => trivial
+  | some result =>
+      rcases hrelation with ⟨htable, hvalue, hinvariant | hdoomed⟩
+      · exact Or.inl ⟨htable, hvalue, hinvariant⟩
+      · exact Or.inr ⟨htable, hdoomed⟩
+
+theorem relTriple_runResolvedFromTable_of_doomed
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha)
+    (right : ProbComp (alpha × QueryCache HashSpec))
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (hdoomed : DoomedResolvedContext table context) :
+    RelTriple
+      (runResolvedFromTable context fuel table (computation.run cache))
+      right (ResolvedRunRel parameter table) := by
+  have hbase := relTriple_true
+    (runResolvedFromTable context fuel table (computation.run cache)) right
+  have hsupported :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+      (fun result => result ∈ support
+        (runResolvedFromTable context fuel table (computation.run cache)))
+      (fun result hresult => hresult)
+  apply relTriple_post_mono hsupported
+  intro leftResult _ hrelation
+  rcases hrelation with ⟨_true, hsupport⟩
+  cases leftResult with
+  | none => trivial
+  | some result =>
+      have hcore := resolvedCore_of_mem_runResolvedFromTable (computation.run cache) context fuel
+        table result hdoomed.1 hdoomed.2.1 hsupport
+      have hstillDoomed := not_deferredCompletable_of_mem_runResolvedFromTable
+        (computation.run cache) context fuel table result hdoomed.1 hdoomed.2.1 hsupport
+          hdoomed.2.2
+      exact Or.inr ⟨hcore.1, hcore.2.1, hcore.2.2, hstillDoomed⟩
+
+theorem relTriple_runResolvedFromTable_bind_clean_or_doomed
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (left : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha)
+    (next : alpha → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) beta)
+    (right : ProbComp (alpha × QueryCache HashSpec))
+    (rightNext : alpha → QueryCache HashSpec →
+      ProbComp (beta × QueryCache HashSpec))
+    (hleft : RelTriple
+      (runResolvedFromTable context fuel table (left.run cache))
+      right (ResolvedRunRel parameter table))
+    (hnext : ∀ (result : ResolvedRunResult (alpha × SplitHashCache))
+      (value : alpha) (concreteCache : QueryCache HashSpec),
+      result.table = table → result.value.1 = value →
+      ResolvedContextInvariant parameter table result.context
+        (ordinaryQueryCache result.value.2) concreteCache →
+      RelTriple
+        (runResolvedFromTable result.context result.remaining result.table
+          ((next result.value.1).run result.value.2))
+        (rightNext value concreteCache)
+        (ResolvedRunRel parameter table)) :
+    RelTriple
+      (runResolvedFromTable context fuel table ((left >>= next).run cache))
+      (right >>= fun result => rightNext result.1 result.2)
+      (ResolvedRunRel parameter table) := by
+  rw [StateT.run_bind, runResolvedFromTable_bind]
+  apply relTriple_bind hleft
+  intro leftResult rightResult hrelation
+  cases leftResult with
+  | none =>
+      have hbase := relTriple_true
+        (pure (none : Option (ResolvedRunResult (beta × SplitHashCache))) :
+          ProbComp (Option (ResolvedRunResult (beta × SplitHashCache))))
+        (rightNext rightResult.1 rightResult.2)
+      have hsupported :=
+        SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+          (fun finalLeft => finalLeft = none) (by
+            intro finalLeft hsupport
+            simpa using hsupport)
+      apply relTriple_post_mono hsupported
+      intro finalLeft _ hfinal
+      rw [hfinal.2]
+      trivial
+  | some result =>
+      rcases hrelation with hclean | hdoomed
+      · exact hnext result rightResult.1 rightResult.2 hclean.1 hclean.2.1 hclean.2.2
+      · simpa [hdoomed.1] using
+          (relTriple_runResolvedFromTable_of_doomed parameter table
+            (next result.value.1) (rightNext rightResult.1 rightResult.2) result.context
+              result.remaining result.value.2 hdoomed.2)
+
+def ResolvedCouples (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (left : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha)
+    (right : StateT (QueryCache HashSpec) ProbComp alpha) : Prop :=
+  ∀ context fuel cache concreteCache,
+    ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache →
+    RelTriple
+      (runResolvedFromTable context fuel table (left.run cache))
+      (right.run concreteCache)
+      (ResolvedRunRel parameter table)
+
+theorem resolvedCouples_pure (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput) (value : alpha) :
+    ResolvedCouples parameter table
+      (pure value : StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate)) alpha)
+      (pure value : StateT (QueryCache HashSpec) ProbComp alpha) := by
+  intro context fuel cache concreteCache hinvariant
+  simp only [StateT.run_pure, runResolvedFromTable]
+  apply relTriple_pure_pure
+  exact Or.inl ⟨rfl, rfl, hinvariant⟩
+
+theorem ResolvedCouples.bind
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {left : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    {right : StateT (QueryCache HashSpec) ProbComp alpha}
+    {leftNext : alpha → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) beta}
+    {rightNext : alpha → StateT (QueryCache HashSpec) ProbComp beta}
+    (hleft : ResolvedCouples parameter table left right)
+    (hnext : ∀ value, ResolvedCouples parameter table (leftNext value) (rightNext value)) :
+    ResolvedCouples parameter table (left >>= leftNext) (right >>= rightNext) := by
+  intro context fuel cache concreteCache hinvariant
+  rw [StateT.run_bind]
+  apply relTriple_runResolvedFromTable_bind_clean_or_doomed parameter table context fuel cache
+    left leftNext (right.run concreteCache) (fun value cache => (rightNext value).run cache)
+    (hleft context fuel cache concreteCache hinvariant)
+  intro result value finalCache htable hvalue hresultInvariant
+  subst value
+  simpa [htable] using
+    (hnext result.value.1 result.context result.remaining result.value.2 finalCache
+      hresultInvariant)
+
+theorem resolvedCouples_sequenceFin
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput} {n : Nat}
+    (left : Fin n → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha)
+    (right : Fin n → StateT (QueryCache HashSpec) ProbComp alpha)
+    (hcomponent : ∀ index, ResolvedCouples parameter table (left index) (right index)) :
+    ResolvedCouples parameter table (sequenceFin left) (sequenceFin right) := by
+  induction n with
+  | zero =>
+      simpa [sequenceFin] using
+        (resolvedCouples_pure parameter table Fin.elim0 :
+          ResolvedCouples parameter table
+            (pure Fin.elim0 : StateT SplitHashCache
+              (OracleComp (LazyRevealProbe.World Coordinate)) (Fin 0 → alpha))
+            (pure Fin.elim0 : StateT (QueryCache HashSpec) ProbComp (Fin 0 → alpha)))
+  | succ n ih =>
+      rw [sequenceFin, sequenceFin]
+      apply (hcomponent 0).bind
+      intro head
+      apply (ih (fun index : Fin n => left index.succ)
+        (fun index : Fin n => right index.succ)
+        (fun index => hcomponent index.succ)).bind
+      intro tail
+      let assembled : Fin (n + 1) → alpha := Fin.cases head tail
+      exact resolvedCouples_pure parameter table assembled
 
 set_option maxRecDepth 100000 in
 theorem relTriple_runResolvedFromTable_revealPosition_chronological
@@ -7080,6 +7258,119 @@ theorem relTriple_runResolvedFromTable_maskedTreeNode_chronological
           (.node lay tree ⟨current, hcurrent⟩ (leafOfNat nodeIdx)) reservedContext fuel cache
             concreteCache hreservedInvariant hresolvable
       simpa [resolvedPositionComputation, hnodeVal] using hposition
+
+theorem relTriple_runResolvedFromTable_splitHashQuery_clean_or_doomed
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (input : HashInput) (hstable : StableOrdinaryInput parameter input)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (concreteCache : QueryCache HashSpec)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache) :
+    RelTriple
+      (runResolvedFromTable context fuel table
+        ((splitHashQuery (.ordinary input)).run cache))
+      ((randomOracle input).run concreteCache)
+      (ResolvedRunRel parameter table) := by
+  apply relTriple_post_mono
+    (relTriple_runResolvedFromTable_splitHashQuery_stable parameter table input hstable
+      context fuel cache concreteCache hinvariant)
+  intro leftResult rightResult hrelation
+  exact hrelation.to_resolvedRunRel
+
+theorem relTriple_runResolvedFromTable_maskedChainValue_clean_or_doomed
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (chainIdx : ChainIndex) (digit : Digit)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (concreteCache : QueryCache HashSpec)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache) :
+    RelTriple
+      (runResolvedFromTable context fuel table
+        ((maskedChainValue lay tree leafIdx chainIdx digit).run cache))
+      ((simulateQ (randomOracle : QueryImpl HashSpec _)
+        (chainWalk parameter lay tree leafIdx chainIdx 0 digit.val
+          (truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩)))).run concreteCache)
+      (ResolvedRunRel parameter table) := by
+  apply relTriple_post_mono
+    (relTriple_runResolvedFromTable_maskedChainValue_chronological parameter table lay tree
+      leafIdx chainIdx digit context fuel cache concreteCache hinvariant)
+  intro leftResult rightResult hrelation
+  exact hrelation.to_resolvedRunRel
+
+theorem relTriple_runResolvedFromTable_maskedTreeNode_clean_or_doomed
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (level nodeIdx : Nat)
+    (hlevel : level ≤ maxLayerHeight)
+    (hspan : 2 ^ level * (nodeIdx + 1) ≤ 2 ^ maxLayerHeight)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (concreteCache : QueryCache HashSpec)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache) :
+    RelTriple
+      (runResolvedFromTable context fuel table
+        ((maskedTreeNode lay tree level nodeIdx).run cache))
+      ((simulateQ (randomOracle : QueryImpl HashSpec _)
+        (treeNode parameter lay tree
+          (fun leafIdx chainIdx =>
+            truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩))
+          level nodeIdx)).run concreteCache)
+      (ResolvedRunRel parameter table) := by
+  apply relTriple_post_mono
+    (relTriple_runResolvedFromTable_maskedTreeNode_chronological parameter table lay tree level
+      nodeIdx hlevel hspan context fuel cache concreteCache hinvariant)
+  intro leftResult rightResult hrelation
+  exact hrelation.to_resolvedRunRel
+
+theorem resolvedCouples_splitHashQuery
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (input : HashInput) (hstable : StableOrdinaryInput parameter input) :
+    ResolvedCouples parameter table (splitHashQuery (.ordinary input))
+      (randomOracle input) := by
+  intro context fuel cache concreteCache hinvariant
+  exact relTriple_runResolvedFromTable_splitHashQuery_clean_or_doomed parameter table input
+    hstable context fuel cache concreteCache hinvariant
+
+theorem resolvedCouples_maskedChainValue
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (chainIdx : ChainIndex) (digit : Digit) :
+    ResolvedCouples parameter table (maskedChainValue lay tree leafIdx chainIdx digit)
+      (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (chainWalk parameter lay tree leafIdx chainIdx 0 digit.val
+          (truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩)))) := by
+  intro context fuel cache concreteCache hinvariant
+  exact relTriple_runResolvedFromTable_maskedChainValue_clean_or_doomed parameter table lay tree
+    leafIdx chainIdx digit context fuel cache concreteCache hinvariant
+
+theorem resolvedCouples_maskedTreeNode
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (level nodeIdx : Nat)
+    (hlevel : level ≤ maxLayerHeight)
+    (hspan : 2 ^ level * (nodeIdx + 1) ≤ 2 ^ maxLayerHeight) :
+    ResolvedCouples parameter table (maskedTreeNode lay tree level nodeIdx)
+      (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (treeNode parameter lay tree
+          (fun leafIdx chainIdx =>
+            truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩))
+          level nodeIdx)) := by
+  intro context fuel cache concreteCache hinvariant
+  exact relTriple_runResolvedFromTable_maskedTreeNode_clean_or_doomed parameter table lay tree
+    level nodeIdx hlevel hspan context fuel cache concreteCache hinvariant
+
+theorem resolvedCouples_maskedTreeRoot
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) :
+    ResolvedCouples parameter table (maskedTreeRoot lay tree)
+      (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (treeNode parameter lay tree
+          (fun leafIdx chainIdx =>
+            truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩))
+          (layerHeight lay) 0)) := by
+  unfold maskedTreeRoot
+  apply resolvedCouples_maskedTreeNode parameter table lay tree (layerHeight lay) 0
+    (layerHeight_le lay)
+  simpa using Nat.pow_le_pow_right (n := 2) (by omega) (layerHeight_le lay)
 
 def DeferredFreshOn (coordinates : List Coordinate) (context : DeferredContext) : Prop :=
   ∀ position : Position, Coordinate.position position ∈ coordinates →
