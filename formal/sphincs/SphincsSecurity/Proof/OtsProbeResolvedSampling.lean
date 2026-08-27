@@ -2139,6 +2139,29 @@ theorem evalDist_finalizeResolvedCoordinates_defer_position
         rw [hcompleted] at hmove
         exact hmove.symm
 
+theorem evalDist_resolveDeferredPositionValue_fresh_then_finalize
+    (position : Position) (coordinates : List Coordinate)
+    (context : DeferredContext) (table : OtsSecretIndex → HashOutput)
+    (hmem : Coordinate.position position ∈ coordinates)
+    (hstate : context.state.values (.position position) = none)
+    (hvalue : context.values position = none) :
+    evalDist (do
+        let resolved ← resolveDeferredPositionValue position context
+        (match resolved with
+        | none => (pure none : ProbComp (Option DeferredContext))
+        | some resolved => finalizeResolvedCoordinates coordinates
+            (resolved.toDeferredContext) table)) =
+      evalDist (finalizeResolvedCoordinates coordinates context table) := by
+  rw [resolveDeferredPositionValue_fresh position context hstate hvalue]
+  simp only [bind_assoc]
+  rw [evalDist_finalizeResolvedCoordinates_defer_position position coordinates context table
+    hmem hstate hvalue]
+  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+  intro output
+  by_cases hhit : context.state.hitAt (.position position) output
+  · simp [hhit]
+  · simp [hhit, DeferredContext.presamplePosition]
+
 def DeferredFreshOn (coordinates : List Coordinate) (context : DeferredContext) : Prop :=
   ∀ position : Position, Coordinate.position position ∈ coordinates →
     context.values position = none
