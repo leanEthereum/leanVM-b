@@ -1477,6 +1477,30 @@ theorem runResolvedFromTable_revealCoordinate
     runResolvedFromTable_reveal_query_bind]
   cases coordinate <;> simp [runResolvedFromTable]
 
+theorem runResolvedFromTable_revealCoordinateOutput
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (coordinate : Coordinate)
+    (cache : SplitHashCache) :
+    runResolvedFromTable context fuel table
+        ((revealCoordinateOutput coordinate).run cache) = (do
+      let resolved ← match coordinate with
+        | .chainStart lay tree leafIdx chainIdx =>
+            pure (resolveDeferredChainStart table ⟨lay, tree, leafIdx, chainIdx⟩ context)
+        | .position position => resolveDeferredReveal table position context
+      match resolved with
+      | none => pure none
+      | some resolved =>
+          pure (some ⟨
+            { state := context.state.materialize coordinate resolved.output
+              values := resolved.values },
+            fuel,
+            (resolved.output,
+              Function.update cache (.hidden coordinate) (some resolved.output)),
+            table⟩)) := by
+  rw [revealCoordinateOutput_run, LazyRevealProbe.revealQuery,
+    runResolvedFromTable_reveal_query_bind]
+  cases coordinate <;> simp [runResolvedFromTable]
+
 theorem runResolvedFromTable_revealPosition
     (context : DeferredContext) (fuel : Nat)
     (table : OtsSecretIndex → HashOutput) (position : Position)
@@ -6938,6 +6962,573 @@ noncomputable def resolvedPositionComputation
         (level.val + 1) nodeIdx.val
   | _ => pure 0
 
+def VisibleResolvedComputationsCached (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput) (context : DeferredContext)
+    (cache : QueryCache HashSpec) : Prop :=
+  ∀ position output, ResolvableOtsPosition position →
+    context.state.values (.position position) = some output →
+      CachedRun cache (fromCache cache)
+          (resolvedPositionComputation parameter table position) ∧
+        evalWithAnswerFn (fromCache cache)
+            (resolvedPositionComputation parameter table position) = truncateHash output
+
+theorem VisibleResolvedComputationsCached.mono
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {context : DeferredContext} {initial final : QueryCache HashSpec}
+    (hclosed : VisibleResolvedComputationsCached parameter table context initial)
+    (hle : initial ≤ final) :
+    VisibleResolvedComputationsCached parameter table context final := by
+  intro position output hresolvable hvalue
+  obtain ⟨hcached, heval⟩ := hclosed position output hresolvable hvalue
+  have hcachedFinal :=
+    (hcached.changeAnswerFn (agreesWithFn_fromCache initial)
+      (agreesWithFn_fromCache_of_le hle)).mono hle
+  refine ⟨hcachedFinal, ?_⟩
+  calc
+    evalWithAnswerFn (fromCache final)
+        (resolvedPositionComputation parameter table position) =
+      evalWithAnswerFn (fromCache initial)
+        (resolvedPositionComputation parameter table position) :=
+      hcached.eval_eq (agreesWithFn_fromCache initial)
+        (agreesWithFn_fromCache_of_le hle) |>.symm
+    _ = truncateHash output := heval
+
+theorem VisibleResolvedComputationsCached.of_state_values_eq
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {left right : DeferredContext} {cache : QueryCache HashSpec}
+    (hclosed : VisibleResolvedComputationsCached parameter table left cache)
+    (hvalues : right.state.values = left.state.values) :
+    VisibleResolvedComputationsCached parameter table right cache := by
+  intro position output hresolvable hvalue
+  apply hclosed position output hresolvable
+  rw [← hvalues]
+  exact hvalue
+
+theorem TableInputAvailable.changeTable
+    {left right : Coordinate → HashOutput}
+    {state : LazyRevealProbe.State Coordinate} {coordinate : Coordinate}
+    (havailable : TableInputAvailable left state coordinate)
+    (hagrees : ∀ other output, state.values other = some output → right other = output) :
+    TableInputAvailable right state coordinate := by
+  cases coordinate with
+  | chainStart lay tree leafIdx chainIdx => simp [TableInputAvailable] at havailable
+  | position position =>
+      cases position with
+      | chain lay tree leafIdx chainIdx step =>
+          by_cases hzero : step.val = 0
+          · have hvalue : state.values (.chainStart lay tree leafIdx chainIdx) =
+                some (left (.chainStart lay tree leafIdx chainIdx)) := by
+              simpa [TableInputAvailable, hzero] using havailable
+            simpa [TableInputAvailable, hzero, hagrees _ _ hvalue] using hvalue
+          · have havailable' : ∀ child,
+                child ∈ (Position.chain lay tree leafIdx chainIdx step).children →
+                  state.values (.position child) = some (left (.position child)) := by
+              simpa [TableInputAvailable, hzero] using havailable
+            simp only [TableInputAvailable, if_neg hzero]
+            intro child hchild
+            have hvalue := havailable' child hchild
+            simpa [hagrees _ _ hvalue] using hvalue
+      | leaf | node | ftsLeaf | ftsNode | ftsRoots =>
+          intro child hchild
+          have hvalue := havailable child hchild
+          simpa [hagrees _ _ hvalue] using hvalue
+
+theorem tableInput_eq_of_available
+    (parameter : PublicParameter) (left right : Coordinate → HashOutput)
+    (state : LazyRevealProbe.State Coordinate) (coordinate : Coordinate)
+    (hleft : TableInputAvailable left state coordinate)
+    (hright : TableInputAvailable right state coordinate) :
+    tableInput parameter left coordinate = tableInput parameter right coordinate := by
+  cases coordinate with
+  | chainStart lay tree leafIdx chainIdx => simp [TableInputAvailable] at hleft
+  | position position =>
+      cases position with
+      | chain lay tree leafIdx chainIdx step =>
+          by_cases hzero : step.val = 0
+          · have hleftValue : state.values (.chainStart lay tree leafIdx chainIdx) =
+                some (left (.chainStart lay tree leafIdx chainIdx)) := by
+              simpa [TableInputAvailable, hzero] using hleft
+            have hrightValue : state.values (.chainStart lay tree leafIdx chainIdx) =
+                some (right (.chainStart lay tree leafIdx chainIdx)) := by
+              simpa [TableInputAvailable, hzero] using hright
+            have heq := Option.some.inj (hleftValue.symm.trans hrightValue)
+            simp [tableInput, tablePayload, hzero, heq]
+          · have hchildren : ∀ child,
+                child ∈ (Position.chain lay tree leafIdx chainIdx step).children →
+                  left (.position child) = right (.position child) := by
+              have hleft' : ∀ child,
+                  child ∈ (Position.chain lay tree leafIdx chainIdx step).children →
+                    state.values (.position child) = some (left (.position child)) := by
+                simpa [TableInputAvailable, hzero] using hleft
+              have hright' : ∀ child,
+                  child ∈ (Position.chain lay tree leafIdx chainIdx step).children →
+                    state.values (.position child) = some (right (.position child)) := by
+                simpa [TableInputAvailable, hzero] using hright
+              intro child hchild
+              have hl := hleft' child hchild
+              have hr := hright' child hchild
+              exact Option.some.inj (hl.symm.trans hr)
+            have hmap :
+                (Position.chain lay tree leafIdx chainIdx step).children.map
+                    (tableValue left) =
+                  (Position.chain lay tree leafIdx chainIdx step).children.map
+                    (tableValue right) := by
+              apply List.map_congr_left
+              intro child hchild
+              simp only [tableValue, hchildren child hchild]
+            simp [tableInput, tablePayload, hzero, hmap]
+      | leaf lay tree leafIdx =>
+          have hchildren : ∀ child,
+              child ∈ (Position.leaf lay tree leafIdx).children →
+                left (.position child) = right (.position child) := by
+            intro child hchild
+            exact Option.some.inj ((hleft child hchild).symm.trans (hright child hchild))
+          have hmap :
+              (Position.leaf lay tree leafIdx).children.map (tableValue left) =
+                (Position.leaf lay tree leafIdx).children.map (tableValue right) := by
+            apply List.map_congr_left
+            intro child hchild
+            simp only [tableValue, hchildren child hchild]
+          simp [tableInput, tablePayload, hmap]
+      | node lay tree level nodeIdx =>
+          have hchildren : ∀ child,
+              child ∈ (Position.node lay tree level nodeIdx).children →
+                left (.position child) = right (.position child) := by
+            intro child hchild
+            exact Option.some.inj ((hleft child hchild).symm.trans (hright child hchild))
+          have hmap :
+              (Position.node lay tree level nodeIdx).children.map (tableValue left) =
+                (Position.node lay tree level nodeIdx).children.map (tableValue right) := by
+            apply List.map_congr_left
+            intro child hchild
+            simp only [tableValue, hchildren child hchild]
+          simp [tableInput, tablePayload, hmap]
+      | ftsLeaf index tree leafIdx =>
+          have hchildren : ∀ child,
+              child ∈ (Position.ftsLeaf index tree leafIdx).children →
+                left (.position child) = right (.position child) := by
+            intro child hchild
+            exact Option.some.inj ((hleft child hchild).symm.trans (hright child hchild))
+          have hmap :
+              (Position.ftsLeaf index tree leafIdx).children.map (tableValue left) =
+                (Position.ftsLeaf index tree leafIdx).children.map (tableValue right) := by
+            apply List.map_congr_left
+            intro child hchild
+            simp only [tableValue, hchildren child hchild]
+          simp [tableInput, tablePayload, hmap]
+      | ftsNode index tree level nodeIdx =>
+          have hchildren : ∀ child,
+              child ∈ (Position.ftsNode index tree level nodeIdx).children →
+                left (.position child) = right (.position child) := by
+            intro child hchild
+            exact Option.some.inj ((hleft child hchild).symm.trans (hright child hchild))
+          have hmap :
+              (Position.ftsNode index tree level nodeIdx).children.map (tableValue left) =
+                (Position.ftsNode index tree level nodeIdx).children.map (tableValue right) := by
+            apply List.map_congr_left
+            intro child hchild
+            simp only [tableValue, hchildren child hchild]
+          simp [tableInput, tablePayload, hmap]
+      | ftsRoots index =>
+          have hchildren : ∀ child,
+              child ∈ (Position.ftsRoots index).children →
+                left (.position child) = right (.position child) := by
+            intro child hchild
+            exact Option.some.inj ((hleft child hchild).symm.trans (hright child hchild))
+          have hmap :
+              (Position.ftsRoots index).children.map (tableValue left) =
+                (Position.ftsRoots index).children.map (tableValue right) := by
+            apply List.map_congr_left
+            intro child hchild
+            simp only [tableValue, hchildren child hchild]
+          simp [tableInput, tablePayload, hmap]
+
+theorem resolvedChainComputation_run_eq_finalQuery_of_available
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (completion : Coordinate → HashOutput) (context : DeferredContext)
+    (cache : QueryCache HashSpec) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) (step : ChainStep)
+    (input : HashInput)
+    (hcompletion : DeferredCompletion table context completion)
+    (havailable : TableInputAvailable completion context.state
+      (.position (.chain lay tree leafIdx chainIdx step)))
+    (hclosed : VisibleResolvedComputationsCached parameter table context cache)
+    (hinput : input = tableInput parameter completion
+      (.position (.chain lay tree leafIdx chainIdx step))) :
+    (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (resolvedPositionComputation parameter table
+          (.chain lay tree leafIdx chainIdx step))).run cache =
+      ((randomOracle input).run cache >>= fun result =>
+        pure (truncateHash result.1, result.2)) := by
+  by_cases hzero : step.val = 0
+  · have hstep : step = ⟨0, by norm_num [chainLength, winternitzBits]⟩ := Fin.ext hzero
+    have hstart : truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩) =
+        truncateHash (completion (.chainStart lay tree leafIdx chainIdx)) := by
+      simpa [OtsSecretIndex.coordinate] using congrArg truncateHash
+        (hcompletion.2.2.2 ⟨lay, tree, leafIdx, chainIdx⟩).symm
+    have hquery : tweakableHashInput parameter
+          (.chain lay tree leafIdx chainIdx step)
+          (digestBytes (truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩))) = input := by
+      rw [hinput, tableInput, tablePayload, if_pos hzero, Position.domain, hstart]
+    have hquery' : tweakableHashInput parameter
+          (.chain lay tree leafIdx chainIdx
+            ⟨0, by norm_num [chainLength, winternitzBits]⟩)
+          (digestBytes (truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩))) = input := by
+      simpa only [hstep] using hquery
+    rw [resolvedPositionComputation, hstep]
+    simp only [chainWalk, Nat.zero_add, pure_bind]
+    rw [dif_pos (show 0 < chainLength - 1 by norm_num [chainLength, winternitzBits])]
+    simp only [tweakableHash, simulateQ_bind, StateT.run_bind,
+      simulateQ_pure, StateT.run_pure]
+    rw [hquery']
+    have horacle : simulateQ (randomOracle : QueryImpl HashSpec _)
+        (oracleHash input) = randomOracle input := by
+      simpa only [oracleHash, HasQuery.instOfMonadLift_query, simulateQ_spec_query]
+    rw [horacle]
+  · have hpositive : 0 < step.val := Nat.pos_of_ne_zero hzero
+    let previous : ChainStep := ⟨step.val - 1, by omega⟩
+    have hpreviousMem : Position.chain lay tree leafIdx chainIdx previous ∈
+        (Position.chain lay tree leafIdx chainIdx step).children := by
+      simp [Position.children, hpositive, previous]
+    have havailable' : ∀ child,
+        child ∈ (Position.chain lay tree leafIdx chainIdx step).children →
+          context.state.values (.position child) = some (completion (.position child)) := by
+      simpa [TableInputAvailable, hzero] using havailable
+    have hpreviousState := havailable'
+      (.chain lay tree leafIdx chainIdx previous) hpreviousMem
+    have hprevious := hclosed (.chain lay tree leafIdx chainIdx previous)
+      (completion (.position (.chain lay tree leafIdx chainIdx previous)))
+      (by simp [ResolvableOtsPosition]) hpreviousState
+    have hprefixEq : step.val = previous.val + 1 := by
+      simp [previous]
+      omega
+    have hprefixComputation :
+        resolvedPositionComputation parameter table
+            (.chain lay tree leafIdx chainIdx previous) =
+          chainWalk parameter lay tree leafIdx chainIdx 0 step.val
+            (truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩)) := by
+      simp [resolvedPositionComputation, hprefixEq]
+    have hprefixRun := simulateQ_randomOracle_run_eq_pure_of_cachedRun
+      (agreesWithFn_fromCache cache) hprevious.1
+    rw [hprefixComputation] at hprefixRun
+    have hpreviousValue : evalWithAnswerFn (fromCache cache)
+          (chainWalk parameter lay tree leafIdx chainIdx 0 step.val
+            (truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩))) =
+        truncateHash (completion (.position
+          (.chain lay tree leafIdx chainIdx previous))) := by
+      rw [← hprefixComputation]
+      exact hprevious.2
+    have hquery : tweakableHashInput parameter
+          (.chain lay tree leafIdx chainIdx step)
+          (digestBytes (truncateHash (completion (.position
+            (.chain lay tree leafIdx chainIdx previous))))) = input := by
+      rw [hinput, tableInput, tablePayload, if_neg hzero, Position.domain]
+      simp [Position.children, hpositive, previous, tableValue]
+    rw [resolvedPositionComputation,
+      show step.val + 1 = step.val + 1 by rfl,
+      chainWalk_add parameter lay tree leafIdx chainIdx 0 step.val 1]
+    rw [simulateQ_bind, StateT.run_bind, hprefixRun]
+    simp only [pure_bind]
+    rw [hpreviousValue]
+    rw [chainWalk]
+    rw [chainWalk]
+    simp only [Nat.zero_add, Nat.add_zero, pure_bind]
+    rw [dif_pos (show step.val < chainLength - 1 by have := step.isLt; omega)]
+    simp only [tweakableHash, simulateQ_bind, StateT.run_bind,
+      simulateQ_pure, StateT.run_pure]
+    have hquery' : tweakableHashInput parameter
+          (.chain lay tree leafIdx chainIdx
+            ⟨step.val, by have := step.isLt; omega⟩)
+          (digestBytes (truncateHash (completion (.position
+            (.chain lay tree leafIdx chainIdx previous))))) = input := by
+      simpa only [Fin.eta] using hquery
+    rw [hquery']
+    have horacle : simulateQ (randomOracle : QueryImpl HashSpec _)
+        (oracleHash input) = randomOracle input := by
+      simpa only [oracleHash, HasQuery.instOfMonadLift_query, simulateQ_spec_query]
+    rw [horacle]
+
+theorem resolvedLeafComputation_run_eq_finalQuery_of_available
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (completion : Coordinate → HashOutput) (context : DeferredContext)
+    (cache : QueryCache HashSpec) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (input : HashInput)
+    (hcompletion : DeferredCompletion table context completion)
+    (havailable : TableInputAvailable completion context.state
+      (.position (.leaf lay tree leafIdx)))
+    (hclosed : VisibleResolvedComputationsCached parameter table context cache)
+    (hinput : input = tableInput parameter completion
+      (.position (.leaf lay tree leafIdx))) :
+    (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (resolvedPositionComputation parameter table (.leaf lay tree leafIdx))).run cache =
+      ((randomOracle input).run cache >>= fun result =>
+        pure (truncateHash result.1, result.2)) := by
+  let endpointPosition := fun chainIdx : ChainIndex =>
+    Position.chain lay tree leafIdx chainIdx Position.lastChainStep
+  have havailable' : ∀ chainIdx,
+      context.state.values (.position (endpointPosition chainIdx)) =
+        some (completion (.position (endpointPosition chainIdx))) := by
+    intro chainIdx
+    apply havailable (endpointPosition chainIdx)
+    simp [endpointPosition, Position.children]
+  have hcomponent : ∀ chainIdx,
+      CachedRun cache (fromCache cache)
+          (chainWalk parameter lay tree leafIdx chainIdx 0 (chainLength - 1)
+            (truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩))) ∧
+        evalWithAnswerFn (fromCache cache)
+            (chainWalk parameter lay tree leafIdx chainIdx 0 (chainLength - 1)
+              (truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩))) =
+          truncateHash (completion (.position (endpointPosition chainIdx))) := by
+    intro chainIdx
+    have hendpoint := hclosed (endpointPosition chainIdx)
+      (completion (.position (endpointPosition chainIdx)))
+      (by simp [endpointPosition, ResolvableOtsPosition]) (havailable' chainIdx)
+    simpa [endpointPosition, resolvedPositionComputation, Position.lastChainStep,
+      chainLength, winternitzBits] using hendpoint
+  have hpublicCached : CachedRun cache (fromCache cache)
+      (oneTimePublicKey parameter lay tree leafIdx
+        (fun chainIdx => truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩))) := by
+    unfold oneTimePublicKey
+    exact CachedRun.sequenceFin _ fun chainIdx => (hcomponent chainIdx).1
+  have hpublicRun := simulateQ_randomOracle_run_eq_pure_of_cachedRun
+    (agreesWithFn_fromCache cache) hpublicCached
+  have hpublicValue : evalWithAnswerFn (fromCache cache)
+        (oneTimePublicKey parameter lay tree leafIdx
+          (fun chainIdx => truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩))) =
+      fun chainIdx => truncateHash (completion (.position (endpointPosition chainIdx))) := by
+    rw [eval_oneTimePublicKey]
+    funext chainIdx
+    exact (hcomponent chainIdx).2
+  have hquery : tweakableHashInput parameter (.leaf lay tree leafIdx)
+        (leafPayload fun chainIdx =>
+          truncateHash (completion (.position (endpointPosition chainIdx)))) = input := by
+    have hleafInput := leafInput_eq_tableInput_of_completion parameter table lay tree leafIdx
+      context
+      (fun chainIdx => truncateHash (completion (.position (endpointPosition chainIdx))))
+      (fun chainIdx => by
+        refine ⟨completion (.position (endpointPosition chainIdx)), ?_, rfl⟩
+        unfold DeferredContext.positionValue
+        rw [havailable' chainIdx])
+      completion hcompletion
+    exact hleafInput.trans hinput.symm
+  rw [resolvedPositionComputation, simulateQ_bind, StateT.run_bind, hpublicRun]
+  simp only [pure_bind]
+  rw [hpublicValue]
+  simp only [leafHash, tweakableHash, simulateQ_bind, StateT.run_bind,
+    simulateQ_pure, StateT.run_pure]
+  rw [hquery]
+  have horacle : simulateQ (randomOracle : QueryImpl HashSpec _)
+      (oracleHash input) = randomOracle input := by
+    simpa only [oracleHash, HasQuery.instOfMonadLift_query, simulateQ_spec_query]
+  rw [horacle]
+
+theorem resolvedPositionComputation_deferredTreePosition
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (level nodeIdx : Nat)
+    (hlevel : level ≤ maxLayerHeight) (hnode : nodeIdx < 2 ^ maxLayerHeight) :
+    resolvedPositionComputation parameter table
+        (deferredTreePosition lay tree level nodeIdx hlevel) =
+      treeNode parameter lay tree
+        (fun leafIdx chainIdx =>
+          truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩)) level nodeIdx := by
+  cases level with
+  | zero => simp [deferredTreePosition, resolvedPositionComputation, treeNode_zero_eq]
+  | succ current =>
+      simp [deferredTreePosition, resolvedPositionComputation, leafOfNat,
+        Nat.mod_eq_of_lt hnode]
+
+theorem resolvableOtsPosition_deferredTreePosition
+    (lay : Layer) (tree : TreeIndex) (level nodeIdx : Nat)
+    (hlevel : level ≤ maxLayerHeight)
+    (hspan : 2 ^ level * (nodeIdx + 1) ≤ 2 ^ maxLayerHeight) :
+    ResolvableOtsPosition (deferredTreePosition lay tree level nodeIdx hlevel) := by
+  have hnode : nodeIdx < 2 ^ maxLayerHeight := by
+    have hpow : 0 < 2 ^ level := pow_pos (by omega) _
+    nlinarith
+  cases level with
+  | zero => simp [deferredTreePosition, ResolvableOtsPosition]
+  | succ current =>
+      simpa [deferredTreePosition, ResolvableOtsPosition, leafOfNat,
+        Nat.mod_eq_of_lt hnode] using hspan
+
+set_option maxRecDepth 100000 in
+theorem resolvedNodeComputation_run_eq_finalQuery_of_available
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (completion : Coordinate → HashOutput) (context : DeferredContext)
+    (cache : QueryCache HashSpec) (lay : Layer) (tree : TreeIndex)
+    (level : Fin maxLayerHeight) (nodeIdx : LeafIndex) (input : HashInput)
+    (hcompletion : DeferredCompletion table context completion)
+    (hresolvable : ResolvableOtsPosition (.node lay tree level nodeIdx))
+    (havailable : TableInputAvailable completion context.state
+      (.position (.node lay tree level nodeIdx)))
+    (hclosed : VisibleResolvedComputationsCached parameter table context cache)
+    (hinput : input = tableInput parameter completion
+      (.position (.node lay tree level nodeIdx))) :
+    (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (resolvedPositionComputation parameter table
+          (.node lay tree level nodeIdx))).run cache =
+      ((randomOracle input).run cache >>= fun result =>
+        pure (truncateHash result.1, result.2)) := by
+  let leftPosition := deferredTreePosition lay tree level.val (2 * nodeIdx.val)
+    (by have := level.isLt; omega)
+  let rightPosition := deferredTreePosition lay tree level.val (2 * nodeIdx.val + 1)
+    (by have := level.isLt; omega)
+  have hspan : 2 ^ (level.val + 1) * (nodeIdx.val + 1) ≤ 2 ^ maxLayerHeight := by
+    simpa [ResolvableOtsPosition] using hresolvable
+  have hleftSpan : 2 ^ level.val * (2 * nodeIdx.val + 1) ≤ 2 ^ maxLayerHeight := by
+    rw [pow_succ] at hspan
+    calc
+      2 ^ level.val * (2 * nodeIdx.val + 1) ≤
+          2 ^ level.val * (2 * (nodeIdx.val + 1)) := by
+        exact Nat.mul_le_mul_left _ (by omega)
+      _ = 2 ^ level.val * 2 * (nodeIdx.val + 1) := by ring
+      _ ≤ 2 ^ maxLayerHeight := hspan
+  have hrightSpan : 2 ^ level.val * (2 * nodeIdx.val + 1 + 1) ≤
+      2 ^ maxLayerHeight := by
+    rw [pow_succ] at hspan
+    calc
+      2 ^ level.val * (2 * nodeIdx.val + 1 + 1) =
+          2 ^ level.val * 2 * (nodeIdx.val + 1) := by ring
+      _ ≤ 2 ^ maxLayerHeight := hspan
+  have hleftNode : 2 * nodeIdx.val < 2 ^ maxLayerHeight := by
+    have hpow : 0 < 2 ^ level.val := pow_pos (by omega) _
+    nlinarith
+  have hrightNode : 2 * nodeIdx.val + 1 < 2 ^ maxLayerHeight := by
+    have hpow : 0 < 2 ^ level.val := pow_pos (by omega) _
+    nlinarith
+  have hchildren : (Position.node lay tree level nodeIdx).children =
+      [leftPosition, rightPosition] := by
+    dsimp [leftPosition, rightPosition]
+    by_cases hzero : level.val = 0
+    · have hlevelEq : level = ⟨0, by have := level.isLt; omega⟩ := Fin.ext hzero
+      rw [hlevelEq]
+      simp [Position.children, deferredTreePosition, hrightNode, leafOfNat,
+        Nat.mod_eq_of_lt hleftNode, Nat.mod_eq_of_lt hrightNode]
+    · obtain ⟨current, hcurrent⟩ := Nat.exists_eq_succ_of_ne_zero hzero
+      have hlevelEq : level = ⟨current + 1, by have := level.isLt; omega⟩ := Fin.ext hcurrent
+      rw [hlevelEq]
+      simp [Position.children, deferredTreePosition, hrightNode, leafOfNat,
+        Nat.mod_eq_of_lt hleftNode, Nat.mod_eq_of_lt hrightNode]
+  have hleftState : context.state.values (.position leftPosition) =
+      some (completion (.position leftPosition)) := by
+    apply havailable leftPosition
+    rw [hchildren]
+    simp
+  have hrightState : context.state.values (.position rightPosition) =
+      some (completion (.position rightPosition)) := by
+    apply havailable rightPosition
+    rw [hchildren]
+    simp
+  have hleftResolvable : ResolvableOtsPosition leftPosition := by
+    exact resolvableOtsPosition_deferredTreePosition lay tree level.val
+      (2 * nodeIdx.val) (by have := level.isLt; omega) hleftSpan
+  have hrightResolvable : ResolvableOtsPosition rightPosition := by
+    exact resolvableOtsPosition_deferredTreePosition lay tree level.val
+      (2 * nodeIdx.val + 1) (by have := level.isLt; omega) hrightSpan
+  have hleft := hclosed leftPosition (completion (.position leftPosition))
+    hleftResolvable hleftState
+  have hright := hclosed rightPosition (completion (.position rightPosition))
+    hrightResolvable hrightState
+  have hleftComputation := resolvedPositionComputation_deferredTreePosition parameter table
+    lay tree level.val (2 * nodeIdx.val) (by have := level.isLt; omega) hleftNode
+  have hrightComputation := resolvedPositionComputation_deferredTreePosition parameter table
+    lay tree level.val (2 * nodeIdx.val + 1) (by have := level.isLt; omega) hrightNode
+  have hleftCached : CachedRun cache (fromCache cache)
+      (treeNode parameter lay tree
+        (fun leafIdx chainIdx => truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩))
+        level.val (2 * nodeIdx.val)) := by
+    rw [← hleftComputation]
+    exact hleft.1
+  have hrightCached : CachedRun cache (fromCache cache)
+      (treeNode parameter lay tree
+        (fun leafIdx chainIdx => truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩))
+        level.val (2 * nodeIdx.val + 1)) := by
+    rw [← hrightComputation]
+    exact hright.1
+  have hleftRun := simulateQ_randomOracle_run_eq_pure_of_cachedRun
+    (agreesWithFn_fromCache cache) hleftCached
+  have hrightRun := simulateQ_randomOracle_run_eq_pure_of_cachedRun
+    (agreesWithFn_fromCache cache) hrightCached
+  have hleftValue : evalWithAnswerFn (fromCache cache)
+        (treeNode parameter lay tree
+          (fun leafIdx chainIdx => truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩))
+          level.val (2 * nodeIdx.val)) =
+      truncateHash (completion (.position leftPosition)) := by
+    rw [← hleftComputation]
+    exact hleft.2
+  have hrightValue : evalWithAnswerFn (fromCache cache)
+        (treeNode parameter lay tree
+          (fun leafIdx chainIdx => truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩))
+          level.val (2 * nodeIdx.val + 1)) =
+      truncateHash (completion (.position rightPosition)) := by
+    rw [← hrightComputation]
+    exact hright.2
+  have hleftPositionValue : context.positionValue leftPosition =
+      some (completion (.position leftPosition)) := by
+    unfold DeferredContext.positionValue
+    rw [hleftState]
+  have hrightPositionValue : context.positionValue rightPosition =
+      some (completion (.position rightPosition)) := by
+    unfold DeferredContext.positionValue
+    rw [hrightState]
+  have hquery : tweakableHashInput parameter
+        (.node lay tree (level.val + 1) nodeIdx.val)
+        (nodePayload (truncateHash (completion (.position leftPosition)))
+          (truncateHash (completion (.position rightPosition)))) = input := by
+    have hnodeInput := nodeInput_eq_tableInput_of_completion parameter table lay tree
+      level.val nodeIdx.val level.isLt hspan context
+      (truncateHash (completion (.position leftPosition)))
+      (truncateHash (completion (.position rightPosition)))
+      (completion (.position leftPosition)) (completion (.position rightPosition))
+      (by simpa [leftPosition] using hleftPositionValue)
+      (by simpa [rightPosition] using hrightPositionValue)
+      rfl rfl completion hcompletion
+    have htarget : Position.node lay tree ⟨level.val, level.isLt⟩
+        (leafOfNat nodeIdx.val) = Position.node lay tree level nodeIdx := by
+      simp [leafOfNat_val]
+    rw [htarget] at hnodeInput
+    exact hnodeInput.trans hinput.symm
+  rw [resolvedPositionComputation, treeNode_succ_eq, simulateQ_bind, StateT.run_bind,
+    hleftRun]
+  simp only [pure_bind]
+  rw [simulateQ_bind, StateT.run_bind, hrightRun]
+  simp only [pure_bind]
+  rw [hleftValue, hrightValue]
+  simp only [tweakableHash, simulateQ_bind, StateT.run_bind,
+    simulateQ_pure, StateT.run_pure]
+  rw [hquery]
+  have horacle : simulateQ (randomOracle : QueryImpl HashSpec _)
+      (oracleHash input) = randomOracle input := by
+    simpa only [oracleHash, HasQuery.instOfMonadLift_query, simulateQ_spec_query]
+  rw [horacle]
+
+theorem resolvedPositionComputation_run_eq_finalQuery_of_available
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (completion : Coordinate → HashOutput) (context : DeferredContext)
+    (cache : QueryCache HashSpec) (position : Position) (input : HashInput)
+    (hcompletion : DeferredCompletion table context completion)
+    (hresolvable : ResolvableOtsPosition position)
+    (havailable : TableInputAvailable completion context.state (.position position))
+    (hclosed : VisibleResolvedComputationsCached parameter table context cache)
+    (hinput : input = tableInput parameter completion (.position position)) :
+    (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (resolvedPositionComputation parameter table position)).run cache =
+      ((randomOracle input).run cache >>= fun result =>
+        pure (truncateHash result.1, result.2)) := by
+  cases position with
+  | chain lay tree leafIdx chainIdx step =>
+      exact resolvedChainComputation_run_eq_finalQuery_of_available parameter table completion
+        context cache lay tree leafIdx chainIdx step input hcompletion havailable hclosed hinput
+  | leaf lay tree leafIdx =>
+      exact resolvedLeafComputation_run_eq_finalQuery_of_available parameter table completion
+        context cache lay tree leafIdx input hcompletion havailable hclosed hinput
+  | node lay tree level nodeIdx =>
+      exact resolvedNodeComputation_run_eq_finalQuery_of_available parameter table completion
+        context cache lay tree level nodeIdx input hcompletion hresolvable havailable hclosed hinput
+  | ftsLeaf index tree leafIdx => simp [ResolvableOtsPosition] at hresolvable
+  | ftsNode index tree level nodeIdx => simp [ResolvableOtsPosition] at hresolvable
+  | ftsRoots index => simp [ResolvableOtsPosition] at hresolvable
+
 noncomputable def resolvedRevealComputation
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
     (position : Position) (input : HashInput) : OracleComp HashSpec Digest := by
@@ -7524,6 +8115,103 @@ theorem relTriple_runResolvedFromTable_revealResolvablePosition_chronological
             hcompletable⟩
   simpa [resolveDeferredReveal, hresolvable, materializeResolvedPosition] using hbound
 
+set_option maxRecDepth 100000 in
+theorem relTriple_runResolvedFromTable_revealResolvablePositionOutput_chronological
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (completion : Coordinate → HashOutput) (position : Position) (input : HashInput)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (concreteCache : QueryCache HashSpec)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache)
+    (hcompletion : DeferredCompletion table context completion)
+    (hots : IsOtsPosition position)
+    (hresolvable : ResolvableOtsPosition position)
+    (havailable : TableInputAvailable completion context.state (.position position))
+    (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hinput : input = tableInput parameter completion (.position position)) :
+    RelTriple
+      (runResolvedFromTable context fuel table
+        ((revealCoordinateOutput (.position position)).run cache))
+      ((randomOracle input).run concreteCache)
+      (ResolvedRunRel parameter table) := by
+  rw [runResolvedFromTable_revealCoordinateOutput]
+  have hresolve := relTriple_resolveDeferredPosition_chronological parameter table position
+    context (ordinaryQueryCache cache) concreteCache hinvariant hresolvable
+  have hrun := resolvedPositionComputation_run_eq_finalQuery_of_available parameter table
+    completion context concreteCache position input hcompletion hresolvable havailable hclosed
+      hinput
+  rw [hrun] at hresolve
+  have hsupported :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hresolve
+      (fun resolved => resolved ∈ support (resolveDeferredPosition table position context))
+      (fun resolved hresolved => hresolved)
+  let recover : Digest × QueryCache HashSpec → HashOutput × QueryCache HashSpec :=
+    fun result => ((result.2 input).getD 0, result.2)
+  have hcore : RelTriple
+      (resolveDeferredPosition table position context >>= fun resolved =>
+        match resolved with
+        | none => pure none
+        | some resolved =>
+            pure (some ⟨materializeResolvedPosition context position resolved, fuel,
+              (resolved.output,
+                Function.update cache (.hidden (.position position)) (some resolved.output)),
+              table⟩))
+      (((randomOracle input).run concreteCache >>= fun result =>
+        pure (truncateHash result.1, result.2)) >>= fun result => pure result)
+      (fun left right => ResolvedRunRel parameter table left (recover right)) := by
+    apply relTriple_bind hsupported
+    intro resolved queryResult hrelation
+    rcases hrelation with ⟨hresolvedRel, hresultSupport⟩
+    cases resolved with
+    | none =>
+        apply relTriple_pure_pure
+        trivial
+    | some resolved =>
+        apply relTriple_pure_pure
+        rcases queryResult with ⟨value, finalCache⟩
+        rcases hresolvedRel with ⟨_hvalue, hresultInvariant, hposition⟩
+        by_cases hcompletable : DeferredCompletable table
+            (materializeResolvedPosition context position resolved)
+        · have hcanonical : ∀ otherCompletion,
+              DeferredCompletion table resolved.toDeferredContext otherCompletion →
+                input = tableInput parameter otherCompletion (.position position) := by
+            intro otherCompletion hotherCompletion
+            have horiginal := hotherCompletion.of_resolveDeferredPosition
+              hinvariant.2.1.valuesConsistent hinvariant.2.2.1 position resolved hresultSupport
+            have hotherAvailable := havailable.changeTable horiginal.1
+            exact hinput.trans (tableInput_eq_of_available parameter completion otherCompletion
+              context.state (.position position) havailable hotherAvailable)
+          have hcached : finalCache input = some resolved.output :=
+            hresultInvariant.concreteCache_eq_of_positionValue position hots resolved.output
+              hposition input hcanonical
+          refine Or.inl ⟨rfl, ?_, ?_⟩
+          · simp [hcached]
+          · rw [ordinaryQueryCache_update_hidden]
+            exact hinvariant.materialize_resolvedReveal position resolved
+              (by simpa [resolveDeferredReveal, hresolvable] using hresultSupport)
+              hresultInvariant hcompletable
+        · refine Or.inr ⟨rfl, ?_⟩
+          exact ⟨
+            hinvariant.2.1.valuesConsistent.materializeResolvedPosition_of table position
+              resolved (by simpa [resolveDeferredReveal, hresolvable] using hresultSupport),
+            by simpa [materializeResolvedPosition] using
+              hinvariant.2.2.1.materialize_position position resolved.output,
+            hcompletable⟩
+  have hmapped := relTriple_map
+    (R := ResolvedRunRel parameter table) (f := id) (g := recover) hcore
+  have hrecover : recover <$> (((randomOracle input).run concreteCache >>= fun result =>
+        pure (truncateHash result.1, result.2)) >>= fun result => pure result) =
+      (randomOracle input).run concreteCache := by
+    cases hcache : concreteCache input with
+    | none =>
+        rw [QueryImpl.withCaching_run_none uniformSampleImpl hcache]
+        simp [recover, QueryCache.cacheQuery_self]
+    | some output =>
+        rw [QueryImpl.withCaching_run_some uniformSampleImpl hcache]
+        simp [recover, hcache]
+  rw [hrecover] at hmapped
+  simpa [resolveDeferredReveal, hresolvable, materializeResolvedPosition] using hmapped
+
 theorem relTriple_runResolvedFromTable_revealChainStart_chronological
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
     (index : OtsSecretIndex) (context : DeferredContext) (fuel : Nat)
@@ -7924,6 +8612,67 @@ theorem runResolvedFromTable_peekTableInput_of_unavailable
       | ftsLeaf index tree leafIdx => simpa [IsOtsPosition] using hots _ rfl
       | ftsNode index tree level nodeIdx => simpa [IsOtsPosition] using hots _ rfl
       | ftsRoots index => simpa [IsOtsPosition] using hots _ rfl
+
+set_option maxRecDepth 100000 in
+theorem relTriple_runResolvedFromTable_resolveKnownInput_completionCanonical
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (completion : Coordinate → HashOutput) (position : Position) (input : HashInput)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (concreteCache : QueryCache HashSpec)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache)
+    (hcompletion : DeferredCompletion table context completion)
+    (hots : IsOtsPosition position)
+    (hresolvable : ResolvableOtsPosition position)
+    (havailable : TableInputAvailable completion context.state (.position position))
+    (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hinput : input = tableInput parameter completion (.position position)) :
+    RelTriple
+      (runResolvedFromTable context fuel table
+        ((resolveKnownInput parameter (.position position) input).run cache))
+      ((randomOracle input).run concreteCache)
+      (ResolvedRunRel parameter table) := by
+  unfold resolveKnownInput
+  rw [StateT.run_bind, runResolvedFromTable_bind,
+    runResolvedFromTable_peekTableInput_of_available parameter completion context fuel table
+      cache (.position position) havailable]
+  simp only [pure_bind]
+  rw [if_pos hinput.symm]
+  change RelTriple
+      (runResolvedFromTable context fuel table
+        ((revealCoordinateOutput (.position position) >>= fun output =>
+          publishOrdinaryInput (.position position) input output).run cache))
+      ((randomOracle input).run concreteCache)
+      (ResolvedRunRel parameter table)
+  rw [StateT.run_bind, runResolvedFromTable_bind]
+  have hreveal :=
+    relTriple_runResolvedFromTable_revealResolvablePositionOutput_chronological parameter table
+      completion position input context fuel cache concreteCache hinvariant hcompletion hots
+        hresolvable havailable hclosed hinput
+  have hsupported :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hreveal
+  rw [show (randomOracle input).run concreteCache =
+      ((randomOracle input).run concreteCache >>= fun result => pure result) by simp]
+  apply relTriple_bind hsupported
+  intro leftResult rightResult hrelation
+  rcases hrelation with ⟨hrelation, hrightSupport⟩
+  cases leftResult with
+  | none =>
+      apply relTriple_pure_pure
+      trivial
+  | some result =>
+      rcases hrelation with hclean | hdoomed
+      · have hcached : rightResult.2 input = some rightResult.1 :=
+          randomOracle_run_output_cached input concreteCache rightResult.2 rightResult.1
+            hrightSupport
+        simpa [hclean.1, hclean.2.1] using
+          (relTriple_runResolvedFromTable_publishOrdinaryInput parameter table
+            (.position position) input rightResult.1 result.context result.remaining
+              result.value.2 rightResult.2 hclean.2.2 hcached)
+      · simpa [hdoomed.1] using
+          (relTriple_runResolvedFromTable_of_doomed parameter table
+            (publishOrdinaryInput (.position position) input result.value.1)
+            (pure rightResult) result.context result.remaining result.value.2 hdoomed.2)
 
 theorem relTriple_runResolvedFromTable_resolveKnownInput_completionOrdinary
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)

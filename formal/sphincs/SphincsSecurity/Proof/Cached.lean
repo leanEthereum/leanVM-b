@@ -125,6 +125,34 @@ theorem CachedRun.changeAnswerFn {alpha : Type} {cache : QueryCache HashSpec}
   rw [hrun.queriedInputs_eq hf hg]
   exact hinput
 
+theorem simulateQ_randomOracle_run_eq_pure_of_cachedRun
+    {alpha : Type} {cache : QueryCache HashSpec} {f : QueryImpl HashSpec Id}
+    {computation : OracleComp HashSpec alpha}
+    (hagrees : cache.AgreesWithFn f) (hcached : CachedRun cache f computation) :
+    (simulateQ (randomOracle : QueryImpl HashSpec _) computation).run cache =
+      pure (evalWithAnswerFn f computation, cache) := by
+  induction computation using OracleComp.inductionOn with
+  | pure value => rfl
+  | query_bind input next ih =>
+      have hinput : cache input ≠ none := by
+        apply hcached input
+        rw [queriedInputs_query_bind]
+        exact List.mem_cons_self
+      obtain ⟨output, houtput⟩ := Option.ne_none_iff_exists'.mp hinput
+      have hf : f input = output := hagrees houtput
+      rw [simulateQ_query_bind, StateT.run_bind]
+      change ((randomOracle input).run cache >>= fun result =>
+        (simulateQ randomOracle (next result.1)).run result.2) = _
+      rw [QueryImpl.withCaching_run_some uniformSampleImpl houtput]
+      simp only [pure_bind]
+      have htail : CachedRun cache f (next (f input)) := hcached.bind_right
+      have hrecursive := ih (f input) htail
+      rw [hf] at hrecursive
+      rw [hrecursive, evalWithAnswerFn_bind,
+        show evalWithAnswerFn f (liftM (HashSpec.query input)) = f input from
+          simulateQ_spec_query f input]
+      rw [hf]
+
 theorem CachedRun.sequenceFin_component {alpha : Type} {n : Nat}
     {cache : QueryCache HashSpec} {f : QueryImpl HashSpec Id}
     (computation : Fin n → OracleComp HashSpec alpha)
