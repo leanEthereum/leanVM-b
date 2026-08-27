@@ -459,6 +459,168 @@ theorem evalDist_runCleanFromTable_eq_lazy
                         rw [congrArg evalDist hleft]
                         exact ih output (state.materialize (.position position) output) fuel
 
+theorem runCleanFromTable_bind
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (left : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (next : alpha → OracleComp (LazyRevealProbe.World Coordinate) beta) :
+    runCleanFromTable state fuel table (left >>= next) =
+      runCleanFromTable state fuel table left >>= fun result =>
+        match result with
+        | none => pure none
+        | some result =>
+            runCleanFromTable result.state result.remaining result.table
+              (next result.value) := by
+  induction left using OracleComp.inductionOn generalizing state fuel with
+  | pure value => simp [runCleanFromTable]
+  | query_bind input continuation ih =>
+      cases input with
+      | uniform n =>
+          rw [bind_assoc, runCleanFromTable_uniform_query_bind,
+            runCleanFromTable_uniform_query_bind]
+          simp only [bind_assoc]
+          apply bind_congr
+          intro output
+          exact ih output state fuel
+      | hashOutput =>
+          rw [bind_assoc, runCleanFromTable_hashOutput_query_bind,
+            runCleanFromTable_hashOutput_query_bind]
+          simp only [bind_assoc]
+          apply bind_congr
+          intro output
+          exact ih output state fuel
+      | ensure coordinate =>
+          rw [bind_assoc, runCleanFromTable_ensure_query_bind,
+            runCleanFromTable_ensure_query_bind]
+          exact ih () (state.ensure coordinate) fuel
+      | probe coordinate candidate =>
+          rw [bind_assoc, runCleanFromTable_probe_query_bind,
+            runCleanFromTable_probe_query_bind]
+          cases fuel with
+          | zero => simp
+          | succ remaining =>
+              by_cases hrevealed : coordinate ∈ state.revealed
+              · simp only [hrevealed, ↓reduceIte]
+                exact ih () state remaining
+              · simp only [hrevealed, ↓reduceIte]
+                exact ih () (state.addPending coordinate candidate) remaining
+      | peek coordinate =>
+          rw [bind_assoc, runCleanFromTable_peek_query_bind,
+            runCleanFromTable_peek_query_bind]
+          exact ih (state.values coordinate) state fuel
+      | publish coordinate =>
+          rw [bind_assoc, runCleanFromTable_publish_query_bind,
+            runCleanFromTable_publish_query_bind]
+          exact ih () (state.publish coordinate) fuel
+      | reveal coordinate =>
+          rw [bind_assoc, runCleanFromTable_reveal_query_bind,
+            runCleanFromTable_reveal_query_bind]
+          cases hvalue : state.values coordinate with
+          | some output => exact ih output state fuel
+          | none =>
+              cases coordinate with
+              | chainStart lay tree leafIdx chainIdx =>
+                  let output := table ⟨lay, tree, leafIdx, chainIdx⟩
+                  by_cases hhit : state.hitAt
+                      (.chainStart lay tree leafIdx chainIdx) output
+                  · simp [output, hhit]
+                  · simp only [output, hhit, ↓reduceIte]
+                    exact ih output
+                      (state.materialize (.chainStart lay tree leafIdx chainIdx) output) fuel
+              | position position =>
+                  simp only [bind_assoc]
+                  apply bind_congr
+                  intro output
+                  by_cases hhit : state.hitAt (.position position) output
+                  · simp [hhit]
+                  · simp only [hhit, ↓reduceIte]
+                    exact ih output (state.materialize (.position position) output) fuel
+
+def projectCleanOrdinary :
+    Option (CleanRunResult (alpha × SplitHashCache)) →
+      Option (alpha × QueryCache HashSpec)
+  | none => none
+  | some result => some (result.value.1, ordinaryQueryCache result.value.2)
+
+theorem projectCleanOrdinary_splitHashQuery
+    (input : HashInput) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache) (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
+    projectCleanOrdinary <$>
+        runCleanFromTable state fuel table ((splitHashQuery (.ordinary input)).run cache) =
+      some <$>
+        (randomOracle (spec := HashSpec) input).run (ordinaryQueryCache cache) := by
+  rw [splitHashQuery_run_eq]
+  cases hlookup : cache (.ordinary input) with
+  | some output =>
+      simp only
+      have hordinary : ordinaryQueryCache cache input = some output := hlookup
+      rw [QueryImpl.withCaching_run_some uniformSampleImpl hordinary]
+      simp [runCleanFromTable, projectCleanOrdinary]
+  | none =>
+      simp only
+      have hordinary : ordinaryQueryCache cache input = none := hlookup
+      rw [QueryImpl.withCaching_run_none uniformSampleImpl hordinary]
+      rw [LazyRevealProbe.hashOutputQuery, runCleanFromTable_hashOutput_query_bind]
+      simp only [map_bind, Functor.map_map]
+      change (LazyRevealProbe.sampleHashOutput >>= fun output =>
+          projectCleanOrdinary <$>
+            runCleanFromTable state fuel table
+              (pure (output,
+                Function.update cache (.ordinary input) (some output)))) =
+        (fun output => some
+          (output, (ordinaryQueryCache cache).cacheQuery input output)) <$>
+            LazyRevealProbe.sampleHashOutput
+      rw [map_eq_bind_pure_comp]
+      apply bind_congr
+      intro output
+      simp [runCleanFromTable, projectCleanOrdinary, ordinaryQueryCache_update]
+
+set_option maxRecDepth 10000 in
+theorem projectCleanOrdinary_simulateQ_ordinaryHashImpl
+    (computation : OracleComp HashSpec alpha)
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
+    projectCleanOrdinary <$>
+        runCleanFromTable state fuel table
+          ((simulateQ ordinaryHashImpl computation).run cache) =
+      some <$>
+        (simulateQ (randomOracle : QueryImpl HashSpec _) computation).run
+          (ordinaryQueryCache cache) := by
+  induction computation using OracleComp.inductionOn generalizing state cache fuel with
+  | pure value =>
+      simp [runCleanFromTable, projectCleanOrdinary]
+  | query_bind input next ih =>
+      simp only [simulateQ_bind, simulateQ_query, OracleQuery.cont_query, id_map,
+        OracleQuery.input_query, StateT.run_bind, runCleanFromTable_bind]
+      rw [show ordinaryHashImpl input = splitHashQuery (.ordinary input) by rfl]
+      rw [splitHashQuery_run_eq]
+      cases hlookup : cache (.ordinary input) with
+      | some output =>
+          simp only
+          have hordinary : ordinaryQueryCache cache input = some output := hlookup
+          rw [QueryImpl.withCaching_run_some uniformSampleImpl hordinary]
+          simp only [runCleanFromTable, pure_bind]
+          exact ih output state cache fuel
+      | none =>
+          simp only
+          have hordinary : ordinaryQueryCache cache input = none := hlookup
+          rw [QueryImpl.withCaching_run_none uniformSampleImpl hordinary]
+          rw [LazyRevealProbe.hashOutputQuery, runCleanFromTable_hashOutput_query_bind]
+          simp only [map_bind, bind_assoc]
+          change (LazyRevealProbe.sampleHashOutput >>= fun output =>
+              projectCleanOrdinary <$>
+                runCleanFromTable state fuel table
+                  ((simulateQ ordinaryHashImpl (next output)).run
+                    (Function.update cache (.ordinary input) (some output)))) =
+            (LazyRevealProbe.sampleHashOutput >>= fun output =>
+              some <$>
+                (simulateQ (randomOracle : QueryImpl HashSpec _) (next output)).run
+                  ((ordinaryQueryCache cache).cacheQuery input output))
+          apply bind_congr
+          intro output
+          rw [← ordinaryQueryCache_update]
+          exact ih output state (Function.update cache (.ordinary input) (some output)) fuel
+
 noncomputable def finishCleanRunFromTable :
     Option (CleanRunResult alpha) → ProbComp (Option (CleanRunResult alpha))
   | none => pure none
