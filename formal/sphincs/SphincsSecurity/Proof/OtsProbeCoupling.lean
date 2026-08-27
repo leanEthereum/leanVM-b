@@ -29,6 +29,324 @@ def RawOrdinaryResultRelAt
       finalState = state ∧ remaining = fuel ∧
         ordinaryResult = (value, ordinaryQueryCache cache)
 
+def AnswersAgreeOnRun (f g : QueryImpl HashSpec Id)
+    (computation : OracleComp HashSpec alpha) : Prop :=
+  ∀ input, input ∈ queriedInputs f computation → f input = g input
+
+theorem AnswersAgreeOnRun.eval_eq_and_queriedInputs_eq
+    {f g : QueryImpl HashSpec Id} {computation : OracleComp HashSpec alpha}
+    (hagrees : AnswersAgreeOnRun f g computation) :
+    evalWithAnswerFn f computation = evalWithAnswerFn g computation ∧
+      queriedInputs f computation = queriedInputs g computation := by
+  induction computation using OracleComp.inductionOn with
+  | pure value => simp
+  | query_bind input next ih =>
+      have hinput : f input = g input := by
+        apply hagrees input
+        rw [queriedInputs_query_bind]
+        exact List.mem_cons_self
+      have htail : AnswersAgreeOnRun f g (next (f input)) := by
+        intro query hquery
+        apply hagrees query
+        rw [queriedInputs_query_bind]
+        exact List.mem_cons_of_mem input hquery
+      obtain ⟨heval, hqueries⟩ := ih (f input) htail
+      constructor
+      · rw [evalWithAnswerFn_bind, evalWithAnswerFn_bind,
+          show evalWithAnswerFn f (liftM (HashSpec.query input)) = f input from
+            simulateQ_spec_query f input,
+          show evalWithAnswerFn g (liftM (HashSpec.query input)) = g input from
+            simulateQ_spec_query g input,
+          ← hinput]
+        exact heval
+      · rw [queriedInputs_query_bind, queriedInputs_query_bind, ← hinput, hqueries]
+
+theorem AnswersAgreeOnRun.eval_eq
+    {f g : QueryImpl HashSpec Id} {computation : OracleComp HashSpec alpha}
+    (hagrees : AnswersAgreeOnRun f g computation) :
+    evalWithAnswerFn f computation = evalWithAnswerFn g computation :=
+  hagrees.eval_eq_and_queriedInputs_eq.1
+
+theorem AnswersAgreeOnRun.queriedInputs_eq
+    {f g : QueryImpl HashSpec Id} {computation : OracleComp HashSpec alpha}
+    (hagrees : AnswersAgreeOnRun f g computation) :
+    queriedInputs f computation = queriedInputs g computation :=
+  hagrees.eval_eq_and_queriedInputs_eq.2
+
+def CacheAnswersAgreeOnRun (cache : QueryCache HashSpec)
+    (f : QueryImpl HashSpec Id) (computation : OracleComp HashSpec alpha) : Prop :=
+  ∀ input, input ∈ queriedInputs f computation →
+    ∀ output, cache input = some output → f input = output
+
+theorem messageDigest_query_mem_verify
+    {f : QueryImpl HashSpec Id} {publicKey : PublicKey} {message : Message}
+    {signature : Signature} {input : HashInput}
+    (hquery : input ∈ queriedInputs f
+      (messageDigest publicKey.parameter publicKey.root message signature.randomness)) :
+    input ∈ queriedInputs f (verify publicKey message signature) := by
+  rw [verify_eq, queriedInputs_bind]
+  exact List.mem_append_left _ hquery
+
+theorem ftsRecover_query_mem_verify
+    {f : QueryImpl HashSpec Id} {publicKey : PublicKey} {message : Message}
+    {signature : Signature} {digest : MessageDigest} {input : HashInput}
+    (hdigest : evalWithAnswerFn f
+      (messageDigest publicKey.parameter publicKey.root message signature.randomness) = digest)
+    (hadmissible : Admissible digest)
+    (hquery : input ∈ queriedInputs f
+      (ftsRecover publicKey.parameter (digestIndex digest) (digestLeaves digest)
+        signature.ftsSecret signature.ftsPath)) :
+    input ∈ queriedInputs f (verify publicKey message signature) := by
+  rw [verify_eq, queriedInputs_bind]
+  apply List.mem_append_right
+  rw [hdigest]
+  simp only [hadmissible, not_true_eq_false, if_false, queriedInputs_bind]
+  exact List.mem_append_left _ hquery
+
+theorem verifyLayers_query_mem_verify
+    {f : QueryImpl HashSpec Id} {publicKey : PublicKey} {message : Message}
+    {signature : Signature} {digest : MessageDigest} {input : HashInput}
+    (hdigest : evalWithAnswerFn f
+      (messageDigest publicKey.parameter publicKey.root message signature.randomness) = digest)
+    (hadmissible : Admissible digest)
+    (hquery : input ∈ queriedInputs f
+      (verifyLayers publicKey.parameter (digestIndex digest) signature numLayers
+        (evalWithAnswerFn f
+          (ftsRecover publicKey.parameter (digestIndex digest) (digestLeaves digest)
+            signature.ftsSecret signature.ftsPath)))) :
+    input ∈ queriedInputs f (verify publicKey message signature) := by
+  rw [verify_eq, queriedInputs_bind]
+  apply List.mem_append_right
+  rw [hdigest]
+  simp only [hadmissible, not_true_eq_false, if_false, queriedInputs_bind]
+  apply List.mem_append_right
+  exact List.mem_append_left _ hquery
+
+theorem bottomOts_query_mem_verify
+    {f : QueryImpl HashSpec Id} {publicKey : PublicKey} {message : Message}
+    {signature : Signature} {digest : MessageDigest} {input : HashInput}
+    (hdigest : evalWithAnswerFn f
+      (messageDigest publicKey.parameter publicKey.root message signature.randomness) = digest)
+    (hadmissible : Admissible digest)
+    (hquery : input ∈ queriedInputs f
+      (otsLeaf publicKey.parameter bottomLayer
+        (treeIndexAt (digestIndex digest) bottomLayer)
+        (leafIndexAt (digestIndex digest) bottomLayer)
+        (evalWithAnswerFn f
+          (ftsRecover publicKey.parameter (digestIndex digest) (digestLeaves digest)
+            signature.ftsSecret signature.ftsPath))
+        (signature.counter bottomLayer) (signature.chainValue bottomLayer))) :
+    input ∈ queriedInputs f (verify publicKey message signature) := by
+  apply verifyLayers_query_mem_verify hdigest hadmissible
+  rw [show numLayers = bottomLayer.val + 1 by rfl, verifyLayers_succ_eq,
+    dif_pos bottomLayer.isLt]
+  exact queriedInputs_mono_bind_left f _ _ hquery
+
+theorem bottomFold_query_mem_verify
+    {f : QueryImpl HashSpec Id} {publicKey : PublicKey} {message : Message}
+    {signature : Signature} {digest : MessageDigest} {bottomLeaf : Digest}
+    {input : HashInput}
+    (hdigest : evalWithAnswerFn f
+      (messageDigest publicKey.parameter publicKey.root message signature.randomness) = digest)
+    (hadmissible : Admissible digest)
+    (hbottom : evalWithAnswerFn f
+      (otsLeaf publicKey.parameter bottomLayer
+        (treeIndexAt (digestIndex digest) bottomLayer)
+        (leafIndexAt (digestIndex digest) bottomLayer)
+        (evalWithAnswerFn f
+          (ftsRecover publicKey.parameter (digestIndex digest) (digestLeaves digest)
+            signature.ftsSecret signature.ftsPath))
+        (signature.counter bottomLayer) (signature.chainValue bottomLayer)) = some bottomLeaf)
+    (hquery : input ∈ queriedInputs f
+      (treeFold publicKey.parameter bottomLayer
+        (treeIndexAt (digestIndex digest) bottomLayer)
+        (leafIndexAt (digestIndex digest) bottomLayer)
+        (signaturePath signature bottomLayer) (layerHeight bottomLayer) bottomLeaf)) :
+    input ∈ queriedInputs f (verify publicKey message signature) := by
+  apply verifyLayers_query_mem_verify hdigest hadmissible
+  rw [show numLayers = bottomLayer.val + 1 by rfl, verifyLayers_succ_eq,
+    dif_pos bottomLayer.isLt]
+  apply queriedInputs_mono_bind_right
+  rw [hbottom]
+  exact queriedInputs_mono_bind_left f _ _ hquery
+
+theorem middleOts_query_mem_verify
+    {f : QueryImpl HashSpec Id} {publicKey : PublicKey} {message : Message}
+    {signature : Signature} {digest : MessageDigest} {bottomLeaf : Digest}
+    {input : HashInput}
+    (hdigest : evalWithAnswerFn f
+      (messageDigest publicKey.parameter publicKey.root message signature.randomness) = digest)
+    (hadmissible : Admissible digest)
+    (hbottom : evalWithAnswerFn f
+      (otsLeaf publicKey.parameter bottomLayer
+        (treeIndexAt (digestIndex digest) bottomLayer)
+        (leafIndexAt (digestIndex digest) bottomLayer)
+        (evalWithAnswerFn f
+          (ftsRecover publicKey.parameter (digestIndex digest) (digestLeaves digest)
+            signature.ftsSecret signature.ftsPath))
+        (signature.counter bottomLayer) (signature.chainValue bottomLayer)) = some bottomLeaf)
+    (hquery : input ∈ queriedInputs f
+      (otsLeaf publicKey.parameter middleLayer
+        (treeIndexAt (digestIndex digest) middleLayer)
+        (leafIndexAt (digestIndex digest) middleLayer)
+        (foldValue f publicKey.parameter bottomLayer
+          (treeIndexAt (digestIndex digest) bottomLayer)
+          (leafIndexAt (digestIndex digest) bottomLayer)
+          (signaturePath signature bottomLayer) bottomLeaf (layerHeight bottomLayer))
+        (signature.counter middleLayer) (signature.chainValue middleLayer))) :
+    input ∈ queriedInputs f (verify publicKey message signature) := by
+  apply verifyLayers_query_mem_verify hdigest hadmissible
+  rw [show numLayers = bottomLayer.val + 1 by rfl, verifyLayers_succ_eq,
+    dif_pos bottomLayer.isLt]
+  apply queriedInputs_mono_bind_right
+  rw [hbottom]
+  apply queriedInputs_mono_bind_right
+  change input ∈ queriedInputs f
+    (verifyLayers publicKey.parameter (digestIndex digest) signature
+      (middleLayer.val + 1)
+      (foldValue f publicKey.parameter bottomLayer
+        (treeIndexAt (digestIndex digest) bottomLayer)
+        (leafIndexAt (digestIndex digest) bottomLayer)
+        (signaturePath signature bottomLayer) bottomLeaf (layerHeight bottomLayer)))
+  rw [verifyLayers_succ_eq, dif_pos middleLayer.isLt]
+  simp only [show (⟨middleLayer.val, by exact middleLayer.isLt⟩ : Layer) = middleLayer by
+    exact Fin.ext rfl]
+  exact queriedInputs_mono_bind_left f _ _ hquery
+
+theorem middleFold_query_mem_verify
+    {f : QueryImpl HashSpec Id} {publicKey : PublicKey} {message : Message}
+    {signature : Signature} {digest : MessageDigest} {bottomLeaf middleLeaf : Digest}
+    {input : HashInput}
+    (hdigest : evalWithAnswerFn f
+      (messageDigest publicKey.parameter publicKey.root message signature.randomness) = digest)
+    (hadmissible : Admissible digest)
+    (hbottom : evalWithAnswerFn f
+      (otsLeaf publicKey.parameter bottomLayer
+        (treeIndexAt (digestIndex digest) bottomLayer)
+        (leafIndexAt (digestIndex digest) bottomLayer)
+        (evalWithAnswerFn f
+          (ftsRecover publicKey.parameter (digestIndex digest) (digestLeaves digest)
+            signature.ftsSecret signature.ftsPath))
+        (signature.counter bottomLayer) (signature.chainValue bottomLayer)) = some bottomLeaf)
+    (hmiddle : evalWithAnswerFn f
+      (otsLeaf publicKey.parameter middleLayer
+        (treeIndexAt (digestIndex digest) middleLayer)
+        (leafIndexAt (digestIndex digest) middleLayer)
+        (foldValue f publicKey.parameter bottomLayer
+          (treeIndexAt (digestIndex digest) bottomLayer)
+          (leafIndexAt (digestIndex digest) bottomLayer)
+          (signaturePath signature bottomLayer) bottomLeaf (layerHeight bottomLayer))
+        (signature.counter middleLayer) (signature.chainValue middleLayer)) = some middleLeaf)
+    (hquery : input ∈ queriedInputs f
+      (treeFold publicKey.parameter middleLayer
+        (treeIndexAt (digestIndex digest) middleLayer)
+        (leafIndexAt (digestIndex digest) middleLayer)
+        (signaturePath signature middleLayer) (layerHeight middleLayer) middleLeaf)) :
+    input ∈ queriedInputs f (verify publicKey message signature) := by
+  apply verifyLayers_query_mem_verify hdigest hadmissible
+  rw [show numLayers = bottomLayer.val + 1 by rfl, verifyLayers_succ_eq,
+    dif_pos bottomLayer.isLt]
+  apply queriedInputs_mono_bind_right
+  rw [hbottom]
+  apply queriedInputs_mono_bind_right
+  change input ∈ queriedInputs f
+    (verifyLayers publicKey.parameter (digestIndex digest) signature
+      (middleLayer.val + 1)
+      (foldValue f publicKey.parameter bottomLayer
+        (treeIndexAt (digestIndex digest) bottomLayer)
+        (leafIndexAt (digestIndex digest) bottomLayer)
+        (signaturePath signature bottomLayer) bottomLeaf (layerHeight bottomLayer)))
+  rw [verifyLayers_succ_eq, dif_pos middleLayer.isLt]
+  simp only [show (⟨middleLayer.val, by exact middleLayer.isLt⟩ : Layer) = middleLayer by
+    exact Fin.ext rfl]
+  apply queriedInputs_mono_bind_right
+  rw [hmiddle]
+  exact queriedInputs_mono_bind_left f _ _ hquery
+
+noncomputable def traceFallbackAnswer (cache : QueryCache HashSpec)
+    (f : QueryImpl HashSpec Id) (computation : OracleComp HashSpec alpha) :
+    QueryImpl HashSpec Id := fun input =>
+  if input ∈ queriedInputs f computation then f input else (cache input).getD 0
+
+theorem cache_agreesWithFn_traceFallbackAnswer
+    (cache : QueryCache HashSpec) (f : QueryImpl HashSpec Id)
+    (computation : OracleComp HashSpec alpha)
+    (hagrees : CacheAnswersAgreeOnRun cache f computation) :
+    cache.AgreesWithFn (traceFallbackAnswer cache f computation) := by
+  intro input output hcached
+  unfold traceFallbackAnswer
+  split_ifs with hmem
+  · exact hagrees input hmem output hcached
+  · simp [hcached]
+
+theorem answersAgreeOnRun_traceFallbackAnswer
+    (cache : QueryCache HashSpec) (f : QueryImpl HashSpec Id)
+    (computation : OracleComp HashSpec alpha) :
+    AnswersAgreeOnRun f (traceFallbackAnswer cache f computation) computation := by
+  intro input hinput
+  simp [traceFallbackAnswer, hinput]
+
+set_option maxRecDepth 10000 in
+theorem replay_of_mem_runRaw_verifierHashImpl_of_cacheAnswersAgreeOnRun
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
+    (computation : OracleComp HashSpec alpha)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (value : alpha)
+    (hf : CacheAnswersAgreeOnRun (ordinaryQueryCache finalCache) f computation)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((simulateQ (verifierHashImpl parameter) computation).run cache))) :
+    evalWithAnswerFn f computation = value ∧
+      CachedRun (ordinaryQueryCache finalCache) f computation := by
+  induction computation using OracleComp.inductionOn generalizing
+      state cache finalState finalCache fuel remaining value with
+  | pure result =>
+      simp [LazyRevealProbe.runRaw] at hresult
+      rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+      exact ⟨rfl, by simp [CachedRun]⟩
+  | query_bind input next ih =>
+      rw [simulateQ_query_bind, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+        mem_support_bind_iff] at hresult
+      obtain ⟨queryRaw, hquery, hrest⟩ := hresult
+      cases queryRaw with
+      | stopped hit => simp at hrest
+      | done queryState queryRemaining queryResult =>
+          rcases queryResult with ⟨answer, queryCache⟩
+          have hqueryProperty : ReturnsCachedOrdinary input
+              (verifierHashImpl parameter input) :=
+            returnsCachedOrdinary_verifierHashQuery parameter input
+          have hcachedQuery : queryCache (.ordinary input) = some answer :=
+            hqueryProperty state cache fuel queryState queryRemaining answer queryCache hquery
+          have hcachedFinal : finalCache (.ordinary input) = some answer :=
+            (ordinaryEntryPreservingImpl_verifierHashImpl parameter input).simulateQ
+              (next answer) queryState queryCache queryRemaining finalState remaining value
+                finalCache answer hcachedQuery hrest
+          have hfinput : f input = answer := by
+            apply hf input
+            · rw [queriedInputs_query_bind]
+              exact List.mem_cons_self
+            · exact hcachedFinal
+          have hfTail : CacheAnswersAgreeOnRun (ordinaryQueryCache finalCache) f
+              (next answer) := by
+            intro query hqueryTail output hcached
+            apply hf query
+            · rw [queriedInputs_query_bind, hfinput]
+              exact List.mem_cons_of_mem input hqueryTail
+            · exact hcached
+          obtain ⟨htailEval, htailQueries⟩ := ih answer queryState finalState queryCache
+            finalCache queryRemaining remaining value hfTail hrest
+          constructor
+          · rw [evalWithAnswerFn_bind,
+              show evalWithAnswerFn f (liftM (HashSpec.query input)) = f input from
+                simulateQ_spec_query f input, hfinput]
+            exact htailEval
+          · intro other hother
+            rw [queriedInputs_query_bind, hfinput] at hother
+            simp only [List.mem_cons] at hother
+            rcases hother with rfl | htail
+            · simp [ordinaryQueryCache, hcachedFinal]
+            · exact htailQueries other htail
+
 theorem exists_right_mem_support_of_relTriple
     {ι₁ ι₂ : Type} {spec₁ : OracleSpec ι₁} {spec₂ : OracleSpec ι₂}
     [IsUniformSpec spec₁] [IsUniformSpec spec₂]
@@ -4556,7 +4874,8 @@ theorem simulateQ_verifierHashImpl_otsLeaf_pendingHit_of_correct_probe
     (hcandidate : probe.candidate = truncateHash (table probe.coordinate))
     (hvalue : state.values probe.coordinate = none)
     (hnotRevealed : probe.coordinate ∉ state.revealed)
-    (hf : (ordinaryQueryCache finalCache).AgreesWithFn f)
+    (hf : CacheAnswersAgreeOnRun (ordinaryQueryCache finalCache) f
+      (otsLeaf parameter lay tree leafIdx message counter values))
     (htable : ∀ coordinate cached, finalState.values coordinate = some cached →
       cached = table coordinate)
     (hresult : LazyRevealProbe.RawResult.done finalState remaining (result, finalCache) ∈
@@ -4573,13 +4892,18 @@ theorem simulateQ_verifierHashImpl_otsLeaf_pendingHit_of_correct_probe
   | stopped hit => simp at hrest
   | done encodeState encodeRemaining encodeResult =>
       rcases encodeResult with ⟨encoded, encodeCache⟩
-      have hfEncode : (ordinaryQueryCache encodeCache).AgreesWithFn f := by
-        intro input output hcached
-        apply hf
-        exact (ordinaryEntryPreservingImpl_verifierHashImpl parameter input).simulateQ _
-          encodeState encodeCache encodeRemaining finalState remaining result finalCache output
-            hcached hrest
-      have hencoded := (replay_of_mem_runRaw_verifierHashImpl f parameter
+      have hfEncode : CacheAnswersAgreeOnRun (ordinaryQueryCache encodeCache) f
+          (encode parameter lay tree leafIdx message counter) := by
+        intro input hquery output hcached
+        apply hf input
+        · unfold otsLeaf
+          rw [queriedInputs_bind]
+          exact List.mem_append_left _ hquery
+        · exact (ordinaryEntryPreservingImpl_verifierHashImpl parameter input).simulateQ _
+            encodeState encodeCache encodeRemaining finalState remaining result finalCache output
+              hcached hrest
+      have hencoded :=
+        (replay_of_mem_runRaw_verifierHashImpl_of_cacheAnswersAgreeOnRun f parameter
         (encode parameter lay tree leafIdx message counter) state encodeState cache encodeCache
           fuel encodeRemaining encoded hfEncode hencodeRaw).1
       rw [hencode] at hencoded
@@ -5022,7 +5346,8 @@ theorem ChainInvariant.not_finalized_false_of_bottom_verifyProbe_verifier
       (CoveredChainCoordinate f targetCache
         (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) signingLog)
       initialState initialCache)
-    (hf : (ordinaryQueryCache rawCache).AgreesWithFn f)
+    (hf : CacheAnswersAgreeOnRun (ordinaryQueryCache rawCache) f
+      (verify ⟨root, parameter⟩ forgery.message forgery.signature))
     (hcompletedTable : ∀ coordinate output,
       completedState.values coordinate = some output → output = table coordinate)
     (hrealizes : ∀ position : Position, IsOtsPosition position →
@@ -5041,6 +5366,8 @@ theorem ChainInvariant.not_finalized_false_of_bottom_verifyProbe_verifier
   obtain ⟨digest, layerMessage, codeword, chainIdx, hdigit, probe, input, hinput,
     hdigest, hadmissible, hencode, hverifierMessage, hhits, hmatches, _, _,
     hnotCovered⟩ := hprobe
+  have hlayerMessage := VerifierLayerMessage.bottom_message hverifierMessage
+  rw [hlayerMessage] at hencode
   have hchain := probe.isChainCoordinate_of_matchesInput hmatches
   have hcandidate : probe.candidate = truncateHash (table probe.coordinate) :=
     hhits.trans (probe.target_eq_truncate_table_of_chain f parameter table ftsSecret hchain
@@ -5060,13 +5387,17 @@ theorem ChainInvariant.not_finalized_false_of_bottom_verifyProbe_verifier
   | stopped hit => simp at hafterDigest
   | done digestState digestRemaining digestResult =>
       rcases digestResult with ⟨sampledDigest, digestCache⟩
-      have hfDigest : (ordinaryQueryCache digestCache).AgreesWithFn f := by
-        intro query output hcached
-        apply hf
-        exact (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
-          digestState digestCache digestRemaining rawState remaining verified rawCache output
-            hcached hafterDigest
-      have hdigestEval := (replay_of_mem_runRaw_verifierHashImpl f parameter
+      have hfDigest : CacheAnswersAgreeOnRun (ordinaryQueryCache digestCache) f
+          (messageDigest parameter root forgery.message forgery.signature.randomness) := by
+        intro query hquery output hcached
+        apply hf query
+        · rw [verify_eq, queriedInputs_bind]
+          exact List.mem_append_left _ hquery
+        · exact (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+            digestState digestCache digestRemaining rawState remaining verified rawCache output
+              hcached hafterDigest
+      have hdigestEval :=
+        (replay_of_mem_runRaw_verifierHashImpl_of_cacheAnswersAgreeOnRun f parameter
         (messageDigest parameter root forgery.message forgery.signature.randomness)
           initialState digestState initialCache digestCache fuel digestRemaining sampledDigest
             hfDigest hdigestRaw).1
@@ -5086,13 +5417,21 @@ theorem ChainInvariant.not_finalized_false_of_bottom_verifyProbe_verifier
       | stopped hit => simp at hafterFts
       | done ftsState ftsRemaining ftsResult =>
           rcases ftsResult with ⟨ftsPublicKey, ftsCache⟩
-          have hfFts : (ordinaryQueryCache ftsCache).AgreesWithFn f := by
-            intro query output hcached
-            apply hf
-            exact (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
-              ftsState ftsCache ftsRemaining rawState remaining verified rawCache output hcached
-                hafterFts
-          have hftsEval := (replay_of_mem_runRaw_verifierHashImpl f parameter
+          have hfFts : CacheAnswersAgreeOnRun (ordinaryQueryCache ftsCache) f
+              (ftsRecover parameter (digestIndex digest) (digestLeaves digest)
+                forgery.signature.ftsSecret forgery.signature.ftsPath) := by
+            intro query hquery output hcached
+            apply hf query
+            · rw [verify_eq, queriedInputs_bind]
+              apply List.mem_append_right
+              rw [hdigest]
+              simp only [hadmissible, not_true_eq_false, if_false, queriedInputs_bind]
+              exact List.mem_append_left _ hquery
+            · exact (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+                ftsState ftsCache ftsRemaining rawState remaining verified rawCache output hcached
+                  hafterFts
+          have hftsEval :=
+            (replay_of_mem_runRaw_verifierHashImpl_of_cacheAnswersAgreeOnRun f parameter
             (ftsRecover parameter (digestIndex digest) (digestLeaves digest)
               forgery.signature.ftsSecret forgery.signature.ftsPath)
             digestState ftsState digestCache ftsCache digestRemaining ftsRemaining ftsPublicKey
@@ -5121,16 +5460,29 @@ theorem ChainInvariant.not_finalized_false_of_bottom_verifyProbe_verifier
               | stopped hit => simp at hafterOts
               | done otsState otsRemaining otsResult =>
                   rcases otsResult with ⟨leafResult, otsCache⟩
-                  have hfOts : (ordinaryQueryCache otsCache).AgreesWithFn f := by
-                    intro query output hcached
-                    apply hf
-                    have hcachedLayers :=
-                      (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
-                        otsState otsCache otsRemaining layersState layersRemaining verifiedRoot
-                          layersCache output hcached hafterOts
-                    exact (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
-                      layersState layersCache layersRemaining rawState remaining verified rawCache
-                        output hcachedLayers hafterLayers
+                  have hfOts : CacheAnswersAgreeOnRun (ordinaryQueryCache otsCache) f
+                      (otsLeaf parameter bottomLayer
+                        (treeIndexAt (digestIndex digest) bottomLayer)
+                        (leafIndexAt (digestIndex digest) bottomLayer)
+                        (evalWithAnswerFn f
+                          (ftsRecover parameter (digestIndex digest) (digestLeaves digest)
+                            forgery.signature.ftsSecret forgery.signature.ftsPath))
+                        (forgery.signature.counter bottomLayer)
+                        (forgery.signature.chainValue bottomLayer)) := by
+                    intro query hquery output hcached
+                    apply hf query
+                    · exact VerifierLayerMessage.otsLeaf_query_mem_verify
+                        (publicKey := ⟨root, parameter⟩) (message := forgery.message)
+                        (signature := forgery.signature) hdigest hadmissible hverifierMessage
+                          (by simpa only [hlayerMessage] using hquery)
+                    · have hcachedLayers :=
+                        (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+                          otsState otsCache otsRemaining layersState layersRemaining verifiedRoot
+                            layersCache output hcached hafterOts
+                      exact
+                        (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+                          layersState layersCache layersRemaining rawState remaining verified
+                            rawCache output hcachedLayers hafterLayers
                   have hvaluesOtsLayers := LazyRevealProbe.valuesLE_of_mem_runRaw_done _ otsState
                     layersState otsRemaining layersRemaining (verifiedRoot, layersCache) hafterOts
                   have hvaluesLayersRaw := LazyRevealProbe.valuesLE_of_mem_runRaw_done _ layersState
@@ -5141,8 +5493,6 @@ theorem ChainInvariant.not_finalized_false_of_bottom_verifyProbe_verifier
                     exact hrawTable coordinate output
                       (hvaluesLayersRaw coordinate output
                         (hvaluesOtsLayers coordinate output hvalue))
-                  have hlayerMessage := VerifierLayerMessage.bottom_message hverifierMessage
-                  rw [hlayerMessage] at hencode
                   rw [hinput] at hmatches
                   have hftsInitial : ftsState = initialState :=
                     hftsState.1.trans hdigestState.1
@@ -5190,7 +5540,8 @@ theorem ChainInvariant.not_finalized_false_of_middle_verifyProbe_verifier
       (CoveredChainCoordinate f targetCache
         (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) signingLog)
       initialState initialCache)
-    (hf : (ordinaryQueryCache rawCache).AgreesWithFn f)
+    (hf : CacheAnswersAgreeOnRun (ordinaryQueryCache rawCache) f
+      (verify ⟨root, parameter⟩ forgery.message forgery.signature))
     (hcompletedTable : ∀ coordinate output,
       completedState.values coordinate = some output → output = table coordinate)
     (hrealizes : ∀ position : Position, IsOtsPosition position →
@@ -5231,13 +5582,15 @@ theorem ChainInvariant.not_finalized_false_of_middle_verifyProbe_verifier
   | stopped hit => simp at hafterDigest
   | done digestState digestRemaining digestResult =>
       rcases digestResult with ⟨sampledDigest, digestCache⟩
-      have hfDigest : (ordinaryQueryCache digestCache).AgreesWithFn f := by
-        intro query output hcached
-        apply hf
+      have hfDigest : CacheAnswersAgreeOnRun (ordinaryQueryCache digestCache) f
+          (messageDigest parameter root forgery.message forgery.signature.randomness) := by
+        intro query hquery output hcached
+        apply hf query (messageDigest_query_mem_verify hquery)
         exact (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
           digestState digestCache digestRemaining rawState remaining verified rawCache output
             hcached hafterDigest
-      have hdigestEval := (replay_of_mem_runRaw_verifierHashImpl f parameter
+      have hdigestEval :=
+        (replay_of_mem_runRaw_verifierHashImpl_of_cacheAnswersAgreeOnRun f parameter
         (messageDigest parameter root forgery.message forgery.signature.randomness)
           initialState digestState initialCache digestCache fuel digestRemaining sampledDigest
             hfDigest hdigestRaw).1
@@ -5257,13 +5610,16 @@ theorem ChainInvariant.not_finalized_false_of_middle_verifyProbe_verifier
       | stopped hit => simp at hafterFts
       | done ftsState ftsRemaining ftsResult =>
           rcases ftsResult with ⟨ftsPublicKey, ftsCache⟩
-          have hfFts : (ordinaryQueryCache ftsCache).AgreesWithFn f := by
-            intro query output hcached
-            apply hf
+          have hfFts : CacheAnswersAgreeOnRun (ordinaryQueryCache ftsCache) f
+              (ftsRecover parameter (digestIndex digest) (digestLeaves digest)
+                forgery.signature.ftsSecret forgery.signature.ftsPath) := by
+            intro query hquery output hcached
+            apply hf query (ftsRecover_query_mem_verify hdigest hadmissible hquery)
             exact (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
               ftsState ftsCache ftsRemaining rawState remaining verified rawCache output hcached
                 hafterFts
-          have hftsEval := (replay_of_mem_runRaw_verifierHashImpl f parameter
+          have hftsEval :=
+            (replay_of_mem_runRaw_verifierHashImpl_of_cacheAnswersAgreeOnRun f parameter
             (ftsRecover parameter (digestIndex digest) (digestLeaves digest)
               forgery.signature.ftsSecret forgery.signature.ftsPath)
             digestState ftsState digestCache ftsCache digestRemaining ftsRemaining ftsPublicKey
@@ -5292,9 +5648,18 @@ theorem ChainInvariant.not_finalized_false_of_middle_verifyProbe_verifier
               | stopped hit => simp at hafterBottomOts
               | done bottomOtsState bottomOtsRemaining bottomOtsResult =>
                   rcases bottomOtsResult with ⟨bottomResult, bottomOtsCache⟩
-                  have hfBottomOts : (ordinaryQueryCache bottomOtsCache).AgreesWithFn f := by
-                    intro query output hcached
-                    apply hf
+                  have hfBottomOts :
+                      CacheAnswersAgreeOnRun (ordinaryQueryCache bottomOtsCache) f
+                        (otsLeaf parameter bottomLayer
+                          (treeIndexAt (digestIndex digest) bottomLayer)
+                          (leafIndexAt (digestIndex digest) bottomLayer)
+                          (evalWithAnswerFn f
+                            (ftsRecover parameter (digestIndex digest) (digestLeaves digest)
+                              forgery.signature.ftsSecret forgery.signature.ftsPath))
+                          (forgery.signature.counter bottomLayer)
+                          (forgery.signature.chainValue bottomLayer)) := by
+                    intro query hquery output hcached
+                    apply hf query (bottomOts_query_mem_verify hdigest hadmissible hquery)
                     have hcachedLayers :=
                       (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
                         bottomOtsState bottomOtsCache bottomOtsRemaining layersState
@@ -5302,7 +5667,8 @@ theorem ChainInvariant.not_finalized_false_of_middle_verifyProbe_verifier
                     exact (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
                       layersState layersCache layersRemaining rawState remaining verified rawCache
                         output hcachedLayers hafterLayers
-                  have hbottomEval := (replay_of_mem_runRaw_verifierHashImpl f parameter
+                  have hbottomEval :=
+                    (replay_of_mem_runRaw_verifierHashImpl_of_cacheAnswersAgreeOnRun f parameter
                     (otsLeaf parameter bottomLayer
                       (treeIndexAt (digestIndex digest) bottomLayer)
                       (leafIndexAt (digestIndex digest) bottomLayer)
@@ -5338,9 +5704,16 @@ theorem ChainInvariant.not_finalized_false_of_middle_verifyProbe_verifier
                   | stopped hit => simp at hafterBottomFold
                   | done bottomFoldState bottomFoldRemaining bottomFoldResult =>
                       rcases bottomFoldResult with ⟨bottomRoot, bottomFoldCache⟩
-                      have hfBottomFold : (ordinaryQueryCache bottomFoldCache).AgreesWithFn f := by
-                        intro query output hcached
-                        apply hf
+                      have hfBottomFold :
+                          CacheAnswersAgreeOnRun (ordinaryQueryCache bottomFoldCache) f
+                            (treeFold parameter bottomLayer
+                              (treeIndexAt (digestIndex digest) bottomLayer)
+                              (leafIndexAt (digestIndex digest) bottomLayer)
+                              (signaturePath forgery.signature bottomLayer)
+                              (layerHeight bottomLayer) bottomLeaf) := by
+                        intro query hquery output hcached
+                        apply hf query
+                          (bottomFold_query_mem_verify hdigest hadmissible hbottomLeaf hquery)
                         have hcachedLayers :=
                           (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
                             bottomFoldState bottomFoldCache bottomFoldRemaining layersState
@@ -5351,7 +5724,7 @@ theorem ChainInvariant.not_finalized_false_of_middle_verifyProbe_verifier
                             layersState layersCache layersRemaining rawState remaining verified
                               rawCache output hcachedLayers hafterLayers
                       have hbottomFoldEval :=
-                        (replay_of_mem_runRaw_verifierHashImpl f parameter
+                        (replay_of_mem_runRaw_verifierHashImpl_of_cacheAnswersAgreeOnRun f parameter
                           (treeFold parameter bottomLayer
                             (treeIndexAt (digestIndex digest) bottomLayer)
                             (leafIndexAt (digestIndex digest) bottomLayer)
@@ -5392,9 +5765,16 @@ theorem ChainInvariant.not_finalized_false_of_middle_verifyProbe_verifier
                       | done middleOtsState middleOtsRemaining middleOtsResult =>
                           rcases middleOtsResult with ⟨middleResult, middleOtsCache⟩
                           have hfMiddleOts :
-                              (ordinaryQueryCache middleOtsCache).AgreesWithFn f := by
-                            intro query output hcached
-                            apply hf
+                              CacheAnswersAgreeOnRun (ordinaryQueryCache middleOtsCache) f
+                                (otsLeaf parameter middleLayer
+                                  (treeIndexAt (digestIndex digest) middleLayer)
+                                  (leafIndexAt (digestIndex digest) middleLayer) layerMessage
+                                  (forgery.signature.counter middleLayer)
+                                  (forgery.signature.chainValue middleLayer)) := by
+                            intro query hquery output hcached
+                            apply hf query
+                              (VerifierLayerMessage.otsLeaf_query_mem_verify hdigest hadmissible
+                                hverifierMessage hquery)
                             have hcachedLayers :=
                               (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
                                 middleOtsState middleOtsCache middleOtsRemaining layersState
@@ -5472,7 +5852,8 @@ theorem ChainInvariant.not_finalized_false_of_top_verifyProbe_verifier
       (CoveredChainCoordinate f targetCache
         (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) signingLog)
       initialState initialCache)
-    (hf : (ordinaryQueryCache rawCache).AgreesWithFn f)
+    (hf : CacheAnswersAgreeOnRun (ordinaryQueryCache rawCache) f
+      (verify ⟨root, parameter⟩ forgery.message forgery.signature))
     (hcompletedTable : ∀ coordinate output,
       completedState.values coordinate = some output → output = table coordinate)
     (hrealizes : ∀ position : Position, IsOtsPosition position →
@@ -5513,13 +5894,15 @@ theorem ChainInvariant.not_finalized_false_of_top_verifyProbe_verifier
   | stopped hit => simp at hafterDigest
   | done digestState digestRemaining digestResult =>
       rcases digestResult with ⟨sampledDigest, digestCache⟩
-      have hfDigest : (ordinaryQueryCache digestCache).AgreesWithFn f := by
-        intro query output hcached
-        apply hf
+      have hfDigest : CacheAnswersAgreeOnRun (ordinaryQueryCache digestCache) f
+          (messageDigest parameter root forgery.message forgery.signature.randomness) := by
+        intro query hquery output hcached
+        apply hf query (messageDigest_query_mem_verify hquery)
         exact (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
           digestState digestCache digestRemaining rawState remaining verified rawCache output
             hcached hafterDigest
-      have hdigestEval := (replay_of_mem_runRaw_verifierHashImpl f parameter
+      have hdigestEval :=
+        (replay_of_mem_runRaw_verifierHashImpl_of_cacheAnswersAgreeOnRun f parameter
         (messageDigest parameter root forgery.message forgery.signature.randomness)
           initialState digestState initialCache digestCache fuel digestRemaining sampledDigest
             hfDigest hdigestRaw).1
@@ -5539,13 +5922,16 @@ theorem ChainInvariant.not_finalized_false_of_top_verifyProbe_verifier
       | stopped hit => simp at hafterFts
       | done ftsState ftsRemaining ftsResult =>
           rcases ftsResult with ⟨ftsPublicKey, ftsCache⟩
-          have hfFts : (ordinaryQueryCache ftsCache).AgreesWithFn f := by
-            intro query output hcached
-            apply hf
+          have hfFts : CacheAnswersAgreeOnRun (ordinaryQueryCache ftsCache) f
+              (ftsRecover parameter (digestIndex digest) (digestLeaves digest)
+                forgery.signature.ftsSecret forgery.signature.ftsPath) := by
+            intro query hquery output hcached
+            apply hf query (ftsRecover_query_mem_verify hdigest hadmissible hquery)
             exact (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
               ftsState ftsCache ftsRemaining rawState remaining verified rawCache output hcached
                 hafterFts
-          have hftsEval := (replay_of_mem_runRaw_verifierHashImpl f parameter
+          have hftsEval :=
+            (replay_of_mem_runRaw_verifierHashImpl_of_cacheAnswersAgreeOnRun f parameter
             (ftsRecover parameter (digestIndex digest) (digestLeaves digest)
               forgery.signature.ftsSecret forgery.signature.ftsPath)
             digestState ftsState digestCache ftsCache digestRemaining ftsRemaining ftsPublicKey
@@ -5574,9 +5960,18 @@ theorem ChainInvariant.not_finalized_false_of_top_verifyProbe_verifier
               | stopped hit => simp at hafterBottomOts
               | done bottomOtsState bottomOtsRemaining bottomOtsResult =>
                   rcases bottomOtsResult with ⟨bottomResult, bottomOtsCache⟩
-                  have hfBottomOts : (ordinaryQueryCache bottomOtsCache).AgreesWithFn f := by
-                    intro query output hcached
-                    apply hf
+                  have hfBottomOts :
+                      CacheAnswersAgreeOnRun (ordinaryQueryCache bottomOtsCache) f
+                        (otsLeaf parameter bottomLayer
+                          (treeIndexAt (digestIndex digest) bottomLayer)
+                          (leafIndexAt (digestIndex digest) bottomLayer)
+                          (evalWithAnswerFn f
+                            (ftsRecover parameter (digestIndex digest) (digestLeaves digest)
+                              forgery.signature.ftsSecret forgery.signature.ftsPath))
+                          (forgery.signature.counter bottomLayer)
+                          (forgery.signature.chainValue bottomLayer)) := by
+                    intro query hquery output hcached
+                    apply hf query (bottomOts_query_mem_verify hdigest hadmissible hquery)
                     have hcachedLayers :=
                       (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
                         bottomOtsState bottomOtsCache bottomOtsRemaining layersState
@@ -5584,7 +5979,8 @@ theorem ChainInvariant.not_finalized_false_of_top_verifyProbe_verifier
                     exact (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
                       layersState layersCache layersRemaining rawState remaining verified rawCache
                         output hcachedLayers hafterLayers
-                  have hbottomEval := (replay_of_mem_runRaw_verifierHashImpl f parameter
+                  have hbottomEval :=
+                    (replay_of_mem_runRaw_verifierHashImpl_of_cacheAnswersAgreeOnRun f parameter
                     (otsLeaf parameter bottomLayer
                       (treeIndexAt (digestIndex digest) bottomLayer)
                       (leafIndexAt (digestIndex digest) bottomLayer)
@@ -5620,9 +6016,16 @@ theorem ChainInvariant.not_finalized_false_of_top_verifyProbe_verifier
                   | stopped hit => simp at hafterBottomFold
                   | done bottomFoldState bottomFoldRemaining bottomFoldResult =>
                       rcases bottomFoldResult with ⟨bottomRoot, bottomFoldCache⟩
-                      have hfBottomFold : (ordinaryQueryCache bottomFoldCache).AgreesWithFn f := by
-                        intro query output hcached
-                        apply hf
+                      have hfBottomFold :
+                          CacheAnswersAgreeOnRun (ordinaryQueryCache bottomFoldCache) f
+                            (treeFold parameter bottomLayer
+                              (treeIndexAt (digestIndex digest) bottomLayer)
+                              (leafIndexAt (digestIndex digest) bottomLayer)
+                              (signaturePath forgery.signature bottomLayer)
+                              (layerHeight bottomLayer) bottomLeaf) := by
+                        intro query hquery output hcached
+                        apply hf query
+                          (bottomFold_query_mem_verify hdigest hadmissible hbottomLeaf hquery)
                         have hcachedLayers :=
                           (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
                             bottomFoldState bottomFoldCache bottomFoldRemaining layersState
@@ -5633,7 +6036,7 @@ theorem ChainInvariant.not_finalized_false_of_top_verifyProbe_verifier
                             layersState layersCache layersRemaining rawState remaining verified
                               rawCache output hcachedLayers hafterLayers
                       have hbottomFoldEval :=
-                        (replay_of_mem_runRaw_verifierHashImpl f parameter
+                        (replay_of_mem_runRaw_verifierHashImpl_of_cacheAnswersAgreeOnRun f parameter
                           (treeFold parameter bottomLayer
                             (treeIndexAt (digestIndex digest) bottomLayer)
                             (leafIndexAt (digestIndex digest) bottomLayer)
@@ -5678,9 +6081,20 @@ theorem ChainInvariant.not_finalized_false_of_top_verifyProbe_verifier
                       | done middleOtsState middleOtsRemaining middleOtsResult =>
                           rcases middleOtsResult with ⟨middleResult, middleOtsCache⟩
                           have hfMiddleOts :
-                              (ordinaryQueryCache middleOtsCache).AgreesWithFn f := by
-                            intro query output hcached
-                            apply hf
+                              CacheAnswersAgreeOnRun (ordinaryQueryCache middleOtsCache) f
+                                (otsLeaf parameter middleLayer
+                                  (treeIndexAt (digestIndex digest) middleLayer)
+                                  (leafIndexAt (digestIndex digest) middleLayer)
+                                  (foldValue f parameter bottomLayer
+                                    (treeIndexAt (digestIndex digest) bottomLayer)
+                                    (leafIndexAt (digestIndex digest) bottomLayer)
+                                    (signaturePath forgery.signature bottomLayer) bottomLeaf
+                                      (layerHeight bottomLayer))
+                                  (forgery.signature.counter middleLayer)
+                                  (forgery.signature.chainValue middleLayer)) := by
+                            intro query hquery output hcached
+                            apply hf query
+                              (middleOts_query_mem_verify hdigest hadmissible hbottomLeaf hquery)
                             have hcachedLayers :=
                               (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
                                 middleOtsState middleOtsCache middleOtsRemaining layersState
@@ -5690,7 +6104,9 @@ theorem ChainInvariant.not_finalized_false_of_top_verifyProbe_verifier
                               (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
                                 layersState layersCache layersRemaining rawState remaining verified
                                   rawCache output hcachedLayers hafterLayers
-                          have hmiddleEval := (replay_of_mem_runRaw_verifierHashImpl f parameter
+                          have hmiddleEval :=
+                            (replay_of_mem_runRaw_verifierHashImpl_of_cacheAnswersAgreeOnRun f
+                              parameter
                             (otsLeaf parameter middleLayer
                               (treeIndexAt (digestIndex digest) middleLayer)
                               (leafIndexAt (digestIndex digest) middleLayer)
@@ -5734,9 +6150,16 @@ theorem ChainInvariant.not_finalized_false_of_top_verifyProbe_verifier
                           | done middleFoldState middleFoldRemaining middleFoldResult =>
                               rcases middleFoldResult with ⟨middleRoot, middleFoldCache⟩
                               have hfMiddleFold :
-                                  (ordinaryQueryCache middleFoldCache).AgreesWithFn f := by
-                                intro query output hcached
-                                apply hf
+                                  CacheAnswersAgreeOnRun (ordinaryQueryCache middleFoldCache) f
+                                    (treeFold parameter middleLayer
+                                      (treeIndexAt (digestIndex digest) middleLayer)
+                                      (leafIndexAt (digestIndex digest) middleLayer)
+                                      (signaturePath forgery.signature middleLayer)
+                                      (layerHeight middleLayer) middleLeaf) := by
+                                intro query hquery output hcached
+                                apply hf query
+                                  (middleFold_query_mem_verify hdigest hadmissible hbottomLeaf
+                                    hmiddleLeaf hquery)
                                 have hcachedLayers :=
                                   (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
                                     middleFoldState middleFoldCache middleFoldRemaining layersState
@@ -5747,7 +6170,8 @@ theorem ChainInvariant.not_finalized_false_of_top_verifyProbe_verifier
                                     layersState layersCache layersRemaining rawState remaining
                                       verified rawCache output hcachedLayers hafterLayers
                               have hmiddleFoldEval :=
-                                (replay_of_mem_runRaw_verifierHashImpl f parameter
+                                (replay_of_mem_runRaw_verifierHashImpl_of_cacheAnswersAgreeOnRun f
+                                  parameter
                                   (treeFold parameter middleLayer
                                     (treeIndexAt (digestIndex digest) middleLayer)
                                     (leafIndexAt (digestIndex digest) middleLayer)
@@ -5788,9 +6212,16 @@ theorem ChainInvariant.not_finalized_false_of_top_verifyProbe_verifier
                               | done topOtsState topOtsRemaining topOtsResult =>
                                   rcases topOtsResult with ⟨topResult, topOtsCache⟩
                                   have hfTopOts :
-                                      (ordinaryQueryCache topOtsCache).AgreesWithFn f := by
-                                    intro query output hcached
-                                    apply hf
+                                      CacheAnswersAgreeOnRun (ordinaryQueryCache topOtsCache) f
+                                        (otsLeaf parameter topLayer
+                                          (treeIndexAt (digestIndex digest) topLayer)
+                                          (leafIndexAt (digestIndex digest) topLayer) layerMessage
+                                          (forgery.signature.counter topLayer)
+                                          (forgery.signature.chainValue topLayer)) := by
+                                    intro query hquery output hcached
+                                    apply hf query
+                                      (VerifierLayerMessage.otsLeaf_query_mem_verify hdigest
+                                        hadmissible hverifierMessage hquery)
                                     have hcachedLayers :=
                                       (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
                                         topOtsState topOtsCache topOtsRemaining layersState
@@ -5873,7 +6304,8 @@ theorem ChainInvariant.not_finalized_false_of_verifyProbe_verifier
       (CoveredChainCoordinate f targetCache
         (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) signingLog)
       initialState initialCache)
-    (hf : (ordinaryQueryCache rawCache).AgreesWithFn f)
+    (hf : CacheAnswersAgreeOnRun (ordinaryQueryCache rawCache) f
+      (verify ⟨root, parameter⟩ forgery.message forgery.signature))
     (hcompletedTable : ∀ coordinate output,
       completedState.values coordinate = some output → output = table coordinate)
     (hrealizes : ∀ position : Position, IsOtsPosition position →
@@ -5906,7 +6338,8 @@ theorem not_verifyProbe_of_mem_runRaw_maskedRetainedGameAfterFtsSecrets
     (rawCache : SplitHashCache) (root : Digest) (forgery : Forgery)
     (signingLog : QueryLog SigningSpec) (verified : Bool)
     (hfStable : StableCacheAgreesWithFn parameter rawCache f)
-    (hfOrdinary : (ordinaryQueryCache rawCache).AgreesWithFn f)
+    (hfOrdinary : CacheAnswersAgreeOnRun (ordinaryQueryCache rawCache) f
+      (verify ⟨root, parameter⟩ forgery.message forgery.signature))
     (hrawTable : ∀ coordinate output, rawState.values coordinate = some output →
       output = table coordinate)
     (hcompletedTable : ∀ coordinate output,
@@ -6026,8 +6459,9 @@ theorem not_verifyProbe_of_retainedCompletion
           emptySplitHashCache)))
     (hfinalize : (false, completedState) ∈ support
       (LazyRevealProbe.finalizeDetailed rawState))
-    (hfOrdinary : (ordinaryQueryCache rawCache).AgreesWithFn
-      (retainedCompletionAnswer parameter completedState rawCache baseStarts))
+    (hfOrdinary : CacheAnswersAgreeOnRun (ordinaryQueryCache rawCache)
+      (retainedCompletionAnswer parameter completedState rawCache baseStarts)
+      (verify ⟨root, parameter⟩ forgery.message forgery.signature))
     (hprobe : VerifyProbeWitness
       (retainedCompletionAnswer parameter completedState rawCache baseStarts)
       (mergedCache parameter
@@ -6087,8 +6521,9 @@ theorem not_verifyProbe_of_retainedCompletion_of_exact_materialized
   apply not_verifyProbe_of_retainedCompletion adversary parameter ftsSecret baseStarts fuel
     remaining rawState completedState rawCache root forgery signingLog verified hconsistent
     hresult hfinalize
-  · exact ordinaryQueryCache_agreesWithFn_retainedCompletionAnswer_of_exact_materialized
-      parameter completedState rawCache baseStarts hexact
+  · intro input _ output hcached
+    exact ordinaryQueryCache_agreesWithFn_retainedCompletionAnswer_of_exact_materialized
+      parameter completedState rawCache baseStarts hexact hcached
   · exact hprobe
 
 theorem relTriple_runRaw_splitUniformImpl
