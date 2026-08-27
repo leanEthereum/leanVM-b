@@ -1477,6 +1477,32 @@ theorem runResolvedFromTable_revealCoordinate
     runResolvedFromTable_reveal_query_bind]
   cases coordinate <;> simp [runResolvedFromTable]
 
+theorem value_ne_none_of_mem_runResolvedFromTable_revealCoordinate
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (coordinate : Coordinate)
+    (cache : SplitHashCache) (result : ResolvedRunResult (Digest × SplitHashCache))
+    (hresult : some result ∈ support
+      (runResolvedFromTable context fuel table ((revealCoordinate coordinate).run cache))) :
+    result.context.state.values coordinate ≠ none := by
+  rw [runResolvedFromTable_revealCoordinate] at hresult
+  cases coordinate with
+  | chainStart lay tree leafIdx chainIdx =>
+      cases hresolve : resolveDeferredChainStart table ⟨lay, tree, leafIdx, chainIdx⟩ context with
+      | none => simp [hresolve] at hresult
+      | some resolved =>
+          simp [hresolve] at hresult
+          subst result
+          simp [LazyRevealProbe.State.materialize]
+  | position position =>
+      rw [mem_support_bind_iff] at hresult
+      obtain ⟨resolvedOption, _hresolved, hrest⟩ := hresult
+      cases resolvedOption with
+      | none => simp at hrest
+      | some resolved =>
+          simp at hrest
+          subst result
+          simp [LazyRevealProbe.State.materialize]
+
 theorem runResolvedFromTable_revealCoordinateOutput
     (context : DeferredContext) (fuel : Nat)
     (table : OtsSecretIndex → HashOutput) (coordinate : Coordinate)
@@ -1500,6 +1526,33 @@ theorem runResolvedFromTable_revealCoordinateOutput
   rw [revealCoordinateOutput_run, LazyRevealProbe.revealQuery,
     runResolvedFromTable_reveal_query_bind]
   cases coordinate <;> simp [runResolvedFromTable]
+
+theorem value_of_mem_runResolvedFromTable_revealCoordinateOutput
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (coordinate : Coordinate)
+    (cache : SplitHashCache) (result : ResolvedRunResult (HashOutput × SplitHashCache))
+    (hresult : some result ∈ support
+      (runResolvedFromTable context fuel table
+        ((revealCoordinateOutput coordinate).run cache))) :
+    result.context.state.values coordinate = some result.value.1 := by
+  rw [runResolvedFromTable_revealCoordinateOutput] at hresult
+  cases coordinate with
+  | chainStart lay tree leafIdx chainIdx =>
+      cases hresolve : resolveDeferredChainStart table ⟨lay, tree, leafIdx, chainIdx⟩ context with
+      | none => simp [hresolve] at hresult
+      | some resolved =>
+          simp [hresolve] at hresult
+          subst result
+          simp [LazyRevealProbe.State.materialize]
+  | position position =>
+      rw [mem_support_bind_iff] at hresult
+      obtain ⟨resolvedOption, _hresolved, hrest⟩ := hresult
+      cases resolvedOption with
+      | none => simp at hrest
+      | some resolved =>
+          simp at hrest
+          subst result
+          simp [LazyRevealProbe.State.materialize]
 
 theorem runResolvedFromTable_revealPosition
     (context : DeferredContext) (fuel : Nat)
@@ -1551,6 +1604,76 @@ def ResolvedAdministrative
     finalContext.state.pending = context.state.pending ∧
     finalContext.state.values = context.state.values ∧
     finalContext.values = context.values
+
+def ResolvedPreservesPublished
+    (computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha) : Prop :=
+  ∀ context cache fuel table result,
+    PublishedValues context.state →
+    some result ∈ support
+      (runResolvedFromTable context fuel table (computation.run cache)) →
+    PublishedValues result.context.state
+
+theorem PublishedValues.materialize
+    {state : LazyRevealProbe.State Coordinate} (hpublished : PublishedValues state)
+    (coordinate : Coordinate) (output : HashOutput) :
+    PublishedValues (state.materialize coordinate output) := by
+  intro other hrevealed
+  by_cases heq : other = coordinate
+  · subst other
+    simp [LazyRevealProbe.State.materialize]
+  · simpa [LazyRevealProbe.State.materialize, heq] using
+      hpublished other hrevealed
+
+theorem ResolvedPreservesPublished.pure (value : alpha) :
+    ResolvedPreservesPublished
+      (pure value : StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate)) alpha) := by
+  intro context cache fuel table result hpublished hresult
+  simp [runResolvedFromTable] at hresult
+  subst result
+  exact hpublished
+
+theorem ResolvedPreservesPublished.bind
+    {left : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    {next : alpha → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) beta}
+    (hleft : ResolvedPreservesPublished left)
+    (hnext : ∀ value, ResolvedPreservesPublished (next value)) :
+    ResolvedPreservesPublished (left >>= next) := by
+  intro context cache fuel table result hpublished hresult
+  rw [StateT.run_bind, runResolvedFromTable_bind, mem_support_bind_iff] at hresult
+  obtain ⟨middle, hmiddle, hrest⟩ := hresult
+  cases middle with
+  | none => simp at hrest
+  | some middle =>
+      exact hnext middle.value.1 middle.context middle.value.2 middle.remaining middle.table result
+        (hleft context cache fuel table middle hpublished hmiddle) hrest
+
+theorem resolvedPreservesPublished_ensureCoordinate (coordinate : Coordinate) :
+    ResolvedPreservesPublished (ensureCoordinate coordinate) := by
+  intro context cache fuel table result hpublished hresult
+  unfold ensureCoordinate at hresult
+  rw [StateT.run_liftM, LazyRevealProbe.ensureQuery,
+    runResolvedFromTable_ensure_query_bind] at hresult
+  simp [runResolvedFromTable] at hresult
+  subst result
+  simpa [PublishedValues, LazyRevealProbe.State.ensure] using hpublished
+
+theorem resolvedPreservesPublished_sequenceFin {n : Nat}
+    (computation : Fin n → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha)
+    (hcomponent : ∀ index, ResolvedPreservesPublished (computation index)) :
+    ResolvedPreservesPublished (sequenceFin computation) := by
+  induction n with
+  | zero => simpa [sequenceFin] using ResolvedPreservesPublished.pure Fin.elim0
+  | succ n ih =>
+      rw [sequenceFin]
+      exact (hcomponent 0).bind fun _ =>
+        (ih (fun index : Fin n => computation index.succ)
+          (fun index => hcomponent index.succ)).bind fun _ =>
+            ResolvedPreservesPublished.pure _
 
 theorem resolvedAdministrative_pure (value : alpha) :
     ResolvedAdministrative
@@ -1661,6 +1784,17 @@ theorem resolvedAdministrative_ensureFullChain
         (.position (.chain lay tree leafIdx chainIdx step))))
   exact resolvedAdministrative_pure ()
 
+theorem resolvedPreservesPublished_ensureFullChain
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex) :
+    ResolvedPreservesPublished (ensureFullChain lay tree leafIdx chainIdx) := by
+  unfold ensureFullChain
+  exact (resolvedPreservesPublished_sequenceFin
+    (fun step : ChainStep =>
+      ensureCoordinate (.position (.chain lay tree leafIdx chainIdx step)))
+    (fun step => resolvedPreservesPublished_ensureCoordinate
+      (.position (.chain lay tree leafIdx chainIdx step)))).bind fun _ =>
+        ResolvedPreservesPublished.pure ()
+
 theorem resolvedAdministrative_ensureChainPrefix
     (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex)
     (digit : Digit) :
@@ -1681,6 +1815,24 @@ theorem resolvedAdministrative_ensureChainPrefix
           exact resolvedAdministrative_pure ()))
   exact resolvedAdministrative_pure ()
 
+theorem resolvedPreservesPublished_ensureChainPrefix
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex)
+    (digit : Digit) :
+    ResolvedPreservesPublished (ensureChainPrefix lay tree leafIdx chainIdx digit) := by
+  unfold ensureChainPrefix
+  exact (resolvedPreservesPublished_sequenceFin
+    (fun step : ChainStep =>
+      if step.val < digit.val then
+        ensureCoordinate (.position (.chain lay tree leafIdx chainIdx step))
+      else pure ())
+    (fun step => by
+      by_cases hstep : step.val < digit.val
+      · rw [if_pos hstep]
+        exact resolvedPreservesPublished_ensureCoordinate _
+      · rw [if_neg hstep]
+        exact ResolvedPreservesPublished.pure ())).bind fun _ =>
+          ResolvedPreservesPublished.pure ()
+
 theorem resolvedAdministrative_ensureOtsLeaf
     (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) :
     ResolvedAdministrative (ensureOtsLeaf lay tree leafIdx) () := by
@@ -1691,6 +1843,15 @@ theorem resolvedAdministrative_ensureOtsLeaf
       resolvedAdministrative_ensureFullChain lay tree leafIdx chainIdx)
   exact hchains.bind
     (resolvedAdministrative_ensureCoordinate (.position (.leaf lay tree leafIdx)))
+
+theorem resolvedPreservesPublished_ensureOtsLeaf
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) :
+    ResolvedPreservesPublished (ensureOtsLeaf lay tree leafIdx) := by
+  unfold ensureOtsLeaf
+  exact (resolvedPreservesPublished_sequenceFin
+    (fun chainIdx : ChainIndex => ensureFullChain lay tree leafIdx chainIdx)
+    (fun chainIdx => resolvedPreservesPublished_ensureFullChain lay tree leafIdx chainIdx)).bind
+      fun _ => resolvedPreservesPublished_ensureCoordinate (.position (.leaf lay tree leafIdx))
 
 theorem resolvedAdministrative_ensureTreeNode (lay : Layer) (tree : TreeIndex) :
     ∀ level nodeIdx, ResolvedAdministrative (ensureTreeNode lay tree level nodeIdx) ()
@@ -1707,6 +1868,20 @@ theorem resolvedAdministrative_ensureTreeNode (lay : Layer) (tree : TreeIndex) :
           (.position (.node lay tree ⟨level, hlevel⟩ (leafOfNat nodeIdx)))
       · rw [dif_neg hlevel]
         exact resolvedAdministrative_pure ()
+
+theorem resolvedPreservesPublished_ensureTreeNode (lay : Layer) (tree : TreeIndex) :
+    ∀ level nodeIdx, ResolvedPreservesPublished (ensureTreeNode lay tree level nodeIdx)
+  | 0, nodeIdx => resolvedPreservesPublished_ensureOtsLeaf lay tree (leafOfNat nodeIdx)
+  | level + 1, nodeIdx => by
+      rw [ensureTreeNode]
+      exact (resolvedPreservesPublished_ensureTreeNode lay tree level (2 * nodeIdx)).bind
+        fun _ => (resolvedPreservesPublished_ensureTreeNode lay tree level
+          (2 * nodeIdx + 1)).bind fun _ => by
+            by_cases hlevel : level < maxLayerHeight
+            · rw [dif_pos hlevel]
+              exact resolvedPreservesPublished_ensureCoordinate _
+            · rw [dif_neg hlevel]
+              exact ResolvedPreservesPublished.pure ()
 
 theorem resolvedAdministrative_ensureTreePath
     (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) :
@@ -1727,6 +1902,23 @@ theorem resolvedAdministrative_ensureTreePath
         · rw [if_neg hlevel]
           exact resolvedAdministrative_pure ()))
   exact resolvedAdministrative_pure ()
+
+theorem resolvedPreservesPublished_ensureTreePath
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) :
+    ResolvedPreservesPublished (ensureTreePath lay tree leafIdx) := by
+  unfold ensureTreePath
+  exact (resolvedPreservesPublished_sequenceFin
+    (fun level : Fin maxLayerHeight =>
+      if level.val < layerHeight lay then
+        ensureTreeNode lay tree level.val (Nat.xor (leafIdx.val / 2 ^ level.val) 1)
+      else pure ())
+    (fun level => by
+      by_cases hlevel : level.val < layerHeight lay
+      · rw [if_pos hlevel]
+        exact resolvedPreservesPublished_ensureTreeNode lay tree level.val _
+      · rw [if_neg hlevel]
+        exact ResolvedPreservesPublished.pure ())).bind fun _ =>
+          ResolvedPreservesPublished.pure ()
 
 theorem runResolvedFromTable_maskedChainValue_zero
     (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
@@ -8021,7 +8213,8 @@ def ReachableResolvedRunRel (parameter : PublicParameter)
       (result.table = table ∧ result.value.1 = value ∧
         ResolvedContextInvariant parameter table result.context
           (ordinaryQueryCache result.value.2) concreteCache ∧
-        VisibleResolvedComputationsCached parameter table result.context concreteCache) ∨
+        VisibleResolvedComputationsCached parameter table result.context concreteCache ∧
+        PublishedValues result.context.state) ∨
       (result.table = table ∧ DoomedResolvedContext table result.context)
 
 theorem ReachableResolvedRunRel.to_resolvedRunRel
@@ -8046,6 +8239,7 @@ def ReachableResolvedCouples (parameter : PublicParameter)
     ResolvedContextInvariant parameter table context
       (ordinaryQueryCache cache) concreteCache →
     VisibleResolvedComputationsCached parameter table context concreteCache →
+    PublishedValues context.state →
     RelTriple
       (runResolvedFromTable context fuel table (left.run cache))
       (right.run concreteCache)
@@ -8057,19 +8251,20 @@ theorem reachableResolvedCouples_pure (parameter : PublicParameter)
       (pure value : StateT SplitHashCache
         (OracleComp (LazyRevealProbe.World Coordinate)) alpha)
       (pure value : StateT (QueryCache HashSpec) ProbComp alpha) := by
-  intro context fuel cache concreteCache hinvariant hclosed
+  intro context fuel cache concreteCache hinvariant hclosed hpublished
   simp only [runResolvedFromTable]
   apply relTriple_pure_pure
-  exact Or.inl ⟨rfl, rfl, hinvariant, hclosed⟩
+  exact Or.inl ⟨rfl, rfl, hinvariant, hclosed, hpublished⟩
 
 theorem reachableResolvedCouples_of_administrative
     {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
     {computation : StateT SplitHashCache
       (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
-    {value : alpha} (hadministrative : ResolvedAdministrative computation value) :
+    {value : alpha} (hadministrative : ResolvedAdministrative computation value)
+    (hpreserves : ResolvedPreservesPublished computation) :
     ReachableResolvedCouples parameter table computation
       (pure value : StateT (QueryCache HashSpec) ProbComp alpha) := by
-  intro context fuel cache concreteCache hinvariant hclosed
+  intro context fuel cache concreteCache hinvariant hclosed hpublished
   obtain ⟨finalContext, hrun, hpending, hvalues, hprivate⟩ :=
     hadministrative.run context cache fuel table
   have hcore : context.CoreEq finalContext :=
@@ -8077,15 +8272,20 @@ theorem reachableResolvedCouples_of_administrative
   rw [hrun]
   simp only [StateT.run_pure]
   apply relTriple_pure_pure
-  exact Or.inl ⟨rfl, rfl, hinvariant.of_coreEq hcore,
-    hclosed.of_state_values_eq hvalues⟩
+  refine Or.inl ⟨rfl, rfl, hinvariant.of_coreEq hcore,
+    hclosed.of_state_values_eq hvalues, ?_⟩
+  apply hpreserves context cache fuel table
+    { context := finalContext, remaining := fuel, value := (value, cache), table := table }
+    hpublished
+  rw [hrun]
+  simp
 
 theorem reachableResolvedCouples_probe
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
     (candidate : Probe) :
     ReachableResolvedCouples parameter table (probe candidate)
       (pure () : StateT (QueryCache HashSpec) ProbComp Unit) := by
-  intro context fuel cache concreteCache hinvariant hclosed
+  intro context fuel cache concreteCache hinvariant hclosed hpublished
   unfold probe
   rw [StateT.run_liftM, LazyRevealProbe.probeQuery,
     runResolvedFromTable_probe_query_bind]
@@ -8098,7 +8298,7 @@ theorem reachableResolvedCouples_probe
       by_cases hrevealed : candidate.coordinate ∈ context.state.revealed
       · simp only [hrevealed, ↓reduceIte, StateT.run_pure, runResolvedFromTable]
         apply relTriple_pure_pure
-        exact Or.inl ⟨rfl, rfl, hinvariant, hclosed⟩
+        exact Or.inl ⟨rfl, rfl, hinvariant, hclosed, hpublished⟩
       · simp only [hrevealed, ↓reduceIte, StateT.run_pure, runResolvedFromTable]
         by_cases hcompletable : DeferredCompletable table
             { context with state :=
@@ -8107,18 +8307,45 @@ theorem reachableResolvedCouples_probe
           exact Or.inl ⟨rfl, rfl,
             hinvariant.addPending_of_completable candidate.coordinate candidate.candidate
               hcompletable,
-            hclosed.of_state_values_eq rfl⟩
+            hclosed.of_state_values_eq rfl, by
+              simpa [PublishedValues, LazyRevealProbe.State.addPending] using hpublished⟩
         · apply relTriple_pure_pure
           exact Or.inr ⟨rfl, hinvariant.2.1.valuesConsistent.addPending
             candidate.coordinate candidate.candidate,
             hinvariant.2.2.1.addPending candidate.coordinate candidate.candidate,
             hcompletable⟩
 
+theorem relTriple_runResolvedFromTable_publishCoordinate_reachable
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (coordinate : Coordinate) (context : DeferredContext) (fuel : Nat)
+    (cache : SplitHashCache) (concreteCache : QueryCache HashSpec)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache)
+    (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hpublished : PublishedValues context.state)
+    (hvalue : context.state.values coordinate ≠ none) :
+    RelTriple
+      (runResolvedFromTable context fuel table ((publishCoordinate coordinate).run cache))
+      (pure ((), concreteCache) : ProbComp (Unit × QueryCache HashSpec))
+      (ReachableResolvedRunRel parameter table) := by
+  unfold publishCoordinate
+  rw [StateT.run_liftM, LazyRevealProbe.publishQuery,
+    runResolvedFromTable_publish_query_bind]
+  simp only [runResolvedFromTable]
+  apply relTriple_pure_pure
+  refine Or.inl ⟨rfl, rfl, hinvariant, hclosed.of_state_values_eq rfl, ?_⟩
+  intro other hrevealed
+  simp only [LazyRevealProbe.State.publish, Finset.mem_insert] at hrevealed
+  rcases hrevealed with heq | hrevealed
+  · subst other
+    exact hvalue
+  · exact hpublished other hrevealed
+
 theorem reachableResolvedCouples_splitUniform
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput) (n : Nat) :
     ReachableResolvedCouples parameter table (splitUniformImpl n)
       (unifFwdImpl HashSpec n) := by
-  intro context fuel cache concreteCache hinvariant hclosed
+  intro context fuel cache concreteCache hinvariant hclosed hpublished
   unfold splitUniformImpl LazyRevealProbe.uniformQuery
   rw [StateT.run_liftM, runResolvedFromTable_uniform_query_bind]
   rw [show (unifFwdImpl HashSpec n).run concreteCache =
@@ -8133,7 +8360,7 @@ theorem reachableResolvedCouples_splitUniform
   subst right
   simp only [runResolvedFromTable]
   apply relTriple_pure_pure
-  exact Or.inl ⟨rfl, rfl, hinvariant, hclosed⟩
+  exact Or.inl ⟨rfl, rfl, hinvariant, hclosed, hpublished⟩
 
 theorem relTriple_runResolvedFromTable_of_doomed_reachable
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
@@ -8177,9 +8404,9 @@ theorem ReachableResolvedCouples.bind
     (hnext : ∀ value,
       ReachableResolvedCouples parameter table (leftNext value) (rightNext value)) :
     ReachableResolvedCouples parameter table (left >>= leftNext) (right >>= rightNext) := by
-  intro context fuel cache concreteCache hinvariant hclosed
+  intro context fuel cache concreteCache hinvariant hclosed hpublished
   rw [StateT.run_bind, StateT.run_bind, runResolvedFromTable_bind]
-  apply relTriple_bind (hleft context fuel cache concreteCache hinvariant hclosed)
+  apply relTriple_bind (hleft context fuel cache concreteCache hinvariant hclosed hpublished)
   intro leftResult rightResult hrelation
   cases leftResult with
   | none =>
@@ -8203,11 +8430,76 @@ theorem ReachableResolvedCouples.bind
         subst rightValue
         simpa [hclean.1] using
           (hnext result.value.1 result.context result.remaining result.value.2 rightCache
-            hclean.2.2.1 hclean.2.2.2)
+            hclean.2.2.1 hclean.2.2.2.1 hclean.2.2.2.2)
       · simpa [hdoomed.1] using
           (relTriple_runResolvedFromTable_of_doomed_reachable parameter table
             (leftNext result.value.1) ((rightNext rightResult.1).run rightResult.2)
               result.context result.remaining result.value.2 hdoomed.2)
+
+theorem ReachableResolvedCouples.publishAfter
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {left : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    {right : StateT (QueryCache HashSpec) ProbComp alpha}
+    (hleft : ReachableResolvedCouples parameter table left right)
+    (coordinate : Coordinate)
+    (hmaterialized : ∀ context fuel cache result,
+      some result ∈ support
+        (runResolvedFromTable context fuel table (left.run cache)) →
+      result.context.state.values coordinate ≠ none) :
+    ReachableResolvedCouples parameter table
+      (left >>= fun value => publishCoordinate coordinate >>= fun _ => pure value) right := by
+  intro context fuel cache concreteCache hinvariant hclosed hpublished
+  rw [StateT.run_bind, runResolvedFromTable_bind]
+  have hbase := hleft context fuel cache concreteCache hinvariant hclosed hpublished
+  have hsupported :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+      (fun result => result ∈ support
+        (runResolvedFromTable context fuel table (left.run cache)))
+      (fun result hresult => hresult)
+  rw [show right.run concreteCache = right.run concreteCache >>= fun result => pure result by simp]
+  apply relTriple_bind hsupported
+  intro leftResult rightResult hrelation
+  rcases hrelation with ⟨hrelation, hleftSupport⟩
+  cases leftResult with
+  | none =>
+      apply relTriple_pure_pure
+      trivial
+  | some result =>
+      rcases hrelation with hclean | hdoomed
+      · have hpublish := relTriple_runResolvedFromTable_publishCoordinate_reachable
+          parameter table coordinate result.context result.remaining result.value.2 rightResult.2
+            hclean.2.2.1 hclean.2.2.2.1 hclean.2.2.2.2
+              (hmaterialized context fuel cache result hleftSupport)
+        simp only
+        rw [hclean.1, StateT.run_bind, runResolvedFromTable_bind]
+        rw [show (pure rightResult : ProbComp (alpha × QueryCache HashSpec)) =
+            (pure ((), rightResult.2) >>= fun _ => pure rightResult) by simp]
+        have hpublishSupported :=
+          SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hpublish
+        apply relTriple_bind hpublishSupported
+        intro publishedResult publishedRight hpublishedRelation
+        rcases hpublishedRelation with ⟨hpublishedRelation, hrightSupport⟩
+        have hpublishedRight : publishedRight = ((), rightResult.2) := by
+          simpa using hrightSupport
+        subst publishedRight
+        cases publishedResult with
+        | none =>
+            apply relTriple_pure_pure
+            trivial
+        | some publishedResult =>
+            rcases hpublishedRelation with hpublishedClean | hpublishedDoomed
+            · simp only [runResolvedFromTable]
+              apply relTriple_pure_pure
+              exact Or.inl ⟨hpublishedClean.1, hclean.2.1, hpublishedClean.2.2.1,
+                hpublishedClean.2.2.2.1, hpublishedClean.2.2.2.2⟩
+            · simp only [runResolvedFromTable]
+              apply relTriple_pure_pure
+              exact Or.inr hpublishedDoomed
+      · simpa [hdoomed.1] using
+          (relTriple_runResolvedFromTable_of_doomed_reachable parameter table
+            (publishCoordinate coordinate >>= fun _ => pure result.value.1)
+              (pure rightResult) result.context result.remaining result.value.2 hdoomed.2)
 
 theorem reachableResolvedCouples_sequenceFin
     {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput} {n : Nat}
@@ -8264,7 +8556,8 @@ theorem relTriple_runResolvedFromTable_splitHashQuery_completionOrdinary_reachab
     (concreteCache : QueryCache HashSpec)
     (hinvariant : ResolvedContextInvariant parameter table context
       (ordinaryQueryCache cache) concreteCache)
-    (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache) :
+    (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hpublished : PublishedValues context.state) :
     RelTriple
       (runResolvedFromTable context fuel table
         ((splitHashQuery (.ordinary input)).run cache))
@@ -8281,7 +8574,7 @@ theorem relTriple_runResolvedFromTable_splitHashQuery_completionOrdinary_reachab
         exact hordinaryCached
       rw [QueryImpl.withCaching_run_some uniformSampleImpl hconcrete]
       simp [runResolvedFromTable, ReachableResolvedRunRel]
-      exact Or.inl ⟨hinvariant, hclosed⟩
+      exact Or.inl ⟨hinvariant, hclosed, hpublished⟩
   | none =>
       have hordinaryCached : ordinaryQueryCache cache input = none := hlookup
       have hconcrete : concreteCache input = none := by
@@ -8297,17 +8590,17 @@ theorem relTriple_runResolvedFromTable_splitHashQuery_completionOrdinary_reachab
       refine Or.inl ⟨rfl, rfl, ?_, ?_⟩
       · rw [ordinaryQueryCache_update]
         exact hinvariant.of_completionOrdinary_cacheQuery input leftOutput hordinary
-      · exact hclosed.mono (le_cacheQuery hconcrete)
+      · exact ⟨hclosed.mono (le_cacheQuery hconcrete), hpublished⟩
 
 theorem reachableResolvedCouples_splitHashQuery_stable
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
     (input : HashInput) (hstable : StableOrdinaryInput parameter input) :
     ReachableResolvedCouples parameter table (splitHashQuery (.ordinary input))
       (randomOracle input) := by
-  intro context fuel cache concreteCache hinvariant hclosed
+  intro context fuel cache concreteCache hinvariant hclosed hpublished
   exact relTriple_runResolvedFromTable_splitHashQuery_completionOrdinary_reachable parameter
     table input context (completionOrdinaryInput_of_stable hstable) fuel cache concreteCache
-      hinvariant hclosed
+      hinvariant hclosed hpublished
 
 theorem reachableResolvedCouples_probingHashQuery_of_stable
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
@@ -8331,12 +8624,12 @@ theorem reachableResolvedCouples_revealChainStart
     ReachableResolvedCouples parameter table
       (revealChainStart index.lay index.tree index.leafIdx index.chainIdx)
       (pure (truncateHash (table index)) : StateT (QueryCache HashSpec) ProbComp Digest) := by
-  intro context fuel cache concreteCache hinvariant hclosed
+  intro context fuel cache concreteCache hinvariant hclosed hpublished
   have hclean := hinvariant.2.2.2.1.not_hitAt_chainStart index
   rw [runResolvedFromTable_revealChainStart_of_agrees context fuel table index cache
     hinvariant.2.2.1 hclean]
   apply relTriple_pure_pure
-  refine Or.inl ⟨rfl, rfl, ?_, ?_⟩
+  refine Or.inl ⟨rfl, rfl, ?_, ?_, ?_⟩
   · rw [ordinaryQueryCache_update_hidden]
     exact hinvariant.materialize_chainStart index
   · apply hclosed.of_position_values_eq
@@ -8346,6 +8639,7 @@ theorem reachableResolvedCouples_revealChainStart
       simp [OtsSecretIndex.coordinate]
     simp only [LazyRevealProbe.State.materialize]
     rw [Function.update_of_ne (Ne.symm hne)]
+  · exact hpublished.materialize index.coordinate (table index)
 
 set_option maxRecDepth 100000 in
 theorem relTriple_runResolvedFromTable_revealResolvablePosition_reachable
@@ -8355,6 +8649,7 @@ theorem relTriple_runResolvedFromTable_revealResolvablePosition_reachable
     (hinvariant : ResolvedContextInvariant parameter table context
       (ordinaryQueryCache cache) concreteCache)
     (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hpublished : PublishedValues context.state)
     (hresolvable : ResolvableOtsPosition position) :
     RelTriple
       (runResolvedFromTable context fuel table ((revealPosition position).run cache))
@@ -8420,7 +8715,11 @@ theorem relTriple_runResolvedFromTable_revealResolvablePosition_reachable
         · have hfinalInvariant := hinvariant.materialize_resolvedReveal position resolved
             (by simpa [resolveDeferredReveal, hresolvable] using hresultSupport)
             hresultInvariant hcompletable
-          exact Or.inl (by simpa [hvalue] using And.intro hfinalInvariant hvisible)
+          exact Or.inl (by
+            simpa [hvalue] using And.intro hfinalInvariant
+              (And.intro hvisible (by
+                simpa [materializeResolvedPosition] using
+                  hpublished.materialize (.position position) resolved.output)))
         · have hfinalDoomed : DoomedResolvedContext table
               (materializeResolvedPosition context position resolved) := ⟨
             hinvariant.2.1.valuesConsistent.materializeResolvedPosition_of table position
@@ -8437,9 +8736,9 @@ theorem reachableResolvedCouples_revealResolvablePosition
     ReachableResolvedCouples parameter table (revealPosition position)
       (simulateQ (randomOracle : QueryImpl HashSpec _)
         (resolvedPositionComputation parameter table position)) := by
-  intro context fuel cache concreteCache hinvariant hclosed
+  intro context fuel cache concreteCache hinvariant hclosed hpublished
   exact relTriple_runResolvedFromTable_revealResolvablePosition_reachable parameter table
-    position context fuel cache concreteCache hinvariant hclosed hresolvable
+    position context fuel cache concreteCache hinvariant hclosed hpublished hresolvable
 
 set_option maxRecDepth 100000 in
 theorem relTriple_runResolvedFromTable_revealPosition_chronological
@@ -8577,6 +8876,7 @@ theorem relTriple_runResolvedFromTable_revealResolvablePositionOutput_chronologi
     (hresolvable : ResolvableOtsPosition position)
     (havailable : TableInputAvailable completion context.state (.position position))
     (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hpublished : PublishedValues context.state)
     (hinput : input = tableInput parameter completion (.position position)) :
     RelTriple
       (runResolvedFromTable context fuel table
@@ -8659,12 +8959,14 @@ theorem relTriple_runResolvedFromTable_revealResolvablePositionOutput_chronologi
           have hcached : finalCache input = some resolved.output :=
             hresultInvariant.concreteCache_eq_of_positionValue position hots resolved.output
               hposition input hcanonical
-          refine Or.inl ⟨rfl, ?_, ?_, hvisible⟩
+          refine Or.inl ⟨rfl, ?_, ?_, hvisible, ?_⟩
           · simp [hcached]
           · rw [ordinaryQueryCache_update_hidden]
             exact hinvariant.materialize_resolvedReveal position resolved
               (by simpa [resolveDeferredReveal, hresolvable] using hresultSupport)
               hresultInvariant hcompletable
+          · simpa [materializeResolvedPosition] using
+              hpublished.materialize (.position position) resolved.output
         · refine Or.inr ⟨rfl, ?_⟩
           exact ⟨
             hinvariant.2.1.valuesConsistent.materializeResolvedPosition_of table position
@@ -9101,6 +9403,7 @@ theorem relTriple_runResolvedFromTable_resolveKnownInput_completionCanonical
     (hresolvable : ResolvableOtsPosition position)
     (havailable : TableInputAvailable completion context.state (.position position))
     (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hpublished : PublishedValues context.state)
     (hinput : input = tableInput parameter completion (.position position)) :
     RelTriple
       (runResolvedFromTable context fuel table
@@ -9123,14 +9426,20 @@ theorem relTriple_runResolvedFromTable_resolveKnownInput_completionCanonical
   have hreveal :=
     relTriple_runResolvedFromTable_revealResolvablePositionOutput_chronological parameter table
       completion position input context fuel cache concreteCache hinvariant hcompletion hots
-        hresolvable havailable hclosed hinput
+        hresolvable havailable hclosed hpublished hinput
+  have hsupportedLeft :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hreveal
+      (fun result => result ∈ support
+        (runResolvedFromTable context fuel table
+          ((revealCoordinateOutput (.position position)).run cache)))
+      (fun result hresult => hresult)
   have hsupported :=
-    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hreveal
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hsupportedLeft
   rw [show (randomOracle input).run concreteCache =
       ((randomOracle input).run concreteCache >>= fun result => pure result) by simp]
   apply relTriple_bind hsupported
   intro leftResult rightResult hrelation
-  rcases hrelation with ⟨hrelation, hrightSupport⟩
+  rcases hrelation with ⟨⟨hrelation, hleftSupport⟩, hrightSupport⟩
   cases leftResult with
   | none =>
       apply relTriple_pure_pure
@@ -9194,24 +9503,28 @@ theorem relTriple_runResolvedFromTable_publishOrdinaryInput_reachable
     (hinvariant : ResolvedContextInvariant parameter table context
       (ordinaryQueryCache cache) concreteCache)
     (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hpublished : PublishedValues context.state)
+    (hvalue : context.state.values coordinate ≠ none)
     (hconcrete : concreteCache input = some output) :
     RelTriple
       (runResolvedFromTable context fuel table
         ((publishOrdinaryInput coordinate input output).run cache))
       (pure (output, concreteCache) : ProbComp (HashOutput × QueryCache HashSpec))
       (ReachableResolvedRunRel parameter table) := by
-  obtain ⟨publishedContext, hpublish, hpending, hvalues, hprivate⟩ :=
-    (resolvedAdministrative_publishCoordinate coordinate).run context cache fuel table
-  have hcore : context.CoreEq publishedContext :=
-    ⟨hpending.symm, hvalues.symm, hprivate.symm⟩
-  have hpublishedInvariant := hinvariant.of_coreEq hcore
-  unfold publishOrdinaryInput
-  rw [StateT.run_bind, runResolvedFromTable_bind, hpublish]
-  simp only [StateT.run_pure, runResolvedFromTable]
+  unfold publishOrdinaryInput publishCoordinate
+  rw [StateT.run_bind, runResolvedFromTable_bind, StateT.run_liftM,
+    LazyRevealProbe.publishQuery, runResolvedFromTable_publish_query_bind]
+  simp only [runResolvedFromTable, pure_bind]
   apply relTriple_pure_pure
-  refine Or.inl ⟨rfl, rfl, ?_, hclosed.of_state_values_eq hvalues⟩
-  rw [ordinaryQueryCache_update]
-  exact hpublishedInvariant.cacheLeft_of_concrete input output hconcrete
+  refine Or.inl ⟨rfl, rfl, ?_, hclosed.of_state_values_eq rfl, ?_⟩
+  · rw [ordinaryQueryCache_update]
+    exact hinvariant.cacheLeft_of_concrete input output hconcrete
+  · intro other hrevealed
+    simp only [LazyRevealProbe.State.publish, Finset.mem_insert] at hrevealed
+    rcases hrevealed with heq | hrevealed
+    · subst other
+      exact hvalue
+    · exact hpublished other hrevealed
 
 set_option maxRecDepth 100000 in
 theorem relTriple_runResolvedFromTable_resolveKnownInput_completionCanonical_reachable
@@ -9226,6 +9539,7 @@ theorem relTriple_runResolvedFromTable_resolveKnownInput_completionCanonical_rea
     (hresolvable : ResolvableOtsPosition position)
     (havailable : TableInputAvailable completion context.state (.position position))
     (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hpublished : PublishedValues context.state)
     (hinput : input = tableInput parameter completion (.position position)) :
     RelTriple
       (runResolvedFromTable context fuel table
@@ -9248,14 +9562,20 @@ theorem relTriple_runResolvedFromTable_resolveKnownInput_completionCanonical_rea
   have hreveal :=
     relTriple_runResolvedFromTable_revealResolvablePositionOutput_chronological parameter table
       completion position input context fuel cache concreteCache hinvariant hcompletion hots
-        hresolvable havailable hclosed hinput
+        hresolvable havailable hclosed hpublished hinput
+  have hsupportedLeft :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hreveal
+      (fun result => result ∈ support
+        (runResolvedFromTable context fuel table
+          ((revealCoordinateOutput (.position position)).run cache)))
+      (fun result hresult => hresult)
   have hsupported :=
-    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hreveal
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hsupportedLeft
   rw [show (randomOracle input).run concreteCache =
       ((randomOracle input).run concreteCache >>= fun result => pure result) by simp]
   apply relTriple_bind hsupported
   intro leftResult rightResult hrelation
-  rcases hrelation with ⟨hrelation, hrightSupport⟩
+  rcases hrelation with ⟨⟨hrelation, hleftSupport⟩, hrightSupport⟩
   cases leftResult with
   | none =>
       apply relTriple_pure_pure
@@ -9268,7 +9588,12 @@ theorem relTriple_runResolvedFromTable_resolveKnownInput_completionCanonical_rea
         simpa [hclean.1, hclean.2.1] using
           (relTriple_runResolvedFromTable_publishOrdinaryInput_reachable parameter table
             (.position position) input rightResult.1 result.context result.remaining
-              result.value.2 rightResult.2 hclean.2.2.1 hclean.2.2.2 hcached)
+              result.value.2 rightResult.2 hclean.2.2.1 hclean.2.2.2.1 hclean.2.2.2.2
+                (by
+                  rw [value_of_mem_runResolvedFromTable_revealCoordinateOutput context fuel table
+                    (.position position) cache result hleftSupport]
+                  simp)
+                hcached)
       · simpa [hdoomed.1] using
           (relTriple_runResolvedFromTable_of_doomed_reachable parameter table
             (publishOrdinaryInput (.position position) input result.value.1)
@@ -9282,6 +9607,7 @@ theorem relTriple_runResolvedFromTable_resolveKnownInput_completionOrdinary_reac
     (hinvariant : ResolvedContextInvariant parameter table context
       (ordinaryQueryCache cache) concreteCache)
     (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hpublished : PublishedValues context.state)
     (hots : ∀ position, coordinate = .position position → IsOtsPosition position)
     (hordinary : CompletionOrdinaryInput parameter table context input) :
     RelTriple
@@ -9305,12 +9631,12 @@ theorem relTriple_runResolvedFromTable_resolveKnownInput_completionOrdinary_reac
           exact hordinary completion hcompletion position (hots position rfl) heq.symm
     rw [if_neg hne]
     exact relTriple_runResolvedFromTable_splitHashQuery_completionOrdinary_reachable parameter
-      table input context hordinary fuel cache concreteCache hinvariant hclosed
+      table input context hordinary fuel cache concreteCache hinvariant hclosed hpublished
   · rw [runResolvedFromTable_peekTableInput_of_unavailable parameter completion context fuel table
       cache coordinate hcompletion hots havailable]
     simp only [pure_bind]
     exact relTriple_runResolvedFromTable_splitHashQuery_completionOrdinary_reachable parameter
-      table input context hordinary fuel cache concreteCache hinvariant hclosed
+      table input context hordinary fuel cache concreteCache hinvariant hclosed hpublished
 
 theorem completionOrdinaryInput_of_available_decoded_ne
     {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
@@ -9343,6 +9669,7 @@ theorem relTriple_runResolvedFromTable_resolveKnownInput_availableDecoded_reacha
     (hinvariant : ResolvedContextInvariant parameter table context
       (ordinaryQueryCache cache) concreteCache)
     (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hpublished : PublishedValues context.state)
     (hots : IsOtsPosition position)
     (hresolvable : ResolvableOtsPosition position)
     (hdecode : decodePosition? parameter input = some position)
@@ -9357,10 +9684,10 @@ theorem relTriple_runResolvedFromTable_resolveKnownInput_availableDecoded_reacha
   by_cases hinput : tableInput parameter completion (.position position) = input
   · exact relTriple_runResolvedFromTable_resolveKnownInput_completionCanonical_reachable
       parameter table completion position input context fuel cache concreteCache hinvariant
-        hcompletion hots hresolvable havailable hclosed hinput.symm
+        hcompletion hots hresolvable havailable hclosed hpublished hinput.symm
   · exact relTriple_runResolvedFromTable_resolveKnownInput_completionOrdinary_reachable
       parameter table (.position position) input context fuel cache concreteCache hinvariant hclosed
-        (fun other heq => by cases heq; exact hots)
+        hpublished (fun other heq => by cases heq; exact hots)
         (completionOrdinaryInput_of_available_decoded_ne hdecode havailable hinput)
 
 theorem tableInputAvailable_chain_of_probe_revealed
@@ -9452,7 +9779,7 @@ theorem relTriple_runResolvedFromTable_probingHashQuery_chain_reachable
           hmatches houtput hrevealed
         exact relTriple_runResolvedFromTable_resolveKnownInput_availableDecoded_reachable
           parameter table (.chain lay tree leafIdx chainIdx step) input context remaining cache
-            concreteCache hinvariant hclosed (by simp [IsOtsPosition])
+            concreteCache hinvariant hclosed hpublished (by simp [IsOtsPosition])
               (by simp [ResolvableOtsPosition]) hposition completion hcompletion havailable
       · simp only [hrevealed, ↓reduceIte]
         let probeContext : DeferredContext :=
@@ -9463,6 +9790,8 @@ theorem relTriple_runResolvedFromTable_probingHashQuery_chain_reachable
             candidate.coordinate candidate.candidate hcompletable
           have hprobeClosed : VisibleResolvedComputationsCached parameter table probeContext
               concreteCache := hclosed.of_state_values_eq rfl
+          have hprobePublished : PublishedValues probeContext.state := by
+            simpa [probeContext, PublishedValues, LazyRevealProbe.State.addPending] using hpublished
           have hpending : (candidate.coordinate, candidate.candidate) ∈
               probeContext.state.pending := by
             simp [probeContext, LazyRevealProbe.State.addPending]
@@ -9470,7 +9799,7 @@ theorem relTriple_runResolvedFromTable_probingHashQuery_chain_reachable
             hprobe hpending
           exact relTriple_runResolvedFromTable_resolveKnownInput_completionOrdinary_reachable
             parameter table (.position (.chain lay tree leafIdx chainIdx step)) input
-              probeContext remaining cache concreteCache hprobeInvariant hprobeClosed
+              probeContext remaining cache concreteCache hprobeInvariant hprobeClosed hprobePublished
                 (fun position heq => by cases heq; simp [IsOtsPosition]) hordinary
         · have hdoomed : DoomedResolvedContext table probeContext := ⟨
             hinvariant.2.1.valuesConsistent.addPending candidate.coordinate candidate.candidate,
@@ -10399,7 +10728,12 @@ theorem reachableResolvedCouples_maskedOtsSignFrom
                 (fun _ => ())
                 (fun chainIdx => resolvedAdministrative_ensureChainPrefix lay tree leafIdx
                   chainIdx (encoding chainIdx))
-              exact (reachableResolvedCouples_of_administrative hreserve).bind fun _ =>
+              have hreservePublished := resolvedPreservesPublished_sequenceFin
+                (fun chainIdx => ensureChainPrefix lay tree leafIdx chainIdx (encoding chainIdx))
+                (fun chainIdx => resolvedPreservesPublished_ensureChainPrefix lay tree leafIdx
+                  chainIdx (encoding chainIdx))
+              exact (reachableResolvedCouples_of_administrative hreserve
+                hreservePublished).bind fun _ =>
                 reachableResolvedCouples_pure parameter table
                   (some (BitVec.ofNat counterBits counter, encoding))
 
@@ -10425,11 +10759,12 @@ theorem reachableResolvedCouples_revealPublishedChainValue
   unfold revealPublishedCoordinate chainValueCoordinate
   split
   · have hbase := (reachableResolvedCouples_revealChainStart parameter table
-      ⟨lay, tree, leafIdx, chainIdx⟩).bind fun value =>
-        (reachableResolvedCouples_of_administrative
-          (resolvedAdministrative_publishCoordinate
-            (.chainStart lay tree leafIdx chainIdx))).bind fun _ =>
-            reachableResolvedCouples_pure parameter table value
+      ⟨lay, tree, leafIdx, chainIdx⟩).publishAfter
+        (.chainStart lay tree leafIdx chainIdx) (by
+          intro context fuel cache result hresult
+          exact value_ne_none_of_mem_runResolvedFromTable_revealCoordinate context fuel table
+            (.chainStart lay tree leafIdx chainIdx) cache result (by
+              simpa [revealChainStart] using hresult))
     simpa [revealChainStart, chainWalk, ‹digit.val = 0›] using hbase
   · let step : ChainStep := ⟨digit.val - 1, by
       have := digit.isLt
@@ -10444,11 +10779,12 @@ theorem reachableResolvedCouples_revealPublishedChainValue
       omega
     rw [← hwalk]
     have hbase := (reachableResolvedCouples_revealResolvablePosition parameter table
-      (.chain lay tree leafIdx chainIdx step) (by simp [ResolvableOtsPosition])).bind fun value =>
-        (reachableResolvedCouples_of_administrative
-          (resolvedAdministrative_publishCoordinate
-            (.position (.chain lay tree leafIdx chainIdx step)))).bind fun _ =>
-            reachableResolvedCouples_pure parameter table value
+      (.chain lay tree leafIdx chainIdx step) (by simp [ResolvableOtsPosition])).publishAfter
+        (.position (.chain lay tree leafIdx chainIdx step)) (by
+          intro context fuel cache result hresult
+          exact value_ne_none_of_mem_runResolvedFromTable_revealCoordinate context fuel table
+            (.position (.chain lay tree leafIdx chainIdx step)) cache result (by
+              simpa [revealPosition] using hresult))
     simpa [revealPosition, step] using hbase
 
 theorem reachableResolvedCouples_revealPublishedTreeNode
@@ -10472,11 +10808,12 @@ theorem reachableResolvedCouples_revealPublishedTreeNode
   cases level with
   | zero =>
       have hbase := (reachableResolvedCouples_revealResolvablePosition parameter table
-        (.leaf lay tree (leafOfNat nodeIdx)) (by simp [ResolvableOtsPosition])).bind fun value =>
-          (reachableResolvedCouples_of_administrative
-            (resolvedAdministrative_publishCoordinate
-              (.position (.leaf lay tree (leafOfNat nodeIdx))))).bind fun _ =>
-                reachableResolvedCouples_pure parameter table value
+        (.leaf lay tree (leafOfNat nodeIdx)) (by simp [ResolvableOtsPosition])).publishAfter
+          (.position (.leaf lay tree (leafOfNat nodeIdx))) (by
+            intro context fuel cache result hresult
+            exact value_ne_none_of_mem_runResolvedFromTable_revealCoordinate context fuel table
+              (.position (.leaf lay tree (leafOfNat nodeIdx))) cache result (by
+                simpa [revealPosition] using hresult))
       simpa [revealPublishedCoordinate, revealPosition, resolvedPositionComputation,
         treeNode_zero_eq] using hbase
   | succ current =>
@@ -10492,12 +10829,12 @@ theorem reachableResolvedCouples_revealPublishedTreeNode
         simp [ResolvableOtsPosition, hnodeVal]
         exact hspan
       have hbase := (reachableResolvedCouples_revealResolvablePosition parameter table
-        (.node lay tree ⟨current, hcurrent⟩ (leafOfNat nodeIdx)) hresolvable).bind fun value =>
-          (reachableResolvedCouples_of_administrative
-            (resolvedAdministrative_publishCoordinate
-              (.position (.node lay tree ⟨current, hcurrent⟩
-                (leafOfNat nodeIdx))))).bind fun _ =>
-                  reachableResolvedCouples_pure parameter table value
+        (.node lay tree ⟨current, hcurrent⟩ (leafOfNat nodeIdx)) hresolvable).publishAfter
+          (.position (.node lay tree ⟨current, hcurrent⟩ (leafOfNat nodeIdx))) (by
+            intro context fuel cache result hresult
+            exact value_ne_none_of_mem_runResolvedFromTable_revealCoordinate context fuel table
+              (.position (.node lay tree ⟨current, hcurrent⟩ (leafOfNat nodeIdx))) cache result
+                (by simpa [revealPosition] using hresult))
       simpa [revealPublishedCoordinate, revealPosition, resolvedPositionComputation,
         hnodeVal] using hbase
 
@@ -10602,7 +10939,8 @@ theorem reachableResolvedCouples_maskedChainValue
   by_cases hzero : digit.val = 0
   · rw [dif_pos hzero]
     have hbase := (reachableResolvedCouples_of_administrative
-      (resolvedAdministrative_ensureChainPrefix lay tree leafIdx chainIdx digit)).bind fun _ =>
+      (resolvedAdministrative_ensureChainPrefix lay tree leafIdx chainIdx digit)
+      (resolvedPreservesPublished_ensureChainPrefix lay tree leafIdx chainIdx digit)).bind fun _ =>
         reachableResolvedCouples_revealChainStart parameter table
           ⟨lay, tree, leafIdx, chainIdx⟩
     simpa [hzero, chainWalk] using hbase
@@ -10614,7 +10952,8 @@ theorem reachableResolvedCouples_maskedChainValue
       simp [step]
       omega
     have hbase := (reachableResolvedCouples_of_administrative
-      (resolvedAdministrative_ensureChainPrefix lay tree leafIdx chainIdx digit)).bind fun _ =>
+      (resolvedAdministrative_ensureChainPrefix lay tree leafIdx chainIdx digit)
+      (resolvedPreservesPublished_ensureChainPrefix lay tree leafIdx chainIdx digit)).bind fun _ =>
         reachableResolvedCouples_revealResolvablePosition parameter table
           (.chain lay tree leafIdx chainIdx step) (by simp [ResolvableOtsPosition])
     simpa [resolvedPositionComputation, step, hsteps] using hbase
@@ -10634,7 +10973,8 @@ theorem reachableResolvedCouples_maskedTreeNode
   cases level with
   | zero =>
       have hbase := (reachableResolvedCouples_of_administrative
-        (resolvedAdministrative_ensureTreeNode lay tree 0 nodeIdx)).bind fun _ =>
+        (resolvedAdministrative_ensureTreeNode lay tree 0 nodeIdx)
+        (resolvedPreservesPublished_ensureTreeNode lay tree 0 nodeIdx)).bind fun _ =>
           reachableResolvedCouples_revealResolvablePosition parameter table
             (.leaf lay tree (leafOfNat nodeIdx)) (by simp [ResolvableOtsPosition])
       simpa [resolvedPositionComputation, treeNode_zero_eq] using hbase
@@ -10651,7 +10991,8 @@ theorem reachableResolvedCouples_maskedTreeNode
         simp [ResolvableOtsPosition, hnodeVal]
         exact hspan
       have hbase := (reachableResolvedCouples_of_administrative
-        (resolvedAdministrative_ensureTreeNode lay tree (current + 1) nodeIdx)).bind fun _ =>
+        (resolvedAdministrative_ensureTreeNode lay tree (current + 1) nodeIdx)
+        (resolvedPreservesPublished_ensureTreeNode lay tree (current + 1) nodeIdx)).bind fun _ =>
           reachableResolvedCouples_revealResolvablePosition parameter table
             (.node lay tree ⟨current, hcurrent⟩ (leafOfNat nodeIdx)) hresolvable
       simpa [resolvedPositionComputation, hnodeVal] using hbase
@@ -10698,6 +11039,8 @@ theorem reachableResolvedCouples_maskedSignLayer
   | some part =>
       exact (reachableResolvedCouples_of_administrative
         (resolvedAdministrative_ensureTreePath lay (treeIndexAt index lay)
+          (leafIndexAt index lay))
+        (resolvedPreservesPublished_ensureTreePath lay (treeIndexAt index lay)
           (leafIndexAt index lay))).bind fun _ =>
             reachableResolvedCouples_pure parameter table (some part)
 
