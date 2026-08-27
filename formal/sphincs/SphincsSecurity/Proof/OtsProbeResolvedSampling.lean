@@ -5070,6 +5070,96 @@ theorem deferredCompletable_of_mem_runResolvedFromTable
                   exact ⟨completion, hbeforeMaterialize.of_resolveDeferredReveal
                     hconsistent hstarts position resolved hresolved⟩
 
+set_option maxRecDepth 100000 in
+theorem resolvedCore_of_mem_runResolvedFromTable
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (result : ResolvedRunResult alpha)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table)
+    (hresult : some result ∈ support
+      (runResolvedFromTable context fuel table computation)) :
+    result.table = table ∧ result.context.ValuesConsistent ∧
+      StartTableAgrees result.context.state table := by
+  induction computation using OracleComp.inductionOn generalizing context fuel with
+  | pure value =>
+      simp [runResolvedFromTable] at hresult
+      subst result
+      exact ⟨rfl, hconsistent, hstarts⟩
+  | query_bind input next ih =>
+      cases input with
+      | uniform n =>
+          rw [runResolvedFromTable_uniform_query_bind, mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, hrest⟩ := hresult
+          exact ih output context fuel hconsistent hstarts hrest
+      | hashOutput =>
+          rw [runResolvedFromTable_hashOutput_query_bind, mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, hrest⟩ := hresult
+          exact ih output context fuel hconsistent hstarts hrest
+      | ensure coordinate =>
+          rw [runResolvedFromTable_ensure_query_bind] at hresult
+          exact ih () { context with state := context.state.ensure coordinate } fuel
+            (hconsistent.ensure coordinate) (hstarts.ensure coordinate) hresult
+      | probe coordinate candidate =>
+          rw [runResolvedFromTable_probe_query_bind] at hresult
+          cases fuel with
+          | zero => simp at hresult
+          | succ remaining =>
+              by_cases hrevealed : coordinate ∈ context.state.revealed
+              · exact ih () context remaining hconsistent hstarts
+                  (by simpa [hrevealed] using hresult)
+              · exact ih () { context with state := context.state.addPending coordinate candidate }
+                  remaining (hconsistent.addPending coordinate candidate)
+                  (hstarts.addPending coordinate candidate)
+                  (by simpa [hrevealed] using hresult)
+      | peek coordinate =>
+          rw [runResolvedFromTable_peek_query_bind] at hresult
+          exact ih (context.state.values coordinate) context fuel hconsistent hstarts hresult
+      | publish coordinate =>
+          rw [runResolvedFromTable_publish_query_bind] at hresult
+          exact ih () { context with state := context.state.publish coordinate } fuel
+            (hconsistent.publish coordinate) (hstarts.publish coordinate) hresult
+      | reveal coordinate =>
+          rw [runResolvedFromTable_reveal_query_bind] at hresult
+          cases coordinate with
+          | chainStart lay tree leafIdx chainIdx =>
+              let index : OtsSecretIndex := ⟨lay, tree, leafIdx, chainIdx⟩
+              simp only [mem_support_bind_iff, support_pure, Set.mem_singleton_iff] at hresult
+              obtain ⟨resolvedOption, hresolved, hrest⟩ := hresult
+              cases resolvedOption with
+              | none => simp at hrest
+              | some resolved =>
+                  have hresolvedEq : resolveDeferredChainStart table index context =
+                      some resolved := by simpa [index] using hresolved.symm
+                  have hmaterializedConsistent :=
+                    hconsistent.materializeResolvedChainStart_of table index resolved hresolvedEq
+                  have houtput := resolveDeferredChainStart_output_of_agrees table index context
+                    resolved hstarts hresolvedEq
+                  have hmaterializedStarts : StartTableAgrees
+                      (context.state.materialize index.coordinate resolved.output) table := by
+                    rw [houtput]
+                    exact hstarts.materialize_start index
+                  exact ih resolved.output (materializeResolvedChainStart context index resolved)
+                    fuel hmaterializedConsistent (by
+                      simpa [materializeResolvedChainStart] using hmaterializedStarts)
+                    (by simpa [index, OtsSecretIndex.coordinate, materializeResolvedChainStart]
+                      using hrest)
+          | position position =>
+              rw [mem_support_bind_iff] at hresult
+              obtain ⟨resolvedOption, hresolved, hrest⟩ := hresult
+              cases resolvedOption with
+              | none => simp at hrest
+              | some resolved =>
+                  have hmaterializedConsistent :=
+                    hconsistent.materializeResolvedPosition_of table position resolved hresolved
+                  have hmaterializedStarts : StartTableAgrees
+                      (context.state.materialize (.position position) resolved.output) table :=
+                    hstarts.materialize_position position resolved.output
+                  exact ih resolved.output (materializeResolvedPosition context position resolved)
+                    fuel hmaterializedConsistent (by
+                      simpa [materializeResolvedPosition] using hmaterializedStarts)
+                    (by simpa [materializeResolvedPosition] using hrest)
+
 def ChronologicalCacheAgrees (parameter : PublicParameter)
     (table : OtsSecretIndex → HashOutput)
     (context : DeferredContext) (cache : QueryCache HashSpec) : Prop :=
@@ -6689,6 +6779,22 @@ def ResolvedOrdinaryRunRel (parameter : PublicParameter)
         ResolvedContextInvariant parameter table result.context
           (ordinaryQueryCache result.value.2) concreteCache
 
+def DoomedResolvedContext (table : OtsSecretIndex → HashOutput)
+    (context : DeferredContext) : Prop :=
+  context.ValuesConsistent ∧ StartTableAgrees context.state table ∧
+    ¬DeferredCompletable table context
+
+def ResolvedRunRel (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput) :
+    Option (ResolvedRunResult (alpha × SplitHashCache)) →
+      alpha × QueryCache HashSpec → Prop
+  | none, _ => True
+  | some result, (value, concreteCache) =>
+      (result.table = table ∧ result.value.1 = value ∧
+        ResolvedContextInvariant parameter table result.context
+          (ordinaryQueryCache result.value.2) concreteCache) ∨
+      DoomedResolvedContext table result.context
+
 theorem relTriple_runResolvedFromTable_splitHashQuery_stable
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
     (input : HashInput) (hstable : StableOrdinaryInput parameter input)
@@ -6737,7 +6843,7 @@ def ResolvedStructuralRunRel (parameter : PublicParameter)
       result.table = table ∧ result.value.1 = value ∧
         (ResolvedContextInvariant parameter table result.context
             (ordinaryQueryCache result.value.2) concreteCache ∨
-          ¬DeferredCompletable table result.context)
+          DoomedResolvedContext table result.context)
 
 set_option maxRecDepth 100000 in
 theorem relTriple_runResolvedFromTable_revealPosition_chronological
@@ -6792,7 +6898,12 @@ theorem relTriple_runResolvedFromTable_revealPosition_chronological
             (materializeResolvedPosition context position resolved)
         · exact Or.inl (hinvariant.materialize_resolvedReveal position resolved
             hresultSupport hresultInvariant hcompletable)
-        · exact Or.inr hcompletable
+        · exact Or.inr ⟨
+            hinvariant.2.1.valuesConsistent.materializeResolvedPosition_of table position
+              resolved hresultSupport,
+            by simpa [materializeResolvedPosition] using
+              hinvariant.2.2.1.materialize_position position resolved.output,
+            hcompletable⟩
   simpa [materializeResolvedPosition] using hbound
 
 set_option maxRecDepth 100000 in
@@ -6846,7 +6957,15 @@ theorem relTriple_runResolvedFromTable_revealResolvablePosition_chronological
         · exact Or.inl (hinvariant.materialize_resolvedReveal position resolved
             (by simpa [resolveDeferredReveal, hresolvable] using hresultSupport)
             hresultInvariant hcompletable)
-        · exact Or.inr hcompletable
+        · have hreveal : some resolved ∈ support
+              (resolveDeferredReveal table position context) := by
+            simpa [resolveDeferredReveal, hresolvable] using hresultSupport
+          exact Or.inr ⟨
+            hinvariant.2.1.valuesConsistent.materializeResolvedPosition_of table position
+              resolved hreveal,
+            by simpa [materializeResolvedPosition] using
+              hinvariant.2.2.1.materialize_position position resolved.output,
+            hcompletable⟩
   simpa [resolveDeferredReveal, hresolvable, materializeResolvedPosition] using hbound
 
 theorem relTriple_runResolvedFromTable_revealChainStart_chronological
@@ -7056,14 +7175,25 @@ theorem finalizeResolvedCoordinates_empty_finset_projects_to_clean
     coordinates.nodup_toList
 
 noncomputable def finishResolvedRun :
-    Option (ResolvedRunResult alpha) → ProbComp (Option (ResolvedRunResult alpha))
-  | none => pure none
-  | some result => do
-      let finalized ← finalizeResolvedCoordinates result.context.state.coordinates.toList
-        result.context result.table
-      match finalized with
-      | none => pure none
-      | some context => pure (some ⟨context, result.remaining, result.value, result.table⟩)
+    Option (ResolvedRunResult alpha) → ProbComp (Option (ResolvedRunResult alpha)) := by
+  classical
+  intro input
+  cases input with
+  | none => exact pure none
+  | some result =>
+      exact if DeferredCompletable result.table result.context then do
+          let finalized ← finalizeResolvedCoordinates result.context.state.coordinates.toList
+            result.context result.table
+          match finalized with
+          | none => pure none
+          | some context => pure (some ⟨context, result.remaining, result.value, result.table⟩)
+        else pure none
+
+theorem finishResolvedRun_of_not_deferredCompletable
+    (result : ResolvedRunResult alpha)
+    (hdoomed : ¬DeferredCompletable result.table result.context) :
+    finishResolvedRun (some result) = pure none := by
+  simp [finishResolvedRun, hdoomed]
 
 def projectResolvedRunResult :
     Option (ResolvedRunResult alpha) → Option (CleanRunResult alpha)
@@ -7072,13 +7202,15 @@ def projectResolvedRunResult :
 
 theorem finishResolvedRun_empty_projects_to_clean
     (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
-    (value : alpha) (table : OtsSecretIndex → HashOutput) :
+    (value : alpha) (table : OtsSecretIndex → HashOutput)
+    (hcompletable : DeferredCompletable table
+      { state := state, values := emptyDeferredStructuralValues }) :
     projectResolvedRunResult <$>
         finishResolvedRun (some ⟨
           { state := state, values := emptyDeferredStructuralValues },
           fuel, value, table⟩) =
       finishCleanRunFromTable (some ⟨state, fuel, value, table⟩) := by
-  simp only [finishResolvedRun, finishCleanRunFromTable]
+  simp only [finishResolvedRun, hcompletable, ↓reduceIte, finishCleanRunFromTable]
   rw [← finalizeResolvedCoordinates_empty_finset_projects_to_clean
     state.coordinates state table]
   simp only [map_eq_bind_pure_comp, bind_assoc]
