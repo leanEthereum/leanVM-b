@@ -1650,6 +1650,267 @@ theorem evalDist_finalizeCleanFromTable_perm
       · exact (evalDist_finalizeCleanFromTable_swap left right remaining state table heq).symm
   | trans _ _ ihLeft ihRight => exact ihLeft state |>.trans (ihRight state)
 
+theorem evalDist_finalizeCleanFromTable_move_to_front
+    (coordinate : Coordinate) (coordinates : List Coordinate)
+    (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput) (hmem : coordinate ∈ coordinates) :
+    𝒟[finalizeCleanFromTable coordinates state table] =
+      𝒟[finalizeCleanFromTable (coordinate :: coordinates.erase coordinate) state table] :=
+  evalDist_finalizeCleanFromTable_perm (List.perm_cons_erase hmem) state table
+
+theorem evalDist_finalizeCleanFromTable_finset_move_to_front
+    (coordinate : Coordinate) (coordinates : Finset Coordinate)
+    (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput) (hmem : coordinate ∈ coordinates) :
+    𝒟[finalizeCleanFromTable coordinates.toList state table] =
+      𝒟[finalizeCleanFromTable
+        (coordinate :: coordinates.toList.erase coordinate) state table] := by
+  apply evalDist_finalizeCleanFromTable_move_to_front
+  simpa using hmem
+
+theorem evalDist_finalizeCleanFromTable_expose_missing
+    (coordinate : Coordinate) (coordinates : List Coordinate)
+    (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput) (hmem : coordinate ∈ coordinates)
+    (hmissing : state.values coordinate = none) :
+    𝒟[finalizeCleanFromTable coordinates state table] =
+      𝒟[do
+        let output ← completionOutputFromTable coordinate table
+        if state.hitAt coordinate output then
+          pure none
+        else
+          finalizeCleanFromTable (coordinates.erase coordinate)
+            (state.complete coordinate output) table] := by
+  calc
+    _ = 𝒟[finalizeCleanFromTable
+        (coordinate :: coordinates.erase coordinate) state table] :=
+      evalDist_finalizeCleanFromTable_move_to_front coordinate coordinates state table hmem
+    _ = _ := congrArg evalDist
+      (finalizeCleanFromTable_cons_of_none coordinate (coordinates.erase coordinate)
+        state table hmissing)
+
+theorem evalDist_finalizeCleanFromTable_finset_expose_missing
+    (coordinate : Coordinate) (coordinates : Finset Coordinate)
+    (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput) (hmem : coordinate ∈ coordinates)
+    (hmissing : state.values coordinate = none) :
+    𝒟[finalizeCleanFromTable coordinates.toList state table] =
+      𝒟[do
+        let output ← completionOutputFromTable coordinate table
+        if state.hitAt coordinate output then
+          pure none
+        else
+          finalizeCleanFromTable (coordinates.toList.erase coordinate)
+            (state.complete coordinate output) table] := by
+  apply evalDist_finalizeCleanFromTable_expose_missing
+  · simpa using hmem
+  · exact hmissing
+
+theorem values_eq_of_mem_finalizeCleanFromTable_of_not_mem
+    (coordinate : Coordinate) (coordinates : List Coordinate)
+    (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput) (output : HashOutput)
+    (hnotMem : coordinate ∉ coordinates)
+    (hvalue : state.values coordinate = some output)
+    (finalState : LazyRevealProbe.State Coordinate)
+    (finalTable : OtsSecretIndex → HashOutput)
+    (hresult : some (finalState, finalTable) ∈ support
+      (finalizeCleanFromTable coordinates state table)) :
+    finalState.values coordinate = some output := by
+  induction coordinates generalizing state with
+  | nil =>
+      simp [finalizeCleanFromTable] at hresult
+      obtain ⟨rfl, rfl⟩ := hresult
+      exact hvalue
+  | cons head remaining ih =>
+      have hne : coordinate ≠ head := by
+        intro heq
+        apply hnotMem
+        simp [heq]
+      have hnotTail : coordinate ∉ remaining := by
+        exact fun hmem => hnotMem (List.mem_cons_of_mem head hmem)
+      cases hhead : state.values head with
+      | some headOutput =>
+          rw [finalizeCleanFromTable.eq_def] at hresult
+          simp only at hresult
+          rw [hhead] at hresult
+          exact ih (state.clearPending head) hnotTail hvalue hresult
+      | none =>
+          rw [finalizeCleanFromTable.eq_def] at hresult
+          simp only at hresult
+          rw [hhead] at hresult
+          simp only at hresult
+          cases head with
+          | chainStart lay tree leafIdx chainIdx =>
+              simp only at hresult
+              by_cases hhit : state.hitAt (.chainStart lay tree leafIdx chainIdx)
+                  (table ⟨lay, tree, leafIdx, chainIdx⟩)
+              · simp [hhit] at hresult
+              · rw [if_neg hhit] at hresult
+                apply ih
+                  (state.complete (.chainStart lay tree leafIdx chainIdx)
+                    (table ⟨lay, tree, leafIdx, chainIdx⟩)) hnotTail
+                  _ hresult
+                rw [values_complete_of_ne state
+                  (.chainStart lay tree leafIdx chainIdx) coordinate _ hne, hvalue]
+          | position position =>
+              simp only at hresult
+              rw [mem_support_bind_iff] at hresult
+              obtain ⟨headOutput, _, hrest⟩ := hresult
+              by_cases hhit : state.hitAt (.position position) headOutput
+              · simp [hhit] at hrest
+              · apply ih (state.complete (.position position) headOutput) hnotTail
+                    _ (by simpa [hhit] using hrest)
+                rw [values_complete_of_ne state (.position position) coordinate _ hne,
+                  hvalue]
+
+def FinalizePositionRel (coordinate : Coordinate) :
+    Option (LazyRevealProbe.State Coordinate × (OtsSecretIndex → HashOutput)) →
+      HashOutput → Prop
+  | none, _ => True
+  | some (state, _), output => state.values coordinate = some output
+
+set_option maxRecDepth 100000 in
+theorem relTriple_finalizeCleanFromTable_position_missing
+    (position : Position) (coordinates : List Coordinate)
+    (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput)
+    (hmem : Coordinate.position position ∈ coordinates)
+    (hnodup : coordinates.Nodup)
+    (hmissing : state.values (.position position) = none) :
+    RelTriple
+      (finalizeCleanFromTable coordinates state table)
+      LazyRevealProbe.sampleHashOutput
+      (FinalizePositionRel (.position position)) := by
+  let coordinate : Coordinate := .position position
+  have hexpose := evalDist_finalizeCleanFromTable_expose_missing coordinate coordinates state
+    table (by simpa [coordinate] using hmem) (by simpa [coordinate] using hmissing)
+  apply relTriple_of_evalDist_eq_left hexpose
+  have hbind : RelTriple
+      (LazyRevealProbe.sampleHashOutput >>= fun output =>
+        if state.hitAt coordinate output then
+          pure none
+        else
+          finalizeCleanFromTable (coordinates.erase coordinate)
+            (state.complete coordinate output) table)
+      (LazyRevealProbe.sampleHashOutput >>= fun output => pure output)
+      (FinalizePositionRel coordinate) := by
+    apply relTriple_bind (relTriple_refl LazyRevealProbe.sampleHashOutput)
+    intro leftOutput rightOutput heq
+    subst rightOutput
+    by_cases hhit : state.hitAt coordinate leftOutput
+    · simp only [hhit, ↓reduceIte]
+      exact relTriple_pure_pure (by simp [FinalizePositionRel])
+    · simp only [hhit, ↓reduceIte]
+      have hbase := relTriple_true
+        (finalizeCleanFromTable (coordinates.erase coordinate)
+          (state.complete coordinate leftOutput) table)
+        (pure leftOutput : ProbComp HashOutput)
+      have hnotMem : coordinate ∉ coordinates.erase coordinate := by
+        have hpermuted : (coordinate :: coordinates.erase coordinate).Nodup :=
+          (List.perm_cons_erase (by simpa [coordinate] using hmem)).nodup_iff.mp hnodup
+        exact (List.nodup_cons.mp hpermuted).1
+      have hsupportedLeft :=
+        SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+          (fun result => FinalizePositionRel coordinate result leftOutput)
+          (by
+            intro result hresult
+            cases result with
+            | none => trivial
+            | some value =>
+                rcases value with ⟨finalState, finalTable⟩
+                exact values_eq_of_mem_finalizeCleanFromTable_of_not_mem coordinate
+                  (coordinates.erase coordinate) (state.complete coordinate leftOutput)
+                  table leftOutput hnotMem (by
+                    simp [LazyRevealProbe.State.complete]) finalState finalTable hresult)
+      have hsupported :=
+        SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hsupportedLeft
+      exact relTriple_post_mono hsupported fun leftResult rightResult hrelation => by
+        have hright : rightResult = leftOutput := by
+          simpa using hrelation.2
+        rw [hright]
+        exact hrelation.1.2
+  simpa [coordinate, completionOutputFromTable] using hbind
+
+theorem relTriple_finalizeCleanFromTable_state_position_missing
+    (position : Position) (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput)
+    (hmem : Coordinate.position position ∈ state.coordinates)
+    (hmissing : state.values (.position position) = none) :
+    RelTriple
+      (finalizeCleanFromTable state.coordinates.toList state table)
+      LazyRevealProbe.sampleHashOutput
+      (FinalizePositionRel (.position position)) := by
+  apply relTriple_finalizeCleanFromTable_position_missing position state.coordinates.toList
+    state table
+  · simpa using hmem
+  · exact Finset.nodup_toList state.coordinates
+  · exact hmissing
+
+theorem relTriple_finalizeCleanFromTable_of_value
+    (coordinate : Coordinate) (coordinates : List Coordinate)
+    (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput) (output : HashOutput)
+    (hmem : coordinate ∈ coordinates) (hnodup : coordinates.Nodup)
+    (hvalue : state.values coordinate = some output) :
+    RelTriple
+      (finalizeCleanFromTable coordinates state table)
+      (pure output : ProbComp HashOutput)
+      (FinalizePositionRel coordinate) := by
+  have heval : 𝒟[finalizeCleanFromTable coordinates state table] =
+      𝒟[finalizeCleanFromTable (coordinates.erase coordinate)
+        (state.clearPending coordinate) table] := by
+    calc
+      _ = 𝒟[finalizeCleanFromTable (coordinate :: coordinates.erase coordinate)
+          state table] :=
+        evalDist_finalizeCleanFromTable_move_to_front coordinate coordinates state table hmem
+      _ = _ := congrArg evalDist
+        (finalizeCleanFromTable_cons_of_some coordinate (coordinates.erase coordinate)
+          state table output hvalue)
+  apply relTriple_of_evalDist_eq_left heval
+  have hnotMem : coordinate ∉ coordinates.erase coordinate := by
+    have hpermuted : (coordinate :: coordinates.erase coordinate).Nodup :=
+      (List.perm_cons_erase hmem).nodup_iff.mp hnodup
+    exact (List.nodup_cons.mp hpermuted).1
+  have hbase := relTriple_true
+    (finalizeCleanFromTable (coordinates.erase coordinate)
+      (state.clearPending coordinate) table)
+    (pure output : ProbComp HashOutput)
+  have hsupportedLeft :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+      (fun result => FinalizePositionRel coordinate result output)
+      (by
+        intro result hresult
+        cases result with
+        | none => trivial
+        | some value =>
+            rcases value with ⟨finalState, finalTable⟩
+            exact values_eq_of_mem_finalizeCleanFromTable_of_not_mem coordinate
+              (coordinates.erase coordinate) (state.clearPending coordinate) table output
+              hnotMem hvalue finalState finalTable hresult)
+  have hsupported :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hsupportedLeft
+  exact relTriple_post_mono hsupported fun leftResult rightResult hrelation => by
+    have hright : rightResult = output := by
+      simpa using hrelation.2
+    rw [hright]
+    exact hrelation.1.2
+
+theorem relTriple_finalizeCleanFromTable_state_of_value
+    (coordinate : Coordinate) (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput) (output : HashOutput)
+    (hmem : coordinate ∈ state.coordinates)
+    (hvalue : state.values coordinate = some output) :
+    RelTriple
+      (finalizeCleanFromTable state.coordinates.toList state table)
+      (pure output : ProbComp HashOutput)
+      (FinalizePositionRel coordinate) := by
+  apply relTriple_finalizeCleanFromTable_of_value coordinate state.coordinates.toList state
+    table output
+  · simpa using hmem
+  · exact Finset.nodup_toList state.coordinates
+  · exact hvalue
+
 noncomputable def detailedExperimentCleanWithCompletionTable
     (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
     (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha) :
