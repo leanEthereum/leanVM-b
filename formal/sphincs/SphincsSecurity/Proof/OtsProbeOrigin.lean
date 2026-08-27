@@ -24,6 +24,11 @@ def ChainForwardClosed (allowed : Coordinate → Prop) : Prop :=
 def ordinaryQueryCache (cache : SplitHashCache) : QueryCache HashSpec :=
   fun input => cache (.ordinary input)
 
+def projectRawOrdinary : LazyRevealProbe.RawResult Coordinate (alpha × SplitHashCache) →
+    Option (alpha × QueryCache HashSpec)
+  | .stopped _ => none
+  | .done _ _ (value, cache) => some (value, ordinaryQueryCache cache)
+
 theorem ordinaryQueryCache_update (cache : SplitHashCache) (input : HashInput)
     (output : HashOutput) :
     ordinaryQueryCache (Function.update cache (.ordinary input) (some output)) =
@@ -40,6 +45,87 @@ theorem ordinaryQueryCache_update_hidden (cache : SplitHashCache)
       ordinaryQueryCache cache := by
   funext input
   simp [ordinaryQueryCache, Function.update]
+
+theorem projectRawOrdinary_splitHashQuery
+    (input : HashInput) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache) (fuel : Nat) :
+    projectRawOrdinary <$>
+        LazyRevealProbe.runRaw state fuel
+          ((splitHashQuery (.ordinary input)).run cache) =
+      some <$>
+        (randomOracle (spec := HashSpec) input).run (ordinaryQueryCache cache) := by
+  rw [splitHashQuery_run_eq]
+  cases hlookup : cache (.ordinary input) with
+  | some output =>
+      simp only
+      have hordinary : ordinaryQueryCache cache input = some output := hlookup
+      rw [QueryImpl.withCaching_run_some uniformSampleImpl hordinary]
+      simp [LazyRevealProbe.runRaw, projectRawOrdinary]
+  | none =>
+      simp only
+      have hordinary : ordinaryQueryCache cache input = none := hlookup
+      rw [QueryImpl.withCaching_run_none uniformSampleImpl hordinary]
+      rw [LazyRevealProbe.hashOutputQuery,
+        LazyRevealProbe.runRaw_hashOutput_query_bind]
+      simp only [map_bind, Functor.map_map]
+      change (LazyRevealProbe.sampleHashOutput >>= fun output =>
+          projectRawOrdinary <$>
+            LazyRevealProbe.runRaw state fuel
+              (pure (output,
+                Function.update cache (.ordinary input) (some output)))) =
+        (fun output => some
+          (output, (ordinaryQueryCache cache).cacheQuery input output)) <$>
+            LazyRevealProbe.sampleHashOutput
+      rw [map_eq_bind_pure_comp]
+      apply bind_congr
+      intro output
+      simp [LazyRevealProbe.runRaw, projectRawOrdinary, ordinaryQueryCache_update]
+
+set_option maxRecDepth 10000 in
+theorem projectRawOrdinary_simulateQ_ordinaryHashImpl
+    (computation : OracleComp HashSpec alpha)
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache) (fuel : Nat) :
+    projectRawOrdinary <$>
+        LazyRevealProbe.runRaw state fuel
+          ((simulateQ ordinaryHashImpl computation).run cache) =
+      some <$>
+        (simulateQ (randomOracle : QueryImpl HashSpec _) computation).run
+          (ordinaryQueryCache cache) := by
+  induction computation using OracleComp.inductionOn generalizing state cache fuel with
+  | pure value =>
+      simp [LazyRevealProbe.runRaw, projectRawOrdinary]
+  | query_bind input next ih =>
+      simp only [simulateQ_bind, simulateQ_query, OracleQuery.cont_query, id_map,
+        OracleQuery.input_query, StateT.run_bind, LazyRevealProbe.runRaw_bind]
+      rw [show ordinaryHashImpl input = splitHashQuery (.ordinary input) by rfl]
+      rw [splitHashQuery_run_eq]
+      cases hlookup : cache (.ordinary input) with
+      | some output =>
+          simp only
+          have hordinary : ordinaryQueryCache cache input = some output := hlookup
+          rw [QueryImpl.withCaching_run_some uniformSampleImpl hordinary]
+          simp only [LazyRevealProbe.runRaw, pure_bind]
+          exact ih output state cache fuel
+      | none =>
+          simp only
+          have hordinary : ordinaryQueryCache cache input = none := hlookup
+          rw [QueryImpl.withCaching_run_none uniformSampleImpl hordinary]
+          rw [LazyRevealProbe.hashOutputQuery,
+            LazyRevealProbe.runRaw_hashOutput_query_bind]
+          simp only [map_bind, bind_assoc]
+          change (LazyRevealProbe.sampleHashOutput >>= fun output =>
+              projectRawOrdinary <$>
+                LazyRevealProbe.runRaw state fuel
+                  ((simulateQ ordinaryHashImpl (next output)).run
+                    (Function.update cache (.ordinary input) (some output)))) =
+            (LazyRevealProbe.sampleHashOutput >>= fun output =>
+              some <$>
+                (simulateQ (randomOracle : QueryImpl HashSpec _) (next output)).run
+                  ((ordinaryQueryCache cache).cacheQuery input output))
+          apply bind_congr
+          intro output
+          rw [← ordinaryQueryCache_update]
+          exact ih output state (Function.update cache (.ordinary input) (some output)) fuel
 
 def LazyRevealProbe.ValuesLE (initial final : LazyRevealProbe.State Coordinate) : Prop :=
   ∀ coordinate output, initial.values coordinate = some output →
