@@ -21,6 +21,79 @@ def completedStartTable (state : LazyRevealProbe.State Coordinate)
     (base : OtsSecretIndex → HashOutput) : OtsSecretIndex → HashOutput :=
   fun index => (state.values index.coordinate).getD (base index)
 
+theorem completedStartTable_complete_coordinate
+    (state : LazyRevealProbe.State Coordinate) (base : OtsSecretIndex → HashOutput)
+    (index : OtsSecretIndex) (output : HashOutput) :
+    completedStartTable (state.complete index.coordinate output) base =
+      Function.update (completedStartTable state base) index output := by
+  funext other
+  by_cases heq : other = index
+  · subst other
+    simp [completedStartTable, LazyRevealProbe.State.complete]
+  · have hcoordinate : other.coordinate ≠ index.coordinate :=
+      fun h => heq (OtsSecretIndex.coordinate_injective h)
+    simp [completedStartTable, LazyRevealProbe.State.complete, heq, hcoordinate]
+
+theorem completedStartTable_materialize_coordinate
+    (state : LazyRevealProbe.State Coordinate) (base : OtsSecretIndex → HashOutput)
+    (index : OtsSecretIndex) (output : HashOutput) :
+    completedStartTable (state.materialize index.coordinate output) base =
+      Function.update (completedStartTable state base) index output := by
+  funext other
+  by_cases heq : other = index
+  · subst other
+    simp [completedStartTable, LazyRevealProbe.State.materialize]
+  · have hcoordinate : other.coordinate ≠ index.coordinate :=
+      fun h => heq (OtsSecretIndex.coordinate_injective h)
+    simp [completedStartTable, LazyRevealProbe.State.materialize, heq, hcoordinate]
+
+@[simp] theorem completedStartTable_complete_position
+    (state : LazyRevealProbe.State Coordinate) (base : OtsSecretIndex → HashOutput)
+    (position : Position) (output : HashOutput) :
+    completedStartTable (state.complete (.position position) output) base =
+      completedStartTable state base := by
+  funext index
+  simp [completedStartTable, LazyRevealProbe.State.complete, OtsSecretIndex.coordinate]
+
+@[simp] theorem completedStartTable_materialize_position
+    (state : LazyRevealProbe.State Coordinate) (base : OtsSecretIndex → HashOutput)
+    (position : Position) (output : HashOutput) :
+    completedStartTable (state.materialize (.position position) output) base =
+      completedStartTable state base := by
+  funext index
+  simp [completedStartTable, LazyRevealProbe.State.materialize, OtsSecretIndex.coordinate]
+
+theorem completedStartTable_update_base_of_missing
+    (state : LazyRevealProbe.State Coordinate) (base : OtsSecretIndex → HashOutput)
+    (index : OtsSecretIndex) (output : HashOutput)
+    (hmissing : state.values index.coordinate = none) :
+    completedStartTable state (Function.update base index output) =
+      Function.update (completedStartTable state base) index output := by
+  funext other
+  by_cases heq : other = index
+  · subst other
+    simp [completedStartTable, hmissing]
+  · simp [completedStartTable, heq]
+
+@[simp] theorem completedStartTable_clearPending
+    (state : LazyRevealProbe.State Coordinate) (base : OtsSecretIndex → HashOutput)
+    (coordinate : Coordinate) :
+    completedStartTable (state.clearPending coordinate) base =
+      completedStartTable state base := by
+  rfl
+
+@[simp] theorem completedStartTable_ensure
+    (state : LazyRevealProbe.State Coordinate) (base : OtsSecretIndex → HashOutput)
+    (coordinate : Coordinate) :
+    completedStartTable (state.ensure coordinate) base = completedStartTable state base := by
+  rfl
+
+@[simp] theorem completedStartTable_publish
+    (state : LazyRevealProbe.State Coordinate) (base : OtsSecretIndex → HashOutput)
+    (coordinate : Coordinate) :
+    completedStartTable (state.publish coordinate) base = completedStartTable state base := by
+  rfl
+
 def extendStartTable (table : OtsSecretIndex → HashOutput) : Coordinate → HashOutput
   | .chainStart lay tree leafIdx chainIdx => table ⟨lay, tree, leafIdx, chainIdx⟩
   | .position _ => 0
@@ -99,6 +172,43 @@ theorem actualRetainedGameAfterTable_eq_afterOtsSecret
 noncomputable local instance completionSampleableOtsHashTable :
     SampleableType (OtsSecretIndex → HashOutput) :=
   SampleableType.ofFintype (OtsSecretIndex → HashOutput)
+
+set_option maxRecDepth 10000 in
+theorem evalDist_complete_missing_start
+    (state : LazyRevealProbe.State Coordinate) (index : OtsSecretIndex)
+    (hmissing : state.values index.coordinate = none) :
+    𝒟[do
+        let output ← LazyRevealProbe.sampleHashOutput
+        let base ← ($ᵗ (OtsSecretIndex → HashOutput) :
+          ProbComp (OtsSecretIndex → HashOutput))
+        pure (completedStartTable (state.complete index.coordinate output) base)] =
+      𝒟[completedStartTable state <$>
+        ($ᵗ (OtsSecretIndex → HashOutput) :
+          ProbComp (OtsSecretIndex → HashOutput))] := by
+  have hupdate := evalDist_uniformSample_bind_update
+    (R := HashOutput) index
+  calc
+    _ = 𝒟[do
+        let output ← ($ᵗ HashOutput : ProbComp HashOutput)
+        let base ← ($ᵗ (OtsSecretIndex → HashOutput) :
+          ProbComp (OtsSecretIndex → HashOutput))
+        pure (completedStartTable state (Function.update base index output))] := by
+      apply congrArg evalDist
+      simp only [LazyRevealProbe.sampleHashOutput]
+      apply bind_congr
+      intro output
+      apply bind_congr
+      intro base
+      rw [completedStartTable_complete_coordinate,
+        completedStartTable_update_base_of_missing state base index output hmissing]
+    _ = 𝒟[completedStartTable state <$> (do
+        let output ← ($ᵗ HashOutput : ProbComp HashOutput)
+        let base ← ($ᵗ (OtsSecretIndex → HashOutput) :
+          ProbComp (OtsSecretIndex → HashOutput))
+        pure (Function.update base index output))] := by
+      simp [map_eq_bind_pure_comp, bind_assoc]
+    _ = _ := by
+      rw [evalDist_map, hupdate, ← evalDist_map]
 
 noncomputable def sampledActualRetainedOtsHashTable (adversary : Adversary)
     (parameter : PublicParameter)
