@@ -25,6 +25,14 @@ structure DeferredContext where
   state : LazyRevealProbe.State Coordinate
   values : DeferredStructuralValues
 
+def DeferredContext.Valid (context : DeferredContext) : Prop :=
+  (∀ position output,
+      context.state.values (.position position) = some output →
+        context.values position = some output) ∧
+    ∀ coordinate output,
+      context.state.values coordinate = some output →
+        ¬context.state.hitAt coordinate output
+
 def DeferredContext.positionValue (context : DeferredContext)
     (position : Position) : Option HashOutput :=
   match context.state.values (.position position) with
@@ -2077,6 +2085,44 @@ theorem not_hitAt_clearPending_self
   simp [LazyRevealProbe.State.hitAt, LazyRevealProbe.State.pendingAt,
     LazyRevealProbe.State.clearPending, LazyRevealProbe.State.pendingAway]
 
+theorem DeferredContext.Valid.clearPending
+    {context : DeferredContext} (hvalid : context.Valid)
+    (coordinate : Coordinate) :
+    ({ context with state := context.state.clearPending coordinate } :
+      DeferredContext).Valid := by
+  constructor
+  · intro position output hvalue
+    exact hvalid.1 position output hvalue
+  · intro other output hvalue
+    by_cases heq : other = coordinate
+    · subst other
+      exact not_hitAt_clearPending_self context.state coordinate output
+    · exact (hitAt_clearPending_of_ne context.state coordinate other output heq).not.mpr
+        (hvalid.2 other output hvalue)
+
+theorem DeferredContext.Valid.clearPending_install
+    {context : DeferredContext} (hvalid : context.Valid)
+    (position : Position) (output : HashOutput)
+    (hcompatible : ∀ existing,
+      context.state.values (.position position) = some existing → existing = output) :
+    ({ state := context.state.clearPending (.position position)
+       values := context.values.install position output } : DeferredContext).Valid := by
+  constructor
+  · intro other otherOutput hvalue
+    by_cases heq : other = position
+    · subst other
+      have hsame : otherOutput = output := hcompatible otherOutput hvalue
+      subst otherOutput
+      simp [DeferredStructuralValues.install]
+    · simpa [DeferredStructuralValues.install, heq] using
+        hvalid.1 other otherOutput hvalue
+  · intro coordinate candidate hvalue
+    by_cases heq : coordinate = .position position
+    · subst coordinate
+      exact not_hitAt_clearPending_self context.state (.position position) candidate
+    · exact (hitAt_clearPending_of_ne context.state (.position position)
+        coordinate candidate heq).not.mpr (hvalid.2 coordinate candidate hvalue)
+
 set_option maxRecDepth 100000 in
 theorem evalDist_finalizeResolvedCoordinates_defer_position
     (position : Position) (coordinates : List Coordinate)
@@ -2161,6 +2207,555 @@ theorem evalDist_resolveDeferredPositionValue_fresh_then_finalize
   by_cases hhit : context.state.hitAt (.position position) output
   · simp [hhit]
   · simp [hhit, DeferredContext.presamplePosition]
+
+@[simp] theorem clearPending_idem
+    (state : LazyRevealProbe.State Coordinate) (coordinate : Coordinate) :
+    (state.clearPending coordinate).clearPending coordinate =
+      state.clearPending coordinate := by
+  rcases state with ⟨pending, values, revealed, ensured⟩
+  simp [LazyRevealProbe.State.clearPending, LazyRevealProbe.State.pendingAway]
+
+set_option maxRecDepth 100000 in
+theorem evalDist_resolveDeferredPositionValue_then_finalize
+    (position : Position) (coordinates : List Coordinate)
+    (context : DeferredContext) (table : OtsSecretIndex → HashOutput)
+    (hmem : Coordinate.position position ∈ coordinates)
+    (hmaterialized : ∀ output,
+      context.state.values (.position position) = some output →
+        context.values position = some output ∧
+          ¬context.state.hitAt (.position position) output) :
+    evalDist (do
+        let resolved ← resolveDeferredPositionValue position context
+        (match resolved with
+        | none => (pure none : ProbComp (Option DeferredContext))
+        | some resolved => finalizeResolvedCoordinates coordinates
+            resolved.toDeferredContext table)) =
+      evalDist (finalizeResolvedCoordinates coordinates context table) := by
+  cases hstate : context.state.values (.position position) with
+  | some output =>
+      obtain ⟨hvalue, hclean⟩ := hmaterialized output hstate
+      rw [resolveDeferredPositionValue_of_state_value position context output hstate,
+        if_neg hclean]
+      simp only [pure_bind]
+      have hinstall : context.values.install position output = context.values := by
+        funext other
+        by_cases heq : other = position
+        · subst other
+          simp [DeferredStructuralValues.install, hvalue]
+        · simp [DeferredStructuralValues.install, heq]
+      have hclearedValue :
+          (context.state.clearPending (.position position)).values
+              (.position position) = some output := by
+        exact hstate
+      calc
+        evalDist (finalizeResolvedCoordinates coordinates
+            { state := context.state.clearPending (.position position)
+              values := context.values.install position output } table) =
+            evalDist (finalizeResolvedCoordinates
+              (.position position :: coordinates.erase (.position position))
+              { state := context.state.clearPending (.position position)
+                values := context.values.install position output } table) :=
+          (evalDist_finalizeResolvedCoordinates_move_to_front
+            (.position position) coordinates
+            { state := context.state.clearPending (.position position)
+              values := context.values.install position output }
+            table hmem)
+        _ = evalDist (finalizeResolvedCoordinates
+              (coordinates.erase (.position position))
+              { state := context.state.clearPending (.position position)
+                values := context.values } table) := by
+          rw [finalizeResolvedCoordinates_cons_of_state_value
+            (.position position) (coordinates.erase (.position position))
+            { state := context.state.clearPending (.position position)
+              values := context.values.install position output }
+            table output hclearedValue]
+          simp [hinstall]
+        _ = evalDist (finalizeResolvedCoordinates
+              (.position position :: coordinates.erase (.position position))
+              context table) := by
+          rw [finalizeResolvedCoordinates_cons_of_state_value
+            (.position position) (coordinates.erase (.position position))
+            context table output hstate]
+        _ = evalDist (finalizeResolvedCoordinates coordinates context table) :=
+          evalDist_finalizeResolvedCoordinates_move_to_front
+            (.position position) coordinates context table hmem |>.symm
+  | none =>
+      cases hvalue : context.values position with
+      | none =>
+          exact evalDist_resolveDeferredPositionValue_fresh_then_finalize position coordinates
+            context table hmem hstate hvalue
+      | some output =>
+          rw [resolveDeferredPositionValue_of_deferred_value position context output hstate
+            hvalue]
+          by_cases hhit : context.state.hitAt (.position position) output
+          · rw [if_pos hhit]
+            simp only [pure_bind]
+            have hmove := evalDist_finalizeResolvedCoordinates_move_to_front
+              (.position position) coordinates context table hmem
+            rw [finalizeResolvedCoordinates_cons_position_of_deferred_value position
+              (coordinates.erase (.position position)) context table output hstate hvalue,
+              if_pos hhit] at hmove
+            simpa using hmove.symm
+          · rw [if_neg hhit]
+            simp only [pure_bind]
+            have hclearedState :
+                (context.state.clearPending (.position position)).values
+                    (.position position) = none := hstate
+            have hclearedValue : context.values position = some output := hvalue
+            have hclearedClean :
+                ¬(context.state.clearPending (.position position)).hitAt
+                  (.position position) output :=
+              not_hitAt_clearPending_self context.state (.position position) output
+            calc
+              evalDist (finalizeResolvedCoordinates coordinates
+                  { state := context.state.clearPending (.position position)
+                    values := context.values } table) =
+                  evalDist (finalizeResolvedCoordinates
+                    (.position position :: coordinates.erase (.position position))
+                    { state := context.state.clearPending (.position position)
+                      values := context.values } table) :=
+                (evalDist_finalizeResolvedCoordinates_move_to_front
+                  (.position position) coordinates
+                  { state := context.state.clearPending (.position position)
+                    values := context.values }
+                  table hmem)
+              _ = evalDist (finalizeResolvedCoordinates
+                    (coordinates.erase (.position position))
+                    { state := context.state.complete (.position position) output
+                      values := context.values } table) := by
+                rw [finalizeResolvedCoordinates_cons_position_of_deferred_value position
+                  (coordinates.erase (.position position))
+                  { state := context.state.clearPending (.position position)
+                    values := context.values }
+                  table output hclearedState hclearedValue,
+                  if_neg hclearedClean, clearPending_complete_self]
+              _ = evalDist (finalizeResolvedCoordinates
+                    (.position position :: coordinates.erase (.position position))
+                    context table) := by
+                rw [finalizeResolvedCoordinates_cons_position_of_deferred_value position
+                  (coordinates.erase (.position position)) context table output hstate hvalue,
+                  if_neg hhit]
+              _ = evalDist (finalizeResolvedCoordinates coordinates context table) :=
+                evalDist_finalizeResolvedCoordinates_move_to_front
+                  (.position position) coordinates context table hmem |>.symm
+
+theorem DeferredContext.Valid.of_resolveDeferredPositionValue
+    {context : DeferredContext} (hvalid : context.Valid)
+    (position : Position) (result : DeferredResolution)
+    (hresult : some result ∈ support
+      (resolveDeferredPositionValue position context)) :
+    result.toDeferredContext.Valid := by
+  cases hstate : context.state.values (.position position) with
+  | some output =>
+      have hclean := hvalid.2 (.position position) output hstate
+      rw [resolveDeferredPositionValue_of_state_value position context output hstate,
+        if_neg hclean] at hresult
+      simp only [support_pure, Set.mem_singleton_iff, Option.some.injEq] at hresult
+      subst result
+      apply hvalid.clearPending_install position output
+      intro existing hexisting
+      rw [hstate] at hexisting
+      exact Option.some.inj hexisting.symm
+  | none =>
+      cases hvalue : context.values position with
+      | some output =>
+          rw [resolveDeferredPositionValue_of_deferred_value position context output hstate
+            hvalue] at hresult
+          by_cases hhit : context.state.hitAt (.position position) output
+          · simp [hhit] at hresult
+          · simp [hhit] at hresult
+            subst result
+            exact hvalid.clearPending (.position position)
+      | none =>
+          rw [resolveDeferredPositionValue_fresh position context hstate hvalue,
+            mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, hreturn⟩ := hresult
+          by_cases hhit : context.state.hitAt (.position position) output
+          · simp [hhit] at hreturn
+          · simp [hhit] at hreturn
+            subst result
+            apply hvalid.clearPending_install position output
+            intro existing hexisting
+            rw [hstate] at hexisting
+            contradiction
+
+set_option maxRecDepth 100000 in
+theorem evalDist_resolveDeferredChainStart_then_finalize
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex)
+    (coordinates : List Coordinate) (context : DeferredContext)
+    (hmem : Coordinate.chainStart lay tree leafIdx chainIdx ∈ coordinates)
+    (hvalid : context.Valid) :
+    evalDist (do
+        let resolved := resolveDeferredChainStart table
+          ⟨lay, tree, leafIdx, chainIdx⟩ context
+        (match resolved with
+        | none => (pure none : ProbComp (Option DeferredContext))
+        | some resolved => finalizeResolvedCoordinates coordinates
+            resolved.toDeferredContext table)) =
+      evalDist (finalizeResolvedCoordinates coordinates context table) := by
+  let coordinate := Coordinate.chainStart lay tree leafIdx chainIdx
+  let index : OtsSecretIndex := ⟨lay, tree, leafIdx, chainIdx⟩
+  have hcoordinate : index.coordinate = coordinate := rfl
+  cases hstate : context.state.values coordinate with
+  | some output =>
+      have hclean := hvalid.2 coordinate output hstate
+      have hresolve : resolveDeferredChainStart table index context = some
+          ⟨{ state := context.state.clearPending coordinate,
+              values := context.values }, output⟩ := by
+        simp [resolveDeferredChainStart, hcoordinate, hstate, hclean]
+      change evalDist (match resolveDeferredChainStart table index context with
+          | none => (pure none : ProbComp (Option DeferredContext))
+          | some resolved => finalizeResolvedCoordinates coordinates
+              resolved.toDeferredContext table) = _
+      rw [hresolve]
+      calc
+        evalDist (finalizeResolvedCoordinates coordinates
+            { state := context.state.clearPending coordinate
+              values := context.values } table) =
+            evalDist (finalizeResolvedCoordinates
+              (coordinate :: coordinates.erase coordinate)
+              { state := context.state.clearPending coordinate
+                values := context.values } table) :=
+          evalDist_finalizeResolvedCoordinates_move_to_front coordinate coordinates
+            { state := context.state.clearPending coordinate
+              values := context.values } table hmem
+        _ = evalDist (finalizeResolvedCoordinates
+              (coordinates.erase coordinate)
+              { state := context.state.clearPending coordinate
+                values := context.values } table) := by
+          rw [finalizeResolvedCoordinates_cons_of_state_value coordinate
+            (coordinates.erase coordinate)
+            { state := context.state.clearPending coordinate
+              values := context.values } table output]
+          · simp
+          · exact hstate
+        _ = evalDist (finalizeResolvedCoordinates
+              (coordinate :: coordinates.erase coordinate) context table) := by
+          rw [finalizeResolvedCoordinates_cons_of_state_value coordinate
+            (coordinates.erase coordinate) context table output hstate]
+        _ = evalDist (finalizeResolvedCoordinates coordinates context table) :=
+          (evalDist_finalizeResolvedCoordinates_move_to_front coordinate coordinates
+            context table hmem).symm
+  | none =>
+      have hstate' : context.state.values index.coordinate = none := by
+        simpa [hcoordinate] using hstate
+      change evalDist (match resolveDeferredChainStart table index context with
+          | none => (pure none : ProbComp (Option DeferredContext))
+          | some resolved => finalizeResolvedCoordinates coordinates
+              resolved.toDeferredContext table) = _
+      rw [resolveDeferredChainStart_of_missing table index context hstate']
+      rw [hcoordinate]
+      by_cases hhit : context.state.hitAt coordinate (table index)
+      · rw [if_pos hhit]
+        simp only
+        have hstateConcrete : context.state.values
+            (.chainStart lay tree leafIdx chainIdx) = none := by
+          simpa [coordinate] using hstate
+        have hhitConcrete : context.state.hitAt
+            (.chainStart lay tree leafIdx chainIdx)
+              (table ⟨lay, tree, leafIdx, chainIdx⟩) := by
+          simpa [coordinate, index] using hhit
+        have hmove := evalDist_finalizeResolvedCoordinates_move_to_front
+          coordinate coordinates context table hmem
+        simp only [coordinate] at hmove
+        rw [finalizeResolvedCoordinates] at hmove
+        simp only [hstateConcrete] at hmove
+        rw [resolveDeferredChainStart_of_missing table
+          ⟨lay, tree, leafIdx, chainIdx⟩ context hstateConcrete] at hmove
+        simp only [pure_bind] at hmove
+        simp only [OtsSecretIndex.coordinate] at hmove
+        rw [if_pos hhitConcrete] at hmove
+        simpa using hmove.symm
+      · rw [if_neg hhit]
+        simp only
+        have hclearedState :
+            (context.state.clearPending coordinate).values coordinate = none :=
+          hstate
+        have hclearedClean :
+            ¬(context.state.clearPending coordinate).hitAt coordinate (table index) :=
+          not_hitAt_clearPending_self context.state coordinate (table index)
+        have hhitConcrete : ¬context.state.hitAt
+            (.chainStart lay tree leafIdx chainIdx)
+              (table ⟨lay, tree, leafIdx, chainIdx⟩) := by
+          simpa [coordinate, index] using hhit
+        have hclearedCleanConcrete :
+            ¬(context.state.clearPending (.chainStart lay tree leafIdx chainIdx)).hitAt
+              (.chainStart lay tree leafIdx chainIdx)
+              (table ⟨lay, tree, leafIdx, chainIdx⟩) := by
+          exact not_hitAt_clearPending_self context.state
+            (.chainStart lay tree leafIdx chainIdx)
+            (table ⟨lay, tree, leafIdx, chainIdx⟩)
+        calc
+          evalDist (finalizeResolvedCoordinates coordinates
+              { state := context.state.clearPending coordinate
+                values := context.values } table) =
+              evalDist (finalizeResolvedCoordinates
+                (coordinate :: coordinates.erase coordinate)
+                { state := context.state.clearPending coordinate
+                  values := context.values } table) :=
+            evalDist_finalizeResolvedCoordinates_move_to_front coordinate coordinates
+              { state := context.state.clearPending coordinate
+                values := context.values } table hmem
+          _ = evalDist (finalizeResolvedCoordinates
+                (coordinates.erase coordinate)
+                { state := context.state.complete coordinate (table index)
+                  values := context.values } table) := by
+            rw [finalizeResolvedCoordinates_cons_of_missing coordinate
+              (coordinates.erase coordinate)
+              { state := context.state.clearPending coordinate
+                values := context.values } table hclearedState]
+            simp [coordinate, index, resolvedCompletionOutput, hclearedCleanConcrete,
+              DeferredContext.completeResolved, clearPending_complete_self]
+          _ = evalDist (finalizeResolvedCoordinates
+                (coordinate :: coordinates.erase coordinate) context table) := by
+            rw [finalizeResolvedCoordinates_cons_of_missing coordinate
+              (coordinates.erase coordinate) context table hstate]
+            simp [coordinate, index, resolvedCompletionOutput, hhitConcrete,
+              DeferredContext.completeResolved]
+          _ = evalDist (finalizeResolvedCoordinates coordinates context table) :=
+            (evalDist_finalizeResolvedCoordinates_move_to_front coordinate coordinates
+              context table hmem).symm
+
+theorem DeferredContext.Valid.of_resolveDeferredChainStart
+    {context : DeferredContext} (hvalid : context.Valid)
+    (table : OtsSecretIndex → HashOutput) (index : OtsSecretIndex)
+    (result : DeferredResolution)
+    (hresult : resolveDeferredChainStart table index context = some result) :
+    result.toDeferredContext.Valid := by
+  unfold resolveDeferredChainStart at hresult
+  cases hstate : context.state.values index.coordinate with
+  | some output =>
+      simp only [hstate] at hresult
+      by_cases hhit : context.state.hitAt index.coordinate output
+      · simp [hhit] at hresult
+      · simp [hhit] at hresult
+        subst result
+        exact hvalid.clearPending index.coordinate
+  | none =>
+      simp only [hstate] at hresult
+      by_cases hhit : context.state.hitAt index.coordinate (table index)
+      · simp [hhit] at hresult
+      · simp [hhit] at hresult
+        subst result
+        exact hvalid.clearPending index.coordinate
+
+theorem DeferredContext.Valid.of_resolveDeferredChainPrefix
+    {context : DeferredContext} (hvalid : context.Valid)
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) :
+    ∀ steps hsteps result,
+      some result ∈ support
+        (resolveDeferredChainPrefix table lay tree leafIdx chainIdx steps hsteps context) →
+      result.toDeferredContext.Valid
+  | 0, hsteps, result, hresult => by
+      simp only [resolveDeferredChainPrefix, support_pure, Set.mem_singleton_iff] at hresult
+      exact hvalid.of_resolveDeferredChainStart table ⟨lay, tree, leafIdx, chainIdx⟩
+        result hresult.symm
+  | steps + 1, hsteps, result, hresult => by
+      rw [resolveDeferredChainPrefix, mem_support_bind_iff] at hresult
+      obtain ⟨previousOption, hprevious, hrest⟩ := hresult
+      cases previousOption with
+      | none => simp at hrest
+      | some previous =>
+          have hmiddle := hvalid.of_resolveDeferredChainPrefix table lay tree leafIdx chainIdx
+            steps (by omega) previous hprevious
+          exact hmiddle.of_resolveDeferredPositionValue
+            (.chain lay tree leafIdx chainIdx ⟨steps, by omega⟩) result (by simpa using hrest)
+
+set_option maxRecDepth 100000 in
+theorem evalDist_resolveDeferredChainPrefix_then_finalize
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex)
+    (coordinates : List Coordinate) (context : DeferredContext)
+    (hvalid : context.Valid)
+    (hstart : Coordinate.chainStart lay tree leafIdx chainIdx ∈ coordinates)
+    (hpositions : ∀ step : ChainStep, step.val < chainLength - 1 →
+      Coordinate.position (.chain lay tree leafIdx chainIdx step) ∈ coordinates) :
+    ∀ steps hsteps,
+      evalDist (do
+          let resolved ← resolveDeferredChainPrefix table lay tree leafIdx chainIdx
+            steps hsteps context
+          (match resolved with
+          | none => (pure none : ProbComp (Option DeferredContext))
+          | some resolved => finalizeResolvedCoordinates coordinates
+              resolved.toDeferredContext table)) =
+        evalDist (finalizeResolvedCoordinates coordinates context table)
+  | 0, hsteps => by
+      simpa [resolveDeferredChainPrefix] using
+        evalDist_resolveDeferredChainStart_then_finalize table lay tree leafIdx chainIdx
+          coordinates context hstart hvalid
+  | steps + 1, hsteps => by
+      rw [resolveDeferredChainPrefix]
+      simp only [bind_assoc]
+      calc
+        _ =
+          evalDist
+            (resolveDeferredChainPrefix table lay tree leafIdx chainIdx steps (by omega) context
+              >>= fun previousOption =>
+                match previousOption with
+                | none => pure none
+                | some previous => finalizeResolvedCoordinates coordinates
+                    previous.toDeferredContext table) := by
+          apply evalDist_bind_congr
+          intro previousOption hprevious
+          cases previousOption with
+          | none => rfl
+          | some previous =>
+              have hmiddle := hvalid.of_resolveDeferredChainPrefix table lay tree leafIdx
+                chainIdx steps (by omega) previous hprevious
+              exact evalDist_resolveDeferredPositionValue_then_finalize
+                (.chain lay tree leafIdx chainIdx ⟨steps, by omega⟩)
+                coordinates previous.toDeferredContext table
+                (hpositions ⟨steps, by omega⟩ (by omega))
+                (fun output hvalue => ⟨hmiddle.1 _ output hvalue,
+                  hmiddle.2 _ output hvalue⟩)
+        _ = evalDist (finalizeResolvedCoordinates coordinates context table) :=
+          evalDist_resolveDeferredChainPrefix_then_finalize table lay tree leafIdx chainIdx
+            coordinates context hvalid hstart hpositions steps (by omega)
+
+theorem DeferredContext.Valid.of_resolveDeferredChains
+    {context : DeferredContext} (hvalid : context.Valid)
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) : ∀ chains result,
+      some result ∈ support
+        (resolveDeferredChains table lay tree leafIdx chains context) →
+      result.Valid
+  | [], result, hresult => by
+      simp [resolveDeferredChains] at hresult
+      subst result
+      exact hvalid
+  | chainIdx :: remaining, result, hresult => by
+      rw [resolveDeferredChains, mem_support_bind_iff] at hresult
+      obtain ⟨resolvedOption, hresolved, hrest⟩ := hresult
+      cases resolvedOption with
+      | none => simp at hrest
+      | some resolved =>
+          have hmiddle := hvalid.of_resolveDeferredChainPrefix table lay tree leafIdx chainIdx
+            (chainLength - 1) (by omega) resolved hresolved
+          exact hmiddle.of_resolveDeferredChains table lay tree leafIdx remaining result
+            (by simpa using hrest)
+
+theorem DeferredContext.Valid.of_resolveDeferredOtsLeaf
+    {context : DeferredContext} (hvalid : context.Valid)
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (result : DeferredResolution)
+    (hresult : some result ∈ support
+      (resolveDeferredOtsLeaf table lay tree leafIdx context)) :
+    result.toDeferredContext.Valid := by
+  rw [resolveDeferredOtsLeaf, mem_support_bind_iff] at hresult
+  obtain ⟨chainsOption, hchains, hrest⟩ := hresult
+  cases chainsOption with
+  | none => simp at hrest
+  | some chains =>
+      have hmiddle := hvalid.of_resolveDeferredChains table lay tree leafIdx
+        (List.ofFn fun chainIdx : ChainIndex => chainIdx) chains hchains
+      exact hmiddle.of_resolveDeferredPositionValue (.leaf lay tree leafIdx) result
+        (by simpa using hrest)
+
+theorem DeferredContext.Valid.of_resolveDeferredTreeNode
+    {context : DeferredContext} (hvalid : context.Valid)
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex) :
+    ∀ level nodeIdx hlevel result,
+      some result ∈ support
+        (resolveDeferredTreeNode table lay tree level nodeIdx hlevel context) →
+      result.toDeferredContext.Valid
+  | 0, nodeIdx, hlevel, result, hresult =>
+      hvalid.of_resolveDeferredOtsLeaf table lay tree (leafOfNat nodeIdx) result hresult
+  | level + 1, nodeIdx, hlevel, result, hresult => by
+      rw [resolveDeferredTreeNode, mem_support_bind_iff] at hresult
+      obtain ⟨leftOption, hleft, hafterLeft⟩ := hresult
+      cases leftOption with
+      | none => simp at hafterLeft
+      | some left =>
+          rw [mem_support_bind_iff] at hafterLeft
+          obtain ⟨rightOption, hright, hafterRight⟩ := hafterLeft
+          cases rightOption with
+          | none => simp at hafterRight
+          | some right =>
+              have hleftValid := hvalid.of_resolveDeferredTreeNode table lay tree level
+                (2 * nodeIdx) (by omega) left hleft
+              have hrightValid := hleftValid.of_resolveDeferredTreeNode table lay tree level
+                (2 * nodeIdx + 1) (by omega) right hright
+              exact hrightValid.of_resolveDeferredPositionValue
+                (.node lay tree ⟨level, by omega⟩ (leafOfNat nodeIdx)) result
+                (by simpa using hafterRight)
+
+theorem DeferredContext.Valid.of_resolveDeferredPosition
+    {context : DeferredContext} (hvalid : context.Valid)
+    (table : OtsSecretIndex → HashOutput) (position : Position)
+    (result : DeferredResolution)
+    (hresult : some result ∈ support
+      (resolveDeferredPosition table position context)) :
+    result.toDeferredContext.Valid := by
+  cases position with
+  | chain lay tree leafIdx chainIdx step =>
+      exact hvalid.of_resolveDeferredChainPrefix table lay tree leafIdx chainIdx
+        (step.val + 1) (by have := step.isLt; omega) result hresult
+  | leaf lay tree leafIdx =>
+      exact hvalid.of_resolveDeferredOtsLeaf table lay tree leafIdx result hresult
+  | node lay tree level nodeIdx =>
+      exact hvalid.of_resolveDeferredTreeNode table lay tree (level.val + 1) nodeIdx
+        (by have := level.isLt; omega) result hresult
+  | ftsLeaf index tree leafIdx =>
+      exact hvalid.of_resolveDeferredPositionValue (.ftsLeaf index tree leafIdx) result hresult
+  | ftsNode index tree level nodeIdx =>
+      exact hvalid.of_resolveDeferredPositionValue (.ftsNode index tree level nodeIdx) result
+        hresult
+  | ftsRoots index =>
+      exact hvalid.of_resolveDeferredPositionValue (.ftsRoots index) result hresult
+
+theorem DeferredContext.Valid.materialize_position
+    {context : DeferredContext} (hvalid : context.Valid)
+    (position : Position) (output : HashOutput)
+    (hvalue : context.values position = some output) :
+    ({ state := context.state.materialize (.position position) output
+       values := context.values } : DeferredContext).Valid := by
+  constructor
+  · intro other candidate hstate
+    by_cases heq : other = position
+    · subst other
+      have hsame : some output = some candidate := by
+        simpa [LazyRevealProbe.State.materialize] using hstate
+      have hcandidate : output = candidate := Option.some.inj hsame
+      subst candidate
+      exact hvalue
+    · have horiginal : context.state.values (.position other) = some candidate := by
+        simpa [LazyRevealProbe.State.materialize, Function.update_of_ne,
+          show Coordinate.position other ≠ Coordinate.position position by
+            simpa using heq] using hstate
+      exact hvalid.1 other candidate horiginal
+  · intro coordinate candidate hstate
+    by_cases heq : coordinate = .position position
+    · subst coordinate
+      change ¬(context.state.clearPending (.position position)).hitAt
+        (.position position) candidate
+      exact not_hitAt_clearPending_self context.state (.position position) candidate
+    · have horiginal : context.state.values coordinate = some candidate := by
+        simpa [LazyRevealProbe.State.materialize, Function.update_of_ne heq] using hstate
+      change ¬(context.state.clearPending (.position position)).hitAt coordinate candidate
+      exact (hitAt_clearPending_of_ne context.state (.position position) coordinate candidate
+        heq).not.mpr (hvalid.2 coordinate candidate horiginal)
+
+theorem DeferredContext.Valid.materialize_resolved_position
+    {context : DeferredContext} (hvalid : context.Valid)
+    (table : OtsSecretIndex → HashOutput) (position : Position)
+    (result : DeferredResolution)
+    (hresult : some result ∈ support
+      (resolveDeferredPosition table position context)) :
+    ({ state := result.state.materialize (.position position) result.output
+       values := result.values } : DeferredContext).Valid := by
+  have hresolved := resolveDeferredPosition_resolves table position context result hresult
+  have hresultValid := hvalid.of_resolveDeferredPosition table position result hresult
+  have hprivate : result.values position = some result.output := by
+    unfold DeferredContext.positionValue at hresolved
+    cases hstate : result.state.values (.position position) with
+    | none => simpa [hstate] using hresolved
+    | some output =>
+        have hsame : output = result.output := by
+          simpa [hstate] using hresolved
+        simpa [hsame] using hresultValid.1 position output hstate
+  exact hresultValid.materialize_position position result.output hprivate
 
 def DeferredFreshOn (coordinates : List Coordinate) (context : DeferredContext) : Prop :=
   ∀ position : Position, Coordinate.position position ∈ coordinates →
