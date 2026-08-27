@@ -5328,6 +5328,444 @@ theorem ChainInvariant.not_finalized_false_of_middle_verifyProbe_verifier
                             probe.coordinate hpendingRaw.1 hpendingRaw.2
                               (hcompletedTable probe.coordinate) hfinalize
 
+set_option maxRecDepth 10000 in
+theorem ChainInvariant.not_finalized_false_of_top_verifyProbe_verifier
+    {f : QueryImpl HashSpec Id} {parameter : PublicParameter}
+    {table : Coordinate → HashOutput}
+    {ftsSecret : Index → FtsTree → FtsLeaf → Digest}
+    {targetCache : QueryCache HashSpec}
+    {initialState rawState completedState : LazyRevealProbe.State Coordinate}
+    {initialCache rawCache : SplitHashCache} {root : Digest} {forgery : Forgery}
+    {signingLog : QueryLog SigningSpec} {fuel remaining : Nat} {verified : Bool}
+    (hinvariant : ChainInvariant parameter
+      (CoveredChainCoordinate f targetCache
+        (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) signingLog)
+      initialState initialCache)
+    (hf : (ordinaryQueryCache rawCache).AgreesWithFn f)
+    (hcompletedTable : ∀ coordinate output,
+      completedState.values coordinate = some output → output = table coordinate)
+    (hrealizes : ∀ position : Position, IsOtsPosition position →
+      f (tableInput parameter table (.position position)) = table (.position position))
+    (hfinalize : (false, completedState) ∈ support
+      (LazyRevealProbe.finalizeDetailed rawState))
+    (hverify : LazyRevealProbe.RawResult.done rawState remaining
+        (verified, rawCache) ∈ support
+      (LazyRevealProbe.runRaw initialState fuel
+        ((simulateQ (verifierRomImpl parameter)
+          (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)).run
+            initialCache)))
+    (hprobe : VerifyProbeWitnessAt f targetCache
+      (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey)
+      signingLog forgery.message forgery.signature topLayer) : False := by
+  obtain ⟨digest, layerMessage, codeword, chainIdx, hdigit, probe, input, hinput,
+    hdigest, hadmissible, hencode, hverifierMessage, hhits, hmatches, _, _,
+    hnotCovered⟩ := hprobe
+  obtain ⟨bottomLeaf, middleLeaf, hbottomLeaf, hmiddleLeaf, hlayerMessage⟩ :=
+    VerifierLayerMessage.top_data hverifierMessage
+  rw [hinput] at hmatches
+  have hchain := probe.isChainCoordinate_of_matchesInput hmatches
+  have hcandidate : probe.candidate = truncateHash (table probe.coordinate) :=
+    hhits.trans (probe.target_eq_truncate_table_of_chain f parameter table ftsSecret hchain
+      hrealizes)
+  have hinitialValue := hinvariant.1.value_eq_none_of_not_allowed hchain hnotCovered
+  have hinitialNotRevealed := hinvariant.1.not_revealed_of_not_allowed hchain hnotCovered
+  have hrawTable : ∀ coordinate output, rawState.values coordinate = some output →
+      output = table coordinate := by
+    intro coordinate output hvalue
+    exact hcompletedTable coordinate output
+      (finalizeDetailedFrom_preserves_value rawState.coordinates.toList rawState completedState
+        coordinate output hvalue hfinalize)
+  rw [simulateQ_verifierRom_scheme_verify, verify_eq, simulateQ_bind,
+    StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hverify
+  obtain ⟨digestRaw, hdigestRaw, hafterDigest⟩ := hverify
+  cases digestRaw with
+  | stopped hit => simp at hafterDigest
+  | done digestState digestRemaining digestResult =>
+      rcases digestResult with ⟨sampledDigest, digestCache⟩
+      have hfDigest : (ordinaryQueryCache digestCache).AgreesWithFn f := by
+        intro query output hcached
+        apply hf
+        exact (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+          digestState digestCache digestRemaining rawState remaining verified rawCache output
+            hcached hafterDigest
+      have hdigestEval := (replay_of_mem_runRaw_verifierHashImpl f parameter
+        (messageDigest parameter root forgery.message forgery.signature.randomness)
+          initialState digestState initialCache digestCache fuel digestRemaining sampledDigest
+            hfDigest hdigestRaw).1
+      rw [hdigest] at hdigestEval
+      subst sampledDigest
+      have hdigestOrdinary := hdigestRaw
+      rw [simulateQ_verifierHashImpl_messageDigest_eq_ordinaryHashImpl] at hdigestOrdinary
+      have hdigestState := mem_runRaw_simulateQ_ordinaryHashImpl_projects
+        (messageDigest parameter root forgery.message forgery.signature.randomness)
+          initialState digestState initialCache digestCache fuel digestRemaining digest
+            hdigestOrdinary
+      simp only [hadmissible, not_true_eq_false, ↓reduceIte] at hafterDigest
+      rw [simulateQ_bind, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+        mem_support_bind_iff] at hafterDigest
+      obtain ⟨ftsRaw, hftsRaw, hafterFts⟩ := hafterDigest
+      cases ftsRaw with
+      | stopped hit => simp at hafterFts
+      | done ftsState ftsRemaining ftsResult =>
+          rcases ftsResult with ⟨ftsPublicKey, ftsCache⟩
+          have hfFts : (ordinaryQueryCache ftsCache).AgreesWithFn f := by
+            intro query output hcached
+            apply hf
+            exact (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+              ftsState ftsCache ftsRemaining rawState remaining verified rawCache output hcached
+                hafterFts
+          have hftsEval := (replay_of_mem_runRaw_verifierHashImpl f parameter
+            (ftsRecover parameter (digestIndex digest) (digestLeaves digest)
+              forgery.signature.ftsSecret forgery.signature.ftsPath)
+            digestState ftsState digestCache ftsCache digestRemaining ftsRemaining ftsPublicKey
+              hfFts hftsRaw).1
+          have hftsOrdinary := hftsRaw
+          rw [simulateQ_verifierHashImpl_ftsRecover_eq_ordinaryHashImpl] at hftsOrdinary
+          have hftsState := mem_runRaw_simulateQ_ordinaryHashImpl_projects
+            (ftsRecover parameter (digestIndex digest) (digestLeaves digest)
+              forgery.signature.ftsSecret forgery.signature.ftsPath)
+            digestState ftsState digestCache ftsCache digestRemaining ftsRemaining ftsPublicKey
+              hftsOrdinary
+          subst ftsPublicKey
+          simp only at hafterFts
+          rw [simulateQ_bind, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+            mem_support_bind_iff] at hafterFts
+          obtain ⟨layersRaw, hlayersRaw, hafterLayers⟩ := hafterFts
+          cases layersRaw with
+          | stopped hit => simp at hafterLayers
+          | done layersState layersRemaining layersResult =>
+              rcases layersResult with ⟨verifiedRoot, layersCache⟩
+              rw [show numLayers = bottomLayer.val + 1 by rfl, verifyLayers_succ_eq,
+                dif_pos bottomLayer.isLt, simulateQ_bind, StateT.run_bind,
+                LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hlayersRaw
+              obtain ⟨bottomOtsRaw, hbottomOtsRaw, hafterBottomOts⟩ := hlayersRaw
+              cases bottomOtsRaw with
+              | stopped hit => simp at hafterBottomOts
+              | done bottomOtsState bottomOtsRemaining bottomOtsResult =>
+                  rcases bottomOtsResult with ⟨bottomResult, bottomOtsCache⟩
+                  have hfBottomOts : (ordinaryQueryCache bottomOtsCache).AgreesWithFn f := by
+                    intro query output hcached
+                    apply hf
+                    have hcachedLayers :=
+                      (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+                        bottomOtsState bottomOtsCache bottomOtsRemaining layersState
+                          layersRemaining verifiedRoot layersCache output hcached hafterBottomOts
+                    exact (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+                      layersState layersCache layersRemaining rawState remaining verified rawCache
+                        output hcachedLayers hafterLayers
+                  have hbottomEval := (replay_of_mem_runRaw_verifierHashImpl f parameter
+                    (otsLeaf parameter bottomLayer
+                      (treeIndexAt (digestIndex digest) bottomLayer)
+                      (leafIndexAt (digestIndex digest) bottomLayer)
+                      (evalWithAnswerFn f
+                        (ftsRecover parameter (digestIndex digest) (digestLeaves digest)
+                          forgery.signature.ftsSecret forgery.signature.ftsPath))
+                      (forgery.signature.counter bottomLayer)
+                      (forgery.signature.chainValue bottomLayer))
+                    ftsState bottomOtsState ftsCache bottomOtsCache ftsRemaining
+                      bottomOtsRemaining bottomResult hfBottomOts hbottomOtsRaw).1
+                  rw [hbottomLeaf] at hbottomEval
+                  subst bottomResult
+                  have hbottomOtsCoordinate :=
+                    preservesCoordinate_simulateQ_verifierHashImpl_otsLeaf_of_layer_ne parameter
+                      probe topLayer (treeIndexAt (digestIndex digest) topLayer)
+                        (leafIndexAt (digestIndex digest) topLayer) chainIdx
+                        ⟨(codeword chainIdx).val, hdigit⟩
+                        (forgery.signature.chainValue topLayer chainIdx) hmatches bottomLayer
+                        (treeIndexAt (digestIndex digest) bottomLayer)
+                        (leafIndexAt (digestIndex digest) bottomLayer)
+                        (evalWithAnswerFn f
+                          (ftsRecover parameter (digestIndex digest) (digestLeaves digest)
+                            forgery.signature.ftsSecret forgery.signature.ftsPath))
+                        (forgery.signature.counter bottomLayer)
+                        (forgery.signature.chainValue bottomLayer) (by decide)
+                        ftsState ftsCache ftsRemaining bottomOtsState bottomOtsRemaining
+                          (some bottomLeaf) bottomOtsCache hbottomOtsRaw
+                  simp only at hafterBottomOts
+                  rw [simulateQ_bind, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+                    mem_support_bind_iff] at hafterBottomOts
+                  obtain ⟨bottomFoldRaw, hbottomFoldRaw, hafterBottomFold⟩ := hafterBottomOts
+                  cases bottomFoldRaw with
+                  | stopped hit => simp at hafterBottomFold
+                  | done bottomFoldState bottomFoldRemaining bottomFoldResult =>
+                      rcases bottomFoldResult with ⟨bottomRoot, bottomFoldCache⟩
+                      have hfBottomFold : (ordinaryQueryCache bottomFoldCache).AgreesWithFn f := by
+                        intro query output hcached
+                        apply hf
+                        have hcachedLayers :=
+                          (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+                            bottomFoldState bottomFoldCache bottomFoldRemaining layersState
+                              layersRemaining verifiedRoot layersCache output hcached
+                                hafterBottomFold
+                        exact
+                          (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+                            layersState layersCache layersRemaining rawState remaining verified
+                              rawCache output hcachedLayers hafterLayers
+                      have hbottomFoldEval :=
+                        (replay_of_mem_runRaw_verifierHashImpl f parameter
+                          (treeFold parameter bottomLayer
+                            (treeIndexAt (digestIndex digest) bottomLayer)
+                            (leafIndexAt (digestIndex digest) bottomLayer)
+                            (signaturePath forgery.signature bottomLayer)
+                            (layerHeight bottomLayer) bottomLeaf)
+                          bottomOtsState bottomFoldState bottomOtsCache bottomFoldCache
+                            bottomOtsRemaining bottomFoldRemaining bottomRoot hfBottomFold
+                              hbottomFoldRaw).1
+                      change foldValue f parameter bottomLayer
+                        (treeIndexAt (digestIndex digest) bottomLayer)
+                        (leafIndexAt (digestIndex digest) bottomLayer)
+                        (signaturePath forgery.signature bottomLayer) bottomLeaf
+                          (layerHeight bottomLayer) = bottomRoot at hbottomFoldEval
+                      subst bottomRoot
+                      have hbottomFoldCoordinate :=
+                        preservesCoordinate_simulateQ_verifierHashImpl_treeFold_of_layer_ne
+                          parameter probe topLayer (treeIndexAt (digestIndex digest) topLayer)
+                          (leafIndexAt (digestIndex digest) topLayer) chainIdx
+                          ⟨(codeword chainIdx).val, hdigit⟩
+                          (forgery.signature.chainValue topLayer chainIdx) hmatches bottomLayer
+                          (treeIndexAt (digestIndex digest) bottomLayer)
+                          (leafIndexAt (digestIndex digest) bottomLayer)
+                          (signaturePath forgery.signature bottomLayer) (by decide)
+                          (layerHeight bottomLayer) bottomLeaf (layerHeight_le bottomLayer)
+                          bottomOtsState bottomOtsCache bottomOtsRemaining bottomFoldState
+                            bottomFoldRemaining
+                            (foldValue f parameter bottomLayer
+                              (treeIndexAt (digestIndex digest) bottomLayer)
+                              (leafIndexAt (digestIndex digest) bottomLayer)
+                              (signaturePath forgery.signature bottomLayer) bottomLeaf
+                                (layerHeight bottomLayer))
+                            bottomFoldCache hbottomFoldRaw
+                      simp only at hafterBottomFold
+                      rw [show bottomLayer.val = middleLayer.val + 1 by rfl,
+                        verifyLayers_succ_eq, dif_pos middleLayer.isLt, simulateQ_bind,
+                        StateT.run_bind, LazyRevealProbe.runRaw_bind,
+                        mem_support_bind_iff] at hafterBottomFold
+                      obtain ⟨middleOtsRaw, hmiddleOtsRaw, hafterMiddleOts⟩ :=
+                        hafterBottomFold
+                      cases middleOtsRaw with
+                      | stopped hit => simp at hafterMiddleOts
+                      | done middleOtsState middleOtsRemaining middleOtsResult =>
+                          rcases middleOtsResult with ⟨middleResult, middleOtsCache⟩
+                          have hfMiddleOts :
+                              (ordinaryQueryCache middleOtsCache).AgreesWithFn f := by
+                            intro query output hcached
+                            apply hf
+                            have hcachedLayers :=
+                              (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+                                middleOtsState middleOtsCache middleOtsRemaining layersState
+                                  layersRemaining verifiedRoot layersCache output hcached
+                                    hafterMiddleOts
+                            exact
+                              (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+                                layersState layersCache layersRemaining rawState remaining verified
+                                  rawCache output hcachedLayers hafterLayers
+                          have hmiddleEval := (replay_of_mem_runRaw_verifierHashImpl f parameter
+                            (otsLeaf parameter middleLayer
+                              (treeIndexAt (digestIndex digest) middleLayer)
+                              (leafIndexAt (digestIndex digest) middleLayer)
+                              (foldValue f parameter bottomLayer
+                                (treeIndexAt (digestIndex digest) bottomLayer)
+                                (leafIndexAt (digestIndex digest) bottomLayer)
+                                (signaturePath forgery.signature bottomLayer) bottomLeaf
+                                  (layerHeight bottomLayer))
+                              (forgery.signature.counter middleLayer)
+                              (forgery.signature.chainValue middleLayer))
+                            bottomFoldState middleOtsState bottomFoldCache middleOtsCache
+                              bottomFoldRemaining middleOtsRemaining middleResult hfMiddleOts
+                                hmiddleOtsRaw).1
+                          rw [hmiddleLeaf] at hmiddleEval
+                          subst middleResult
+                          have hmiddleOtsCoordinate :=
+                            preservesCoordinate_simulateQ_verifierHashImpl_otsLeaf_of_layer_ne
+                              parameter probe topLayer
+                              (treeIndexAt (digestIndex digest) topLayer)
+                              (leafIndexAt (digestIndex digest) topLayer) chainIdx
+                              ⟨(codeword chainIdx).val, hdigit⟩
+                              (forgery.signature.chainValue topLayer chainIdx) hmatches middleLayer
+                              (treeIndexAt (digestIndex digest) middleLayer)
+                              (leafIndexAt (digestIndex digest) middleLayer)
+                              (foldValue f parameter bottomLayer
+                                (treeIndexAt (digestIndex digest) bottomLayer)
+                                (leafIndexAt (digestIndex digest) bottomLayer)
+                                (signaturePath forgery.signature bottomLayer) bottomLeaf
+                                  (layerHeight bottomLayer))
+                              (forgery.signature.counter middleLayer)
+                              (forgery.signature.chainValue middleLayer) (by decide)
+                              bottomFoldState bottomFoldCache bottomFoldRemaining middleOtsState
+                                middleOtsRemaining (some middleLeaf) middleOtsCache hmiddleOtsRaw
+                          simp only at hafterMiddleOts
+                          rw [simulateQ_bind, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+                            mem_support_bind_iff] at hafterMiddleOts
+                          obtain ⟨middleFoldRaw, hmiddleFoldRaw, hafterMiddleFold⟩ :=
+                            hafterMiddleOts
+                          cases middleFoldRaw with
+                          | stopped hit => simp at hafterMiddleFold
+                          | done middleFoldState middleFoldRemaining middleFoldResult =>
+                              rcases middleFoldResult with ⟨middleRoot, middleFoldCache⟩
+                              have hfMiddleFold :
+                                  (ordinaryQueryCache middleFoldCache).AgreesWithFn f := by
+                                intro query output hcached
+                                apply hf
+                                have hcachedLayers :=
+                                  (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+                                    middleFoldState middleFoldCache middleFoldRemaining layersState
+                                      layersRemaining verifiedRoot layersCache output hcached
+                                        hafterMiddleFold
+                                exact
+                                  (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+                                    layersState layersCache layersRemaining rawState remaining
+                                      verified rawCache output hcachedLayers hafterLayers
+                              have hmiddleFoldEval :=
+                                (replay_of_mem_runRaw_verifierHashImpl f parameter
+                                  (treeFold parameter middleLayer
+                                    (treeIndexAt (digestIndex digest) middleLayer)
+                                    (leafIndexAt (digestIndex digest) middleLayer)
+                                    (signaturePath forgery.signature middleLayer)
+                                    (layerHeight middleLayer) middleLeaf)
+                                  middleOtsState middleFoldState middleOtsCache middleFoldCache
+                                    middleOtsRemaining middleFoldRemaining middleRoot hfMiddleFold
+                                      hmiddleFoldRaw).1
+                              change foldValue f parameter middleLayer
+                                (treeIndexAt (digestIndex digest) middleLayer)
+                                (leafIndexAt (digestIndex digest) middleLayer)
+                                (signaturePath forgery.signature middleLayer) middleLeaf
+                                  (layerHeight middleLayer) = middleRoot at hmiddleFoldEval
+                              rw [← hlayerMessage] at hmiddleFoldEval
+                              subst middleRoot
+                              have hmiddleFoldCoordinate :=
+                                preservesCoordinate_simulateQ_verifierHashImpl_treeFold_of_layer_ne
+                                  parameter probe topLayer
+                                  (treeIndexAt (digestIndex digest) topLayer)
+                                  (leafIndexAt (digestIndex digest) topLayer) chainIdx
+                                  ⟨(codeword chainIdx).val, hdigit⟩
+                                  (forgery.signature.chainValue topLayer chainIdx) hmatches
+                                  middleLayer (treeIndexAt (digestIndex digest) middleLayer)
+                                  (leafIndexAt (digestIndex digest) middleLayer)
+                                  (signaturePath forgery.signature middleLayer) (by decide)
+                                  (layerHeight middleLayer) middleLeaf (layerHeight_le middleLayer)
+                                  middleOtsState middleOtsCache middleOtsRemaining middleFoldState
+                                    middleFoldRemaining layerMessage middleFoldCache hmiddleFoldRaw
+                              simp only at hafterMiddleFold
+                              rw [show middleLayer.val = topLayer.val + 1 by rfl,
+                                verifyLayers_succ_eq, dif_pos topLayer.isLt, simulateQ_bind,
+                                StateT.run_bind, LazyRevealProbe.runRaw_bind,
+                                mem_support_bind_iff] at hafterMiddleFold
+                              obtain ⟨topOtsRaw, htopOtsRaw, hafterTopOts⟩ :=
+                                hafterMiddleFold
+                              cases topOtsRaw with
+                              | stopped hit => simp at hafterTopOts
+                              | done topOtsState topOtsRemaining topOtsResult =>
+                                  rcases topOtsResult with ⟨topResult, topOtsCache⟩
+                                  have hfTopOts :
+                                      (ordinaryQueryCache topOtsCache).AgreesWithFn f := by
+                                    intro query output hcached
+                                    apply hf
+                                    have hcachedLayers :=
+                                      (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+                                        topOtsState topOtsCache topOtsRemaining layersState
+                                          layersRemaining verifiedRoot layersCache output hcached
+                                            hafterTopOts
+                                    exact
+                                      (ordinaryEntryPreservingImpl_verifierHashImpl parameter query).simulateQ _
+                                        layersState layersCache layersRemaining rawState remaining
+                                          verified rawCache output hcachedLayers hafterLayers
+                                  have hvaluesTopLayers :=
+                                    LazyRevealProbe.valuesLE_of_mem_runRaw_done _ topOtsState
+                                      layersState topOtsRemaining layersRemaining
+                                        (verifiedRoot, layersCache) hafterTopOts
+                                  have hvaluesLayersRaw :=
+                                    LazyRevealProbe.valuesLE_of_mem_runRaw_done _ layersState
+                                      rawState layersRemaining remaining (verified, rawCache)
+                                        hafterLayers
+                                  have htableTop : ∀ coordinate output,
+                                      topOtsState.values coordinate = some output →
+                                        output = table coordinate := by
+                                    intro coordinate output hvalue
+                                    exact hrawTable coordinate output
+                                      (hvaluesLayersRaw coordinate output
+                                        (hvaluesTopLayers coordinate output hvalue))
+                                  have hftsInitial : ftsState = initialState :=
+                                    hftsState.1.trans hdigestState.1
+                                  have htopInitialValue :
+                                      middleFoldState.values probe.coordinate = none := by
+                                    rw [hmiddleFoldCoordinate.1, hmiddleOtsCoordinate.1,
+                                      hbottomFoldCoordinate.1, hbottomOtsCoordinate.1,
+                                      hftsInitial, hinitialValue]
+                                  have htopInitialNotRevealed :
+                                      probe.coordinate ∉ middleFoldState.revealed := by
+                                    rw [hmiddleFoldCoordinate.2, hmiddleOtsCoordinate.2,
+                                      hbottomFoldCoordinate.2, hbottomOtsCoordinate.2, hftsInitial]
+                                    exact hinitialNotRevealed
+                                  have hpendingTop :=
+                                    simulateQ_verifierHashImpl_otsLeaf_pendingHit_of_correct_probe
+                                      f parameter table probe topLayer
+                                      (treeIndexAt (digestIndex digest) topLayer)
+                                      (leafIndexAt (digestIndex digest) topLayer) layerMessage
+                                      (forgery.signature.counter topLayer)
+                                      (forgery.signature.chainValue topLayer) codeword chainIdx
+                                      hdigit hencode middleFoldState topOtsState middleFoldCache
+                                      topOtsCache middleFoldRemaining topOtsRemaining topResult
+                                      hmatches hcandidate htopInitialValue htopInitialNotRevealed
+                                      hfTopOts htableTop htopOtsRaw
+                                  have htableLayers : ∀ output,
+                                      layersState.values probe.coordinate = some output →
+                                        output = table probe.coordinate := by
+                                    intro output hvalue
+                                    exact hrawTable probe.coordinate output
+                                      (hvaluesLayersRaw probe.coordinate output hvalue)
+                                  have hpendingLayers :=
+                                    LazyRevealProbe.pendingHit_preserved_of_mem_runRaw_done _
+                                      probe.coordinate (table probe.coordinate) topOtsState
+                                      layersState topOtsRemaining layersRemaining
+                                      (verifiedRoot, layersCache) hpendingTop.1 hpendingTop.2
+                                      htableLayers hafterTopOts
+                                  have hpendingRaw :=
+                                    LazyRevealProbe.pendingHit_preserved_of_mem_runRaw_done _
+                                      probe.coordinate (table probe.coordinate) layersState rawState
+                                      layersRemaining remaining (verified, rawCache)
+                                      hpendingLayers.1 hpendingLayers.2
+                                      (hrawTable probe.coordinate) hafterLayers
+                                  exact finalizeDetailed_false_of_pending_hit table rawState
+                                    completedState probe.coordinate hpendingRaw.1 hpendingRaw.2
+                                      (hcompletedTable probe.coordinate) hfinalize
+
+set_option maxRecDepth 10000 in
+theorem ChainInvariant.not_finalized_false_of_verifyProbe_verifier
+    {f : QueryImpl HashSpec Id} {parameter : PublicParameter}
+    {table : Coordinate → HashOutput}
+    {ftsSecret : Index → FtsTree → FtsLeaf → Digest}
+    {targetCache : QueryCache HashSpec}
+    {initialState rawState completedState : LazyRevealProbe.State Coordinate}
+    {initialCache rawCache : SplitHashCache} {root : Digest} {forgery : Forgery}
+    {signingLog : QueryLog SigningSpec} {fuel remaining : Nat} {verified : Bool}
+    (hinvariant : ChainInvariant parameter
+      (CoveredChainCoordinate f targetCache
+        (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) signingLog)
+      initialState initialCache)
+    (hf : (ordinaryQueryCache rawCache).AgreesWithFn f)
+    (hcompletedTable : ∀ coordinate output,
+      completedState.values coordinate = some output → output = table coordinate)
+    (hrealizes : ∀ position : Position, IsOtsPosition position →
+      f (tableInput parameter table (.position position)) = table (.position position))
+    (hfinalize : (false, completedState) ∈ support
+      (LazyRevealProbe.finalizeDetailed rawState))
+    (hverify : LazyRevealProbe.RawResult.done rawState remaining
+        (verified, rawCache) ∈ support
+      (LazyRevealProbe.runRaw initialState fuel
+        ((simulateQ (verifierRomImpl parameter)
+          (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)).run
+            initialCache)))
+    (hprobe : VerifyProbeWitness f targetCache
+      (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey)
+      signingLog forgery.message forgery.signature) : False := by
+  rcases hprobe.at_bottom_or_middle_or_top with hbottom | hmiddle | htop
+  · exact hinvariant.not_finalized_false_of_bottom_verifyProbe_verifier hf hcompletedTable
+      hrealizes hfinalize hverify hbottom
+  · exact hinvariant.not_finalized_false_of_middle_verifyProbe_verifier hf hcompletedTable
+      hrealizes hfinalize hverify hmiddle
+  · exact hinvariant.not_finalized_false_of_top_verifyProbe_verifier hf hcompletedTable
+      hrealizes hfinalize hverify htop
+
 theorem relTriple_runRaw_splitUniformImpl
     (n : Nat) (state : LazyRevealProbe.State Coordinate)
     (cache : SplitHashCache) (fuel : Nat) :
