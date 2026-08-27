@@ -11,6 +11,7 @@ check every intervening probe against the already drawn answer.
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
 open OracleComp OracleSpec
+open OracleComp.ProgramLogic.Relational
 
 abbrev DeferredStructuralValues := Position → Option HashOutput
 
@@ -23,6 +24,12 @@ def DeferredStructuralValues.install (values : DeferredStructuralValues)
 structure DeferredContext where
   state : LazyRevealProbe.State Coordinate
   values : DeferredStructuralValues
+
+def DeferredContext.positionValue (context : DeferredContext)
+    (position : Position) : Option HashOutput :=
+  match context.state.values (.position position) with
+  | some output => some output
+  | none => context.values position
 
 structure DeferredResolution extends DeferredContext where
   output : HashOutput
@@ -204,6 +211,142 @@ theorem resolveDeferredPositionValue_preserves_other
             subst result
             simp [DeferredStructuralValues.install, hne]
 
+theorem resolveDeferredPositionValue_resolves
+    (position : Position) (context : DeferredContext) (result : DeferredResolution)
+    (hresult : some result ∈ support
+      (resolveDeferredPositionValue position context)) :
+    result.toDeferredContext.positionValue position = some result.output := by
+  have hstateValues := resolveDeferredPositionValue_preserves_state_values
+    position context result hresult
+  cases hstate : context.state.values (.position position) with
+  | some output =>
+      unfold resolveDeferredPositionValue at hresult
+      simp only [hstate] at hresult
+      by_cases hhit : context.state.hitAt (.position position) output
+      · simp [hhit] at hresult
+      · simp [hhit] at hresult
+        subst result
+        simp [DeferredContext.positionValue, hstate]
+  | none =>
+      unfold DeferredContext.positionValue
+      rw [hstateValues, hstate]
+      exact resolveDeferredPositionValue_installs position context result hresult
+
+theorem resolveDeferredPositionValue_preserves_positionValue
+    (position other : Position) (context : DeferredContext) (result : DeferredResolution)
+    (output : HashOutput)
+    (hknown : context.positionValue other = some output)
+    (hresult : some result ∈ support
+      (resolveDeferredPositionValue position context)) :
+    result.toDeferredContext.positionValue other = some output := by
+  by_cases heq : other = position
+  · subst other
+    have hresolved := resolveDeferredPositionValue_resolves position context result hresult
+    cases hstate : context.state.values (.position position) with
+    | some cached =>
+        have houtput : output = cached := by
+          simpa [DeferredContext.positionValue, hstate] using hknown.symm
+        unfold resolveDeferredPositionValue at hresult
+        simp only [hstate] at hresult
+        by_cases hhit : context.state.hitAt (.position position) cached
+        · simp [hhit] at hresult
+        · simp [hhit] at hresult
+          subst result
+          simpa [houtput]
+    | none =>
+        cases hvalue : context.values position with
+        | some cached =>
+            have houtput : output = cached := by
+              simpa [DeferredContext.positionValue, hstate, hvalue] using hknown.symm
+            unfold resolveDeferredPositionValue at hresult
+            simp only [hstate, hvalue] at hresult
+            by_cases hhit : context.state.hitAt (.position position) cached
+            · simp [hhit] at hresult
+            · simp [hhit] at hresult
+              subst result
+              simpa [houtput]
+        | none => simp [DeferredContext.positionValue, hstate, hvalue] at hknown
+  · have hstateValues := resolveDeferredPositionValue_preserves_state_values
+      position context result hresult
+    have hdeferred := resolveDeferredPositionValue_preserves_other
+      position other context result heq hresult
+    unfold DeferredContext.positionValue at hknown ⊢
+    rw [hstateValues]
+    cases hstate : context.state.values (.position other) with
+    | some cached => simpa [hstate] using hknown
+    | none => simpa [hstate, hdeferred] using hknown
+
+def ResolveQueryRel (input : HashInput) (cache : QueryCache HashSpec) :
+    Option DeferredResolution → HashOutput × QueryCache HashSpec → Prop
+  | none, _ => True
+  | some resolved, (output, finalCache) =>
+      resolved.output = output ∧ finalCache = cache.cacheQuery input output
+
+theorem relTriple_resolveDeferredPositionValue_freshQuery
+    (position : Position) (context : DeferredContext) (input : HashInput)
+    (cache : QueryCache HashSpec)
+    (hstate : context.state.values (.position position) = none)
+    (hvalue : context.values position = none) (hcache : cache input = none) :
+    RelTriple
+      (resolveDeferredPositionValue position context)
+      ((randomOracle (spec := HashSpec) input).run cache)
+      (ResolveQueryRel input cache) := by
+  rw [resolveDeferredPositionValue_fresh position context hstate hvalue,
+    QueryImpl.withCaching_run_none uniformSampleImpl hcache]
+  unfold LazyRevealProbe.sampleHashOutput uniformSampleImpl
+  simp only [map_eq_bind_pure_comp]
+  apply relTriple_bind (relTriple_refl ($ᵗ HashOutput : ProbComp HashOutput))
+  intro leftOutput rightOutput heq
+  subst rightOutput
+  by_cases hhit : context.state.hitAt (.position position) leftOutput
+  · simp [hhit, ResolveQueryRel]
+  · simp [hhit, ResolveQueryRel]
+
+theorem relTriple_resolveDeferredPositionValue_cachedQuery
+    (position : Position) (context : DeferredContext) (input : HashInput)
+    (cache : QueryCache HashSpec) (output : HashOutput)
+    (hknown : context.positionValue position = some output)
+    (hcache : cache input = some output) :
+    RelTriple
+      (resolveDeferredPositionValue position context)
+      ((randomOracle (spec := HashSpec) input).run cache)
+      (ResolveQueryRel input cache) := by
+  rw [QueryImpl.withCaching_run_some uniformSampleImpl hcache]
+  cases hstate : context.state.values (.position position) with
+  | some cached =>
+      have hcached : cached = output := by
+        simpa [DeferredContext.positionValue, hstate] using hknown
+      subst cached
+      rw [resolveDeferredPositionValue_of_state_value position context output hstate]
+      by_cases hhit : context.state.hitAt (.position position) output
+      · simp [hhit, ResolveQueryRel]
+      · have hcacheQuery : cache.cacheQuery input output = cache := by
+          apply QueryCache.ext
+          intro query
+          by_cases hquery : query = input
+          · subst query
+            simp [QueryCache.cacheQuery_self, hcache]
+          · simp [QueryCache.cacheQuery_of_ne cache output hquery]
+        simp [hhit, ResolveQueryRel, hcacheQuery]
+  | none =>
+      cases hvalue : context.values position with
+      | some cached =>
+          have hcached : cached = output := by
+            simpa [DeferredContext.positionValue, hstate, hvalue] using hknown
+          subst cached
+          rw [resolveDeferredPositionValue_of_deferred_value position context output hstate hvalue]
+          by_cases hhit : context.state.hitAt (.position position) output
+          · simp [hhit, ResolveQueryRel]
+          · have hcacheQuery : cache.cacheQuery input output = cache := by
+              apply QueryCache.ext
+              intro query
+              by_cases hquery : query = input
+              · subst query
+                simp [QueryCache.cacheQuery_self, hcache]
+              · simp [QueryCache.cacheQuery_of_ne cache output hquery]
+            simp [hhit, ResolveQueryRel, hcacheQuery]
+      | none => simp [DeferredContext.positionValue, hstate, hvalue] at hknown
+
 noncomputable def resolveDeferredChainStart (table : OtsSecretIndex → HashOutput)
     (index : OtsSecretIndex) (context : DeferredContext) :
     Option DeferredResolution :=
@@ -243,6 +386,30 @@ theorem resolveDeferredChainStart_of_agrees
       have hout : output = table index := hagrees index output hvalue
       subst output
       simp [hvalue, hclean]
+
+theorem resolveDeferredChainStart_preserves_positionValue
+    (table : OtsSecretIndex → HashOutput) (index : OtsSecretIndex)
+    (context : DeferredContext) (result : DeferredResolution) (position : Position)
+    (output : HashOutput) (hknown : context.positionValue position = some output)
+    (hresult : resolveDeferredChainStart table index context = some result) :
+    result.toDeferredContext.positionValue position = some output := by
+  unfold resolveDeferredChainStart at hresult
+  dsimp only at hresult
+  cases hvalue : context.state.values index.coordinate with
+  | some cached =>
+      rw [hvalue] at hresult
+      by_cases hhit : context.state.hitAt index.coordinate cached
+      · simp [hhit] at hresult
+      · simp [hhit] at hresult
+        subst result
+        simpa [DeferredContext.positionValue, LazyRevealProbe.State.clearPending] using hknown
+  | none =>
+      rw [hvalue] at hresult
+      by_cases hhit : context.state.hitAt index.coordinate (table index)
+      · simp [hhit] at hresult
+      · simp [hhit] at hresult
+        subst result
+        simpa [DeferredContext.positionValue, LazyRevealProbe.State.clearPending] using hknown
 
 noncomputable def resolveDeferredChainPrefix
     (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
@@ -312,11 +479,30 @@ theorem resolveDeferredChainPrefix_installs_last
         (.chain lay tree leafIdx chainIdx ⟨steps, by omega⟩)
         previous.toDeferredContext result (by simpa using hrest)
 
+theorem resolveDeferredChainPrefix_resolves_last
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) (steps : Nat)
+    (hsteps : steps + 1 ≤ chainLength - 1) (context : DeferredContext)
+    (result : DeferredResolution)
+    (hresult : some result ∈ support
+      (resolveDeferredChainPrefix table lay tree leafIdx chainIdx (steps + 1)
+        hsteps context)) :
+    result.toDeferredContext.positionValue
+        (.chain lay tree leafIdx chainIdx ⟨steps, by omega⟩) = some result.output := by
+  rw [resolveDeferredChainPrefix, mem_support_bind_iff] at hresult
+  obtain ⟨previousOption, _hprevious, hrest⟩ := hresult
+  cases previousOption with
+  | none => simp at hrest
+  | some previous =>
+      exact resolveDeferredPositionValue_resolves
+        (.chain lay tree leafIdx chainIdx ⟨steps, by omega⟩)
+        previous.toDeferredContext result (by simpa using hrest)
+
 def DeferredChainPrefixAvailable (lay : Layer) (tree : TreeIndex)
     (leafIdx : LeafIndex) (chainIdx : ChainIndex) (steps : Nat)
     (context : DeferredContext) : Prop :=
   ∀ step : ChainStep, step.val < steps → ∃ output,
-    context.values (.chain lay tree leafIdx chainIdx step) = some output
+    context.positionValue (.chain lay tree leafIdx chainIdx step) = some output
 
 theorem deferredChainPrefixAvailable_of_resolve
     (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
@@ -345,20 +531,41 @@ theorem deferredChainPrefixAvailable_of_resolve
           by_cases heq : step.val = steps
           · have hstep : step = ⟨steps, by omega⟩ := Fin.ext heq
             refine ⟨result.output, ?_⟩
-            simpa [hstep] using resolveDeferredPositionValue_installs
+            simpa [hstep] using resolveDeferredPositionValue_resolves
               (.chain lay tree leafIdx chainIdx ⟨steps, by omega⟩)
               previous.toDeferredContext result hrest'
           · have hbefore : step.val < steps := by omega
             obtain ⟨output, houtput⟩ := hpreviousAvailable step hbefore
             refine ⟨output, ?_⟩
-            have hpreserve := resolveDeferredPositionValue_preserves_other
+            exact resolveDeferredPositionValue_preserves_positionValue
               (.chain lay tree leafIdx chainIdx ⟨steps, by omega⟩)
-              (.chain lay tree leafIdx chainIdx step) previous.toDeferredContext result (by
-                intro hposition
-                have hfin : step = ⟨steps, by omega⟩ := by simpa using hposition
-                exact heq (congrArg Fin.val hfin)) hrest'
-            rw [hpreserve]
-            exact houtput
+              (.chain lay tree leafIdx chainIdx step) previous.toDeferredContext result output
+              houtput hrest'
+
+theorem resolveDeferredChainPrefix_preserves_positionValue
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) :
+    ∀ steps hsteps context result position output,
+      context.positionValue position = some output →
+      some result ∈ support
+        (resolveDeferredChainPrefix table lay tree leafIdx chainIdx steps hsteps context) →
+      result.toDeferredContext.positionValue position = some output
+  | 0, hsteps, context, result, position, output, hknown, hresult => by
+      simp only [resolveDeferredChainPrefix, support_pure, Set.mem_singleton_iff] at hresult
+      exact resolveDeferredChainStart_preserves_positionValue table
+        ⟨lay, tree, leafIdx, chainIdx⟩ context result position output hknown hresult.symm
+  | steps + 1, hsteps, context, result, position, output, hknown, hresult => by
+      rw [resolveDeferredChainPrefix, mem_support_bind_iff] at hresult
+      obtain ⟨previousOption, hprevious, hrest⟩ := hresult
+      cases previousOption with
+      | none => simp at hrest
+      | some previous =>
+          have hmiddle := resolveDeferredChainPrefix_preserves_positionValue
+            table lay tree leafIdx chainIdx steps (by omega) context previous position output
+              hknown hprevious
+          exact resolveDeferredPositionValue_preserves_positionValue
+            (.chain lay tree leafIdx chainIdx ⟨steps, by omega⟩) position
+            previous.toDeferredContext result output hmiddle (by simpa using hrest)
 
 noncomputable def resolveDeferredChains
     (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
@@ -373,6 +580,65 @@ noncomputable def resolveDeferredChains
       | some resolved =>
           resolveDeferredChains table lay tree leafIdx remaining resolved.toDeferredContext
 
+theorem resolveDeferredChains_preserves_positionValue
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) :
+    ∀ chains context result position output,
+      context.positionValue position = some output →
+      some result ∈ support (resolveDeferredChains table lay tree leafIdx chains context) →
+      result.positionValue position = some output
+  | [], context, result, position, output, hknown, hresult => by
+      simp [resolveDeferredChains] at hresult
+      subst result
+      exact hknown
+  | chainIdx :: remaining, context, result, position, output, hknown, hresult => by
+      rw [resolveDeferredChains, mem_support_bind_iff] at hresult
+      obtain ⟨resolvedOption, hresolved, hrest⟩ := hresult
+      cases resolvedOption with
+      | none => simp at hrest
+      | some resolved =>
+          have hmiddle := resolveDeferredChainPrefix_preserves_positionValue
+            table lay tree leafIdx chainIdx (chainLength - 1) (by omega) context resolved
+              position output hknown hresolved
+          exact resolveDeferredChains_preserves_positionValue table lay tree leafIdx remaining
+            resolved.toDeferredContext result position output hmiddle (by simpa using hrest)
+
+def DeferredChainsAvailable (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chains : List ChainIndex) (context : DeferredContext) : Prop :=
+  ∀ chainIdx, chainIdx ∈ chains →
+    DeferredChainPrefixAvailable lay tree leafIdx chainIdx (chainLength - 1) context
+
+theorem deferredChainsAvailable_of_resolve
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) :
+    ∀ chains context result,
+      some result ∈ support (resolveDeferredChains table lay tree leafIdx chains context) →
+      DeferredChainsAvailable lay tree leafIdx chains result
+  | [], context, result, hresult => by
+      intro chainIdx hmem
+      simp at hmem
+  | chainIdx :: remaining, context, result, hresult => by
+      rw [resolveDeferredChains, mem_support_bind_iff] at hresult
+      obtain ⟨resolvedOption, hresolved, hrest⟩ := hresult
+      cases resolvedOption with
+      | none => simp at hrest
+      | some resolved =>
+          have hhead := deferredChainPrefixAvailable_of_resolve table lay tree leafIdx chainIdx
+            (chainLength - 1) (by omega) context resolved hresolved
+          have htail := deferredChainsAvailable_of_resolve table lay tree leafIdx remaining
+            resolved.toDeferredContext result (by simpa using hrest)
+          intro other hmem
+          simp only [List.mem_cons] at hmem
+          rcases hmem with heq | hmem
+          · subst other
+            intro step hstep
+            obtain ⟨output, houtput⟩ := hhead step hstep
+            refine ⟨output, ?_⟩
+            exact resolveDeferredChains_preserves_positionValue table lay tree leafIdx remaining
+              resolved.toDeferredContext result
+              (.chain lay tree leafIdx chainIdx step) output houtput (by simpa using hrest)
+          · exact htail other hmem
+
 noncomputable def resolveDeferredOtsLeaf
     (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
     (leafIdx : LeafIndex) (context : DeferredContext) :
@@ -383,6 +649,69 @@ noncomputable def resolveDeferredOtsLeaf
   | none => pure none
   | some chains =>
       resolveDeferredPositionValue (.leaf lay tree leafIdx) chains
+
+theorem resolveDeferredOtsLeaf_preserves_positionValue
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (context : DeferredContext) (result : DeferredResolution)
+    (position : Position) (output : HashOutput)
+    (hknown : context.positionValue position = some output)
+    (hresult : some result ∈ support
+      (resolveDeferredOtsLeaf table lay tree leafIdx context)) :
+    result.toDeferredContext.positionValue position = some output := by
+  rw [resolveDeferredOtsLeaf, mem_support_bind_iff] at hresult
+  obtain ⟨chainsOption, hchains, hrest⟩ := hresult
+  cases chainsOption with
+  | none => simp at hrest
+  | some chains =>
+      have hmiddle := resolveDeferredChains_preserves_positionValue table lay tree leafIdx
+        (List.ofFn fun chainIdx : ChainIndex => chainIdx) context chains position output
+          hknown hchains
+      exact resolveDeferredPositionValue_preserves_positionValue
+        (.leaf lay tree leafIdx) position chains result output hmiddle (by simpa using hrest)
+
+theorem resolveDeferredOtsLeaf_resolves
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (context : DeferredContext) (result : DeferredResolution)
+    (hresult : some result ∈ support
+      (resolveDeferredOtsLeaf table lay tree leafIdx context)) :
+    result.toDeferredContext.positionValue (.leaf lay tree leafIdx) = some result.output := by
+  rw [resolveDeferredOtsLeaf, mem_support_bind_iff] at hresult
+  obtain ⟨chainsOption, _hchains, hrest⟩ := hresult
+  cases chainsOption with
+  | none => simp at hrest
+  | some chains =>
+      exact resolveDeferredPositionValue_resolves (.leaf lay tree leafIdx) chains result
+        (by simpa using hrest)
+
+def DeferredOtsLeafChildrenAvailable (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (context : DeferredContext) : Prop :=
+  ∀ chainIdx : ChainIndex, ∃ output,
+    context.positionValue
+      (.chain lay tree leafIdx chainIdx Position.lastChainStep) = some output
+
+theorem deferredOtsLeafChildrenAvailable_of_resolve
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (context : DeferredContext) (result : DeferredResolution)
+    (hresult : some result ∈ support
+      (resolveDeferredOtsLeaf table lay tree leafIdx context)) :
+    DeferredOtsLeafChildrenAvailable lay tree leafIdx result.toDeferredContext := by
+  rw [resolveDeferredOtsLeaf, mem_support_bind_iff] at hresult
+  obtain ⟨chainsOption, hchains, hrest⟩ := hresult
+  cases chainsOption with
+  | none => simp at hrest
+  | some chains =>
+      have havailable := deferredChainsAvailable_of_resolve table lay tree leafIdx
+        (List.ofFn fun chainIdx : ChainIndex => chainIdx) context chains hchains
+      intro chainIdx
+      have hmem : chainIdx ∈ List.ofFn (fun chainIdx : ChainIndex => chainIdx) := by
+        simp only [List.mem_ofFn]
+        exact ⟨chainIdx, rfl⟩
+      obtain ⟨output, houtput⟩ := havailable chainIdx hmem Position.lastChainStep (by
+        simp [Position.lastChainStep, chainLength, winternitzBits])
+      refine ⟨output, ?_⟩
+      exact resolveDeferredPositionValue_preserves_positionValue (.leaf lay tree leafIdx)
+        (.chain lay tree leafIdx chainIdx Position.lastChainStep) chains result output houtput
+          (by simpa using hrest)
 
 noncomputable def resolveDeferredTreeNode
     (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex) :
@@ -404,6 +733,104 @@ noncomputable def resolveDeferredTreeNode
                 (.node lay tree ⟨level, by omega⟩ (leafOfNat nodeIdx))
                 right.toDeferredContext
 
+def deferredTreePosition (lay : Layer) (tree : TreeIndex) :
+    (level nodeIdx : Nat) → level ≤ maxLayerHeight → Position
+  | 0, nodeIdx, _ => .leaf lay tree (leafOfNat nodeIdx)
+  | level + 1, nodeIdx, hlevel =>
+      .node lay tree ⟨level, by omega⟩ (leafOfNat nodeIdx)
+
+theorem resolveDeferredTreeNode_preserves_positionValue
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex) :
+    ∀ level nodeIdx hlevel context result position output,
+      context.positionValue position = some output →
+      some result ∈ support
+        (resolveDeferredTreeNode table lay tree level nodeIdx hlevel context) →
+      result.toDeferredContext.positionValue position = some output
+  | 0, nodeIdx, hlevel, context, result, position, output, hknown, hresult =>
+      resolveDeferredOtsLeaf_preserves_positionValue table lay tree (leafOfNat nodeIdx)
+        context result position output hknown hresult
+  | level + 1, nodeIdx, hlevel, context, result, position, output, hknown, hresult => by
+      rw [resolveDeferredTreeNode, mem_support_bind_iff] at hresult
+      obtain ⟨leftOption, hleft, hafterLeft⟩ := hresult
+      cases leftOption with
+      | none => simp at hafterLeft
+      | some left =>
+          rw [mem_support_bind_iff] at hafterLeft
+          obtain ⟨rightOption, hright, hafterRight⟩ := hafterLeft
+          cases rightOption with
+          | none => simp at hafterRight
+          | some right =>
+              have hleftKnown := resolveDeferredTreeNode_preserves_positionValue table lay tree
+                level (2 * nodeIdx) (by omega) context left position output hknown hleft
+              have hrightKnown := resolveDeferredTreeNode_preserves_positionValue table lay tree
+                level (2 * nodeIdx + 1) (by omega) left.toDeferredContext right position output
+                  hleftKnown hright
+              exact resolveDeferredPositionValue_preserves_positionValue
+                (.node lay tree ⟨level, by omega⟩ (leafOfNat nodeIdx)) position
+                right.toDeferredContext result output hrightKnown (by simpa using hafterRight)
+
+theorem resolveDeferredTreeNode_resolves
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex) :
+    ∀ level nodeIdx hlevel context result,
+      some result ∈ support
+        (resolveDeferredTreeNode table lay tree level nodeIdx hlevel context) →
+      result.toDeferredContext.positionValue
+        (deferredTreePosition lay tree level nodeIdx hlevel) = some result.output
+  | 0, nodeIdx, hlevel, context, result, hresult =>
+      resolveDeferredOtsLeaf_resolves table lay tree (leafOfNat nodeIdx) context result hresult
+  | level + 1, nodeIdx, hlevel, context, result, hresult => by
+      rw [resolveDeferredTreeNode, mem_support_bind_iff] at hresult
+      obtain ⟨leftOption, _hleft, hafterLeft⟩ := hresult
+      cases leftOption with
+      | none => simp at hafterLeft
+      | some left =>
+          rw [mem_support_bind_iff] at hafterLeft
+          obtain ⟨rightOption, _hright, hafterRight⟩ := hafterLeft
+          cases rightOption with
+          | none => simp at hafterRight
+          | some right =>
+              simpa [deferredTreePosition] using resolveDeferredPositionValue_resolves
+                (.node lay tree ⟨level, by omega⟩ (leafOfNat nodeIdx))
+                right.toDeferredContext result (by simpa using hafterRight)
+
+theorem resolveDeferredTreeNode_children_available
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (level nodeIdx : Nat) (hlevel : level + 1 ≤ maxLayerHeight)
+    (context : DeferredContext) (result : DeferredResolution)
+    (hresult : some result ∈ support
+      (resolveDeferredTreeNode table lay tree (level + 1) nodeIdx hlevel context)) :
+    (∃ output, result.toDeferredContext.positionValue
+        (deferredTreePosition lay tree level (2 * nodeIdx) (by omega)) = some output) ∧
+      (∃ output, result.toDeferredContext.positionValue
+        (deferredTreePosition lay tree level (2 * nodeIdx + 1) (by omega)) = some output) := by
+  rw [resolveDeferredTreeNode, mem_support_bind_iff] at hresult
+  obtain ⟨leftOption, hleft, hafterLeft⟩ := hresult
+  cases leftOption with
+  | none => simp at hafterLeft
+  | some left =>
+      rw [mem_support_bind_iff] at hafterLeft
+      obtain ⟨rightOption, hright, hafterRight⟩ := hafterLeft
+      cases rightOption with
+      | none => simp at hafterRight
+      | some right =>
+          have hleftValue := resolveDeferredTreeNode_resolves table lay tree level
+            (2 * nodeIdx) (by omega) context left hleft
+          have hleftInRight := resolveDeferredTreeNode_preserves_positionValue table lay tree level
+            (2 * nodeIdx + 1) (by omega) left.toDeferredContext right
+              (deferredTreePosition lay tree level (2 * nodeIdx) (by omega)) left.output
+              hleftValue hright
+          have hrightValue := resolveDeferredTreeNode_resolves table lay tree level
+            (2 * nodeIdx + 1) (by omega) left.toDeferredContext right hright
+          have hfinalLeft := resolveDeferredPositionValue_preserves_positionValue
+            (.node lay tree ⟨level, by omega⟩ (leafOfNat nodeIdx))
+            (deferredTreePosition lay tree level (2 * nodeIdx) (by omega))
+            right.toDeferredContext result left.output hleftInRight (by simpa using hafterRight)
+          have hfinalRight := resolveDeferredPositionValue_preserves_positionValue
+            (.node lay tree ⟨level, by omega⟩ (leafOfNat nodeIdx))
+            (deferredTreePosition lay tree level (2 * nodeIdx + 1) (by omega))
+            right.toDeferredContext result right.output hrightValue (by simpa using hafterRight)
+          exact ⟨⟨left.output, hfinalLeft⟩, ⟨right.output, hfinalRight⟩⟩
+
 noncomputable def resolveDeferredPosition
     (table : OtsSecretIndex → HashOutput) (position : Position)
     (context : DeferredContext) : ProbComp (Option DeferredResolution) :=
@@ -416,6 +843,58 @@ noncomputable def resolveDeferredPosition
       resolveDeferredTreeNode table lay tree (level.val + 1) nodeIdx
         (by have := level.isLt; omega) context
   | position => resolveDeferredPositionValue position context
+
+theorem resolveDeferredPosition_preserves_positionValue
+    (table : OtsSecretIndex → HashOutput) (target : Position)
+    (context : DeferredContext) (result : DeferredResolution)
+    (position : Position) (output : HashOutput)
+    (hknown : context.positionValue position = some output)
+    (hresult : some result ∈ support
+      (resolveDeferredPosition table target context)) :
+    result.toDeferredContext.positionValue position = some output := by
+  cases target with
+  | chain lay tree leafIdx chainIdx step =>
+      exact resolveDeferredChainPrefix_preserves_positionValue table lay tree leafIdx chainIdx
+        (step.val + 1) (by have := step.isLt; omega) context result position output hknown hresult
+  | leaf lay tree leafIdx =>
+      exact resolveDeferredOtsLeaf_preserves_positionValue table lay tree leafIdx context result
+        position output hknown hresult
+  | node lay tree level nodeIdx =>
+      exact resolveDeferredTreeNode_preserves_positionValue table lay tree (level.val + 1)
+        nodeIdx (by have := level.isLt; omega) context result position output hknown hresult
+  | ftsLeaf index tree leafIdx =>
+      exact resolveDeferredPositionValue_preserves_positionValue (.ftsLeaf index tree leafIdx)
+        position context result output hknown hresult
+  | ftsNode index tree level nodeIdx =>
+      exact resolveDeferredPositionValue_preserves_positionValue (.ftsNode index tree level nodeIdx)
+        position context result output hknown hresult
+  | ftsRoots index =>
+      exact resolveDeferredPositionValue_preserves_positionValue (.ftsRoots index)
+        position context result output hknown hresult
+
+theorem resolveDeferredPosition_resolves
+    (table : OtsSecretIndex → HashOutput) (position : Position)
+    (context : DeferredContext) (result : DeferredResolution)
+    (hresult : some result ∈ support
+      (resolveDeferredPosition table position context)) :
+    result.toDeferredContext.positionValue position = some result.output := by
+  cases position with
+  | chain lay tree leafIdx chainIdx step =>
+      simpa using resolveDeferredChainPrefix_resolves_last table lay tree leafIdx chainIdx
+        step.val (by have := step.isLt; omega) context result hresult
+  | leaf lay tree leafIdx =>
+      exact resolveDeferredOtsLeaf_resolves table lay tree leafIdx context result hresult
+  | node lay tree level nodeIdx =>
+      have hleaf : leafOfNat nodeIdx.val = nodeIdx := leafOfNat_val nodeIdx
+      simpa [deferredTreePosition, hleaf] using resolveDeferredTreeNode_resolves table lay tree
+        (level.val + 1) nodeIdx (by have := level.isLt; omega) context result hresult
+  | ftsLeaf index tree leafIdx =>
+      exact resolveDeferredPositionValue_resolves (.ftsLeaf index tree leafIdx) context result hresult
+  | ftsNode index tree level nodeIdx =>
+      exact resolveDeferredPositionValue_resolves (.ftsNode index tree level nodeIdx) context result
+        hresult
+  | ftsRoots index =>
+      exact resolveDeferredPositionValue_resolves (.ftsRoots index) context result hresult
 
 structure ResolvedRunResult (alpha : Type) where
   context : DeferredContext
@@ -940,6 +1419,46 @@ theorem runResolvedFromTable_maskedChainValue_zero
   rw [dif_pos hdigit]
   exact runResolvedFromTable_revealChainStart_of_agrees reservedContext fuel table
     ⟨lay, tree, leafIdx, chainIdx⟩ cache hreservedAgrees hreservedClean
+
+theorem runResolvedFromTable_maskedChainValue_positive
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (chainIdx : ChainIndex) (digit : Digit) (hdigit : digit.val ≠ 0)
+    (context : DeferredContext) (cache : SplitHashCache) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) :
+    let step : ChainStep := ⟨digit.val - 1, by
+      have := digit.isLt
+      omega⟩
+    ∃ reservedContext : DeferredContext,
+      runResolvedFromTable context fuel table
+          ((maskedChainValue lay tree leafIdx chainIdx digit).run cache) = (do
+        let resolved ← resolveDeferredPosition table
+          (.chain lay tree leafIdx chainIdx step) reservedContext
+        match resolved with
+        | none => pure none
+        | some resolved =>
+            pure (some ⟨
+              { state := resolved.state.materialize
+                  (.position (.chain lay tree leafIdx chainIdx step)) resolved.output
+                values := resolved.values },
+              fuel,
+              (truncateHash resolved.output,
+                Function.update cache
+                  (.hidden (.position (.chain lay tree leafIdx chainIdx step)))
+                  (some resolved.output)),
+              table⟩)) := by
+  dsimp only
+  obtain ⟨reservedContext, hreserve, _hpending, _hstateValues, _hdeferred⟩ :=
+    (resolvedAdministrative_ensureChainPrefix lay tree leafIdx chainIdx digit).run
+      context cache fuel table
+  refine ⟨reservedContext, ?_⟩
+  unfold maskedChainValue
+  rw [StateT.run_bind, runResolvedFromTable_bind, hreserve]
+  simp only [pure_bind]
+  rw [dif_neg hdigit]
+  exact runResolvedFromTable_revealPosition reservedContext fuel table
+    (.chain lay tree leafIdx chainIdx ⟨digit.val - 1, by
+      have := digit.isLt
+      omega⟩) cache
 
 noncomputable def finalizeResolvedCoordinates
     (coordinates : List Coordinate) (context : DeferredContext)
