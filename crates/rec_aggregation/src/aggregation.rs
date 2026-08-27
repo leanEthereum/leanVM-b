@@ -58,7 +58,6 @@ pub type SphincsSigner = (SphincsPublicKey, sphincs::Message);
 const VALCOL_FRAMEWORK: &str = "a framework block must not reference a virtual value column";
 const RECURSION_AGG_LABEL: &[u8] = b"leanvm-b/recursion-aggregation/v1";
 const RECURSION_STATEMENT_LABEL: &[u8] = b"leanvm-b/recursive-statement/v1";
-const EPOCH_LABEL: &[u8] = b"leanvm-b/aggregation-epoch/v1";
 const PUBKEYS_LABEL: &[u8] = b"leanvm-b/aggregation-pubkeys/v1";
 
 /// The recursion arity, and the cap on the coverage table's slots, declared and
@@ -79,11 +78,9 @@ pub const MAX_KEYS: usize = 1 << 16;
 // that happen to agree: were they to drift, a leaf's claim point would be one length in
 // the guest and another in the statement, and nothing else would notice.
 const _: () = assert!(lean_vm::leaf::N_TUPLE_BITS == lean_vm::leaf::N_BYTECODE_SELECTORS);
-// `epoch_hash` streams the tweak table and the Merkle bits four cells to a
-// 64-byte block, so each has to fill whole blocks or the two sides would
-// disagree on where the padding falls.
-const _: () = assert!((2 + xmss::V * (xmss::CHAIN_LENGTH - 1) + xmss::LOG_LIFETIME).is_multiple_of(4));
-const _: () = assert!(xmss::LOG_LIFETIME.is_multiple_of(4));
+// The epoch fills a tweak's four-byte index field, so a longer lifetime would
+// need a weight per bit that `xmss::make_tweak` cannot express.
+const _: () = assert!(xmss::LOG_LIFETIME <= 32);
 // The guest's `WOTS_PK_BLOCKS = (2 + V) / 4` truncates, so a bad `V` would drop
 // the last tips.
 const _: () = assert!((2 + xmss::V).is_multiple_of(4));
@@ -180,44 +177,20 @@ fn sphincs_signer_cells((pk, message): &SphincsSigner) -> [F192; 4] {
     ]
 }
 
-/// The 328-entry tweak table at `epoch`, in the order `verify_sig` indexes it:
-/// encoding, then `V` chains of `CHAIN_LENGTH - 1` steps, then the WOTS-PK
-/// tweak, then one per Merkle level. The Merkle parent index is `epoch >>
-/// (level+1)` in `u64` (a `u32` shift by 32 at the top level would mask, not
-/// zero).
-fn tweak_table(epoch: u32) -> Vec<xmss::Tweak> {
-    use xmss::*;
-    let mut tweaks = vec![make_tweak(TWEAK_TYPE_ENCODING, 0, epoch)];
-    for i in 0..V {
-        for s in 0..CHAIN_LENGTH - 1 {
-            tweaks.push(make_tweak(TWEAK_TYPE_CHAIN, (i * CHAIN_LENGTH + s) as u32, epoch));
-        }
-    }
-    tweaks.push(make_tweak(TWEAK_TYPE_WOTS_PK, 0, epoch));
-    for level in 0..LOG_LIFETIME {
-        let parent_index = ((epoch as u64) >> (level + 1)) as u32;
-        tweaks.push(make_tweak(TWEAK_TYPE_MERKLE, (level + 1) as u32, parent_index));
-    }
-    tweaks
+/// One XMSS tweak as the cell the guest adds into: `xmss::make_tweak`'s own
+/// output, packed. The guest holds no byte layout of its own, building a tweak
+/// as this constant half plus one [`tweak_index_weight`] per set epoch bit, so a
+/// field that moves in `make_tweak` moves both halves together.
+fn tweak_cell(tweak_type: u8, sub_position: u32) -> F192 {
+    pack_16_bytes(&xmss::make_tweak(tweak_type, sub_position, 0))
 }
 
-/// The Merkle direction bits at `epoch`, one 1-cell word per level.
-fn merkle_bit_cells(epoch: u32) -> Vec<F192> {
-    (0..xmss::LOG_LIFETIME)
-        .map(|level| F192::new(((epoch >> level) & 1) as u64, 0, 0))
-        .collect()
-}
-
-/// The epoch's whole contribution to the statement: the tweak table and the
-/// Merkle bits, chained through BLAKE2s exactly as the guest absorbs them, two
-/// cells per compression. Nothing derives a tweak in-circuit; the guest hints
-/// both tables and checks this digest.
-fn epoch_hash(epoch: u32) -> [F192; 2] {
-    let mut cells: Vec<F192> = tweak_table(epoch).iter().map(|tweak| pack_16_bytes(tweak)).collect();
-    cells.extend(merkle_bit_cells(epoch));
-    // The tag gets a block to itself, keeping both tables block-aligned.
-    let pad = std::iter::repeat_n(0u64, 4);
-    tagged_hash(EPOCH_LABEL, pad.chain(cells.iter().flat_map(|c| [c.c0, c.c1])))
+/// What bit `b` of the epoch weighs in a tweak's index field, so an index is its
+/// set bits summed. The one property of the layout this assumes is that the
+/// index field is linear in the index, which a leaf proof at the benchmark epoch
+/// exercises for every bit.
+fn tweak_index_weight(b: usize) -> F192 {
+    pack_16_bytes(&xmss::make_tweak(0, 0, 1 << b))
 }
 
 /// The signer-set digest: both counts, then one compression per key, the XMSS
@@ -316,7 +289,7 @@ impl DeferredClaim {
 /// The statement's fixed header, ahead of the deferred cells. Fed to the guest
 /// as `STMT_HEADER`, so the two cannot drift: both sides derive every offset
 /// below it from this one constant.
-const STATEMENT_HEADER: usize = 10;
+const STATEMENT_HEADER: usize = 9;
 
 /// A 32-byte domain tag: the label, zero-padded. A plain BLAKE2s separates in
 /// the message, not in a custom IV, so any BLAKE2s reproduces the digest.
@@ -348,7 +321,7 @@ fn statement_digest(
     n_sphincs: usize,
     pubkeys_hash: [F192; 2],
     xmss_message: &xmss::Message,
-    epoch_hash: [F192; 2],
+    xmss_epoch: u32,
     defer: &DeferredClaim,
 ) -> [F192; 2] {
     let seed = lean_vm::cpu::fs_seed(unified_guest());
@@ -361,8 +334,7 @@ fn statement_digest(
         pubkeys_hash[1],
         pack_16_bytes(&xmss_message[..16]),
         pack_16_bytes(&xmss_message[16..]),
-        epoch_hash[0],
-        epoch_hash[1],
+        F192::new(xmss_epoch as u64, 0, 0),
     ];
     let mut cells = defer.cells();
     if !cells.len().is_multiple_of(2) {
@@ -501,7 +473,7 @@ impl AggregateSignature {
             self.sphincs_signers.len(),
             pubkeys_hash(&self.xmss_keys, &self.sphincs_signers),
             &self.xmss_message,
-            epoch_hash(self.xmss_epoch),
+            self.xmss_epoch,
             &self.defer,
         )
     }
@@ -1880,13 +1852,9 @@ pub(crate) fn aggregate_tampered(
         "message",
         vec![pack_16_bytes(&xmss_message[..16]), pack_16_bytes(&xmss_message[16..])],
     );
-    // Four cells an entry: one hashed block of the epoch digest.
-    for quad in tweak_table(xmss_epoch).as_chunks::<4>().0 {
-        hints.push("tweaks", quad.iter().map(|tweak| pack_16_bytes(tweak)).collect());
-    }
-    for quad in merkle_bit_cells(xmss_epoch).as_chunks::<4>().0 {
-        hints.push("merkle_bits", quad.to_vec());
-    }
+    // The one epoch every XMSS signature under this node is against. The guest
+    // derives the tweak table and the Merkle direction bits from it.
+    hints.push("epoch", vec![F192::new(xmss_epoch as u64, 0, 0)]);
     // Two keys per entry, so the guest can halve its loop frames; the odd key out
     // of each list rides a final one-key entry. The digest itself is unchanged.
     hints.push("pk_halves", vec![count(n_xmss / 2), count(n_xmss % 2)]);
@@ -1962,7 +1930,7 @@ pub(crate) fn aggregate_tampered(
         n_sphincs,
         pubkeys_hash(&cover.xmss_keys, &cover.sphincs_signers),
         &xmss_message,
-        epoch_hash(xmss_epoch),
+        xmss_epoch,
         &defer,
     );
     let mut program = guest.clone();
@@ -2607,9 +2575,6 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("STMT_PAIRS", pairs.to_string());
     ps("STMT_PAD_CELLS", (4 * blocks - off - 3 * pairs).to_string());
     ps("STMT_BLOCKS", blocks.to_string());
-    let etag = label_tag(EPOCH_LABEL);
-    ps("EPOCH_TAG_0", dsl_u128(pack_16_bytes(&etag[..16])).to_string());
-    ps("EPOCH_TAG_1", dsl_u128(pack_16_bytes(&etag[16..])).to_string());
     let pk_iv = chain_iv(PUBKEYS_LABEL);
     ps("PK_IV_0", dsl_u128(pk_iv[0]).to_string());
     ps("PK_IV_1", dsl_u128(pk_iv[1]).to_string());
@@ -2620,12 +2585,37 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("W", xmss::W.to_string());
     ps("TARGET_SUM", xmss::TARGET_SUM.to_string());
     ps("LOG_LIFETIME", xmss::LOG_LIFETIME.to_string());
+    // Every XMSS tweak the guest builds is one of these constants plus the
+    // epoch's weighed bits, so the byte layout lives in `xmss::make_tweak` and
+    // nowhere else. The chain table is indexed `CHAIN_STEPS * i + s` and the
+    // Merkle one by level, exactly as `verify_sig` walks them.
+    ps(
+        "XM_ENC_TWEAK",
+        dsl_u128(tweak_cell(xmss::TWEAK_TYPE_ENCODING, 0)).to_string(),
+    );
+    ps(
+        "XM_PK_TWEAK",
+        dsl_u128(tweak_cell(xmss::TWEAK_TYPE_WOTS_PK, 0)).to_string(),
+    );
+    let chain_tweaks: Vec<F192> = (0..xmss::V)
+        .flat_map(|i| {
+            (0..xmss::CHAIN_LENGTH - 1)
+                .map(move |s| tweak_cell(xmss::TWEAK_TYPE_CHAIN, (i * xmss::CHAIN_LENGTH + s) as u32))
+        })
+        .collect();
+    ps("XM_CHAIN_TWEAKS", flds(&chain_tweaks));
+    let merkle_tweaks: Vec<F192> = (0..xmss::LOG_LIFETIME)
+        .map(|level| tweak_cell(xmss::TWEAK_TYPE_MERKLE, (level + 1) as u32))
+        .collect();
+    ps("XM_MERKLE_TWEAKS", flds(&merkle_tweaks));
+    let index_weights: Vec<F192> = (0..xmss::LOG_LIFETIME).map(tweak_index_weight).collect();
+    ps("XM_INDEX_WEIGHT", flds(&index_weights));
     ps("MAX_KEYS", MAX_KEYS.to_string());
     ps("MAX_CHILDREN", MAX_CHILDREN.to_string());
 
-    // The SPHINCS instance. Its tweaks are derived in-circuit from the index the
-    // message digest picks, so unlike XMSS's epoch tables nothing about a
-    // SPHINCS position rides the statement, and the guest needs only the shape.
+    // The SPHINCS instance. Its tweaks are derived per signature from the index
+    // the message digest picks, where XMSS's come from one public epoch, so the
+    // guest needs only the shape.
     let dsl_list = |values: &[usize]| {
         let inner: Vec<String> = values.iter().map(usize::to_string).collect();
         format!("[{}]", inner.join(", "))
@@ -3084,8 +3074,13 @@ mod tests {
             ("leaf_defer", &|h: &mut Hints| {
                 h.entries("leaf_defer")[0][0] += F192::ONE;
             }),
-            ("tweaks (an epoch the verifier did not ask for)", &|h: &mut Hints| {
-                h.entries("tweaks")[0][0] += F192::ONE;
+            // A leaf derives its tweak table from this, so a wrong epoch is
+            // caught by the signatures long before the statement digest.
+            ("epoch (another epoch's tweak table)", &|h: &mut Hints| {
+                h.entries("epoch")[0][0] += F192::ONE;
+            }),
+            ("epoch (wider than the u32 the verifier holds)", &|h: &mut Hints| {
+                h.entries("epoch")[0][0] += F192::new(0, 1, 0);
             }),
         ];
         for (description, tamper) in leaf_cases {
@@ -3194,6 +3189,12 @@ mod tests {
             // the real A_0/B_0.
             ("matpart", &|h: &mut Hints| {
                 h.entries("matpart")[0][0] += F192::ONE;
+            }),
+            // A node holding no raw XMSS signature builds no tweak table, so
+            // the statement digest is all that pins the epoch. It is the child
+            // statements, rebuilt from the same cell, that reject first.
+            ("epoch (a node that derives nothing from it)", &|h: &mut Hints| {
+                h.entries("epoch")[0][0] += F192::ONE;
             }),
         ];
         for (description, tamper) in node_cases {

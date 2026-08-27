@@ -3,7 +3,6 @@
 
 A node proves it verified $n_{\mathrm{rec}}$ sub-proofs together with raw XMSS and SPHINCS signatures, and publishes the sorted deduplicated union of their signer sets as one list per scheme. The XMSS signers share a message and an epoch; a SPHINCS signer carries its own, so that list holds $(\text{key},\text{message})$ pairs, a key once per message it signed. The sub-proofs are proofs of the same bytecode, so recursion is self-reference: only the bytecode's \emph{size} needs a fixed point, its digest riding the public statement instead of the code. A parent rebuilds each child's statement, pinning it to the same bytecode, message and epoch, and writes one write-once cell per declared signer, holding a running count that is totalled at the end: every declared signer is therefore backed by a signature or by a verified child, and a key a child repeats takes a duplicate slot past its own scheme's declared keys, which merges overlapping committees to their union.
 
-XMSS's depend only on the public epoch, so its tweak table and Merkle decomposition bits are hinted once per proof and bound by a digest in the statement; SPHINCS's depend on the index its message digest picks, which is neither public nor shared between signers, so every tweak and Merkle bits has to be reconstructed.
 
 \subsection{Deferred evaluation claims}\label{sec:deferred-claims}
 

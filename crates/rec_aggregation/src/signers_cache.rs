@@ -23,9 +23,9 @@ type CachedSignature = (XmssPublicKey, XmssSignature);
 const SCHEMA_VERSION: u32 = 2;
 
 /// The epoch every cached XMSS signature was made at. SPHINCS has none.
-pub const XMSS_EPOCH: u32 = 7;
-const KEY_START: u32 = 0;
-const KEY_END: u32 = 15;
+pub const XMSS_EPOCH: u32 = 3_000_000_007;
+const KEY_START: u32 = 3_000_000_000;
+const KEY_END: u32 = 3_000_000_015;
 
 pub fn message() -> Message {
     std::array::from_fn(|i| (i * 5 + 1) as u8)

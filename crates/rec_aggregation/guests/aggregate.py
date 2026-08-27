@@ -234,10 +234,6 @@ STMT_ODD = STMT_ODD_PLACEHOLDER
 STMT_PAIRS = STMT_PAIRS_PLACEHOLDER
 STMT_PAD_CELLS = STMT_PAD_CELLS_PLACEHOLDER
 STMT_BLOCKS = STMT_BLOCKS_PLACEHOLDER
-# The epoch digest: a plain BLAKE2s of its tag, the tweak table and the Merkle
-# bits, streamed four cells to a 64-byte block.
-EPOCH_TAG_0 = EPOCH_TAG_0_PLACEHOLDER
-EPOCH_TAG_1 = EPOCH_TAG_1_PLACEHOLDER
 # The signer set cannot stream: its length is runtime and the counter is a
 # bytecode immediate, so it stays a chain of complete hashes under its own IV.
 PK_IV_0 = PK_IV_0_PLACEHOLDER
@@ -283,16 +279,22 @@ WORDS_PER_VALUE = 1
 WORDS_PER_BLOCK = 2
 
 # Tweak table (one 1-cell tweak per index): encoding | V·CHAIN_STEPS chain |
-# wots-pk | merkle. Bound by EPOCH_HASH, which the outer verifier recomputes
-# from the epoch.
+# wots-pk | merkle. Derived in-circuit from the epoch the statement carries.
 N_TWEAKS = 1 + V * CHAIN_STEPS + 1 + LOG_LIFETIME
 N_TWEAK_CELLS = WORDS_PER_VALUE * N_TWEAKS
-N_TWEAK_BLOCKS = N_TWEAKS / 4                # four tweaks per hashed 64-byte block
 WOTS_PK_TWEAK_IDX = 1 + V * CHAIN_STEPS      # tweak index of the wots-pk tweak
 MERKLE_TWEAK_IDX = WOTS_PK_TWEAK_IDX + 1     # tweak index of merkle level 0
 
 MERKLE_BIT_CELLS = WORDS_PER_VALUE * LOG_LIFETIME  # one 1-cell bit word per level
-MERKLE_BIT_BLOCKS = LOG_LIFETIME / 4
+
+# Every tweak, minus its index field, as the host read it out of the native
+# `make_tweak`: the guest holds no byte layout of its own. XM_INDEX_WEIGHT[b] is
+# what bit b of an index weighs, so an index is its set bits summed.
+XM_ENC_TWEAK = XM_ENC_TWEAK_PLACEHOLDER
+XM_PK_TWEAK = XM_PK_TWEAK_PLACEHOLDER
+XM_CHAIN_TWEAKS = XM_CHAIN_TWEAKS_PLACEHOLDER   # indexed CHAIN_STEPS·i + s
+XM_MERKLE_TWEAKS = XM_MERKLE_TWEAKS_PLACEHOLDER  # indexed by level
+XM_INDEX_WEIGHT = XM_INDEX_WEIGHT_PLACEHOLDER
 
 # Digits packed per digest lane: W bits each in GF(2^64)'s monomial budget
 # (the lane's leftover top bits are ground to zero by the signer).
@@ -2294,6 +2296,43 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
 #     MERKLE_TWEAK_IDX + l     : merkle tweak, level l < LOG_LIFETIME
 
 
+def fill_xmss_epoch_tables(epoch, merkle_bits, tweak_table):
+    # The tweak table and the Merkle direction bits at `epoch`, shared by every
+    # XMSS signature this node verifies. A tweak's index field is the epoch for
+    # the encoding, chain and wots-pk tweaks and the parent index `epoch >> l` at
+    # Merkle level l - 1, and the direction bit at that level IS bit l - 1 of the
+    # epoch, so one bit decomposition gives all three. Booleanity is a write-once
+    # pin and the reconstruction ties the bits back to the epoch, which also
+    # bounds it to LOG_LIFETIME bits. SPHINCS shares none of this, deriving every
+    # tweak of its own from the index its digest picks, which is neither public
+    # nor shared between signers.
+    hint_decompose_bits(merkle_bits, epoch, LOG_LIFETIME)
+    bits = StackBuf(LOG_LIFETIME)
+    reconstructed = 0
+    index = 0
+    for b in unroll(0, LOG_LIFETIME):
+        bit = merkle_bits[GEN ** b]
+        merkle_bits[GEN ** b] = bit * bit
+        bits[b] = bit
+        reconstructed = reconstructed + bit * COORD_BASIS[b]
+        index = index + bit * XM_INDEX_WEIGHT[b]
+    assert reconstructed == epoch
+    tweak_table[1] = index + XM_ENC_TWEAK
+    for i in unroll(0, V):
+        for s in unroll(0, CHAIN_STEPS):
+            tweak_table[GEN ** (1 + CHAIN_STEPS * i + s)] = index + XM_CHAIN_TWEAKS[CHAIN_STEPS * i + s]
+    tweak_table[GEN ** WOTS_PK_TWEAK_IDX] = index + XM_PK_TWEAK
+    # Merkle level l - 1 hashes the parent at index `epoch >> l`, which is the
+    # epoch's bits from l up, each weighed l places down. The top level gets the
+    # empty sum, the root's index being zero.
+    for l in unroll(1, LOG_LIFETIME + 1):
+        parent = 0
+        for b in unroll(l, LOG_LIFETIME):
+            parent = parent + bits[b] * XM_INDEX_WEIGHT[b - l]
+        tweak_table[GEN ** (MERKLE_TWEAK_IDX + l - 1)] = parent + XM_MERKLE_TWEAKS[l - 1]
+    return
+
+
 def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     pp = pk_ptr[GEN]
 
@@ -2375,16 +2414,16 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
         leaf = next_leaf
 
     # Merkle path from the leaf to the root: the epoch bit orders the two
-    # children at each level; the tweak comes from the bound table.
+    # children at each level, and the tweak carries that level's parent index.
     node = leaf[0]
     for l in unroll(0, LOG_LIFETIME):
         bit = merkle_bits[GEN ** (WORDS_PER_VALUE * l)]
         sibling = StackBuf(1)
         hint_witness(sibling, "siblings")
-        # Branchless child ordering: bit ∈ {0,1} (bound by EPOCH_HASH), so the
-        # swap is a select, not a branch. m = bit·(node⊕sibling) is 0 when
-        # bit=0 and node⊕sibling when bit=1, so children[0] = node⊕m is node
-        # for bit=0 and sibling for bit=1 (and children[1] the complement).
+        # Branchless child ordering: bit ∈ {0,1} (pinned at its decomposition),
+        # so the swap is a select, not a branch. m = bit·(node⊕sibling) is 0
+        # when bit=0 and node⊕sibling when bit=1, so children[0] = node⊕m is
+        # node for bit=0 and sibling for bit=1 (children[1] the complement).
         diff = node + sibling[0]
         m = bit * diff
         children = StackBuf(WORDS_PER_BLOCK)
@@ -2662,7 +2701,7 @@ def verify_sig_sphincs(signer):
     return
 
 
-def statement_digest(seed_0, seed_1, n_xmss_g, n_sphincs_g, pk_hash, msg, epoch_digest, defer):
+def statement_digest(seed_0, seed_1, n_xmss_g, n_sphincs_g, pk_hash, msg, epoch, defer):
     # A node's statement, hashed to the two words the VM publishes: the proving
     # environment, the two signer counts, the signer-set digest, the shared
     # (message, epoch), and the deferred claims. A parent rebuilds a child's with
@@ -2678,7 +2717,7 @@ def statement_digest(seed_0, seed_1, n_xmss_g, n_sphincs_g, pk_hash, msg, epoch_
     cells = StackBuf(4 * STMT_BLOCKS)
     cells[0] = STMT_TAG_0
     cells[1] = STMT_TAG_1
-    hdr = [seed_0, seed_1, n_xmss_g, n_sphincs_g, pk_hash[1], pk_hash[GEN], msg[1], msg[GEN], epoch_digest[1], epoch_digest[GEN]]
+    hdr = [seed_0, seed_1, n_xmss_g, n_sphincs_g, pk_hash[1], pk_hash[GEN], msg[1], msg[GEN], epoch]
     for i in unroll(0, STMT_HEADER):
         cells[2 + i] = hdr[i]
     dfr = StackBuf(DEFER_STMT_CELLS + STMT_ODD)
@@ -2883,44 +2922,18 @@ def main():
     xmss_msg[1] = msg_hint[0]
     xmss_msg[GEN] = msg_hint[1]
 
-    # ---- the epoch, as the tweak table and the Merkle direction bits ----
-    # Both are hinted and bound by one digest in the statement; the outer
-    # verifier rebuilds them from the epoch and rehashes. Nothing derives a
-    # tweak in-circuit. They serve the XMSS signatures only: SPHINCS derives
-    # every tweak of its own from the index its digest picks, which is not
-    # public and differs per signer.
-    # A plain BLAKE2s, four cells a block, where a re-injected state left room
-    # for two. Each block is hashed out of the frame it was hinted into: a
-    # blake2s operand is addressed off `fp`, so a heap one would cost a DEREF
-    # per cell to read back.
-    tag = StackBuf(4)
-    tag[0] = EPOCH_TAG_0
-    tag[1] = EPOCH_TAG_1
-    tag[2] = 0
-    tag[3] = 0
-    epoch_state = StackBuf(WORDS_PER_BLOCK)
-    blake2s(tag[0:2], tag[2:4], epoch_state, counter=64, final=0)
-    tweak_table = HeapBuf(N_TWEAK_CELLS)
-    for t in unroll(0, N_TWEAK_BLOCKS):
-        blk = StackBuf(4)
-        hint_witness(blk, "tweaks")
-        for i in unroll(0, 4):
-            tweak_table[GEN ** (4 * t + i)] = blk[i]
-        next_state = StackBuf(WORDS_PER_BLOCK)
-        blake2s(blk[0:2], blk[2:4], next_state, cv=epoch_state, counter=64 * (t + 2), final=0)
-        epoch_state = next_state
+    # ---- the epoch, and the XMSS tables derived from it ----
+    # Nothing here bounds the epoch's width: the statement digest below does,
+    # against the u32 the outer verifier holds, and any descendant that verifies
+    # a raw signature bounds it again. Only a node holding raw XMSS signatures
+    # needs the tables, and they cost the same for one signature or a thousand.
+    epoch_hint = StackBuf(1)
+    hint_witness(epoch_hint, "epoch")
+    epoch = epoch_hint[0]
     merkle_bits = HeapBuf(MERKLE_BIT_CELLS)
-    for u in unroll(0, MERKLE_BIT_BLOCKS):
-        blk = StackBuf(4)
-        hint_witness(blk, "merkle_bits")
-        for i in unroll(0, 4):
-            merkle_bits[GEN ** (4 * u + i)] = blk[i]
-        next_state = StackBuf(WORDS_PER_BLOCK)
-        blake2s(blk[0:2], blk[2:4], next_state, cv=epoch_state, counter=64 * (N_TWEAK_BLOCKS + u + 2), final=(u + 1) // MERKLE_BIT_BLOCKS)
-        epoch_state = next_state
-    xmss_epoch = HeapBuf(WORDS_PER_BLOCK)
-    xmss_epoch[1] = epoch_state[0]
-    xmss_epoch[GEN] = epoch_state[1]
+    tweak_table = HeapBuf(N_TWEAK_CELLS)
+    if n_raw_x_g != 1:
+        fill_xmss_epoch_tables(epoch, merkle_bits, tweak_table)
 
     # ---- the signer set ----
     # One table per scheme, each the declared list (strictly sorted, checked by
@@ -3031,7 +3044,7 @@ def main():
         sub_hash[GEN] = sub_hash_1
         xd = xc ** DEFER_STMT_CELLS
         hint_witness(child_carried[xd:xd + DEFER_STMT_CELLS], "child_defer")
-        pi_0, pi_1 = statement_digest(seed_0, seed_1, nsub_x_g, nsub_s_g, sub_hash, xmss_msg, xmss_epoch, child_carried * xd)
+        pi_0, pi_1 = statement_digest(seed_0, seed_1, nsub_x_g, nsub_s_g, sub_hash, xmss_msg, epoch, child_carried * xd)
         x2 = xc * xc
         child_pi[x2] = pi_0
         child_pi[x2 * GEN] = pi_1
@@ -3058,7 +3071,7 @@ def main():
     else:
         aggregate_claims(n_children_g, child_pi, child_fresh, child_carried, defer_stmt)
 
-    own_0, own_1 = statement_digest(seed_0, seed_1, n_xmss_g, n_sphincs_g, pk_hash, xmss_msg, xmss_epoch, defer_stmt)
+    own_0, own_1 = statement_digest(seed_0, seed_1, n_xmss_g, n_sphincs_g, pk_hash, xmss_msg, epoch, defer_stmt)
     pub_ptr = GEN ** 0
     own_pi_0 = pub_ptr[1]
     own_pi_1 = pub_ptr[GEN]
