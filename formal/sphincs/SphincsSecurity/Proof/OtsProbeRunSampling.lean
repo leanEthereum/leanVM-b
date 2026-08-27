@@ -610,6 +610,35 @@ theorem StartTableAgrees.materialize_position
   apply hagrees index cached
   simpa [LazyRevealProbe.State.materialize, OtsSecretIndex.coordinate] using hvalue
 
+theorem StartTableAgrees.complete_start
+    {state : LazyRevealProbe.State Coordinate}
+    {table : OtsSecretIndex → HashOutput} (hagrees : StartTableAgrees state table)
+    (index : OtsSecretIndex) :
+    StartTableAgrees (state.complete index.coordinate (table index)) table := by
+  intro other output hvalue
+  by_cases heq : other = index
+  · subst other
+    simpa [LazyRevealProbe.State.complete] using hvalue.symm
+  · have hcoordinate : other.coordinate ≠ index.coordinate :=
+      fun h => heq (OtsSecretIndex.coordinate_injective h)
+    apply hagrees other output
+    simpa [LazyRevealProbe.State.complete, hcoordinate] using hvalue
+
+theorem StartTableAgrees.complete_position
+    {state : LazyRevealProbe.State Coordinate}
+    {table : OtsSecretIndex → HashOutput} (hagrees : StartTableAgrees state table)
+    (position : Position) (output : HashOutput) :
+    StartTableAgrees (state.complete (.position position) output) table := by
+  intro index cached hvalue
+  apply hagrees index cached
+  simpa [LazyRevealProbe.State.complete, OtsSecretIndex.coordinate] using hvalue
+
+theorem StartTableAgrees.clearPending
+    {state : LazyRevealProbe.State Coordinate}
+    {table : OtsSecretIndex → HashOutput} (hagrees : StartTableAgrees state table)
+    (coordinate : Coordinate) : StartTableAgrees (state.clearPending coordinate) table := by
+  exact hagrees
+
 theorem startTableAgrees_of_mem_runCleanFromTable
     (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
     (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
@@ -836,6 +865,89 @@ noncomputable def finishCleanRunFromTable :
       | none => pure none
       | some (finalState, finalTable) =>
           pure (some ⟨finalState, result.remaining, result.value, finalTable⟩)
+
+theorem startTableAgrees_of_mem_finalizeCleanFromTable
+    (coordinates : List Coordinate) (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput) (hagrees : StartTableAgrees state table)
+    (finalState : LazyRevealProbe.State Coordinate)
+    (finalTable : OtsSecretIndex → HashOutput)
+    (hresult : some (finalState, finalTable) ∈ support
+      (finalizeCleanFromTable coordinates state table)) :
+    finalTable = table ∧ StartTableAgrees finalState table := by
+  induction coordinates generalizing state with
+  | nil =>
+      simp [finalizeCleanFromTable] at hresult
+      obtain ⟨rfl, rfl⟩ := hresult
+      exact ⟨rfl, hagrees⟩
+  | cons coordinate remaining ih =>
+      cases hvalue : state.values coordinate with
+      | some output =>
+          rw [finalizeCleanFromTable.eq_def] at hresult
+          simp only at hresult
+          rw [hvalue] at hresult
+          exact ih (state.clearPending coordinate) (hagrees.clearPending coordinate) hresult
+      | none =>
+          rw [finalizeCleanFromTable.eq_def] at hresult
+          simp only at hresult
+          rw [hvalue] at hresult
+          cases coordinate with
+          | chainStart lay tree leafIdx chainIdx =>
+              let index : OtsSecretIndex := ⟨lay, tree, leafIdx, chainIdx⟩
+              simp only at hresult
+              by_cases hhit : state.hitAt (.chainStart lay tree leafIdx chainIdx)
+                  (table ⟨lay, tree, leafIdx, chainIdx⟩)
+              · rw [if_pos hhit] at hresult
+                simp at hresult
+              · rw [if_neg hhit] at hresult
+                exact ih
+                  (state.complete (.chainStart lay tree leafIdx chainIdx) (table index))
+                  (by simpa [index, OtsSecretIndex.coordinate] using
+                    hagrees.complete_start index)
+                  (by simpa [index] using hresult)
+          | position position =>
+              rw [mem_support_bind_iff] at hresult
+              obtain ⟨output, _houtput, hrest⟩ := hresult
+              by_cases hhit : state.hitAt (.position position) output
+              · simp [hhit] at hrest
+              · exact ih (state.complete (.position position) output)
+                  (hagrees.complete_position position output) (by simpa [hhit] using hrest)
+
+theorem startTableAgrees_of_mem_finishCleanRunFromTable
+    (result finalResult : CleanRunResult alpha)
+    (hagrees : StartTableAgrees result.state result.table)
+    (hresult : some finalResult ∈ support
+      (finishCleanRunFromTable (some result))) :
+    finalResult.table = result.table ∧ StartTableAgrees finalResult.state result.table := by
+  unfold finishCleanRunFromTable at hresult
+  rw [mem_support_bind_iff] at hresult
+  obtain ⟨finalized, hfinalized, hreturn⟩ := hresult
+  cases finalized with
+  | none => simp at hreturn
+  | some value =>
+      rcases value with ⟨finalState, finalTable⟩
+      simp only [support_pure, Set.mem_singleton_iff, Option.some.injEq] at hreturn
+      obtain ⟨rfl, rfl, rfl, rfl⟩ := hreturn
+      exact startTableAgrees_of_mem_finalizeCleanFromTable result.state.coordinates.toList
+        result.state result.table hagrees finalState finalTable hfinalized
+
+theorem startTableAgrees_of_mem_runThenFinalizeCleanFromTable
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (hagrees : StartTableAgrees state table)
+    (finalResult : CleanRunResult alpha)
+    (hresult : some finalResult ∈ support (do
+      let result ← runCleanFromTable state fuel table computation
+      finishCleanRunFromTable result)) :
+    finalResult.table = table ∧ StartTableAgrees finalResult.state table := by
+  rw [mem_support_bind_iff] at hresult
+  obtain ⟨result, hrun, hfinish⟩ := hresult
+  cases result with
+  | none => simp [finishCleanRunFromTable] at hfinish
+  | some runResult =>
+      obtain ⟨rfl, hrunAgrees⟩ := startTableAgrees_of_mem_runCleanFromTable
+        computation state fuel table hagrees runResult hrun
+      exact startTableAgrees_of_mem_finishCleanRunFromTable runResult finalResult
+        hrunAgrees hfinish
 
 noncomputable def detailedExperimentCleanWithCompletionTable
     (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
