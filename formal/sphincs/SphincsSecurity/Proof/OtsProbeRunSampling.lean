@@ -2084,6 +2084,267 @@ theorem relTriple_finalizeCleanFromTable_position_cachedQuery_bind
   rw [QueryImpl.withCaching_run_some uniformSampleImpl hcache]
   simpa using hnext
 
+def StructuralScheduleWP (computation : OracleComp HashSpec alpha)
+    (post : alpha → List Coordinate → LazyRevealProbe.State Coordinate →
+      QueryCache HashSpec → Prop)
+    (coordinates : List Coordinate) (state : LazyRevealProbe.State Coordinate)
+    (cache : QueryCache HashSpec) : Prop :=
+  OracleComp.construct
+    (C := fun _ : OracleComp HashSpec alpha =>
+      List Coordinate → LazyRevealProbe.State Coordinate → QueryCache HashSpec → Prop)
+    post
+    (fun input _next recursivelyScheduled coordinates state cache =>
+      ∃ position : Position,
+        (Coordinate.position position ∈ coordinates ∧
+          state.values (.position position) = none ∧
+          cache input = none ∧
+          ∀ output, ¬state.hitAt (.position position) output →
+            recursivelyScheduled output
+              (coordinates.erase (.position position))
+              (state.complete (.position position) output)
+              (cache.cacheQuery input output)) ∨
+        (∃ output : HashOutput,
+          Coordinate.position position ∈ coordinates ∧
+          state.values (.position position) = some output ∧
+          cache input = some output ∧
+          recursivelyScheduled output
+            (coordinates.erase (.position position))
+            (state.clearPending (.position position)) cache))
+    computation coordinates state cache
+
+abbrev StructuralSchedule (computation : OracleComp HashSpec alpha)
+    (coordinates : List Coordinate) (state : LazyRevealProbe.State Coordinate)
+    (cache : QueryCache HashSpec) : Prop :=
+  StructuralScheduleWP computation (fun _ _ _ _ => True) coordinates state cache
+
+@[simp] theorem structuralScheduleWP_pure
+    (value : alpha)
+    (post : alpha → List Coordinate → LazyRevealProbe.State Coordinate →
+      QueryCache HashSpec → Prop)
+    (coordinates : List Coordinate) (state : LazyRevealProbe.State Coordinate)
+    (cache : QueryCache HashSpec) :
+    StructuralScheduleWP (pure value) post coordinates state cache =
+      post value coordinates state cache := by
+  rfl
+
+theorem structuralScheduleWP_query_bind_iff
+    (input : HashInput) (next : HashOutput → OracleComp HashSpec alpha)
+    (post : alpha → List Coordinate → LazyRevealProbe.State Coordinate →
+      QueryCache HashSpec → Prop)
+    (coordinates : List Coordinate) (state : LazyRevealProbe.State Coordinate)
+    (cache : QueryCache HashSpec) :
+    StructuralScheduleWP
+        ((liftM (HashSpec.query input) : OracleComp HashSpec HashOutput) >>= next)
+        post coordinates state cache ↔
+      ∃ position : Position,
+        (Coordinate.position position ∈ coordinates ∧
+          state.values (.position position) = none ∧
+          cache input = none ∧
+          ∀ output, ¬state.hitAt (.position position) output →
+            StructuralScheduleWP (next output) post
+              (coordinates.erase (.position position))
+              (state.complete (.position position) output)
+              (cache.cacheQuery input output)) ∨
+        (∃ output : HashOutput,
+          Coordinate.position position ∈ coordinates ∧
+          state.values (.position position) = some output ∧
+          cache input = some output ∧
+          StructuralScheduleWP (next output) post
+            (coordinates.erase (.position position))
+            (state.clearPending (.position position)) cache) := by
+  rfl
+
+theorem structuralScheduleWP_query_bind_fresh
+    (input : HashInput) (next : HashOutput → OracleComp HashSpec alpha)
+    (post : alpha → List Coordinate → LazyRevealProbe.State Coordinate →
+      QueryCache HashSpec → Prop)
+    (position : Position) (coordinates : List Coordinate)
+    (state : LazyRevealProbe.State Coordinate) (cache : QueryCache HashSpec)
+    (hmem : Coordinate.position position ∈ coordinates)
+    (hmissing : state.values (.position position) = none)
+    (hcache : cache input = none)
+    (htail : ∀ output, ¬state.hitAt (.position position) output →
+      StructuralScheduleWP (next output) post
+        (coordinates.erase (.position position))
+        (state.complete (.position position) output)
+        (cache.cacheQuery input output)) :
+    StructuralScheduleWP
+      ((liftM (HashSpec.query input) : OracleComp HashSpec HashOutput) >>= next)
+      post coordinates state cache := by
+  exact (structuralScheduleWP_query_bind_iff input next post coordinates state cache).2
+    ⟨position, Or.inl ⟨hmem, hmissing, hcache, htail⟩⟩
+
+theorem structuralScheduleWP_query_bind_cached
+    (input : HashInput) (next : HashOutput → OracleComp HashSpec alpha)
+    (post : alpha → List Coordinate → LazyRevealProbe.State Coordinate →
+      QueryCache HashSpec → Prop)
+    (position : Position) (coordinates : List Coordinate)
+    (state : LazyRevealProbe.State Coordinate) (cache : QueryCache HashSpec)
+    (output : HashOutput)
+    (hmem : Coordinate.position position ∈ coordinates)
+    (hvalue : state.values (.position position) = some output)
+    (hcache : cache input = some output)
+    (htail : StructuralScheduleWP (next output) post
+      (coordinates.erase (.position position))
+      (state.clearPending (.position position)) cache) :
+    StructuralScheduleWP
+      ((liftM (HashSpec.query input) : OracleComp HashSpec HashOutput) >>= next)
+      post coordinates state cache := by
+  exact (structuralScheduleWP_query_bind_iff input next post coordinates state cache).2
+    ⟨position, Or.inr ⟨output, hmem, hvalue, hcache, htail⟩⟩
+
+theorem structuralScheduleWP_tweakableHash_fresh
+    (parameter : PublicParameter) (domain : HashDomain) (payload : HashInput)
+    (post : Digest → List Coordinate → LazyRevealProbe.State Coordinate →
+      QueryCache HashSpec → Prop)
+    (position : Position) (coordinates : List Coordinate)
+    (state : LazyRevealProbe.State Coordinate) (cache : QueryCache HashSpec)
+    (hmem : Coordinate.position position ∈ coordinates)
+    (hmissing : state.values (.position position) = none)
+    (hcache : cache (tweakableHashInput parameter domain payload) = none)
+    (htail : ∀ output, ¬state.hitAt (.position position) output →
+      post (truncateHash output) (coordinates.erase (.position position))
+        (state.complete (.position position) output)
+        (cache.cacheQuery (tweakableHashInput parameter domain payload) output)) :
+    StructuralScheduleWP (tweakableHash parameter domain payload) post
+      coordinates state cache := by
+  unfold tweakableHash oracleHash
+  apply structuralScheduleWP_query_bind_fresh _ _ post position coordinates state cache
+    hmem hmissing hcache
+  intro output hhit
+  simpa using htail output hhit
+
+theorem structuralScheduleWP_tweakableHash_cached
+    (parameter : PublicParameter) (domain : HashDomain) (payload : HashInput)
+    (post : Digest → List Coordinate → LazyRevealProbe.State Coordinate →
+      QueryCache HashSpec → Prop)
+    (position : Position) (coordinates : List Coordinate)
+    (state : LazyRevealProbe.State Coordinate) (cache : QueryCache HashSpec)
+    (output : HashOutput)
+    (hmem : Coordinate.position position ∈ coordinates)
+    (hvalue : state.values (.position position) = some output)
+    (hcache : cache (tweakableHashInput parameter domain payload) = some output)
+    (htail : post (truncateHash output) (coordinates.erase (.position position))
+      (state.clearPending (.position position)) cache) :
+    StructuralScheduleWP (tweakableHash parameter domain payload) post
+      coordinates state cache := by
+  unfold tweakableHash oracleHash
+  apply structuralScheduleWP_query_bind_cached _ _ post position coordinates state cache
+    output hmem hvalue hcache
+  simpa using htail
+
+theorem structuralScheduleWP_bind
+    (left : OracleComp HashSpec alpha) (next : alpha → OracleComp HashSpec beta)
+    (post : beta → List Coordinate → LazyRevealProbe.State Coordinate →
+      QueryCache HashSpec → Prop)
+    (coordinates : List Coordinate) (state : LazyRevealProbe.State Coordinate)
+    (cache : QueryCache HashSpec) :
+    StructuralScheduleWP (left >>= next) post coordinates state cache ↔
+      StructuralScheduleWP left
+        (fun value => StructuralScheduleWP (next value) post)
+        coordinates state cache := by
+  induction left using OracleComp.inductionOn generalizing coordinates state cache with
+  | pure value => rfl
+  | query_bind input continuation ih =>
+      simp only [StructuralScheduleWP, OracleComp.construct_query_bind]
+      constructor <;> intro hschedule
+      · obtain ⟨position, hfresh | hcached⟩ := hschedule
+        · refine ⟨position, Or.inl ⟨hfresh.1, hfresh.2.1, hfresh.2.2.1, ?_⟩⟩
+          intro output hhit
+          exact (ih output _ _ _).mp (hfresh.2.2.2 output hhit)
+        · obtain ⟨output, hmem, hvalue, hcache, htail⟩ := hcached
+          exact ⟨position, Or.inr ⟨output, hmem, hvalue, hcache,
+            (ih output _ _ _).mp htail⟩⟩
+      · obtain ⟨position, hfresh | hcached⟩ := hschedule
+        · refine ⟨position, Or.inl ⟨hfresh.1, hfresh.2.1, hfresh.2.2.1, ?_⟩⟩
+          intro output hhit
+          exact (ih output _ _ _).mpr (hfresh.2.2.2 output hhit)
+        · obtain ⟨output, hmem, hvalue, hcache, htail⟩ := hcached
+          exact ⟨position, Or.inr ⟨output, hmem, hvalue, hcache,
+            (ih output _ _ _).mpr htail⟩⟩
+
+theorem relTriple_finalizeCleanFromTable_simulateQ_of_structuralScheduleWP
+    (computation : OracleComp HashSpec alpha)
+    (post : alpha → List Coordinate → LazyRevealProbe.State Coordinate →
+      QueryCache HashSpec → Prop)
+    (table : OtsSecretIndex → HashOutput)
+    (leftNext : Option
+      (LazyRevealProbe.State Coordinate × (OtsSecretIndex → HashOutput)) → ProbComp gamma)
+    (rightNext : alpha × QueryCache HashSpec → ProbComp beta)
+    (relation : gamma → beta → Prop)
+    (hstopped : ∀ right : ProbComp beta,
+      RelTriple (leftNext none) right relation)
+    (hdone : ∀ value coordinates state cache,
+      post value coordinates state cache →
+      RelTriple
+        (finalizeCleanFromTable coordinates state table >>= leftNext)
+        (rightNext (value, cache)) relation) :
+    ∀ coordinates state cache,
+      StructuralScheduleWP computation post coordinates state cache →
+      RelTriple
+        (finalizeCleanFromTable coordinates state table >>= leftNext)
+        (((simulateQ (randomOracle : QueryImpl HashSpec _) computation).run cache) >>=
+          rightNext)
+        relation := by
+  induction computation using OracleComp.inductionOn with
+  | pure value =>
+      intro coordinates state cache hschedule
+      simpa [StructuralScheduleWP] using hdone value coordinates state cache hschedule
+  | query_bind input next ih =>
+      intro coordinates state cache hschedule
+      simp only [StructuralScheduleWP, OracleComp.construct_query_bind] at hschedule
+      obtain ⟨position, hfresh | hcached⟩ := hschedule
+      · rcases hfresh with ⟨hmem, hmissing, hcache, htail⟩
+        rw [simulateQ_query_bind, StateT.run_bind, bind_assoc]
+        apply relTriple_finalizeCleanFromTable_position_freshQuery_bind position coordinates
+          state table input cache leftNext
+          (fun result =>
+            ((simulateQ (randomOracle : QueryImpl HashSpec _) (next result.1)).run result.2) >>=
+              rightNext)
+          relation hmem hmissing hcache
+        intro output
+        by_cases hhit : state.hitAt (.position position) output
+        · simp only [hhit, ↓reduceIte, pure_bind]
+          exact hstopped _
+        · simp only [hhit, ↓reduceIte]
+          exact ih output (coordinates.erase (.position position))
+            (state.complete (.position position) output)
+            (cache.cacheQuery input output) (htail output hhit)
+      · obtain ⟨output, hmem, hvalue, hcache, htail⟩ := hcached
+        rw [simulateQ_query_bind, StateT.run_bind, bind_assoc]
+        apply relTriple_finalizeCleanFromTable_position_cachedQuery_bind position coordinates
+          state table input cache output leftNext
+          (fun result =>
+            ((simulateQ (randomOracle : QueryImpl HashSpec _) (next result.1)).run result.2) >>=
+              rightNext)
+          relation hmem hvalue hcache
+        exact ih output (coordinates.erase (.position position))
+          (state.clearPending (.position position)) cache htail
+
+theorem relTriple_finalizeCleanFromTable_simulateQ_of_structuralSchedule
+    (computation : OracleComp HashSpec alpha)
+    (table : OtsSecretIndex → HashOutput)
+    (leftNext : Option
+      (LazyRevealProbe.State Coordinate × (OtsSecretIndex → HashOutput)) → ProbComp gamma)
+    (rightNext : alpha × QueryCache HashSpec → ProbComp beta)
+    (relation : gamma → beta → Prop)
+    (hstopped : ∀ right : ProbComp beta,
+      RelTriple (leftNext none) right relation)
+    (hdone : ∀ value coordinates state cache,
+      RelTriple
+        (finalizeCleanFromTable coordinates state table >>= leftNext)
+        (rightNext (value, cache)) relation) :
+    ∀ coordinates state cache,
+      StructuralSchedule computation coordinates state cache →
+      RelTriple
+        (finalizeCleanFromTable coordinates state table >>= leftNext)
+        (((simulateQ (randomOracle : QueryImpl HashSpec _) computation).run cache) >>=
+          rightNext)
+        relation := by
+  exact relTriple_finalizeCleanFromTable_simulateQ_of_structuralScheduleWP computation
+    (fun _ _ _ _ => True) table leftNext rightNext relation hstopped
+    (fun value coordinates state cache _ => hdone value coordinates state cache)
+
 noncomputable def detailedExperimentCleanWithCompletionTable
     (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
     (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha) :
