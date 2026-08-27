@@ -755,14 +755,39 @@ theorem preservesHidden_probeFirstMissingInputCoordinate (input : HashInput) :
         | none => preservesHidden_probe ⟨coordinate, slotDigest slot input⟩
         | some _ => preservesHidden_probeFirstMissingInputCoordinate input (slot + 1) remaining
 
+theorem preservesHidden_prepareLeafInputProbe
+    (input : HashInput) (candidate : Probe)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) :
+    PreservesHidden (prepareLeafInputProbe input candidate lay tree leafIdx) := by
+  unfold prepareLeafInputProbe
+  apply (preservesHidden_peekCoordinate candidate.coordinate).bind
+  intro value
+  cases value with
+  | none =>
+      simp only
+      exact preservesHidden_probe candidate
+  | some output =>
+      simp only
+      exact preservesHidden_probeFirstMissingInputCoordinate input 0
+        ((Position.leaf lay tree leafIdx).children.map Coordinate.position)
+
 theorem preservesHidden_probingHashQuery (parameter : PublicParameter)
     (input : HashInput) :
     PreservesHidden (probingHashQuery parameter input) := by
   unfold probingHashQuery
   cases decodeProbe? parameter input with
   | some candidate =>
-      exact (preservesHidden_probe candidate).bind fun _ =>
-        preservesHidden_resolveKnownInput parameter candidate.outputCoordinate input
+      cases decodePosition? parameter input with
+      | some position =>
+          cases position with
+          | leaf lay tree leafIdx =>
+              exact (preservesHidden_prepareLeafInputProbe input candidate lay tree leafIdx).bind
+                fun _ => preservesHidden_resolveKnownInput parameter candidate.outputCoordinate input
+          | chain | node | ftsLeaf | ftsNode | ftsRoots =>
+              exact (preservesHidden_probe candidate).bind fun _ =>
+                preservesHidden_resolveKnownInput parameter candidate.outputCoordinate input
+      | none => exact (preservesHidden_probe candidate).bind fun _ =>
+          preservesHidden_resolveKnownInput parameter candidate.outputCoordinate input
   | none =>
       cases decodePosition? parameter input with
       | none => exact preservesHidden_splitHashQuery_ordinary input

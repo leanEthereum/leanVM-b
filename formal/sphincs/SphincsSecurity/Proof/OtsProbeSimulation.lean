@@ -975,13 +975,28 @@ noncomputable def resolveKnownInput (parameter : PublicParameter)
         splitHashQuery (.ordinary input)
   | none => splitHashQuery (.ordinary input)
 
+noncomputable def prepareLeafInputProbe (input : HashInput) (candidate : Probe)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) Unit := do
+  match ← peekCoordinate candidate.coordinate with
+  | none => probe candidate
+  | some _ =>
+      probeFirstMissingInputCoordinate input 0
+        ((Position.leaf lay tree leafIdx).children.map Coordinate.position)
+
 noncomputable def probingHashQuery (parameter : PublicParameter) (input : HashInput) :
     StateT SplitHashCache
       (OracleComp (LazyRevealProbe.World Coordinate)) HashOutput :=
   match decodeProbe? parameter input with
-  | some candidate => do
-      probe candidate
-      resolveKnownInput parameter candidate.outputCoordinate input
+  | some candidate =>
+      match decodePosition? parameter input with
+      | some (.leaf lay tree leafIdx) => do
+          prepareLeafInputProbe input candidate lay tree leafIdx
+          resolveKnownInput parameter candidate.outputCoordinate input
+      | _ => do
+          probe candidate
+          resolveKnownInput parameter candidate.outputCoordinate input
   | none =>
       match decodePosition? parameter input with
       | some position@(.chain _ _ _ _ _) =>

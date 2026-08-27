@@ -2093,6 +2093,22 @@ theorem splitCachePreserving_probeFirstMissingInputCoordinate (input : HashInput
         | none => splitCachePreserving_probe ⟨coordinate, slotDigest slot input⟩
         | some _ => splitCachePreserving_probeFirstMissingInputCoordinate input (slot + 1) remaining
 
+theorem splitCachePreserving_prepareLeafInputProbe
+    (input : HashInput) (candidate : Probe)
+  (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) :
+    SplitCachePreserving (prepareLeafInputProbe input candidate lay tree leafIdx) := by
+  unfold prepareLeafInputProbe
+  apply (rawReadOnly_peekCoordinate candidate.coordinate).splitCachePreserving.bind
+  intro value
+  cases value with
+  | none =>
+      simp only
+      exact splitCachePreserving_probe candidate
+  | some output =>
+      simp only
+      exact splitCachePreserving_probeFirstMissingInputCoordinate input 0
+        ((Position.leaf lay tree leafIdx).children.map Coordinate.position)
+
 theorem ordinaryEntryPreserving_publishCoordinate
     (input : HashInput) (coordinate : Coordinate) :
     OrdinaryEntryPreserving input (publishCoordinate coordinate) := by
@@ -2289,8 +2305,16 @@ theorem cachesOrdinaryInput_probingHashQuery
   unfold probingHashQuery
   cases hprobe : decodeProbe? parameter input with
   | some candidate =>
-      exact CachesOrdinaryInput.bind_right fun _ =>
-        cachesOrdinaryInput_resolveKnownInput parameter candidate.outputCoordinate input
+      cases decodePosition? parameter input with
+      | some position =>
+          cases position with
+          | leaf => exact CachesOrdinaryInput.bind_right fun _ =>
+              cachesOrdinaryInput_resolveKnownInput parameter candidate.outputCoordinate input
+          | chain | node | ftsLeaf | ftsNode | ftsRoots =>
+              exact CachesOrdinaryInput.bind_right fun _ =>
+                cachesOrdinaryInput_resolveKnownInput parameter candidate.outputCoordinate input
+      | none => exact CachesOrdinaryInput.bind_right fun _ =>
+          cachesOrdinaryInput_resolveKnownInput parameter candidate.outputCoordinate input
   | none =>
       cases hposition : decodePosition? parameter input with
       | none => exact cachesOrdinaryInput_splitHashQuery input
@@ -2314,8 +2338,16 @@ theorem returnsCachedOrdinary_probingHashQuery
   unfold probingHashQuery
   cases hprobe : decodeProbe? parameter input with
   | some candidate =>
-      exact ReturnsCachedOrdinary.bind_right fun _ =>
-        returnsCachedOrdinary_resolveKnownInput parameter candidate.outputCoordinate input
+      cases decodePosition? parameter input with
+      | some position =>
+          cases position with
+          | leaf => exact ReturnsCachedOrdinary.bind_right fun _ =>
+              returnsCachedOrdinary_resolveKnownInput parameter candidate.outputCoordinate input
+          | chain | node | ftsLeaf | ftsNode | ftsRoots =>
+              exact ReturnsCachedOrdinary.bind_right fun _ =>
+                returnsCachedOrdinary_resolveKnownInput parameter candidate.outputCoordinate input
+      | none => exact ReturnsCachedOrdinary.bind_right fun _ =>
+          returnsCachedOrdinary_resolveKnownInput parameter candidate.outputCoordinate input
   | none =>
       cases hposition : decodePosition? parameter input with
       | none => exact returnsCachedOrdinary_splitHashQuery input
@@ -2358,9 +2390,21 @@ theorem ordinaryEntryPreserving_probingHashQuery_of_ne
   unfold probingHashQuery
   cases hprobe : decodeProbe? parameter query with
   | some candidate =>
-      exact (ordinaryEntryPreserving_probe input candidate).bind fun _ =>
-        ordinaryEntryPreserving_resolveKnownInput_of_ne parameter input query
-          candidate.outputCoordinate hne
+      cases decodePosition? parameter query with
+      | some position =>
+          cases position with
+          | leaf lay tree leafIdx =>
+              exact ((splitCachePreserving_prepareLeafInputProbe query candidate lay tree leafIdx)
+                |>.entryPreserving input).bind (fun _ =>
+                  ordinaryEntryPreserving_resolveKnownInput_of_ne parameter input query
+                    candidate.outputCoordinate hne)
+          | chain | node | ftsLeaf | ftsNode | ftsRoots =>
+              exact (ordinaryEntryPreserving_probe input candidate).bind (fun _ =>
+                ordinaryEntryPreserving_resolveKnownInput_of_ne parameter input query
+                  candidate.outputCoordinate hne)
+      | none => exact (ordinaryEntryPreserving_probe input candidate).bind (fun _ =>
+          ordinaryEntryPreserving_resolveKnownInput_of_ne parameter input query
+            candidate.outputCoordinate hne)
   | none =>
       cases hposition : decodePosition? parameter query with
       | none =>
@@ -3004,6 +3048,25 @@ theorem mem_runRaw_peekCoordinate_some
       rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
       exact ⟨rfl, rfl, rfl, by simp⟩
 
+theorem mem_runRaw_peekCoordinate_none
+    (coordinate : Coordinate) (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (none, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel ((peekCoordinate coordinate).run cache))) :
+    finalState = state ∧ remaining = fuel ∧ finalCache = cache ∧
+      state.values coordinate = none := by
+  change LazyRevealProbe.RawResult.done finalState remaining (none, finalCache) ∈
+    support (LazyRevealProbe.runRaw state fuel
+      (LazyRevealProbe.peekQuery coordinate >>= fun output =>
+        pure (truncateHash <$> output, cache))) at hresult
+  rw [LazyRevealProbe.peekQuery, LazyRevealProbe.runRaw_peek_query_bind] at hresult
+  cases hvalue : state.values coordinate with
+  | none =>
+      simp [hvalue, LazyRevealProbe.runRaw] at hresult
+      rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+      exact ⟨rfl, rfl, rfl, rfl⟩
+  | some output => simp [hvalue, LazyRevealProbe.runRaw] at hresult
+
 theorem preservesChainValid_peekPositionValues (allowed : Coordinate → Prop)
     (positions : List Position) : PreservesChainValid allowed (peekPositionValues positions) := by
   induction positions with
@@ -3552,6 +3615,90 @@ theorem preservesChainInvariant_probeFirstMissingInputCoordinate
         | some _ => preservesChainInvariant_probeFirstMissingInputCoordinate parameter allowed input
             (slot + 1) remaining
 
+theorem chainInvariant_prepareLeafInputProbe_secures
+    (allowed : Coordinate → Prop) (parameter : PublicParameter)
+    (input : HashInput) (candidate : Probe)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (hdecode : decodeProbe? parameter input = some candidate)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (value : Unit)
+    (hinvariant : ChainInvariant parameter allowed state cache)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((prepareLeafInputProbe input candidate lay tree leafIdx).run cache))) :
+    ChainInvariant parameter allowed finalState finalCache ∧
+      (allowed candidate.coordinate ∨
+        candidate.candidate ∈ finalState.pendingAt candidate.coordinate) := by
+  unfold prepareLeafInputProbe at hresult
+  rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨peekRaw, hpeek, hrest⟩ := hresult
+  cases peekRaw with
+  | stopped hit => simp at hrest
+  | done peekState peekRemaining peekResult =>
+      rcases peekResult with ⟨peeked, peekCache⟩
+      cases peeked with
+      | none =>
+          simp only at hrest
+          obtain ⟨rfl, rfl, rfl, hmissing⟩ := mem_runRaw_peekCoordinate_none
+            candidate.coordinate state peekState cache peekCache fuel peekRemaining hpeek
+          have hmatches := (decodeProbe?_eq_some_iff parameter input candidate).1 hdecode
+          have hchain := candidate.isChainCoordinate_of_matchesInput hmatches
+          have hnotRevealed : candidate.coordinate ∉ peekState.revealed := by
+            intro hrevealed
+            exact ((hinvariant.1 candidate.coordinate hchain).2.1 hrevealed) hmissing
+          have hfinalInvariant := preservesChainInvariant_probe parameter allowed candidate peekState
+            peekCache peekRemaining finalState remaining value finalCache hinvariant hrest
+          change LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈ support
+            (LazyRevealProbe.runRaw peekState peekRemaining
+              (LazyRevealProbe.probeQuery candidate.coordinate candidate.candidate >>=
+                fun result => pure (result, peekCache))) at hrest
+          rw [LazyRevealProbe.probeQuery, LazyRevealProbe.runRaw_probe_query_bind] at hrest
+          cases peekRemaining with
+          | zero => simp at hrest
+          | succ remainingFuel =>
+              simp only at hrest
+              rw [if_neg hnotRevealed] at hrest
+              simp [LazyRevealProbe.runRaw] at hrest
+              rcases hrest with ⟨rfl, rfl, rfl, rfl⟩
+              exact ⟨hfinalInvariant, Or.inr
+                (LazyRevealProbe.State.pendingAt_addPending_self peekState candidate.coordinate
+                  candidate.candidate)⟩
+      | some output =>
+          simp only at hrest
+          obtain ⟨rfl, rfl, rfl, hvalue⟩ := mem_runRaw_peekCoordinate_some
+            candidate.coordinate state peekState cache peekCache fuel peekRemaining output hpeek
+          have hmatches := (decodeProbe?_eq_some_iff parameter input candidate).1 hdecode
+          have hchain := candidate.isChainCoordinate_of_matchesInput hmatches
+          have hallowed : allowed candidate.coordinate :=
+            (hinvariant.1 candidate.coordinate hchain).2.2
+              ((hinvariant.1 candidate.coordinate hchain).1 hvalue)
+          exact ⟨preservesChainInvariant_probeFirstMissingInputCoordinate parameter allowed
+            input 0 ((Position.leaf lay tree leafIdx).children.map Coordinate.position) peekState
+              peekCache peekRemaining finalState remaining value finalCache hinvariant hrest,
+                Or.inl hallowed⟩
+
+theorem preservesChainInvariant_prepareLeafInputProbe_resolveKnownInput
+    (allowed : Coordinate → Prop) (hclosed : ChainForwardClosed allowed)
+    (parameter : PublicParameter) (input : HashInput) (candidate : Probe)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (hdecode : decodeProbe? parameter input = some candidate) :
+    PreservesChainInvariant parameter allowed (do
+      prepareLeafInputProbe input candidate lay tree leafIdx
+      resolveKnownInput parameter candidate.outputCoordinate input) := by
+  intro state cache fuel finalState remaining value finalCache hinvariant hresult
+  rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨probeRaw, hprobe, hresolve⟩ := hresult
+  cases probeRaw with
+  | stopped hit => simp at hresolve
+  | done probeState probeRemaining probeResult =>
+      rcases probeResult with ⟨probedUnit, probeCache⟩
+      obtain ⟨hprobeInvariant, hsecured⟩ := chainInvariant_prepareLeafInputProbe_secures
+        allowed parameter input candidate lay tree leafIdx hdecode state probeState cache probeCache
+          fuel probeRemaining probedUnit hinvariant hprobe
+      exact chainInvariant_resolveKnownInput_of_decoded_secured allowed hclosed parameter
+        candidate.outputCoordinate input candidate hdecode probeState probeCache probeRemaining
+          finalState remaining value finalCache hprobeInvariant hsecured hresolve
+
 theorem preservesChainInvariant_probingHashQuery
     (allowed : Coordinate → Prop) (hclosed : ChainForwardClosed allowed)
     (parameter : PublicParameter) (input : HashInput) :
@@ -3559,8 +3706,21 @@ theorem preservesChainInvariant_probingHashQuery
   unfold probingHashQuery
   cases hprobe : decodeProbe? parameter input with
   | some candidate =>
-      exact preservesChainInvariant_probe_resolveKnownInput allowed hclosed parameter input
-        candidate hprobe
+      cases hposition : decodePosition? parameter input with
+      | some position =>
+          cases position with
+          | leaf lay tree leafIdx =>
+              simp only
+              exact preservesChainInvariant_prepareLeafInputProbe_resolveKnownInput allowed
+                hclosed parameter input candidate lay tree leafIdx hprobe
+          | chain | node | ftsLeaf | ftsNode | ftsRoots =>
+              simp only
+              exact preservesChainInvariant_probe_resolveKnownInput allowed hclosed parameter input
+                candidate hprobe
+      | none =>
+          simp only
+          exact preservesChainInvariant_probe_resolveKnownInput allowed hclosed parameter input
+            candidate hprobe
   | none =>
       cases hposition : decodePosition? parameter input with
       | none =>
@@ -4137,6 +4297,22 @@ theorem preservesChainValid_probeFirstMissingInputCoordinate
         | some _ => preservesChainValid_probeFirstMissingInputCoordinate allowed input
             (slot + 1) remaining
 
+theorem preservesChainValid_prepareLeafInputProbe
+    (allowed : Coordinate → Prop) (input : HashInput) (candidate : Probe)
+  (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) :
+    PreservesChainValid allowed (prepareLeafInputProbe input candidate lay tree leafIdx) := by
+  unfold prepareLeafInputProbe
+  apply (preservesChainValid_peekCoordinate allowed candidate.coordinate).bind
+  intro value
+  cases value with
+  | none =>
+      simp only
+      exact preservesChainValid_probe allowed candidate
+  | some output =>
+      simp only
+      exact preservesChainValid_probeFirstMissingInputCoordinate allowed input 0
+        ((Position.leaf lay tree leafIdx).children.map Coordinate.position)
+
 theorem preservesChainValid_probingHashQuery
     (allowed : Coordinate → Prop) (hclosed : ChainForwardClosed allowed)
     (parameter : PublicParameter) (input : HashInput) :
@@ -4144,9 +4320,24 @@ theorem preservesChainValid_probingHashQuery
   unfold probingHashQuery
   cases decodeProbe? parameter input with
   | some candidate =>
-      exact (preservesChainValid_probe allowed candidate).bind fun _ =>
-        preservesChainValid_resolveKnownInput allowed hclosed parameter
-          candidate.outputCoordinate input
+      cases hposition : decodePosition? parameter input with
+      | some position =>
+          cases position with
+          | leaf lay tree leafIdx =>
+              simp only
+              exact (preservesChainValid_prepareLeafInputProbe allowed input candidate lay tree
+                leafIdx).bind (fun _ => preservesChainValid_resolveKnownInput allowed hclosed
+                  parameter candidate.outputCoordinate input)
+          | chain | node | ftsLeaf | ftsNode | ftsRoots =>
+              simp only
+              exact (preservesChainValid_probe allowed candidate).bind (fun _ =>
+                preservesChainValid_resolveKnownInput allowed hclosed parameter
+                  candidate.outputCoordinate input)
+      | none =>
+          simp only
+          exact (preservesChainValid_probe allowed candidate).bind (fun _ =>
+          preservesChainValid_resolveKnownInput allowed hclosed parameter
+            candidate.outputCoordinate input)
   | none =>
       cases decodePosition? parameter input with
       | none => exact preservesChainValid_splitHashQuery_ordinary allowed input
