@@ -5607,6 +5607,17 @@ theorem VerifierLayerMessage.otsLeaf_query_mem_verify
   apply List.mem_append_left
   exact VerifierLayerMessage.otsLeaf_query_mem_verifyLayers hlayer hquery
 
+def VerifyProbeWitness (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
+    (secretKey : SecretKey) (signingLog : QueryLog SigningSpec)
+    (forgedMessage : Message) (signature : Signature) : Prop :=
+  ∃ (probe : Probe) (input : HashInput),
+    probe.Hits f secretKey.parameter secretKey.otsSecret secretKey.ftsSecret
+      ∧ probe.MatchesInput secretKey.parameter input
+      ∧ input ∈ queriedInputs f
+        (verify ⟨secretKey.root, secretKey.parameter⟩ forgedMessage signature)
+      ∧ cache input ≠ none
+      ∧ ¬CoveredChainCoordinate f cache secretKey signingLog probe.coordinate
+
 theorem ForgedFreshLayerOpening.exists_uncovered_matching_probe
     {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
     {signingLog : QueryLog SigningSpec} {index : Index} {leaves : DigestTree → FtsLeaf}
@@ -5698,6 +5709,24 @@ theorem ForgedFreshLayerOpening.exists_uncovered_matching_chain_probe
   rw [htree, hleaf] at hsigned
   exact hnotSigned hsigned
 
+set_option maxHeartbeats 400000 in
+theorem ForgedFreshLayerOpening.toVerifyProbeWitness
+    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
+    {signingLog : QueryLog SigningSpec} {forgedMessage : Message} {digest : MessageDigest}
+    {signature : Signature}
+    (hdigest : evalWithAnswerFn f (messageDigest secretKey.parameter secretKey.root
+      forgedMessage signature.randomness) = digest)
+    (hadmissible : Admissible digest)
+    (hfresh : ForgedFreshLayerOpening f cache secretKey signingLog (digestIndex digest)
+      (digestLeaves digest) signature) :
+    VerifyProbeWitness f cache secretKey signingLog forgedMessage signature := by
+  obtain ⟨lay, message, codeword, chainIdx, hdigit, probe, input, hencode,
+    hverifierMessage, hquery, hhit, hmatch, hcached, huncovered⟩ :=
+      ForgedFreshLayerOpening.exists_uncovered_matching_chain_probe hfresh
+  exact ⟨probe, input, hhit, hmatch,
+    VerifierLayerMessage.otsLeaf_query_mem_verify hdigest hadmissible hverifierMessage hquery,
+    hcached, huncovered⟩
+
 theorem ForgedBackwardChainOpening.exists_uncovered_matching_probe
     {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
     {signingLog : QueryLog SigningSpec} {forgedIndex : Index}
@@ -5782,6 +5811,24 @@ theorem ForgedBackwardChainOpening.exists_uncovered_matching_probe
   rw [hcodeword] at hcoveredDigit
   have hdigitValue := congrArg Fin.val htargetDigit
   omega
+
+set_option maxHeartbeats 400000 in
+theorem ForgedBackwardChainOpening.toVerifyProbeWitness
+    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
+    {signingLog : QueryLog SigningSpec} {forgedMessage : Message} {digest : MessageDigest}
+    {signature : Signature}
+    (hdigest : evalWithAnswerFn f (messageDigest secretKey.parameter secretKey.root
+      forgedMessage signature.randomness) = digest)
+    (hadmissible : Admissible digest)
+    (hbackward : ForgedBackwardChainOpening f cache secretKey signingLog (digestIndex digest)
+      (digestLeaves digest) signature) :
+    VerifyProbeWitness f cache secretKey signingLog forgedMessage signature := by
+  obtain ⟨probe, input, lay, layerMessage, hverifierMessage, hquery, hhit, hmatch,
+    hcached, huncovered⟩ :=
+      ForgedBackwardChainOpening.exists_uncovered_matching_probe hbackward
+  exact ⟨probe, input, hhit, hmatch,
+    VerifierLayerMessage.otsLeaf_query_mem_verify hdigest hadmissible hverifierMessage hquery,
+    hcached, huncovered⟩
 
 theorem signingTraceComputation_query_bind
     (input : (OracleWorld + SigningSpec).Domain)

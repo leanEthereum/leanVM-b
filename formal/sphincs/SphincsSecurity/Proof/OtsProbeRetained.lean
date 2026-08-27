@@ -431,14 +431,16 @@ def WinningRetainedFreshLayerOpeningWitness (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :=
   WinningRetainedWitnessFor parameter table ftsSecret
     fun f cache secretKey log forgery index leaves =>
-      ForgedFreshLayerOpening f cache secretKey log index leaves forgery.signature
+      ¬Bad parameter (tableOtsSecret table) ftsSecret cache ∧
+        ForgedFreshLayerOpening f cache secretKey log index leaves forgery.signature
 
 def WinningRetainedBackwardChainOpeningWitness (parameter : PublicParameter)
     (table : Coordinate → HashOutput)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :=
   WinningRetainedWitnessFor parameter table ftsSecret
     fun f cache secretKey log forgery index leaves =>
-      ForgedBackwardChainOpening f cache secretKey log index leaves forgery.signature
+      ¬Bad parameter (tableOtsSecret table) ftsSecret cache ∧
+        ForgedBackwardChainOpening f cache secretKey log index leaves forgery.signature
 
 theorem probEvent_cleanFresh_le_actualRetained
     (adversary : Adversary) (parameter : PublicParameter)
@@ -450,13 +452,23 @@ theorem probEvent_cleanFresh_le_actualRetained
         actualRetainedGameAfterTable adversary parameter ftsSecret table] := by
   calc
     _ ≤ Pr[fun result => result.1.2.2 = true ∧
-        ViewedWinningFreshLayerOpeningWitness parameter (tableOtsSecret table) ftsSecret result |
+        ViewedWinningTerminalWitnessFor parameter (tableOtsSecret table) ftsSecret
+          (fun f cache secretKey log forgery index leaves =>
+            ¬Bad parameter (tableOtsSecret table) ftsSecret cache ∧
+              ForgedFreshLayerOpening f cache secretKey log index leaves forgery.signature)
+          result |
           gameAfterSecretsWithViewTrace adversary parameter (tableOtsSecret table)
             ftsSecret] := by
-      exact probEvent_mono fun _ _ hevent => ⟨hevent.1.2, hevent.2⟩
+      apply probEvent_mono
+      intro _ _ hevent
+      rcases hevent with ⟨⟨hbad, hverdict⟩, f, digest, hf, hvalid, hnotContains,
+        hdigest, hadmissible, heval, hfresh⟩
+      exact ⟨hverdict, f, digest, hf, hvalid, hnotContains, hdigest, hadmissible,
+        heval, hbad, hfresh⟩
     _ ≤ _ := probEvent_viewedWinningWitness_le_actualRetained adversary parameter table ftsSecret
       (fun f cache secretKey log forgery index leaves =>
-        ForgedFreshLayerOpening f cache secretKey log index leaves forgery.signature)
+        ¬Bad parameter (tableOtsSecret table) ftsSecret cache ∧
+          ForgedFreshLayerOpening f cache secretKey log index leaves forgery.signature)
 
 theorem probEvent_cleanBackward_le_actualRetained
     (adversary : Adversary) (parameter : PublicParameter)
@@ -468,12 +480,22 @@ theorem probEvent_cleanBackward_le_actualRetained
         actualRetainedGameAfterTable adversary parameter ftsSecret table] := by
   calc
     _ ≤ Pr[fun result => result.1.2.2 = true ∧
-        ViewedWinningBackwardChainOpeningWitness parameter (tableOtsSecret table) ftsSecret result |
+        ViewedWinningTerminalWitnessFor parameter (tableOtsSecret table) ftsSecret
+          (fun f cache secretKey log forgery index leaves =>
+            ¬Bad parameter (tableOtsSecret table) ftsSecret cache ∧
+              ForgedBackwardChainOpening f cache secretKey log index leaves forgery.signature)
+          result |
           gameAfterSecretsWithViewTrace adversary parameter (tableOtsSecret table)
             ftsSecret] := by
-      exact probEvent_mono fun _ _ hevent => ⟨hevent.1.2, hevent.2⟩
+      apply probEvent_mono
+      intro _ _ hevent
+      rcases hevent with ⟨⟨hbad, hverdict⟩, f, digest, hf, hvalid, hnotContains,
+        hdigest, hadmissible, heval, hbackward⟩
+      exact ⟨hverdict, f, digest, hf, hvalid, hnotContains, hdigest, hadmissible,
+        heval, hbad, hbackward⟩
     _ ≤ _ := probEvent_viewedWinningWitness_le_actualRetained adversary parameter table ftsSecret
       (fun f cache secretKey log forgery index leaves =>
-        ForgedBackwardChainOpening f cache secretKey log index leaves forgery.signature)
+        ¬Bad parameter (tableOtsSecret table) ftsSecret cache ∧
+          ForgedBackwardChainOpening f cache secretKey log index leaves forgery.signature)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
