@@ -165,7 +165,7 @@ An `@inline` function may also **return a `StackBuf`**: the caller's binding ali
 ```python
 @inline
 def obs(cb, x):          # Fiat-Shamir absorb: cb <- compress(cb, (x, SCALAR))
-    tg = [x, DS_SCALAR]  # a list literal: an initialized StackBuf(2)
+    tg = [x, DS_OBSERVE]  # a list literal: an initialized StackBuf(2)
     nb = StackBuf(2)
     blake2s(cb, tg, nb)
     return nb            # the call site's `cvb = obs(cvb, v)` aliases nb

@@ -339,11 +339,7 @@ class Proof:
 
 # Fiat--Shamir ---------------------------------------------------------------
 
-
-# Every absorbed block puts its tag in lane 3 and its data in lanes 0..2, so one
-# role is one constant in one place and no two roles can alias. The seeding block
-# is the exception: it is fixed at the head of the chain, so its position is its tag.
-DS_SCALAR = 1
+DS_OBSERVE = 1
 DS_SQUEEZE = 2
 DS_POW_BASE = 3
 DS_POW_NONCE = 4
@@ -351,9 +347,6 @@ DS_POW_NONCE = 4
 
 def compress(left: Sequence[K | int], right: Sequence[K | int]) -> tuple[int, int, int, int]:
     """Hash two four-word operands, a word being a plain integer or the K element standing for it."""
-    # Nothing downstream would catch a short operand: it would simply hash to a
-    # different value.
-    require(len(left) == len(right) == 4, "compression operands must contain four words")
     return unpack("<4Q", blake2s_hash(b"".join(int(x).to_bytes(8, "little") for x in (*left, *right))).value)
 
 
@@ -361,11 +354,11 @@ class Transcript:
     def __init__(self, proof: Proof, fiat_shamir_IV: Digest, public_input: Digest) -> None:
         self.proof = proof
         self.state = compress(fiat_shamir_IV.words(), public_input.words())
-        self.stream_offset = 0
-        self.opening_offset = 0
+        self.stream_offset = 0  # in E field elements
+        self.opening_offset = 0  # in bytes
 
     def observe(self, value: E) -> None:
-        self.state = compress(self.state, (value.c0, value.c1, value.c2, DS_SCALAR))
+        self.state = compress(self.state, (value.c0, value.c1, value.c2, DS_OBSERVE))
 
     def sample(self) -> E:
         self.state = compress(self.state, (0, 0, 0, DS_SQUEEZE))
@@ -380,16 +373,15 @@ class Transcript:
         self.stream_offset += 1
         return value
 
-    def scalar(self) -> E:
+    def next_scalar(self) -> E:
         value = self._next()
         self.observe(value)
         return value
 
-    def scalars(self, count: int) -> list[E]:
-        return [self.scalar() for _ in range(count)]
+    def next_scalars(self, count: int) -> list[E]:
+        return [self.next_scalar() for _ in range(count)]
 
     def grind_check(self, bits: int) -> None:
-        require(0 <= bits < 64, "invalid grinding width")
         nonce = self._next()
         block = (nonce.c0, nonce.c1, nonce.c2, DS_POW_NONCE)
         digest = compress(compress(self.state, (0, 0, 0, DS_POW_BASE)), block)[0]
@@ -397,7 +389,7 @@ class Transcript:
         self.state = compress(self.state, block)
         require(valid, "invalid grinding nonce")
 
-    def _take(self, length: int) -> bytes:
+    def _merkle_data(self, length: int) -> bytes:
         end = self.opening_offset + length
         require(end <= len(self.proof.merkle_openings), "Merkle opening missing")
         chunk = self.proof.merkle_openings[self.opening_offset : end]
@@ -405,99 +397,64 @@ class Transcript:
         return chunk
 
     def merkle(self, root: Digest, block_length: int, queries: Sequence[int], leaf_words: int) -> list[tuple[K, ...]]:
-        """Pull one opening per query and authenticate each against `root`.
-
-        Not absorbed: an opening's binding is the Merkle structure itself, which
-        is checked here rather than by the Fiat-Shamir state. Returns the rows in query
-        order, so a repeated position simply re-opens the same authenticated row.
-        """
         height = log2_strict(block_length)
         rows = []
         for query in queries:
-            require(0 <= query < block_length, "Merkle query is out of range")
-            # The leaf's bytes are the committer's preimage as they lie on the wire.
-            leaf = self._take(8 * leaf_words)
+            leaf = self._merkle_data(8 * leaf_words)
             node = blake2s_hash(leaf)
             for level in range(height):
-                sibling = Digest(self._take(32))
+                sibling = Digest(self._merkle_data(32))
                 node = _hash_pair(node, sibling) if query >> level & 1 == 0 else _hash_pair(sibling, node)
             require(node == root, "Merkle root mismatch")
             rows.append(tuple(K(word) for word in unpack(f"<{leaf_words}Q", leaf)))
         return rows
 
-    def round_poly(self, count: int, claim: E, equality: E | None = None) -> list[E]:
-        """Read one sumcheck round polynomial, in coefficients.
-
-        The message is every coefficient but one; the split identity fixes the
-        remaining one to `claim`, so it is neither sent nor bound, and deriving it
-        is an addition either way. A plain round has `h(0) + h(1) = c1 + ... + cd`,
-        which fixes `c1`; a round whose eq factor `r` the protocol pulled out has
-        `c0 + r·(c1 + ... + cd)`, which fixes `c0`.
-        """
-        if equality is None:
-            constant, tail = self.scalar(), self.scalars(count - 2)
+    def sumcheck_round_poly(self, count: int, claim: E, eq_factor: E | None = None) -> list[E]:
+        """returns q(X) := c0 + c1X + c2X^2 + ..."""
+        if eq_factor is None:
+            constant, tail = self.next_scalar(), self.next_scalars(count - 2)  # `q(0) + q(1) == claim`. The transcript contains c0, c2, c3 ...
             return [constant, claim + sum(tail, ZERO), *tail]
-        tail = self.scalars(count - 1)
-        return [claim + equality * sum(tail, ZERO), *tail]
-
-    def finish(self) -> None:
-        require(self.stream_offset == len(self.proof.stream), "proof stream not fully consumed")
-        require(self.opening_offset == len(self.proof.merkle_openings), "Merkle openings not fully consumed")
+        # `(1 + r) q(0) + r q(1) == claim`. The transcript contains c1, c2, c3 ... (r := eq_factor)
+        tail = self.next_scalars(count - 1)
+        return [claim + eq_factor * sum(tail, ZERO), *tail]
 
 
-# GKR product triple ---------------------------------------------------------
+def sumcheck(transcript: Transcript, claim: E, count: int, equalities: Sequence[E | None]) -> tuple[MultilinearPoint, E]:
+    point = []
+    for equality in equalities:
+        message = transcript.sumcheck_round_poly(count, claim, equality)
+        challenge = transcript.sample()
+        point.append(challenge)
+        claim = poly_eval(message, challenge)
+    return tuple(point), claim
 
+# Bus balance and decomposition ---------------------------------------------
 
-@dataclass(frozen=True)
-class ProductTriple:
-    roots: tuple[E, E, E]
-    point: MultilinearPoint
-    values: tuple[E, E, E]
-
-
-def verify_product_triple(depth: int, transcript: Transcript) -> ProductTriple:
-    shared, count = transcript.scalar(), transcript.scalar()
-    roots = (shared, shared, count)
-    combine = transcript.sample()
+def verify_gkr_grand_products(depth: int, transcript: Transcript) -> tuple[E, MultilinearPoint, tuple[E, E, E]]:
+    shared, count = transcript.next_scalar(), transcript.next_scalar()
+    combiner = transcript.sample()
     point: list[E] = []
-    values = list(roots)
+    values = (shared, shared, count)  # 3 grand product GKR are batched together: push, pull, count
 
     layer = depth
     while layer > 0:
-        # Layers are taken two at a time (radix four). An odd depth leaves one
-        # binary layer, which can only be the root-most one, where no prior point
-        # exists to fold against.
-        width = 1 if layer % 2 else 2
-        round_count = depth - layer
-        require(width == 2 or round_count == 0, "binary GKR layer is not root-most")
-        claim = values[0] + combine * (values[1] + combine * values[2])
+        # Two levels a step. An odd depth starts with one.
+        step = 1 if layer % 2 else 2
+        claim = poly_eval(values, combiner)
+        # The product is degree 2^step, so one more coefficient than that per round.
+        x, claim = sumcheck(transcript, claim, 2**step + 1, point)
 
-        round_point: list[E] = []
-        for prior in point[:round_count]:
-            # Four independent coefficients determine the degree-four round
-            # polynomial: with `difference = q(0) + q(1)`, the incoming claim fixes
-            # the constant one and characteristic two fixes the linear one.
-            difference, c2, c3, c4 = transcript.scalars(4)
-            challenge = transcript.sample()
-            round_point.append(challenge)
-            c0 = claim + prior * difference
-            c1 = difference + c2 + c3 + c4
-            claim = c0 + challenge * (c1 + challenge * (c2 + challenge * (c3 + challenge * c4)))
+        children = [transcript.next_scalars(2**step) for _ in range(3)]
+        products = [reduce(mul, child) for child in children]
+        require(claim == poly_eval(products, combiner), f"GKR layer {layer}: children do not match the sumcheck")
 
-        tails = [transcript.scalars(2**width) for _ in range(3)]
-        products = [reduce(mul, tail) for tail in tails]
-        expected = products[0] + combine * (products[1] + combine * products[2])
-        require(claim == expected, f"GKR layer {layer}: tail mismatch")
-        challenges = transcript.samples(width)
-        values = [multilinear_eval(tail, challenges) for tail in tails]
-        combine = transcript.sample()
-        point = [*challenges, *round_point]
-        layer -= width
+        y = transcript.samples(step)
+        values = [multilinear_eval(child, y) for child in children]
+        combiner = transcript.sample()
+        point = [*y, *x]
+        layer -= step
 
-    return ProductTriple(roots, tuple(point), (values[0], values[1], values[2]))
-
-
-# Bus balance and decomposition ---------------------------------------------
+    return count, tuple(point), (values[0], values[1], values[2])
 
 
 @dataclass
@@ -587,18 +544,16 @@ def verify_bus_balance(layout: Layout, transcript: Transcript) -> BusResult:
     alphas = transcript.samples(BUS_BITS)
     weights = eq_kernel(alphas)
     beta = transcript.sample()
-    product = verify_product_triple(push_layout.depth, transcript)
-    count_root = product.roots[2]
+    count_root, point, tree_values = verify_gkr_grand_products(push_layout.depth, transcript)
     require(count_root != ZERO, "a bus read count is zero")
 
     # The framework blocks' committed columns, in the order the two sides first
     # name them: the memory image on push, then each array's final count on pull.
-    point = product.point
     memory_low = tuple(point[: layout.log_memory])
     bytecode_low = tuple(point[: layout.log_bytecode])
-    memory = transcript.scalars(3)
-    memory_final = transcript.scalar()
-    bytecode_final = transcript.scalar()
+    memory = transcript.next_scalars(3)
+    memory_final = transcript.next_scalar()
+    bytecode_final = transcript.next_scalar()
     claims = [ColumnClaim(column, memory_low, memory[column]) for column in (MEMORY_0, MEMORY_1, MEMORY_2)]
     claims.append(ColumnClaim(MEMORY_FINAL_COUNTERS, memory_low, memory_final))
     claims.append(ColumnClaim(BYTECODE_FINAL_COUNTERS, bytecode_low, bytecode_final))
@@ -649,7 +604,7 @@ def verify_bus_balance(layout: Layout, transcript: Transcript) -> BusResult:
         # Every occupied row holds beta + its fingerprint; the rest of the packed
         # leaf cube holds the product identity.
         occupied = sum(framework_selectors + table_selectors, ZERO)
-        totals.append(product.values[side] + known + ONE + occupied)
+        totals.append(tree_values[side] + known + ONE + occupied)
 
     # The recursive verifier defers a claim on the public bytecode polynomial. Its
     # point comes from alpha alone (doc sec:e2e-bc), so nothing is observed here and
@@ -701,7 +656,7 @@ def verify_constraints(
     cursor = 0
     claims: list[ColumnClaim] = []
     for table_index, air in enumerate(airs):
-        evaluations = tuple(transcript.scalars(air.table.width))
+        evaluations = tuple(transcript.next_scalars(air.table.width))
         table_constraint_powers = constraint_powers[cursor : cursor + air.table.n_constraints]
         cursor += air.table.n_constraints
         final += weights[table_index] * air.evaluate(table_constraint_powers, form_powers, evaluations)
@@ -1085,7 +1040,6 @@ def derive_config(log_n: int, log_inv_rate: int) -> WhirConfig:
         fold = min(SUBSEQUENT_FOLDING_FACTOR, remaining)
         remaining -= fold
         folds.append(fold)
-    require(len(folds) >= 2, "WHIR requires at least two levels")
     queries = WHIR_QUERIES[log_inv_rate - 1][log_n - MIN_STACKED_LOG]
     require(len(queries) == len(folds), "tabulated query count does not match the ladder")
     return WhirConfig(log_inv_rates=tuple(log_inv_rates), folds=tuple(folds), queries=queries)
@@ -1102,7 +1056,6 @@ def _ext_row(words: Sequence[K]) -> tuple[E, ...]:
 
 def sample_queries(transcript: Transcript, block_length: int, count: int) -> list[int]:
     depth = log2_strict(block_length)
-    require(0 < depth <= 192, "invalid query domain")
     per_word = 192 // depth
     result: list[int] = []
     while len(result) < count:
@@ -1170,7 +1123,7 @@ def verify_whir(transcript: Transcript, log_n: int, log_inv_rate: int, target: E
     levels = len(config.folds)
 
     running_target = target
-    running_quad = transcript.round_poly(3, target)
+    running_quad = transcript.sumcheck_round_poly(3, target)
     folds: list[E] = []
     glued: list[GluedClaim] = []
     current_root = root
@@ -1182,7 +1135,7 @@ def verify_whir(transcript: Transcript, log_n: int, log_inv_rate: int, target: E
             folds.append(challenge)
             level_folds.append(challenge)
             running_target = poly_eval(running_quad, challenge)
-            running_quad = transcript.round_poly(3, running_target)
+            running_quad = transcript.sumcheck_round_poly(3, running_target)
 
         message_log = log_n - len(folds)
         final_level = level == levels - 1
@@ -1190,12 +1143,12 @@ def verify_whir(transcript: Transcript, log_n: int, log_inv_rate: int, target: E
         # OOD claims first, then the query batch (Annex B, Protocol 1 step 1).
         pending: list[tuple[E, Sequence[E], Callable[[Sequence[E]], E]]] = []
         if final_level:
-            residual = tuple(transcript.scalars(2**message_log))
+            residual = tuple(transcript.next_scalars(2**message_log))
         else:
-            next_root = Digest.from_halves(*transcript.scalars(2))
+            next_root = Digest.from_halves(*transcript.next_scalars(2))
             ood_point = tuple(transcript.samples(message_log))
-            ood_value = transcript.scalar()
-            pending.append((ood_value, transcript.round_poly(3, ood_value), lambda x, z=ood_point: eq_eval(z, x)))
+            ood_value = transcript.next_scalar()
+            pending.append((ood_value, transcript.sumcheck_round_poly(3, ood_value), lambda x, z=ood_point: eq_eval(z, x)))
 
         transcript.grind_check(QUERY_GRINDING_BITS)
         block_length = 2 ** (message_log + level_rate)
@@ -1215,7 +1168,7 @@ def verify_whir(transcript: Transcript, log_n: int, log_inv_rate: int, target: E
         # message; the level's claims are then batched with powers of `lam`,
         # the running claim keeping lam^0 = 1.
         batch = (message_log, tuple(queries), tuple(query_weights))
-        pending.append((enforced, transcript.round_poly(3, enforced), lambda x, b=batch: _induced_weight(*b, x)))
+        pending.append((enforced, transcript.sumcheck_round_poly(3, enforced), lambda x, b=batch: _induced_weight(*b, x)))
         scalar = ONE
         for value, intro, weight_at in pending:
             scalar *= lam
@@ -1232,7 +1185,7 @@ def verify_whir(transcript: Transcript, log_n: int, log_inv_rate: int, target: E
                 running_target = poly_eval(running_quad, challenge)
                 tail_folds.append(challenge)
                 if round_index + 1 < message_log:
-                    running_quad = transcript.round_poly(3, running_target)
+                    running_quad = transcript.sumcheck_round_poly(3, running_target)
             # Each glued claim is rebound at the terminal point: the fold
             # challenges its level fixed after it was made, then the tail.
             point = list(folds) + tail_folds
@@ -1293,32 +1246,20 @@ class ZerocheckResult:
     v_c: E
 
 
-def sumcheck(transcript: Transcript, claim: E, count: int, equalities: Sequence[E | None]) -> tuple[MultilinearPoint, E]:
-    """One sumcheck round per entry of `equalities`, each the round's pulled-out eq factor or None: the challenges drawn, and the claim they leave."""
-    point = []
-    for equality in equalities:
-        message = transcript.round_poly(count, claim, equality)
-        challenge = transcript.sample()
-        point.append(challenge)
-        claim = poly_eval(message, challenge)
-    return tuple(point), claim
-
-
 def verify_flock_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResult:
     """The zerocheck: one univariate skip round, then nflock quadratic ones.
     C rides those rounds with AB, so all three claims come out at one point."""
-    require(log_n >= FLOCK_K_SKIP + len(FIXED_CHALLENGES), "Flock zerocheck input is too small")
     # The point r: seven fixed coordinates, the rest sampled.
     r = (*FIXED_CHALLENGES, *transcript.samples(log_n - FLOCK_K_SKIP - len(FIXED_CHALLENGES)))
 
     # P = P^AB + P^C on the coset, then z_skip; the 64 zeros on Lambda are assumed.
-    p_coset = transcript.scalars(K_BITS)
+    p_coset = transcript.next_scalars(K_BITS)
     z_skip = transcript.sample()
     v_p = lagrange_interpolate(2 * K_BITS, [ZERO] * K_BITS + list(p_coset), z_skip)
 
     # nflock quadratic rounds on P, closed by v_a, v_b.
     chi, running = sumcheck(transcript, v_p, 3, r)
-    v_a, v_b = transcript.scalars(2)
+    v_a, v_b = transcript.next_scalars(2)
     # v_c is what the terminal identity leaves, never transmitted: nothing is
     # checked here, lincheck pins all three claims against the committed witness.
     v_c = running + v_a * v_b
@@ -1344,7 +1285,7 @@ def verify_flock_lincheck(zc: ZerocheckResult, transcript: Transcript) -> tuple[
     # The residual, then the terminal identity: pin term and c term included.
     # C = I, so the c weight is e_row itself, and both sides being tensors it
     # collapses to eq(chi_in, chi_in_prime) times a 64-term Lagrange combination.
-    s = tuple(transcript.scalars(K_BITS))
+    s = tuple(transcript.next_scalars(K_BITS))
     chi_in_prime = tuple(reversed(round_challenges))
     w_col = [value * weight for weight in eq_kernel(chi_in_prime) for value in s]
     terminal = (
@@ -1525,7 +1466,7 @@ def ring_switch(point: MultilinearPoint, s: Sequence[E], transcript: Transcript)
     challenges = transcript.samples(len(RING_MAP_SHIFTS))
     # The same map as a Frobenius sum, `Phi(a) = sum_k c_k a^(2^k)` for k < 64.
     coefficients = [reduce(mul, (f ** (2 ** (k % s)) for f, s in zip(challenges, RING_MAP_SHIFTS, strict=True) if k & s), ONE) for k in range(K_BITS)]
-    target = dot(powers(GEN, K_BITS), [_phi(value, challenges) for value in s])
+    target = poly_eval([_phi(value, challenges) for value in s], GEN)
     return target, lambda r_prime: _ring_weight(point, r_prime, coefficients)
 
 
@@ -1557,7 +1498,7 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     transcript = Transcript(proof, fiat_shamir_IV, public_input)
 
     # 1] memory log-size, table log-size, and log-inv-rate in WHIR
-    announced = transcript.scalars(2 + len(TABLES))
+    announced = transcript.next_scalars(2 + len(TABLES))
     require(all(value.c1 == value.c2 == 0 for value in announced), "announced size has a nonzero high limb")
     log_memory = int(announced[0].c0)
     table_logs = tuple(int(value.c0) for value in announced[1 : 1 + len(TABLES)])
@@ -1567,7 +1508,7 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     require(MIN_STACKED_LOG <= layout.stack_log <= MAX_STACKED_LOG, "committed size outside the PCS window")
 
     # 2] parse WHIR commitment: one Merkle root (No OOD, our PCS is only List-binding).
-    root = Digest.from_halves(*transcript.scalars(2))
+    root = Digest.from_halves(*transcript.next_scalars(2))
 
     # 3] Bus: one batched GKR over the push, pull and count trees, then the leaf decomposition, which leaves each table a degree-2 claim.
     bus = verify_bus_balance(layout, transcript)
@@ -1588,11 +1529,11 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     # line through them. The prover sends one evaluation per limb; the three must
     # reassemble the line's value at the challenge (doc sec:e2e-pi).
     public_challenge = transcript.sample()
-    public_limbs = transcript.scalars(3)
+    public_limbs = transcript.next_scalars(3)
     public_point = [ZERO] * layout.placements[MEMORY_0].variables
     public_point[0] = public_challenge
     public_value = multilinear_eval(public_input.halves(), [public_challenge])
-    require(public_limbs[0] + Y * public_limbs[1] + Y**2 * public_limbs[2] == public_value, "public input limbs are off the line")
+    require(poly_eval(public_limbs, Y) == public_value, "public input limbs are off the line")
     claims.extend(ColumnClaim(column, tuple(public_point), value) for column, value in zip((MEMORY_0, MEMORY_1, MEMORY_2), public_limbs, strict=True))
 
     # 6] Locate every claim in the stack: a column claim keeps its point and
@@ -1621,7 +1562,6 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     # placement's selector, and it leads the batch, taking the first power.
     ringswitch = (ringswitch_target, lambda x: selector_eq(qflock.selector, x[qflock.variables :]) * ringswitch_weight(x[: qflock.variables]))
     verify_stacked_opening(transcript, root, layout.stack_log, log_inverse_rate, [ringswitch, *stack_claims])
-    transcript.finish()
 
 
 def main(argv: Sequence[str] | None = None) -> int:

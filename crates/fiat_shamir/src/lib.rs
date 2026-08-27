@@ -33,7 +33,7 @@ pub fn digest_words(digest: &[u8; 32]) -> [F64; 4] {
 // never adversary-controlled, so distinct constants are all it takes to make two
 // roles unable to alias. The seeding block ([`FiatShamirState::new`]) is the
 // exception: it is fixed at the head of the chain, so its position is its tag.
-const DS_SCALAR: F64 = F64(1);
+const DS_OBSERVE: F64 = F64(1);
 const DS_SQUEEZE: F64 = F64(2);
 const DS_POW_BASE: F64 = F64(3);
 const DS_POW_NONCE: F64 = F64(4);
@@ -81,9 +81,9 @@ impl FiatShamirState {
     }
 
     /// Absorb one 24-byte scalar (three little-endian `K` limbs):
-    /// `cv ← compress(cv, (c0, c1, c2, DS_SCALAR))`.
+    /// `cv ← compress(cv, (c0, c1, c2, DS_OBSERVE))`.
     pub fn observe(&mut self, x: F192) {
-        self.cv = compress(self.cv, [F64(x.c0), F64(x.c1), F64(x.c2), DS_SCALAR]);
+        self.cv = compress(self.cv, [F64(x.c0), F64(x.c1), F64(x.c2), DS_OBSERVE]);
     }
 
     /// Squeeze a challenge and ratchet: the challenge's three limbs are the

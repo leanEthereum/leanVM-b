@@ -9,7 +9,7 @@
 use crate::PAR_THRESHOLD;
 use crate::transcript::{Challenger, ProverState, Receiver, Transmitter, VerifierState};
 use primitives::field::{F192, F192Unreduced, mul_unreduced4, mul2, mul4};
-use primitives::multilinear::{eq_table, interp, shrink_eq_low};
+use primitives::multilinear::{eq_table, interp, poly_eval, shrink_eq_low};
 #[cfg(target_arch = "x86_64")]
 use primitives::stream::Stream;
 use zk_alloc::ArenaVec;
@@ -316,9 +316,14 @@ pub fn prove_product_triple(leaves: [ArenaVec<F192>; 3], ps: &mut ProverState, s
         let mut round_point = Vec::with_capacity(round_count);
         for _ in 0..round_count {
             let messages = [0, 1, 2].map(|tree| trees[tree].round_message(&equality));
-            ps.add_scalars(&[0, 1, 2, 3].map(|coefficient| {
+            let mut coeffs = [0, 1, 2, 3].map(|coefficient| {
                 messages[0][coefficient] + lambda * (messages[1][coefficient] + lambda * messages[2][coefficient])
-            }));
+            });
+            // The kernel accumulates `q(0) + q(1)`, the wire carries `c1`. This is
+            // `Transmitter::add_round_poly(_, true)` bar its dropped `c0`, which the
+            // claim fixes and the prover therefore never forms.
+            coeffs[0] = coeffs[0] + coeffs[1] + coeffs[2] + coeffs[3];
+            ps.add_scalars(&coeffs);
             let challenge = ps.sample();
             round_point.push(challenge);
             for tree in &mut trees {
@@ -368,7 +373,7 @@ pub fn verify_product_triple(mu: usize, vs: &mut VerifierState, shape: RootShape
     let mut layer = mu;
     while layer > 0 {
         let round_count = mu - layer;
-        let mut claim = values[0] + lambda * (values[1] + lambda * values[2]);
+        let mut claim = poly_eval(&values, lambda);
         if layer % 2 == 1 {
             debug_assert_eq!(round_count, 0, "only the root-most layer may be binary");
             let mut tails = [[F192::ZERO; 2]; 3];
@@ -376,7 +381,7 @@ pub fn verify_product_triple(mu: usize, vs: &mut VerifierState, shape: RootShape
                 *value = vs.next_scalar().map_err(|_| GkrError::Truncated)?;
             }
             let products = tails.map(|[left, right]| left * right);
-            if claim != products[0] + lambda * (products[1] + lambda * products[2]) {
+            if claim != poly_eval(&products, lambda) {
                 return Err(GkrError::LayerMismatch { layer });
             }
             let challenge = vs.sample();
@@ -391,24 +396,19 @@ pub fn verify_product_triple(mu: usize, vs: &mut VerifierState, shape: RootShape
 
         let mut round_point = Vec::with_capacity(round_count);
         for &equality_point in point.iter().take(round_count) {
-            // Four independent coefficients determine the degree-four round
-            // polynomial: with `difference = q(0) + q(1)`, the incoming claim fixes
-            // the constant one and characteristic two fixes the linear one.
-            let [difference, c2, c3, c4] = vs.next_scalars(4).map_err(|_| GkrError::Truncated)?[..] else {
-                unreachable!("next_scalars(4) returns four scalars")
-            };
+            let h = vs
+                .next_round_poly(5, claim, Some(equality_point))
+                .map_err(|_| GkrError::Truncated)?;
             let challenge = vs.sample();
             round_point.push(challenge);
-            let c0 = claim + equality_point * difference;
-            let c1 = difference + c2 + c3 + c4;
-            claim = c0 + challenge * (c1 + challenge * (c2 + challenge * (c3 + challenge * c4)));
+            claim = poly_eval(&h, challenge);
         }
         let mut tails = [[F192::ZERO; 4]; 3];
         for value in tails.iter_mut().flatten() {
             *value = vs.next_scalar().map_err(|_| GkrError::Truncated)?;
         }
         let products = tails.map(|tail| tail[0] * tail[1] * tail[2] * tail[3]);
-        if claim != products[0] + lambda * (products[1] + lambda * products[2]) {
+        if claim != poly_eval(&products, lambda) {
             return Err(GkrError::LayerMismatch { layer });
         }
         let low_challenge = vs.sample();

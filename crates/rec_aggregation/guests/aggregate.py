@@ -240,7 +240,7 @@ PK_IV_1 = PK_IV_1_PLACEHOLDER
 # Fiat-Shamir domain tags: every absorbed block carries its tag in lane 3, which
 # is exactly `fs_compress`'s `tail` argument, so a role is never smuggled through
 # the data lanes. The seeding block has none, being fixed at the head of the chain.
-DS_SCALAR = 1
+DS_OBSERVE = 1
 DS_SQ = 2
 DS_POW_BASE = 3
 DS_POW_NONCE = 4
@@ -605,17 +605,15 @@ def verify_merkle_path(leaf_0, leaf_1, path_ptr, direction_bits, depth: Const):
 
 
 def sumcheck_round5(state_0, state_1, msg_cursor, claim, prev_challenge):
-    # One GKR round. Four independent coefficients determine the degree-four round
-    # polynomial: with `difference = q(0) + q(1)`, the incoming claim fixes the
-    # constant one and characteristic two fixes the linear one.
+    # One GKR round. The prover sends every coefficient but c0, which the round's
+    # pulled-out eq factor leaves fixed: `c0 + prev_challenge * (c1 + ... + c4) == claim`.
     fs = [state_0, state_1]
-    fs, difference, msg_cursor = fs_next(fs, msg_cursor)
+    fs, c1, msg_cursor = fs_next(fs, msg_cursor)
     fs, c2, msg_cursor = fs_next(fs, msg_cursor)
     fs, c3, msg_cursor = fs_next(fs, msg_cursor)
     fs, c4, msg_cursor = fs_next(fs, msg_cursor)
     fs, y = squeeze(fs)
-    c0 = claim + prev_challenge * difference
-    c1 = difference + c2 + c3 + c4
+    c0 = claim + prev_challenge * (c1 + c2 + c3 + c4)
     return fs[0], fs[1], msg_cursor, c0 + y * (c1 + y * (c2 + y * (c3 + y * c4))), y
 
 
@@ -657,7 +655,7 @@ def obs(state, x):
     # Bind one scalar into the Fiat-Shamir chain: state <- compress(state, (x, SCALAR)).
     # Returns the successor StackBuf; the call site aliases it (zero copies).
     nb = StackBuf(2)
-    fs_compress(state, x, DS_SCALAR, nb)
+    fs_compress(state, x, DS_OBSERVE, nb)
     return nb
 
 
