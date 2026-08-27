@@ -1120,6 +1120,456 @@ theorem honestChain_eq_table_chainValueCoordinate
     rw [hvalue] at hchain
     simpa [chainValueCoordinate, hzero, tableValue] using hchain
 
+theorem maskedSignLayer_and_reveal_eval
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter) (root : Digest)
+    (table : Coordinate → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (index : Index) (lay : Layer) (counter : Counter)
+    (encoding : ChainIndex → Digit)
+    (signState signFinalState : LazyRevealProbe.State Coordinate)
+    (signCache signFinalCache : SplitHashCache) (signFuel signRemaining : Nat)
+    (revealState revealFinalState : LazyRevealProbe.State Coordinate)
+    (revealCache revealFinalCache : SplitHashCache) (revealFuel revealRemaining : Nat)
+    (values : (ChainIndex → Digest) × (Fin maxLayerHeight → Digest))
+    (hf : StableCacheAgreesWithFn parameter signFinalCache f)
+    (htableSign : ∀ coordinate output,
+      signFinalState.values coordinate = some output → output = table coordinate)
+    (htableReveal : ∀ coordinate output,
+      revealFinalState.values coordinate = some output → output = table coordinate)
+    (hrealizes : ∀ position : Position, IsOtsPosition position →
+      f (tableInput parameter table (.position position)) = table (.position position))
+    (hsign : LazyRevealProbe.RawResult.done signFinalState signRemaining
+        (some (counter, encoding), signFinalCache) ∈ support
+      (LazyRevealProbe.runRaw signState signFuel
+        ((maskedSignLayer parameter ftsSecret index lay).run signCache)))
+    (hreveal : LazyRevealProbe.RawResult.done revealFinalState revealRemaining
+        (values, revealFinalCache) ∈ support
+      (LazyRevealProbe.runRaw revealState revealFuel
+        ((revealLayerValues index lay encoding).run revealCache))) :
+    evalWithAnswerFn f
+        (signLayer
+          (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) index lay) =
+      some (counter, values.1, values.2) := by
+  have hots := maskedSignLayer_some_honest_eval f parameter root table ftsSecret index lay
+    signState signFinalState signCache signFinalCache signFuel signRemaining counter encoding hf
+      htableSign hrealizes hsign
+  have hotsTable : evalWithAnswerFn f
+      (otsSign parameter lay (treeIndexAt index lay) (leafIndexAt index lay)
+        (tableOtsSecret table lay (treeIndexAt index lay) (leafIndexAt index lay))
+        (evalWithAnswerFn f
+          (layerMessage
+            (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) index lay))) =
+    some (counter, fun chainIdx => truncateHash (table
+      (chainValueCoordinate lay (treeIndexAt index lay) (leafIndexAt index lay)
+        chainIdx (encoding chainIdx)))) := by
+    rw [hots]
+    congr 2
+    funext chainIdx
+    exact honestChain_eq_table_chainValueCoordinate f parameter table lay
+      (treeIndexAt index lay) (leafIndexAt index lay) chainIdx (encoding chainIdx) hrealizes
+  have hpathTable := evalWithAnswerFn_treePath_eq_table f parameter table lay
+    (treeIndexAt index lay) (leafIndexAt index lay) hrealizes
+  have hrevealedTable := revealLayerValues_eq_table table index lay encoding revealState
+    revealFinalState revealCache revealFinalCache revealFuel revealRemaining values htableReveal
+      hreveal
+  rw [signLayer, evalWithAnswerFn_bind, evalWithAnswerFn_bind, hotsTable,
+    evalWithAnswerFn_bind, hpathTable, evalWithAnswerFn_pure, hrevealedTable.1,
+    hrevealedTable.2]
+
+noncomputable def totalAnswerCache (f : QueryImpl HashSpec Id) : QueryCache HashSpec :=
+  fun input => some (f input)
+
+@[simp] theorem totalAnswerCache_apply (f : QueryImpl HashSpec Id) (input : HashInput) :
+    totalAnswerCache f input = some (f input) := rfl
+
+theorem cachedRun_totalAnswerCache (f : QueryImpl HashSpec Id)
+    (computation : OracleComp HashSpec alpha) :
+    CachedRun (totalAnswerCache f) f computation := by
+  intro input _
+  simp
+
+set_option maxRecDepth 10000 in
+set_option linter.constructorNameAsVariable false in
+theorem successfulSignRun_of_mem_runRaw_maskedSignAfterDigest
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter) (root : Digest)
+    (table : Coordinate → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (message : Message) (randomness : Randomness) (index : Index)
+    (leaves : DigestTree → FtsLeaf) (signature : Signature)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat)
+    (hf : StableCacheAgreesWithFn parameter finalCache f)
+    (htable : ∀ coordinate output, finalState.values coordinate = some output →
+      output = table coordinate)
+    (hrealizes : ∀ position : Position, IsOtsPosition position →
+      f (tableInput parameter table (.position position)) = table (.position position))
+    (hdigest : SuccessfulDigestRun f (totalAnswerCache f)
+      (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey)
+        message randomness index leaves)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining
+        (some signature, finalCache) ∈ support
+      (LazyRevealProbe.runRaw state fuel
+        ((maskedSignAfterDigest parameter ftsSecret randomness index leaves).run cache))) :
+    SuccessfulSignRun f (totalAnswerCache f)
+      (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey)
+        message signature := by
+  unfold maskedSignAfterDigest at hresult
+  rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨pathRaw, hpath, hafterPath⟩ := hresult
+  cases pathRaw with
+  | stopped hit => simp at hafterPath
+  | done pathState pathRemaining pathResult =>
+      rcases pathResult with ⟨ftsPath, pathCache⟩
+      simp only at hafterPath
+      rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hafterPath
+      obtain ⟨layersRaw, hlayers, hafterLayers⟩ := hafterPath
+      cases layersRaw with
+      | stopped hit => simp at hafterLayers
+      | done layersState layersRemaining layersResult =>
+          rcases layersResult with ⟨layers, layersCache⟩
+          rw [← maskedSignLayers_eq_sequenceFin parameter ftsSecret index] at hlayers
+          have hlayersLE := ordinaryCacheIncreasing_maskedSignLayers parameter ftsSecret index
+            pathState pathCache pathRemaining layersState layersRemaining layers layersCache hlayers
+          simp only at hafterLayers
+          cases hparts : traverseOption layers with
+          | none =>
+              simp [hparts, LazyRevealProbe.runRaw] at hafterLayers
+          | some parts =>
+              rw [hparts, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+                mem_support_bind_iff] at hafterLayers
+              obtain ⟨revealedRaw, hrevealed, hfinish⟩ := hafterLayers
+              cases revealedRaw with
+              | stopped hit => simp at hfinish
+              | done revealedState revealedRemaining revealedResult =>
+                  rcases revealedResult with ⟨revealed, revealedCache⟩
+                  have hrevealedLE := ordinaryCacheIncreasing_sequenceFin
+                    (fun lay => revealLayerValues index lay (parts lay).2)
+                    (fun lay => ordinaryCacheIncreasing_revealLayerValues index lay (parts lay).2)
+                    layersState layersCache layersRemaining revealedState revealedRemaining
+                      revealed revealedCache hrevealed
+                  have hvaluesLE := LazyRevealProbe.valuesLE_of_mem_runRaw_done
+                    ((sequenceFin fun lay => revealLayerValues index lay (parts lay).2).run
+                      layersCache) layersState revealedState layersRemaining revealedRemaining
+                        (revealed, revealedCache) hrevealed
+                  simp [LazyRevealProbe.runRaw] at hfinish
+                  rcases hfinish with ⟨rfl, rfl, hsignature, rfl⟩
+                  have hfPath : StableCacheAgreesWithFn parameter pathCache f :=
+                    fun input output hstable hcached => hf input output hstable
+                      (hrevealedLE (hlayersLE hcached))
+                  have hftsEval := (replay_of_mem_runRaw_ordinaryHashImpl_of_stable f parameter
+                    (ftsOpen parameter index leaves (ftsSecret index)) state pathState cache
+                      pathCache fuel pathRemaining ftsPath hfPath
+                        (queriesStable_ftsOpen f parameter index leaves (ftsSecret index)) hpath).1
+                  rw [hsignature]
+                  refine ⟨index, leaves,
+                    (fun lay => ((parts lay).1, (revealed lay).1, (revealed lay).2)),
+                    hdigest, rfl, hftsEval.symm, rfl, rfl, rfl,
+                    cachedRun_totalAnswerCache f _, ?_, ?_⟩
+                  · intro lay
+                    obtain ⟨componentState, componentFinalState, componentCache,
+                        componentFinalCache, componentFuel, componentRemaining, part, hcomponent,
+                        hselected, hcomponentValuesLE, hcomponentCacheLE⟩ :=
+                      maskedSignLayers_component_run parameter ftsSecret index pathState
+                        layersState pathCache layersCache pathRemaining layersRemaining layers
+                          hlayers lay
+                    have hpartsAt := traverseOption_eq_some_apply layers parts hparts lay
+                    have hpart : part = some (parts lay) := hselected.symm.trans hpartsAt
+                    rw [hpart, maskedSignLayerAt_eq] at hcomponent
+                    obtain ⟨revealState, revealFinalState, revealCache, revealFinalCache,
+                        revealFuel, revealRemaining, revealValue, hrevealComponent,
+                        hrevealSelected, hrevealValuesLE, _⟩ :=
+                      sequenceFin_component_run_of_done
+                        (fun otherLay => revealLayerValues index otherLay (parts otherLay).2)
+                        (fun otherLay => ordinaryCacheIncreasing_revealLayerValues index otherLay
+                          (parts otherLay).2) layersState finalState layersCache finalCache
+                            layersRemaining remaining revealed hrevealed lay
+                    have hfComponent : StableCacheAgreesWithFn parameter componentFinalCache f :=
+                      fun input output hstable hcached => hf input output hstable
+                        (hrevealedLE (hcomponentCacheLE hcached))
+                    have htableComponent : ∀ coordinate output,
+                        componentFinalState.values coordinate = some output →
+                          output = table coordinate :=
+                      fun coordinate output hvalue => htable coordinate output
+                        (hvaluesLE coordinate output
+                          (hcomponentValuesLE coordinate output hvalue))
+                    have htableReveal : ∀ coordinate output,
+                        revealFinalState.values coordinate = some output →
+                          output = table coordinate :=
+                      fun coordinate output hvalue => htable coordinate output
+                        (hrevealValuesLE coordinate output hvalue)
+                    change evalWithAnswerFn f
+                      (signLayer
+                        (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey)
+                          index lay) =
+                        some ((parts lay).1, (revealed lay).1, (revealed lay).2)
+                    rw [hrevealSelected]
+                    exact maskedSignLayer_and_reveal_eval f parameter root table ftsSecret index lay
+                      (parts lay).1 (parts lay).2 componentState componentFinalState componentCache
+                        componentFinalCache componentFuel componentRemaining revealState
+                          revealFinalState revealCache revealFinalCache revealFuel revealRemaining
+                            revealValue hfComponent htableComponent htableReveal hrealizes hcomponent
+                              hrevealComponent
+                  · intro lay
+                    exact cachedRun_totalAnswerCache f _
+
+set_option maxRecDepth 10000 in
+theorem successfulSignRun_of_mem_runRaw_maskedSign
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter) (root : Digest)
+    (table : Coordinate → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (message : Message) (signature : Signature)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat)
+    (hf : StableCacheAgreesWithFn parameter finalCache f)
+    (htable : ∀ coordinate output, finalState.values coordinate = some output →
+      output = table coordinate)
+    (hrealizes : ∀ position : Position, IsOtsPosition position →
+      f (tableInput parameter table (.position position)) = table (.position position))
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining
+        (some signature, finalCache) ∈ support
+      (LazyRevealProbe.runRaw state fuel
+        ((maskedSign parameter root ftsSecret message).run cache))) :
+    SuccessfulSignRun f (totalAnswerCache f)
+      (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey)
+        message signature := by
+  let secretKey : SecretKey :=
+    ⟨parameter, root, tableOtsSecret table, ftsSecret⟩
+  let digestSecretKey : SecretKey :=
+    ⟨parameter, root, fun _ _ _ _ => 0, ftsSecret⟩
+  unfold maskedSign at hresult
+  rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨loopRaw, hloop, hrest⟩ := hresult
+  cases loopRaw with
+  | stopped hit => simp at hrest
+  | done loopState loopRemaining loopResult =>
+      rcases loopResult with ⟨selected, loopCache⟩
+      simp only at hrest
+      cases selected with
+      | none => simp [LazyRevealProbe.runRaw] at hrest
+      | some selected =>
+          obtain ⟨randomness, index, leaves⟩ := selected
+          have hcacheLE := ordinaryCacheIncreasing_maskedSignAfterDigest parameter ftsSecret
+            randomness index leaves loopState loopCache loopRemaining finalState remaining
+              (some signature) finalCache hrest
+          have hdigestLoop := successfulDigestLoop_of_mem_runRaw_ordinaryRomImpl f
+            digestSecretKey message digestAttemptLimit randomness index leaves state loopState
+              cache loopCache fuel loopRemaining finalCache hcacheLE hf hloop
+          have hdigest : SuccessfulDigestRun f (ordinaryQueryCache finalCache) secretKey message
+              randomness index leaves := by
+            simpa only [SuccessfulDigestRun, signAttempt, digestSecretKey, secretKey] using
+              hdigestLoop
+          have hdigestTotal : SuccessfulDigestRun f (totalAnswerCache f) secretKey message
+              randomness index leaves :=
+            ⟨hdigest.1, hdigest.2.1, cachedRun_totalAnswerCache f _⟩
+          exact successfulSignRun_of_mem_runRaw_maskedSignAfterDigest f parameter root table
+            ftsSecret message randomness index leaves signature loopState finalState loopCache
+              finalCache loopRemaining remaining hf htable hrealizes (by
+                simpa only [secretKey] using hdigestTotal) hrest
+
+set_option maxRecDepth 10000 in
+theorem successfulSignRuns_signingTraceComputation
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter) (root : Digest)
+    (table : Coordinate → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) alpha)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat)
+    (value : alpha) (signingLog : QueryLog SigningSpec)
+    (hf : StableCacheAgreesWithFn parameter finalCache f)
+    (htable : ∀ coordinate output, finalState.values coordinate = some output →
+      output = table coordinate)
+    (hrealizes : ∀ position : Position, IsOtsPosition position →
+      f (tableInput parameter table (.position position)) = table (.position position))
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining
+        ((value, signingLog), finalCache) ∈ support
+      (LazyRevealProbe.runRaw state fuel
+        ((simulateQ (maskedExpandedAdversaryImpl parameter root ftsSecret)
+          (signingTraceComputation computation)).run cache))) :
+    ∀ (entry : (request : SignRequest) × SigningSpec.Range request)
+      (signature : Signature), entry ∈ signingLog → entry.2 = some signature →
+        SuccessfulSignRun f (totalAnswerCache f)
+          (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey)
+            entry.1 signature := by
+  induction computation using OracleComp.inductionOn generalizing signingLog state cache fuel with
+  | pure result =>
+      simp [signingTraceComputation, LazyRevealProbe.runRaw] at hresult
+      rcases hresult with ⟨rfl, rfl, hvalue, rfl⟩
+      rcases hvalue with ⟨rfl, rfl⟩
+      intro entry signature hentry
+      simp at hentry
+  | query_bind input next ih =>
+      rw [signingTraceComputation_query_bind, simulateQ_bind, simulateQ_spec_query,
+        StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+      obtain ⟨queryRaw, hquery, hrest⟩ := hresult
+      cases queryRaw with
+      | stopped hit => simp at hrest
+      | done queryState queryRemaining queryResult =>
+          rcases queryResult with ⟨output, queryCache⟩
+          simp only at hrest
+          rw [map_eq_bind_pure_comp, simulateQ_bind, StateT.run_bind,
+            LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hrest
+          obtain ⟨tailRaw, htail, hfinish⟩ := hrest
+          cases tailRaw with
+          | stopped hit => simp at hfinish
+          | done tailState tailRemaining tailResult =>
+              rcases tailResult with ⟨⟨tailValue, tailLog⟩, tailCache⟩
+              simp [LazyRevealProbe.runRaw] at hfinish
+              rcases hfinish with ⟨rfl, rfl, houtputs, rfl⟩
+              rcases houtputs with ⟨rfl, rfl⟩
+              have hvaluesLE := LazyRevealProbe.valuesLE_of_mem_runRaw_done
+                ((simulateQ (maskedExpandedAdversaryImpl parameter root ftsSecret)
+                  (signingTraceComputation (next output))).run queryCache)
+                    queryState finalState queryRemaining remaining
+                      ((value, tailLog), finalCache) htail
+              have htableQuery : ∀ coordinate cached,
+                  queryState.values coordinate = some cached → cached = table coordinate :=
+                fun coordinate cached hcached =>
+                  htable coordinate cached (hvaluesLE coordinate cached hcached)
+              have hfQuery : StableCacheAgreesWithFn parameter queryCache f :=
+                StableCacheAgreesWithFn.of_run
+                  (fun stableInput hstable =>
+                    (ordinaryEntryPreservingImpl_maskedExpandedAdversaryImpl parameter root
+                      ftsSecret stableInput hstable).simulateQ
+                        (signingTraceComputation (next output)))
+                  queryState finalState queryCache finalCache queryRemaining remaining
+                    (value, tailLog) hf htail
+              intro entry signature hentry hsignature
+              simp only [List.mem_append] at hentry
+              rcases hentry with hfragment | htailEntry
+              · cases input with
+                | inl oracleQuery => simp [signingLogFragment] at hfragment
+                | inr message =>
+                    have hentryEq : entry = ⟨message, output⟩ := by
+                      simpa [signingLogFragment] using hfragment
+                    subst entry
+                    change LazyRevealProbe.RawResult.done queryState queryRemaining
+                        (output, queryCache) ∈ support
+                      (LazyRevealProbe.runRaw state fuel
+                        ((maskedSign parameter root ftsSecret message).run cache)) at hquery
+                    change output = some signature at hsignature
+                    subst output
+                    exact successfulSignRun_of_mem_runRaw_maskedSign f parameter root table
+                      ftsSecret message signature state queryState cache queryCache fuel
+                        queryRemaining hfQuery htableQuery hrealizes hquery
+              · exact ih output queryState queryCache queryRemaining tailLog htail entry signature
+                  htailEntry hsignature
+
+set_option maxRecDepth 10000 in
+theorem successfulSignRuns_retainedGameRestComputation
+    (adversary : Adversary) (f : QueryImpl HashSpec Id)
+    (parameter : PublicParameter) (root : Digest) (table : Coordinate → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat)
+    (forgery : Forgery) (signingLog : QueryLog SigningSpec) (verified : Bool)
+    (hf : StableCacheAgreesWithFn parameter finalCache f)
+    (htable : ∀ coordinate output, finalState.values coordinate = some output →
+      output = table coordinate)
+    (hrealizes : ∀ position : Position, IsOtsPosition position →
+      f (tableInput parameter table (.position position)) = table (.position position))
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining
+        (((forgery, signingLog), verified), finalCache) ∈ support
+      (LazyRevealProbe.runRaw state fuel
+        ((simulateQ (maskedExpandedAdversaryImpl parameter root ftsSecret)
+          (retainedGameRestComputation adversary ⟨root, parameter⟩)).run cache))) :
+    ∀ (entry : (request : SignRequest) × SigningSpec.Range request)
+      (signature : Signature), entry ∈ signingLog → entry.2 = some signature →
+        SuccessfulSignRun f (totalAnswerCache f)
+          (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey)
+            entry.1 signature := by
+  rw [simulateQ_maskedExpanded_retainedGameRestComputation, StateT.run_bind,
+    LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨prefixRaw, hprefix, hrest⟩ := hresult
+  cases prefixRaw with
+  | stopped hit => simp at hrest
+  | done prefixState prefixRemaining prefixResult =>
+      rcases prefixResult with ⟨⟨prefixForgery, prefixLog⟩, prefixCache⟩
+      simp only at hrest
+      rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hrest
+      obtain ⟨verifyRaw, hverify, hfinish⟩ := hrest
+      cases verifyRaw with
+      | stopped hit => simp at hfinish
+      | done verifyState verifyRemaining verifyResult =>
+          rcases verifyResult with ⟨prefixVerified, verifyCache⟩
+          simp [LazyRevealProbe.runRaw] at hfinish
+          rcases hfinish with ⟨rfl, rfl, houtputs, rfl⟩
+          rcases houtputs with ⟨hprefixOutput, rfl⟩
+          rcases hprefixOutput with ⟨rfl, rfl⟩
+          have hvaluesLE := LazyRevealProbe.valuesLE_of_mem_runRaw_done
+            ((simulateQ (probingRomImpl parameter)
+              (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)).run
+                prefixCache) prefixState finalState prefixRemaining remaining
+                  (verified, finalCache) hverify
+          have htablePrefix : ∀ coordinate output,
+              prefixState.values coordinate = some output → output = table coordinate :=
+            fun coordinate output hcached =>
+              htable coordinate output (hvaluesLE coordinate output hcached)
+          have hfPrefix : StableCacheAgreesWithFn parameter prefixCache f :=
+            StableCacheAgreesWithFn.of_run
+              (fun input hstable =>
+                (ordinaryEntryPreservingImpl_probingRomImpl parameter input hstable).simulateQ
+                  (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature))
+              prefixState finalState prefixCache finalCache prefixRemaining remaining verified hf
+                hverify
+          exact successfulSignRuns_signingTraceComputation f parameter root table ftsSecret
+            (adversary.main ⟨root, parameter⟩) state prefixState cache prefixCache fuel
+              prefixRemaining forgery signingLog hfPrefix htablePrefix hrealizes hprefix
+
+set_option maxRecDepth 10000 in
+set_option linter.constructorNameAsVariable false in
+theorem successfulSignRuns_maskedRetainedGameAfterFtsSecrets
+    (adversary : Adversary) (f : QueryImpl HashSpec Id)
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (fuel remaining : Nat) (finalState : LazyRevealProbe.State Coordinate)
+    (finalCache : SplitHashCache) (root : Digest) (forgery : Forgery)
+    (signingLog : QueryLog SigningSpec) (verified : Bool)
+    (hf : StableCacheAgreesWithFn parameter finalCache f)
+    (htable : ∀ coordinate output, finalState.values coordinate = some output →
+      output = table coordinate)
+    (hrealizes : ∀ position : Position, IsOtsPosition position →
+      f (tableInput parameter table (.position position)) = table (.position position))
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining
+        ((root, ((forgery, signingLog), verified)), finalCache) ∈ support
+      (LazyRevealProbe.runRaw (LazyRevealProbe.State.empty :
+          LazyRevealProbe.State Coordinate) fuel
+        ((maskedRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
+          emptySplitHashCache))) :
+    ∀ (entry : (request : SignRequest) × SigningSpec.Range request)
+      (signature : Signature), entry ∈ signingLog → entry.2 = some signature →
+        SuccessfulSignRun f (totalAnswerCache f)
+          (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey)
+            entry.1 signature := by
+  unfold maskedRetainedGameAfterFtsSecrets at hresult
+  rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hresult
+  obtain ⟨rootRaw, hroot, hafterRoot⟩ := hresult
+  cases rootRaw with
+  | stopped hit => simp at hafterRoot
+  | done rootState rootRemaining rootResult =>
+      rcases rootResult with ⟨sampledRoot, rootCache⟩
+      simp only at hafterRoot
+      rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hafterRoot
+      obtain ⟨publishRaw, hpublish, hafterPublish⟩ := hafterRoot
+      cases publishRaw with
+      | stopped hit => simp at hafterPublish
+      | done publishState publishRemaining publishResult =>
+          rcases publishResult with ⟨publishedUnit, publishCache⟩
+          simp only at hafterPublish
+          rw [StateT.run_bind, LazyRevealProbe.runRaw_bind, mem_support_bind_iff] at hafterPublish
+          obtain ⟨restRaw, hrest, hfinish⟩ := hafterPublish
+          cases restRaw with
+          | stopped hit => simp at hfinish
+          | done restState restRemaining restResult =>
+              rcases restResult with ⟨result, restCache⟩
+              simp [LazyRevealProbe.runRaw] at hfinish
+              rcases hfinish with ⟨rfl, rfl, houtput, rfl⟩
+              rcases houtput with ⟨hrootEq, hresultEq⟩
+              rw [← hresultEq] at hrest
+              have hruns := successfulSignRuns_retainedGameRestComputation adversary f parameter
+                sampledRoot table ftsSecret publishState finalState publishCache finalCache
+                  publishRemaining remaining forgery signingLog verified hf htable hrealizes hrest
+              simpa only [hrootEq] using hruns
+
 theorem resolveKnownInput_returns_table_of_available
     (parameter : PublicParameter) (table : Coordinate → HashOutput)
     (coordinate : Coordinate) (state finalState : LazyRevealProbe.State Coordinate)
