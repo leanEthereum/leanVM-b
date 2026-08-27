@@ -3075,6 +3075,34 @@ theorem verifierHashQuery_returns_table_of_uncached
       exact resolveVerifierInput_returns_table_of_uncached parameter table position state finalState
         cache finalCache fuel remaining output huncached htable hresult
 
+theorem verifierHashQuery_returns_table
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
+    (table : Coordinate → HashOutput) (position : Position) (hots : IsOtsPosition position)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (output : HashOutput)
+    (hf : (ordinaryQueryCache finalCache).AgreesWithFn f)
+    (htable : ∀ coordinate cached, finalState.values coordinate = some cached →
+      cached = table coordinate)
+    (hrealizes : f (tableInput parameter table (.position position)) =
+      table (.position position))
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (output, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((verifierHashQuery parameter
+          (tableInput parameter table (.position position))).run cache))) :
+    output = table (.position position) ∧
+      finalCache (.ordinary (tableInput parameter table (.position position))) = some output := by
+  cases hcached : cache (.ordinary
+      (tableInput parameter table (.position position))) with
+  | none =>
+      exact verifierHashQuery_returns_table_of_uncached parameter table position hots state
+        finalState cache finalCache fuel remaining output hcached htable hresult
+  | some cached =>
+      have hreturns := returnsCachedOrdinary_verifierHashQuery parameter
+        (tableInput parameter table (.position position)) state cache fuel finalState remaining
+          output finalCache hresult
+      have hanswer := hf hreturns
+      exact ⟨hanswer.symm.trans hrealizes, hreturns⟩
+
 theorem probingHashQuery_eq_resolveKnownInput_of_decodeProbe_none
     (parameter : PublicParameter) (input : HashInput) (position : Position)
     (hprobe : decodeProbe? parameter input = none)

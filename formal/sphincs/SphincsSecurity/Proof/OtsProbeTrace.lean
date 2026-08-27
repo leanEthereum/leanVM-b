@@ -65,6 +65,52 @@ theorem simulateQ_probingRom_scheme_verify
       liftM (verify publicKey message signature : OracleComp HashSpec Bool) by rfl]
   exact QueryImpl.simulateQ_add_liftM_right _ _ _
 
+theorem simulateQ_verifierRom_scheme_verify
+    (parameter : PublicParameter) (publicKey : PublicKey)
+    (message : Message) (signature : Signature) :
+    simulateQ (verifierRomImpl parameter)
+        (scheme.verify publicKey message signature) =
+      simulateQ (verifierHashImpl parameter)
+        (verify publicKey message signature) := by
+  rw [show scheme.verify publicKey message signature =
+      liftM (verify publicKey message signature : OracleComp HashSpec Bool) by rfl]
+  exact QueryImpl.simulateQ_add_liftM_right _ _ _
+
+theorem replay_of_mem_runRaw_verifierRom_scheme_verify
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
+    (publicKey : PublicKey) (message : Message) (signature : Signature)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (verified : Bool)
+    (hf : (ordinaryQueryCache finalCache).AgreesWithFn f)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining
+        (verified, finalCache) ∈ support
+      (LazyRevealProbe.runRaw state fuel
+        ((simulateQ (verifierRomImpl parameter)
+          (scheme.verify publicKey message signature)).run cache))) :
+    evalWithAnswerFn f (verify publicKey message signature) = verified ∧
+      CachedRun (ordinaryQueryCache finalCache) f
+        (verify publicKey message signature) := by
+  rw [simulateQ_verifierRom_scheme_verify] at hresult
+  exact replay_of_mem_runRaw_verifierHashImpl f parameter
+    (verify publicKey message signature) state finalState cache finalCache fuel remaining verified
+      hf hresult
+
+theorem rawCachesVerifierTrace_of_mem_runRaw_verifierRom
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
+    (publicKey : PublicKey) (message : Message) (signature : Signature)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (verified : Bool)
+    (hf : (ordinaryQueryCache finalCache).AgreesWithFn f)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining
+        (verified, finalCache) ∈ support
+      (LazyRevealProbe.runRaw state fuel
+        ((simulateQ (verifierRomImpl parameter)
+          (scheme.verify publicKey message signature)).run cache))) :
+    ∀ input, input ∈ queriedInputs f (verify publicKey message signature) →
+      finalCache (.ordinary input) ≠ none := by
+  exact (replay_of_mem_runRaw_verifierRom_scheme_verify f parameter publicKey message signature
+    state finalState cache finalCache fuel remaining verified hf hresult).2
+
 set_option maxRecDepth 10000 in
 theorem cached_bottom_probe_of_mem_runRaw_verify
     (f : QueryImpl HashSpec Id) (parameter : PublicParameter)

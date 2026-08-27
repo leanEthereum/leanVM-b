@@ -2130,6 +2130,46 @@ theorem returnsCachedOrdinary_resolveKnownInput
       · rw [if_neg hexact]
         exact returnsCachedOrdinary_splitHashQuery input
 
+theorem returnsCachedOrdinary_resolveVerifierInput
+    (parameter : PublicParameter) (coordinate : Coordinate) (input : HashInput) :
+    ReturnsCachedOrdinary input (resolveVerifierInput parameter coordinate input) := by
+  intro state cache fuel finalState remaining output finalCache hresult
+  unfold resolveVerifierInput at hresult
+  cases hcached : cache (.ordinary input) with
+  | some cached =>
+      simp [StateT.run_get, hcached, LazyRevealProbe.runRaw] at hresult
+      rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+      exact hcached
+  | none =>
+      simp [hcached] at hresult
+      exact (ReturnsCachedOrdinary.bind_right fun _ =>
+        returnsCachedOrdinary_resolveKnownInput parameter coordinate input)
+          state cache fuel finalState remaining output finalCache hresult
+
+theorem returnsCachedOrdinary_verifierHashQuery
+    (parameter : PublicParameter) (input : HashInput) :
+    ReturnsCachedOrdinary input (verifierHashQuery parameter input) := by
+  unfold verifierHashQuery
+  cases hprobe : decodeProbe? parameter input with
+  | some candidate =>
+      exact ReturnsCachedOrdinary.bind_right fun _ =>
+        returnsCachedOrdinary_resolveVerifierInput parameter candidate.outputCoordinate input
+  | none =>
+      cases hposition : decodePosition? parameter input with
+      | none => exact returnsCachedOrdinary_splitHashQuery input
+      | some position =>
+          cases position with
+          | chain lay tree leafIdx chainIdx step =>
+              exact returnsCachedOrdinary_resolveVerifierInput parameter
+                (.position (.chain lay tree leafIdx chainIdx step)) input
+          | leaf lay tree leafIdx =>
+              exact returnsCachedOrdinary_resolveVerifierInput parameter
+                (.position (.leaf lay tree leafIdx)) input
+          | node lay tree level nodeIdx =>
+              exact returnsCachedOrdinary_resolveVerifierInput parameter
+                (.position (.node lay tree level nodeIdx)) input
+          | ftsLeaf | ftsNode | ftsRoots => exact returnsCachedOrdinary_splitHashQuery input
+
 theorem cachesOrdinaryInput_probingHashQuery
     (parameter : PublicParameter) (input : HashInput) :
     CachesOrdinaryInput input (probingHashQuery parameter input) := by
@@ -2391,6 +2431,56 @@ theorem ordinaryEntryPreservingImpl_verifierRomImpl
   cases query with
   | inl query => exact ordinaryEntryPreservingImpl_splitUniformImpl input query
   | inr query => exact ordinaryEntryPreservingImpl_verifierHashImpl parameter input query
+
+set_option maxRecDepth 10000 in
+theorem replay_of_mem_runRaw_verifierHashImpl
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
+    (computation : OracleComp HashSpec alpha)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat) (value : alpha)
+    (hf : (ordinaryQueryCache finalCache).AgreesWithFn f)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈
+      support (LazyRevealProbe.runRaw state fuel
+        ((simulateQ (verifierHashImpl parameter) computation).run cache))) :
+    evalWithAnswerFn f computation = value ∧
+      CachedRun (ordinaryQueryCache finalCache) f computation := by
+  induction computation using OracleComp.inductionOn generalizing
+      state cache finalState finalCache fuel remaining value with
+  | pure result =>
+      simp [LazyRevealProbe.runRaw] at hresult
+      rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+      exact ⟨rfl, by simp [CachedRun]⟩
+  | query_bind input next ih =>
+      rw [simulateQ_query_bind, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+        mem_support_bind_iff] at hresult
+      obtain ⟨queryRaw, hquery, hrest⟩ := hresult
+      cases queryRaw with
+      | stopped hit => simp at hrest
+      | done queryState queryRemaining queryResult =>
+          rcases queryResult with ⟨answer, queryCache⟩
+          have hqueryProperty : ReturnsCachedOrdinary input
+              (verifierHashImpl parameter input) :=
+            returnsCachedOrdinary_verifierHashQuery parameter input
+          have hcachedQuery : queryCache (.ordinary input) = some answer :=
+            hqueryProperty state cache fuel queryState queryRemaining answer queryCache hquery
+          have hcachedFinal : finalCache (.ordinary input) = some answer :=
+            (ordinaryEntryPreservingImpl_verifierHashImpl parameter input).simulateQ
+              (next answer) queryState queryCache queryRemaining finalState remaining value
+                finalCache answer hcachedQuery hrest
+          have hfinput : f input = answer := hf hcachedFinal
+          obtain ⟨htailEval, htailQueries⟩ := ih answer queryState finalState queryCache finalCache queryRemaining
+            remaining value hf hrest
+          constructor
+          · rw [evalWithAnswerFn_bind,
+              show evalWithAnswerFn f (liftM (HashSpec.query input)) = f input from
+                simulateQ_spec_query f input, hfinput]
+            exact htailEval
+          · intro other hother
+            rw [queriedInputs_query_bind, hfinput] at hother
+            simp only [List.mem_cons] at hother
+            rcases hother with rfl | htail
+            · simp [ordinaryQueryCache, hcachedFinal]
+            · exact htailQueries other htail
 
 set_option maxRecDepth 10000 in
 theorem replay_of_mem_runRaw_probingHashImpl_of_stable
