@@ -1735,10 +1735,6 @@ theorem finalizeResolvedCoordinates_cons_position_fresh
   · simp only [hhit, ↓reduceIte, pure_bind]
     rw [clearPending_complete_self]
 
-def DeferredFreshOn (coordinates : List Coordinate) (context : DeferredContext) : Prop :=
-  ∀ position : Position, Coordinate.position position ∈ coordinates →
-    context.values position = none
-
 theorem resolveDeferredChainStart_of_missing
     (table : OtsSecretIndex → HashOutput) (index : OtsSecretIndex)
     (context : DeferredContext)
@@ -1750,6 +1746,402 @@ theorem resolveDeferredChainStart_of_missing
           values := context.values },
         table index⟩ := by
   simp [resolveDeferredChainStart, hmissing]
+
+noncomputable def resolvedCompletionOutput (coordinate : Coordinate)
+    (context : DeferredContext) (table : OtsSecretIndex → HashOutput) : ProbComp HashOutput :=
+  match coordinate with
+  | .chainStart lay tree leafIdx chainIdx => pure (table ⟨lay, tree, leafIdx, chainIdx⟩)
+  | .position position =>
+      match context.values position with
+      | some output => pure output
+      | none => LazyRevealProbe.sampleHashOutput
+
+def DeferredContext.completeResolved (context : DeferredContext)
+    (coordinate : Coordinate) (output : HashOutput) : DeferredContext :=
+  match coordinate with
+  | .chainStart _ _ _ _ =>
+      { context with state := context.state.complete coordinate output }
+  | .position position =>
+      { state := context.state.complete coordinate output
+        values := context.values.install position output }
+
+theorem resolvedCompletionOutput_neverFails
+    (coordinate : Coordinate) (context : DeferredContext)
+    (table : OtsSecretIndex → HashOutput) :
+    Pr[⊥ | resolvedCompletionOutput coordinate context table] = 0 := by
+  cases coordinate with
+  | chainStart => simp [resolvedCompletionOutput]
+  | position position =>
+      cases context.values position <;>
+        simp [resolvedCompletionOutput, LazyRevealProbe.sampleHashOutput]
+
+theorem finalizeResolvedCoordinates_cons_of_missing
+    (coordinate : Coordinate) (remaining : List Coordinate)
+    (context : DeferredContext) (table : OtsSecretIndex → HashOutput)
+    (hmissing : context.state.values coordinate = none) :
+    finalizeResolvedCoordinates (coordinate :: remaining) context table = (do
+      let output ← resolvedCompletionOutput coordinate context table
+      (if context.state.hitAt coordinate output then
+        (pure none : ProbComp (Option DeferredContext))
+      else finalizeResolvedCoordinates remaining
+        (context.completeResolved coordinate output) table)) := by
+  cases coordinate with
+  | chainStart lay tree leafIdx chainIdx =>
+      let index : OtsSecretIndex := ⟨lay, tree, leafIdx, chainIdx⟩
+      have hmissing' : context.state.values index.coordinate = none := by
+        simpa [index, OtsSecretIndex.coordinate] using hmissing
+      rw [finalizeResolvedCoordinates]
+      simp only [hmissing]
+      rw [resolveDeferredChainStart_of_missing table index context hmissing']
+      by_cases hhit : context.state.hitAt (.chainStart lay tree leafIdx chainIdx)
+          (table ⟨lay, tree, leafIdx, chainIdx⟩)
+      · simp [resolvedCompletionOutput, DeferredContext.completeResolved, index,
+          OtsSecretIndex.coordinate, hhit]
+      · simp [resolvedCompletionOutput, DeferredContext.completeResolved, index,
+          OtsSecretIndex.coordinate, hhit]
+  | position position =>
+      cases hvalue : context.values position with
+      | some output =>
+          rw [finalizeResolvedCoordinates_cons_position_of_deferred_value position remaining
+            context table output hmissing hvalue]
+          have hinstall : context.values.install position output = context.values := by
+            funext other
+            by_cases heq : other = position
+            · subst other
+              simp [DeferredStructuralValues.install, hvalue]
+            · simp [DeferredStructuralValues.install, heq]
+          simp [resolvedCompletionOutput, DeferredContext.completeResolved, hvalue, hinstall]
+      | none =>
+          rw [finalizeResolvedCoordinates_cons_position_fresh position remaining context table
+            hmissing hvalue]
+          simp [resolvedCompletionOutput, DeferredContext.completeResolved, hvalue]
+
+theorem resolvedCompletionOutput_completeResolved_of_ne
+    (left right : Coordinate) (context : DeferredContext)
+    (table : OtsSecretIndex → HashOutput) (output : HashOutput) (hne : right ≠ left) :
+    resolvedCompletionOutput right (context.completeResolved left output) table =
+      resolvedCompletionOutput right context table := by
+  cases left with
+  | chainStart => cases right <;> rfl
+  | position left =>
+      cases right with
+      | chainStart => rfl
+      | position right =>
+          have hposition : right ≠ left := by
+            intro heq
+            subst right
+            exact hne rfl
+          simp [resolvedCompletionOutput, DeferredContext.completeResolved,
+            DeferredStructuralValues.install, hposition]
+
+theorem DeferredContext.completeResolved_comm
+    (context : DeferredContext) (left right : Coordinate)
+    (leftOutput rightOutput : HashOutput) (hne : left ≠ right) :
+    (context.completeResolved left leftOutput).completeResolved right rightOutput =
+      (context.completeResolved right rightOutput).completeResolved left leftOutput := by
+  have hstate := complete_comm context.state left right leftOutput rightOutput hne
+  cases left with
+  | chainStart =>
+      cases right with
+      | chainStart =>
+          simp [DeferredContext.completeResolved, hstate]
+      | position right =>
+          simp [DeferredContext.completeResolved, hstate]
+  | position left =>
+      cases right with
+      | chainStart =>
+          simp [DeferredContext.completeResolved, hstate]
+      | position right =>
+          have hposition : left ≠ right := by
+            intro heq
+            subst right
+            exact hne rfl
+          rcases context with ⟨state, values⟩
+          simp only [DeferredContext.completeResolved]
+          rw [complete_comm state (.position left) (.position right)
+            leftOutput rightOutput hne]
+          congr 1
+          exact Function.update_comm hposition (some leftOutput) (some rightOutput) values
+
+set_option maxRecDepth 100000 in
+theorem evalDist_finalizeResolvedCoordinates_two_missing
+    (left right : Coordinate) (remaining : List Coordinate)
+    (context : DeferredContext) (table : OtsSecretIndex → HashOutput)
+    (hne : left ≠ right) (hleft : context.state.values left = none)
+    (hright : context.state.values right = none) :
+    evalDist (finalizeResolvedCoordinates (left :: right :: remaining) context table) =
+      evalDist (do
+        let leftOutput ← resolvedCompletionOutput left context table
+        let rightOutput ← resolvedCompletionOutput right context table
+        (if context.state.hitAt left leftOutput then
+          (pure none : ProbComp (Option DeferredContext))
+        else if context.state.hitAt right rightOutput then
+          pure none
+        else finalizeResolvedCoordinates remaining
+          (((context.completeResolved left leftOutput).completeResolved right rightOutput) :
+            DeferredContext) table)) := by
+  rw [finalizeResolvedCoordinates_cons_of_missing left (right :: remaining) context table hleft]
+  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+  intro leftOutput
+  by_cases hleftHit : context.state.hitAt left leftOutput
+  · rw [if_pos hleftHit]
+    simp only [hleftHit, ↓reduceIte]
+    exact OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+      (resolvedCompletionOutput right context table)
+      (resolvedCompletionOutput_neverFails right context table) (pure none) |>.symm
+  · rw [if_neg hleftHit]
+    simp only [hleftHit, ↓reduceIte]
+    have hrightValue : (context.completeResolved left leftOutput).state.values right = none := by
+      cases left <;> simp only [DeferredContext.completeResolved] <;>
+        rw [values_complete_of_ne context.state _ right leftOutput (Ne.symm hne), hright]
+    rw [finalizeResolvedCoordinates_cons_of_missing right remaining
+      (context.completeResolved left leftOutput) table hrightValue]
+    rw [resolvedCompletionOutput_completeResolved_of_ne left right context table leftOutput
+      (Ne.symm hne)]
+    apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+    intro rightOutput
+    have hcompleteState :
+        (context.completeResolved left leftOutput).state =
+          context.state.complete left leftOutput := by
+      cases left <;> rfl
+    have hrightHit :
+        (context.completeResolved left leftOutput).state.hitAt right rightOutput ↔
+          context.state.hitAt right rightOutput := by
+      rw [hcompleteState]
+      exact hitAt_complete_of_ne context.state left right leftOutput rightOutput (Ne.symm hne)
+    by_cases hhit : context.state.hitAt right rightOutput
+    · rw [if_pos (hrightHit.mpr hhit), if_pos hhit]
+    · rw [if_neg (mt hrightHit.mp hhit), if_neg hhit]
+
+set_option maxRecDepth 100000 in
+theorem evalDist_finalizeResolvedCoordinates_swap_of_both_missing
+    (left right : Coordinate) (remaining : List Coordinate)
+    (context : DeferredContext) (table : OtsSecretIndex → HashOutput)
+    (hne : left ≠ right) (hleft : context.state.values left = none)
+    (hright : context.state.values right = none) :
+    evalDist (finalizeResolvedCoordinates (left :: right :: remaining) context table) =
+      evalDist (finalizeResolvedCoordinates (right :: left :: remaining) context table) := by
+  rw [evalDist_finalizeResolvedCoordinates_two_missing left right remaining context table hne
+    hleft hright,
+    evalDist_finalizeResolvedCoordinates_two_missing right left remaining context table hne.symm
+      hright hleft]
+  rw [OracleComp.DeferredSampling.evalDist_bind_comm
+    (resolvedCompletionOutput left context table)
+    (resolvedCompletionOutput right context table)]
+  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+  intro rightOutput
+  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+  intro leftOutput
+  by_cases hleftHit : context.state.hitAt left leftOutput
+  · simp [hleftHit]
+  · by_cases hrightHit : context.state.hitAt right rightOutput
+    · simp [hleftHit, hrightHit]
+    · simp only [hleftHit, hrightHit, ↓reduceIte]
+      rw [DeferredContext.completeResolved_comm context left right leftOutput rightOutput hne]
+
+theorem clearPending_completeResolved_comm
+    (context : DeferredContext) (left right : Coordinate) (output : HashOutput) :
+    ({ context with state := context.state.clearPending left }).completeResolved right output =
+      { context.completeResolved right output with
+        state := (context.completeResolved right output).state.clearPending left } := by
+  cases right <;> simp only [DeferredContext.completeResolved] <;>
+    rw [clearPending_complete_comm]
+
+set_option maxRecDepth 100000 in
+theorem evalDist_finalizeResolvedCoordinates_swap_of_some_none
+    (left right : Coordinate) (remaining : List Coordinate)
+    (context : DeferredContext) (table : OtsSecretIndex → HashOutput)
+    (leftOutput : HashOutput) (hne : left ≠ right)
+    (hleft : context.state.values left = some leftOutput)
+    (hright : context.state.values right = none) :
+    evalDist (finalizeResolvedCoordinates (left :: right :: remaining) context table) =
+      evalDist (finalizeResolvedCoordinates (right :: left :: remaining) context table) := by
+  rw [finalizeResolvedCoordinates_cons_of_state_value left (right :: remaining) context table
+    leftOutput hleft]
+  have hrightClear :
+      (context.state.clearPending left).values right = none := by
+    simpa only [values_clearPending] using hright
+  rw [finalizeResolvedCoordinates_cons_of_missing right remaining
+    { context with state := context.state.clearPending left } table hrightClear]
+  rw [finalizeResolvedCoordinates_cons_of_missing right (left :: remaining) context table hright]
+  have hcompletionOutput : resolvedCompletionOutput right
+      { context with state := context.state.clearPending left } table =
+        resolvedCompletionOutput right context table := by
+    cases right <;> rfl
+  rw [hcompletionOutput]
+  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+  intro rightOutput
+  have hrightHit : (context.state.clearPending left).hitAt right rightOutput ↔
+      context.state.hitAt right rightOutput :=
+    hitAt_clearPending_of_ne context.state left right rightOutput hne.symm
+  by_cases hhit : context.state.hitAt right rightOutput
+  · rw [if_pos (hrightHit.mpr hhit), if_pos hhit]
+  · rw [if_neg (mt hrightHit.mp hhit), if_neg hhit]
+    have hleftCompleted :
+        (context.completeResolved right rightOutput).state.values left = some leftOutput := by
+      have hstate : (context.completeResolved right rightOutput).state =
+          context.state.complete right rightOutput := by
+        cases right <;> rfl
+      rw [hstate, values_complete_of_ne context.state right left rightOutput hne, hleft]
+    rw [finalizeResolvedCoordinates_cons_of_state_value left remaining
+      (context.completeResolved right rightOutput) table leftOutput hleftCompleted]
+    rw [clearPending_completeResolved_comm context left right rightOutput]
+
+set_option maxRecDepth 100000 in
+theorem evalDist_finalizeResolvedCoordinates_swap
+    (left right : Coordinate) (remaining : List Coordinate)
+    (context : DeferredContext) (table : OtsSecretIndex → HashOutput)
+    (hne : left ≠ right) :
+    evalDist (finalizeResolvedCoordinates (left :: right :: remaining) context table) =
+      evalDist (finalizeResolvedCoordinates (right :: left :: remaining) context table) := by
+  cases hleft : context.state.values left with
+  | some leftOutput =>
+      cases hright : context.state.values right with
+      | some rightOutput =>
+          rw [finalizeResolvedCoordinates_cons_of_state_value left (right :: remaining)
+            context table leftOutput hleft,
+            finalizeResolvedCoordinates_cons_of_state_value right (left :: remaining)
+              context table rightOutput hright]
+          have hrightClear : (context.state.clearPending left).values right =
+              some rightOutput := by simpa only [values_clearPending] using hright
+          have hleftClear : (context.state.clearPending right).values left =
+              some leftOutput := by simpa only [values_clearPending] using hleft
+          rw [finalizeResolvedCoordinates_cons_of_state_value right remaining
+            { context with state := context.state.clearPending left } table rightOutput hrightClear,
+            finalizeResolvedCoordinates_cons_of_state_value left remaining
+              { context with state := context.state.clearPending right } table leftOutput hleftClear]
+          rw [clearPending_comm]
+      | none =>
+          exact evalDist_finalizeResolvedCoordinates_swap_of_some_none left right remaining
+            context table leftOutput hne hleft hright
+  | none =>
+      cases hright : context.state.values right with
+      | some rightOutput =>
+          exact (evalDist_finalizeResolvedCoordinates_swap_of_some_none right left remaining
+            context table rightOutput hne.symm hright hleft).symm
+      | none =>
+          exact evalDist_finalizeResolvedCoordinates_swap_of_both_missing left right remaining
+            context table hne hleft hright
+
+set_option maxRecDepth 100000 in
+theorem evalDist_finalizeResolvedCoordinates_perm
+    {left right : List Coordinate} (hperm : left.Perm right)
+    (context : DeferredContext) (table : OtsSecretIndex → HashOutput) :
+    evalDist (finalizeResolvedCoordinates left context table) =
+      evalDist (finalizeResolvedCoordinates right context table) := by
+  induction hperm generalizing context with
+  | nil => rfl
+  | cons coordinate hperm ih =>
+      cases hvalue : context.state.values coordinate with
+      | some output =>
+          rw [finalizeResolvedCoordinates_cons_of_state_value coordinate _ context table output
+            hvalue,
+            finalizeResolvedCoordinates_cons_of_state_value coordinate _ context table output
+              hvalue]
+          exact ih { context with state := context.state.clearPending coordinate }
+      | none =>
+          rw [finalizeResolvedCoordinates_cons_of_missing coordinate _ context table hvalue,
+            finalizeResolvedCoordinates_cons_of_missing coordinate _ context table hvalue]
+          apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+          intro output
+          by_cases hhit : context.state.hitAt coordinate output
+          · rw [if_pos hhit, if_pos hhit]
+          · rw [if_neg hhit, if_neg hhit]
+            exact ih (context.completeResolved coordinate output)
+  | swap left right remaining =>
+      by_cases heq : left = right
+      · subst right
+        rfl
+      · exact (evalDist_finalizeResolvedCoordinates_swap left right remaining context table
+          heq).symm
+  | trans _ _ ihLeft ihRight => exact (ihLeft context).trans (ihRight context)
+
+theorem evalDist_finalizeResolvedCoordinates_move_to_front
+    (coordinate : Coordinate) (coordinates : List Coordinate)
+    (context : DeferredContext) (table : OtsSecretIndex → HashOutput)
+    (hmem : coordinate ∈ coordinates) :
+    evalDist (finalizeResolvedCoordinates coordinates context table) =
+      evalDist (finalizeResolvedCoordinates
+        (coordinate :: coordinates.erase coordinate) context table) :=
+  evalDist_finalizeResolvedCoordinates_perm (List.perm_cons_erase hmem) context table
+
+def DeferredContext.presamplePosition (context : DeferredContext)
+    (position : Position) (output : HashOutput) : DeferredContext :=
+  { state := context.state.clearPending (.position position)
+    values := context.values.install position output }
+
+theorem not_hitAt_clearPending_self
+    (state : LazyRevealProbe.State Coordinate) (coordinate : Coordinate)
+    (output : HashOutput) :
+    ¬(state.clearPending coordinate).hitAt coordinate output := by
+  simp [LazyRevealProbe.State.hitAt, LazyRevealProbe.State.pendingAt,
+    LazyRevealProbe.State.clearPending, LazyRevealProbe.State.pendingAway]
+
+set_option maxRecDepth 100000 in
+theorem evalDist_finalizeResolvedCoordinates_defer_position
+    (position : Position) (coordinates : List Coordinate)
+    (context : DeferredContext) (table : OtsSecretIndex → HashOutput)
+    (hmem : Coordinate.position position ∈ coordinates)
+    (hstate : context.state.values (.position position) = none)
+    (hvalue : context.values position = none) :
+    evalDist (finalizeResolvedCoordinates coordinates context table) =
+      evalDist (do
+        let output ← LazyRevealProbe.sampleHashOutput
+        (if context.state.hitAt (.position position) output then
+          (pure none : ProbComp (Option DeferredContext))
+        else finalizeResolvedCoordinates coordinates
+          (context.presamplePosition position output) table)) := by
+  calc
+    _ = evalDist (finalizeResolvedCoordinates
+        (.position position :: coordinates.erase (.position position)) context table) :=
+      evalDist_finalizeResolvedCoordinates_move_to_front (.position position) coordinates
+        context table hmem
+    _ = evalDist (do
+        let output ← LazyRevealProbe.sampleHashOutput
+        (if context.state.hitAt (.position position) output then
+          (pure none : ProbComp (Option DeferredContext))
+        else finalizeResolvedCoordinates (coordinates.erase (.position position))
+          ({ state := context.state.complete (.position position) output
+             values := context.values.install position output } : DeferredContext)
+          table)) := congrArg evalDist
+      (finalizeResolvedCoordinates_cons_position_fresh position
+        (coordinates.erase (.position position)) context table hstate hvalue)
+    _ = _ := by
+      apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+      intro output
+      by_cases hhit : context.state.hitAt (.position position) output
+      · simp [hhit]
+      · simp only [hhit, ↓reduceIte]
+        have hpresampledState :
+            (context.presamplePosition position output).state.values
+              (.position position) = none := by
+          exact hstate
+        have hpresampledValue :
+            (context.presamplePosition position output).values position = some output := by
+          simp [DeferredContext.presamplePosition, DeferredStructuralValues.install]
+        have hhead := finalizeResolvedCoordinates_cons_position_of_deferred_value position
+          (coordinates.erase (.position position)) (context.presamplePosition position output)
+            table output hpresampledState hpresampledValue
+        have hclean : ¬(context.presamplePosition position output).state.hitAt
+            (.position position) output :=
+          not_hitAt_clearPending_self context.state (.position position) output
+        have hmove := evalDist_finalizeResolvedCoordinates_move_to_front
+          (.position position) coordinates (context.presamplePosition position output) table hmem
+        rw [hhead, if_neg hclean] at hmove
+        have hcompleted :
+            ({ state := (context.presamplePosition position output).state.complete
+                (.position position) output
+               values := (context.presamplePosition position output).values } :
+              DeferredContext) =
+              ({ state := context.state.complete (.position position) output
+                 values := context.values.install position output } : DeferredContext) := by
+          simp [DeferredContext.presamplePosition]
+        rw [hcompleted] at hmove
+        exact hmove.symm
+
+def DeferredFreshOn (coordinates : List Coordinate) (context : DeferredContext) : Prop :=
+  ∀ position : Position, Coordinate.position position ∈ coordinates →
+    context.values position = none
 
 theorem finalizeResolvedCoordinates_projects_to_clean
     (coordinates : List Coordinate) (context : DeferredContext)
