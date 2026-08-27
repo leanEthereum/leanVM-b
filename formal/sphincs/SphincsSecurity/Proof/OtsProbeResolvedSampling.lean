@@ -4069,6 +4069,69 @@ def DeferredCompletion (table : OtsSecretIndex → HashOutput) (context : Deferr
       truncateHash (completion coordinate) ≠ candidate) ∧
     ∀ index, completion index.coordinate = table index
 
+def DeferredContext.CoreEq (left right : DeferredContext) : Prop :=
+  left.state.pending = right.state.pending ∧
+    left.state.values = right.state.values ∧
+    left.values = right.values
+
+theorem DeferredContext.CoreEq.symm {left right : DeferredContext}
+    (heq : left.CoreEq right) : right.CoreEq left :=
+  ⟨heq.1.symm, heq.2.1.symm, heq.2.2.symm⟩
+
+theorem DeferredContext.CoreEq.positionValue_eq {left right : DeferredContext}
+    (heq : left.CoreEq right) : left.positionValue = right.positionValue := by
+  funext position
+  unfold DeferredContext.positionValue
+  rw [heq.2.1, heq.2.2]
+
+theorem DeferredContext.CoreEq.hitAt_iff {left right : DeferredContext}
+    (heq : left.CoreEq right) (coordinate : Coordinate) (output : HashOutput) :
+    left.state.hitAt coordinate output ↔ right.state.hitAt coordinate output := by
+  unfold LazyRevealProbe.State.hitAt LazyRevealProbe.State.pendingAt
+  rw [heq.1]
+
+theorem DeferredContext.Valid.of_coreEq {left right : DeferredContext}
+    (hvalid : left.Valid) (heq : left.CoreEq right) : right.Valid := by
+  constructor
+  · intro position output hvalue
+    rw [← heq.2.2]
+    apply hvalid.1 position output
+    rw [heq.2.1]
+    exact hvalue
+  · intro coordinate output hvalue
+    rw [← heq.hitAt_iff coordinate output]
+    apply hvalid.2 coordinate output
+    rw [heq.2.1]
+    exact hvalue
+
+theorem StartTableAgrees.of_coreEq
+    {table : OtsSecretIndex → HashOutput} {left right : DeferredContext}
+    (hagrees : StartTableAgrees left.state table) (heq : left.CoreEq right) :
+    StartTableAgrees right.state table := by
+  intro index output hvalue
+  apply hagrees index output
+  rw [heq.2.1]
+  exact hvalue
+
+theorem DeferredCompletion.of_coreEq
+    {table : OtsSecretIndex → HashOutput} {left right : DeferredContext}
+    {completion : Coordinate → HashOutput} (heq : left.CoreEq right)
+    (hcompletion : DeferredCompletion table left completion) :
+    DeferredCompletion table right completion := by
+  refine ⟨?_, ?_, ?_, hcompletion.2.2.2⟩
+  · intro coordinate output hvalue
+    apply hcompletion.1 coordinate output
+    rw [heq.2.1]
+    exact hvalue
+  · intro position output hvalue
+    apply hcompletion.2.1 position output
+    rw [heq.2.2]
+    exact hvalue
+  · intro coordinate candidate hmember
+    apply hcompletion.2.2.1 coordinate candidate
+    rw [heq.1]
+    exact hmember
+
 theorem DeferredCompletion.eq_positionValue
     {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
     {completion : Coordinate → HashOutput}
@@ -4373,6 +4436,66 @@ theorem DeferredCompletion.of_materializeResolvedChainStart
         Finset.mem_filter.2 ⟨hmember, heq⟩
       simpa [materializeResolvedChainStart, LazyRevealProbe.State.materialize] using haway
 
+theorem resolveDeferredChainStart_not_hit
+    {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
+    (hagrees : StartTableAgrees context.state table) (index : OtsSecretIndex)
+    (result : DeferredResolution)
+    (hresult : resolveDeferredChainStart table index context = some result) :
+    ¬context.state.hitAt index.coordinate (table index) := by
+  unfold resolveDeferredChainStart at hresult
+  cases hvalue : context.state.values index.coordinate with
+  | none =>
+      by_cases hhit : context.state.hitAt index.coordinate (table index)
+      · simp [hvalue, hhit] at hresult
+      · exact hhit
+  | some output =>
+      have houtput := hagrees index output hvalue
+      subst output
+      by_cases hhit : context.state.hitAt index.coordinate (table index)
+      · simp [hvalue, hhit] at hresult
+      · exact hhit
+
+theorem DeferredCompletion.of_materializeResolvedChainStart'
+    {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
+    {completion : Coordinate → HashOutput}
+    (hagrees : StartTableAgrees context.state table) (index : OtsSecretIndex)
+    (result : DeferredResolution)
+    (hresult : resolveDeferredChainStart table index context = some result)
+    (hcompletion : DeferredCompletion table
+      (materializeResolvedChainStart context index result) completion) :
+    DeferredCompletion table context completion := by
+  have houtput := resolveDeferredChainStart_output_of_agrees table index context result hagrees
+    hresult
+  have hdeferred := resolveDeferredChainStart_deferred_values_eq table index context result
+    hresult
+  have hnotHit := resolveDeferredChainStart_not_hit hagrees index result hresult
+  refine ⟨?_, ?_, ?_, hcompletion.2.2.2⟩
+  · intro coordinate output hvalue
+    by_cases heq : coordinate = index.coordinate
+    · subst coordinate
+      have htable := hagrees index output hvalue
+      apply hcompletion.1 index.coordinate output
+      simp [materializeResolvedChainStart, LazyRevealProbe.State.materialize, houtput,
+        htable]
+    · apply hcompletion.1 coordinate output
+      simpa [materializeResolvedChainStart, LazyRevealProbe.State.materialize,
+        Function.update_of_ne heq] using hvalue
+  · intro position output hvalue
+    apply hcompletion.2.1 position output
+    simpa [materializeResolvedChainStart, hdeferred] using hvalue
+  · intro coordinate candidate hmember
+    by_cases heq : coordinate = index.coordinate
+    · subst coordinate
+      intro hequal
+      apply hnotHit
+      unfold LazyRevealProbe.State.hitAt LazyRevealProbe.State.pendingAt
+      rw [hcompletion.2.2.2 index] at hequal
+      simpa [hequal] using hmember
+    · apply hcompletion.2.2.1 coordinate candidate
+      have haway : (coordinate, candidate) ∈ context.state.pendingAway index.coordinate :=
+        Finset.mem_filter.2 ⟨hmember, heq⟩
+      simpa [materializeResolvedChainStart, LazyRevealProbe.State.materialize] using haway
+
 def ChronologicalCacheAgrees (parameter : PublicParameter)
     (table : OtsSecretIndex → HashOutput)
     (context : DeferredContext) (cache : QueryCache HashSpec) : Prop :=
@@ -4463,6 +4586,16 @@ def DeferredCompletable (table : OtsSecretIndex → HashOutput)
     (context : DeferredContext) : Prop :=
   ∃ completion, DeferredCompletion table context completion
 
+theorem deferredCompletable_iff_of_coreEq
+    {table : OtsSecretIndex → HashOutput} {left right : DeferredContext}
+    (heq : left.CoreEq right) :
+    DeferredCompletable table left ↔ DeferredCompletable table right := by
+  constructor
+  · rintro ⟨completion, hcompletion⟩
+    exact ⟨completion, hcompletion.of_coreEq heq⟩
+  · rintro ⟨completion, hcompletion⟩
+    exact ⟨completion, hcompletion.of_coreEq heq.symm⟩
+
 theorem DeferredCompletable.materializeResolvedChainStart
     {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
     (hcompletable : DeferredCompletable table context)
@@ -4497,6 +4630,20 @@ theorem DeferredCompletable.materializeResolvedChainStart
     have haway : (coordinate, candidate) ∈ context.state.pendingAway index.coordinate := by
       exact hmember
     exact (Finset.mem_filter.1 haway).1
+
+theorem DeferredCompletable.not_hitAt_chainStart
+    {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
+    (hcompletable : DeferredCompletable table context) (index : OtsSecretIndex) :
+    ¬context.state.hitAt index.coordinate (table index) := by
+  obtain ⟨completion, hcompletion⟩ := hcompletable
+  intro hhit
+  unfold LazyRevealProbe.State.hitAt LazyRevealProbe.State.pendingAt at hhit
+  obtain ⟨entry, hentry, heq⟩ := Finset.mem_image.1 hhit
+  have hparts := Finset.mem_filter.1 hentry
+  have havoid := hcompletion.2.2.1 entry.1 entry.2 hparts.1
+  have hcoordinate : entry.1 = index.coordinate := hparts.2
+  rw [hcoordinate, hcompletion.2.2.2 index, heq] at havoid
+  exact havoid rfl
 
 theorem DeferredCompletable.of_resolveDeferredChainStart
     {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
@@ -4736,6 +4883,43 @@ def ResolvedCachePartition (parameter : PublicParameter)
       ordinaryCache input = some output ∨
         FixedResolvedInput parameter table context input output
 
+theorem ChronologicalCacheAgrees.of_coreEq
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {left right : DeferredContext} {cache : QueryCache HashSpec}
+    (hagrees : ChronologicalCacheAgrees parameter table left cache)
+    (heq : left.CoreEq right) :
+    ChronologicalCacheAgrees parameter table right cache := by
+  intro completion hcompletion position hots
+  have hknown := hagrees completion (hcompletion.of_coreEq heq.symm) position hots
+  unfold ResolveInputAgrees at hknown ⊢
+  rw [← heq.positionValue_eq]
+  exact hknown
+
+theorem FixedResolvedInput.of_coreEq
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {left right : DeferredContext} {input : HashInput} {output : HashOutput}
+    (hfixed : FixedResolvedInput parameter table left input output)
+    (heq : left.CoreEq right) :
+    FixedResolvedInput parameter table right input output := by
+  rcases hfixed with ⟨position, hots, hvalue, hinput⟩
+  refine ⟨position, hots, ?_, ?_⟩
+  · rw [← heq.positionValue_eq]
+    exact hvalue
+  · intro completion hcompletion
+    exact hinput completion (hcompletion.of_coreEq heq.symm)
+
+theorem ResolvedCachePartition.of_coreEq
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {left right : DeferredContext} {ordinaryCache concreteCache : QueryCache HashSpec}
+    (hpartition : ResolvedCachePartition parameter table left ordinaryCache concreteCache)
+    (heq : left.CoreEq right) :
+    ResolvedCachePartition parameter table right ordinaryCache concreteCache := by
+  refine ⟨hpartition.1, ?_⟩
+  intro input output hcached
+  rcases hpartition.2 input output hcached with hordinary | hfixed
+  · exact Or.inl hordinary
+  · exact Or.inr (hfixed.of_coreEq heq)
+
 theorem resolvedCachePartition_empty (parameter : PublicParameter)
     (table : OtsSecretIndex → HashOutput) :
     ResolvedCachePartition parameter table
@@ -4955,6 +5139,37 @@ def ResolvedContextInvariant (parameter : PublicParameter)
     DeferredCompletable table context ∧
     ResolvedCachePartition parameter table context ordinaryCache concreteCache
 
+theorem ResolvedContextInvariant.of_coreEq
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {left right : DeferredContext} {ordinaryCache concreteCache : QueryCache HashSpec}
+    (hinvariant : ResolvedContextInvariant parameter table left ordinaryCache concreteCache)
+    (heq : left.CoreEq right) :
+    ResolvedContextInvariant parameter table right ordinaryCache concreteCache := by
+  rcases hinvariant with ⟨hcache, hvalid, hstarts, hcompletable, hpartition⟩
+  exact ⟨hcache.of_coreEq heq, hvalid.of_coreEq heq, hstarts.of_coreEq heq,
+    (deferredCompletable_iff_of_coreEq heq).mp hcompletable,
+    hpartition.of_coreEq heq⟩
+
+theorem ResolvedAdministrative.run_preserves_invariant
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    {value : alpha} (hadministrative : ResolvedAdministrative computation value)
+    (context : DeferredContext) (cache : SplitHashCache) (fuel : Nat)
+    (concreteCache : QueryCache HashSpec)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache) :
+    ∃ finalContext,
+      runResolvedFromTable context fuel table (computation.run cache) =
+        pure (some ⟨finalContext, fuel, (value, cache), table⟩) ∧
+      ResolvedContextInvariant parameter table finalContext
+        (ordinaryQueryCache cache) concreteCache := by
+  obtain ⟨finalContext, hrun, hpending, hvalues, hprivate⟩ :=
+    hadministrative.run context cache fuel table
+  have hcore : context.CoreEq finalContext :=
+    ⟨hpending.symm, hvalues.symm, hprivate.symm⟩
+  exact ⟨finalContext, hrun, hinvariant.of_coreEq hcore⟩
+
 theorem ResolvedContextInvariant.materialize_resolvedChainStart
     {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
     {context : DeferredContext} {ordinaryCache concreteCache : QueryCache HashSpec}
@@ -4984,6 +5199,35 @@ theorem ResolvedContextInvariant.materialize_resolvedChainStart
   · unfold materializeResolvedChainStart
     rw [houtput]
     exact hstarts.materialize_start index
+
+theorem ResolvedContextInvariant.materialize_chainStart
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {context : DeferredContext} {ordinaryCache concreteCache : QueryCache HashSpec}
+    (hinvariant : ResolvedContextInvariant parameter table context ordinaryCache concreteCache)
+    (index : OtsSecretIndex) :
+    ResolvedContextInvariant parameter table
+      { state := context.state.materialize index.coordinate (table index)
+        values := context.values }
+      ordinaryCache concreteCache := by
+  have hclean := hinvariant.2.2.2.1.not_hitAt_chainStart index
+  cases hvalue : context.state.values index.coordinate with
+  | some output =>
+      have houtput := hinvariant.2.2.1 index output hvalue
+      let result : DeferredResolution :=
+        ⟨{ state := context.state.clearPending index.coordinate, values := context.values },
+          table index⟩
+      have hresult : resolveDeferredChainStart table index context = some result := by
+        simp [resolveDeferredChainStart, hvalue, houtput, hclean, result]
+      have hresolved := hinvariant.materialize_resolvedChainStart index result hresult
+      simpa [materializeResolvedChainStart, result] using hresolved
+  | none =>
+      let result : DeferredResolution :=
+        ⟨{ state := context.state.clearPending index.coordinate, values := context.values },
+          table index⟩
+      have hresult : resolveDeferredChainStart table index context = some result := by
+        simp [resolveDeferredChainStart, hvalue, hclean, result]
+      have hresolved := hinvariant.materialize_resolvedChainStart index result hresult
+      simpa [materializeResolvedChainStart, result] using hresolved
 
 theorem ChronologicalCacheAgrees.of_materializeResolvedPosition
     {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
@@ -5962,6 +6206,173 @@ theorem relTriple_runResolvedFromTable_revealPosition_chronological
             hresultSupport hresultInvariant hcompletable)
         · exact Or.inr hcompletable
   simpa [materializeResolvedPosition] using hbound
+
+set_option maxRecDepth 100000 in
+theorem relTriple_runResolvedFromTable_revealResolvablePosition_chronological
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (position : Position) (context : DeferredContext) (fuel : Nat)
+    (cache : SplitHashCache) (concreteCache : QueryCache HashSpec)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache)
+    (hresolvable : ResolvableOtsPosition position) :
+    RelTriple
+      (runResolvedFromTable context fuel table ((revealPosition position).run cache))
+      ((simulateQ (randomOracle : QueryImpl HashSpec _)
+        (resolvedPositionComputation parameter table position)).run concreteCache)
+      (ResolvedStructuralRunRel parameter table) := by
+  rw [runResolvedFromTable_revealPosition]
+  have hresolve := relTriple_resolveDeferredPosition_chronological parameter table position
+    context (ordinaryQueryCache cache) concreteCache hinvariant hresolvable
+  have hsupported :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hresolve
+      (fun resolved => resolved ∈ support (resolveDeferredPosition table position context))
+      (fun resolved hresolved => hresolved)
+  have hbound : RelTriple
+      (resolveDeferredPosition table position context >>= fun resolved =>
+        match resolved with
+        | none => pure none
+        | some resolved =>
+            pure (some ⟨materializeResolvedPosition context position resolved, fuel,
+              (truncateHash resolved.output,
+                Function.update cache (.hidden (.position position)) (some resolved.output)),
+              table⟩))
+      (((simulateQ (randomOracle : QueryImpl HashSpec _)
+        (resolvedPositionComputation parameter table position)).run concreteCache) >>=
+          fun result => pure result)
+      (ResolvedStructuralRunRel parameter table) := by
+    apply relTriple_bind hsupported
+    intro resolved rightResult hrelation
+    rcases hrelation with ⟨hresolvedRel, hresultSupport⟩
+    cases resolved with
+    | none =>
+        apply relTriple_pure_pure
+        trivial
+    | some resolved =>
+        apply relTriple_pure_pure
+        rcases rightResult with ⟨value, finalCache⟩
+        rcases hresolvedRel with ⟨hvalue, hresultInvariant, _hposition⟩
+        refine ⟨rfl, hvalue.symm, ?_⟩
+        rw [ordinaryQueryCache_update_hidden]
+        by_cases hcompletable : DeferredCompletable table
+            (materializeResolvedPosition context position resolved)
+        · exact Or.inl (hinvariant.materialize_resolvedReveal position resolved
+            (by simpa [resolveDeferredReveal, hresolvable] using hresultSupport)
+            hresultInvariant hcompletable)
+        · exact Or.inr hcompletable
+  simpa [resolveDeferredReveal, hresolvable, materializeResolvedPosition] using hbound
+
+theorem relTriple_runResolvedFromTable_revealChainStart_chronological
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (index : OtsSecretIndex) (context : DeferredContext) (fuel : Nat)
+    (cache : SplitHashCache) (concreteCache : QueryCache HashSpec)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache) :
+    RelTriple
+      (runResolvedFromTable context fuel table
+        ((revealChainStart index.lay index.tree index.leafIdx index.chainIdx).run cache))
+      (pure (truncateHash (table index), concreteCache) :
+        ProbComp (Digest × QueryCache HashSpec))
+      (ResolvedStructuralRunRel parameter table) := by
+  have hclean := hinvariant.2.2.2.1.not_hitAt_chainStart index
+  rw [runResolvedFromTable_revealChainStart_of_agrees context fuel table index cache
+    hinvariant.2.2.1 hclean]
+  apply relTriple_pure_pure
+  refine ⟨rfl, rfl, Or.inl ?_⟩
+  rw [ordinaryQueryCache_update_hidden]
+  exact hinvariant.materialize_chainStart index
+
+set_option maxRecDepth 100000 in
+theorem relTriple_runResolvedFromTable_maskedChainValue_chronological
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (chainIdx : ChainIndex) (digit : Digit)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (concreteCache : QueryCache HashSpec)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache) :
+    RelTriple
+      (runResolvedFromTable context fuel table
+        ((maskedChainValue lay tree leafIdx chainIdx digit).run cache))
+      ((simulateQ (randomOracle : QueryImpl HashSpec _)
+        (chainWalk parameter lay tree leafIdx chainIdx 0 digit.val
+          (truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩)))).run concreteCache)
+      (ResolvedStructuralRunRel parameter table) := by
+  obtain ⟨reservedContext, hreserve, hreservedInvariant⟩ :=
+    (resolvedAdministrative_ensureChainPrefix lay tree leafIdx chainIdx digit).run_preserves_invariant
+      context cache fuel concreteCache hinvariant
+  unfold maskedChainValue
+  rw [StateT.run_bind, runResolvedFromTable_bind, hreserve]
+  simp only [pure_bind]
+  by_cases hzero : digit.val = 0
+  · rw [dif_pos hzero]
+    have hstart := relTriple_runResolvedFromTable_revealChainStart_chronological
+      parameter table ⟨lay, tree, leafIdx, chainIdx⟩ reservedContext fuel cache concreteCache
+        hreservedInvariant
+    simpa [hzero, chainWalk] using hstart
+  · rw [dif_neg hzero]
+    let step : ChainStep := ⟨digit.val - 1, by
+      have := digit.isLt
+      omega⟩
+    have hposition :=
+      relTriple_runResolvedFromTable_revealResolvablePosition_chronological parameter table
+        (.chain lay tree leafIdx chainIdx step) reservedContext fuel cache concreteCache
+          hreservedInvariant (by simp [ResolvableOtsPosition])
+    have hpositive : 0 < digit.val := Nat.pos_of_ne_zero hzero
+    have hsteps : step.val + 1 = digit.val := by
+      simp [step]
+      omega
+    simpa [resolvedPositionComputation, step, hsteps] using hposition
+
+set_option maxRecDepth 100000 in
+theorem relTriple_runResolvedFromTable_maskedTreeNode_chronological
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (level nodeIdx : Nat)
+    (hlevel : level ≤ maxLayerHeight)
+    (hspan : 2 ^ level * (nodeIdx + 1) ≤ 2 ^ maxLayerHeight)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (concreteCache : QueryCache HashSpec)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache) :
+    RelTriple
+      (runResolvedFromTable context fuel table
+        ((maskedTreeNode lay tree level nodeIdx).run cache))
+      ((simulateQ (randomOracle : QueryImpl HashSpec _)
+        (treeNode parameter lay tree
+          (fun leafIdx chainIdx =>
+            truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩))
+          level nodeIdx)).run concreteCache)
+      (ResolvedStructuralRunRel parameter table) := by
+  obtain ⟨reservedContext, hreserve, hreservedInvariant⟩ :=
+    (resolvedAdministrative_ensureTreeNode lay tree level nodeIdx).run_preserves_invariant
+      context cache fuel concreteCache hinvariant
+  unfold maskedTreeNode
+  rw [StateT.run_bind, runResolvedFromTable_bind, hreserve]
+  simp only [pure_bind]
+  cases level with
+  | zero =>
+      have hposition :=
+        relTriple_runResolvedFromTable_revealResolvablePosition_chronological parameter table
+          (.leaf lay tree (leafOfNat nodeIdx)) reservedContext fuel cache concreteCache
+            hreservedInvariant (by simp [ResolvableOtsPosition])
+      rw [treeNode_zero_eq]
+      simpa [resolvedPositionComputation] using hposition
+  | succ current =>
+      have hcurrent : current < maxLayerHeight := by omega
+      simp only [hcurrent, ↓reduceDIte]
+      have hnodeLt : nodeIdx < 2 ^ maxLayerHeight := by
+        have hpow : 0 < 2 ^ (current + 1) := pow_pos (by omega) _
+        nlinarith
+      have hnodeVal : (leafOfNat nodeIdx).val = nodeIdx := by
+        simp [leafOfNat, Nat.mod_eq_of_lt hnodeLt]
+      have hresolvable : ResolvableOtsPosition
+          (.node lay tree ⟨current, hcurrent⟩ (leafOfNat nodeIdx)) := by
+        simp [ResolvableOtsPosition, hnodeVal]
+        exact hspan
+      have hposition :=
+        relTriple_runResolvedFromTable_revealResolvablePosition_chronological parameter table
+          (.node lay tree ⟨current, hcurrent⟩ (leafOfNat nodeIdx)) reservedContext fuel cache
+            concreteCache hreservedInvariant hresolvable
+      simpa [resolvedPositionComputation, hnodeVal] using hposition
 
 def DeferredFreshOn (coordinates : List Coordinate) (context : DeferredContext) : Prop :=
   ∀ position : Position, Coordinate.position position ∈ coordinates →
