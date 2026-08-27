@@ -1959,6 +1959,27 @@ theorem ordinaryEntryPreserving_probe (input : HashInput) (candidate : Probe) :
         rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
         exact hcached
 
+theorem splitCachePreserving_probe (candidate : Probe) :
+    SplitCachePreserving (probe candidate) := by
+  intro state cache fuel finalState remaining value finalCache hresult
+  change LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈ support
+    (LazyRevealProbe.runRaw state fuel
+      (LazyRevealProbe.probeQuery candidate.coordinate candidate.candidate >>= fun result =>
+        pure (result, cache))) at hresult
+  rw [LazyRevealProbe.probeQuery, LazyRevealProbe.runRaw_probe_query_bind] at hresult
+  cases fuel with
+  | zero => simp at hresult
+  | succ remainingFuel =>
+      rw [show remainingFuel + 1 = Nat.succ remainingFuel by omega] at hresult
+      simp only at hresult
+      by_cases hrevealed : candidate.coordinate ∈ state.revealed
+      · rw [if_pos hrevealed] at hresult
+        simp [LazyRevealProbe.runRaw] at hresult
+        exact hresult.2.2
+      · rw [if_neg hrevealed] at hresult
+        simp [LazyRevealProbe.runRaw] at hresult
+        exact hresult.2.2
+
 theorem ordinaryEntryPreserving_publishCoordinate
     (input : HashInput) (coordinate : Coordinate) :
     OrdinaryEntryPreserving input (publishCoordinate coordinate) := by
