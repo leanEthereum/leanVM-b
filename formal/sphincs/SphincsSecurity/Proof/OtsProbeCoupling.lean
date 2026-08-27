@@ -322,6 +322,75 @@ theorem tableAnswer_completedRealizedTable_eq_of_decoded_missing
       · rfl
   | ftsLeaf | ftsNode | ftsRoots => simp [IsOtsPosition] at hots
 
+noncomputable def retainedCompletionTable
+    (parameter : PublicParameter) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput) :
+    Coordinate → HashOutput :=
+  completedRealizedTable (splitFallback cache) parameter state baseStarts
+
+noncomputable def retainedCompletionAnswer
+    (parameter : PublicParameter) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput) :
+    QueryImpl HashSpec Id :=
+  tableAnswer parameter (retainedCompletionTable parameter state cache baseStarts)
+    (splitFallback cache)
+
+theorem tableOtsSecret_retainedCompletionTable
+    (parameter : PublicParameter) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex) :
+    tableOtsSecret (retainedCompletionTable parameter state cache baseStarts)
+        lay tree leafIdx chainIdx =
+      truncateHash ((state.values (.chainStart lay tree leafIdx chainIdx)).getD
+        (baseStarts lay tree leafIdx chainIdx)) := by
+  rfl
+
+theorem retainedCompletionAnswer_realizes
+    (parameter : PublicParameter) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput) :
+    ∀ position : Position, IsOtsPosition position →
+      retainedCompletionAnswer parameter state cache baseStarts
+          (tableInput parameter (retainedCompletionTable parameter state cache baseStarts)
+            (.position position)) =
+        retainedCompletionTable parameter state cache baseStarts (.position position) := by
+  exact tableAnswer_realizes_otsPositions parameter
+    (retainedCompletionTable parameter state cache baseStarts) (splitFallback cache)
+
+theorem stableCacheAgreesWithFn_retainedCompletionAnswer
+    (parameter : PublicParameter) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput) :
+    StableCacheAgreesWithFn parameter cache
+      (retainedCompletionAnswer parameter state cache baseStarts) := by
+  exact stableCacheAgreesWithFn_tableAnswer parameter
+    (retainedCompletionTable parameter state cache baseStarts) cache
+
+theorem mergedCache_agreesWithFn_retainedCompletionAnswer
+    (parameter : PublicParameter) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (hconsistent : HiddenConsistent state cache) :
+    (mergedCache parameter (retainedCompletionTable parameter state cache baseStarts)
+      state.ensured cache).AgreesWithFn
+        (retainedCompletionAnswer parameter state cache baseStarts) := by
+  exact mergedCache_completedRealizedTable_agreesWith_tableAnswer
+    (splitFallback cache) parameter state cache baseStarts hconsistent
+
+theorem retainedCompletionAnswer_eq_fallback_of_decoded_missing
+    (parameter : PublicParameter) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (input : HashInput) (position : Position) (hots : IsOtsPosition position)
+    (hposition : decodePosition? parameter input = some position)
+    (hmissing : state.values (.position position) = none) :
+    retainedCompletionAnswer parameter state cache baseStarts input = splitFallback cache input := by
+  exact tableAnswer_completedRealizedTable_eq_of_decoded_missing
+    (splitFallback cache) parameter state baseStarts input position hots hposition hmissing
+
 noncomputable def realizedOtsSecret
     (chainStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput) :
     Layer → TreeIndex → LeafIndex → ChainIndex → Digest :=
