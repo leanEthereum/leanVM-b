@@ -7331,6 +7331,175 @@ theorem resolvedCouples_splitHashQuery
   exact relTriple_runResolvedFromTable_splitHashQuery_clean_or_doomed parameter table input
     hstable context fuel cache concreteCache hinvariant
 
+theorem resolvedCouples_oracleHash
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (input : HashInput) (hstable : StableOrdinaryInput parameter input) :
+    ResolvedCouples parameter table
+      (simulateQ ordinaryHashImpl (oracleHash input))
+      (simulateQ (randomOracle : QueryImpl HashSpec _) (oracleHash input)) := by
+  simpa only [oracleHash, HasQuery.instOfMonadLift_query, simulateQ_spec_query,
+    ordinaryHashImpl] using
+    resolvedCouples_splitHashQuery parameter table input hstable
+
+theorem resolvedCouples_tweakableHash
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (domain : HashDomain) (payload : HashInput)
+    (hstable : StableOrdinaryInput parameter
+      (tweakableHashInput parameter domain payload)) :
+    ResolvedCouples parameter table
+      (simulateQ ordinaryHashImpl (tweakableHash parameter domain payload))
+      (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (tweakableHash parameter domain payload)) := by
+  unfold tweakableHash
+  rw [simulateQ_bind, simulateQ_bind]
+  exact (resolvedCouples_oracleHash parameter table
+    (tweakableHashInput parameter domain payload) hstable).bind fun output =>
+      resolvedCouples_pure parameter table (truncateHash output)
+
+theorem resolvedCouples_ftsLeafHash
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (index : Index) (tree : FtsTree) (leafIdx : FtsLeaf) (secret : Digest) :
+    ResolvedCouples parameter table
+      (simulateQ ordinaryHashImpl (ftsLeafHash parameter index tree leafIdx secret))
+      (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (ftsLeafHash parameter index tree leafIdx secret)) := by
+  unfold ftsLeafHash
+  exact resolvedCouples_tweakableHash parameter table (.ftsLeaf index tree leafIdx) _
+    (stableOrdinaryInput_tweakableHashInput parameter (.ftsLeaf index tree leafIdx) _
+      (by trivial) (by simp) (by simp) (by simp))
+
+theorem simulateQ_ordinaryHashImpl_sequenceFin {n : Nat}
+    (computation : Fin n → OracleComp HashSpec alpha) :
+    simulateQ ordinaryHashImpl (sequenceFin computation) =
+      sequenceFin fun position => simulateQ ordinaryHashImpl (computation position) := by
+  induction n with
+  | zero => simp [sequenceFin]
+  | succ n ih =>
+      simp only [sequenceFin, simulateQ_bind, simulateQ_pure, ih]
+
+theorem resolvedCouples_ftsNode
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (index : Index) (tree : FtsTree) (secret : FtsLeaf → Digest) :
+    ∀ level nodeIdx, level ≤ ftsTreeHeight →
+      2 ^ level * (nodeIdx + 1) ≤ 2 ^ ftsTreeHeight →
+      ResolvedCouples parameter table
+        (simulateQ ordinaryHashImpl
+          (ftsNode parameter index tree secret level nodeIdx))
+        (simulateQ (randomOracle : QueryImpl HashSpec _)
+          (ftsNode parameter index tree secret level nodeIdx))
+  | 0, nodeIdx, hlevel, hspan => by
+      rw [ftsNode_zero_eq]
+      exact resolvedCouples_ftsLeafHash parameter table index tree _ _
+  | level + 1, nodeIdx, hlevel, hspan => by
+      rw [ftsNode_succ_eq]
+      simp only [simulateQ_bind]
+      have hleftSpan : 2 ^ level * (2 * nodeIdx + 1) ≤ 2 ^ ftsTreeHeight := by
+        rw [pow_succ] at hspan
+        calc
+          2 ^ level * (2 * nodeIdx + 1) ≤ 2 ^ level * (2 * (nodeIdx + 1)) :=
+            Nat.mul_le_mul_left _ (by omega)
+          _ = 2 ^ level * 2 * (nodeIdx + 1) := by ring
+          _ ≤ 2 ^ ftsTreeHeight := hspan
+      have hrightSpan : 2 ^ level * (2 * nodeIdx + 1 + 1) ≤ 2 ^ ftsTreeHeight := by
+        rw [pow_succ] at hspan
+        calc
+          2 ^ level * (2 * nodeIdx + 1 + 1) = 2 ^ level * 2 * (nodeIdx + 1) := by
+            ring
+          _ ≤ 2 ^ ftsTreeHeight := hspan
+      have hinRange : (HashDomain.ftsNode index tree (level + 1) nodeIdx).InRange := by
+        show level + 1 < 2 ^ 32 ∧ nodeIdx < 2 ^ 32
+        constructor
+        · have : ftsTreeHeight < 2 ^ 32 := by norm_num [ftsTreeHeight]
+          omega
+        · have hnode : nodeIdx < 2 ^ ftsTreeHeight := by
+            have hpow : 0 < 2 ^ (level + 1) := Nat.two_pow_pos _
+            nlinarith
+          have : 2 ^ ftsTreeHeight ≤ 2 ^ 32 := Nat.pow_le_pow_right (by omega) (by
+            norm_num [ftsTreeHeight])
+          omega
+      exact (resolvedCouples_ftsNode parameter table index tree secret level (2 * nodeIdx)
+        (by omega) hleftSpan).bind fun left =>
+          (resolvedCouples_ftsNode parameter table index tree secret level (2 * nodeIdx + 1)
+            (by omega) hrightSpan).bind fun right =>
+              resolvedCouples_tweakableHash parameter table
+                (.ftsNode index tree (level + 1) nodeIdx) (nodePayload left right)
+                (stableOrdinaryInput_tweakableHashInput parameter
+                  (.ftsNode index tree (level + 1) nodeIdx) _ hinRange
+                  (by simp) (by simp) (by simp))
+
+theorem resolvedCouples_ftsKey
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (index : Index) (secret : FtsTree → FtsLeaf → Digest) :
+    ResolvedCouples parameter table
+      (simulateQ ordinaryHashImpl (ftsKey parameter index secret))
+      (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (ftsKey parameter index secret)) := by
+  unfold ftsKey
+  rw [simulateQ_bind, simulateQ_bind, simulateQ_ordinaryHashImpl_sequenceFin,
+    FtsProbeSimulation.simulateQ_randomOracle_sequenceFin]
+  exact (resolvedCouples_sequenceFin
+    (fun tree => simulateQ ordinaryHashImpl
+      (ftsNode parameter index tree (secret tree) ftsTreeHeight 0))
+    (fun tree => simulateQ (randomOracle : QueryImpl HashSpec _)
+      (ftsNode parameter index tree (secret tree) ftsTreeHeight 0))
+    (fun tree => resolvedCouples_ftsNode parameter table index tree (secret tree)
+      ftsTreeHeight 0 le_rfl (by simp))).bind fun roots =>
+        resolvedCouples_tweakableHash parameter table (.ftsRoots index)
+          (ftsRootsPayload roots)
+          (stableOrdinaryInput_tweakableHashInput parameter (.ftsRoots index) _
+            (by trivial) (by simp) (by simp) (by simp))
+
+theorem resolvedCouples_ftsOpen
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (index : Index) (leaves : DigestTree → FtsLeaf)
+    (secret : FtsTree → FtsLeaf → Digest) :
+    ResolvedCouples parameter table
+      (simulateQ ordinaryHashImpl (ftsOpen parameter index leaves secret))
+      (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (ftsOpen parameter index leaves secret)) := by
+  unfold ftsOpen
+  rw [simulateQ_ordinaryHashImpl_sequenceFin,
+    FtsProbeSimulation.simulateQ_randomOracle_sequenceFin]
+  exact resolvedCouples_sequenceFin _ _ fun tree => by
+    rw [simulateQ_ordinaryHashImpl_sequenceFin,
+      FtsProbeSimulation.simulateQ_randomOracle_sequenceFin]
+    exact resolvedCouples_sequenceFin _ _ fun level =>
+      resolvedCouples_ftsNode parameter table index tree (secret tree) level.val
+        (Nat.xor ((leaves (ftsIndexOf tree)).val / 2 ^ level.val) 1)
+        (Nat.le_of_lt level.isLt)
+        (FtsProbeSimulation.ftsOpen_node_bound (leaves (ftsIndexOf tree)) level)
+
+theorem resolvedCouples_encode
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (message : Digest) (counter : Counter) :
+    ResolvedCouples parameter table
+      (simulateQ ordinaryHashImpl (encode parameter lay tree leafIdx message counter))
+      (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (encode parameter lay tree leafIdx message counter)) := by
+  unfold encode
+  rw [simulateQ_bind, simulateQ_bind]
+  exact (resolvedCouples_tweakableHash parameter table (.encoding lay tree leafIdx) _
+    (stableOrdinaryInput_tweakableHashInput parameter (.encoding lay tree leafIdx) _
+      (by trivial) (by simp) (by simp) (by simp))).bind fun digest =>
+        resolvedCouples_pure parameter table (TargetSum.decodeDigest digest)
+
+theorem resolvedCouples_messageDigest
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (root : Digest) (message : Message) (randomness : Randomness) :
+    ResolvedCouples parameter table
+      (simulateQ ordinaryHashImpl (messageDigest parameter root message randomness))
+      (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (messageDigest parameter root message randomness)) := by
+  unfold messageDigest
+  rw [simulateQ_bind, simulateQ_bind]
+  exact (resolvedCouples_oracleHash parameter table
+    (tweakableHashInput parameter .message
+      (messageDigestPayload root message randomness))
+    (stableOrdinaryInput_tweakableHashInput parameter .message _
+      (by trivial) (by simp) (by simp) (by simp))).bind fun output =>
+        resolvedCouples_pure parameter table (truncateMessageDigest output)
+
 theorem resolvedCouples_maskedChainValue
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
     (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
