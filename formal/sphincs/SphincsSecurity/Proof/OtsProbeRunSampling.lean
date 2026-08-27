@@ -785,16 +785,241 @@ theorem projectCleanOrdinary_splitHashQuery
       intro output
       simp [runCleanFromTable, projectCleanOrdinary, ordinaryQueryCache_update]
 
+theorem runCleanFromTable_pure_StateT
+    (value : alpha) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache) (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
+    runCleanFromTable state fuel table
+        ((pure value : StateT SplitHashCache
+          (OracleComp (LazyRevealProbe.World Coordinate)) alpha).run cache) =
+      pure (some ⟨state, fuel, (value, cache), table⟩) := by
+  simp [runCleanFromTable]
+
+theorem runCleanFromTable_ensureCoordinate
+    (coordinate : Coordinate) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache) (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
+    runCleanFromTable state fuel table ((ensureCoordinate coordinate).run cache) =
+      pure (some ⟨state.ensure coordinate, fuel, ((), cache), table⟩) := by
+  unfold ensureCoordinate
+  rw [StateT.run_liftM, LazyRevealProbe.ensureQuery,
+    runCleanFromTable_ensure_query_bind]
+  simp [runCleanFromTable]
+
+def CleanAdministrative
+    (computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha)
+    (value : alpha) : Prop :=
+  ∀ state cache fuel table, ∃ finalState,
+    runCleanFromTable state fuel table (computation.run cache) =
+      pure (some ⟨finalState, fuel, (value, cache), table⟩)
+
+theorem cleanAdministrative_pure (value : alpha) :
+    CleanAdministrative
+      (pure value : StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate)) alpha)
+      value := by
+  intro state cache fuel table
+  exact ⟨state, runCleanFromTable_pure_StateT value state cache fuel table⟩
+
+theorem CleanAdministrative.bind
+    {left : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    {next : alpha → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) beta}
+    {leftValue : alpha} {value : beta}
+    (hleft : CleanAdministrative left leftValue)
+    (hnext : CleanAdministrative (next leftValue) value) :
+    CleanAdministrative (left >>= next) value := by
+  intro state cache fuel table
+  obtain ⟨middleState, hleftRun⟩ := hleft state cache fuel table
+  obtain ⟨finalState, hnextRun⟩ := hnext middleState cache fuel table
+  refine ⟨finalState, ?_⟩
+  rw [StateT.run_bind, runCleanFromTable_bind, hleftRun]
+  simpa using hnextRun
+
+theorem cleanAdministrative_ensureCoordinate (coordinate : Coordinate) :
+    CleanAdministrative (ensureCoordinate coordinate) () := by
+  intro state cache fuel table
+  exact ⟨state.ensure coordinate,
+    runCleanFromTable_ensureCoordinate coordinate state cache fuel table⟩
+
+theorem cleanAdministrative_sequenceFin {n : Nat}
+    (computation : Fin n → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha)
+    (value : Fin n → alpha)
+    (hcomponent : ∀ index, CleanAdministrative (computation index) (value index)) :
+    CleanAdministrative (sequenceFin computation) value := by
+  induction n with
+  | zero =>
+      have hvalue : value = Fin.elim0 := Subsingleton.elim _ _
+      subst value
+      simpa [sequenceFin] using
+        (cleanAdministrative_pure (value := Fin.elim0) :
+          CleanAdministrative (pure Fin.elim0) Fin.elim0)
+  | succ n ih =>
+      rw [sequenceFin]
+      have htail := ih (fun index : Fin n => computation index.succ)
+        (fun index : Fin n => value index.succ) (fun index => hcomponent index.succ)
+      let assembled : Fin (n + 1) → alpha :=
+        Fin.cases (value 0) (fun index : Fin n => value index.succ)
+      have hpure : CleanAdministrative
+          (pure assembled : StateT SplitHashCache
+            (OracleComp (LazyRevealProbe.World Coordinate)) (Fin (n + 1) → alpha))
+          assembled := cleanAdministrative_pure assembled
+      have hrest : CleanAdministrative
+          (sequenceFin (fun index : Fin n => computation index.succ) >>= fun tail =>
+            pure (Fin.cases (value 0) tail)) assembled := by
+        exact htail.bind hpure
+      have hhead : CleanAdministrative
+          (computation 0 >>= fun head =>
+            sequenceFin (fun index : Fin n => computation index.succ) >>= fun tail =>
+              pure (Fin.cases head tail)) assembled := by
+        exact (hcomponent 0).bind hrest
+      have hassembled : assembled = value := by
+        funext index
+        cases index using Fin.cases <;> rfl
+      simpa only [hassembled] using hhead
+
+theorem cleanAdministrative_ensureFullChain
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex) :
+    CleanAdministrative (ensureFullChain lay tree leafIdx chainIdx) () := by
+  unfold ensureFullChain
+  apply CleanAdministrative.bind
+    (cleanAdministrative_sequenceFin
+      (fun step : ChainStep =>
+        ensureCoordinate (.position (.chain lay tree leafIdx chainIdx step)))
+      (fun _ => ())
+      (fun step => cleanAdministrative_ensureCoordinate
+        (.position (.chain lay tree leafIdx chainIdx step))))
+  exact cleanAdministrative_pure ()
+
+theorem cleanAdministrative_ensureChainPrefix
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex)
+    (digit : Digit) :
+    CleanAdministrative (ensureChainPrefix lay tree leafIdx chainIdx digit) () := by
+  unfold ensureChainPrefix
+  apply CleanAdministrative.bind
+    (cleanAdministrative_sequenceFin
+      (fun step : ChainStep =>
+        if step.val < digit.val then
+          ensureCoordinate (.position (.chain lay tree leafIdx chainIdx step))
+        else pure ())
+      (fun _ => ()) (fun step => by
+        by_cases hstep : step.val < digit.val
+        · rw [if_pos hstep]
+          exact cleanAdministrative_ensureCoordinate
+            (.position (.chain lay tree leafIdx chainIdx step))
+        · rw [if_neg hstep]
+          exact cleanAdministrative_pure ()))
+  exact cleanAdministrative_pure ()
+
+theorem cleanAdministrative_ensureOtsLeaf
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) :
+    CleanAdministrative (ensureOtsLeaf lay tree leafIdx) () := by
+  unfold ensureOtsLeaf
+  have hchains := cleanAdministrative_sequenceFin
+    (fun chainIdx : ChainIndex => ensureFullChain lay tree leafIdx chainIdx)
+    (fun _ => ()) (fun chainIdx =>
+      cleanAdministrative_ensureFullChain lay tree leafIdx chainIdx)
+  exact hchains.bind
+    (cleanAdministrative_ensureCoordinate (.position (.leaf lay tree leafIdx)))
+
+theorem cleanAdministrative_ensureTreeNode (lay : Layer) (tree : TreeIndex) :
+    ∀ level nodeIdx, CleanAdministrative (ensureTreeNode lay tree level nodeIdx) ()
+  | 0, nodeIdx => cleanAdministrative_ensureOtsLeaf lay tree (leafOfNat nodeIdx)
+  | level + 1, nodeIdx => by
+      rw [ensureTreeNode]
+      apply CleanAdministrative.bind
+        (cleanAdministrative_ensureTreeNode lay tree level (2 * nodeIdx))
+      apply CleanAdministrative.bind
+        (cleanAdministrative_ensureTreeNode lay tree level (2 * nodeIdx + 1))
+      by_cases hlevel : level < maxLayerHeight
+      · rw [dif_pos hlevel]
+        exact cleanAdministrative_ensureCoordinate
+          (.position (.node lay tree ⟨level, hlevel⟩ (leafOfNat nodeIdx)))
+      · rw [dif_neg hlevel]
+        exact cleanAdministrative_pure ()
+
+theorem cleanAdministrative_ensureTreePath
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) :
+    CleanAdministrative (ensureTreePath lay tree leafIdx) () := by
+  unfold ensureTreePath
+  apply CleanAdministrative.bind
+    (cleanAdministrative_sequenceFin
+      (fun level : Fin maxLayerHeight =>
+        if level.val < layerHeight lay then
+          ensureTreeNode lay tree level.val
+            (Nat.xor (leafIdx.val / 2 ^ level.val) 1)
+        else pure ())
+      (fun _ => ()) (fun level => by
+        by_cases hlevel : level.val < layerHeight lay
+        · rw [if_pos hlevel]
+          exact cleanAdministrative_ensureTreeNode lay tree level.val
+            (Nat.xor (leafIdx.val / 2 ^ level.val) 1)
+        · rw [if_neg hlevel]
+          exact cleanAdministrative_pure ()))
+  exact cleanAdministrative_pure ()
+
+theorem CleanAdministrative.project
+    {computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    {value : alpha} (hadministrative : CleanAdministrative computation value)
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
+    projectCleanOrdinary <$>
+        runCleanFromTable state fuel table (computation.run cache) =
+      pure (some (value, ordinaryQueryCache cache)) := by
+  obtain ⟨finalState, hrun⟩ := hadministrative state cache fuel table
+  rw [hrun]
+  simp [projectCleanOrdinary]
+
+theorem CleanAdministrative.run_agrees
+    {computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    {value : alpha} (hadministrative : CleanAdministrative computation value)
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (hagrees : StartTableAgrees state table) :
+    ∃ finalState,
+      runCleanFromTable state fuel table (computation.run cache) =
+          pure (some ⟨finalState, fuel, (value, cache), table⟩) ∧
+        StartTableAgrees finalState table := by
+  obtain ⟨finalState, hrun⟩ := hadministrative state cache fuel table
+  refine ⟨finalState, hrun, ?_⟩
+  have hmem : some ⟨finalState, fuel, (value, cache), table⟩ ∈ support
+      (runCleanFromTable state fuel table (computation.run cache)) := by
+    rw [hrun]
+    simp
+  exact (startTableAgrees_of_mem_runCleanFromTable
+    (computation.run cache) state fuel table hagrees
+    ⟨finalState, fuel, (value, cache), table⟩ hmem).2
+
+theorem CleanAdministrative.relTriple
+    {computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    {value : alpha} [Inhabited alpha]
+    (hadministrative : CleanAdministrative computation value)
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
+    RelTriple
+      (runCleanFromTable state fuel table (computation.run cache))
+      (pure (value, ordinaryQueryCache cache) :
+        ProbComp (alpha × QueryCache HashSpec))
+      fun cleanResult ordinaryResult =>
+        projectCleanOrdinary cleanResult = some ordinaryResult := by
+  exact SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_of_project_eq_some_exact
+    projectCleanOrdinary (default, ∅)
+    (runCleanFromTable state fuel table (computation.run cache))
+    (pure (value, ordinaryQueryCache cache) : ProbComp (alpha × QueryCache HashSpec))
+    (hadministrative.project state cache fuel table)
+
 theorem projectCleanOrdinary_ensureCoordinate
     (coordinate : Coordinate) (state : LazyRevealProbe.State Coordinate)
     (cache : SplitHashCache) (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
     projectCleanOrdinary <$>
         runCleanFromTable state fuel table ((ensureCoordinate coordinate).run cache) =
       pure (some ((), ordinaryQueryCache cache)) := by
-  unfold ensureCoordinate
-  rw [StateT.run_liftM, LazyRevealProbe.ensureQuery,
-    runCleanFromTable_ensure_query_bind]
-  simp [runCleanFromTable, projectCleanOrdinary]
+  rw [runCleanFromTable_ensureCoordinate]
+  simp [projectCleanOrdinary]
 
 theorem relTriple_runCleanFromTable_ensureCoordinate
     (coordinate : Coordinate) (state : LazyRevealProbe.State Coordinate)
@@ -922,6 +1147,29 @@ theorem relTriple_runCleanFromTable_revealChainStart
   · rw [hvalue]
     simp [runCleanFromTable, CleanOrdinaryStepRel, projectCleanOrdinary,
       ordinaryQueryCache_update_hidden]
+
+theorem relTriple_runCleanFromTable_maskedChainValue_zero
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (chainIdx : ChainIndex) (digit : Digit) (hdigit : digit.val = 0)
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (hagrees : StartTableAgrees state table) :
+    RelTriple
+      (runCleanFromTable state fuel table
+        ((maskedChainValue lay tree leafIdx chainIdx digit).run cache))
+      (pure (truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+        ordinaryQueryCache cache) : ProbComp (Digest × QueryCache HashSpec))
+      CleanOrdinaryStepRel := by
+  obtain ⟨reservedState, hreserve, hreservedAgrees⟩ :=
+    (cleanAdministrative_ensureChainPrefix lay tree leafIdx chainIdx digit).run_agrees
+      state cache fuel table hagrees
+  unfold maskedChainValue
+  rw [StateT.run_bind, runCleanFromTable_bind, hreserve]
+  simp only [pure_bind]
+  rw [dif_pos hdigit]
+  exact relTriple_runCleanFromTable_revealChainStart
+    ⟨lay, tree, leafIdx, chainIdx⟩ reservedState cache fuel table
+      (hreservedAgrees.lookup ⟨lay, tree, leafIdx, chainIdx⟩)
 
 theorem relTriple_runCleanFromTable_revealChainStart_then_ordinary
     [Inhabited alpha] (index : OtsSecretIndex)
