@@ -1087,9 +1087,10 @@ impl<'a> SumcheckProver<'a> {
             Witness::Base(f) => fold_and_msg_lsb(f, &self.combined_basis, r),
             Witness::Ext(f) => fold_and_msg_lsb(f, &self.combined_basis, r),
         };
-        // Swap the freshly folded buffers in and drop the consumed ones. Their
-        // slab space is not reclaimed until the phase ends, which is exactly what
-        // makes the next round's `fold_out_buf` a bump instead of a fresh mapping.
+        // Swap the freshly folded buffers in and drop the consumed ones, which
+        // at these sizes returns their slab space to the arena's reuse list, so
+        // the next round's `fold_out_buf` is served from it rather than growing
+        // the phase's cursor.
         drop(std::mem::replace(&mut self.f, Witness::Ext(nf)));
         drop(std::mem::replace(&mut self.combined_basis, nb));
         self.quad = RoundQuad::from_msg(msg, self.t_r);

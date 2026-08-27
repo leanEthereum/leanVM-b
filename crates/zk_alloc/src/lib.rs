@@ -1,5 +1,18 @@
 //! Bump arena for transient proving buffers. Each thread owns a slab, and [`enter_phase`] resets all slabs. An [`ArenaVec`] allocated in a phase becomes invalid at the next phase; values that outlive a phase must use `Vec`.
 //!
+//! # Reuse within a phase
+//!
+//! A prover is a pipeline: a stage's output is allocated while its input is
+//! still live and the input dies first, so lifetimes are not nested and popping
+//! the cursor reclaims almost nothing. Blocks of at least [`REUSE_MIN`] go to a
+//! per-thread free list on release; anything it cannot serve falls back to the
+//! bump.
+//!
+//! `ZK_ALLOC_POISON=1` fills a released block, and fills what a phase used when
+//! it ends. Between them they catch the two use-after-free shapes the arena
+//! otherwise hides: a buffer read after being dropped, and one that outlives its
+//! phase.
+//!
 //! # Usage
 //!
 //! ```no_run
@@ -27,6 +40,14 @@ const SLACK: usize = 8;
 /// Minimum alignment for allocations at least this large.
 const CACHE_LINE: usize = 64;
 
+/// Smallest block the reuse list tracks: below it, small allocations are too
+/// numerous to be worth a scan and too small to move the resident set.
+pub const REUSE_MIN: usize = 1 << 20;
+
+/// Freed blocks one thread's list holds; generous, since the prover's large
+/// buffers are few.
+const FREE_LIST_CAP: usize = 128;
+
 /// The alignment a `size`-byte request is actually served at. [`raw_alloc`] and
 /// [`raw_dealloc`] must agree on it, or a system buffer would be freed under a
 /// layout it was not allocated with.
@@ -41,6 +62,75 @@ const fn effective_align(size: usize, align: usize) -> usize {
 #[inline(always)]
 const fn align_up(addr: usize, align: usize) -> usize {
     (addr + align - 1) & !(align - 1)
+}
+
+/// One thread's released blocks: inside its own slab, below its cursor, and
+/// pairwise NON-ADJACENT, since `store` inserts only merged unions and `take`
+/// carves strictly inside a block.
+struct FreeList {
+    blocks: [(usize, usize); FREE_LIST_CAP],
+    len: usize,
+}
+
+impl FreeList {
+    const EMPTY: Self = Self {
+        blocks: [(0, 0); FREE_LIST_CAP],
+        len: 0,
+    };
+
+    #[inline]
+    fn remove(&mut self, i: usize) {
+        self.len -= 1;
+        self.blocks[i] = self.blocks[self.len];
+    }
+
+    /// First block that fits, carved from its low end. The carve is NOT
+    /// optional: without it one request consumes a whole merged union.
+    fn take(&mut self, size: usize) -> Option<usize> {
+        let i = self.blocks[..self.len].iter().position(|&(_, len)| len >= size)?;
+        let (addr, len) = self.blocks[i];
+        // Realigned, so the remainder is still a legal block to hand out.
+        let rest = align_up(addr + size, CACHE_LINE);
+        let rest_len = (addr + len).saturating_sub(rest);
+        if rest_len >= REUSE_MIN {
+            self.blocks[i] = (rest, rest_len);
+        } else {
+            self.remove(i);
+        }
+        Some(addr)
+    }
+
+    /// Absorb the held blocks adjacent to `[addr, addr + size)` and return the
+    /// union. Held blocks are non-adjacent, so at most one lies on each side.
+    fn merge(&mut self, addr: usize, size: usize) -> (usize, usize) {
+        let (mut a, mut n) = (addr, size);
+        let mut i = 0;
+        while i < self.len {
+            let (b, m) = self.blocks[i];
+            if b + m == a {
+                a = b;
+                n += m;
+            } else if a + n == b {
+                n += m;
+            } else {
+                i += 1;
+                continue;
+            }
+            // Swap-remove moves an unexamined block to `i`, so stay put. One
+            // pass suffices only because held blocks are non-adjacent.
+            self.remove(i);
+        }
+        (a, n)
+    }
+
+    /// Hold `[addr, size)`, or drop it when the list is full (an unheld block is
+    /// just not recycled).
+    fn store(&mut self, addr: usize, size: usize) {
+        if self.len < FREE_LIST_CAP {
+            self.blocks[self.len] = (addr, size);
+            self.len += 1;
+        }
+    }
 }
 
 fn max_threads() -> usize {
@@ -71,11 +161,20 @@ static NEXT_SLAB: AtomicUsize = AtomicUsize::new(0);
 static HIGH_WATER: AtomicUsize = AtomicUsize::new(0);
 /// Bytes that overflowed a slab mid-phase and went to the system allocator.
 static OVERFLOW_BYTES: AtomicUsize = AtomicUsize::new(0);
-/// Bytes bump-allocated across all threads and phases, accumulated one atomic per
+/// Peak slab use summed over all threads and phases, accumulated one atomic per
 /// thread per phase (at reset), so the hot path stays free of shared writes.
+/// The PEAK, not the total bumped: with reuse the cursor moves both ways.
 static ARENA_BYTES: AtomicUsize = AtomicUsize::new(0);
 
+/// `ZK_ALLOC_POISON`, resolved in [`enable_arena`] with the rest of the
+/// process-wide policy, so the release path pays one relaxed load.
+static POISON: AtomicBool = AtomicBool::new(false);
+
 thread_local! {
+    static FREE: std::cell::RefCell<FreeList> = const { std::cell::RefCell::new(FreeList::EMPTY) };
+    /// Highest cursor address reached in the phase in flight. The cursor
+    /// retreats when a release tops it, so its final value is not its peak.
+    static HIGH: Cell<usize> = const { Cell::new(0) };
     static PTR: Cell<usize> = const { Cell::new(0) };
     static END: Cell<usize> = const { Cell::new(0) };
     static BASE: Cell<usize> = const { Cell::new(0) };
@@ -107,6 +206,7 @@ fn region() -> usize {
 /// module docs.
 pub fn enable_arena() {
     syscall::retain_system_heap();
+    POISON.store(std::env::var_os("ZK_ALLOC_POISON").is_some(), Ordering::Relaxed);
     ARENA_ENGAGED.store(true, Ordering::Release);
 }
 
@@ -173,13 +273,14 @@ pub struct Stats {
     pub phases: usize,
     /// Slabs handed out so far, i.e. threads that have allocated in a phase.
     pub threads: usize,
-    /// Bytes served from a slab, over all threads and phases. Divided by
-    /// [`Stats::phases`] this is the allocation traffic the arena absorbed per
-    /// proof; compare it against the workload's total to see what is still
-    /// going to the system allocator.
-    pub arena_bytes: usize,
-    /// Largest single-thread slab use seen at a phase boundary, in bytes.
-    /// Compare against [`Stats::slab_size`].
+    /// Peak slab use summed over the threads that have published one. A thread
+    /// publishes when it RESETS, so a phase counts only for the threads that
+    /// allocate again afterwards: a worker that exits, and the phase in flight,
+    /// are both missing. An underestimate of the arena's footprint, in other
+    /// words, and the pool's steady threads are what make it a useful one.
+    pub peak_bytes: usize,
+    /// Largest peak any single thread reached within a phase, in bytes. Compare
+    /// against [`Stats::slab_size`].
     pub high_water: usize,
     /// Bytes that overflowed a slab mid-phase and fell back to the system
     /// allocator. Nonzero means `SLAB_SIZE` is too small for this workload.
@@ -188,15 +289,15 @@ pub struct Stats {
     pub slab_size: usize,
 }
 
-/// Snapshot the arena's accounting. Both `arena_bytes` and `high_water` are
-/// updated when a thread resets its slab, so read them after at least one
+/// Snapshot the arena's accounting. `peak_bytes` and `high_water` are published
+/// when a thread resets its slab, so read them after at least one
 /// [`enter_phase`] has followed the phase of interest.
 #[must_use]
 pub fn stats() -> Stats {
     Stats {
         phases: GENERATION.load(Ordering::Relaxed),
         threads: NEXT_SLAB.load(Ordering::Relaxed).min(max_threads()),
-        arena_bytes: ARENA_BYTES.load(Ordering::Relaxed),
+        peak_bytes: ARENA_BYTES.load(Ordering::Relaxed),
         high_water: HIGH_WATER.load(Ordering::Relaxed),
         overflow: OVERFLOW_BYTES.load(Ordering::Relaxed),
         slab_size: SLAB_SIZE,
@@ -206,17 +307,16 @@ pub fn stats() -> Stats {
 impl std::fmt::Display for Stats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let bytes_to_gib = |bytes: usize| bytes as f64 / (1u64 << 30) as f64;
-        let per_phase = if self.phases == 0 {
-            0.0
-        } else {
-            bytes_to_gib(self.arena_bytes) / self.phases as f64
-        };
+        // A thread publishes its peak when it RESETS, so the phase in flight is
+        // not in the sum: report the count the average is actually over.
+        let completed = self.phases.saturating_sub(1);
+        let per_phase = bytes_to_gib(self.peak_bytes) / completed.max(1) as f64;
         write!(
             f,
-            "arena: {:.2} GiB/phase over {} phase(s) on {} thread(s); \
+            "arena: {:.2} GiB/phase over {} completed phase(s) on {} thread(s); \
              high water {:.2} of {} GiB per slab; overflow {:.2} GiB",
             per_phase,
-            self.phases,
+            completed,
             self.threads,
             bytes_to_gib(self.high_water),
             self.slab_size >> 30,
@@ -244,12 +344,26 @@ unsafe fn alloc_slow(size: usize, align: usize) -> *mut u8 {
             BASE.set(base);
             END.set(base + SLAB_SIZE);
         } else {
-            // Reset: account for what the finished phase used before abandoning it.
-            let used = PTR.get() - base;
-            HIGH_WATER.fetch_max(used, Ordering::Relaxed);
-            ARENA_BYTES.fetch_add(used, Ordering::Relaxed);
+            // The PEAK, not where the cursor ended: reuse moves it both ways.
+            let peak = HIGH.get().max(PTR.get()) - base;
+            ARENA_BYTES.fetch_add(peak, Ordering::Relaxed);
+            HIGH_WATER.fetch_max(peak, Ordering::Relaxed);
+            if POISON.load(Ordering::Relaxed) {
+                // Catches a buffer that OUTLIVES its phase, which the release
+                // path cannot: by then its memory may be live again.
+                // SAFETY: the phase is over, so by contract nothing may read
+                // `[base, base + peak)`, and it lies in this thread's slab.
+                unsafe { std::ptr::write_bytes(base as *mut u8, 0xCD, peak) };
+            }
         }
+        // The one place per-phase state is reset. Clearing the list here is why
+        // its users need no staleness check: they run only under
+        // `GEN == GENERATION`, set below. (`begin_phase` publishes
+        // `ARENA_ACTIVE` first, so that rests on its one-proof-in-flight
+        // assert: no allocation may race a phase opening.)
         PTR.set(base);
+        HIGH.set(base);
+        FREE.with(|f| f.borrow_mut().len = 0);
         GEN.set(generation);
         let aligned = align_up(base, align);
         let bumped = aligned + size;
@@ -285,6 +399,15 @@ pub(crate) unsafe fn raw_alloc(size: usize, align: usize) -> *mut u8 {
     let align = effective_align(size, align);
     if ARENA_ACTIVE.load(Ordering::Relaxed) {
         if GEN.get() == GENERATION.load(Ordering::Relaxed) {
+            // Recycle first, so a phase's cursor tracks its live set. At this
+            // size `effective_align` has already raised any smaller request to
+            // `CACHE_LINE`, which every listed address is aligned to.
+            if size >= REUSE_MIN
+                && align <= CACHE_LINE
+                && let Some(addr) = alloc_reuse(size)
+            {
+                return addr;
+            }
             let aligned = align_up(PTR.get(), align);
             let bumped = aligned + size;
             if bumped <= END.get() {
@@ -297,21 +420,55 @@ pub(crate) unsafe fn raw_alloc(size: usize, align: usize) -> *mut u8 {
     unsafe { system_alloc(size, align) }
 }
 
-/// The matching free: for an arena pointer, pop the cursor if this was the most
-/// recent allocation on this thread and otherwise do nothing (the slab is
-/// reclaimed wholesale by the next [`begin_phase`]); for a system pointer, a
-/// system free.
+/// Serve `size` from this thread's free list. Out of line to keep the scan and
+/// its panic edge out of every `ArenaVec` growth site.
+#[inline(never)]
+fn alloc_reuse(size: usize) -> Option<*mut u8> {
+    FREE.with(|f| f.borrow_mut().take(size)).map(|a| a as *mut u8)
+}
+
+/// The cursor is about to retreat from `p`, and only ever falls here, so this is
+/// where it peaks. Keeps the allocation path free of accounting.
+#[inline]
+fn note_peak(p: usize) {
+    if p > HIGH.get() {
+        HIGH.set(p);
+    }
+}
+
+/// Merge with any neighbour, then unwind the cursor if the union tops it and
+/// hold it for reuse otherwise. Out of line, as [`alloc_reuse`].
+#[inline(never)]
+fn dealloc_large(addr: usize, size: usize) {
+    FREE.with(|f| {
+        let mut f = f.borrow_mut();
+        let (a, n) = f.merge(addr, size);
+        let p = PTR.get();
+        if a + n == p {
+            note_peak(p);
+            PTR.set(a);
+        } else {
+            f.store(a, n);
+        }
+    });
+}
+
+/// The matching free: for an arena pointer, recycle it (at least [`REUSE_MIN`]
+/// joins this thread's [`FreeList`], smaller pops the cursor if it tops it) or
+/// leave it to the next [`begin_phase`]; for a system pointer, a system free.
 ///
 /// Which one applies is decided by address range, not by a flag stored beside
 /// the buffer, which is what lets [`ArenaVec`] carry no allocator parameter and
 /// stay a single type whether or not a phase was open when it was built.
 ///
-/// The LIFO pop matters more than it looks. A bump cursor's high-water mark is a
-/// phase's *cumulative* allocation, not its live set, so a loop that allocates a
-/// temporary and drops it each iteration would otherwise grow the resident set
-/// without bound. Popping the top makes that shape cost one buffer. It cannot
-/// reclaim an alloc-new-then-free-old rotation, where the freed buffer is not on
-/// top.
+/// Recycling is safe NOT because of a cursor property (reuse puts live
+/// allocations below the cursor), but because a block reaches the list only from
+/// a release, which the caller performs only on a dead block, and
+/// [`FreeList::take`] removes or carves whatever it hands out.
+///
+/// A block released on a thread other than its allocator is dropped here, the
+/// list being thread-local. Not a rare class: `parallel`'s per-worker buffers
+/// are built on the worker and dropped on the dispatcher. Fix it there.
 ///
 /// # Safety
 /// `ptr` came from [`raw_alloc`] with this `size` and `align`.
@@ -322,12 +479,28 @@ pub(crate) unsafe fn raw_dealloc(ptr: *mut u8, size: usize, align: usize) {
         .get()
         .is_some_and(|&base| addr >= base && addr - base < region_size())
     {
-        // Pop only within this thread's own slab and only in the phase that
-        // allocated it: the cursor is thread-local, so another thread's pointer
-        // (or a pointer from a previous phase) must not move it.
-        if addr >= BASE.get() && addr + size == PTR.get() && GEN.get() == GENERATION.load(Ordering::Relaxed) {
-            PTR.set(addr);
+        // This thread's own slab, this phase only. BOTH bounds are load-bearing:
+        // foreign releases are routine (`parallel` drops a worker's buffer on
+        // the dispatcher), and `END` is 0 for a thread that never claimed a
+        // slab. A stale-phase block also returns here rather than being
+        // poisoned, its memory now possibly live; the reset fill covers that.
+        if addr < BASE.get() || addr >= END.get() || GEN.get() != GENERATION.load(Ordering::Relaxed) {
+            return;
         }
+        if POISON.load(Ordering::Relaxed) {
+            // SAFETY: the caller guarantees this block came from `raw_alloc`
+            // with this size, and it is being released, so nothing may read it.
+            unsafe { std::ptr::write_bytes(ptr, 0xCD, size) };
+        }
+        if size < REUSE_MIN {
+            let p = PTR.get();
+            if addr + size == p {
+                note_peak(p);
+                PTR.set(addr);
+            }
+            return;
+        }
+        dealloc_large(addr, size);
         return;
     }
     let align = effective_align(size, align);

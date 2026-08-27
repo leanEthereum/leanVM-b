@@ -132,3 +132,113 @@ fn zero_sized_elements_never_allocate() {
     assert_eq!(v.len(), 1000);
     assert_eq!(v.capacity(), usize::MAX);
 }
+
+/// The shape the LIFO pop cannot reclaim, and the reason the reuse list exists:
+/// allocate the next buffer, release the previous one. Nothing is ever freed at
+/// the cursor, so without reuse the cursor would grow by a buffer per iteration.
+#[test]
+fn reuse_holds_a_rotation_at_its_live_set() {
+    let _serial = exclusive();
+    let words = zk_alloc::REUSE_MIN; // `REUSE_MIN * 8` bytes, well over the floor
+    let buf = words * size_of::<u64>();
+    let rounds = 16;
+
+    // A thread publishes its peak only when it next RESETS, so bracket the
+    // rotation with phases that force one.
+    let flush = || {
+        let _phase = enter_phase();
+        let _tiny: ArenaVec<u64> = ArenaVec::with_capacity(1);
+    };
+    flush();
+    let before = zk_alloc::stats().peak_bytes;
+    {
+        let _phase = enter_phase();
+        let mut live = Some(ArenaVec::<u64>::with_capacity(words));
+        for _ in 0..rounds {
+            let next = ArenaVec::<u64>::with_capacity(words);
+            drop(live.take());
+            live = Some(next);
+        }
+    }
+    flush();
+
+    // Two buffers are live across the swap, so that is the floor; a third would
+    // mean the rotation grew the cursor instead of recycling.
+    let peak = zk_alloc::stats().peak_bytes - before;
+    assert!(
+        (2 * buf..3 * buf).contains(&peak),
+        "a rotation of {rounds} buffers of {buf} bytes peaked at {peak}, not two buffers"
+    );
+}
+
+/// A buffer allocated on one thread and released on another must not enter the
+/// releasing thread's free list, or that thread hands out memory it does not
+/// own. Not hypothetical: `parallel::map_reduce_with_state` builds each worker's
+/// accumulator on the worker and folds (and drops) the slots on the dispatcher.
+#[test]
+fn a_foreign_release_never_enters_this_thread_s_free_list() {
+    let _serial = exclusive();
+    let words = zk_alloc::REUSE_MIN; // over the reuse floor, so the list would take it
+    let _phase = enter_phase();
+
+    // Claim this thread's slab first, so the worker gets a different one.
+    let mine: ArenaVec<u64> = ArenaVec::with_capacity(words);
+    let foreign = std::thread::scope(|scope| {
+        scope
+            .spawn(|| ArenaVec::<u64>::with_capacity(words))
+            .join()
+            .expect("worker allocates")
+    });
+    let foreign_addr = foreign.as_ptr() as usize;
+    assert_ne!(
+        foreign_addr,
+        mine.as_ptr() as usize,
+        "the worker shared this thread's slab"
+    );
+    drop(foreign); // released HERE, on a thread whose slab it is not in
+
+    let next: ArenaVec<u64> = ArenaVec::with_capacity(words);
+    assert_ne!(
+        next.as_ptr() as usize,
+        foreign_addr,
+        "a release from another thread's slab was recycled into this one"
+    );
+}
+
+/// Recycled memory must never back two live buffers at once. Mixed sizes and
+/// out-of-order releases, so the carve, the merge and the cursor unwind all run
+/// (a same-size rotation exercises none of them); every buffer carries its own
+/// tag and is checked while all the others are still live, so an overlap shows
+/// up here rather than as a proof that quietly stops verifying.
+#[test]
+fn recycled_blocks_never_back_two_live_buffers() {
+    let _serial = exclusive();
+    let _phase = enter_phase();
+    let mib = zk_alloc::REUSE_MIN / size_of::<u64>(); // words, so every buffer clears the floor
+    let mut seed = 0x243f_6a88_85a3_08d3_u64;
+    let mut rand = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+
+    let mut live: Vec<(u64, ArenaVec<u64>)> = Vec::new();
+    for tag in 1..=200_u64 {
+        // Deliberately not a whole number of cache lines, so a carve's remainder
+        // has to be realigned rather than starting where the block ended.
+        let words = mib * (1 + rand() as usize % 6) + 1;
+        let mut buf: ArenaVec<u64> = ArenaVec::with_capacity(words);
+        buf.resize(words, tag);
+        // Large blocks are served at cache-line alignment, recycled or not.
+        assert_eq!(buf.as_ptr() as usize % 64, 0, "buffer {tag} came back under-aligned");
+        live.push((tag, buf));
+        // The ends are what an overlapping block writes over first.
+        for (t, b) in &live {
+            assert_eq!((b[0], b[b.len() - 1]), (*t, *t), "buffer {t} was handed out twice");
+        }
+        if live.len() > 4 {
+            live.remove(rand() as usize % live.len());
+        }
+    }
+}

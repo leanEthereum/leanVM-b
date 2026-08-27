@@ -71,11 +71,11 @@ The benchmarks we care about:
 
 ## The proving arena (`zk_alloc`)
 
-One proof is one **phase**, opened by `cpu::prove`. `ArenaVec` bumps a per-thread slab, freeing is a no-op, and the next `begin_phase()` reclaims everything. Not a `#[global_allocator]`: `raw_dealloc` picks arena-vs-system by address range, so with no phase open `ArenaVec` is an ordinary system vector (used in particular by the verifier, where correctness and simplicity matters much more than performance).
+One proof is one **phase**, opened by `cpu::prove`. `ArenaVec` bumps a per-thread slab, a small block's release is at most a cursor pop while a large one is recycled (below), and the next `begin_phase()` reclaims everything. Not a `#[global_allocator]`: `raw_dealloc` picks arena-vs-system by address range, so with no phase open `ArenaVec` is an ordinary system vector (used in particular by the verifier, where correctness and simplicity matters much more than performance).
 
-**The rule:** an `ArenaVec` allocated in a phase dies at the next `begin_phase()`. A reset neither clears nor unmaps, so a buffer that outlives its phase reads the previous proof's plausible bytes, so the symptom is a proof that stops verifying, never a crash. Anything outliving a phase (a `Proof`, a cache, a table) must be a plain `Vec`.
+**The rule:** an `ArenaVec` allocated in a phase dies at the next `begin_phase()`. A reset neither clears nor unmaps, so a buffer that outlives its phase reads the previous proof's plausible bytes, so the symptom is a proof that stops verifying, never a crash. Anything outliving a phase (a `Proof`, a cache, a table) must be a plain `Vec`. And **`drop` means something**: a large released block is handed back out within the phase (a per-thread free list, see the crate docs), so dropping a big buffer where it dies is worth doing, and a use-after-free the bump arena used to mask now reads another buffer's live data. Run `ZK_ALLOC_POISON=1 cargo testall` after changing buffer lifetimes; it fills released blocks and fills what a phase used when it ends, turning a silent wrong answer into a loud failure. That covers both shapes: a buffer read after being dropped, and a buffer that outlives its phase.
 
-`LEANVM_NO_ARENA=1` halves resident memory but is unoptmized (not our concern for now, we assume we have enough RAM).
+`LEANVM_NO_ARENA=1` sends every `ArenaVec` to the system allocator. It is the escape hatch for a host where even the recycled peak does not fit; on one that it does fit, the arena is faster, since its pages stay faulted in across proofs.
 
 ## The thread pool (`parallel`)
 
@@ -132,8 +132,9 @@ Understand the third before changing the verifier. `guests/aggregate.py` is zkDS
 | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
 | `LEANVM_NUM_THREADS` / `RAYON_NUM_THREADS`                                                              | performance-worker count; `1` = sequential       |
 | `LEANVM_PROFILE`                                                                                        | per-stage prover timings                         |
-| `LEANVM_NO_ARENA`                                                                                       | disable the arena (less memory, slower)          |
-| `ZK_ALLOC_STATS`                                                                                        | arena bytes/phase, high water, overflow          |
+| `LEANVM_NO_ARENA`                                                                                       | disable the arena (slower where it fits)         |
+| `ZK_ALLOC_STATS`                                                                                        | arena peak/phase, high water, overflow           |
+| `ZK_ALLOC_POISON`                                                                                       | fill released arena blocks, to catch use-after-free |
 | `BENCH_REPEAT`, `BENCH_COOLDOWN`                                                                        | `--repeat`/`--cooldown` for `#[ignore]`d benches |
 | `LEANVM_XMSS_N`, `LEANVM_HASH_N`, `LEANVM_HASH_UNROLL`                                                  | workload sizes in tests                          |
 | `FLOCK_N_LOG`, `FLOCK_PROVE_TRACE`, `FLOCK_ZC_TIMING`, `LINCHECK_TRACE`                                 | flock batch size, stage traces                   |

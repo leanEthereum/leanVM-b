@@ -17,7 +17,7 @@ fn repeated_proofs_survive_phase_resets() {
     let stats = zk_alloc::stats();
     assert!(stats.phases >= 3, "expected one phase per proof, got {stats:?}");
     assert!(
-        stats.arena_bytes > 0,
+        stats.peak_bytes > 0,
         "no buffer reached the arena, so nothing was actually exercised: {stats:?}"
     );
     assert_eq!(

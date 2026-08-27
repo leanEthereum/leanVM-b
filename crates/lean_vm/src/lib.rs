@@ -38,10 +38,10 @@ pub mod witness;
 ///
 /// Call once at program or test start.
 ///
-/// Set `LEANVM_NO_ARENA` (or call only [`init_prover_pool`]) on a
-/// memory-constrained host: every [`ArenaVec`](zk_alloc::ArenaVec) then falls back
-/// to the system allocator, which is slower but holds only the live working set
-/// instead of a phase's cumulative allocation.
+/// Set `LEANVM_NO_ARENA` (or call only [`init_prover_pool`]) on a host where even
+/// the arena's recycled peak does not fit: every [`ArenaVec`](zk_alloc::ArenaVec)
+/// then falls back to the system allocator, which is slower where the arena fits,
+/// since the arena's pages stay faulted in across proofs.
 ///
 /// # Contract
 /// The arena has one region per process, so two proofs must never run

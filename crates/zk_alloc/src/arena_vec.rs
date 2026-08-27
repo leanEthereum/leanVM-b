@@ -1,4 +1,4 @@
-//! Growable buffer backed by the proving arena during a phase and the system allocator otherwise. Size arena-backed buffers up front because growing may leave the old allocation occupied until the phase resets.
+//! Growable buffer backed by the proving arena during a phase and the system allocator otherwise. Size arena-backed buffers up front anyway: growing copies, and the old allocation is only recycled if it clears the arena's reuse floor.
 
 use std::alloc::{Layout, handle_alloc_error};
 use std::cmp;
@@ -43,8 +43,7 @@ impl<T> ArenaVec<T> {
     }
 
     /// An empty buffer with room for exactly `cap` elements (no over-allocation:
-    /// the caller knows the size, and slab space spent is not reclaimed until the
-    /// phase ends).
+    /// the caller knows the size, and a slab is not a heap to grow into).
     #[inline]
     #[must_use]
     pub fn with_capacity(cap: usize) -> Self {
@@ -320,8 +319,8 @@ impl<T> Drop for ArenaVec<T> {
         // Release the buffer. Zero-sized types and never-grown vectors own nothing.
         if size_of::<T>() != 0 && self.cap != 0 {
             // SAFETY: the buffer came from `raw_alloc(cap * size, align)`;
-            // `raw_dealloc` range-checks arena-vs-system, so an arena pointer is
-            // simply left to the next phase reset.
+            // `raw_dealloc` range-checks arena-vs-system, and an arena pointer is
+            // recycled or left to the next phase reset rather than unmapped.
             unsafe {
                 raw_dealloc(
                     self.ptr.as_ptr().cast::<u8>(),
