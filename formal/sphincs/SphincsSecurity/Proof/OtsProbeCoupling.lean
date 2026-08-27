@@ -9907,6 +9907,57 @@ theorem not_verifyProbe_of_retainedCompletion_of_clean_finalize
           hcompletedTable hresult hfinalize
   · exact hprobe
 
+set_option maxRecDepth 10000 in
+theorem detailedExperiment_maskedRetainedGame_not_verifyProbe
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (fuel remaining : Nat) (completedState : LazyRevealProbe.State Coordinate)
+    (rawCache : SplitHashCache) (root : Digest) (forgery : Forgery)
+    (signingLog : QueryLog SigningSpec) (verified : Bool)
+    (hresult : LazyRevealProbe.DetailedResult.done false completedState remaining
+        ((root, ((forgery, signingLog), verified)), rawCache) ∈ support
+      (LazyRevealProbe.detailedExperiment
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel
+        ((maskedRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
+          emptySplitHashCache)))
+    (hprobe : VerifyProbeWitness
+      (retainedCompletionAnswer parameter completedState rawCache baseStarts)
+      (mergedCache parameter
+        (retainedCompletionTable parameter completedState rawCache baseStarts)
+        completedState.ensured rawCache)
+      (⟨parameter, root,
+        tableOtsSecret (retainedCompletionTable parameter completedState rawCache baseStarts),
+        ftsSecret⟩ : SecretKey)
+      signingLog forgery.message forgery.signature) : False := by
+  rw [LazyRevealProbe.detailedExperiment, mem_support_bind_iff] at hresult
+  obtain ⟨raw, hraw, hfinish⟩ := hresult
+  cases raw with
+  | stopped hit =>
+      simp [LazyRevealProbe.RawResult.finishDetailed] at hfinish
+  | done rawState rawRemaining rawResult =>
+      rcases rawResult with ⟨rawValue, finalCache⟩
+      rcases rawValue with ⟨rawRoot, ⟨⟨rawForgery, rawLog⟩, rawVerified⟩⟩
+      rw [LazyRevealProbe.RawResult.finishDetailed, mem_support_bind_iff] at hfinish
+      obtain ⟨finished, hfinalize, hreturn⟩ := hfinish
+      rcases finished with ⟨hit, finalState⟩
+      simp only [support_pure, Set.mem_singleton_iff] at hreturn
+      have hdone := LazyRevealProbe.DetailedResult.done.inj hreturn
+      rcases hdone with ⟨rfl, rfl, rfl, hvalue⟩
+      have houter := Prod.mk.inj hvalue
+      have hgame := Prod.mk.inj houter.1
+      have hrest := Prod.mk.inj hgame.2
+      have hforgeryLog := Prod.mk.inj hrest.1
+      have hprobe' := hprobe
+      rw [hgame.1, hforgeryLog.1, hforgeryLog.2, houter.2] at hprobe'
+      have hconsistent : HiddenConsistent rawState finalCache :=
+        PreservesHidden.done
+          (preservesHidden_maskedRetainedGameAfterFtsSecrets adversary parameter ftsSecret)
+          hiddenConsistent_empty hraw
+      exact not_verifyProbe_of_retainedCompletion_of_clean_finalize adversary parameter
+        ftsSecret baseStarts fuel remaining rawState completedState finalCache rawRoot rawForgery
+          rawLog rawVerified hconsistent hraw hfinalize hprobe'
+
 theorem relTriple_runRaw_splitUniformImpl
     (n : Nat) (state : LazyRevealProbe.State Coordinate)
     (cache : SplitHashCache) (fuel : Nat) :
