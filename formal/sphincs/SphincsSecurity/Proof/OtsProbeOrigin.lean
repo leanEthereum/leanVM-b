@@ -6166,6 +6166,106 @@ theorem finalizeDetailedFrom_preserves_value
               simpa [LazyRevealProbe.State.complete, Function.update, hne] using hvalue
             · exact hrest
 
+theorem finalizeDetailedFrom_materializes_mem :
+    ∀ (coordinates : List Coordinate)
+      (state finalState : LazyRevealProbe.State Coordinate) (coordinate : Coordinate),
+      coordinate ∈ coordinates →
+      (false, finalState) ∈ support
+        (LazyRevealProbe.finalizeDetailedFrom coordinates state) →
+      finalState.values coordinate ≠ none := by
+  intro coordinates
+  induction coordinates with
+  | nil =>
+      intro state finalState coordinate hmem
+      simp at hmem
+  | cons current remaining ih =>
+      intro state finalState coordinate hmem hresult
+      rw [LazyRevealProbe.finalizeDetailedFrom] at hresult
+      cases hcurrent : state.values current with
+      | some output =>
+          rw [hcurrent] at hresult
+          rcases List.mem_cons.mp hmem with heq | htail
+          · subst coordinate
+            exact Option.ne_none_iff_exists'.2 ⟨output,
+              finalizeDetailedFrom_preserves_value remaining
+                (state.clearPending current) finalState current output
+                (by simpa [LazyRevealProbe.State.clearPending] using hcurrent) hresult⟩
+          · exact ih (state.clearPending current) finalState coordinate htail hresult
+      | none =>
+          rw [hcurrent, mem_support_bind_iff] at hresult
+          obtain ⟨output, _, hrest⟩ := hresult
+          by_cases hhit : state.hitAt current output
+          · rw [if_pos hhit] at hrest
+            simp at hrest
+          · rw [if_neg hhit] at hrest
+            rcases List.mem_cons.mp hmem with heq | htail
+            · subst coordinate
+              exact Option.ne_none_iff_exists'.2 ⟨output,
+                finalizeDetailedFrom_preserves_value remaining
+                  (state.complete current output) finalState current output
+                  (by simp [LazyRevealProbe.State.complete]) hrest⟩
+            · exact ih (state.complete current output) finalState coordinate htail hrest
+
+theorem finalizeDetailed_materializes_coordinate
+    (state finalState : LazyRevealProbe.State Coordinate) (coordinate : Coordinate)
+    (hcoordinate : coordinate ∈ state.coordinates)
+    (hresult : (false, finalState) ∈ support
+      (LazyRevealProbe.finalizeDetailed state)) :
+    finalState.values coordinate ≠ none := by
+  exact finalizeDetailedFrom_materializes_mem state.coordinates.toList state finalState
+    coordinate (by simpa using hcoordinate) hresult
+
+theorem finalizeDetailed_materializes_ensured
+    (state finalState : LazyRevealProbe.State Coordinate) (coordinate : Coordinate)
+    (hcoordinate : coordinate ∈ state.ensured)
+    (hresult : (false, finalState) ∈ support
+      (LazyRevealProbe.finalizeDetailed state)) :
+    finalState.values coordinate ≠ none := by
+  apply finalizeDetailed_materializes_coordinate state finalState coordinate
+  · simp [LazyRevealProbe.State.coordinates, hcoordinate]
+  · exact hresult
+
+theorem completedSplitHashCache_eq_table_of_finalize
+    (table : Coordinate → HashOutput)
+    (state finalState : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
+    (coordinate : Coordinate) (hcoordinate : coordinate ∈ state.coordinates)
+    (hconsistent : HiddenConsistent state cache)
+    (htable : ∀ other output, finalState.values other = some output →
+      output = table other)
+    (hresult : (false, finalState) ∈ support
+      (LazyRevealProbe.finalizeDetailed state)) :
+    completedSplitHashCache table state.coordinates cache (.hidden coordinate) =
+      some (table coordinate) := by
+  unfold completedSplitHashCache
+  change (match cache (.hidden coordinate) with
+    | some output => some output
+    | none => if coordinate ∈ state.coordinates then some (table coordinate) else none) =
+      some (table coordinate)
+  cases hcache : cache (.hidden coordinate) with
+  | none => simp [hcoordinate]
+  | some output =>
+      have hstateValue := hconsistent coordinate output hcache
+      have hfinalValue := finalizeDetailedFrom_preserves_value state.coordinates.toList
+        state finalState coordinate output hstateValue hresult
+      rw [htable coordinate output hfinalValue]
+
+theorem mergedCache_tableInput_eq_table_of_finalize
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (state finalState : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
+    (position : Position) (hots : IsOtsPosition position)
+    (hcoordinate : Coordinate.position position ∈ state.coordinates)
+    (hconsistent : HiddenConsistent state cache)
+    (htable : ∀ other output, finalState.values other = some output →
+      output = table other)
+    (hresult : (false, finalState) ∈ support
+      (LazyRevealProbe.finalizeDetailed state)) :
+    mergedCache parameter table state.coordinates cache
+        (tableInput parameter table (.position position)) =
+      some (table (.position position)) := by
+  rw [mergedCache_tableInput parameter table state.coordinates cache position hots]
+  exact completedSplitHashCache_eq_table_of_finalize table state finalState cache
+    (.position position) hcoordinate hconsistent htable hresult
+
 theorem finalizeDetailedFrom_false_of_pending_hit
     (table : Coordinate → HashOutput) :
     ∀ (coordinates : List Coordinate) (state finalState : LazyRevealProbe.State Coordinate)

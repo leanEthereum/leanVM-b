@@ -218,4 +218,46 @@ theorem evalDist_uniformOtsHashTable_truncate :
           ProbComp (Layer → TreeIndex → LeafIndex → ChainIndex → Digest))] := hcurried
     _ = 𝒟[sampleOtsSecrets] := by rfl
 
+set_option maxRecDepth 30000 in
+theorem relTriple_uniformOtsHashTable_sampleOtsSecrets :
+    RelTriple
+      (($ᵗ (OtsSecretIndex → HashOutput) :
+        ProbComp (OtsSecretIndex → HashOutput)))
+      sampleOtsSecrets
+      fun table secret =>
+        otsSecretTableEquiv.symm
+          (fun index => truncateHash (table index)) = secret := by
+  let truncateTable := fun table : OtsSecretIndex → HashOutput =>
+    otsSecretTableEquiv.symm (fun index => truncateHash (table index))
+  have hself : RelTriple
+      (($ᵗ (OtsSecretIndex → HashOutput) :
+        ProbComp (OtsSecretIndex → HashOutput)))
+      (($ᵗ (OtsSecretIndex → HashOutput) :
+        ProbComp (OtsSecretIndex → HashOutput)))
+      fun left right => left = right :=
+    relTriple_refl _
+  have hmapped : RelTriple
+      (($ᵗ (OtsSecretIndex → HashOutput) :
+        ProbComp (OtsSecretIndex → HashOutput)))
+      (truncateTable <$>
+        ($ᵗ (OtsSecretIndex → HashOutput) :
+          ProbComp (OtsSecretIndex → HashOutput)))
+      fun table secret => truncateTable table = secret := by
+    have htruncate : RelTriple
+        (($ᵗ (OtsSecretIndex → HashOutput) :
+          ProbComp (OtsSecretIndex → HashOutput)))
+        (($ᵗ (OtsSecretIndex → HashOutput) :
+          ProbComp (OtsSecretIndex → HashOutput)))
+        fun left right => truncateTable left = truncateTable right := by
+      apply relTriple_post_mono hself
+      intro left right heq
+      rw [heq]
+    simpa [truncateTable] using
+      (relTriple_map
+        (R := fun table secret => truncateTable table = secret)
+        (f := id) (g := truncateTable) htruncate)
+  exact relTriple_of_evalDist_eq_right
+    (by simpa [truncateTable] using evalDist_uniformOtsHashTable_truncate)
+    hmapped
+
 end SphincsSecurity.Concrete.OtsProbeSimulation

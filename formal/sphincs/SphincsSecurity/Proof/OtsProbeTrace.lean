@@ -203,6 +203,92 @@ theorem VerifierLayerMessage.bottom_message
         norm_num [bottomLayer, topLayer, numLayers] at hval
       exact (this htopPosition.1).elim
 
+theorem VerifierLayerMessage.middle_data
+    {f : QueryImpl HashSpec Id} {parameter : PublicParameter} {index : Index}
+    {leaves : DigestTree → FtsLeaf} {signature : Signature} {message : Digest}
+    (hmessage : VerifierLayerMessage f parameter index leaves signature middleLayer message) :
+    ∃ bottomLeaf,
+      evalWithAnswerFn f
+          (otsLeaf parameter bottomLayer (treeIndexAt index bottomLayer)
+            (leafIndexAt index bottomLayer)
+            (evalWithAnswerFn f
+              (ftsRecover parameter index leaves signature.ftsSecret signature.ftsPath))
+            (signature.counter bottomLayer) (signature.chainValue bottomLayer)) =
+        some bottomLeaf
+      ∧ message = foldValue f parameter bottomLayer (treeIndexAt index bottomLayer)
+        (leafIndexAt index bottomLayer) (signaturePath signature bottomLayer) bottomLeaf
+          (layerHeight bottomLayer) := by
+  simp only [VerifierLayerMessage] at hmessage
+  obtain ⟨bottomLeaf, hbottom, middleLeaf, hmiddle, hposition⟩ := hmessage
+  refine ⟨bottomLeaf, hbottom, ?_⟩
+  rcases hposition with hbottomPosition | hrest
+  · have : middleLayer ≠ bottomLayer := by
+      intro heq
+      have hval := congrArg Fin.val heq
+      norm_num [middleLayer, bottomLayer, numLayers] at hval
+    exact (this hbottomPosition.1).elim
+  · rcases hrest with hmiddlePosition | htopPosition
+    · exact hmiddlePosition.2
+    · have : middleLayer ≠ topLayer := by
+        intro heq
+        have hval := congrArg Fin.val heq
+        norm_num [middleLayer, topLayer, numLayers] at hval
+      exact (this htopPosition.1).elim
+
+theorem VerifierLayerMessage.top_data
+    {f : QueryImpl HashSpec Id} {parameter : PublicParameter} {index : Index}
+    {leaves : DigestTree → FtsLeaf} {signature : Signature} {message : Digest}
+    (hmessage : VerifierLayerMessage f parameter index leaves signature topLayer message) :
+    ∃ bottomLeaf middleLeaf,
+      evalWithAnswerFn f
+          (otsLeaf parameter bottomLayer (treeIndexAt index bottomLayer)
+            (leafIndexAt index bottomLayer)
+            (evalWithAnswerFn f
+              (ftsRecover parameter index leaves signature.ftsSecret signature.ftsPath))
+            (signature.counter bottomLayer) (signature.chainValue bottomLayer)) =
+        some bottomLeaf
+      ∧ evalWithAnswerFn f
+          (otsLeaf parameter middleLayer (treeIndexAt index middleLayer)
+            (leafIndexAt index middleLayer)
+            (foldValue f parameter bottomLayer (treeIndexAt index bottomLayer)
+              (leafIndexAt index bottomLayer) (signaturePath signature bottomLayer)
+                bottomLeaf (layerHeight bottomLayer))
+            (signature.counter middleLayer) (signature.chainValue middleLayer)) =
+        some middleLeaf
+      ∧ message = foldValue f parameter middleLayer (treeIndexAt index middleLayer)
+        (leafIndexAt index middleLayer) (signaturePath signature middleLayer) middleLeaf
+          (layerHeight middleLayer) := by
+  simp only [VerifierLayerMessage] at hmessage
+  obtain ⟨bottomLeaf, hbottom, middleLeaf, hmiddle, hposition⟩ := hmessage
+  refine ⟨bottomLeaf, middleLeaf, hbottom, hmiddle, ?_⟩
+  rcases hposition with hbottomPosition | hrest
+  · have : topLayer ≠ bottomLayer := by
+      intro heq
+      have hval := congrArg Fin.val heq
+      norm_num [topLayer, bottomLayer, numLayers] at hval
+    exact (this hbottomPosition.1).elim
+  · rcases hrest with hmiddlePosition | htopPosition
+    · have : topLayer ≠ middleLayer := by
+        intro heq
+        have hval := congrArg Fin.val heq
+        norm_num [topLayer, middleLayer, numLayers] at hval
+      exact (this hmiddlePosition.1).elim
+    · exact htopPosition.2
+
+theorem VerifyProbeWitness.at_bottom_or_middle_or_top
+    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec}
+    {secretKey : SecretKey} {signingLog : QueryLog SigningSpec}
+    {forgedMessage : Message} {signature : Signature}
+    (hprobe : VerifyProbeWitness f cache secretKey signingLog forgedMessage signature) :
+    VerifyProbeWitnessAt f cache secretKey signingLog forgedMessage signature bottomLayer
+      ∨ VerifyProbeWitnessAt f cache secretKey signingLog forgedMessage signature middleLayer
+      ∨ VerifyProbeWitnessAt f cache secretKey signingLog forgedMessage signature topLayer := by
+  obtain ⟨lay, hprobe⟩ := hprobe
+  fin_cases lay
+  · exact Or.inr (Or.inr hprobe)
+  · exact Or.inr (Or.inl hprobe)
+  · exact Or.inl hprobe
+
 theorem ChainInvariant.not_finalized_false_of_bottom_verifyProbe
     {f : QueryImpl HashSpec Id} {parameter : PublicParameter}
     {table : Coordinate → HashOutput}
