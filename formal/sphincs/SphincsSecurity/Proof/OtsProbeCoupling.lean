@@ -5766,6 +5766,157 @@ theorem ChainInvariant.not_finalized_false_of_verifyProbe_verifier
   · exact hinvariant.not_finalized_false_of_top_verifyProbe_verifier hf hcompletedTable
       hrealizes hfinalize hverify htop
 
+set_option maxRecDepth 10000 in
+theorem not_verifyProbe_of_mem_runRaw_maskedRetainedGameAfterFtsSecrets
+    (adversary : Adversary) (f : QueryImpl HashSpec Id)
+    (parameter : PublicParameter) (table : Coordinate → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (fuel remaining : Nat) (rawState completedState : LazyRevealProbe.State Coordinate)
+    (rawCache : SplitHashCache) (root : Digest) (forgery : Forgery)
+    (signingLog : QueryLog SigningSpec) (verified : Bool)
+    (hfStable : StableCacheAgreesWithFn parameter rawCache f)
+    (hfOrdinary : (ordinaryQueryCache rawCache).AgreesWithFn f)
+    (hrawTable : ∀ coordinate output, rawState.values coordinate = some output →
+      output = table coordinate)
+    (hcompletedTable : ∀ coordinate output,
+      completedState.values coordinate = some output → output = table coordinate)
+    (hrealizes : ∀ position : Position, IsOtsPosition position →
+      f (tableInput parameter table (.position position)) = table (.position position))
+    (hresult : LazyRevealProbe.RawResult.done rawState remaining
+        ((root, ((forgery, signingLog), verified)), rawCache) ∈ support
+      (LazyRevealProbe.runRaw (LazyRevealProbe.State.empty :
+          LazyRevealProbe.State Coordinate) fuel
+        ((maskedRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
+          emptySplitHashCache)))
+    (hfinalize : (false, completedState) ∈ support
+      (LazyRevealProbe.finalizeDetailed rawState))
+    (hprobe : VerifyProbeWitness f
+      (mergedCache parameter table rawState.ensured rawCache)
+      (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey)
+      signingLog forgery.message forgery.signature) : False := by
+  obtain ⟨verifierState, verifierFuel, verifierCache, hinvariant, hverify⟩ :=
+    chainInvariant_maskedRetainedGameAfterFtsSecrets_mergedCache adversary f parameter table
+      ftsSecret fuel remaining rawState rawCache root forgery signingLog verified hfStable
+        hrawTable hrealizes hresult
+  exact hinvariant.not_finalized_false_of_verifyProbe_verifier hfOrdinary hcompletedTable
+    hrealizes hfinalize hverify hprobe
+
+theorem finalizeDetailedFrom_ensured_eq :
+    ∀ (coordinates : List Coordinate) (state finalState : LazyRevealProbe.State Coordinate),
+      (false, finalState) ∈ support
+        (LazyRevealProbe.finalizeDetailedFrom coordinates state) →
+      finalState.ensured = state.ensured := by
+  intro coordinates
+  induction coordinates with
+  | nil =>
+      intro state finalState hresult
+      simp [LazyRevealProbe.finalizeDetailedFrom] at hresult
+      exact congrArg LazyRevealProbe.State.ensured hresult
+  | cons coordinate coordinates ih =>
+      intro state finalState hresult
+      rw [LazyRevealProbe.finalizeDetailedFrom] at hresult
+      cases hvalue : state.values coordinate with
+      | some output =>
+          rw [hvalue] at hresult
+          exact (ih (state.clearPending coordinate) finalState hresult).trans (by
+            simp [LazyRevealProbe.State.clearPending])
+      | none =>
+          rw [hvalue, mem_support_bind_iff] at hresult
+          obtain ⟨output, _, hrest⟩ := hresult
+          by_cases hhit : state.hitAt coordinate output
+          · rw [if_pos hhit] at hrest
+            simp at hrest
+          · rw [if_neg hhit] at hrest
+            exact (ih (state.complete coordinate output) finalState hrest).trans (by
+              simp [LazyRevealProbe.State.complete])
+
+theorem finalizeDetailed_ensured_eq
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (hresult : (false, finalState) ∈ support
+      (LazyRevealProbe.finalizeDetailed state)) :
+    finalState.ensured = state.ensured :=
+  finalizeDetailedFrom_ensured_eq state.coordinates.toList state finalState hresult
+
+theorem retainedCompletion_of_finalize
+    (parameter : PublicParameter)
+    (rawState completedState : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (hconsistent : HiddenConsistent rawState cache)
+    (hfinalize : (false, completedState) ∈ support
+      (LazyRevealProbe.finalizeDetailed rawState)) :
+    let table := retainedCompletionTable parameter completedState cache baseStarts
+    let f := retainedCompletionAnswer parameter completedState cache baseStarts
+    StableCacheAgreesWithFn parameter cache f ∧
+      (mergedCache parameter table rawState.ensured cache).AgreesWithFn f ∧
+      (∀ coordinate output, rawState.values coordinate = some output →
+        output = table coordinate) ∧
+      (∀ coordinate output, completedState.values coordinate = some output →
+        output = table coordinate) ∧
+      (∀ position : Position, IsOtsPosition position →
+        f (tableInput parameter table (.position position)) = table (.position position)) := by
+  let table := retainedCompletionTable parameter completedState cache baseStarts
+  let f := retainedCompletionAnswer parameter completedState cache baseStarts
+  have hensured := finalizeDetailed_ensured_eq rawState completedState hfinalize
+  have hcompletedConsistent :=
+    finalizeDetailed_preservesHidden rawState cache hconsistent completedState hfinalize
+  have hcompletedTable : ∀ coordinate output,
+      completedState.values coordinate = some output → output = table coordinate := by
+    intro coordinate output hvalue
+    exact (completedRealizedTable_of_value (splitFallback cache) parameter completedState
+      baseStarts coordinate output hvalue).symm
+  have hrawTable : ∀ coordinate output,
+      rawState.values coordinate = some output → output = table coordinate := by
+    intro coordinate output hvalue
+    exact hcompletedTable coordinate output
+      (finalizeDetailedFrom_preserves_value rawState.coordinates.toList rawState completedState
+        coordinate output hvalue hfinalize)
+  refine ⟨stableCacheAgreesWithFn_retainedCompletionAnswer parameter completedState cache
+      baseStarts, ?_, hrawTable, hcompletedTable,
+      retainedCompletionAnswer_realizes parameter completedState cache baseStarts⟩
+  rw [← hensured]
+  exact mergedCache_agreesWithFn_retainedCompletionAnswer parameter completedState cache
+    baseStarts hcompletedConsistent
+
+set_option maxRecDepth 10000 in
+theorem not_verifyProbe_of_retainedCompletion
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (baseStarts : Layer → TreeIndex → LeafIndex → ChainIndex → HashOutput)
+    (fuel remaining : Nat) (rawState completedState : LazyRevealProbe.State Coordinate)
+    (rawCache : SplitHashCache) (root : Digest) (forgery : Forgery)
+    (signingLog : QueryLog SigningSpec) (verified : Bool)
+    (hconsistent : HiddenConsistent rawState rawCache)
+    (hresult : LazyRevealProbe.RawResult.done rawState remaining
+        ((root, ((forgery, signingLog), verified)), rawCache) ∈ support
+      (LazyRevealProbe.runRaw (LazyRevealProbe.State.empty :
+          LazyRevealProbe.State Coordinate) fuel
+        ((maskedRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
+          emptySplitHashCache)))
+    (hfinalize : (false, completedState) ∈ support
+      (LazyRevealProbe.finalizeDetailed rawState))
+    (hfOrdinary : (ordinaryQueryCache rawCache).AgreesWithFn
+      (retainedCompletionAnswer parameter completedState rawCache baseStarts))
+    (hprobe : VerifyProbeWitness
+      (retainedCompletionAnswer parameter completedState rawCache baseStarts)
+      (mergedCache parameter
+        (retainedCompletionTable parameter completedState rawCache baseStarts)
+        completedState.ensured rawCache)
+      (⟨parameter, root,
+        tableOtsSecret (retainedCompletionTable parameter completedState rawCache baseStarts),
+        ftsSecret⟩ : SecretKey)
+      signingLog forgery.message forgery.signature) : False := by
+  obtain ⟨hfStable, _hfMerged, hrawTable, hcompletedTable, hrealizes⟩ :=
+    retainedCompletion_of_finalize parameter rawState completedState rawCache baseStarts
+      hconsistent hfinalize
+  have hensured := finalizeDetailed_ensured_eq rawState completedState hfinalize
+  rw [hensured] at hprobe
+  exact not_verifyProbe_of_mem_runRaw_maskedRetainedGameAfterFtsSecrets adversary
+    (retainedCompletionAnswer parameter completedState rawCache baseStarts) parameter
+    (retainedCompletionTable parameter completedState rawCache baseStarts) ftsSecret fuel
+    remaining rawState completedState rawCache root forgery signingLog verified hfStable
+    hfOrdinary hrawTable hcompletedTable hrealizes hresult hfinalize hprobe
+
 theorem relTriple_runRaw_splitUniformImpl
     (n : Nat) (state : LazyRevealProbe.State Coordinate)
     (cache : SplitHashCache) (fuel : Nat) :
