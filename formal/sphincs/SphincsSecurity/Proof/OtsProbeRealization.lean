@@ -743,16 +743,28 @@ theorem preservesHidden_resolveKnownInput (parameter : PublicParameter)
         · rw [if_neg heq]
           exact preservesHidden_splitHashQuery_ordinary input
 
+set_option maxHeartbeats 10000 in
+theorem preservesHidden_probeFirstMissingInputCoordinate (input : HashInput) :
+    ∀ (slot : Nat) (coordinates : List Coordinate),
+      PreservesHidden (probeFirstMissingInputCoordinate input slot coordinates)
+  | _, [] => preservesHidden_pure ()
+  | slot, coordinate :: remaining => by
+      rw [probeFirstMissingInputCoordinate]
+      exact (preservesHidden_peekCoordinate coordinate).bind fun value =>
+        match value with
+        | none => preservesHidden_probe ⟨coordinate, slotDigest slot input⟩
+        | some _ => preservesHidden_probeFirstMissingInputCoordinate input (slot + 1) remaining
+
 theorem preservesHidden_probingHashQuery (parameter : PublicParameter)
     (input : HashInput) :
     PreservesHidden (probingHashQuery parameter input) := by
   unfold probingHashQuery
-  cases hprobe : decodeProbe? parameter input with
+  cases decodeProbe? parameter input with
   | some candidate =>
       exact (preservesHidden_probe candidate).bind fun _ =>
         preservesHidden_resolveKnownInput parameter candidate.outputCoordinate input
   | none =>
-      cases hposition : decodePosition? parameter input with
+      cases decodePosition? parameter input with
       | none => exact preservesHidden_splitHashQuery_ordinary input
       | some position =>
           cases position with
@@ -763,10 +775,11 @@ theorem preservesHidden_probingHashQuery (parameter : PublicParameter)
               exact preservesHidden_resolveKnownInput parameter
                 (.position (.leaf lay tree leafIdx)) input
           | node lay tree level nodeIdx =>
-              exact preservesHidden_resolveKnownInput parameter
-                (.position (.node lay tree level nodeIdx)) input
-          | ftsLeaf | ftsNode | ftsRoots =>
-              exact preservesHidden_splitHashQuery_ordinary input
+              exact (preservesHidden_probeFirstMissingInputCoordinate input 0
+                ((Position.node lay tree level nodeIdx).children.map Coordinate.position)).bind fun _ =>
+                  preservesHidden_resolveKnownInput parameter
+                    (.position (.node lay tree level nodeIdx)) input
+          | ftsLeaf | ftsNode | ftsRoots => exact preservesHidden_splitHashQuery_ordinary input
 
 theorem preservesHiddenImpl_probingHashImpl (parameter : PublicParameter) :
     PreservesHiddenImpl (probingHashImpl parameter) :=

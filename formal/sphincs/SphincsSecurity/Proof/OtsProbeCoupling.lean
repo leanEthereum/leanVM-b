@@ -1063,6 +1063,24 @@ theorem TableInputAvailable.monoValues
           intro child hchild
           exact hle _ _ (havailable child hchild)
 
+theorem runRaw_probeFirstMissingInputCoordinate_of_values
+    (table : Coordinate → HashOutput) (input : HashInput)
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache) (fuel : Nat) :
+    ∀ (slot : Nat) (coordinates : List Coordinate),
+      (∀ coordinate, coordinate ∈ coordinates →
+        state.values coordinate = some (table coordinate)) →
+      LazyRevealProbe.runRaw state fuel
+          ((probeFirstMissingInputCoordinate input slot coordinates).run cache) =
+        pure (.done state fuel ((), cache))
+  | _, [], _ => by simp [probeFirstMissingInputCoordinate, LazyRevealProbe.runRaw]
+  | slot, coordinate :: remaining, hvalues => by
+      rw [probeFirstMissingInputCoordinate, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+        runRaw_peekCoordinate_of_value state cache fuel coordinate (table coordinate)
+          (hvalues coordinate (by simp))]
+      simp only [pure_bind]
+      exact runRaw_probeFirstMissingInputCoordinate_of_values table input state cache fuel
+        (slot + 1) remaining (fun other hother => hvalues other (by simp [hother]))
+
 theorem runRaw_peekTableInput_of_available
     (parameter : PublicParameter) (table : Coordinate → HashOutput)
     (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
@@ -5524,16 +5542,6 @@ theorem verifierHashQuery_returns_table
       have hanswer := hf hreturns
       exact ⟨hanswer.symm.trans hrealizes, hreturns⟩
 
-theorem probingHashQuery_eq_resolveKnownInput_of_decodeProbe_none
-    (parameter : PublicParameter) (input : HashInput) (position : Position)
-    (hprobe : decodeProbe? parameter input = none)
-    (hposition : decodePosition? parameter input = some position)
-    (hots : IsOtsPosition position) :
-    probingHashQuery parameter input = resolveKnownInput parameter (.position position) input := by
-  unfold probingHashQuery
-  rw [hprobe, hposition]
-  cases position <;> simp [IsOtsPosition] at hots ⊢
-
 set_option maxRecDepth 10000 in
 theorem probingHashQuery_returns_table_of_available
     (parameter : PublicParameter) (table : Coordinate → HashOutput)
@@ -5552,6 +5560,9 @@ theorem probingHashQuery_returns_table_of_available
   let input := tableInput parameter table (.position position)
   have hposition : decodePosition? parameter input = some position :=
     (decodePosition?_eq_some_iff parameter input position).2 ⟨tablePayload table position, rfl⟩
+  change LazyRevealProbe.RawResult.done finalState remaining (output, finalCache) ∈
+    support (LazyRevealProbe.runRaw state fuel ((probingHashQuery parameter input).run cache))
+    at hresult
   cases hprobe : decodeProbe? parameter input with
   | some candidate =>
       unfold probingHashQuery at hresult
@@ -5562,6 +5573,7 @@ theorem probingHashQuery_returns_table_of_available
       | stopped hit => simp at hrest
       | done probeState probeRemaining probeResult =>
           rcases probeResult with ⟨probed, probeCache⟩
+          simp only at hrest
           have hvaluesLE := LazyRevealProbe.valuesLE_of_mem_runRaw_done
             ((probe candidate).run cache) state probeState fuel probeRemaining
               (probed, probeCache) hprobeRun
@@ -5573,10 +5585,40 @@ theorem probingHashQuery_returns_table_of_available
             probeState finalState probeCache finalCache probeRemaining remaining output
               havailableProbe htable hrest
   | none =>
-      rw [probingHashQuery_eq_resolveKnownInput_of_decodeProbe_none parameter input position
-        hprobe hposition hots] at hresult
-      exact resolveKnownInput_returns_table_of_available parameter table (.position position)
-        state finalState cache finalCache fuel remaining output havailable htable hresult
+      unfold probingHashQuery at hresult
+      rw [hprobe, hposition] at hresult
+      cases position with
+      | chain lay tree leafIdx chainIdx step =>
+          simp only at hresult
+          exact resolveKnownInput_returns_table_of_available parameter table
+            (.position (.chain lay tree leafIdx chainIdx step)) state finalState cache finalCache
+              fuel remaining output havailable htable hresult
+      | leaf lay tree leafIdx =>
+          simp only at hresult
+          exact resolveKnownInput_returns_table_of_available parameter table
+            (.position (.leaf lay tree leafIdx)) state finalState cache finalCache fuel remaining
+              output havailable htable hresult
+      | node lay tree level nodeIdx =>
+          simp only at hresult
+          let coordinates := (Position.node lay tree level nodeIdx).children.map Coordinate.position
+          have hvalues : ∀ coordinate, coordinate ∈ coordinates →
+              state.values coordinate = some (table coordinate) := by
+            intro coordinate hcoordinate
+            obtain ⟨child, hchild, heq⟩ := List.mem_map.1 hcoordinate
+            rw [← heq]
+            exact havailable child hchild
+          have hscan := runRaw_probeFirstMissingInputCoordinate_of_values table input state cache
+            fuel 0 coordinates hvalues
+          change LazyRevealProbe.RawResult.done finalState remaining
+              (output, finalCache) ∈ support (LazyRevealProbe.runRaw state fuel
+                ((probeFirstMissingInputCoordinate input 0 coordinates).run cache >>=
+                  fun probeResult => (resolveKnownInput parameter
+                    (.position (.node lay tree level nodeIdx)) input).run probeResult.2)) at hresult
+          rw [LazyRevealProbe.runRaw_bind, hscan, pure_bind] at hresult
+          exact resolveKnownInput_returns_table_of_available parameter table
+            (.position (.node lay tree level nodeIdx)) state finalState cache finalCache fuel
+              remaining output havailable htable hresult
+      | ftsLeaf | ftsNode | ftsRoots => simp [IsOtsPosition] at hots
 theorem simulateQ_probingHashImpl_tweakableHash_eq_ordinaryHashImpl
     (parameter : PublicParameter) (domain : HashDomain) (payload : HashInput)
     (hinRange : domain.InRange)

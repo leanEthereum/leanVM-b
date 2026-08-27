@@ -1917,6 +1917,14 @@ theorem RawReadOnly.entryPreserving
   rw [hreadonly state cache fuel finalState remaining value finalCache hresult |>.2.2]
   exact hcached
 
+theorem RawReadOnly.splitCachePreserving
+    {computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    (hreadonly : RawReadOnly computation) :
+    SplitCachePreserving computation := by
+  intro state cache fuel finalState remaining value finalCache hresult
+  exact hreadonly state cache fuel finalState remaining value finalCache hresult |>.2.2
+
 theorem rawReadOnly_peekCoordinate (coordinate : Coordinate) :
     RawReadOnly (peekCoordinate coordinate) := by
   intro state cache fuel finalState remaining value finalCache hresult
@@ -2073,6 +2081,17 @@ theorem splitCachePreserving_probe (candidate : Probe) :
       · rw [if_neg hrevealed] at hresult
         simp [LazyRevealProbe.runRaw] at hresult
         exact hresult.2.2
+
+theorem splitCachePreserving_probeFirstMissingInputCoordinate (input : HashInput) :
+    ∀ (slot : Nat) (coordinates : List Coordinate),
+      SplitCachePreserving (probeFirstMissingInputCoordinate input slot coordinates)
+  | _, [] => SplitCachePreserving.pure ()
+  | slot, coordinate :: remaining => by
+      rw [probeFirstMissingInputCoordinate]
+      exact (rawReadOnly_peekCoordinate coordinate).splitCachePreserving.bind fun value =>
+        match value with
+        | none => splitCachePreserving_probe ⟨coordinate, slotDigest slot input⟩
+        | some _ => splitCachePreserving_probeFirstMissingInputCoordinate input (slot + 1) remaining
 
 theorem ordinaryEntryPreserving_publishCoordinate
     (input : HashInput) (coordinate : Coordinate) :
@@ -2284,8 +2303,9 @@ theorem cachesOrdinaryInput_probingHashQuery
               exact cachesOrdinaryInput_resolveKnownInput parameter
                 (.position (.leaf lay tree leafIdx)) input
           | node lay tree level nodeIdx =>
-              exact cachesOrdinaryInput_resolveKnownInput parameter
-                (.position (.node lay tree level nodeIdx)) input
+              exact CachesOrdinaryInput.bind_right fun _ =>
+                cachesOrdinaryInput_resolveKnownInput parameter
+                  (.position (.node lay tree level nodeIdx)) input
           | ftsLeaf | ftsNode | ftsRoots => exact cachesOrdinaryInput_splitHashQuery input
 
 theorem returnsCachedOrdinary_probingHashQuery
@@ -2308,8 +2328,9 @@ theorem returnsCachedOrdinary_probingHashQuery
               exact returnsCachedOrdinary_resolveKnownInput parameter
                 (.position (.leaf lay tree leafIdx)) input
           | node lay tree level nodeIdx =>
-              exact returnsCachedOrdinary_resolveKnownInput parameter
-                (.position (.node lay tree level nodeIdx)) input
+              exact ReturnsCachedOrdinary.bind_right fun _ =>
+                returnsCachedOrdinary_resolveKnownInput parameter
+                  (.position (.node lay tree level nodeIdx)) input
           | ftsLeaf | ftsNode | ftsRoots => exact returnsCachedOrdinary_splitHashQuery input
 
 theorem returnsCachedOrdinary_probingHashImpl
@@ -2324,16 +2345,10 @@ theorem ordinaryEntryPreserving_probingHashQuery_self
   unfold probingHashQuery
   rw [hstable.1]
   cases hposition : decodePosition? parameter input with
-  | none =>
-      exact (ordinaryCacheIncreasing_splitHashQuery_ordinary input).entryPreserving input
+  | none => exact (ordinaryCacheIncreasing_splitHashQuery_ordinary input).entryPreserving input
   | some position =>
       cases position with
-      | chain lay tree leafIdx chainIdx step =>
-          exact (hstable.2 _ hposition (by trivial)).elim
-      | leaf lay tree leafIdx =>
-          exact (hstable.2 _ hposition (by trivial)).elim
-      | node lay tree level nodeIdx =>
-          exact (hstable.2 _ hposition (by trivial)).elim
+      | chain | leaf | node => exact (hstable.2 _ hposition (by trivial)).elim
       | ftsLeaf | ftsNode | ftsRoots =>
           exact (ordinaryCacheIncreasing_splitHashQuery_ordinary input).entryPreserving input
 
@@ -2352,12 +2367,12 @@ theorem ordinaryEntryPreserving_probingHashQuery_of_ne
           exact (ordinaryCacheIncreasing_splitHashQuery_ordinary query).entryPreserving input
       | some position =>
           cases position with
-          | chain lay tree leafIdx chainIdx step =>
-              exact ordinaryEntryPreserving_resolveKnownInput_of_ne parameter input query _ hne
-          | leaf lay tree leafIdx =>
+          | chain | leaf =>
               exact ordinaryEntryPreserving_resolveKnownInput_of_ne parameter input query _ hne
           | node lay tree level nodeIdx =>
-              exact ordinaryEntryPreserving_resolveKnownInput_of_ne parameter input query _ hne
+              exact (splitCachePreserving_probeFirstMissingInputCoordinate query 0
+                ((Position.node lay tree level nodeIdx).children.map Coordinate.position)).entryPreserving input |>.bind
+                  fun _ => ordinaryEntryPreserving_resolveKnownInput_of_ne parameter input query _ hne
           | ftsLeaf | ftsNode | ftsRoots =>
               exact (ordinaryCacheIncreasing_splitHashQuery_ordinary query).entryPreserving input
 
@@ -3522,6 +3537,21 @@ theorem preservesChainInvariant_probe_resolveKnownInput
         candidate.outputCoordinate input candidate hdecode probeState probeCache probeRemaining
           finalState remaining value finalCache hprobeInvariant hsecured hrest
 
+theorem preservesChainInvariant_probeFirstMissingInputCoordinate
+    (parameter : PublicParameter) (allowed : Coordinate → Prop) (input : HashInput) :
+    ∀ (slot : Nat) (coordinates : List Coordinate),
+      PreservesChainInvariant parameter allowed
+        (probeFirstMissingInputCoordinate input slot coordinates)
+  | _, [] => preservesChainInvariant_pure parameter allowed ()
+  | slot, coordinate :: remaining => by
+      rw [probeFirstMissingInputCoordinate]
+      exact (preservesChainInvariant_peekCoordinate parameter allowed coordinate).bind fun value =>
+        match value with
+        | none => preservesChainInvariant_probe parameter allowed
+            ⟨coordinate, slotDigest slot input⟩
+        | some _ => preservesChainInvariant_probeFirstMissingInputCoordinate parameter allowed input
+            (slot + 1) remaining
+
 theorem preservesChainInvariant_probingHashQuery
     (allowed : Coordinate → Prop) (hclosed : ChainForwardClosed allowed)
     (parameter : PublicParameter) (input : HashInput) :
@@ -3545,8 +3575,11 @@ theorem preservesChainInvariant_probingHashQuery
               exact preservesChainInvariant_resolveKnownInput_of_decode_none allowed hclosed
                 parameter (.position (.leaf lay tree leafIdx)) input hprobe
           | node lay tree level nodeIdx =>
-              exact preservesChainInvariant_resolveKnownInput_of_decode_none allowed hclosed
-                parameter (.position (.node lay tree level nodeIdx)) input hprobe
+              exact (preservesChainInvariant_probeFirstMissingInputCoordinate parameter allowed
+                input 0 ((Position.node lay tree level nodeIdx).children.map
+                  Coordinate.position)).bind fun _ =>
+                    preservesChainInvariant_resolveKnownInput_of_decode_none allowed hclosed
+                      parameter (.position (.node lay tree level nodeIdx)) input hprobe
           | ftsLeaf | ftsNode | ftsRoots =>
               exact preservesChainInvariant_splitHashQuery_ordinary_of_decode_none parameter
                 allowed input hprobe
@@ -4091,18 +4124,31 @@ theorem preservesChainValid_resolveKnownInput
             exact preservesChainValid_splitHashQuery_ordinary allowed input peekState peekCache
               peekRemaining finalState remaining value finalCache hpeekValid hrest
 
+theorem preservesChainValid_probeFirstMissingInputCoordinate
+    (allowed : Coordinate → Prop) (input : HashInput) :
+    ∀ (slot : Nat) (coordinates : List Coordinate),
+      PreservesChainValid allowed (probeFirstMissingInputCoordinate input slot coordinates)
+  | _, [] => preservesChainValid_pure allowed ()
+  | slot, coordinate :: remaining => by
+      rw [probeFirstMissingInputCoordinate]
+      exact (preservesChainValid_peekCoordinate allowed coordinate).bind fun value =>
+        match value with
+        | none => preservesChainValid_probe allowed ⟨coordinate, slotDigest slot input⟩
+        | some _ => preservesChainValid_probeFirstMissingInputCoordinate allowed input
+            (slot + 1) remaining
+
 theorem preservesChainValid_probingHashQuery
     (allowed : Coordinate → Prop) (hclosed : ChainForwardClosed allowed)
     (parameter : PublicParameter) (input : HashInput) :
     PreservesChainValid allowed (probingHashQuery parameter input) := by
   unfold probingHashQuery
-  cases hprobe : decodeProbe? parameter input with
+  cases decodeProbe? parameter input with
   | some candidate =>
       exact (preservesChainValid_probe allowed candidate).bind fun _ =>
         preservesChainValid_resolveKnownInput allowed hclosed parameter
           candidate.outputCoordinate input
   | none =>
-      cases hposition : decodePosition? parameter input with
+      cases decodePosition? parameter input with
       | none => exact preservesChainValid_splitHashQuery_ordinary allowed input
       | some position =>
           cases position with
@@ -4113,8 +4159,10 @@ theorem preservesChainValid_probingHashQuery
               exact preservesChainValid_resolveKnownInput allowed hclosed parameter
                 (.position (.leaf lay tree leafIdx)) input
           | node lay tree level nodeIdx =>
-              exact preservesChainValid_resolveKnownInput allowed hclosed parameter
-                (.position (.node lay tree level nodeIdx)) input
+              exact (preservesChainValid_probeFirstMissingInputCoordinate allowed input 0
+                ((Position.node lay tree level nodeIdx).children.map Coordinate.position)).bind
+                  fun _ => preservesChainValid_resolveKnownInput allowed hclosed parameter
+                    (.position (.node lay tree level nodeIdx)) input
           | ftsLeaf | ftsNode | ftsRoots =>
               exact preservesChainValid_splitHashQuery_ordinary allowed input
 

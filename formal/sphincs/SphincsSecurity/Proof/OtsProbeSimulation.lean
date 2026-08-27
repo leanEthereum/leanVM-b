@@ -949,6 +949,16 @@ noncomputable def probe (candidate : Probe) :
       (OracleComp (LazyRevealProbe.World Coordinate)) Unit :=
   liftM (LazyRevealProbe.probeQuery candidate.coordinate candidate.candidate)
 
+noncomputable def probeFirstMissingInputCoordinate (input : HashInput) :
+    Nat → List Coordinate →
+      StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate)) Unit
+  | _, [] => pure ()
+  | slot, coordinate :: remaining => do
+      match ← peekCoordinate coordinate with
+      | none => probe ⟨coordinate, slotDigest slot input⟩
+      | some _ => probeFirstMissingInputCoordinate input (slot + 1) remaining
+
 noncomputable def resolveKnownInput (parameter : PublicParameter)
     (coordinate : Coordinate) (input : HashInput) :
     StateT SplitHashCache
@@ -967,7 +977,7 @@ noncomputable def resolveKnownInput (parameter : PublicParameter)
 
 noncomputable def probingHashQuery (parameter : PublicParameter) (input : HashInput) :
     StateT SplitHashCache
-      (OracleComp (LazyRevealProbe.World Coordinate)) HashOutput := do
+      (OracleComp (LazyRevealProbe.World Coordinate)) HashOutput :=
   match decodeProbe? parameter input with
   | some candidate => do
       probe candidate
@@ -978,7 +988,8 @@ noncomputable def probingHashQuery (parameter : PublicParameter) (input : HashIn
           resolveKnownInput parameter (.position position) input
       | some position@(.leaf _ _ _) =>
           resolveKnownInput parameter (.position position) input
-      | some position@(.node _ _ _ _) =>
+      | some position@(.node _ _ _ _) => do
+          probeFirstMissingInputCoordinate input 0 (position.children.map .position)
           resolveKnownInput parameter (.position position) input
       | _ => splitHashQuery (.ordinary input)
 
