@@ -785,6 +785,32 @@ theorem projectCleanOrdinary_splitHashQuery
       intro output
       simp [runCleanFromTable, projectCleanOrdinary, ordinaryQueryCache_update]
 
+theorem projectCleanOrdinary_ensureCoordinate
+    (coordinate : Coordinate) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache) (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
+    projectCleanOrdinary <$>
+        runCleanFromTable state fuel table ((ensureCoordinate coordinate).run cache) =
+      pure (some ((), ordinaryQueryCache cache)) := by
+  unfold ensureCoordinate
+  rw [StateT.run_liftM, LazyRevealProbe.ensureQuery,
+    runCleanFromTable_ensure_query_bind]
+  simp [runCleanFromTable, projectCleanOrdinary]
+
+theorem relTriple_runCleanFromTable_ensureCoordinate
+    (coordinate : Coordinate) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache) (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
+    RelTriple
+      (runCleanFromTable state fuel table ((ensureCoordinate coordinate).run cache))
+      (pure ((), ordinaryQueryCache cache) :
+        ProbComp (Unit × QueryCache HashSpec))
+      fun cleanResult ordinaryResult =>
+        projectCleanOrdinary cleanResult = some ordinaryResult := by
+  exact SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_of_project_eq_some_exact
+    projectCleanOrdinary ((), ∅)
+    (runCleanFromTable state fuel table ((ensureCoordinate coordinate).run cache))
+    (pure ((), ordinaryQueryCache cache) : ProbComp (Unit × QueryCache HashSpec))
+    (projectCleanOrdinary_ensureCoordinate coordinate state cache fuel table)
+
 set_option maxRecDepth 10000 in
 theorem projectCleanOrdinary_simulateQ_ordinaryHashImpl
     (computation : OracleComp HashSpec alpha)
@@ -896,6 +922,39 @@ theorem relTriple_runCleanFromTable_revealChainStart
   · rw [hvalue]
     simp [runCleanFromTable, CleanOrdinaryStepRel, projectCleanOrdinary,
       ordinaryQueryCache_update_hidden]
+
+theorem relTriple_runCleanFromTable_revealChainStart_then_ordinary
+    [Inhabited alpha] (index : OtsSecretIndex)
+    (next : Digest → OracleComp HashSpec alpha)
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (hagrees : StartTableAgrees state table) :
+    RelTriple
+      (runCleanFromTable state fuel table
+        (((revealChainStart index.lay index.tree index.leafIdx index.chainIdx) >>= fun value =>
+          simulateQ ordinaryHashImpl (next value)).run cache))
+      ((simulateQ (randomOracle : QueryImpl HashSpec _)
+        (next (truncateHash (table index)))).run (ordinaryQueryCache cache))
+      CleanOrdinaryStepRel := by
+  let maskedNext := fun value : Digest => simulateQ ordinaryHashImpl (next value)
+  let ordinaryNext := fun value : Digest =>
+    simulateQ (randomOracle : QueryImpl HashSpec _) (next value)
+  have hleft := relTriple_runCleanFromTable_revealChainStart index state cache fuel table
+    (hagrees.lookup index)
+  have hbind := relTriple_runCleanFromTable_StateT_bind
+    (revealChainStart index.lay index.tree index.leafIdx index.chainIdx)
+    maskedNext (pure (truncateHash (table index))) ordinaryNext state fuel table cache
+    (ordinaryQueryCache cache) hleft
+    (fun result ordinaryResult hproject => by
+      rcases result with ⟨finalState, remaining, ⟨value, finalCache⟩, finalTable⟩
+      have hresult : (value, ordinaryQueryCache finalCache) = ordinaryResult :=
+        Option.some.inj hproject
+      subst ordinaryResult
+      apply relTriple_post_mono
+        (relTriple_runCleanFromTable_simulateQ_ordinaryHashImpl (next value)
+          finalState finalCache remaining finalTable)
+      exact fun _ _ h => Or.inr h)
+  simpa [maskedNext, ordinaryNext] using hbind
 
 noncomputable def finishCleanRunFromTable :
     Option (CleanRunResult alpha) → ProbComp (Option (CleanRunResult alpha))
