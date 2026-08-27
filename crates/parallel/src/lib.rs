@@ -150,6 +150,15 @@ fn pool() -> &'static Pool {
     })
 }
 
+/// Which worker the calling thread is: `0` for the dispatcher, `1..perf` for the
+/// performance workers, and `perf..` for the efficiency ones. Any thread
+/// outside the pool reads as `0`.
+#[must_use]
+#[inline]
+pub fn worker_id() -> usize {
+    WORKER_ID.get()
+}
+
 fn worker_main(pool: &'static Pool, id: usize, qos: Qos) {
     WORKER_ID.set(id);
     set_qos(qos);
