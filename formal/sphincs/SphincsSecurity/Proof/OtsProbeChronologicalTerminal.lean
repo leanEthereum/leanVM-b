@@ -192,4 +192,65 @@ theorem resolvedNoPublish_ordinaryRomImpl (query : OracleWorld.Domain)
   | inl query => exact resolvedNoPublish_splitUniformImpl query cache
   | inr input => exact resolvedNoPublish_ordinaryHashImpl input cache
 
+theorem ResolvedContextInvariant.concreteCache_agreesWith_tableAnswer
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {context : DeferredContext} {ordinaryCache concreteCache : QueryCache HashSpec}
+    (hinvariant : ResolvedContextInvariant parameter table context ordinaryCache concreteCache)
+    (completion : Coordinate → HashOutput)
+    (hcompletion : DeferredCompletion table context completion) :
+    concreteCache.AgreesWithFn
+      (tableAnswer parameter completion (fromCache ordinaryCache)) := by
+  intro input output hcached
+  rcases hinvariant.2.2.2.2.2 input output hcached with hordinary | hfixed
+  · unfold tableAnswer
+    cases hdecode : decodePosition? parameter input with
+    | none =>
+        change fromCache ordinaryCache input = output
+        exact agreesWithFn_fromCache ordinaryCache hordinary
+    | some position =>
+        have hcanonicalOutput (hots : IsOtsPosition position)
+            (hexact : input = tableInput parameter completion (.position position)) :
+            completion (.position position) = output := by
+          have hagrees := hinvariant.1 completion hcompletion position hots
+          rw [← hexact] at hagrees
+          unfold ResolveInputAgrees at hagrees
+          cases hvalue : context.positionValue position with
+          | none =>
+              rw [hvalue] at hagrees
+              rw [hcached] at hagrees
+              simp at hagrees
+          | some cached =>
+              rw [hvalue] at hagrees
+              have hcachedEq : cached = output := Option.some.inj (hagrees.symm.trans hcached)
+              exact (hcompletion.eq_positionValue position cached hvalue).trans hcachedEq
+        cases position with
+        | chain lay tree leafIdx chainIdx step =>
+            by_cases hexact : input = tableInput parameter completion
+                (.position (.chain lay tree leafIdx chainIdx step))
+            · rw [tableAnswerDecoded, if_pos hexact]
+              exact hcanonicalOutput (by trivial) hexact
+            · rw [tableAnswerDecoded, if_neg hexact]
+              exact agreesWithFn_fromCache ordinaryCache hordinary
+        | leaf lay tree leafIdx =>
+            by_cases hexact : input = tableInput parameter completion
+                (.position (.leaf lay tree leafIdx))
+            · rw [tableAnswerDecoded, if_pos hexact]
+              exact hcanonicalOutput (by trivial) hexact
+            · rw [tableAnswerDecoded, if_neg hexact]
+              exact agreesWithFn_fromCache ordinaryCache hordinary
+        | node lay tree level nodeIdx =>
+            by_cases hexact : input = tableInput parameter completion
+                (.position (.node lay tree level nodeIdx))
+            · rw [tableAnswerDecoded, if_pos hexact]
+              exact hcanonicalOutput (by trivial) hexact
+            · rw [tableAnswerDecoded, if_neg hexact]
+              exact agreesWithFn_fromCache ordinaryCache hordinary
+        | ftsLeaf | ftsNode | ftsRoots =>
+            change fromCache ordinaryCache input = output
+            exact agreesWithFn_fromCache ordinaryCache hordinary
+  · rcases hfixed with ⟨position, hots, hvalue, hinput⟩
+    rw [hinput completion hcompletion,
+      tableAnswer_tableInput parameter completion (fromCache ordinaryCache) position hots,
+      hcompletion.eq_positionValue position output hvalue]
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
