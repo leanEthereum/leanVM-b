@@ -645,4 +645,283 @@ theorem evalDist_deferredLayerSchedule_then_finalize_eq_selections
   exact evalDist_selectThenResolveDeferredLayerSchedule_then_finalize parameter table ftsSecret
     index coordinates [topLayer, middleLayer, bottomLayer] result htable hvalid hcovered
 
+noncomputable def runResolvedSequenceFin
+    {n : Nat}
+    (computation : Fin n → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α)
+    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (cache : SplitHashCache) :
+    ProbComp (Option (ResolvedRunResult ((Fin n → α) × SplitHashCache))) :=
+  match n with
+  | 0 => pure (some ⟨context, fuel, (Fin.elim0, cache), table⟩)
+  | n + 1 => do
+      let head ← runResolvedFromTable context fuel table ((computation 0).run cache)
+      match head with
+      | none => pure none
+      | some head => do
+          let tail ← runResolvedSequenceFin
+            (fun position : Fin n => computation position.succ)
+            head.context head.remaining table head.value.2
+          match tail with
+          | none => pure none
+          | some tail => pure (some ⟨tail.context, tail.remaining,
+              (Fin.cases head.value.1 tail.value.1, tail.value.2), table⟩)
+
+set_option maxRecDepth 100000 in
+theorem evalDist_runResolvedSequenceFin_eq
+    {n : Nat}
+    (computation : Fin n → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α)
+    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (cache : SplitHashCache) (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table) :
+    evalDist (runResolvedSequenceFin computation context fuel table cache) =
+      evalDist (runResolvedFromTable context fuel table
+        ((sequenceFin computation).run cache)) := by
+  induction n generalizing context fuel cache with
+  | zero => simp [runResolvedSequenceFin, sequenceFin, runResolvedFromTable]
+  | succ n ih =>
+      rw [runResolvedSequenceFin, sequenceFin, StateT.run_bind,
+        runResolvedFromTable_bind]
+      apply evalDist_bind_congr
+      intro headOption hhead
+      cases headOption with
+      | none => simp
+      | some head =>
+          have hcore := resolvedCore_of_mem_runResolvedFromTable
+            ((computation 0).run cache) context fuel table head hconsistent hstarts hhead
+          simp only
+          rw [hcore.1, StateT.run_bind, runResolvedFromTable_bind]
+          simp only [StateT.run_pure]
+          rw [evalDist_bind, ih (fun position : Fin n => computation position.succ)
+            head.context head.remaining head.value.2 hcore.2.1 hcore.2.2, ← evalDist_bind]
+          apply evalDist_bind_congr
+          intro tailOption htail
+          cases tailOption with
+          | none => simp
+          | some tail =>
+              have htailCore := resolvedCore_of_mem_runResolvedFromTable
+                ((sequenceFin fun position : Fin n => computation position.succ).run
+                  head.value.2)
+                head.context head.remaining table tail hcore.2.1 hcore.2.2 htail
+              simp [runResolvedFromTable, htailCore.1]
+
+noncomputable def finalizeResolvedRunState
+    (coordinates : List Coordinate) :
+    Option (ResolvedRunResult α) →
+      ProbComp (Option (LazyRevealProbe.State Coordinate))
+  | none => pure none
+  | some result => projectDeferredState <$>
+      finalizeResolvedCoordinates coordinates result.context result.table
+
+noncomputable def finalizeResolvedRunStateFromTable
+    (coordinates : List Coordinate) (table : OtsSecretIndex → HashOutput) :
+    Option (ResolvedRunResult α) →
+      ProbComp (Option (LazyRevealProbe.State Coordinate))
+  | none => pure none
+  | some result => projectDeferredState <$>
+      finalizeResolvedCoordinates coordinates result.context table
+
+noncomputable def runResolvedLayerList
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index) :
+    List Layer → DeferredContext → Nat → SplitHashCache →
+      ProbComp (Option (ResolvedRunResult SplitHashCache))
+  | [], context, fuel, cache => pure (some ⟨context, fuel, cache, table⟩)
+  | lay :: layers, context, fuel, cache => do
+      let selected ← runResolvedFromTable context fuel table
+        ((maskedSignLayer parameter ftsSecret index lay).run cache)
+      match selected with
+      | none => pure none
+      | some selected =>
+          runResolvedLayerList parameter table ftsSecret index layers selected.context
+            selected.remaining selected.value.2
+
+set_option maxRecDepth 100000 in
+theorem evalDist_runDeferredLayerSelections_then_finalize_eq_list
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (coordinates : List Coordinate) :
+    ∀ (layers : List Layer) (result : ResolvedRunResult DeferredLayerStore),
+      result.table = table →
+      evalDist (runDeferredLayerSchedule parameter table ftsSecret index
+          (layers.map DeferredLayerOperation.select) (some result) >>=
+        finalizeDeferredLayerSchedule coordinates) =
+      evalDist (runResolvedLayerList parameter table ftsSecret index layers
+          result.context result.remaining result.value.cache >>=
+        finalizeResolvedRunStateFromTable coordinates table)
+  | [], result, htable => by
+      simp only [List.map_nil, runDeferredLayerSchedule, pure_bind,
+        finalizeDeferredLayerSchedule, runResolvedLayerList,
+        finalizeResolvedRunStateFromTable]
+      rw [htable]
+  | lay :: layers, result, _htable => by
+      simp only [List.map_cons, runDeferredLayerSchedule, runDeferredLayerOperation,
+        selectDeferredLayer, runResolvedLayerList, bind_assoc]
+      apply evalDist_bind_congr
+      intro selectedOption _hselected
+      cases selectedOption with
+      | none => simp [finalizeDeferredLayerSchedule, finalizeResolvedRunStateFromTable]
+      | some selected =>
+          simp only [pure_bind]
+          exact evalDist_runDeferredLayerSelections_then_finalize_eq_list parameter table
+            ftsSecret index coordinates layers
+            { context := selected.context
+              remaining := selected.remaining
+              value :=
+                { selected := Function.update result.value.selected lay selected.value.1
+                  resolved := result.value.resolved
+                  cache := selected.value.2 }
+              table := table } rfl
+
+noncomputable def runResolvedSequenceFinDiscard
+    {n : Nat}
+    (computation : Fin n → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α)
+    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (cache : SplitHashCache) :
+    ProbComp (Option (ResolvedRunResult SplitHashCache)) :=
+  match n with
+  | 0 => pure (some ⟨context, fuel, cache, table⟩)
+  | n + 1 => do
+      let head ← runResolvedFromTable context fuel table ((computation 0).run cache)
+      match head with
+      | none => pure none
+      | some head =>
+          runResolvedSequenceFinDiscard
+            (fun position : Fin n => computation position.succ)
+            head.context head.remaining table head.value.2
+
+set_option maxRecDepth 100000 in
+theorem evalDist_runResolvedSequenceFin_then_finalize_eq_discard
+    {n : Nat}
+    (computation : Fin n → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α)
+    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (cache : SplitHashCache) (coordinates : List Coordinate) :
+    evalDist (runResolvedSequenceFin computation context fuel table cache >>=
+        finalizeResolvedRunStateFromTable coordinates table) =
+      evalDist (runResolvedSequenceFinDiscard computation context fuel table cache >>=
+        finalizeResolvedRunStateFromTable coordinates table) := by
+  induction n generalizing context fuel cache with
+  | zero => simp [runResolvedSequenceFin, runResolvedSequenceFinDiscard,
+      finalizeResolvedRunStateFromTable]
+  | succ n ih =>
+      simp only [runResolvedSequenceFin, runResolvedSequenceFinDiscard, bind_assoc]
+      apply evalDist_bind_congr
+      intro headOption _hhead
+      cases headOption with
+      | none => simp [finalizeResolvedRunStateFromTable]
+      | some head =>
+          calc
+            _ = evalDist (runResolvedSequenceFin
+                (fun position : Fin n => computation position.succ)
+                head.context head.remaining table head.value.2 >>=
+              finalizeResolvedRunStateFromTable coordinates table) := by
+                simp only [bind_assoc]
+                apply evalDist_bind_congr
+                intro tailOption _htail
+                cases tailOption <;>
+                  simp [finalizeResolvedRunStateFromTable]
+            _ = _ := ih (fun position : Fin n => computation position.succ)
+              head.context head.remaining head.value.2
+
+set_option maxRecDepth 100000 in
+theorem runResolvedSequenceFinDiscard_layers_eq_list
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache) :
+    runResolvedSequenceFinDiscard
+        (fun lay : Layer => maskedSignLayer parameter ftsSecret index lay)
+        context fuel table cache =
+      runResolvedLayerList parameter table ftsSecret index
+        [topLayer, middleLayer, bottomLayer] context fuel cache := by
+  simp [runResolvedSequenceFinDiscard, runResolvedLayerList, numLayers,
+    topLayer, middleLayer, bottomLayer]
+  apply bind_congr
+  intro topOption
+  cases topOption with
+  | none => rfl
+  | some top =>
+      apply bind_congr
+      intro middleOption
+      cases middleOption with
+      | none => rfl
+      | some middle =>
+          apply bind_congr
+          intro bottomOption
+          cases bottomOption <;> rfl
+
+set_option maxRecDepth 100000 in
+theorem evalDist_deferredLayerSelections_then_finalize_eq_sequenceFin
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (coordinates : List Coordinate) (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table) :
+    evalDist (runDeferredLayerSchedule parameter table ftsSecret index
+        deferredLayerSelections
+        (some ⟨context, fuel, emptyDeferredLayerStore cache, table⟩) >>=
+      finalizeDeferredLayerSchedule coordinates) =
+      evalDist (runResolvedFromTable context fuel table
+          ((sequenceFin fun lay : Layer =>
+            maskedSignLayer parameter ftsSecret index lay).run cache) >>=
+        finalizeResolvedRunStateFromTable coordinates table) := by
+  calc
+    _ = evalDist (runResolvedLayerList parameter table ftsSecret index
+          [topLayer, middleLayer, bottomLayer] context fuel cache >>=
+        finalizeResolvedRunStateFromTable coordinates table) :=
+      evalDist_runDeferredLayerSelections_then_finalize_eq_list parameter table ftsSecret
+        index coordinates [topLayer, middleLayer, bottomLayer]
+        ⟨context, fuel, emptyDeferredLayerStore cache, table⟩ rfl
+    _ = evalDist (runResolvedSequenceFinDiscard
+          (fun lay : Layer => maskedSignLayer parameter ftsSecret index lay)
+          context fuel table cache >>= finalizeResolvedRunStateFromTable coordinates table) := by
+      rw [runResolvedSequenceFinDiscard_layers_eq_list]
+    _ = evalDist (runResolvedSequenceFin
+          (fun lay : Layer => maskedSignLayer parameter ftsSecret index lay)
+          context fuel table cache >>= finalizeResolvedRunStateFromTable coordinates table) :=
+      (evalDist_runResolvedSequenceFin_then_finalize_eq_discard
+        (fun lay : Layer => maskedSignLayer parameter ftsSecret index lay)
+        context fuel table cache coordinates).symm
+    _ = _ := by
+      rw [evalDist_bind,
+        evalDist_runResolvedSequenceFin_eq
+          (fun lay : Layer => maskedSignLayer parameter ftsSecret index lay)
+          context fuel table cache hconsistent hstarts, ← evalDist_bind]
+
+set_option maxRecDepth 100000 in
+theorem evalDist_chronologicalLayerSchedule_then_finalize_eq_sequenceFin
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (coordinates : List Coordinate) (hvalid : context.Valid)
+    (hcovered : PendingCovered coordinates context)
+    (hstarts : StartTableAgrees context.state table) :
+    evalDist (runDeferredLayerSchedule parameter table ftsSecret index
+        chronologicalLayerSchedule
+        (some ⟨context, fuel, emptyDeferredLayerStore cache, table⟩) >>=
+      finalizeDeferredLayerSchedule coordinates) =
+      evalDist (runResolvedFromTable context fuel table
+          ((sequenceFin fun lay : Layer =>
+            maskedSignLayer parameter ftsSecret index lay).run cache) >>=
+        finalizeResolvedRunStateFromTable coordinates table) := by
+  calc
+    _ = evalDist (runDeferredLayerSchedule parameter table ftsSecret index
+          deferredLayerSchedule
+          (some ⟨context, fuel, emptyDeferredLayerStore cache, table⟩) >>=
+        finalizeDeferredLayerSchedule coordinates) :=
+      evalDist_chronologicalLayerSchedule_bind_eq_deferred parameter table ftsSecret index
+        (some ⟨context, fuel, emptyDeferredLayerStore cache, table⟩)
+        (finalizeDeferredLayerSchedule coordinates)
+    _ = evalDist (runDeferredLayerSchedule parameter table ftsSecret index
+          deferredLayerSelections
+          (some ⟨context, fuel, emptyDeferredLayerStore cache, table⟩) >>=
+        finalizeDeferredLayerSchedule coordinates) :=
+      evalDist_deferredLayerSchedule_then_finalize_eq_selections parameter table ftsSecret
+        index coordinates ⟨context, fuel, emptyDeferredLayerStore cache, table⟩ rfl hvalid
+        hcovered
+    _ = _ := evalDist_deferredLayerSelections_then_finalize_eq_sequenceFin parameter table
+      ftsSecret index context fuel cache coordinates hvalid.valuesConsistent hstarts
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
