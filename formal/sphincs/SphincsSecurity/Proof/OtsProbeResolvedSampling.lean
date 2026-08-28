@@ -5588,6 +5588,146 @@ theorem resolvedCore_of_mem_runResolvedFromTable
                       simpa [materializeResolvedPosition] using hmaterializedStarts)
                     (by simpa [materializeResolvedPosition] using hrest)
 
+set_option maxRecDepth 100000 in
+theorem valid_pendingCovered_of_mem_runResolvedFromTable_of_probeFree
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (result : ResolvedRunResult alpha)
+    (coordinates : List Coordinate)
+    (hbound : computation.IsQueryBoundP
+      (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) 0)
+    (hvalid : context.Valid) (hcovered : PendingCovered coordinates context)
+    (hresult : some result ∈ support
+      (runResolvedFromTable context fuel table computation)) :
+    result.context.Valid ∧ PendingCovered coordinates result.context := by
+  induction computation using OracleComp.inductionOn generalizing context fuel with
+  | pure value =>
+      simp [runResolvedFromTable] at hresult
+      subst result
+      exact ⟨hvalid, hcovered⟩
+  | query_bind input next ih =>
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
+      cases input with
+      | uniform n =>
+          rw [runResolvedFromTable_uniform_query_bind, mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, hrest⟩ := hresult
+          exact ih output context fuel
+            (by simpa [LazyRevealProbe.IsProbe] using hbound.2 output)
+            hvalid hcovered hrest
+      | hashOutput =>
+          rw [runResolvedFromTable_hashOutput_query_bind, mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, hrest⟩ := hresult
+          exact ih output context fuel
+            (by simpa [LazyRevealProbe.IsProbe] using hbound.2 output)
+            hvalid hcovered hrest
+      | ensure coordinate =>
+          rw [runResolvedFromTable_ensure_query_bind] at hresult
+          have hnextCovered : PendingCovered coordinates
+              { context with state := context.state.ensure coordinate } := by
+            intro entry hentry
+            exact hcovered entry hentry
+          exact ih () { context with state := context.state.ensure coordinate } fuel
+            (by simpa [LazyRevealProbe.IsProbe] using hbound.2 ())
+            (hvalid.ensure coordinate) hnextCovered hresult
+      | probe coordinate candidate =>
+          simp [LazyRevealProbe.IsProbe] at hbound
+      | peek coordinate =>
+          rw [runResolvedFromTable_peek_query_bind] at hresult
+          exact ih (context.state.values coordinate) context fuel
+            (by simpa [LazyRevealProbe.IsProbe] using
+              hbound.2 (context.state.values coordinate))
+            hvalid hcovered hresult
+      | publish coordinate =>
+          rw [runResolvedFromTable_publish_query_bind] at hresult
+          have hnextCovered : PendingCovered coordinates
+              { context with state := context.state.publish coordinate } := by
+            intro entry hentry
+            exact hcovered entry hentry
+          exact ih () { context with state := context.state.publish coordinate } fuel
+            (by simpa [LazyRevealProbe.IsProbe] using hbound.2 ())
+            (hvalid.publish coordinate) hnextCovered hresult
+      | reveal coordinate =>
+          cases coordinate with
+          | chainStart lay tree leafIdx chainIdx =>
+              rw [runResolvedFromTable_reveal_query_bind,
+                mem_support_bind_iff] at hresult
+              obtain ⟨resolvedOption, hresolved, hrest⟩ := hresult
+              cases resolvedOption with
+              | none => simp at hrest
+              | some resolved =>
+                  let index : OtsSecretIndex := ⟨lay, tree, leafIdx, chainIdx⟩
+                  have hresolvedEq : resolveDeferredChainStart table index context =
+                      some resolved := by
+                    simpa [index] using hresolved.symm
+                  have hdeferred := resolveDeferredChainStart_deferred_values_eq table index
+                    context resolved hresolvedEq
+                  have hnextValid :
+                      (materializeResolvedChainStart context index resolved).Valid := by
+                    rw [materializeResolvedChainStart, hdeferred]
+                    exact hvalid.materialize_chainStart lay tree leafIdx chainIdx resolved.output
+                  have hnextCovered : PendingCovered coordinates
+                      (materializeResolvedChainStart context index resolved) := by
+                    intro entry hentry
+                    apply hcovered entry
+                    have haway : entry ∈ context.state.pendingAway index.coordinate := by
+                      simpa [materializeResolvedChainStart,
+                        LazyRevealProbe.State.materialize] using hentry
+                    exact (Finset.mem_filter.1 haway).1
+                  exact ih resolved.output (materializeResolvedChainStart context index resolved)
+                    fuel (by simpa [LazyRevealProbe.IsProbe] using hbound.2 resolved.output)
+                    hnextValid hnextCovered
+                    (by simpa [materializeResolvedChainStart, index,
+                      OtsSecretIndex.coordinate] using hrest)
+          | position position =>
+              rw [runResolvedFromTable_reveal_query_bind,
+                mem_support_bind_iff] at hresult
+              obtain ⟨resolvedOption, hresolved, hrest⟩ := hresult
+              cases resolvedOption with
+              | none => simp at hrest
+              | some resolved =>
+                  have hresolvedValid :=
+                    hvalid.of_resolveDeferredReveal table position resolved hresolved
+                  have hstateValues := resolveDeferredReveal_preserves_state_values table
+                    position context resolved hresolved
+                  have hresolvedValue := resolveDeferredReveal_resolves table position context
+                    resolved hresolved
+                  have htemporary :
+                      ({ state := context.state, values := resolved.values } :
+                        DeferredContext).Valid := by
+                    constructor
+                    · intro other output hvalue
+                      apply hresolvedValid.1 other output
+                      rw [hstateValues]
+                      exact hvalue
+                    · exact hvalid.2
+                  have hprivate : resolved.values position = some resolved.output := by
+                    unfold DeferredContext.positionValue at hresolvedValue
+                    rw [hstateValues] at hresolvedValue
+                    cases hstate : context.state.values (.position position) with
+                    | none => simpa [hstate] using hresolvedValue
+                    | some output =>
+                        have hsame : output = resolved.output := by
+                          simpa [hstate] using hresolvedValue
+                        simpa [hsame] using hresolvedValid.1 position output (by
+                          rw [hstateValues]
+                          exact hstate)
+                  have hnextValid :
+                      (materializeResolvedPosition context position resolved).Valid := by
+                    exact htemporary.materialize_position position resolved.output hprivate
+                  have hnextCovered : PendingCovered coordinates
+                      (materializeResolvedPosition context position resolved) := by
+                    intro entry hentry
+                    apply hcovered entry
+                    have haway : entry ∈
+                        context.state.pendingAway (.position position) := by
+                      simpa [materializeResolvedPosition,
+                        LazyRevealProbe.State.materialize] using hentry
+                    exact (Finset.mem_filter.1 haway).1
+                  exact ih resolved.output (materializeResolvedPosition context position resolved)
+                    fuel (by simpa [LazyRevealProbe.IsProbe] using hbound.2 resolved.output)
+                    hnextValid hnextCovered
+                    (by simpa [materializeResolvedPosition] using hrest)
+
 def ChronologicalCacheAgrees (parameter : PublicParameter)
     (table : OtsSecretIndex → HashOutput)
     (context : DeferredContext) (cache : QueryCache HashSpec) : Prop :=
@@ -8459,6 +8599,276 @@ theorem evalDist_map_resolveDeferredLayerValuesFamily_then_finalize
                     hheadCovered
         _ = _ := evalDist_map_resolveDeferredLayerValues_then_finalize table index
           (layers 0) (encodings 0) coordinates context hvalid hcovered
+
+noncomputable def resolveDeferredOptionalLayerValuesFamily
+    (table : OtsSecretIndex → HashOutput) (index : Index) :
+    ∀ {n : Nat}, (Fin n → Layer) →
+      (Fin n → Option (ChainIndex → Digit)) → DeferredContext →
+      ProbComp (Option (DeferredContext ×
+        (Fin n → Option
+          ((ChainIndex → Digest) × (Fin maxLayerHeight → Digest)))))
+  | 0, _, _, context => pure (some (context, fun position => Fin.elim0 position))
+  | n + 1, layers, encodings, context =>
+      match encodings 0 with
+      | none => do
+          let tail ← resolveDeferredOptionalLayerValuesFamily table index
+            (fun position : Fin n => layers position.succ)
+            (fun position : Fin n => encodings position.succ) context
+          match tail with
+          | none => pure none
+          | some (finalContext, tailValues) =>
+              pure (some (finalContext, Fin.cases none tailValues))
+      | some encoding => do
+          let head ← resolveDeferredLayerValues table index (layers 0) encoding context
+          match head with
+          | none => pure none
+          | some (headContext, headValues) => do
+              let tail ← resolveDeferredOptionalLayerValuesFamily table index
+                (fun position : Fin n => layers position.succ)
+                (fun position : Fin n => encodings position.succ) headContext
+              match tail with
+              | none => pure none
+              | some (finalContext, tailValues) =>
+                  pure (some (finalContext, Fin.cases (some headValues) tailValues))
+
+set_option maxRecDepth 100000 in
+theorem evalDist_map_resolveDeferredOptionalLayerValuesFamily_then_finalize
+    (table : OtsSecretIndex → HashOutput) (index : Index)
+    (coordinates : List Coordinate) :
+    ∀ {n : Nat} (layers : Fin n → Layer)
+      (encodings : Fin n → Option (ChainIndex → Digit))
+      (context : DeferredContext),
+      context.Valid → PendingCovered coordinates context →
+      evalDist (do
+          let resolved ←
+            resolveDeferredOptionalLayerValuesFamily table index layers encodings context
+          match resolved with
+          | none => (pure none : ProbComp
+              (Option (LazyRevealProbe.State Coordinate)))
+          | some (finalContext, _) =>
+              finalizeProjectedResolvedCoordinates coordinates finalContext table) =
+        evalDist (finalizeProjectedResolvedCoordinates coordinates context table)
+  | 0, layers, encodings, context, hvalid, hcovered => by
+      simp [resolveDeferredOptionalLayerValuesFamily]
+  | n + 1, layers, encodings, context, hvalid, hcovered => by
+      rw [resolveDeferredOptionalLayerValuesFamily]
+      cases hencoding : encodings 0 with
+      | none =>
+          simp only [bind_assoc]
+          calc
+            _ = evalDist (do
+                let tail ← resolveDeferredOptionalLayerValuesFamily table index
+                  (fun position : Fin n => layers position.succ)
+                  (fun position : Fin n => encodings position.succ) context
+                match tail with
+                | none => (pure none : ProbComp
+                    (Option (LazyRevealProbe.State Coordinate)))
+                | some (finalContext, _) =>
+                    finalizeProjectedResolvedCoordinates coordinates finalContext table) := by
+                  apply congrArg evalDist
+                  apply bind_congr
+                  intro tailOption
+                  cases tailOption <;> rfl
+            _ = _ :=
+              evalDist_map_resolveDeferredOptionalLayerValuesFamily_then_finalize table index
+                coordinates (fun position : Fin n => layers position.succ)
+                (fun position : Fin n => encodings position.succ) context hvalid hcovered
+      | some encoding =>
+          simp only [bind_assoc]
+          calc
+            _ = evalDist
+                (resolveDeferredLayerValues table index (layers 0) encoding context >>=
+                  fun headOption =>
+                    match headOption with
+                    | none => pure none
+                    | some (headContext, _) =>
+                        finalizeProjectedResolvedCoordinates coordinates headContext table) := by
+              apply evalDist_bind_congr
+              intro headOption hhead
+              cases headOption with
+              | none => rfl
+              | some head =>
+                  rcases head with ⟨headContext, headValues⟩
+                  have hheadValid := hvalid.of_resolveDeferredLayerValues table index
+                    (layers 0) encoding headContext headValues hhead
+                  have hheadCovered := hcovered.of_resolveDeferredLayerValues table index
+                    (layers 0) encoding headContext headValues hhead
+                  calc
+                    _ = evalDist (do
+                        let tail ← resolveDeferredOptionalLayerValuesFamily table index
+                          (fun position : Fin n => layers position.succ)
+                          (fun position : Fin n => encodings position.succ) headContext
+                        match tail with
+                        | none => (pure none : ProbComp
+                            (Option (LazyRevealProbe.State Coordinate)))
+                        | some (finalContext, _) =>
+                            finalizeProjectedResolvedCoordinates coordinates finalContext
+                              table) := by
+                          apply congrArg evalDist
+                          simp only [bind_assoc]
+                          apply bind_congr
+                          intro tailOption
+                          cases tailOption <;> rfl
+                    _ = _ :=
+                      evalDist_map_resolveDeferredOptionalLayerValuesFamily_then_finalize table
+                        index coordinates (fun position : Fin n => layers position.succ)
+                        (fun position : Fin n => encodings position.succ) headContext hheadValid
+                        hheadCovered
+            _ = _ := evalDist_map_resolveDeferredLayerValues_then_finalize table index
+              (layers 0) encoding coordinates context hvalid hcovered
+
+noncomputable def resolveDeferredSelectedLayerResults
+    (table : OtsSecretIndex → HashOutput) (index : Index)
+    {n : Nat} (layers : Fin n → Layer)
+    (selected : Fin n → Option (Counter × (ChainIndex → Digit)))
+    (context : DeferredContext) :
+    ProbComp (Option (DeferredContext × (Fin n → Option LayerPart))) := do
+  let resolved ← resolveDeferredOptionalLayerValuesFamily table index layers
+    (fun position => (selected position).map Prod.snd) context
+  match resolved with
+  | none => pure none
+  | some (finalContext, values) =>
+      pure (some (finalContext, fun position =>
+        match selected position, values position with
+        | some part, some layerValues =>
+            some (part.1, layerValues.1, layerValues.2)
+        | _, _ => none))
+
+set_option maxRecDepth 100000 in
+theorem evalDist_resolveDeferredSelectedLayerResults_then_finalize
+    (table : OtsSecretIndex → HashOutput) (index : Index)
+    {n : Nat} (layers : Fin n → Layer)
+    (selected : Fin n → Option (Counter × (ChainIndex → Digit)))
+    (coordinates : List Coordinate) (context : DeferredContext)
+    (hvalid : context.Valid) (hcovered : PendingCovered coordinates context) :
+    evalDist (do
+        let resolved ←
+          resolveDeferredSelectedLayerResults table index layers selected context
+        match resolved with
+        | none => (pure none : ProbComp
+            (Option (LazyRevealProbe.State Coordinate)))
+        | some (finalContext, _) =>
+            finalizeProjectedResolvedCoordinates coordinates finalContext table) =
+      evalDist (finalizeProjectedResolvedCoordinates coordinates context table) := by
+  unfold resolveDeferredSelectedLayerResults
+  simp only [bind_assoc]
+  calc
+    _ = evalDist (do
+        let resolved ← resolveDeferredOptionalLayerValuesFamily table index layers
+          (fun position => (selected position).map Prod.snd) context
+        match resolved with
+        | none => (pure none : ProbComp
+            (Option (LazyRevealProbe.State Coordinate)))
+        | some (finalContext, _) =>
+            finalizeProjectedResolvedCoordinates coordinates finalContext table) := by
+          apply congrArg evalDist
+          apply bind_congr
+          intro resolved
+          cases resolved <;> rfl
+    _ = _ := evalDist_map_resolveDeferredOptionalLayerValuesFamily_then_finalize table index
+      coordinates layers (fun position => (selected position).map Prod.snd) context hvalid hcovered
+
+noncomputable def scheduleResolvedSelectedLayerResult
+    (index : Index) {n : Nat} (layers : Fin n → Layer) :
+    Option (ResolvedRunResult
+      ((Fin n → Option (Counter × (ChainIndex → Digit))) × SplitHashCache)) →
+      ProbComp (Option (ResolvedRunResult
+        ((Fin n → Option LayerPart) × SplitHashCache)))
+  | none => pure none
+  | some result => do
+      let resolved ← resolveDeferredSelectedLayerResults result.table index layers
+        result.value.1 result.context
+      match resolved with
+      | none => pure none
+      | some (finalContext, values) =>
+          pure (some ⟨finalContext, result.remaining, (values, result.value.2), result.table⟩)
+
+set_option maxRecDepth 100000 in
+theorem evalDist_scheduleResolvedSelectedLayerResult_then_finalize
+    (index : Index) {n : Nat} (layers : Fin n → Layer)
+    (result : ResolvedRunResult
+      ((Fin n → Option (Counter × (ChainIndex → Digit))) × SplitHashCache))
+    (coordinates : List Coordinate) (hvalid : result.context.Valid)
+    (hcovered : PendingCovered coordinates result.context) :
+    evalDist (do
+        let scheduled ← scheduleResolvedSelectedLayerResult index layers (some result)
+        match scheduled with
+        | none => (pure none : ProbComp
+            (Option (LazyRevealProbe.State Coordinate)))
+        | some scheduled =>
+            finalizeProjectedResolvedCoordinates coordinates scheduled.context scheduled.table) =
+      evalDist (finalizeProjectedResolvedCoordinates coordinates result.context result.table) := by
+  unfold scheduleResolvedSelectedLayerResult
+  simp only [bind_assoc]
+  calc
+    _ = evalDist (do
+        let resolved ← resolveDeferredSelectedLayerResults result.table index layers
+          result.value.1 result.context
+        match resolved with
+        | none => (pure none : ProbComp
+            (Option (LazyRevealProbe.State Coordinate)))
+        | some (finalContext, _) =>
+            finalizeProjectedResolvedCoordinates coordinates finalContext result.table) := by
+          apply congrArg evalDist
+          apply bind_congr
+          intro resolved
+          cases resolved <;> rfl
+    _ = _ := evalDist_resolveDeferredSelectedLayerResults_then_finalize result.table index layers
+      result.value.1 coordinates result.context hvalid hcovered
+
+noncomputable def runDeferredResolvedLayers
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    {n : Nat} (layers : Fin n → Layer) (context : DeferredContext)
+    (fuel : Nat) (cache : SplitHashCache) :
+    ProbComp (Option (ResolvedRunResult
+      ((Fin n → Option LayerPart) × SplitHashCache))) :=
+  runResolvedFromTable context fuel table
+      ((sequenceFin fun position =>
+        maskedSignLayer parameter ftsSecret index (layers position)).run cache) >>=
+    scheduleResolvedSelectedLayerResult index layers
+
+set_option maxRecDepth 100000 in
+theorem evalDist_runDeferredResolvedLayers_then_finalize
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    {n : Nat} (layers : Fin n → Layer) (context : DeferredContext)
+    (fuel : Nat) (cache : SplitHashCache) (coordinates : List Coordinate)
+    (hvalid : context.Valid) (hcovered : PendingCovered coordinates context) :
+    evalDist (do
+        let scheduled ← runDeferredResolvedLayers parameter table ftsSecret index layers
+          context fuel cache
+        match scheduled with
+        | none => (pure none : ProbComp
+            (Option (LazyRevealProbe.State Coordinate)))
+        | some scheduled =>
+            finalizeProjectedResolvedCoordinates coordinates scheduled.context scheduled.table) =
+      evalDist (do
+        let selected ← runResolvedFromTable context fuel table
+          ((sequenceFin fun position =>
+            maskedSignLayer parameter ftsSecret index (layers position)).run cache)
+        match selected with
+        | none => (pure none : ProbComp
+            (Option (LazyRevealProbe.State Coordinate)))
+        | some selected =>
+            finalizeProjectedResolvedCoordinates coordinates selected.context selected.table) := by
+  unfold runDeferredResolvedLayers
+  simp only [bind_assoc]
+  apply evalDist_bind_congr
+  intro selected hselected
+  cases selected with
+  | none => simp [scheduleResolvedSelectedLayerResult]
+  | some result =>
+      have hprobeFree : ProbeFree (sequenceFin fun position =>
+          maskedSignLayer parameter ftsSecret index (layers position)) :=
+        sequenceFin_probeFree _ fun position =>
+          maskedSignLayer_probeFree parameter ftsSecret index (layers position)
+      have hinvariants := valid_pendingCovered_of_mem_runResolvedFromTable_of_probeFree
+        ((sequenceFin fun position =>
+          maskedSignLayer parameter ftsSecret index (layers position)).run cache)
+        context fuel table result coordinates (hprobeFree cache) hvalid hcovered hselected
+      exact evalDist_scheduleResolvedSelectedLayerResult_then_finalize index layers result
+        coordinates hinvariants.1 hinvariants.2
 
 def ResolveLayerValuesRel (parameter : PublicParameter)
     (table : OtsSecretIndex → HashOutput) (ordinaryCache : QueryCache HashSpec) :
