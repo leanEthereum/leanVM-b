@@ -487,6 +487,107 @@ theorem relTriple_runSynchronizedResolved
                 · exact hrightNotCompletable
                 · exact hleftNotCompletable
 
+theorem finalizationSynchronizedCouples_sequenceFin
+    {table : OtsSecretIndex → HashOutput} {n : Nat}
+    (computation : Fin n → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α)
+    (hcomponent : ∀ position,
+      FinalizationSynchronizedCouples table (computation position)
+        (computation position)) :
+    FinalizationSynchronizedCouples table (sequenceFin computation)
+      (sequenceFin computation) := by
+  induction n with
+  | zero =>
+      simpa [sequenceFin] using
+        (finalizationSynchronizedCouples_pure table Fin.elim0 :
+          FinalizationSynchronizedCouples table
+            (pure Fin.elim0 : StateT SplitHashCache
+              (OracleComp (LazyRevealProbe.World Coordinate)) (Fin 0 → α))
+            (pure Fin.elim0 : StateT SplitHashCache
+              (OracleComp (LazyRevealProbe.World Coordinate)) (Fin 0 → α)))
+  | succ n ih =>
+      rw [sequenceFin]
+      apply (hcomponent 0).bind
+      intro head
+      apply (ih (fun position : Fin n => computation position.succ)
+        (fun position => hcomponent position.succ)).bind
+      intro tail
+      exact finalizationSynchronizedCouples_pure table
+        (Fin.cases head tail : Fin (n + 1) → α)
+
+theorem finalizationSynchronizedCouples_ensureFullChain
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) :
+    FinalizationSynchronizedCouples table
+      (ensureFullChain lay tree leafIdx chainIdx)
+      (ensureFullChain lay tree leafIdx chainIdx) := by
+  unfold ensureFullChain
+  apply (finalizationSynchronizedCouples_sequenceFin
+    (fun step : ChainStep =>
+      ensureCoordinate (.position (.chain lay tree leafIdx chainIdx step)))
+    (fun step => finalizationSynchronizedCouples_ensureCoordinate table
+      (.position (.chain lay tree leafIdx chainIdx step)))).bind
+  intro _
+  exact finalizationSynchronizedCouples_pure table ()
+
+theorem finalizationSynchronizedCouples_ensureOtsLeaf
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) :
+    FinalizationSynchronizedCouples table (ensureOtsLeaf lay tree leafIdx)
+      (ensureOtsLeaf lay tree leafIdx) := by
+  unfold ensureOtsLeaf
+  apply (finalizationSynchronizedCouples_sequenceFin
+    (fun chainIdx : ChainIndex => ensureFullChain lay tree leafIdx chainIdx)
+    (fun chainIdx => finalizationSynchronizedCouples_ensureFullChain table lay tree leafIdx
+      chainIdx)).bind
+  intro _
+  exact finalizationSynchronizedCouples_ensureCoordinate table
+    (.position (.leaf lay tree leafIdx))
+
+theorem finalizationSynchronizedCouples_ensureTreeNode
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex) :
+    ∀ level nodeIdx,
+      FinalizationSynchronizedCouples table (ensureTreeNode lay tree level nodeIdx)
+        (ensureTreeNode lay tree level nodeIdx)
+  | 0, nodeIdx =>
+      finalizationSynchronizedCouples_ensureOtsLeaf table lay tree (leafOfNat nodeIdx)
+  | level + 1, nodeIdx => by
+      rw [ensureTreeNode]
+      apply (finalizationSynchronizedCouples_ensureTreeNode table lay tree level
+        (2 * nodeIdx)).bind
+      intro _
+      apply (finalizationSynchronizedCouples_ensureTreeNode table lay tree level
+        (2 * nodeIdx + 1)).bind
+      intro _
+      by_cases hlevel : level < maxLayerHeight
+      · rw [dif_pos hlevel]
+        exact finalizationSynchronizedCouples_ensureCoordinate table
+          (.position (.node lay tree ⟨level, hlevel⟩ (leafOfNat nodeIdx)))
+      · rw [dif_neg hlevel]
+        exact finalizationSynchronizedCouples_pure table ()
+
+theorem finalizationSynchronizedCouples_revealPublishedCoordinate
+    (table : OtsSecretIndex → HashOutput) (coordinate : Coordinate) :
+    FinalizationSynchronizedCouples table (revealPublishedCoordinate coordinate)
+      (revealPublishedCoordinate coordinate) := by
+  unfold revealPublishedCoordinate
+  exact (finalizationSynchronizedCouples_revealCoordinate table coordinate).bind fun value =>
+    (finalizationSynchronizedCouples_publishCoordinate table coordinate).bind fun _ =>
+      finalizationSynchronizedCouples_pure table value
+
+set_option maxRecDepth 100000 in
+theorem finalizationSynchronizedCouples_maskedPublishedTreeRoot
+    (table : OtsSecretIndex → HashOutput) :
+    FinalizationSynchronizedCouples table maskedPublishedTreeRoot
+      maskedPublishedTreeRoot := by
+  unfold maskedPublishedTreeRoot
+  apply (finalizationSynchronizedCouples_ensureTreeNode table topLayer rootTree
+    (layerHeight topLayer) 0).bind
+  intro _
+  exact finalizationSynchronizedCouples_revealPublishedCoordinate table
+    (.position (.node topLayer rootTree
+      ⟨layerHeight topLayer - 1, by norm_num [layerHeight, topLayer, maxLayerHeight]⟩ 0))
+
 noncomputable def canonicalChronologicalAdversaryImpl
     (parameter : PublicParameter) (root : Digest)
     (table : OtsSecretIndex → HashOutput)
@@ -556,5 +657,286 @@ theorem relTriple_canonical_adversaryExecution
   relTriple_runSynchronizedResolved
     (synchronizedResolvedImplCouples_canonicalAdversaryImpl parameter root table ftsSecret)
     computation left right fuel leftCache rightCache hcontext hvalues hcache hrevealed
+
+noncomputable def canonicalVerifierFinish
+    (parameter : PublicParameter) (root : Digest)
+    (forgeryLog : Forgery × QueryLog SigningSpec) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) RetainedGameResult := do
+  let verified ← simulateQ (probingRomImpl parameter)
+    (scheme.verify ⟨root, parameter⟩ forgeryLog.1.message forgeryLog.1.signature)
+  pure (root, (forgeryLog, verified))
+
+theorem finalizationSynchronizedCouples_canonicalVerifierFinish
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (forgeryLog : Forgery × QueryLog SigningSpec) :
+    FinalizationSynchronizedCouples table
+      (canonicalVerifierFinish parameter root forgeryLog)
+      (canonicalVerifierFinish parameter root forgeryLog) := by
+  unfold canonicalVerifierFinish
+  apply (finalizationSynchronizedCouples_probingRom table parameter
+    (scheme.verify ⟨root, parameter⟩ forgeryLog.1.message
+      forgeryLog.1.signature)).bind
+  intro verified
+  exact finalizationSynchronizedCouples_pure table (root, (forgeryLog, verified))
+
+noncomputable def canonicalVerifierContinuation
+    (parameter : PublicParameter) (root : Digest)
+    (result : Option (ResolvedRunResult
+      ((Forgery × QueryLog SigningSpec) × SplitHashCache))) :
+    ProbComp (Option (ResolvedRunResult (RetainedGameResult × SplitHashCache))) :=
+  match result with
+  | none => pure none
+  | some result =>
+      runResolvedFromTable result.context result.remaining result.table
+        ((canonicalVerifierFinish parameter root result.value.1).run result.value.2)
+
+theorem relTriple_canonicalVerifierContinuation
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (left right : Option (ResolvedRunResult
+      ((Forgery × QueryLog SigningSpec) × SplitHashCache)))
+    (hrelation : FinalizationSynchronizedRunEq table left right) :
+    RelTriple
+      (canonicalVerifierContinuation parameter root left)
+      (canonicalVerifierContinuation parameter root right)
+      (FinalizationSynchronizedRunEq table) := by
+  rcases hrelation with hclean | hdoomed
+  · cases left with
+    | none =>
+        cases right with
+        | none => simp [canonicalVerifierContinuation, FinalizationSynchronizedRunEq,
+            FinalizationMaterializedRunEq, MaterializedValuesEq]
+        | some right => simp [FinalizationMaterializedRunEq] at hclean
+    | some left =>
+        cases right with
+        | none => simp [FinalizationMaterializedRunEq] at hclean
+        | some right =>
+            rcases left with ⟨leftContext, leftFuel, leftValue, leftTable⟩
+            rcases right with ⟨rightContext, rightFuel, rightValue, rightTable⟩
+            rcases leftValue with ⟨leftOutput, leftCache⟩
+            rcases rightValue with ⟨rightOutput, rightCache⟩
+            simp only [FinalizationMaterializedRunEq, MaterializedValuesEq] at hclean
+            rcases hclean.1 with
+              ⟨houtput, hcontext, hfuel, hleftTable, hrightTable, hcache, hrevealed⟩
+            subst rightOutput
+            subst rightFuel
+            subst leftTable
+            subst rightTable
+            exact finalizationSynchronizedCouples_canonicalVerifierFinish parameter root table
+              leftOutput leftContext rightContext leftFuel leftCache rightCache hcontext
+                hclean.2 hcache hrevealed
+  · cases left with
+    | none =>
+        cases right with
+        | none => simp [canonicalVerifierContinuation, FinalizationSynchronizedRunEq,
+            FinalizationDoomedRun]
+        | some right =>
+            simp only [canonicalVerifierContinuation]
+            rw [hdoomed.2.1]
+            exact relTriple_pure_none_runResolvedFromTable_of_finalizationDoomed_synchronized
+              table ((canonicalVerifierFinish parameter root right.value.1).run right.value.2)
+                right.context right.remaining hdoomed.2.2
+    | some left =>
+        cases right with
+        | none =>
+            simp only [canonicalVerifierContinuation]
+            rw [hdoomed.1.1]
+            exact relTriple_runResolvedFromTable_pure_none_of_finalizationDoomed_synchronized
+              table ((canonicalVerifierFinish parameter root left.value.1).run left.value.2)
+                left.context left.remaining hdoomed.1.2
+        | some right =>
+            simp only [canonicalVerifierContinuation]
+            rw [hdoomed.1.1, hdoomed.2.1]
+            exact relTriple_runResolvedFromTable_of_finalizationDoomed_synchronized table
+              ((canonicalVerifierFinish parameter root left.value.1).run left.value.2)
+              ((canonicalVerifierFinish parameter root right.value.1).run right.value.2)
+              left.context right.context left.remaining right.remaining hdoomed.1.2 hdoomed.2.2
+
+noncomputable def canonicalChronologicalRetainedRunAfterFtsSecrets
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp (Option (ResolvedRunResult (RetainedGameResult × SplitHashCache))) := do
+  let rootResult ← runResolvedFromTable
+    { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+      values := emptyDeferredStructuralValues }
+    fuel table (maskedPublishedTreeRoot.run emptySplitHashCache)
+  match rootResult with
+  | none => pure none
+  | some rootResult => do
+      let adversaryResult ← runSynchronizedResolved
+        (canonicalChronologicalAdversaryImpl parameter rootResult.value.1 table ftsSecret)
+        (signingTraceComputation (adversary.main ⟨rootResult.value.1, parameter⟩))
+        rootResult.context rootResult.remaining rootResult.table rootResult.value.2
+      canonicalVerifierContinuation parameter rootResult.value.1 adversaryResult
+
+noncomputable def canonicalDeferredRetainedRunAfterFtsSecrets
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp (Option (ResolvedRunResult (RetainedGameResult × SplitHashCache))) := do
+  let rootResult ← runResolvedFromTable
+    { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+      values := emptyDeferredStructuralValues }
+    fuel table (maskedPublishedTreeRoot.run emptySplitHashCache)
+  match rootResult with
+  | none => pure none
+  | some rootResult => do
+      let adversaryResult ← runSynchronizedResolved
+        (canonicalDeferredAdversaryImpl parameter rootResult.value.1 table ftsSecret)
+        (signingTraceComputation (adversary.main ⟨rootResult.value.1, parameter⟩))
+        rootResult.context rootResult.remaining rootResult.table rootResult.value.2
+      canonicalVerifierContinuation parameter rootResult.value.1 adversaryResult
+
+theorem finalizationContextEq_empty (table : OtsSecretIndex → HashOutput) :
+    FinalizationContextEq table
+      (some
+        { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+          values := emptyDeferredStructuralValues })
+      (some
+        { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+          values := emptyDeferredStructuralValues }) := by
+  let context : DeferredContext :=
+    { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+      values := emptyDeferredStructuralValues }
+  have hclean : ∀ coordinate output,
+      resolvedCompletionValue table context coordinate = some output →
+        ¬context.state.hitAt coordinate output := by
+    intro coordinate output _hvalue
+    simp [context, LazyRevealProbe.State.hitAt, LazyRevealProbe.State.pendingAt,
+      LazyRevealProbe.State.empty]
+  exact ⟨FinalizationViewEq.refl table context DeferredContext.valid_empty
+      (startTableAgrees_empty table) hclean,
+    DeferredContext.valid_empty, DeferredContext.valid_empty,
+    deferredCompletable_empty table⟩
+
+set_option maxRecDepth 100000 in
+theorem relTriple_canonicalRetainedRunAfterFtsSecrets
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    RelTriple
+      (canonicalChronologicalRetainedRunAfterFtsSecrets adversary parameter table ftsSecret fuel)
+      (canonicalDeferredRetainedRunAfterFtsSecrets adversary parameter table ftsSecret fuel)
+      (FinalizationSynchronizedRunEq table) := by
+  unfold canonicalChronologicalRetainedRunAfterFtsSecrets
+    canonicalDeferredRetainedRunAfterFtsSecrets
+  let emptyContext : DeferredContext :=
+    { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+      values := emptyDeferredStructuralValues }
+  have hroot := finalizationSynchronizedCouples_maskedPublishedTreeRoot table
+    emptyContext emptyContext fuel emptySplitHashCache emptySplitHashCache
+      (finalizationContextEq_empty table) rfl rfl rfl
+  apply relTriple_bind hroot
+  intro leftRootResult rightRootResult hrootRelation
+  rcases hrootRelation with hrootClean | hrootDoomed
+  · cases leftRootResult with
+    | none =>
+        cases rightRootResult with
+        | none => simp [FinalizationSynchronizedRunEq, FinalizationMaterializedRunEq,
+            MaterializedValuesEq]
+        | some right => simp [FinalizationMaterializedRunEq] at hrootClean
+    | some leftRootResult =>
+        cases rightRootResult with
+        | none => simp [FinalizationMaterializedRunEq] at hrootClean
+        | some rightRootResult =>
+            rcases leftRootResult with
+              ⟨leftContext, leftFuel, leftValue, leftTable⟩
+            rcases rightRootResult with
+              ⟨rightContext, rightFuel, rightValue, rightTable⟩
+            rcases leftValue with ⟨leftRoot, leftCache⟩
+            rcases rightValue with ⟨rightRoot, rightCache⟩
+            simp only [FinalizationMaterializedRunEq, MaterializedValuesEq] at hrootClean
+            rcases hrootClean.1 with
+              ⟨hroot, hcontext, hfuel, hleftTable, hrightTable, hcache, hrevealed⟩
+            subst rightRoot
+            subst rightFuel
+            subst leftTable
+            subst rightTable
+            apply relTriple_bind
+              (relTriple_canonical_adversaryExecution parameter leftRoot table ftsSecret
+                (signingTraceComputation (adversary.main ⟨leftRoot, parameter⟩))
+                leftContext rightContext leftFuel leftCache rightCache hcontext hrootClean.2
+                  hcache hrevealed)
+            intro leftAdversaryResult rightAdversaryResult hadversary
+            exact relTriple_canonicalVerifierContinuation parameter leftRoot table
+              leftAdversaryResult rightAdversaryResult hadversary
+  · cases leftRootResult with
+    | none =>
+        cases rightRootResult with
+        | none => simp [FinalizationSynchronizedRunEq, FinalizationDoomedRun]
+        | some rightRootResult =>
+            have hrightTable := hrootDoomed.2.1
+            have hrightNotCompletable :
+                ¬DeferredCompletable rightRootResult.table rightRootResult.context := by
+              rw [hrightTable]
+              exact hrootDoomed.2.2.2.2
+            simp only
+            rw [runSynchronizedResolved_of_not_completable]
+            · simp [canonicalVerifierContinuation, FinalizationSynchronizedRunEq,
+                FinalizationDoomedRun]
+            · exact hrightNotCompletable
+    | some leftRootResult =>
+        cases rightRootResult with
+        | none =>
+            have hleftTable := hrootDoomed.1.1
+            have hleftNotCompletable :
+                ¬DeferredCompletable leftRootResult.table leftRootResult.context := by
+              rw [hleftTable]
+              exact hrootDoomed.1.2.2.2
+            simp only
+            rw [runSynchronizedResolved_of_not_completable]
+            · simp [canonicalVerifierContinuation, FinalizationSynchronizedRunEq,
+                FinalizationDoomedRun]
+            · exact hleftNotCompletable
+        | some rightRootResult =>
+            have hleftTable := hrootDoomed.1.1
+            have hrightTable := hrootDoomed.2.1
+            have hleftNotCompletable :
+                ¬DeferredCompletable leftRootResult.table leftRootResult.context := by
+              rw [hleftTable]
+              exact hrootDoomed.1.2.2.2
+            have hrightNotCompletable :
+                ¬DeferredCompletable rightRootResult.table rightRootResult.context := by
+              rw [hrightTable]
+              exact hrootDoomed.2.2.2.2
+            simp only
+            rw [runSynchronizedResolved_of_not_completable,
+              runSynchronizedResolved_of_not_completable]
+            · simp [canonicalVerifierContinuation, FinalizationSynchronizedRunEq,
+                FinalizationDoomedRun]
+            · exact hrightNotCompletable
+            · exact hleftNotCompletable
+
+theorem relTriple_canonicalRetainedFinishIsNone
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    RelTriple
+      (canonicalChronologicalRetainedRunAfterFtsSecrets adversary parameter table ftsSecret fuel
+        >>= finishResolvedRunIsNone)
+      (canonicalDeferredRetainedRunAfterFtsSecrets adversary parameter table ftsSecret fuel >>=
+        finishResolvedRunIsNone)
+      (EqRel Bool) := by
+  apply relTriple_bind
+    (relTriple_canonicalRetainedRunAfterFtsSecrets adversary parameter table ftsSecret fuel)
+  intro left right hrelation
+  exact relTriple_finishResolvedRunIsNone_of_finalizationAdaptiveRunEq table left right
+    hrelation.toAdaptive
+
+theorem prob_canonicalChronologicalRetainedFinishIsNone_eq_deferred
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    Pr[= true |
+        canonicalChronologicalRetainedRunAfterFtsSecrets adversary parameter table ftsSecret fuel
+          >>= finishResolvedRunIsNone] =
+      Pr[= true |
+        canonicalDeferredRetainedRunAfterFtsSecrets adversary parameter table ftsSecret fuel >>=
+          finishResolvedRunIsNone] :=
+  probOutput_true_eq_of_relTriple_eqRel
+    (relTriple_canonicalRetainedFinishIsNone adversary parameter table ftsSecret fuel)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
