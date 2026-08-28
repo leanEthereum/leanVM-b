@@ -15396,4 +15396,41 @@ theorem finishResolvedRun_empty_projects_to_clean
   intro finalized
   cases finalized <;> simp [projectResolvedRunResult]
 
+theorem DeferredCompletion.not_probeHits_of_pending
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {context : DeferredContext} {completion : Coordinate → HashOutput}
+    (hcompletion : DeferredCompletion table context completion)
+    (f : QueryImpl HashSpec Id)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (probe : Probe) (input : HashInput)
+    (hmatches : probe.MatchesInput parameter input)
+    (hpending : (probe.coordinate, probe.candidate) ∈ context.state.pending)
+    (hrealizes : ∀ position : Position, IsOtsPosition position →
+      f (tableInput parameter completion (.position position)) =
+        completion (.position position)) :
+    ¬probe.Hits f parameter (tableOtsSecret completion) ftsSecret := by
+  intro hhits
+  have hchain := probe.isChainCoordinate_of_matchesInput hmatches
+  have htarget := probe.target_eq_truncate_table_of_chain f parameter completion ftsSecret
+    hchain hrealizes
+  have havoids := hcompletion.2.2.1 probe.coordinate probe.candidate hpending
+  apply havoids
+  rw [← htarget]
+  exact hhits.symm
+
+theorem DeferredCompletion.not_probeHits_tableAnswer_of_pending
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {context : DeferredContext} {completion : Coordinate → HashOutput}
+    (hcompletion : DeferredCompletion table context completion)
+    (fallback : QueryImpl HashSpec Id)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (probe : Probe) (input : HashInput)
+    (hmatches : probe.MatchesInput parameter input)
+    (hpending : (probe.coordinate, probe.candidate) ∈ context.state.pending) :
+    ¬probe.Hits (tableAnswer parameter completion fallback) parameter
+      (tableOtsSecret completion) ftsSecret := by
+  apply hcompletion.not_probeHits_of_pending
+    (tableAnswer parameter completion fallback) ftsSecret probe input hmatches hpending
+  exact tableAnswer_realizes_otsPositions parameter completion fallback
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
