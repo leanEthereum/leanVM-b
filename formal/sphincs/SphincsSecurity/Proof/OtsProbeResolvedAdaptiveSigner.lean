@@ -23,6 +23,10 @@ def canonicalizeMaterializedValues (table : OtsSecretIndex → HashOutput)
   { context with
     state := { context.state with values := publicMaterializedValues table context } }
 
+def CanonicalMaterializedValues (table : OtsSecretIndex → HashOutput)
+    (context : DeferredContext) : Prop :=
+  context.state.values = publicMaterializedValues table context
+
 theorem canonicalizeMaterializedValues_revealed
     (table : OtsSecretIndex → HashOutput) (context : DeferredContext) :
     (canonicalizeMaterializedValues table context).state.revealed =
@@ -64,6 +68,39 @@ theorem canonicalizeMaterializedValues_resolvedCompletionValue
   | chainStart => rfl
   | position position =>
       exact canonicalizeMaterializedValues_positionValue table context hconsistent position
+
+theorem canonicalizeMaterializedValues_canonical
+    (table : OtsSecretIndex → HashOutput) (context : DeferredContext)
+    (hconsistent : context.ValuesConsistent) :
+    CanonicalMaterializedValues table
+      (canonicalizeMaterializedValues table context) := by
+  change publicMaterializedValues table context =
+    publicMaterializedValues table (canonicalizeMaterializedValues table context)
+  funext coordinate
+  unfold publicMaterializedValues
+  by_cases hrevealed : coordinate ∈ context.state.revealed
+  · have hcanonicalRevealed : coordinate ∈
+        (canonicalizeMaterializedValues table context).state.revealed := hrevealed
+    simp only [hrevealed, hcanonicalRevealed, ↓reduceIte]
+    rw [canonicalizeMaterializedValues_resolvedCompletionValue table context hconsistent]
+  · have hcanonicalNotRevealed : coordinate ∉
+        (canonicalizeMaterializedValues table context).state.revealed := hrevealed
+    simp [hrevealed, hcanonicalNotRevealed]
+
+theorem canonicalizeMaterializedValues_idempotent
+    (table : OtsSecretIndex → HashOutput) (context : DeferredContext)
+    (hconsistent : context.ValuesConsistent) :
+    canonicalizeMaterializedValues table
+        (canonicalizeMaterializedValues table context) =
+      canonicalizeMaterializedValues table context := by
+  have hcanonical := canonicalizeMaterializedValues_canonical table context hconsistent
+  unfold CanonicalMaterializedValues at hcanonical
+  cases context with
+  | mk state values =>
+      cases state with
+      | mk pending stateValues revealed ensured =>
+          simp only [canonicalizeMaterializedValues] at hcanonical ⊢
+          rw [← hcanonical]
 
 theorem canonicalizeMaterializedValues_valuesConsistent
     (table : OtsSecretIndex → HashOutput) (context : DeferredContext)
@@ -197,6 +234,122 @@ theorem DeferredCompletion.of_canonicalizeMaterializedValues
       have hprivate := hconsistent position output hvalue
       exact hcompletion.2.1 position output hprivate
 
+theorem DeferredCompletion.to_canonicalizedMaterializedValues
+    {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
+    {completion : Coordinate → HashOutput}
+    (hcompletion : DeferredCompletion table context completion) :
+    DeferredCompletion table (canonicalizeMaterializedValues table context) completion := by
+  refine ⟨?_, hcompletion.2.1, hcompletion.2.2.1, hcompletion.2.2.2⟩
+  intro coordinate output hvalue
+  unfold canonicalizeMaterializedValues publicMaterializedValues at hvalue
+  by_cases hrevealed : coordinate ∈ context.state.revealed
+  · simp only [hrevealed, ↓reduceIte] at hvalue
+    exact hcompletion.eq_resolvedCompletionValue coordinate output hvalue
+  · simp [hrevealed] at hvalue
+
+theorem ChronologicalCacheAgrees.to_canonicalizedMaterializedValues
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {context : DeferredContext} {cache : QueryCache HashSpec}
+    (hagrees : ChronologicalCacheAgrees parameter table context cache)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table) :
+    ChronologicalCacheAgrees parameter table
+      (canonicalizeMaterializedValues table context) cache := by
+  intro completion hcompletion position hots
+  have horiginal := hcompletion.of_canonicalizeMaterializedValues hconsistent hstarts
+  have hknown := hagrees completion horiginal position hots
+  unfold ResolveInputAgrees at hknown ⊢
+  rw [canonicalizeMaterializedValues_positionValue table context hconsistent]
+  exact hknown
+
+theorem ResolvedCachePartition.to_canonicalizedMaterializedValues
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {context : DeferredContext} {ordinaryCache concreteCache : QueryCache HashSpec}
+    (hpartition : ResolvedCachePartition parameter table context ordinaryCache concreteCache)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table) :
+    ResolvedCachePartition parameter table
+      (canonicalizeMaterializedValues table context) ordinaryCache concreteCache := by
+  refine ⟨hpartition.1, ?_⟩
+  intro input output hcached
+  rcases hpartition.2 input output hcached with hordinary | hfixed
+  · exact Or.inl hordinary
+  · rcases hfixed with ⟨position, hots, hvalue, hinput⟩
+    right
+    refine ⟨position, hots, ?_, ?_⟩
+    · rw [canonicalizeMaterializedValues_positionValue table context hconsistent]
+      exact hvalue
+    · intro completion hcompletion
+      exact hinput completion
+        (hcompletion.of_canonicalizeMaterializedValues hconsistent hstarts)
+
+theorem VisibleResolvedComputationsCached.to_canonicalizedMaterializedValues
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {context : DeferredContext} {cache : QueryCache HashSpec}
+    (hclosed : VisibleResolvedComputationsCached parameter table context cache)
+    (hpublished : PublishedValues context.state) :
+    VisibleResolvedComputationsCached parameter table
+      (canonicalizeMaterializedValues table context) cache := by
+  intro position output hresolvable hvalue
+  have hrevealed : Coordinate.position position ∈ context.state.revealed := by
+    unfold canonicalizeMaterializedValues publicMaterializedValues at hvalue
+    by_contra hnotRevealed
+    simp [hnotRevealed] at hvalue
+  have horiginalNonempty := hpublished (.position position) hrevealed
+  cases horiginal : context.state.values (.position position) with
+  | none => exact False.elim (horiginalNonempty horiginal)
+  | some originalOutput =>
+      have hresolved : resolvedCompletionValue table context (.position position) =
+          some originalOutput := by
+        simp [resolvedCompletionValue, DeferredContext.positionValue, horiginal]
+      have houtput : originalOutput = output := by
+        unfold canonicalizeMaterializedValues publicMaterializedValues at hvalue
+        simp only [hrevealed, ↓reduceIte] at hvalue
+        exact Option.some.inj (hresolved.symm.trans hvalue)
+      subst originalOutput
+      exact hclosed position output hresolvable horiginal
+
+theorem PublishedValues.to_canonicalizedMaterializedValues
+    {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
+    (hpublished : PublishedValues context.state) :
+    PublishedValues (canonicalizeMaterializedValues table context).state := by
+  intro coordinate hrevealed
+  have hrevealedOriginal : coordinate ∈ context.state.revealed := by
+    simpa [canonicalizeMaterializedValues] using hrevealed
+  unfold canonicalizeMaterializedValues publicMaterializedValues
+  simp only [hrevealedOriginal, ↓reduceIte]
+  have horiginalNonempty := hpublished coordinate hrevealedOriginal
+  cases coordinate with
+  | chainStart lay tree leafIdx chainIdx => simp [resolvedCompletionValue]
+  | position position =>
+      cases horiginal : context.state.values (.position position) with
+      | none => exact False.elim (horiginalNonempty horiginal)
+      | some output =>
+          simp [resolvedCompletionValue, DeferredContext.positionValue, horiginal]
+
+theorem ResolvedContextInvariant.to_canonicalizedMaterializedValues
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {context : DeferredContext} {ordinaryCache concreteCache : QueryCache HashSpec}
+    (hinvariant : ResolvedContextInvariant parameter table context ordinaryCache concreteCache) :
+    ResolvedContextInvariant parameter table
+      (canonicalizeMaterializedValues table context) ordinaryCache concreteCache := by
+  rcases hinvariant with ⟨hagrees, hvalid, hstarts, hcompletable, hpartition⟩
+  refine ⟨hagrees.to_canonicalizedMaterializedValues hvalid.valuesConsistent hstarts,
+    ?_, canonicalizeMaterializedValues_startTableAgrees table context, ?_,
+    hpartition.to_canonicalizedMaterializedValues hvalid.valuesConsistent hstarts⟩
+  · rcases hcompletable with ⟨completion, hcompletion⟩
+    have hclean : ∀ coordinate output,
+        resolvedCompletionValue table context coordinate = some output →
+          ¬context.state.hitAt coordinate output := by
+      intro coordinate output hvalue hhit
+      have houtput := hcompletion.eq_resolvedCompletionValue coordinate output hvalue
+      unfold LazyRevealProbe.State.hitAt at hhit
+      rw [LazyRevealProbe.State.mem_pendingAt_iff] at hhit
+      exact hcompletion.2.2.1 coordinate (truncateHash output) hhit (by rw [houtput])
+    exact canonicalizeMaterializedValues_valid table context hvalid hclean
+  · rcases hcompletable with ⟨completion, hcompletion⟩
+    exact ⟨completion, hcompletion.to_canonicalizedMaterializedValues⟩
+
 theorem doomedResolvedContext_canonicalizeMaterializedValues
     {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
     (hdoomed : DoomedResolvedContext table context) :
@@ -213,6 +366,70 @@ def canonicalizeResolvedRun (table : OtsSecretIndex → HashOutput) :
   | none => none
   | some result => some
       { result with context := canonicalizeMaterializedValues table result.context }
+
+def CanonicalResolvedRun (table : OtsSecretIndex → HashOutput) :
+    Option (ResolvedRunResult α) → Prop
+  | none => True
+  | some result => CanonicalMaterializedValues table result.context
+
+theorem canonicalResolvedRun_canonicalize
+    (table : OtsSecretIndex → HashOutput)
+    (result : Option (ResolvedRunResult α))
+    (hconsistent : ∀ resolved, result = some resolved →
+      resolved.context.ValuesConsistent) :
+    CanonicalResolvedRun table (canonicalizeResolvedRun table result) := by
+  cases result with
+  | none => trivial
+  | some result =>
+      exact canonicalizeMaterializedValues_canonical table result.context
+        (hconsistent result rfl)
+
+theorem canonicalizeResolvedRun_idempotent
+    (table : OtsSecretIndex → HashOutput)
+    (result : Option (ResolvedRunResult α))
+    (hconsistent : ∀ resolved, result = some resolved →
+      resolved.context.ValuesConsistent) :
+    canonicalizeResolvedRun table (canonicalizeResolvedRun table result) =
+      canonicalizeResolvedRun table result := by
+  cases result with
+  | none => rfl
+  | some result =>
+      simp only [canonicalizeResolvedRun]
+      rw [canonicalizeMaterializedValues_idempotent table result.context
+        (hconsistent result rfl)]
+
+theorem ReachableResolvedRunRel.canonicalizeResolvedRun
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {left : Option (ResolvedRunResult (α × SplitHashCache))}
+    {right : α × QueryCache HashSpec}
+    (hrelation : ReachableResolvedRunRel parameter table left right) :
+    ReachableResolvedRunRel parameter table (canonicalizeResolvedRun table left) right := by
+  cases left with
+  | none => trivial
+  | some result =>
+      rcases hrelation with hclean | hdoomed
+      · left
+        exact ⟨hclean.1, hclean.2.1,
+          hclean.2.2.1.to_canonicalizedMaterializedValues,
+          hclean.2.2.2.1.to_canonicalizedMaterializedValues hclean.2.2.2.2,
+          hclean.2.2.2.2.to_canonicalizedMaterializedValues⟩
+      · right
+        exact ⟨hdoomed.1,
+          doomedResolvedContext_canonicalizeMaterializedValues hdoomed.2⟩
+
+theorem relTriple_canonicalizeResolvedRun_of_reachable
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (leftRun : ProbComp (Option (ResolvedRunResult (α × SplitHashCache))))
+    (rightRun : ProbComp (α × QueryCache HashSpec))
+    (hrelation : RelTriple leftRun rightRun
+      (ReachableResolvedRunRel parameter table)) :
+    RelTriple
+      (leftRun >>= fun result => pure (canonicalizeResolvedRun table result))
+      rightRun (ReachableResolvedRunRel parameter table) := by
+  rw [show rightRun = rightRun >>= pure by simp]
+  apply relTriple_bind hrelation
+  intro left right hresult
+  exact relTriple_pure_pure hresult.canonicalizeResolvedRun
 
 theorem finalizationSynchronizedRunEq_canonicalize
     (table : OtsSecretIndex → HashOutput)
@@ -597,7 +814,8 @@ noncomputable def canonicalChronologicalAdversaryImpl
     match query with
     | .inl oracleQuery =>
         runResolvedFromTable context fuel table
-          ((probingRomImpl parameter oracleQuery).run cache)
+            ((probingRomImpl parameter oracleQuery).run cache) >>=
+          fun result => pure (canonicalizeResolvedRun table result)
     | .inr message =>
         runResolvedFromTable context fuel table
             ((maskedPublishedChronologicalSign parameter root ftsSecret message).run cache) >>=
@@ -612,10 +830,133 @@ noncomputable def canonicalDeferredAdversaryImpl
     match query with
     | .inl oracleQuery =>
         runResolvedFromTable context fuel table
-          ((probingRomImpl parameter oracleQuery).run cache)
+            ((probingRomImpl parameter oracleQuery).run cache) >>=
+          fun result => pure (canonicalizeResolvedRun table result)
     | .inr message =>
         runDeferredChronologicalSign parameter root table ftsSecret message context fuel cache >>=
           fun result => pure (canonicalizeResolvedRun table result)
+
+def CanonicalReachableResolvedImplCouples (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (leftImpl : ResolvedQueryImpl spec)
+    (rightImpl : QueryImpl spec (StateT (QueryCache HashSpec) ProbComp)) : Prop :=
+  ∀ query context fuel cache concreteCache,
+    ResolvedContextInvariant parameter table context
+        (ordinaryQueryCache cache) concreteCache →
+    VisibleResolvedComputationsCached parameter table context concreteCache →
+    PublishedValues context.state →
+    RelTriple
+      (leftImpl query context fuel table cache)
+      ((rightImpl query).run concreteCache)
+      (ReachableResolvedRunRel parameter table)
+
+set_option maxRecDepth 100000 in
+theorem canonicalReachableResolvedImplCouples_chronologicalAdversaryImpl
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    CanonicalReachableResolvedImplCouples parameter table
+      (canonicalChronologicalAdversaryImpl parameter root table ftsSecret)
+      (unloggedMappedAdversaryImpl
+        (⟨parameter, root,
+          fun lay tree leafIdx chainIdx =>
+            truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+          ftsSecret⟩ : SecretKey)) := by
+  intro query context fuel cache concreteCache hinvariant hclosed hpublished
+  cases query with
+  | inl oracleQuery =>
+      apply relTriple_canonicalizeResolvedRun_of_reachable parameter table
+      exact reachableResolvedCouples_probingRomImpl parameter table oracleQuery context fuel cache
+        concreteCache hinvariant hclosed hpublished
+  | inr message =>
+      apply relTriple_canonicalizeResolvedRun_of_reachable parameter table
+      exact reachableResolvedCouples_maskedPublishedChronologicalSign_concrete parameter root
+        table ftsSecret message context fuel cache concreteCache hinvariant hclosed hpublished
+
+set_option maxRecDepth 100000 in
+theorem relTriple_runSynchronizedResolved_reachable
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {leftImpl : ResolvedQueryImpl spec}
+    {rightImpl : QueryImpl spec (StateT (QueryCache HashSpec) ProbComp)}
+    (himpl : CanonicalReachableResolvedImplCouples parameter table leftImpl rightImpl)
+    (computation : OracleComp spec α)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (concreteCache : QueryCache HashSpec)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache)
+    (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hpublished : PublishedValues context.state) :
+    RelTriple
+      (runSynchronizedResolved leftImpl computation context fuel table cache)
+      ((simulateQ rightImpl computation).run concreteCache)
+      (ReachableResolvedRunRel parameter table) := by
+  induction computation using OracleComp.inductionOn generalizing context fuel cache concreteCache
+      with
+  | pure value =>
+      rw [runSynchronizedResolved_pure leftImpl value context fuel table cache
+          hinvariant.2.2.2.1,
+        simulateQ_pure]
+      simp only [StateT.run_pure]
+      exact relTriple_pure_pure
+        (Or.inl ⟨rfl, rfl, hinvariant, hclosed, hpublished⟩)
+  | query_bind query next ih =>
+      rw [runSynchronizedResolved, OracleComp.construct_query_bind,
+        simulateQ_query_bind, StateT.run_bind]
+      simp only [OracleQuery.input_query, dif_pos hinvariant.2.2.2.1]
+      apply relTriple_bind
+        (himpl query context fuel cache concreteCache hinvariant hclosed hpublished)
+      intro leftResult rightResult hrelation
+      cases leftResult with
+      | none =>
+          have hbase := relTriple_true
+            (pure none : ProbComp (Option (ResolvedRunResult (α × SplitHashCache))))
+            ((simulateQ rightImpl (next rightResult.1)).run rightResult.2)
+          have hsupported :=
+            SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+              (fun finalLeft => finalLeft = none) (by
+                intro finalLeft hsupport
+                simpa using hsupport)
+          apply relTriple_post_mono hsupported
+          intro finalLeft _ hfinal
+          rw [hfinal.2]
+          trivial
+      | some result =>
+          rcases hrelation with hclean | hdoomed
+          · rcases rightResult with ⟨rightValue, rightCache⟩
+            have hvalue : result.value.1 = rightValue := hclean.2.1
+            subst rightValue
+            change RelTriple
+              (runSynchronizedResolved leftImpl (next result.value.1) result.context
+                result.remaining result.table result.value.2)
+              ((simulateQ rightImpl (next result.value.1)).run rightCache)
+              (ReachableResolvedRunRel parameter table)
+            rw [hclean.1]
+            exact ih result.value.1 result.context result.remaining result.value.2 rightCache
+              hclean.2.2.1 hclean.2.2.2.1 hclean.2.2.2.2
+          · have hnotCompletable :
+                ¬DeferredCompletable result.table result.context := by
+              rw [hdoomed.1]
+              exact hdoomed.2.2.2
+            change RelTriple
+              (runSynchronizedResolved leftImpl (next result.value.1) result.context
+                result.remaining result.table result.value.2)
+              ((simulateQ rightImpl (next rightResult.1)).run rightResult.2)
+              (ReachableResolvedRunRel parameter table)
+            rw [runSynchronizedResolved_of_not_completable leftImpl
+              (next result.value.1) result.context result.remaining result.table result.value.2
+              hnotCompletable]
+            have hbase := relTriple_true
+              (pure none : ProbComp (Option (ResolvedRunResult (α × SplitHashCache))))
+              ((simulateQ rightImpl (next rightResult.1)).run rightResult.2)
+            have hsupported :=
+              SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+                (fun finalLeft => finalLeft = none) (by
+                  intro finalLeft hsupport
+                  simpa using hsupport)
+            apply relTriple_post_mono hsupported
+            intro finalLeft _ hfinal
+            rw [hfinal.2]
+            trivial
 
 set_option maxRecDepth 100000 in
 theorem synchronizedResolvedImplCouples_canonicalAdversaryImpl
@@ -628,8 +969,13 @@ theorem synchronizedResolvedImplCouples_canonicalAdversaryImpl
   intro query left right fuel leftCache rightCache hcontext hvalues hcache hrevealed
   cases query with
   | inl oracleQuery =>
-      exact finalizationSynchronizedCouples_probingRomImpl table parameter oracleQuery
-        left right fuel leftCache rightCache hcontext hvalues hcache hrevealed
+      apply relTriple_bind
+        (finalizationSynchronizedCouples_probingRomImpl table parameter oracleQuery
+          left right fuel leftCache rightCache hcontext hvalues hcache hrevealed)
+      intro leftResult rightResult hrelation
+      apply relTriple_pure_pure
+      exact finalizationSynchronizedRunEq_canonicalize table leftResult rightResult
+        hrelation.toAdaptive
   | inr message =>
       exact relTriple_canonicalized_maskedPublishedChronologicalSign parameter root table
         ftsSecret message left right fuel leftCache rightCache hcontext hcache hrevealed
@@ -666,6 +1012,28 @@ noncomputable def canonicalVerifierFinish
   let verified ← simulateQ (probingRomImpl parameter)
     (scheme.verify ⟨root, parameter⟩ forgeryLog.1.message forgeryLog.1.signature)
   pure (root, (forgeryLog, verified))
+
+noncomputable def concreteVerifierFinish
+    (parameter : PublicParameter) (root : Digest)
+    (forgeryLog : Forgery × QueryLog SigningSpec) :
+    StateT (QueryCache HashSpec) ProbComp RetainedGameResult := do
+  let verified ← simulateQ romImpl
+    (scheme.verify ⟨root, parameter⟩ forgeryLog.1.message forgeryLog.1.signature)
+  pure (root, (forgeryLog, verified))
+
+theorem reachableResolvedCouples_canonicalVerifierFinish
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (forgeryLog : Forgery × QueryLog SigningSpec) :
+    ReachableResolvedCouples parameter table
+      (canonicalVerifierFinish parameter root forgeryLog)
+      (concreteVerifierFinish parameter root forgeryLog) := by
+  unfold canonicalVerifierFinish concreteVerifierFinish
+  apply (reachableResolvedCouples_probingRom parameter table
+    (scheme.verify ⟨root, parameter⟩ forgeryLog.1.message
+      forgeryLog.1.signature)).bind
+  intro verified
+  exact reachableResolvedCouples_pure parameter table (root, (forgeryLog, verified))
 
 theorem finalizationSynchronizedCouples_canonicalVerifierFinish
     (parameter : PublicParameter) (root : Digest)
@@ -754,6 +1122,49 @@ theorem relTriple_canonicalVerifierContinuation
               ((canonicalVerifierFinish parameter root right.value.1).run right.value.2)
               left.context right.context left.remaining right.remaining hdoomed.1.2 hdoomed.2.2
 
+theorem relTriple_canonicalVerifierContinuation_reachable
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (left : Option (ResolvedRunResult
+      ((Forgery × QueryLog SigningSpec) × SplitHashCache)))
+    (right : (Forgery × QueryLog SigningSpec) × QueryCache HashSpec)
+    (hrelation : ReachableResolvedRunRel parameter table left right) :
+    RelTriple
+      (canonicalVerifierContinuation parameter root left)
+      ((concreteVerifierFinish parameter root right.1).run right.2)
+      (ReachableResolvedRunRel parameter table) := by
+  cases left with
+  | none =>
+      have hbase := relTriple_true
+        (pure none : ProbComp
+          (Option (ResolvedRunResult (RetainedGameResult × SplitHashCache))))
+        ((concreteVerifierFinish parameter root right.1).run right.2)
+      have hsupported :=
+        SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+          (fun result => result = none) (by
+            intro result hsupport
+            simpa using hsupport)
+      apply relTriple_post_mono hsupported
+      intro result _ hsupport
+      rw [hsupport.2]
+      trivial
+  | some result =>
+      rcases hrelation with hclean | hdoomed
+      · rcases right with ⟨rightValue, rightCache⟩
+        have hvalue : result.value.1 = rightValue := hclean.2.1
+        subst rightValue
+        simp only [canonicalVerifierContinuation]
+        rw [hclean.1]
+        exact reachableResolvedCouples_canonicalVerifierFinish parameter root table
+          result.value.1 result.context result.remaining result.value.2 rightCache
+            hclean.2.2.1 hclean.2.2.2.1 hclean.2.2.2.2
+      · simp only [canonicalVerifierContinuation]
+        rw [hdoomed.1]
+        exact relTriple_runResolvedFromTable_of_doomed_reachable parameter table
+          (canonicalVerifierFinish parameter root result.value.1)
+          ((concreteVerifierFinish parameter root right.1).run right.2)
+          result.context result.remaining result.value.2 hdoomed.2
+
 noncomputable def canonicalChronologicalRetainedRunAfterFtsSecrets
     (adversary : Adversary) (parameter : PublicParameter)
     (table : OtsSecretIndex → HashOutput)
@@ -789,6 +1200,161 @@ noncomputable def canonicalDeferredRetainedRunAfterFtsSecrets
         (signingTraceComputation (adversary.main ⟨rootResult.value.1, parameter⟩))
         rootResult.context rootResult.remaining rootResult.table rootResult.value.2
       canonicalVerifierContinuation parameter rootResult.value.1 adversaryResult
+
+set_option maxRecDepth 100000 in
+theorem relTriple_canonicalChronologicalRest_reachable
+    (adversary : Adversary) (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (concreteCache : QueryCache HashSpec)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache)
+    (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hpublished : PublishedValues context.state) :
+    RelTriple
+      (do
+        let adversaryResult ← runSynchronizedResolved
+          (canonicalChronologicalAdversaryImpl parameter root table ftsSecret)
+          (signingTraceComputation (adversary.main ⟨root, parameter⟩))
+          context fuel table cache
+        canonicalVerifierContinuation parameter root adversaryResult)
+      ((do
+        let forgeryLog ← simulateQ
+          (unloggedMappedAdversaryImpl
+            (⟨parameter, root,
+              fun lay tree leafIdx chainIdx =>
+                truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+              ftsSecret⟩ : SecretKey))
+          (signingTraceComputation (adversary.main ⟨root, parameter⟩))
+        concreteVerifierFinish parameter root forgeryLog).run concreteCache)
+      (ReachableResolvedRunRel parameter table) := by
+  rw [StateT.run_bind]
+  apply relTriple_bind
+    (relTriple_runSynchronizedResolved_reachable
+      (canonicalReachableResolvedImplCouples_chronologicalAdversaryImpl parameter root table
+        ftsSecret)
+      (signingTraceComputation (adversary.main ⟨root, parameter⟩)) context fuel cache
+        concreteCache hinvariant hclosed hpublished)
+  intro left right hrelation
+  exact relTriple_canonicalVerifierContinuation_reachable parameter root table left right
+    hrelation
+
+set_option maxRecDepth 100000 in
+theorem relTriple_canonicalChronologicalRetainedRun_actual
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    RelTriple
+      (canonicalChronologicalRetainedRunAfterFtsSecrets adversary parameter table ftsSecret fuel)
+      (actualRetainedGameAfterTable adversary parameter ftsSecret (extendStartTable table))
+      (ReachableResolvedRunRel parameter table) := by
+  rw [← concreteRetainedGameAfterFtsSecrets_run_eq_actual adversary parameter table ftsSecret]
+  unfold canonicalChronologicalRetainedRunAfterFtsSecrets
+    concreteRetainedGameAfterFtsSecrets concreteRetainedPrefixAfterFtsSecrets
+  simp only [StateT.run_bind, StateT.run_pure, bind_assoc, pure_bind]
+  change RelTriple
+    (runResolvedFromTable
+        { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+          values := emptyDeferredStructuralValues }
+        fuel table (maskedPublishedTreeRoot.run emptySplitHashCache) >>= fun rootOption =>
+      match rootOption with
+      | none => pure none
+      | some rootResult => do
+          let adversaryResult ← runSynchronizedResolved
+            (canonicalChronologicalAdversaryImpl parameter rootResult.value.1 table ftsSecret)
+            (signingTraceComputation
+              (adversary.main ⟨rootResult.value.1, parameter⟩))
+            rootResult.context rootResult.remaining rootResult.table rootResult.value.2
+          canonicalVerifierContinuation parameter rootResult.value.1 adversaryResult)
+    (((simulateQ (randomOracle : QueryImpl HashSpec _)
+        (treeNode parameter topLayer rootTree
+          (fun leafIdx chainIdx =>
+            truncateHash (table ⟨topLayer, rootTree, leafIdx, chainIdx⟩))
+          (layerHeight topLayer) 0)).run ∅) >>= fun rootResult =>
+      (do
+        let forgeryLog ← simulateQ
+          (unloggedMappedAdversaryImpl
+            (⟨parameter, rootResult.1,
+              fun lay tree leafIdx chainIdx =>
+                truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+              ftsSecret⟩ : SecretKey))
+          (signingTraceComputation (adversary.main ⟨rootResult.1, parameter⟩))
+        concreteVerifierFinish parameter rootResult.1 forgeryLog).run rootResult.2)
+    (ReachableResolvedRunRel parameter table)
+  have hroot := reachableResolvedCouples_maskedPublishedTreeRoot parameter table
+    { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+      values := emptyDeferredStructuralValues }
+    fuel emptySplitHashCache ∅ (resolvedContextInvariant_empty parameter table)
+      (visibleResolvedComputationsCached_empty parameter table emptyDeferredStructuralValues ∅)
+      publishedValues_empty
+  apply relTriple_bind hroot
+  intro leftRoot rightRoot hrelation
+  cases leftRoot with
+  | none =>
+      have hbase := relTriple_true
+        (pure none : ProbComp
+          (Option (ResolvedRunResult (RetainedGameResult × SplitHashCache))))
+        ((do
+          let forgeryLog ← simulateQ
+            (unloggedMappedAdversaryImpl
+              (⟨parameter, rightRoot.1,
+                fun lay tree leafIdx chainIdx =>
+                  truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+                ftsSecret⟩ : SecretKey))
+            (signingTraceComputation (adversary.main ⟨rightRoot.1, parameter⟩))
+          concreteVerifierFinish parameter rightRoot.1 forgeryLog).run rightRoot.2)
+      have hsupported :=
+        SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+          (fun result => result = none) (by
+            intro result hsupport
+            simpa using hsupport)
+      apply relTriple_post_mono hsupported
+      intro result _ hsupport
+      rw [hsupport.2]
+      trivial
+  | some rootResult =>
+      rcases hrelation with hclean | hdoomed
+      · rcases rightRoot with ⟨rightRoot, rightCache⟩
+        have hrootValue : rootResult.value.1 = rightRoot := hclean.2.1
+        subst rightRoot
+        simp only
+        rw [hclean.1]
+        exact relTriple_canonicalChronologicalRest_reachable adversary parameter
+          rootResult.value.1 table ftsSecret rootResult.context rootResult.remaining
+            rootResult.value.2 rightCache hclean.2.2.1 hclean.2.2.2.1 hclean.2.2.2.2
+      · have hnotCompletable :
+            ¬DeferredCompletable rootResult.table rootResult.context := by
+          rw [hdoomed.1]
+          exact hdoomed.2.2.2
+        simp only
+        rw [runSynchronizedResolved_of_not_completable
+          (canonicalChronologicalAdversaryImpl parameter rootResult.value.1 table ftsSecret)
+          (signingTraceComputation (adversary.main ⟨rootResult.value.1, parameter⟩))
+          rootResult.context rootResult.remaining rootResult.table rootResult.value.2
+          hnotCompletable]
+        simp only [canonicalVerifierContinuation]
+        have hbase := relTriple_true
+          (pure none : ProbComp
+            (Option (ResolvedRunResult (RetainedGameResult × SplitHashCache))))
+          ((do
+            let forgeryLog ← simulateQ
+              (unloggedMappedAdversaryImpl
+                (⟨parameter, rightRoot.1,
+                  fun lay tree leafIdx chainIdx =>
+                    truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+                  ftsSecret⟩ : SecretKey))
+              (signingTraceComputation (adversary.main ⟨rightRoot.1, parameter⟩))
+            concreteVerifierFinish parameter rightRoot.1 forgeryLog).run rightRoot.2)
+        have hsupported :=
+          SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+            (fun result => result = none) (by
+              intro result hsupport
+              simpa using hsupport)
+        apply relTriple_post_mono hsupported
+        intro result _ hsupport
+        rw [hsupport.2]
+        trivial
 
 theorem finalizationContextEq_empty (table : OtsSecretIndex → HashOutput) :
     FinalizationContextEq table
@@ -938,5 +1504,245 @@ theorem prob_canonicalChronologicalRetainedFinishIsNone_eq_deferred
           finishResolvedRunIsNone] :=
   probOutput_true_eq_of_relTriple_eqRel
     (relTriple_canonicalRetainedFinishIsNone adversary parameter table ftsSecret fuel)
+
+def CanonicalFailureRefinementRunEq (table : OtsSecretIndex → HashOutput) :
+    Option (ResolvedRunResult (α × SplitHashCache)) →
+      Option (ResolvedRunResult (α × SplitHashCache)) → Prop :=
+  fun left right =>
+    (FinalizationMaterializedRunEq table left right ∧ CanonicalResolvedRun table right) ∨
+      FinalizationDoomedRun table right
+
+theorem canonicalFailureRefinementRunEq_canonicalize_right_of_synchronized
+    (table : OtsSecretIndex → HashOutput)
+    (left right : Option (ResolvedRunResult (α × SplitHashCache)))
+    (hrelation : FinalizationSynchronizedRunEq table left right) :
+    CanonicalFailureRefinementRunEq table left (canonicalizeResolvedRun table right) := by
+  rcases hrelation with hclean | hdoomed
+  · cases left with
+    | none =>
+        cases right with
+        | none => exact Or.inl ⟨trivial, trivial⟩
+        | some right => simp [FinalizationMaterializedRunEq] at hclean
+    | some left =>
+        cases right with
+        | none => simp [FinalizationMaterializedRunEq] at hclean
+        | some right =>
+            rcases hclean.1 with
+              ⟨hvalue, hcontext, hremaining, hleftTable, hrightTable, hcache, hrevealed⟩
+            rcases hcontext with ⟨hview, hleftValid, hrightValid, hleftCompletable⟩
+            have hrightCanonicalView := finalizationViewEq_canonicalize_left table right.context
+              hrightValid hview.rightStarts hview.rightClean
+            have hrightCanonicalValid := canonicalizeMaterializedValues_valid table right.context
+              hrightValid hview.rightClean
+            left
+            constructor
+            · exact ⟨hvalue,
+                ⟨hview.trans hrightCanonicalView.symm, hleftValid,
+                  hrightCanonicalValid, hleftCompletable⟩,
+                hremaining, hleftTable, hrightTable, hcache, by
+                  simpa [canonicalizeResolvedRun,
+                    canonicalizeMaterializedValues_revealed] using hrevealed⟩
+            · exact canonicalizeMaterializedValues_canonical table right.context
+                hrightValid.valuesConsistent
+  · right
+    cases right with
+    | none => trivial
+    | some right =>
+        exact ⟨hdoomed.2.1,
+          doomedResolvedContext_canonicalizeMaterializedValues hdoomed.2.2⟩
+
+theorem relTriple_canonicalize_right_of_synchronized
+    (table : OtsSecretIndex → HashOutput)
+    (leftRun rightRun : ProbComp
+      (Option (ResolvedRunResult (α × SplitHashCache))))
+    (hrelation : RelTriple leftRun rightRun
+      (FinalizationSynchronizedRunEq table)) :
+    RelTriple leftRun
+      (rightRun >>= fun result => pure (canonicalizeResolvedRun table result))
+      (CanonicalFailureRefinementRunEq table) := by
+  rw [← bind_pure leftRun]
+  apply relTriple_bind hrelation
+  intro left right hsync
+  apply relTriple_pure_pure
+  exact canonicalFailureRefinementRunEq_canonicalize_right_of_synchronized table left right
+    hsync
+
+def CanonicalRefinementResolvedImplCouples (table : OtsSecretIndex → HashOutput)
+    (leftImpl rightImpl : ResolvedQueryImpl spec) : Prop :=
+  ∀ query left right fuel leftCache rightCache,
+    FinalizationContextEq table (some left) (some right) →
+    CanonicalMaterializedValues table right →
+    ordinaryQueryCache leftCache = ordinaryQueryCache rightCache →
+    left.state.revealed = right.state.revealed →
+    RelTriple
+      (leftImpl query left fuel table leftCache)
+      (rightImpl query right fuel table rightCache)
+      (CanonicalFailureRefinementRunEq table)
+
+set_option maxRecDepth 100000 in
+theorem relTriple_runSynchronizedResolved_canonicalRefinement
+    {table : OtsSecretIndex → HashOutput}
+    {leftImpl rightImpl : ResolvedQueryImpl spec}
+    (himpl : CanonicalRefinementResolvedImplCouples table leftImpl rightImpl)
+    (computation : OracleComp spec α)
+    (left right : DeferredContext) (fuel : Nat)
+    (leftCache rightCache : SplitHashCache)
+    (hcontext : FinalizationContextEq table (some left) (some right))
+    (hrightCanonical : CanonicalMaterializedValues table right)
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed) :
+    RelTriple
+      (runSynchronizedResolved leftImpl computation left fuel table leftCache)
+      (runSynchronizedResolved rightImpl computation right fuel table rightCache)
+      (CanonicalFailureRefinementRunEq table) := by
+  induction computation using OracleComp.inductionOn generalizing left right fuel leftCache
+      rightCache with
+  | pure value =>
+      have hleftCompletable := hcontext.2.2.2
+      have hrightCompletable : DeferredCompletable table right := by
+        rcases hleftCompletable with ⟨completion, hcompletion⟩
+        exact ⟨completion, (hcontext.1.deferredCompletion_iff completion).mp hcompletion⟩
+      rw [runSynchronizedResolved_pure leftImpl value left fuel table leftCache
+          hleftCompletable,
+        runSynchronizedResolved_pure rightImpl value right fuel table rightCache
+          hrightCompletable]
+      apply relTriple_pure_pure
+      left
+      exact ⟨⟨rfl, hcontext, rfl, rfl, rfl, hcache, hrevealed⟩,
+        hrightCanonical⟩
+  | query_bind query next ih =>
+      have hleftCompletable := hcontext.2.2.2
+      have hrightCompletable : DeferredCompletable table right := by
+        rcases hleftCompletable with ⟨completion, hcompletion⟩
+        exact ⟨completion, (hcontext.1.deferredCompletion_iff completion).mp hcompletion⟩
+      rw [runSynchronizedResolved, OracleComp.construct_query_bind,
+        runSynchronizedResolved, OracleComp.construct_query_bind]
+      simp only [dif_pos hleftCompletable, dif_pos hrightCompletable]
+      apply relTriple_bind
+        (himpl query left right fuel leftCache rightCache hcontext hrightCanonical hcache
+          hrevealed)
+      intro leftResult rightResult hrelation
+      rcases hrelation with hclean | hrightDoomed
+      · cases leftResult with
+        | none =>
+            cases rightResult with
+            | none => simp [CanonicalFailureRefinementRunEq, FinalizationMaterializedRunEq,
+                CanonicalResolvedRun]
+            | some rightResult => simp [FinalizationMaterializedRunEq] at hclean
+        | some leftResult =>
+            cases rightResult with
+            | none => simp [FinalizationMaterializedRunEq] at hclean
+            | some rightResult =>
+                rcases leftResult with ⟨leftContext, leftFuel, leftValue, leftTable⟩
+                rcases rightResult with ⟨rightContext, rightFuel, rightValue, rightTable⟩
+                rcases leftValue with ⟨leftOutput, nextLeftCache⟩
+                rcases rightValue with ⟨rightOutput, nextRightCache⟩
+                simp only [FinalizationMaterializedRunEq, CanonicalResolvedRun] at hclean
+                rcases hclean.1 with
+                  ⟨houtput, hnextContext, hnextFuel, hleftTable, hrightTable,
+                    hnextCache, hnextRevealed⟩
+                subst rightOutput
+                subst rightFuel
+                subst leftTable
+                subst rightTable
+                exact ih leftOutput leftContext rightContext leftFuel nextLeftCache nextRightCache
+                  hnextContext hclean.2 hnextCache hnextRevealed
+      · have hbase := relTriple_true
+            (match leftResult with
+              | none => pure none
+              | some result =>
+                  runSynchronizedResolved leftImpl (next result.value.1) result.context
+                    result.remaining result.table result.value.2)
+            (match rightResult with
+              | none => pure none
+              | some result =>
+                  runSynchronizedResolved rightImpl (next result.value.1) result.context
+                    result.remaining result.table result.value.2)
+        have hright :=
+          SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hbase
+        apply relTriple_post_mono hright
+        intro _ rightFinal hsupport
+        right
+        cases rightResult with
+        | none =>
+            have hnone : rightFinal = none := by simpa using hsupport.2
+            subst rightFinal
+            trivial
+        | some rightResult =>
+            have hrightTable := hrightDoomed.1
+            have hnotCompletable :
+                ¬DeferredCompletable rightResult.table rightResult.context := by
+              rw [hrightTable]
+              exact hrightDoomed.2.2.2
+            have hrun := runSynchronizedResolved_of_not_completable rightImpl
+              (next rightResult.value.1) rightResult.context rightResult.remaining
+                rightResult.table rightResult.value.2 hnotCompletable
+            have hnone : rightFinal = none := by
+              simp only at hsupport
+              rw [hrun] at hsupport
+              simpa using hsupport.2
+            subst rightFinal
+            trivial
+
+theorem relTriple_finishResolvedRunIsNone_of_canonicalFailureRefinement
+    (table : OtsSecretIndex → HashOutput)
+    (left right : Option (ResolvedRunResult (α × SplitHashCache)))
+    (hrelation : CanonicalFailureRefinementRunEq table left right) :
+    RelTriple (finishResolvedRunIsNone left) (finishResolvedRunIsNone right)
+      (fun leftFailed rightFailed => leftFailed = true → rightFailed = true) := by
+  rcases hrelation with hclean | hrightDoomed
+  · apply relTriple_post_mono
+      (relTriple_finishResolvedRunIsNone_of_finalizationMaterializedRunEq table left right
+        hclean.1)
+    intro leftFailed rightFailed heq hleft
+    rw [← heq]
+    exact hleft
+  · cases right with
+    | none =>
+        have hright : finishResolvedRunIsNone
+            (none : Option (ResolvedRunResult (α × SplitHashCache))) = pure true := by
+          simp [finishResolvedRunIsNone, finishResolvedRun]
+        rw [hright]
+        have hbase := relTriple_true (finishResolvedRunIsNone left)
+          (pure true : ProbComp Bool)
+        have hsupported :=
+          SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hbase
+        apply relTriple_post_mono hsupported
+        intro leftFailed rightFailed hsupport _hleft
+        simpa using hsupport.2
+    | some right =>
+        have hrightTable := hrightDoomed.1
+        have hnotCompletable : ¬DeferredCompletable right.table right.context := by
+          rw [hrightTable]
+          exact hrightDoomed.2.2.2
+        have hright : finishResolvedRunIsNone (some right) = pure true := by
+          unfold finishResolvedRunIsNone
+          rw [finishResolvedRun_of_not_deferredCompletable right hnotCompletable]
+          simp
+        rw [hright]
+        have hbase := relTriple_true (finishResolvedRunIsNone left)
+          (pure true : ProbComp Bool)
+        have hsupported :=
+          SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hbase
+        apply relTriple_post_mono hsupported
+        intro leftFailed rightFailed hsupport _hleft
+        simpa using hsupport.2
+
+theorem prob_finishResolvedRunIsNone_le_of_canonicalFailureRefinement
+    (table : OtsSecretIndex → HashOutput)
+    (leftRun rightRun : ProbComp
+      (Option (ResolvedRunResult (α × SplitHashCache))))
+    (hrelation : RelTriple leftRun rightRun
+      (CanonicalFailureRefinementRunEq table)) :
+    Pr[= true | leftRun >>= finishResolvedRunIsNone] ≤
+      Pr[= true | rightRun >>= finishResolvedRunIsNone] := by
+  rw [← probEvent_eq_eq_probOutput, ← probEvent_eq_eq_probOutput]
+  apply probEvent_le_of_relTriple
+    (p := fun failed : Bool => failed = true)
+    (q := fun failed : Bool => failed = true)
+    (relTriple_bind hrelation fun left right hresult =>
+      relTriple_finishResolvedRunIsNone_of_canonicalFailureRefinement table left right hresult)
+  intro leftFailed rightFailed himp hleft
+  exact himp hleft
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
