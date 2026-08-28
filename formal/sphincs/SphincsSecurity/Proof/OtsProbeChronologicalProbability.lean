@@ -11,6 +11,7 @@ relating failed completion to the lazy-probe probability bound.
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
 open OracleComp OracleSpec ENNReal
+open OracleComp.ProgramLogic.Relational
 
 attribute [local irreducible] maskedChronologicalRetainedGameAfterFtsSecrets
   actualRetainedGameAfterTable
@@ -351,5 +352,101 @@ theorem not_deferredCompletable_of_winningRetainedVerifyProbe
       ftsSecret result actualValue actualCache hactual hrelation hcompletable hwitness
   exact (not_resolvedCompletionVerifyProbe_of_reachableResolvedRunRel adversary parameter table
     ftsSecret fuel result actualValue actualCache hresult hactual hrelation) hcompletionProbe
+
+def ResolvedCompletionFailure (table : OtsSecretIndex → HashOutput) :
+    Option (ResolvedRunResult (RetainedGameResult × SplitHashCache)) → Prop
+  | none => True
+  | some result => ¬DeferredCompletable table result.context
+
+theorem probEvent_winningRetainedVerifyProbe_le_resolvedCompletionFailure
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    Pr[WinningRetainedVerifyProbeWitness parameter (extendStartTable table) ftsSecret |
+        actualRetainedGameAfterTable adversary parameter ftsSecret (extendStartTable table)] ≤
+      Pr[ResolvedCompletionFailure table |
+        runResolvedFromTable
+          { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+            values := emptyDeferredStructuralValues }
+          fuel table
+          ((maskedChronologicalRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
+            emptySplitHashCache)] := by
+  let resolvedRun := runResolvedFromTable
+    { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+      values := emptyDeferredStructuralValues }
+    fuel table
+    ((maskedChronologicalRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
+      emptySplitHashCache)
+  let actualRun :=
+    actualRetainedGameAfterTable adversary parameter ftsSecret (extendStartTable table)
+  have hrel := relTriple_runResolvedFromTable_maskedChronologicalRetainedGame adversary parameter
+    table ftsSecret fuel
+  have hleft :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hrel
+      (fun result => result ∈ support resolvedRun) (fun result hresult => hresult)
+  have hboth :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hleft
+  apply probEvent_le_of_relTriple (relTriple_symm hboth)
+  intro actualResult resolvedResult hrelation hwitness
+  cases resolvedResult with
+  | none => trivial
+  | some result =>
+      exact not_deferredCompletable_of_winningRetainedVerifyProbe adversary parameter table
+        ftsSecret fuel result actualResult.1 actualResult.2 hrelation.1.2 hrelation.2
+          hrelation.1.1 hwitness
+
+theorem probEvent_resolvedCompletionFailure_le_finishResolvedRun_none
+    (table : OtsSecretIndex → HashOutput)
+    (run : ProbComp
+      (Option (ResolvedRunResult (RetainedGameResult × SplitHashCache))))
+    (htable : ∀ result, some result ∈ support run → result.table = table) :
+    Pr[ResolvedCompletionFailure table | run] ≤
+      Pr[fun result => result = none | run >>= finishResolvedRun] := by
+  classical
+  calc
+    Pr[ResolvedCompletionFailure table | run] =
+        Pr[ResolvedCompletionFailure table | run >>= pure] := by rw [bind_pure]
+    _ ≤ Pr[fun result => result = none | run >>= finishResolvedRun] := by
+      apply probEvent_bind_le_bind_of_forall_le
+      intro result _hresult
+      cases result with
+      | none => simp [ResolvedCompletionFailure, finishResolvedRun]
+      | some result =>
+          have hresultTable := htable result _hresult
+          by_cases hcompletable : DeferredCompletable table result.context
+          · have hfailure : ¬ResolvedCompletionFailure table (some result) := by
+              simpa [ResolvedCompletionFailure] using hcompletable
+            rw [probEvent_pure]
+            simp [hfailure]
+          · have hdoomed : ¬DeferredCompletable result.table result.context := by
+              rwa [hresultTable]
+            rw [finishResolvedRun_of_not_deferredCompletable result hdoomed]
+            simp [ResolvedCompletionFailure, hcompletable]
+
+theorem probEvent_winningRetainedVerifyProbe_le_finishedResolvedRun_none
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    Pr[WinningRetainedVerifyProbeWitness parameter (extendStartTable table) ftsSecret |
+        actualRetainedGameAfterTable adversary parameter ftsSecret (extendStartTable table)] ≤
+      Pr[fun result => result = none |
+        runResolvedFromTable
+          { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+            values := emptyDeferredStructuralValues }
+          fuel table
+          ((maskedChronologicalRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
+            emptySplitHashCache) >>= finishResolvedRun] := by
+  exact (probEvent_winningRetainedVerifyProbe_le_resolvedCompletionFailure adversary parameter
+    table ftsSecret fuel).trans
+      (probEvent_resolvedCompletionFailure_le_finishResolvedRun_none table _ (by
+        intro result hresult
+        exact (resolvedCore_of_mem_runResolvedFromTable
+          ((maskedChronologicalRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
+            emptySplitHashCache)
+          { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+            values := emptyDeferredStructuralValues }
+          fuel table result DeferredContext.valid_empty.valuesConsistent
+          (startTableAgrees_empty table)
+          hresult).1))
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

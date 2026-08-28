@@ -4130,6 +4130,12 @@ theorem evalDist_map_resolveDeferredChainStart_then_finalize_of_not_mem
 def PendingCovered (coordinates : List Coordinate) (context : DeferredContext) : Prop :=
   ∀ entry, entry ∈ context.state.pending → entry.1 ∈ coordinates
 
+theorem pendingCovered_coordinates_toList (context : DeferredContext) :
+    PendingCovered context.state.coordinates.toList context := by
+  intro entry hentry
+  simp only [Finset.mem_toList, LazyRevealProbe.State.coordinates]
+  exact Finset.mem_union_right _ (Finset.mem_image_of_mem _ hentry)
+
 theorem PendingCovered.clearPending
     {coordinates : List Coordinate} {context : DeferredContext}
     (hcovered : PendingCovered coordinates context) (coordinate : Coordinate) :
@@ -4660,6 +4666,28 @@ theorem evalDist_map_resolveDeferredPosition_then_finalize
   | ftsRoots index =>
       exact evalDist_map_resolveDeferredPositionValue_then_finalize
         (.ftsRoots index) coordinates context table hvalid hcovered
+
+set_option maxRecDepth 100000 in
+theorem evalDist_map_resolveDeferredReveal_then_finalize
+    (table : OtsSecretIndex → HashOutput) (position : Position)
+    (coordinates : List Coordinate) (context : DeferredContext)
+    (hvalid : context.Valid) (hcovered : PendingCovered coordinates context) :
+    evalDist (do
+        let resolved ← resolveDeferredReveal table position context
+        match resolved with
+        | none => (pure none : ProbComp
+            (Option (LazyRevealProbe.State Coordinate)))
+        | some resolved => projectDeferredState <$>
+            finalizeResolvedCoordinates coordinates resolved.toDeferredContext table) =
+      evalDist (projectDeferredState <$>
+        finalizeResolvedCoordinates coordinates context table) := by
+  by_cases hresolvable : ResolvableOtsPosition position
+  · simpa [resolveDeferredReveal, hresolvable] using
+      evalDist_map_resolveDeferredPosition_then_finalize table position coordinates context
+        hvalid hcovered
+  · simpa [resolveDeferredReveal, hresolvable] using
+      evalDist_map_resolveDeferredPositionValue_then_finalize position coordinates context table
+        hvalid hcovered
 
 def DeferredCompletion (table : OtsSecretIndex → HashOutput) (context : DeferredContext)
     (completion : Coordinate → HashOutput) : Prop :=
@@ -12831,6 +12859,52 @@ noncomputable def scheduleResolvedLayerResult
         else
           pure (some ⟨result.context, result.remaining,
             (none, result.value.2), result.table⟩)
+
+set_option maxRecDepth 100000 in
+theorem evalDist_scheduleResolvedLayerResult_then_finalize
+    (index : Index) (lay : Layer)
+    (result : ResolvedRunResult
+      (Option (Counter × (ChainIndex → Digit)) × SplitHashCache))
+    (coordinates : List Coordinate) (hvalid : result.context.Valid)
+    (hcovered : PendingCovered coordinates result.context) :
+    evalDist (do
+        let scheduled ← scheduleResolvedLayerResult index lay (some result)
+        match scheduled with
+        | none => (pure none : ProbComp
+            (Option (LazyRevealProbe.State Coordinate)))
+        | some scheduled => projectDeferredState <$>
+            finalizeResolvedCoordinates coordinates scheduled.context scheduled.table) =
+      evalDist (projectDeferredState <$>
+        finalizeResolvedCoordinates coordinates result.context result.table) := by
+  classical
+  by_cases hcompletable : DeferredCompletable result.table result.context
+  · cases hselected : result.value.1 with
+    | none =>
+        simp [scheduleResolvedLayerResult, hcompletable, hselected]
+    | some selected =>
+        rcases selected with ⟨counter, encoding⟩
+        rw [scheduleResolvedLayerResult]
+        simp only [hcompletable, if_pos, hselected, bind_assoc]
+        calc
+          _ = evalDist (do
+              let resolved ← resolveDeferredLayerValues result.table index lay encoding
+                result.context
+              match resolved with
+              | none => (pure none : ProbComp
+                  (Option (LazyRevealProbe.State Coordinate)))
+              | some (finalContext, _) => projectDeferredState <$>
+                  finalizeResolvedCoordinates coordinates finalContext result.table) := by
+            apply congrArg evalDist
+            apply bind_congr
+            intro resolved
+            cases resolved with
+            | none => rfl
+            | some resolved =>
+                rcases resolved with ⟨finalContext, values⟩
+                simp
+          _ = _ := evalDist_map_resolveDeferredLayerValues_then_finalize result.table index lay
+            encoding coordinates result.context hvalid hcovered
+  · simp [scheduleResolvedLayerResult, hcompletable]
 
 theorem resolvedCouples_maskedSignLayer
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
