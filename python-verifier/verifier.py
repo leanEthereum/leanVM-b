@@ -183,6 +183,11 @@ GEN = E(2)
 Y = E(0, 1)  # the tower generator, y^3 = y + 1
 
 
+def powers(base: E, count: int) -> list[E]:
+    """`[1, base, base^2, ...]`, `count` terms."""
+    return list(islice(accumulate(repeat(base), mul, initial=ONE), count))
+
+
 # BLAKE2s and digests ---------------------------------------------------------
 
 BLAKE2S_IV = (0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A, 0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19)  # fmt: skip
@@ -394,8 +399,9 @@ class Transcript:
             leaf = self._merkle_data(8 * leaf_words)
             node = blake2s_hash(leaf)
             for level in range(height):
-                sibling = Digest(self._merkle_data(32))
-                node = _hash_pair(node, sibling) if query >> level & 1 == 0 else _hash_pair(sibling, node)
+                sibling = self._merkle_data(32)
+                left, right = (node.value, sibling) if query >> level & 1 == 0 else (sibling, node.value)
+                node = blake2s_hash(left + right)
             require(node == root, "Merkle root mismatch")
             rows.append(tuple(K(word) for word in unpack(f"<{leaf_words}Q", leaf)))
         return rows
@@ -456,13 +462,23 @@ def verify_gkr_grand_products(depth: int, transcript: Transcript) -> tuple[E, Mu
 
 @dataclass
 class Form:
-    """A polynomial of degree at most 2 in a row's columns, one table's own."""
+    """A polynomial of degree at most 2 in a table's columns."""
 
     terms: dict[tuple[int, ...], E] = field(default_factory=dict)  # monomial -> coefficient; () is 1, (i,) is x_i, (i, j) is x_i*x_j
 
     def add_scaled(self, other: Form, weight: E) -> None:
         for monomial, coefficient in other.terms.items():
             self.terms[monomial] = self.terms.get(monomial, ZERO) + weight * coefficient
+
+    def __add__(self, other: Form) -> Form:
+        combined = Form(dict(self.terms))
+        combined.add_scaled(other, ONE)
+        return combined
+
+    @staticmethod
+    def sum(forms: Iterable[Form]) -> Form:
+        """`Σ forms`, the empty sum being the zero polynomial."""
+        return sum(forms, Form())
 
     def evaluate(self, column: Callable[[int], E]) -> E:
         return E.sum(reduce(mul, map(column, monomial), c) for monomial, c in self.terms.items())
@@ -512,7 +528,7 @@ BUS_BITS = 4  # bus communicates tuples of 2^BUS_BITS field elements
 class BusResult:
     claims: tuple[ColumnClaim, ...]
     point: MultilinearPoint  # the GKR point zeta, which the table sumcheck reuses
-    forms: tuple[tuple[Form, ...], ...]  # forms[side][table]
+    forms: tuple[tuple[Form, ...], ...]  # forms[table][side]
     totals: tuple[E, E, E]  # what the tables owe each side, derived
 
 
@@ -555,8 +571,8 @@ def verify_bus_balance(layout: Layout, transcript: Transcript) -> BusResult:
         (layout.pull, pull_layout, fingerprints(final_pc, memory_final, bytecode_final), weights, beta),
         (layout.count, count_layout, (), (ONE,), ZERO),  # The count channel owns no framework block and runs at alpha = beta = 0.
     )
-    totals = [] # what remains to be proven by the next table sumcheck
-    forms = tuple(tuple(Form() for _ in TABLES) for _ in range(3))
+    totals = []  # what remains to be proven by the next table sumcheck
+    forms = tuple(tuple(Form() for _ in range(3)) for _ in TABLES)
     for side, (blocks, side_layout, framework_fingerprints, side_weights, side_beta) in enumerate(sides):
         framework_selectors = [p.eq_above(point) for p in side_layout.framework]
         table_selectors = [p.eq_above(point) for p in side_layout.tables]
@@ -564,7 +580,7 @@ def verify_bus_balance(layout: Layout, transcript: Transcript) -> BusResult:
         # A table's blocks stay symbolic: they accumulate into the form its sumcheck settles over its own columns.
         beta_form = _const(side_beta)
         for selector, block in zip(table_selectors, blocks, strict=True):
-            form = forms[side][block.owner]
+            form = forms[block.owner][side]
             form.add_scaled(beta_form, selector)
             for slot, coordinate in enumerate(block.coordinates):
                 form.add_scaled(coordinate, selector * side_weights[slot])  # the fingerprint, one tuple slot at a time
@@ -578,58 +594,36 @@ def verify_bus_balance(layout: Layout, transcript: Transcript) -> BusResult:
 # Table sumcheck -------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class Air:
-    """One table at its announced height, with the bus forms it owes each side."""
-
-    table: Table
-    log_height: int
-    forms: tuple[Form, ...]
-
-    def evaluate(self, constraint_powers: Sequence[E], form_powers: Sequence[E], columns: Sequence[E]) -> E:
-        """This table's share of the batch's summand: its constraints, then its bus forms."""
-        terms = self.table.constraints(lambda name: columns[self.table.col(name)])
-        constraints = dot(constraint_powers, terms)
-        buses = dot(form_powers, [form.evaluate(lambda index: columns[index]) for form in self.forms])
-        return constraints + buses
-
-
-def powers(base: E, count: int) -> list[E]:
-    """`[1, base, base^2, ...]`, `count` terms."""
-    return list(islice(accumulate(repeat(base), mul, initial=ONE), count))
-
-
-def verify_constraints(
-    airs: Sequence[Air], constraint_powers: Sequence[E], form_powers: Sequence[E], equality_point: MultilinearPoint, target: E, transcript: Transcript
+def table_sumcheck(
+    table_log_heights: Sequence[int],
+    bus_forms: Sequence[Sequence[Form]],
+    constraint_powers: Sequence[E],
+    form_powers: Sequence[E],
+    equality_point: MultilinearPoint,
+    target: E,
+    transcript: Transcript,
 ) -> list[ColumnClaim]:
-    depth = max((air.log_height for air in airs), default=0)
-    require(len(equality_point) >= depth, "AIR equality point is too short")
-
-    # Back-loaded: the first round binds the top variable, so each table reads its
-    # own low ones off the head of `point`.
-    challenges, claim = sumcheck(transcript, target, 4, [None] * depth)
+    n_rounds = max(table_log_heights)
+    challenges, claim = sumcheck(transcript, target, 4, [None] * n_rounds)
     point = list(reversed(challenges))
-    weights = [ONE] * len(airs)
+    weights = [ONE] * len(TABLES)
     for variable, challenge in enumerate(point):
         equality = ONE + equality_point[variable] + challenge
-        for table_index, air in enumerate(airs):
-            weights[table_index] *= equality if air.log_height > variable else challenge
+        for index, height in enumerate(table_log_heights):
+            weights[index] *= equality if height > variable else challenge
 
     final = ZERO
     cursor = 0
     claims: list[ColumnClaim] = []
-    for table_index, air in enumerate(airs):
-        evaluations = tuple(transcript.next_scalars(air.table.width))
-        table_constraint_powers = constraint_powers[cursor : cursor + air.table.n_constraints]
-        cursor += air.table.n_constraints
-        final += weights[table_index] * air.evaluate(table_constraint_powers, form_powers, evaluations)
-        base, air_point = GLOBAL_COLUMN_BASES[air.table.opcode], tuple(point[: air.log_height])
-        claims.extend(ColumnClaim(base + local, air_point, value) for local, value in enumerate(evaluations))
-    require(final == claim, "AIR terminal mismatch")
+    for table, height, forms, weight in zip(TABLES, table_log_heights, bus_forms, weights, strict=True):
+        evaluations = tuple(transcript.next_scalars(table.width))
+        summand = dot(constraint_powers[cursor : cursor + table.n_constraints], table.constraints(evaluations))
+        final += weight * (summand + dot(form_powers, [form.evaluate(evaluations.__getitem__) for form in forms]))
+        cursor += table.n_constraints
+        claims.extend(ColumnClaim(GLOBAL_COLUMN_BASES[table.opcode] + local, tuple(point[:height]), value) for local, value in enumerate(evaluations))
+    require(final == claim, "table sumcheck terminal mismatch")
     return claims
 
-
-# VM statement, layout, and AIR -----------------------------------------------
 
 R1CS_DIGEST = bytes.fromhex("537ad20790308f8eb8c0e8bd3e6c58ee64573371e3d53c30613dd04d87c0b7ea")
 
@@ -657,7 +651,12 @@ class Layout:
     count: tuple[BusBlock, ...]
     placements: tuple[Placement, ...]
     stack_log: int
-    table_logs: tuple[int, ...]
+    table_log_heights: tuple[int, ...]
+
+
+def _cols(columns: Sequence[str], *names: str) -> tuple[int, ...]:
+    assert set(names) <= set(columns), f"unknown columns: {sorted(set(names) - set(columns))}"
+    return tuple(columns.index(name) for name in names)
 
 
 def _gpow(index: int) -> E:
@@ -674,13 +673,6 @@ def _col(index: int, exponent: int = 0) -> Form:
 
 def _prod(a: int, b: int, exponent: int = 0) -> Form:
     return Form({tuple(sorted((a, b))): _gpow(exponent)})
-
-
-def _sum(forms: Iterable[Form]) -> Form:
-    combined = Form()
-    for form in forms:
-        combined.add_scaled(form, ONE)
-    return combined
 
 
 SEP_STATE = ONE
@@ -713,180 +705,122 @@ class Flushes:
         self._counted((_const(SEP_MEM), address), count, values)
 
     def memory_cols(self, address: Form, count: int, *columns: int) -> None:
-        """A word whose lanes are committed columns, low lane first.
-
-        Lanes past the ones named are literal zeros, which is what turns the
-        flush into a range assertion on the value: bus balance can only hold if
-        the cell really is that narrow.
-        """
-        lanes = [_col(column) for column in columns] + [_const(ZERO)] * (3 - len(columns))
-        self.memory(address, count, lanes)
+        self.memory(address, count, [_col(column) for column in columns] + [_const(ZERO)] * (3 - len(columns)))
 
 
-# The instruction tables (doc sec:tables) -------------------------------------
-#
-# One table per opcode. Each declares its columns by name, how it flushes the
-# bus, and its AIR; everything else about it (its width, where its columns land
-# in the global numbering, which of them hold read counts) is read off those
-# names, so the views cannot drift apart. A column name prefixed ``cnt`` is a
-# read count, and ``<x>_0.._2`` are the three K-lanes of one 192-bit word.
+# The instruction tables ------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class Table:
-    """One instruction's table: its columns, its bus flushes, its AIR."""
+    """One instruction's table: its columns, its bus flushes, its constraints."""
 
     name: str
     opcode: int  # also its index in TABLES, so g^opcode is its bytecode tag
     columns: tuple[str, ...]
-    flushes: Callable[[Table], Flushes]
-    constraints: Callable[[Callable[[str], E]], tuple[E, ...]] = lambda _: ()
+    flushes: Flushes
+    constraints: Callable[[Sequence[E]], tuple[E, ...]] = lambda _: ()
 
     @property
     def n_constraints(self) -> int:
-        return len(self.constraints(lambda _: ZERO))
+        return len(self.constraints([ZERO] * self.width))
 
     @property
     def width(self) -> int:
         return len(self.columns)
-
-    def col(self, name: str) -> int:
-        assert name in self.columns, f"table {self.name} has no column {name!r}"
-        return self.columns.index(name)
-
-    def cols(self, *names: str) -> tuple[int, ...]:
-        return tuple(self.col(name) for name in names)
 
     @property
     def count_columns(self) -> tuple[int, ...]:
         return tuple(i for i, name in enumerate(self.columns) if name.startswith("cnt"))
 
 
-# Operand pairs contributing to each lane after reducing y^3 = y + 1 in E = K[y]/(y^3 + y + 1).
-TOWER_LANES = (((0, 0), (1, 2), (2, 1)), ((0, 1), (1, 0), (1, 2), (2, 1), (2, 2)), ((0, 2), (1, 1), (2, 0), (2, 2)))
-
-
-def _arith_result(multiply: bool, a: Sequence[int], b: Sequence[int]) -> tuple[Form, ...]:
-    """The result word's three K-lanes as forms over the two operands' lanes.
-
-    XOR is the lane-wise sum; MUL is the tower product, unrolled through TOWER_LANES.
-    """
-    if not multiply:
-        return tuple(_sum((_col(a[i]), _col(b[i]))) for i in range(3))
-    return tuple(_sum(_prod(a[j], b[k]) for j, k in lane) for lane in TOWER_LANES)
-
-
-def _flushes_arith(table: Table) -> Flushes:
-    pc, fp, o_a, o_b, o_c, cnt_a, cnt_b, cnt_c, cnt_bc = table.cols("pc", "fp", "o_a", "o_b", "o_c", "cnt_a", "cnt_b", "cnt_c", "cnt_bc")
-    va, vb = table.cols("va_0", "va_1", "va_2"), table.cols("vb_0", "vb_1", "vb_2")
+def _flushes_arith(opcode: int, multiply: bool) -> Flushes:
+    pc, fp, o_a, o_b, o_c, cnt_a, cnt_b, cnt_c, cnt_bc = _cols(ARITH_COLUMNS, "pc", "fp", "o_a", "o_b", "o_c", "cnt_a", "cnt_b", "cnt_c", "cnt_bc")
+    va, vb = _cols(ARITH_COLUMNS, "va_0", "va_1", "va_2"), _cols(ARITH_COLUMNS, "vb_0", "vb_1", "vb_2")
     flushes = Flushes()
     flushes.state_step(pc, fp)
-    flushes.bytecode(pc, cnt_bc, table.opcode, (_col(o_a), _col(o_b), _col(o_c), _const(ZERO), _const(ZERO)))
+    flushes.bytecode(pc, cnt_bc, opcode, (_col(o_a), _col(o_b), _col(o_c), _const(ZERO), _const(ZERO)))
     flushes.memory_cols(_prod(fp, o_a), cnt_a, *va)
     flushes.memory_cols(_prod(fp, o_b), cnt_b, *vb)
-    # The destination cell's flush carries the result itself, so bus balance is
-    # the assertion and the result is no column.
-    flushes.memory(_prod(fp, o_c), cnt_c, _arith_result(table.name == "mul", va, vb))
+    TOWER_LANES = (((0, 0), (1, 2), (2, 1)), ((0, 1), (1, 0), (1, 2), (2, 1), (2, 2)), ((0, 2), (1, 1), (2, 0), (2, 2)))
+    result = (
+        tuple(Form.sum(_prod(va[j], vb[k]) for j, k in lane) for lane in TOWER_LANES)
+        if multiply
+        else tuple(_col(va[i]) + _col(vb[i]) for i in range(3))
+    )
+    flushes.memory(_prod(fp, o_c), cnt_c, result)
     return flushes
 
 
-def _flushes_set(table: Table) -> Flushes:
-    pc, fp, o, cnt, cnt_bc = table.cols("pc", "fp", "o", "cnt", "cnt_bc")
-    k = table.cols("k_0", "k_1", "k_2")
+def _flushes_set() -> Flushes:
+    pc, fp, o, cnt, cnt_bc = _cols(SET_COLUMNS, "pc", "fp", "o", "cnt", "cnt_bc")
+    k = _cols(SET_COLUMNS, "k_0", "k_1", "k_2")
     flushes = Flushes()
     flushes.state_step(pc, fp)
-    # The immediate's three limbs ride the spare operand slots.
-    flushes.bytecode(pc, cnt_bc, table.opcode, (_col(o), *(_col(limb) for limb in k), _const(ZERO)))
+    flushes.bytecode(pc, cnt_bc, OP_SET, (_col(o), *(_col(limb) for limb in k), _const(ZERO)))
     flushes.memory_cols(_prod(fp, o), cnt, *k)
     return flushes
 
 
-def _flushes_deref(table: Table) -> Flushes:
-    pc, fp, alpha, beta, gamma, f_pc, f_fp, ptr = table.cols("pc", "fp", "alpha", "beta", "gamma", "f_pc", "f_fp", "ptr")
-    cnt_ptr, cnt_target, cnt_local, cnt_bc = table.cols("cnt_ptr", "cnt_target", "cnt_local", "cnt_bc")
-    v3 = table.cols("v3_0", "v3_1", "v3_2")
+def _flushes_deref() -> Flushes:
+    pc, fp, alpha, beta, gamma, f_pc, f_fp, ptr = _cols(DEREF_COLUMNS, "pc", "fp", "alpha", "beta", "gamma", "f_pc", "f_fp", "ptr")
+    cnt_ptr, cnt_target, cnt_local, cnt_bc = _cols(DEREF_COLUMNS, "cnt_ptr", "cnt_target", "cnt_local", "cnt_bc")
+    v3 = _cols(DEREF_COLUMNS, "v3_0", "v3_1", "v3_2")
 
     def gated(lane: int) -> list[Form]:
         return [_col(lane), _prod(f_pc, lane), _prod(f_fp, lane)]
 
-    # v2 = (1 + f_pc + f_fp)*v3 + f_pc*(g^2*pc) + f_fp*fp, lane-wise: only the low
-    # lane takes the two K-valued sources.
-    store = (_sum((*gated(v3[0]), _prod(f_pc, pc, 2), _prod(f_fp, fp))), _sum(gated(v3[1])), _sum(gated(v3[2])))
+    # v2 = (1 + f_pc + f_fp)*v3 + f_pc*(g^2*pc) + f_fp*fp, lane-wise: only the low lane takes the two K-valued sources.
+    store = (Form.sum((*gated(v3[0]), _prod(f_pc, pc, 2), _prod(f_fp, fp))), Form.sum(gated(v3[1])), Form.sum(gated(v3[2])))
     flushes = Flushes()
     flushes.state_step(pc, fp)
-    flushes.bytecode(pc, cnt_bc, table.opcode, (_col(alpha), _col(beta), _col(gamma), _col(f_pc), _col(f_fp)))
+    flushes.bytecode(pc, cnt_bc, OP_DEREF, (_col(alpha), _col(beta), _col(gamma), _col(f_pc), _col(f_fp)))
     flushes.memory_cols(_prod(fp, alpha), cnt_ptr, ptr)
     flushes.memory(_prod(ptr, beta), cnt_target, store)
     flushes.memory_cols(_prod(fp, gamma), cnt_local, *v3)
     return flushes
 
 
-def _flushes_jump(table: Table) -> Flushes:
-    pc, fp, o_c, o_d, o_f, cond, dest, frame, b = table.cols("pc", "fp", "o_c", "o_d", "o_f", "c", "dest", "frame", "b")
-    cnt_c, cnt_d, cnt_f, cnt_bc = table.cols("cnt_c", "cnt_d", "cnt_f", "cnt_bc")
+def _flushes_jump() -> Flushes:
+    pc, fp, o_c, o_d, o_f, cond, dest, frame, b = _cols(JUMP_COLUMNS, "pc", "fp", "o_c", "o_d", "o_f", "c", "dest", "frame", "b")
+    cnt_c, cnt_d, cnt_f, cnt_bc = _cols(JUMP_COLUMNS, "cnt_c", "cnt_d", "cnt_f", "cnt_bc")
     flushes = Flushes()
     # next_pc = b*dest + (b+1)*g*pc, next_fp = b*frame + (b+1)*fp, both derived.
-    flushes.state_derived(pc, fp, _sum((_prod(b, dest), _prod(b, pc, 1), _col(pc, 1))), _sum((_prod(b, frame), _prod(b, fp), _col(fp))))
-    flushes.bytecode(pc, cnt_bc, table.opcode, (_col(o_c), _col(o_d), _col(o_f), _const(ZERO), _const(ZERO)))
-    # The condition, the destination and the frame are K-valued on every row, taken
-    # or not, so each is one K-limb read through literal zeros in the upper lanes.
+    flushes.state_derived(pc, fp, _prod(b, dest) + _prod(b, pc, 1) + _col(pc, 1), _prod(b, frame) + _prod(b, fp) + _col(fp))
+    flushes.bytecode(pc, cnt_bc, OP_JUMP, (_col(o_c), _col(o_d), _col(o_f), _const(ZERO), _const(ZERO)))
     flushes.memory_cols(_prod(fp, o_c), cnt_c, cond)
     flushes.memory_cols(_prod(fp, o_d), cnt_d, dest)
     flushes.memory_cols(_prod(fp, o_f), cnt_f, frame)
     return flushes
 
 
-def _jump_constraints(get: Callable[[str], E]) -> tuple[E, ...]:
-    """``b = c*w`` and ``c*(b+1) = 0``: the one quantity no interaction pins.
-
-    No table binds an address, an arithmetic result, a DEREF store or a JUMP
-    successor, the bus reading each as a degree-2 coordinate, so JUMP's
-    is-nonzero indicator is the whole AIR of the machine. The condition is K-valued
-    (its memory read carries literal zeros above the low limb), so both relations
-    are single-lane.
-    """
-    condition, inverse, flag = get("c"), get("w"), get("b")
+def _jump_constraints(columns: Sequence[E]) -> tuple[E, ...]:
+    condition, inverse, flag = (columns[index] for index in _cols(JUMP_COLUMNS, "c", "w", "b"))
     return (flag + condition * inverse, condition * (flag + ONE))
 
 
-def _flushes_blake2s(table: Table) -> Flushes:
-    pc, fp, cnt_bc = table.cols("pc", "fp", "cnt_bc")
-    operands = table.cols("o_0", "o_1", "o_2", "o_3", "o_v", "o_out", "md_0", "md_1")
+def _flushes_blake2s() -> Flushes:
+    pc, fp, cnt_bc = _cols(BLAKE2S_COLUMNS, "pc", "fp", "cnt_bc")
+    operands = _cols(BLAKE2S_COLUMNS, "o_0", "o_1", "o_2", "o_3", "o_v", "o_out", "md_0", "md_1")
     flushes = Flushes()
     flushes.state_step(pc, fp)
-    flushes.bytecode(pc, cnt_bc, table.opcode, tuple(_col(i) for i in operands))
+    flushes.bytecode(pc, cnt_bc, OP_BLAKE2S, tuple(_col(i) for i in operands))
     # The eight cells read, as (cell, operand, offset from it): four addressed message chunks, then
     # the consecutive chaining-value and output pairs. Each holds two q_flock limbs and a zero top.
     cells = (("m0", "o_0", 0), ("m1", "o_1", 0), ("m2", "o_2", 0), ("m3", "o_3", 0),
              ("cv0", "o_v", 0), ("cv1", "o_v", 1), ("out0", "o_out", 0), ("out1", "o_out", 1))  # fmt: skip
     for cell, operand, exponent in cells:
-        lo, hi = table.cols(f"{cell}_lo", f"{cell}_hi")
-        flushes.memory_cols(_prod(fp, table.col(operand), exponent), table.col(f"cnt_{cell}"), lo, hi)
+        address, count, lo, hi = _cols(BLAKE2S_COLUMNS, operand, f"cnt_{cell}", f"{cell}_lo", f"{cell}_hi")
+        flushes.memory_cols(_prod(fp, address, exponent), count, lo, hi)
     return flushes
 
 
-# The column names of each table, in the order they are committed. Hand-laid in
-# groups: the state, the operands, the values, then the read counts.
-ARITH_COLUMNS = (
-    "pc", "fp", "o_a", "o_b", "o_c",
-    "va_0", "va_1", "va_2", "vb_0", "vb_1", "vb_2",
-    "cnt_a", "cnt_b", "cnt_c", "cnt_bc",
-)  # fmt: skip
+OP_XOR, OP_MUL, OP_SET, OP_DEREF, OP_JUMP, OP_BLAKE2S = range(6)
 
+ARITH_COLUMNS = ("pc", "fp", "o_a", "o_b", "o_c", "va_0", "va_1", "va_2", "vb_0", "vb_1", "vb_2", "cnt_a", "cnt_b", "cnt_c", "cnt_bc",)  # fmt: skip
 SET_COLUMNS = ("pc", "fp", "o", "k_0", "k_1", "k_2", "cnt", "cnt_bc")
-
-DEREF_COLUMNS = (
-    "pc", "fp", "alpha", "beta", "gamma", "f_pc", "f_fp", "ptr",
-    "v3_0", "v3_1", "v3_2",
-    "cnt_ptr", "cnt_target", "cnt_local", "cnt_bc",
-)  # fmt: skip
-
-JUMP_COLUMNS = (
-    "pc", "fp", "o_c", "o_d", "o_f", "c", "dest", "frame",
-    "cnt_c", "cnt_d", "cnt_f", "cnt_bc",
-    "w", "b",  # witness columns: neither read from memory nor in the bytecode
-)  # fmt: skip
-
+DEREF_COLUMNS = ("pc", "fp", "alpha", "beta", "gamma", "f_pc", "f_fp", "ptr", "v3_0", "v3_1", "v3_2",  "cnt_ptr", "cnt_target", "cnt_local", "cnt_bc",)  # fmt: skip
+JUMP_COLUMNS = ("pc", "fp", "o_c", "o_d", "o_f", "c", "dest", "frame", "cnt_c", "cnt_d", "cnt_f", "cnt_bc", "w", "b",)  # fmt: skip
 BLAKE2S_COLUMNS = (
     "pc", "fp", "o_0", "o_1", "o_2", "o_3", "o_v", "o_out",
     # These eighteen value limbs live in q_flock, not here: each is already a flock witness slot.
@@ -897,27 +831,22 @@ BLAKE2S_COLUMNS = (
 )  # fmt: skip
 
 TABLES = (
-    Table("xor", 0, ARITH_COLUMNS, _flushes_arith),
-    Table("mul", 1, ARITH_COLUMNS, _flushes_arith),
-    Table("set", 2, SET_COLUMNS, _flushes_set),
-    Table("deref", 3, DEREF_COLUMNS, _flushes_deref),
-    Table("jump", 4, JUMP_COLUMNS, _flushes_jump, _jump_constraints),
-    Table("blake2s", 5, BLAKE2S_COLUMNS, _flushes_blake2s),
+    Table("xor", OP_XOR, ARITH_COLUMNS, _flushes_arith(OP_XOR, multiply=False)),
+    Table("mul", OP_MUL, ARITH_COLUMNS, _flushes_arith(OP_MUL, multiply=True)),
+    Table("set", OP_SET, SET_COLUMNS, _flushes_set()),
+    Table("deref", OP_DEREF, DEREF_COLUMNS, _flushes_deref()),
+    Table("jump", OP_JUMP, JUMP_COLUMNS, _flushes_jump(), _jump_constraints),
+    Table("blake2s", OP_BLAKE2S, BLAKE2S_COLUMNS, _flushes_blake2s()),
 )
-BLAKE2S = TABLES[5]
 
-# Where in the flock witness each embedded BLAKE2s limb lives (doc
-# sec:tab-blake2s): one 64-bit slot per limb, the chaining value first, then the
-# digest, the message block and the metadata. Slots 8 and 9 hold the
-# compression's high output words, which no memory cell carries.
+# Where in the flock witness each embedded BLAKE2s limb live: one 64-bit slot per limb, the chaining value first, then the
+# digest, the message block and the metadata. Slots 8 and 9 hold the compression's high output words, which no memory cell carries.
 BLAKE2S_SLOTS = (
     "cv0_lo", "cv0_hi", "cv1_lo", "cv1_hi", "out0_lo", "out0_hi", "out1_lo", "out1_hi", None, None,
     "m0_lo", "m0_hi", "m1_lo", "m1_hi", "m2_lo", "m2_hi", "m3_lo", "m3_hi", "md_0", "md_1",
 )  # fmt: skip
-BLAKE2S_SLOT_BY_COLUMN = {BLAKE2S.col(name): slot for slot, name in enumerate(BLAKE2S_SLOTS) if name}
 
 TABLE_WIDTHS = tuple(t.width for t in TABLES)
-# Global column numbering: the shared columns, then each table's block in turn.
 GLOBAL_COLUMN_BASES = tuple(NUM_GLOBAL_COLUMNS + sum(TABLE_WIDTHS[:table]) for table in range(len(TABLES)))
 
 
@@ -926,7 +855,7 @@ def build_layout(bytecode: Sequence[K], log_memory: int, table_log_heights: Sequ
     require(
         16 <= log_memory <= 32
         and all(0 <= log_height <= 32 for log_height in table_log_heights)
-        and table_log_heights[BLAKE2S.opcode] >= 3
+        and table_log_heights[OP_BLAKE2S] >= 3
         and 0 <= log_bytecode <= 32,
         "invalid announced table sizes",
     )
@@ -935,7 +864,7 @@ def build_layout(bytecode: Sequence[K], log_memory: int, table_log_heights: Sequ
     pull: list[BusBlock] = []
     count: list[BusBlock] = []
     for table, height in zip(TABLES, table_log_heights, strict=True):
-        flushes = table.flushes(table)
+        flushes = table.flushes
         for coordinates in flushes.push:
             push.append(BusBlock(height, coordinates, table.opcode))
         for coordinates in flushes.pull:
@@ -944,14 +873,14 @@ def build_layout(bytecode: Sequence[K], log_memory: int, table_log_heights: Sequ
             count.append(BusBlock(height, (_col(local),), table.opcode))
 
     # Every column's log size, in global order: the framework's, q_flock's, then each table's block.
-    qflock_kappa = table_log_heights[BLAKE2S.opcode] + QFLOCK_SLOT_BITS
+    qflock_kappa = table_log_heights[OP_BLAKE2S] + QFLOCK_SLOT_BITS
     kappas = [log_memory, log_memory, log_memory, log_memory, log_bytecode, qflock_kappa]
-    for table, width in zip(TABLES, TABLE_WIDTHS, strict=True):
-        kappas += [table_log_heights[table.opcode]] * width
+    for table in TABLES:
+        kappas += [table_log_heights[table.opcode]] * table.width
 
     # A BLAKE2s value limb gets no block of its own: it is committed inside q_flock, whose slots
     # interleave, so it sits at q_flock's offset behind its own slot's bits. Same width either way.
-    limbs = {GLOBAL_COLUMN_BASES[BLAKE2S.opcode] + local: slot for local, slot in BLAKE2S_SLOT_BY_COLUMN.items()}
+    limbs = {GLOBAL_COLUMN_BASES[OP_BLAKE2S] + _cols(BLAKE2S_COLUMNS, name)[0]: slot for slot, name in enumerate(BLAKE2S_SLOTS) if name}
     blocks = {column: kappa for column, kappa in enumerate(kappas) if column not in limbs}
     block_offsets, total_log = stack_offsets(list(blocks.values()))
     offsets = dict(zip(blocks, block_offsets, strict=True))
@@ -961,10 +890,6 @@ def build_layout(bytecode: Sequence[K], log_memory: int, table_log_heights: Sequ
         for column, kappa in enumerate(kappas)
     ]
     return Layout(log_memory, log_bytecode, bytecode, tuple(push), tuple(pull), tuple(count), tuple(placements), stack_log, tuple(table_log_heights))
-
-
-def build_airs(layout: Layout, bus_forms: Sequence[Sequence[Form]]) -> list[Air]:
-    return [Air(table, height, tuple(side[table.opcode] for side in bus_forms)) for table, height in zip(TABLES, layout.table_logs, strict=True)]
 
 
 # WHIR opening ----------------------------------------------------------------
@@ -1006,10 +931,6 @@ def derive_config(log_n: int, log_inv_rate: int) -> WhirConfig:
     queries = WHIR_QUERIES[log_inv_rate - 1][log_n - MIN_STACKED_LOG]
     require(len(queries) == len(folds), "tabulated query count does not match the ladder")
     return WhirConfig(log_inv_rates=tuple(log_inv_rates), folds=tuple(folds), queries=queries)
-
-
-def _hash_pair(left: Digest, right: Digest) -> Digest:
-    return blake2s_hash(left.value + right.value)
 
 
 def _ext_row(words: Sequence[K]) -> tuple[E, ...]:
@@ -1476,17 +1397,15 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     # 3] Bus: one batched GKR over the push, pull and count trees, then the leaf decomposition, which leaves each table a degree-2 claim.
     bus = verify_bus_balance(layout, transcript)
 
-    # 4] Rows: one back-loaded table sumcheck over all six tables, at
-    # the bus point, starting from the target the three leaf claims derive.
-    # Every table takes a disjoint range of xi powers for its constraints; the
-    # three bus sides share the three above them (doc sec:air).
+    # 4] One batched (back-loaded) "table sumcheck" over all six tables, at the bus point, proving the target the three
+    # leaf claims derive and that constraints vanish. Every table takes a disjoint range of xi powers for its constraints
     xi = transcript.sample()
     n_constraints = sum(table.n_constraints for table in TABLES)
-    xi_powers = powers(xi, n_constraints + 3)
+    xi_powers = powers(xi, n_constraints + 3)  # one power per constraint, then one per bus side, shared by every table
     constraint_powers, form_powers = xi_powers[:n_constraints], xi_powers[n_constraints:]
     target = dot(form_powers, bus.totals)
-    air_claims = verify_constraints(build_airs(layout, bus.forms), constraint_powers, form_powers, bus.point, target, transcript)
-    claims = [*bus.claims, *air_claims]
+    table_sumcheck_claims = table_sumcheck(layout.table_log_heights, bus.forms, constraint_powers, form_powers, bus.point, target, transcript)
+    claims = [*bus.claims, *table_sumcheck_claims]
 
     # 5] Public input: the first two memory cells, as one claim per limb on the
     # line through them. The prover sends one evaluation per limb; the three must
@@ -1508,7 +1427,7 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
 
     # 7] BLAKE2s validity, its 64 claims ring-switched, then the one opening that
     # discharges every claim.
-    flock_point, flock_s = verify_flock(BLAKE2S_R1CS_LOG_SIZE + layout.table_logs[BLAKE2S.opcode], transcript)
+    flock_point, flock_s = verify_flock(BLAKE2S_R1CS_LOG_SIZE + layout.table_log_heights[OP_BLAKE2S], transcript)
     ringswitch_target, ringswitch_weight = ring_switch(flock_point, flock_s, transcript)
     # That claim is supported on q_flock's region of the stack, so its weight carries the
     # placement's selector, and it leads the batch, taking the first power.
