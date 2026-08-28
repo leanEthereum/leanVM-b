@@ -100,14 +100,14 @@ def ViewedFreshLayerOpeningWitness (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :=
   ViewedTerminalWitnessFor parameter otsSecret ftsSecret
     fun f cache secretKey signingLog forgery index leaves =>
-      ForgedFreshLayerOpening f cache secretKey signingLog index leaves forgery.signature
+      SettledForgedFreshLayerOpening f cache secretKey signingLog index leaves forgery.signature
 
 def ViewedWinningFreshLayerOpeningWitness (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :=
   ViewedWinningTerminalWitnessFor parameter otsSecret ftsSecret
     fun f cache secretKey signingLog forgery index leaves =>
-      ForgedFreshLayerOpening f cache secretKey signingLog index leaves forgery.signature
+      SettledForgedFreshLayerOpening f cache secretKey signingLog index leaves forgery.signature
 
 def ViewedEncodingCollisionWitness (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
@@ -121,14 +121,16 @@ def ViewedBackwardChainOpeningWitness (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :=
   ViewedTerminalWitnessFor parameter otsSecret ftsSecret
     fun f cache secretKey signingLog forgery index leaves =>
-      ForgedBackwardChainOpening f cache secretKey signingLog index leaves forgery.signature
+      SettledForgedBackwardChainOpening f cache secretKey signingLog index leaves
+        forgery.signature
 
 def ViewedWinningBackwardChainOpeningWitness (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :=
   ViewedWinningTerminalWitnessFor parameter otsSecret ftsSecret
     fun f cache secretKey signingLog forgery index leaves =>
-      ForgedBackwardChainOpening f cache secretKey signingLog index leaves forgery.signature
+      SettledForgedBackwardChainOpening f cache secretKey signingLog index leaves
+        forgery.signature
 
 def ViewedMessageDigestCollisionWitness (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
@@ -252,10 +254,16 @@ theorem gameAfterSecretsWithViewTrace_winning_terminal_classify
   · let secretKey : SecretKey := ⟨parameter, root, otsSecret, ftsSecret⟩
     have hclassified := accepted_forgery_classify f finalCache secretKey
       state.trace.signing.toSigningLog index forgery.signature leaves ftsPublicKey root hf rfl
-        htop hftsRun
+        htop (by
+          have htree : treeIndexAt index topLayer = rootTree := by
+            apply Fin.ext
+            exact treeIndexAt_topLayer index
+          unfold LayerRootSettled
+          rw [htree]
+          simpa using hrootSettled) hftsRun
     rcases hclassified with hbad | hobstacle | hfull
     · exact Or.inl hbad
-    · rcases forgedLayerObstacle_classify f finalCache secretKey
+    · rcases settledForgedLayerObstacle_classify f finalCache secretKey
           state.trace.signing.toSigningLog index leaves forgery.signature hobstacle with
         hfresh | hencoding | hbackward
       · exact Or.inr ⟨f, digest, hf, htranscript.1, htranscript.2, hdigest,
@@ -268,11 +276,12 @@ theorem gameAfterSecretsWithViewTrace_winning_terminal_classify
           index leaves with hleak | ⟨tree, huncovered⟩
       · rcases fullyHonest_leak_classify f finalCache secretKey
             state.trace.signing.toSigningLog forgery digest index leaves hdigest hdigestRun rfl rfl
-              hfull htranscript.2 hleak with hcollision | hobstacle | hproper
+              hfull.1 htranscript.2 hleak with hcollision | hobstacle | hproper
         · exact Or.inr ⟨f, digest, hf, htranscript.1, htranscript.2, hdigest,
             hadmissible, heval, Or.inr (Or.inr (Or.inr (Or.inl ⟨hcollision, hleak⟩)))⟩
-        · rcases forgedLayerObstacle_classify f finalCache secretKey
-              state.trace.signing.toSigningLog index leaves forgery.signature hobstacle with
+        · rcases settledForgedLayerObstacle_classify f finalCache secretKey
+              state.trace.signing.toSigningLog index leaves forgery.signature
+                (hfull.settleObstacle hobstacle) with
             hfresh | hencoding | hbackward
           · exact Or.inr ⟨f, digest, hf, htranscript.1, htranscript.2, hdigest,
               hadmissible, heval, Or.inl hfresh⟩
@@ -284,7 +293,7 @@ theorem gameAfterSecretsWithViewTrace_winning_terminal_classify
             hadmissible, heval, Or.inr (Or.inr (Or.inr (Or.inr (Or.inl hproper))))⟩
       · exact Or.inr ⟨f, digest, hf, htranscript.1, htranscript.2, hdigest,
           hadmissible, heval, Or.inr (Or.inr (Or.inr (Or.inr (Or.inr
-            ⟨tree, huncovered, (hfull.2.1 tree).1, by
+            ⟨tree, huncovered, (hfull.1.2.1 tree).1, by
               apply hftsRun
               exact ftsRecover_leaf_query_mem f parameter index leaves
                 forgery.signature.ftsSecret forgery.signature.ftsPath tree⟩))))⟩

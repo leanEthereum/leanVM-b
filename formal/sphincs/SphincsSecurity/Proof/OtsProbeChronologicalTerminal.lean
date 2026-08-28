@@ -3090,7 +3090,7 @@ theorem not_verifyProbe_of_mem_runResolved_verifier
       signingLog forgery.message forgery.signature) : False := by
   obtain ⟨lay, digest, layerMessage, codeword, chainIdx, hdigit, probe, input, hinput,
       _hdigest, _hadmissible, _hencode, _hverifierMessage, hhits, hmatches, hquery,
-      _hcached, hnotCovered⟩ := hprobe
+      _hcached, hnotCovered, _hsourceSettled⟩ := hprobe
   have hposition : decodePosition? parameter input =
       some (.chain lay (treeIndexAt (digestIndex digest) lay)
         (leafIndexAt (digestIndex digest) lay) chainIdx

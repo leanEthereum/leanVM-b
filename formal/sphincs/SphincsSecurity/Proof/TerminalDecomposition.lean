@@ -44,7 +44,7 @@ def FreshLayerOpeningWitness (parameter : PublicParameter)
     Bool × QueryCache HashSpec → Prop :=
   TerminalWitnessFor parameter otsSecret ftsSecret
     fun f cache secretKey signingLog forgery index leaves =>
-      ForgedFreshLayerOpening f cache secretKey signingLog index leaves forgery.signature
+      SettledForgedFreshLayerOpening f cache secretKey signingLog index leaves forgery.signature
 
 def EncodingCollisionWitness (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
@@ -59,7 +59,8 @@ def BackwardChainOpeningWitness (parameter : PublicParameter)
     Bool × QueryCache HashSpec → Prop :=
   TerminalWitnessFor parameter otsSecret ftsSecret
     fun f cache secretKey signingLog forgery index leaves =>
-      ForgedBackwardChainOpening f cache secretKey signingLog index leaves forgery.signature
+      SettledForgedBackwardChainOpening f cache secretKey signingLog index leaves
+        forgery.signature
 
 def MessageDigestCollisionWitness (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)

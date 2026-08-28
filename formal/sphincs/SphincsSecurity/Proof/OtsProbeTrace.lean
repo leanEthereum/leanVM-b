@@ -365,7 +365,7 @@ theorem ChainInvariant.not_finalized_false_of_bottom_verifyProbe
       signingLog forgery.message forgery.signature bottomLayer) : False := by
   obtain ⟨digest, layerMessage, codeword, chainIdx, hdigit, probe, input, hinput,
     hdigest, hadmissible, hencode, hverifierMessage, hhits, hmatches, hquery,
-    htargetCached, hnotCovered⟩ := hprobe
+    htargetCached, hnotCovered, _hsourceSettled⟩ := hprobe
   have hlayerMessage := VerifierLayerMessage.bottom_message hverifierMessage
   rw [hlayerMessage] at hencode
   have hcached := cached_bottom_probe_of_mem_runRaw_verify f parameter root forgery.message
@@ -410,7 +410,7 @@ theorem ChainInvariant.not_finalized_false_of_verifyProbe_of_cachedBefore
       signingLog forgery.message forgery.signature) : False := by
   obtain ⟨lay, digest, layerMessage, codeword, chainIdx, hdigit, probe, input,
     hinput, hdigest, hadmissible, hencode, hverifierMessage, hhits, hmatches, hquery,
-    _, hnotCovered⟩ := hprobe
+    _, hnotCovered, _hsourceSettled⟩ := hprobe
   exact hinvariant.not_finalized_false_of_uncovered_probe_through probe input hhits hmatches
     (hqueriesBefore input hquery) hnotCovered (hcompletedTable probe.coordinate) hrealizes
       hverify hfinalize

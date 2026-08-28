@@ -8662,7 +8662,7 @@ theorem ChainInvariant.not_finalized_false_of_bottom_verifyProbe_verifier
       signingLog forgery.message forgery.signature bottomLayer) : False := by
   obtain ⟨digest, layerMessage, codeword, chainIdx, hdigit, probe, input, hinput,
     hdigest, hadmissible, hencode, hverifierMessage, hhits, hmatches, _, _,
-    hnotCovered⟩ := hprobe
+    hnotCovered, _hsourceSettled⟩ := hprobe
   have hlayerMessage := VerifierLayerMessage.bottom_message hverifierMessage
   rw [hlayerMessage] at hencode
   have hchain := probe.isChainCoordinate_of_matchesInput hmatches
@@ -8859,7 +8859,7 @@ theorem ChainInvariant.not_finalized_false_of_middle_verifyProbe_verifier
       signingLog forgery.message forgery.signature middleLayer) : False := by
   obtain ⟨digest, layerMessage, codeword, chainIdx, hdigit, probe, input, hinput,
     hdigest, hadmissible, hencode, hverifierMessage, hhits, hmatches, _, _,
-    hnotCovered⟩ := hprobe
+    hnotCovered, _hsourceSettled⟩ := hprobe
   obtain ⟨bottomLeaf, hbottomLeaf, hlayerMessage⟩ :=
     VerifierLayerMessage.middle_data hverifierMessage
   rw [hinput] at hmatches
@@ -9173,7 +9173,7 @@ theorem ChainInvariant.not_finalized_false_of_top_verifyProbe_verifier
       signingLog forgery.message forgery.signature topLayer) : False := by
   obtain ⟨digest, layerMessage, codeword, chainIdx, hdigit, probe, input, hinput,
     hdigest, hadmissible, hencode, hverifierMessage, hhits, hmatches, _, _,
-    hnotCovered⟩ := hprobe
+    hnotCovered, _hsourceSettled⟩ := hprobe
   obtain ⟨bottomLeaf, middleLeaf, hbottomLeaf, hmiddleLeaf, hlayerMessage⟩ :=
     VerifierLayerMessage.top_data hverifierMessage
   rw [hinput] at hmatches

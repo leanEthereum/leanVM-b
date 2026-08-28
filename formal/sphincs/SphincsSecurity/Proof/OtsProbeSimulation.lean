@@ -37,6 +37,30 @@ def Probe.Hits (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (probe : Probe) : Prop :=
   probe.candidate = probe.target f parameter otsSecret ftsSecret
 
+def Probe.SourceSettled (cache : QueryCache HashSpec) (secretKey : SecretKey)
+    (probe : Probe) : Prop :=
+  match probe.coordinate with
+  | .chainStart _ _ _ _ => True
+  | .position position =>
+      Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache position
+
+theorem Probe.target_eq_of_sourceSettled
+    {cache : QueryCache HashSpec} {secretKey : SecretKey}
+    {f g : QueryImpl HashSpec Id} {probe : Probe}
+    (hf : cache.AgreesWithFn f) (hg : cache.AgreesWithFn g)
+    (hsettled : probe.SourceSettled cache secretKey) :
+    probe.target f secretKey.parameter secretKey.otsSecret secretKey.ftsSecret =
+      probe.target g secretKey.parameter secretKey.otsSecret secretKey.ftsSecret := by
+  cases probe with
+  | mk coordinate candidate =>
+      cases coordinate with
+      | chainStart => rfl
+      | position position =>
+          simp only [Probe.SourceSettled] at hsettled
+          simp only [Probe.target]
+          rw [honestValue_eq_of_settled hf hsettled,
+            honestValue_eq_of_settled hg hsettled]
+
 noncomputable def toProbe (probe : OtsValueProbe) : Probe :=
   if hzero : probe.digit.val = 0 then
     ⟨.chainStart probe.lay probe.tree probe.leafIdx probe.chainIdx, probe.candidate⟩
@@ -81,6 +105,21 @@ theorem toProbe_hits
     (toProbe probe).Hits f parameter otsSecret ftsSecret := by
   rw [Probe.Hits, toProbe_target]
   simpa only [toProbe_candidate, OtsValueProbe.Hits] using hhit
+
+theorem toProbe_sourceSettled_of_layerRootSettled
+    {cache : QueryCache HashSpec} {secretKey : SecretKey}
+    {probe : OtsValueProbe}
+    (hleaf : probe.leafIdx.val < 2 ^ layerHeight probe.lay)
+    (hroot : LayerRootSettled cache secretKey probe.lay probe.tree) :
+    (toProbe probe).SourceSettled cache secretKey := by
+  have hleaf := (settled_tree_path_of_settled_root probe.lay probe.tree probe.leafIdx
+    hleaf hroot).1
+  unfold toProbe
+  split_ifs with hzero
+  · trivial
+  · simp only [Probe.SourceSettled]
+    apply settled_chain_of_settled_leaf probe.lay probe.tree probe.leafIdx hleaf probe.chainIdx
+      (probe.digit.val - 1)
 
 def Probe.MatchesInput (parameter : PublicParameter) (probe : Probe)
     (input : HashInput) : Prop :=
@@ -219,7 +258,7 @@ theorem cleanFreshEvent_exists_matching_probe
     hevent.2.toViewed
   obtain ⟨probe, input, hhit, hmatch, hcached⟩ :=
     SphincsSecurity.Concrete.OtsProbeSimulation.FreshLayerOpening.exists_matching_probe
-      hfresh.toFreshLayerOpening
+      hfresh.toForged.toFreshLayerOpening
   refine ⟨f, probe, input, hf, ?_, hmatch, hcached⟩
   rw [Probe.Hits] at hhit ⊢
   rw [← probe.target_ftsSecret_irrel_of_matchesInput f parameter otsSecret
@@ -240,7 +279,7 @@ theorem cleanBackwardEvent_exists_matching_probe
     hevent.2.toViewed
   obtain ⟨probe, input, hhit, hmatch, hcached⟩ :=
     SphincsSecurity.Concrete.OtsProbeSimulation.BackwardChainOpening.exists_matching_probe
-      hbackward.toBackwardChainOpening
+      hbackward.toForged.toBackwardChainOpening
   refine ⟨f, probe, input, hf, ?_, hmatch, hcached⟩
   rw [Probe.Hits] at hhit ⊢
   rw [← probe.target_ftsSecret_irrel_of_matchesInput f parameter otsSecret

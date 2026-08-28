@@ -133,7 +133,7 @@ theorem ChainInvariant.not_finalized_false_of_verifyProbe
       signingLog forgery.message forgery.signature) : False := by
   obtain ⟨lay, digest, layerMessage, codeword, chainIdx, hdigit, probe, input,
     hinput, hdigest, hadmissible, hencode, hverifierMessage, hhits, hmatches, hquery,
-    _, hnotCovered⟩ := hprobe
+    _, hnotCovered, _hsourceSettled⟩ := hprobe
   exact hinvariant.not_finalized_false_of_uncovered_probe probe input hhits hmatches
     (hqueries input hquery) hnotCovered (hcompletedTable probe.coordinate) hrealizes hfinalize
 
@@ -146,7 +146,7 @@ theorem winningRetainedFresh_imp_verifyProbe
   rcases hwitness with ⟨hverdict, f, digest, hf, hvalid, hnotContains, hdigest,
     hadmissible, heval, hbad, hfresh⟩
   exact ⟨hverdict, f, digest, hf, hvalid, hnotContains, hdigest, hadmissible, heval,
-    hbad, ForgedFreshLayerOpening.toVerifyProbeWitness hdigest hadmissible hfresh⟩
+    hbad, SettledForgedFreshLayerOpening.toVerifyProbeWitness hdigest hadmissible hfresh⟩
 
 theorem winningRetainedBackward_imp_verifyProbe
     (parameter : PublicParameter) (table : Coordinate → HashOutput)
@@ -157,7 +157,7 @@ theorem winningRetainedBackward_imp_verifyProbe
   rcases hwitness with ⟨hverdict, f, digest, hf, hvalid, hnotContains, hdigest,
     hadmissible, heval, hbad, hbackward⟩
   exact ⟨hverdict, f, digest, hf, hvalid, hnotContains, hdigest, hadmissible, heval,
-    hbad, ForgedBackwardChainOpening.toVerifyProbeWitness hdigest hadmissible hbackward⟩
+    hbad, SettledForgedBackwardChainOpening.toVerifyProbeWitness hdigest hadmissible hbackward⟩
 
 theorem probEvent_winningRetainedFresh_le_verifyProbe
     (adversary : Adversary) (parameter : PublicParameter)
