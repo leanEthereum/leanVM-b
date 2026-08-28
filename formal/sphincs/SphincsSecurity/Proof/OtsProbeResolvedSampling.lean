@@ -12670,6 +12670,84 @@ theorem resolvedImmediateSignAfterDigest_eq_concrete
     exact resolvedImmediateSignLayer_eq_signLayer parameter root table ftsSecret index lay
   rw [hlayers]
 
+theorem concreteSignAfterDigestFromTable_eq_signAfterDigest
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    concreteSignAfterDigestFromTable parameter root table ftsSecret randomness index leaves =
+      simulateQ (randomOracle : QueryImpl HashSpec _)
+        (signAfterDigest
+          (⟨parameter, root,
+            fun lay tree leafIdx chainIdx =>
+              truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+            ftsSecret⟩ : SecretKey)
+          randomness index leaves) := by
+  unfold concreteSignAfterDigestFromTable signAfterDigest
+  rw [simulateQ_bind]
+  apply bind_congr
+  intro ftsPath
+  rw [simulateQ_bind, FtsProbeSimulation.simulateQ_randomOracle_sequenceFin]
+  apply bind_congr
+  intro layers
+  cases traverseOption layers <;> rfl
+
+noncomputable def resolvedImmediateSign
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message) :
+    StateT (QueryCache HashSpec) ProbComp (Option Signature) := do
+  let secretKey : SecretKey :=
+    ⟨parameter, root,
+      fun lay tree leafIdx chainIdx =>
+        truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+      ftsSecret⟩
+  match ← simulateQ romImpl (signDigestLoop digestAttemptLimit secretKey message) with
+  | none => pure none
+  | some (randomness, index, leaves) =>
+      resolvedImmediateSignAfterDigest parameter table ftsSecret randomness index leaves
+
+theorem resolvedImmediateSign_eq_concrete
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message) :
+    resolvedImmediateSign parameter root table ftsSecret message =
+      simulateQ romImpl
+        (scheme.sign
+          (⟨parameter, root,
+            fun lay tree leafIdx chainIdx =>
+              truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+            ftsSecret⟩ : SecretKey)
+          message) := by
+  let secretKey : SecretKey :=
+    ⟨parameter, root,
+      fun lay tree leafIdx chainIdx =>
+        truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+      ftsSecret⟩
+  unfold resolvedImmediateSign
+  rw [show (⟨parameter, root,
+      fun lay tree leafIdx chainIdx =>
+        truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+      ftsSecret⟩ : SecretKey) = secretKey from rfl]
+  change (do
+      match ← simulateQ romImpl (signDigestLoop digestAttemptLimit secretKey message) with
+      | none => pure none
+      | some (randomness, index, leaves) =>
+          resolvedImmediateSignAfterDigest parameter table ftsSecret randomness index leaves) =
+    simulateQ romImpl (sign secretKey message)
+  rw [sign_eq_digestLoop_afterDigest, simulateQ_bind]
+  apply bind_congr
+  intro selected
+  cases selected with
+  | none => rfl
+  | some selected =>
+      rcases selected with ⟨randomness, index, leaves⟩
+      rw [romImpl, QueryImpl.simulateQ_add_liftM_right]
+      rw [← concreteSignAfterDigestFromTable_eq_signAfterDigest parameter root table ftsSecret
+        randomness index leaves]
+      exact resolvedImmediateSignAfterDigest_eq_concrete parameter root table ftsSecret
+        randomness index leaves
+
 theorem resolvedCouples_maskedLayerMessage
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
@@ -13055,6 +13133,28 @@ theorem reachableResolvedCouples_signDigestLoop
           cases attempt with
           | none => exact reachableResolvedCouples_signDigestLoop table secretKey message attempts
           | some selected => exact reachableResolvedCouples_pure secretKey.parameter table _
+
+theorem signDigestLoop_eq_of_parameter_root
+    (left right : SecretKey) (hparameter : left.parameter = right.parameter)
+    (hroot : left.root = right.root) (message : Message) : ∀ attempts,
+    signDigestLoop attempts left message = signDigestLoop attempts right message
+  | 0 => by rw [signDigestLoop, signDigestLoop]
+  | attempts + 1 => by
+      rw [signDigestLoop, signDigestLoop]
+      apply bind_congr
+      intro randomness
+      have hattempt :
+          (signAttempt left message randomness :
+              OracleComp HashSpec (Option (Index × (DigestTree → FtsLeaf)))) =
+            signAttempt right message randomness := by
+        unfold signAttempt
+        rw [hparameter, hroot]
+      rw [hattempt]
+      apply bind_congr
+      intro attempt
+      cases attempt with
+      | none => exact signDigestLoop_eq_of_parameter_root left right hparameter hroot message attempts
+      | some selected => rfl
 
 theorem reachableResolvedCouples_maskedOtsSignFrom
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
@@ -13924,16 +14024,13 @@ theorem reachableResolvedCouples_maskedPrivateImmediateSignAfterDigest_concrete
   exact reachableResolvedCouples_maskedPrivateImmediateSignAfterDigest parameter table ftsSecret
     randomness index leaves
 
-noncomputable def maskedPublishedChronologicalSignAfterDigest
-    (parameter : PublicParameter)
+noncomputable def publishChronologicalSignature
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf)
+    (ftsPath : FtsTree → Fin ftsTreeHeight → Digest)
+    (layers : Layer → Option ChronologicalLayerPart) :
     StateT SplitHashCache
-      (OracleComp (LazyRevealProbe.World Coordinate)) (Option Signature) := do
-  let ftsPath ← simulateQ ordinaryHashImpl
-    (ftsOpen parameter index leaves (ftsSecret index))
-  let layers ← sequenceFin fun lay =>
-    maskedChronologicalSignLayer parameter ftsSecret index lay
+      (OracleComp (LazyRevealProbe.World Coordinate)) (Option Signature) :=
   match traverseOption layers with
   | none => pure none
   | some parts => do
@@ -13946,6 +14043,37 @@ noncomputable def maskedPublishedChronologicalSignAfterDigest
           counter := fun lay => (parts lay).counter
           chainValue := fun lay => (published lay).1
           authPath := flattenPaths fun lay => (published lay).2 })
+
+noncomputable def maskedChronologicalSignLayers
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate))
+      (Layer → Option ChronologicalLayerPart) :=
+  sequenceFin fun lay => maskedChronologicalSignLayer parameter ftsSecret index lay
+
+noncomputable def maskedPublishedChronologicalSignAfterDigest
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) (Option Signature) := do
+  let ftsPath ← simulateQ ordinaryHashImpl
+    (ftsOpen parameter index leaves (ftsSecret index))
+  let layers ← maskedChronologicalSignLayers parameter ftsSecret index
+  publishChronologicalSignature ftsSecret randomness index leaves ftsPath layers
+
+theorem maskedPublishedChronologicalSignAfterDigest_eq
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    maskedPublishedChronologicalSignAfterDigest parameter ftsSecret randomness index leaves =
+      (do
+        let ftsPath ← simulateQ ordinaryHashImpl
+          (ftsOpen parameter index leaves (ftsSecret index))
+        let layers ← maskedChronologicalSignLayers parameter ftsSecret index
+        publishChronologicalSignature ftsSecret randomness index leaves ftsPath layers) := by
+  rfl
 
 noncomputable def resolvedPublishedChronologicalSignAfterDigest
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
@@ -14069,6 +14197,7 @@ theorem reachableResolvedCouples_maskedPublishedChronologicalSignAfterDigest
       (resolvedPublishedChronologicalSignAfterDigest parameter table ftsSecret randomness index
         leaves) := by
   unfold maskedPublishedChronologicalSignAfterDigest
+    maskedChronologicalSignLayers publishChronologicalSignature
     resolvedPublishedChronologicalSignAfterDigest
   apply (reachableResolvedCouples_ftsOpen parameter table index leaves (ftsSecret index)).bind
   intro ftsPath
@@ -14119,6 +14248,273 @@ theorem reachableResolvedCouples_maskedPublishedChronologicalSignAfterDigest_con
     index leaves]
   exact reachableResolvedCouples_maskedPublishedChronologicalSignAfterDigest_immediate parameter
     table ftsSecret randomness index leaves
+
+noncomputable def maskedPublishedChronologicalSign
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) (Option Signature) := do
+  let secretKey : SecretKey :=
+    ⟨parameter, root, fun _ _ _ _ => 0, ftsSecret⟩
+  match ← simulateQ ordinaryRomImpl
+      (signDigestLoop digestAttemptLimit secretKey message) with
+  | none => pure none
+  | some (randomness, index, leaves) =>
+      maskedPublishedChronologicalSignAfterDigest parameter ftsSecret randomness index leaves
+
+theorem revealPrivateLayerValues_probeFree (index : Index) (lay : Layer)
+    (encoding : ChainIndex → Digit) :
+    ProbeFree (revealPrivateLayerValues index lay encoding) := by
+  unfold revealPrivateLayerValues
+  apply (sequenceFin_probeFree _ fun chainIdx =>
+    revealCoordinate_probeFree
+      (chainValueCoordinate lay (treeIndexAt index lay) (leafIndexAt index lay) chainIdx
+        (encoding chainIdx))).bind
+  intro values
+  apply (sequenceFin_probeFree _ fun level => by
+    by_cases hinLayer : level.val < layerHeight lay
+    · simp only [hinLayer, if_pos]
+      cases hvalue : level.val with
+      | zero => exact revealPosition_probeFree _
+      | succ current =>
+          by_cases hcurrent : current < maxLayerHeight
+          · simp only [hcurrent, dite_true]
+            exact revealPosition_probeFree _
+          · simp only [hcurrent, dite_false]
+            exact ProbeFree.pure 0
+    · simp only [hinLayer, if_false]
+      exact ProbeFree.pure 0).bind
+  intro path
+  exact ProbeFree.pure (values, path)
+
+theorem maskedChronologicalSignLayer_probeFree
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) : ProbeFree
+      (maskedChronologicalSignLayer parameter ftsSecret index lay) := by
+  unfold maskedChronologicalSignLayer
+  exact (maskedSignLayer_probeFree parameter ftsSecret index lay).bind fun selected => by
+    cases selected with
+    | none => exact ProbeFree.pure none
+    | some selected =>
+        rcases selected with ⟨counter, encoding⟩
+        exact (revealPrivateLayerValues_probeFree index lay encoding).bind fun values =>
+          ProbeFree.pure (some (show ChronologicalLayerPart from
+            ⟨counter, encoding, values.1, values.2⟩))
+
+theorem maskedChronologicalSignLayers_probeFree
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index) :
+    ProbeFree (maskedChronologicalSignLayers parameter ftsSecret index) := by
+  unfold maskedChronologicalSignLayers
+  exact sequenceFin_probeFree _ fun lay =>
+    maskedChronologicalSignLayer_probeFree parameter ftsSecret index lay
+
+theorem publishChronologicalSignature_probeFree
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf)
+    (ftsPath : FtsTree → Fin ftsTreeHeight → Digest)
+    (layers : Layer → Option ChronologicalLayerPart) :
+    ProbeFree (alpha := Option Signature)
+      (publishChronologicalSignature ftsSecret randomness index leaves ftsPath layers) := by
+  unfold publishChronologicalSignature
+  cases hparts : traverseOption layers with
+  | none => exact ProbeFree.pure none
+  | some parts =>
+      have hpublished : ProbeFree (sequenceFin fun lay =>
+          revealLayerValues index lay (parts lay).encoding) :=
+        sequenceFin_probeFree _ fun lay =>
+          revealLayerValues_probeFree index lay (parts lay).encoding
+      apply hpublished.bind
+      intro published
+      exact ProbeFree.pure (some (show Signature from
+        { randomness := randomness
+          ftsSecret := fun tree => ftsSecret index tree (leaves (ftsIndexOf tree))
+          ftsPath := ftsPath
+          counter := fun lay => (parts lay).counter
+          chainValue := fun lay => (published lay).1
+          authPath := flattenPaths fun lay => (published lay).2 }))
+
+set_option maxHeartbeats 2000000 in
+theorem maskedPublishedChronologicalSignAfterDigest_probeFree
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    ProbeFree (alpha := Option Signature)
+      (maskedPublishedChronologicalSignAfterDigest parameter ftsSecret randomness index leaves) := by
+  intro cache
+  rw [maskedPublishedChronologicalSignAfterDigest_eq, StateT.run_bind]
+  apply OracleComp.isQueryBoundP_bind (n := 0) (m := 0)
+    (simulateQ_ordinaryHashImpl_probeFree
+      (ftsOpen parameter index leaves (ftsSecret index)) cache)
+  intro ftsResult _
+  rcases ftsResult with ⟨ftsPath, afterFtsCache⟩
+  rw [StateT.run_bind]
+  apply OracleComp.isQueryBoundP_bind (n := 0) (m := 0)
+    (maskedChronologicalSignLayers_probeFree parameter ftsSecret index afterFtsCache)
+  intro layerResult _
+  rcases layerResult with ⟨layers, afterLayersCache⟩
+  exact publishChronologicalSignature_probeFree ftsSecret randomness index leaves ftsPath layers
+    afterLayersCache
+
+set_option maxHeartbeats 400000 in
+theorem maskedPublishedChronologicalSign_probeFree
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message) :
+    ProbeFree (alpha := Option Signature)
+      (maskedPublishedChronologicalSign parameter root ftsSecret message) := by
+  unfold maskedPublishedChronologicalSign
+  exact (simulateQ_ordinaryRomImpl_probeFree
+    (signDigestLoop digestAttemptLimit
+      (⟨parameter, root, fun _ _ _ _ => 0, ftsSecret⟩ : SecretKey) message)).bind
+    fun selected => by
+        cases selected with
+        | none => exact ProbeFree.pure none
+        | some selected =>
+            rcases selected with ⟨randomness, index, leaves⟩
+            exact maskedPublishedChronologicalSignAfterDigest_probeFree parameter ftsSecret
+              randomness index leaves
+
+set_option maxHeartbeats 400000 in
+theorem reachableResolvedCouples_maskedPublishedChronologicalSign
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message) :
+    ReachableResolvedCouples parameter table
+      (maskedPublishedChronologicalSign parameter root ftsSecret message)
+      (resolvedImmediateSign parameter root table ftsSecret message) := by
+  let maskedSecretKey : SecretKey :=
+    ⟨parameter, root, fun _ _ _ _ => 0, ftsSecret⟩
+  let concreteSecretKey : SecretKey :=
+    ⟨parameter, root,
+      fun lay tree leafIdx chainIdx =>
+        truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+      ftsSecret⟩
+  unfold maskedPublishedChronologicalSign resolvedImmediateSign
+  change ReachableResolvedCouples parameter table
+    (do
+      match ← simulateQ ordinaryRomImpl
+          (signDigestLoop digestAttemptLimit maskedSecretKey message) with
+      | none => pure none
+      | some (randomness, index, leaves) =>
+          maskedPublishedChronologicalSignAfterDigest parameter ftsSecret randomness index leaves)
+    (do
+      match ← simulateQ romImpl
+          (signDigestLoop digestAttemptLimit concreteSecretKey message) with
+      | none => pure none
+      | some (randomness, index, leaves) =>
+          resolvedImmediateSignAfterDigest parameter table ftsSecret randomness index leaves)
+  rw [← signDigestLoop_eq_of_parameter_root maskedSecretKey concreteSecretKey rfl rfl message
+    digestAttemptLimit]
+  apply (reachableResolvedCouples_signDigestLoop table maskedSecretKey message
+    digestAttemptLimit).bind
+  intro selected
+  cases selected with
+  | none => exact reachableResolvedCouples_pure parameter table none
+  | some selected =>
+      rcases selected with ⟨randomness, index, leaves⟩
+      exact reachableResolvedCouples_maskedPublishedChronologicalSignAfterDigest_immediate
+        parameter table ftsSecret randomness index leaves
+
+theorem reachableResolvedCouples_maskedPublishedChronologicalSign_concrete
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message) :
+    ReachableResolvedCouples parameter table
+      (maskedPublishedChronologicalSign parameter root ftsSecret message)
+      (simulateQ romImpl
+        (scheme.sign
+          (⟨parameter, root,
+            fun lay tree leafIdx chainIdx =>
+              truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+            ftsSecret⟩ : SecretKey)
+          message)) := by
+  rw [← resolvedImmediateSign_eq_concrete parameter root table ftsSecret message]
+  exact reachableResolvedCouples_maskedPublishedChronologicalSign parameter root table ftsSecret
+    message
+
+noncomputable def maskedChronologicalSigningImpl
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    QueryImpl SigningSpec
+      (StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate))) :=
+  fun message => maskedPublishedChronologicalSign parameter root ftsSecret message
+
+noncomputable def maskedChronologicalExpandedAdversaryImpl
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    QueryImpl (OracleWorld + SigningSpec)
+      (StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate))) :=
+  probingRomImpl parameter + maskedChronologicalSigningImpl parameter root ftsSecret
+
+theorem maskedChronologicalExpandedAdversaryImpl_step_isProbeBound
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (input : (OracleWorld + SigningSpec).Domain) (cache : SplitHashCache) :
+    ((maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret input).run cache).IsQueryBoundP
+      (LazyRevealProbe.IsProbe (Coordinate := Coordinate))
+        (if IsOuterHash input then 1 else 0) := by
+  cases input with
+  | inl worldInput =>
+      cases worldInput with
+      | inl n =>
+          simpa [maskedChronologicalExpandedAdversaryImpl, probingRomImpl, IsOuterHash] using
+            splitUniformImpl_probeFree n cache
+      | inr hashInput =>
+          simpa [maskedChronologicalExpandedAdversaryImpl, probingRomImpl, probingHashImpl,
+            IsOuterHash] using probingHashQuery_run_isProbeBound parameter hashInput cache
+  | inr message =>
+      simpa [maskedChronologicalExpandedAdversaryImpl, maskedChronologicalSigningImpl,
+        IsOuterHash] using
+          maskedPublishedChronologicalSign_probeFree parameter root ftsSecret message cache
+
+theorem reachableResolvedCouples_maskedChronologicalExpandedAdversaryImpl
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (query) :
+    ReachableResolvedCouples parameter table
+      (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret query)
+      (unloggedMappedAdversaryImpl
+        (⟨parameter, root,
+          fun lay tree leafIdx chainIdx =>
+            truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+          ftsSecret⟩ : SecretKey)
+        query) := by
+  cases query with
+  | inl oracleQuery =>
+      cases oracleQuery with
+      | inl n => exact reachableResolvedCouples_splitUniform parameter table n
+      | inr input => exact reachableResolvedCouples_probingHashQuery parameter table input
+  | inr message =>
+      exact reachableResolvedCouples_maskedPublishedChronologicalSign_concrete parameter root
+        table ftsSecret message
+
+theorem reachableResolvedCouples_chronologicalAdversaryPrefix
+    (adversary : Adversary) (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    ReachableResolvedCouples parameter table
+      (simulateQ (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret)
+        (signingTraceComputation (adversary.main ⟨root, parameter⟩)))
+      (simulateQ
+        (unloggedMappedAdversaryImpl
+          (⟨parameter, root,
+            fun lay tree leafIdx chainIdx =>
+              truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+            ftsSecret⟩ : SecretKey))
+        (signingTraceComputation (adversary.main ⟨root, parameter⟩))) := by
+  exact reachableResolvedCouples_simulateQ
+    (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret)
+    (unloggedMappedAdversaryImpl
+      (⟨parameter, root,
+        fun lay tree leafIdx chainIdx =>
+          truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+        ftsSecret⟩ : SecretKey))
+    (reachableResolvedCouples_maskedChronologicalExpandedAdversaryImpl parameter root table
+      ftsSecret)
+    (signingTraceComputation (adversary.main ⟨root, parameter⟩))
 
 set_option maxRecDepth 100000 in
 theorem relTriple_scheduleResolvedSignLayer
@@ -14565,6 +14961,56 @@ theorem reachableResolvedCouples_maskedPublishedTreeRoot
   all_goals simp [layerHeight, topLayer, maxLayerHeight, leafOfNat, revealPublishedCoordinate]
   all_goals rfl
 
+noncomputable def maskedChronologicalRetainedPrefixAfterFtsSecrets
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate))
+      (Digest × (Forgery × QueryLog SigningSpec)) := do
+  let root ← maskedPublishedTreeRoot
+  let forgeryLog ←
+    simulateQ (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret)
+      (signingTraceComputation (adversary.main ⟨root, parameter⟩))
+  pure (root, forgeryLog)
+
+noncomputable def concreteRetainedPrefixAfterFtsSecrets
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    StateT (QueryCache HashSpec) ProbComp
+      (Digest × (Forgery × QueryLog SigningSpec)) := do
+  let root ← simulateQ (randomOracle : QueryImpl HashSpec _)
+    (treeNode parameter topLayer rootTree
+      (fun leafIdx chainIdx =>
+        truncateHash (table ⟨topLayer, rootTree, leafIdx, chainIdx⟩))
+      (layerHeight topLayer) 0)
+  let secretKey : SecretKey :=
+    ⟨parameter, root,
+      fun lay tree leafIdx chainIdx =>
+        truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+      ftsSecret⟩
+  let forgeryLog ←
+    simulateQ (unloggedMappedAdversaryImpl secretKey)
+      (signingTraceComputation (adversary.main ⟨root, parameter⟩))
+  pure (root, forgeryLog)
+
+set_option maxRecDepth 100000 in
+theorem reachableResolvedCouples_chronologicalRetainedPrefixAfterFtsSecrets
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    ReachableResolvedCouples parameter table
+      (maskedChronologicalRetainedPrefixAfterFtsSecrets adversary parameter ftsSecret)
+      (concreteRetainedPrefixAfterFtsSecrets adversary parameter table ftsSecret) := by
+  unfold maskedChronologicalRetainedPrefixAfterFtsSecrets
+    concreteRetainedPrefixAfterFtsSecrets
+  apply (reachableResolvedCouples_maskedPublishedTreeRoot parameter table).bind
+  intro root
+  apply (reachableResolvedCouples_chronologicalAdversaryPrefix adversary parameter root table
+    ftsSecret).bind
+  intro forgeryLog
+  exact reachableResolvedCouples_pure parameter table (root, forgeryLog)
+
 set_option maxRecDepth 100000 in
 theorem reachableResolvedCouples_retainedPrefixAfterFtsSecrets
     (adversary : Adversary) (parameter : PublicParameter)
@@ -14597,6 +15043,60 @@ theorem reachableResolvedCouples_probingRom
       (simulateQ romImpl computation) :=
   reachableResolvedCouples_simulateQ (probingRomImpl parameter) romImpl
     (reachableResolvedCouples_probingRomImpl parameter table) computation
+
+noncomputable def maskedChronologicalRetainedGameAfterFtsSecrets
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) RetainedGameResult := do
+  let (root, forgery, log) ←
+    maskedChronologicalRetainedPrefixAfterFtsSecrets adversary parameter ftsSecret
+  let verified ← simulateQ (probingRomImpl parameter)
+    (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)
+  pure (root, ((forgery, log), verified))
+
+noncomputable def concreteRetainedGameAfterFtsSecrets
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    StateT (QueryCache HashSpec) ProbComp RetainedGameResult := do
+  let (root, forgery, log) ←
+    concreteRetainedPrefixAfterFtsSecrets adversary parameter table ftsSecret
+  let verified ← simulateQ romImpl
+    (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)
+  pure (root, ((forgery, log), verified))
+
+theorem reachableResolvedCouples_chronologicalRetainedGameAfterFtsSecrets
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    ReachableResolvedCouples parameter table
+      (maskedChronologicalRetainedGameAfterFtsSecrets adversary parameter ftsSecret)
+      (concreteRetainedGameAfterFtsSecrets adversary parameter table ftsSecret) := by
+  unfold maskedChronologicalRetainedGameAfterFtsSecrets
+    concreteRetainedGameAfterFtsSecrets
+  apply (reachableResolvedCouples_chronologicalRetainedPrefixAfterFtsSecrets adversary parameter
+    table ftsSecret).bind
+  intro result
+  rcases result with ⟨root, forgery, log⟩
+  apply (reachableResolvedCouples_probingRom parameter table
+    (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)).bind
+  intro verified
+  exact reachableResolvedCouples_pure parameter table (root, ((forgery, log), verified))
+
+theorem concreteRetainedGameAfterFtsSecrets_run_eq_actual
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    (concreteRetainedGameAfterFtsSecrets adversary parameter table ftsSecret).run ∅ =
+      actualRetainedGameAfterTable adversary parameter ftsSecret (extendStartTable table) := by
+  unfold actualRetainedGameAfterTable
+  simp_rw [simulateQ_unloggedMapped_retainedGameRestComputation]
+  unfold concreteRetainedGameAfterFtsSecrets concreteRetainedPrefixAfterFtsSecrets treeRoot
+  rw [show tableOtsSecret (extendStartTable table) =
+      fun lay tree leafIdx chainIdx =>
+        truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩) from rfl]
+  simp only [StateT.run_bind, StateT.run_pure, bind_assoc, pure_bind]
 
 noncomputable def maskedResolvedRetainedGameAfterFtsSecrets
     (adversary : Adversary) (parameter : PublicParameter)
@@ -14651,6 +15151,30 @@ theorem publishedValues_empty :
     PublishedValues (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) := by
   simp [PublishedValues, LazyRevealProbe.State.empty]
 
+theorem relTriple_runResolvedFromTable_maskedChronologicalRetainedGame
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    RelTriple
+      (runResolvedFromTable
+        { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+          values := emptyDeferredStructuralValues }
+        fuel table
+        ((maskedChronologicalRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
+          emptySplitHashCache))
+      (actualRetainedGameAfterTable adversary parameter ftsSecret (extendStartTable table))
+      (ReachableResolvedRunRel parameter table) := by
+  rw [← concreteRetainedGameAfterFtsSecrets_run_eq_actual adversary parameter table ftsSecret]
+  have hempty : ordinaryQueryCache emptySplitHashCache = (∅ : QueryCache HashSpec) := by
+    rfl
+  apply reachableResolvedCouples_chronologicalRetainedGameAfterFtsSecrets adversary parameter
+    table ftsSecret
+  · rw [hempty]
+    exact resolvedContextInvariant_empty parameter table
+  · exact visibleResolvedComputationsCached_empty parameter table
+      emptyDeferredStructuralValues ∅
+  · exact publishedValues_empty
+
 theorem relTriple_runResolvedFromTable_maskedResolvedRetainedGame
     (adversary : Adversary) (parameter : PublicParameter)
     (table : OtsSecretIndex → HashOutput)
@@ -14672,6 +15196,37 @@ theorem relTriple_runResolvedFromTable_maskedResolvedRetainedGame
   · exact visibleResolvedComputationsCached_empty parameter table
       emptyDeferredStructuralValues ∅
   · exact publishedValues_empty
+
+theorem maskedChronologicalRetainedGameRest_run_isProbeBound
+    (adversary : Adversary) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (hbound : (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
+      IsOuterHash q) (cache : SplitHashCache) :
+    ((do
+      let (forgery, log) ←
+        simulateQ (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret)
+          (signingTraceComputation (adversary.main ⟨root, parameter⟩))
+      let verified ← simulateQ (probingRomImpl parameter)
+        (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)
+      pure ((forgery, log), verified)).run cache).IsQueryBoundP
+        (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) q := by
+  let adversaryPrefix := signingTraceComputation
+    (adversary.main (⟨root, parameter⟩ : PublicKey))
+  let finish : (Forgery × QueryLog SigningSpec) →
+      OracleComp (OracleWorld + SigningSpec) RetainedRestResult := fun result => do
+    let verified ← liftOracleWorldLeft
+      (scheme.verify ⟨root, parameter⟩ result.1.message result.1.signature)
+    pure (result, verified)
+  have hsource : (adversaryPrefix >>= finish).IsQueryBoundP IsOuterHash q := by
+    simpa [adversaryPrefix, finish, retainedGameRestComputation] using hbound
+  have hmixed := isQueryBoundP_simulateQ_run_StateT_then_of_steps
+    (leftImpl := maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret)
+    (rightImpl := maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret)
+    hsource
+    (maskedChronologicalExpandedAdversaryImpl_step_isProbeBound parameter root ftsSecret)
+    (maskedChronologicalExpandedAdversaryImpl_step_isProbeBound parameter root ftsSecret) cache
+  simpa [adversaryPrefix, finish, maskedChronologicalExpandedAdversaryImpl, simulateQ_bind,
+    simulateQ_liftOracleWorldLeft, StateT.run_bind] using hmixed
 
 theorem maskedResolvedRetainedGameRest_run_isProbeBound
     (adversary : Adversary) (parameter : PublicParameter) (root : Digest)
