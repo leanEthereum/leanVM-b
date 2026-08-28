@@ -8,7 +8,50 @@ Private chronological resolution may materialize a chain value without publishin
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
-open OracleComp OracleSpec
+open OracleComp OracleSpec OracleComp.ProgramLogic.Relational
+
+theorem exists_right_of_relTriple_of_mem_support
+    {left : ProbComp alpha} {right : ProbComp beta} {relation : alpha → beta → Prop}
+    (hrel : RelTriple left right relation) {leftResult : alpha}
+    (hleft : leftResult ∈ support left) :
+    ∃ rightResult ∈ support right, relation leftResult rightResult := by
+  rw [relTriple_iff_relWP, relWP_iff_couplingPost] at hrel
+  obtain ⟨coupling, hrelation⟩ := hrel
+  have hleftDist : leftResult ∈ support 𝒟[left] := by
+    apply (mem_support_iff_evalDist_apply_ne_zero 𝒟[left] leftResult).2
+    exact (mem_support_iff_evalDist_apply_ne_zero left leftResult).1 hleft
+  have hleftMapped : leftResult ∈ support (Prod.fst <$> coupling.1) := by
+    rw [coupling.2.map_fst]
+    exact hleftDist
+  rw [support_map] at hleftMapped
+  obtain ⟨pair, hpair, heq⟩ := hleftMapped
+  have hrightMapped : pair.2 ∈ support (Prod.snd <$> coupling.1) := by
+    rw [support_map]
+    exact ⟨pair, hpair, rfl⟩
+  have hrightDist : pair.2 ∈ support 𝒟[right] := by
+    rw [← coupling.2.map_snd]
+    exact hrightMapped
+  have hright : pair.2 ∈ support right := by
+    apply (mem_support_iff_evalDist_apply_ne_zero right pair.2).2
+    exact (mem_support_iff_evalDist_apply_ne_zero 𝒟[right] pair.2).1 hrightDist
+  exact ⟨pair.2, hright, heq ▸ hrelation pair hpair⟩
+
+theorem ReachableResolvedRunRel.clean_of_completion
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {result : ResolvedRunResult (alpha × SplitHashCache)}
+    {value : alpha} {concreteCache : QueryCache HashSpec}
+    (hrelation : ReachableResolvedRunRel parameter table (some result)
+      (value, concreteCache))
+    {completion : Coordinate → HashOutput}
+    (hcompletion : DeferredCompletion table result.context completion) :
+    result.value.1 = value ∧
+      ResolvedContextInvariant parameter table result.context
+        (ordinaryQueryCache result.value.2) concreteCache ∧
+      VisibleResolvedComputationsCached parameter table result.context concreteCache ∧
+      PublishedValues result.context.state := by
+  rcases hrelation with hclean | hdoomed
+  · exact ⟨hclean.2.1, hclean.2.2.1, hclean.2.2.2.1, hclean.2.2.2.2⟩
+  · exact False.elim (hdoomed.2.2.2 ⟨completion, hcompletion⟩)
 
 def IsPublishQuery : (LazyRevealProbe.World Coordinate).Domain → Prop
   | .publish _ => True
@@ -954,6 +997,296 @@ theorem noPublish_maskedSignLayer (parameter : PublicParameter)
             exact (noPublish_ensureTreePath lay (treeIndexAt index lay)
               (leafIndexAt index lay)).bind fun _ => NoPublish.pure (some part)
 
+theorem resolvedOtsSelectFrom_replay
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter) (lay : Layer)
+    (tree : TreeIndex) (leafIdx : LeafIndex) (message : Digest) :
+    ∀ attempts counter initial final result,
+      (result, final) ∈ support
+        ((resolvedOtsSelectFrom parameter lay tree leafIdx message attempts counter).run initial) →
+      final.AgreesWithFn f →
+      initial ≤ final ∧ ∀ selectedCounter encoding, result = some (selectedCounter, encoding) →
+        evalWithAnswerFn f
+          (encode parameter lay tree leafIdx message selectedCounter) = some encoding
+  | 0, counter, initial, final, result, hresult, _ => by
+      simp [resolvedOtsSelectFrom] at hresult
+      rcases hresult with ⟨rfl, rfl⟩
+      exact ⟨le_rfl, by simp⟩
+  | attempts + 1, counter, initial, final, result, hresult, hf => by
+      rw [resolvedOtsSelectFrom, StateT.run_bind, mem_support_bind_iff] at hresult
+      obtain ⟨⟨encoded, encodedCache⟩, hencoded, hrest⟩ := hresult
+      cases encoded with
+      | none =>
+          have hqueryLe := FtsProbeSimulation.simulateQ_randomOracle_cache_le
+            (encode parameter lay tree leafIdx message (BitVec.ofNat counterBits counter))
+              initial encodedCache none hencoded
+          have htail := resolvedOtsSelectFrom_replay f parameter lay tree leafIdx message attempts
+            (counter + 1) encodedCache final result hrest hf
+          exact ⟨hqueryLe.trans htail.1, htail.2⟩
+      | some encoding =>
+          simp only [StateT.run_pure, support_pure, Set.mem_singleton_iff,
+            Prod.mk.injEq] at hrest
+          rcases hrest with ⟨rfl, rfl⟩
+          obtain ⟨hle, heval, _⟩ := replay_of_mem_support
+            (encode parameter lay tree leafIdx message (BitVec.ofNat counterBits counter))
+            initial (some encoding) final hencoded f hf
+          refine ⟨hle, ?_⟩
+          intro selectedCounter selectedEncoding heq
+          rcases Option.some.inj heq with ⟨rfl, rfl⟩
+          exact heval
+
+theorem resolvedSignLayer_some_honest_eval
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index) (lay : Layer)
+    (initial final : QueryCache HashSpec) (counter : Counter)
+    (encoding : ChainIndex → Digit)
+    (hresult : (some (counter, encoding), final) ∈ support
+      ((resolvedSignLayer parameter table ftsSecret index lay).run initial))
+    (hf : final.AgreesWithFn f) :
+    evalWithAnswerFn f
+      (encode parameter lay (treeIndexAt index lay) (leafIndexAt index lay)
+        (evalWithAnswerFn f
+          (layerMessage
+            (⟨parameter, root,
+              fun selectedLay selectedTree selectedLeaf selectedChain =>
+                truncateHash
+                  (table ⟨selectedLay, selectedTree, selectedLeaf, selectedChain⟩),
+              ftsSecret⟩ : SecretKey)
+              index lay)) counter) = some encoding := by
+  unfold resolvedSignLayer at hresult
+  rw [StateT.run_bind, mem_support_bind_iff] at hresult
+  obtain ⟨⟨message, messageCache⟩, hmessage, hrest⟩ := hresult
+  rw [StateT.run_bind, mem_support_bind_iff] at hrest
+  obtain ⟨⟨selected, selectedCache⟩, hselected, hfinish⟩ := hrest
+  cases selected with
+  | none => simp at hfinish
+  | some selected =>
+      rcases selected with ⟨selectedCounter, selectedEncoding⟩
+      simp only [StateT.run_pure, support_pure, Set.mem_singleton_iff,
+        Prod.mk.injEq, Option.some.injEq] at hfinish
+      rcases hfinish with ⟨⟨rfl, rfl⟩, rfl⟩
+      have hselectedReplay := resolvedOtsSelectFrom_replay f parameter lay
+        (treeIndexAt index lay) (leafIndexAt index lay) message encodingAttemptLimit 0
+          messageCache final (some (counter, encoding)) hselected hf
+      have hmessageEval : evalWithAnswerFn f
+          (layerMessage
+            (⟨parameter, root,
+              fun selectedLay selectedTree selectedLeaf selectedChain =>
+                truncateHash
+                  (table ⟨selectedLay, selectedTree, selectedLeaf, selectedChain⟩),
+              ftsSecret⟩ : SecretKey)
+              index lay) = message := by
+        rw [resolvedLayerMessage_eq_layerMessage parameter root table ftsSecret index lay]
+          at hmessage
+        exact (replay_of_mem_support_of_le _ initial message messageCache final hmessage
+          hselectedReplay.1 f hf).1
+      rw [hmessageEval]
+      exact hselectedReplay.2 counter encoding rfl
+
+theorem resolvedChronologicalSignLayer_select_support
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index) (lay : Layer)
+    (initial final : QueryCache HashSpec) (part : ChronologicalLayerPart)
+    (hresult : (some part, final) ∈ support
+      ((resolvedChronologicalSignLayer parameter table ftsSecret index lay).run initial)) :
+    ∃ selectedCache,
+      (some (part.counter, part.encoding), selectedCache) ∈ support
+        ((resolvedSignLayer parameter table ftsSecret index lay).run initial) ∧
+      selectedCache ≤ final := by
+  unfold resolvedChronologicalSignLayer at hresult
+  rw [StateT.run_bind, mem_support_bind_iff] at hresult
+  obtain ⟨⟨selected, selectedCache⟩, hselected, hrest⟩ := hresult
+  cases selected with
+  | none => simp at hrest
+  | some selected =>
+      rcases selected with ⟨counter, encoding⟩
+      rw [StateT.run_bind, mem_support_bind_iff] at hrest
+      obtain ⟨⟨values, valuesCache⟩, hvalues, hfinish⟩ := hrest
+      simp only [StateT.run_pure, support_pure, Set.mem_singleton_iff,
+        Prod.mk.injEq, Option.some.injEq] at hfinish
+      rcases hfinish with ⟨⟨rfl, rfl, rfl, rfl⟩, rfl⟩
+      exact ⟨selectedCache, hselected,
+        resolvedRevealLayerValues_cache_mono parameter table index lay encoding
+          selectedCache final values hvalues⟩
+
+theorem reachableResolvedCouples_maskedChronologicalSignLayers
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index) :
+    ReachableResolvedCouples parameter table
+      (maskedChronologicalSignLayers parameter ftsSecret index)
+      (sequenceFin fun lay =>
+        resolvedChronologicalSignLayer parameter table ftsSecret index lay) := by
+  unfold maskedChronologicalSignLayers
+  exact reachableResolvedCouples_sequenceFin
+    (fun lay => maskedChronologicalSignLayer parameter ftsSecret index lay)
+    (fun lay => resolvedChronologicalSignLayer parameter table ftsSecret index lay)
+    (fun lay => reachableResolvedCouples_maskedChronologicalSignLayer parameter table ftsSecret
+      index lay)
+
+theorem concreteSupport_of_mem_runResolved_maskedChronologicalSignLayer
+    (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index) (lay : Layer)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (concreteCache : QueryCache HashSpec)
+    (result : ResolvedRunResult
+      (Option ChronologicalLayerPart × SplitHashCache))
+    (completion : Coordinate → HashOutput)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache)
+    (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hpublished : PublishedValues context.state)
+    (hresult : some result ∈ support
+      (runResolvedFromTable context fuel table
+        ((maskedChronologicalSignLayer parameter ftsSecret index lay).run cache)))
+    (hcompletion : DeferredCompletion table result.context completion) :
+    ∃ rightCache,
+      (result.value.1, rightCache) ∈ support
+        ((resolvedChronologicalSignLayer parameter table ftsSecret index lay).run concreteCache) ∧
+      ResolvedContextInvariant parameter table result.context
+        (ordinaryQueryCache result.value.2) rightCache ∧
+      VisibleResolvedComputationsCached parameter table result.context rightCache ∧
+      PublishedValues result.context.state := by
+  let left := maskedChronologicalSignLayer parameter ftsSecret index lay
+  let right := resolvedChronologicalSignLayer parameter table ftsSecret index lay
+  have hrel : RelTriple
+      (runResolvedFromTable context fuel table (left.run cache))
+      (right.run concreteCache) (ReachableResolvedRunRel parameter table) :=
+    reachableResolvedCouples_maskedChronologicalSignLayer parameter table ftsSecret index lay
+      context fuel cache concreteCache hinvariant hclosed hpublished
+  change some result ∈ support
+    (runResolvedFromTable context fuel table (left.run cache)) at hresult
+  obtain ⟨rightResult, hrightSupport, hrelation⟩ :=
+    exists_right_of_relTriple_of_mem_support
+      (relation := ReachableResolvedRunRel parameter table) hrel hresult
+  rcases rightResult with ⟨rightValue, rightCache⟩
+  have hclean := ReachableResolvedRunRel.clean_of_completion hrelation hcompletion
+  refine ⟨rightCache, ?_, hclean.2.1, hclean.2.2.1, hclean.2.2.2⟩
+  rw [hclean.1]
+  exact hrightSupport
+
+set_option maxHeartbeats 800000 in
+theorem concreteSupport_of_mem_runResolved_chronologicalLayerSequence
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index) :
+    ∀ {n : Nat} (indices : Fin n → Layer)
+      (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+      (concreteCache : QueryCache HashSpec)
+      (result : ResolvedRunResult
+        ((Fin n → Option ChronologicalLayerPart) × SplitHashCache))
+      (completion : Coordinate → HashOutput),
+      ResolvedContextInvariant parameter table context
+        (ordinaryQueryCache cache) concreteCache →
+      VisibleResolvedComputationsCached parameter table context concreteCache →
+      PublishedValues context.state →
+      some result ∈ support
+        (runResolvedFromTable context fuel table
+          ((sequenceFin fun position =>
+            maskedChronologicalSignLayer parameter ftsSecret index (indices position)).run cache)) →
+      DeferredCompletion table result.context completion →
+      ∃ rightCache,
+        ResolvedContextInvariant parameter table result.context
+          (ordinaryQueryCache result.value.2) rightCache ∧
+        VisibleResolvedComputationsCached parameter table result.context rightCache ∧
+        PublishedValues result.context.state ∧
+        (result.value.1, rightCache) ∈ support
+          ((sequenceFin fun position =>
+            resolvedChronologicalSignLayer parameter table ftsSecret index
+              (indices position)).run concreteCache)
+  | 0, indices, context, fuel, cache, concreteCache, result, completion,
+      hinvariant, hclosed, hpublished, hresult, _ => by
+      simp [sequenceFin, runResolvedFromTable] at hresult
+      subst result
+      refine ⟨concreteCache, hinvariant, hclosed, hpublished, ?_⟩
+      simp [sequenceFin]
+  | n + 1, indices, context, fuel, cache, concreteCache, result, completion,
+      hinvariant, hclosed, hpublished, hresult, hcompletion => by
+      rw [sequenceFin, StateT.run_bind, runResolvedFromTable_bind,
+        mem_support_bind_iff] at hresult
+      obtain ⟨headOption, hhead, hrest⟩ := hresult
+      cases headOption with
+      | none => simp at hrest
+      | some headResult =>
+          have hheadCore := resolvedCore_of_mem_runResolvedFromTable
+            ((maskedChronologicalSignLayer parameter ftsSecret index (indices 0)).run cache)
+            context fuel table headResult hinvariant.2.1.valuesConsistent hinvariant.2.2.1 hhead
+          simp only at hrest
+          rw [hheadCore.1] at hrest
+          have hheadCompletion : DeferredCompletion table headResult.context completion :=
+            hcompletion.of_mem_runResolvedFromTable _ headResult.context headResult.remaining table
+              result completion hheadCore.2.1 hheadCore.2.2 hrest
+          obtain ⟨rightHeadCache, hrightHead, hheadInvariant, hheadClosed, hheadPublished⟩ :=
+            concreteSupport_of_mem_runResolved_maskedChronologicalSignLayer parameter table
+              ftsSecret index (indices 0) context fuel cache concreteCache headResult completion
+                hinvariant hclosed hpublished hhead hheadCompletion
+          rw [StateT.run_bind, runResolvedFromTable_bind,
+            mem_support_bind_iff] at hrest
+          obtain ⟨tailOption, htail, hfinish⟩ := hrest
+          cases tailOption with
+          | none => simp at hfinish
+          | some tailResult =>
+              have htailCore := resolvedCore_of_mem_runResolvedFromTable
+                ((sequenceFin fun position : Fin n =>
+                  maskedChronologicalSignLayer parameter ftsSecret index
+                    (indices position.succ)).run headResult.value.2)
+                headResult.context headResult.remaining table tailResult
+                  hheadCore.2.1 hheadCore.2.2 htail
+              simp only at hfinish
+              rw [htailCore.1] at hfinish
+              simp [runResolvedFromTable] at hfinish
+              subst result
+              obtain ⟨rightTailCache, htailInvariant, htailClosed, htailPublished,
+                  hrightTail⟩ :=
+                concreteSupport_of_mem_runResolved_chronologicalLayerSequence parameter table
+                  ftsSecret index (fun position : Fin n => indices position.succ)
+                    headResult.context headResult.remaining headResult.value.2 rightHeadCache
+                      tailResult completion hheadInvariant hheadClosed hheadPublished htail
+                        hcompletion
+              refine ⟨rightTailCache, htailInvariant, htailClosed, htailPublished, ?_⟩
+              rw [sequenceFin, StateT.run_bind, mem_support_bind_iff]
+              refine ⟨(headResult.value.1, rightHeadCache), hrightHead, ?_⟩
+              rw [StateT.run_bind, mem_support_bind_iff]
+              exact ⟨(tailResult.value.1, rightTailCache), hrightTail, by simp⟩
+
+set_option maxHeartbeats 500000 in
+theorem honestLayerParts_of_support_resolvedChronologicalSignLayers
+    (f : QueryImpl HashSpec Id) (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (initial final : QueryCache HashSpec)
+    (layers : Layer → Option ChronologicalLayerPart)
+    (parts : Layer → ChronologicalLayerPart)
+    (hresult : (layers, final) ∈ support
+      ((sequenceFin fun lay =>
+        resolvedChronologicalSignLayer parameter table ftsSecret index lay).run initial))
+    (hparts : traverseOption layers = some parts)
+    (hf : final.AgreesWithFn f) :
+    HonestLayerParts f
+      (⟨parameter, root,
+        fun selectedLay selectedTree selectedLeaf selectedChain =>
+          truncateHash (table ⟨selectedLay, selectedTree, selectedLeaf, selectedChain⟩),
+        ftsSecret⟩ : SecretKey)
+      index (fun lay => ((parts lay).counter, (parts lay).encoding)) := by
+  intro lay
+  obtain ⟨componentInitial, componentFinal, componentValue, hcomponent,
+      hvalue, hcomponentLe⟩ :=
+    queryCache_sequenceFin_component_support
+      (fun selectedLay =>
+        resolvedChronologicalSignLayer parameter table ftsSecret index selectedLay)
+      (fun selectedLay => resolvedChronologicalSignLayer_cache_mono parameter table ftsSecret
+        index selectedLay) initial final layers hresult lay
+  have hpartsAt := traverseOption_eq_some_apply layers parts hparts lay
+  have hcomponentValue : componentValue = some (parts lay) := hvalue.symm.trans hpartsAt
+  rw [hcomponentValue] at hcomponent
+  obtain ⟨selectedCache, hselected, hselectedLe⟩ :=
+    resolvedChronologicalSignLayer_select_support parameter table ftsSecret index lay
+      componentInitial componentFinal (parts lay) hcomponent
+  have hselectedAgrees : selectedCache.AgreesWithFn f := fun input output hcached =>
+    hf (hcomponentLe (hselectedLe hcached))
+  exact resolvedSignLayer_some_honest_eval f parameter root table ftsSecret index lay
+    componentInitial selectedCache (parts lay).counter (parts lay).encoding hselected
+      hselectedAgrees
+
 theorem noPublish_revealPrivateLayerValues (index : Index) (lay : Layer)
     (encoding : ChainIndex → Digit) :
     NoPublish (revealPrivateLayerValues index lay encoding) := by
@@ -1142,21 +1475,21 @@ theorem DeferredCompletion.not_probeHits_of_probingHashQuery_chain
         fallback ftsSecret probe input hmatches
       simp [probeContext, LazyRevealProbe.State.addPending]
 
-theorem ResolvedContextInvariant.concreteCache_agreesWith_tableAnswer
+theorem ResolvedContextInvariant.concreteCache_agreesWith_tableAnswer_of_fallback
     {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
     {context : DeferredContext} {ordinaryCache concreteCache : QueryCache HashSpec}
     (hinvariant : ResolvedContextInvariant parameter table context ordinaryCache concreteCache)
     (completion : Coordinate → HashOutput)
-    (hcompletion : DeferredCompletion table context completion) :
+    (hcompletion : DeferredCompletion table context completion)
+    (fallback : QueryImpl HashSpec Id) (hfallback : ordinaryCache.AgreesWithFn fallback) :
     concreteCache.AgreesWithFn
-      (tableAnswer parameter completion (fromCache ordinaryCache)) := by
+      (tableAnswer parameter completion fallback) := by
   intro input output hcached
   rcases hinvariant.2.2.2.2.2 input output hcached with hordinary | hfixed
   · unfold tableAnswer
     cases hdecode : decodePosition? parameter input with
     | none =>
-        change fromCache ordinaryCache input = output
-        exact agreesWithFn_fromCache ordinaryCache hordinary
+        exact hfallback hordinary
     | some position =>
         have hcanonicalOutput (hots : IsOtsPosition position)
             (hexact : input = tableInput parameter completion (.position position)) :
@@ -1180,27 +1513,134 @@ theorem ResolvedContextInvariant.concreteCache_agreesWith_tableAnswer
             · rw [tableAnswerDecoded, if_pos hexact]
               exact hcanonicalOutput (by trivial) hexact
             · rw [tableAnswerDecoded, if_neg hexact]
-              exact agreesWithFn_fromCache ordinaryCache hordinary
+              exact hfallback hordinary
         | leaf lay tree leafIdx =>
             by_cases hexact : input = tableInput parameter completion
                 (.position (.leaf lay tree leafIdx))
             · rw [tableAnswerDecoded, if_pos hexact]
               exact hcanonicalOutput (by trivial) hexact
             · rw [tableAnswerDecoded, if_neg hexact]
-              exact agreesWithFn_fromCache ordinaryCache hordinary
+              exact hfallback hordinary
         | node lay tree level nodeIdx =>
             by_cases hexact : input = tableInput parameter completion
                 (.position (.node lay tree level nodeIdx))
             · rw [tableAnswerDecoded, if_pos hexact]
               exact hcanonicalOutput (by trivial) hexact
             · rw [tableAnswerDecoded, if_neg hexact]
-              exact agreesWithFn_fromCache ordinaryCache hordinary
+              exact hfallback hordinary
         | ftsLeaf | ftsNode | ftsRoots =>
-            change fromCache ordinaryCache input = output
-            exact agreesWithFn_fromCache ordinaryCache hordinary
+            exact hfallback hordinary
   · rcases hfixed with ⟨position, hots, hvalue, hinput⟩
     rw [hinput completion hcompletion,
-      tableAnswer_tableInput parameter completion (fromCache ordinaryCache) position hots,
+      tableAnswer_tableInput parameter completion fallback position hots,
       hcompletion.eq_positionValue position output hvalue]
+
+theorem ResolvedContextInvariant.concreteCache_agreesWith_tableAnswer
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {context : DeferredContext} {ordinaryCache concreteCache : QueryCache HashSpec}
+    (hinvariant : ResolvedContextInvariant parameter table context ordinaryCache concreteCache)
+    (completion : Coordinate → HashOutput)
+    (hcompletion : DeferredCompletion table context completion) :
+    concreteCache.AgreesWithFn
+      (tableAnswer parameter completion (fromCache ordinaryCache)) :=
+  hinvariant.concreteCache_agreesWith_tableAnswer_of_fallback completion hcompletion
+    (fromCache ordinaryCache) (agreesWithFn_fromCache ordinaryCache)
+
+section
+
+attribute [local irreducible] sequenceFin runResolvedFromTable
+
+set_option maxHeartbeats 800000 in
+theorem concreteSupport_of_mem_runResolved_maskedChronologicalSignLayers
+    (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (concreteCache : QueryCache HashSpec)
+    (result : ResolvedRunResult
+      ((Layer → Option ChronologicalLayerPart) × SplitHashCache))
+    (completion : Coordinate → HashOutput)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache)
+    (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hpublished : PublishedValues context.state)
+    (hresult : some result ∈ support
+      (runResolvedFromTable context fuel table
+        ((maskedChronologicalSignLayers parameter ftsSecret index).run cache)))
+    (hcompletion : DeferredCompletion table result.context completion) :
+    ∃ rightCache,
+      ResolvedContextInvariant parameter table result.context
+        (ordinaryQueryCache result.value.2) rightCache ∧
+      VisibleResolvedComputationsCached parameter table result.context rightCache ∧
+      PublishedValues result.context.state ∧
+      (result.value.1, rightCache) ∈ support
+        ((sequenceFin fun lay =>
+          resolvedChronologicalSignLayer parameter table ftsSecret index lay).run concreteCache) := by
+  unfold maskedChronologicalSignLayers at hresult
+  have hbridge0 :=
+    concreteSupport_of_mem_runResolved_chronologicalLayerSequence parameter table ftsSecret index
+      (n := numLayers) (fun lay : Layer => lay)
+  have hbridge1 := hbridge0 context fuel cache concreteCache result completion
+  have hbridge2 := hbridge1 hinvariant
+  have hbridge3 := hbridge2 hclosed
+  have hbridge4 :
+      some result ∈ support
+          (runResolvedFromTable context fuel table
+            ((sequenceFin fun lay =>
+              maskedChronologicalSignLayer parameter ftsSecret index lay).run cache)) →
+      DeferredCompletion table result.context completion →
+      ∃ rightCache,
+        ResolvedContextInvariant parameter table result.context
+          (ordinaryQueryCache result.value.2) rightCache ∧
+        VisibleResolvedComputationsCached parameter table result.context rightCache ∧
+        PublishedValues result.context.state ∧
+        (result.value.1, rightCache) ∈ support
+          ((sequenceFin fun lay =>
+            resolvedChronologicalSignLayer parameter table ftsSecret index lay).run concreteCache) :=
+    hbridge3 hpublished
+  have hbridge5 := hbridge4 hresult
+  exact hbridge5 hcompletion
+
+set_option maxHeartbeats 500000 in
+theorem honestLayerParts_of_mem_runResolved_maskedChronologicalSignLayers
+    (fallback : QueryImpl HashSpec Id) (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (concreteCache : QueryCache HashSpec)
+    (result : ResolvedRunResult
+      ((Layer → Option ChronologicalLayerPart) × SplitHashCache))
+    (completion : Coordinate → HashOutput)
+    (parts : Layer → ChronologicalLayerPart)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache)
+    (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hpublished : PublishedValues context.state)
+    (hresult : some result ∈ support
+      (runResolvedFromTable context fuel table
+        ((maskedChronologicalSignLayers parameter ftsSecret index).run cache)))
+    (hcompletion : DeferredCompletion table result.context completion)
+    (hparts : traverseOption result.value.1 = some parts)
+    (hfallback : (ordinaryQueryCache result.value.2).AgreesWithFn fallback) :
+    HonestLayerParts (tableAnswer parameter completion fallback)
+      (⟨parameter, root,
+        fun selectedLay selectedTree selectedLeaf selectedChain =>
+          truncateHash (table ⟨selectedLay, selectedTree, selectedLeaf, selectedChain⟩),
+        ftsSecret⟩ : SecretKey)
+      index (fun lay => ((parts lay).counter, (parts lay).encoding)) := by
+  obtain ⟨rightCache, hfinalInvariant, _hfinalClosed, _hfinalPublished, hright⟩ :=
+    concreteSupport_of_mem_runResolved_maskedChronologicalSignLayers parameter table ftsSecret
+      index context fuel cache concreteCache result completion hinvariant hclosed hpublished hresult
+        hcompletion
+  have hrightAgrees : rightCache.AgreesWithFn
+      (tableAnswer parameter completion fallback) :=
+    @ResolvedContextInvariant.concreteCache_agreesWith_tableAnswer_of_fallback
+      parameter table result.context (ordinaryQueryCache result.value.2) rightCache
+        hfinalInvariant completion hcompletion fallback hfallback
+  exact honestLayerParts_of_support_resolvedChronologicalSignLayers
+    (tableAnswer parameter completion fallback) parameter root table ftsSecret index concreteCache
+      rightCache result.value.1 parts hright hparts hrightAgrees
+
+end
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
