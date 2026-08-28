@@ -10,7 +10,7 @@ probe fuel and table needed by finalization.
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
-open OracleComp OracleSpec
+open OracleComp OracleSpec ENNReal
 open OracleComp.ProgramLogic.Relational
 
 noncomputable local instance runSampleableOtsHashTable :
@@ -2422,5 +2422,92 @@ theorem evalDist_runThenFinalizeCleanFromTable_eq_detailed
               by_cases hhit : hit
               · simp [hhit, finish, sampleOtsHashTable]
               · simp [hhit, finish, sampleOtsHashTable]
+
+set_option maxRecDepth 100000 in
+theorem evalDist_map_isNone_detailedExperimentClean_eq_hit
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (hbound : computation.IsQueryBoundP LazyRevealProbe.IsProbe fuel) :
+    𝒟[Option.isNone <$> detailedExperimentCleanWithCompletionTable state fuel computation] =
+      𝒟[LazyRevealProbe.DetailedResult.hit <$>
+        LazyRevealProbe.detailedExperiment state fuel computation] := by
+  unfold detailedExperimentCleanWithCompletionTable
+  rw [map_bind, map_eq_bind_pure_comp]
+  apply evalDist_bind_congr
+  intro result hresult
+  cases result with
+  | stopped hit =>
+      cases hit with
+      | false =>
+          exact (LazyRevealProbe.stopped_false_not_mem_support_detailedExperiment
+            state fuel computation hbound hresult).elim
+      | true => simp [LazyRevealProbe.DetailedResult.hit]
+  | done hit finalState remaining value =>
+      cases hit with
+      | false =>
+          simp only [Bool.false_eq_true, ↓reduceIte, Functor.map_map, Function.comp_apply,
+            Option.isNone_some, LazyRevealProbe.DetailedResult.hit]
+          apply evalDist_ext
+          intro output
+          rw [probOutput_map_const]
+          have hmass : Pr[⊥ | sampleOtsHashTable] = 0 := by
+            rw [sampleOtsHashTable]
+            exact probFailure_uniformSample _
+          rw [hmass]
+          simp
+      | true => simp [LazyRevealProbe.DetailedResult.hit]
+
+theorem probEvent_detailedExperimentClean_none_eq_hit
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (hbound : computation.IsQueryBoundP LazyRevealProbe.IsProbe fuel) :
+    Pr[= none | detailedExperimentCleanWithCompletionTable state fuel computation] =
+      Pr[= true | LazyRevealProbe.experiment state fuel computation] := by
+  calc
+    _ = Pr[= true |
+        Option.isNone <$> detailedExperimentCleanWithCompletionTable state fuel computation] := by
+      have hmap := _root_.probEvent_map
+        (mx := detailedExperimentCleanWithCompletionTable state fuel computation)
+        (f := Option.isNone) (q := fun hit : Bool => hit = true)
+      simpa [Function.comp_def] using hmap.symm
+    _ = Pr[= true | LazyRevealProbe.DetailedResult.hit <$>
+        LazyRevealProbe.detailedExperiment state fuel computation] := by
+      exact OracleComp.probOutput_congr rfl
+        (evalDist_map_isNone_detailedExperimentClean_eq_hit computation state fuel hbound)
+    _ = _ := by
+      rw [LazyRevealProbe.detailedExperiment_hit_eq_experiment state fuel computation hbound]
+
+noncomputable def sampledRunThenFinalizeClean
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha) :
+    ProbComp (Option (CleanRunResult alpha)) := do
+  let base ← ($ᵗ (OtsSecretIndex → HashOutput) :
+    ProbComp (OtsSecretIndex → HashOutput))
+  let result ← runCleanFromTable state fuel (completedStartTable state base) computation
+  finishCleanRunFromTable result
+
+theorem probEvent_sampledRunThenFinalizeClean_empty_none_le
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (fuel : Nat) (hbound : computation.IsQueryBoundP LazyRevealProbe.IsProbe fuel) :
+    Pr[= none | sampledRunThenFinalizeClean
+      (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel computation] ≤
+      (fuel : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  calc
+    _ = Pr[= none | detailedExperimentCleanWithCompletionTable
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+          fuel computation] :=
+      OracleComp.probOutput_congr rfl
+        (by
+          unfold sampledRunThenFinalizeClean
+          exact evalDist_runThenFinalizeCleanFromTable_eq_detailed computation
+            (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel)
+    _ = Pr[= true | LazyRevealProbe.experiment
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+          fuel computation] :=
+      probEvent_detailedExperimentClean_none_eq_hit computation
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel hbound
+    _ ≤ _ := by
+      rw [← probEvent_eq_eq_probOutput]
+      exact LazyRevealProbe.experiment_empty_probability_le fuel computation
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

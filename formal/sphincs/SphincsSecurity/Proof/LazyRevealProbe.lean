@@ -600,6 +600,66 @@ theorem runRaw_bind (state : State Coordinate) (fuel : Nat)
               · simp only [hhit, ↓reduceIte]
                 exact ih output (state.materialize coordinate output) fuel
 
+theorem stopped_false_not_mem_support_runRaw
+    (state : State Coordinate) (fuel : Nat)
+    (computation : OracleComp (World Coordinate) alpha)
+    (hbound : computation.IsQueryBoundP IsProbe fuel) :
+    RawResult.stopped false ∉ support (runRaw state fuel computation) := by
+  induction computation using OracleComp.inductionOn generalizing state fuel with
+  | pure value =>
+      simp [runRaw]
+  | query_bind input next ih =>
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
+      cases input with
+      | uniform n =>
+          rw [runRaw_uniform_query_bind, mem_support_bind_iff]
+          rintro ⟨output, _houtput, hrest⟩
+          exact ih output state fuel (by simpa [IsProbe] using hbound.2 output) hrest
+      | hashOutput =>
+          rw [runRaw_hashOutput_query_bind, mem_support_bind_iff]
+          rintro ⟨output, _houtput, hrest⟩
+          exact ih output state fuel (by simpa [IsProbe] using hbound.2 output) hrest
+      | ensure coordinate =>
+          rw [runRaw_ensure_query_bind]
+          exact ih () (state.ensure coordinate) fuel
+            (by simpa [IsProbe] using hbound.2 ())
+      | probe coordinate candidate =>
+          have hpositive : 0 < fuel := by
+            simpa [IsProbe] using hbound.1
+          cases fuel with
+          | zero => omega
+          | succ remaining =>
+              rw [runRaw_probe_query_bind]
+              by_cases hrevealed : coordinate ∈ state.revealed
+              · simp only [hrevealed, ↓reduceIte]
+                exact ih () state remaining
+                  (by simpa [IsProbe] using hbound.2 ())
+              · simp only [hrevealed, ↓reduceIte]
+                exact ih () (state.addPending coordinate candidate) remaining
+                  (by simpa [IsProbe] using hbound.2 ())
+      | peek coordinate =>
+          rw [runRaw_peek_query_bind]
+          exact ih (state.values coordinate) state fuel
+            (by simpa [IsProbe] using hbound.2 (state.values coordinate))
+      | publish coordinate =>
+          rw [runRaw_publish_query_bind]
+          exact ih () (state.publish coordinate) fuel
+            (by simpa [IsProbe] using hbound.2 ())
+      | reveal coordinate =>
+          rw [runRaw_reveal_query_bind]
+          cases hvalue : state.values coordinate with
+          | some output =>
+              exact ih output state fuel
+                (by simpa [IsProbe] using hbound.2 output)
+          | none =>
+              rw [mem_support_bind_iff]
+              rintro ⟨output, _houtput, hrest⟩
+              by_cases hhit : state.hitAt coordinate output
+              · simp [hhit] at hrest
+              · simp only [hhit, ↓reduceIte] at hrest
+                exact ih output (state.materialize coordinate output) fuel
+                  (by simpa [IsProbe] using hbound.2 output) hrest
+
 inductive DetailedResult (Coordinate : Type) (alpha : Type) where
   | stopped (hit : Bool)
   | done (hit : Bool) (state : State Coordinate) (remaining : Nat) (value : alpha)
@@ -631,6 +691,24 @@ noncomputable def detailedExperiment (state : State Coordinate) (fuel : Nat)
     (computation : OracleComp (World Coordinate) alpha) :
     ProbComp (DetailedResult Coordinate alpha) :=
   runRaw state fuel computation >>= RawResult.finishDetailed
+
+theorem stopped_false_not_mem_support_detailedExperiment
+    (state : State Coordinate) (fuel : Nat)
+    (computation : OracleComp (World Coordinate) alpha)
+    (hbound : computation.IsQueryBoundP IsProbe fuel) :
+    DetailedResult.stopped false ∉ support
+      (detailedExperiment state fuel computation) := by
+  unfold detailedExperiment
+  rw [mem_support_bind_iff]
+  rintro ⟨raw, hraw, hfinish⟩
+  cases raw with
+  | stopped hit =>
+      cases hit with
+      | false =>
+          exact stopped_false_not_mem_support_runRaw state fuel computation hbound hraw
+      | true => simp [RawResult.finishDetailed] at hfinish
+  | done finalState remaining value =>
+      simp [RawResult.finishDetailed] at hfinish
 
 noncomputable def experiment (state : State Coordinate) (fuel : Nat)
     (computation : OracleComp (World Coordinate) alpha) : ProbComp Bool :=
