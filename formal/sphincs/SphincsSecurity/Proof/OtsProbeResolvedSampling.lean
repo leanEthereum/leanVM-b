@@ -11854,6 +11854,23 @@ theorem resolvedCouples_revealLayerValues
   intro path
   exact resolvedCouples_pure parameter table (values, path)
 
+noncomputable def resolvedLayerValuesComputation
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (index : Index) (lay : Layer) (encoding : ChainIndex → Digit) :
+    OracleComp HashSpec ((ChainIndex → Digest) × (Fin maxLayerHeight → Digest)) := do
+  let chainValues ← sequenceFin fun chainIdx =>
+    chainWalk parameter lay (treeIndexAt index lay) (leafIndexAt index lay) chainIdx 0
+      (encoding chainIdx).val
+      (truncateHash (table ⟨lay, treeIndexAt index lay, leafIndexAt index lay, chainIdx⟩))
+  let pathValues ← sequenceFin fun level : Fin maxLayerHeight =>
+    if level.val < layerHeight lay then
+      treeNode parameter lay (treeIndexAt index lay)
+        (fun sibling chainIdx =>
+          truncateHash (table ⟨lay, treeIndexAt index lay, sibling, chainIdx⟩))
+        level.val (Nat.xor ((leafIndexAt index lay).val / 2 ^ level.val) 1)
+    else pure 0
+  pure (chainValues, pathValues)
+
 noncomputable def resolvedRevealLayerValues
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
     (index : Index) (lay : Layer) (encoding : ChainIndex → Digit) :
@@ -11876,6 +11893,41 @@ noncomputable def resolvedRevealLayerValues
       pure 0
   pure (values, path)
 
+theorem resolvedRevealLayerValues_eq_simulateQ
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (index : Index) (lay : Layer) (encoding : ChainIndex → Digit) :
+    resolvedRevealLayerValues parameter table index lay encoding =
+      simulateQ (randomOracle : QueryImpl HashSpec _)
+        (resolvedLayerValuesComputation parameter table index lay encoding) := by
+  unfold resolvedRevealLayerValues resolvedLayerValuesComputation
+  rw [simulateQ_bind, FtsProbeSimulation.simulateQ_randomOracle_sequenceFin]
+  apply bind_congr
+  intro chainValues
+  rw [simulateQ_bind, FtsProbeSimulation.simulateQ_randomOracle_sequenceFin]
+  have hpathComponent :
+      (fun level : Fin maxLayerHeight =>
+        if level.val < layerHeight lay then
+          simulateQ (randomOracle : QueryImpl HashSpec _)
+            (treeNode parameter lay (treeIndexAt index lay)
+              (fun sibling chainIdx =>
+                truncateHash (table ⟨lay, treeIndexAt index lay, sibling, chainIdx⟩))
+              level.val (Nat.xor ((leafIndexAt index lay).val / 2 ^ level.val) 1))
+        else pure 0) =
+      (fun level : Fin maxLayerHeight =>
+        simulateQ (randomOracle : QueryImpl HashSpec _)
+          (if level.val < layerHeight lay then
+            treeNode parameter lay (treeIndexAt index lay)
+              (fun sibling chainIdx =>
+                truncateHash (table ⟨lay, treeIndexAt index lay, sibling, chainIdx⟩))
+              level.val (Nat.xor ((leafIndexAt index lay).val / 2 ^ level.val) 1)
+          else pure 0)) := by
+    funext level
+    split <;> rfl
+  rw [hpathComponent]
+  apply bind_congr
+  intro pathValues
+  rw [simulateQ_pure]
+
 theorem resolvedRevealLayerValues_cache_mono
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
     (index : Index) (lay : Layer) (encoding : ChainIndex → Digit)
@@ -11884,53 +11936,44 @@ theorem resolvedRevealLayerValues_cache_mono
     (hresult : (values, finalCache) ∈ support
       ((resolvedRevealLayerValues parameter table index lay encoding).run cache)) :
     cache ≤ finalCache := by
-  let computation : OracleComp HashSpec
-      ((ChainIndex → Digest) × (Fin maxLayerHeight → Digest)) := do
-    let chainValues ← sequenceFin fun chainIdx =>
-      chainWalk parameter lay (treeIndexAt index lay) (leafIndexAt index lay) chainIdx 0
-        (encoding chainIdx).val
-        (truncateHash (table ⟨lay, treeIndexAt index lay, leafIndexAt index lay, chainIdx⟩))
-    let pathValues ← sequenceFin fun level : Fin maxLayerHeight =>
-      if level.val < layerHeight lay then
-        treeNode parameter lay (treeIndexAt index lay)
-          (fun sibling chainIdx =>
-            truncateHash (table ⟨lay, treeIndexAt index lay, sibling, chainIdx⟩))
-          level.val (Nat.xor ((leafIndexAt index lay).val / 2 ^ level.val) 1)
-      else pure 0
-    pure (chainValues, pathValues)
-  have heq : resolvedRevealLayerValues parameter table index lay encoding =
-      simulateQ (randomOracle : QueryImpl HashSpec _) computation := by
-    unfold resolvedRevealLayerValues computation
-    rw [simulateQ_bind, FtsProbeSimulation.simulateQ_randomOracle_sequenceFin]
-    apply bind_congr
-    intro chainValues
-    rw [simulateQ_bind, FtsProbeSimulation.simulateQ_randomOracle_sequenceFin]
-    have hpathComponent :
-        (fun level : Fin maxLayerHeight =>
-          if level.val < layerHeight lay then
-            simulateQ (randomOracle : QueryImpl HashSpec _)
-              (treeNode parameter lay (treeIndexAt index lay)
-                (fun sibling chainIdx =>
-                  truncateHash (table ⟨lay, treeIndexAt index lay, sibling, chainIdx⟩))
-                level.val (Nat.xor ((leafIndexAt index lay).val / 2 ^ level.val) 1))
-          else pure 0) =
-        (fun level : Fin maxLayerHeight =>
-          simulateQ (randomOracle : QueryImpl HashSpec _)
-            (if level.val < layerHeight lay then
-              treeNode parameter lay (treeIndexAt index lay)
-                (fun sibling chainIdx =>
-                  truncateHash (table ⟨lay, treeIndexAt index lay, sibling, chainIdx⟩))
-                level.val (Nat.xor ((leafIndexAt index lay).val / 2 ^ level.val) 1)
-            else pure 0)) := by
-      funext level
-      split <;> rfl
-    rw [hpathComponent]
-    apply bind_congr
-    intro pathValues
-    rw [simulateQ_pure]
-  rw [heq] at hresult
-  exact (replay_of_mem_support computation cache values finalCache hresult
+  rw [resolvedRevealLayerValues_eq_simulateQ] at hresult
+  exact (replay_of_mem_support (resolvedLayerValuesComputation parameter table index lay encoding)
+    cache values finalCache hresult
     (fromCache finalCache) (agreesWithFn_fromCache finalCache)).1
+
+theorem resolvedRevealLayerValues_replay_of_mem_support
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (index : Index) (lay : Layer) (encoding : ChainIndex → Digit)
+    (cache finalCache : QueryCache HashSpec)
+    (values : (ChainIndex → Digest) × (Fin maxLayerHeight → Digest))
+    (hresult : (values, finalCache) ∈ support
+      ((resolvedRevealLayerValues parameter table index lay encoding).run cache)) :
+    (resolvedRevealLayerValues parameter table index lay encoding).run finalCache =
+      pure (values, finalCache) := by
+  rw [resolvedRevealLayerValues_eq_simulateQ] at hresult ⊢
+  obtain ⟨_, heval, hcached⟩ := replay_of_mem_support
+    (resolvedLayerValuesComputation parameter table index lay encoding)
+    cache values finalCache hresult (fromCache finalCache) (agreesWithFn_fromCache finalCache)
+  rw [simulateQ_randomOracle_run_eq_pure_of_cachedRun
+    (agreesWithFn_fromCache finalCache) hcached, heval]
+
+theorem resolvedRevealLayerValues_replay_of_mem_support_of_le
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (index : Index) (lay : Layer) (encoding : ChainIndex → Digit)
+    (cache observedCache finalCache : QueryCache HashSpec)
+    (values : (ChainIndex → Digest) × (Fin maxLayerHeight → Digest))
+    (hresult : (values, observedCache) ∈ support
+      ((resolvedRevealLayerValues parameter table index lay encoding).run cache))
+    (hle : observedCache ≤ finalCache) :
+    (resolvedRevealLayerValues parameter table index lay encoding).run finalCache =
+      pure (values, finalCache) := by
+  rw [resolvedRevealLayerValues_eq_simulateQ] at hresult ⊢
+  have hreplayed := replay_of_mem_support_of_le
+    (resolvedLayerValuesComputation parameter table index lay encoding)
+    cache values observedCache finalCache hresult hle (fromCache finalCache)
+      (agreesWithFn_fromCache finalCache)
+  rw [simulateQ_randomOracle_run_eq_pure_of_cachedRun
+    (agreesWithFn_fromCache finalCache) hreplayed.2, hreplayed.1]
 
 set_option maxRecDepth 100000 in
 theorem relTriple_resolveDeferredLayerValues_chronological
@@ -13444,6 +13487,221 @@ theorem resolvedChronologicalSignLayer_projects_to_immediate
       rcases selected with ⟨counter, encoding⟩
       simp [ChronologicalLayerPart.toLayerPart]
 
+theorem resolvedChronologicalSignLayer_cache_mono
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) (cache finalCache : QueryCache HashSpec)
+    (result : Option ChronologicalLayerPart)
+    (hresult : (result, finalCache) ∈ support
+      ((resolvedChronologicalSignLayer parameter table ftsSecret index lay).run cache)) :
+    cache ≤ finalCache := by
+  have hmapped : (result.map ChronologicalLayerPart.toLayerPart, finalCache) ∈ support
+      ((do
+        let selected ← resolvedChronologicalSignLayer parameter table ftsSecret index lay
+        pure (selected.map ChronologicalLayerPart.toLayerPart)).run cache) := by
+    rw [StateT.run_bind, mem_support_bind_iff]
+    exact ⟨(result, finalCache), hresult, by simp⟩
+  rw [resolvedChronologicalSignLayer_projects_to_immediate parameter table ftsSecret index lay,
+    resolvedImmediateSignLayer_eq_signLayer parameter 0 table ftsSecret index lay] at hmapped
+  exact FtsProbeSimulation.simulateQ_randomOracle_cache_le _ cache finalCache _ hmapped
+
+theorem resolvedChronologicalSignLayer_reveal_support
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) (cache finalCache : QueryCache HashSpec)
+    (part : ChronologicalLayerPart)
+    (hresult : (some part, finalCache) ∈ support
+      ((resolvedChronologicalSignLayer parameter table ftsSecret index lay).run cache)) :
+    ∃ selectedCache,
+      ((part.chainValue, part.authPath), finalCache) ∈ support
+        ((resolvedRevealLayerValues parameter table index lay part.encoding).run selectedCache) := by
+  unfold resolvedChronologicalSignLayer at hresult
+  rw [StateT.run_bind, mem_support_bind_iff] at hresult
+  obtain ⟨⟨selected, selectedCache⟩, hselected, hrest⟩ := hresult
+  cases selected with
+  | none => simp at hrest
+  | some selected =>
+      rcases selected with ⟨counter, encoding⟩
+      simp only [StateT.run_bind, mem_support_bind_iff] at hrest
+      obtain ⟨⟨values, revealCache⟩, hvalues, hfinish⟩ := hrest
+      simp only [StateT.run_pure, support_pure, Set.mem_singleton_iff,
+        Prod.mk.injEq, Option.some.injEq] at hfinish
+      rcases hfinish with ⟨rfl, rfl, rfl, rfl, rfl⟩
+      exact ⟨selectedCache, hvalues⟩
+
+theorem queryCache_sequenceFin_cache_mono {n : Nat}
+    (computation : Fin n → StateT (QueryCache HashSpec) ProbComp alpha)
+    (hcomponent : ∀ position initial final value,
+      (value, final) ∈ support ((computation position).run initial) → initial ≤ final)
+    (initial final : QueryCache HashSpec) (values : Fin n → alpha)
+    (hresult : (values, final) ∈ support ((sequenceFin computation).run initial)) :
+    initial ≤ final := by
+  induction n generalizing initial final with
+  | zero =>
+      simp [sequenceFin] at hresult
+      exact hresult.2 ▸ le_rfl
+  | succ n ih =>
+      rw [sequenceFin, StateT.run_bind, mem_support_bind_iff] at hresult
+      obtain ⟨⟨head, headCache⟩, hhead, hrest⟩ := hresult
+      rw [StateT.run_bind, mem_support_bind_iff] at hrest
+      obtain ⟨⟨tail, tailCache⟩, htail, hfinish⟩ := hrest
+      simp only [StateT.run_pure, support_pure, Set.mem_singleton_iff,
+        Prod.mk.injEq] at hfinish
+      rcases hfinish with ⟨rfl, rfl⟩
+      exact (hcomponent 0 initial headCache head hhead).trans
+        (ih (fun position => computation position.succ)
+          (fun position => hcomponent position.succ) headCache final tail htail)
+
+theorem queryCache_sequenceFin_component_support {n : Nat}
+    (computation : Fin n → StateT (QueryCache HashSpec) ProbComp alpha)
+    (hcomponent : ∀ position initial final value,
+      (value, final) ∈ support ((computation position).run initial) → initial ≤ final)
+    (initial final : QueryCache HashSpec) (values : Fin n → alpha)
+    (hresult : (values, final) ∈ support ((sequenceFin computation).run initial))
+    (position : Fin n) :
+    ∃ componentInitial componentFinal componentValue,
+      (componentValue, componentFinal) ∈ support
+          ((computation position).run componentInitial) ∧
+        values position = componentValue ∧ componentFinal ≤ final := by
+  induction n generalizing initial final with
+  | zero => exact position.elim0
+  | succ n ih =>
+      rw [sequenceFin, StateT.run_bind, mem_support_bind_iff] at hresult
+      obtain ⟨⟨head, headCache⟩, hhead, hrest⟩ := hresult
+      rw [StateT.run_bind, mem_support_bind_iff] at hrest
+      obtain ⟨⟨tail, tailCache⟩, htail, hfinish⟩ := hrest
+      simp only [StateT.run_pure, support_pure, Set.mem_singleton_iff,
+        Prod.mk.injEq] at hfinish
+      rcases hfinish with ⟨rfl, rfl⟩
+      cases position using Fin.cases with
+      | zero =>
+          exact ⟨initial, headCache, head, hhead, rfl,
+            queryCache_sequenceFin_cache_mono
+              (fun tailPosition => computation tailPosition.succ)
+              (fun tailPosition => hcomponent tailPosition.succ)
+              headCache final tail htail⟩
+      | succ tailPosition =>
+          exact ih (fun position => computation position.succ)
+            (fun position => hcomponent position.succ) headCache final tail htail tailPosition
+
+theorem queryCache_sequenceFin_run_of_run_eq_pure {n : Nat}
+    (computation : Fin n → StateT (QueryCache HashSpec) ProbComp alpha)
+    (values : Fin n → alpha) (cache : QueryCache HashSpec)
+    (hrun : ∀ position, (computation position).run cache = pure (values position, cache)) :
+    (sequenceFin computation).run cache = pure (values, cache) := by
+  induction n with
+  | zero =>
+      rw [sequenceFin, StateT.run_pure]
+      congr 2
+      funext position
+      exact position.elim0
+  | succ n ih =>
+      rw [sequenceFin, StateT.run_bind, hrun 0, pure_bind,
+        StateT.run_bind,
+        ih (fun position => computation position.succ)
+          (fun position => values position.succ)
+          (fun position => hrun position.succ),
+        pure_bind, StateT.run_pure]
+      congr 2
+      funext position
+      cases position using Fin.cases <;> rfl
+
+theorem sequenceFin_bind_pure_map {m : Type → Type} [Monad m] [LawfulMonad m]
+    {n : Nat} (computation : Fin n → m alpha) (transform : alpha → beta) :
+    (do
+      let values ← sequenceFin computation
+      pure (fun position => transform (values position))) =
+      sequenceFin (fun position => do
+        let value ← computation position
+        pure (transform value)) := by
+  induction n with
+  | zero =>
+      simp only [sequenceFin, pure_bind]
+      congr
+      funext position
+      exact position.elim0
+  | succ n ih =>
+      rw [sequenceFin, sequenceFin]
+      simp only [bind_assoc, pure_bind]
+      apply bind_congr
+      intro head
+      rw [← ih (fun position => computation position.succ)]
+      simp only [bind_assoc, pure_bind]
+      apply bind_congr
+      intro tail
+      congr
+      funext position
+      cases position using Fin.cases <;> rfl
+
+theorem traverseOption_map {n : Nat} (family : Fin n → Option alpha)
+    (transform : alpha → beta) :
+    traverseOption (fun position => (family position).map transform) =
+      (traverseOption family).map
+        (fun values position => transform (values position)) := by
+  induction n with
+  | zero =>
+      simp only [traverseOption, Option.map_some]
+      congr
+      funext position
+      exact position.elim0
+  | succ n ih =>
+      rw [traverseOption, traverseOption]
+      cases hhead : family 0 with
+      | none => simp
+      | some head =>
+          cases htail : traverseOption (fun position : Fin n => family position.succ) with
+          | none =>
+              have htailMap := ih (fun position : Fin n => family position.succ)
+              rw [htail] at htailMap
+              simp only [Option.map_none] at htailMap
+              simp [htailMap]
+          | some tail =>
+              have htailMap := ih (fun position : Fin n => family position.succ)
+              rw [htail] at htailMap
+              simp only [Option.map_some] at htailMap
+              rw [htailMap]
+              simp only [Option.map_some]
+              congr
+              funext position
+              cases position using Fin.cases <;> rfl
+
+theorem resolvedChronologicalLayers_replay_of_mem_support
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (cache finalCache : QueryCache HashSpec)
+    (layers : Layer → Option ChronologicalLayerPart)
+    (parts : Layer → ChronologicalLayerPart)
+    (hresult : (layers, finalCache) ∈ support
+      ((sequenceFin fun lay =>
+        resolvedChronologicalSignLayer parameter table ftsSecret index lay).run cache))
+    (hparts : traverseOption layers = some parts) :
+    (sequenceFin fun lay =>
+      resolvedRevealLayerValues parameter table index lay (parts lay).encoding).run finalCache =
+      pure ((fun lay => ((parts lay).chainValue, (parts lay).authPath)), finalCache) := by
+  have hrun : ∀ lay,
+      (resolvedRevealLayerValues parameter table index lay (parts lay).encoding).run finalCache =
+        pure (((parts lay).chainValue, (parts lay).authPath), finalCache) := by
+    intro lay
+    obtain ⟨componentInitial, componentFinal, componentValue, hcomponent, hvalue, hle⟩ :=
+      queryCache_sequenceFin_component_support
+        (fun position =>
+          resolvedChronologicalSignLayer parameter table ftsSecret index position)
+        (fun position initial final value hvalue =>
+          resolvedChronologicalSignLayer_cache_mono parameter table ftsSecret index position
+            initial final value hvalue)
+        cache finalCache layers hresult lay
+    have hlayer : layers lay = some (parts lay) :=
+      traverseOption_eq_some_apply layers parts hparts lay
+    have hcomponentValue : componentValue = some (parts lay) := hvalue.symm.trans hlayer
+    rw [hcomponentValue] at hcomponent
+    obtain ⟨selectedCache, hreveal⟩ :=
+      resolvedChronologicalSignLayer_reveal_support parameter table ftsSecret index lay
+        componentInitial componentFinal (parts lay) hcomponent
+    exact resolvedRevealLayerValues_replay_of_mem_support_of_le parameter table index lay
+      (parts lay).encoding selectedCache componentFinal finalCache
+        ((parts lay).chainValue, (parts lay).authPath) hreveal hle
+  exact queryCache_sequenceFin_run_of_run_eq_pure _ _ finalCache hrun
+
 theorem reachableResolvedCouples_maskedChainValue
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
     (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
@@ -13665,6 +13923,202 @@ theorem reachableResolvedCouples_maskedPrivateImmediateSignAfterDigest_concrete
     index leaves]
   exact reachableResolvedCouples_maskedPrivateImmediateSignAfterDigest parameter table ftsSecret
     randomness index leaves
+
+noncomputable def maskedPublishedChronologicalSignAfterDigest
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) (Option Signature) := do
+  let ftsPath ← simulateQ ordinaryHashImpl
+    (ftsOpen parameter index leaves (ftsSecret index))
+  let layers ← sequenceFin fun lay =>
+    maskedChronologicalSignLayer parameter ftsSecret index lay
+  match traverseOption layers with
+  | none => pure none
+  | some parts => do
+      let published ← sequenceFin fun lay =>
+        revealLayerValues index lay (parts lay).encoding
+      pure (some
+        { randomness := randomness
+          ftsSecret := fun tree => ftsSecret index tree (leaves (ftsIndexOf tree))
+          ftsPath := ftsPath
+          counter := fun lay => (parts lay).counter
+          chainValue := fun lay => (published lay).1
+          authPath := flattenPaths fun lay => (published lay).2 })
+
+noncomputable def resolvedPublishedChronologicalSignAfterDigest
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    StateT (QueryCache HashSpec) ProbComp (Option Signature) := do
+  let ftsPath ← simulateQ (randomOracle : QueryImpl HashSpec _)
+    (ftsOpen parameter index leaves (ftsSecret index))
+  let layers ← sequenceFin fun lay =>
+    resolvedChronologicalSignLayer parameter table ftsSecret index lay
+  match traverseOption layers with
+  | none => pure none
+  | some parts => do
+      let published ← sequenceFin fun lay =>
+        resolvedRevealLayerValues parameter table index lay (parts lay).encoding
+      pure (some
+        { randomness := randomness
+          ftsSecret := fun tree => ftsSecret index tree (leaves (ftsIndexOf tree))
+          ftsPath := ftsPath
+          counter := fun lay => (parts lay).counter
+          chainValue := fun lay => (published lay).1
+          authPath := flattenPaths fun lay => (published lay).2 })
+
+noncomputable def resolvedProjectedChronologicalSignAfterDigest
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    StateT (QueryCache HashSpec) ProbComp (Option Signature) := do
+  let ftsPath ← simulateQ (randomOracle : QueryImpl HashSpec _)
+    (ftsOpen parameter index leaves (ftsSecret index))
+  let layers ← do
+    let chronological ← sequenceFin fun lay =>
+      resolvedChronologicalSignLayer parameter table ftsSecret index lay
+    pure (fun lay => (chronological lay).map ChronologicalLayerPart.toLayerPart)
+  match traverseOption layers with
+  | none => pure none
+  | some parts =>
+      pure (some
+        { randomness := randomness
+          ftsSecret := fun tree => ftsSecret index tree (leaves (ftsIndexOf tree))
+          ftsPath := ftsPath
+          counter := fun lay => (parts lay).1
+          chainValue := fun lay => (parts lay).2.1
+          authPath := flattenPaths fun lay => (parts lay).2.2 })
+
+theorem resolvedProjectedChronologicalSignAfterDigest_eq_immediate
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    resolvedProjectedChronologicalSignAfterDigest parameter table ftsSecret randomness index
+        leaves =
+      resolvedImmediateSignAfterDigest parameter table ftsSecret randomness index leaves := by
+  unfold resolvedProjectedChronologicalSignAfterDigest resolvedImmediateSignAfterDigest
+  apply bind_congr
+  intro ftsPath
+  rw [← bind_assoc]
+  rw [sequenceFin_bind_pure_map
+    (fun lay => resolvedChronologicalSignLayer parameter table ftsSecret index lay)
+    (fun result => result.map ChronologicalLayerPart.toLayerPart)]
+  have hlayers :
+      (fun lay => do
+        let result ← resolvedChronologicalSignLayer parameter table ftsSecret index lay
+        pure (result.map ChronologicalLayerPart.toLayerPart)) =
+      (fun lay => resolvedImmediateSignLayer parameter table ftsSecret index lay) := by
+    funext lay
+    exact resolvedChronologicalSignLayer_projects_to_immediate parameter table ftsSecret index lay
+  rw [hlayers]
+  rfl
+
+theorem evalDist_resolvedPublishedChronologicalSignAfterDigest_eq_projected
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf)
+    (cache : QueryCache HashSpec) :
+    𝒟[(resolvedPublishedChronologicalSignAfterDigest parameter table ftsSecret randomness index
+        leaves).run cache] =
+      𝒟[(resolvedProjectedChronologicalSignAfterDigest parameter table ftsSecret randomness index
+        leaves).run cache] := by
+  unfold resolvedPublishedChronologicalSignAfterDigest
+    resolvedProjectedChronologicalSignAfterDigest
+  simp only [StateT.run_bind, pure_bind]
+  apply evalDist_bind_congr
+  intro ftsResult hftsResult
+  rcases ftsResult with ⟨ftsPath, afterFtsCache⟩
+  apply evalDist_bind_congr
+  intro layerResult hlayerResult
+  rcases layerResult with ⟨layers, finalCache⟩
+  cases hparts : traverseOption layers with
+  | none =>
+      rw [traverseOption_map layers ChronologicalLayerPart.toLayerPart, hparts]
+      rfl
+  | some parts =>
+      rw [traverseOption_map layers ChronologicalLayerPart.toLayerPart, hparts]
+      simp only [Option.map_some]
+      rw [StateT.run_bind]
+      rw [resolvedChronologicalLayers_replay_of_mem_support parameter table ftsSecret index
+        afterFtsCache finalCache layers parts hlayerResult hparts]
+      rfl
+
+theorem evalDist_resolvedPublishedChronologicalSignAfterDigest_eq_immediate
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf)
+    (cache : QueryCache HashSpec) :
+    𝒟[(resolvedPublishedChronologicalSignAfterDigest parameter table ftsSecret randomness index
+        leaves).run cache] =
+      𝒟[(resolvedImmediateSignAfterDigest parameter table ftsSecret randomness index leaves).run
+        cache] := by
+  rw [evalDist_resolvedPublishedChronologicalSignAfterDigest_eq_projected parameter table
+    ftsSecret randomness index leaves cache,
+    resolvedProjectedChronologicalSignAfterDigest_eq_immediate parameter table ftsSecret
+      randomness index leaves]
+
+set_option maxHeartbeats 400000 in
+theorem reachableResolvedCouples_maskedPublishedChronologicalSignAfterDigest
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    ReachableResolvedCouples parameter table
+      (maskedPublishedChronologicalSignAfterDigest parameter ftsSecret randomness index leaves)
+      (resolvedPublishedChronologicalSignAfterDigest parameter table ftsSecret randomness index
+        leaves) := by
+  unfold maskedPublishedChronologicalSignAfterDigest
+    resolvedPublishedChronologicalSignAfterDigest
+  apply (reachableResolvedCouples_ftsOpen parameter table index leaves (ftsSecret index)).bind
+  intro ftsPath
+  apply (reachableResolvedCouples_sequenceFin _ _ fun lay =>
+    reachableResolvedCouples_maskedChronologicalSignLayer parameter table ftsSecret index
+      lay).bind
+  intro layers
+  cases hparts : traverseOption layers with
+  | none => exact reachableResolvedCouples_pure parameter table none
+  | some parts =>
+      apply (reachableResolvedCouples_sequenceFin _ _ fun lay =>
+        reachableResolvedCouples_resolvedRevealLayerValues parameter table index lay
+          (parts lay).encoding).bind
+      intro published
+      exact reachableResolvedCouples_pure parameter table (some (show Signature from
+        { randomness := randomness
+          ftsSecret := fun tree => ftsSecret index tree (leaves (ftsIndexOf tree))
+          ftsPath := ftsPath
+          counter := fun lay => (parts lay).counter
+          chainValue := fun lay => (published lay).1
+          authPath := flattenPaths fun lay => (published lay).2 }))
+
+theorem reachableResolvedCouples_maskedPublishedChronologicalSignAfterDigest_immediate
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    ReachableResolvedCouples parameter table
+      (maskedPublishedChronologicalSignAfterDigest parameter ftsSecret randomness index leaves)
+      (resolvedImmediateSignAfterDigest parameter table ftsSecret randomness index leaves) := by
+  intro context fuel cache concreteCache hinvariant hclosed hpublished
+  apply relTriple_of_evalDist_eq_right
+    (evalDist_resolvedPublishedChronologicalSignAfterDigest_eq_immediate parameter table
+      ftsSecret randomness index leaves concreteCache)
+  exact reachableResolvedCouples_maskedPublishedChronologicalSignAfterDigest parameter table
+    ftsSecret randomness index leaves context fuel cache concreteCache hinvariant hclosed
+      hpublished
+
+theorem reachableResolvedCouples_maskedPublishedChronologicalSignAfterDigest_concrete
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    ReachableResolvedCouples parameter table
+      (maskedPublishedChronologicalSignAfterDigest parameter ftsSecret randomness index leaves)
+      (concreteSignAfterDigestFromTable parameter root table ftsSecret randomness index
+        leaves) := by
+  rw [← resolvedImmediateSignAfterDigest_eq_concrete parameter root table ftsSecret randomness
+    index leaves]
+  exact reachableResolvedCouples_maskedPublishedChronologicalSignAfterDigest_immediate parameter
+    table ftsSecret randomness index leaves
 
 set_option maxRecDepth 100000 in
 theorem relTriple_scheduleResolvedSignLayer
