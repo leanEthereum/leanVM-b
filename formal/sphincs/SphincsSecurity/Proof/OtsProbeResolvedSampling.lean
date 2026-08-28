@@ -10615,6 +10615,270 @@ theorem resolverLayerViewPreserving_maskedSignLayer_of_lt
     omega
   · exact resolverLayerViewPreserving_maskedSignLayer_of_not_below preservedLay parameter
       ftsSecret index lay hbelow
+
+abbrev DeferredLayerValues :=
+  (ChainIndex → Digest) × (Fin maxLayerHeight → Digest)
+
+abbrev DeferredLayerSelection :=
+  Option (Counter × (ChainIndex → Digit)) × SplitHashCache
+
+structure IndependentLayerScheduleResult where
+  resolution : DeferredContext × DeferredLayerValues
+  selection : ResolvedRunResult DeferredLayerSelection
+
+noncomputable def independentResolveThenSelectLayer
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (resolvedLay selectedLay : Layer) (encoding : ChainIndex → Digit)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache) :
+    ProbComp (Option IndependentLayerScheduleResult) := do
+  let resolution ← resolveDeferredLayerValues table index resolvedLay encoding context
+  match resolution with
+  | none => pure none
+  | some resolution => do
+      let selection ← runResolvedFromTable context fuel table
+        ((maskedSignLayer parameter ftsSecret index selectedLay).run cache)
+      match selection with
+      | none => pure none
+      | some selection => pure (some ⟨resolution, selection⟩)
+
+noncomputable def independentSelectThenResolveLayer
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (resolvedLay selectedLay : Layer) (encoding : ChainIndex → Digit)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache) :
+    ProbComp (Option IndependentLayerScheduleResult) := do
+  let selection ← runResolvedFromTable context fuel table
+    ((maskedSignLayer parameter ftsSecret index selectedLay).run cache)
+  match selection with
+  | none => pure none
+  | some selection => do
+      let resolution ← resolveDeferredLayerValues table index resolvedLay encoding context
+      match resolution with
+      | none => pure none
+      | some resolution => pure (some ⟨resolution, selection⟩)
+
+theorem evalDist_independentResolveThenSelectLayer_eq_selectThenResolve
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (resolvedLay selectedLay : Layer) (encoding : ChainIndex → Digit)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache) :
+    evalDist (independentResolveThenSelectLayer parameter table ftsSecret index resolvedLay
+        selectedLay encoding context fuel cache) =
+      evalDist (independentSelectThenResolveLayer parameter table ftsSecret index resolvedLay
+        selectedLay encoding context fuel cache) := by
+  let resolution := resolveDeferredLayerValues table index resolvedLay encoding context
+  let selection := runResolvedFromTable context fuel table
+    ((maskedSignLayer parameter ftsSecret index selectedLay).run cache)
+  let combine := fun
+    (resolved : Option (DeferredContext × DeferredLayerValues))
+    (selected : Option (ResolvedRunResult DeferredLayerSelection)) =>
+      match resolved, selected with
+      | some resolved, some selected =>
+          (some ⟨resolved, selected⟩ : Option IndependentLayerScheduleResult)
+      | _, _ => none
+  have hresolveFirst :
+      evalDist (independentResolveThenSelectLayer parameter table ftsSecret index resolvedLay
+          selectedLay encoding context fuel cache) =
+        evalDist (resolution >>= fun resolved =>
+          selection >>= fun selected => pure (combine resolved selected)) := by
+    unfold independentResolveThenSelectLayer
+    apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+    intro resolved
+    cases resolved with
+    | none =>
+        simpa [combine] using
+          (OracleComp.DeferredSampling.evalDist_bind_const_neverFails selection
+            (by simp) (pure none)).symm
+    | some resolved =>
+        apply congrArg evalDist
+        apply bind_congr
+        intro selected
+        cases selected <;> rfl
+  have hselectFirst :
+      evalDist (independentSelectThenResolveLayer parameter table ftsSecret index resolvedLay
+          selectedLay encoding context fuel cache) =
+        evalDist (selection >>= fun selected =>
+          resolution >>= fun resolved => pure (combine resolved selected)) := by
+    unfold independentSelectThenResolveLayer
+    apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+    intro selected
+    cases selected with
+    | none =>
+        simpa [combine] using
+          (OracleComp.DeferredSampling.evalDist_bind_const_neverFails resolution
+            (by simp) (pure none)).symm
+    | some selected =>
+        apply congrArg evalDist
+        apply bind_congr
+        intro resolved
+        cases resolved <;> rfl
+  calc
+    _ = evalDist (resolution >>= fun resolved =>
+        selection >>= fun selected => pure (combine resolved selected)) := hresolveFirst
+    _ = evalDist (selection >>= fun selected =>
+        resolution >>= fun resolved => pure (combine resolved selected)) :=
+      OracleComp.DeferredSampling.evalDist_bind_comm resolution selection
+        (fun resolved selected => pure (combine resolved selected))
+    _ = _ := hselectFirst.symm
+
+noncomputable def resolveThenSelectLayer
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (resolvedLay selectedLay : Layer) (encoding : ChainIndex → Digit)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache) :
+    ProbComp (Option (ResolvedRunResult
+      (DeferredLayerValues × DeferredLayerSelection))) := do
+  let resolution ← resolveDeferredLayerValues table index resolvedLay encoding context
+  match resolution with
+  | none => pure none
+  | some (resolvedContext, values) => do
+      let selection ← runResolvedFromTable resolvedContext fuel table
+        ((maskedSignLayer parameter ftsSecret index selectedLay).run cache)
+      match selection with
+      | none => pure none
+      | some selection => pure (some ⟨selection.context, selection.remaining,
+          (values, selection.value), selection.table⟩)
+
+noncomputable def selectThenResolveLayer
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (resolvedLay selectedLay : Layer) (encoding : ChainIndex → Digit)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache) :
+    ProbComp (Option (ResolvedRunResult
+      (DeferredLayerValues × DeferredLayerSelection))) := do
+  let selection ← runResolvedFromTable context fuel table
+    ((maskedSignLayer parameter ftsSecret index selectedLay).run cache)
+  match selection with
+  | none => pure none
+  | some selection => do
+      let resolution ← resolveDeferredLayerValues table index resolvedLay encoding
+        selection.context
+      match resolution with
+      | none => pure none
+      | some (resolvedContext, values) => pure (some ⟨resolvedContext,
+          selection.remaining, (values, selection.value), selection.table⟩)
+
+def otsDeferredValues (context : DeferredContext) (lay : Layer)
+    (position : Position) : Option HashOutput :=
+  if positionOtsLayer? position = some lay then context.values position else none
+
+def otsPendingAt (context : DeferredContext) (lay : Layer)
+    (coordinate : Coordinate) : Finset Digest :=
+  if coordinateOtsLayer? coordinate = some lay then
+    context.state.pendingAt coordinate
+  else ∅
+
+theorem LayerViewEq.otsDeferredValues_eq {lay : Layer}
+    {left right : DeferredContext} (heq : LayerViewEq lay left right) :
+    otsDeferredValues left lay = otsDeferredValues right lay := by
+  funext position
+  unfold otsDeferredValues
+  by_cases hposition : positionOtsLayer? position = some lay
+  · rw [if_pos hposition, if_pos hposition]
+    exact heq.2.2.2.1 position hposition
+  · rw [if_neg hposition, if_neg hposition]
+
+theorem LayerViewEq.otsPendingAt_eq {lay : Layer}
+    {left right : DeferredContext} (heq : LayerViewEq lay left right) :
+    otsPendingAt left lay = otsPendingAt right lay := by
+  funext coordinate
+  unfold otsPendingAt
+  by_cases hcoordinate : coordinateOtsLayer? coordinate = some lay
+  · rw [if_pos hcoordinate, if_pos hcoordinate]
+    exact heq.2.2.2.2 coordinate hcoordinate
+  · rw [if_neg hcoordinate, if_neg hcoordinate]
+
+theorem ResolverLayerViewEq.otsDeferredValues_eq {lay : Layer}
+    {left right : DeferredContext} (heq : ResolverLayerViewEq lay left right) :
+    otsDeferredValues left lay = otsDeferredValues right lay := by
+  funext position
+  unfold otsDeferredValues
+  by_cases hposition : positionOtsLayer? position = some lay
+  · rw [if_pos hposition, if_pos hposition]
+    exact heq.2.1 position hposition
+  · rw [if_neg hposition, if_neg hposition]
+
+theorem ResolverLayerViewEq.otsPendingAt_eq {lay : Layer}
+    {left right : DeferredContext} (heq : ResolverLayerViewEq lay left right) :
+    otsPendingAt left lay = otsPendingAt right lay := by
+  funext coordinate
+  unfold otsPendingAt
+  by_cases hcoordinate : coordinateOtsLayer? coordinate = some lay
+  · rw [if_pos hcoordinate, if_pos hcoordinate]
+    exact heq.2.2 coordinate hcoordinate
+  · rw [if_neg hcoordinate, if_neg hcoordinate]
+
+structure OtsContextView where
+  values : Coordinate → Option HashOutput
+  revealed : Finset Coordinate
+  ensured : Finset Coordinate
+  deferredValues : Layer → Position → Option HashOutput
+  pendingAt : Layer → Coordinate → Finset Digest
+
+theorem OtsContextView.ext {left right : OtsContextView}
+    (hvalues : left.values = right.values)
+    (hrevealed : left.revealed = right.revealed)
+    (hensured : left.ensured = right.ensured)
+    (hdeferred : left.deferredValues = right.deferredValues)
+    (hpending : left.pendingAt = right.pendingAt) : left = right := by
+  cases left
+  cases right
+  simp_all
+
+def otsContextView (context : DeferredContext) : OtsContextView where
+  values := context.state.values
+  revealed := context.state.revealed
+  ensured := context.state.ensured
+  deferredValues := otsDeferredValues context
+  pendingAt := otsPendingAt context
+
+def independentLayerContextView (resolvedLay observedLay : Layer)
+    (base : DeferredContext) (result : IndependentLayerScheduleResult) : OtsContextView where
+  values := result.selection.context.state.values
+  revealed := result.selection.context.state.revealed
+  ensured := result.selection.context.state.ensured
+  deferredValues := fun lay =>
+    if lay = resolvedLay then otsDeferredValues result.resolution.1 lay
+    else if lay = observedLay then otsDeferredValues result.selection.context lay
+    else otsDeferredValues base lay
+  pendingAt := fun lay =>
+    if lay = resolvedLay then otsPendingAt result.resolution.1 lay
+    else if lay = observedLay then otsPendingAt result.selection.context lay
+    else otsPendingAt base lay
+
+structure LayerScheduleView where
+  context : OtsContextView
+  remaining : Nat
+  resolution : DeferredLayerValues
+  selection : DeferredLayerSelection
+  table : OtsSecretIndex → HashOutput
+
+theorem LayerScheduleView.ext {left right : LayerScheduleView}
+    (hcontext : left.context = right.context)
+    (hremaining : left.remaining = right.remaining)
+    (hresolution : left.resolution = right.resolution)
+    (hselection : left.selection = right.selection)
+    (htable : left.table = right.table) : left = right := by
+  cases left
+  cases right
+  simp_all
+
+def resolvedLayerScheduleView :
+    Option (ResolvedRunResult (DeferredLayerValues × DeferredLayerSelection)) →
+      Option LayerScheduleView
+  | none => none
+  | some result => some ⟨otsContextView result.context, result.remaining,
+      result.value.1, result.value.2, result.table⟩
+
+def independentLayerScheduleView (resolvedLay observedLay : Layer)
+    (base : DeferredContext) :
+    Option IndependentLayerScheduleResult → Option LayerScheduleView
+  | none => none
+  | some result => some ⟨independentLayerContextView resolvedLay observedLay base result,
+      result.selection.remaining, result.resolution.2, result.selection.value,
+      result.selection.table⟩
+
 theorem privateStateAgrees_resolveDeferredLayerValues
     (table : OtsSecretIndex → HashOutput) (index : Index) (lay : Layer)
     (encoding : ChainIndex → Digit) (context finalContext : DeferredContext)
@@ -10674,6 +10938,454 @@ theorem layerViewEq_resolveDeferredLayerValues_of_ne
       exact hne (Option.some.inj heq)
     · exact hresult
 
+theorem relTriple_resolveThenSelectLayer_independent_of_below
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (resolvedLay selectedLay : Layer) (encoding : ChainIndex → Digit)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (hbelow : selectedLay.val + 1 < numLayers)
+    (hne : resolvedLay ≠ ⟨selectedLay.val + 1, hbelow⟩) :
+    RelTriple
+      (resolveThenSelectLayer parameter table ftsSecret index resolvedLay selectedLay encoding
+        context fuel cache)
+      (independentResolveThenSelectLayer parameter table ftsSecret index resolvedLay selectedLay
+        encoding context fuel cache)
+      (fun actual independent => resolvedLayerScheduleView actual =
+        independentLayerScheduleView resolvedLay ⟨selectedLay.val + 1, hbelow⟩ context
+          independent) := by
+  unfold resolveThenSelectLayer independentResolveThenSelectLayer
+  let resolution := resolveDeferredLayerValues table index resolvedLay encoding context
+  have hresolution :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support
+      (relTriple_refl resolution)
+      (fun result => result ∈ support resolution) (fun result hresult => hresult)
+  apply relTriple_bind hresolution
+  intro leftResolution rightResolution hresolutionRelation
+  rcases hresolutionRelation with ⟨hresolutionEq, hresolutionSupport⟩
+  subst rightResolution
+  cases leftResolution with
+  | none =>
+      simpa [resolvedLayerScheduleView, independentLayerScheduleView] using
+        (relTriple_pure_pure (R := fun actual independent =>
+          resolvedLayerScheduleView actual = independentLayerScheduleView resolvedLay
+            ⟨selectedLay.val + 1, hbelow⟩ context independent) rfl)
+  | some resolution =>
+      rcases resolution with ⟨resolvedContext, resolvedValues⟩
+      have hview : LayerViewEq ⟨selectedLay.val + 1, hbelow⟩ resolvedContext context :=
+        layerViewEq_resolveDeferredLayerValues_of_ne table index resolvedLay
+          ⟨selectedLay.val + 1, hbelow⟩ (Ne.symm hne) encoding context resolvedContext
+          resolvedValues hresolutionSupport
+      have hselection := layerViewCouples_maskedSignLayer_of_below parameter ftsSecret index
+        selectedLay hbelow resolvedContext context fuel table cache hview
+      have hselectionSupport :=
+        SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hselection
+          (fun result => result ∈ support
+            (runResolvedFromTable resolvedContext fuel table
+              ((maskedSignLayer parameter ftsSecret index selectedLay).run cache)))
+          (fun result hresult => hresult)
+      apply relTriple_bind hselectionSupport
+      intro leftSelection rightSelection hselectionRelation
+      rcases hselectionRelation with ⟨hselectionEq, hleftSupport⟩
+      cases leftSelection with
+      | none =>
+          cases rightSelection with
+          | none => exact relTriple_pure_pure rfl
+          | some rightSelection => simp [LayerRunEq] at hselectionEq
+      | some leftSelection =>
+          cases rightSelection with
+          | none => simp [LayerRunEq] at hselectionEq
+          | some rightSelection =>
+              rcases hselectionEq with ⟨hcontext, hremaining, hvalue, htable⟩
+              apply relTriple_pure_pure
+              apply congrArg some
+              apply LayerScheduleView.ext
+              · apply OtsContextView.ext
+                · change leftSelection.context.state.values =
+                    rightSelection.context.state.values
+                  exact hcontext.1
+                · change leftSelection.context.state.revealed =
+                    rightSelection.context.state.revealed
+                  exact hcontext.2.1
+                · change leftSelection.context.state.ensured =
+                    rightSelection.context.state.ensured
+                  exact hcontext.2.2.1
+                · change otsDeferredValues leftSelection.context = fun lay =>
+                    if lay = resolvedLay then otsDeferredValues resolvedContext lay
+                    else if lay = ⟨selectedLay.val + 1, hbelow⟩ then
+                      otsDeferredValues rightSelection.context lay
+                    else otsDeferredValues context lay
+                  funext lay
+                  by_cases hresolved : lay = resolvedLay
+                  · subst lay
+                    rw [if_pos rfl]
+                    exact (resolverLayerViewPreserving_maskedSignLayer_of_below resolvedLay
+                      parameter ftsSecret index selectedLay hbelow hne resolvedContext fuel table
+                      cache leftSelection hleftSupport).otsDeferredValues_eq
+                  · by_cases hobserved : lay = ⟨selectedLay.val + 1, hbelow⟩
+                    · subst lay
+                      rw [if_neg hresolved, if_pos rfl]
+                      exact hcontext.otsDeferredValues_eq
+                    · rw [if_neg hresolved, if_neg hobserved]
+                      exact ((resolverLayerViewPreserving_maskedSignLayer_of_below lay parameter
+                        ftsSecret index selectedLay hbelow hobserved resolvedContext fuel table cache
+                        leftSelection hleftSupport).otsDeferredValues_eq).trans
+                          (layerViewEq_resolveDeferredLayerValues_of_ne table index resolvedLay lay
+                            hresolved encoding context resolvedContext resolvedValues
+                            hresolutionSupport).otsDeferredValues_eq
+                · change otsPendingAt leftSelection.context = fun lay =>
+                    if lay = resolvedLay then otsPendingAt resolvedContext lay
+                    else if lay = ⟨selectedLay.val + 1, hbelow⟩ then
+                      otsPendingAt rightSelection.context lay
+                    else otsPendingAt context lay
+                  funext lay
+                  by_cases hresolved : lay = resolvedLay
+                  · subst lay
+                    rw [if_pos rfl]
+                    exact (resolverLayerViewPreserving_maskedSignLayer_of_below resolvedLay
+                      parameter ftsSecret index selectedLay hbelow hne resolvedContext fuel table
+                      cache leftSelection hleftSupport).otsPendingAt_eq
+                  · by_cases hobserved : lay = ⟨selectedLay.val + 1, hbelow⟩
+                    · subst lay
+                      rw [if_neg hresolved, if_pos rfl]
+                      exact hcontext.otsPendingAt_eq
+                    · rw [if_neg hresolved, if_neg hobserved]
+                      exact ((resolverLayerViewPreserving_maskedSignLayer_of_below lay parameter
+                        ftsSecret index selectedLay hbelow hobserved resolvedContext fuel table cache
+                        leftSelection hleftSupport).otsPendingAt_eq).trans
+                          (layerViewEq_resolveDeferredLayerValues_of_ne table index resolvedLay lay
+                            hresolved encoding context resolvedContext resolvedValues
+                            hresolutionSupport).otsPendingAt_eq
+              · exact hremaining
+              · rfl
+              · exact hvalue
+              · exact htable
+
+theorem relTriple_resolveThenSelectLayer_independent_of_not_below
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (resolvedLay selectedLay : Layer) (encoding : ChainIndex → Digit)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (hbelow : ¬selectedLay.val + 1 < numLayers) (hne : resolvedLay ≠ selectedLay) :
+    RelTriple
+      (resolveThenSelectLayer parameter table ftsSecret index resolvedLay selectedLay encoding
+        context fuel cache)
+      (independentResolveThenSelectLayer parameter table ftsSecret index resolvedLay selectedLay
+        encoding context fuel cache)
+      (fun actual independent => resolvedLayerScheduleView actual =
+        independentLayerScheduleView resolvedLay selectedLay context independent) := by
+  unfold resolveThenSelectLayer independentResolveThenSelectLayer
+  let resolution := resolveDeferredLayerValues table index resolvedLay encoding context
+  have hresolution :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support
+      (relTriple_refl resolution)
+      (fun result => result ∈ support resolution) (fun result hresult => hresult)
+  apply relTriple_bind hresolution
+  intro leftResolution rightResolution hresolutionRelation
+  rcases hresolutionRelation with ⟨hresolutionEq, hresolutionSupport⟩
+  subst rightResolution
+  cases leftResolution with
+  | none =>
+      simpa [resolvedLayerScheduleView, independentLayerScheduleView] using
+        (relTriple_pure_pure (R := fun actual independent =>
+          resolvedLayerScheduleView actual = independentLayerScheduleView resolvedLay
+            selectedLay context independent) rfl)
+  | some resolution =>
+      rcases resolution with ⟨resolvedContext, resolvedValues⟩
+      have hview : LayerViewEq selectedLay resolvedContext context :=
+        layerViewEq_resolveDeferredLayerValues_of_ne table index resolvedLay selectedLay
+          (Ne.symm hne) encoding context resolvedContext resolvedValues hresolutionSupport
+      have hselection := layerViewCouples_maskedSignLayer_of_not_below selectedLay parameter
+        ftsSecret index selectedLay hbelow resolvedContext context fuel table cache hview
+      have hselectionSupport :=
+        SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hselection
+          (fun result => result ∈ support
+            (runResolvedFromTable resolvedContext fuel table
+              ((maskedSignLayer parameter ftsSecret index selectedLay).run cache)))
+          (fun result hresult => hresult)
+      apply relTriple_bind hselectionSupport
+      intro leftSelection rightSelection hselectionRelation
+      rcases hselectionRelation with ⟨hselectionEq, hleftSupport⟩
+      cases leftSelection with
+      | none =>
+          cases rightSelection with
+          | none => exact relTriple_pure_pure rfl
+          | some rightSelection => simp [LayerRunEq] at hselectionEq
+      | some leftSelection =>
+          cases rightSelection with
+          | none => simp [LayerRunEq] at hselectionEq
+          | some rightSelection =>
+              rcases hselectionEq with ⟨hcontext, hremaining, hvalue, htable⟩
+              apply relTriple_pure_pure
+              apply congrArg some
+              apply LayerScheduleView.ext
+              · apply OtsContextView.ext
+                · change leftSelection.context.state.values =
+                    rightSelection.context.state.values
+                  exact hcontext.1
+                · change leftSelection.context.state.revealed =
+                    rightSelection.context.state.revealed
+                  exact hcontext.2.1
+                · change leftSelection.context.state.ensured =
+                    rightSelection.context.state.ensured
+                  exact hcontext.2.2.1
+                · change otsDeferredValues leftSelection.context = fun lay =>
+                    if lay = resolvedLay then otsDeferredValues resolvedContext lay
+                    else if lay = selectedLay then otsDeferredValues rightSelection.context lay
+                    else otsDeferredValues context lay
+                  funext lay
+                  by_cases hresolved : lay = resolvedLay
+                  · subst lay
+                    rw [if_pos rfl]
+                    exact (resolverLayerViewPreserving_maskedSignLayer_of_not_below resolvedLay
+                      parameter ftsSecret index selectedLay hbelow resolvedContext fuel table cache
+                      leftSelection hleftSupport).otsDeferredValues_eq
+                  · by_cases hobserved : lay = selectedLay
+                    · subst lay
+                      rw [if_neg hresolved, if_pos rfl]
+                      exact hcontext.otsDeferredValues_eq
+                    · rw [if_neg hresolved, if_neg hobserved]
+                      exact ((resolverLayerViewPreserving_maskedSignLayer_of_not_below lay
+                        parameter ftsSecret index selectedLay hbelow resolvedContext fuel table cache
+                        leftSelection hleftSupport).otsDeferredValues_eq).trans
+                          (layerViewEq_resolveDeferredLayerValues_of_ne table index resolvedLay lay
+                            hresolved encoding context resolvedContext resolvedValues
+                            hresolutionSupport).otsDeferredValues_eq
+                · change otsPendingAt leftSelection.context = fun lay =>
+                    if lay = resolvedLay then otsPendingAt resolvedContext lay
+                    else if lay = selectedLay then otsPendingAt rightSelection.context lay
+                    else otsPendingAt context lay
+                  funext lay
+                  by_cases hresolved : lay = resolvedLay
+                  · subst lay
+                    rw [if_pos rfl]
+                    exact (resolverLayerViewPreserving_maskedSignLayer_of_not_below resolvedLay
+                      parameter ftsSecret index selectedLay hbelow resolvedContext fuel table cache
+                      leftSelection hleftSupport).otsPendingAt_eq
+                  · by_cases hobserved : lay = selectedLay
+                    · subst lay
+                      rw [if_neg hresolved, if_pos rfl]
+                      exact hcontext.otsPendingAt_eq
+                    · rw [if_neg hresolved, if_neg hobserved]
+                      exact ((resolverLayerViewPreserving_maskedSignLayer_of_not_below lay
+                        parameter ftsSecret index selectedLay hbelow resolvedContext fuel table cache
+                        leftSelection hleftSupport).otsPendingAt_eq).trans
+                          (layerViewEq_resolveDeferredLayerValues_of_ne table index resolvedLay lay
+                            hresolved encoding context resolvedContext resolvedValues
+                            hresolutionSupport).otsPendingAt_eq
+              · exact hremaining
+              · rfl
+              · exact hvalue
+              · exact htable
+
+noncomputable def selectionObservedLayer (lay : Layer) : Layer :=
+  if hbelow : lay.val + 1 < numLayers then ⟨lay.val + 1, hbelow⟩ else lay
+
+theorem relTriple_resolveThenSelectLayer_independent_of_lt
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (resolvedLay selectedLay : Layer) (hlt : resolvedLay.val < selectedLay.val)
+    (encoding : ChainIndex → Digit) (context : DeferredContext) (fuel : Nat)
+    (cache : SplitHashCache) :
+    RelTriple
+      (resolveThenSelectLayer parameter table ftsSecret index resolvedLay selectedLay encoding
+        context fuel cache)
+      (independentResolveThenSelectLayer parameter table ftsSecret index resolvedLay selectedLay
+        encoding context fuel cache)
+      (fun actual independent => resolvedLayerScheduleView actual =
+        independentLayerScheduleView resolvedLay (selectionObservedLayer selectedLay) context
+          independent) := by
+  by_cases hbelow : selectedLay.val + 1 < numLayers
+  · have hne : resolvedLay ≠ ⟨selectedLay.val + 1, hbelow⟩ := by
+      intro heq
+      have hval := congrArg Fin.val heq
+      simp only at hval
+      omega
+    simpa [selectionObservedLayer, hbelow] using
+      relTriple_resolveThenSelectLayer_independent_of_below parameter table ftsSecret index
+        resolvedLay selectedLay encoding context fuel cache hbelow hne
+  · have hne : resolvedLay ≠ selectedLay := by
+      intro heq
+      subst selectedLay
+      omega
+    simpa [selectionObservedLayer, hbelow] using
+      relTriple_resolveThenSelectLayer_independent_of_not_below parameter table ftsSecret index
+        resolvedLay selectedLay encoding context fuel cache hbelow hne
+
+theorem resolverLayerViewPreserving_maskedSignLayer_of_ne_observed
+    (preservedLay lay : Layer) (hne : preservedLay ≠ selectionObservedLayer lay)
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index) :
+    ResolverLayerViewPreserving preservedLay
+      (maskedSignLayer parameter ftsSecret index lay) := by
+  by_cases hbelow : lay.val + 1 < numLayers
+  · apply resolverLayerViewPreserving_maskedSignLayer_of_below preservedLay parameter
+      ftsSecret index lay hbelow
+    simpa [selectionObservedLayer, hbelow] using hne
+  · exact resolverLayerViewPreserving_maskedSignLayer_of_not_below preservedLay parameter
+      ftsSecret index lay hbelow
+
+theorem relTriple_selectThenResolveLayer_independent_of_lt
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (resolvedLay selectedLay : Layer) (hlt : resolvedLay.val < selectedLay.val)
+    (encoding : ChainIndex → Digit) (context : DeferredContext) (fuel : Nat)
+    (cache : SplitHashCache) :
+    RelTriple
+      (selectThenResolveLayer parameter table ftsSecret index resolvedLay selectedLay encoding
+        context fuel cache)
+      (independentSelectThenResolveLayer parameter table ftsSecret index resolvedLay selectedLay
+        encoding context fuel cache)
+      (fun actual independent => resolvedLayerScheduleView actual =
+        independentLayerScheduleView resolvedLay (selectionObservedLayer selectedLay) context
+          independent) := by
+  have hneObserved : resolvedLay ≠ selectionObservedLayer selectedLay := by
+    by_cases hbelow : selectedLay.val + 1 < numLayers
+    · simp only [selectionObservedLayer, dif_pos hbelow]
+      intro heq
+      have hval := congrArg Fin.val heq
+      simp only at hval
+      omega
+    · simp only [selectionObservedLayer, dif_neg hbelow]
+      intro heq
+      subst selectedLay
+      omega
+  unfold selectThenResolveLayer independentSelectThenResolveLayer
+  let selection := runResolvedFromTable context fuel table
+    ((maskedSignLayer parameter ftsSecret index selectedLay).run cache)
+  have hselection :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support
+      (relTriple_refl selection)
+      (fun result => result ∈ support selection) (fun result hresult => hresult)
+  apply relTriple_bind hselection
+  intro leftSelection rightSelection hselectionRelation
+  rcases hselectionRelation with ⟨hselectionEq, hselectionSupport⟩
+  subst rightSelection
+  cases leftSelection with
+  | none =>
+      simpa [resolvedLayerScheduleView, independentLayerScheduleView] using
+        (relTriple_pure_pure (R := fun actual independent =>
+          resolvedLayerScheduleView actual = independentLayerScheduleView resolvedLay
+            (selectionObservedLayer selectedLay) context independent) rfl)
+  | some selectionResult =>
+      have hresolverView : ResolverLayerViewEq resolvedLay selectionResult.context context :=
+        resolverLayerViewPreserving_maskedSignLayer_of_ne_observed resolvedLay selectedLay
+          hneObserved parameter ftsSecret index context fuel table cache selectionResult
+          hselectionSupport
+      let resolution := resolveDeferredLayerValues table index resolvedLay encoding
+        selectionResult.context
+      have hresolutionBase := relTriple_resolveDeferredLayerValues_of_resolverLayerViewEq table
+        index resolvedLay encoding selectionResult.context context hresolverView
+      have hresolution :=
+        SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hresolutionBase
+          (fun result => result ∈ support resolution) (fun result hresult => hresult)
+      apply relTriple_bind hresolution
+      intro leftResolution rightResolution hresolutionRelation
+      rcases hresolutionRelation with ⟨hresolutionEq, hresolutionSupport⟩
+      cases leftResolution with
+      | none =>
+          cases rightResolution with
+          | none => exact relTriple_pure_pure rfl
+          | some rightResolution => simp [ResolverLayerContextValueEq] at hresolutionEq
+      | some leftResolution =>
+          cases rightResolution with
+          | none => simp [ResolverLayerContextValueEq] at hresolutionEq
+          | some rightResolution =>
+              rcases hresolutionEq with ⟨hvalues, hresolvedView⟩
+              apply relTriple_pure_pure
+              apply congrArg some
+              apply LayerScheduleView.ext
+              · apply OtsContextView.ext
+                · change leftResolution.1.state.values = selectionResult.context.state.values
+                  exact (privateStateAgrees_resolveDeferredLayerValues table index resolvedLay
+                    encoding selectionResult.context leftResolution.1 leftResolution.2
+                    hresolutionSupport).1
+                · change leftResolution.1.state.revealed =
+                    selectionResult.context.state.revealed
+                  exact (privateStateAgrees_resolveDeferredLayerValues table index resolvedLay
+                    encoding selectionResult.context leftResolution.1 leftResolution.2
+                    hresolutionSupport).2.1
+                · change leftResolution.1.state.ensured =
+                    selectionResult.context.state.ensured
+                  exact (privateStateAgrees_resolveDeferredLayerValues table index resolvedLay
+                    encoding selectionResult.context leftResolution.1 leftResolution.2
+                    hresolutionSupport).2.2
+                · change otsDeferredValues leftResolution.1 = fun lay =>
+                    if lay = resolvedLay then otsDeferredValues rightResolution.1 lay
+                    else if lay = selectionObservedLayer selectedLay then
+                      otsDeferredValues selectionResult.context lay
+                    else otsDeferredValues context lay
+                  funext lay
+                  by_cases hresolved : lay = resolvedLay
+                  · subst lay
+                    rw [if_pos rfl]
+                    exact hresolvedView.otsDeferredValues_eq
+                  · have hresolutionOther := layerViewEq_resolveDeferredLayerValues_of_ne
+                      table index resolvedLay lay hresolved encoding selectionResult.context
+                      leftResolution.1 leftResolution.2 hresolutionSupport
+                    by_cases hobserved : lay = selectionObservedLayer selectedLay
+                    · rw [if_neg hresolved, if_pos hobserved]
+                      exact hresolutionOther.otsDeferredValues_eq
+                    · rw [if_neg hresolved, if_neg hobserved]
+                      exact hresolutionOther.otsDeferredValues_eq.trans
+                        ((resolverLayerViewPreserving_maskedSignLayer_of_ne_observed lay
+                          selectedLay hobserved parameter ftsSecret index context fuel table cache
+                          selectionResult hselectionSupport).otsDeferredValues_eq)
+                · change otsPendingAt leftResolution.1 = fun lay =>
+                    if lay = resolvedLay then otsPendingAt rightResolution.1 lay
+                    else if lay = selectionObservedLayer selectedLay then
+                      otsPendingAt selectionResult.context lay
+                    else otsPendingAt context lay
+                  funext lay
+                  by_cases hresolved : lay = resolvedLay
+                  · subst lay
+                    rw [if_pos rfl]
+                    exact hresolvedView.otsPendingAt_eq
+                  · have hresolutionOther := layerViewEq_resolveDeferredLayerValues_of_ne
+                      table index resolvedLay lay hresolved encoding selectionResult.context
+                      leftResolution.1 leftResolution.2 hresolutionSupport
+                    by_cases hobserved : lay = selectionObservedLayer selectedLay
+                    · rw [if_neg hresolved, if_pos hobserved]
+                      exact hresolutionOther.otsPendingAt_eq
+                    · rw [if_neg hresolved, if_neg hobserved]
+                      exact hresolutionOther.otsPendingAt_eq.trans
+                        ((resolverLayerViewPreserving_maskedSignLayer_of_ne_observed lay
+                          selectedLay hobserved parameter ftsSecret index context fuel table cache
+                          selectionResult hselectionSupport).otsPendingAt_eq)
+              · rfl
+              · exact hvalues
+              · rfl
+              · rfl
+
+theorem evalDist_resolveThenSelectLayer_view_eq_selectThenResolveLayer_of_lt
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (resolvedLay selectedLay : Layer) (hlt : resolvedLay.val < selectedLay.val)
+    (encoding : ChainIndex → Digit) (context : DeferredContext) (fuel : Nat)
+    (cache : SplitHashCache) :
+    evalDist (resolvedLayerScheduleView <$>
+      resolveThenSelectLayer parameter table ftsSecret index resolvedLay selectedLay encoding
+        context fuel cache) =
+    evalDist (resolvedLayerScheduleView <$>
+      selectThenResolveLayer parameter table ftsSecret index resolvedLay selectedLay encoding
+        context fuel cache) := by
+  have hresolveFirst := evalDist_map_eq_of_relTriple
+    (relTriple_resolveThenSelectLayer_independent_of_lt parameter table ftsSecret index
+      resolvedLay selectedLay hlt encoding context fuel cache)
+  have hselectFirst := evalDist_map_eq_of_relTriple
+    (relTriple_selectThenResolveLayer_independent_of_lt parameter table ftsSecret index
+      resolvedLay selectedLay hlt encoding context fuel cache)
+  calc
+    _ = evalDist (independentLayerScheduleView resolvedLay
+        (selectionObservedLayer selectedLay) context <$>
+      independentResolveThenSelectLayer parameter table ftsSecret index resolvedLay selectedLay
+        encoding context fuel cache) := hresolveFirst
+    _ = evalDist (independentLayerScheduleView resolvedLay
+        (selectionObservedLayer selectedLay) context <$>
+      independentSelectThenResolveLayer parameter table ftsSecret index resolvedLay selectedLay
+        encoding context fuel cache) := by
+      rw [evalDist_map, evalDist_map,
+        evalDist_independentResolveThenSelectLayer_eq_selectThenResolve]
+    _ = _ := hselectFirst.symm
 theorem DeferredContext.Valid.of_resolveDeferredLayerValues
     {context : DeferredContext} (hvalid : context.Valid)
     (table : OtsSecretIndex → HashOutput) (index : Index) (lay : Layer)
