@@ -39,6 +39,40 @@ noncomputable def chronologicalCleanRetainedRun
     rootResult.2
   pure ((rootResult.1, restResult.1), restResult.2)
 
+noncomputable def deferredCleanRetainedRest
+    (adversary : Adversary) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (cache : SplitHashCache) :
+    OracleComp (LazyRevealProbe.World Coordinate)
+      (RetainedRestResult × SplitHashCache) :=
+  (do
+    let (forgery, log) ←
+      simulateQ (maskedExpandedAdversaryImpl parameter root ftsSecret)
+        (signingTraceComputation (adversary.main ⟨root, parameter⟩))
+    let verified ← simulateQ (probingRomImpl parameter)
+      (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)
+    pure ((forgery, log), verified)).run cache
+
+noncomputable def deferredCleanRetainedRun
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    OracleComp (LazyRevealProbe.World Coordinate)
+      (RetainedGameResult × SplitHashCache) := do
+  let rootResult ← maskedPublishedTreeRoot.run emptySplitHashCache
+  let restResult ← deferredCleanRetainedRest adversary parameter rootResult.1 ftsSecret
+    rootResult.2
+  pure ((rootResult.1, restResult.1), restResult.2)
+
+set_option maxRecDepth 100000 in
+theorem deferredCleanRetainedRun_eq
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    deferredCleanRetainedRun adversary parameter ftsSecret =
+      (maskedResolvedRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
+        emptySplitHashCache := by
+  unfold deferredCleanRetainedRun deferredCleanRetainedRest
+    maskedResolvedRetainedGameAfterFtsSecrets maskedRetainedPrefixAfterFtsSecrets
+  simp only [StateT.run_bind, StateT.run_pure, bind_assoc, pure_bind]
+
 set_option maxRecDepth 100000 in
 theorem chronologicalCleanRetainedRun_eq
     (adversary : Adversary) (parameter : PublicParameter)
