@@ -12201,6 +12201,73 @@ theorem reachableResolvedCouples_retainedGameAfterFtsSecrets
   intro verified
   exact reachableResolvedCouples_pure parameter table (root, ((forgery, log), verified))
 
+theorem resolvedContextInvariant_empty
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput) :
+    ResolvedContextInvariant parameter table
+      { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+        values := emptyDeferredStructuralValues }
+      (∅ : QueryCache HashSpec) ∅ :=
+  ⟨chronologicalCacheAgrees_empty parameter table, DeferredContext.valid_empty,
+    startTableAgrees_empty table, deferredCompletable_empty table,
+    resolvedCachePartition_empty parameter table⟩
+
+theorem publishedValues_empty :
+    PublishedValues (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) := by
+  simp [PublishedValues, LazyRevealProbe.State.empty]
+
+theorem relTriple_runResolvedFromTable_maskedResolvedRetainedGame
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    RelTriple
+      (runResolvedFromTable
+        { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+          values := emptyDeferredStructuralValues }
+        fuel table
+        ((maskedResolvedRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
+          emptySplitHashCache))
+      ((resolvedRetainedGameAfterFtsSecrets adversary parameter table ftsSecret).run ∅)
+      (ReachableResolvedRunRel parameter table) := by
+  have hempty : ordinaryQueryCache emptySplitHashCache = (∅ : QueryCache HashSpec) := by
+    rfl
+  apply reachableResolvedCouples_retainedGameAfterFtsSecrets adversary parameter table ftsSecret
+  · rw [hempty]
+    exact resolvedContextInvariant_empty parameter table
+  · exact visibleResolvedComputationsCached_empty parameter table
+      emptyDeferredStructuralValues ∅
+  · exact publishedValues_empty
+
+theorem maskedResolvedRetainedGameRest_run_isProbeBound
+    (adversary : Adversary) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (hbound : (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
+      IsOuterHash q) (cache : SplitHashCache) :
+    ((do
+      let (forgery, log) ←
+        simulateQ (maskedExpandedAdversaryImpl parameter root ftsSecret)
+          (signingTraceComputation (adversary.main ⟨root, parameter⟩))
+      let verified ← simulateQ (probingRomImpl parameter)
+        (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)
+      pure ((forgery, log), verified)).run cache).IsQueryBoundP
+        (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) q := by
+  let adversaryPrefix := signingTraceComputation
+    (adversary.main (⟨root, parameter⟩ : PublicKey))
+  let finish : (Forgery × QueryLog SigningSpec) →
+      OracleComp (OracleWorld + SigningSpec) RetainedRestResult := fun result => do
+    let verified ← liftOracleWorldLeft
+      (scheme.verify ⟨root, parameter⟩ result.1.message result.1.signature)
+    pure (result, verified)
+  have hsource : (adversaryPrefix >>= finish).IsQueryBoundP IsOuterHash q := by
+    simpa [adversaryPrefix, finish, retainedGameRestComputation] using hbound
+  have hmixed := isQueryBoundP_simulateQ_run_StateT_then_of_steps
+    (leftImpl := maskedExpandedAdversaryImpl parameter root ftsSecret)
+    (rightImpl := maskedExpandedAdversaryImpl parameter root ftsSecret)
+    hsource
+    (maskedExpandedAdversaryImpl_step_isProbeBound parameter root ftsSecret)
+    (maskedExpandedAdversaryImpl_step_isProbeBound parameter root ftsSecret) cache
+  simpa [adversaryPrefix, finish, maskedExpandedAdversaryImpl, simulateQ_bind,
+    simulateQ_liftOracleWorldLeft, StateT.run_bind] using hmixed
+
 def DeferredFreshOn (coordinates : List Coordinate) (context : DeferredContext) : Prop :=
   ∀ position : Position, Coordinate.position position ∈ coordinates →
     context.values position = none
