@@ -154,6 +154,7 @@ import SphincsSecurity.Proof.OtsProbeResolvedAdaptiveSigner
 import SphincsSecurity.Proof.OtsProbeChronologicalTerminal
 import SphincsSecurity.Proof.OtsProbeChronologicalProbability
 import SphincsSecurity.Proof.OtsProbeResolvedAdaptiveProbability
+import SphincsSecurity.Proof.OtsProbeResolvedAdaptiveClean
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
