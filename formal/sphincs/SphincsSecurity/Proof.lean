@@ -150,6 +150,7 @@ import SphincsSecurity.Proof.OtsProbeResolvedFinalization
 import SphincsSecurity.Proof.OtsProbeResolvedSelectionFinalization
 import SphincsSecurity.Proof.OtsProbeResolvedSignerFinalization
 import SphincsSecurity.Proof.OtsProbeResolvedAdaptiveFinalization
+import SphincsSecurity.Proof.OtsProbeResolvedAdaptiveSigner
 import SphincsSecurity.Proof.OtsProbeChronologicalTerminal
 import SphincsSecurity.Proof.OtsProbeChronologicalProbability
 
