@@ -11186,6 +11186,56 @@ noncomputable def resolvedOtsSelect
       (Option (Counter × (ChainIndex → Digit))) :=
   resolvedOtsSelectFrom parameter lay tree leafIdx message encodingAttemptLimit 0
 
+theorem resolvedOtsSelectFrom_then_values_eq_otsSignFrom
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (message : Digest) :
+    ∀ attempts counter,
+      (do
+        match ← resolvedOtsSelectFrom parameter lay tree leafIdx message attempts counter with
+        | none => pure none
+        | some (selectedCounter, encoding) => do
+            let values ← sequenceFin fun chainIdx =>
+              simulateQ (randomOracle : QueryImpl HashSpec _)
+                (chainWalk parameter lay tree leafIdx chainIdx 0 (encoding chainIdx).val
+                  (truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩)))
+            pure (some (selectedCounter, values))) =
+        simulateQ (randomOracle : QueryImpl HashSpec _)
+          (otsSignFrom parameter lay tree leafIdx
+            (fun chainIdx => truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩))
+            message attempts counter)
+  | 0, counter => by
+      simp [resolvedOtsSelectFrom, otsSignFrom]
+  | attempts + 1, counter => by
+      rw [resolvedOtsSelectFrom, otsSignFrom, simulateQ_bind]
+      rw [bind_assoc]
+      apply bind_congr
+      intro encoded
+      cases encoded with
+      | none =>
+          exact resolvedOtsSelectFrom_then_values_eq_otsSignFrom parameter table lay tree
+            leafIdx message attempts (counter + 1)
+      | some encoding =>
+          simp only [pure_bind, simulateQ_bind, simulateQ_pure]
+          rw [FtsProbeSimulation.simulateQ_randomOracle_sequenceFin]
+
+theorem resolvedOtsSelect_then_values_eq_otsSign
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (message : Digest) :
+    (do
+      match ← resolvedOtsSelect parameter lay tree leafIdx message with
+      | none => pure none
+      | some (counter, encoding) => do
+          let values ← sequenceFin fun chainIdx =>
+            simulateQ (randomOracle : QueryImpl HashSpec _)
+              (chainWalk parameter lay tree leafIdx chainIdx 0 (encoding chainIdx).val
+                (truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩)))
+          pure (some (counter, values))) =
+      simulateQ (randomOracle : QueryImpl HashSpec _)
+        (otsSign parameter lay tree leafIdx
+          (fun chainIdx => truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩)) message) := by
+  exact resolvedOtsSelectFrom_then_values_eq_otsSignFrom parameter table lay tree leafIdx
+    message encodingAttemptLimit 0
+
 theorem resolvedCouples_maskedOtsSignFrom
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
     (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (message : Digest) :
@@ -11279,6 +11329,192 @@ noncomputable def resolvedLayerMessage
   else
     simulateQ (randomOracle : QueryImpl HashSpec _)
       (ftsKey parameter index (ftsSecret index))
+
+theorem resolvedLayerMessage_eq_layerMessage
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) :
+    resolvedLayerMessage parameter table ftsSecret index lay =
+      simulateQ (randomOracle : QueryImpl HashSpec _)
+        (layerMessage
+          (⟨parameter, root,
+            fun selectedLay selectedTree selectedLeaf selectedChain =>
+              truncateHash
+                (table ⟨selectedLay, selectedTree, selectedLeaf, selectedChain⟩),
+            ftsSecret⟩ : SecretKey)
+          index lay) := by
+  unfold resolvedLayerMessage layerMessage treeRoot
+  split <;> rfl
+
+noncomputable def resolvedSelectedLayerValues
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (index : Index) (lay : Layer) (message : Digest) :
+    StateT (QueryCache HashSpec) ProbComp
+      (Option (Counter × (ChainIndex → Digest))) := do
+  let tree := treeIndexAt index lay
+  let leafIdx := leafIndexAt index lay
+  match ← resolvedOtsSelect parameter lay tree leafIdx message with
+  | none => pure none
+  | some (counter, encoding) => do
+      let values ← sequenceFin fun chainIdx =>
+        simulateQ (randomOracle : QueryImpl HashSpec _)
+          (chainWalk parameter lay tree leafIdx chainIdx 0 (encoding chainIdx).val
+            (truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩)))
+      pure (some (counter, values))
+
+noncomputable def resolvedFinishLayerValues
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (index : Index) (lay : Layer) :
+    Option (Counter × (ChainIndex → Digest)) →
+      StateT (QueryCache HashSpec) ProbComp
+        (Option (Counter × (ChainIndex → Digest) × (Fin maxLayerHeight → Digest)))
+  | none => pure none
+  | some (counter, values) => do
+      let path ← sequenceFin fun level : Fin maxLayerHeight =>
+        if level.val < layerHeight lay then
+          simulateQ (randomOracle : QueryImpl HashSpec _)
+            (treeNode parameter lay (treeIndexAt index lay)
+              (fun sibling chainIdx =>
+                truncateHash
+                  (table ⟨lay, treeIndexAt index lay, sibling, chainIdx⟩))
+              level.val
+              (Nat.xor ((leafIndexAt index lay).val / 2 ^ level.val) 1))
+        else pure 0
+      pure (some (counter, values, path))
+
+noncomputable def resolvedImmediateSignLayer
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) : StateT (QueryCache HashSpec) ProbComp
+      (Option (Counter × (ChainIndex → Digest) × (Fin maxLayerHeight → Digest))) := do
+  let message ← resolvedLayerMessage parameter table ftsSecret index lay
+  let selectedValues ← resolvedSelectedLayerValues parameter table index lay message
+  resolvedFinishLayerValues parameter table index lay selectedValues
+
+theorem resolvedImmediateSignLayer_eq_signLayer
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) :
+    resolvedImmediateSignLayer parameter table ftsSecret index lay =
+      simulateQ (randomOracle : QueryImpl HashSpec _)
+        (signLayer
+          (⟨parameter, root,
+            fun selectedLay selectedTree selectedLeaf selectedChain =>
+              truncateHash
+                (table ⟨selectedLay, selectedTree, selectedLeaf, selectedChain⟩),
+            ftsSecret⟩ : SecretKey)
+          index lay) := by
+  unfold resolvedImmediateSignLayer signLayer
+  rw [resolvedLayerMessage_eq_layerMessage parameter root table ftsSecret index lay,
+    simulateQ_bind]
+  apply bind_congr
+  intro message
+  rw [simulateQ_bind]
+  unfold resolvedSelectedLayerValues
+  rw [resolvedOtsSelect_then_values_eq_otsSign parameter table lay
+    (treeIndexAt index lay) (leafIndexAt index lay) message]
+  apply bind_congr
+  intro selected
+  cases selected with
+  | none => simp [resolvedFinishLayerValues]
+  | some part =>
+      rcases part with ⟨counter, values⟩
+      unfold resolvedFinishLayerValues
+      simp only [simulateQ_bind, simulateQ_pure]
+      rw [treePath, FtsProbeSimulation.simulateQ_randomOracle_sequenceFin]
+      have hcomponent :
+          (fun level : Fin maxLayerHeight =>
+            if level.val < layerHeight lay then
+              simulateQ (randomOracle : QueryImpl HashSpec _)
+                (treeNode parameter lay (treeIndexAt index lay)
+                  (fun sibling chainIdx => truncateHash
+                    (table ⟨lay, treeIndexAt index lay, sibling, chainIdx⟩))
+                  level.val
+                  (Nat.xor ((leafIndexAt index lay).val / 2 ^ level.val) 1))
+            else pure 0) =
+          (fun level : Fin maxLayerHeight =>
+            simulateQ (randomOracle : QueryImpl HashSpec _)
+              (if level.val < layerHeight lay then
+                treeNode parameter lay (treeIndexAt index lay)
+                  (fun sibling chainIdx => truncateHash
+                    (table ⟨lay, treeIndexAt index lay, sibling, chainIdx⟩))
+                  level.val
+                  (Nat.xor ((leafIndexAt index lay).val / 2 ^ level.val) 1)
+              else pure 0)) := by
+        funext level
+        split <;> rfl
+      rw [hcomponent]
+
+noncomputable def resolvedImmediateSignAfterDigest
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    StateT (QueryCache HashSpec) ProbComp (Option Signature) := do
+  let ftsPath ← simulateQ (randomOracle : QueryImpl HashSpec _)
+    (ftsOpen parameter index leaves (ftsSecret index))
+  let layers ← sequenceFin fun lay =>
+    resolvedImmediateSignLayer parameter table ftsSecret index lay
+  match traverseOption layers with
+  | none => pure none
+  | some parts =>
+      pure (some
+        { randomness := randomness
+          ftsSecret := fun tree => ftsSecret index tree (leaves (ftsIndexOf tree))
+          ftsPath := ftsPath
+          counter := fun lay => (parts lay).1
+          chainValue := fun lay => (parts lay).2.1
+          authPath := flattenPaths fun lay => (parts lay).2.2 })
+
+noncomputable def concreteSignAfterDigestFromTable
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    StateT (QueryCache HashSpec) ProbComp (Option Signature) := do
+  let secretKey : SecretKey :=
+    ⟨parameter, root,
+      fun lay tree leafIdx chainIdx =>
+        truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+      ftsSecret⟩
+  let ftsPath ← simulateQ (randomOracle : QueryImpl HashSpec _)
+    (ftsOpen parameter index leaves (ftsSecret index))
+  let layers ← sequenceFin fun lay =>
+    simulateQ (randomOracle : QueryImpl HashSpec _)
+      (signLayer secretKey index lay)
+  match traverseOption layers with
+  | none => pure none
+  | some parts =>
+      pure (some
+        { randomness := randomness
+          ftsSecret := fun tree => ftsSecret index tree (leaves (ftsIndexOf tree))
+          ftsPath := ftsPath
+          counter := fun lay => (parts lay).1
+          chainValue := fun lay => (parts lay).2.1
+          authPath := flattenPaths fun lay => (parts lay).2.2 })
+
+theorem resolvedImmediateSignAfterDigest_eq_concrete
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    resolvedImmediateSignAfterDigest parameter table ftsSecret randomness index leaves =
+      concreteSignAfterDigestFromTable parameter root table ftsSecret randomness index leaves := by
+  unfold resolvedImmediateSignAfterDigest concreteSignAfterDigestFromTable
+  have hlayers :
+      (fun lay => resolvedImmediateSignLayer parameter table ftsSecret index lay) =
+        (fun lay => simulateQ (randomOracle : QueryImpl HashSpec _)
+          (signLayer
+            (⟨parameter, root,
+              fun selectedLay selectedTree selectedLeaf selectedChain =>
+                truncateHash
+                  (table ⟨selectedLay, selectedTree, selectedLeaf, selectedChain⟩),
+              ftsSecret⟩ : SecretKey)
+            index lay)) := by
+    funext lay
+    exact resolvedImmediateSignLayer_eq_signLayer parameter root table ftsSecret index lay
+  rw [hlayers]
 
 theorem resolvedCouples_maskedLayerMessage
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
