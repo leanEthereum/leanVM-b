@@ -11386,6 +11386,685 @@ theorem evalDist_resolveThenSelectLayer_view_eq_selectThenResolveLayer_of_lt
       rw [evalDist_map, evalDist_map,
         evalDist_independentResolveThenSelectLayer_eq_selectThenResolve]
     _ = _ := hselectFirst.symm
+
+def NonOtsViewEq (left right : DeferredContext) : Prop :=
+  (∀ position, positionOtsLayer? position = none →
+    left.values position = right.values position) ∧
+  ∀ coordinate, coordinateOtsLayer? coordinate = none →
+    left.state.pendingAt coordinate = right.state.pendingAt coordinate
+
+theorem NonOtsViewEq.refl (context : DeferredContext) :
+    NonOtsViewEq context context := by
+  exact ⟨fun _ _ => rfl, fun _ _ => rfl⟩
+
+theorem NonOtsViewEq.trans {left middle right : DeferredContext}
+    (hleft : NonOtsViewEq left middle) (hright : NonOtsViewEq middle right) :
+    NonOtsViewEq left right := by
+  exact ⟨fun position hposition =>
+      (hleft.1 position hposition).trans (hright.1 position hposition),
+    fun coordinate hcoordinate =>
+      (hleft.2 coordinate hcoordinate).trans (hright.2 coordinate hcoordinate)⟩
+
+def NonOtsViewPreserving
+    (computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha) : Prop :=
+  ∀ context fuel table cache result,
+    some result ∈ support
+      (runResolvedFromTable context fuel table (computation.run cache)) →
+    NonOtsViewEq result.context context
+
+theorem nonOtsViewPreserving_pure (value : alpha) :
+    NonOtsViewPreserving
+      (pure value : StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate)) alpha) := by
+  intro context fuel table cache result hresult
+  simp [runResolvedFromTable] at hresult
+  subst result
+  exact NonOtsViewEq.refl context
+
+theorem NonOtsViewPreserving.bind
+    {left : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    {next : alpha → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) beta}
+    (hleft : NonOtsViewPreserving left)
+    (hnext : ∀ value, NonOtsViewPreserving (next value)) :
+    NonOtsViewPreserving (left >>= next) := by
+  intro context fuel table cache result hresult
+  rw [StateT.run_bind, runResolvedFromTable_bind, mem_support_bind_iff] at hresult
+  obtain ⟨middleOption, hmiddle, hrest⟩ := hresult
+  cases middleOption with
+  | none => simp at hrest
+  | some middle =>
+      exact (hnext middle.value.1 middle.context middle.remaining middle.table middle.value.2
+        result hrest).trans (hleft context fuel table cache middle hmiddle)
+
+theorem nonOtsViewPreserving_of_resolvedAdministrative
+    {computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    {value : alpha} (hadministrative : ResolvedAdministrative computation value) :
+    NonOtsViewPreserving computation := by
+  intro context fuel table cache result hresult
+  obtain ⟨finalContext, hrun, hpending, _, hdeferred⟩ :=
+    hadministrative context cache fuel table
+  rw [hrun] at hresult
+  simp only [support_pure, Set.mem_singleton_iff] at hresult
+  have hresultEq := Option.some.inj hresult
+  subst result
+  refine ⟨?_, ?_⟩
+  · intro position _
+    exact congrFun hdeferred position
+  · intro coordinate _
+    change finalContext.state.pendingAt coordinate = context.state.pendingAt coordinate
+    simp only [LazyRevealProbe.State.pendingAt, hpending]
+
+theorem nonOtsViewPreserving_splitHashQuery_ordinary (input : HashInput) :
+    NonOtsViewPreserving (splitHashQuery (.ordinary input)) := by
+  intro context fuel table cache result hresult
+  rw [splitHashQuery_run_eq] at hresult
+  cases hlookup : cache (.ordinary input) with
+  | some output =>
+      simp only [hlookup] at hresult
+      simp [runResolvedFromTable] at hresult
+      subst result
+      exact NonOtsViewEq.refl context
+  | none =>
+      simp only [hlookup] at hresult
+      rw [LazyRevealProbe.hashOutputQuery, runResolvedFromTable_hashOutput_query_bind,
+        mem_support_bind_iff] at hresult
+      obtain ⟨output, _houtput, hreturn⟩ := hresult
+      simp [runResolvedFromTable] at hreturn
+      subst result
+      exact NonOtsViewEq.refl context
+
+theorem nonOtsViewPreserving_ordinaryHashImpl (input : HashInput) :
+    NonOtsViewPreserving (ordinaryHashImpl input) :=
+  nonOtsViewPreserving_splitHashQuery_ordinary input
+
+theorem nonOtsViewPreserving_sequenceFin {n : Nat}
+    (computation : Fin n → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha)
+    (hcomponent : ∀ position, NonOtsViewPreserving (computation position)) :
+    NonOtsViewPreserving (sequenceFin computation) := by
+  induction n with
+  | zero =>
+      simpa [sequenceFin] using
+        (nonOtsViewPreserving_pure Fin.elim0 :
+          NonOtsViewPreserving
+            (pure Fin.elim0 : StateT SplitHashCache
+              (OracleComp (LazyRevealProbe.World Coordinate)) (Fin 0 → alpha)))
+  | succ n ih =>
+      rw [sequenceFin]
+      exact (hcomponent 0).bind fun _ =>
+        (ih (fun position : Fin n => computation position.succ)
+          (fun position => hcomponent position.succ)).bind fun _ =>
+            nonOtsViewPreserving_pure _
+
+theorem nonOtsViewPreserving_simulateQ {spec : OracleSpec ι}
+    (impl : QueryImpl spec
+      (StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate))))
+    (hquery : ∀ query, NonOtsViewPreserving (impl query))
+    (computation : OracleComp spec alpha) :
+    NonOtsViewPreserving (simulateQ impl computation) := by
+  induction computation using OracleComp.inductionOn with
+  | pure value =>
+      simp only [simulateQ_pure]
+      exact nonOtsViewPreserving_pure value
+  | query_bind query next ih =>
+      rw [simulateQ_query_bind]
+      exact (hquery query).bind fun output => ih output
+
+theorem nonOtsViewPreserving_revealPosition
+    (revealedLay : Layer) (position : Position)
+    (hposition : positionOtsLayer? position = some revealedLay) :
+    NonOtsViewPreserving (revealPosition position) := by
+  intro context fuel table cache result hresult
+  rw [runResolvedFromTable_revealPosition, mem_support_bind_iff] at hresult
+  obtain ⟨resolvedOption, hresolved, hreturn⟩ := hresult
+  cases resolvedOption with
+  | none => simp at hreturn
+  | some resolved =>
+      simp [runResolvedFromTable] at hreturn
+      subst result
+      refine ⟨?_, ?_⟩
+      · intro other hother
+        apply resolveDeferredReveal_preserves_other_layer_value table revealedLay position
+          hposition context resolved other
+        · intro hlayer
+          rw [hother] at hlayer
+          simp at hlayer
+        · exact hresolved
+      · intro coordinate hcoordinate
+        have hcoordinateNe : coordinate ≠ .position position := by
+          intro heq
+          subst coordinate
+          have hnone : positionOtsLayer? position = none := by
+            simpa [coordinateOtsLayer?] using hcoordinate
+          rw [hposition] at hnone
+          simp at hnone
+        change (context.state.clearPending (.position position)).pendingAt coordinate =
+          context.state.pendingAt coordinate
+        exact pendingAt_clearPending_of_ne context.state (.position position) coordinate
+          hcoordinateNe
+
+theorem nonOtsViewPreserving_maskedTreeNode
+    (lay : Layer) (tree : TreeIndex) (level nodeIdx : Nat) :
+    NonOtsViewPreserving (maskedTreeNode lay tree level nodeIdx) := by
+  unfold maskedTreeNode
+  apply (nonOtsViewPreserving_of_resolvedAdministrative
+    (resolvedAdministrative_ensureTreeNode lay tree level nodeIdx)).bind
+  intro _
+  cases level with
+  | zero =>
+      exact nonOtsViewPreserving_revealPosition lay
+        (.leaf lay tree (leafOfNat nodeIdx)) (by simp [positionOtsLayer?])
+  | succ current =>
+      by_cases hlevel : current < maxLayerHeight
+      · simp only [hlevel, ↓reduceDIte]
+        exact nonOtsViewPreserving_revealPosition lay
+          (.node lay tree ⟨current, hlevel⟩ (leafOfNat nodeIdx))
+          (by simp [positionOtsLayer?])
+      · simp [hlevel]
+        exact nonOtsViewPreserving_pure 0
+
+theorem nonOtsViewPreserving_maskedTreeRoot
+    (lay : Layer) (tree : TreeIndex) :
+    NonOtsViewPreserving (maskedTreeRoot lay tree) := by
+  unfold maskedTreeRoot
+  exact nonOtsViewPreserving_maskedTreeNode lay tree (layerHeight lay) 0
+
+theorem nonOtsViewPreserving_maskedOtsSignFrom
+    (lay : Layer) (parameter : PublicParameter) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (message : Digest) : ∀ attempts counter,
+    NonOtsViewPreserving
+      (maskedOtsSignFrom parameter lay tree leafIdx message attempts counter)
+  | 0, counter => by
+      rw [maskedOtsSignFrom]
+      exact nonOtsViewPreserving_pure none
+  | attempts + 1, counter => by
+      rw [maskedOtsSignFrom]
+      have hencoded := nonOtsViewPreserving_simulateQ ordinaryHashImpl
+        nonOtsViewPreserving_ordinaryHashImpl
+        (encode parameter lay tree leafIdx message (BitVec.ofNat counterBits counter))
+      apply hencoded.bind
+      intro encoded
+      cases encoded with
+      | none =>
+          exact nonOtsViewPreserving_maskedOtsSignFrom lay parameter tree leafIdx message
+            attempts (counter + 1)
+      | some encoding =>
+          apply (nonOtsViewPreserving_sequenceFin
+            (fun chainIdx => ensureChainPrefix lay tree leafIdx chainIdx (encoding chainIdx))
+            (fun chainIdx => nonOtsViewPreserving_of_resolvedAdministrative
+              (resolvedAdministrative_ensureChainPrefix lay tree leafIdx chainIdx
+                (encoding chainIdx)))).bind
+          intro _
+          exact nonOtsViewPreserving_pure
+            (some (BitVec.ofNat counterBits counter, encoding))
+
+theorem nonOtsViewPreserving_maskedOtsSign
+    (lay : Layer) (parameter : PublicParameter) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (message : Digest) :
+    NonOtsViewPreserving (maskedOtsSign parameter lay tree leafIdx message) :=
+  nonOtsViewPreserving_maskedOtsSignFrom lay parameter tree leafIdx message
+    encodingAttemptLimit 0
+
+theorem nonOtsViewPreserving_maskedLayerMessage
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) :
+    NonOtsViewPreserving (maskedLayerMessage parameter ftsSecret index lay) := by
+  unfold maskedLayerMessage
+  split
+  · exact nonOtsViewPreserving_maskedTreeRoot _ _
+  · exact nonOtsViewPreserving_simulateQ ordinaryHashImpl
+      nonOtsViewPreserving_ordinaryHashImpl (ftsKey parameter index (ftsSecret index))
+
+theorem nonOtsViewPreserving_maskedSignLayer
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) :
+    NonOtsViewPreserving (maskedSignLayer parameter ftsSecret index lay) := by
+  unfold maskedSignLayer
+  apply (nonOtsViewPreserving_maskedLayerMessage parameter ftsSecret index lay).bind
+  intro message
+  apply (nonOtsViewPreserving_maskedOtsSign lay parameter (treeIndexAt index lay)
+    (leafIndexAt index lay) message).bind
+  intro selected
+  cases selected with
+  | none => exact nonOtsViewPreserving_pure none
+  | some selected =>
+      apply (nonOtsViewPreserving_of_resolvedAdministrative
+        (resolvedAdministrative_ensureTreePath lay (treeIndexAt index lay)
+          (leafIndexAt index lay))).bind
+      intro _
+      exact nonOtsViewPreserving_pure (some selected)
+
+theorem nonOtsViewEq_resolveDeferredLayerValues
+    (table : OtsSecretIndex → HashOutput) (index : Index) (lay : Layer)
+    (encoding : ChainIndex → Digit) (context finalContext : DeferredContext)
+    (values : DeferredLayerValues)
+    (hresult : some (finalContext, values) ∈ support
+      (resolveDeferredLayerValues table index lay encoding context)) :
+    NonOtsViewEq finalContext context := by
+  refine ⟨?_, ?_⟩
+  · intro position hposition
+    apply resolveDeferredLayerValues_preserves_other_layer_value table index lay encoding
+      context finalContext values position
+    · intro hlayer
+      rw [hposition] at hlayer
+      simp at hlayer
+    · exact hresult
+  · intro coordinate hcoordinate
+    apply resolveDeferredLayerValues_preserves_other_layer_pendingAt table index lay encoding
+      context finalContext values coordinate
+    · intro hlayer
+      rw [hcoordinate] at hlayer
+      simp at hlayer
+    · exact hresult
+
+theorem nonOtsViewEq_of_mem_resolveThenSelectLayer
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (resolvedLay selectedLay : Layer) (encoding : ChainIndex → Digit)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (result : ResolvedRunResult (DeferredLayerValues × DeferredLayerSelection))
+    (hresult : some result ∈ support
+      (resolveThenSelectLayer parameter table ftsSecret index resolvedLay selectedLay encoding
+        context fuel cache)) :
+    NonOtsViewEq result.context context := by
+  unfold resolveThenSelectLayer at hresult
+  rw [mem_support_bind_iff] at hresult
+  obtain ⟨resolutionOption, hresolution, hrest⟩ := hresult
+  cases resolutionOption with
+  | none => simp at hrest
+  | some resolution =>
+      rcases resolution with ⟨resolvedContext, resolvedValues⟩
+      rw [mem_support_bind_iff] at hrest
+      obtain ⟨selectionOption, hselection, hfinish⟩ := hrest
+      cases selectionOption with
+      | none => simp at hfinish
+      | some selection =>
+          simp only [support_pure, Set.mem_singleton_iff] at hfinish
+          have hresultEq := Option.some.inj hfinish
+          subst result
+          exact (nonOtsViewPreserving_maskedSignLayer parameter ftsSecret index selectedLay
+            resolvedContext fuel table cache selection hselection).trans
+              (nonOtsViewEq_resolveDeferredLayerValues table index resolvedLay encoding context
+                resolvedContext resolvedValues hresolution)
+
+theorem nonOtsViewEq_of_mem_selectThenResolveLayer
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (resolvedLay selectedLay : Layer) (encoding : ChainIndex → Digit)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (result : ResolvedRunResult (DeferredLayerValues × DeferredLayerSelection))
+    (hresult : some result ∈ support
+      (selectThenResolveLayer parameter table ftsSecret index resolvedLay selectedLay encoding
+        context fuel cache)) :
+    NonOtsViewEq result.context context := by
+  unfold selectThenResolveLayer at hresult
+  rw [mem_support_bind_iff] at hresult
+  obtain ⟨selectionOption, hselection, hrest⟩ := hresult
+  cases selectionOption with
+  | none => simp at hrest
+  | some selection =>
+      rw [mem_support_bind_iff] at hrest
+      obtain ⟨resolutionOption, hresolution, hfinish⟩ := hrest
+      cases resolutionOption with
+      | none => simp at hfinish
+      | some resolution =>
+          rcases resolution with ⟨resolvedContext, resolvedValues⟩
+          simp only [support_pure, Set.mem_singleton_iff] at hfinish
+          have hresultEq := Option.some.inj hfinish
+          subst result
+          exact (nonOtsViewEq_resolveDeferredLayerValues table index resolvedLay encoding
+            selection.context resolvedContext resolvedValues hresolution).trans
+              (nonOtsViewPreserving_maskedSignLayer parameter ftsSecret index selectedLay
+                context fuel table cache selection hselection)
+
+def nonOtsDeferredValues (context : DeferredContext)
+    (position : Position) : Option HashOutput :=
+  if positionOtsLayer? position = none then context.values position else none
+
+def nonOtsPendingAt (context : DeferredContext)
+    (coordinate : Coordinate) : Finset Digest :=
+  if coordinateOtsLayer? coordinate = none then context.state.pendingAt coordinate else ∅
+
+theorem NonOtsViewEq.nonOtsDeferredValues_eq {left right : DeferredContext}
+    (heq : NonOtsViewEq left right) :
+    nonOtsDeferredValues left = nonOtsDeferredValues right := by
+  funext position
+  by_cases hposition : positionOtsLayer? position = none
+  · simp [nonOtsDeferredValues, hposition, heq.1 position hposition]
+  · simp [nonOtsDeferredValues, hposition]
+
+theorem NonOtsViewEq.nonOtsPendingAt_eq {left right : DeferredContext}
+    (heq : NonOtsViewEq left right) :
+    nonOtsPendingAt left = nonOtsPendingAt right := by
+  funext coordinate
+  by_cases hcoordinate : coordinateOtsLayer? coordinate = none
+  · simp [nonOtsPendingAt, hcoordinate, heq.2 coordinate hcoordinate]
+  · simp [nonOtsPendingAt, hcoordinate]
+
+structure CompleteOtsContextView where
+  ots : OtsContextView
+  nonOtsDeferredValues : Position → Option HashOutput
+  nonOtsPendingAt : Coordinate → Finset Digest
+
+theorem CompleteOtsContextView.ext {left right : CompleteOtsContextView}
+    (hots : left.ots = right.ots)
+    (hdeferred : left.nonOtsDeferredValues = right.nonOtsDeferredValues)
+    (hpending : left.nonOtsPendingAt = right.nonOtsPendingAt) : left = right := by
+  cases left
+  cases right
+  simp_all
+
+def completeOtsContextView (context : DeferredContext) : CompleteOtsContextView where
+  ots := otsContextView context
+  nonOtsDeferredValues := nonOtsDeferredValues context
+  nonOtsPendingAt := nonOtsPendingAt context
+
+theorem LazyRevealProbe.State.mem_pendingAt_iff
+    (state : LazyRevealProbe.State Coordinate) (coordinate : Coordinate)
+    (candidate : Digest) :
+    candidate ∈ state.pendingAt coordinate ↔ (coordinate, candidate) ∈ state.pending := by
+  simp [LazyRevealProbe.State.pendingAt]
+
+theorem completeOtsContextView_injective : Function.Injective completeOtsContextView := by
+  intro left right heq
+  have hots := congrArg CompleteOtsContextView.ots heq
+  have hnonDeferred := congrArg CompleteOtsContextView.nonOtsDeferredValues heq
+  have hnonPending := congrArg CompleteOtsContextView.nonOtsPendingAt heq
+  have hstateValues := congrArg OtsContextView.values hots
+  have hrevealed := congrArg OtsContextView.revealed hots
+  have hensured := congrArg OtsContextView.ensured hots
+  have hdeferredFibers := congrArg OtsContextView.deferredValues hots
+  have hpendingFibers := congrArg OtsContextView.pendingAt hots
+  have hdeferred : left.values = right.values := by
+    funext position
+    cases hposition : positionOtsLayer? position with
+    | none =>
+        have hvalue := congrFun hnonDeferred position
+        simpa [completeOtsContextView, nonOtsDeferredValues, hposition] using hvalue
+    | some lay =>
+        have hvalue := congrFun (congrFun hdeferredFibers lay) position
+        simpa [completeOtsContextView, otsContextView, otsDeferredValues, hposition] using hvalue
+  have hpendingAt : left.state.pendingAt = right.state.pendingAt := by
+    funext coordinate
+    cases hcoordinate : coordinateOtsLayer? coordinate with
+    | none =>
+        have hvalue := congrFun hnonPending coordinate
+        simpa [completeOtsContextView, nonOtsPendingAt, hcoordinate] using hvalue
+    | some lay =>
+        have hvalue := congrFun (congrFun hpendingFibers lay) coordinate
+        simpa [completeOtsContextView, otsContextView, otsPendingAt, hcoordinate] using hvalue
+  have hpending : left.state.pending = right.state.pending := by
+    ext entry
+    rcases entry with ⟨coordinate, candidate⟩
+    rw [← LazyRevealProbe.State.mem_pendingAt_iff,
+      ← LazyRevealProbe.State.mem_pendingAt_iff, hpendingAt]
+  change left.state.values = right.state.values at hstateValues
+  change left.state.revealed = right.state.revealed at hrevealed
+  change left.state.ensured = right.state.ensured at hensured
+  rcases left with ⟨⟨leftPending, leftStateValues, leftRevealed, leftEnsured⟩,
+    leftDeferred⟩
+  rcases right with ⟨⟨rightPending, rightStateValues, rightRevealed, rightEnsured⟩,
+    rightDeferred⟩
+  simp only at hpending hstateValues hrevealed hensured hdeferred
+  subst rightPending
+  subst rightStateValues
+  subst rightRevealed
+  subst rightEnsured
+  subst rightDeferred
+  rfl
+
+def independentCompleteOtsContextView (resolvedLay observedLay : Layer)
+    (base : DeferredContext) (result : IndependentLayerScheduleResult) :
+    CompleteOtsContextView where
+  ots := independentLayerContextView resolvedLay observedLay base result
+  nonOtsDeferredValues := nonOtsDeferredValues base
+  nonOtsPendingAt := nonOtsPendingAt base
+
+structure CompleteLayerScheduleView where
+  context : CompleteOtsContextView
+  remaining : Nat
+  resolution : DeferredLayerValues
+  selection : DeferredLayerSelection
+  table : OtsSecretIndex → HashOutput
+
+theorem CompleteLayerScheduleView.ext {left right : CompleteLayerScheduleView}
+    (hcontext : left.context = right.context)
+    (hremaining : left.remaining = right.remaining)
+    (hresolution : left.resolution = right.resolution)
+    (hselection : left.selection = right.selection)
+    (htable : left.table = right.table) : left = right := by
+  cases left
+  cases right
+  simp_all
+
+def completeResolvedLayerScheduleView :
+    Option (ResolvedRunResult (DeferredLayerValues × DeferredLayerSelection)) →
+      Option CompleteLayerScheduleView
+  | none => none
+  | some result => some ⟨completeOtsContextView result.context, result.remaining,
+      result.value.1, result.value.2, result.table⟩
+
+def completeIndependentLayerScheduleView (resolvedLay observedLay : Layer)
+    (base : DeferredContext) :
+    Option IndependentLayerScheduleResult → Option CompleteLayerScheduleView
+  | none => none
+  | some result => some ⟨independentCompleteOtsContextView resolvedLay observedLay base result,
+      result.selection.remaining, result.resolution.2, result.selection.value,
+      result.selection.table⟩
+
+theorem relTriple_resolveThenSelectLayer_complete_independent_of_lt
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (resolvedLay selectedLay : Layer) (hlt : resolvedLay.val < selectedLay.val)
+    (encoding : ChainIndex → Digit) (context : DeferredContext) (fuel : Nat)
+    (cache : SplitHashCache) :
+    RelTriple
+      (resolveThenSelectLayer parameter table ftsSecret index resolvedLay selectedLay encoding
+        context fuel cache)
+      (independentResolveThenSelectLayer parameter table ftsSecret index resolvedLay selectedLay
+        encoding context fuel cache)
+      (fun actual independent => completeResolvedLayerScheduleView actual =
+        completeIndependentLayerScheduleView resolvedLay (selectionObservedLayer selectedLay)
+          context independent) := by
+  let actualRun := resolveThenSelectLayer parameter table ftsSecret index resolvedLay selectedLay
+    encoding context fuel cache
+  have hbase := relTriple_resolveThenSelectLayer_independent_of_lt parameter table ftsSecret index
+    resolvedLay selectedLay hlt encoding context fuel cache
+  have hsupported :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+      (fun result => result ∈ support actualRun) (fun result hresult => hresult)
+  apply relTriple_post_mono hsupported
+  intro actual independent hrelation
+  rcases hrelation with ⟨hots, hsupport⟩
+  cases actual with
+  | none =>
+      cases independent with
+      | none => rfl
+      | some independent => simp [resolvedLayerScheduleView,
+          independentLayerScheduleView] at hots
+  | some actual =>
+      cases independent with
+      | none => simp [resolvedLayerScheduleView, independentLayerScheduleView] at hots
+      | some independent =>
+          have hots' := Option.some.inj hots
+          apply congrArg some
+          apply CompleteLayerScheduleView.ext
+          · apply CompleteOtsContextView.ext
+            · exact congrArg LayerScheduleView.context hots'
+            · change nonOtsDeferredValues actual.context = nonOtsDeferredValues context
+              have hnon := nonOtsViewEq_of_mem_resolveThenSelectLayer parameter table ftsSecret
+                index resolvedLay selectedLay encoding context fuel cache actual hsupport
+              exact hnon.nonOtsDeferredValues_eq
+            · change nonOtsPendingAt actual.context = nonOtsPendingAt context
+              have hnon := nonOtsViewEq_of_mem_resolveThenSelectLayer parameter table ftsSecret
+                index resolvedLay selectedLay encoding context fuel cache actual hsupport
+              exact hnon.nonOtsPendingAt_eq
+          · exact congrArg LayerScheduleView.remaining hots'
+          · exact congrArg LayerScheduleView.resolution hots'
+          · exact congrArg LayerScheduleView.selection hots'
+          · exact congrArg LayerScheduleView.table hots'
+
+theorem relTriple_selectThenResolveLayer_complete_independent_of_lt
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (resolvedLay selectedLay : Layer) (hlt : resolvedLay.val < selectedLay.val)
+    (encoding : ChainIndex → Digit) (context : DeferredContext) (fuel : Nat)
+    (cache : SplitHashCache) :
+    RelTriple
+      (selectThenResolveLayer parameter table ftsSecret index resolvedLay selectedLay encoding
+        context fuel cache)
+      (independentSelectThenResolveLayer parameter table ftsSecret index resolvedLay selectedLay
+        encoding context fuel cache)
+      (fun actual independent => completeResolvedLayerScheduleView actual =
+        completeIndependentLayerScheduleView resolvedLay (selectionObservedLayer selectedLay)
+          context independent) := by
+  let actualRun := selectThenResolveLayer parameter table ftsSecret index resolvedLay selectedLay
+    encoding context fuel cache
+  have hbase := relTriple_selectThenResolveLayer_independent_of_lt parameter table ftsSecret index
+    resolvedLay selectedLay hlt encoding context fuel cache
+  have hsupported :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+      (fun result => result ∈ support actualRun) (fun result hresult => hresult)
+  apply relTriple_post_mono hsupported
+  intro actual independent hrelation
+  rcases hrelation with ⟨hots, hsupport⟩
+  cases actual with
+  | none =>
+      cases independent with
+      | none => rfl
+      | some independent => simp [resolvedLayerScheduleView,
+          independentLayerScheduleView] at hots
+  | some actual =>
+      cases independent with
+      | none => simp [resolvedLayerScheduleView, independentLayerScheduleView] at hots
+      | some independent =>
+          have hots' := Option.some.inj hots
+          apply congrArg some
+          apply CompleteLayerScheduleView.ext
+          · apply CompleteOtsContextView.ext
+            · exact congrArg LayerScheduleView.context hots'
+            · change nonOtsDeferredValues actual.context = nonOtsDeferredValues context
+              have hnon := nonOtsViewEq_of_mem_selectThenResolveLayer parameter table ftsSecret
+                index resolvedLay selectedLay encoding context fuel cache actual hsupport
+              exact hnon.nonOtsDeferredValues_eq
+            · change nonOtsPendingAt actual.context = nonOtsPendingAt context
+              have hnon := nonOtsViewEq_of_mem_selectThenResolveLayer parameter table ftsSecret
+                index resolvedLay selectedLay encoding context fuel cache actual hsupport
+              exact hnon.nonOtsPendingAt_eq
+          · exact congrArg LayerScheduleView.remaining hots'
+          · exact congrArg LayerScheduleView.resolution hots'
+          · exact congrArg LayerScheduleView.selection hots'
+          · exact congrArg LayerScheduleView.table hots'
+
+theorem evalDist_resolveThenSelectLayer_complete_view_eq_selectThenResolveLayer_of_lt
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (resolvedLay selectedLay : Layer) (hlt : resolvedLay.val < selectedLay.val)
+    (encoding : ChainIndex → Digit) (context : DeferredContext) (fuel : Nat)
+    (cache : SplitHashCache) :
+    evalDist (completeResolvedLayerScheduleView <$>
+      resolveThenSelectLayer parameter table ftsSecret index resolvedLay selectedLay encoding
+        context fuel cache) =
+    evalDist (completeResolvedLayerScheduleView <$>
+      selectThenResolveLayer parameter table ftsSecret index resolvedLay selectedLay encoding
+        context fuel cache) := by
+  have hresolveFirst := evalDist_map_eq_of_relTriple
+    (relTriple_resolveThenSelectLayer_complete_independent_of_lt parameter table ftsSecret index
+      resolvedLay selectedLay hlt encoding context fuel cache)
+  have hselectFirst := evalDist_map_eq_of_relTriple
+    (relTriple_selectThenResolveLayer_complete_independent_of_lt parameter table ftsSecret index
+      resolvedLay selectedLay hlt encoding context fuel cache)
+  calc
+    _ = evalDist (completeIndependentLayerScheduleView resolvedLay
+        (selectionObservedLayer selectedLay) context <$>
+      independentResolveThenSelectLayer parameter table ftsSecret index resolvedLay selectedLay
+        encoding context fuel cache) := hresolveFirst
+    _ = evalDist (completeIndependentLayerScheduleView resolvedLay
+        (selectionObservedLayer selectedLay) context <$>
+      independentSelectThenResolveLayer parameter table ftsSecret index resolvedLay selectedLay
+        encoding context fuel cache) := by
+      rw [evalDist_map, evalDist_map,
+        evalDist_independentResolveThenSelectLayer_eq_selectThenResolve]
+    _ = _ := hselectFirst.symm
+
+local instance deferredContextNonempty : Nonempty DeferredContext :=
+  ⟨{ state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate),
+      values := emptyDeferredStructuralValues }⟩
+
+noncomputable def CompleteOtsContextView.toContext
+    (view : CompleteOtsContextView) : DeferredContext :=
+  Function.invFun completeOtsContextView view
+
+@[simp] theorem CompleteOtsContextView.toContext_complete
+    (context : DeferredContext) :
+    (completeOtsContextView context).toContext = context :=
+  Function.leftInverse_invFun completeOtsContextView_injective context
+
+noncomputable def completeLayerScheduleViewResult :
+    Option CompleteLayerScheduleView →
+      Option (ResolvedRunResult (DeferredLayerValues × DeferredLayerSelection))
+  | none => none
+  | some view => some ⟨view.context.toContext, view.remaining,
+      (view.resolution, view.selection), view.table⟩
+
+@[simp] theorem completeLayerScheduleViewResult_resolved
+    (input : Option
+      (ResolvedRunResult (DeferredLayerValues × DeferredLayerSelection))) :
+    completeLayerScheduleViewResult (completeResolvedLayerScheduleView input) = input := by
+  cases input with
+  | none => rfl
+  | some result =>
+      cases result
+      simp [completeLayerScheduleViewResult, completeResolvedLayerScheduleView]
+
+theorem completeLayerScheduleView_roundtrip
+    (run : ProbComp
+      (Option (ResolvedRunResult (DeferredLayerValues × DeferredLayerSelection)))) :
+    completeLayerScheduleViewResult <$> (completeResolvedLayerScheduleView <$> run) = run := by
+  rw [Functor.map_map]
+  have hfunction :
+      completeLayerScheduleViewResult ∘ completeResolvedLayerScheduleView = id := by
+    funext input
+    exact completeLayerScheduleViewResult_resolved input
+  change ((completeLayerScheduleViewResult ∘ completeResolvedLayerScheduleView) <$> run) = run
+  rw [hfunction, id_map]
+
+theorem evalDist_resolveThenSelectLayer_eq_selectThenResolveLayer_of_lt
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (resolvedLay selectedLay : Layer) (hlt : resolvedLay.val < selectedLay.val)
+    (encoding : ChainIndex → Digit) (context : DeferredContext) (fuel : Nat)
+    (cache : SplitHashCache) :
+    evalDist
+        (resolveThenSelectLayer parameter table ftsSecret index resolvedLay selectedLay encoding
+          context fuel cache) =
+      evalDist
+        (selectThenResolveLayer parameter table ftsSecret index resolvedLay selectedLay encoding
+          context fuel cache) := by
+  let left := resolveThenSelectLayer parameter table ftsSecret index resolvedLay selectedLay
+    encoding context fuel cache
+  let right := selectThenResolveLayer parameter table ftsSecret index resolvedLay selectedLay
+    encoding context fuel cache
+  have hview :=
+    evalDist_resolveThenSelectLayer_complete_view_eq_selectThenResolveLayer_of_lt parameter table
+      ftsSecret index resolvedLay selectedLay hlt encoding context fuel cache
+  change evalDist (completeResolvedLayerScheduleView <$> left) =
+    evalDist (completeResolvedLayerScheduleView <$> right) at hview
+  calc
+    evalDist left = completeLayerScheduleViewResult <$>
+        evalDist (completeResolvedLayerScheduleView <$> left) := by
+      rw [← evalDist_map, completeLayerScheduleView_roundtrip]
+    _ = completeLayerScheduleViewResult <$>
+        evalDist (completeResolvedLayerScheduleView <$> right) := by rw [hview]
+    _ = evalDist right := by
+      rw [← evalDist_map, completeLayerScheduleView_roundtrip]
 theorem DeferredContext.Valid.of_resolveDeferredLayerValues
     {context : DeferredContext} (hvalid : context.Valid)
     (table : OtsSecretIndex → HashOutput) (index : Index) (lay : Layer)
