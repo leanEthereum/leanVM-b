@@ -13484,6 +13484,148 @@ theorem relTriple_scheduleResolvedSignLayer
             rw [houtput.2]
             exact Or.inr hdoomed
 
+noncomputable def runScheduledResolvedLayers
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index) :
+    ∀ {n : Nat}, (Fin n → Layer) → DeferredContext → Nat → SplitHashCache →
+      ProbComp (Option (ResolvedRunResult
+        ((Fin n → Option LayerPart) × SplitHashCache)))
+  | 0, _, context, fuel, cache =>
+      pure (some ⟨context, fuel, (Fin.elim0, cache), table⟩)
+  | n + 1, layers, context, fuel, cache =>
+      @ite (ProbComp (Option (ResolvedRunResult
+          ((Fin (n + 1) → Option LayerPart) × SplitHashCache))))
+        (DeferredCompletable table context) (Classical.propDecidable _) (do
+          let headResult ←
+            runResolvedFromTable context fuel table
+                ((maskedSignLayer parameter ftsSecret index (layers 0)).run cache) >>=
+              scheduleResolvedLayerResult index (layers 0)
+          match headResult with
+          | none => pure none
+          | some headResult => do
+              let tailResult ← runScheduledResolvedLayers parameter table ftsSecret index
+                (fun position : Fin n => layers position.succ) headResult.context
+                  headResult.remaining headResult.value.2
+              match tailResult with
+              | none => pure none
+              | some tailResult =>
+                  pure (some ⟨tailResult.context, tailResult.remaining,
+                    (Fin.cases headResult.value.1 tailResult.value.1,
+                      tailResult.value.2), tailResult.table⟩)
+        ) (pure (some ⟨context, fuel, (fun _ => none, cache), table⟩))
+
+theorem runScheduledResolvedLayers_of_not_deferredCompletable
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    {n : Nat} (layers : Fin n → Layer) (context : DeferredContext) (fuel : Nat)
+    (cache : SplitHashCache) (hnotCompletable : ¬DeferredCompletable table context) :
+    runScheduledResolvedLayers parameter table ftsSecret index layers context fuel cache =
+      pure (some ⟨context, fuel, (fun _ => none, cache), table⟩) := by
+  cases n with
+  | zero =>
+      simp only [runScheduledResolvedLayers]
+      congr
+      funext position
+      exact Fin.elim0 position
+  | succ n =>
+      rw [runScheduledResolvedLayers]
+      simp [hnotCompletable]
+
+set_option maxRecDepth 100000 in
+theorem relTriple_runScheduledResolvedLayers
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    {n : Nat} (layers : Fin n → Layer) (context : DeferredContext) (fuel : Nat)
+    (cache : SplitHashCache) (concreteCache : QueryCache HashSpec)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache)
+    (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hpublished : PublishedValues context.state) :
+    RelTriple
+      (runScheduledResolvedLayers parameter table ftsSecret index layers context fuel cache)
+      ((sequenceFin fun position =>
+        resolvedImmediateSignLayer parameter table ftsSecret index (layers position)).run
+          concreteCache)
+      (ReachableResolvedRunRel parameter table) := by
+  induction n generalizing context fuel cache concreteCache with
+  | zero =>
+      simp [runScheduledResolvedLayers, sequenceFin]
+      exact Or.inl ⟨rfl, rfl, hinvariant, hclosed, hpublished⟩
+  | succ n ih =>
+      have hcompletable : DeferredCompletable table context := hinvariant.2.2.2.1
+      rw [runScheduledResolvedLayers, if_pos hcompletable, sequenceFin, StateT.run_bind]
+      have hhead := relTriple_scheduleResolvedSignLayer parameter table ftsSecret index
+        (layers 0) context fuel cache concreteCache hinvariant hclosed hpublished
+      apply relTriple_bind hhead
+      intro leftHead rightHead hheadRelation
+      cases leftHead with
+      | none =>
+          have hbase := relTriple_true
+            (pure (none : Option (ResolvedRunResult
+              ((Fin (n + 1) → Option LayerPart) × SplitHashCache))) :
+                ProbComp (Option (ResolvedRunResult
+                  ((Fin (n + 1) → Option LayerPart) × SplitHashCache))))
+            ((do
+              let tail ← sequenceFin fun position : Fin n =>
+                resolvedImmediateSignLayer parameter table ftsSecret index
+                  (layers position.succ)
+              pure (Fin.cases rightHead.1 tail : Fin (n + 1) → Option LayerPart)).run
+                rightHead.2)
+          have hsupported :=
+            SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+              (fun result => result = none) (by simp)
+          apply relTriple_post_mono hsupported
+          intro result _ hresult
+          rw [hresult.2]
+          trivial
+      | some headResult =>
+          rcases hheadRelation with hclean | hdoomed
+          · rcases hclean with ⟨htable, hvalue, hheadInvariant, hheadClosed,
+              hheadPublished⟩
+            have htail := ih (fun position : Fin n => layers position.succ)
+              headResult.context headResult.remaining headResult.value.2 rightHead.2
+                hheadInvariant hheadClosed hheadPublished
+            apply relTriple_bind htail
+            intro leftTail rightTail htailRelation
+            cases leftTail with
+            | none =>
+                apply relTriple_pure_pure
+                trivial
+            | some tailResult =>
+                rcases htailRelation with htailClean | htailDoomed
+                · apply relTriple_pure_pure
+                  exact Or.inl ⟨htailClean.1, by
+                    rw [htailClean.2.1, hvalue], htailClean.2.2.1,
+                    htailClean.2.2.2.1, htailClean.2.2.2.2⟩
+                · apply relTriple_pure_pure
+                  exact Or.inr htailDoomed
+          · have hnotCompletable : ¬DeferredCompletable table headResult.context := by
+              exact hdoomed.2.2.2
+            simp only
+            rw [runScheduledResolvedLayers_of_not_deferredCompletable parameter table ftsSecret
+              index (fun position : Fin n => layers position.succ) headResult.context
+                headResult.remaining headResult.value.2 hnotCompletable]
+            have hbase := relTriple_true
+              (pure (some ⟨headResult.context, headResult.remaining,
+                (Fin.cases headResult.value.1 (fun _ => none), headResult.value.2), table⟩) :
+                  ProbComp (Option (ResolvedRunResult
+                    ((Fin (n + 1) → Option LayerPart) × SplitHashCache))))
+              ((do
+                let tail ← sequenceFin fun position : Fin n =>
+                  resolvedImmediateSignLayer parameter table ftsSecret index
+                    (layers position.succ)
+                pure (Fin.cases rightHead.1 tail : Fin (n + 1) → Option LayerPart)).run
+                  rightHead.2)
+            have hsupported :=
+              SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+                (fun result => result = some ⟨headResult.context, headResult.remaining,
+                  (Fin.cases headResult.value.1 (fun _ => none), headResult.value.2), table⟩)
+                (by simp)
+            apply relTriple_post_mono hsupported
+            intro leftResult _ htailSupport
+            rw [htailSupport.2]
+            exact Or.inr ⟨rfl, hdoomed.2⟩
+
 set_option maxHeartbeats 400000 in
 theorem reachableResolvedCouples_maskedSignAfterDigest
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
