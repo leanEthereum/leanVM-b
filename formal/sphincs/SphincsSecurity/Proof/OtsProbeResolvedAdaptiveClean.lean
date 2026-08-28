@@ -1,4 +1,6 @@
 import SphincsSecurity.Proof.OtsProbeResolvedAdaptiveProbability
+import SphincsSecurity.Proof.TerminalResidual
+import SphincsSecurity.Proof.FtsProbeSampling
 
 /-!
 # Clean terminal lift for adaptive one-time probes
@@ -105,6 +107,62 @@ theorem probEvent_sampledChronologicalCleanFinish_none_le
   probEvent_sampledRunThenFinalizeClean_empty_none_le
     (chronologicalCleanRetainedRun adversary parameter ftsSecret) q
       (chronologicalCleanRetainedRun_isProbeBound adversary parameter ftsSecret q hbound)
+
+noncomputable def sampledCanonicalDeferredFinishIsNone
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp Bool := do
+  let table ← sampleOtsHashTable
+  let result ← canonicalDeferredRetainedRunAfterFtsSecrets adversary parameter table
+    ftsSecret fuel
+  finishResolvedRunIsNone result
+
+theorem probEvent_finishResolvedRun_none_eq_isNone
+    (run : ProbComp (Option (ResolvedRunResult α))) :
+    Pr[= none | run >>= finishResolvedRun] =
+      Pr[= true | run >>= finishResolvedRunIsNone] := by
+  have hrun : run >>= finishResolvedRunIsNone =
+      Option.isNone <$> (run >>= finishResolvedRun) := by
+    unfold finishResolvedRunIsNone
+    rw [map_bind]
+  rw [hrun, ← probEvent_eq_eq_probOutput, ← probEvent_eq_eq_probOutput,
+    probEvent_map]
+  apply OracleComp.probEvent_congr' (fun result _ => by cases result <;> simp) rfl
+
+set_option linter.constructorNameAsVariable false in
+theorem probEvent_sampledActualRetainedOtsHashTable_verifyProbe_le_canonicalDeferred
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    Pr[fun result => WinningRetainedVerifyProbeWitness parameter
+        (extendStartTable result.1) ftsSecret result.2 |
+      sampledActualRetainedOtsHashTable adversary parameter ftsSecret] ≤
+      Pr[= true |
+        sampledCanonicalDeferredFinishIsNone adversary parameter ftsSecret fuel] := by
+  unfold sampledActualRetainedOtsHashTable sampledCanonicalDeferredFinishIsNone
+    sampleOtsHashTable
+  rw [← probEvent_eq_eq_probOutput]
+  apply probEvent_bind_le_bind_of_forall_le
+  intro table _htable
+  calc
+    _ ≤ Pr[= none |
+        canonicalChronologicalRetainedRunAfterFtsSecrets adversary parameter table ftsSecret
+          fuel >>= finishResolvedRun] := by
+      simpa [probEvent_map, Function.comp_def] using
+        probEvent_winningRetainedVerifyProbe_le_canonicalFinishedResolvedRun_none adversary
+          parameter table ftsSecret fuel
+    _ = Pr[= true |
+        canonicalChronologicalRetainedRunAfterFtsSecrets adversary parameter table ftsSecret
+          fuel >>= finishResolvedRunIsNone] :=
+      probEvent_finishResolvedRun_none_eq_isNone _
+    _ = Pr[= true |
+        canonicalDeferredRetainedRunAfterFtsSecrets adversary parameter table ftsSecret fuel >>=
+          finishResolvedRunIsNone] :=
+      prob_canonicalChronologicalRetainedFinishIsNone_eq_deferred adversary parameter table
+        ftsSecret fuel
+    _ = Pr[fun failed : Bool => failed = true |
+        canonicalDeferredRetainedRunAfterFtsSecrets adversary parameter table ftsSecret fuel >>=
+          finishResolvedRunIsNone] := by
+      rw [probEvent_eq_eq_probOutput]
 
 set_option linter.constructorNameAsVariable false in
 theorem probEvent_sampledActualRetainedOtsHashTable_verifyProbe_le_of_fixed
@@ -237,15 +295,13 @@ theorem evalDist_sampledViewedGame_eq_ftsFirst (adversary : Adversary) :
       let result ← gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret
       pure (⟨⟨parameter, otsSecret, ftsSecret⟩, result⟩ : SampledViewedResult))
 
-set_option linter.constructorNameAsVariable false in
-theorem probEvent_sampledViewedGame_cleanFresh_le_of_fixed
+theorem probEvent_sampledViewedGame_cleanFresh_le_of_sampled
     (adversary : Adversary) (bound : ℝ≥0∞)
-    (hfixed : ∀ parameter ∈ support sampleParameter,
+    (hsampled : ∀ parameter ∈ support sampleParameter,
       ∀ ftsSecret ∈ support sampleFtsSecrets,
-      ∀ table : OtsSecretIndex → HashOutput,
-        Pr[WinningRetainedVerifyProbeWitness parameter (extendStartTable table) ftsSecret |
-          actualRetainedGameAfterTable adversary parameter ftsSecret
-            (extendStartTable table)] ≤ bound) :
+        Pr[fun result => WinningRetainedVerifyProbeWitness parameter
+            (extendStartTable result.1) ftsSecret result.2 |
+          sampledActualRetainedOtsHashTable adversary parameter ftsSecret] ≤ bound) :
     Pr[SampledViewedEvent cleanFreshEvent | sampledViewedGame adversary] ≤ bound := by
   have hrewrite :
       Pr[SampledViewedEvent cleanFreshEvent | sampledViewedGame adversary] =
@@ -271,19 +327,19 @@ theorem probEvent_sampledViewedGame_cleanFresh_le_of_fixed
           ftsSecret result.2 |
         sampledActualRetainedOtsSecrets adversary parameter ftsSecret] :=
       probEvent_sampledViewedOtsSecrets_cleanFresh_le_verifyProbe adversary parameter ftsSecret
-    _ ≤ bound :=
-      probEvent_sampledActualRetainedOtsSecrets_verifyProbe_le_of_fixed adversary parameter
-        ftsSecret bound (hfixed parameter hparameter ftsSecret hfts)
+    _ = Pr[fun result => WinningRetainedVerifyProbeWitness parameter
+          (extendStartTable result.1) ftsSecret result.2 |
+        sampledActualRetainedOtsHashTable adversary parameter ftsSecret] :=
+      (probEvent_sampledWinningRetainedVerifyProbe_eq_secrets adversary parameter ftsSecret).symm
+    _ ≤ bound := hsampled parameter hparameter ftsSecret hfts
 
-set_option linter.constructorNameAsVariable false in
-theorem probEvent_sampledViewedGame_cleanBackward_le_of_fixed
+theorem probEvent_sampledViewedGame_cleanBackward_le_of_sampled
     (adversary : Adversary) (bound : ℝ≥0∞)
-    (hfixed : ∀ parameter ∈ support sampleParameter,
+    (hsampled : ∀ parameter ∈ support sampleParameter,
       ∀ ftsSecret ∈ support sampleFtsSecrets,
-      ∀ table : OtsSecretIndex → HashOutput,
-        Pr[WinningRetainedVerifyProbeWitness parameter (extendStartTable table) ftsSecret |
-          actualRetainedGameAfterTable adversary parameter ftsSecret
-            (extendStartTable table)] ≤ bound) :
+        Pr[fun result => WinningRetainedVerifyProbeWitness parameter
+            (extendStartTable result.1) ftsSecret result.2 |
+          sampledActualRetainedOtsHashTable adversary parameter ftsSecret] ≤ bound) :
     Pr[SampledViewedEvent cleanBackwardEvent | sampledViewedGame adversary] ≤ bound := by
   have hrewrite :
       Pr[SampledViewedEvent cleanBackwardEvent | sampledViewedGame adversary] =
@@ -309,8 +365,51 @@ theorem probEvent_sampledViewedGame_cleanBackward_le_of_fixed
           ftsSecret result.2 |
         sampledActualRetainedOtsSecrets adversary parameter ftsSecret] :=
       probEvent_sampledViewedOtsSecrets_cleanBackward_le_verifyProbe adversary parameter ftsSecret
-    _ ≤ bound :=
-      probEvent_sampledActualRetainedOtsSecrets_verifyProbe_le_of_fixed adversary parameter
-        ftsSecret bound (hfixed parameter hparameter ftsSecret hfts)
+    _ = Pr[fun result => WinningRetainedVerifyProbeWitness parameter
+          (extendStartTable result.1) ftsSecret result.2 |
+        sampledActualRetainedOtsHashTable adversary parameter ftsSecret] :=
+      (probEvent_sampledWinningRetainedVerifyProbe_eq_secrets adversary parameter ftsSecret).symm
+    _ ≤ bound := hsampled parameter hparameter ftsSecret hfts
+
+theorem security_of_sampledWinningRetainedVerifyProbe_le
+    (hprobe : ∀ (q : Nat), 1 ≤ q → ∀ adversary : Adversary,
+      HasHashQueryBound scheme adversary q → q ≤ 2 ^ securityBits →
+      ∀ parameter ∈ support sampleParameter,
+      ∀ ftsSecret ∈ support sampleFtsSecrets,
+        Pr[fun result => WinningRetainedVerifyProbeWitness parameter
+            (extendStartTable result.1) ftsSecret result.2 |
+          sampledActualRetainedOtsHashTable adversary parameter ftsSecret] ≤
+          (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹) :
+    SphincsSecurityStatement := by
+  apply security_of_sampled_hiddenOpeningRisk_le
+  intro q hqPos adversary hq hqMax
+  let bound := (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹
+  have hsampled : ∀ parameter ∈ support sampleParameter,
+      ∀ ftsSecret ∈ support sampleFtsSecrets,
+        Pr[fun result => WinningRetainedVerifyProbeWitness parameter
+            (extendStartTable result.1) ftsSecret result.2 |
+          sampledActualRetainedOtsHashTable adversary parameter ftsSecret] ≤ bound := by
+    intro parameter hparameter ftsSecret hfts
+    exact hprobe q hqPos adversary hq hqMax parameter hparameter ftsSecret hfts
+  have hfresh :
+      Pr[SampledViewedEvent cleanFreshEvent | sampledViewedGame adversary] ≤ bound :=
+    probEvent_sampledViewedGame_cleanFresh_le_of_sampled adversary bound hsampled
+  have hbackward :
+      Pr[SampledViewedEvent cleanBackwardEvent | sampledViewedGame adversary] ≤ bound :=
+    probEvent_sampledViewedGame_cleanBackward_le_of_sampled adversary bound hsampled
+  have huncovered :
+      Pr[SampledViewedEvent cleanUncoveredEvent | sampledViewedGame adversary] ≤ bound :=
+    FtsProbeSimulation.probEvent_sampledViewedGame_cleanUncovered_le adversary q hq
+  rw [sampledHiddenOpeningRisk]
+  calc
+    _ ≤ bound + (bound + bound) := add_le_add hfresh (add_le_add hbackward huncovered)
+    _ = ((3 * q : Nat) : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+      simp only [bound]
+      push_cast
+      ring
+    _ ≤ ((19 * q : Nat) : ℝ≥0∞) *
+        ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+      gcongr
+      omega
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
