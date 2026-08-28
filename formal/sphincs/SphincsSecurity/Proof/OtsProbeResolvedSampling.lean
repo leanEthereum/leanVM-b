@@ -7432,6 +7432,103 @@ theorem privateStateAgrees_resolveDeferredLayerPathFamily
             exact privateStateAgrees_resolveDeferredLayerPathFamily table lay tree leafIdx
               (fun index : Fin n => family index.succ) context tailContext tailValues htail
 
+theorem DeferredContext.Valid.of_resolveDeferredLayerPathFamily
+    {context : DeferredContext} (hvalid : context.Valid)
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) : ∀ {n : Nat} (family : Fin n → Fin maxLayerHeight)
+      (finalContext : DeferredContext) (values : Fin n → Digest),
+      some (finalContext, values) ∈ support
+        (resolveDeferredLayerPathFamily table lay tree leafIdx family context) →
+      finalContext.Valid
+  | 0, family, finalContext, values, hresult => by
+      simp [resolveDeferredLayerPathFamily] at hresult
+      rw [hresult.1]
+      exact hvalid
+  | n + 1, family, finalContext, values, hresult => by
+      rw [resolveDeferredLayerPathFamily] at hresult
+      by_cases hinLayer : (family 0).val < layerHeight lay
+      · simp only [hinLayer, ↓reduceDIte, mem_support_bind_iff] at hresult
+        obtain ⟨headOption, hhead, hrest⟩ := hresult
+        cases headOption with
+        | none => simp at hrest
+        | some head =>
+            rw [mem_support_bind_iff] at hrest
+            obtain ⟨tailOption, htail, hreturn⟩ := hrest
+            cases tailOption with
+            | none => simp at hreturn
+            | some tail =>
+                rcases tail with ⟨tailContext, tailValues⟩
+                have hreturn' : finalContext = tailContext ∧
+                    values = Fin.cases (truncateHash head.output) tailValues := by
+                  simpa using hreturn
+                rw [hreturn'.1]
+                have hheadValid := hvalid.of_resolveDeferredTreeNode table lay tree
+                  (family 0).val (Nat.xor (leafIdx.val / 2 ^ (family 0).val) 1)
+                  (by have := (family 0).isLt; omega) head hhead
+                exact hheadValid.of_resolveDeferredLayerPathFamily table lay tree leafIdx
+                  (fun index : Fin n => family index.succ) tailContext tailValues htail
+      · simp only [hinLayer, ↓reduceDIte, mem_support_bind_iff] at hresult
+        obtain ⟨tailOption, htail, hreturn⟩ := hresult
+        cases tailOption with
+        | none => simp at hreturn
+        | some tail =>
+            rcases tail with ⟨tailContext, tailValues⟩
+            have hreturn' : finalContext = tailContext ∧
+                values = Fin.cases 0 tailValues := by
+              simpa using hreturn
+            rw [hreturn'.1]
+            exact hvalid.of_resolveDeferredLayerPathFamily table lay tree leafIdx
+              (fun index : Fin n => family index.succ) tailContext tailValues htail
+
+theorem PendingCovered.of_resolveDeferredLayerPathFamily
+    {coordinates : List Coordinate} {context : DeferredContext}
+    (hcovered : PendingCovered coordinates context)
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) : ∀ {n : Nat} (family : Fin n → Fin maxLayerHeight)
+      (finalContext : DeferredContext) (values : Fin n → Digest),
+      some (finalContext, values) ∈ support
+        (resolveDeferredLayerPathFamily table lay tree leafIdx family context) →
+      PendingCovered coordinates finalContext
+  | 0, family, finalContext, values, hresult => by
+      simp [resolveDeferredLayerPathFamily] at hresult
+      rw [hresult.1]
+      exact hcovered
+  | n + 1, family, finalContext, values, hresult => by
+      rw [resolveDeferredLayerPathFamily] at hresult
+      by_cases hinLayer : (family 0).val < layerHeight lay
+      · simp only [hinLayer, ↓reduceDIte, mem_support_bind_iff] at hresult
+        obtain ⟨headOption, hhead, hrest⟩ := hresult
+        cases headOption with
+        | none => simp at hrest
+        | some head =>
+            rw [mem_support_bind_iff] at hrest
+            obtain ⟨tailOption, htail, hreturn⟩ := hrest
+            cases tailOption with
+            | none => simp at hreturn
+            | some tail =>
+                rcases tail with ⟨tailContext, tailValues⟩
+                have hreturn' : finalContext = tailContext ∧
+                    values = Fin.cases (truncateHash head.output) tailValues := by
+                  simpa using hreturn
+                rw [hreturn'.1]
+                have hheadCovered := hcovered.of_resolveDeferredTreeNode table lay tree
+                  (family 0).val (Nat.xor (leafIdx.val / 2 ^ (family 0).val) 1)
+                  (by have := (family 0).isLt; omega) head hhead
+                exact hheadCovered.of_resolveDeferredLayerPathFamily table lay tree leafIdx
+                  (fun index : Fin n => family index.succ) tailContext tailValues htail
+      · simp only [hinLayer, ↓reduceDIte, mem_support_bind_iff] at hresult
+        obtain ⟨tailOption, htail, hreturn⟩ := hresult
+        cases tailOption with
+        | none => simp at hreturn
+        | some tail =>
+            rcases tail with ⟨tailContext, tailValues⟩
+            have hreturn' : finalContext = tailContext ∧
+                values = Fin.cases 0 tailValues := by
+              simpa using hreturn
+            rw [hreturn'.1]
+            exact hcovered.of_resolveDeferredLayerPathFamily table lay tree leafIdx
+              (fun index : Fin n => family index.succ) tailContext tailValues htail
+
 set_option maxRecDepth 100000 in
 theorem evalDist_map_resolveDeferredLayerPathFamily_then_finalize
     (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
@@ -8123,6 +8220,67 @@ theorem privateStateAgrees_resolveDeferredLayerValues
           exact ⟨hpathState.1.trans hchainState.1,
             hpathState.2.trans hchainState.2⟩
 
+theorem DeferredContext.Valid.of_resolveDeferredLayerValues
+    {context : DeferredContext} (hvalid : context.Valid)
+    (table : OtsSecretIndex → HashOutput) (index : Index) (lay : Layer)
+    (encoding : ChainIndex → Digit) (finalContext : DeferredContext)
+    (values : (ChainIndex → Digest) × (Fin maxLayerHeight → Digest))
+    (hresult : some (finalContext, values) ∈ support
+      (resolveDeferredLayerValues table index lay encoding context)) :
+    finalContext.Valid := by
+  rw [resolveDeferredLayerValues, mem_support_bind_iff] at hresult
+  obtain ⟨chainsOption, hchains, hrest⟩ := hresult
+  cases chainsOption with
+  | none => simp at hrest
+  | some chains =>
+      rcases chains with ⟨afterChains, chainValues⟩
+      rw [mem_support_bind_iff] at hrest
+      obtain ⟨pathOption, hpath, hreturn⟩ := hrest
+      cases pathOption with
+      | none => simp at hreturn
+      | some path =>
+          rcases path with ⟨afterPath, pathValues⟩
+          have hcontext : finalContext = afterPath :=
+            congrArg Prod.fst (Option.some.inj hreturn)
+          rw [hcontext]
+          have hchainsValid := hvalid.of_resolveDeferredSelectedChainFamily table lay
+            (treeIndexAt index lay) (leafIndexAt index lay)
+            (fun chainIdx : ChainIndex => chainIdx) encoding afterChains chainValues hchains
+          exact hchainsValid.of_resolveDeferredLayerPathFamily table lay
+            (treeIndexAt index lay) (leafIndexAt index lay)
+            (fun level : Fin maxLayerHeight => level) afterPath pathValues hpath
+
+theorem PendingCovered.of_resolveDeferredLayerValues
+    {coordinates : List Coordinate} {context : DeferredContext}
+    (hcovered : PendingCovered coordinates context)
+    (table : OtsSecretIndex → HashOutput) (index : Index) (lay : Layer)
+    (encoding : ChainIndex → Digit) (finalContext : DeferredContext)
+    (values : (ChainIndex → Digest) × (Fin maxLayerHeight → Digest))
+    (hresult : some (finalContext, values) ∈ support
+      (resolveDeferredLayerValues table index lay encoding context)) :
+    PendingCovered coordinates finalContext := by
+  rw [resolveDeferredLayerValues, mem_support_bind_iff] at hresult
+  obtain ⟨chainsOption, hchains, hrest⟩ := hresult
+  cases chainsOption with
+  | none => simp at hrest
+  | some chains =>
+      rcases chains with ⟨afterChains, chainValues⟩
+      rw [mem_support_bind_iff] at hrest
+      obtain ⟨pathOption, hpath, hreturn⟩ := hrest
+      cases pathOption with
+      | none => simp at hreturn
+      | some path =>
+          rcases path with ⟨afterPath, pathValues⟩
+          have hcontext : finalContext = afterPath :=
+            congrArg Prod.fst (Option.some.inj hreturn)
+          rw [hcontext]
+          have hchainsCovered := hcovered.of_resolveDeferredSelectedChainFamily table lay
+            (treeIndexAt index lay) (leafIndexAt index lay)
+            (fun chainIdx : ChainIndex => chainIdx) encoding afterChains chainValues hchains
+          exact hchainsCovered.of_resolveDeferredLayerPathFamily table lay
+            (treeIndexAt index lay) (leafIndexAt index lay)
+            (fun level : Fin maxLayerHeight => level) afterPath pathValues hpath
+
 theorem PublishedValues.of_resolveDeferredLayerValues
     {context : DeferredContext} (hpublished : PublishedValues context.state)
     (table : OtsSecretIndex → HashOutput) (index : Index) (lay : Layer)
@@ -8212,6 +8370,95 @@ theorem evalDist_map_resolveDeferredLayerValues_then_finalize
       apply bind_congr
       intro chainsOption
       cases chainsOption <;> rfl
+
+noncomputable def resolveDeferredLayerValuesFamily
+    (table : OtsSecretIndex → HashOutput) (index : Index) :
+    ∀ {n : Nat}, (Fin n → Layer) →
+      ((position : Fin n) → ChainIndex → Digit) → DeferredContext →
+      ProbComp (Option (DeferredContext ×
+        (Fin n → (ChainIndex → Digest) × (Fin maxLayerHeight → Digest))))
+  | 0, _, _, context => pure (some (context, fun position => Fin.elim0 position))
+  | n + 1, layers, encodings, context => do
+      let head ← resolveDeferredLayerValues table index (layers 0) (encodings 0) context
+      match head with
+      | none => pure none
+      | some (headContext, headValues) => do
+          let tail ← resolveDeferredLayerValuesFamily table index
+            (fun position : Fin n => layers position.succ)
+            (fun position : Fin n => encodings position.succ) headContext
+          match tail with
+          | none => pure none
+          | some (finalContext, tailValues) =>
+              pure (some (finalContext, Fin.cases headValues tailValues))
+
+noncomputable def finalizeProjectedResolvedCoordinates
+    (coordinates : List Coordinate) (context : DeferredContext)
+    (table : OtsSecretIndex → HashOutput) :
+    ProbComp (Option (LazyRevealProbe.State Coordinate)) :=
+  projectDeferredState <$> finalizeResolvedCoordinates coordinates context table
+
+set_option maxRecDepth 100000 in
+theorem evalDist_map_resolveDeferredLayerValuesFamily_then_finalize
+    (table : OtsSecretIndex → HashOutput) (index : Index)
+    (coordinates : List Coordinate) :
+    ∀ {n : Nat} (layers : Fin n → Layer)
+      (encodings : (position : Fin n) → ChainIndex → Digit)
+      (context : DeferredContext),
+      context.Valid → PendingCovered coordinates context →
+      evalDist (do
+          let resolved ←
+            resolveDeferredLayerValuesFamily table index layers encodings context
+          match resolved with
+          | none => (pure none : ProbComp
+              (Option (LazyRevealProbe.State Coordinate)))
+          | some (finalContext, _) =>
+              finalizeProjectedResolvedCoordinates coordinates finalContext table) =
+        evalDist (finalizeProjectedResolvedCoordinates coordinates context table)
+  | 0, layers, encodings, context, hvalid, hcovered => by
+      simp [resolveDeferredLayerValuesFamily]
+  | n + 1, layers, encodings, context, hvalid, hcovered => by
+      rw [resolveDeferredLayerValuesFamily]
+      simp only [bind_assoc]
+      calc
+        _ = evalDist
+            (resolveDeferredLayerValues table index (layers 0) (encodings 0) context >>=
+              fun headOption =>
+                match headOption with
+                | none => pure none
+                | some (headContext, _) =>
+                    finalizeProjectedResolvedCoordinates coordinates headContext table) := by
+          apply evalDist_bind_congr
+          intro headOption hhead
+          cases headOption with
+          | none => rfl
+          | some head =>
+              rcases head with ⟨headContext, headValues⟩
+              have hheadValid := hvalid.of_resolveDeferredLayerValues table index
+                (layers 0) (encodings 0) headContext headValues hhead
+              have hheadCovered := hcovered.of_resolveDeferredLayerValues table index
+                (layers 0) (encodings 0) headContext headValues hhead
+              calc
+                _ = evalDist (do
+                    let tail ← resolveDeferredLayerValuesFamily table index
+                      (fun position : Fin n => layers position.succ)
+                      (fun position : Fin n => encodings position.succ) headContext
+                    match tail with
+                    | none => (pure none : ProbComp
+                        (Option (LazyRevealProbe.State Coordinate)))
+                    | some (finalContext, _) =>
+                        finalizeProjectedResolvedCoordinates coordinates finalContext table) := by
+                      apply congrArg evalDist
+                      simp only [bind_assoc]
+                      apply bind_congr
+                      intro tailOption
+                      cases tailOption <;> rfl
+                _ = _ :=
+                  evalDist_map_resolveDeferredLayerValuesFamily_then_finalize table index
+                    coordinates (fun position : Fin n => layers position.succ)
+                    (fun position : Fin n => encodings position.succ) headContext hheadValid
+                    hheadCovered
+        _ = _ := evalDist_map_resolveDeferredLayerValues_then_finalize table index
+          (layers 0) (encodings 0) coordinates context hvalid hcovered
 
 def ResolveLayerValuesRel (parameter : PublicParameter)
     (table : OtsSecretIndex → HashOutput) (ordinaryCache : QueryCache HashSpec) :
@@ -12905,6 +13152,44 @@ theorem evalDist_scheduleResolvedLayerResult_then_finalize
           _ = _ := evalDist_map_resolveDeferredLayerValues_then_finalize result.table index lay
             encoding coordinates result.context hvalid hcovered
   · simp [scheduleResolvedLayerResult, hcompletable]
+
+theorem evalDist_map_scheduleResolvedLayerResult_then_finalize
+    (index : Index) (lay : Layer)
+    (result : ResolvedRunResult
+      (Option (Counter × (ChainIndex → Digit)) × SplitHashCache))
+    (coordinates : List Coordinate) (hvalid : result.context.Valid)
+    (hcovered : PendingCovered coordinates result.context)
+    (project : Option (LazyRevealProbe.State Coordinate) → alpha) :
+    evalDist (project <$> (do
+        let scheduled ← scheduleResolvedLayerResult index lay (some result)
+        match scheduled with
+        | none => (pure none : ProbComp
+            (Option (LazyRevealProbe.State Coordinate)))
+        | some scheduled => projectDeferredState <$>
+            finalizeResolvedCoordinates coordinates scheduled.context scheduled.table)) =
+      evalDist (project <$> (projectDeferredState <$>
+        finalizeResolvedCoordinates coordinates result.context result.table)) := by
+  rw [evalDist_map, evalDist_map,
+    evalDist_scheduleResolvedLayerResult_then_finalize index lay result coordinates hvalid
+      hcovered]
+
+theorem evalDist_scheduleResolvedLayerResult_then_finalize_isNone
+    (index : Index) (lay : Layer)
+    (result : ResolvedRunResult
+      (Option (Counter × (ChainIndex → Digit)) × SplitHashCache))
+    (coordinates : List Coordinate) (hvalid : result.context.Valid)
+    (hcovered : PendingCovered coordinates result.context) :
+    evalDist (Option.isNone <$> (do
+        let scheduled ← scheduleResolvedLayerResult index lay (some result)
+        match scheduled with
+        | none => (pure none : ProbComp
+            (Option (LazyRevealProbe.State Coordinate)))
+        | some scheduled => projectDeferredState <$>
+            finalizeResolvedCoordinates coordinates scheduled.context scheduled.table)) =
+      evalDist (Option.isNone <$> (projectDeferredState <$>
+        finalizeResolvedCoordinates coordinates result.context result.table)) :=
+  evalDist_map_scheduleResolvedLayerResult_then_finalize index lay result coordinates hvalid
+    hcovered Option.isNone
 
 theorem resolvedCouples_maskedSignLayer
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
