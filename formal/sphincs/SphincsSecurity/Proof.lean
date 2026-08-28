@@ -145,6 +145,7 @@ import SphincsSecurity.Proof.OtsProbeCoupling
 import SphincsSecurity.Proof.OtsProbeCompletionSampling
 import SphincsSecurity.Proof.OtsProbeRunSampling
 import SphincsSecurity.Proof.OtsProbeResolvedSampling
+import SphincsSecurity.Proof.OtsProbeChronologicalTerminal
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
