@@ -112,6 +112,40 @@ noncomputable def resolveDeferredPositionValue (position : Position)
                 values := context.values.install position output }
               output))
 
+theorem resolveDeferredPositionValue_state_eq_clearPending
+    (position : Position) (context : DeferredContext) (result : DeferredResolution)
+    (hresult : some result ∈ support
+      (resolveDeferredPositionValue position context)) :
+    result.state = context.state.clearPending (.position position) := by
+  unfold resolveDeferredPositionValue at hresult
+  simp only at hresult
+  cases hstate : context.state.values (.position position) with
+  | some output =>
+      rw [hstate] at hresult
+      by_cases hhit : context.state.hitAt (.position position) output
+      · simp [hhit] at hresult
+      · simp [hhit] at hresult
+        subst result
+        rfl
+  | none =>
+      rw [hstate] at hresult
+      cases hvalue : context.values position with
+      | some output =>
+          rw [hvalue] at hresult
+          by_cases hhit : context.state.hitAt (.position position) output
+          · simp [hhit] at hresult
+          · simp [hhit] at hresult
+            subst result
+            rfl
+      | none =>
+          rw [hvalue, mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, hreturn⟩ := hresult
+          by_cases hhit : context.state.hitAt (.position position) output
+          · simp [hhit] at hreturn
+          · simp [hhit] at hreturn
+            subst result
+            rfl
+
 theorem resolveDeferredPositionValue_of_state_value
     (position : Position) (context : DeferredContext) (output : HashOutput)
     (hvalue : context.state.values (.position position) = some output) :
@@ -521,6 +555,48 @@ noncomputable def resolveDeferredChainStart (table : OtsSecretIndex → HashOutp
             values := context.values }
           output)
 
+theorem resolveDeferredChainStart_state_eq_clearPending
+    (table : OtsSecretIndex → HashOutput) (index : OtsSecretIndex)
+    (context : DeferredContext) (result : DeferredResolution)
+    (hresult : resolveDeferredChainStart table index context = some result) :
+    result.state = context.state.clearPending index.coordinate := by
+  unfold resolveDeferredChainStart at hresult
+  cases hstate : context.state.values index.coordinate with
+  | some output =>
+      by_cases hhit : context.state.hitAt index.coordinate output
+      · simp [hstate, hhit] at hresult
+      · simp [hstate, hhit] at hresult
+        subst result
+        rfl
+  | none =>
+      by_cases hhit : context.state.hitAt index.coordinate (table index)
+      · simp [hstate, hhit] at hresult
+      · simp [hstate, hhit] at hresult
+        subst result
+        rfl
+
+def PrivateStateAgrees (left right : DeferredContext) : Prop :=
+  left.state.values = right.state.values ∧
+    left.state.revealed = right.state.revealed
+
+theorem privateStateAgrees_resolveDeferredPositionValue
+    (position : Position) (context : DeferredContext) (result : DeferredResolution)
+    (hresult : some result ∈ support
+      (resolveDeferredPositionValue position context)) :
+    PrivateStateAgrees result.toDeferredContext context := by
+  rw [PrivateStateAgrees,
+    resolveDeferredPositionValue_state_eq_clearPending position context result hresult]
+  exact ⟨rfl, rfl⟩
+
+theorem privateStateAgrees_resolveDeferredChainStart
+    (table : OtsSecretIndex → HashOutput) (index : OtsSecretIndex)
+    (context : DeferredContext) (result : DeferredResolution)
+    (hresult : resolveDeferredChainStart table index context = some result) :
+    PrivateStateAgrees result.toDeferredContext context := by
+  rw [PrivateStateAgrees,
+    resolveDeferredChainStart_state_eq_clearPending table index context result hresult]
+  exact ⟨rfl, rfl⟩
+
 theorem resolveDeferredChainStart_of_agrees
     (table : OtsSecretIndex → HashOutput) (index : OtsSecretIndex)
     (context : DeferredContext) (hagrees : StartTableAgrees context.state table)
@@ -663,6 +739,35 @@ theorem resolveDeferredChainPrefix_preserves_state_values
             (.chain lay tree leafIdx chainIdx ⟨steps, by omega⟩)
             previous.toDeferredContext result (by simpa using hrest)
           exact hrestValues.trans hpreviousValues
+
+theorem privateStateAgrees_resolveDeferredChainPrefix
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) :
+    ∀ steps hsteps context result,
+      some result ∈ support
+        (resolveDeferredChainPrefix table lay tree leafIdx chainIdx steps hsteps context) →
+      PrivateStateAgrees result.toDeferredContext context
+  | 0, hsteps, context, result, hresult => by
+      simp only [resolveDeferredChainPrefix, support_pure, Set.mem_singleton_iff] at hresult
+      exact privateStateAgrees_resolveDeferredChainStart table
+        ⟨lay, tree, leafIdx, chainIdx⟩ context result hresult.symm
+  | steps + 1, hsteps, context, result, hresult => by
+      rw [resolveDeferredChainPrefix, mem_support_bind_iff] at hresult
+      obtain ⟨previous, hprevious, hrest⟩ := hresult
+      cases previous with
+      | none => simp at hrest
+      | some previous =>
+          exact ⟨
+            (privateStateAgrees_resolveDeferredPositionValue
+              (.chain lay tree leafIdx chainIdx ⟨steps, by omega⟩)
+              previous.toDeferredContext result (by simpa using hrest)).1.trans
+                (privateStateAgrees_resolveDeferredChainPrefix table lay tree leafIdx chainIdx
+                  steps (by omega) context previous hprevious).1,
+            (privateStateAgrees_resolveDeferredPositionValue
+              (.chain lay tree leafIdx chainIdx ⟨steps, by omega⟩)
+              previous.toDeferredContext result (by simpa using hrest)).2.trans
+                (privateStateAgrees_resolveDeferredChainPrefix table lay tree leafIdx chainIdx
+                  steps (by omega) context previous hprevious).2⟩
 
 theorem resolveDeferredChainPrefix_installs_last
     (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
@@ -3300,6 +3405,75 @@ theorem resolveDeferredTreeNode_preserves_state_values
                   (2 * nodeIdx + 1) (by omega) left.toDeferredContext right hright).trans
                   (resolveDeferredTreeNode_preserves_state_values table lay tree level
                     (2 * nodeIdx) (by omega) context left hleft))
+
+theorem privateStateAgrees_resolveDeferredChains
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) : ∀ chains context result,
+      some result ∈ support
+        (resolveDeferredChains table lay tree leafIdx chains context) →
+      PrivateStateAgrees result context
+  | [], context, result, hresult => by
+      simp [resolveDeferredChains] at hresult
+      subst result
+      exact ⟨rfl, rfl⟩
+  | chainIdx :: remaining, context, result, hresult => by
+      rw [resolveDeferredChains, mem_support_bind_iff] at hresult
+      obtain ⟨resolvedOption, hresolved, hrest⟩ := hresult
+      cases resolvedOption with
+      | none => simp at hrest
+      | some resolved =>
+          have hhead := privateStateAgrees_resolveDeferredChainPrefix table lay tree leafIdx
+            chainIdx (chainLength - 1) (by omega) context resolved hresolved
+          have htail := privateStateAgrees_resolveDeferredChains table lay tree leafIdx remaining
+            resolved.toDeferredContext result (by simpa using hrest)
+          exact ⟨htail.1.trans hhead.1, htail.2.trans hhead.2⟩
+
+theorem privateStateAgrees_resolveDeferredOtsLeaf
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (context : DeferredContext) (result : DeferredResolution)
+    (hresult : some result ∈ support
+      (resolveDeferredOtsLeaf table lay tree leafIdx context)) :
+    PrivateStateAgrees result.toDeferredContext context := by
+  rw [resolveDeferredOtsLeaf, mem_support_bind_iff] at hresult
+  obtain ⟨chainsOption, hchains, hrest⟩ := hresult
+  cases chainsOption with
+  | none => simp at hrest
+  | some chains =>
+      have hhead := privateStateAgrees_resolveDeferredChains table lay tree leafIdx
+        (List.ofFn fun chainIdx : ChainIndex => chainIdx) context chains hchains
+      have htail := privateStateAgrees_resolveDeferredPositionValue
+        (.leaf lay tree leafIdx) chains result (by simpa using hrest)
+      exact ⟨htail.1.trans hhead.1, htail.2.trans hhead.2⟩
+
+theorem privateStateAgrees_resolveDeferredTreeNode
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex) :
+    ∀ level nodeIdx hlevel context result,
+      some result ∈ support
+        (resolveDeferredTreeNode table lay tree level nodeIdx hlevel context) →
+      PrivateStateAgrees result.toDeferredContext context
+  | 0, nodeIdx, hlevel, context, result, hresult =>
+      privateStateAgrees_resolveDeferredOtsLeaf table lay tree (leafOfNat nodeIdx)
+        context result hresult
+  | level + 1, nodeIdx, hlevel, context, result, hresult => by
+      rw [resolveDeferredTreeNode, mem_support_bind_iff] at hresult
+      obtain ⟨leftOption, hleft, hafterLeft⟩ := hresult
+      cases leftOption with
+      | none => simp at hafterLeft
+      | some left =>
+          rw [mem_support_bind_iff] at hafterLeft
+          obtain ⟨rightOption, hright, hafterRight⟩ := hafterLeft
+          cases rightOption with
+          | none => simp at hafterRight
+          | some right =>
+              have hleftState := privateStateAgrees_resolveDeferredTreeNode table lay tree level
+                (2 * nodeIdx) (by omega) context left hleft
+              have hrightState := privateStateAgrees_resolveDeferredTreeNode table lay tree level
+                (2 * nodeIdx + 1) (by omega) left.toDeferredContext right hright
+              have hnodeState := privateStateAgrees_resolveDeferredPositionValue
+                (.node lay tree ⟨level, by omega⟩ (leafOfNat nodeIdx))
+                right.toDeferredContext result (by simpa using hafterRight)
+              exact ⟨hnodeState.1.trans (hrightState.1.trans hleftState.1),
+                hnodeState.2.trans (hrightState.2.trans hleftState.2)⟩
 
 theorem resolveDeferredPosition_preserves_state_values
     (table : OtsSecretIndex → HashOutput) (position : Position)
@@ -6773,7 +6947,7 @@ theorem relTriple_resolveDeferredChainPrefix_chronological
         ((simulateQ (randomOracle : QueryImpl HashSpec _)
           (chainWalk parameter lay tree leafIdx chainIdx 0 steps
             (truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩)))).run cache)
-        (ResolveChainRel
+      (ResolveChainRel
           (ResolvedChainInvariant parameter table lay tree leafIdx chainIdx ordinaryCache
             steps)) := by
   rcases hinvariant with ⟨hcache, hvalid, hstarts, hcompletable, hpartition⟩
@@ -6838,6 +7012,470 @@ theorem relTriple_resolveDeferredChainPrefix_chronological
       exact hvalue
     · exact resolveDeferredPositionValue_resolves position previous.toDeferredContext result
         hresultSupport
+
+noncomputable def resolveDeferredSelectedChainFamily
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) : ∀ {n : Nat}, (Fin n → ChainIndex) →
+      (Fin n → Digit) → DeferredContext →
+        ProbComp (Option (DeferredContext × (Fin n → Digest)))
+  | 0, _, _, context => pure (some (context, fun index => Fin.elim0 index))
+  | n + 1, family, digits, context => do
+      let head ← resolveDeferredChainPrefix table lay tree leafIdx (family 0)
+        (digits 0).val (by have := (digits 0).isLt; omega) context
+      match head with
+      | none => pure none
+      | some head => do
+          let tail ← resolveDeferredSelectedChainFamily table lay tree leafIdx
+            (fun index : Fin n => family index.succ)
+            (fun index : Fin n => digits index.succ) head.toDeferredContext
+          match tail with
+          | none => pure none
+          | some (finalContext, tailValues) =>
+              pure (some (finalContext,
+                Fin.cases (truncateHash head.output) tailValues))
+
+theorem privateStateAgrees_resolveDeferredSelectedChainFamily
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) : ∀ {n : Nat} (family : Fin n → ChainIndex)
+      (digits : Fin n → Digit) (context finalContext : DeferredContext)
+      (values : Fin n → Digest),
+      some (finalContext, values) ∈ support
+        (resolveDeferredSelectedChainFamily table lay tree leafIdx family digits context) →
+      PrivateStateAgrees finalContext context
+  | 0, family, digits, context, finalContext, values, hresult => by
+      simp [resolveDeferredSelectedChainFamily] at hresult
+      rw [hresult.1]
+      exact ⟨rfl, rfl⟩
+  | n + 1, family, digits, context, finalContext, values, hresult => by
+      rw [resolveDeferredSelectedChainFamily, mem_support_bind_iff] at hresult
+      obtain ⟨headOption, hhead, hrest⟩ := hresult
+      cases headOption with
+      | none => simp at hrest
+      | some head =>
+          rw [mem_support_bind_iff] at hrest
+          obtain ⟨tailOption, htail, hreturn⟩ := hrest
+          cases tailOption with
+          | none => simp at hreturn
+          | some tail =>
+              rcases tail with ⟨tailContext, tailValues⟩
+              simp only [support_pure, Set.mem_singleton_iff] at hreturn
+              have hcontext : finalContext = tailContext :=
+                congrArg Prod.fst (Option.some.inj hreturn)
+              rw [hcontext]
+              have hheadState := privateStateAgrees_resolveDeferredChainPrefix table lay tree
+                leafIdx (family 0) (digits 0).val (by have := (digits 0).isLt; omega)
+                context head hhead
+              have htailState := privateStateAgrees_resolveDeferredSelectedChainFamily table lay
+                tree leafIdx (fun index : Fin n => family index.succ)
+                (fun index : Fin n => digits index.succ) head.toDeferredContext tailContext
+                tailValues htail
+              exact ⟨htailState.1.trans hheadState.1,
+                htailState.2.trans hheadState.2⟩
+
+theorem DeferredContext.Valid.of_resolveDeferredSelectedChainFamily
+    {context : DeferredContext} (hvalid : context.Valid)
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) : ∀ {n : Nat} (family : Fin n → ChainIndex)
+      (digits : Fin n → Digit) (finalContext : DeferredContext)
+      (values : Fin n → Digest),
+      some (finalContext, values) ∈ support
+        (resolveDeferredSelectedChainFamily table lay tree leafIdx family digits context) →
+      finalContext.Valid
+  | 0, family, digits, finalContext, values, hresult => by
+      simp [resolveDeferredSelectedChainFamily] at hresult
+      rw [hresult.1]
+      exact hvalid
+  | n + 1, family, digits, finalContext, values, hresult => by
+      rw [resolveDeferredSelectedChainFamily, mem_support_bind_iff] at hresult
+      obtain ⟨headOption, hhead, hrest⟩ := hresult
+      cases headOption with
+      | none => simp at hrest
+      | some head =>
+          rw [mem_support_bind_iff] at hrest
+          obtain ⟨tailOption, htail, hreturn⟩ := hrest
+          cases tailOption with
+          | none => simp at hreturn
+          | some tail =>
+              rcases tail with ⟨tailContext, tailValues⟩
+              have hreturn' : finalContext = tailContext ∧
+                  values = Fin.cases (truncateHash head.output) tailValues := by
+                simpa using hreturn
+              have hcontext : finalContext = tailContext := hreturn'.1
+              rw [hcontext]
+              have hheadValid := hvalid.of_resolveDeferredChainPrefix table lay tree leafIdx
+                (family 0) (digits 0).val (by have := (digits 0).isLt; omega) head hhead
+              exact hheadValid.of_resolveDeferredSelectedChainFamily table lay tree leafIdx
+                (fun index : Fin n => family index.succ)
+                (fun index : Fin n => digits index.succ) tailContext tailValues htail
+
+theorem PendingCovered.of_resolveDeferredSelectedChainFamily
+    {coordinates : List Coordinate} {context : DeferredContext}
+    (hcovered : PendingCovered coordinates context)
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) : ∀ {n : Nat} (family : Fin n → ChainIndex)
+      (digits : Fin n → Digit) (finalContext : DeferredContext)
+      (values : Fin n → Digest),
+      some (finalContext, values) ∈ support
+        (resolveDeferredSelectedChainFamily table lay tree leafIdx family digits context) →
+      PendingCovered coordinates finalContext
+  | 0, family, digits, finalContext, values, hresult => by
+      simp [resolveDeferredSelectedChainFamily] at hresult
+      rw [hresult.1]
+      exact hcovered
+  | n + 1, family, digits, finalContext, values, hresult => by
+      rw [resolveDeferredSelectedChainFamily, mem_support_bind_iff] at hresult
+      obtain ⟨headOption, hhead, hrest⟩ := hresult
+      cases headOption with
+      | none => simp at hrest
+      | some head =>
+          rw [mem_support_bind_iff] at hrest
+          obtain ⟨tailOption, htail, hreturn⟩ := hrest
+          cases tailOption with
+          | none => simp at hreturn
+          | some tail =>
+              rcases tail with ⟨tailContext, tailValues⟩
+              have hreturn' : finalContext = tailContext ∧
+                  values = Fin.cases (truncateHash head.output) tailValues := by
+                simpa using hreturn
+              have hcontext : finalContext = tailContext := hreturn'.1
+              rw [hcontext]
+              have hheadCovered := hcovered.of_resolveDeferredChainPrefix table lay tree leafIdx
+                (family 0) (digits 0).val (by have := (digits 0).isLt; omega) head hhead
+              exact hheadCovered.of_resolveDeferredSelectedChainFamily table lay tree leafIdx
+                (fun index : Fin n => family index.succ)
+                (fun index : Fin n => digits index.succ) tailContext tailValues htail
+
+set_option maxRecDepth 100000 in
+theorem evalDist_map_resolveDeferredSelectedChainFamily_then_finalize
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (coordinates : List Coordinate) :
+    ∀ {n : Nat} (family : Fin n → ChainIndex) (digits : Fin n → Digit)
+      (context : DeferredContext),
+      context.Valid → PendingCovered coordinates context →
+      evalDist (do
+          let resolved ← resolveDeferredSelectedChainFamily table lay tree leafIdx
+            family digits context
+          match resolved with
+          | none => (pure none : ProbComp
+              (Option (LazyRevealProbe.State Coordinate)))
+          | some (finalContext, _) => projectDeferredState <$>
+              finalizeResolvedCoordinates coordinates finalContext table) =
+        evalDist (projectDeferredState <$>
+          finalizeResolvedCoordinates coordinates context table)
+  | 0, family, digits, context, hvalid, hcovered => by
+      simp [resolveDeferredSelectedChainFamily]
+  | n + 1, family, digits, context, hvalid, hcovered => by
+      rw [resolveDeferredSelectedChainFamily]
+      simp only [bind_assoc]
+      calc
+        _ = evalDist
+            (resolveDeferredChainPrefix table lay tree leafIdx (family 0)
+                (digits 0).val (by have := (digits 0).isLt; omega) context >>=
+              fun headOption =>
+                match headOption with
+                | none => pure none
+                | some head => projectDeferredState <$>
+                    finalizeResolvedCoordinates coordinates head.toDeferredContext table) := by
+          apply evalDist_bind_congr
+          intro headOption hhead
+          cases headOption with
+          | none => rfl
+          | some head =>
+              have hmiddleValid := hvalid.of_resolveDeferredChainPrefix table lay tree leafIdx
+                (family 0) (digits 0).val (by have := (digits 0).isLt; omega) head hhead
+              have hmiddleCovered := hcovered.of_resolveDeferredChainPrefix table lay tree leafIdx
+                (family 0) (digits 0).val (by have := (digits 0).isLt; omega) head hhead
+              simp only
+              calc
+                _ = evalDist (do
+                    let tail ← resolveDeferredSelectedChainFamily table lay tree leafIdx
+                      (fun index : Fin n => family index.succ)
+                      (fun index : Fin n => digits index.succ) head.toDeferredContext
+                    match tail with
+                    | none => (pure none : ProbComp
+                        (Option (LazyRevealProbe.State Coordinate)))
+                    | some (finalContext, _) => projectDeferredState <$>
+                        finalizeResolvedCoordinates coordinates finalContext table) := by
+                      apply congrArg evalDist
+                      simp only [bind_assoc]
+                      apply bind_congr
+                      intro tailOption
+                      cases tailOption <;> simp
+                _ = _ :=
+                  evalDist_map_resolveDeferredSelectedChainFamily_then_finalize table lay tree
+                    leafIdx coordinates (fun index : Fin n => family index.succ)
+                    (fun index : Fin n => digits index.succ) head.toDeferredContext hmiddleValid
+                    hmiddleCovered
+        _ = evalDist (projectDeferredState <$>
+            finalizeResolvedCoordinates coordinates context table) :=
+          evalDist_map_resolveDeferredChainPrefix_then_finalize table lay tree leafIdx
+            (family 0) coordinates context hvalid hcovered (digits 0).val
+              (by have := (digits 0).isLt; omega)
+
+def ResolveDeferredValueFamilyRel (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput) (ordinaryCache : QueryCache HashSpec) :
+    Option (DeferredContext × (Fin n → Digest)) →
+      (Fin n → Digest) × QueryCache HashSpec → Prop
+  | none, _ => True
+  | some (context, values), (concreteValues, cache) =>
+      values = concreteValues ∧
+        ResolvedContextInvariant parameter table context ordinaryCache cache
+
+set_option maxRecDepth 100000 in
+theorem relTriple_resolveDeferredSelectedChainFamily_chronological
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) :
+    ∀ {n : Nat} (family : Fin n → ChainIndex) (digits : Fin n → Digit)
+      (context : DeferredContext) (ordinaryCache cache : QueryCache HashSpec),
+      ResolvedContextInvariant parameter table context ordinaryCache cache →
+      RelTriple
+        (resolveDeferredSelectedChainFamily table lay tree leafIdx family digits context)
+        ((simulateQ (randomOracle : QueryImpl HashSpec _)
+          (sequenceFin fun index =>
+            chainWalk parameter lay tree leafIdx (family index) 0 (digits index).val
+              (truncateHash (table ⟨lay, tree, leafIdx, family index⟩)))).run cache)
+        (ResolveDeferredValueFamilyRel parameter table ordinaryCache)
+  | 0, family, digits, context, ordinaryCache, cache, hinvariant => by
+      simp [resolveDeferredSelectedChainFamily, sequenceFin,
+        ResolveDeferredValueFamilyRel, hinvariant]
+  | n + 1, family, digits, context, ordinaryCache, cache, hinvariant => by
+      rw [resolveDeferredSelectedChainFamily, sequenceFin, simulateQ_bind,
+        StateT.run_bind]
+      have hhead := relTriple_resolveDeferredChainPrefix_chronological parameter table lay tree
+        leafIdx (family 0) context ordinaryCache cache hinvariant (digits 0).val
+          (by have := (digits 0).isLt; omega)
+      apply relTriple_bind hhead
+      intro headOption headResult hheadRelation
+      cases headOption with
+      | none =>
+          rcases headResult with ⟨headValue, headCache⟩
+          simp only
+          let right : ProbComp ((Fin (n + 1) → Digest) × QueryCache HashSpec) :=
+            ((simulateQ (randomOracle : QueryImpl HashSpec _)
+              (do
+                let tail ← sequenceFin fun index : Fin n =>
+                  chainWalk parameter lay tree leafIdx (family index.succ) 0
+                    (digits index.succ).val
+                    (truncateHash (table ⟨lay, tree, leafIdx, family index.succ⟩))
+                pure (Fin.cases headValue tail))).run headCache)
+          have hbase := relTriple_true
+            (pure (none : Option (DeferredContext × (Fin (n + 1) → Digest))) :
+              ProbComp (Option (DeferredContext × (Fin (n + 1) → Digest)))) right
+          have hsupported :=
+            SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+              (fun result => result = none) (by
+                intro result hresult
+                simpa using hresult)
+          apply relTriple_post_mono hsupported
+          intro leftResult _ hrelation
+          rw [hrelation.2]
+          trivial
+      | some head =>
+          rcases headResult with ⟨headValue, headCache⟩
+          rcases hheadRelation with ⟨hheadValue, hheadInvariant⟩
+          have htail := relTriple_resolveDeferredSelectedChainFamily_chronological
+            parameter table lay tree leafIdx
+            (fun index : Fin n => family index.succ)
+            (fun index : Fin n => digits index.succ) head.toDeferredContext ordinaryCache
+              headCache hheadInvariant.1
+          have hbound : RelTriple
+              (resolveDeferredSelectedChainFamily table lay tree leafIdx
+                  (fun index : Fin n => family index.succ)
+                  (fun index : Fin n => digits index.succ) head.toDeferredContext >>=
+                fun tailOption =>
+                  match tailOption with
+                  | none => pure none
+                  | some (finalContext, tailValues) =>
+                      pure (some (finalContext,
+                        Fin.cases (truncateHash head.output) tailValues)))
+              (((simulateQ (randomOracle : QueryImpl HashSpec _)
+                  (sequenceFin fun index : Fin n =>
+                    chainWalk parameter lay tree leafIdx (family index.succ) 0
+                      (digits index.succ).val
+                      (truncateHash
+                        (table ⟨lay, tree, leafIdx, family index.succ⟩)))).run
+                headCache) >>= fun tail =>
+                  pure (Fin.cases headValue tail.1, tail.2))
+              (ResolveDeferredValueFamilyRel parameter table ordinaryCache) := by
+            apply relTriple_bind htail
+            intro tailOption tailResult htailRelation
+            cases tailOption with
+            | none =>
+                apply relTriple_pure_pure
+                trivial
+            | some tail =>
+                rcases tail with ⟨finalContext, tailValues⟩
+                rcases tailResult with ⟨concreteTailValues, finalCache⟩
+                rcases htailRelation with ⟨htailValues, hfinalInvariant⟩
+                apply relTriple_pure_pure
+                refine ⟨?_, hfinalInvariant⟩
+                funext index
+                refine Fin.cases hheadValue.symm (fun tailIndex => ?_) index
+                exact congrFun htailValues tailIndex
+          simpa [simulateQ_bind, StateT.run_bind, simulateQ_pure,
+            StateT.run_pure] using hbound
+
+noncomputable def resolveDeferredLayerPathFamily
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) : ∀ {n : Nat}, (Fin n → Fin maxLayerHeight) →
+      DeferredContext → ProbComp (Option (DeferredContext × (Fin n → Digest)))
+  | 0, _, context => pure (some (context, fun index => Fin.elim0 index))
+  | n + 1, family, context =>
+      if hinLayer : (family 0).val < layerHeight lay then do
+        let head ← resolveDeferredTreeNode table lay tree (family 0).val
+          (Nat.xor (leafIdx.val / 2 ^ (family 0).val) 1) (by
+            have := (family 0).isLt
+            omega) context
+        match head with
+        | none => pure none
+        | some head => do
+            let tail ← resolveDeferredLayerPathFamily table lay tree leafIdx
+              (fun index : Fin n => family index.succ) head.toDeferredContext
+            match tail with
+            | none => pure none
+            | some (finalContext, tailValues) =>
+                pure (some (finalContext,
+                  Fin.cases (truncateHash head.output) tailValues))
+      else do
+        let tail ← resolveDeferredLayerPathFamily table lay tree leafIdx
+          (fun index : Fin n => family index.succ) context
+        match tail with
+        | none => pure none
+        | some (finalContext, tailValues) =>
+            pure (some (finalContext, Fin.cases 0 tailValues))
+
+theorem privateStateAgrees_resolveDeferredLayerPathFamily
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) : ∀ {n : Nat} (family : Fin n → Fin maxLayerHeight)
+      (context finalContext : DeferredContext) (values : Fin n → Digest),
+      some (finalContext, values) ∈ support
+        (resolveDeferredLayerPathFamily table lay tree leafIdx family context) →
+      PrivateStateAgrees finalContext context
+  | 0, family, context, finalContext, values, hresult => by
+      simp [resolveDeferredLayerPathFamily] at hresult
+      rw [hresult.1]
+      exact ⟨rfl, rfl⟩
+  | n + 1, family, context, finalContext, values, hresult => by
+      rw [resolveDeferredLayerPathFamily] at hresult
+      by_cases hinLayer : (family 0).val < layerHeight lay
+      · simp only [hinLayer, ↓reduceDIte, mem_support_bind_iff] at hresult
+        obtain ⟨headOption, hhead, hrest⟩ := hresult
+        cases headOption with
+        | none => simp at hrest
+        | some head =>
+            rw [mem_support_bind_iff] at hrest
+            obtain ⟨tailOption, htail, hreturn⟩ := hrest
+            cases tailOption with
+            | none => simp at hreturn
+            | some tail =>
+                rcases tail with ⟨tailContext, tailValues⟩
+                simp only [support_pure, Set.mem_singleton_iff] at hreturn
+                have hcontext : finalContext = tailContext :=
+                  congrArg Prod.fst (Option.some.inj hreturn)
+                rw [hcontext]
+                have hheadState := privateStateAgrees_resolveDeferredTreeNode table lay tree
+                  (family 0).val (Nat.xor (leafIdx.val / 2 ^ (family 0).val) 1)
+                  (by have := (family 0).isLt; omega) context head hhead
+                have htailState := privateStateAgrees_resolveDeferredLayerPathFamily table lay tree
+                  leafIdx (fun index : Fin n => family index.succ) head.toDeferredContext
+                  tailContext tailValues htail
+                exact ⟨htailState.1.trans hheadState.1,
+                  htailState.2.trans hheadState.2⟩
+      · simp only [hinLayer, ↓reduceDIte, mem_support_bind_iff] at hresult
+        obtain ⟨tailOption, htail, hreturn⟩ := hresult
+        cases tailOption with
+        | none => simp at hreturn
+        | some tail =>
+            rcases tail with ⟨tailContext, tailValues⟩
+            simp only [support_pure, Set.mem_singleton_iff] at hreturn
+            have hcontext : finalContext = tailContext :=
+              congrArg Prod.fst (Option.some.inj hreturn)
+            rw [hcontext]
+            exact privateStateAgrees_resolveDeferredLayerPathFamily table lay tree leafIdx
+              (fun index : Fin n => family index.succ) context tailContext tailValues htail
+
+set_option maxRecDepth 100000 in
+theorem evalDist_map_resolveDeferredLayerPathFamily_then_finalize
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (coordinates : List Coordinate) :
+    ∀ {n : Nat} (family : Fin n → Fin maxLayerHeight) (context : DeferredContext),
+      context.Valid → PendingCovered coordinates context →
+      evalDist (do
+          let resolved ←
+            resolveDeferredLayerPathFamily table lay tree leafIdx family context
+          match resolved with
+          | none => (pure none : ProbComp
+              (Option (LazyRevealProbe.State Coordinate)))
+          | some (finalContext, _) => projectDeferredState <$>
+              finalizeResolvedCoordinates coordinates finalContext table) =
+        evalDist (projectDeferredState <$>
+          finalizeResolvedCoordinates coordinates context table)
+  | 0, family, context, hvalid, hcovered => by
+      simp [resolveDeferredLayerPathFamily]
+  | n + 1, family, context, hvalid, hcovered => by
+      rw [resolveDeferredLayerPathFamily]
+      by_cases hinLayer : (family 0).val < layerHeight lay
+      · simp only [hinLayer, ↓reduceDIte, bind_assoc]
+        calc
+          _ = evalDist
+              (resolveDeferredTreeNode table lay tree (family 0).val
+                  (Nat.xor (leafIdx.val / 2 ^ (family 0).val) 1)
+                  (by have := (family 0).isLt; omega) context >>= fun headOption =>
+                match headOption with
+                | none => pure none
+                | some head => projectDeferredState <$>
+                    finalizeResolvedCoordinates coordinates head.toDeferredContext table) := by
+            apply evalDist_bind_congr
+            intro headOption hhead
+            cases headOption with
+            | none => rfl
+            | some head =>
+                have hmiddleValid := hvalid.of_resolveDeferredTreeNode table lay tree
+                  (family 0).val (Nat.xor (leafIdx.val / 2 ^ (family 0).val) 1)
+                  (by have := (family 0).isLt; omega) head hhead
+                have hmiddleCovered := hcovered.of_resolveDeferredTreeNode table lay tree
+                  (family 0).val (Nat.xor (leafIdx.val / 2 ^ (family 0).val) 1)
+                  (by have := (family 0).isLt; omega) head hhead
+                simp only
+                calc
+                  _ = evalDist (do
+                      let tail ← resolveDeferredLayerPathFamily table lay tree leafIdx
+                        (fun index : Fin n => family index.succ) head.toDeferredContext
+                      match tail with
+                      | none => (pure none : ProbComp
+                          (Option (LazyRevealProbe.State Coordinate)))
+                      | some (finalContext, _) => projectDeferredState <$>
+                          finalizeResolvedCoordinates coordinates finalContext table) := by
+                        apply congrArg evalDist
+                        simp only [bind_assoc]
+                        apply bind_congr
+                        intro tailOption
+                        cases tailOption <;> simp
+                  _ = _ :=
+                    evalDist_map_resolveDeferredLayerPathFamily_then_finalize table lay tree
+                      leafIdx coordinates (fun index : Fin n => family index.succ)
+                      head.toDeferredContext hmiddleValid hmiddleCovered
+          _ = evalDist (projectDeferredState <$>
+              finalizeResolvedCoordinates coordinates context table) :=
+            evalDist_map_resolveDeferredTreeNode_then_finalize table lay tree coordinates
+              (family 0).val (Nat.xor (leafIdx.val / 2 ^ (family 0).val) 1)
+                (by have := (family 0).isLt; omega) context hvalid hcovered
+      · simp only [hinLayer, ↓reduceDIte, bind_assoc]
+        calc
+          _ = evalDist (do
+              let tail ← resolveDeferredLayerPathFamily table lay tree leafIdx
+                (fun index : Fin n => family index.succ) context
+              match tail with
+              | none => (pure none : ProbComp
+                  (Option (LazyRevealProbe.State Coordinate)))
+              | some (finalContext, _) => projectDeferredState <$>
+                  finalizeResolvedCoordinates coordinates finalContext table) := by
+                apply congrArg evalDist
+                apply bind_congr
+                intro tailOption
+                cases tailOption <;> simp
+          _ = _ := evalDist_map_resolveDeferredLayerPathFamily_then_finalize table lay tree
+            leafIdx coordinates (fun index : Fin n => family index.succ) context hvalid hcovered
 
 theorem ResolvedChainInvariant.fullChain
     {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
@@ -7248,6 +7886,305 @@ theorem relTriple_resolveDeferredTreeNode_chronological
                   (by simp [position, IsOtsPosition]) hcanonical
               simpa [deferredTreePosition, position, input, tweakableHash, oracleHash,
                 simulateQ_bind, StateT.run_bind, simulateQ_pure, StateT.run_pure] using hquery
+
+set_option maxRecDepth 100000 in
+theorem relTriple_resolveDeferredLayerPathFamily_chronological
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) :
+    ∀ {n : Nat} (family : Fin n → Fin maxLayerHeight)
+      (context : DeferredContext) (ordinaryCache cache : QueryCache HashSpec),
+      ResolvedContextInvariant parameter table context ordinaryCache cache →
+      RelTriple
+        (resolveDeferredLayerPathFamily table lay tree leafIdx family context)
+        ((simulateQ (randomOracle : QueryImpl HashSpec _)
+          (sequenceFin fun index =>
+            if (family index).val < layerHeight lay then
+              treeNode parameter lay tree
+                (fun sibling chainIdx =>
+                  truncateHash (table ⟨lay, tree, sibling, chainIdx⟩))
+                (family index).val
+                (Nat.xor (leafIdx.val / 2 ^ (family index).val) 1)
+            else pure 0)).run cache)
+        (ResolveDeferredValueFamilyRel parameter table ordinaryCache)
+  | 0, family, context, ordinaryCache, cache, hinvariant => by
+      simp [resolveDeferredLayerPathFamily, sequenceFin,
+        ResolveDeferredValueFamilyRel, hinvariant]
+  | n + 1, family, context, ordinaryCache, cache, hinvariant => by
+      rw [resolveDeferredLayerPathFamily, sequenceFin]
+      by_cases hinLayer : (family 0).val < layerHeight lay
+      · simp only [hinLayer, ↓reduceDIte, simulateQ_bind, StateT.run_bind]
+        have hspan := FtsProbeSimulation.sibling_node_bound maxLayerHeight leafIdx.val
+          (family 0).val (by omega) leafIdx.isLt
+        have hhead := relTriple_resolveDeferredTreeNode_chronological parameter table lay tree
+          (family 0).val (Nat.xor (leafIdx.val / 2 ^ (family 0).val) 1)
+          (by have := (family 0).isLt; omega) hspan context ordinaryCache cache hinvariant
+        apply relTriple_bind hhead
+        intro headOption headResult hheadRelation
+        cases headOption with
+        | none =>
+            rcases headResult with ⟨headValue, headCache⟩
+            simp only
+            let right : ProbComp ((Fin (n + 1) → Digest) × QueryCache HashSpec) :=
+              ((simulateQ (randomOracle : QueryImpl HashSpec _)
+                (do
+                  let tail ← sequenceFin fun index : Fin n =>
+                    if (family index.succ).val < layerHeight lay then
+                      treeNode parameter lay tree
+                        (fun sibling chainIdx => truncateHash
+                          (table ⟨lay, tree, sibling, chainIdx⟩))
+                        (family index.succ).val
+                        (Nat.xor (leafIdx.val / 2 ^ (family index.succ).val) 1)
+                    else pure 0
+                  pure (Fin.cases headValue tail))).run headCache)
+            have hbase := relTriple_true
+              (pure (none : Option (DeferredContext × (Fin (n + 1) → Digest))) :
+                ProbComp (Option (DeferredContext × (Fin (n + 1) → Digest)))) right
+            have hsupported :=
+              SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+                (fun result => result = none) (by
+                  intro result hresult
+                  simpa using hresult)
+            have hfinal := relTriple_post_mono
+              (R' := ResolveDeferredValueFamilyRel parameter table ordinaryCache)
+              hsupported (by
+              intro leftResult _ hrelation
+              rw [hrelation.2]
+              trivial)
+            simpa [right, simulateQ_bind, StateT.run_bind, simulateQ_pure,
+              StateT.run_pure] using hfinal
+        | some head =>
+            rcases headResult with ⟨headValue, headCache⟩
+            rcases hheadRelation with ⟨hheadValue, hheadInvariant, _hheadPosition⟩
+            have htail := relTriple_resolveDeferredLayerPathFamily_chronological
+              parameter table lay tree leafIdx (fun index : Fin n => family index.succ)
+                head.toDeferredContext ordinaryCache headCache hheadInvariant
+            have hbound : RelTriple
+                (resolveDeferredLayerPathFamily table lay tree leafIdx
+                    (fun index : Fin n => family index.succ) head.toDeferredContext >>=
+                  fun tailOption =>
+                    match tailOption with
+                    | none => pure none
+                    | some (finalContext, tailValues) =>
+                        pure (some (finalContext,
+                          Fin.cases (truncateHash head.output) tailValues)))
+                (((simulateQ (randomOracle : QueryImpl HashSpec _)
+                    (sequenceFin fun index : Fin n =>
+                      if (family index.succ).val < layerHeight lay then
+                        treeNode parameter lay tree
+                          (fun sibling chainIdx => truncateHash
+                            (table ⟨lay, tree, sibling, chainIdx⟩))
+                          (family index.succ).val
+                          (Nat.xor (leafIdx.val / 2 ^ (family index.succ).val) 1)
+                      else pure 0)).run headCache) >>= fun tail =>
+                    pure (Fin.cases headValue tail.1, tail.2))
+                (ResolveDeferredValueFamilyRel parameter table ordinaryCache) := by
+              apply relTriple_bind htail
+              intro tailOption tailResult htailRelation
+              cases tailOption with
+              | none =>
+                  apply relTriple_pure_pure
+                  trivial
+              | some tail =>
+                  rcases tail with ⟨finalContext, tailValues⟩
+                  rcases tailResult with ⟨concreteTailValues, finalCache⟩
+                  rcases htailRelation with ⟨htailValues, hfinalInvariant⟩
+                  apply relTriple_pure_pure
+                  refine ⟨?_, hfinalInvariant⟩
+                  funext index
+                  refine Fin.cases hheadValue.symm (fun tailIndex => ?_) index
+                  exact congrFun htailValues tailIndex
+            simpa [simulateQ_bind, StateT.run_bind, simulateQ_pure,
+              StateT.run_pure] using hbound
+      · simp only [hinLayer, ↓reduceDIte]
+        have htail := relTriple_resolveDeferredLayerPathFamily_chronological
+          parameter table lay tree leafIdx (fun index : Fin n => family index.succ)
+            context ordinaryCache cache hinvariant
+        have hbound : RelTriple
+            (resolveDeferredLayerPathFamily table lay tree leafIdx
+                (fun index : Fin n => family index.succ) context >>= fun tailOption =>
+              match tailOption with
+              | none => pure none
+              | some (finalContext, tailValues) =>
+                  pure (some (finalContext, Fin.cases 0 tailValues)))
+            (((simulateQ (randomOracle : QueryImpl HashSpec _)
+                (sequenceFin fun index : Fin n =>
+                  if (family index.succ).val < layerHeight lay then
+                    treeNode parameter lay tree
+                      (fun sibling chainIdx => truncateHash
+                        (table ⟨lay, tree, sibling, chainIdx⟩))
+                      (family index.succ).val
+                      (Nat.xor (leafIdx.val / 2 ^ (family index.succ).val) 1)
+                  else pure 0)).run cache) >>= fun tail =>
+                pure (Fin.cases 0 tail.1, tail.2))
+            (ResolveDeferredValueFamilyRel parameter table ordinaryCache) := by
+          apply relTriple_bind htail
+          intro tailOption tailResult htailRelation
+          cases tailOption with
+          | none =>
+              apply relTriple_pure_pure
+              trivial
+          | some tail =>
+              rcases tail with ⟨finalContext, tailValues⟩
+              rcases tailResult with ⟨concreteTailValues, finalCache⟩
+              rcases htailRelation with ⟨htailValues, hfinalInvariant⟩
+              apply relTriple_pure_pure
+              refine ⟨?_, hfinalInvariant⟩
+              funext index
+              refine Fin.cases rfl (fun tailIndex => ?_) index
+              exact congrFun htailValues tailIndex
+        simpa [simulateQ_bind, StateT.run_bind, simulateQ_pure,
+          StateT.run_pure] using hbound
+
+
+noncomputable def resolveDeferredLayerValues
+    (table : OtsSecretIndex → HashOutput) (index : Index) (lay : Layer)
+    (encoding : ChainIndex → Digit) (context : DeferredContext) :
+    ProbComp (Option (DeferredContext ×
+      ((ChainIndex → Digest) × (Fin maxLayerHeight → Digest)))) := do
+  let chains ← resolveDeferredSelectedChainFamily table lay (treeIndexAt index lay)
+    (leafIndexAt index lay) (fun chainIdx : ChainIndex => chainIdx) encoding context
+  match chains with
+  | none => pure none
+  | some (afterChains, values) => do
+      let path ← resolveDeferredLayerPathFamily table lay (treeIndexAt index lay)
+        (leafIndexAt index lay) (fun level : Fin maxLayerHeight => level) afterChains
+      match path with
+      | none => pure none
+      | some (finalContext, pathValues) =>
+          pure (some (finalContext, (values, pathValues)))
+
+theorem privateStateAgrees_resolveDeferredLayerValues
+    (table : OtsSecretIndex → HashOutput) (index : Index) (lay : Layer)
+    (encoding : ChainIndex → Digit) (context finalContext : DeferredContext)
+    (values : (ChainIndex → Digest) × (Fin maxLayerHeight → Digest))
+    (hresult : some (finalContext, values) ∈ support
+      (resolveDeferredLayerValues table index lay encoding context)) :
+    PrivateStateAgrees finalContext context := by
+  rw [resolveDeferredLayerValues, mem_support_bind_iff] at hresult
+  obtain ⟨chainsOption, hchains, hrest⟩ := hresult
+  cases chainsOption with
+  | none => simp at hrest
+  | some chains =>
+      rcases chains with ⟨afterChains, chainValues⟩
+      rw [mem_support_bind_iff] at hrest
+      obtain ⟨pathOption, hpath, hreturn⟩ := hrest
+      cases pathOption with
+      | none => simp at hreturn
+      | some path =>
+          rcases path with ⟨afterPath, pathValues⟩
+          simp only [support_pure, Set.mem_singleton_iff] at hreturn
+          have hcontext : finalContext = afterPath :=
+            congrArg Prod.fst (Option.some.inj hreturn)
+          rw [hcontext]
+          have hchainState := privateStateAgrees_resolveDeferredSelectedChainFamily table lay
+            (treeIndexAt index lay) (leafIndexAt index lay)
+            (fun chainIdx : ChainIndex => chainIdx) encoding context afterChains chainValues hchains
+          have hpathState := privateStateAgrees_resolveDeferredLayerPathFamily table lay
+            (treeIndexAt index lay) (leafIndexAt index lay)
+            (fun level : Fin maxLayerHeight => level) afterChains afterPath pathValues hpath
+          exact ⟨hpathState.1.trans hchainState.1,
+            hpathState.2.trans hchainState.2⟩
+
+theorem PublishedValues.of_resolveDeferredLayerValues
+    {context : DeferredContext} (hpublished : PublishedValues context.state)
+    (table : OtsSecretIndex → HashOutput) (index : Index) (lay : Layer)
+    (encoding : ChainIndex → Digit) (finalContext : DeferredContext)
+    (values : (ChainIndex → Digest) × (Fin maxLayerHeight → Digest))
+    (hresult : some (finalContext, values) ∈ support
+      (resolveDeferredLayerValues table index lay encoding context)) :
+    PublishedValues finalContext.state := by
+  have hagrees := privateStateAgrees_resolveDeferredLayerValues table index lay encoding
+    context finalContext values hresult
+  intro coordinate hrevealed
+  rw [hagrees.1]
+  apply hpublished coordinate
+  rw [← hagrees.2]
+  exact hrevealed
+
+set_option maxRecDepth 100000 in
+theorem evalDist_map_resolveDeferredLayerValues_then_finalize
+    (table : OtsSecretIndex → HashOutput) (index : Index) (lay : Layer)
+    (encoding : ChainIndex → Digit) (coordinates : List Coordinate)
+    (context : DeferredContext) (hvalid : context.Valid)
+    (hcovered : PendingCovered coordinates context) :
+    evalDist (do
+        let resolved ← resolveDeferredLayerValues table index lay encoding context
+        match resolved with
+        | none => (pure none : ProbComp
+            (Option (LazyRevealProbe.State Coordinate)))
+        | some (finalContext, _) => projectDeferredState <$>
+            finalizeResolvedCoordinates coordinates finalContext table) =
+      evalDist (projectDeferredState <$>
+        finalizeResolvedCoordinates coordinates context table) := by
+  unfold resolveDeferredLayerValues
+  simp only [bind_assoc]
+  calc
+    _ = evalDist
+        (resolveDeferredSelectedChainFamily table lay (treeIndexAt index lay)
+            (leafIndexAt index lay) (fun chainIdx : ChainIndex => chainIdx) encoding context >>=
+          fun chainsOption =>
+            match chainsOption with
+            | none => pure none
+            | some (afterChains, _) => projectDeferredState <$>
+                finalizeResolvedCoordinates coordinates afterChains table) := by
+      apply evalDist_bind_congr
+      intro chainsOption hchains
+      cases chainsOption with
+      | none => rfl
+      | some chains =>
+          rcases chains with ⟨afterChains, chainValues⟩
+          have hmiddleValid := hvalid.of_resolveDeferredSelectedChainFamily table lay
+            (treeIndexAt index lay) (leafIndexAt index lay)
+            (fun chainIdx : ChainIndex => chainIdx) encoding afterChains chainValues hchains
+          have hmiddleCovered := hcovered.of_resolveDeferredSelectedChainFamily table lay
+            (treeIndexAt index lay) (leafIndexAt index lay)
+            (fun chainIdx : ChainIndex => chainIdx) encoding afterChains chainValues hchains
+          simp only
+          calc
+            _ = evalDist (do
+                let path ← resolveDeferredLayerPathFamily table lay (treeIndexAt index lay)
+                  (leafIndexAt index lay) (fun level : Fin maxLayerHeight => level) afterChains
+                match path with
+                | none => (pure none : ProbComp
+                    (Option (LazyRevealProbe.State Coordinate)))
+                | some (finalContext, _) => projectDeferredState <$>
+                    finalizeResolvedCoordinates coordinates finalContext table) := by
+                  apply congrArg evalDist
+                  simp only [bind_assoc]
+                  apply bind_congr
+                  intro pathOption
+                  cases pathOption <;> simp
+            _ = _ := by
+              convert
+                evalDist_map_resolveDeferredLayerPathFamily_then_finalize table lay
+                  (treeIndexAt index lay) (leafIndexAt index lay) coordinates
+                  (fun level : Fin maxLayerHeight => level) afterChains hmiddleValid
+                  hmiddleCovered using 1
+              apply congrArg evalDist
+              apply bind_congr
+              intro pathOption
+              cases pathOption <;> rfl
+    _ = evalDist (projectDeferredState <$>
+        finalizeResolvedCoordinates coordinates context table) := by
+      convert
+        evalDist_map_resolveDeferredSelectedChainFamily_then_finalize table lay
+          (treeIndexAt index lay) (leafIndexAt index lay) coordinates
+          (fun chainIdx : ChainIndex => chainIdx) encoding context hvalid hcovered using 1
+      apply congrArg evalDist
+      apply bind_congr
+      intro chainsOption
+      cases chainsOption <;> rfl
+
+def ResolveLayerValuesRel (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput) (ordinaryCache : QueryCache HashSpec) :
+    Option (DeferredContext ×
+      ((ChainIndex → Digest) × (Fin maxLayerHeight → Digest))) →
+      ((ChainIndex → Digest) × (Fin maxLayerHeight → Digest)) ×
+        QueryCache HashSpec → Prop
+  | none, _ => True
+  | some (context, values), (concreteValues, cache) =>
+      values = concreteValues ∧
+        ResolvedContextInvariant parameter table context ordinaryCache cache
 
 noncomputable def resolvedPositionComputation
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput) :
@@ -10939,6 +11876,180 @@ noncomputable def resolvedRevealLayerValues
       pure 0
   pure (values, path)
 
+theorem resolvedRevealLayerValues_cache_mono
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (index : Index) (lay : Layer) (encoding : ChainIndex → Digit)
+    (cache finalCache : QueryCache HashSpec)
+    (values : (ChainIndex → Digest) × (Fin maxLayerHeight → Digest))
+    (hresult : (values, finalCache) ∈ support
+      ((resolvedRevealLayerValues parameter table index lay encoding).run cache)) :
+    cache ≤ finalCache := by
+  let computation : OracleComp HashSpec
+      ((ChainIndex → Digest) × (Fin maxLayerHeight → Digest)) := do
+    let chainValues ← sequenceFin fun chainIdx =>
+      chainWalk parameter lay (treeIndexAt index lay) (leafIndexAt index lay) chainIdx 0
+        (encoding chainIdx).val
+        (truncateHash (table ⟨lay, treeIndexAt index lay, leafIndexAt index lay, chainIdx⟩))
+    let pathValues ← sequenceFin fun level : Fin maxLayerHeight =>
+      if level.val < layerHeight lay then
+        treeNode parameter lay (treeIndexAt index lay)
+          (fun sibling chainIdx =>
+            truncateHash (table ⟨lay, treeIndexAt index lay, sibling, chainIdx⟩))
+          level.val (Nat.xor ((leafIndexAt index lay).val / 2 ^ level.val) 1)
+      else pure 0
+    pure (chainValues, pathValues)
+  have heq : resolvedRevealLayerValues parameter table index lay encoding =
+      simulateQ (randomOracle : QueryImpl HashSpec _) computation := by
+    unfold resolvedRevealLayerValues computation
+    rw [simulateQ_bind, FtsProbeSimulation.simulateQ_randomOracle_sequenceFin]
+    apply bind_congr
+    intro chainValues
+    rw [simulateQ_bind, FtsProbeSimulation.simulateQ_randomOracle_sequenceFin]
+    have hpathComponent :
+        (fun level : Fin maxLayerHeight =>
+          if level.val < layerHeight lay then
+            simulateQ (randomOracle : QueryImpl HashSpec _)
+              (treeNode parameter lay (treeIndexAt index lay)
+                (fun sibling chainIdx =>
+                  truncateHash (table ⟨lay, treeIndexAt index lay, sibling, chainIdx⟩))
+                level.val (Nat.xor ((leafIndexAt index lay).val / 2 ^ level.val) 1))
+          else pure 0) =
+        (fun level : Fin maxLayerHeight =>
+          simulateQ (randomOracle : QueryImpl HashSpec _)
+            (if level.val < layerHeight lay then
+              treeNode parameter lay (treeIndexAt index lay)
+                (fun sibling chainIdx =>
+                  truncateHash (table ⟨lay, treeIndexAt index lay, sibling, chainIdx⟩))
+                level.val (Nat.xor ((leafIndexAt index lay).val / 2 ^ level.val) 1)
+            else pure 0)) := by
+      funext level
+      split <;> rfl
+    rw [hpathComponent]
+    apply bind_congr
+    intro pathValues
+    rw [simulateQ_pure]
+  rw [heq] at hresult
+  exact (replay_of_mem_support computation cache values finalCache hresult
+    (fromCache finalCache) (agreesWithFn_fromCache finalCache)).1
+
+set_option maxRecDepth 100000 in
+theorem relTriple_resolveDeferredLayerValues_chronological
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (index : Index) (lay : Layer) (encoding : ChainIndex → Digit)
+    (context : DeferredContext) (ordinaryCache cache : QueryCache HashSpec)
+    (hinvariant : ResolvedContextInvariant parameter table context ordinaryCache cache) :
+    RelTriple
+      (resolveDeferredLayerValues table index lay encoding context)
+      ((resolvedRevealLayerValues parameter table index lay encoding).run cache)
+      (ResolveLayerValuesRel parameter table ordinaryCache) := by
+  unfold resolveDeferredLayerValues resolvedRevealLayerValues
+  dsimp only
+  rw [← FtsProbeSimulation.simulateQ_randomOracle_sequenceFin]
+  have hpathComponent :
+      (fun level : Fin maxLayerHeight =>
+        if level.val < layerHeight lay then
+          simulateQ (randomOracle : QueryImpl HashSpec _)
+            (treeNode parameter lay (treeIndexAt index lay)
+              (fun sibling chainIdx => truncateHash
+                (table ⟨lay, treeIndexAt index lay, sibling, chainIdx⟩))
+              level.val
+              (Nat.xor ((leafIndexAt index lay).val / 2 ^ level.val) 1))
+        else pure 0) =
+      (fun level : Fin maxLayerHeight =>
+        simulateQ (randomOracle : QueryImpl HashSpec _)
+          (if level.val < layerHeight lay then
+            treeNode parameter lay (treeIndexAt index lay)
+              (fun sibling chainIdx => truncateHash
+                (table ⟨lay, treeIndexAt index lay, sibling, chainIdx⟩))
+              level.val
+              (Nat.xor ((leafIndexAt index lay).val / 2 ^ level.val) 1)
+          else pure 0)) := by
+    funext level
+    split <;> rfl
+  rw [hpathComponent, ← FtsProbeSimulation.simulateQ_randomOracle_sequenceFin]
+  simp only [StateT.run_bind, StateT.run_pure]
+  have hchains := relTriple_resolveDeferredSelectedChainFamily_chronological
+    parameter table lay (treeIndexAt index lay) (leafIndexAt index lay)
+      (fun chainIdx : ChainIndex => chainIdx) encoding context ordinaryCache cache hinvariant
+  apply relTriple_bind hchains
+  intro chainsOption chainsResult hchainsRelation
+  cases chainsOption with
+  | none =>
+      rcases chainsResult with ⟨values, chainsCache⟩
+      simp only
+      let right : ProbComp
+          (((ChainIndex → Digest) × (Fin maxLayerHeight → Digest)) ×
+            QueryCache HashSpec) := do
+        let path ← (simulateQ (randomOracle : QueryImpl HashSpec _)
+          (sequenceFin fun level : Fin maxLayerHeight =>
+            if level.val < layerHeight lay then
+              treeNode parameter lay (treeIndexAt index lay)
+                (fun sibling chainIdx => truncateHash
+                  (table ⟨lay, treeIndexAt index lay, sibling, chainIdx⟩))
+                level.val
+                (Nat.xor ((leafIndexAt index lay).val / 2 ^ level.val) 1)
+            else pure 0)).run chainsCache
+        pure ((values, path.1), path.2)
+      have hbase := relTriple_true
+        (pure (none : Option (DeferredContext ×
+          ((ChainIndex → Digest) × (Fin maxLayerHeight → Digest)))) :
+            ProbComp (Option (DeferredContext ×
+              ((ChainIndex → Digest) × (Fin maxLayerHeight → Digest))))) right
+      have hsupported :=
+        SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+          (fun result => result = none) (by
+            intro result hresult
+            simpa using hresult)
+      have hfinal := relTriple_post_mono
+        (R' := ResolveLayerValuesRel parameter table ordinaryCache) hsupported (by
+          intro leftResult _ hrelation
+          rw [hrelation.2]
+          trivial)
+      simpa [right, simulateQ_bind, StateT.run_bind, simulateQ_pure,
+        StateT.run_pure] using hfinal
+  | some chains =>
+      rcases chains with ⟨afterChains, values⟩
+      rcases chainsResult with ⟨concreteValues, chainsCache⟩
+      rcases hchainsRelation with ⟨hvalues, hchainsInvariant⟩
+      have hpath := relTriple_resolveDeferredLayerPathFamily_chronological
+        parameter table lay (treeIndexAt index lay) (leafIndexAt index lay)
+          (fun level : Fin maxLayerHeight => level) afterChains ordinaryCache chainsCache
+            hchainsInvariant
+      have hbound : RelTriple
+          (resolveDeferredLayerPathFamily table lay (treeIndexAt index lay)
+              (leafIndexAt index lay) (fun level : Fin maxLayerHeight => level)
+              afterChains >>= fun pathOption =>
+            match pathOption with
+            | none => pure none
+            | some (finalContext, pathValues) =>
+                pure (some (finalContext, (values, pathValues))))
+          (((simulateQ (randomOracle : QueryImpl HashSpec _)
+              (sequenceFin fun level : Fin maxLayerHeight =>
+                if level.val < layerHeight lay then
+                  treeNode parameter lay (treeIndexAt index lay)
+                    (fun sibling chainIdx => truncateHash
+                      (table ⟨lay, treeIndexAt index lay, sibling, chainIdx⟩))
+                    level.val
+                    (Nat.xor ((leafIndexAt index lay).val / 2 ^ level.val) 1)
+                else pure 0)).run chainsCache) >>= fun path =>
+              pure ((concreteValues, path.1), path.2))
+          (ResolveLayerValuesRel parameter table ordinaryCache) := by
+        apply relTriple_bind hpath
+        intro pathOption pathResult hpathRelation
+        cases pathOption with
+        | none =>
+            apply relTriple_pure_pure
+            trivial
+        | some path =>
+            rcases path with ⟨finalContext, pathValues⟩
+            rcases pathResult with ⟨concretePathValues, finalCache⟩
+            rcases hpathRelation with ⟨hpathValues, hfinalInvariant⟩
+            apply relTriple_pure_pure
+            exact ⟨by rw [hvalues, hpathValues], hfinalInvariant⟩
+      simpa [simulateQ_bind, StateT.run_bind, simulateQ_pure,
+        StateT.run_pure] using hbound
+
+
 theorem resolvedCouples_resolvedRevealLayerValues
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
     (index : Index) (lay : Layer) (encoding : ChainIndex → Digit) :
@@ -11538,6 +12649,57 @@ noncomputable def resolvedSignLayer
   match ← resolvedOtsSelect parameter lay tree leafIdx message with
   | none => pure none
   | some part => pure (some part)
+
+theorem resolvedImmediateSignLayer_eq_resolvedSignLayer_then_reveal
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) :
+    resolvedImmediateSignLayer parameter table ftsSecret index lay = (do
+      match ← resolvedSignLayer parameter table ftsSecret index lay with
+      | none => pure none
+      | some (counter, encoding) => do
+          let revealed ← resolvedRevealLayerValues parameter table index lay encoding
+          pure (some (counter, revealed.1, revealed.2))) := by
+  unfold resolvedImmediateSignLayer resolvedSignLayer resolvedSelectedLayerValues
+    resolvedFinishLayerValues resolvedRevealLayerValues
+  simp only [bind_assoc]
+  apply bind_congr
+  intro message
+  apply bind_congr
+  intro selected
+  cases selected with
+  | none => rfl
+  | some part =>
+      rcases part with ⟨counter, encoding⟩
+      simp only [pure_bind, bind_assoc]
+
+noncomputable def scheduleResolvedLayerResult
+    (index : Index) (lay : Layer) :
+    Option (ResolvedRunResult
+      (Option (Counter × (ChainIndex → Digit)) × SplitHashCache)) →
+      ProbComp (Option (ResolvedRunResult
+        (Option (Counter × (ChainIndex → Digest) ×
+          (Fin maxLayerHeight → Digest)) × SplitHashCache))) := by
+  classical
+  intro input
+  cases input with
+  | none => exact pure none
+  | some result =>
+      exact if DeferredCompletable result.table result.context then
+          match result.value.1 with
+          | none => pure (some ⟨result.context, result.remaining,
+              (none, result.value.2), result.table⟩)
+          | some (counter, encoding) => do
+              let resolved ← resolveDeferredLayerValues result.table index lay encoding
+                result.context
+              match resolved with
+              | none => pure none
+              | some (finalContext, values) =>
+                  pure (some ⟨finalContext, result.remaining,
+                    (some (counter, values.1, values.2), result.value.2), result.table⟩)
+        else
+          pure (some ⟨result.context, result.remaining,
+            (none, result.value.2), result.table⟩)
 
 theorem resolvedCouples_maskedSignLayer
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
@@ -12191,6 +13353,136 @@ theorem reachableResolvedCouples_maskedSignLayer
         (resolvedPreservesPublished_ensureTreePath lay (treeIndexAt index lay)
           (leafIndexAt index lay))).bind fun _ =>
             reachableResolvedCouples_pure parameter table (some part)
+
+set_option maxRecDepth 100000 in
+theorem relTriple_scheduleResolvedSignLayer
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) (context : DeferredContext) (fuel : Nat)
+    (cache : SplitHashCache) (concreteCache : QueryCache HashSpec)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache)
+    (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hpublished : PublishedValues context.state) :
+    RelTriple
+      (runResolvedFromTable context fuel table
+          ((maskedSignLayer parameter ftsSecret index lay).run cache) >>=
+        scheduleResolvedLayerResult index lay)
+      ((resolvedImmediateSignLayer parameter table ftsSecret index lay).run concreteCache)
+      (ReachableResolvedRunRel parameter table) := by
+  rw [resolvedImmediateSignLayer_eq_resolvedSignLayer_then_reveal,
+    StateT.run_bind]
+  have hselected := reachableResolvedCouples_maskedSignLayer parameter table ftsSecret index lay
+    context fuel cache concreteCache hinvariant hclosed hpublished
+  apply relTriple_bind hselected
+  intro leftResult rightResult hrelation
+  rcases rightResult with ⟨selected, selectedCache⟩
+  simp only at hrelation ⊢
+  cases leftResult with
+  | none =>
+      cases selected with
+      | none =>
+          simp [scheduleResolvedLayerResult]
+          trivial
+      | some selectedPart =>
+          rcases selectedPart with ⟨counter, encoding⟩
+          have hbase := relTriple_true (scheduleResolvedLayerResult index lay none)
+            ((do
+              let revealed ← resolvedRevealLayerValues parameter table index lay encoding
+              pure (some (counter, revealed.1, revealed.2))).run selectedCache)
+          have hsupported :=
+            SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+              (fun result => result = none) (by
+                intro result hresult
+                simpa [scheduleResolvedLayerResult] using hresult)
+          apply relTriple_post_mono hsupported
+          intro result _ hresult
+          rw [hresult.2]
+          trivial
+  | some result =>
+      rcases hrelation with hclean | hdoomed
+      · rcases hclean with ⟨htable, hvalue, hresultInvariant, hresultClosed,
+          hresultPublished⟩
+        have hcompletable : DeferredCompletable result.table result.context := by
+          rw [htable]
+          exact hresultInvariant.2.2.2.1
+        have hcompletableTable : DeferredCompletable table result.context :=
+          hresultInvariant.2.2.2.1
+        cases selected with
+        | none =>
+            have hselectedNone : result.value.1 = none := hvalue
+            simp [scheduleResolvedLayerResult, hcompletable, hselectedNone]
+            exact Or.inl ⟨htable, rfl, hresultInvariant, hresultClosed, hresultPublished⟩
+        | some selectedPart =>
+            rcases selectedPart with ⟨counter, encoding⟩
+            have hselectedSome : result.value.1 = some (counter, encoding) := hvalue
+            rw [show scheduleResolvedLayerResult index lay (some result) =
+                (do
+                  let resolved ← resolveDeferredLayerValues table index lay encoding
+                    result.context
+                  match resolved with
+                  | none => pure none
+                  | some (finalContext, values) =>
+                      pure (some ⟨finalContext, result.remaining,
+                        (some (counter, values.1, values.2), result.value.2), table⟩)) by
+              simp [scheduleResolvedLayerResult, hcompletableTable, hselectedSome, htable]]
+            have hresolved := relTriple_resolveDeferredLayerValues_chronological parameter table
+              index lay encoding result.context (ordinaryQueryCache result.value.2)
+                selectedCache hresultInvariant
+            have hresolvedLeft :=
+              SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hresolved
+                (fun resolved => resolved ∈ support
+                  (resolveDeferredLayerValues table index lay encoding result.context))
+                (fun resolved hresolved => hresolved)
+            have hresolvedBoth :=
+              SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hresolvedLeft
+            apply relTriple_bind hresolvedBoth
+            intro resolved revealResult hresolvedRelation
+            rcases revealResult with ⟨concreteValues, finalCache⟩
+            rcases hresolvedRelation with
+              ⟨⟨hresolvedRelation, hleftSupport⟩, hrightSupport⟩
+            cases resolved with
+            | none =>
+                apply relTriple_pure_pure
+                trivial
+            | some resolved =>
+                rcases resolved with ⟨finalContext, resolvedValues⟩
+                rcases hresolvedRelation with ⟨hvalues, hfinalInvariant⟩
+                have hprivate := privateStateAgrees_resolveDeferredLayerValues table index lay
+                  encoding result.context finalContext resolvedValues hleftSupport
+                have hcacheLe := resolvedRevealLayerValues_cache_mono parameter table index lay
+                  encoding selectedCache finalCache concreteValues hrightSupport
+                apply relTriple_pure_pure
+                refine Or.inl ⟨rfl, ?_, hfinalInvariant,
+                  (hresultClosed.of_state_values_eq hprivate.1).mono hcacheLe,
+                  hresultPublished.of_resolveDeferredLayerValues table index lay encoding
+                    finalContext resolvedValues hleftSupport⟩
+                rw [hvalues]
+      · have hnotCompletable : ¬DeferredCompletable result.table result.context :=
+          by
+            rw [hdoomed.1]
+            exact hdoomed.2.2.2
+        cases selected with
+        | none =>
+            simp [scheduleResolvedLayerResult, hnotCompletable]
+            exact Or.inr hdoomed
+        | some selectedPart =>
+            rcases selectedPart with ⟨counter, encoding⟩
+            have hbase := relTriple_true
+              (scheduleResolvedLayerResult index lay (some result))
+              ((do
+                let revealed ← resolvedRevealLayerValues parameter table index lay encoding
+                pure (some (counter, revealed.1, revealed.2))).run selectedCache)
+            have hsupported :=
+              SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+                (fun output => output = some ⟨result.context, result.remaining,
+                  (none, result.value.2), result.table⟩) (by
+                    intro output houtput
+                    simpa [scheduleResolvedLayerResult, hnotCompletable] using houtput)
+            apply relTriple_post_mono hsupported
+            intro output _ houtput
+            rw [houtput.2]
+            exact Or.inr hdoomed
 
 set_option maxHeartbeats 400000 in
 theorem reachableResolvedCouples_maskedSignAfterDigest
