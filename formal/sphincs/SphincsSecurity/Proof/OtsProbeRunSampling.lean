@@ -2424,10 +2424,11 @@ theorem evalDist_runThenFinalizeCleanFromTable_eq_detailed
               · simp [hhit, finish, sampleOtsHashTable]
 
 set_option maxRecDepth 100000 in
-theorem evalDist_map_isNone_detailedExperimentClean_eq_hit
+theorem evalDist_map_isNone_detailedExperimentClean_eq_hit_of_not_stopped_false
     (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
     (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
-    (hbound : computation.IsQueryBoundP LazyRevealProbe.IsProbe fuel) :
+    (hnotStopped : LazyRevealProbe.RawResult.stopped false ∉ support
+      (LazyRevealProbe.runRaw state fuel computation)) :
     𝒟[Option.isNone <$> detailedExperimentCleanWithCompletionTable state fuel computation] =
       𝒟[LazyRevealProbe.DetailedResult.hit <$>
         LazyRevealProbe.detailedExperiment state fuel computation] := by
@@ -2439,8 +2440,8 @@ theorem evalDist_map_isNone_detailedExperimentClean_eq_hit
   | stopped hit =>
       cases hit with
       | false =>
-          exact (LazyRevealProbe.stopped_false_not_mem_support_detailedExperiment
-            state fuel computation hbound hresult).elim
+          exact (LazyRevealProbe.stopped_false_not_mem_support_detailedExperiment_of_runRaw
+            state fuel computation hnotStopped hresult).elim
       | true => simp [LazyRevealProbe.DetailedResult.hit]
   | done hit finalState remaining value =>
       cases hit with
@@ -2456,6 +2457,41 @@ theorem evalDist_map_isNone_detailedExperimentClean_eq_hit
           rw [hmass]
           simp
       | true => simp [LazyRevealProbe.DetailedResult.hit]
+
+set_option maxRecDepth 100000 in
+theorem evalDist_map_isNone_detailedExperimentClean_eq_hit
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (hbound : computation.IsQueryBoundP LazyRevealProbe.IsProbe fuel) :
+    𝒟[Option.isNone <$> detailedExperimentCleanWithCompletionTable state fuel computation] =
+      𝒟[LazyRevealProbe.DetailedResult.hit <$>
+        LazyRevealProbe.detailedExperiment state fuel computation] :=
+  evalDist_map_isNone_detailedExperimentClean_eq_hit_of_not_stopped_false computation state fuel
+    (LazyRevealProbe.stopped_false_not_mem_support_runRaw state fuel computation hbound)
+
+theorem probEvent_detailedExperimentClean_none_eq_hit_of_not_stopped_false
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (hnotStopped : LazyRevealProbe.RawResult.stopped false ∉ support
+      (LazyRevealProbe.runRaw state fuel computation)) :
+    Pr[= none | detailedExperimentCleanWithCompletionTable state fuel computation] =
+      Pr[= true | LazyRevealProbe.experiment state fuel computation] := by
+  calc
+    _ = Pr[= true |
+        Option.isNone <$> detailedExperimentCleanWithCompletionTable state fuel computation] := by
+      have hmap := _root_.probEvent_map
+        (mx := detailedExperimentCleanWithCompletionTable state fuel computation)
+        (f := Option.isNone) (q := fun hit : Bool => hit = true)
+      simpa [Function.comp_def] using hmap.symm
+    _ = Pr[= true | LazyRevealProbe.DetailedResult.hit <$>
+        LazyRevealProbe.detailedExperiment state fuel computation] := by
+      exact OracleComp.probOutput_congr rfl
+        (evalDist_map_isNone_detailedExperimentClean_eq_hit_of_not_stopped_false computation state
+          fuel hnotStopped)
+    _ = _ := by
+      exact OracleComp.probOutput_congr (x := true) (y := true) rfl
+        (LazyRevealProbe.evalDist_detailedExperiment_hit_eq_experiment_of_not_stopped_false
+          state fuel computation hnotStopped)
 
 theorem probEvent_detailedExperimentClean_none_eq_hit
     (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
@@ -2506,6 +2542,33 @@ theorem probEvent_sampledRunThenFinalizeClean_empty_none_le
           fuel computation] :=
       probEvent_detailedExperimentClean_none_eq_hit computation
         (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel hbound
+    _ ≤ _ := by
+      rw [← probEvent_eq_eq_probOutput]
+      exact LazyRevealProbe.experiment_empty_probability_le fuel computation
+
+theorem probEvent_sampledRunThenFinalizeClean_empty_none_le_of_not_stopped_false
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (fuel : Nat)
+    (hnotStopped : LazyRevealProbe.RawResult.stopped false ∉ support
+      (LazyRevealProbe.runRaw
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel computation)) :
+    Pr[= none | sampledRunThenFinalizeClean
+      (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel computation] ≤
+      (fuel : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  calc
+    _ = Pr[= none | detailedExperimentCleanWithCompletionTable
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+          fuel computation] :=
+      OracleComp.probOutput_congr rfl
+        (by
+          unfold sampledRunThenFinalizeClean
+          exact evalDist_runThenFinalizeCleanFromTable_eq_detailed computation
+            (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel)
+    _ = Pr[= true | LazyRevealProbe.experiment
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+          fuel computation] :=
+      probEvent_detailedExperimentClean_none_eq_hit_of_not_stopped_false computation
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel hnotStopped
     _ ≤ _ := by
       rw [← probEvent_eq_eq_probOutput]
       exact LazyRevealProbe.experiment_empty_probability_le fuel computation

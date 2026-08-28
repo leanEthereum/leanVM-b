@@ -710,6 +710,23 @@ theorem stopped_false_not_mem_support_detailedExperiment
   | done finalState remaining value =>
       simp [RawResult.finishDetailed] at hfinish
 
+theorem stopped_false_not_mem_support_detailedExperiment_of_runRaw
+    (state : State Coordinate) (fuel : Nat)
+    (computation : OracleComp (World Coordinate) alpha)
+    (hnotStopped : RawResult.stopped false ∉ support (runRaw state fuel computation)) :
+    DetailedResult.stopped false ∉ support
+      (detailedExperiment state fuel computation) := by
+  unfold detailedExperiment
+  rw [mem_support_bind_iff]
+  rintro ⟨raw, hraw, hfinish⟩
+  cases raw with
+  | stopped hit =>
+      cases hit with
+      | false => exact hnotStopped hraw
+      | true => simp [RawResult.finishDetailed] at hfinish
+  | done finalState remaining value =>
+      simp [RawResult.finishDetailed] at hfinish
+
 noncomputable def experiment (state : State Coordinate) (fuel : Nat)
     (computation : OracleComp (World Coordinate) alpha) : ProbComp Bool :=
   OracleComp.construct
@@ -889,6 +906,104 @@ theorem experiment_eq_runRaw_finish (state : State Coordinate) (fuel : Nat)
               · simp only [hhit, ↓reduceIte]
                 exact ih output (state.materialize coordinate output) fuel
                   (by simpa [IsProbe] using hbound.2 output)
+
+set_option maxRecDepth 100000 in
+theorem evalDist_experiment_eq_runRaw_finish_of_not_stopped_false
+    (state : State Coordinate) (fuel : Nat)
+    (computation : OracleComp (World Coordinate) alpha)
+    (hnotStopped : RawResult.stopped false ∉ support (runRaw state fuel computation)) :
+    evalDist (experiment state fuel computation) =
+      evalDist (runRaw state fuel computation >>= RawResult.finish) := by
+  induction computation using OracleComp.inductionOn generalizing state fuel with
+  | pure value => simp [experiment, runRaw, RawResult.finish]
+  | query_bind input next ih =>
+      cases input with
+      | uniform n =>
+          rw [experiment_uniform_query_bind, runRaw_uniform_query_bind, bind_assoc,
+            evalDist_bind, evalDist_bind]
+          apply congrArg
+          funext output
+          apply ih output state fuel
+          intro hstopped
+          apply hnotStopped
+          rw [runRaw_uniform_query_bind, mem_support_bind_iff]
+          exact ⟨output, by simp, hstopped⟩
+      | hashOutput =>
+          rw [experiment_hashOutput_query_bind, runRaw_hashOutput_query_bind, bind_assoc,
+            evalDist_bind, evalDist_bind]
+          apply congrArg
+          funext output
+          apply ih output state fuel
+          intro hstopped
+          apply hnotStopped
+          rw [runRaw_hashOutput_query_bind, mem_support_bind_iff]
+          exact ⟨output, by simp [sampleHashOutput], hstopped⟩
+      | ensure coordinate =>
+          rw [experiment_ensure_query_bind, runRaw_ensure_query_bind]
+          apply ih () (state.ensure coordinate) fuel
+          simpa [runRaw_ensure_query_bind] using hnotStopped
+      | probe coordinate candidate =>
+          cases fuel with
+          | zero =>
+              exfalso
+              apply hnotStopped
+              simp [runRaw_probe_query_bind]
+          | succ remaining =>
+              rw [experiment_probe_query_bind, runRaw_probe_query_bind]
+              by_cases hrevealed : coordinate ∈ state.revealed
+              · simp only [hrevealed, ↓reduceIte]
+                apply ih () state remaining
+                simpa [runRaw_probe_query_bind, hrevealed] using hnotStopped
+              · simp only [hrevealed, ↓reduceIte]
+                apply ih () (state.addPending coordinate candidate) remaining
+                simpa [runRaw_probe_query_bind, hrevealed] using hnotStopped
+      | peek coordinate =>
+          rw [experiment_peek_query_bind, runRaw_peek_query_bind]
+          apply ih (state.values coordinate) state fuel
+          simpa [runRaw_peek_query_bind] using hnotStopped
+      | publish coordinate =>
+          rw [experiment_publish_query_bind, runRaw_publish_query_bind]
+          apply ih () (state.publish coordinate) fuel
+          simpa [runRaw_publish_query_bind] using hnotStopped
+      | reveal coordinate =>
+          rw [experiment_reveal_query_bind, runRaw_reveal_query_bind]
+          cases hvalue : state.values coordinate with
+          | some output =>
+              apply ih output state fuel
+              simpa [runRaw_reveal_query_bind, hvalue] using hnotStopped
+          | none =>
+              simp only [bind_assoc, evalDist_bind, evalDist_bind]
+              apply congrArg
+              funext output
+              by_cases hhit : state.hitAt coordinate output
+              · simp [hhit, RawResult.finish]
+              · simp only [hhit, ↓reduceIte]
+                have htail : RawResult.stopped false ∉ support
+                    (runRaw (state.materialize coordinate output) fuel (next output)) := by
+                  intro hstopped
+                  apply hnotStopped
+                  rw [runRaw_reveal_query_bind, hvalue, mem_support_bind_iff]
+                  exact ⟨output, by simp [sampleHashOutput], by simpa [hhit] using hstopped⟩
+                simpa [evalDist_bind] using
+                  ih output (state.materialize coordinate output) fuel htail
+
+theorem evalDist_detailedExperiment_hit_eq_experiment_of_not_stopped_false
+    (state : State Coordinate) (fuel : Nat)
+    (computation : OracleComp (World Coordinate) alpha)
+    (hnotStopped : RawResult.stopped false ∉ support (runRaw state fuel computation)) :
+    evalDist (DetailedResult.hit <$> detailedExperiment state fuel computation) =
+      evalDist (experiment state fuel computation) := by
+  calc
+    _ = evalDist (runRaw state fuel computation >>= fun result =>
+        DetailedResult.hit <$> result.finishDetailed) := by
+      unfold detailedExperiment
+      rw [map_bind]
+    _ = evalDist (runRaw state fuel computation >>= RawResult.finish) := by
+      apply evalDist_bind_congr
+      intro result _
+      exact congrArg evalDist result.finishDetailed_hit
+    _ = _ := (evalDist_experiment_eq_runRaw_finish_of_not_stopped_false state fuel computation
+      hnotStopped).symm
 
 theorem detailedExperiment_hit_eq_experiment (state : State Coordinate) (fuel : Nat)
     (computation : OracleComp (World Coordinate) alpha)
