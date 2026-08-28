@@ -12144,6 +12144,63 @@ theorem reachableResolvedCouples_retainedPrefixAfterFtsSecrets
   intro forgeryLog
   exact reachableResolvedCouples_pure parameter table (root, forgeryLog)
 
+theorem reachableResolvedCouples_probingRomImpl
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (query) :
+    ReachableResolvedCouples parameter table (probingRomImpl parameter query)
+      (romImpl query) := by
+  cases query with
+  | inl n => exact reachableResolvedCouples_splitUniform parameter table n
+  | inr input => exact reachableResolvedCouples_probingHashQuery parameter table input
+
+theorem reachableResolvedCouples_probingRom
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (computation : OracleComp OracleWorld alpha) :
+    ReachableResolvedCouples parameter table
+      (simulateQ (probingRomImpl parameter) computation)
+      (simulateQ romImpl computation) :=
+  reachableResolvedCouples_simulateQ (probingRomImpl parameter) romImpl
+    (reachableResolvedCouples_probingRomImpl parameter table) computation
+
+noncomputable def maskedResolvedRetainedGameAfterFtsSecrets
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) RetainedGameResult := do
+  let (root, forgery, log) ←
+    maskedRetainedPrefixAfterFtsSecrets adversary parameter ftsSecret
+  let verified ← simulateQ (probingRomImpl parameter)
+    (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)
+  pure (root, ((forgery, log), verified))
+
+noncomputable def resolvedRetainedGameAfterFtsSecrets
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    StateT (QueryCache HashSpec) ProbComp RetainedGameResult := do
+  let (root, forgery, log) ←
+    resolvedRetainedPrefixAfterFtsSecrets adversary parameter table ftsSecret
+  let verified ← simulateQ romImpl
+    (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)
+  pure (root, ((forgery, log), verified))
+
+theorem reachableResolvedCouples_retainedGameAfterFtsSecrets
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    ReachableResolvedCouples parameter table
+      (maskedResolvedRetainedGameAfterFtsSecrets adversary parameter ftsSecret)
+      (resolvedRetainedGameAfterFtsSecrets adversary parameter table ftsSecret) := by
+  unfold maskedResolvedRetainedGameAfterFtsSecrets resolvedRetainedGameAfterFtsSecrets
+  apply (reachableResolvedCouples_retainedPrefixAfterFtsSecrets adversary parameter table
+    ftsSecret).bind
+  intro result
+  rcases result with ⟨root, forgery, log⟩
+  apply (reachableResolvedCouples_probingRom parameter table
+    (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)).bind
+  intro verified
+  exact reachableResolvedCouples_pure parameter table (root, ((forgery, log), verified))
+
 def DeferredFreshOn (coordinates : List Coordinate) (context : DeferredContext) : Prop :=
   ∀ position : Position, Coordinate.position position ∈ coordinates →
     context.values position = none
