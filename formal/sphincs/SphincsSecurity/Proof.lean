@@ -148,6 +148,7 @@ import SphincsSecurity.Proof.OtsProbeResolvedSampling
 import SphincsSecurity.Proof.OtsProbeResolvedSchedule
 import SphincsSecurity.Proof.OtsProbeResolvedFinalization
 import SphincsSecurity.Proof.OtsProbeResolvedSelectionFinalization
+import SphincsSecurity.Proof.OtsProbeResolvedSignerFinalization
 import SphincsSecurity.Proof.OtsProbeChronologicalTerminal
 import SphincsSecurity.Proof.OtsProbeChronologicalProbability
 
