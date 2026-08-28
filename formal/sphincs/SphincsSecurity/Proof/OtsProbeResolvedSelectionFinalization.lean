@@ -22,7 +22,8 @@ def FinalizationMaterializedRunEq (table : OtsSecretIndex → HashOutput) :
         FinalizationContextEq table (some left.context) (some right.context) ∧
         left.remaining = right.remaining ∧
         left.table = table ∧ right.table = table ∧
-        ordinaryQueryCache left.value.2 = ordinaryQueryCache right.value.2
+        ordinaryQueryCache left.value.2 = ordinaryQueryCache right.value.2 ∧
+        left.context.state.revealed = right.context.state.revealed
   | _, _ => False
 
 def FinalizationMaterializedCouples (table : OtsSecretIndex → HashOutput)
@@ -31,6 +32,7 @@ def FinalizationMaterializedCouples (table : OtsSecretIndex → HashOutput)
   ∀ left right fuel leftCache rightCache,
     FinalizationContextEq table (some left) (some right) →
     ordinaryQueryCache leftCache = ordinaryQueryCache rightCache →
+    left.state.revealed = right.state.revealed →
     RelTriple
       (runResolvedFromTable left fuel table (computation.run leftCache))
       (runResolvedFromTable right fuel table (computation.run rightCache))
@@ -41,9 +43,9 @@ theorem finalizationMaterializedCouples_pure
     FinalizationMaterializedCouples table
       (pure value : StateT SplitHashCache
         (OracleComp (LazyRevealProbe.World Coordinate)) α) := by
-  intro left right fuel leftCache rightCache hcontext hcache
+  intro left right fuel leftCache rightCache hcontext hcache hrevealed
   simp [StateT.run_pure, runResolvedFromTable, FinalizationMaterializedRunEq,
-    hcontext, hcache]
+    hcontext, hcache, hrevealed]
 
 theorem FinalizationMaterializedCouples.bind
     {table : OtsSecretIndex → HashOutput}
@@ -54,11 +56,11 @@ theorem FinalizationMaterializedCouples.bind
     (hleft : FinalizationMaterializedCouples table left)
     (hnext : ∀ value, FinalizationMaterializedCouples table (next value)) :
     FinalizationMaterializedCouples table (left >>= next) := by
-  intro leftContext rightContext fuel leftCache rightCache hcontext hcache
+  intro leftContext rightContext fuel leftCache rightCache hcontext hcache hrevealed
   rw [StateT.run_bind, StateT.run_bind, runResolvedFromTable_bind,
     runResolvedFromTable_bind]
   apply relTriple_bind
-    (hleft leftContext rightContext fuel leftCache rightCache hcontext hcache)
+    (hleft leftContext rightContext fuel leftCache rightCache hcontext hcache hrevealed)
   intro leftResult rightResult hresult
   cases leftResult with
   | none =>
@@ -74,13 +76,14 @@ theorem FinalizationMaterializedCouples.bind
           rcases leftValue with ⟨leftOutput, leftCache⟩
           rcases rightValue with ⟨rightOutput, rightCache⟩
           simp only [FinalizationMaterializedRunEq] at hresult
-          rcases hresult with ⟨houtput, hcontext, hfuel, hleftTable, hrightTable, hcache⟩
+          rcases hresult with
+            ⟨houtput, hcontext, hfuel, hleftTable, hrightTable, hcache, hrevealed⟩
           subst rightOutput
           subst rightFuel
           subst leftTable
           subst rightTable
           exact hnext leftOutput leftContext rightContext leftFuel leftCache
-            rightCache hcontext hcache
+            rightCache hcontext hcache hrevealed
 
 theorem FinalizationViewEq.ensure
     {table : OtsSecretIndex → HashOutput} {left right : DeferredContext}
@@ -127,7 +130,7 @@ theorem DeferredCompletable.ensure
 theorem finalizationMaterializedCouples_ensureCoordinate
     (table : OtsSecretIndex → HashOutput) (coordinate : Coordinate) :
     FinalizationMaterializedCouples table (ensureCoordinate coordinate) := by
-  intro left right fuel leftCache rightCache hcontext hcache
+  intro left right fuel leftCache rightCache hcontext hcache hrevealed
   rcases hcontext with ⟨hview, hleftValid, hrightValid, hleftCompletable⟩
   unfold ensureCoordinate
   simp only [StateT.run_liftM, LazyRevealProbe.ensureQuery, runResolvedFromTable]
@@ -135,7 +138,7 @@ theorem finalizationMaterializedCouples_ensureCoordinate
   exact ⟨rfl,
     ⟨hview.ensure coordinate, hleftValid.ensure coordinate,
       hrightValid.ensure coordinate, hleftCompletable.ensure coordinate⟩,
-    rfl, rfl, rfl, hcache⟩
+    rfl, rfl, rfl, hcache, hrevealed⟩
 
 theorem finalizationMaterializedCouples_sequenceFin
     {table : OtsSecretIndex → HashOutput} {n : Nat}
@@ -165,7 +168,7 @@ theorem finalizationMaterializedCouples_splitHashQuery_ordinary
     (table : OtsSecretIndex → HashOutput) (input : HashInput) :
     FinalizationMaterializedCouples table
       (splitHashQuery (.ordinary input)) := by
-  intro left right fuel leftCache rightCache hcontext hcache
+  intro left right fuel leftCache rightCache hcontext hcache hrevealed
   rw [splitHashQuery_run_eq, splitHashQuery_run_eq]
   have hcacheAt : leftCache (.ordinary input) = rightCache (.ordinary input) :=
     congrFun hcache input
@@ -175,7 +178,7 @@ theorem finalizationMaterializedCouples_splitHashQuery_ordinary
         rw [← hcacheAt]
         exact hlookup
       simp only [hright]
-      simp [runResolvedFromTable, FinalizationMaterializedRunEq, hcontext, hcache]
+      simp [runResolvedFromTable, FinalizationMaterializedRunEq, hcontext, hcache, hrevealed]
   | none =>
       have hright : rightCache (.ordinary input) = none := by
         rw [← hcacheAt]
@@ -189,7 +192,7 @@ theorem finalizationMaterializedCouples_splitHashQuery_ordinary
       subst rightOutput
       simp only [runResolvedFromTable]
       apply relTriple_pure_pure
-      refine ⟨rfl, hcontext, rfl, rfl, rfl, ?_⟩
+      refine ⟨rfl, hcontext, rfl, rfl, rfl, ?_, hrevealed⟩
       rw [ordinaryQueryCache_update, ordinaryQueryCache_update, hcache]
 
 theorem finalizationMaterializedCouples_ordinaryHashImpl
@@ -217,7 +220,7 @@ set_option maxRecDepth 100000 in
 theorem finalizationMaterializedCouples_revealPosition
     (table : OtsSecretIndex → HashOutput) (position : Position) :
     FinalizationMaterializedCouples table (revealPosition position) := by
-  intro left right fuel leftCache rightCache hcontext hcache
+  intro left right fuel leftCache rightCache hcontext hcache hrevealed
   rcases hcontext with ⟨hview, hleftValid, hrightValid, hleftCompletable⟩
   rw [runResolvedFromTable_revealPosition, runResolvedFromTable_revealPosition]
   have hresolved := relTriple_resolveDeferredReveal_of_finalizationViewEq table position left
@@ -284,7 +287,7 @@ theorem finalizationMaterializedCouples_revealPosition
             hrightValid.materializeResolvedPosition_of position rightResolved hrightResultValid
               hrightStateValues hrightResolvedValue
           apply relTriple_pure_pure
-          refine ⟨?_, ?_, rfl, rfl, rfl, ?_⟩
+          refine ⟨?_, ?_, rfl, rfl, rfl, ?_, ?_⟩
           · simpa using congrArg truncateHash hrelation.1
           · exact ⟨hleftMaterializedView.trans
                 (hrelation.2.1.trans hrightMaterializedView.symm),
@@ -292,6 +295,8 @@ theorem finalizationMaterializedCouples_revealPosition
               hleftMaterializedCompletable⟩
           · rw [ordinaryQueryCache_update_hidden, ordinaryQueryCache_update_hidden,
               hcache]
+          · simpa [materializeResolvedPosition, LazyRevealProbe.State.materialize]
+              using hrevealed
 
 theorem finalizationMaterializedCouples_ensureFullChain
     (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
@@ -526,7 +531,8 @@ def FinalizationChronologicalLayerEq
           (left.value.1.map fun part => (part.counter, part.encoding)) ∧
         right.value.resolved = Function.update initialStore.resolved lay
           (left.value.1.map ChronologicalLayerPart.toLayerPart) ∧
-        ordinaryQueryCache left.value.2 = ordinaryQueryCache right.value.cache
+        ordinaryQueryCache left.value.2 = ordinaryQueryCache right.value.cache ∧
+        left.context.state.revealed = right.context.state.revealed
   | _, _ => False
 
 set_option maxRecDepth 100000 in
@@ -536,7 +542,8 @@ theorem relTriple_runResolvedFromTable_maskedChronologicalSignLayer_finalization
     (lay : Layer) (left right : DeferredContext) (fuel : Nat)
     (leftCache : SplitHashCache) (store : DeferredLayerStore)
     (hcontext : FinalizationContextEq table (some left) (some right))
-    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache store.cache) :
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache store.cache)
+    (hrevealed : left.state.revealed = right.state.revealed) :
     RelTriple
       (runResolvedFromTable left fuel table
         ((maskedChronologicalSignLayer parameter ftsSecret index lay).run leftCache))
@@ -545,7 +552,7 @@ theorem relTriple_runResolvedFromTable_maskedChronologicalSignLayer_finalization
   rw [maskedChronologicalSignLayer, StateT.run_bind, runResolvedFromTable_bind]
   unfold privateChronologicalSignLayer
   have hselected := finalizationMaterializedCouples_maskedSignLayer table parameter ftsSecret
-    index lay left right fuel leftCache store.cache hcontext hcache
+    index lay left right fuel leftCache store.cache hcontext hcache hrevealed
   apply relTriple_bind hselected
   intro leftSelected rightSelected hselectedRelation
   cases leftSelected with
@@ -559,7 +566,7 @@ theorem relTriple_runResolvedFromTable_maskedChronologicalSignLayer_finalization
       | some rightSelected =>
           rcases hselectedRelation with
             ⟨hselection, hselectedContext, hremaining, hleftTable, hrightTable,
-              hselectedCache⟩
+              hselectedCache, hselectedRevealed⟩
           simp only
           rw [← hselection]
           cases selected : leftSelected.value.1 with
@@ -567,19 +574,31 @@ theorem relTriple_runResolvedFromTable_maskedChronologicalSignLayer_finalization
               simp only
               apply relTriple_pure_pure
               simp [FinalizationChronologicalLayerEq, hselectedContext, hremaining,
-                hleftTable, hselectedCache]
+                hleftTable, hselectedCache, hselectedRevealed]
           | some selectedPart =>
               rcases selectedPart with ⟨counter, encoding⟩
               simp only
               rw [hremaining, hleftTable]
               rw [StateT.run_bind, runResolvedFromTable_bind]
-              have hvalues :=
+              have hvaluesBase :=
                 relTriple_runResolvedFromTable_revealPrivateLayerValues_of_finalizationViewEq
                   table index lay encoding leftSelected.context rightSelected.context
                   rightSelected.remaining leftSelected.value.2 hselectedContext.1
                   hselectedContext.2.1 hselectedContext.2.2.1 hselectedContext.2.2.2
+              have hvaluesLeft :=
+                SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support
+                  hvaluesBase
+                  (fun result => result ∈ support
+                    (runResolvedFromTable leftSelected.context rightSelected.remaining table
+                      ((revealPrivateLayerValues index lay encoding).run
+                        leftSelected.value.2)))
+                  (fun result hresult => hresult)
+              have hvalues :=
+                SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hvaluesLeft
               apply relTriple_bind hvalues
               intro leftValues rightValues hvaluesRelation
+              rcases hvaluesRelation with
+                ⟨⟨hvaluesRelation, hleftValuesSupport⟩, hrightValuesSupport⟩
               cases leftValues with
               | none =>
                   cases rightValues with
@@ -592,7 +611,7 @@ theorem relTriple_runResolvedFromTable_maskedChronologicalSignLayer_finalization
                   | some rightValues =>
                       apply relTriple_pure_pure
                       refine ⟨hvaluesRelation.2.1, hvaluesRelation.2.2.1,
-                        hvaluesRelation.2.2.2.1, rfl, ?_, ?_, ?_⟩
+                        hvaluesRelation.2.2.2.1, rfl, ?_, ?_, ?_, ?_⟩
                       · funext selectedLay
                         by_cases heq : selectedLay = lay
                         · subst selectedLay
@@ -605,6 +624,20 @@ theorem relTriple_runResolvedFromTable_maskedChronologicalSignLayer_finalization
                             hvaluesRelation.1]
                         · simp [Function.update_of_ne heq]
                       · exact hvaluesRelation.2.2.2.2.trans hselectedCache
+                      · have hleftValuesRevealed :=
+                          revealed_eq_of_mem_runResolvedFromTable_of_noPublish
+                            ((revealPrivateLayerValues index lay encoding).run
+                              leftSelected.value.2)
+                            leftSelected.context rightSelected.remaining table leftValues
+                            (noPublish_revealPrivateLayerValues index lay encoding
+                              leftSelected.value.2)
+                            hleftValuesSupport
+                        have hrightValuesRevealed :=
+                          (privateStateAgrees_resolveDeferredLayerValues table index lay encoding
+                            rightSelected.context rightValues.1 rightValues.2
+                            hrightValuesSupport).2.1
+                        exact hleftValuesRevealed.trans
+                          (hselectedRevealed.trans hrightValuesRevealed.symm)
 
 theorem privateChronologicalSignLayer_eq_schedule
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
@@ -684,7 +717,8 @@ def FinalizationChronologicalFamilyEq
           chronologicalSelectedAfter family left.value.1 initialStore.selected ∧
         right.value.resolved =
           chronologicalResolvedAfter family left.value.1 initialStore.resolved ∧
-        ordinaryQueryCache left.value.2 = ordinaryQueryCache right.value.cache
+        ordinaryQueryCache left.value.2 = ordinaryQueryCache right.value.cache ∧
+        left.context.state.revealed = right.context.state.revealed
   | _, _ => False
 
 set_option maxRecDepth 100000 in
@@ -695,6 +729,7 @@ theorem relTriple_runResolvedSequenceFin_maskedChronologicalLayerFamily_finaliza
       (fuel : Nat) (leftCache : SplitHashCache) (store : DeferredLayerStore),
       FinalizationContextEq table (some left) (some right) →
       ordinaryQueryCache leftCache = ordinaryQueryCache store.cache →
+      left.state.revealed = right.state.revealed →
       RelTriple
         (runResolvedSequenceFin
           (fun position => maskedChronologicalSignLayer parameter ftsSecret index
@@ -702,15 +737,15 @@ theorem relTriple_runResolvedSequenceFin_maskedChronologicalLayerFamily_finaliza
         (privateChronologicalLayerFamily parameter table ftsSecret index family
           (some ⟨right, fuel, store, table⟩))
         (FinalizationChronologicalFamilyEq table family store)
-  | 0, family, left, right, fuel, leftCache, store, hcontext, hcache => by
+  | 0, family, left, right, fuel, leftCache, store, hcontext, hcache, hrevealed => by
       simp [runResolvedSequenceFin, privateChronologicalLayerFamily,
         FinalizationChronologicalFamilyEq, chronologicalSelectedAfter,
-        chronologicalResolvedAfter, hcontext, hcache]
-  | n + 1, family, left, right, fuel, leftCache, store, hcontext, hcache => by
+        chronologicalResolvedAfter, hcontext, hcache, hrevealed]
+  | n + 1, family, left, right, fuel, leftCache, store, hcontext, hcache, hrevealed => by
       rw [runResolvedSequenceFin, privateChronologicalLayerFamily]
       have hhead :=
         relTriple_runResolvedFromTable_maskedChronologicalSignLayer_finalization parameter table
-          ftsSecret index (family 0) left right fuel leftCache store hcontext hcache
+          ftsSecret index (family 0) left right fuel leftCache store hcontext hcache hrevealed
       apply relTriple_bind hhead
       intro leftHead rightHead hheadRelation
       cases leftHead with
@@ -737,7 +772,7 @@ theorem relTriple_runResolvedSequenceFin_maskedChronologicalLayerFamily_finaliza
               simp only [FinalizationChronologicalLayerEq] at hheadRelation
               rcases hheadRelation with
                 ⟨hcontext, hremaining, hleftTable, hrightTable, hselected,
-                  hresolved, hcache⟩
+                  hresolved, hcache, hrevealed⟩
               subst leftRemaining
               subst leftTable
               subst rightTable
@@ -746,7 +781,7 @@ theorem relTriple_runResolvedSequenceFin_maskedChronologicalLayerFamily_finaliza
                 relTriple_runResolvedSequenceFin_maskedChronologicalLayerFamily_finalization
                   parameter table ftsSecret index
                   (fun position : Fin n => family position.succ) leftContext
-                  rightContext rightRemaining leftCache rightStore hcontext hcache
+                  rightContext rightRemaining leftCache rightStore hcontext hcache hrevealed
               rw [← bind_pure
                 (privateChronologicalLayerFamily parameter table ftsSecret index
                   (fun position : Fin n => family position.succ)
@@ -766,7 +801,8 @@ theorem relTriple_runResolvedSequenceFin_maskedChronologicalLayerFamily_finaliza
                       apply relTriple_pure_pure
                       refine ⟨htailRelation.1, htailRelation.2.1,
                         rfl, htailRelation.2.2.2.1, ?_, ?_,
-                        htailRelation.2.2.2.2.2.2⟩
+                        htailRelation.2.2.2.2.2.2.1,
+                        htailRelation.2.2.2.2.2.2.2⟩
                       · simpa [chronologicalSelectedAfter, hselected] using
                           htailRelation.2.2.2.2.1
                       · simpa [chronologicalResolvedAfter, hresolved] using
@@ -814,7 +850,8 @@ theorem relTriple_runResolvedSequenceFin_maskedChronologicalSignLayers_schedule_
     (left right : DeferredContext) (fuel : Nat) (leftCache : SplitHashCache)
     (store : DeferredLayerStore)
     (hcontext : FinalizationContextEq table (some left) (some right))
-    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache store.cache) :
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache store.cache)
+    (hrevealed : left.state.revealed = right.state.revealed) :
     RelTriple
       (runResolvedSequenceFin
         (fun lay : Layer => maskedChronologicalSignLayer parameter ftsSecret index lay)
@@ -826,6 +863,6 @@ theorem relTriple_runResolvedSequenceFin_maskedChronologicalSignLayers_schedule_
     ← privateChronologicalLayerFamily_eq_schedule parameter table ftsSecret index]
   exact relTriple_runResolvedSequenceFin_maskedChronologicalLayerFamily_finalization
     parameter table ftsSecret index (fun lay : Layer => lay) left right fuel leftCache store
-      hcontext hcache
+      hcontext hcache hrevealed
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

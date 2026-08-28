@@ -38,7 +38,7 @@ theorem DeferredCompletable.publish
 theorem finalizationMaterializedCouples_publishCoordinate
     (table : OtsSecretIndex → HashOutput) (coordinate : Coordinate) :
     FinalizationMaterializedCouples table (publishCoordinate coordinate) := by
-  intro left right fuel leftCache rightCache hcontext hcache
+  intro left right fuel leftCache rightCache hcontext hcache hrevealed
   rcases hcontext with ⟨hview, hleftValid, hrightValid, hleftCompletable⟩
   unfold publishCoordinate
   rw [StateT.run_liftM, StateT.run_liftM,
@@ -49,12 +49,13 @@ theorem finalizationMaterializedCouples_publishCoordinate
   exact ⟨rfl,
     ⟨hview.publish coordinate, hleftValid.publish coordinate,
       hrightValid.publish coordinate, hleftCompletable.publish coordinate⟩,
-    rfl, rfl, rfl, hcache⟩
+    rfl, rfl, rfl, hcache, by
+      simpa [LazyRevealProbe.State.publish] using congrArg (insert coordinate) hrevealed⟩
 
 theorem finalizationMaterializedCouples_splitUniformImpl
     (table : OtsSecretIndex → HashOutput) (n : Nat) :
     FinalizationMaterializedCouples table (splitUniformImpl n) := by
-  intro left right fuel leftCache rightCache hcontext hcache
+  intro left right fuel leftCache rightCache hcontext hcache hrevealed
   unfold splitUniformImpl
   rw [StateT.run_liftM, StateT.run_liftM, LazyRevealProbe.uniformQuery,
     runResolvedFromTable_uniform_query_bind,
@@ -64,7 +65,7 @@ theorem finalizationMaterializedCouples_splitUniformImpl
   intro leftOutput rightOutput houtput
   subst rightOutput
   apply relTriple_pure_pure
-  exact ⟨rfl, hcontext, rfl, rfl, rfl, hcache⟩
+  exact ⟨rfl, hcontext, rfl, rfl, rfl, hcache, hrevealed⟩
 
 theorem finalizationMaterializedCouples_ordinaryRomImpl
     (table : OtsSecretIndex → HashOutput) (query : OracleWorld.Domain) :
@@ -78,7 +79,7 @@ theorem finalizationMaterializedCouples_revealChainStart
     (table : OtsSecretIndex → HashOutput) (index : OtsSecretIndex) :
     FinalizationMaterializedCouples table
       (revealChainStart index.lay index.tree index.leafIdx index.chainIdx) := by
-  intro left right fuel leftCache rightCache hcontext hcache
+  intro left right fuel leftCache rightCache hcontext hcache hrevealed
   rcases hcontext with ⟨hview, hleftValid, hrightValid, hleftCompletable⟩
   rw [revealChainStart, runResolvedFromTable_revealCoordinate,
     runResolvedFromTable_revealCoordinate]
@@ -141,7 +142,7 @@ theorem finalizationMaterializedCouples_revealChainStart
             exact hrightValid.materialize_chainStart lay tree leafIdx chainIdx
               rightResolved.output
           apply relTriple_pure_pure
-          refine ⟨?_, ?_, rfl, rfl, rfl, ?_⟩
+          refine ⟨?_, ?_, rfl, rfl, rfl, ?_, ?_⟩
           · simpa using congrArg truncateHash hrelation.1
           · exact ⟨hleftMaterializedView.trans
                 (hrelation.2.1.trans hrightMaterializedView.symm),
@@ -149,6 +150,8 @@ theorem finalizationMaterializedCouples_revealChainStart
               hleftMaterializedCompletable⟩
           · rw [ordinaryQueryCache_update_hidden, ordinaryQueryCache_update_hidden,
               hcache]
+          · simpa [materializeResolvedChainStart, LazyRevealProbe.State.materialize]
+              using hrevealed
 
 theorem finalizationMaterializedCouples_revealCoordinate
     (table : OtsSecretIndex → HashOutput) (coordinate : Coordinate) :
@@ -332,7 +335,8 @@ theorem relTriple_runResolvedChronologicalLayersAndPublish_finalization
     (ftsPath : FtsTree → Fin ftsTreeHeight → Digest)
     (left right : DeferredContext) (fuel : Nat) (leftCache rightCache : SplitHashCache)
     (hcontext : FinalizationContextEq table (some left) (some right))
-    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache) :
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed) :
     RelTriple
       (runResolvedChronologicalLayersAndPublish parameter table ftsSecret randomness index
         leaves ftsPath left fuel leftCache)
@@ -344,7 +348,7 @@ theorem relTriple_runResolvedChronologicalLayersAndPublish_finalization
   have hlayers :=
     relTriple_runResolvedSequenceFin_maskedChronologicalSignLayers_schedule_finalization
       parameter table ftsSecret index left right fuel leftCache
-      (emptyDeferredLayerStore rightCache) hcontext hcache
+      (emptyDeferredLayerStore rightCache) hcontext hcache hrevealed
   apply relTriple_bind hlayers
   intro leftLayers rightLayers hlayersRelation
   cases leftLayers with
@@ -365,7 +369,7 @@ theorem relTriple_runResolvedChronologicalLayersAndPublish_finalization
           simp only [FinalizationChronologicalFamilyEq] at hlayersRelation
           rcases hlayersRelation with
             ⟨hcontext, hremaining, hleftTable, hrightTable, hselected, hresolved,
-              hcache⟩
+              hcache, hrevealed⟩
           subst leftRemaining
           subst leftTable
           subst rightTable
@@ -382,7 +386,7 @@ theorem relTriple_runResolvedChronologicalLayersAndPublish_finalization
           rw [hparts]
           exact finalizationMaterializedCouples_publishChronologicalSignature table ftsSecret
             randomness index leaves ftsPath leftParts leftContext rightContext rightRemaining
-              leftCache rightStore.cache hcontext hcache
+              leftCache rightStore.cache hcontext hcache hrevealed
 
 set_option maxHeartbeats 400000 in
 theorem evalDist_runResolvedChronologicalLayersAndPublish_eq
@@ -457,7 +461,7 @@ theorem evalDist_finishResolvedRunIsNone_eq_of_finalizationMaterializedRunEq
       | none => simp [FinalizationMaterializedRunEq] at hrelation
       | some right =>
           rcases hrelation with
-            ⟨hvalue, hcontext, hremaining, hleftTable, hrightTable, hcache⟩
+            ⟨hvalue, hcontext, hremaining, hleftTable, hrightTable, hcache, _hrevealed⟩
           rcases hcontext with ⟨hview, hleftValid, hrightValid, hleftCompletable⟩
           have hrightCompletable : DeferredCompletable table right.context := by
             rcases hleftCompletable with ⟨completion, hcompletion⟩
@@ -517,7 +521,8 @@ theorem evalDist_runResolvedChronologicalLayersAndPublish_finish_eq_deferred
     (ftsPath : FtsTree → Fin ftsTreeHeight → Digest)
     (left right : DeferredContext) (fuel : Nat) (leftCache rightCache : SplitHashCache)
     (hcontext : FinalizationContextEq table (some left) (some right))
-    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache) :
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed) :
     evalDist (runResolvedChronologicalLayersAndPublish parameter table ftsSecret randomness
         index leaves ftsPath left fuel leftCache >>= finishResolvedRunIsNone) =
       evalDist (runDeferredChronologicalLayersAndPublish parameter table ftsSecret randomness
@@ -525,7 +530,7 @@ theorem evalDist_runResolvedChronologicalLayersAndPublish_finish_eq_deferred
   apply evalDist_eq_of_relTriple_eqRel
   apply relTriple_bind
     (relTriple_runResolvedChronologicalLayersAndPublish_finalization parameter table ftsSecret
-      randomness index leaves ftsPath left right fuel leftCache rightCache hcontext hcache)
+      randomness index leaves ftsPath left right fuel leftCache rightCache hcontext hcache hrevealed)
   intro leftResult rightResult hrelation
   exact relTriple_finishResolvedRunIsNone_of_finalizationMaterializedRunEq table leftResult
     rightResult hrelation
@@ -566,7 +571,8 @@ theorem relTriple_runResolvedFromTable_maskedPublishedChronologicalSignAfterDige
     (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf)
     (left right : DeferredContext) (fuel : Nat) (leftCache rightCache : SplitHashCache)
     (hcontext : FinalizationContextEq table (some left) (some right))
-    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache) :
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed) :
     RelTriple
       (runResolvedFromTable left fuel table
         ((maskedPublishedChronologicalSignAfterDigest parameter ftsSecret randomness index
@@ -580,7 +586,7 @@ theorem relTriple_runResolvedFromTable_maskedPublishedChronologicalSignAfterDige
   have hfts := finalizationMaterializedCouples_simulateQ ordinaryHashImpl
     (finalizationMaterializedCouples_ordinaryHashImpl table)
     (ftsOpen parameter index leaves (ftsSecret index))
-    left right fuel leftCache rightCache hcontext hcache
+    left right fuel leftCache rightCache hcontext hcache hrevealed
   apply relTriple_bind hfts
   intro leftFts rightFts hftsRelation
   cases leftFts with
@@ -597,8 +603,8 @@ theorem relTriple_runResolvedFromTable_maskedPublishedChronologicalSignAfterDige
           rcases rightFts with
             ⟨rightContext, rightRemaining, ⟨rightFtsPath, rightCache⟩, rightTable⟩
           rcases hftsRelation with
-            ⟨hftsPath, hcontext, hremaining, hleftTable, hrightTable, hcache⟩
-          simp only at hftsPath hcontext hremaining hleftTable hrightTable hcache
+            ⟨hftsPath, hcontext, hremaining, hleftTable, hrightTable, hcache, hrevealed⟩
+          simp only at hftsPath hcontext hremaining hleftTable hrightTable hcache hrevealed
           subst rightFtsPath
           subst leftRemaining
           subst leftTable
@@ -607,7 +613,7 @@ theorem relTriple_runResolvedFromTable_maskedPublishedChronologicalSignAfterDige
           have hlayers :=
             relTriple_runResolvedChronologicalLayersAndPublish_finalization parameter table
               ftsSecret randomness index leaves leftFtsPath leftContext rightContext
-                rightRemaining leftCache rightCache hcontext hcache
+                rightRemaining leftCache rightCache hcontext hcache hrevealed
           apply relTriple_of_evalDist_eq_left _ hlayers
           exact (evalDist_runResolvedChronologicalLayersAndPublish_eq parameter table ftsSecret
             randomness index leaves leftFtsPath leftContext rightRemaining leftCache
@@ -641,7 +647,8 @@ theorem relTriple_runResolvedFromTable_maskedPublishedChronologicalSign_finaliza
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message)
     (left right : DeferredContext) (fuel : Nat) (leftCache rightCache : SplitHashCache)
     (hcontext : FinalizationContextEq table (some left) (some right))
-    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache) :
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed) :
     RelTriple
       (runResolvedFromTable left fuel table
         ((maskedPublishedChronologicalSign parameter root ftsSecret message).run leftCache))
@@ -654,7 +661,7 @@ theorem relTriple_runResolvedFromTable_maskedPublishedChronologicalSign_finaliza
   have hselected := finalizationMaterializedCouples_simulateQ ordinaryRomImpl
     (finalizationMaterializedCouples_ordinaryRomImpl table)
     (signDigestLoop digestAttemptLimit secretKey message)
-    left right fuel leftCache rightCache hcontext hcache
+    left right fuel leftCache rightCache hcontext hcache hrevealed
   apply relTriple_bind hselected
   intro leftSelected rightSelected hselectedRelation
   cases leftSelected with
@@ -673,7 +680,7 @@ theorem relTriple_runResolvedFromTable_maskedPublishedChronologicalSign_finaliza
             ⟨rightContext, rightRemaining, ⟨rightValue, rightCache⟩, rightTable⟩
           simp only [FinalizationMaterializedRunEq] at hselectedRelation
           rcases hselectedRelation with
-            ⟨hvalue, hcontext, hremaining, hleftTable, hrightTable, hcache⟩
+            ⟨hvalue, hcontext, hremaining, hleftTable, hrightTable, hcache, hrevealed⟩
           subst rightValue
           subst leftRemaining
           subst leftTable
@@ -682,12 +689,12 @@ theorem relTriple_runResolvedFromTable_maskedPublishedChronologicalSign_finaliza
           cases leftValue with
           | none =>
               apply relTriple_pure_pure
-              exact ⟨rfl, hcontext, rfl, rfl, rfl, hcache⟩
+              exact ⟨rfl, hcontext, rfl, rfl, rfl, hcache, hrevealed⟩
           | some selected =>
               rcases selected with ⟨randomness, index, leaves⟩
               exact
                 relTriple_runResolvedFromTable_maskedPublishedChronologicalSignAfterDigest_finalization
                   parameter table ftsSecret randomness index leaves leftContext rightContext
-                    rightRemaining leftCache rightCache hcontext hcache
+                    rightRemaining leftCache rightCache hcontext hcache hrevealed
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
