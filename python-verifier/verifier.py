@@ -118,6 +118,10 @@ class E:
             return E(lifted)
         raise TypeError(f"cannot use {type(value).__name__} as a field element")
 
+    @staticmethod
+    def sum(values: Iterable[E]) -> E:
+        return sum(values, ZERO)
+
     def __int__(self) -> int:
         return self.c0.value | self.c1.value << 64 | self.c2.value << 128
 
@@ -247,41 +251,29 @@ def log2_strict(value: int) -> int:
 
 @dataclass(frozen=True)
 class Placement:
-    """Where something of 2^variables entries sits in a stacked cube, as returned
-    by `stack_offsets`: one committed column in the witness, or one block of a bus
-    side in its leaf cube."""
+    """Where something sits in the stacked cube: a claim's point fills the `variables` coordinates above `low`, the bits of `index` fixing the rest.
+    `low` is zero for a block with a cube of its own, and the slot width for a column interleaved into a bigger block."""
 
     variables: int
-    offset: int
+    index: int
+    low: int = 0
 
-    @property
-    def virtual(self) -> bool:
-        return self is VIRTUAL
+    def stack_point(self, point: MultilinearPoint, stack_log: int) -> MultilinearPoint:
+        bits = _selector_point(self.index, stack_log)
+        return bits[: self.low] + tuple(point) + bits[self.low + self.variables :]
 
-    @property
-    def selector(self) -> int:
-        """Which slice of the stacked cube it occupies."""
-        return self.offset >> self.variables
-
-
-VIRTUAL = Placement(-1, 0)
-"""An entry stacked elsewhere, taking no room here (`Placement::VIRTUAL` in Rust)."""
+    def eq_above(self, point: Sequence[E]) -> E:
+        """eq weight of the coordinates above the window."""
+        return selector_eq(self.index >> (self.low + self.variables), point[self.low + self.variables :])
 
 
-def stack_offsets(sizes: Sequence[int | None]) -> tuple[list[Placement], int]:
-    """Place a block of 2^size at the next multiple of its own size, largest first.
-    Ties keep input order, so both sides derive the same layout from the sizes alone.
-    A None size is an entry that is committed elsewhere and takes no room here.
-    Returns each entry's placement and the log2 of the padded total.
-    """
+def stack_offsets(sizes: Sequence[int]) -> tuple[list[int], int]:
     offsets = [0] * len(sizes)
     total = 0
-    present = [(index, size) for index, size in enumerate(sizes) if size is not None]
-    for index, size in sorted(present, key=lambda item: (-item[1], item[0])):
+    for index, size in sorted(enumerate(sizes), key=lambda item: (-item[1], item[0])):
         offsets[index] = total
         total += 2**size
-    placed = [VIRTUAL if size is None else Placement(size, offset) for size, offset in zip(sizes, offsets, strict=True)]
-    return placed, log2_ceil(max(total, 1))
+    return offsets, log2_ceil(total)
 
 
 def eq_eval(left: Sequence[E], right: Sequence[E]) -> E:
@@ -292,7 +284,6 @@ def eq_eval(left: Sequence[E], right: Sequence[E]) -> E:
 
 
 def dot(left: Sequence[K | E], right: Sequence[K | E]) -> E:
-    """`Σ_i left[i] · right[i]` in E."""
     result = ZERO
     for x, y in zip(left, right, strict=True):
         result += E.lift(x) * y
@@ -413,10 +404,14 @@ class Transcript:
         """returns q(X) := c0 + c1X + c2X^2 + ..."""
         if eq_factor is None:
             constant, tail = self.next_scalar(), self.next_scalars(count - 2)  # `q(0) + q(1) == claim`. The transcript contains c0, c2, c3 ...
-            return [constant, claim + sum(tail, ZERO), *tail]
+            return [constant, claim + E.sum(tail), *tail]
         # `(1 + r) q(0) + r q(1) == claim`. The transcript contains c1, c2, c3 ... (r := eq_factor)
         tail = self.next_scalars(count - 1)
-        return [claim + eq_factor * sum(tail, ZERO), *tail]
+        return [claim + eq_factor * E.sum(tail), *tail]
+
+    def finish(self) -> None:
+        require(self.stream_offset == len(self.proof.stream), "proof stream not fully consumed")
+        require(self.opening_offset == len(self.proof.merkle_openings), "Merkle openings not fully consumed")
 
 
 def sumcheck(transcript: Transcript, claim: E, count: int, equalities: Sequence[E | None]) -> tuple[MultilinearPoint, E]:
@@ -428,7 +423,9 @@ def sumcheck(transcript: Transcript, claim: E, count: int, equalities: Sequence[
         claim = poly_eval(message, challenge)
     return tuple(point), claim
 
+
 # Bus balance and decomposition ---------------------------------------------
+
 
 def verify_gkr_grand_products(depth: int, transcript: Transcript) -> tuple[E, MultilinearPoint, tuple[E, E, E]]:
     shared, count = transcript.next_scalar(), transcript.next_scalar()
@@ -461,58 +458,44 @@ def verify_gkr_grand_products(depth: int, transcript: Transcript) -> tuple[E, Mu
 class Form:
     """A polynomial of degree at most 2 in a row's columns, one table's own."""
 
-    terms: dict[tuple[int, ...], E] = field(default_factory=dict)
+    terms: dict[tuple[int, ...], E] = field(default_factory=dict)  # monomial -> coefficient; () is 1, (i,) is x_i, (i, j) is x_i*x_j
 
     def add_scaled(self, other: Form, weight: E) -> None:
         for monomial, coefficient in other.terms.items():
             self.terms[monomial] = self.terms.get(monomial, ZERO) + weight * coefficient
 
     def evaluate(self, column: Callable[[int], E]) -> E:
-        """Substitute a value for every column."""
-        return sum((reduce(mul, map(column, monomial), c) for monomial, c in self.terms.items()), ZERO)
+        return E.sum(reduce(mul, map(column, monomial), c) for monomial, c in self.terms.items())
 
 
 @dataclass(frozen=True)
 class BusBlock:
-    """One block of a bus side: 2^log_rows rows of one tuple shape.
+    """One block of a bus side, always owned by a table. The three blocks no table owns are the framework, on `BusLayout`."""
 
-    Always a block some table owns: it names that table's columns in ITS OWN
-    local indices, which is what its bus form is written over, and stays symbolic
-    until the table sumcheck. The three blocks no table owns are the framework, on
-    `BusLayout`.
-    """
-
-    log_rows: int
-    coordinates: tuple[Form, ...]
-    owner: int
+    log_rows: int  # the owner's height: this block flushes 2^log_rows rows
+    coordinates: tuple[Form, ...]  # the tuple flushed, over the owner's OWN local column indices; stays symbolic until its table sumcheck
+    owner: int  # whose block it is, by opcode
 
 
 @dataclass(frozen=True)
 class BusLayout:
-    """Where a side's blocks sit in the stacked leaf cube, split by kind so no
-    caller has to know that the framework blocks are stacked first.
+    """Where a side's blocks sit in the stacked leaf cube. Split by kind because framework coordinates are
+    public, so the verifier evaluates their fingerprints outright, while a table's stay symbolic until its sumcheck."""
 
-    The framework is the three blocks no table owns: the boundary state, then the
-    memory and bytecode arrays. Their coordinates are public, so the verifier
-    evaluates their fingerprints outright instead of carrying them symbolically."""
-
-    depth: int
-    framework: tuple[Placement, ...]
-    tables: tuple[Placement, ...]
+    depth: int  # log2 of the padded cube, so how many layers the side's GKR walks
+    framework: tuple[Placement, ...]  # the blocks no table owns, stacked first: boundary state, memory, bytecode (none on the count side)
+    tables: tuple[Placement, ...]  # one per block a table owns, in the side's own block order
 
 
 FrameworkLogRows = tuple[int, int, int] | tuple[()]  # state, memory, bytecode
 
 
 def bus_layout(framework_log_rows: FrameworkLogRows, blocks: Sequence[BusBlock]) -> BusLayout:
-    placements, depth = stack_offsets([*framework_log_rows, *(block.log_rows for block in blocks)])
+    sizes = [*framework_log_rows, *(block.log_rows for block in blocks)]
+    offsets, depth = stack_offsets(sizes)
+    placements = [Placement(size, offset) for size, offset in zip(sizes, offsets, strict=True)]
     split = len(framework_log_rows)
     return BusLayout(depth, tuple(placements[:split]), tuple(placements[split:]))
-
-
-def selector_weights(placements: Sequence[Placement], point: MultilinearPoint) -> list[E]:
-    """Each block's eq weight: which slice of the stacked leaf cube it occupies."""
-    return [selector_eq(p.selector, point[p.variables :]) for p in placements]
 
 
 @dataclass(frozen=True)
@@ -522,7 +505,7 @@ class ColumnClaim:
     value: E
 
 
-BUS_BITS = 4
+BUS_BITS = 4  # bus communicates tuples of 2^BUS_BITS field elements
 
 
 @dataclass(frozen=True)
@@ -538,14 +521,12 @@ def verify_bus_balance(layout: Layout, transcript: Transcript) -> BusResult:
     push_layout = bus_layout(framework_log_rows, layout.push)
     pull_layout = bus_layout(framework_log_rows, layout.pull)
     count_layout = bus_layout((), layout.count)
-    require(push_layout.depth == pull_layout.depth, "push/pull bus depths differ")
-    require(count_layout.depth <= push_layout.depth, "count bus is deeper than push bus")
 
     alphas = transcript.samples(BUS_BITS)
     weights = eq_kernel(alphas)
     beta = transcript.sample()
     count_root, point, tree_values = verify_gkr_grand_products(push_layout.depth, transcript)
-    require(count_root != ZERO, "a bus read count is zero")
+    require(count_root != ZERO, "a bus count is zero")
 
     # The framework blocks' committed columns, in the order the two sides first
     # name them: the memory image on push, then each array's final count on pull.
@@ -558,57 +539,39 @@ def verify_bus_balance(layout: Layout, transcript: Transcript) -> BusResult:
     claims.append(ColumnClaim(MEMORY_FINAL_COUNTERS, memory_low, memory_final))
     claims.append(ColumnClaim(BYTECODE_FINAL_COUNTERS, bytecode_low, bytecode_final))
 
-    def fingerprints(state: E, memory_count: E, bytecode_count: E) -> tuple[E, E, E]:
-        """The three framework tuples, read off directly. A side differs only in
-        these: push seeds each array at count one, pull finalizes it with the
-        committed final count and ends at the last pc."""
+    def fingerprints(pc: E, memory_count: E, bytecode_count: E) -> tuple[E, E, E]:
+        """The three framework tuples, each its coordinates weighted by eq(alpha, .); slots past the ones
+        named are zero. A side differs only here: push seeds each array at count one, pull finalizes it
+        with the committed final count and ends at the last pc. Both boundaries sit in frame 0."""
         return (
-            weights[0] * SEP_STATE + weights[1] * state + weights[2] * ONE,
-            weights[0] * SEP_MEM
-            + weights[1] * index_mle(memory_low)
-            + weights[2] * memory_count
-            + sum((weights[3 + limb] * memory[limb] for limb in range(3)), ZERO),
-            # The public coordinates' weighted sum IS the stacked polynomial at
-            # (zeta, alpha), the weights being eq(alpha, .): one evaluation, not nine.
-            weights[0] * SEP_BYTECODE
-            + weights[1] * index_mle(bytecode_low)
-            + weights[2] * bytecode_count
-            + multilinear_eval(layout.bytecode, (*bytecode_low, *alphas)),
+            dot(weights[:3], (SEP_STATE, pc, _gpow(0))),
+            dot(weights[:6], (SEP_MEM, index_mle(memory_low), memory_count, *memory)),
+            dot(weights[:3], (SEP_BYTECODE, index_mle(bytecode_low), bytecode_count)) + multilinear_eval(layout.bytecode, (*bytecode_low, *alphas)),
         )
 
-    forms = tuple(tuple(Form() for _ in TABLES) for _ in range(3))
-    final_pc = _gpow(2**layout.log_bytecode - 1)  # the run ends at the bytecode's last cell
+    final_pc = _gpow(2**layout.log_bytecode - 1)  # the execution ends at the bytecode's last instruction
     sides = (
-        (layout.push, push_layout, fingerprints(ONE, ONE, ONE), weights, beta),
+        (layout.push, push_layout, fingerprints(_gpow(0), ONE, ONE), weights, beta),
         (layout.pull, pull_layout, fingerprints(final_pc, memory_final, bytecode_final), weights, beta),
-        # The count channel owns no framework block and runs at alpha = beta = 0:
-        # its leaf IS the read count.
-        (layout.count, count_layout, (), eq_kernel((ZERO,) * BUS_BITS), ZERO),
+        (layout.count, count_layout, (), (ONE,), ZERO),  # The count channel owns no framework block and runs at alpha = beta = 0.
     )
-    totals = []
+    totals = [] # what remains to be proven by the next table sumcheck
+    forms = tuple(tuple(Form() for _ in TABLES) for _ in range(3))
     for side, (blocks, side_layout, framework_fingerprints, side_weights, side_beta) in enumerate(sides):
-        framework_selectors = selector_weights(side_layout.framework, point)
-        table_selectors = selector_weights(side_layout.tables, point)
-        known = sum(
-            (selector * (side_beta + fingerprint) for selector, fingerprint in zip(framework_selectors, framework_fingerprints, strict=True)),
-            ZERO,
-        )
-        # A table's blocks stay symbolic: they accumulate into the form its
-        # sumcheck settles over its own columns.
+        framework_selectors = [p.eq_above(point) for p in side_layout.framework]
+        table_selectors = [p.eq_above(point) for p in side_layout.tables]
+        known = dot(framework_selectors, [side_beta + fingerprint for fingerprint in framework_fingerprints])
+        # A table's blocks stay symbolic: they accumulate into the form its sumcheck settles over its own columns.
         beta_form = _const(side_beta)
         for selector, block in zip(table_selectors, blocks, strict=True):
             form = forms[side][block.owner]
             form.add_scaled(beta_form, selector)
             for slot, coordinate in enumerate(block.coordinates):
-                form.add_scaled(coordinate, selector * side_weights[slot])
-        # Every occupied row holds beta + its fingerprint; the rest of the packed
-        # leaf cube holds the product identity.
-        occupied = sum(framework_selectors + table_selectors, ZERO)
-        totals.append(tree_values[side] + known + ONE + occupied)
+                form.add_scaled(coordinate, selector * side_weights[slot])  # the fingerprint, one tuple slot at a time
+        # Every occupied row holds beta + its fingerprint; the rest of the leaf cube holds 1.
+        ones_padding = E.sum(framework_selectors + table_selectors) + ONE
+        totals.append(tree_values[side] + known + ones_padding)  # what the forms owe: the GKR value, less framework and padding
 
-    # The recursive verifier defers a claim on the public bytecode polynomial. Its
-    # point comes from alpha alone (doc sec:e2e-bc), so nothing is observed here and
-    # no selector challenge is drawn.
     return BusResult(tuple(claims), point, forms, (totals[0], totals[1], totals[2]))
 
 
@@ -714,10 +677,10 @@ def _prod(a: int, b: int, exponent: int = 0) -> Form:
 
 
 def _sum(forms: Iterable[Form]) -> Form:
-    total = Form()
+    combined = Form()
     for form in forms:
-        total.add_scaled(form, ONE)
-    return total
+        combined.add_scaled(form, ONE)
+    return combined
 
 
 SEP_STATE = ONE
@@ -892,19 +855,11 @@ def _flushes_blake2s(table: Table) -> Flushes:
     flushes = Flushes()
     flushes.state_step(pc, fp)
     flushes.bytecode(pc, cnt_bc, table.opcode, tuple(_col(i) for i in operands))
-    # The eight cells a row accesses: the four independently addressed message
-    # chunks, then the two consecutive chaining-value cells and the two output
-    # ones. Each carries two limbs of q_flock and a zero top limb.
-    for operand, exponent, cell in (
-        ("o_0", 0, "m0"),
-        ("o_1", 0, "m1"),
-        ("o_2", 0, "m2"),
-        ("o_3", 0, "m3"),
-        ("o_v", 0, "cv0"),
-        ("o_v", 1, "cv1"),
-        ("o_out", 0, "out0"),
-        ("o_out", 1, "out1"),
-    ):
+    # The eight cells read, as (cell, operand, offset from it): four addressed message chunks, then
+    # the consecutive chaining-value and output pairs. Each holds two q_flock limbs and a zero top.
+    cells = (("m0", "o_0", 0), ("m1", "o_1", 0), ("m2", "o_2", 0), ("m3", "o_3", 0),
+             ("cv0", "o_v", 0), ("cv1", "o_v", 1), ("out0", "o_out", 0), ("out1", "o_out", 1))  # fmt: skip
+    for cell, operand, exponent in cells:
         lo, hi = table.cols(f"{cell}_lo", f"{cell}_hi")
         flushes.memory_cols(_prod(fp, table.col(operand), exponent), table.col(f"cnt_{cell}"), lo, hi)
     return flushes
@@ -934,9 +889,10 @@ JUMP_COLUMNS = (
 
 BLAKE2S_COLUMNS = (
     "pc", "fp", "o_0", "o_1", "o_2", "o_3", "o_v", "o_out",
-    # The eighteen value limbs are committed inside q_flock, not here.
+    # These eighteen value limbs live in q_flock, not here: each is already a flock witness slot.
     "m0_lo", "m0_hi", "m1_lo", "m1_hi", "m2_lo", "m2_hi", "m3_lo", "m3_hi",
     "out0_lo", "out0_hi", "out1_lo", "out1_hi", "cv0_lo", "cv0_hi", "cv1_lo", "cv1_hi", "md_0", "md_1",
+    # ...and the read counts, committed here like every other column.
     "cnt_m0", "cnt_m1", "cnt_m2", "cnt_m3", "cnt_cv0", "cnt_cv1", "cnt_out0", "cnt_out1", "cnt_bc",
 )  # fmt: skip
 
@@ -987,16 +943,23 @@ def build_layout(bytecode: Sequence[K], log_memory: int, table_log_heights: Sequ
         for local in table.count_columns:
             count.append(BusBlock(height, (_col(local),), table.opcode))
 
-    kappas: list[int | None] = [0] * (NUM_GLOBAL_COLUMNS + sum(TABLE_WIDTHS))
-    kappas[MEMORY_0] = kappas[MEMORY_1] = kappas[MEMORY_2] = kappas[MEMORY_FINAL_COUNTERS] = log_memory
-    kappas[BYTECODE_FINAL_COUNTERS] = log_bytecode
-    kappas[QFLOCK] = table_log_heights[BLAKE2S.opcode] + QFLOCK_SLOT_BITS
-    for table, (base, width) in enumerate(zip(GLOBAL_COLUMN_BASES, TABLE_WIDTHS, strict=True)):
-        kappas[base : base + width] = [table_log_heights[table]] * width
-    for local in BLAKE2S_SLOT_BY_COLUMN:
-        kappas[GLOBAL_COLUMN_BASES[BLAKE2S.opcode] + local] = None
-    placements, total_log = stack_offsets(kappas)
+    # Every column's log size, in global order: the framework's, q_flock's, then each table's block.
+    qflock_kappa = table_log_heights[BLAKE2S.opcode] + QFLOCK_SLOT_BITS
+    kappas = [log_memory, log_memory, log_memory, log_memory, log_bytecode, qflock_kappa]
+    for table, width in zip(TABLES, TABLE_WIDTHS, strict=True):
+        kappas += [table_log_heights[table.opcode]] * width
+
+    # A BLAKE2s value limb gets no block of its own: it is committed inside q_flock, whose slots
+    # interleave, so it sits at q_flock's offset behind its own slot's bits. Same width either way.
+    limbs = {GLOBAL_COLUMN_BASES[BLAKE2S.opcode] + local: slot for local, slot in BLAKE2S_SLOT_BY_COLUMN.items()}
+    blocks = {column: kappa for column, kappa in enumerate(kappas) if column not in limbs}
+    block_offsets, total_log = stack_offsets(list(blocks.values()))
+    offsets = dict(zip(blocks, block_offsets, strict=True))
     stack_log = max(MIN_STACKED_LOG, total_log)  # Floor at the PCS minimum
+    placements = [
+        Placement(kappa, offsets[QFLOCK] + limbs[column], QFLOCK_SLOT_BITS) if column in limbs else Placement(kappa, offsets[column])
+        for column, kappa in enumerate(kappas)
+    ]
     return Layout(log_memory, log_bytecode, bytecode, tuple(push), tuple(pull), tuple(count), tuple(placements), stack_log, tuple(table_log_heights))
 
 
@@ -1204,7 +1167,7 @@ def verify_whir(transcript: Transcript, log_n: int, log_inv_rate: int, target: E
 # Flock reduction -------------------------------------------------------------
 
 PHI_BASIS = (E(0x0000000000000001), E(0x033CE8BEDDC8A656), E(0x512620375ED2A108), E(0x0C9E636090AAFC01), E(0xBA4F3CD82801769C), E(0xBA26E7904ADB4A47), E(0x467698598926DC01), E(0x4418AE808B28BDD0))  # fmt: skip
-PHI = tuple(sum((PHI_BASIS[bit] for bit in range(8) if value >> bit & 1), ZERO) for value in range(256))
+PHI = tuple(E.sum(PHI_BASIS[bit] for bit in range(8) if value >> bit & 1) for value in range(256))
 
 _MEDIUM_GENERATOR = E(0x243F6A8885A308D3, 0x13198A2E03707344, 0xA4093822299F31D0)
 
@@ -1486,7 +1449,7 @@ def verify_stacked_opening(transcript: Transcript, root: Digest, stack_log: int,
 
     def evaluate_basis(point: Sequence[E]) -> E:
         """Every claim's weight at the opening's terminal point."""
-        return sum((scale * weight(point) for scale, (_, weight) in zip(scales, claims, strict=True)), ZERO)
+        return dot(scales, [weight(point) for _, weight in claims])
 
     verify_whir(transcript, stack_log, log_inv_rate, target, root, evaluate_basis)
 
@@ -1536,22 +1499,11 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     require(poly_eval(public_limbs, Y) == public_value, "public input limbs are off the line")
     claims.extend(ColumnClaim(column, tuple(public_point), value) for column, value in zip((MEMORY_0, MEMORY_1, MEMORY_2), public_limbs, strict=True))
 
-    # 6] Locate every claim in the stack: a column claim keeps its point and
-    # gains its placement's selector bits; a BLAKE2s value claim is re-routed to
-    # the equal q_flock slot evaluation.
-    stack_claims: list[StackClaim] = []
+    # 6] Locate every claim in the stack: its point sets into the column's window.
     qflock = layout.placements[QFLOCK]
+    stack_claims: list[StackClaim] = []
     for claim in claims:
-        # A BLAKE2s value column is committed inside q_flock rather than on its
-        # own, so its claim is re-routed to the equal evaluation of q_flock's
-        # slot: the same point, under a different placement, behind the slot bits.
-        slot = BLAKE2S_SLOT_BY_COLUMN.get(claim.column - GLOBAL_COLUMN_BASES[BLAKE2S.opcode])
-        placement = qflock if slot is not None else layout.placements[claim.column]
-        prefix = _selector_point(slot, QFLOCK_SLOT_BITS) if slot is not None else ()
-        require(not placement.virtual, "claim targets an uncommitted column")
-        require(len(prefix) + len(claim.point) == placement.variables, "column claim dimension mismatch")
-        tail = _selector_point(placement.selector, layout.stack_log - placement.variables)
-        point = prefix + claim.point + tail
+        point = layout.placements[claim.column].stack_point(claim.point, layout.stack_log)
         stack_claims.append((claim.value, lambda x, p=point: eq_eval(p, x)))
 
     # 7] BLAKE2s validity, its 64 claims ring-switched, then the one opening that
@@ -1560,8 +1512,9 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     ringswitch_target, ringswitch_weight = ring_switch(flock_point, flock_s, transcript)
     # That claim is supported on q_flock's region of the stack, so its weight carries the
     # placement's selector, and it leads the batch, taking the first power.
-    ringswitch = (ringswitch_target, lambda x: selector_eq(qflock.selector, x[qflock.variables :]) * ringswitch_weight(x[: qflock.variables]))
+    ringswitch = (ringswitch_target, lambda x: qflock.eq_above(x) * ringswitch_weight(x[: qflock.variables]))
     verify_stacked_opening(transcript, root, layout.stack_log, log_inverse_rate, [ringswitch, *stack_claims])
+    transcript.finish()
 
 
 def main(argv: Sequence[str] | None = None) -> int:
