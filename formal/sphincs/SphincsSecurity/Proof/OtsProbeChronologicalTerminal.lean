@@ -192,6 +192,54 @@ theorem resolvedNoPublish_ordinaryRomImpl (query : OracleWorld.Domain)
   | inl query => exact resolvedNoPublish_splitUniformImpl query cache
   | inr input => exact resolvedNoPublish_ordinaryHashImpl input cache
 
+theorem DeferredCompletion.not_probeHits_of_probingHashQuery_chain
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {context : DeferredContext} {fuel : Nat} {cache : SplitHashCache}
+    {result : ResolvedRunResult (HashOutput × SplitHashCache)}
+    {completion : Coordinate → HashOutput} {probe : Probe} {input : HashInput}
+    (fallback : QueryImpl HashSpec Id)
+    {lay : Layer} {tree : TreeIndex} {leafIdx : LeafIndex}
+    {chainIdx : ChainIndex} {step : ChainStep}
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table)
+    (hmatches : probe.MatchesInput parameter input)
+    (hposition : decodePosition? parameter input =
+      some (.chain lay tree leafIdx chainIdx step))
+    (hnotRevealed : probe.coordinate ∉ context.state.revealed)
+    (hresult : some result ∈ support
+      (runResolvedFromTable context fuel table
+        ((probingHashQuery parameter input).run cache)))
+    (hcompletion : DeferredCompletion table result.context completion)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    ¬probe.Hits (tableAnswer parameter completion fallback)
+      parameter (tableOtsSecret completion) ftsSecret := by
+  have hprobe : decodeProbe? parameter input = some probe :=
+    (decodeProbe?_eq_some_iff parameter input probe).2 hmatches
+  unfold probingHashQuery at hresult
+  rw [hprobe, hposition] at hresult
+  simp only at hresult
+  rw [StateT.run_bind, runResolvedFromTable_bind] at hresult
+  unfold SphincsSecurity.Concrete.OtsProbeSimulation.probe at hresult
+  rw [StateT.run_liftM, LazyRevealProbe.probeQuery,
+    runResolvedFromTable_probe_query_bind] at hresult
+  cases fuel with
+  | zero => simp at hresult
+  | succ remaining =>
+      rw [show remaining + 1 = Nat.succ remaining by omega] at hresult
+      simp only at hresult
+      rw [if_neg hnotRevealed] at hresult
+      simp only [runResolvedFromTable] at hresult
+      let probeContext : DeferredContext :=
+        { context with state := context.state.addPending probe.coordinate probe.candidate }
+      have hbefore : DeferredCompletion table probeContext completion :=
+        hcompletion.of_mem_runResolvedFromTable _ probeContext remaining table result completion
+          (hconsistent.addPending probe.coordinate probe.candidate)
+          (hstarts.addPending probe.coordinate probe.candidate) (by
+            simpa [probeContext, runResolvedFromTable] using hresult)
+      apply hbefore.not_probeHits_tableAnswer_of_pending
+        fallback ftsSecret probe input hmatches
+      simp [probeContext, LazyRevealProbe.State.addPending]
+
 theorem ResolvedContextInvariant.concreteCache_agreesWith_tableAnswer
     {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
     {context : DeferredContext} {ordinaryCache concreteCache : QueryCache HashSpec}

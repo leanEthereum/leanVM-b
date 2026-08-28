@@ -5348,21 +5348,22 @@ theorem DeferredCompletion.of_materializeResolvedChainStart'
       simpa [materializeResolvedChainStart, LazyRevealProbe.State.materialize] using haway
 
 set_option maxRecDepth 100000 in
-theorem deferredCompletable_of_mem_runResolvedFromTable
+theorem DeferredCompletion.of_mem_runResolvedFromTable
     (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
     (context : DeferredContext) (fuel : Nat)
     (table : OtsSecretIndex → HashOutput) (result : ResolvedRunResult alpha)
+    (completion : Coordinate → HashOutput)
     (hconsistent : context.ValuesConsistent)
     (hstarts : StartTableAgrees context.state table)
     (hresult : some result ∈ support
       (runResolvedFromTable context fuel table computation))
-    (hfinal : ∃ completion, DeferredCompletion table result.context completion) :
-    ∃ completion, DeferredCompletion table context completion := by
+    (hcompletion : DeferredCompletion table result.context completion) :
+    DeferredCompletion table context completion := by
   induction computation using OracleComp.inductionOn generalizing context fuel with
   | pure value =>
       simp [runResolvedFromTable] at hresult
       subst result
-      exact hfinal
+      exact hcompletion
   | query_bind input next ih =>
       cases input with
       | uniform n =>
@@ -5377,8 +5378,7 @@ theorem deferredCompletable_of_mem_runResolvedFromTable
           rw [runResolvedFromTable_ensure_query_bind] at hresult
           have hcurrent := ih () { context with state := context.state.ensure coordinate } fuel
             (hconsistent.ensure coordinate) (hstarts.ensure coordinate) hresult
-          obtain ⟨completion, hcompletion⟩ := hcurrent
-          exact ⟨completion, hcompletion.of_coreEq ⟨rfl, rfl, rfl⟩⟩
+          exact hcurrent.of_coreEq ⟨rfl, rfl, rfl⟩
       | probe coordinate candidate =>
           rw [runResolvedFromTable_probe_query_bind] at hresult
           cases fuel with
@@ -5392,8 +5392,7 @@ theorem deferredCompletable_of_mem_runResolvedFromTable
                     remaining (hconsistent.addPending coordinate candidate)
                     (hstarts.addPending coordinate candidate)
                     (by simpa [hrevealed] using hresult)
-                obtain ⟨completion, hcompletion⟩ := hcurrent
-                exact ⟨completion, hcompletion.of_addPending coordinate candidate⟩
+                exact hcurrent.of_addPending coordinate candidate
       | peek coordinate =>
           rw [runResolvedFromTable_peek_query_bind] at hresult
           exact ih (context.state.values coordinate) context fuel hconsistent hstarts hresult
@@ -5401,8 +5400,7 @@ theorem deferredCompletable_of_mem_runResolvedFromTable
           rw [runResolvedFromTable_publish_query_bind] at hresult
           have hcurrent := ih () { context with state := context.state.publish coordinate } fuel
             (hconsistent.publish coordinate) (hstarts.publish coordinate) hresult
-          obtain ⟨completion, hcompletion⟩ := hcurrent
-          exact ⟨completion, hcompletion.of_coreEq ⟨rfl, rfl, rfl⟩⟩
+          exact hcurrent.of_coreEq ⟨rfl, rfl, rfl⟩
       | reveal coordinate =>
           rw [runResolvedFromTable_reveal_query_bind] at hresult
           cases coordinate with
@@ -5429,9 +5427,8 @@ theorem deferredCompletable_of_mem_runResolvedFromTable
                       simpa [materializeResolvedChainStart] using hmaterializedStarts)
                     (by simpa [index, OtsSecretIndex.coordinate, materializeResolvedChainStart]
                       using hrest)
-                  obtain ⟨completion, hcompletion⟩ := hcurrent
-                  exact ⟨completion,
-                    hcompletion.of_materializeResolvedChainStart' hstarts index resolved hresolvedEq⟩
+                  exact hcurrent.of_materializeResolvedChainStart' hstarts index resolved
+                    hresolvedEq
           | position position =>
               rw [mem_support_bind_iff] at hresult
               obtain ⟨resolvedOption, hresolved, hrest⟩ := hresult
@@ -5448,17 +5445,30 @@ theorem deferredCompletable_of_mem_runResolvedFromTable
                     hmaterializedConsistent (by
                       simpa [materializeResolvedPosition] using hmaterializedStarts)
                     (by simpa [materializeResolvedPosition] using hrest)
-                  obtain ⟨completion, hcompletion⟩ := hcurrent
                   have hstateValues := resolveDeferredReveal_preserves_state_values table position
                     context resolved hresolved
                   have hpending := resolveDeferredReveal_pendingAway_subset table position context
                     resolved hresolved
                   have hresolvedValue := resolveDeferredReveal_resolves table position context
                     resolved hresolved
-                  have hbeforeMaterialize := hcompletion.of_materializeResolvedPosition position
+                  have hbeforeMaterialize := hcurrent.of_materializeResolvedPosition position
                     resolved hstateValues hpending hresolvedValue
-                  exact ⟨completion, hbeforeMaterialize.of_resolveDeferredReveal
-                    hconsistent hstarts position resolved hresolved⟩
+                  exact hbeforeMaterialize.of_resolveDeferredReveal
+                    hconsistent hstarts position resolved hresolved
+
+theorem deferredCompletable_of_mem_runResolvedFromTable
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (result : ResolvedRunResult alpha)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table)
+    (hresult : some result ∈ support
+      (runResolvedFromTable context fuel table computation))
+    (hfinal : ∃ completion, DeferredCompletion table result.context completion) :
+    ∃ completion, DeferredCompletion table context completion := by
+  obtain ⟨completion, hcompletion⟩ := hfinal
+  exact ⟨completion, hcompletion.of_mem_runResolvedFromTable computation context fuel table
+    result completion hconsistent hstarts hresult⟩
 
 set_option maxRecDepth 100000 in
 theorem resolvedCore_of_mem_runResolvedFromTable
