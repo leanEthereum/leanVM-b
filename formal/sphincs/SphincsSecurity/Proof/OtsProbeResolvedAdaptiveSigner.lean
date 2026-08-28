@@ -566,6 +566,43 @@ theorem runSynchronizedResolved_of_not_completable
       exact runSynchronizedResolved_query_bind_of_not_completable impl query next context fuel
         table cache hnotCompletable
 
+set_option maxRecDepth 100000 in
+theorem runSynchronizedResolved_bind
+    (impl : ResolvedQueryImpl spec) (left : OracleComp spec α)
+    (next : α → OracleComp spec β)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    runSynchronizedResolved impl (left >>= next) context fuel table cache = (do
+      let leftResult ← runSynchronizedResolved impl left context fuel table cache
+      match leftResult with
+      | none => pure none
+      | some result =>
+          runSynchronizedResolved impl (next result.value.1) result.context
+            result.remaining result.table result.value.2) := by
+  induction left using OracleComp.inductionOn generalizing context fuel table cache with
+  | pure value =>
+      rw [pure_bind]
+      by_cases hcompletable : DeferredCompletable table context
+      · rw [runSynchronizedResolved_pure impl value context fuel table cache hcompletable]
+        simp
+      · rw [runSynchronizedResolved_pure_of_not_completable impl value context fuel table
+          cache hcompletable,
+          runSynchronizedResolved_of_not_completable impl (next value) context fuel table cache
+            hcompletable]
+        simp
+  | query_bind query tail ih =>
+      rw [bind_assoc, runSynchronizedResolved, OracleComp.construct_query_bind,
+        runSynchronizedResolved, OracleComp.construct_query_bind]
+      by_cases hcompletable : DeferredCompletable table context
+      · simp only [dif_pos hcompletable, bind_assoc]
+        apply bind_congr
+        intro stepOption
+        cases stepOption with
+        | none => simp
+        | some result =>
+            exact ih result.value.1 result.context result.remaining result.table result.value.2
+      · simp only [dif_neg hcompletable, pure_bind]
+
 def SynchronizedResolvedImplCouples (table : OtsSecretIndex → HashOutput)
     (leftImpl rightImpl : ResolvedQueryImpl spec) : Prop :=
   ∀ query left right fuel leftCache rightCache,
@@ -873,6 +910,261 @@ theorem canonicalReachableResolvedImplCouples_chronologicalAdversaryImpl
       exact reachableResolvedCouples_maskedPublishedChronologicalSign_concrete parameter root
         table ftsSecret message context fuel cache concreteCache hinvariant hclosed hpublished
 
+theorem canonicalChronologicalAdversaryImpl_eq_raw_then_canonicalize
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (input : (OracleWorld + SigningSpec).Domain)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache) :
+    canonicalChronologicalAdversaryImpl parameter root table ftsSecret
+        input context fuel table cache =
+      (runResolvedFromTable context fuel table
+        ((maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret input).run cache) >>=
+          fun result => pure (canonicalizeResolvedRun table result)) := by
+  cases input <;> rfl
+
+set_option maxRecDepth 100000 in
+theorem revealedChainAllowed_canonicalChronologicalAdversaryQuery
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (targetCache : QueryCache HashSpec) (allowedLog : QueryLog SigningSpec)
+    (completion : Coordinate → HashOutput) (fallback : QueryImpl HashSpec Id)
+    (hlogRuns : ∀ (entry : (request : SignRequest) × SigningSpec.Range request)
+      (signature : Signature), entry ∈ allowedLog → entry.2 = some signature →
+        SuccessfulSignRun (tableAnswer parameter completion fallback) targetCache
+          (⟨parameter, root,
+            fun lay tree leafIdx chainIdx =>
+              truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+            ftsSecret⟩ : SecretKey)
+          entry.1 signature)
+    (input : (OracleWorld + SigningSpec).Domain)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (concreteCache : QueryCache HashSpec)
+    (result : ResolvedRunResult
+      ((OracleWorld + SigningSpec).Range input × SplitHashCache))
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache)
+    (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hpublished : PublishedValues context.state)
+    (hallowed : RevealedChainAllowed
+      (CoveredChainCoordinate (tableAnswer parameter completion fallback) targetCache
+        (⟨parameter, root,
+          fun lay tree leafIdx chainIdx =>
+            truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+          ftsSecret⟩ : SecretKey)
+        allowedLog)
+      context.state)
+    (hfragment : ∀ entry, entry ∈ signingLogFragment input result.value.1 →
+      entry ∈ allowedLog)
+    (hresult : some result ∈ support
+      (canonicalChronologicalAdversaryImpl parameter root table ftsSecret
+        input context fuel table cache))
+    (hcompletion : DeferredCompletion table result.context completion)
+    (hfallback : CacheAgreesWithFnOffTable parameter completion
+      (ordinaryQueryCache result.value.2) fallback) :
+    RevealedChainAllowed
+      (CoveredChainCoordinate (tableAnswer parameter completion fallback) targetCache
+        (⟨parameter, root,
+          fun lay tree leafIdx chainIdx =>
+            truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+          ftsSecret⟩ : SecretKey)
+        allowedLog)
+      result.context.state := by
+  rw [canonicalChronologicalAdversaryImpl_eq_raw_then_canonicalize,
+    mem_support_bind_iff] at hresult
+  obtain ⟨rawOption, hraw, hcanonical⟩ := hresult
+  cases rawOption with
+  | none => simp [canonicalizeResolvedRun] at hcanonical
+  | some rawResult =>
+      simp only [canonicalizeResolvedRun, mem_support_pure_iff] at hcanonical
+      have hresultEq : result =
+          { rawResult with
+            context := canonicalizeMaterializedValues table rawResult.context } :=
+        Option.some.inj hcanonical
+      subst result
+      have hcore := resolvedCore_of_mem_runResolvedFromTable
+        ((maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret input).run cache)
+        context fuel table rawResult hinvariant.2.1.valuesConsistent hinvariant.2.2.1 hraw
+      have hrawCompletion : DeferredCompletion table rawResult.context completion :=
+        hcompletion.of_canonicalizeMaterializedValues hcore.2.1 hcore.2.2
+      have hrawAllowed :=
+        revealedChainAllowed_maskedChronologicalExpandedAdversaryQuery parameter root table
+          ftsSecret targetCache allowedLog completion fallback hlogRuns input context fuel cache
+            concreteCache rawResult hinvariant hclosed hpublished hallowed hfragment hraw
+              hrawCompletion hfallback
+      intro coordinate hchain hrevealed
+      apply hrawAllowed coordinate hchain
+      simpa [canonicalizeMaterializedValues] using hrevealed
+
+theorem resolvedCore_of_mem_canonicalChronologicalAdversaryImpl
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (input : (OracleWorld + SigningSpec).Domain)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (result : ResolvedRunResult
+      ((OracleWorld + SigningSpec).Range input × SplitHashCache))
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table)
+    (hresult : some result ∈ support
+      (canonicalChronologicalAdversaryImpl parameter root table ftsSecret
+        input context fuel table cache)) :
+    result.table = table ∧ result.context.ValuesConsistent ∧
+      StartTableAgrees result.context.state table := by
+  rw [canonicalChronologicalAdversaryImpl_eq_raw_then_canonicalize,
+    mem_support_bind_iff] at hresult
+  obtain ⟨rawOption, hraw, hcanonical⟩ := hresult
+  cases rawOption with
+  | none => simp [canonicalizeResolvedRun] at hcanonical
+  | some rawResult =>
+      simp only [canonicalizeResolvedRun, mem_support_pure_iff] at hcanonical
+      have hresultEq : result =
+          { rawResult with
+            context := canonicalizeMaterializedValues table rawResult.context } :=
+        Option.some.inj hcanonical
+      subst result
+      have hcore := resolvedCore_of_mem_runResolvedFromTable
+        ((maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret input).run cache)
+        context fuel table rawResult hconsistent hstarts hraw
+      exact ⟨hcore.1,
+        canonicalizeMaterializedValues_valuesConsistent table rawResult.context hcore.2.1,
+        canonicalizeMaterializedValues_startTableAgrees table rawResult.context⟩
+
+theorem DeferredCompletion.of_mem_canonicalChronologicalAdversaryImpl
+    {parameter : PublicParameter} {root : Digest}
+    {table : OtsSecretIndex → HashOutput}
+    {ftsSecret : Index → FtsTree → FtsLeaf → Digest}
+    {input : (OracleWorld + SigningSpec).Domain}
+    {context : DeferredContext} {fuel : Nat} {cache : SplitHashCache}
+    {result : ResolvedRunResult
+      ((OracleWorld + SigningSpec).Range input × SplitHashCache)}
+    {completion : Coordinate → HashOutput}
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table)
+    (hresult : some result ∈ support
+      (canonicalChronologicalAdversaryImpl parameter root table ftsSecret
+        input context fuel table cache))
+    (hcompletion : DeferredCompletion table result.context completion) :
+    DeferredCompletion table context completion := by
+  rw [canonicalChronologicalAdversaryImpl_eq_raw_then_canonicalize,
+    mem_support_bind_iff] at hresult
+  obtain ⟨rawOption, hraw, hcanonical⟩ := hresult
+  cases rawOption with
+  | none => simp [canonicalizeResolvedRun] at hcanonical
+  | some rawResult =>
+      simp only [canonicalizeResolvedRun, mem_support_pure_iff] at hcanonical
+      have hresultEq : result =
+          { rawResult with
+            context := canonicalizeMaterializedValues table rawResult.context } :=
+        Option.some.inj hcanonical
+      subst result
+      have hcore := resolvedCore_of_mem_runResolvedFromTable
+        ((maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret input).run cache)
+        context fuel table rawResult hconsistent hstarts hraw
+      have hrawCompletion : DeferredCompletion table rawResult.context completion :=
+        hcompletion.of_canonicalizeMaterializedValues hcore.2.1 hcore.2.2
+      exact hrawCompletion.of_mem_runResolvedFromTable _ context fuel table rawResult completion
+        hconsistent hstarts hraw
+
+set_option maxRecDepth 100000 in
+theorem DeferredCompletion.of_mem_runSynchronizedResolved_canonicalChronological
+    {parameter : PublicParameter} {root : Digest}
+    {table : OtsSecretIndex → HashOutput}
+    {ftsSecret : Index → FtsTree → FtsLeaf → Digest}
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (result : ResolvedRunResult (α × SplitHashCache))
+    (completion : Coordinate → HashOutput)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table)
+    (hresult : some result ∈ support
+      (runSynchronizedResolved
+        (canonicalChronologicalAdversaryImpl parameter root table ftsSecret)
+        computation context fuel table cache))
+    (hcompletion : DeferredCompletion table result.context completion) :
+    DeferredCompletion table context completion := by
+  induction computation using OracleComp.inductionOn generalizing context fuel cache result with
+  | pure value =>
+      by_cases hcompletable : DeferredCompletable table context
+      · rw [runSynchronizedResolved_pure _ value context fuel table cache hcompletable] at hresult
+        simp only [mem_support_pure_iff, Option.some.injEq] at hresult
+        subst result
+        exact hcompletion
+      · rw [runSynchronizedResolved_pure_of_not_completable _ value context fuel table cache
+          hcompletable] at hresult
+        simp at hresult
+  | query_bind input next ih =>
+      rw [runSynchronizedResolved, OracleComp.construct_query_bind] at hresult
+      by_cases hcompletable : DeferredCompletable table context
+      · simp only [dif_pos hcompletable, mem_support_bind_iff] at hresult
+        obtain ⟨stepOption, hstep, htail⟩ := hresult
+        cases stepOption with
+        | none => simp at htail
+        | some stepResult =>
+            have hstepCore :=
+              resolvedCore_of_mem_canonicalChronologicalAdversaryImpl parameter root table
+                ftsSecret input context fuel cache stepResult hconsistent hstarts hstep
+            change some result ∈ support
+              (runSynchronizedResolved
+                (canonicalChronologicalAdversaryImpl parameter root table ftsSecret)
+                (next stepResult.value.1) stepResult.context stepResult.remaining
+                  stepResult.table stepResult.value.2) at htail
+            rw [hstepCore.1] at htail
+            have hstepCompletion := ih stepResult.value.1 stepResult.context
+              stepResult.remaining stepResult.value.2 result hstepCore.2.1 hstepCore.2.2 htail
+                hcompletion
+            exact hstepCompletion.of_mem_canonicalChronologicalAdversaryImpl hconsistent hstarts
+              hstep
+      · simp [hcompletable] at hresult
+
+set_option maxRecDepth 100000 in
+theorem resolvedCore_of_mem_runSynchronizedResolved_canonicalChronological
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (result : ResolvedRunResult (α × SplitHashCache))
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table)
+    (hresult : some result ∈ support
+      (runSynchronizedResolved
+        (canonicalChronologicalAdversaryImpl parameter root table ftsSecret)
+        computation context fuel table cache)) :
+    result.table = table ∧ result.context.ValuesConsistent ∧
+      StartTableAgrees result.context.state table := by
+  induction computation using OracleComp.inductionOn generalizing context fuel cache result with
+  | pure value =>
+      by_cases hcompletable : DeferredCompletable table context
+      · rw [runSynchronizedResolved_pure _ value context fuel table cache hcompletable] at hresult
+        simp only [mem_support_pure_iff, Option.some.injEq] at hresult
+        subst result
+        exact ⟨rfl, hconsistent, hstarts⟩
+      · rw [runSynchronizedResolved_pure_of_not_completable _ value context fuel table cache
+          hcompletable] at hresult
+        simp at hresult
+  | query_bind input next ih =>
+      rw [runSynchronizedResolved, OracleComp.construct_query_bind] at hresult
+      by_cases hcompletable : DeferredCompletable table context
+      · simp only [dif_pos hcompletable, mem_support_bind_iff] at hresult
+        obtain ⟨stepOption, hstep, htail⟩ := hresult
+        cases stepOption with
+        | none => simp at htail
+        | some stepResult =>
+            have hstepCore :=
+              resolvedCore_of_mem_canonicalChronologicalAdversaryImpl parameter root table
+                ftsSecret input context fuel cache stepResult hconsistent hstarts hstep
+            change some result ∈ support
+              (runSynchronizedResolved
+                (canonicalChronologicalAdversaryImpl parameter root table ftsSecret)
+                (next stepResult.value.1) stepResult.context stepResult.remaining
+                  stepResult.table stepResult.value.2) at htail
+            rw [hstepCore.1] at htail
+            exact ih stepResult.value.1 stepResult.context stepResult.remaining
+              stepResult.value.2 result hstepCore.2.1 hstepCore.2.2 htail
+      · simp [hcompletable] at hresult
+
 set_option maxRecDepth 100000 in
 theorem relTriple_runSynchronizedResolved_reachable
     {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
@@ -958,6 +1250,73 @@ theorem relTriple_runSynchronizedResolved_reachable
             rw [hfinal.2]
             trivial
 
+theorem concreteSupport_of_mem_runSynchronizedResolved
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {leftImpl : ResolvedQueryImpl spec}
+    {rightImpl : QueryImpl spec (StateT (QueryCache HashSpec) ProbComp)}
+    (himpl : CanonicalReachableResolvedImplCouples parameter table leftImpl rightImpl)
+    (computation : OracleComp spec α)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (concreteCache : QueryCache HashSpec)
+    (result : ResolvedRunResult (α × SplitHashCache))
+    (completion : Coordinate → HashOutput)
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache)
+    (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hpublished : PublishedValues context.state)
+    (hresult : some result ∈ support
+      (runSynchronizedResolved leftImpl computation context fuel table cache))
+    (hcompletion : DeferredCompletion table result.context completion) :
+    ∃ rightCache,
+      ResolvedContextInvariant parameter table result.context
+          (ordinaryQueryCache result.value.2) rightCache ∧
+        VisibleResolvedComputationsCached parameter table result.context rightCache ∧
+        PublishedValues result.context.state ∧
+        (result.value.1, rightCache) ∈ support
+          ((simulateQ rightImpl computation).run concreteCache) := by
+  have hrel := relTriple_runSynchronizedResolved_reachable himpl computation context fuel cache
+    concreteCache hinvariant hclosed hpublished
+  obtain ⟨rightResult, hrightSupport, hrelation⟩ :=
+    exists_right_of_relTriple_of_mem_support hrel hresult
+  rcases rightResult with ⟨rightValue, rightCache⟩
+  have hclean := hrelation.clean_of_completion hcompletion
+  refine ⟨rightCache, hclean.2.1, hclean.2.2.1, hclean.2.2.2, ?_⟩
+  rw [hclean.1]
+  exact hrightSupport
+
+theorem CacheAgreesWithFnOffTable.of_reachableRelTriple
+    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
+    {leftRun : ProbComp (Option (ResolvedRunResult (α × SplitHashCache)))}
+    {rightRun : ProbComp (α × QueryCache HashSpec)}
+    {context : DeferredContext} {cache concreteCache : QueryCache HashSpec}
+    {result : ResolvedRunResult (α × SplitHashCache)}
+    {completion : Coordinate → HashOutput} {fallback : QueryImpl HashSpec Id}
+    (hrelation : RelTriple leftRun rightRun
+      (ReachableResolvedRunRel parameter table))
+    (hinvariant : ResolvedContextInvariant parameter table context cache concreteCache)
+    (hresult : some result ∈ support leftRun)
+    (hcompletion : DeferredCompletion table result.context completion)
+    (hfinal : CacheAgreesWithFnOffTable parameter completion
+      (ordinaryQueryCache result.value.2) fallback)
+    (hrightLe : ∀ value finalCache,
+      (value, finalCache) ∈ support rightRun → concreteCache ≤ finalCache) :
+    CacheAgreesWithFnOffTable parameter completion cache fallback := by
+  obtain ⟨rightResult, hrightSupport, hresultRelation⟩ :=
+    exists_right_of_relTriple_of_mem_support hrelation hresult
+  rcases rightResult with ⟨rightValue, rightCache⟩
+  obtain ⟨_value, hfinalInvariant, _hfinalClosed, _hfinalPublished⟩ :=
+    hresultRelation.clean_of_completion hcompletion
+  intro input output hoff hcached
+  have hconcrete : concreteCache input = some output :=
+    hinvariant.2.2.2.2.1 input output hcached
+  have hright : rightCache input = some output :=
+    hrightLe rightValue rightCache hrightSupport hconcrete
+  rcases hfinalInvariant.2.2.2.2.2 input output hright with hordinary | hfixed
+  · exact hfinal input output hoff hordinary
+  · rcases hfixed with ⟨position, hots, _hvalue, hinput⟩
+    exact False.elim (hoff position hots (hinput completion hcompletion))
+
+
 set_option maxRecDepth 100000 in
 theorem synchronizedResolvedImplCouples_canonicalAdversaryImpl
     (parameter : PublicParameter) (root : Digest)
@@ -1020,6 +1379,23 @@ noncomputable def concreteVerifierFinish
   let verified ← simulateQ romImpl
     (scheme.verify ⟨root, parameter⟩ forgeryLog.1.message forgeryLog.1.signature)
   pure (root, (forgeryLog, verified))
+
+theorem concreteVerifierFinish_cache_le
+    (parameter : PublicParameter) (root : Digest)
+    (forgeryLog : Forgery × QueryLog SigningSpec)
+    (initialCache : QueryCache HashSpec)
+    (result : RetainedGameResult × QueryCache HashSpec)
+    (hresult : result ∈ support
+      ((concreteVerifierFinish parameter root forgeryLog).run initialCache)) :
+    initialCache ≤ result.2 := by
+  unfold concreteVerifierFinish at hresult
+  rw [StateT.run_bind, mem_support_bind_iff] at hresult
+  obtain ⟨verifiedResult, hverified, hfinish⟩ := hresult
+  simp only [StateT.run_pure, mem_support_pure_iff] at hfinish
+  subst result
+  exact simulateQ_romImpl_cache_le
+    (scheme.verify ⟨root, parameter⟩ forgeryLog.1.message forgeryLog.1.signature)
+    initialCache verifiedResult hverified
 
 theorem reachableResolvedCouples_canonicalVerifierFinish
     (parameter : PublicParameter) (root : Digest)
@@ -1355,6 +1731,8 @@ theorem relTriple_canonicalChronologicalRetainedRun_actual
         intro result _ hsupport
         rw [hsupport.2]
         trivial
+
+
 
 theorem finalizationContextEq_empty (table : OtsSecretIndex → HashOutput) :
     FinalizationContextEq table

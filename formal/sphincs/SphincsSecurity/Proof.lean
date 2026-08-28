@@ -153,6 +153,7 @@ import SphincsSecurity.Proof.OtsProbeResolvedAdaptiveFinalization
 import SphincsSecurity.Proof.OtsProbeResolvedAdaptiveSigner
 import SphincsSecurity.Proof.OtsProbeChronologicalTerminal
 import SphincsSecurity.Proof.OtsProbeChronologicalProbability
+import SphincsSecurity.Proof.OtsProbeResolvedAdaptiveProbability
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
