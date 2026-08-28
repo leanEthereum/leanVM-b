@@ -589,7 +589,8 @@ theorem resolveDeferredChainStart_state_eq_clearPending
 
 def PrivateStateAgrees (left right : DeferredContext) : Prop :=
   left.state.values = right.state.values ∧
-    left.state.revealed = right.state.revealed
+    left.state.revealed = right.state.revealed ∧
+    left.state.ensured = right.state.ensured
 
 theorem privateStateAgrees_resolveDeferredPositionValue
     (position : Position) (context : DeferredContext) (result : DeferredResolution)
@@ -598,7 +599,7 @@ theorem privateStateAgrees_resolveDeferredPositionValue
     PrivateStateAgrees result.toDeferredContext context := by
   rw [PrivateStateAgrees,
     resolveDeferredPositionValue_state_eq_clearPending position context result hresult]
-  exact ⟨rfl, rfl⟩
+  exact ⟨rfl, rfl, rfl⟩
 
 theorem privateStateAgrees_resolveDeferredChainStart
     (table : OtsSecretIndex → HashOutput) (index : OtsSecretIndex)
@@ -607,7 +608,7 @@ theorem privateStateAgrees_resolveDeferredChainStart
     PrivateStateAgrees result.toDeferredContext context := by
   rw [PrivateStateAgrees,
     resolveDeferredChainStart_state_eq_clearPending table index context result hresult]
-  exact ⟨rfl, rfl⟩
+  exact ⟨rfl, rfl, rfl⟩
 
 theorem resolveDeferredChainStart_of_agrees
     (table : OtsSecretIndex → HashOutput) (index : OtsSecretIndex)
@@ -777,9 +778,14 @@ theorem privateStateAgrees_resolveDeferredChainPrefix
                   steps (by omega) context previous hprevious).1,
             (privateStateAgrees_resolveDeferredPositionValue
               (.chain lay tree leafIdx chainIdx ⟨steps, by omega⟩)
-              previous.toDeferredContext result (by simpa using hrest)).2.trans
+              previous.toDeferredContext result (by simpa using hrest)).2.1.trans
                 (privateStateAgrees_resolveDeferredChainPrefix table lay tree leafIdx chainIdx
-                  steps (by omega) context previous hprevious).2⟩
+                  steps (by omega) context previous hprevious).2.1,
+            (privateStateAgrees_resolveDeferredPositionValue
+              (.chain lay tree leafIdx chainIdx ⟨steps, by omega⟩)
+              previous.toDeferredContext result (by simpa using hrest)).2.2.trans
+                (privateStateAgrees_resolveDeferredChainPrefix table lay tree leafIdx chainIdx
+                  steps (by omega) context previous hprevious).2.2⟩
 
 theorem resolveDeferredChainPrefix_installs_last
     (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
@@ -3427,7 +3433,7 @@ theorem privateStateAgrees_resolveDeferredChains
   | [], context, result, hresult => by
       simp [resolveDeferredChains] at hresult
       subst result
-      exact ⟨rfl, rfl⟩
+      exact ⟨rfl, rfl, rfl⟩
   | chainIdx :: remaining, context, result, hresult => by
       rw [resolveDeferredChains, mem_support_bind_iff] at hresult
       obtain ⟨resolvedOption, hresolved, hrest⟩ := hresult
@@ -3438,7 +3444,8 @@ theorem privateStateAgrees_resolveDeferredChains
             chainIdx (chainLength - 1) (by omega) context resolved hresolved
           have htail := privateStateAgrees_resolveDeferredChains table lay tree leafIdx remaining
             resolved.toDeferredContext result (by simpa using hrest)
-          exact ⟨htail.1.trans hhead.1, htail.2.trans hhead.2⟩
+          exact ⟨htail.1.trans hhead.1, htail.2.1.trans hhead.2.1,
+            htail.2.2.trans hhead.2.2⟩
 
 theorem privateStateAgrees_resolveDeferredOtsLeaf
     (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
@@ -3455,7 +3462,8 @@ theorem privateStateAgrees_resolveDeferredOtsLeaf
         (List.ofFn fun chainIdx : ChainIndex => chainIdx) context chains hchains
       have htail := privateStateAgrees_resolveDeferredPositionValue
         (.leaf lay tree leafIdx) chains result (by simpa using hrest)
-      exact ⟨htail.1.trans hhead.1, htail.2.trans hhead.2⟩
+      exact ⟨htail.1.trans hhead.1, htail.2.1.trans hhead.2.1,
+        htail.2.2.trans hhead.2.2⟩
 
 theorem privateStateAgrees_resolveDeferredTreeNode
     (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex) :
@@ -3485,7 +3493,8 @@ theorem privateStateAgrees_resolveDeferredTreeNode
                 (.node lay tree ⟨level, by omega⟩ (leafOfNat nodeIdx))
                 right.toDeferredContext result (by simpa using hafterRight)
               exact ⟨hnodeState.1.trans (hrightState.1.trans hleftState.1),
-                hnodeState.2.trans (hrightState.2.trans hleftState.2)⟩
+                hnodeState.2.1.trans (hrightState.2.1.trans hleftState.2.1),
+                hnodeState.2.2.trans (hrightState.2.2.trans hleftState.2.2)⟩
 
 theorem resolveDeferredPosition_preserves_state_values
     (table : OtsSecretIndex → HashOutput) (position : Position)
@@ -7235,7 +7244,7 @@ theorem privateStateAgrees_resolveDeferredSelectedChainFamily
   | 0, family, digits, context, finalContext, values, hresult => by
       simp [resolveDeferredSelectedChainFamily] at hresult
       rw [hresult.1]
-      exact ⟨rfl, rfl⟩
+      exact ⟨rfl, rfl, rfl⟩
   | n + 1, family, digits, context, finalContext, values, hresult => by
       rw [resolveDeferredSelectedChainFamily, mem_support_bind_iff] at hresult
       obtain ⟨headOption, hhead, hrest⟩ := hresult
@@ -7260,7 +7269,8 @@ theorem privateStateAgrees_resolveDeferredSelectedChainFamily
                 (fun index : Fin n => digits index.succ) head.toDeferredContext tailContext
                 tailValues htail
               exact ⟨htailState.1.trans hheadState.1,
-                htailState.2.trans hheadState.2⟩
+                htailState.2.1.trans hheadState.2.1,
+                htailState.2.2.trans hheadState.2.2⟩
 
 theorem DeferredContext.Valid.of_resolveDeferredSelectedChainFamily
     {context : DeferredContext} (hvalid : context.Valid)
@@ -7544,7 +7554,7 @@ theorem privateStateAgrees_resolveDeferredLayerPathFamily
   | 0, family, context, finalContext, values, hresult => by
       simp [resolveDeferredLayerPathFamily] at hresult
       rw [hresult.1]
-      exact ⟨rfl, rfl⟩
+      exact ⟨rfl, rfl, rfl⟩
   | n + 1, family, context, finalContext, values, hresult => by
       rw [resolveDeferredLayerPathFamily] at hresult
       by_cases hinLayer : (family 0).val < layerHeight lay
@@ -7570,7 +7580,8 @@ theorem privateStateAgrees_resolveDeferredLayerPathFamily
                   leafIdx (fun index : Fin n => family index.succ) head.toDeferredContext
                   tailContext tailValues htail
                 exact ⟨htailState.1.trans hheadState.1,
-                  htailState.2.trans hheadState.2⟩
+                  htailState.2.1.trans hheadState.2.1,
+                  htailState.2.2.trans hheadState.2.2⟩
       · simp only [hinLayer, ↓reduceDIte, mem_support_bind_iff] at hresult
         obtain ⟨tailOption, htail, hreturn⟩ := hresult
         cases tailOption with
@@ -8812,6 +8823,7 @@ theorem resolveDeferredLayerValues_preserves_other_layer_pendingAt
 def LayerViewEq (lay : Layer) (left right : DeferredContext) : Prop :=
   left.state.values = right.state.values ∧
     left.state.revealed = right.state.revealed ∧
+    left.state.ensured = right.state.ensured ∧
     (∀ position, positionOtsLayer? position = some lay →
       left.values position = right.values position) ∧
     ∀ coordinate, coordinateOtsLayer? coordinate = some lay →
@@ -8819,23 +8831,790 @@ def LayerViewEq (lay : Layer) (left right : DeferredContext) : Prop :=
 
 theorem LayerViewEq.refl (lay : Layer) (context : DeferredContext) :
     LayerViewEq lay context context := by
-  exact ⟨rfl, rfl, fun _ _ => rfl, fun _ _ => rfl⟩
+  exact ⟨rfl, rfl, rfl, fun _ _ => rfl, fun _ _ => rfl⟩
 
 theorem LayerViewEq.symm {lay : Layer} {left right : DeferredContext}
     (heq : LayerViewEq lay left right) : LayerViewEq lay right left := by
-  exact ⟨heq.1.symm, heq.2.1.symm,
-    fun position hposition => (heq.2.2.1 position hposition).symm,
-    fun coordinate hcoordinate => (heq.2.2.2 coordinate hcoordinate).symm⟩
+  exact ⟨heq.1.symm, heq.2.1.symm, heq.2.2.1.symm,
+    fun position hposition => (heq.2.2.2.1 position hposition).symm,
+    fun coordinate hcoordinate => (heq.2.2.2.2 coordinate hcoordinate).symm⟩
 
 theorem LayerViewEq.trans {lay : Layer} {left middle right : DeferredContext}
     (hleft : LayerViewEq lay left middle) (hright : LayerViewEq lay middle right) :
     LayerViewEq lay left right := by
   exact ⟨hleft.1.trans hright.1, hleft.2.1.trans hright.2.1,
+    hleft.2.2.1.trans hright.2.2.1,
     fun position hposition =>
-      (hleft.2.2.1 position hposition).trans (hright.2.2.1 position hposition),
+      (hleft.2.2.2.1 position hposition).trans
+        (hright.2.2.2.1 position hposition),
     fun coordinate hcoordinate =>
-      (hleft.2.2.2 coordinate hcoordinate).trans
-        (hright.2.2.2 coordinate hcoordinate)⟩
+      (hleft.2.2.2.2 coordinate hcoordinate).trans
+        (hright.2.2.2.2 coordinate hcoordinate)⟩
+
+theorem LayerViewEq.hitAt_iff {lay : Layer} {left right : DeferredContext}
+    (heq : LayerViewEq lay left right) (coordinate : Coordinate)
+    (hcoordinate : coordinateOtsLayer? coordinate = some lay) (output : HashOutput) :
+    left.state.hitAt coordinate output ↔ right.state.hitAt coordinate output := by
+  unfold LazyRevealProbe.State.hitAt
+  rw [heq.2.2.2.2 coordinate hcoordinate]
+
+theorem LayerViewEq.positionValue_eq {lay : Layer} {left right : DeferredContext}
+    (heq : LayerViewEq lay left right) (position : Position)
+    (hposition : positionOtsLayer? position = some lay) :
+    left.positionValue position = right.positionValue position := by
+  unfold DeferredContext.positionValue
+  rw [heq.1]
+  cases right.state.values (.position position)
+  · exact heq.2.2.2.1 position hposition
+  · rfl
+
+theorem LayerViewEq.clearPending {lay : Layer} {left right : DeferredContext}
+    (heq : LayerViewEq lay left right) (coordinate : Coordinate)
+    (hcoordinate : coordinateOtsLayer? coordinate = some lay) :
+    LayerViewEq lay
+      { left with state := left.state.clearPending coordinate }
+      { right with state := right.state.clearPending coordinate } := by
+  refine ⟨heq.1, heq.2.1, heq.2.2.1, heq.2.2.2.1, ?_⟩
+  intro other hother
+  by_cases hsame : other = coordinate
+  · subst other
+    ext candidate
+    simp [LazyRevealProbe.State.pendingAt, LazyRevealProbe.State.clearPending,
+      LazyRevealProbe.State.pendingAway]
+  · rw [pendingAt_clearPending_of_ne left.state coordinate other hsame,
+      pendingAt_clearPending_of_ne right.state coordinate other hsame]
+    exact heq.2.2.2.2 other hother
+
+theorem LayerViewEq.install {lay : Layer} {left right : DeferredContext}
+    (heq : LayerViewEq lay left right) (position : Position)
+    (hposition : positionOtsLayer? position = some lay) (output : HashOutput) :
+    LayerViewEq lay
+      { left with values := left.values.install position output }
+      { right with values := right.values.install position output } := by
+  refine ⟨heq.1, heq.2.1, heq.2.2.1, ?_, heq.2.2.2.2⟩
+  intro other hother
+  by_cases hsame : other = position
+  · subst other
+    simp [DeferredStructuralValues.install]
+  · simpa [DeferredStructuralValues.install, hsame] using
+      heq.2.2.2.1 other hother
+
+theorem LayerViewEq.ensure {lay : Layer} {left right : DeferredContext}
+    (heq : LayerViewEq lay left right) (coordinate : Coordinate) :
+    LayerViewEq lay
+      { left with state := left.state.ensure coordinate }
+      { right with state := right.state.ensure coordinate } := by
+  refine ⟨heq.1, heq.2.1, ?_, heq.2.2.2.1, heq.2.2.2.2⟩
+  simpa [LazyRevealProbe.State.ensure] using congrArg (insert coordinate) heq.2.2.1
+
+theorem LayerViewEq.publish {lay : Layer} {left right : DeferredContext}
+    (heq : LayerViewEq lay left right) (coordinate : Coordinate) :
+    LayerViewEq lay
+      { left with state := left.state.publish coordinate }
+      { right with state := right.state.publish coordinate } := by
+  refine ⟨heq.1, ?_, heq.2.2.1, heq.2.2.2.1, heq.2.2.2.2⟩
+  simpa [LazyRevealProbe.State.publish] using congrArg (insert coordinate) heq.2.1
+
+theorem LayerViewEq.materialize {lay : Layer} {left right : DeferredContext}
+    (heq : LayerViewEq lay left right) (coordinate : Coordinate)
+    (hcoordinate : coordinateOtsLayer? coordinate = some lay) (output : HashOutput) :
+    LayerViewEq lay
+      { left with state := left.state.materialize coordinate output }
+      { right with state := right.state.materialize coordinate output } := by
+  have hclear := heq.clearPending coordinate hcoordinate
+  refine ⟨?_, heq.2.1, ?_, heq.2.2.2.1, hclear.2.2.2.2⟩
+  · simpa [LazyRevealProbe.State.materialize] using
+      congrArg (fun values => Function.update values coordinate (some output)) heq.1
+  · simpa [LazyRevealProbe.State.materialize] using
+      congrArg (insert coordinate) heq.2.2.1
+
+def LayerResolutionEq (lay : Layer) :
+    Option DeferredResolution → Option DeferredResolution → Prop
+  | none, none => True
+  | some left, some right =>
+      left.output = right.output ∧ LayerViewEq lay left.toDeferredContext right.toDeferredContext
+  | _, _ => False
+
+theorem relTriple_resolveDeferredPositionValue_of_layerViewEq
+    (lay : Layer) (position : Position)
+    (hposition : positionOtsLayer? position = some lay)
+    (left right : DeferredContext) (heq : LayerViewEq lay left right) :
+    RelTriple
+      (resolveDeferredPositionValue position left)
+      (resolveDeferredPositionValue position right)
+      (LayerResolutionEq lay) := by
+  have hcoordinate : coordinateOtsLayer? (.position position) = some lay := by
+    simpa [coordinateOtsLayer?] using hposition
+  have hstate := congrFun heq.1 (.position position)
+  unfold resolveDeferredPositionValue
+  dsimp only
+  cases hleftState : left.state.values (.position position) with
+  | some output =>
+      have hrightState : right.state.values (.position position) = some output := by
+        rw [← hstate]
+        exact hleftState
+      simp only [hrightState]
+      have hhit := heq.hitAt_iff (.position position) hcoordinate output
+      by_cases hleftHit : left.state.hitAt (.position position) output
+      · rw [if_pos hleftHit, if_pos (hhit.mp hleftHit)]
+        exact relTriple_pure_pure trivial
+      · rw [if_neg hleftHit, if_neg (fun hrightHit => hleftHit (hhit.mpr hrightHit))]
+        apply relTriple_pure_pure
+        exact ⟨rfl,
+          (heq.clearPending (.position position) hcoordinate).install position hposition output⟩
+  | none =>
+      have hrightState : right.state.values (.position position) = none := by
+        rw [← hstate]
+        exact hleftState
+      simp only [hrightState]
+      have hvalue := heq.2.2.2.1 position hposition
+      cases hleftValue : left.values position with
+      | some output =>
+          have hrightValue : right.values position = some output := by
+            rw [← hvalue]
+            exact hleftValue
+          simp only [hrightValue]
+          have hhit := heq.hitAt_iff (.position position) hcoordinate output
+          by_cases hleftHit : left.state.hitAt (.position position) output
+          · rw [if_pos hleftHit, if_pos (hhit.mp hleftHit)]
+            exact relTriple_pure_pure trivial
+          · rw [if_neg hleftHit,
+              if_neg (fun hrightHit => hleftHit (hhit.mpr hrightHit))]
+            apply relTriple_pure_pure
+            exact ⟨rfl, heq.clearPending (.position position) hcoordinate⟩
+      | none =>
+          have hrightValue : right.values position = none := by
+            rw [← hvalue]
+            exact hleftValue
+          simp only [hrightValue]
+          apply relTriple_bind (relTriple_refl LazyRevealProbe.sampleHashOutput)
+          intro leftOutput rightOutput houtput
+          subst rightOutput
+          have hhit := heq.hitAt_iff (.position position) hcoordinate leftOutput
+          by_cases hleftHit : left.state.hitAt (.position position) leftOutput
+          · rw [if_pos hleftHit, if_pos (hhit.mp hleftHit)]
+            exact relTriple_pure_pure trivial
+          · rw [if_neg hleftHit,
+              if_neg (fun hrightHit => hleftHit (hhit.mpr hrightHit))]
+            apply relTriple_pure_pure
+            exact ⟨rfl,
+              (heq.clearPending (.position position) hcoordinate).install position hposition
+                leftOutput⟩
+
+theorem relTriple_resolveDeferredChainStart_of_layerViewEq
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex)
+    (left right : DeferredContext) (heq : LayerViewEq lay left right) :
+    RelTriple
+      (pure (resolveDeferredChainStart table ⟨lay, tree, leafIdx, chainIdx⟩ left) :
+        ProbComp (Option DeferredResolution))
+      (pure (resolveDeferredChainStart table ⟨lay, tree, leafIdx, chainIdx⟩ right) :
+        ProbComp (Option DeferredResolution))
+      (LayerResolutionEq lay) := by
+  apply relTriple_pure_pure
+  have hcoordinate : coordinateOtsLayer? (.chainStart lay tree leafIdx chainIdx) = some lay := by
+    simp [coordinateOtsLayer?]
+  have hstate := congrFun heq.1 (.chainStart lay tree leafIdx chainIdx)
+  unfold resolveDeferredChainStart
+  dsimp only [OtsSecretIndex.coordinate]
+  cases hleftState : left.state.values (.chainStart lay tree leafIdx chainIdx) with
+  | some output =>
+      have hrightState :
+          right.state.values (.chainStart lay tree leafIdx chainIdx) = some output := by
+        rw [← hstate]
+        exact hleftState
+      simp only [hrightState]
+      have hhit := heq.hitAt_iff (.chainStart lay tree leafIdx chainIdx) hcoordinate output
+      by_cases hleftHit : left.state.hitAt (.chainStart lay tree leafIdx chainIdx) output
+      · rw [if_pos hleftHit, if_pos (hhit.mp hleftHit)]
+        trivial
+      · rw [if_neg hleftHit, if_neg (fun hrightHit => hleftHit (hhit.mpr hrightHit))]
+        exact ⟨rfl, heq.clearPending (.chainStart lay tree leafIdx chainIdx) hcoordinate⟩
+  | none =>
+      have hrightState :
+          right.state.values (.chainStart lay tree leafIdx chainIdx) = none := by
+        rw [← hstate]
+        exact hleftState
+      simp only [hrightState]
+      let output := table ⟨lay, tree, leafIdx, chainIdx⟩
+      have hhit := heq.hitAt_iff (.chainStart lay tree leafIdx chainIdx) hcoordinate output
+      by_cases hleftHit : left.state.hitAt (.chainStart lay tree leafIdx chainIdx) output
+      · rw [if_pos hleftHit, if_pos (hhit.mp hleftHit)]
+        trivial
+      · rw [if_neg hleftHit, if_neg (fun hrightHit => hleftHit (hhit.mpr hrightHit))]
+        exact ⟨rfl, heq.clearPending (.chainStart lay tree leafIdx chainIdx) hcoordinate⟩
+
+theorem relTriple_resolveDeferredChainPrefix_of_layerViewEq
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) :
+    ∀ steps hsteps left right,
+      LayerViewEq lay left right →
+      RelTriple
+        (resolveDeferredChainPrefix table lay tree leafIdx chainIdx steps hsteps left)
+        (resolveDeferredChainPrefix table lay tree leafIdx chainIdx steps hsteps right)
+        (LayerResolutionEq lay)
+  | 0, hsteps, left, right, heq => by
+      simp only [resolveDeferredChainPrefix]
+      exact relTriple_resolveDeferredChainStart_of_layerViewEq table lay tree leafIdx chainIdx
+        left right heq
+  | steps + 1, hsteps, left, right, heq => by
+      rw [resolveDeferredChainPrefix, resolveDeferredChainPrefix]
+      apply relTriple_bind
+        (relTriple_resolveDeferredChainPrefix_of_layerViewEq table lay tree leafIdx chainIdx
+          steps (by omega) left right heq)
+      intro leftPrevious rightPrevious hprevious
+      cases leftPrevious with
+      | none =>
+          cases rightPrevious <;> simp [LayerResolutionEq] at hprevious ⊢
+      | some leftPrevious =>
+          cases rightPrevious with
+          | none => simp [LayerResolutionEq] at hprevious
+          | some rightPrevious =>
+              exact relTriple_resolveDeferredPositionValue_of_layerViewEq lay
+                (.chain lay tree leafIdx chainIdx ⟨steps, by omega⟩)
+                (by simp [positionOtsLayer?]) leftPrevious.toDeferredContext
+                rightPrevious.toDeferredContext hprevious.2
+
+def LayerContextOptionEq (lay : Layer) :
+    Option DeferredContext → Option DeferredContext → Prop
+  | none, none => True
+  | some left, some right => LayerViewEq lay left right
+  | _, _ => False
+
+theorem relTriple_resolveDeferredChains_of_layerViewEq
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) : ∀ chains left right,
+      LayerViewEq lay left right →
+      RelTriple
+        (resolveDeferredChains table lay tree leafIdx chains left)
+        (resolveDeferredChains table lay tree leafIdx chains right)
+        (LayerContextOptionEq lay)
+  | [], left, right, heq => by
+      simp only [resolveDeferredChains]
+      exact relTriple_pure_pure heq
+  | chainIdx :: remaining, left, right, heq => by
+      rw [resolveDeferredChains, resolveDeferredChains]
+      apply relTriple_bind
+        (relTriple_resolveDeferredChainPrefix_of_layerViewEq table lay tree leafIdx chainIdx
+          (chainLength - 1) (by omega) left right heq)
+      intro leftResolved rightResolved hresolved
+      cases leftResolved with
+      | none =>
+          cases rightResolved with
+          | none =>
+              simpa [LayerContextOptionEq] using
+                (relTriple_pure_pure (R := LayerContextOptionEq lay) trivial)
+          | some rightResolved => simp [LayerResolutionEq] at hresolved
+      | some leftResolved =>
+          cases rightResolved with
+          | none => simp [LayerResolutionEq] at hresolved
+          | some rightResolved =>
+              exact relTriple_resolveDeferredChains_of_layerViewEq table lay tree leafIdx
+                remaining leftResolved.toDeferredContext rightResolved.toDeferredContext
+                hresolved.2
+
+theorem relTriple_resolveDeferredOtsLeaf_of_layerViewEq
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (left right : DeferredContext)
+    (heq : LayerViewEq lay left right) :
+    RelTriple
+      (resolveDeferredOtsLeaf table lay tree leafIdx left)
+      (resolveDeferredOtsLeaf table lay tree leafIdx right)
+      (LayerResolutionEq lay) := by
+  rw [resolveDeferredOtsLeaf, resolveDeferredOtsLeaf]
+  apply relTriple_bind
+    (relTriple_resolveDeferredChains_of_layerViewEq table lay tree leafIdx
+      (List.ofFn fun chainIdx : ChainIndex => chainIdx) left right heq)
+  intro leftChains rightChains hchains
+  cases leftChains with
+  | none =>
+      cases rightChains with
+      | none =>
+          simpa [LayerResolutionEq] using
+            (relTriple_pure_pure (R := LayerResolutionEq lay) trivial)
+      | some rightChains => simp [LayerContextOptionEq] at hchains
+  | some leftChains =>
+      cases rightChains with
+      | none => simp [LayerContextOptionEq] at hchains
+      | some rightChains =>
+          exact relTriple_resolveDeferredPositionValue_of_layerViewEq lay
+            (.leaf lay tree leafIdx) (by simp [positionOtsLayer?]) leftChains rightChains hchains
+
+theorem relTriple_resolveDeferredTreeNode_of_layerViewEq
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex) :
+    ∀ level nodeIdx hlevel left right,
+      LayerViewEq lay left right →
+      RelTriple
+        (resolveDeferredTreeNode table lay tree level nodeIdx hlevel left)
+        (resolveDeferredTreeNode table lay tree level nodeIdx hlevel right)
+        (LayerResolutionEq lay)
+  | 0, nodeIdx, hlevel, left, right, heq =>
+      relTriple_resolveDeferredOtsLeaf_of_layerViewEq table lay tree (leafOfNat nodeIdx)
+        left right heq
+  | level + 1, nodeIdx, hlevel, left, right, heq => by
+      rw [resolveDeferredTreeNode, resolveDeferredTreeNode]
+      apply relTriple_bind
+        (relTriple_resolveDeferredTreeNode_of_layerViewEq table lay tree level
+          (2 * nodeIdx) (by omega) left right heq)
+      intro leftNode rightNode hleftNode
+      cases leftNode with
+      | none =>
+          cases rightNode <;> simp [LayerResolutionEq] at hleftNode ⊢
+      | some leftNode =>
+          cases rightNode with
+          | none => simp [LayerResolutionEq] at hleftNode
+          | some rightNode =>
+              apply relTriple_bind
+                (relTriple_resolveDeferredTreeNode_of_layerViewEq table lay tree level
+                  (2 * nodeIdx + 1) (by omega) leftNode.toDeferredContext
+                  rightNode.toDeferredContext hleftNode.2)
+              intro leftSibling rightSibling hsibling
+              cases leftSibling with
+              | none =>
+                  cases rightSibling <;> simp [LayerResolutionEq] at hsibling ⊢
+              | some leftSibling =>
+                  cases rightSibling with
+                  | none => simp [LayerResolutionEq] at hsibling
+                  | some rightSibling =>
+                      exact relTriple_resolveDeferredPositionValue_of_layerViewEq lay
+                        (.node lay tree ⟨level, by omega⟩ (leafOfNat nodeIdx))
+                        (by simp [positionOtsLayer?]) leftSibling.toDeferredContext
+                        rightSibling.toDeferredContext hsibling.2
+
+theorem relTriple_resolveDeferredPosition_of_layerViewEq
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (position : Position)
+    (hposition : positionOtsLayer? position = some lay)
+    (left right : DeferredContext) (heq : LayerViewEq lay left right) :
+    RelTriple
+      (resolveDeferredPosition table position left)
+      (resolveDeferredPosition table position right)
+      (LayerResolutionEq lay) := by
+  cases position with
+  | chain selectedLay tree leafIdx chainIdx step =>
+      have hlay : selectedLay = lay := Option.some.inj hposition
+      subst selectedLay
+      exact relTriple_resolveDeferredChainPrefix_of_layerViewEq table lay tree leafIdx chainIdx
+        (step.val + 1) (by have := step.isLt; omega) left right heq
+  | leaf selectedLay tree leafIdx =>
+      have hlay : selectedLay = lay := Option.some.inj hposition
+      subst selectedLay
+      exact relTriple_resolveDeferredOtsLeaf_of_layerViewEq table lay tree leafIdx left right heq
+  | node selectedLay tree level nodeIdx =>
+      have hlay : selectedLay = lay := Option.some.inj hposition
+      subst selectedLay
+      exact relTriple_resolveDeferredTreeNode_of_layerViewEq table lay tree
+        (level.val + 1) nodeIdx (by have := level.isLt; omega) left right heq
+  | ftsLeaf index tree leafIdx => simp [positionOtsLayer?] at hposition
+  | ftsNode index tree level nodeIdx => simp [positionOtsLayer?] at hposition
+  | ftsRoots index => simp [positionOtsLayer?] at hposition
+
+theorem relTriple_resolveDeferredReveal_of_layerViewEq
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (position : Position)
+    (hposition : positionOtsLayer? position = some lay)
+    (left right : DeferredContext) (heq : LayerViewEq lay left right) :
+    RelTriple
+      (resolveDeferredReveal table position left)
+      (resolveDeferredReveal table position right)
+      (LayerResolutionEq lay) := by
+  classical
+  unfold resolveDeferredReveal
+  by_cases hresolvable : ResolvableOtsPosition position
+  · rw [if_pos hresolvable, if_pos hresolvable]
+    exact relTriple_resolveDeferredPosition_of_layerViewEq table lay position hposition
+      left right heq
+  · rw [if_neg hresolvable, if_neg hresolvable]
+    exact relTriple_resolveDeferredPositionValue_of_layerViewEq lay position hposition
+      left right heq
+
+def LayerRunEq (lay : Layer) :
+    Option (ResolvedRunResult alpha) → Option (ResolvedRunResult alpha) → Prop
+  | none, none => True
+  | some left, some right =>
+      LayerViewEq lay left.context right.context ∧
+        left.remaining = right.remaining ∧ left.value = right.value ∧ left.table = right.table
+  | _, _ => False
+
+def LayerViewCouples (lay : Layer)
+    (computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha) : Prop :=
+  ∀ left right fuel table cache,
+    LayerViewEq lay left right →
+    RelTriple
+      (runResolvedFromTable left fuel table (computation.run cache))
+      (runResolvedFromTable right fuel table (computation.run cache))
+      (LayerRunEq lay)
+
+theorem layerViewCouples_pure (lay : Layer) (value : alpha) :
+    LayerViewCouples lay
+      (pure value : StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate)) alpha) := by
+  intro left right fuel table cache heq
+  simp only [StateT.run_pure]
+  simp [runResolvedFromTable, LayerRunEq, heq]
+
+theorem LayerViewCouples.bind {lay : Layer}
+    {left : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha}
+    {next : alpha → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) beta}
+    (hleft : LayerViewCouples lay left)
+    (hnext : ∀ value, LayerViewCouples lay (next value)) :
+    LayerViewCouples lay (left >>= next) := by
+  intro leftContext rightContext fuel table cache heq
+  rw [StateT.run_bind, runResolvedFromTable_bind, runResolvedFromTable_bind]
+  apply relTriple_bind (hleft leftContext rightContext fuel table cache heq)
+  intro leftResult rightResult hresult
+  cases leftResult with
+  | none =>
+      cases rightResult with
+      | none =>
+          simpa [LayerRunEq] using
+            (relTriple_pure_pure (R := LayerRunEq lay) trivial)
+      | some rightResult => simp [LayerRunEq] at hresult
+  | some leftResult =>
+      cases rightResult with
+      | none => simp [LayerRunEq] at hresult
+      | some rightResult =>
+          rcases leftResult with ⟨leftContext, leftFuel, leftValue, leftTable⟩
+          rcases rightResult with ⟨rightContext, rightFuel, rightValue, rightTable⟩
+          simp only [LayerRunEq] at hresult
+          rcases hresult with ⟨hcontext, rfl, hvalue, rfl⟩
+          subst rightValue
+          exact hnext leftValue.1 leftContext rightContext leftFuel leftTable leftValue.2 hcontext
+
+theorem layerViewCouples_ensureCoordinate (lay : Layer) (coordinate : Coordinate) :
+    LayerViewCouples lay (ensureCoordinate coordinate) := by
+  intro left right fuel table cache heq
+  unfold ensureCoordinate
+  rw [StateT.run_liftM, LazyRevealProbe.ensureQuery,
+    runResolvedFromTable_ensure_query_bind, runResolvedFromTable_ensure_query_bind]
+  simp only [runResolvedFromTable]
+  apply relTriple_pure_pure
+  exact ⟨heq.ensure coordinate, rfl, rfl, rfl⟩
+
+theorem layerViewCouples_sequenceFin {lay : Layer} {n : Nat}
+    (computation : Fin n → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) alpha)
+    (hcomponent : ∀ position, LayerViewCouples lay (computation position)) :
+    LayerViewCouples lay (sequenceFin computation) := by
+  induction n with
+  | zero =>
+      simpa [sequenceFin] using
+        (layerViewCouples_pure lay Fin.elim0 :
+          LayerViewCouples lay
+            (pure Fin.elim0 : StateT SplitHashCache
+              (OracleComp (LazyRevealProbe.World Coordinate)) (Fin 0 → alpha)))
+  | succ n ih =>
+      rw [sequenceFin]
+      apply (hcomponent 0).bind
+      intro head
+      apply (ih (fun position : Fin n => computation position.succ)
+        (fun position => hcomponent position.succ)).bind
+      intro tail
+      exact layerViewCouples_pure lay
+        (Fin.cases head tail : Fin (n + 1) → alpha)
+
+theorem layerViewCouples_ensureFullChain (observedLay lay : Layer)
+    (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex) :
+    LayerViewCouples observedLay (ensureFullChain lay tree leafIdx chainIdx) := by
+  unfold ensureFullChain
+  apply (layerViewCouples_sequenceFin
+    (fun step : ChainStep =>
+      ensureCoordinate (.position (.chain lay tree leafIdx chainIdx step)))
+    (fun step => layerViewCouples_ensureCoordinate observedLay
+      (.position (.chain lay tree leafIdx chainIdx step)))).bind
+  intro _
+  exact layerViewCouples_pure observedLay ()
+
+theorem layerViewCouples_ensureOtsLeaf (observedLay lay : Layer)
+    (tree : TreeIndex) (leafIdx : LeafIndex) :
+    LayerViewCouples observedLay (ensureOtsLeaf lay tree leafIdx) := by
+  unfold ensureOtsLeaf
+  apply (layerViewCouples_sequenceFin
+    (fun chainIdx : ChainIndex => ensureFullChain lay tree leafIdx chainIdx)
+    (fun chainIdx => layerViewCouples_ensureFullChain observedLay lay tree leafIdx chainIdx)).bind
+  intro _
+  exact layerViewCouples_ensureCoordinate observedLay (.position (.leaf lay tree leafIdx))
+
+theorem layerViewCouples_ensureTreeNode (observedLay lay : Layer) (tree : TreeIndex) :
+    ∀ level nodeIdx, LayerViewCouples observedLay (ensureTreeNode lay tree level nodeIdx)
+  | 0, nodeIdx => layerViewCouples_ensureOtsLeaf observedLay lay tree (leafOfNat nodeIdx)
+  | level + 1, nodeIdx => by
+      rw [ensureTreeNode]
+      apply (layerViewCouples_ensureTreeNode observedLay lay tree level (2 * nodeIdx)).bind
+      intro _
+      apply (layerViewCouples_ensureTreeNode observedLay lay tree level
+        (2 * nodeIdx + 1)).bind
+      intro _
+      by_cases hlevel : level < maxLayerHeight
+      · rw [dif_pos hlevel]
+        exact layerViewCouples_ensureCoordinate observedLay
+          (.position (.node lay tree ⟨level, hlevel⟩ (leafOfNat nodeIdx)))
+      · rw [dif_neg hlevel]
+        exact layerViewCouples_pure observedLay ()
+
+theorem layerViewCouples_revealPosition (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (position : Position) (hposition : positionOtsLayer? position = some lay) :
+    ∀ left right fuel cache,
+      LayerViewEq lay left right →
+      RelTriple
+        (runResolvedFromTable left fuel table ((revealPosition position).run cache))
+        (runResolvedFromTable right fuel table ((revealPosition position).run cache))
+        (LayerRunEq lay) := by
+  intro left right fuel cache heq
+  rw [runResolvedFromTable_revealPosition, runResolvedFromTable_revealPosition]
+  apply relTriple_bind
+    (relTriple_resolveDeferredReveal_of_layerViewEq table lay position hposition left right heq)
+  intro leftResolved rightResolved hresolved
+  cases leftResolved with
+  | none =>
+      cases rightResolved with
+      | none =>
+          simpa [LayerRunEq] using
+            (relTriple_pure_pure (R := LayerRunEq lay) trivial)
+      | some rightResolved => simp [LayerResolutionEq] at hresolved
+  | some leftResolved =>
+      cases rightResolved with
+      | none => simp [LayerResolutionEq] at hresolved
+      | some rightResolved =>
+          apply relTriple_pure_pure
+          refine ⟨?_, rfl, ?_, rfl⟩
+          · rw [← hresolved.1]
+            have hstate := heq.materialize (.position position)
+                (by simpa [coordinateOtsLayer?] using hposition) leftResolved.output
+            exact ⟨hstate.1, hstate.2.1, hstate.2.2.1,
+              hresolved.2.2.2.2.1, hstate.2.2.2.2⟩
+          · rw [hresolved.1]
+
+theorem layerViewCouples_maskedTreeNode (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (level nodeIdx : Nat) :
+    ∀ left right fuel cache,
+      LayerViewEq lay left right →
+      RelTriple
+        (runResolvedFromTable left fuel table ((maskedTreeNode lay tree level nodeIdx).run cache))
+        (runResolvedFromTable right fuel table ((maskedTreeNode lay tree level nodeIdx).run cache))
+        (LayerRunEq lay) := by
+  intro left right fuel cache heq
+  unfold maskedTreeNode
+  rw [StateT.run_bind, runResolvedFromTable_bind, runResolvedFromTable_bind]
+  apply relTriple_bind
+    (layerViewCouples_ensureTreeNode lay lay tree level nodeIdx left right fuel table cache heq)
+  intro leftEnsured rightEnsured hensured
+  cases leftEnsured with
+  | none =>
+      cases rightEnsured with
+      | none =>
+          simpa [LayerRunEq] using
+            (relTriple_pure_pure (R := LayerRunEq lay) trivial)
+      | some rightEnsured => simp [LayerRunEq] at hensured
+  | some leftEnsured =>
+      cases rightEnsured with
+      | none => simp [LayerRunEq] at hensured
+      | some rightEnsured =>
+          rcases leftEnsured with ⟨leftContext, leftFuel, leftValue, leftTable⟩
+          rcases rightEnsured with ⟨rightContext, rightFuel, rightValue, rightTable⟩
+          simp only [LayerRunEq] at hensured
+          rcases hensured with ⟨hcontext, rfl, hvalue, rfl⟩
+          subst rightValue
+          cases level with
+          | zero =>
+              exact layerViewCouples_revealPosition leftTable lay
+                (.leaf lay tree (leafOfNat nodeIdx)) (by simp [positionOtsLayer?])
+                leftContext rightContext leftFuel leftValue.2 hcontext
+          | succ current =>
+              by_cases hlevel : current < maxLayerHeight
+              · simp only [hlevel, ↓reduceDIte]
+                exact layerViewCouples_revealPosition leftTable lay
+                  (.node lay tree ⟨current, hlevel⟩ (leafOfNat nodeIdx))
+                  (by simp [positionOtsLayer?]) leftContext rightContext leftFuel leftValue.2
+                  hcontext
+              · simp [hlevel, runResolvedFromTable, LayerRunEq, hcontext]
+
+theorem layerViewCouples_maskedTreeRoot (lay : Layer) (tree : TreeIndex) :
+    LayerViewCouples lay (maskedTreeRoot lay tree) := by
+  intro left right fuel table cache heq
+  unfold maskedTreeRoot
+  exact layerViewCouples_maskedTreeNode table lay tree (layerHeight lay) 0
+    left right fuel cache heq
+
+theorem layerViewCouples_ensureChainPrefix (observedLay lay : Layer)
+    (tree : TreeIndex) (leafIdx : LeafIndex) (chainIdx : ChainIndex) (digit : Digit) :
+    LayerViewCouples observedLay (ensureChainPrefix lay tree leafIdx chainIdx digit) := by
+  unfold ensureChainPrefix
+  apply (layerViewCouples_sequenceFin
+    (fun step : ChainStep =>
+      if step.val < digit.val then
+        ensureCoordinate (.position (.chain lay tree leafIdx chainIdx step))
+      else pure ())
+    (fun step => by
+      by_cases hstep : step.val < digit.val
+      · rw [if_pos hstep]
+        exact layerViewCouples_ensureCoordinate observedLay
+          (.position (.chain lay tree leafIdx chainIdx step))
+      · rw [if_neg hstep]
+        exact layerViewCouples_pure observedLay ())).bind
+  intro _
+  exact layerViewCouples_pure observedLay ()
+
+theorem layerViewCouples_ensureTreePath (observedLay lay : Layer)
+    (tree : TreeIndex) (leafIdx : LeafIndex) :
+    LayerViewCouples observedLay (ensureTreePath lay tree leafIdx) := by
+  unfold ensureTreePath
+  apply (layerViewCouples_sequenceFin
+    (fun level : Fin maxLayerHeight =>
+      if level.val < layerHeight lay then
+        ensureTreeNode lay tree level.val
+          (Nat.xor (leafIdx.val / 2 ^ level.val) 1)
+      else pure ())
+    (fun level => by
+      by_cases hlevel : level.val < layerHeight lay
+      · rw [if_pos hlevel]
+        exact layerViewCouples_ensureTreeNode observedLay lay tree level.val
+          (Nat.xor (leafIdx.val / 2 ^ level.val) 1)
+      · rw [if_neg hlevel]
+        exact layerViewCouples_pure observedLay ())).bind
+  intro _
+  exact layerViewCouples_pure observedLay ()
+
+theorem layerViewCouples_splitHashQuery_ordinary (lay : Layer) (input : HashInput) :
+    LayerViewCouples lay (splitHashQuery (.ordinary input)) := by
+  intro left right fuel table cache heq
+  rw [splitHashQuery_run_eq]
+  cases hlookup : cache (.ordinary input) with
+  | some output =>
+      simp only
+      simp [runResolvedFromTable, LayerRunEq, heq]
+  | none =>
+      simp only
+      rw [LazyRevealProbe.hashOutputQuery,
+        runResolvedFromTable_hashOutput_query_bind,
+        runResolvedFromTable_hashOutput_query_bind]
+      apply relTriple_bind (relTriple_refl LazyRevealProbe.sampleHashOutput)
+      intro leftOutput rightOutput houtput
+      subst rightOutput
+      simp [runResolvedFromTable, LayerRunEq, heq]
+
+theorem layerViewCouples_ordinaryHashImpl (lay : Layer) (input : HashInput) :
+    LayerViewCouples lay (ordinaryHashImpl input) := by
+  exact layerViewCouples_splitHashQuery_ordinary lay input
+
+theorem layerViewCouples_simulateQ {spec : OracleSpec ι}
+    (lay : Layer)
+    (impl : QueryImpl spec
+      (StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate))))
+    (hquery : ∀ query, LayerViewCouples lay (impl query))
+    (computation : OracleComp spec alpha) :
+    LayerViewCouples lay (simulateQ impl computation) := by
+  induction computation using OracleComp.inductionOn with
+  | pure value =>
+      simp only [simulateQ_pure]
+      exact layerViewCouples_pure lay value
+  | query_bind query next ih =>
+      rw [simulateQ_query_bind]
+      exact (hquery query).bind fun output => ih output
+
+theorem layerViewCouples_maskedOtsSignFrom (observedLay lay : Layer)
+    (parameter : PublicParameter) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (message : Digest) : ∀ attempts counter,
+    LayerViewCouples observedLay
+      (maskedOtsSignFrom parameter lay tree leafIdx message attempts counter)
+  | 0, counter => by
+      rw [maskedOtsSignFrom]
+      exact layerViewCouples_pure observedLay none
+  | attempts + 1, counter => by
+      rw [maskedOtsSignFrom]
+      have hencoded := layerViewCouples_simulateQ observedLay ordinaryHashImpl
+        (layerViewCouples_ordinaryHashImpl observedLay)
+        (encode parameter lay tree leafIdx message
+          (BitVec.ofNat counterBits counter))
+      apply hencoded.bind
+      intro encoded
+      cases encoded with
+      | none =>
+          exact layerViewCouples_maskedOtsSignFrom observedLay lay parameter tree leafIdx
+            message attempts (counter + 1)
+      | some encoding =>
+          apply (layerViewCouples_sequenceFin
+            (fun chainIdx => ensureChainPrefix lay tree leafIdx chainIdx
+              (encoding chainIdx))
+            (fun chainIdx => layerViewCouples_ensureChainPrefix observedLay lay tree leafIdx
+              chainIdx (encoding chainIdx))).bind
+          intro _
+          exact layerViewCouples_pure observedLay
+            (some (BitVec.ofNat counterBits counter, encoding))
+
+theorem layerViewCouples_maskedOtsSign (observedLay lay : Layer)
+    (parameter : PublicParameter) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (message : Digest) :
+    LayerViewCouples observedLay
+      (maskedOtsSign parameter lay tree leafIdx message) := by
+  exact layerViewCouples_maskedOtsSignFrom observedLay lay parameter tree leafIdx message
+    encodingAttemptLimit 0
+
+theorem layerViewCouples_maskedLayerMessage_of_below
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) (hbelow : lay.val + 1 < numLayers) :
+    LayerViewCouples ⟨lay.val + 1, hbelow⟩
+      (maskedLayerMessage parameter ftsSecret index lay) := by
+  unfold maskedLayerMessage
+  rw [dif_pos hbelow]
+  exact layerViewCouples_maskedTreeRoot ⟨lay.val + 1, hbelow⟩
+    (treeIndexAt index ⟨lay.val + 1, hbelow⟩)
+
+theorem layerViewCouples_maskedLayerMessage_of_not_below
+    (observedLay : Layer) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) (hbelow : ¬lay.val + 1 < numLayers) :
+    LayerViewCouples observedLay
+      (maskedLayerMessage parameter ftsSecret index lay) := by
+  unfold maskedLayerMessage
+  rw [dif_neg hbelow]
+  exact layerViewCouples_simulateQ observedLay ordinaryHashImpl
+    (layerViewCouples_ordinaryHashImpl observedLay)
+    (ftsKey parameter index (ftsSecret index))
+
+theorem layerViewCouples_maskedSignLayer_of_below
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) (hbelow : lay.val + 1 < numLayers) :
+    LayerViewCouples ⟨lay.val + 1, hbelow⟩
+      (maskedSignLayer parameter ftsSecret index lay) := by
+  unfold maskedSignLayer
+  apply (layerViewCouples_maskedLayerMessage_of_below parameter ftsSecret index lay
+    hbelow).bind
+  intro message
+  apply (layerViewCouples_maskedOtsSign ⟨lay.val + 1, hbelow⟩ lay parameter
+    (treeIndexAt index lay) (leafIndexAt index lay) message).bind
+  intro selected
+  cases selected with
+  | none => exact layerViewCouples_pure ⟨lay.val + 1, hbelow⟩ none
+  | some selected =>
+      apply (layerViewCouples_ensureTreePath ⟨lay.val + 1, hbelow⟩ lay
+        (treeIndexAt index lay) (leafIndexAt index lay)).bind
+      intro _
+      exact layerViewCouples_pure ⟨lay.val + 1, hbelow⟩ (some selected)
+
+theorem layerViewCouples_maskedSignLayer_of_not_below
+    (observedLay : Layer) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) (hbelow : ¬lay.val + 1 < numLayers) :
+    LayerViewCouples observedLay (maskedSignLayer parameter ftsSecret index lay) := by
+  unfold maskedSignLayer
+  apply (layerViewCouples_maskedLayerMessage_of_not_below observedLay parameter ftsSecret
+    index lay hbelow).bind
+  intro message
+  apply (layerViewCouples_maskedOtsSign observedLay lay parameter
+    (treeIndexAt index lay) (leafIndexAt index lay) message).bind
+  intro selected
+  cases selected with
+  | none => exact layerViewCouples_pure observedLay none
+  | some selected =>
+      apply (layerViewCouples_ensureTreePath observedLay lay
+        (treeIndexAt index lay) (leafIndexAt index lay)).bind
+      intro _
+      exact layerViewCouples_pure observedLay (some selected)
 
 theorem privateStateAgrees_resolveDeferredLayerValues
     (table : OtsSecretIndex → HashOutput) (index : Index) (lay : Layer)
@@ -8867,7 +9646,8 @@ theorem privateStateAgrees_resolveDeferredLayerValues
             (treeIndexAt index lay) (leafIndexAt index lay)
             (fun level : Fin maxLayerHeight => level) afterChains afterPath pathValues hpath
           exact ⟨hpathState.1.trans hchainState.1,
-            hpathState.2.trans hchainState.2⟩
+            hpathState.2.1.trans hchainState.2.1,
+            hpathState.2.2.trans hchainState.2.2⟩
 
 theorem layerViewEq_resolveDeferredLayerValues_of_ne
     (table : OtsSecretIndex → HashOutput) (index : Index)
@@ -8879,7 +9659,7 @@ theorem layerViewEq_resolveDeferredLayerValues_of_ne
     LayerViewEq observedLay finalContext context := by
   have hprivate := privateStateAgrees_resolveDeferredLayerValues table index resolvedLay
     encoding context finalContext values hresult
-  refine ⟨hprivate.1, hprivate.2, ?_, ?_⟩
+  refine ⟨hprivate.1, hprivate.2.1, hprivate.2.2, ?_, ?_⟩
   · intro position hposition
     apply resolveDeferredLayerValues_preserves_other_layer_value table index resolvedLay
       encoding context finalContext values position
@@ -8969,7 +9749,7 @@ theorem PublishedValues.of_resolveDeferredLayerValues
   intro coordinate hrevealed
   rw [hagrees.1]
   apply hpublished coordinate
-  rw [← hagrees.2]
+  rw [← hagrees.2.1]
   exact hrevealed
 
 set_option maxRecDepth 100000 in
