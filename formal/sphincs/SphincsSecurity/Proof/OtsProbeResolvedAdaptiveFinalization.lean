@@ -446,4 +446,49 @@ theorem finalizationAdaptiveCouples_publishCoordinate
       (publishCoordinate coordinate) :=
   (finalizationMaterializedCouples_publishCoordinate table coordinate).toAdaptive
 
+theorem relTriple_finishResolvedRunIsNone_of_finalizationAdaptiveRunEq
+    (table : OtsSecretIndex → HashOutput)
+    (left right : Option (ResolvedRunResult (α × SplitHashCache)))
+    (hrelation : FinalizationAdaptiveRunEq table left right) :
+    RelTriple (finishResolvedRunIsNone left) (finishResolvedRunIsNone right)
+      (EqRel Bool) := by
+  rcases hrelation with hclean | hdoomed
+  · exact relTriple_finishResolvedRunIsNone_of_finalizationMaterializedRunEq table left right
+      hclean
+  · cases left with
+    | none =>
+        cases right with
+        | none => exact relTriple_pure_pure rfl
+        | some right =>
+            have hrightTable := hdoomed.2.1
+            have hrightDoomed :
+                ¬DeferredCompletable right.table right.context := by
+              rw [hrightTable]
+              exact hdoomed.2.2.2.2
+            rw [finishResolvedRunIsNone, finishResolvedRunIsNone,
+              finishResolvedRun_of_not_deferredCompletable right hrightDoomed]
+            simp [finishResolvedRun]
+            rfl
+    | some left =>
+        have hleftTable := hdoomed.1.1
+        have hleftDoomed : ¬DeferredCompletable left.table left.context := by
+          rw [hleftTable]
+          exact hdoomed.1.2.2.2
+        cases right with
+        | none =>
+            rw [finishResolvedRunIsNone, finishResolvedRunIsNone,
+              finishResolvedRun_of_not_deferredCompletable left hleftDoomed]
+            simp [finishResolvedRun]
+            rfl
+        | some right =>
+            have hrightTable := hdoomed.2.1
+            have hrightDoomed :
+                ¬DeferredCompletable right.table right.context := by
+              rw [hrightTable]
+              exact hdoomed.2.2.2.2
+            rw [finishResolvedRunIsNone, finishResolvedRunIsNone,
+              finishResolvedRun_of_not_deferredCompletable left hleftDoomed,
+              finishResolvedRun_of_not_deferredCompletable right hrightDoomed]
+            exact relTriple_pure_pure rfl
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
