@@ -13237,6 +13237,213 @@ theorem reachableResolvedCouples_resolvedRevealLayerValues
   unfold resolvedRevealLayerValues
   exact reachableResolvedCouples_revealLayerValues parameter table index lay encoding
 
+noncomputable def revealPrivateLayerValues (index : Index) (lay : Layer)
+    (encoding : ChainIndex → Digit) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate))
+        ((ChainIndex → Digest) × (Fin maxLayerHeight → Digest)) := do
+  let tree := treeIndexAt index lay
+  let leafIdx := leafIndexAt index lay
+  let values ← sequenceFin fun chainIdx =>
+    revealCoordinate (chainValueCoordinate lay tree leafIdx chainIdx (encoding chainIdx))
+  let path ← sequenceFin fun level : Fin maxLayerHeight =>
+    if level.val < layerHeight lay then
+      match level.val with
+      | 0 => revealPosition (.leaf lay tree
+          (leafOfNat (Nat.xor leafIdx.val 1)))
+      | current + 1 =>
+          if hlevel : current < maxLayerHeight then
+            revealPosition (.node lay tree ⟨current, hlevel⟩
+              (leafOfNat (Nat.xor (leafIdx.val / 2 ^ (current + 1)) 1)))
+          else pure 0
+    else pure 0
+  pure (values, path)
+
+theorem reachableResolvedCouples_revealPrivateChainValue
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (chainIdx : ChainIndex) (digit : Digit) :
+    ReachableResolvedCouples parameter table
+      (revealCoordinate (chainValueCoordinate lay tree leafIdx chainIdx digit))
+      (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (chainWalk parameter lay tree leafIdx chainIdx 0 digit.val
+          (truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩)))) := by
+  unfold chainValueCoordinate
+  split
+  · simpa [revealChainStart, chainWalk, ‹digit.val = 0›] using
+      reachableResolvedCouples_revealChainStart parameter table
+        ⟨lay, tree, leafIdx, chainIdx⟩
+  · let step : ChainStep := ⟨digit.val - 1, by
+      have := digit.isLt
+      omega⟩
+    have hwalk : resolvedPositionComputation parameter table
+        (.chain lay tree leafIdx chainIdx step) =
+        chainWalk parameter lay tree leafIdx chainIdx 0 digit.val
+          (truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩)) := by
+      simp [resolvedPositionComputation, step]
+      have hpos : 0 < digit.val := Nat.pos_of_ne_zero ‹digit.val ≠ 0›
+      congr 1
+      omega
+    rw [← hwalk]
+    simpa [revealPosition, step] using
+      reachableResolvedCouples_revealResolvablePosition parameter table
+        (.chain lay tree leafIdx chainIdx step) (by simp [ResolvableOtsPosition])
+
+theorem reachableResolvedCouples_revealPrivateTreeNode
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (lay : Layer) (tree : TreeIndex) (level nodeIdx : Nat)
+    (hlevel : level ≤ maxLayerHeight)
+    (hspan : 2 ^ level * (nodeIdx + 1) ≤ 2 ^ maxLayerHeight) :
+    ReachableResolvedCouples parameter table
+      (match level with
+        | 0 => revealPosition (.leaf lay tree (leafOfNat nodeIdx))
+        | current + 1 =>
+            if hcurrent : current < maxLayerHeight then
+              revealPosition (.node lay tree ⟨current, hcurrent⟩ (leafOfNat nodeIdx))
+            else pure 0)
+      (simulateQ (randomOracle : QueryImpl HashSpec _)
+        (treeNode parameter lay tree
+          (fun leafIdx chainIdx =>
+            truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩))
+          level nodeIdx)) := by
+  cases level with
+  | zero =>
+      simpa [revealPosition, resolvedPositionComputation, treeNode_zero_eq] using
+        reachableResolvedCouples_revealResolvablePosition parameter table
+          (.leaf lay tree (leafOfNat nodeIdx)) (by simp [ResolvableOtsPosition])
+  | succ current =>
+      have hcurrent : current < maxLayerHeight := by omega
+      simp only [hcurrent, ↓reduceDIte]
+      have hnodeLt : nodeIdx < 2 ^ maxLayerHeight := by
+        have hpow : 0 < 2 ^ (current + 1) := pow_pos (by omega) _
+        nlinarith
+      have hnodeVal : (leafOfNat nodeIdx).val = nodeIdx := by
+        simp [leafOfNat, Nat.mod_eq_of_lt hnodeLt]
+      have hresolvable : ResolvableOtsPosition
+          (.node lay tree ⟨current, hcurrent⟩ (leafOfNat nodeIdx)) := by
+        simp [ResolvableOtsPosition, hnodeVal]
+        exact hspan
+      simpa [revealPosition, resolvedPositionComputation, hnodeVal] using
+        reachableResolvedCouples_revealResolvablePosition parameter table
+          (.node lay tree ⟨current, hcurrent⟩ (leafOfNat nodeIdx)) hresolvable
+
+theorem reachableResolvedCouples_revealPrivateLayerPathNode
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (index : Index) (lay : Layer) (level : Fin maxLayerHeight) :
+    ReachableResolvedCouples parameter table
+      (if level.val < layerHeight lay then
+        match level.val with
+        | 0 => revealPosition (.leaf lay (treeIndexAt index lay)
+            (leafOfNat (Nat.xor (leafIndexAt index lay).val 1)))
+        | current + 1 =>
+            if hcurrent : current < maxLayerHeight then
+              revealPosition (.node lay (treeIndexAt index lay)
+                ⟨current, hcurrent⟩ (leafOfNat
+                  (Nat.xor ((leafIndexAt index lay).val / 2 ^ (current + 1)) 1)))
+            else pure 0
+      else pure 0)
+      (if level.val < layerHeight lay then
+        simulateQ (randomOracle : QueryImpl HashSpec _)
+          (treeNode parameter lay (treeIndexAt index lay)
+            (fun sibling chainIdx =>
+              truncateHash (table ⟨lay, treeIndexAt index lay, sibling, chainIdx⟩))
+            level.val
+            (Nat.xor ((leafIndexAt index lay).val / 2 ^ level.val) 1))
+      else pure 0) := by
+  by_cases hinLayer : level.val < layerHeight lay
+  · rw [if_pos hinLayer, if_pos hinLayer]
+    cases hvalue : level.val with
+    | zero =>
+        simpa [hvalue] using
+          reachableResolvedCouples_revealPrivateTreeNode parameter table lay
+            (treeIndexAt index lay) 0
+            (Nat.xor (leafIndexAt index lay).val 1) (by omega)
+            (by
+              simpa using (FtsProbeSimulation.sibling_node_bound maxLayerHeight
+                (leafIndexAt index lay).val 0 (by omega) (leafIndexAt index lay).isLt))
+    | succ current =>
+        have hcurrent : current < maxLayerHeight := by
+          have := level.isLt
+          omega
+        simpa [hvalue, hcurrent] using
+          reachableResolvedCouples_revealPrivateTreeNode parameter table lay
+            (treeIndexAt index lay) (current + 1)
+            (Nat.xor ((leafIndexAt index lay).val / 2 ^ (current + 1)) 1)
+            (by omega)
+            (FtsProbeSimulation.sibling_node_bound maxLayerHeight
+              (leafIndexAt index lay).val (current + 1) (by omega)
+              (leafIndexAt index lay).isLt)
+  · rw [if_neg hinLayer, if_neg hinLayer]
+    exact reachableResolvedCouples_pure parameter table 0
+
+set_option maxHeartbeats 400000 in
+theorem reachableResolvedCouples_revealPrivateLayerValues
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (index : Index) (lay : Layer) (encoding : ChainIndex → Digit) :
+    ReachableResolvedCouples parameter table
+      (revealPrivateLayerValues index lay encoding)
+      (resolvedRevealLayerValues parameter table index lay encoding) := by
+  unfold revealPrivateLayerValues resolvedRevealLayerValues
+  apply (reachableResolvedCouples_sequenceFin _ _ fun chainIdx =>
+    reachableResolvedCouples_revealPrivateChainValue parameter table lay
+      (treeIndexAt index lay) (leafIndexAt index lay) chainIdx (encoding chainIdx)).bind
+  intro values
+  apply (reachableResolvedCouples_sequenceFin _ _ fun level =>
+    reachableResolvedCouples_revealPrivateLayerPathNode parameter table index lay level).bind
+  intro path
+  exact reachableResolvedCouples_pure parameter table (values, path)
+
+structure ChronologicalLayerPart where
+  counter : Counter
+  encoding : ChainIndex → Digit
+  chainValue : ChainIndex → Digest
+  authPath : Fin maxLayerHeight → Digest
+
+def ChronologicalLayerPart.toLayerPart (part : ChronologicalLayerPart) : LayerPart :=
+  (part.counter, part.chainValue, part.authPath)
+
+noncomputable def maskedChronologicalSignLayer
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate))
+        (Option ChronologicalLayerPart) := do
+  match ← maskedSignLayer parameter ftsSecret index lay with
+  | none => pure none
+  | some (counter, encoding) => do
+      let values ← revealPrivateLayerValues index lay encoding
+      pure (some ⟨counter, encoding, values.1, values.2⟩)
+
+noncomputable def resolvedChronologicalSignLayer
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) : StateT (QueryCache HashSpec) ProbComp
+      (Option ChronologicalLayerPart) := do
+  match ← resolvedSignLayer parameter table ftsSecret index lay with
+  | none => pure none
+  | some (counter, encoding) => do
+      let values ← resolvedRevealLayerValues parameter table index lay encoding
+      pure (some ⟨counter, encoding, values.1, values.2⟩)
+
+theorem resolvedChronologicalSignLayer_projects_to_immediate
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) :
+    (do
+      let result ← resolvedChronologicalSignLayer parameter table ftsSecret index lay
+      pure (result.map ChronologicalLayerPart.toLayerPart)) =
+        resolvedImmediateSignLayer parameter table ftsSecret index lay := by
+  rw [resolvedImmediateSignLayer_eq_resolvedSignLayer_then_reveal]
+  unfold resolvedChronologicalSignLayer
+  simp only [bind_assoc]
+  apply bind_congr
+  intro selected
+  cases selected with
+  | none => rfl
+  | some selected =>
+      rcases selected with ⟨counter, encoding⟩
+      simp [ChronologicalLayerPart.toLayerPart]
+
 theorem reachableResolvedCouples_maskedChainValue
     (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
     (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
@@ -13350,9 +13557,114 @@ theorem reachableResolvedCouples_maskedSignLayer
       exact (reachableResolvedCouples_of_administrative
         (resolvedAdministrative_ensureTreePath lay (treeIndexAt index lay)
           (leafIndexAt index lay))
-        (resolvedPreservesPublished_ensureTreePath lay (treeIndexAt index lay)
+          (resolvedPreservesPublished_ensureTreePath lay (treeIndexAt index lay)
           (leafIndexAt index lay))).bind fun _ =>
             reachableResolvedCouples_pure parameter table (some part)
+
+theorem reachableResolvedCouples_maskedChronologicalSignLayer
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) :
+    ReachableResolvedCouples parameter table
+      (maskedChronologicalSignLayer parameter ftsSecret index lay)
+      (resolvedChronologicalSignLayer parameter table ftsSecret index lay) := by
+  unfold maskedChronologicalSignLayer resolvedChronologicalSignLayer
+  apply (reachableResolvedCouples_maskedSignLayer parameter table ftsSecret index lay).bind
+  intro selected
+  cases selected with
+  | none => exact reachableResolvedCouples_pure parameter table none
+  | some selected =>
+      rcases selected with ⟨counter, encoding⟩
+      apply (reachableResolvedCouples_revealPrivateLayerValues parameter table index lay
+        encoding).bind
+      intro values
+      exact reachableResolvedCouples_pure parameter table
+        (some (ChronologicalLayerPart.mk counter encoding values.1 values.2))
+
+noncomputable def maskedPrivateImmediateSignLayer
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) (Option LayerPart) := do
+  let result ← maskedChronologicalSignLayer parameter ftsSecret index lay
+  pure (result.map ChronologicalLayerPart.toLayerPart)
+
+theorem reachableResolvedCouples_maskedPrivateImmediateSignLayer
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) :
+    ReachableResolvedCouples parameter table
+      (maskedPrivateImmediateSignLayer parameter ftsSecret index lay)
+      (resolvedImmediateSignLayer parameter table ftsSecret index lay) := by
+  unfold maskedPrivateImmediateSignLayer
+  rw [← resolvedChronologicalSignLayer_projects_to_immediate parameter table ftsSecret
+    index lay]
+  apply (reachableResolvedCouples_maskedChronologicalSignLayer parameter table ftsSecret index
+    lay).bind
+  intro result
+  exact reachableResolvedCouples_pure parameter table
+    (result.map ChronologicalLayerPart.toLayerPart)
+
+noncomputable def maskedPrivateImmediateSignAfterDigest
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) (Option Signature) := do
+  let ftsPath ← simulateQ ordinaryHashImpl
+    (ftsOpen parameter index leaves (ftsSecret index))
+  let layers ← sequenceFin fun lay =>
+    maskedPrivateImmediateSignLayer parameter ftsSecret index lay
+  match traverseOption layers with
+  | none => pure none
+  | some parts =>
+      pure (some
+        { randomness := randomness
+          ftsSecret := fun tree => ftsSecret index tree (leaves (ftsIndexOf tree))
+          ftsPath := ftsPath
+          counter := fun lay => (parts lay).1
+          chainValue := fun lay => (parts lay).2.1
+          authPath := flattenPaths fun lay => (parts lay).2.2 })
+
+set_option maxHeartbeats 400000 in
+theorem reachableResolvedCouples_maskedPrivateImmediateSignAfterDigest
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    ReachableResolvedCouples parameter table
+      (maskedPrivateImmediateSignAfterDigest parameter ftsSecret randomness index leaves)
+      (resolvedImmediateSignAfterDigest parameter table ftsSecret randomness index leaves) := by
+  unfold maskedPrivateImmediateSignAfterDigest resolvedImmediateSignAfterDigest
+  apply (reachableResolvedCouples_ftsOpen parameter table index leaves (ftsSecret index)).bind
+  intro ftsPath
+  apply (reachableResolvedCouples_sequenceFin _ _ fun lay =>
+    reachableResolvedCouples_maskedPrivateImmediateSignLayer parameter table ftsSecret index
+      lay).bind
+  intro layers
+  cases hparts : traverseOption layers with
+  | none => exact reachableResolvedCouples_pure parameter table none
+  | some parts =>
+      exact reachableResolvedCouples_pure parameter table (some (show Signature from
+        { randomness := randomness
+          ftsSecret := fun tree => ftsSecret index tree (leaves (ftsIndexOf tree))
+          ftsPath := ftsPath
+          counter := fun lay => (parts lay).1
+          chainValue := fun lay => (parts lay).2.1
+          authPath := flattenPaths fun lay => (parts lay).2.2 }))
+
+theorem reachableResolvedCouples_maskedPrivateImmediateSignAfterDigest_concrete
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    ReachableResolvedCouples parameter table
+      (maskedPrivateImmediateSignAfterDigest parameter ftsSecret randomness index leaves)
+      (concreteSignAfterDigestFromTable parameter root table ftsSecret randomness index
+        leaves) := by
+  rw [← resolvedImmediateSignAfterDigest_eq_concrete parameter root table ftsSecret randomness
+    index leaves]
+  exact reachableResolvedCouples_maskedPrivateImmediateSignAfterDigest parameter table ftsSecret
+    randomness index leaves
 
 set_option maxRecDepth 100000 in
 theorem relTriple_scheduleResolvedSignLayer
