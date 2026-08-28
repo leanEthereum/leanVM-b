@@ -3128,4 +3128,543 @@ theorem not_verifyProbe_of_mem_runResolved_verifier
           (leafIndexAt (digestIndex digest) lay) chainIdx
             ⟨(codeword chainIdx).val, hdigit⟩ hmatches hposition hnotCovered hquery hhits'
 
+theorem not_uncoveredChainProbe_of_mem_runResolved_verifier
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (targetCache : QueryCache HashSpec) (root : Digest) (forgery : Forgery)
+    (signingLog : QueryLog SigningSpec)
+    (completion : Coordinate → HashOutput) (fallback : QueryImpl HashSpec Id)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (concreteCache : QueryCache HashSpec)
+    (result : ResolvedRunResult (Bool × SplitHashCache))
+    (hinvariant : ResolvedContextInvariant parameter table context
+      (ordinaryQueryCache cache) concreteCache)
+    (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
+    (hpublished : PublishedValues context.state)
+    (hallowed : RevealedChainAllowed
+      (CoveredChainCoordinate
+        (tableAnswer parameter completion fallback) targetCache
+        (⟨parameter, root,
+          fun lay tree leafIdx chainIdx =>
+            truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+          ftsSecret⟩ : SecretKey)
+        signingLog)
+      context.state)
+    (hresult : some result ∈ support
+      (runResolvedFromTable context fuel table
+        ((simulateQ (probingRomImpl parameter)
+          (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)).run cache)))
+    (hcompletion : DeferredCompletion table result.context completion)
+    (hfallback : CacheAgreesWithFnOffTable parameter completion
+      (ordinaryQueryCache result.value.2) fallback)
+    (probe : Probe) (input : HashInput)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (chainIdx : ChainIndex) (step : ChainStep)
+    (hmatches : probe.MatchesInput parameter input)
+    (hposition : decodePosition? parameter input =
+      some (.chain lay tree leafIdx chainIdx step))
+    (hnotCovered : ¬CoveredChainCoordinate
+      (tableAnswer parameter completion fallback) targetCache
+      (⟨parameter, root,
+        fun selectedLay selectedTree selectedLeaf selectedChain =>
+          truncateHash (table ⟨selectedLay, selectedTree, selectedLeaf, selectedChain⟩),
+        ftsSecret⟩ : SecretKey)
+      signingLog probe.coordinate)
+    (hquery : input ∈ queriedInputs (tableAnswer parameter completion fallback)
+      (verify ⟨root, parameter⟩ forgery.message forgery.signature))
+    (hhits : probe.Hits (tableAnswer parameter completion fallback)
+      parameter (tableOtsSecret completion) ftsSecret) : False := by
+  have hresult' : some result ∈ support
+      (runResolvedFromTable context fuel table
+        ((simulateQ (probingHashImpl parameter)
+          (verify ⟨root, parameter⟩ forgery.message forgery.signature)).run cache)) := by
+    rw [← simulateQ_probingRom_scheme_verify]
+    exact hresult
+  exact not_probeHits_of_mem_runResolved_probingHashImpl parameter table ftsSecret
+    (CoveredChainCoordinate
+      (tableAnswer parameter completion fallback) targetCache
+      (⟨parameter, root,
+        fun selectedLay selectedTree selectedLeaf selectedChain =>
+          truncateHash (table ⟨selectedLay, selectedTree, selectedLeaf, selectedChain⟩),
+        ftsSecret⟩ : SecretKey)
+      signingLog)
+    (coveredChainCoordinate_forwardClosed (tableAnswer parameter completion fallback)
+      targetCache
+      (⟨parameter, root,
+        fun selectedLay selectedTree selectedLeaf selectedChain =>
+          truncateHash (table ⟨selectedLay, selectedTree, selectedLeaf, selectedChain⟩),
+        ftsSecret⟩ : SecretKey)
+      signingLog)
+    completion fallback (verify ⟨root, parameter⟩ forgery.message forgery.signature)
+      context fuel cache concreteCache result hinvariant hclosed hpublished hallowed hresult'
+        hcompletion hfallback probe input lay tree leafIdx chainIdx step hmatches hposition
+          hnotCovered hquery hhits
+
+set_option maxHeartbeats 1000000 in
+theorem resolvedPreservesChainPublication_maskedPublishedTreeRoot
+    (allowed : Coordinate → Prop) :
+    ResolvedPreservesChainPublication allowed maskedPublishedTreeRoot := by
+  unfold maskedPublishedTreeRoot
+  apply (ResolvedPreservesChainPublication.of_noPublish allowed
+    (ensureTreeNode topLayer rootTree (layerHeight topLayer) 0) fun cache =>
+      noPublish_ensureTreeNode topLayer rootTree (layerHeight topLayer) 0 cache).bind
+  intro _
+  exact resolvedPreservesChainPublication_revealPublishedCoordinate allowed _
+    (by simp [IsChainCoordinate])
+
+theorem successfulSignRuns_of_mem_support_unloggedMapped_signingTrace
+    (f : QueryImpl HashSpec Id) (secretKey : SecretKey)
+    (computation : OracleComp (OracleWorld + SigningSpec) alpha)
+    (initialCache : QueryCache HashSpec) (value : alpha)
+    (signingLog : QueryLog SigningSpec) (adversaryCache finalCache : QueryCache HashSpec)
+    (hmem : ((value, signingLog), adversaryCache) ∈ support
+      ((simulateQ (unloggedMappedAdversaryImpl secretKey)
+        (signingTraceComputation computation)).run initialCache))
+    (hle : adversaryCache ≤ finalCache) (hf : finalCache.AgreesWithFn f) :
+    ∀ (entry : (request : SignRequest) × SigningSpec.Range request)
+      (signature : Signature), entry ∈ signingLog → entry.2 = some signature →
+        SuccessfulSignRun f finalCache secretKey entry.1 signature := by
+  rw [← simulateQ_withTraceAppend_run_eq_signingTraceComputation,
+    ← FtsProbeSimulation.writerTMapBase_expanded_withTraceAppend_eq_unlogged,
+    ← QueryImpl.simulateQ_writerTMapBase_run,
+    ← SphincsSecurity.forwardOracles_add_signingOracle_eq_withTraceAppend] at hmem
+  intro entry signature hentry hresponse
+  exact successfulSignRun_of_signing_entry f secretKey computation initialCache value signingLog
+    adversaryCache finalCache hmem hle hf entry signature hresponse hentry
+
+theorem successfulSignRuns_of_mem_support_concreteRetainedPrefix
+    (adversary : Adversary) (f : QueryImpl HashSpec Id)
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (initialCache : QueryCache HashSpec) (root : Digest) (forgery : Forgery)
+    (signingLog : QueryLog SigningSpec) (prefixCache finalCache : QueryCache HashSpec)
+    (hmem : ((root, (forgery, signingLog)), prefixCache) ∈ support
+      ((concreteRetainedPrefixAfterFtsSecrets adversary parameter table ftsSecret).run
+        initialCache))
+    (hle : prefixCache ≤ finalCache) (hf : finalCache.AgreesWithFn f) :
+    ∀ (entry : (request : SignRequest) × SigningSpec.Range request)
+      (signature : Signature), entry ∈ signingLog → entry.2 = some signature →
+        SuccessfulSignRun f finalCache
+          (⟨parameter, root,
+            fun lay tree leafIdx chainIdx =>
+              truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+            ftsSecret⟩ : SecretKey)
+          entry.1 signature := by
+  unfold concreteRetainedPrefixAfterFtsSecrets at hmem
+  rw [StateT.run_bind, mem_support_bind_iff] at hmem
+  obtain ⟨rootResult, hroot, hrest⟩ := hmem
+  rcases rootResult with ⟨sampledRoot, rootCache⟩
+  rw [StateT.run_bind, mem_support_bind_iff] at hrest
+  obtain ⟨adversaryResult, hadversary, hfinish⟩ := hrest
+  rcases adversaryResult with ⟨forgeryLog, adversaryCache⟩
+  rcases forgeryLog with ⟨sampledForgery, sampledLog⟩
+  simp only [StateT.run_pure, support_pure, Set.mem_singleton_iff, Prod.mk.injEq] at hfinish
+  obtain ⟨hvalue, hcache⟩ := hfinish
+  subst adversaryCache
+  obtain ⟨hrootValue, hforgeryLog⟩ := hvalue
+  subst sampledRoot
+  obtain ⟨hforgery, hlog⟩ := hforgeryLog
+  subst sampledForgery
+  subst sampledLog
+  exact successfulSignRuns_of_mem_support_unloggedMapped_signingTrace f
+    (⟨parameter, root,
+      fun lay tree leafIdx chainIdx =>
+        truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+      ftsSecret⟩ : SecretKey)
+    (adversary.main ⟨root, parameter⟩) rootCache forgery signingLog prefixCache finalCache
+      hadversary hle hf
+
+attribute [local irreducible] maskedPublishedTreeRoot
+
+set_option maxHeartbeats 1000000 in
+theorem resolvedCore_of_mem_runResolved_maskedPublishedTreeRoot
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (fuel : Nat)
+    (result : ResolvedRunResult (Digest × SplitHashCache))
+    (hresult : some result ∈ support
+      (runResolvedFromTable
+        { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+          values := emptyDeferredStructuralValues }
+        fuel table (maskedPublishedTreeRoot.run emptySplitHashCache))) :
+    result.table = table ∧ result.context.ValuesConsistent ∧
+      StartTableAgrees result.context.state table :=
+  resolvedCore_of_mem_runResolved_of_reachableResolvedCouples
+    (reachableResolvedCouples_maskedPublishedTreeRoot parameter table)
+    (resolvedContextInvariant_empty parameter table)
+    (visibleResolvedComputationsCached_empty parameter table emptyDeferredStructuralValues ∅)
+    publishedValues_empty hresult
+
+set_option maxHeartbeats 1000000 in
+theorem concreteSupport_of_mem_runResolved_maskedPublishedTreeRoot
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (fuel : Nat)
+    (result : ResolvedRunResult (Digest × SplitHashCache))
+    (completion : Coordinate → HashOutput)
+    (hresult : some result ∈ support
+      (runResolvedFromTable
+        { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+          values := emptyDeferredStructuralValues }
+        fuel table (maskedPublishedTreeRoot.run emptySplitHashCache)))
+    (hcompletion : DeferredCompletion table result.context completion) :
+    ∃ concreteCache,
+      ResolvedContextInvariant parameter table result.context
+        (ordinaryQueryCache result.value.2) concreteCache ∧
+      VisibleResolvedComputationsCached parameter table result.context concreteCache ∧
+      PublishedValues result.context.state ∧
+      (result.value.1, concreteCache) ∈ support
+        ((simulateQ (randomOracle : QueryImpl HashSpec _)
+          (treeNode parameter topLayer rootTree
+            (fun leafIdx chainIdx =>
+              truncateHash (table ⟨topLayer, rootTree, leafIdx, chainIdx⟩))
+            (layerHeight topLayer) 0)).run ∅) :=
+  concreteSupport_of_mem_runResolved_of_reachableResolvedCouples
+    (reachableResolvedCouples_maskedPublishedTreeRoot parameter table)
+    (resolvedContextInvariant_empty parameter table)
+    (visibleResolvedComputationsCached_empty parameter table emptyDeferredStructuralValues ∅)
+    publishedValues_empty hresult hcompletion
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem revealedChainAllowed_of_mem_runResolved_chronologicalRetainedPrefix
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (targetCache : QueryCache HashSpec)
+    (completion : Coordinate → HashOutput) (fallback : QueryImpl HashSpec Id)
+    (fuel : Nat)
+    (result : ResolvedRunResult
+      ((Digest × (Forgery × QueryLog SigningSpec)) × SplitHashCache))
+    (hresult : some result ∈ support
+      (runResolvedFromTable
+        { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+          values := emptyDeferredStructuralValues }
+        fuel table
+        ((maskedChronologicalRetainedPrefixAfterFtsSecrets adversary parameter ftsSecret).run
+          emptySplitHashCache)))
+    (hcompletion : DeferredCompletion table result.context completion)
+    (hfallback : CacheAgreesWithFnOffTable parameter completion
+      (ordinaryQueryCache result.value.2) fallback)
+    (hlogRuns : ∀ (entry : (request : SignRequest) × SigningSpec.Range request)
+      (signature : Signature), entry ∈ result.value.1.2.2 → entry.2 = some signature →
+        SuccessfulSignRun (tableAnswer parameter completion fallback) targetCache
+          (⟨parameter, result.value.1.1,
+            fun lay tree leafIdx chainIdx =>
+              truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+            ftsSecret⟩ : SecretKey)
+          entry.1 signature) :
+    RevealedChainAllowed
+      (CoveredChainCoordinate (tableAnswer parameter completion fallback) targetCache
+        (⟨parameter, result.value.1.1,
+          fun lay tree leafIdx chainIdx =>
+            truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+          ftsSecret⟩ : SecretKey)
+        result.value.1.2.2)
+      result.context.state := by
+  unfold maskedChronologicalRetainedPrefixAfterFtsSecrets at hresult
+  rw [StateT.run_bind, runResolvedFromTable_bind, mem_support_bind_iff] at hresult
+  obtain ⟨rootOption, hroot, hrest⟩ := hresult
+  cases rootOption with
+  | none => simp at hrest
+  | some rootResult =>
+      have hrootCore : rootResult.table = table ∧ rootResult.context.ValuesConsistent ∧
+          StartTableAgrees rootResult.context.state table :=
+        resolvedCore_of_mem_runResolved_maskedPublishedTreeRoot parameter table fuel rootResult
+          hroot
+      simp only at hrest
+      rw [hrootCore.1] at hrest
+      have hrootCompletion : DeferredCompletion table rootResult.context completion :=
+        hcompletion.of_mem_runResolvedFromTable _ rootResult.context rootResult.remaining table
+          result completion hrootCore.2.1 hrootCore.2.2 hrest
+      obtain ⟨rootConcreteCache, hrootInvariant, hrootClosed, hrootPublished,
+          _hrootConcrete⟩ :=
+        concreteSupport_of_mem_runResolved_maskedPublishedTreeRoot parameter table fuel rootResult
+          completion hroot hrootCompletion
+      have hemptyAllowed : RevealedChainAllowed
+          (CoveredChainCoordinate (tableAnswer parameter completion fallback) targetCache
+            (⟨parameter, rootResult.value.1,
+              fun lay tree leafIdx chainIdx =>
+                truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+              ftsSecret⟩ : SecretKey)
+            result.value.1.2.2)
+          (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) := by
+        intro coordinate hchain hrevealed
+        simp [LazyRevealProbe.State.empty] at hrevealed
+      have hrootAllowed : RevealedChainAllowed
+          (CoveredChainCoordinate (tableAnswer parameter completion fallback) targetCache
+            (⟨parameter, rootResult.value.1,
+              fun lay tree leafIdx chainIdx =>
+                truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+              ftsSecret⟩ : SecretKey)
+            result.value.1.2.2)
+          rootResult.context.state :=
+        resolvedPreservesChainPublication_maskedPublishedTreeRoot _
+          { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+            values := emptyDeferredStructuralValues }
+          emptySplitHashCache fuel table rootResult completion
+              (resolvedContextInvariant_empty parameter table).2.1.valuesConsistent
+              (resolvedContextInvariant_empty parameter table).2.2.1 hemptyAllowed hroot
+                hrootCompletion
+      rw [StateT.run_bind, runResolvedFromTable_bind, mem_support_bind_iff] at hrest
+      obtain ⟨adversaryOption, hadversary, hfinish⟩ := hrest
+      cases adversaryOption with
+      | none => simp at hfinish
+      | some adversaryResult =>
+          simp [runResolvedFromTable] at hfinish
+          subst result
+          exact revealedChainAllowed_signingTraceComputation parameter rootResult.value.1 table
+            ftsSecret targetCache adversaryResult.value.1.2 completion fallback hlogRuns
+              (adversary.main ⟨rootResult.value.1, parameter⟩) rootResult.context
+                rootResult.remaining rootResult.value.2 rootConcreteCache adversaryResult
+                  hrootInvariant hrootClosed hrootPublished hrootAllowed (fun entry => id)
+                    hadversary hcompletion hfallback
+
+theorem successfulSignRuns_of_mem_support_actualRetainedGameAfterTable
+    (adversary : Adversary) (f : QueryImpl HashSpec Id)
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (root : Digest) (forgery : Forgery) (signingLog : QueryLog SigningSpec)
+    (verified : Bool) (finalCache : QueryCache HashSpec)
+    (hactual : ((root, ((forgery, signingLog), verified)), finalCache) ∈ support
+      (actualRetainedGameAfterTable adversary parameter ftsSecret (extendStartTable table)))
+    (hf : finalCache.AgreesWithFn f) :
+    ∀ (entry : (request : SignRequest) × SigningSpec.Range request)
+      (signature : Signature), entry ∈ signingLog → entry.2 = some signature →
+        SuccessfulSignRun f finalCache
+          (⟨parameter, root,
+            fun lay tree leafIdx chainIdx =>
+              truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+            ftsSecret⟩ : SecretKey)
+          entry.1 signature := by
+  rw [← concreteRetainedGameAfterFtsSecrets_run_eq_actual] at hactual
+  unfold concreteRetainedGameAfterFtsSecrets at hactual
+  rw [StateT.run_bind, mem_support_bind_iff] at hactual
+  obtain ⟨prefixResult, hprefix, hrest⟩ := hactual
+  rcases prefixResult with ⟨prefixValue, prefixCache⟩
+  rcases prefixValue with ⟨sampledRoot, forgeryLog⟩
+  rcases forgeryLog with ⟨sampledForgery, sampledLog⟩
+  rw [StateT.run_bind, mem_support_bind_iff] at hrest
+  obtain ⟨verifierResult, hverifier, hfinish⟩ := hrest
+  rcases verifierResult with ⟨sampledVerified, verifierCache⟩
+  simp only [StateT.run_pure, support_pure, Set.mem_singleton_iff, Prod.mk.injEq] at hfinish
+  obtain ⟨hvalue, hcache⟩ := hfinish
+  subst verifierCache
+  obtain ⟨hroot, hrestValue⟩ := hvalue
+  subst sampledRoot
+  obtain ⟨hforgeryLog, hverified⟩ := hrestValue
+  subst sampledVerified
+  obtain ⟨hforgery, hlog⟩ := hforgeryLog
+  subst sampledForgery
+  subst sampledLog
+  have hle : prefixCache ≤ finalCache :=
+    simulateQ_romImpl_cache_le
+      (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)
+      prefixCache (verified, finalCache) hverifier
+  exact successfulSignRuns_of_mem_support_concreteRetainedPrefix adversary f parameter table
+    ftsSecret ∅ root forgery signingLog prefixCache finalCache hprefix hle hf
+
+theorem SuccessfulDigestRun.changeAnswerFn
+    {f g : QueryImpl HashSpec Id} {cache : QueryCache HashSpec}
+    {secretKey : SecretKey} {message : Message} {randomness : Randomness}
+    {index : Index} {leaves : DigestTree → FtsLeaf}
+    (hrun : SuccessfulDigestRun f cache secretKey message randomness index leaves)
+    (hf : cache.AgreesWithFn f) (hg : cache.AgreesWithFn g) :
+    SuccessfulDigestRun g cache secretKey message randomness index leaves := by
+  refine ⟨hrun.1, ?_, hrun.2.2.changeAnswerFn hf hg⟩
+  rw [← hrun.2.2.eval_eq hf hg]
+  exact hrun.2.1
+
+theorem SuccessfulSignRun.changeAnswerFn
+    {f g : QueryImpl HashSpec Id} {cache : QueryCache HashSpec}
+    {secretKey : SecretKey} {message : Message} {signature : Signature}
+    (hrun : SuccessfulSignRun f cache secretKey message signature)
+    (hf : cache.AgreesWithFn f) (hg : cache.AgreesWithFn g) :
+    SuccessfulSignRun g cache secretKey message signature := by
+  obtain ⟨index, leaves, parts, hdigest, hftsSecret, hftsPath, hcounter, hvalues,
+      hauthPath, hftsCached, hlayers, hlayersCached⟩ := hrun
+  refine ⟨index, leaves, parts, SuccessfulDigestRun.changeAnswerFn hdigest hf hg, hftsSecret,
+    ?_, hcounter,
+    hvalues, hauthPath, hftsCached.changeAnswerFn hf hg, ?_, ?_⟩
+  · rw [← hftsCached.eval_eq hf hg]
+    exact hftsPath
+  · intro lay
+    rw [← (hlayersCached lay).eval_eq hf hg]
+    exact hlayers lay
+  · intro lay
+    exact (hlayersCached lay).changeAnswerFn hf hg
+
+theorem CoveredChainCoordinate.changeAnswerFn
+    {f g : QueryImpl HashSpec Id} {cache : QueryCache HashSpec}
+    {secretKey : SecretKey} {signingLog : QueryLog SigningSpec}
+    {coordinate : Coordinate}
+    (hcovered : CoveredChainCoordinate f cache secretKey signingLog coordinate)
+    (hf : cache.AgreesWithFn f) (hg : cache.AgreesWithFn g) :
+    CoveredChainCoordinate g cache secretKey signingLog coordinate := by
+  obtain ⟨entry, signature, index, leaves, lay, chainIdx, codeword, targetDigit, hentry,
+      hresponse, hrun, hdigest, hencode, hle, hcoordinate⟩ := hcovered
+  have hmessageCached : CachedRun cache f (layerMessage secretKey index lay) := by
+    obtain ⟨runIndex, runLeaves, parts, runDigest, _hftsSecret, _hftsPath, _hcounter,
+        _hvalues, _hauthPath, _hftsCached, _hlayers, hlayersCached⟩ := hrun
+    have hselection : (runIndex, runLeaves) = (index, leaves) := by
+      apply Option.some.inj
+      exact runDigest.2.1.symm.trans hdigest.2.1
+    obtain ⟨rfl, rfl⟩ := Prod.mk.inj hselection
+    exact (hlayersCached lay).bind_left
+  have hmessageEq := hmessageCached.eval_eq hf hg
+  have hencodingInputCached := hrun.signed_encode_cached_of_digest hdigest lay
+  have hencodeCached : CachedRun cache f
+      (encode secretKey.parameter lay (treeIndexAt index lay) (leafIndexAt index lay)
+        (evalWithAnswerFn f (layerMessage secretKey index lay))
+        (signature.counter lay)) := by
+    intro input hinput
+    simp only [encode, queriedInputs_bind, queriedInputs_tweakableHash, queriedInputs_pure,
+      List.append_nil, List.mem_singleton] at hinput
+    subst input
+    exact hencodingInputCached
+  have hencode' : evalWithAnswerFn g
+      (encode secretKey.parameter lay (treeIndexAt index lay) (leafIndexAt index lay)
+        (evalWithAnswerFn g (layerMessage secretKey index lay))
+        (signature.counter lay)) = some codeword := by
+    rw [← hmessageEq, ← hencodeCached.eval_eq hf hg]
+    exact hencode
+  exact ⟨entry, signature, index, leaves, lay, chainIdx, codeword, targetDigit, hentry,
+    hresponse, SuccessfulSignRun.changeAnswerFn hrun hf hg,
+    SuccessfulDigestRun.changeAnswerFn hdigest hf hg, hencode', hle, hcoordinate⟩
+
+attribute [local irreducible] maskedChronologicalRetainedPrefixAfterFtsSecrets
+
+theorem resolvedCore_of_mem_runResolved_chronologicalRetainedPrefix
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat)
+    (result : ResolvedRunResult
+      ((Digest × (Forgery × QueryLog SigningSpec)) × SplitHashCache))
+    (hresult : some result ∈ support
+      (runResolvedFromTable
+        { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+          values := emptyDeferredStructuralValues }
+        fuel table
+        ((maskedChronologicalRetainedPrefixAfterFtsSecrets adversary parameter ftsSecret).run
+          emptySplitHashCache))) :
+    result.table = table ∧ result.context.ValuesConsistent ∧
+      StartTableAgrees result.context.state table :=
+  resolvedCore_of_mem_runResolved_of_reachableResolvedCouples
+    (reachableResolvedCouples_chronologicalRetainedPrefixAfterFtsSecrets adversary parameter
+      table ftsSecret)
+    (resolvedContextInvariant_empty parameter table)
+    (visibleResolvedComputationsCached_empty parameter table emptyDeferredStructuralValues ∅)
+    publishedValues_empty hresult
+
+theorem concreteSupport_of_mem_runResolved_chronologicalRetainedPrefix
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat)
+    (result : ResolvedRunResult
+      ((Digest × (Forgery × QueryLog SigningSpec)) × SplitHashCache))
+    (completion : Coordinate → HashOutput)
+    (hresult : some result ∈ support
+      (runResolvedFromTable
+        { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+          values := emptyDeferredStructuralValues }
+        fuel table
+        ((maskedChronologicalRetainedPrefixAfterFtsSecrets adversary parameter ftsSecret).run
+          emptySplitHashCache)))
+    (hcompletion : DeferredCompletion table result.context completion) :
+    ∃ concreteCache,
+      ResolvedContextInvariant parameter table result.context
+        (ordinaryQueryCache result.value.2) concreteCache ∧
+      VisibleResolvedComputationsCached parameter table result.context concreteCache ∧
+      PublishedValues result.context.state ∧
+      (result.value.1, concreteCache) ∈ support
+        ((concreteRetainedPrefixAfterFtsSecrets adversary parameter table ftsSecret).run ∅) :=
+  concreteSupport_of_mem_runResolved_of_reachableResolvedCouples
+    (reachableResolvedCouples_chronologicalRetainedPrefixAfterFtsSecrets adversary parameter
+      table ftsSecret)
+    (resolvedContextInvariant_empty parameter table)
+    (visibleResolvedComputationsCached_empty parameter table emptyDeferredStructuralValues ∅)
+    publishedValues_empty hresult hcompletion
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem not_verifyProbe_of_mem_runResolved_maskedChronologicalRetainedGame
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (targetCache : QueryCache HashSpec)
+    (completion : Coordinate → HashOutput) (fallback : QueryImpl HashSpec Id)
+    (fuel : Nat)
+    (result : ResolvedRunResult (RetainedGameResult × SplitHashCache))
+    (hresult : some result ∈ support
+      (runResolvedFromTable
+        { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+          values := emptyDeferredStructuralValues }
+        fuel table
+        ((maskedChronologicalRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run
+          emptySplitHashCache)))
+    (hcompletion : DeferredCompletion table result.context completion)
+    (hfallback : CacheAgreesWithFnOffTable parameter completion
+      (ordinaryQueryCache result.value.2) fallback)
+    (hlogRuns : ∀ (entry : (request : SignRequest) × SigningSpec.Range request)
+      (signature : Signature), entry ∈ result.value.1.2.1.2 → entry.2 = some signature →
+        SuccessfulSignRun (tableAnswer parameter completion fallback) targetCache
+          (⟨parameter, result.value.1.1,
+            fun lay tree leafIdx chainIdx =>
+              truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+            ftsSecret⟩ : SecretKey)
+          entry.1 signature)
+    (hprobe : VerifyProbeWitness (tableAnswer parameter completion fallback) targetCache
+      (⟨parameter, result.value.1.1,
+        fun lay tree leafIdx chainIdx =>
+          truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
+        ftsSecret⟩ : SecretKey)
+      result.value.1.2.1.2 result.value.1.2.1.1.message
+        result.value.1.2.1.1.signature) : False := by
+  unfold maskedChronologicalRetainedGameAfterFtsSecrets at hresult
+  rw [StateT.run_bind, runResolvedFromTable_bind, mem_support_bind_iff] at hresult
+  obtain ⟨prefixOption, hprefix, hrest⟩ := hresult
+  cases prefixOption with
+  | none => simp at hrest
+  | some prefixResult =>
+      have hprefixCore : prefixResult.table = table ∧
+          prefixResult.context.ValuesConsistent ∧
+          StartTableAgrees prefixResult.context.state table :=
+        resolvedCore_of_mem_runResolved_chronologicalRetainedPrefix adversary parameter table
+          ftsSecret fuel prefixResult hprefix
+      simp only at hrest
+      rw [hprefixCore.1] at hrest
+      have hprefixCompletion : DeferredCompletion table prefixResult.context completion :=
+        hcompletion.of_mem_runResolvedFromTable _ prefixResult.context prefixResult.remaining table
+          result completion hprefixCore.2.1 hprefixCore.2.2 hrest
+      obtain ⟨prefixConcreteCache, hprefixInvariant, hprefixClosed, hprefixPublished,
+          _hprefixConcrete⟩ :=
+        concreteSupport_of_mem_runResolved_chronologicalRetainedPrefix adversary parameter table
+          ftsSecret fuel prefixResult completion hprefix hprefixCompletion
+      rw [StateT.run_bind, runResolvedFromTable_bind, mem_support_bind_iff] at hrest
+      obtain ⟨verifierOption, hverifier, hfinish⟩ := hrest
+      cases verifierOption with
+      | none => simp at hfinish
+      | some verifierResult =>
+          simp [runResolvedFromTable] at hfinish
+          subst result
+          have hprefixAllowed :=
+            revealedChainAllowed_of_mem_runResolved_chronologicalRetainedPrefix adversary
+              parameter table ftsSecret targetCache completion fallback fuel prefixResult hprefix
+                hprefixCompletion
+                (CacheAgreesWithFnOffTable.of_reachableResolvedCouples
+                  (reachableResolvedCouples_probingRom parameter table
+                    (scheme.verify ⟨prefixResult.value.1.1, parameter⟩
+                      prefixResult.value.1.2.1.message prefixResult.value.1.2.1.signature))
+                  hprefixInvariant hprefixClosed hprefixPublished hverifier hcompletion hfallback
+                    (fun value finalCache hright =>
+                      simulateQ_romImpl_cache_le
+                        (scheme.verify ⟨prefixResult.value.1.1, parameter⟩
+                          prefixResult.value.1.2.1.message
+                            prefixResult.value.1.2.1.signature)
+                        prefixConcreteCache (value, finalCache) hright))
+                hlogRuns
+          exact not_verifyProbe_of_mem_runResolved_verifier parameter table ftsSecret targetCache
+            prefixResult.value.1.1 prefixResult.value.1.2.1 prefixResult.value.1.2.2 completion
+              fallback prefixResult.context prefixResult.remaining prefixResult.value.2
+                prefixConcreteCache verifierResult hprefixInvariant hprefixClosed hprefixPublished
+                  hprefixAllowed hverifier hcompletion hfallback hprobe
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
