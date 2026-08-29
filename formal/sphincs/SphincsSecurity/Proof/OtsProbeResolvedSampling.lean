@@ -2549,6 +2549,86 @@ def DeferredContext.presamplePosition (context : DeferredContext)
   { state := context.state.clearPending (.position position)
     values := context.values.install position output }
 
+theorem clearPending_ensure_comm
+    (state : LazyRevealProbe.State Coordinate) (cleared ensured : Coordinate) :
+    (state.clearPending cleared).ensure ensured =
+      (state.ensure ensured).clearPending cleared := by
+  rfl
+
+theorem clearPending_publish_comm
+    (state : LazyRevealProbe.State Coordinate) (cleared published : Coordinate) :
+    (state.clearPending cleared).publish published =
+      (state.publish published).clearPending cleared := by
+  rfl
+
+theorem clearPending_addPending_comm_of_ne
+    (state : LazyRevealProbe.State Coordinate) (cleared added : Coordinate)
+    (candidate : Digest) (hne : added ≠ cleared) :
+    (state.clearPending cleared).addPending added candidate =
+      (state.addPending added candidate).clearPending cleared := by
+  rcases state with ⟨pending, values, revealed, ensured⟩
+  simp [LazyRevealProbe.State.clearPending, LazyRevealProbe.State.addPending,
+    LazyRevealProbe.State.pendingAway]
+  apply Finset.ext
+  intro entry
+  by_cases hpair : entry = (added, candidate)
+  · subst entry
+    simp [hne]
+  · simp [hpair]
+
+theorem presamplePosition_ensure
+    (context : DeferredContext) (position : Position) (output : HashOutput)
+    (coordinate : Coordinate) :
+    { context.presamplePosition position output with
+        state := (context.presamplePosition position output).state.ensure coordinate } =
+      ({ context with state := context.state.ensure coordinate } :
+        DeferredContext).presamplePosition position output := by
+  simp [DeferredContext.presamplePosition, clearPending_ensure_comm]
+
+theorem presamplePosition_publish
+    (context : DeferredContext) (position : Position) (output : HashOutput)
+    (coordinate : Coordinate) :
+    { context.presamplePosition position output with
+        state := (context.presamplePosition position output).state.publish coordinate } =
+      ({ context with state := context.state.publish coordinate } :
+        DeferredContext).presamplePosition position output := by
+  simp [DeferredContext.presamplePosition, clearPending_publish_comm]
+
+theorem presamplePosition_addPending_of_ne
+    (context : DeferredContext) (position : Position) (output : HashOutput)
+    (coordinate : Coordinate) (candidate : Digest)
+    (hne : coordinate ≠ .position position) :
+    { context.presamplePosition position output with
+        state := (context.presamplePosition position output).state.addPending
+          coordinate candidate } =
+      ({ context with state := context.state.addPending coordinate candidate } :
+        DeferredContext).presamplePosition position output := by
+  simp [DeferredContext.presamplePosition,
+    clearPending_addPending_comm_of_ne _ _ _ _ hne]
+
+theorem coordinates_clearPending_of_mem_ensured
+    (state : LazyRevealProbe.State Coordinate) (coordinate : Coordinate)
+    (hensured : coordinate ∈ state.ensured) :
+    (state.clearPending coordinate).coordinates = state.coordinates := by
+  rcases state with ⟨pending, values, revealed, ensured⟩
+  simp only [LazyRevealProbe.State.clearPending, LazyRevealProbe.State.coordinates]
+  apply Finset.ext
+  intro other
+  simp only [Finset.mem_union, Finset.mem_image, LazyRevealProbe.State.pendingAway,
+    Finset.mem_filter]
+  constructor
+  · intro hmem
+    rcases hmem with hmem | ⟨entry, ⟨hentry, _hne⟩, heq⟩
+    · exact Or.inl hmem
+    · exact Or.inr ⟨entry, hentry, heq⟩
+  · intro hmem
+    rcases hmem with hmem | ⟨entry, hentry, heq⟩
+    · exact Or.inl hmem
+    · by_cases hsame : entry.1 = coordinate
+      · have hother : other = coordinate := heq ▸ hsame
+        exact Or.inl (hother.symm ▸ hensured)
+      · exact Or.inr ⟨entry, ⟨hentry, hsame⟩, heq⟩
+
 theorem not_hitAt_clearPending_self
     (state : LazyRevealProbe.State Coordinate) (coordinate : Coordinate)
     (output : HashOutput) :
