@@ -1,6 +1,6 @@
 import SphincsSecurity.Proof.OtsProbeResolvedAdaptiveProbability
 import SphincsSecurity.Proof.OtsProbeResolvedCleanTerminal
-import SphincsSecurity.Proof.OtsProbeResolvedDirectRecursive
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryDirect
 import SphincsSecurity.Proof.TerminalResidual
 import SphincsSecurity.Proof.FtsProbeSampling
 
