@@ -6,6 +6,7 @@ import SphincsSecurity.Proof.OtsProbeResolvedPrivateObserver
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
 open OracleComp OracleSpec
+open OracleComp.ProgramLogic.Relational
 
 def DeferredAbsentOn (coordinates : List Coordinate) (context : DeferredContext) : Prop :=
   ∀ position : Position, Coordinate.position position ∈ coordinates →
@@ -138,6 +139,378 @@ theorem evalDist_finishResolvedRunIsNone_eq_finishDirectRunIsNone
       (some ⟨directDeferredContext state, fuel, value, table⟩))
   funext result
   cases result <;> rfl
+
+set_option maxRecDepth 100000 in
+theorem evalDist_resolveDeferredPositionValue_then_runResolvedObserve_eq_of_synchronized
+    (table : OtsSecretIndex → HashOutput) (position : Position)
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    {observe : DeferredContext → Nat → α → ProbComp Bool}
+    [ObserverDooms table observe] [ObserverSynchronized table observe]
+    (left right : DeferredContext) (fuel : Nat)
+    (hcontext : FinalizationContextEq table (some left) (some right))
+    (hvalues : left.state.values = right.state.values)
+    (hrevealed : left.state.revealed = right.state.revealed) :
+    evalDist (do
+      let resolved ← resolveDeferredPositionValue position left
+      match resolved with
+      | none => pure true
+      | some resolved =>
+          runResolvedObserve observe resolved.toDeferredContext fuel table computation) =
+      evalDist (do
+        let resolved ← resolveDeferredPositionValue position right
+        match resolved with
+        | none => pure true
+        | some resolved =>
+            runResolvedObserve observe resolved.toDeferredContext fuel table computation) := by
+  rcases hcontext with ⟨hview, hleftValid, hrightValid, hleftCompletable⟩
+  have hresolved := relTriple_resolveDeferredPositionValue_of_finalizationViewEq table position
+    left right hview hleftValid hrightValid hleftCompletable
+  have hresolvedLeft :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hresolved
+      (fun result => result ∈ support (resolveDeferredPositionValue position left))
+      (fun result hresult => hresult)
+  have hresolvedBoth :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hresolvedLeft
+  apply evalDist_eq_of_relTriple_eqRel
+  apply relTriple_bind hresolvedBoth
+  intro leftResolved rightResolved hrelation
+  rcases hrelation with ⟨⟨hrelation, hleftSupport⟩, hrightSupport⟩
+  cases leftResolved with
+  | none =>
+      cases rightResolved with
+      | none => exact relTriple_pure_pure rfl
+      | some rightResolved => simp [FinalizationResolutionEq] at hrelation
+  | some leftResolved =>
+      cases rightResolved with
+      | none => simp [FinalizationResolutionEq] at hrelation
+      | some rightResolved =>
+          apply relTriple_eqRel_of_evalDist_eq
+          apply evalDist_runResolvedObserve_eq_of_finalizationSynchronized computation
+          · exact ⟨hrelation.2.1, hrelation.2.2.1, hrelation.2.2.2.1,
+              hrelation.2.2.2.2⟩
+          · rw [resolveDeferredPositionValue_preserves_state_values position left leftResolved
+                hleftSupport,
+              resolveDeferredPositionValue_preserves_state_values position right rightResolved
+                hrightSupport]
+            exact hvalues
+          · rw [resolveDeferredPositionValue_state_eq_clearPending position left leftResolved
+                hleftSupport,
+              resolveDeferredPositionValue_state_eq_clearPending position right rightResolved
+                hrightSupport]
+            simpa [LazyRevealProbe.State.clearPending] using hrevealed
+
+set_option maxRecDepth 100000 in
+theorem evalDist_resolveDeferredPositionValue_then_runResolvedObserve_any
+    (position : Position) (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    {observe : DeferredContext → Nat → α → ProbComp Bool}
+    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (hvalid : context.Valid) (hcompletable : DeferredCompletable table context)
+    [ObserverDooms table observe] [ObserverSynchronized table observe]
+    [ObserverPositionNeutral table observe] :
+    evalDist (do
+      let resolved ← resolveDeferredPositionValue position context
+      match resolved with
+      | none => pure true
+      | some resolved =>
+          runResolvedObserve observe resolved.toDeferredContext fuel table computation) =
+      evalDist (runResolvedObserve observe context fuel table computation) := by
+  let ensured : DeferredContext :=
+    { context with state := context.state.ensure (.position position) }
+  have hensuredValid : ensured.Valid := hvalid.ensure (.position position)
+  have hensuredCompletable : DeferredCompletable table ensured :=
+    hcompletable.ensure (.position position)
+  have hstarts := startTableAgrees_of_deferredCompletable hcompletable
+  have hensuredStarts : StartTableAgrees ensured.state table :=
+    hstarts.ensure (.position position)
+  have hview : FinalizationViewEq table context ensured :=
+    finalizationViewEq_of_deferredCompletion_iff hvalid hensuredValid hstarts hensuredStarts rfl
+      hcompletable (fun _ => Iff.rfl)
+  have hcontext : FinalizationContextEq table (some context) (some ensured) :=
+    ⟨hview, hvalid, hensuredValid, hcompletable⟩
+  have hcontextSymm : FinalizationContextEq table (some ensured) (some context) :=
+    ⟨hview.symm, hensuredValid, hvalid, hensuredCompletable⟩
+  calc
+    _ = evalDist (do
+        let resolved ← resolveDeferredPositionValue position ensured
+        match resolved with
+        | none => pure true
+        | some resolved =>
+            runResolvedObserve observe resolved.toDeferredContext fuel table computation) :=
+      evalDist_resolveDeferredPositionValue_then_runResolvedObserve_eq_of_synchronized
+        table position computation context ensured fuel hcontext rfl rfl
+    _ = evalDist (runResolvedObserve observe ensured fuel table computation) :=
+      evalDist_resolveDeferredPositionValue_then_runResolvedObserve_auto
+        (observe := observe) position computation ensured fuel table hensuredValid
+          hensuredCompletable (by simp [ensured, LazyRevealProbe.State.ensure])
+    _ = _ :=
+      evalDist_runResolvedObserve_eq_of_finalizationSynchronized computation ensured context
+        fuel table hcontextSymm rfl rfl
+
+set_option maxRecDepth 100000 in
+theorem evalDist_resolveDeferredChainPrefix_then_runResolvedObserve_any
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) :
+    ∀ steps hsteps (context : DeferredContext) (fuel : Nat)
+      (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+      {observe : DeferredContext → Nat → α → ProbComp Bool}
+      [ObserverDooms table observe] [ObserverSynchronized table observe]
+      [ObserverPositionNeutral table observe],
+      context.Valid → DeferredCompletable table context →
+      evalDist (do
+        let resolved ← resolveDeferredChainPrefix table lay tree leafIdx chainIdx
+          steps hsteps context
+        match resolved with
+        | none => pure true
+        | some resolved =>
+            runResolvedObserve observe resolved.toDeferredContext fuel table computation) =
+        evalDist (runResolvedObserve observe context fuel table computation)
+  | 0, hsteps, context, fuel, computation, observe, _hdooms, _hsynchronized,
+      _hposition, hvalid, hcompletable => by
+      simp only [resolveDeferredChainPrefix, pure_bind]
+      exact evalDist_resolveDeferredChainStart_then_runResolvedObserve table
+        ⟨lay, tree, leafIdx, chainIdx⟩ context fuel computation hvalid hcompletable
+  | steps + 1, hsteps, context, fuel, computation, observe, _hdooms, _hsynchronized,
+      _hposition, hvalid, hcompletable => by
+      rw [resolveDeferredChainPrefix]
+      simp only [bind_assoc]
+      calc
+        _ = evalDist (resolveDeferredChainPrefix table lay tree leafIdx chainIdx steps
+              (by omega) context >>= fun previous =>
+            match previous with
+            | none => pure true
+            | some previous =>
+                runResolvedObserve observe previous.toDeferredContext fuel table computation) := by
+          apply evalDist_bind_congr
+          intro previous hprevious
+          cases previous with
+          | none => rfl
+          | some previous =>
+              let position : Position :=
+                .chain lay tree leafIdx chainIdx ⟨steps, by omega⟩
+              have hpreviousValid := hvalid.of_resolveDeferredChainPrefix table lay tree
+                leafIdx chainIdx steps (by omega) previous hprevious
+              have hpreviousCompletable :=
+                hcompletable.of_resolveDeferredChainPrefix hvalid hprevious
+              exact evalDist_resolveDeferredPositionValue_then_runResolvedObserve_any
+                (observe := observe) position computation previous.toDeferredContext fuel table
+                  hpreviousValid hpreviousCompletable
+        _ = _ :=
+          evalDist_resolveDeferredChainPrefix_then_runResolvedObserve_any table lay tree
+            leafIdx chainIdx steps (by omega) context fuel computation hvalid hcompletable
+
+set_option maxRecDepth 100000 in
+theorem evalDist_resolveDeferredChains_then_runResolvedObserve_any
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) :
+    ∀ (chains : List ChainIndex) (context : DeferredContext) (fuel : Nat)
+      (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+      {observe : DeferredContext → Nat → α → ProbComp Bool}
+      [ObserverDooms table observe] [ObserverSynchronized table observe]
+      [ObserverPositionNeutral table observe],
+      context.Valid → DeferredCompletable table context →
+      evalDist (do
+        let resolved ← resolveDeferredChains table lay tree leafIdx chains context
+        match resolved with
+        | none => pure true
+        | some resolved => runResolvedObserve observe resolved fuel table computation) =
+        evalDist (runResolvedObserve observe context fuel table computation)
+  | [], context, fuel, computation, observe, _hdooms, _hsynchronized, _hposition,
+      _hvalid, _hcompletable => by
+      simp [resolveDeferredChains]
+  | chainIdx :: remaining, context, fuel, computation, observe, _hdooms, _hsynchronized,
+      _hposition, hvalid, hcompletable => by
+      rw [resolveDeferredChains]
+      simp only [bind_assoc]
+      calc
+        _ = evalDist (resolveDeferredChainPrefix table lay tree leafIdx chainIdx
+              (chainLength - 1) (by omega) context >>= fun resolved =>
+            match resolved with
+            | none => pure true
+            | some resolved =>
+                runResolvedObserve observe resolved.toDeferredContext fuel table computation) := by
+          apply evalDist_bind_congr
+          intro resolved hresolved
+          cases resolved with
+          | none => rfl
+          | some resolved =>
+              have hresolvedValid := hvalid.of_resolveDeferredChainPrefix table lay tree
+                leafIdx chainIdx (chainLength - 1) (by omega) resolved hresolved
+              have hresolvedCompletable :=
+                hcompletable.of_resolveDeferredChainPrefix hvalid hresolved
+              exact evalDist_resolveDeferredChains_then_runResolvedObserve_any table lay tree
+                leafIdx remaining resolved.toDeferredContext fuel computation hresolvedValid
+                  hresolvedCompletable
+        _ = _ :=
+          evalDist_resolveDeferredChainPrefix_then_runResolvedObserve_any table lay tree
+            leafIdx chainIdx (chainLength - 1) (by omega) context fuel computation hvalid
+              hcompletable
+
+set_option maxRecDepth 100000 in
+theorem evalDist_resolveDeferredOtsLeaf_then_runResolvedObserve_any
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (context : DeferredContext) (fuel : Nat)
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    {observe : DeferredContext → Nat → α → ProbComp Bool}
+    [ObserverDooms table observe] [ObserverSynchronized table observe]
+    [ObserverPositionNeutral table observe]
+    (hvalid : context.Valid) (hcompletable : DeferredCompletable table context) :
+    evalDist (do
+      let resolved ← resolveDeferredOtsLeaf table lay tree leafIdx context
+      match resolved with
+      | none => pure true
+      | some resolved =>
+          runResolvedObserve observe resolved.toDeferredContext fuel table computation) =
+      evalDist (runResolvedObserve observe context fuel table computation) := by
+  rw [resolveDeferredOtsLeaf]
+  simp only [bind_assoc]
+  calc
+    _ = evalDist (resolveDeferredChains table lay tree leafIdx
+          (List.ofFn fun chainIdx : ChainIndex => chainIdx) context >>= fun chains =>
+        match chains with
+        | none => pure true
+        | some chains => runResolvedObserve observe chains fuel table computation) := by
+      apply evalDist_bind_congr
+      intro chains hchains
+      cases chains with
+      | none => rfl
+      | some chains =>
+          have hchainsValid := hvalid.of_resolveDeferredChains table lay tree leafIdx
+            (List.ofFn fun chainIdx : ChainIndex => chainIdx) chains hchains
+          have hchainsCompletable := hcompletable.of_resolveDeferredChains hvalid hchains
+          exact evalDist_resolveDeferredPositionValue_then_runResolvedObserve_any
+            (observe := observe) (.leaf lay tree leafIdx) computation chains fuel table
+              hchainsValid hchainsCompletable
+    _ = _ := evalDist_resolveDeferredChains_then_runResolvedObserve_any table lay tree
+      leafIdx (List.ofFn fun chainIdx : ChainIndex => chainIdx) context fuel computation
+        hvalid hcompletable
+
+set_option maxRecDepth 100000 in
+theorem evalDist_resolveDeferredTreeNode_then_runResolvedObserve_any
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex) :
+    ∀ level nodeIdx hlevel (context : DeferredContext) (fuel : Nat)
+      (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+      {observe : DeferredContext → Nat → α → ProbComp Bool}
+      [ObserverDooms table observe] [ObserverSynchronized table observe]
+      [ObserverPositionNeutral table observe],
+      context.Valid → DeferredCompletable table context →
+      evalDist (do
+        let resolved ← resolveDeferredTreeNode table lay tree level nodeIdx hlevel context
+        match resolved with
+        | none => pure true
+        | some resolved =>
+            runResolvedObserve observe resolved.toDeferredContext fuel table computation) =
+        evalDist (runResolvedObserve observe context fuel table computation)
+  | 0, nodeIdx, hlevel, context, fuel, computation, observe, _hdooms, _hsynchronized,
+      _hposition, hvalid, hcompletable =>
+      evalDist_resolveDeferredOtsLeaf_then_runResolvedObserve_any table lay tree
+        (leafOfNat nodeIdx) context fuel computation hvalid hcompletable
+  | level + 1, nodeIdx, hlevel, context, fuel, computation, observe, _hdooms,
+      _hsynchronized, _hposition, hvalid, hcompletable => by
+      rw [resolveDeferredTreeNode]
+      simp only [bind_assoc]
+      calc
+        _ = evalDist (resolveDeferredTreeNode table lay tree level (2 * nodeIdx)
+              (by omega) context >>= fun leftResult =>
+            match leftResult with
+            | none => pure true
+            | some leftResult =>
+                runResolvedObserve observe leftResult.toDeferredContext fuel table computation) := by
+          apply evalDist_bind_congr
+          intro leftResult hleft
+          cases leftResult with
+          | none => rfl
+          | some leftResult =>
+              have hleftValid := hvalid.of_resolveDeferredTreeNode table lay tree level
+                (2 * nodeIdx) (by omega) leftResult hleft
+              have hleftCompletable :=
+                hcompletable.of_resolveDeferredTreeNode hvalid hleft
+              simp only [bind_assoc]
+              calc
+                _ = evalDist (resolveDeferredTreeNode table lay tree level
+                      (2 * nodeIdx + 1) (by omega) leftResult.toDeferredContext >>=
+                    fun rightResult =>
+                      match rightResult with
+                      | none => pure true
+                      | some rightResult =>
+                          runResolvedObserve observe rightResult.toDeferredContext fuel table
+                            computation) := by
+                  apply evalDist_bind_congr
+                  intro rightResult hright
+                  cases rightResult with
+                  | none => rfl
+                  | some rightResult =>
+                      have hrightValid := hleftValid.of_resolveDeferredTreeNode table lay tree
+                        level (2 * nodeIdx + 1) (by omega) rightResult hright
+                      have hrightCompletable :=
+                        hleftCompletable.of_resolveDeferredTreeNode hleftValid hright
+                      exact evalDist_resolveDeferredPositionValue_then_runResolvedObserve_any
+                        (observe := observe)
+                        (.node lay tree ⟨level, by omega⟩ (leafOfNat nodeIdx)) computation
+                          rightResult.toDeferredContext fuel table hrightValid
+                            hrightCompletable
+                _ = _ :=
+                  evalDist_resolveDeferredTreeNode_then_runResolvedObserve_any table lay tree
+                    level (2 * nodeIdx + 1) (by omega) leftResult.toDeferredContext fuel
+                      computation hleftValid hleftCompletable
+        _ = _ :=
+          evalDist_resolveDeferredTreeNode_then_runResolvedObserve_any table lay tree level
+            (2 * nodeIdx) (by omega) context fuel computation hvalid hcompletable
+
+set_option maxRecDepth 100000 in
+theorem evalDist_resolveDeferredReveal_then_runResolvedObserve_any
+    (table : OtsSecretIndex → HashOutput) (position : Position)
+    (context : DeferredContext) (fuel : Nat)
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    {observe : DeferredContext → Nat → α → ProbComp Bool}
+    [ObserverDooms table observe] [ObserverSynchronized table observe]
+    [ObserverPositionNeutral table observe]
+    (hvalid : context.Valid) (hcompletable : DeferredCompletable table context) :
+    evalDist (do
+      let resolved ← resolveDeferredReveal table position context
+      match resolved with
+      | none => pure true
+      | some resolved =>
+          runResolvedObserve observe resolved.toDeferredContext fuel table computation) =
+      evalDist (runResolvedObserve observe context fuel table computation) := by
+  cases position with
+  | chain lay tree leafIdx chainIdx step =>
+      have hsteps : step.val + 1 ≤ chainLength - 1 := by
+        have := step.isLt
+        omega
+      rw [resolveDeferredReveal, if_pos (by simp [ResolvableOtsPosition])]
+      exact evalDist_resolveDeferredChainPrefix_then_runResolvedObserve_any table lay tree
+        leafIdx chainIdx (step.val + 1) hsteps context fuel computation hvalid hcompletable
+  | leaf lay tree leafIdx =>
+      rw [resolveDeferredReveal, if_pos (by simp [ResolvableOtsPosition])]
+      exact evalDist_resolveDeferredOtsLeaf_then_runResolvedObserve_any table lay tree
+        leafIdx context fuel computation hvalid hcompletable
+  | node lay tree level nodeIdx =>
+      by_cases hresolvable : ResolvableOtsPosition (.node lay tree level nodeIdx)
+      · have hlevel : level.val + 1 ≤ maxLayerHeight := by
+          have := level.isLt
+          omega
+        rw [resolveDeferredReveal, if_pos hresolvable]
+        exact evalDist_resolveDeferredTreeNode_then_runResolvedObserve_any table lay tree
+          (level.val + 1) nodeIdx hlevel context fuel computation hvalid hcompletable
+      · rw [resolveDeferredReveal, if_neg hresolvable]
+        exact evalDist_resolveDeferredPositionValue_then_runResolvedObserve_any
+          (observe := observe) (.node lay tree level nodeIdx) computation context fuel table
+            hvalid hcompletable
+  | ftsLeaf index tree leafIdx =>
+      rw [resolveDeferredReveal, if_neg (by simp [ResolvableOtsPosition])]
+      exact evalDist_resolveDeferredPositionValue_then_runResolvedObserve_any
+        (observe := observe) (.ftsLeaf index tree leafIdx) computation context fuel table
+          hvalid hcompletable
+  | ftsNode index tree level nodeIdx =>
+      rw [resolveDeferredReveal, if_neg (by simp [ResolvableOtsPosition])]
+      exact evalDist_resolveDeferredPositionValue_then_runResolvedObserve_any
+        (observe := observe) (.ftsNode index tree level nodeIdx) computation context fuel table
+          hvalid hcompletable
+  | ftsRoots index =>
+      rw [resolveDeferredReveal, if_neg (by simp [ResolvableOtsPosition])]
+      exact evalDist_resolveDeferredPositionValue_then_runResolvedObserve_any
+        (observe := observe) (.ftsRoots index) computation context fuel table hvalid
+          hcompletable
 
 def RecursiveRevealEnsured (position : Position) (context : DeferredContext) : Prop :=
   match position with
