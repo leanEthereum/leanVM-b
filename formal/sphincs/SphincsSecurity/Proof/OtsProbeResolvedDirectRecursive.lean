@@ -1766,6 +1766,72 @@ theorem evalDist_runResolvedObserve_eq_runDirectResolvedObserve
                       intro resolved _hresolved
                       cases resolved <;> rfl
 
+noncomputable def resolvedFinalizationObserve
+    (table : OtsSecretIndex → HashOutput)
+    (context : DeferredContext) (fuel : Nat) (value : α) : ProbComp Bool :=
+  finishResolvedRunIsNone (some ⟨context, fuel, value, table⟩)
+
+instance resolvedFinalizationObserve_observerDooms
+    (α : Type) (table : OtsSecretIndex → HashOutput) :
+    ObserverDooms table
+      (resolvedFinalizationObserve table : DeferredContext → Nat → α → ProbComp Bool) where
+  eq_true context fuel value hconsistent hstarts hdoomed := by
+    simpa [runResolvedFinishIsNone, runResolvedFromTable,
+      resolvedFinalizationObserve] using
+      (evalDist_runResolvedFinishIsNone_eq_true_of_not_completable context fuel table
+        (pure value) hconsistent hstarts hdoomed)
+
+instance resolvedFinalizationObserve_observerSynchronized
+    (α : Type) (table : OtsSecretIndex → HashOutput) :
+    ObserverSynchronized table
+      (resolvedFinalizationObserve table : DeferredContext → Nat → α → ProbComp Bool) where
+  eq_of_synchronized left right fuel value hcontext _hvalues _hrevealed := by
+    exact evalDist_finishResolvedRunIsNone_eq_of_finalizationContextEq table left right fuel
+      value hcontext
+
+instance resolvedFinalizationObserve_observerPositionNeutral
+    (α : Type) (table : OtsSecretIndex → HashOutput) :
+    ObserverPositionNeutral table
+      (resolvedFinalizationObserve table : DeferredContext → Nat → α → ProbComp Bool) where
+  eq_resolve position context fuel value hvalid hcompletable hensured := by
+    change evalDist (do
+      let resolved ← resolveDeferredPositionValue position context
+      match resolved with
+      | none => pure true
+      | some resolved =>
+          runResolvedFinishIsNone resolved.toDeferredContext fuel table (pure value)) =
+        evalDist (runResolvedFinishIsNone context fuel table (pure value))
+    exact evalDist_resolveDeferredPositionValue_then_runResolvedFinishIsNone position
+      (pure value) context fuel table hvalid hcompletable hensured
+
+theorem evalDist_runResolvedFinishIsNone_eq_runDirectResolvedFinalizationIsNone
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (hvalid : context.Valid) (hcompletable : DeferredCompletable table context) :
+    evalDist (runResolvedFinishIsNone context fuel table computation) =
+      evalDist (runDirectResolvedFromTable context fuel table computation >>=
+        finishObserve (resolvedFinalizationObserve table)) := by
+  calc
+    _ = evalDist (runResolvedObserve (resolvedFinalizationObserve table) context fuel table
+          computation) := by
+      unfold runResolvedFinishIsNone runResolvedObserve
+      apply evalDist_bind_congr
+      intro result hresult
+      cases result with
+      | none => rfl
+      | some result =>
+          have hcore := resolvedCore_of_mem_runResolvedFromTable computation context fuel table
+            result hvalid.valuesConsistent
+              (startTableAgrees_of_deferredCompletable hcompletable) hresult
+          rcases result with ⟨resultContext, remaining, value, resultTable⟩
+          dsimp only at hcore
+          rw [hcore.1]
+          rfl
+    _ = _ := evalDist_runResolvedObserve_eq_runDirectResolvedObserve
+      (observe := resolvedFinalizationObserve table) context fuel table computation hvalid
+        hcompletable
+
 def RecursiveRevealEnsured (position : Position) (context : DeferredContext) : Prop :=
   match position with
   | .chain lay tree leafIdx chainIdx step =>
