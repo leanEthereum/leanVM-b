@@ -1,5 +1,5 @@
 import SphincsSecurity.Proof.OtsProbeResolvedAdaptiveProbability
-import SphincsSecurity.Proof.OtsProbeResolvedAdaptiveEndpoint
+import SphincsSecurity.Proof.OtsProbeResolvedCleanTerminal
 import SphincsSecurity.Proof.TerminalResidual
 import SphincsSecurity.Proof.FtsProbeSampling
 

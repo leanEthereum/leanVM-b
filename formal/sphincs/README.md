@@ -142,6 +142,8 @@ The adaptive delayed-signer lift is now complete. A generic boundary observer co
 
 Root construction, adaptive execution and verifier finalization are now composed around the boundary observer. The verifier-plus-finalization continuation itself satisfies the doomed, synchronized and private-position-neutral observer laws, so the canonical delayed retained game has exactly the same fixed-table failure distribution as the boundary-normalized masked run. The remaining one-time work is only the table-averaged identification of that boundary run with `sampledRunThenFinalizeClean`, followed by the existing `q * 2^-128` bound and final three-event theorem.
 
+The terminal resolved-to-clean quotient is now explicit. Any deferred context related by `FinalizationContextEq` to a clean state with an empty private store has exactly the same final completion-failure Boolean as `finishCleanRunFromTable`; no equality of their hidden representations is assumed. What remains is to preserve that relation through the boundary-normalized root, adaptive masked handler and verifier, then average the resulting endpoint equality over the uniformly sampled one-time table.
+
 Two places a proof can go wrong, both found by attacking the claim rather than by reading it:
 
 - **A strong forgery needs no chain inversion.** `Ver` does not check that the counter is the least admissible one, so a second `c'` with `Enc(P,lay,tau,e,M,c') = x` reuses the chain values verbatim and verifies. Since the codeword fixes the digest, that is one `2^-128` hit per query and it is harmless, but it is a branch of its own: the one-time signature is unforgeable on a *new* message by incomparability, and unforgeable on the *signed* message only by collision resistance at `tw_enc`.
