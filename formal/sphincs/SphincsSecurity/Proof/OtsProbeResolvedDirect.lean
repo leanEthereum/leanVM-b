@@ -66,14 +66,14 @@ noncomputable def runDirectResolvedFromTable
                         values := context.values }
                       fuel table
               | .position position => do
-                  let output ← LazyRevealProbe.sampleHashOutput
-                  if context.state.hitAt coordinate output then
-                    pure none
-                  else
-                    recursivelyRun output
-                      { state := context.state.materialize coordinate output
-                        values := context.values.install position output }
-                      fuel table)
+                  let resolved ← resolveDeferredPositionValue position context
+                  match resolved with
+                  | none => pure none
+                  | some resolved =>
+                      recursivelyRun resolved.output
+                        { state := context.state.materialize coordinate resolved.output
+                          values := resolved.values }
+                        fuel table)
     computation context fuel table
 
 theorem runDirectResolvedFromTable_uniform_query_bind
@@ -182,14 +182,14 @@ theorem runDirectResolvedFromTable_reveal_query_bind
                     values := context.values }
                   fuel table (next output)
           | .position position => do
-              let output ← LazyRevealProbe.sampleHashOutput
-              if context.state.hitAt coordinate output then
-                pure none
-              else
-                runDirectResolvedFromTable
-                  { state := context.state.materialize coordinate output
-                    values := context.values.install position output }
-                  fuel table (next output)) := by
+              let resolved ← resolveDeferredPositionValue position context
+              match resolved with
+              | none => pure none
+              | some resolved =>
+                  runDirectResolvedFromTable
+                    { state := context.state.materialize coordinate resolved.output
+                      values := resolved.values }
+                    fuel table (next resolved.output)) := by
   cases coordinate <;> rfl
 
 theorem directDeferredValues_ensure
@@ -310,20 +310,46 @@ theorem map_projectResolvedRunResult_runDirect_eq_runClean
                       (hcontext ▸ ih output
                         (state.materialize index.coordinate output) fuel)
               | position position =>
-                  simp only [directDeferredContext, hvalue, map_bind]
-                  apply bind_congr
-                  intro output
-                  by_cases hhit : state.hitAt (.position position) output
-                  · simp [hhit, projectResolvedRunResult]
-                  · simp only [hhit, ↓reduceIte]
-                    have hcontext :
-                        { state := state.materialize (.position position) output,
-                          values := (directDeferredValues state).install position output } =
-                          directDeferredContext
-                            (state.materialize (.position position) output) := by
-                      simp [directDeferredContext,
-                        directDeferredValues_materialize_position]
-                    rw [hcontext]
-                    exact ih output (state.materialize (.position position) output) fuel
+                  have hstate : (directDeferredContext state).state = state := rfl
+                  simp only [hstate, hvalue]
+                  have hprivate :
+                      (directDeferredContext state).values position = none := by
+                    simpa [directDeferredContext, directDeferredValues] using hvalue
+                  rw [resolveDeferredPositionValue_fresh position
+                    (directDeferredContext state) hvalue hprivate]
+                  · simp only [map_bind, bind_assoc]
+                    apply bind_congr
+                    intro output
+                    by_cases hhit : state.hitAt (.position position) output
+                    · simp [hstate, hhit, projectResolvedRunResult]
+                    · simp only [hhit, ↓reduceIte, pure_bind,
+                        directDeferredContext]
+                      have hcontext :
+                          { state := state.materialize (.position position) output,
+                            values := (directDeferredValues state).install position output } =
+                            directDeferredContext
+                              (state.materialize (.position position) output) := by
+                        simp [directDeferredContext,
+                          directDeferredValues_materialize_position]
+                      rw [hcontext]
+                      exact ih output (state.materialize (.position position) output) fuel
+
+noncomputable def finishDirectRunIsNone :
+    Option (ResolvedRunResult α) → ProbComp Bool := fun result =>
+  finishCleanRunIsNone (projectResolvedRunResult result)
+
+set_option maxRecDepth 100000 in
+theorem evalDist_runDirectFinishIsNone_eq_runCleanFinishIsNone
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) :
+    evalDist (runDirectResolvedFromTable (directDeferredContext state) fuel table computation >>=
+        finishDirectRunIsNone) =
+      evalDist (runCleanFromTable state fuel table computation >>= finishCleanRunIsNone) := by
+  have hprojection := map_projectResolvedRunResult_runDirect_eq_runClean computation state
+    fuel table
+  unfold finishDirectRunIsNone
+  rw [← hprojection, map_eq_bind_pure_comp, bind_assoc]
+  rfl
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
