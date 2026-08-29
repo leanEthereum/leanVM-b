@@ -2679,6 +2679,148 @@ theorem evalDist_finalizeResolvedCoordinates_defer_position
         rw [hcompleted] at hmove
         exact hmove.symm
 
+theorem hitAt_addPending_self_iff
+    (state : LazyRevealProbe.State Coordinate) (coordinate : Coordinate)
+    (candidate : Digest) (output : HashOutput) :
+    (state.addPending coordinate candidate).hitAt coordinate output ↔
+      state.hitAt coordinate output ∨ truncateHash output = candidate := by
+  simp [LazyRevealProbe.State.hitAt, LazyRevealProbe.State.pendingAt,
+    LazyRevealProbe.State.addPending, or_comm]
+
+@[simp] theorem clearPending_addPending_complete_self
+    (state : LazyRevealProbe.State Coordinate) (coordinate : Coordinate)
+    (candidate : Digest) (output : HashOutput) :
+    ((state.clearPending coordinate).addPending coordinate candidate).complete
+        coordinate output =
+      ((state.addPending coordinate candidate).clearPending coordinate).complete
+        coordinate output := by
+  rcases state with ⟨pending, values, revealed, ensured⟩
+  simp [LazyRevealProbe.State.clearPending, LazyRevealProbe.State.addPending,
+    LazyRevealProbe.State.complete, LazyRevealProbe.State.pendingAway]
+  apply Finset.ext
+  intro entry
+  by_cases haway : entry.1 ≠ coordinate
+  · have hpair : entry ≠ (coordinate, candidate) := by
+      intro heq
+      subst entry
+      exact haway rfl
+    simp [haway, hpair]
+  · simp [haway]
+
+set_option maxRecDepth 100000 in
+theorem evalDist_resolveDeferredPositionValue_then_probe_self_finalize_fresh
+    (position : Position) (candidate : Digest) (coordinates : List Coordinate)
+    (context : DeferredContext) (table : OtsSecretIndex → HashOutput)
+    (hmem : Coordinate.position position ∈ coordinates)
+    (hstate : context.state.values (.position position) = none)
+    (hvalue : context.values position = none) :
+    evalDist (do
+      let resolved ← resolveDeferredPositionValue position context
+      match resolved with
+      | none => (pure none : ProbComp (Option DeferredContext))
+      | some resolved =>
+          finalizeResolvedCoordinates coordinates
+            { resolved.toDeferredContext with
+              state := resolved.state.addPending (.position position) candidate }
+            table) =
+      evalDist (finalizeResolvedCoordinates coordinates
+        { context with state := context.state.addPending (.position position) candidate }
+        table) := by
+  rw [resolveDeferredPositionValue_fresh position context hstate hvalue]
+  simp only [bind_assoc]
+  rw [evalDist_finalizeResolvedCoordinates_defer_position position coordinates
+    { context with state := context.state.addPending (.position position) candidate }
+    table hmem]
+  · apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+    intro output
+    by_cases holdHit : context.state.hitAt (.position position) output
+    · rw [if_pos holdHit]
+      have hnewHit :
+          (context.state.addPending (.position position) candidate).hitAt
+            (.position position) output :=
+        (hitAt_addPending_self_iff context.state (.position position) candidate output).2
+          (Or.inl holdHit)
+      rw [if_pos hnewHit]
+      simp
+    · rw [if_neg holdHit]
+      by_cases hcandidate : truncateHash output = candidate
+      · have hnewHit :
+            (context.state.addPending (.position position) candidate).hitAt
+              (.position position) output :=
+          (hitAt_addPending_self_iff context.state (.position position) candidate output).2
+            (Or.inr hcandidate)
+        rw [if_pos hnewHit]
+        let leftContext : DeferredContext :=
+          { state :=
+              (context.presamplePosition position output).state.addPending
+                (.position position) candidate
+            values := (context.presamplePosition position output).values }
+        have hleftState : leftContext.state.values (.position position) = none := hstate
+        have hleftValue : leftContext.values position = some output := by
+          simp [leftContext, DeferredContext.presamplePosition,
+            DeferredStructuralValues.install]
+        have hleftHit : leftContext.state.hitAt (.position position) output := by
+          rw [hitAt_addPending_self_iff]
+          exact Or.inr hcandidate
+        have hleftMove := evalDist_finalizeResolvedCoordinates_move_to_front
+          (.position position) coordinates leftContext table hmem
+        rw [finalizeResolvedCoordinates_cons_position_of_deferred_value position
+          (coordinates.erase (.position position)) leftContext table output hleftState
+          hleftValue, if_pos hleftHit] at hleftMove
+        change evalDist (finalizeResolvedCoordinates coordinates leftContext table) =
+          evalDist (pure none)
+        exact hleftMove
+      · have hnewHit :
+            ¬(context.state.addPending (.position position) candidate).hitAt
+              (.position position) output := by
+          rw [hitAt_addPending_self_iff]
+          exact not_or_intro holdHit hcandidate
+        rw [if_neg hnewHit]
+        let leftContext : DeferredContext :=
+          { state :=
+              (context.presamplePosition position output).state.addPending
+                (.position position) candidate
+            values := (context.presamplePosition position output).values }
+        let rightContext : DeferredContext :=
+          ({ context with
+              state := context.state.addPending (.position position) candidate } :
+            DeferredContext).presamplePosition position output
+        change evalDist (finalizeResolvedCoordinates coordinates leftContext table) =
+          evalDist (finalizeResolvedCoordinates coordinates rightContext table)
+        have hleftState : leftContext.state.values (.position position) = none := hstate
+        have hrightState : rightContext.state.values (.position position) = none := hstate
+        have hleftValue : leftContext.values position = some output := by
+          simp [leftContext, DeferredContext.presamplePosition,
+            DeferredStructuralValues.install]
+        have hrightValue : rightContext.values position = some output := by
+          simp [rightContext, DeferredContext.presamplePosition,
+            DeferredStructuralValues.install]
+        have hleftClean : ¬leftContext.state.hitAt (.position position) output := by
+          rw [hitAt_addPending_self_iff]
+          exact not_or_intro
+            (not_hitAt_clearPending_self context.state (.position position) output)
+            hcandidate
+        have hrightClean : ¬rightContext.state.hitAt (.position position) output := by
+          exact not_hitAt_clearPending_self
+            (context.state.addPending (.position position) candidate)
+            (.position position) output
+        have hleftMove := evalDist_finalizeResolvedCoordinates_move_to_front
+          (.position position) coordinates leftContext table hmem
+        have hrightMove := evalDist_finalizeResolvedCoordinates_move_to_front
+          (.position position) coordinates rightContext table hmem
+        rw [finalizeResolvedCoordinates_cons_position_of_deferred_value position
+          (coordinates.erase (.position position)) leftContext table output hleftState
+          hleftValue, if_neg hleftClean] at hleftMove
+        rw [finalizeResolvedCoordinates_cons_position_of_deferred_value position
+          (coordinates.erase (.position position)) rightContext table output hrightState
+          hrightValue, if_neg hrightClean] at hrightMove
+        rw [hleftMove, hrightMove]
+        congr 3
+        simp [leftContext, rightContext, DeferredContext.presamplePosition,
+          DeferredStructuralValues.install]
+  · exact hstate
+  · exact hvalue
+
 theorem evalDist_resolveDeferredPositionValue_fresh_then_finalize
     (position : Position) (coordinates : List Coordinate)
     (context : DeferredContext) (table : OtsSecretIndex → HashOutput)
