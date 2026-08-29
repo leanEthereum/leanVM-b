@@ -509,7 +509,7 @@ FrameworkLogRows = tuple[int, int, int] | tuple[()]  # state, memory, bytecode
 def bus_layout(framework_log_rows: FrameworkLogRows, blocks: Sequence[BusBlock]) -> BusLayout:
     sizes = [*framework_log_rows, *(block.log_rows for block in blocks)]
     offsets, depth = stack_offsets(sizes)
-    placements = [Placement(size, offset) for size, offset in zip(sizes, offsets, strict=True)]
+    placements = [Placement(size, offset) for size, offset in zip(sizes, offsets)]
     split = len(framework_log_rows)
     return BusLayout(depth, tuple(placements[:split]), tuple(placements[split:]))
 
@@ -519,6 +519,10 @@ class ColumnClaim:
     column: int
     point: MultilinearPoint
     value: E
+
+    def on_stack(self, layout: Layout) -> StackClaim:
+        point = layout.placements[self.column].stack_point(self.point, layout.stack_log)
+        return (lambda x: eq_eval(point, x), self.value)
 
 
 BUS_BITS = 4  # bus communicates tuples of 2^BUS_BITS field elements
@@ -883,7 +887,7 @@ def build_layout(bytecode: Sequence[K], log_memory: int, table_log_heights: Sequ
     limbs = {GLOBAL_COLUMN_BASES[OP_BLAKE2S] + _cols(BLAKE2S_COLUMNS, name)[0]: slot for slot, name in enumerate(BLAKE2S_SLOTS) if name}
     blocks = {column: kappa for column, kappa in enumerate(kappas) if column not in limbs}
     block_offsets, total_log = stack_offsets(list(blocks.values()))
-    offsets = dict(zip(blocks, block_offsets, strict=True))
+    offsets = dict(zip(blocks, block_offsets))
     stack_log = max(MIN_STACKED_LOG, total_log)  # Floor at the PCS minimum
     placements = [
         Placement(kappa, offsets[QFLOCK] + limbs[column], QFLOCK_SLOT_BITS) if column in limbs else Placement(kappa, offsets[column])
@@ -899,7 +903,6 @@ SUBSEQUENT_FOLDING_FACTOR = 4
 RS_DOMAIN_INITIAL_REDUCTION_FACTOR = 3
 RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR = 1
 RESIDUAL_MAX_LOG = 5
-# Grinding: one width for every level's queries, none per fold.
 QUERY_GRINDING_BITS = 17
 
 MIN_STACKED_LOG = 15
@@ -1114,7 +1117,7 @@ def lagrange_weights(count: int, point: E) -> list[E]:
     prefix = list(accumulate(differences, mul, initial=ONE))
     suffix = list(accumulate(reversed(differences), mul, initial=ONE))[::-1]
     denominator = _window_denominator(count)
-    return [p * s * denominator for p, s in zip(prefix[:count], suffix[1:], strict=True)]
+    return [p * s * denominator for p, s in zip(prefix[:count], suffix[1:])]
 
 
 def lagrange_interpolate(count: int, values: Sequence[E], point: E) -> E:
@@ -1144,26 +1147,20 @@ def verify_flock_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResul
     # nflock quadratic rounds on P, closed by v_a, v_b.
     chi, running = sumcheck(transcript, v_p, 3, r)
     v_a, v_b = transcript.next_scalars(2)
-    # v_c is what the terminal identity leaves, never transmitted: nothing is
-    # checked here, lincheck pins all three claims against the committed witness.
     v_c = running + v_a * v_b
     return ZerocheckResult(z_skip, chi, v_a, v_b, v_c)
 
 
 def verify_flock_lincheck(zc: ZerocheckResult, transcript: Transcript) -> tuple[MultilinearPoint, tuple[E, ...]]:
     """Lincheck at the quirky point (z_skip, chi): the claim's point, then its 64 slices s."""
-    # alpha batches the two matrix identities, the c claim and the
-    # constant-position check in its powers.
-    alpha = transcript.sample()
-    alpha_sq = alpha**2
-    alpha_cu = alpha**3
+    alpha = transcript.sample()  # batches the two matrix identities, the c claim and the constant-position claim
     # e_row: phi8 Lagrange in the skip coordinate, eq in the slot variables.
     skip_weights = lagrange_weights(K_BITS, zc.z_skip)
     chi_in = zc.chi[:FLOCK_NUM_LINCHECK_ROUNDS]
     e_row = [weight * value for weight in eq_kernel(chi_in) for value in skip_weights]
 
     # The 8 rounds that bind the high column coordinates, leaving 64 unfolded.
-    claim = zc.v_a + alpha * zc.v_b + alpha_sq * zc.v_c + alpha_cu
+    claim = zc.v_a + alpha * zc.v_b + alpha**2 * zc.v_c + alpha**3
     round_challenges, r_lc = sumcheck(transcript, claim, 3, [None] * FLOCK_NUM_LINCHECK_ROUNDS)
 
     # The residual, then the terminal identity: pin term and c term included.
@@ -1174,8 +1171,8 @@ def verify_flock_lincheck(zc: ZerocheckResult, transcript: Transcript) -> tuple[
     w_col = [value * weight for weight in eq_kernel(chi_in_prime) for value in s]
     terminal = (
         blake2s_bilinear(alpha, e_row, w_col)
-        + alpha_sq * eq_eval(chi_in, chi_in_prime) * dot(skip_weights, s)
-        + alpha_cu * w_col[BLAKE2S_CONSTANT_COLUMN]
+        + alpha**2 * eq_eval(chi_in, chi_in_prime) * dot(skip_weights, s)
+        + alpha**3 * w_col[BLAKE2S_CONSTANT_COLUMN]
     )
     require(terminal == r_lc, "Flock lincheck terminal mismatch")
     return chi_in_prime + zc.chi[FLOCK_NUM_LINCHECK_ROUNDS:], s
@@ -1184,7 +1181,6 @@ def verify_flock_lincheck(zc: ZerocheckResult, transcript: Transcript) -> tuple[
 def blake2s_row_values(column_weights: Sequence[E]) -> tuple[list[E], list[E]]:
     """Compute `A0 w` and `B0 w` by one forward walk of the circuit."""
     size = 2**BLAKE2S_R1CS_LOG_SIZE
-    require(len(column_weights) == size, "bad BLAKE2s column-weight vector")
     constant = BLAKE2S_CONSTANT_COLUMN
     message_base = 640
     counter_low = 1152
@@ -1302,8 +1298,6 @@ def blake2s_row_values(column_weights: Sequence[E]) -> tuple[list[E], list[E]]:
 
 def blake2s_bilinear(alpha: E, row_weights: Sequence[E], column_weights: Sequence[E]) -> E:
     """Compute `e_row^T (A0 + alpha B0) w_col` from the two forward row vectors."""
-    size = 2**BLAKE2S_R1CS_LOG_SIZE
-    require(len(row_weights) == size, "bad BLAKE2s row-weight vector")
     left_values, right_values = blake2s_row_values(column_weights)
     return dot(row_weights, left_values) + alpha * dot(row_weights, right_values)
 
@@ -1349,7 +1343,7 @@ def ring_switch(point: MultilinearPoint, s: Sequence[E], transcript: Transcript)
     MLE-friendly weight `W(u) = Phi(eq(point, u))`. Returns the target and W as a closure."""
     challenges = transcript.samples(len(RING_MAP_SHIFTS))
     # The same map as a Frobenius sum, `Phi(a) = sum_k c_k a^(2^k)` for k < 64.
-    coefficients = [reduce(mul, (f ** (2 ** (k % s)) for f, s in zip(challenges, RING_MAP_SHIFTS, strict=True) if k & s), ONE) for k in range(K_BITS)]
+    coefficients = [reduce(mul, (f ** (2 ** (k % s)) for f, s in zip(challenges, RING_MAP_SHIFTS) if k & s), ONE) for k in range(K_BITS)]
     target = poly_eval([_phi(value, challenges) for value in s], GEN)
     return target, lambda r_prime: _ring_weight(point, r_prime, coefficients)
 
@@ -1357,22 +1351,16 @@ def ring_switch(point: MultilinearPoint, s: Sequence[E], transcript: Transcript)
 # Stacked opening -------------------------------------------------------------
 
 
-type StackClaim = tuple[E, Callable[[Sequence[E]], E]]
-"""A claim on the committed stack: its value, and the weight it puts on the stack."""
+type StackClaim = tuple[Callable[[Sequence[E]], E], E]  # the weight it puts on the stack, and the value it claims for it
 
 
 def verify_stacked_opening(transcript: Transcript, root: Digest, stack_log: int, log_inv_rate: int, claims: Sequence[StackClaim]) -> None:
-    """Discharge every claim on the committed stack in one opening.
-    Batching is then powers of one challenge over both halves of every claim.
+    """Discharge every claim on the committed stack in one opening: the same powers of one challenge
+    batch the values into the target, and the weights into the basis WHIR evaluates at its terminal point.
     """
+    weights, values = zip(*claims, strict=True)
     scales = powers(transcript.sample(), len(claims))
-    target = dot(scales, [value for value, _ in claims])
-
-    def evaluate_basis(point: Sequence[E]) -> E:
-        """Every claim's weight at the opening's terminal point."""
-        return dot(scales, [weight(point) for _, weight in claims])
-
-    verify_whir(transcript, stack_log, log_inv_rate, target, root, evaluate_basis)
+    verify_whir(transcript, stack_log, log_inv_rate, dot(scales, values), root, lambda point: dot(scales, [weight(point) for weight in weights]))
 
 
 def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) -> None:
@@ -1407,32 +1395,23 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     table_sumcheck_claims = table_sumcheck(layout.table_log_heights, bus.forms, constraint_powers, form_powers, bus.point, target, transcript)
     claims = [*bus.claims, *table_sumcheck_claims]
 
-    # 5] Public input: the first two memory cells, as one claim per limb on the
-    # line through them. The prover sends one evaluation per limb; the three must
-    # reassemble the line's value at the challenge (doc sec:e2e-pi).
+    # 5] binding the public input
     public_challenge = transcript.sample()
     public_limbs = transcript.next_scalars(3)
-    public_point = [ZERO] * layout.placements[MEMORY_0].variables
-    public_point[0] = public_challenge
-    public_value = multilinear_eval(public_input.halves(), [public_challenge])
-    require(poly_eval(public_limbs, Y) == public_value, "public input limbs are off the line")
-    claims.extend(ColumnClaim(column, tuple(public_point), value) for column, value in zip((MEMORY_0, MEMORY_1, MEMORY_2), public_limbs, strict=True))
+    require(poly_eval(public_limbs, Y) == multilinear_eval(public_input.halves(), [public_challenge]), "public input check failed")
+    public_point = (public_challenge, *[ZERO] * (layout.placements[MEMORY_0].variables - 1))
+    claims.extend(ColumnClaim(column, public_point, value) for column, value in zip((MEMORY_0, MEMORY_1, MEMORY_2), public_limbs))
 
-    # 6] Locate every claim in the stack: its point sets into the column's window.
-    qflock = layout.placements[QFLOCK]
-    stack_claims: list[StackClaim] = []
-    for claim in claims:
-        point = layout.placements[claim.column].stack_point(claim.point, layout.stack_log)
-        stack_claims.append((claim.value, lambda x, p=point: eq_eval(p, x)))
-
-    # 7] BLAKE2s validity, its 64 claims ring-switched, then the one opening that
-    # discharges every claim.
+    # 6] BLAKE2s validity via Flock
     flock_point, flock_s = verify_flock(BLAKE2S_R1CS_LOG_SIZE + layout.table_log_heights[OP_BLAKE2S], transcript)
+
+    # 7] Ring-switching
     ringswitch_target, ringswitch_weight = ring_switch(flock_point, flock_s, transcript)
     # That claim is supported on q_flock's region of the stack, so its weight carries the
     # placement's selector, and it leads the batch, taking the first power.
-    ringswitch = (ringswitch_target, lambda x: qflock.eq_above(x) * ringswitch_weight(x[: qflock.variables]))
-    verify_stacked_opening(transcript, root, layout.stack_log, log_inverse_rate, [ringswitch, *stack_claims])
+    qflock = layout.placements[QFLOCK]
+    ringswitch = (lambda x: qflock.eq_above(x) * ringswitch_weight(x[: qflock.variables]), ringswitch_target)
+    verify_stacked_opening(transcript, root, layout.stack_log, log_inverse_rate, [ringswitch, *(c.on_stack(layout) for c in claims)])
     transcript.finish()
 
 
