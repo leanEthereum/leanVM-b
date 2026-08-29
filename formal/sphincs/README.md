@@ -144,6 +144,8 @@ Root construction, adaptive execution and verifier finalization are now composed
 
 The terminal resolved-to-clean quotient is now explicit. Any deferred context related by `FinalizationContextEq` to a clean state with an empty private store has exactly the same final completion-failure Boolean as `finishCleanRunFromTable`; no equality of their hidden representations is assumed. What remains is to preserve that relation through the boundary-normalized root, adaptive masked handler and verifier, then average the resulting endpoint equality over the uniformly sampled one-time table.
 
+The clean interpreter is now factored through a direct resolved interpreter. It carries the same deferred context and result type as the recursive resolver, but a missing structural reveal samples only the requested coordinate. From the mirrored context whose private position store is exactly the state's materialized values, its complete execution projects exactly to `runCleanFromTable` for every computation. The remaining semantic lift is therefore only the sampling-order equivalence between recursive structural resolution and this direct interpreter on the concrete masked game.
+
 Two places a proof can go wrong, both found by attacking the claim rather than by reading it:
 
 - **A strong forgery needs no chain inversion.** `Ver` does not check that the counter is the least admissible one, so a second `c'` with `Enc(P,lay,tau,e,M,c') = x` reuses the chain values verbatim and verifies. Since the codeword fixes the digest, that is one `2^-128` hit per query and it is harmless, but it is a branch of its own: the one-time signature is unforgeable on a *new* message by incomparability, and unforgeable on the *signed* message only by collision resistance at `tw_enc`.
