@@ -600,6 +600,25 @@ theorem runRaw_bind (state : State Coordinate) (fuel : Nat)
               · simp only [hhit, ↓reduceIte]
                 exact ih output (state.materialize coordinate output) fuel
 
+theorem stopped_false_not_mem_support_runRaw_bind
+    (state : State Coordinate) (fuel : Nat)
+    (left : OracleComp (World Coordinate) alpha)
+    (next : alpha → OracleComp (World Coordinate) beta)
+    (hleft : RawResult.stopped false ∉ support (runRaw state fuel left))
+    (htail : ∀ finalState remaining value,
+      RawResult.done finalState remaining value ∈ support (runRaw state fuel left) →
+        RawResult.stopped false ∉ support (runRaw finalState remaining (next value))) :
+    RawResult.stopped false ∉ support (runRaw state fuel (left >>= next)) := by
+  rw [runRaw_bind, mem_support_bind_iff]
+  rintro ⟨result, hresult, hnext⟩
+  cases result with
+  | stopped hit =>
+      cases hit with
+      | false => exact hleft hresult
+      | true => simp at hnext
+  | done finalState remaining value =>
+      exact htail finalState remaining value hresult hnext
+
 theorem stopped_false_not_mem_support_runRaw
     (state : State Coordinate) (fuel : Nat)
     (computation : OracleComp (World Coordinate) alpha)
@@ -659,6 +678,91 @@ theorem stopped_false_not_mem_support_runRaw
               · simp only [hhit, ↓reduceIte] at hrest
                 exact ih output (state.materialize coordinate output) fuel
                   (by simpa [IsProbe] using hbound.2 output) hrest
+
+theorem fuel_le_remaining_add_of_mem_support_runRaw_done
+    (state finalState : State Coordinate) (fuel remaining bound : Nat)
+    (computation : OracleComp (World Coordinate) alpha) (value : alpha)
+    (hbound : computation.IsQueryBoundP IsProbe bound)
+    (hresult : RawResult.done finalState remaining value ∈
+      support (runRaw state fuel computation)) :
+    fuel ≤ remaining + bound := by
+  induction computation using OracleComp.inductionOn generalizing state fuel bound with
+  | pure value =>
+      simp [runRaw] at hresult
+      rcases hresult with ⟨rfl, rfl, rfl⟩
+      omega
+  | query_bind input next ih =>
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
+      cases input with
+      | uniform n =>
+          rw [runRaw_uniform_query_bind, mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, htail⟩ := hresult
+          exact ih output state fuel bound (by simpa [IsProbe] using hbound.2 output) htail
+      | hashOutput =>
+          rw [runRaw_hashOutput_query_bind, mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, htail⟩ := hresult
+          exact ih output state fuel bound (by simpa [IsProbe] using hbound.2 output) htail
+      | ensure coordinate =>
+          rw [runRaw_ensure_query_bind] at hresult
+          exact ih () (state.ensure coordinate) fuel bound
+            (by simpa [IsProbe] using hbound.2 ()) hresult
+      | probe coordinate candidate =>
+          cases fuel with
+          | zero => simp [runRaw_probe_query_bind] at hresult
+          | succ nextFuel =>
+              have hboundPositive : 0 < bound := by
+                simpa [IsProbe] using hbound.1
+              rw [runRaw_probe_query_bind] at hresult
+              by_cases hrevealed : coordinate ∈ state.revealed
+              · simp only [hrevealed, ↓reduceIte] at hresult
+                have htail := ih () state nextFuel (bound - 1)
+                  (by simpa [IsProbe] using hbound.2 ()) hresult
+                omega
+              · simp only [hrevealed, ↓reduceIte] at hresult
+                have htail := ih () (state.addPending coordinate candidate) nextFuel
+                  (bound - 1) (by simpa [IsProbe] using hbound.2 ()) hresult
+                omega
+      | peek coordinate =>
+          rw [runRaw_peek_query_bind] at hresult
+          exact ih (state.values coordinate) state fuel bound
+            (by simpa [IsProbe] using hbound.2 (state.values coordinate)) hresult
+      | publish coordinate =>
+          rw [runRaw_publish_query_bind] at hresult
+          exact ih () (state.publish coordinate) fuel bound
+            (by simpa [IsProbe] using hbound.2 ()) hresult
+      | reveal coordinate =>
+          rw [runRaw_reveal_query_bind] at hresult
+          cases hvalue : state.values coordinate with
+          | some output =>
+              rw [hvalue] at hresult
+              exact ih output state fuel bound
+                (by simpa [IsProbe] using hbound.2 output) hresult
+          | none =>
+              rw [hvalue] at hresult
+              rw [mem_support_bind_iff] at hresult
+              obtain ⟨output, _houtput, htail⟩ := hresult
+              by_cases hhit : state.hitAt coordinate output
+              · simp [hhit] at htail
+              · simp only [hhit, ↓reduceIte] at htail
+                exact ih output (state.materialize coordinate output) fuel bound
+                  (by simpa [IsProbe] using hbound.2 output) htail
+
+theorem stopped_false_not_mem_support_runRaw_bind_of_bound
+    (state : State Coordinate) (fuel bound : Nat)
+    (left : OracleComp (World Coordinate) alpha)
+    (next : alpha → OracleComp (World Coordinate) beta)
+    (hbound : left.IsQueryBoundP IsProbe bound)
+    (hleft : RawResult.stopped false ∉ support (runRaw state fuel left))
+    (htail : ∀ finalState remaining value,
+      RawResult.done finalState remaining value ∈ support (runRaw state fuel left) →
+      fuel ≤ remaining + bound →
+        RawResult.stopped false ∉ support (runRaw finalState remaining (next value))) :
+    RawResult.stopped false ∉ support (runRaw state fuel (left >>= next)) := by
+  apply stopped_false_not_mem_support_runRaw_bind state fuel left next hleft
+  intro finalState remaining value hresult
+  exact htail finalState remaining value hresult
+    (fuel_le_remaining_add_of_mem_support_runRaw_done state finalState fuel remaining bound
+      left value hbound hresult)
 
 inductive DetailedResult (Coordinate : Type) (alpha : Type) where
   | stopped (hit : Bool)

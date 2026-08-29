@@ -119,6 +119,314 @@ theorem isQueryBoundP_expandedRetained_all_tables_roots
       adversary secretKey q hrest
   convert hbound using 1 <;> rfl
 
+noncomputable def rejectingHashOutput : HashOutput :=
+  hashOutputCoordinatesEquiv.symm
+    ((default, ⟨1, by norm_num [ftsTreeHeight]⟩), 0)
+
+noncomputable def rejectingRomAnswer : QueryImpl OracleWorld Id
+  | .inl n => (0 : Fin (n + 1))
+  | .inr _ => rejectingHashOutput
+
+theorem signAttemptResultOfOutput_rejecting :
+    signAttemptResultOfOutput rejectingHashOutput = none := by
+  by_contra h
+  have hne : signAttemptResultOfOutput rejectingHashOutput ≠ none := h
+  rw [show rejectingHashOutput = hashOutputCoordinatesEquiv.symm
+      ((default, ⟨1, by norm_num [ftsTreeHeight]⟩), 0) from rfl,
+    signAttemptResultOfOutput_coordinates_ne_none_iff] at hne
+  norm_num at hne
+
+@[simp] theorem eval_lift_hash_rejecting (input : HashInput) :
+    evalWithAnswerFn rejectingRomAnswer
+      (liftM (HashSpec.query input) : OracleComp OracleWorld HashOutput) =
+        rejectingHashOutput := by
+  rfl
+
+theorem eval_lift_hash_comp_rejecting (computation : OracleComp HashSpec α) :
+    evalWithAnswerFn rejectingRomAnswer
+      (OracleComp.liftComp computation OracleWorld) =
+        evalWithAnswerFn (fun _ : HashInput => rejectingHashOutput) computation := by
+  induction computation using OracleComp.inductionOn with
+  | pure value => rfl
+  | query_bind input next ih =>
+      rw [OracleComp.liftComp_bind, evalWithAnswerFn_bind, evalWithAnswerFn_bind,
+        show evalWithAnswerFn rejectingRomAnswer
+          (OracleComp.liftComp (liftM (HashSpec.query input)) OracleWorld) =
+            rejectingHashOutput from rfl,
+        show
+          evalWithAnswerFn (fun _ : HashInput => rejectingHashOutput)
+            (liftM (HashSpec.query input)) = rejectingHashOutput from rfl]
+      exact ih rejectingHashOutput
+
+set_option maxRecDepth 100000 in
+theorem eval_signAttempt_rejecting (secretKey : SecretKey) (message : Message)
+    (randomness : Randomness) :
+    evalWithAnswerFn rejectingRomAnswer
+      (liftM (signAttempt secretKey message randomness : OracleComp HashSpec _) :
+        OracleComp OracleWorld _) = none := by
+  change evalWithAnswerFn rejectingRomAnswer
+    (OracleComp.liftComp (signAttempt secretKey message randomness : OracleComp HashSpec _)
+      OracleWorld) = none
+  rw [eval_lift_hash_comp_rejecting]
+  simp only [signAttempt, messageDigest, oracleHash, evalWithAnswerFn_bind,
+    evalWithAnswerFn_query, evalWithAnswerFn_pure]
+  have hreject : ¬Admissible (truncateMessageDigest rejectingHashOutput) := by
+    intro hadmissible
+    have hne : signAttemptResultOfOutput rejectingHashOutput ≠ none :=
+      (signAttemptResultOfOutput_ne_none_iff rejectingHashOutput).2 hadmissible
+    exact hne signAttemptResultOfOutput_rejecting
+  simp [hreject]
+
+theorem eval_signDigestLoop_rejecting (attempts : Nat) (secretKey : SecretKey)
+    (message : Message) :
+    evalWithAnswerFn rejectingRomAnswer (signDigestLoop attempts secretKey message) = none := by
+  induction attempts with
+  | zero => simp [signDigestLoop]
+  | succ attempts ih =>
+      rw [signDigestLoop]
+      simp only [evalWithAnswerFn_bind, eval_signAttempt_rejecting, ih]
+
+theorem eval_sign_rejecting (secretKey : SecretKey) (message : Message) :
+    evalWithAnswerFn rejectingRomAnswer (scheme.sign secretKey message) = none := by
+  change evalWithAnswerFn rejectingRomAnswer (sign secretKey message) = none
+  rw [sign_eq_digestLoop_afterDigest]
+  simp [evalWithAnswerFn_bind, eval_signDigestLoop_rejecting]
+
+theorem mem_support_sign_none (secretKey : SecretKey) (message : Message) :
+    none ∈ support (scheme.sign secretKey message) := by
+  have hsim := (OracleComp.exists_agreesWithFn_evalWithAnswerFn_eq_iff_mem_support
+    (scheme.sign secretKey message) ∅ none).mp
+      ⟨rejectingRomAnswer, (by simp [QueryCache.AgreesWithFn]),
+        eval_sign_rejecting secretKey message⟩
+  obtain ⟨cache, hcache⟩ := hsim
+  apply OracleComp.support_simulateQ_run'_subset
+    (randomOracle : QueryImpl OracleWorld _) (scheme.sign secretKey message) ∅
+  rw [StateT.run'_eq, support_map]
+  exact ⟨(none, cache), hcache, rfl⟩
+
+theorem mem_support_of_evalWithAnswerFn
+    (f : QueryImpl HashSpec Id) (computation : OracleComp HashSpec α)
+    (value : α) (heval : evalWithAnswerFn f computation = value) :
+    value ∈ support computation := by
+  have hsim := (OracleComp.exists_agreesWithFn_evalWithAnswerFn_eq_iff_mem_support
+    computation ∅ value).mp ⟨f, (by simp [QueryCache.AgreesWithFn]), heval⟩
+  obtain ⟨cache, hcache⟩ := hsim
+  apply OracleComp.support_simulateQ_run'_subset
+    (randomOracle : QueryImpl HashSpec _) computation ∅
+  rw [StateT.run'_eq, support_map]
+  exact ⟨(value, cache), hcache, rfl⟩
+
+set_option maxRecDepth 100000 in
+theorem SuccessfulSignRun.mem_support_sign
+    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec}
+    {secretKey : SecretKey} {message : Message} {signature : Signature}
+    (hrun : SuccessfulSignRun f cache secretKey message signature) :
+    some signature ∈ support (scheme.sign secretKey message) := by
+  change some signature ∈ support (sign secretKey message)
+  obtain ⟨index, leaves, hdigest, hafter⟩ := hrun.eval_signAfterDigest
+  have hattempt : some (index, leaves) ∈
+      support (signAttempt secretKey message signature.randomness : OracleComp HashSpec _) :=
+    mem_support_of_evalWithAnswerFn f _ _ hdigest.2.1
+  have hloop : some (signature.randomness, index, leaves) ∈
+      support (signDigestLoop digestAttemptLimit secretKey message) := by
+    rw [show digestAttemptLimit = (digestAttemptLimit - 1) + 1 by
+      norm_num [digestAttemptLimit], signDigestLoop, mem_support_bind_iff]
+    refine ⟨signature.randomness, ?_, ?_⟩
+    · change signature.randomness ∈
+        support (OracleComp.liftComp sampleRandomness OracleWorld)
+      rw [OracleComp.mem_support_liftComp_iff]
+      exact hdigest.1
+    · rw [mem_support_bind_iff]
+      refine ⟨some (index, leaves), ?_, by simp⟩
+      change some (index, leaves) ∈ support
+        (OracleComp.liftComp
+          (signAttempt secretKey message signature.randomness : OracleComp HashSpec _)
+          OracleWorld)
+      rw [OracleComp.mem_support_liftComp_iff]
+      exact hattempt
+  have hafterSupport : some signature ∈
+      support (signAfterDigest secretKey signature.randomness index leaves) :=
+    mem_support_of_evalWithAnswerFn f _ _ hafter
+  rw [sign_eq_digestLoop_afterDigest, mem_support_bind_iff]
+  exact ⟨some (signature.randomness, index, leaves), hloop, by
+    change some signature ∈ support
+      (OracleComp.liftComp
+        (signAfterDigest secretKey signature.randomness index leaves) OracleWorld)
+    rw [OracleComp.mem_support_liftComp_iff]
+    exact hafterSupport⟩
+
+theorem tableOtsSecret_retainedCompletionTable_of_startTableAgrees
+    (parameter : PublicParameter) (state : LazyRevealProbe.State Coordinate)
+    (cache : SplitHashCache) (table : OtsSecretIndex → HashOutput)
+    (hagrees : StartTableAgrees state table) :
+    tableOtsSecret (retainedCompletionTable parameter state cache
+      (baseStartsOfTable table)) =
+        tableOtsSecret (extendStartTable table) := by
+  rw [tableOtsSecret_retainedCompletionTable_eq_extendStartTable]
+  congr 2
+  funext index
+  unfold completedStartTable
+  cases hvalue : state.values index.coordinate with
+  | none => simp
+  | some output => simp [hagrees index output hvalue]
+
+set_option maxRecDepth 10000 in
+theorem maskedSign_done_output_mem_support
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message)
+    (state finalState : LazyRevealProbe.State Coordinate)
+    (cache finalCache : SplitHashCache) (fuel remaining : Nat)
+    (output : Option Signature) (hagrees : StartTableAgrees finalState table)
+    (hresult : LazyRevealProbe.RawResult.done finalState remaining
+        (output, finalCache) ∈ support
+      (LazyRevealProbe.runRaw state fuel
+        ((maskedSign parameter root ftsSecret message).run cache))) :
+    output ∈ support
+      (scheme.sign
+        (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ : SecretKey)
+        message) := by
+  cases output with
+  | none =>
+      exact mem_support_sign_none _ _
+  | some signature =>
+      let baseStarts := fun lay tree leafIdx chainIdx =>
+        table (⟨lay, tree, leafIdx, chainIdx⟩ : OtsSecretIndex)
+      let completion := retainedCompletionTable parameter finalState finalCache baseStarts
+      let f := retainedCompletionAnswer parameter finalState finalCache baseStarts
+      have hrun := successfulSignRun_of_mem_runRaw_maskedSign f parameter root completion
+        ftsSecret message signature state finalState cache finalCache fuel remaining finalState
+          finalCache
+          (stableCacheAgreesWithFn_retainedCompletionAnswer parameter finalState finalCache
+            baseStarts)
+          (fun coordinate cached hvalue =>
+            (completedRealizedTable_of_value (splitFallback finalCache) parameter finalState
+              baseStarts coordinate cached hvalue).symm)
+          (retainedCompletionAnswer_realizes parameter finalState finalCache baseStarts)
+          hresult (by intro coordinate hvalue; exact hvalue)
+          (by intro input output hstable hcached; exact hcached)
+      have hsupport := SuccessfulSignRun.mem_support_sign hrun
+      have hsecret : tableOtsSecret completion =
+          tableOtsSecret (extendStartTable table) := by
+        change tableOtsSecret (retainedCompletionTable parameter finalState finalCache
+          (baseStartsOfTable table)) = tableOtsSecret (extendStartTable table)
+        exact tableOtsSecret_retainedCompletionTable_of_startTableAgrees parameter
+          finalState finalCache table hagrees
+      rw [hsecret] at hsupport
+      exact hsupport
+
+theorem startTableAgrees_completedStartTable
+    (state : LazyRevealProbe.State Coordinate) (base : OtsSecretIndex → HashOutput) :
+    StartTableAgrees state (completedStartTable state base) := by
+  intro index output hvalue
+  simp [completedStartTable, hvalue]
+
+set_option maxRecDepth 100000 in
+theorem stopped_false_not_mem_support_masked_adversary
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (cache : SplitHashCache)
+    (hbound : ∀ table : OtsSecretIndex → HashOutput,
+      StartTableAgrees state table →
+        (simulateQ
+          (SphincsSecurity.expandedAdversaryImpl
+            (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ : SecretKey))
+          computation).IsQueryBoundP (· matches Sum.inr _) fuel) :
+    LazyRevealProbe.RawResult.stopped false ∉ support
+      (LazyRevealProbe.runRaw state fuel
+        ((simulateQ (maskedExpandedAdversaryImpl parameter root ftsSecret)
+          computation).run cache)) := by
+  induction computation using OracleComp.inductionOn generalizing state fuel cache with
+  | pure value => simp [simulateQ_pure, StateT.run_pure, LazyRevealProbe.runRaw]
+  | query_bind input next ih =>
+      rw [simulateQ_query_bind, StateT.run_bind, LazyRevealProbe.runRaw_bind,
+        mem_support_bind_iff]
+      rintro ⟨stepResult, hstep, htail⟩
+      cases stepResult with
+      | stopped hit =>
+          cases hit with
+          | false =>
+              apply LazyRevealProbe.stopped_false_not_mem_support_runRaw state fuel
+                ((maskedExpandedAdversaryImpl parameter root ftsSecret input).run cache) ?_ hstep
+              cases input with
+              | inl worldInput =>
+                  cases worldInput with
+                  | inl n =>
+                      exact (maskedExpandedAdversaryImpl_step_isProbeBound parameter root
+                        ftsSecret (.inl (.inl n)) cache).mono (by simp [IsOuterHash])
+                  | inr hashInput =>
+                      let table := completedStartTable state (fun _ => 0)
+                      have hsource := hbound table
+                        (startTableAgrees_completedStartTable state _)
+                      rw [simulateQ_expandedAdversaryImpl_query_bind_inl,
+                        OracleComp.isQueryBoundP_query_bind_iff] at hsource
+                      have hpositive : 0 < fuel := by simpa using hsource.1
+                      exact (maskedExpandedAdversaryImpl_step_isProbeBound parameter root
+                        ftsSecret (.inl (.inr hashInput)) cache).mono (by
+                          simp [IsOuterHash]
+                          omega)
+              | inr message =>
+                  exact (maskedExpandedAdversaryImpl_step_isProbeBound parameter root
+                    ftsSecret (.inr message) cache).mono (by simp [IsOuterHash])
+          | true => simp at htail
+      | done finalState remaining result =>
+          rcases result with ⟨output, finalCache⟩
+          have hvaluesLE := LazyRevealProbe.valuesLE_of_mem_runRaw_done
+            ((maskedExpandedAdversaryImpl parameter root ftsSecret input).run cache)
+            state finalState fuel remaining (output, finalCache) hstep
+          have hinitial : ∀ table : OtsSecretIndex → HashOutput,
+              StartTableAgrees finalState table → StartTableAgrees state table := by
+            intro table hagrees index cached hcached
+            exact hagrees index cached (hvaluesLE index.coordinate cached hcached)
+          have hstepBound := maskedExpandedAdversaryImpl_step_isProbeBound parameter root
+            ftsSecret input cache
+          have hfuel := LazyRevealProbe.fuel_le_remaining_add_of_mem_support_runRaw_done
+            state finalState fuel remaining (if IsOuterHash input then 1 else 0)
+            ((maskedExpandedAdversaryImpl parameter root ftsSecret input).run cache)
+            (output, finalCache) hstepBound hstep
+          apply ih output finalState remaining finalCache
+          · intro table hagrees
+            have hsource := hbound table (hinitial table hagrees)
+            cases input with
+            | inl worldInput =>
+                cases worldInput with
+                | inl n =>
+                    rw [simulateQ_expandedAdversaryImpl_query_bind_inl,
+                      OracleComp.isQueryBoundP_query_bind_iff] at hsource
+                    exact (hsource.2 output).mono (by simpa [IsOuterHash] using hfuel)
+                | inr hashInput =>
+                    rw [simulateQ_expandedAdversaryImpl_query_bind_inl,
+                      OracleComp.isQueryBoundP_query_bind_iff] at hsource
+                    have htailSource :
+                        (simulateQ
+                          (SphincsSecurity.expandedAdversaryImpl
+                            (⟨parameter, root, tableOtsSecret (extendStartTable table),
+                              ftsSecret⟩ : SecretKey))
+                          (next output)).IsQueryBoundP (· matches Sum.inr _) (fuel - 1) := by
+                      simpa using hsource.2 output
+                    change fuel ≤ remaining + 1 at hfuel
+                    exact htailSource.mono (by omega)
+            | inr message =>
+                change Option Signature at output
+                change LazyRevealProbe.RawResult.done finalState remaining
+                    (output, finalCache) ∈ support
+                  (LazyRevealProbe.runRaw state fuel
+                    ((maskedSigningImpl parameter root ftsSecret message).run cache)) at hstep
+                rw [simulateQ_expandedAdversaryImpl_query_bind_inr] at hsource
+                have houtput : output ∈ support
+                    (scheme.sign
+                      (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+                        SecretKey) message) := by
+                  exact maskedSign_done_output_mem_support parameter root table ftsSecret
+                    message state finalState cache finalCache fuel remaining output hagrees
+                      (by simpa only [SigningSpec, maskedExpandedAdversaryImpl,
+                        maskedSigningImpl] using hstep)
+                exact (isQueryBoundP_of_bind hsource output houtput).mono (by
+                  simpa [IsOuterHash] using hfuel)
+          · exact htail
+
 noncomputable def chronologicalCleanRetainedRest
     (adversary : Adversary) (parameter : PublicParameter) (root : Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (cache : SplitHashCache) :
@@ -201,6 +509,52 @@ theorem maskedPublishedTreeRoot_probeFree : ProbeFree maskedPublishedTreeRoot :=
       ⟨layerHeight topLayer - 1, by norm_num [layerHeight, topLayer, maxLayerHeight]⟩ 0))
         nextCache)
     (fun _ _ => by simp)
+
+set_option maxRecDepth 100000 in
+set_option maxHeartbeats 1000000 in
+set_option linter.constructorNameAsVariable false in
+theorem stopped_false_not_mem_support_deferredCleanRetainedRun
+    (adversary : Adversary) (q : Nat)
+    (hq : HasHashQueryBound scheme adversary q)
+    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (hfts : ftsSecret ∈ support sampleFtsSecrets) :
+    LazyRevealProbe.RawResult.stopped false ∉ support
+      (LazyRevealProbe.runRaw LazyRevealProbe.State.empty q
+        (deferredCleanRetainedRun adversary parameter ftsSecret)) := by
+  unfold deferredCleanRetainedRun
+  apply LazyRevealProbe.stopped_false_not_mem_support_runRaw_bind_of_bound
+  · exact maskedPublishedTreeRoot_probeFree emptySplitHashCache
+  · apply LazyRevealProbe.stopped_false_not_mem_support_runRaw
+    exact (maskedPublishedTreeRoot_probeFree emptySplitHashCache).mono (Nat.zero_le q)
+  · intro rootState remaining rootResult _hroot hfuel
+    rcases rootResult with ⟨root, cache⟩
+    apply LazyRevealProbe.stopped_false_not_mem_support_runRaw_bind
+    · unfold deferredCleanRetainedRest
+      rw [← simulateQ_maskedExpanded_retainedGameRestComputation]
+      apply stopped_false_not_mem_support_masked_adversary parameter root ftsSecret
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)
+        rootState remaining cache
+      intro table _hagrees
+      exact (isQueryBoundP_expandedRetained_all_tables_roots adversary q hq parameter
+        hparameter table ftsSecret hfts root).mono (by omega)
+    · intro finalState finalRemaining restResult _hrest
+      simp [LazyRevealProbe.runRaw]
+
+theorem probEvent_sampledDeferredCleanFinish_none_le
+    (adversary : Adversary) (q : Nat)
+    (hq : HasHashQueryBound scheme adversary q)
+    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (hfts : ftsSecret ∈ support sampleFtsSecrets) :
+    Pr[= none | sampledRunThenFinalizeClean
+      (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) q
+        (deferredCleanRetainedRun adversary parameter ftsSecret)] ≤
+      (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ :=
+  probEvent_sampledRunThenFinalizeClean_empty_none_le_of_not_stopped_false
+    (deferredCleanRetainedRun adversary parameter ftsSecret) q
+      (stopped_false_not_mem_support_deferredCleanRetainedRun adversary q hq parameter
+        hparameter ftsSecret hfts)
 
 set_option maxRecDepth 100000 in
 theorem chronologicalCleanRetainedRun_isProbeBound
