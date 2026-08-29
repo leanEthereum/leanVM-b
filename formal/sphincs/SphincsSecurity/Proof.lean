@@ -155,6 +155,7 @@ import SphincsSecurity.Proof.OtsProbeChronologicalTerminal
 import SphincsSecurity.Proof.OtsProbeChronologicalProbability
 import SphincsSecurity.Proof.OtsProbeResolvedAdaptiveProbability
 import SphincsSecurity.Proof.OtsProbeResolvedPrivateSelection
+import SphincsSecurity.Proof.OtsProbeResolvedPrivateSchedule
 import SphincsSecurity.Proof.OtsProbeResolvedAdaptiveClean
 
 /-!
