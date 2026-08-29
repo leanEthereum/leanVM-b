@@ -138,6 +138,8 @@ The clean terminal probability endpoint is now closed independently. A probe-bou
 
 Nothing closes the main claim yet. The one-time and Merkle halves of `formal/xmss` carry over, sharing the tweakable hash, the target-sum code and the shape of the bound; what is new is the hypertree, the few-time forest, the digest that picks the index, and the counter search under a tweak shared across attempts.
 
+The adaptive delayed-signer lift is now complete. A generic boundary observer composes the local ordinary and signing query equalities through an arbitrary adaptive adversary computation, preserves synchronized clean contexts, treats non-completable contexts as terminal failure and remains neutral to ensured private-position resolution. The remaining one-time work is to compose root construction and verifier finalization around this boundary theorem, erase the boundary canonicalizations into the complete clean masked run, identify the resulting table-averaged failure distribution with the existing sampled clean lazy-probe endpoint and apply the final three-event theorem.
+
 Two places a proof can go wrong, both found by attacking the claim rather than by reading it:
 
 - **A strong forgery needs no chain inversion.** `Ver` does not check that the counter is the least admissible one, so a second `c'` with `Enc(P,lay,tau,e,M,c') = x` reuses the chain values verbatim and verifies. Since the codeword fixes the digest, that is one `2^-128` hit per query and it is harmless, but it is a branch of its own: the one-time signature is unforgeable on a *new* message by incomparability, and unforgeable on the *signed* message only by collision resistance at `tw_enc`.
