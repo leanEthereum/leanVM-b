@@ -12,6 +12,8 @@ namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
 open OracleComp OracleSpec ENNReal
 
+attribute [local irreducible] maskedPublishedTreeRoot
+
 def PrivateStructuralHit (context : DeferredContext) : Prop :=
   ∃ position output,
     context.state.values (.position position) = none ∧
@@ -444,5 +446,417 @@ theorem map_toOption_runDirectResolvedDetailedFromTable
                           { state := context.state.materialize (.position position) output
                             values := context.values.install position output }
                           fuel
+
+theorem mem_support_runDirectResolvedFromTable_of_done_detailed
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (result : ResolvedRunResult alpha)
+    (hresult : DirectDetailedResult.done result ∈ support
+      (runDirectResolvedDetailedFromTable context fuel table computation)) :
+    some result ∈ support
+      (runDirectResolvedFromTable context fuel table computation) := by
+  rw [← map_toOption_runDirectResolvedDetailedFromTable computation context fuel table,
+    support_map]
+  exact ⟨.done result, hresult, rfl⟩
+
+inductive DirectBoundaryOutcome where
+  | success
+  | ordinaryFailure
+  | privateStructuralFailure
+deriving DecidableEq
+
+def DirectBoundaryOutcome.failed : DirectBoundaryOutcome → Bool
+  | .success => false
+  | .ordinaryFailure => true
+  | .privateStructuralFailure => true
+
+def DirectBoundaryOutcome.privateStructural : DirectBoundaryOutcome → Bool
+  | .privateStructuralFailure => true
+  | _ => false
+
+def DirectBoundaryOutcome.ofFailed : Bool → DirectBoundaryOutcome
+  | false => .success
+  | true => .ordinaryFailure
+
+@[simp] theorem DirectBoundaryOutcome.failed_ofFailed (failed : Bool) :
+    (DirectBoundaryOutcome.ofFailed failed).failed = failed := by
+  cases failed <;> rfl
+
+noncomputable def classifyDirectObserve
+    (table : OtsSecretIndex → HashOutput)
+    (observe : DeferredContext → Nat → alpha → ProbComp Bool)
+    (context : DeferredContext) (fuel : Nat) (value : alpha) :
+    ProbComp DirectBoundaryOutcome := by
+  classical
+  exact if PrivateStructuralHit context then
+      pure .privateStructuralFailure
+    else if DeferredCompletable table context then
+      DirectBoundaryOutcome.ofFailed <$> observe context fuel value
+    else
+      pure .ordinaryFailure
+
+theorem evalDist_failed_classifyDirectObserve
+    (table : OtsSecretIndex → HashOutput)
+    (observe : DeferredContext → Nat → alpha → ProbComp Bool)
+    [ObserverDooms table observe]
+    (context : DeferredContext) (fuel : Nat) (value : alpha)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table) :
+    evalDist (DirectBoundaryOutcome.failed <$>
+        classifyDirectObserve table observe context fuel value) =
+      evalDist (observe context fuel value) := by
+  unfold classifyDirectObserve
+  by_cases hprivate : PrivateStructuralHit context
+  · simp only [hprivate, ↓reduceIte, map_pure, DirectBoundaryOutcome.failed]
+    exact (ObserverDooms.eq_true (table := table) (observe := observe)
+      context fuel value hconsistent hstarts
+        (fun hcompletable =>
+          (not_privateStructuralHit_of_deferredCompletable hcompletable) hprivate)).symm
+  · simp only [hprivate, ↓reduceIte]
+    by_cases hcompletable : DeferredCompletable table context
+    · simp [hcompletable, Functor.map_map]
+    · simp only [hcompletable, ↓reduceIte, map_pure, DirectBoundaryOutcome.failed]
+      exact (ObserverDooms.eq_true (table := table) (observe := observe)
+        context fuel value hconsistent hstarts hcompletable).symm
+
+noncomputable def finishDirectDetailedObserve
+    (observe : DeferredContext → Nat → alpha → ProbComp DirectBoundaryOutcome) :
+    DirectDetailedResult alpha → ProbComp DirectBoundaryOutcome
+  | .stopped .privateStructuralHit => pure .privateStructuralFailure
+  | .stopped _ => pure .ordinaryFailure
+  | .done result => observe result.context result.remaining result.value
+
+noncomputable def classifyDirectDetailedObserve
+    (table : OtsSecretIndex → HashOutput)
+    (observe : DeferredContext → Nat → alpha → ProbComp DirectBoundaryOutcome)
+    (context : DeferredContext) (fuel : Nat) (value : alpha) :
+    ProbComp DirectBoundaryOutcome := by
+  classical
+  exact if PrivateStructuralHit context then
+      pure .privateStructuralFailure
+    else if DeferredCompletable table context then
+      observe context fuel value
+    else
+      pure .ordinaryFailure
+
+theorem evalDist_failed_classifyDirectDetailedObserve
+    (table : OtsSecretIndex → HashOutput)
+    (detailedObserve : DeferredContext → Nat → alpha → ProbComp DirectBoundaryOutcome)
+    (observe : DeferredContext → Nat → alpha → ProbComp Bool)
+    [ObserverDooms table observe]
+    (context : DeferredContext) (fuel : Nat) (value : alpha)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table)
+    (hproject : evalDist (DirectBoundaryOutcome.failed <$>
+        detailedObserve context fuel value) =
+      evalDist (observe context fuel value)) :
+    evalDist (DirectBoundaryOutcome.failed <$>
+        classifyDirectDetailedObserve table detailedObserve context fuel value) =
+      evalDist (observe context fuel value) := by
+  unfold classifyDirectDetailedObserve
+  by_cases hprivate : PrivateStructuralHit context
+  · simp only [hprivate, ↓reduceIte, map_pure, DirectBoundaryOutcome.failed]
+    exact (ObserverDooms.eq_true (table := table) (observe := observe)
+      context fuel value hconsistent hstarts
+        (fun hcompletable =>
+          (not_privateStructuralHit_of_deferredCompletable hcompletable) hprivate)).symm
+  · simp only [hprivate, ↓reduceIte]
+    by_cases hcompletable : DeferredCompletable table context
+    · simpa only [hcompletable, ↓reduceIte] using hproject
+    · simp only [hcompletable, ↓reduceIte, map_pure, DirectBoundaryOutcome.failed]
+      exact (ObserverDooms.eq_true (table := table) (observe := observe)
+        context fuel value hconsistent hstarts hcompletable).symm
+
+noncomputable def canonicalizeDirectDetailedObserve
+    (table : OtsSecretIndex → HashOutput)
+    (observe : DeferredContext → Nat → alpha → ProbComp DirectBoundaryOutcome)
+    (context : DeferredContext) (fuel : Nat) (value : alpha) :
+    ProbComp DirectBoundaryOutcome := by
+  classical
+  exact if PublishedValues context.state then
+      classifyDirectDetailedObserve table observe
+        (canonicalizeMaterializedValues table context) fuel value
+    else
+      pure .ordinaryFailure
+
+theorem evalDist_failed_canonicalizeDirectDetailedObserve
+    (table : OtsSecretIndex → HashOutput)
+    (detailedObserve : DeferredContext → Nat → alpha → ProbComp DirectBoundaryOutcome)
+    (observe : DeferredContext → Nat → alpha → ProbComp Bool)
+    [ObserverDooms table observe]
+    (context : DeferredContext) (fuel : Nat) (value : alpha)
+    (hconsistent : context.ValuesConsistent)
+    (hproject : evalDist (DirectBoundaryOutcome.failed <$>
+        detailedObserve (canonicalizeMaterializedValues table context) fuel value) =
+      evalDist (observe (canonicalizeMaterializedValues table context) fuel value)) :
+    evalDist (DirectBoundaryOutcome.failed <$>
+        canonicalizeDirectDetailedObserve table detailedObserve context fuel value) =
+      evalDist (canonicalizeObserve table observe context fuel value) := by
+  unfold canonicalizeDirectDetailedObserve canonicalizeObserve
+  by_cases hpublished : PublishedValues context.state
+  · simp only [hpublished, ↓reduceIte]
+    exact evalDist_failed_classifyDirectDetailedObserve table detailedObserve observe
+      (canonicalizeMaterializedValues table context) fuel value
+        (canonicalizeMaterializedValues_valuesConsistent table context hconsistent)
+        (canonicalizeMaterializedValues_startTableAgrees table context) hproject
+  · simp [hpublished, DirectBoundaryOutcome.failed]
+
+noncomputable def runDirectDetailedObserve
+    (observe : DeferredContext → Nat → alpha → ProbComp DirectBoundaryOutcome)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha) :
+    ProbComp DirectBoundaryOutcome :=
+  runDirectResolvedDetailedFromTable context fuel table computation >>=
+    finishDirectDetailedObserve observe
+
+theorem evalDist_failed_runDirectDetailedObserve
+    (detailedObserve : DeferredContext → Nat → alpha → ProbComp DirectBoundaryOutcome)
+    (observe : DeferredContext → Nat → alpha → ProbComp Bool)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (hproject : ∀ result,
+      DirectDetailedResult.done result ∈ support
+          (runDirectResolvedDetailedFromTable context fuel table computation) →
+        evalDist (DirectBoundaryOutcome.failed <$>
+            detailedObserve result.context result.remaining result.value) =
+          evalDist (observe result.context result.remaining result.value)) :
+    evalDist (DirectBoundaryOutcome.failed <$>
+        runDirectDetailedObserve detailedObserve context fuel table computation) =
+      evalDist (runDirectResolvedObserve observe context fuel table computation) := by
+  unfold runDirectDetailedObserve runDirectResolvedObserve
+  rw [map_bind]
+  calc
+    _ = evalDist (runDirectResolvedDetailedFromTable context fuel table computation >>=
+          fun result => finishObserve observe (DirectDetailedResult.toOption result)) := by
+      apply evalDist_bind_congr
+      intro result hresult
+      cases result with
+      | stopped reason =>
+          cases reason <;> rfl
+      | done result =>
+          exact hproject result hresult
+    _ = evalDist ((DirectDetailedResult.toOption <$>
+          runDirectResolvedDetailedFromTable context fuel table computation) >>=
+            finishObserve observe) := by
+      apply congrArg evalDist
+      simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind, Function.comp_apply]
+    _ = _ := by
+      rw [map_toOption_runDirectResolvedDetailedFromTable]
+
+noncomputable def directDetailedBoundaryObserve
+    (impl : QueryImpl spec
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))))
+    (computation : OracleComp spec alpha)
+    (observe : DeferredContext → Nat → (alpha × SplitHashCache) →
+      ProbComp DirectBoundaryOutcome)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    ProbComp DirectBoundaryOutcome := by
+  classical
+  exact OracleComp.construct
+    (C := fun _ : OracleComp spec alpha =>
+      (DeferredContext → Nat → (alpha × SplitHashCache) →
+          ProbComp DirectBoundaryOutcome) →
+        DeferredContext → Nat → (OtsSecretIndex → HashOutput) → SplitHashCache →
+          ProbComp DirectBoundaryOutcome)
+    (fun value observe context fuel _table cache => observe context fuel (value, cache))
+    (fun query _next recursivelyRun observe context fuel table cache =>
+      runDirectDetailedObserve
+        (canonicalizeDirectDetailedObserve table
+          (fun nextContext remaining value =>
+            recursivelyRun value.1 observe nextContext remaining table value.2))
+        context fuel table ((impl query).run cache))
+    computation observe context fuel table cache
+
+set_option maxRecDepth 100000 in
+theorem evalDist_failed_directDetailedBoundaryObserve
+    (impl : QueryImpl spec
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))))
+    (computation : OracleComp spec alpha)
+    (detailedObserve : DeferredContext → Nat → (alpha × SplitHashCache) →
+      ProbComp DirectBoundaryOutcome)
+    (observe : DeferredContext → Nat → (alpha × SplitHashCache) → ProbComp Bool)
+    [ObserverDooms table observe]
+    (hobserve : ∀ context fuel value,
+      context.ValuesConsistent → StartTableAgrees context.state table →
+      evalDist (DirectBoundaryOutcome.failed <$>
+          detailedObserve context fuel value) =
+        evalDist (observe context fuel value))
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table) :
+    evalDist (DirectBoundaryOutcome.failed <$>
+        directDetailedBoundaryObserve impl computation detailedObserve context fuel table cache) =
+      evalDist (directBoundaryObserve impl computation observe context fuel table cache) := by
+  induction computation using OracleComp.inductionOn generalizing context fuel cache with
+  | pure value =>
+      rw [directDetailedBoundaryObserve, OracleComp.construct_pure,
+        directBoundaryObserve, OracleComp.construct_pure]
+      exact hobserve context fuel (value, cache) hconsistent hstarts
+  | query_bind query next ih =>
+      rw [directDetailedBoundaryObserve, OracleComp.construct_query_bind,
+        directBoundaryObserve, OracleComp.construct_query_bind]
+      let detailedNext : DeferredContext → Nat →
+          ((spec.Range query) × SplitHashCache) → ProbComp DirectBoundaryOutcome :=
+        fun nextContext remaining value =>
+          directDetailedBoundaryObserve impl (next value.1) detailedObserve
+            nextContext remaining table value.2
+      let nextObserve : DeferredContext → Nat →
+          ((spec.Range query) × SplitHashCache) → ProbComp Bool :=
+        fun nextContext remaining value =>
+          directBoundaryObserve impl (next value.1) observe
+            nextContext remaining table value.2
+      letI : ObserverDooms table nextObserve := ⟨by
+        intro nextContext remaining value hnextConsistent hnextStarts hnextDoomed
+        exact directBoundaryObserve_dooms impl (next value.1) observe nextContext remaining
+          value.2 hnextConsistent hnextStarts hnextDoomed⟩
+      apply evalDist_failed_runDirectDetailedObserve
+      intro result hresult
+      have hdirect := mem_support_runDirectResolvedFromTable_of_done_detailed
+        ((impl query).run cache) context fuel table result hresult
+      have hcore := resolvedCore_of_mem_runDirectResolvedFromTable
+        ((impl query).run cache) context fuel table result hconsistent hstarts hdirect
+      apply evalDist_failed_canonicalizeDirectDetailedObserve
+        table detailedNext nextObserve result.context result.remaining result.value hcore.2.1
+      exact ih result.value.1 (canonicalizeMaterializedValues table result.context)
+        result.remaining result.value.2
+          (canonicalizeMaterializedValues_valuesConsistent table result.context hcore.2.1)
+          (canonicalizeMaterializedValues_startTableAgrees table result.context)
+
+noncomputable def directDetailedVerifierFinishObserve
+    (table : OtsSecretIndex → HashOutput)
+    (parameter : PublicParameter) (root : Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : (Forgery × QueryLog SigningSpec) × SplitHashCache) :
+    ProbComp DirectBoundaryOutcome :=
+  runDirectDetailedObserve
+    (classifyDirectObserve table (resolvedFinalizationObserve table))
+    context fuel table ((canonicalVerifierFinish parameter root value.1).run value.2)
+
+instance directVerifierFinishObserve_observerDooms
+    (table : OtsSecretIndex → HashOutput)
+    (parameter : PublicParameter) (root : Digest) :
+    ObserverDooms table (directVerifierFinishObserve table parameter root) where
+  eq_true context fuel value hconsistent hstarts hdoomed := by
+    unfold directVerifierFinishObserve
+    exact evalDist_runDirectResolvedObserve_eq_true_of_not_completable_auto
+      (observe := resolvedFinalizationObserve table) context fuel table
+        ((canonicalVerifierFinish parameter root value.1).run value.2)
+          hconsistent hstarts hdoomed
+
+theorem evalDist_failed_directDetailedVerifierFinishObserve
+    (table : OtsSecretIndex → HashOutput)
+    (parameter : PublicParameter) (root : Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : (Forgery × QueryLog SigningSpec) × SplitHashCache)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table) :
+    evalDist (DirectBoundaryOutcome.failed <$>
+        directDetailedVerifierFinishObserve table parameter root context fuel value) =
+      evalDist (directVerifierFinishObserve table parameter root context fuel value) := by
+  unfold directDetailedVerifierFinishObserve directVerifierFinishObserve
+  apply evalDist_failed_runDirectDetailedObserve
+  intro result hresult
+  have hdirect := mem_support_runDirectResolvedFromTable_of_done_detailed
+    ((canonicalVerifierFinish parameter root value.1).run value.2)
+      context fuel table result hresult
+  have hcore := resolvedCore_of_mem_runDirectResolvedFromTable
+    ((canonicalVerifierFinish parameter root value.1).run value.2)
+      context fuel table result hconsistent hstarts hdirect
+  exact evalDist_failed_classifyDirectObserve table (resolvedFinalizationObserve table)
+    result.context result.remaining result.value hcore.2.1 hcore.2.2
+
+noncomputable def allDirectDetailedRetainedRestObserve
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : Digest × SplitHashCache) : ProbComp DirectBoundaryOutcome :=
+  directDetailedBoundaryObserve
+    (maskedExpandedAdversaryImpl parameter value.1 ftsSecret)
+    (signingTraceComputation (adversary.main ⟨value.1, parameter⟩))
+    (directDetailedVerifierFinishObserve table parameter value.1)
+    context fuel table value.2
+
+theorem evalDist_failed_allDirectDetailedRetainedRestObserve
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : Digest × SplitHashCache)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table) :
+    evalDist (DirectBoundaryOutcome.failed <$>
+        allDirectDetailedRetainedRestObserve adversary parameter table ftsSecret
+          context fuel value) =
+      evalDist (allDirectRetainedRestObserve adversary parameter table ftsSecret
+        context fuel value) := by
+  unfold allDirectDetailedRetainedRestObserve allDirectRetainedRestObserve
+  apply evalDist_failed_directDetailedBoundaryObserve
+  intro nextContext remaining nextValue hnextConsistent hnextStarts
+  exact evalDist_failed_directDetailedVerifierFinishObserve table parameter value.1
+    nextContext remaining nextValue hnextConsistent hnextStarts
+  exact hconsistent
+  exact hstarts
+
+noncomputable def allDirectBoundaryDetailedRetainedOutcome
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp DirectBoundaryOutcome :=
+  runDirectDetailedObserve
+    (allDirectDetailedRetainedRestObserve adversary parameter table ftsSecret)
+    { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+      values := emptyDeferredStructuralValues }
+    fuel table (maskedPublishedTreeRoot.run emptySplitHashCache)
+
+set_option maxHeartbeats 1000000 in
+set_option maxRecDepth 100000 in
+theorem evalDist_failed_allDirectBoundaryDetailedRetainedOutcome
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    evalDist (DirectBoundaryOutcome.failed <$>
+        allDirectBoundaryDetailedRetainedOutcome adversary parameter table ftsSecret fuel) =
+      evalDist (allDirectBoundaryDeferredRetainedFinishIsNone adversary parameter table
+        ftsSecret fuel) := by
+  let initial : DeferredContext :=
+    { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+      values := emptyDeferredStructuralValues }
+  unfold allDirectBoundaryDetailedRetainedOutcome
+    allDirectBoundaryDeferredRetainedFinishIsNone
+  apply evalDist_failed_runDirectDetailedObserve
+  intro result hresult
+  have hdirect := mem_support_runDirectResolvedFromTable_of_done_detailed
+    (maskedPublishedTreeRoot.run emptySplitHashCache) initial fuel table result hresult
+  have hcore := resolvedCore_of_mem_runDirectResolvedFromTable
+    (maskedPublishedTreeRoot.run emptySplitHashCache) initial fuel table result
+      DeferredContext.valid_empty.valuesConsistent (startTableAgrees_empty table) hdirect
+  exact evalDist_failed_allDirectDetailedRetainedRestObserve adversary parameter table ftsSecret
+    result.context result.remaining result.value hcore.2.1 hcore.2.2
+
+noncomputable def sampledAllDirectBoundaryDetailedRetainedOutcome
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp DirectBoundaryOutcome := do
+  let table ← sampleOtsHashTable
+  allDirectBoundaryDetailedRetainedOutcome adversary parameter table ftsSecret fuel
+
+set_option linter.constructorNameAsVariable false in
+set_option maxRecDepth 100000 in
+theorem evalDist_failed_sampledAllDirectBoundaryDetailedRetainedOutcome
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    evalDist (DirectBoundaryOutcome.failed <$>
+        sampledAllDirectBoundaryDetailedRetainedOutcome adversary parameter ftsSecret fuel) =
+      evalDist (sampledAllDirectBoundaryFinishIsNone adversary parameter ftsSecret fuel) := by
+  unfold sampledAllDirectBoundaryDetailedRetainedOutcome sampledAllDirectBoundaryFinishIsNone
+  rw [map_bind]
+  apply evalDist_bind_congr
+  intro table _htable
+  exact evalDist_failed_allDirectBoundaryDetailedRetainedOutcome adversary parameter table
+    ftsSecret fuel
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
