@@ -208,6 +208,34 @@ noncomputable def runDirectDetailedPrivateObserve
   runDirectResolvedDetailedFromTable context fuel table computation >>=
     finishDirectDetailedPrivateObserve observe
 
+theorem evalDist_runDirectDetailedPrivateObserve_bind
+    (table : OtsSecretIndex → HashOutput)
+    (context : DeferredContext) (fuel : Nat)
+    (left : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (next : α → OracleComp (LazyRevealProbe.World Coordinate) β)
+    (observe : DeferredContext → Nat → β → ProbComp Bool)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table) :
+    evalDist
+      (runDirectDetailedPrivateObserve observe context fuel table (left >>= next)) =
+    evalDist (runDirectResolvedDetailedFromTable context fuel table left >>=
+      finishDirectDetailedPrivateObserve
+        (fun nextContext remaining value =>
+          runDirectDetailedPrivateObserve observe nextContext remaining table
+            (next value))) := by
+  unfold runDirectDetailedPrivateObserve
+  rw [runDirectResolvedDetailedFromTable_bind, bind_assoc]
+  apply evalDist_bind_congr
+  intro result hresult
+  cases result with
+  | stopped reason => cases reason <;> rfl
+  | done result =>
+      have hdirect := mem_support_runDirectResolvedFromTable_of_done_detailed
+        left context fuel table result hresult
+      have hcore := resolvedCore_of_mem_runDirectResolvedFromTable
+        left context fuel table result hconsistent hstarts hdirect
+      simp [finishDirectDetailedPrivateObserve, hcore.1]
+
 theorem evalDist_private_runDirectDetailedObserve
     (detailedObserve : DeferredContext → Nat → alpha → ProbComp DirectBoundaryOutcome)
     (observe : DeferredContext → Nat → alpha → ProbComp Bool)
