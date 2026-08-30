@@ -864,6 +864,51 @@ theorem probEvent_sampledViewedGame_cleanBackward_le_of_sampled
       (probEvent_sampledWinningRetainedVerifyProbe_eq_secrets adversary parameter ftsSecret).symm
     _ ≤ bound := hsampled parameter hparameter ftsSecret hfts
 
+theorem security_of_sampledWinningRetainedVerifyProbe_le_mul
+    (c : Nat) (hc : 2 * c + 1 ≤ 19)
+    (hprobe : ∀ (q : Nat), 1 ≤ q → ∀ adversary : Adversary,
+      HasHashQueryBound scheme adversary q → q ≤ 2 ^ securityBits →
+      ∀ parameter ∈ support sampleParameter,
+      ∀ ftsSecret ∈ support sampleFtsSecrets,
+        Pr[fun result => WinningRetainedVerifyProbeWitness parameter
+            (extendStartTable result.1) ftsSecret result.2 |
+          sampledActualRetainedOtsHashTable adversary parameter ftsSecret] ≤
+          ((c * q : Nat) : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹) :
+    SphincsSecurityStatement := by
+  apply security_of_sampled_hiddenOpeningRisk_le
+  intro q hqPos adversary hq hqMax
+  let probeBound := ((c * q : Nat) : ℝ≥0∞) *
+    ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹
+  let unitBound := (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹
+  have hsampled : ∀ parameter ∈ support sampleParameter,
+      ∀ ftsSecret ∈ support sampleFtsSecrets,
+        Pr[fun result => WinningRetainedVerifyProbeWitness parameter
+            (extendStartTable result.1) ftsSecret result.2 |
+          sampledActualRetainedOtsHashTable adversary parameter ftsSecret] ≤ probeBound := by
+    intro parameter hparameter ftsSecret hfts
+    exact hprobe q hqPos adversary hq hqMax parameter hparameter ftsSecret hfts
+  have hfresh :
+      Pr[SampledViewedEvent cleanFreshEvent | sampledViewedGame adversary] ≤ probeBound :=
+    probEvent_sampledViewedGame_cleanFresh_le_of_sampled adversary probeBound hsampled
+  have hbackward :
+      Pr[SampledViewedEvent cleanBackwardEvent | sampledViewedGame adversary] ≤ probeBound :=
+    probEvent_sampledViewedGame_cleanBackward_le_of_sampled adversary probeBound hsampled
+  have huncovered :
+      Pr[SampledViewedEvent cleanUncoveredEvent | sampledViewedGame adversary] ≤ unitBound :=
+    FtsProbeSimulation.probEvent_sampledViewedGame_cleanUncovered_le adversary q hq
+  rw [sampledHiddenOpeningRisk]
+  calc
+    _ ≤ probeBound + (probeBound + unitBound) :=
+      add_le_add hfresh (add_le_add hbackward huncovered)
+    _ = (((2 * c + 1) * q : Nat) : ℝ≥0∞) *
+        ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+      simp only [probeBound, unitBound]
+      push_cast
+      ring
+    _ ≤ ((19 * q : Nat) : ℝ≥0∞) *
+        ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+      gcongr
+
 theorem security_of_sampledWinningRetainedVerifyProbe_le
     (hprobe : ∀ (q : Nat), 1 ≤ q → ∀ adversary : Adversary,
       HasHashQueryBound scheme adversary q → q ≤ 2 ^ securityBits →
@@ -874,35 +919,7 @@ theorem security_of_sampledWinningRetainedVerifyProbe_le
           sampledActualRetainedOtsHashTable adversary parameter ftsSecret] ≤
           (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹) :
     SphincsSecurityStatement := by
-  apply security_of_sampled_hiddenOpeningRisk_le
-  intro q hqPos adversary hq hqMax
-  let bound := (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹
-  have hsampled : ∀ parameter ∈ support sampleParameter,
-      ∀ ftsSecret ∈ support sampleFtsSecrets,
-        Pr[fun result => WinningRetainedVerifyProbeWitness parameter
-            (extendStartTable result.1) ftsSecret result.2 |
-          sampledActualRetainedOtsHashTable adversary parameter ftsSecret] ≤ bound := by
-    intro parameter hparameter ftsSecret hfts
-    exact hprobe q hqPos adversary hq hqMax parameter hparameter ftsSecret hfts
-  have hfresh :
-      Pr[SampledViewedEvent cleanFreshEvent | sampledViewedGame adversary] ≤ bound :=
-    probEvent_sampledViewedGame_cleanFresh_le_of_sampled adversary bound hsampled
-  have hbackward :
-      Pr[SampledViewedEvent cleanBackwardEvent | sampledViewedGame adversary] ≤ bound :=
-    probEvent_sampledViewedGame_cleanBackward_le_of_sampled adversary bound hsampled
-  have huncovered :
-      Pr[SampledViewedEvent cleanUncoveredEvent | sampledViewedGame adversary] ≤ bound :=
-    FtsProbeSimulation.probEvent_sampledViewedGame_cleanUncovered_le adversary q hq
-  rw [sampledHiddenOpeningRisk]
-  calc
-    _ ≤ bound + (bound + bound) := add_le_add hfresh (add_le_add hbackward huncovered)
-    _ = ((3 * q : Nat) : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
-      simp only [bound]
-      push_cast
-      ring
-    _ ≤ ((19 * q : Nat) : ℝ≥0∞) *
-        ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
-      gcongr
-      omega
+  apply security_of_sampledWinningRetainedVerifyProbe_le_mul 1 (by omega)
+  simpa using hprobe
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

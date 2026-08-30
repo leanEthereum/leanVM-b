@@ -74,6 +74,50 @@ theorem valid_completable_canonicalizeMaterializedValues
   exact ⟨canonicalizeMaterializedValues_valid table context hvalid hclean,
     ⟨completion, hcompletion.to_canonicalizedMaterializedValues⟩⟩
 
+theorem canonicalizeMaterializedValues_chain_value
+    (table : OtsSecretIndex → HashOutput) (context : DeferredContext)
+    (hstarts : StartTableAgrees context.state table)
+    (hchainValid : ChainState.ValidFor allowed context.state)
+    (coordinate : Coordinate) (hchain : IsChainCoordinate coordinate) :
+    (canonicalizeMaterializedValues table context).state.values coordinate =
+      context.state.values coordinate := by
+  unfold canonicalizeMaterializedValues publicMaterializedValues
+  cases hvalue : context.state.values coordinate with
+  | none =>
+      have hnotRevealed : coordinate ∉ context.state.revealed := by
+        intro hrevealed
+        exact (hchainValid coordinate hchain).2.1 hrevealed hvalue
+      simp [hnotRevealed]
+  | some output =>
+      have hrevealed : coordinate ∈ context.state.revealed :=
+        (hchainValid coordinate hchain).1 (by simp [hvalue])
+      simp only [hrevealed, ↓reduceIte]
+      cases coordinate with
+      | chainStart lay tree leafIdx chainIdx =>
+          let index : OtsSecretIndex := ⟨lay, tree, leafIdx, chainIdx⟩
+          have htable : output = table index := hstarts index output (by
+            simpa [index, OtsSecretIndex.coordinate] using hvalue)
+          simp [resolvedCompletionValue, index, htable]
+      | position position =>
+          simp [resolvedCompletionValue, DeferredContext.positionValue, hvalue]
+
+theorem ChainInvariant.canonicalizeMaterializedValues
+    (table : OtsSecretIndex → HashOutput) (context : DeferredContext)
+    (hstarts : StartTableAgrees context.state table)
+    (hinvariant : ChainInvariant parameter allowed context.state cache) :
+    ChainInvariant parameter allowed
+      (canonicalizeMaterializedValues table context).state cache := by
+  constructor
+  · intro coordinate hchain
+    have hcoordinate := hinvariant.1 coordinate hchain
+    rw [canonicalizeMaterializedValues_chain_value table context hstarts hinvariant.1
+      coordinate hchain, canonicalizeMaterializedValues_revealed]
+    exact hcoordinate
+  · intro probe input hmatches hcached hnotAllowed
+    have hpending := hinvariant.2 probe input hmatches hcached hnotAllowed
+    simpa [LazyRevealProbe.State.pendingAt,
+      canonicalizeMaterializedValues_pending] using hpending
+
 set_option maxRecDepth 100000 in
 theorem evalDist_boundaryObserve_eq_directBoundaryObserve
     (impl : QueryImpl spec
