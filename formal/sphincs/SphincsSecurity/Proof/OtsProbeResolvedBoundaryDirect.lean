@@ -159,6 +159,77 @@ theorem evalDist_boundaryObserve_eq_directBoundaryObserve
                         result.value.2 hcanonical.1 hcanonical.2.1 hcanonical.2.2).symm
                 · simp [hpublished]
 
+set_option maxRecDepth 100000 in
+theorem directBoundaryObserve_synchronized
+    (impl : QueryImpl spec
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))))
+    (computation : OracleComp spec α)
+    (observe : DeferredContext → Nat → (α × SplitHashCache) → ProbComp Bool)
+    [ObserverDooms table observe] [ObserverSynchronized table observe]
+    [ObserverPositionNeutral table observe]
+    (left right : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (hcontext : FinalizationContextEq table (some left) (some right))
+    (hvalues : left.state.values = right.state.values)
+    (hrevealed : left.state.revealed = right.state.revealed) :
+    evalDist (directBoundaryObserve impl computation observe left fuel table cache) =
+      evalDist (directBoundaryObserve impl computation observe right fuel table cache) := by
+  rcases hcontext with ⟨hview, hleftValid, hrightValid, hleftCompletable⟩
+  have hrightCompletable : DeferredCompletable table right := by
+    rcases hleftCompletable with ⟨completion, hcompletion⟩
+    exact ⟨completion, (hview.deferredCompletion_iff completion).mp hcompletion⟩
+  calc
+    _ = evalDist (boundaryObserve impl computation observe left fuel table cache) :=
+      (evalDist_boundaryObserve_eq_directBoundaryObserve impl computation observe left fuel
+        cache hleftValid hleftCompletable).symm
+    _ = evalDist (boundaryObserve impl computation observe right fuel table cache) :=
+      boundaryObserve_synchronized impl computation observe left right fuel cache
+        ⟨hview, hleftValid, hrightValid, hleftCompletable⟩ hvalues hrevealed
+    _ = _ := evalDist_boundaryObserve_eq_directBoundaryObserve impl computation observe right
+      fuel cache hrightValid hrightCompletable
+
+set_option maxRecDepth 100000 in
+theorem directBoundaryObserve_positionNeutral
+    (impl : QueryImpl spec
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))))
+    (computation : OracleComp spec α)
+    (observe : DeferredContext → Nat → (α × SplitHashCache) → ProbComp Bool)
+    [ObserverDooms table observe] [ObserverSynchronized table observe]
+    [ObserverPositionNeutral table observe]
+    (position : Position) (context : DeferredContext) (fuel : Nat)
+    (cache : SplitHashCache)
+    (hvalid : context.Valid) (hcompletable : DeferredCompletable table context)
+    (hensured : Coordinate.position position ∈ context.state.ensured) :
+    evalDist (resolveDeferredPositionValue position context >>= fun resolved =>
+      match resolved with
+      | none => pure true
+      | some resolved =>
+          directBoundaryObserve impl computation observe resolved.toDeferredContext fuel table
+            cache) =
+      evalDist (directBoundaryObserve impl computation observe context fuel table cache) := by
+  calc
+    _ = evalDist (resolveDeferredPositionValue position context >>= fun resolved =>
+        match resolved with
+        | none => pure true
+        | some resolved =>
+            boundaryObserve impl computation observe resolved.toDeferredContext fuel table
+              cache) := by
+      apply evalDist_bind_congr
+      intro resolved hresolved
+      cases resolved with
+      | none => rfl
+      | some resolved =>
+          have hresolvedValid := hvalid.of_resolveDeferredPositionValue position resolved
+            hresolved
+          have hresolvedCompletable := hcompletable.of_resolveDeferredPositionValue hvalid
+            position resolved hresolved
+          simpa using (evalDist_boundaryObserve_eq_directBoundaryObserve impl computation observe
+            resolved.toDeferredContext fuel cache hresolvedValid hresolvedCompletable).symm
+    _ = evalDist (boundaryObserve impl computation observe context fuel table cache) :=
+      boundaryObserve_positionNeutral impl computation observe position context fuel cache
+        hvalid hcompletable hensured
+    _ = _ := evalDist_boundaryObserve_eq_directBoundaryObserve impl computation observe context
+      fuel cache hvalid hcompletable
+
 noncomputable def directBoundaryDeferredRetainedFinishIsNone
     (adversary : Adversary) (parameter : PublicParameter)
     (table : OtsSecretIndex → HashOutput)
@@ -206,5 +277,91 @@ theorem evalDist_boundaryDeferredRetainedFinishIsNone_eq_direct
         (verifierFinishObserve table parameter rootResult.value.1)
         rootResult.context rootResult.remaining rootResult.value.2
           hrootInvariants.1 hrootInvariants.2
+
+noncomputable def directRetainedRestObserve
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : Digest × SplitHashCache) : ProbComp Bool :=
+  directBoundaryObserve (maskedExpandedAdversaryImpl parameter value.1 ftsSecret)
+    (signingTraceComputation (adversary.main ⟨value.1, parameter⟩))
+    (verifierFinishObserve table parameter value.1)
+    context fuel table value.2
+
+instance directRetainedRestObserve_observerDooms
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    ObserverDooms table
+      (directRetainedRestObserve adversary parameter table ftsSecret) where
+  eq_true context fuel value hconsistent hstarts hdoomed := by
+    exact directBoundaryObserve_dooms
+      (maskedExpandedAdversaryImpl parameter value.1 ftsSecret)
+      (signingTraceComputation (adversary.main ⟨value.1, parameter⟩))
+      (verifierFinishObserve table parameter value.1)
+      context fuel value.2 hconsistent hstarts hdoomed
+
+instance directRetainedRestObserve_observerSynchronized
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    ObserverSynchronized table
+      (directRetainedRestObserve adversary parameter table ftsSecret) where
+  eq_of_synchronized left right fuel value hcontext hvalues hrevealed := by
+    exact directBoundaryObserve_synchronized
+      (maskedExpandedAdversaryImpl parameter value.1 ftsSecret)
+      (signingTraceComputation (adversary.main ⟨value.1, parameter⟩))
+      (verifierFinishObserve table parameter value.1)
+      left right fuel value.2 hcontext hvalues hrevealed
+
+instance directRetainedRestObserve_observerPositionNeutral
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    ObserverPositionNeutral table
+      (directRetainedRestObserve adversary parameter table ftsSecret) where
+  eq_resolve position context fuel value hvalid hcompletable hensured := by
+    exact directBoundaryObserve_positionNeutral
+      (maskedExpandedAdversaryImpl parameter value.1 ftsSecret)
+      (signingTraceComputation (adversary.main ⟨value.1, parameter⟩))
+      (verifierFinishObserve table parameter value.1)
+      position context fuel value.2 hvalid hcompletable hensured
+
+noncomputable def fullyDirectBoundaryDeferredRetainedFinishIsNone
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp Bool :=
+  runDirectResolvedObserve (directRetainedRestObserve adversary parameter table ftsSecret)
+    { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+      values := emptyDeferredStructuralValues }
+    fuel table (maskedPublishedTreeRoot.run emptySplitHashCache)
+
+set_option maxRecDepth 100000 in
+theorem evalDist_directBoundaryDeferredRetainedFinishIsNone_eq_fullyDirect
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    evalDist (directBoundaryDeferredRetainedFinishIsNone adversary parameter table ftsSecret
+        fuel) =
+      evalDist (fullyDirectBoundaryDeferredRetainedFinishIsNone adversary parameter table
+        ftsSecret fuel) := by
+  let context : DeferredContext :=
+    { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+      values := emptyDeferredStructuralValues }
+  have hleft : directBoundaryDeferredRetainedFinishIsNone adversary parameter table ftsSecret
+      fuel = runResolvedObserve
+        (directRetainedRestObserve adversary parameter table ftsSecret)
+        context fuel table (maskedPublishedTreeRoot.run emptySplitHashCache) := by
+    unfold directBoundaryDeferredRetainedFinishIsNone runResolvedObserve
+    apply bind_congr
+    intro result
+    cases result <;> rfl
+  rw [hleft]
+  exact evalDist_runResolvedObserve_eq_runDirectResolvedObserve
+    (observe := directRetainedRestObserve adversary parameter table ftsSecret)
+    context fuel table (maskedPublishedTreeRoot.run emptySplitHashCache)
+      DeferredContext.valid_empty (deferredCompletable_empty table)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
