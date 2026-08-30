@@ -483,7 +483,28 @@ impl Parser {
                     }
                     ForBound::Const(hi)
                 }
-                Err(_) => ForBound::Runtime(parse_expr(&parts[1])?),
+                Err(_) => {
+                    let stop = parse_expr(&parts[1])?;
+                    // A compile-time value that is not a power of GEN can never be
+                    // REACHED: the counter walks by multiplication and exits on
+                    // equality, so the loop runs forever at witness generation with
+                    // no diagnostic. The `lo` side has always been checked, which
+                    // made `mul_range(0, GEN ** 3)` a clean parse error while
+                    // `mul_range(1, 10)` was a hang.
+                    // A power of two reached `gpow_bound` above, so a literal here
+                    // is one the multiplicative walk can never hit. This catches a
+                    // bare `10` and a constant that substitutes to one; a value
+                    // built by arithmetic (`5 * 2`) still slips through to the
+                    // runtime path and still hangs, which wants a field-level
+                    // constant folder the parser does not have.
+                    if let Expr::Lit(n) = stop {
+                        return Err(format!(
+                            "mul_range stop bound `{n}` is not a power of GEN, so the multiplicative walk \
+                             never reaches it: write `GEN ** k`"
+                        ));
+                    }
+                    ForBound::Runtime(stop)
+                }
             };
             self.i += 1;
             let body = self.block(indent)?;
@@ -933,8 +954,12 @@ fn const_int_expr(e: &Expr) -> Option<u128> {
 /// power of `g` has no usable exponent).
 fn gpow_bound(e: &Expr) -> Result<u64, String> {
     match e {
-        // `1` is the multiplicative identity g^0, the natural loop start.
-        Expr::Lit(1) => Ok(0),
+        // `g` is `x`, so the literal `2^k` IS `g^k`, and `1` is `g^0`. Rejecting
+        // these used to make `mul_range(1, 8)` an error although it runs exactly
+        // like `mul_range(1, GEN ** 3)`, and `mul_range(2, GEN ** 5)` an error
+        // although `2 == GEN`. It also contradicted `gaddr_of`, which reads the
+        // same literal as the same element.
+        Expr::Lit(n) if (n.is_power_of_two() && *n < (1 << 64)) || *n == 1 => Ok(n.trailing_zeros() as u64),
         Expr::Gen => Ok(1),
         Expr::GPow(k) => u64::try_from(*k).map_err(|_| format!("bound exponent {k} does not fit in u64")),
         other => Err(format!(

@@ -47,8 +47,10 @@ fn gmul(a: GAddr, b: GAddr) -> Option<GAddr> {
 
 /// Cap on a `β`-folded exponent: the operand g-power table is sized to the
 /// largest immediate, so beyond this a huge constant index falls back to a
-/// materialized pointer instead of inflating that table. Tied to the smallest
-/// admissible memory, like [`FnLower::try_gpow_index`]'s own cap.
+/// materialized pointer instead of inflating that table. Inclusive, and one more
+/// than [`FnLower::try_gpow_index`]'s cap, which is fine: `layout::bytecode_columns`
+/// sizes the table from the program's own largest operand, so a folded `β` is
+/// never one the table cannot represent. The two caps measure different things.
 const FOLD_MAX: u128 = 1 << lean_vm::cpu::MIN_LOG_MEM;
 
 /// `b^k` for a compile-time exponent (small, so plain repeated multiplication).
@@ -1643,9 +1645,19 @@ impl FnLower<'_> {
     /// via [`gmul`]. `None` for anything with a runtime, non-g-power value.
     fn gaddr_of(&self, e: &Expr) -> Option<GAddr> {
         match e {
-            Expr::Lit(1) => Some(GAddr {
+            // A literal `2^k` IS `g^k` here, since `g = x`. `try_gpow_index`
+            // always knew that; without this arm `hb[GEN * 2]` was rejected as
+            // "not a g-power" while `hb[GEN * GEN]`, the same field element,
+            // compiled, and `hb[r * 2]` compiled again once `r` was runtime.
+            // `g = x`, so the literal `2^k` IS `g^k` -- but ONLY while `k < 64`.
+            // At and above that the modulus `x^64 + x^4 + x^3 + x + 1` folds the
+            // monomial back into the low limb, while the literal's bit `k` lands
+            // in the NEXT limb, the tower coefficient of `y`. `try_gpow_index`
+            // carries this guard; without it here the guest's own
+            // `Y_TOWER = 2^64` would read as `g^64` in a pointer position.
+            Expr::Lit(n) if n.is_power_of_two() && *n < (1 << 64) => Some(GAddr {
                 base: None,
-                exp: 0,
+                exp: n.trailing_zeros() as u128,
                 run: None,
             }),
             Expr::Gen => Some(GAddr {
@@ -1808,7 +1820,13 @@ impl FnLower<'_> {
         // g-power (`buf[0]`, `buf[2]`, an integer unroll var) can never name
         // a heap cell (cell k lives at `buf · g^k`) and would deref a wild
         // address at proving time. Reject it here, where the source is known.
-        if self.gaddr_of(idx).is_none()
+        // A BARE literal index is rejected even now that `gaddr_of` reads `2^k`
+        // as `g^k` in a pointer: `hb[2]` would silently mean cell 1, while slice
+        // bounds stayed integer (`hb[2:4]` starts at cell 2), so one spelling
+        // would name two different cells. An index built from `GEN` is fine, and
+        // `1` is `g^0` either way.
+        let bare_int = matches!(self.try_lit(idx), Some(n) if n != 1);
+        if (bare_int || self.gaddr_of(idx).is_none())
             && let Some(c) = self.try_field_const(idx)
         {
             panic!(
@@ -2628,6 +2646,14 @@ impl FnLower<'_> {
         for s in body {
             free_vars_stmt(s, &mut referenced, &mut bound);
         }
+        // Everything the body binds ANYWHERE, branch-local or not. `bound` above
+        // is scoped, which is what makes the capture set right; this flat one
+        // only answers "does the body have an `r` of its own?", which is what the
+        // StackBuf rejection below needs: a body that merely SHADOWS an enclosing
+        // `StackBuf` never touches it, so rejecting it names a capture that is
+        // not happening.
+        let mut shadowed = std::collections::HashSet::new();
+        binds_anywhere(body, &mut shadowed);
         let mut captures = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for r in &referenced {
@@ -2640,7 +2666,7 @@ impl FnLower<'_> {
             // clear error (not the misleading "unbound variable" the capture drop
             // would otherwise trigger). Keep it inside the loop body, or carry
             // state through a `HeapBuf`.
-            if self.scope.stacks.contains_key(r) {
+            if self.scope.stacks.contains_key(r) && !shadowed.contains(r) {
                 panic!(
                     "StackBuf `{r}` cannot be captured into a `for` loop; \
                      define it inside the loop body or carry state via a `HeapBuf`"
@@ -2792,6 +2818,41 @@ fn free_vars_expr(e: &Expr, refs: &mut Vec<String>) {
 }
 
 /// Collect references in `s` into `refs` and names it binds into `bound`.
+/// Every name the block binds, ignoring scope. [`free_vars_stmt`] deliberately
+/// does not answer this: its `bound` set is scoped, so an arm-local binding is
+/// discarded with the arm.
+fn binds_anywhere(body: &[Stmt], out: &mut std::collections::HashSet<String>) {
+    for s in body {
+        match s {
+            Stmt::Let(n, _) => {
+                out.insert(n.clone());
+            }
+            Stmt::LetTuple(ns, ..) | Stmt::LetMatchRange { names: ns, .. } => ns.iter().for_each(|n| {
+                out.insert(n.clone());
+            }),
+            Stmt::If { then, els, .. } => {
+                binds_anywhere(then, out);
+                binds_anywhere(els, out);
+            }
+            Stmt::Match { cases, .. } => cases.iter().for_each(|c| binds_anywhere(c, out)),
+            Stmt::For { var, body, .. } | Stmt::Unroll { var, body, .. } => {
+                out.insert(var.clone());
+                binds_anywhere(body, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Free variables of a block whose bindings do NOT escape it: it sees everything
+/// bound so far, and anything it binds stays inside.
+fn scoped_vars(body: &[Stmt], refs: &mut Vec<String>, bound: &std::collections::HashSet<String>) {
+    let mut inner = bound.clone();
+    for s in body {
+        free_vars_stmt(s, refs, &mut inner);
+    }
+}
+
 fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut std::collections::HashSet<String>) {
     match s {
         Stmt::Let(n, e) => {
@@ -2821,14 +2882,28 @@ fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut std::collections
         } => {
             free_vars_expr(lhs, refs);
             free_vars_expr(rhs, refs);
-            then.iter().for_each(|s| free_vars_stmt(s, refs, bound));
-            els.iter().for_each(|s| free_vars_stmt(s, refs, bound));
+            // An arm's bindings are local to it (`zkDSL.md` §Control flow), so each
+            // gets its own scope. Sharing one made a name rebound in ONE arm count
+            // as loop-local everywhere, so the OUTER binding the other arm reads
+            // was never captured and a legal program failed with `unbound
+            // variable`. Over-collecting into `refs` is harmless: a capture naming
+            // nothing in the enclosing scope is dropped.
+            // `lower_if` FOLDS a compile-time condition and runs the taken branch
+            // without `scoped`, so its bindings persist exactly like an `unroll`
+            // body's. Modelling that as scoped over-captured, and the loop's own
+            // self-call then read a name the folded arm had rebound to a
+            // `StackBuf`. Both sides literal is the syntactic half of that test.
+            if matches!((lhs, rhs), (Expr::Lit(_), Expr::Lit(_))) {
+                then.iter().for_each(|s| free_vars_stmt(s, refs, bound));
+                els.iter().for_each(|s| free_vars_stmt(s, refs, bound));
+            } else {
+                scoped_vars(then, refs, bound);
+                scoped_vars(els, refs, bound);
+            }
         }
         Stmt::Match { x, cases } => {
             free_vars_expr(x, refs);
-            cases
-                .iter()
-                .for_each(|c| c.iter().for_each(|s| free_vars_stmt(s, refs, bound)));
+            cases.iter().for_each(|c| scoped_vars(c, refs, bound));
         }
         Stmt::LetMatchRange { names, x, arms } => {
             free_vars_expr(x, refs);
@@ -2853,8 +2928,13 @@ fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut std::collections
             if let ForBound::Runtime(b) = hi {
                 free_vars_expr(b, refs);
             }
-            bound.insert(var.clone());
-            body.iter().for_each(|s| free_vars_stmt(s, refs, bound));
+            // A nested loop's body becomes its own function, so neither its
+            // counter nor its bindings exist out here. `unroll` below is the
+            // opposite: it replicates straight-line code into THIS scope, so its
+            // bindings really do persist and it keeps the shared set.
+            let mut inner = bound.clone();
+            inner.insert(var.clone());
+            body.iter().for_each(|s| free_vars_stmt(s, refs, &mut inner));
         }
         Stmt::Unroll { var, lo, hi, body } => {
             free_vars_expr(lo, refs);

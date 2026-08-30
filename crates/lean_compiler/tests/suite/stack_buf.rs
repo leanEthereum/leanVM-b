@@ -13,7 +13,7 @@ use lean_compiler::{compile, parse};
 use lean_vm::cpu::{Op, prove, verify};
 use lean_vm::hash_flock::{compression, digest, metadata, unpack_metadata, warm_setup};
 use lean_vm::vmhash::compress;
-use primitives::field::{F64, F192};
+use primitives::field::{F64, F192, g_pow};
 
 use crate::common::mix;
 
@@ -594,4 +594,26 @@ fn heap_index_boundary_ok() {
     let pi = [F192::from(F64(3)), F192::from(F64(4))];
     let (proof, _) = prove(&program, pi, lean_vm::pcs::LOG_INV_RATE);
     verify(&program, &pi, &proof).expect("boundary access verifies");
+}
+
+/// `g` is `x`, so the literal `2^k` IS `g^k`. `try_gpow_index` always knew that
+/// and `gaddr_of` did not, so one field element had three answers: `hb[GEN * 2]`
+/// was rejected as "not a g-power" while `hb[GEN * GEN]` compiled, and
+/// `hb[r * 2]` compiled again as soon as `r` was runtime. All three name cell 2.
+/// A BARE literal index stays rejected: see `integer_heap_index_is_rejected`.
+#[test]
+fn a_literal_power_of_two_is_a_g_power() {
+    let src = "\
+def main():
+    hb = HeapBuf(8)
+    hb[GEN * GEN] = GEN ** 5
+    p = GEN ** 0
+    p[1] = hb[GEN * 2]
+    p[GEN] = hb[GEN ** 2]
+    return
+";
+    let program = compile(&parse(src).expect("parse"));
+    let want = [F192::from(g_pow(5)); 2];
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    verify(&program, &want, &proof).expect("three spellings of cell 2 agree");
 }
