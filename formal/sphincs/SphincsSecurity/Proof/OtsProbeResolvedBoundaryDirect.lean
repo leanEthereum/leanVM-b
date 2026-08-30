@@ -5,6 +5,8 @@ namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
 open OracleComp OracleSpec
 
+attribute [local irreducible] maskedPublishedTreeRoot
+
 noncomputable def directBoundaryObserve
     (impl : QueryImpl spec
       (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))))
@@ -156,5 +158,53 @@ theorem evalDist_boundaryObserve_eq_directBoundaryObserve
                       (canonicalizeMaterializedValues table result.context) result.remaining
                         result.value.2 hcanonical.1 hcanonical.2.1 hcanonical.2.2).symm
                 · simp [hpublished]
+
+noncomputable def directBoundaryDeferredRetainedFinishIsNone
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp Bool := do
+  let rootResult ← runResolvedFromTable
+    { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+      values := emptyDeferredStructuralValues }
+    fuel table (maskedPublishedTreeRoot.run emptySplitHashCache)
+  match rootResult with
+  | none => pure true
+  | some rootResult =>
+      directBoundaryObserve (maskedExpandedAdversaryImpl parameter rootResult.value.1 ftsSecret)
+        (signingTraceComputation (adversary.main ⟨rootResult.value.1, parameter⟩))
+        (verifierFinishObserve table parameter rootResult.value.1)
+        rootResult.context rootResult.remaining table rootResult.value.2
+
+set_option maxRecDepth 100000 in
+theorem evalDist_boundaryDeferredRetainedFinishIsNone_eq_direct
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    evalDist (boundaryDeferredRetainedFinishIsNone adversary parameter table ftsSecret fuel) =
+      evalDist (directBoundaryDeferredRetainedFinishIsNone adversary parameter table ftsSecret
+        fuel) := by
+  unfold boundaryDeferredRetainedFinishIsNone
+    directBoundaryDeferredRetainedFinishIsNone
+  apply evalDist_bind_congr
+  intro rootOption hroot
+  cases rootOption with
+  | none => rfl
+  | some rootResult =>
+      have hrootInvariants : rootResult.context.Valid ∧
+          DeferredCompletable table rootResult.context :=
+        valid_completable_of_mem_runResolvedFromTable_of_finalizationMaterializedCouples
+          (α := Digest) table maskedPublishedTreeRoot
+          (finalizationMaterializedCouples_maskedPublishedTreeRoot table)
+          { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+            values := emptyDeferredStructuralValues }
+          fuel emptySplitHashCache rootResult DeferredContext.valid_empty
+            (deferredCompletable_empty table) hroot
+      exact evalDist_boundaryObserve_eq_directBoundaryObserve
+        (maskedExpandedAdversaryImpl parameter rootResult.value.1 ftsSecret)
+        (signingTraceComputation (adversary.main ⟨rootResult.value.1, parameter⟩))
+        (verifierFinishObserve table parameter rootResult.value.1)
+        rootResult.context rootResult.remaining rootResult.value.2
+          hrootInvariants.1 hrootInvariants.2
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
