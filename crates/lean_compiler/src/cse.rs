@@ -16,8 +16,21 @@ enum Key {
 }
 
 /// Rewrite `code` in place, leaving caller-visible cells and fill blocks untouched.
-pub(crate) fn cse(code: &mut Vec<LInstr>, abi_end: Off, frozen_from: usize) -> usize {
-    let writes = write_counts(code);
+///
+/// `opaque` lists frame runs whose ADDRESS escaped (`addr(sb)`, see
+/// [`crate::lower::FnLower::stack_addr`]). A write through such a pointer is a
+/// `DEREF` whose only counted cell is `gamma`, so the run's own cells look
+/// unwritten here; without this a store into one would fold into a canonical
+/// elsewhere and leave the cell prover-chosen. Same rule the stack-run hints
+/// already follow in [`write_counts`]: a run is addressed by contiguity, so no
+/// cell of one may be rewritten.
+pub(crate) fn cse(code: &mut Vec<LInstr>, abi_end: Off, frozen_from: usize, opaque: &[(Off, u32)]) -> usize {
+    let mut writes = write_counts(code);
+    for &(base, len) in opaque {
+        for k in 0..len {
+            *writes.entry(base + k).or_default() += 2;
+        }
+    }
     let labels = label_targets(code);
 
     let mut subst: HashMap<Off, Off> = HashMap::new();
@@ -87,9 +100,19 @@ fn write_counts(code: &[LInstr]) -> HashMap<Off, u32> {
                 }
             }
             // The 32-byte digest lands in two consecutive cells.
-            LOp::Blake2s { c, .. } => {
+            //
+            // `cv` names a consecutive PAIR that is only READ, and `rewrite_reads`
+            // deliberately refuses to substitute it (a substitution speaks for one
+            // cell, not two). Both halves are therefore pinned here, so neither can
+            // be a CSE destination and the copies that assemble them survive:
+            // dropping one would leave its cell unwritten, hence prover-chosen.
+            // Same "count a read, since counting is the only way to say so" device
+            // `Log2Ceil` uses below.
+            LOp::Blake2s { c, cv, .. } => {
                 bump(*c);
                 bump(*c + 1);
+                bump(*cv);
+                bump(*cv + 1);
             }
             LOp::Jump { .. } => {}
         }
@@ -162,11 +185,16 @@ fn rewrite_reads(ins: &mut LInstr, subst: &HashMap<Off, Off>) {
             map(od);
             map(of);
         }
-        LOp::Blake2s { ins: chunks, cv, .. } => {
+        LOp::Blake2s { ins: chunks, .. } => {
             for chunk in chunks.iter_mut() {
                 map(chunk);
             }
-            map(cv);
+            // `cv` is NOT mapped: it names a CONSECUTIVE PAIR (`cv`, `cv+1`), and a
+            // substitution only speaks for the one cell. Rewriting the base to a
+            // canonical that happens to hold the same first word silently redirects
+            // the second word too, and the compression absorbs a value the source
+            // never named. The four message chunks are independent single cells, so
+            // they map safely; this one has no safe single-cell reading.
         }
     }
     for h in &mut ins.hints {

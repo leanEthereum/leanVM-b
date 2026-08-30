@@ -103,7 +103,7 @@ fn compile_inner(ast: &Ast, with_filler: bool) -> Program {
         let dropped = if std::env::var("DBG_NO_CSE").is_ok() {
             0
         } else {
-            cse::cse(&mut low.code, low.abi_end, low.filler_start)
+            cse::cse(&mut low.code, low.abi_end, low.filler_start, &low.opaque_runs)
         };
         // CSE never drops an instruction at or after `filler_start`, so every fill block
         // moves down by exactly the number it did drop.

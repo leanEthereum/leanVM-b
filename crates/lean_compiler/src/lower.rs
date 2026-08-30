@@ -20,6 +20,13 @@ type SpecializedBody = (Vec<String>, Vec<Expr>, Vec<Stmt>, usize);
 struct GAddr {
     base: Option<Off>,
     exp: u128,
+    /// For a pointer minted by `addr(sb)`, the frame run it names, as
+    /// `(first cell, length)`. `base` is then the shared `fp` cell and `exp` the
+    /// absolute frame offset, so the run cannot be recovered from those two
+    /// alone: carrying it here is what lets [`FnLower::check_heap_bound`] hold a
+    /// frame pointer to the same bound a `HeapBuf` pointer gets. `None` for a
+    /// heap pointer (bounded through `heap_sizes`) and for a pure g-power.
+    run: Option<(Off, u32)>,
 }
 
 /// `a·b` in the [`GAddr`] representation: exponents add, and at most one factor
@@ -32,6 +39,9 @@ fn gmul(a: GAddr, b: GAddr) -> Option<GAddr> {
     Some(GAddr {
         base,
         exp: a.exp.checked_add(b.exp)?,
+        // Only a based address carries a run, and at most one side is based, so
+        // the shift keeps its origin: `addr(sb) * GEN ** k` stays bounded by `sb`.
+        run: a.run.or(b.run),
     })
 }
 
@@ -137,6 +147,14 @@ struct Scope {
     const_cells: HashMap<[u64; 3], Off>,
     /// A cached frame cell holding `0` (for forwarded zero words), set lazily.
     zero_off: Option<Off>,
+    /// A cached frame cell holding `1` ([`FnLower::one`]), set lazily. Lives here
+    /// rather than on [`FnLower`] so it reverts at a branch join like every other
+    /// lazily-materialized cell: a `SET 1` first emitted inside a branch must not
+    /// be named from outside it, where the other path leaves the cell unwritten
+    /// and therefore prover-chosen. Several call sites hoist `one()` above a
+    /// branch on purpose; this is what makes that an optimization rather than the
+    /// thing holding the invariant up.
+    one_off: Option<Off>,
     /// Two consecutive frame cells holding the standard BLAKE2s IV, emitted
     /// lazily at the first dominating default-IV compression in this
     /// control-flow scope.
@@ -152,7 +170,6 @@ struct FnLower<'a> {
     return_shapes: Vec<ReturnShape>,
     is_main: bool,
     code: Vec<LInstr>,
-    one_off: Option<Off>,
     /// Declared size of each `HeapBuf`, keyed by its pointer cell. Shifted
     /// aliases resolve to the same base cell through their gaddr, so a
     /// compile-time index checks against the ORIGINAL buffer's bound.
@@ -176,6 +193,17 @@ struct FnLower<'a> {
     /// deliberately NOT restored across a branch: if either arm gives the cell a
     /// value, a later store to it is an assertion on whichever arm ran.
     phys: HashSet<Off>,
+    /// Frame runs whose cells no longer have a visible writer, as `(base, len)`.
+    /// Carried to [`crate::cse::cse`], which must leave their cells alone.
+    opaque_runs: Vec<(Off, u32)>,
+    /// Every frame run this function has allocated, in order.
+    stack_runs: Vec<(Off, u32)>,
+    /// Set once a frame address escapes ([`Self::stack_addr`]). The pointer it
+    /// hands out addresses the WHOLE frame, not just the run it was taken from,
+    /// so from that point every run is opaque: an off-by-one in a callee lands
+    /// on the next `StackBuf`, and if that one is still transparent its later
+    /// store defers as an alias and the write-once assertion is gone.
+    frame_escaped: bool,
     /// Where the fill blocks begin in `code`, once emitted.
     filler_start: Option<usize>,
     /// Hints queued to attach to the next emitted instruction.
@@ -331,12 +359,12 @@ impl FnLower<'_> {
 
     /// A frame cell holding `1` (always-taken `JUMP` condition), set lazily once.
     fn one(&mut self) -> Off {
-        if let Some(o) = self.one_off {
+        if let Some(o) = self.scope.one_off {
             return o;
         }
         let o = self.fresh();
         self.set_const(o, F192::ONE);
-        self.one_off = Some(o);
+        self.scope.one_off = Some(o);
         o
     }
 
@@ -1181,7 +1209,22 @@ impl FnLower<'_> {
     fn alloc_stack(&mut self, n: u32) -> Off {
         let base = self.next;
         self.next += n;
+        // A run allocated after the escape is just as reachable as one before it,
+        // so it is sealed on the spot and never needs recording.
+        if self.frame_escaped {
+            self.seal_run(base, n);
+        } else {
+            self.stack_runs.push((base, n));
+        }
         base
+    }
+
+    /// Give up on seeing writes to a frame run: materialize any deferred alias on
+    /// it, mark its cells `phys` so a later store stays the write-once equality
+    /// assertion rather than an alias, and hand it to CSE as untouchable.
+    fn seal_run(&mut self, base: Off, len: u32) {
+        self.materialize_run(base, len);
+        self.opaque_runs.push((base, len));
     }
 
     /// A computed-advice bit buffer's destination ([`BitsDest`]). Not
@@ -1218,10 +1261,25 @@ impl FnLower<'_> {
     /// address is a folded [`GAddr`], so `addr(sb) * GEN ** k` stays virtual.
     fn stack_addr(&mut self, args: &[Expr]) -> GAddr {
         assert_eq!(args.len(), 1, "addr(buf) takes one StackBuf");
-        let (base, _) = self.stack_of(&args[0]).expect("addr() takes a StackBuf");
+        let (base, len) = self.stack_of(&args[0]).expect("addr() takes a StackBuf");
+        // Once an address escapes, a write through it is a `DEREF` that names no
+        // frame cell the lowerer can see, so every run has to be treated as
+        // already valued: `phys` keeps a later `sb[k] = v` the write-once
+        // equality assertion `zkDSL.md` §Memory promises instead of a deferred
+        // alias that would drop it, and `opaque_runs` keeps CSE off its cells (a
+        // store folded into a canonical elsewhere would leave the cell unwritten,
+        // hence prover-chosen). Every run, not just this one: the pointer is a
+        // frame address, and one off-by-one in a callee reaches the next run.
+        if !self.frame_escaped {
+            self.frame_escaped = true;
+            for (b, l) in std::mem::take(&mut self.stack_runs) {
+                self.seal_run(b, l);
+            }
+        }
         GAddr {
             base: Some(self.self_fp()),
             exp: base as u128,
+            run: Some((base, len)),
         }
     }
 
@@ -1541,19 +1599,33 @@ impl FnLower<'_> {
     /// via [`gmul`]. `None` for anything with a runtime, non-g-power value.
     fn gaddr_of(&self, e: &Expr) -> Option<GAddr> {
         match e {
-            Expr::Lit(1) => Some(GAddr { base: None, exp: 0 }),
-            Expr::Gen => Some(GAddr { base: None, exp: 1 }),
-            Expr::GPow(k) => Some(GAddr { base: None, exp: *k }),
+            Expr::Lit(1) => Some(GAddr {
+                base: None,
+                exp: 0,
+                run: None,
+            }),
+            Expr::Gen => Some(GAddr {
+                base: None,
+                exp: 1,
+                run: None,
+            }),
+            Expr::GPow(k) => Some(GAddr {
+                base: None,
+                exp: *k,
+                run: None,
+            }),
             Expr::GenPow(e) => Some(GAddr {
                 base: None,
                 exp: self.try_const_index(e)? as u128,
+                run: None,
             }),
-            Expr::Var(v) => self
-                .scope
-                .gaddrs
-                .get(v)
-                .copied()
-                .or_else(|| self.scope.vars.get(v).map(|&c| GAddr { base: Some(c), exp: 0 })),
+            Expr::Var(v) => self.scope.gaddrs.get(v).copied().or_else(|| {
+                self.scope.vars.get(v).map(|&c| GAddr {
+                    base: Some(c),
+                    exp: 0,
+                    run: None,
+                })
+            }),
             Expr::Mul(a, b) => gmul(self.gaddr_of(a)?, self.gaddr_of(b)?),
             _ => None,
         }
@@ -1577,7 +1649,7 @@ impl FnLower<'_> {
                 .get(v)
                 .copied()
                 .or_else(|| match self.scope.gaddrs.get(v) {
-                    Some(GAddr { base: None, exp }) => Some(g_pow_u128(*exp).into()),
+                    Some(GAddr { base: None, exp, .. }) => Some(g_pow_u128(*exp).into()),
                     _ => None,
                 }),
             Expr::Add(a, b) => Some(self.try_field_const(a)? + self.try_field_const(b)?),
@@ -1603,8 +1675,10 @@ impl FnLower<'_> {
     /// `SET`+`MUL`.
     fn materialize(&mut self, ga: GAddr) -> Off {
         match ga {
-            GAddr { base: Some(c), exp: 0 } => c,
-            GAddr { base, exp } => {
+            GAddr {
+                base: Some(c), exp: 0, ..
+            } => c,
+            GAddr { base, exp, .. } => {
                 let k = self.fresh();
                 self.set_const(k, g_pow_u128(exp).into());
                 let Some(c) = base else { return k };
@@ -1624,6 +1698,22 @@ impl FnLower<'_> {
         let (Some(base), Some(exp)) = (ga.base, ga.exp.checked_add(extra)) else {
             return;
         };
+        // A frame pointer from `addr(sb)`: `exp` is an absolute frame offset and
+        // `base` is the shared `fp` cell, so the run comes from the address's own
+        // provenance rather than from `heap_sizes`.
+        if let Some((start, len)) = ga.run {
+            let (start, len) = (start as u128, len as u128);
+            if exp < start || exp + span > start + len {
+                let off = exp.saturating_sub(start); // `exp < start` is unreachable: gmul only adds
+                let what = if span == 1 {
+                    format!("index {off}")
+                } else {
+                    format!("slice {off}:{}", off + span)
+                };
+                panic!("frame {what} out of bounds for the StackBuf({len}) named by `addr`");
+            }
+            return;
+        }
         let Some(&size) = self.heap_sizes.get(&base) else {
             return;
         };
@@ -1684,12 +1774,14 @@ impl FnLower<'_> {
             );
         }
         match self.gaddr_of(idx) {
-            Some(GAddr { base: None, exp }) => return self.heap_base(arr, exp),
+            Some(GAddr { base: None, exp, .. }) => return self.heap_base(arr, exp),
             // A runtime-base index carrying a constant g-power shift
             // (`buf[cursor * GEN ** k]`): fold the whole constant part (the
             // index's shift plus `arr`'s own symbolic shift) into `β`, and
             // emit ONE pointer multiply instead of materializing g^k.
-            Some(GAddr { base: Some(ib), exp }) => {
+            Some(GAddr {
+                base: Some(ib), exp, ..
+            }) => {
                 if let Some(ga) = self.gaddr_of(arr)
                     && let (Some(ab), Some(total)) = (ga.base, ga.exp.checked_add(exp))
                     && total <= FOLD_MAX
@@ -2765,7 +2857,9 @@ pub(crate) fn lower_func(
         fn_name: f.name.clone(),
         tail_call: false,
         code: Vec::new(),
-        one_off: None,
+        opaque_runs: Vec::new(),
+        stack_runs: Vec::new(),
+        frame_escaped: false,
         heap_sizes: HashMap::new(),
         inline_ret: None,
         inline_stack_ret: None,
@@ -2809,6 +2903,7 @@ pub(crate) fn lower_func(
         frame_size: lowerer.next,
         abi_end: 2 + f.params.len() as u32 + n_ret_cells,
         filler_start,
+        opaque_runs: lowerer.opaque_runs,
         filler,
     }
 }

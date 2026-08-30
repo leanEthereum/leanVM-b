@@ -4,7 +4,7 @@
 
 use lean_compiler::{compile, parse};
 use lean_vm::cpu::{Stats, prove, verify};
-use primitives::field::{F64, F192};
+use primitives::field::{F64, F192, g_pow};
 
 const V: u64 = 0b1011_0110;
 
@@ -123,4 +123,110 @@ def probe(v):
     verify(&program, &want, &proof).expect("the pointer reads the frame run");
     let bad = [F192::from(F64(V + 1)), F192::from(F64::ONE)];
     assert!(verify(&program, &bad, &proof).is_err(), "a wrong value is rejected");
+}
+
+/// A store into a cell the program has ALREADY written through an `addr()`
+/// pointer is the write-once equality assertion of `zkDSL.md` §Memory, not an
+/// assembly copy. `addr()` hands out an ordinary `GAddr`, so a write through it
+/// is a `DEREF` whose only `phys`-recorded cell is its source; the run's own
+/// cells looked untouched, the store deferred as an alias and emitted nothing,
+/// and the program went on to "prove" that one cell held two different values.
+#[test]
+#[should_panic(expected = "write-once conflict")]
+fn a_store_after_a_write_through_addr_still_asserts() {
+    let src = "\
+def main():
+    b = StackBuf(1)
+    p = addr(b)
+    v = GEN ** 7
+    p[1] = v
+    b[0] = GEN ** 9
+    return
+";
+    compile(&parse(src).expect("parse")).execute([F192::ZERO; 2]);
+}
+
+/// A pointed-at frame run is opaque to CSE: a write through the pointer is a
+/// `DEREF` naming no frame cell the pass can see, so a store into one of its
+/// cells must not be folded into a canonical elsewhere. Folding it left the cell
+/// unwritten, hence prover-chosen, and `unconstrained_reads` could not see it
+/// either (the `DEREF` had both sides unwritten, so the deferred fixup marked
+/// both written first).
+///
+/// The two programs differ only in whether the run is pointed at. Without
+/// `addr()` the duplicate store is genuinely dead, so it folds; with `addr()` it
+/// has to survive.
+#[test]
+fn a_pointed_at_frame_run_is_opaque_to_cse() {
+    let mul = Stats::TABLES.iter().position(|&t| t == "MUL").expect("a MUL table");
+    let src = |read: &str| {
+        format!(
+            "\
+def stash(x, y):
+    b = StackBuf(1)
+    t = x * y
+    b[0] = x * y
+    {read}
+    return t, q
+
+def main():
+    hb = HeapBuf(2)
+    hb[1] = GEN ** 3
+    hb[GEN] = GEN ** 5
+    t, q = stash(hb[1], hb[GEN])
+    p = 1
+    p[1] = t
+    p[GEN] = q
+    return
+"
+        )
+    };
+    let want = [F192::from(g_pow(8)); 2];
+    let counts = |s: &str| crate::common::mix(s, want)[mul];
+    assert_eq!(
+        counts(&src("p = addr(b)\n    q = p[1]")) - counts(&src("q = b[0]")),
+        1,
+        "the store into a pointed-at run must survive CSE"
+    );
+}
+
+/// A frame pointer carries the same compile-time bound a `HeapBuf` pointer gets.
+/// `check_heap_bound` keys `heap_sizes` by the pointer's own cell, but every
+/// `addr()` in a function shares the `fp` cell as its base, so the run has to
+/// come from the address's own provenance instead.
+#[test]
+#[should_panic(expected = "out of bounds")]
+fn addr_pointers_are_bounds_checked() {
+    let src = "\
+def main():
+    b = StackBuf(2)
+    p = addr(b)
+    p[GEN ** 40] = GEN ** 3
+    return
+";
+    compile(&parse(src).expect("parse"));
+}
+
+/// The pointer `addr()` hands out addresses the WHOLE frame, not the run it was
+/// taken from, so sealing only that run leaves the next `StackBuf` transparent:
+/// one off-by-one in a callee writes it, and its later store then defers as an
+/// alias and drops the write-once assertion, exactly as before the fix. An
+/// escaped frame address therefore seals every run in the function.
+#[test]
+#[should_panic(expected = "write-once conflict")]
+fn an_escaped_frame_address_seals_every_run() {
+    let src = "\
+def poke(q):
+    q[GEN ** 2] = GEN ** 7
+    return 0
+
+def main():
+    a = StackBuf(2)
+    b = StackBuf(1)
+    z = poke(addr(a))
+    b[0] = GEN ** 9
+    assert b[0] == GEN ** 9
+    return
+";
+    compile(&parse(src).expect("parse")).execute([F192::ZERO; 2]);
 }

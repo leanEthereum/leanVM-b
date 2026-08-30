@@ -105,6 +105,11 @@ pub(crate) struct Lowered {
     /// offsets into the frames the interpreter gives them, not this function's
     /// ([`crate::cse::cse`]). `code.len()` when there are none.
     pub(crate) filler_start: usize,
+    /// Frame runs whose address escaped through `addr(sb)`, as `(base, len)`.
+    /// Writes and reads through the resulting pointer are `DEREF`s that name no
+    /// frame cell CSE can see, so these runs are excluded from it
+    /// ([`crate::cse::cse`]).
+    pub(crate) opaque_runs: Vec<(Off, u32)>,
     /// The fill blocks this function carries, with `code`-relative pcs; only `main` has
     /// any ([`crate::lower::FnLower::lower_filler_blocks`]).
     pub(crate) filler: Vec<lean_vm::cpu::filler::Block>,
