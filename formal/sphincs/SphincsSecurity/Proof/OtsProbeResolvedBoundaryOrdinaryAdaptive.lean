@@ -325,6 +325,18 @@ noncomputable def classifyCanonicalMaterializedPrivateObserve
     else
       pure false
 
+noncomputable def classifyCanonicalMaterializedOrdinaryObserve
+    (table : OtsSecretIndex → HashOutput)
+    (observe : DeferredContext → Nat → alpha → ProbComp Bool)
+    (context : DeferredContext) (fuel : Nat) (value : alpha) : ProbComp Bool := by
+  classical
+  exact if PrivateStructuralHit (canonicalizeMaterializedValues table context) then
+      pure false
+    else if DeferredCompletable table context then
+      observe context fuel value
+    else
+      pure true
+
 noncomputable def classifyCanonicalMaterializedObserve
     (table : OtsSecretIndex → HashOutput)
     (observe : DeferredContext → Nat → alpha → ProbComp DirectBoundaryOutcome)
@@ -360,6 +372,29 @@ theorem evalDist_private_classifyCanonicalMaterializedObserve
     by_cases hcompletable : DeferredCompletable table context
     · simpa [hcompletable] using hproject
     · simp [hcompletable, DirectBoundaryOutcome.privateStructural]
+
+theorem evalDist_ordinary_classifyCanonicalMaterializedObserve
+    (table : OtsSecretIndex → HashOutput)
+    (detailedObserve : DeferredContext → Nat → alpha →
+      ProbComp DirectBoundaryOutcome)
+    (observe : DeferredContext → Nat → alpha → ProbComp Bool)
+    (context : DeferredContext) (fuel : Nat) (value : alpha)
+    (hproject : evalDist (DirectBoundaryOutcome.ordinary <$>
+        detailedObserve context fuel value) =
+      evalDist (observe context fuel value)) :
+    evalDist (DirectBoundaryOutcome.ordinary <$>
+        classifyCanonicalMaterializedObserve table detailedObserve context fuel value) =
+      evalDist
+        (classifyCanonicalMaterializedOrdinaryObserve table observe context fuel value) := by
+  unfold classifyCanonicalMaterializedObserve
+    classifyCanonicalMaterializedOrdinaryObserve
+  by_cases hprivate : PrivateStructuralHit
+      (canonicalizeMaterializedValues table context)
+  · simp [hprivate, DirectBoundaryOutcome.ordinary]
+  · simp only [hprivate, ↓reduceIte]
+    by_cases hcompletable : DeferredCompletable table context
+    · simpa [hcompletable] using hproject
+    · simp [hcompletable, DirectBoundaryOutcome.ordinary]
 
 theorem probEvent_resolve_then_classifyCanonicalMaterializedPrivateObserve_le
     (table : OtsSecretIndex → HashOutput)
@@ -469,6 +504,29 @@ noncomputable def directDetailedBoundaryCanonicalMaterializedPrivateObserve
         context fuel table ((impl query).run cache))
     computation observe context fuel table cache
 
+noncomputable def directDetailedBoundaryCanonicalMaterializedOrdinaryObserve
+    (impl : QueryImpl spec
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))))
+    (computation : OracleComp spec alpha)
+    (observe : DeferredContext → Nat → (alpha × SplitHashCache) → ProbComp Bool)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    ProbComp Bool := by
+  classical
+  exact OracleComp.construct
+    (C := fun _ : OracleComp spec alpha =>
+      (DeferredContext → Nat → (alpha × SplitHashCache) → ProbComp Bool) →
+        DeferredContext → Nat → (OtsSecretIndex → HashOutput) → SplitHashCache →
+          ProbComp Bool)
+    (fun value observe context fuel _table cache => observe context fuel (value, cache))
+    (fun query _next recursivelyRun observe context fuel table cache =>
+      runDirectDetailedOrdinaryObserve
+        (classifyCanonicalMaterializedOrdinaryObserve table
+          (fun nextContext remaining value =>
+            recursivelyRun value.1 observe nextContext remaining table value.2))
+        context fuel table ((impl query).run cache))
+    computation observe context fuel table cache
+
 noncomputable def directDetailedBoundaryCanonicalMaterializedObserve
     (impl : QueryImpl spec
       (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))))
@@ -528,6 +586,42 @@ theorem evalDist_private_directDetailedBoundaryCanonicalMaterializedObserve
       apply evalDist_private_runDirectDetailedObserve
       intro result _hresult
       apply evalDist_private_classifyCanonicalMaterializedObserve
+      exact ih result.value.1 result.context result.remaining result.value.2
+
+set_option maxRecDepth 100000 in
+theorem evalDist_ordinary_directDetailedBoundaryCanonicalMaterializedObserve
+    (impl : QueryImpl spec
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))))
+    (computation : OracleComp spec alpha)
+    (detailedObserve : DeferredContext → Nat →
+      (alpha × SplitHashCache) → ProbComp DirectBoundaryOutcome)
+    (observe : DeferredContext → Nat → (alpha × SplitHashCache) → ProbComp Bool)
+    (hobserve : ∀ context fuel value,
+      evalDist (DirectBoundaryOutcome.ordinary <$>
+          detailedObserve context fuel value) =
+        evalDist (observe context fuel value))
+    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (cache : SplitHashCache) :
+    evalDist (DirectBoundaryOutcome.ordinary <$>
+        directDetailedBoundaryCanonicalMaterializedObserve impl computation detailedObserve
+          context fuel table cache) =
+      evalDist (directDetailedBoundaryCanonicalMaterializedOrdinaryObserve impl computation
+        observe context fuel table cache) := by
+  induction computation using OracleComp.inductionOn generalizing context fuel cache with
+  | pure value =>
+      rw [directDetailedBoundaryCanonicalMaterializedObserve,
+        OracleComp.construct_pure,
+        directDetailedBoundaryCanonicalMaterializedOrdinaryObserve,
+        OracleComp.construct_pure]
+      exact hobserve context fuel (value, cache)
+  | query_bind query next ih =>
+      rw [directDetailedBoundaryCanonicalMaterializedObserve,
+        OracleComp.construct_query_bind,
+        directDetailedBoundaryCanonicalMaterializedOrdinaryObserve,
+        OracleComp.construct_query_bind]
+      apply evalDist_ordinary_runDirectDetailedObserve
+      intro result _hresult
+      apply evalDist_ordinary_classifyCanonicalMaterializedObserve
       exact ih result.value.1 result.context result.remaining result.value.2
 
 set_option maxRecDepth 100000 in
