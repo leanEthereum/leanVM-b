@@ -101,6 +101,27 @@ theorem canonicalizeMaterializedValues_chain_value
       | position position =>
           simp [resolvedCompletionValue, DeferredContext.positionValue, hvalue]
 
+theorem canonicalizeMaterializedValues_chain_private_eq
+    (table : OtsSecretIndex → HashOutput) (context : DeferredContext)
+    (hdirect : context = directDeferredContext context.state)
+    (hstarts : StartTableAgrees context.state table)
+    (hchainValid : ChainState.ValidFor allowed context.state)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (chainIdx : ChainIndex) (step : ChainStep) :
+    (canonicalizeMaterializedValues table context).values
+        (.chain lay tree leafIdx chainIdx step) =
+      (canonicalizeMaterializedValues table context).state.values
+        (.position (.chain lay tree leafIdx chainIdx step)) := by
+  have hprivate :
+      context.values (.chain lay tree leafIdx chainIdx step) =
+        context.state.values (.position (.chain lay tree leafIdx chainIdx step)) := by
+    rw [hdirect]
+    rfl
+  change context.values (.chain lay tree leafIdx chainIdx step) = _
+  rw [canonicalizeMaterializedValues_chain_value table context hstarts hchainValid]
+  · exact hprivate
+  · trivial
+
 theorem ChainInvariant.canonicalizeMaterializedValues
     (table : OtsSecretIndex → HashOutput) (context : DeferredContext)
     (hstarts : StartTableAgrees context.state table)

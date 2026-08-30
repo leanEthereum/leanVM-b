@@ -228,6 +228,127 @@ theorem directDeferredValues_materialize_position
   · simp [directDeferredValues, DeferredStructuralValues.install,
       LazyRevealProbe.State.materialize, heq]
 
+theorem resolveDeferredPositionValue_direct_values
+    (position : Position) (state : LazyRevealProbe.State Coordinate)
+    (result : DeferredResolution)
+    (hstate : state.values (.position position) = none)
+    (hresult : some result ∈ support
+      (resolveDeferredPositionValue position (directDeferredContext state))) :
+    result.values = (directDeferredValues state).install position result.output := by
+  have hprivate : (directDeferredContext state).values position = none := by
+    simpa [directDeferredContext, directDeferredValues] using hstate
+  rw [resolveDeferredPositionValue_fresh position (directDeferredContext state)
+    (by simpa [directDeferredContext] using hstate) hprivate,
+    mem_support_bind_iff] at hresult
+  obtain ⟨output, _houtput, hreturn⟩ := hresult
+  by_cases hhit : state.hitAt (.position position) output
+  · simp [directDeferredContext, hhit] at hreturn
+  · simp [directDeferredContext, hhit] at hreturn
+    subst result
+    rfl
+
+set_option maxRecDepth 100000 in
+theorem direct_context_of_mem_runDirectResolvedFromTable
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (result : ResolvedRunResult α)
+    (hresult : some result ∈ support
+      (runDirectResolvedFromTable (directDeferredContext state) fuel table computation)) :
+    result.context = directDeferredContext result.context.state := by
+  induction computation using OracleComp.inductionOn generalizing state fuel result with
+  | pure value =>
+      simp [runDirectResolvedFromTable] at hresult
+      subst result
+      rfl
+  | query_bind input next ih =>
+      cases input with
+      | uniform n =>
+          rw [runDirectResolvedFromTable_uniform_query_bind, mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, hrest⟩ := hresult
+          exact ih output state fuel result hrest
+      | hashOutput =>
+          rw [runDirectResolvedFromTable_hashOutput_query_bind, mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, hrest⟩ := hresult
+          exact ih output state fuel result hrest
+      | ensure coordinate =>
+          rw [runDirectResolvedFromTable_ensure_query_bind] at hresult
+          have hcontext :
+              { directDeferredContext state with state := state.ensure coordinate } =
+                directDeferredContext (state.ensure coordinate) := by
+            simp [directDeferredContext, directDeferredValues_ensure]
+          exact ih () (state.ensure coordinate) fuel result (hcontext ▸ hresult)
+      | probe coordinate candidate =>
+          rw [runDirectResolvedFromTable_probe_query_bind] at hresult
+          cases fuel with
+          | zero => simp at hresult
+          | succ remaining =>
+              by_cases hrevealed : coordinate ∈ state.revealed
+              · exact ih () state remaining result (by
+                  simpa [directDeferredContext, hrevealed] using hresult)
+              · simp only [directDeferredContext, hrevealed, ↓reduceIte] at hresult
+                have hcontext :
+                    { directDeferredContext state with
+                      state := state.addPending coordinate candidate } =
+                      directDeferredContext (state.addPending coordinate candidate) := by
+                  simp [directDeferredContext, directDeferredValues_addPending]
+                exact ih () (state.addPending coordinate candidate) remaining result
+                  (hcontext ▸ hresult)
+      | peek coordinate =>
+          rw [runDirectResolvedFromTable_peek_query_bind] at hresult
+          exact ih (state.values coordinate) state fuel result hresult
+      | publish coordinate =>
+          rw [runDirectResolvedFromTable_publish_query_bind] at hresult
+          exact ih () (state.publish coordinate) fuel result (by
+            simpa [directDeferredContext, directDeferredValues_publish] using hresult)
+      | reveal coordinate =>
+          rw [runDirectResolvedFromTable_reveal_query_bind] at hresult
+          cases hvalue : state.values coordinate with
+          | some output =>
+              exact ih output state fuel result (by
+                simpa only [directDeferredContext, hvalue] using hresult)
+          | none =>
+              cases coordinate with
+              | chainStart lay tree leafIdx chainIdx =>
+                  let index : OtsSecretIndex := ⟨lay, tree, leafIdx, chainIdx⟩
+                  let output := table index
+                  by_cases hhit : state.hitAt index.coordinate output
+                  · change state.hitAt (.chainStart lay tree leafIdx chainIdx)
+                        (table ⟨lay, tree, leafIdx, chainIdx⟩) at hhit
+                    simp only [directDeferredContext, hvalue, hhit, ↓reduceIte] at hresult
+                    simp at hresult
+                  · have hcontext :
+                        { state := state.materialize index.coordinate output
+                          values := directDeferredValues state } =
+                          directDeferredContext (state.materialize index.coordinate output) := by
+                      simp [directDeferredContext,
+                        directDeferredValues_materialize_chainStart]
+                    change ¬state.hitAt (.chainStart lay tree leafIdx chainIdx)
+                      (table ⟨lay, tree, leafIdx, chainIdx⟩) at hhit
+                    simp only [directDeferredContext, hvalue, hhit, ↓reduceIte] at hresult
+                    exact ih output (state.materialize index.coordinate output) fuel result
+                      (hcontext ▸ hresult)
+              | position position =>
+                  simp only [directDeferredContext] at hresult
+                  rw [hvalue, mem_support_bind_iff] at hresult
+                  obtain ⟨resolvedOption, hresolved, hrest⟩ := hresult
+                  cases resolvedOption with
+                  | none => simp at hrest
+                  | some resolved =>
+                      simp only at hrest
+                      have hvalues := resolveDeferredPositionValue_direct_values position state
+                        resolved hvalue hresolved
+                      have hcontext :
+                          { state := state.materialize (.position position) resolved.output
+                            values := resolved.values } =
+                            directDeferredContext
+                              (state.materialize (.position position) resolved.output) := by
+                        rw [hvalues]
+                        simp [directDeferredContext,
+                          directDeferredValues_materialize_position]
+                      exact ih resolved.output
+                        (state.materialize (.position position) resolved.output) fuel result
+                        (hcontext ▸ hrest)
+
 set_option maxRecDepth 100000 in
 theorem map_projectResolvedRunResult_runDirect_eq_runClean
     (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
