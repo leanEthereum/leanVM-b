@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.OtsProbeResolvedBoundaryOrdinaryRefinement
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryOrdinarySigner
 
 /-!
 # Adaptive ordinary boundary refinement
@@ -146,6 +146,50 @@ theorem relTriple_runDirectResolvedDetailed_probingRomImpl
   | inr input =>
       exact relTriple_runDirectResolvedDetailed_probingHashQuery parameter table input
         left right leftFuel rightFuel leftCache rightCache hcontext hpositive hfuel hcache
+          hrevealed hvalues hpublished hrightMaterialized
+
+set_option maxRecDepth 100000 in
+theorem relTriple_runDirectResolvedDetailed_maskedExpandedAdversaryImpl
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (query : (OracleWorld + SigningSpec).Domain)
+    (left right : DeferredContext) (leftFuel rightFuel : Nat)
+    (leftCache rightCache : SplitHashCache)
+    (hcontext : FinalizationContextLE table left right)
+    (hpositive : IsOuterHash query → 0 < leftFuel)
+    (hfuel : leftFuel ≤ rightFuel)
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hvalues : LazyRevealProbe.ValuesLE left.state right.state)
+    (hpublished : PublishedValues left.state)
+    (hrightMaterialized : right = directDeferredContext right.state) :
+    RelTriple
+      (runDirectResolvedDetailedFromTable left leftFuel table
+        ((maskedExpandedAdversaryImpl parameter root ftsSecret query).run leftCache))
+      (runDirectResolvedDetailedFromTable right rightFuel table
+        ((maskedExpandedAdversaryImpl parameter root ftsSecret query).run rightCache))
+      (DirectDetailedOrdinaryRunEq table) := by
+  cases query with
+  | inl worldQuery =>
+      cases worldQuery with
+      | inl n =>
+          apply relTriple_stable_to_ordinary
+          simpa [maskedExpandedAdversaryImpl, probingRomImpl] using
+            ordinaryMaterializedStableCouples_splitUniformImpl table n left right leftFuel
+              rightFuel leftCache rightCache hcontext hfuel hcache hrevealed hvalues hpublished
+              hrightMaterialized
+      | inr input =>
+          simpa [maskedExpandedAdversaryImpl] using
+            relTriple_runDirectResolvedDetailed_probingRomImpl parameter table (.inr input)
+              left right leftFuel rightFuel leftCache rightCache hcontext
+              (hpositive (by simp [IsOuterHash])) hfuel hcache hrevealed hvalues hpublished
+              hrightMaterialized
+  | inr message =>
+      apply relTriple_stable_to_ordinary
+      simpa [maskedExpandedAdversaryImpl, maskedSigningImpl] using
+        ordinaryMaterializedStableCouples_maskedSigningImpl table parameter root ftsSecret
+          message left right leftFuel rightFuel leftCache rightCache hcontext hfuel hcache
           hrevealed hvalues hpublished hrightMaterialized
 
 def BoolImp (left right : Bool) : Prop := left = true → right = true

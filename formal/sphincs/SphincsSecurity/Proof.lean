@@ -162,6 +162,7 @@ import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivate
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryProbability
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryOrdinary
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryOrdinaryRefinement
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryOrdinarySigner
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryOrdinaryAdaptive
 
 /-!
