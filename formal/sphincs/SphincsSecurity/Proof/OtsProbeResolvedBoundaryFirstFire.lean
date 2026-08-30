@@ -482,6 +482,27 @@ def DirectBoundaryOutcome.ofFailed : Bool → DirectBoundaryOutcome
     (DirectBoundaryOutcome.ofFailed failed).failed = failed := by
   cases failed <;> rfl
 
+theorem DirectBoundaryOutcome.failed_eq_true_iff
+    (outcome : DirectBoundaryOutcome) :
+    outcome.failed = true ↔
+      outcome = .ordinaryFailure ∨ outcome = .privateStructuralFailure := by
+  cases outcome <;> simp [DirectBoundaryOutcome.failed]
+
+theorem probEvent_failed_le_ordinary_add_private
+    (run : ProbComp DirectBoundaryOutcome) :
+    Pr[fun outcome => outcome.failed = true | run] ≤
+      Pr[= .ordinaryFailure | run] + Pr[= .privateStructuralFailure | run] := by
+  have heq : Pr[fun outcome => outcome.failed = true | run] =
+      Pr[fun outcome => outcome = .ordinaryFailure ∨
+        outcome = .privateStructuralFailure | run] :=
+    OracleComp.probEvent_congr'
+      (fun outcome _ => DirectBoundaryOutcome.failed_eq_true_iff outcome) rfl
+  rw [heq]
+  simpa only [probEvent_eq_eq_probOutput] using
+    (probEvent_or_le run
+      (fun outcome => outcome = .ordinaryFailure)
+      (fun outcome => outcome = .privateStructuralFailure))
+
 noncomputable def classifyDirectObserve
     (table : OtsSecretIndex → HashOutput)
     (observe : DeferredContext → Nat → alpha → ProbComp Bool)
@@ -573,7 +594,9 @@ noncomputable def canonicalizeDirectDetailedObserve
     (context : DeferredContext) (fuel : Nat) (value : alpha) :
     ProbComp DirectBoundaryOutcome := by
   classical
-  exact if PublishedValues context.state then
+  exact if PrivateStructuralHit (canonicalizeMaterializedValues table context) then
+      pure .privateStructuralFailure
+    else if PublishedValues context.state then
       classifyDirectDetailedObserve table observe
         (canonicalizeMaterializedValues table context) fuel value
     else
@@ -593,13 +616,25 @@ theorem evalDist_failed_canonicalizeDirectDetailedObserve
         canonicalizeDirectDetailedObserve table detailedObserve context fuel value) =
       evalDist (canonicalizeObserve table observe context fuel value) := by
   unfold canonicalizeDirectDetailedObserve canonicalizeObserve
-  by_cases hpublished : PublishedValues context.state
-  · simp only [hpublished, ↓reduceIte]
-    exact evalDist_failed_classifyDirectDetailedObserve table detailedObserve observe
-      (canonicalizeMaterializedValues table context) fuel value
-        (canonicalizeMaterializedValues_valuesConsistent table context hconsistent)
-        (canonicalizeMaterializedValues_startTableAgrees table context) hproject
-  · simp [hpublished, DirectBoundaryOutcome.failed]
+  by_cases hprivate : PrivateStructuralHit (canonicalizeMaterializedValues table context)
+  · simp only [hprivate, ↓reduceIte, map_pure, DirectBoundaryOutcome.failed]
+    by_cases hpublished : PublishedValues context.state
+    · simp only [hpublished, ↓reduceIte]
+      exact (ObserverDooms.eq_true (table := table) (observe := observe)
+        (canonicalizeMaterializedValues table context) fuel value
+          (canonicalizeMaterializedValues_valuesConsistent table context hconsistent)
+          (canonicalizeMaterializedValues_startTableAgrees table context)
+          (fun hcompletable =>
+            (not_privateStructuralHit_of_deferredCompletable hcompletable) hprivate)).symm
+    · simp [hpublished]
+  · simp only [hprivate, ↓reduceIte]
+    by_cases hpublished : PublishedValues context.state
+    · simp only [hpublished, ↓reduceIte]
+      exact evalDist_failed_classifyDirectDetailedObserve table detailedObserve observe
+        (canonicalizeMaterializedValues table context) fuel value
+          (canonicalizeMaterializedValues_valuesConsistent table context hconsistent)
+          (canonicalizeMaterializedValues_startTableAgrees table context) hproject
+    · simp [hpublished, DirectBoundaryOutcome.failed]
 
 noncomputable def runDirectDetailedObserve
     (observe : DeferredContext → Nat → alpha → ProbComp DirectBoundaryOutcome)
