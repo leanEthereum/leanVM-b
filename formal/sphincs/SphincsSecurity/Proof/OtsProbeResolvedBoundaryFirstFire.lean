@@ -153,6 +153,18 @@ theorem deferredCompletable_addPending_position_iff
       hcompletion.2.1 position output hprivate
     rwa [hcompletionOutput]
 
+theorem truncateHash_completion_eq_of_not_deferredCompletable_addPending
+    {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
+    {completion : Coordinate → HashOutput}
+    (coordinate : Coordinate) (candidate : Digest)
+    (hcompletion : DeferredCompletion table context completion)
+    (hnotCompletable : ¬DeferredCompletable table
+      { context with state := context.state.addPending coordinate candidate }) :
+    truncateHash (completion coordinate) = candidate := by
+  by_contra hne
+  exact hnotCompletable
+    ⟨completion, hcompletion.addPending_of_avoids coordinate candidate hne⟩
+
 theorem not_deferredCompletable_addPending_position_iff_privateStructuralHit
     {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
     {completion : Coordinate → HashOutput}

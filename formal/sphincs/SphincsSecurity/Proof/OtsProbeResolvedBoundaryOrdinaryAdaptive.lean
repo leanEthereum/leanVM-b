@@ -116,6 +116,129 @@ theorem privateStructuralHit_canonicalizeMaterializedValues_iff
     · change truncateHash output ∈ context.state.pendingAt (.position position)
       exact hhit
 
+theorem privateStructuralHit_canonicalize_directDeferredContext_iff
+    (table : OtsSecretIndex → HashOutput)
+    (state : LazyRevealProbe.State Coordinate)
+    (hpublished : PublishedValues state) :
+    PrivateStructuralHit
+        (canonicalizeMaterializedValues table (directDeferredContext state)) ↔
+      ∃ position output,
+        Coordinate.position position ∉ state.revealed ∧
+          state.values (.position position) = some output ∧
+          state.hitAt (.position position) output := by
+  rw [privateStructuralHit_canonicalizeMaterializedValues_iff table
+    (directDeferredContext state) hpublished]
+  rfl
+
+theorem privateStructuralHit_canonicalize_presample_materialize_addPending_iff
+    (table : OtsSecretIndex → HashOutput) (context : DeferredContext)
+    (position : Position) (output : HashOutput) (candidate : Digest)
+    (hpublished : PublishedValues context.state)
+    (hhidden : context.state.values (.position position) = none)
+    (hclean : ¬PrivateStructuralHit
+      (canonicalizeMaterializedValues table context)) :
+    let nextContext : DeferredContext :=
+      { state := ((context.state.clearPending (.position position)).materialize
+          (.position position) output).addPending (.position position) candidate
+        values := context.values.install position output }
+    PrivateStructuralHit (canonicalizeMaterializedValues table nextContext) ↔
+      truncateHash output = candidate := by
+  dsimp only
+  let baseState := (context.state.clearPending (.position position)).materialize
+    (.position position) output
+  let nextContext : DeferredContext :=
+    { state := baseState.addPending (.position position) candidate
+      values := context.values.install position output }
+  have hnotRevealed : Coordinate.position position ∉ context.state.revealed := by
+    intro hrevealed
+    exact (hpublished (.position position) hrevealed) hhidden
+  have hbasePublished : PublishedValues baseState := by
+    apply PublishedValues.materialize
+    simpa [PublishedValues, LazyRevealProbe.State.clearPending] using hpublished
+  have hnextPublished : PublishedValues nextContext.state := by
+    simpa [nextContext, PublishedValues, LazyRevealProbe.State.addPending] using
+      hbasePublished
+  rw [privateStructuralHit_canonicalizeMaterializedValues_iff table nextContext
+    hnextPublished]
+  constructor
+  · rintro ⟨other, otherOutput, hotherHidden, hotherPrivate, hotherHit⟩
+    by_cases heq : other = position
+    · subst other
+      have houtput : otherOutput = output := by
+        have hvalue : some output = some otherOutput := by
+          simpa [nextContext, DeferredStructuralValues.install] using hotherPrivate
+        exact (Option.some.inj hvalue).symm
+      subst otherOutput
+      have hbaseMiss : ¬baseState.hitAt (.position position) output := by
+        change ¬((context.state.clearPending (.position position)).clearPending
+          (.position position)).hitAt (.position position) output
+        exact not_hitAt_clearPending_self
+          (context.state.clearPending (.position position)) (.position position) output
+      exact (hitAt_addPending_self_iff baseState (.position position) candidate output).1
+        hotherHit |>.resolve_left hbaseMiss
+    · exfalso
+      apply hclean
+      rw [privateStructuralHit_canonicalizeMaterializedValues_iff table context hpublished]
+      refine ⟨other, otherOutput, ?_, ?_, ?_⟩
+      · simpa [nextContext, baseState, LazyRevealProbe.State.addPending,
+          LazyRevealProbe.State.materialize, LazyRevealProbe.State.clearPending] using
+          hotherHidden
+      · simpa [nextContext, DeferredStructuralValues.install,
+          Function.update_of_ne heq] using hotherPrivate
+      · have hcoordinate : Coordinate.position position ≠ .position other := by
+          intro hsame
+          exact heq (Coordinate.position.inj hsame).symm
+        have hbaseHit : baseState.hitAt (.position other) otherOutput := by
+          change (baseState.addPending (.position position) candidate).hitAt
+            (.position other) otherOutput at hotherHit
+          rw [hitAt_addPending_of_ne baseState (.position position)
+            (.position other) candidate otherOutput hcoordinate] at hotherHit
+          exact hotherHit
+        change ((context.state.clearPending (.position position)).clearPending
+          (.position position)).hitAt (.position other) otherOutput at hbaseHit
+        have honce := (hitAt_clearPending_of_ne
+          (context.state.clearPending (.position position)) (.position position)
+          (.position other) otherOutput hcoordinate.symm).mp hbaseHit
+        exact (hitAt_clearPending_of_ne context.state (.position position)
+          (.position other) otherOutput hcoordinate.symm).mp honce
+  · intro hcandidate
+    refine ⟨position, output, ?_, ?_, ?_⟩
+    · simpa [nextContext, baseState, LazyRevealProbe.State.addPending,
+        LazyRevealProbe.State.materialize, LazyRevealProbe.State.clearPending] using
+        hnotRevealed
+    · simp [nextContext, DeferredStructuralValues.install]
+    · exact (hitAt_addPending_self_iff baseState (.position position) candidate output).2
+        (Or.inr hcandidate)
+
+theorem probEvent_privateStructuralHit_canonicalize_presample_materialize_addPending_le
+    (table : OtsSecretIndex → HashOutput) (context : DeferredContext)
+    (position : Position) (candidate : Digest)
+    (hpublished : PublishedValues context.state)
+    (hhidden : context.state.values (.position position) = none)
+    (hclean : ¬PrivateStructuralHit
+      (canonicalizeMaterializedValues table context)) :
+    Pr[fun output : HashOutput =>
+        let nextContext : DeferredContext :=
+          { state := ((context.state.clearPending (.position position)).materialize
+              (.position position) output).addPending (.position position) candidate
+            values := context.values.install position output }
+        PrivateStructuralHit (canonicalizeMaterializedValues table nextContext) |
+      LazyRevealProbe.sampleHashOutput] ≤
+      ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  calc
+    _ = Pr[fun output : HashOutput => truncateHash output = candidate |
+        LazyRevealProbe.sampleHashOutput] := by
+      apply OracleComp.probEvent_congr'
+      · intro output _houtput
+        exact privateStructuralHit_canonicalize_presample_materialize_addPending_iff
+          table context position output candidate hpublished hhidden hclean
+      · rfl
+    _ = (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
+      unfold LazyRevealProbe.sampleHashOutput
+      exact SphincsSecurity.probEvent_uniform_truncateHash_eq candidate
+    _ ≤ _ := by
+      rw [show Fintype.card Digest = 2 ^ digestBits by simp]
+
 theorem publishedValues_of_done_runDirectResolvedDetailedFromTable
     (computation : StateT SplitHashCache
       (OracleComp (LazyRevealProbe.World Coordinate)) α)
