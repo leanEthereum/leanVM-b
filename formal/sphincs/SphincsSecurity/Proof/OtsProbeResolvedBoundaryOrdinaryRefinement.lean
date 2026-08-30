@@ -440,6 +440,378 @@ theorem FinalizationViewLE.privateValue_of_left_hidden_of_right_materialized
     simp [resolvedCompletionValue, DeferredContext.positionValue, hright]
   simpa [DeferredContext.positionValue, hleft] using hposition
 
+set_option maxRecDepth 100000 in
+theorem FinalizationViewLE.materialize_position_left
+    {table : OtsSecretIndex → HashOutput} {left right : DeferredContext}
+    (hview : FinalizationViewLE table left right) (position : Position)
+    (output : HashOutput)
+    (hhidden : left.state.values (.position position) = none)
+    (hprivate : left.values position = some output) :
+    FinalizationViewLE table
+      { left with state := left.state.materialize (.position position) output } right := by
+  let materialized : DeferredContext :=
+    { left with state := left.state.materialize (.position position) output }
+  have hresolved : resolvedCompletionValue table materialized =
+      resolvedCompletionValue table left := by
+    funext coordinate
+    cases coordinate with
+    | chainStart => rfl
+    | position other =>
+        by_cases heq : other = position
+        · subst other
+          simp [materialized, resolvedCompletionValue, DeferredContext.positionValue,
+            LazyRevealProbe.State.materialize, hhidden, hprivate]
+        · simp [materialized, resolvedCompletionValue, DeferredContext.positionValue,
+            LazyRevealProbe.State.materialize, Function.update_of_ne,
+            show Coordinate.position other ≠ Coordinate.position position by simpa using heq]
+  refine
+    { leftConsistent := ?_
+      rightConsistent := hview.rightConsistent
+      leftStarts := hview.leftStarts.materialize_position position output
+      rightStarts := hview.rightStarts
+      valueEq := hresolved.trans hview.valueEq
+      leftClean := ?_
+      rightClean := hview.rightClean
+      pendingLE := ?_ }
+  · intro other cached hvalue
+    by_cases heq : other = position
+    · subst other
+      have hsame : cached = output := by
+        simpa [materialized, LazyRevealProbe.State.materialize] using hvalue.symm
+      subst cached
+      exact hprivate
+    · apply hview.leftConsistent other cached
+      simpa [materialized, LazyRevealProbe.State.materialize, Function.update_of_ne,
+        show Coordinate.position other ≠ Coordinate.position position by simpa using heq]
+        using hvalue
+  · intro coordinate otherOutput hvalue
+    have horiginal : resolvedCompletionValue table left coordinate = some otherOutput := by
+      rw [← hresolved]
+      exact hvalue
+    by_cases heq : coordinate = .position position
+    · subst coordinate
+      change ¬(left.state.clearPending (.position position)).hitAt
+        (.position position) otherOutput
+      exact not_hitAt_clearPending_self left.state (.position position) otherOutput
+    · change ¬(left.state.clearPending (.position position)).hitAt coordinate otherOutput
+      exact (hitAt_clearPending_of_ne left.state (.position position) coordinate
+        otherOutput heq).not.mpr (hview.leftClean coordinate otherOutput horiginal)
+  · intro coordinate hvalue candidate hcandidate
+    have horiginal : resolvedCompletionValue table left coordinate = none := by
+      rw [← hresolved]
+      exact hvalue
+    have hbase : candidate ∈ left.state.pendingAt coordinate := by
+      by_cases heq : coordinate = .position position
+      · subst coordinate
+        change resolvedCompletionValue table materialized (.position position) = none at hvalue
+        simp [materialized, resolvedCompletionValue, DeferredContext.positionValue,
+          LazyRevealProbe.State.materialize] at hvalue
+      · change candidate ∈
+          (left.state.clearPending (.position position)).pendingAt coordinate at hcandidate
+        rw [pendingAt_clearPending_of_ne left.state (.position position) coordinate heq]
+          at hcandidate
+        exact hcandidate
+    exact hview.pendingLE coordinate horiginal hbase
+
+theorem FinalizationContextLE.materialize_position_left
+    {table : OtsSecretIndex → HashOutput} {left right : DeferredContext}
+    (hcontext : FinalizationContextLE table left right) (position : Position)
+    (output : HashOutput)
+    (hhidden : left.state.values (.position position) = none)
+    (hprivate : left.values position = some output) :
+    FinalizationContextLE table
+      { left with state := left.state.materialize (.position position) output } right where
+  view := hcontext.view.materialize_position_left position output hhidden hprivate
+  leftValid := hcontext.leftValid.materialize_position position output hprivate
+  rightValid := hcontext.rightValid
+  rightCompletable := hcontext.rightCompletable
+
+theorem FinalizationViewLE.leftValid_of_view
+    {table : OtsSecretIndex → HashOutput} {left right : DeferredContext}
+    (hview : FinalizationViewLE table left right) : left.Valid := by
+  refine ⟨hview.leftConsistent, ?_⟩
+  intro coordinate output hvalue
+  apply hview.leftClean coordinate output
+  cases coordinate with
+  | chainStart lay tree leafIdx chainIdx =>
+      have hsame := hview.leftStarts ⟨lay, tree, leafIdx, chainIdx⟩ output hvalue
+      simp [resolvedCompletionValue, hsame]
+  | position position =>
+      simp [resolvedCompletionValue, DeferredContext.positionValue, hvalue]
+
+theorem FinalizationViewLE.rightValid_of_view
+    {table : OtsSecretIndex → HashOutput} {left right : DeferredContext}
+    (hview : FinalizationViewLE table left right) : right.Valid := by
+  refine ⟨hview.rightConsistent, ?_⟩
+  intro coordinate output hvalue
+  apply hview.rightClean coordinate output
+  cases coordinate with
+  | chainStart lay tree leafIdx chainIdx =>
+      have hsame := hview.rightStarts ⟨lay, tree, leafIdx, chainIdx⟩ output hvalue
+      simp [resolvedCompletionValue, hsame]
+  | position position =>
+      simp [resolvedCompletionValue, DeferredContext.positionValue, hvalue]
+
+set_option maxRecDepth 100000 in
+theorem FinalizationViewLE.materialize_position_both
+    {table : OtsSecretIndex → HashOutput} {left right : DeferredContext}
+    (hview : FinalizationViewLE table left right) (position : Position)
+    (output : HashOutput) :
+    FinalizationViewLE table
+      { state := left.state.materialize (.position position) output
+        values := left.values.install position output }
+      { state := right.state.materialize (.position position) output
+        values := right.values.install position output } := by
+  let leftMaterialized : DeferredContext :=
+    { state := left.state.materialize (.position position) output
+      values := left.values.install position output }
+  let rightMaterialized : DeferredContext :=
+    { state := right.state.materialize (.position position) output
+      values := right.values.install position output }
+  refine
+    { leftConsistent := ?_
+      rightConsistent := ?_
+      leftStarts := hview.leftStarts.materialize_position position output
+      rightStarts := hview.rightStarts.materialize_position position output
+      valueEq := ?_
+      leftClean := ?_
+      rightClean := ?_
+      pendingLE := ?_ }
+  · intro other cached hvalue
+    by_cases heq : other = position
+    · subst other
+      have hsame : cached = output := by
+        simpa [leftMaterialized, LazyRevealProbe.State.materialize] using hvalue.symm
+      subst cached
+      simp [DeferredStructuralValues.install]
+    · have hold := hview.leftConsistent other cached (by
+        simpa [leftMaterialized, LazyRevealProbe.State.materialize, Function.update_of_ne,
+        show Coordinate.position other ≠ Coordinate.position position by simpa using heq,
+        DeferredStructuralValues.install, heq] using hvalue)
+      simpa [leftMaterialized, DeferredStructuralValues.install, heq] using hold
+  · intro other cached hvalue
+    by_cases heq : other = position
+    · subst other
+      have hsame : cached = output := by
+        simpa [rightMaterialized, LazyRevealProbe.State.materialize] using hvalue.symm
+      subst cached
+      simp [DeferredStructuralValues.install]
+    · have hold := hview.rightConsistent other cached (by
+        simpa [rightMaterialized, LazyRevealProbe.State.materialize, Function.update_of_ne,
+        show Coordinate.position other ≠ Coordinate.position position by simpa using heq,
+        DeferredStructuralValues.install, heq] using hvalue)
+      simpa [rightMaterialized, DeferredStructuralValues.install, heq] using hold
+  · funext coordinate
+    cases coordinate with
+    | chainStart => rfl
+    | position other =>
+        by_cases heq : other = position
+        · subst other
+          simp [resolvedCompletionValue, DeferredContext.positionValue,
+            LazyRevealProbe.State.materialize]
+        · simpa [leftMaterialized, rightMaterialized, resolvedCompletionValue,
+            DeferredContext.positionValue, LazyRevealProbe.State.materialize,
+            Function.update_of_ne,
+            show Coordinate.position other ≠ Coordinate.position position by simpa using heq,
+            DeferredStructuralValues.install, heq] using congrFun hview.valueEq (.position other)
+  · intro coordinate otherOutput hvalue
+    by_cases heq : coordinate = .position position
+    · subst coordinate
+      change ¬(left.state.clearPending (.position position)).hitAt
+        (.position position) otherOutput
+      exact not_hitAt_clearPending_self left.state (.position position) otherOutput
+    · have horiginal : resolvedCompletionValue table left coordinate = some otherOutput := by
+        cases coordinate with
+        | chainStart => exact hvalue
+        | position other =>
+            have hother : other ≠ position := by simpa using heq
+            simpa [leftMaterialized, resolvedCompletionValue, DeferredContext.positionValue,
+              LazyRevealProbe.State.materialize, Function.update_of_ne,
+              show Coordinate.position other ≠ Coordinate.position position by
+                simpa using hother,
+              DeferredStructuralValues.install, hother] using hvalue
+      change ¬(left.state.clearPending (.position position)).hitAt coordinate otherOutput
+      exact (hitAt_clearPending_of_ne left.state (.position position) coordinate
+        otherOutput heq).not.mpr (hview.leftClean coordinate otherOutput horiginal)
+  · intro coordinate otherOutput hvalue
+    by_cases heq : coordinate = .position position
+    · subst coordinate
+      change ¬(right.state.clearPending (.position position)).hitAt
+        (.position position) otherOutput
+      exact not_hitAt_clearPending_self right.state (.position position) otherOutput
+    · have horiginal : resolvedCompletionValue table right coordinate = some otherOutput := by
+        cases coordinate with
+        | chainStart => exact hvalue
+        | position other =>
+            have hother : other ≠ position := by simpa using heq
+            simpa [rightMaterialized, resolvedCompletionValue, DeferredContext.positionValue,
+              LazyRevealProbe.State.materialize, Function.update_of_ne,
+              show Coordinate.position other ≠ Coordinate.position position by
+                simpa using hother,
+              DeferredStructuralValues.install, hother] using hvalue
+      change ¬(right.state.clearPending (.position position)).hitAt coordinate otherOutput
+      exact (hitAt_clearPending_of_ne right.state (.position position) coordinate
+        otherOutput heq).not.mpr (hview.rightClean coordinate otherOutput horiginal)
+  · intro coordinate hvalue candidate hcandidate
+    have hne : coordinate ≠ .position position := by
+      intro heq
+      subst coordinate
+      change resolvedCompletionValue table leftMaterialized (.position position) = none at hvalue
+      simp [leftMaterialized, resolvedCompletionValue, DeferredContext.positionValue,
+        LazyRevealProbe.State.materialize] at hvalue
+    have horiginal : resolvedCompletionValue table left coordinate = none := by
+      cases coordinate with
+      | chainStart => exact hvalue
+      | position other =>
+          have hother : other ≠ position := by simpa using hne
+          simpa [leftMaterialized, resolvedCompletionValue, DeferredContext.positionValue,
+            LazyRevealProbe.State.materialize, Function.update_of_ne,
+            show Coordinate.position other ≠ Coordinate.position position by
+              simpa using hother,
+            DeferredStructuralValues.install, hother] using hvalue
+    have hbase : candidate ∈ left.state.pendingAt coordinate := by
+      change candidate ∈
+        (left.state.clearPending (.position position)).pendingAt coordinate at hcandidate
+      rw [pendingAt_clearPending_of_ne left.state (.position position) coordinate hne]
+        at hcandidate
+      exact hcandidate
+    have hrightBase := hview.pendingLE coordinate horiginal hbase
+    change candidate ∈
+      (right.state.clearPending (.position position)).pendingAt coordinate
+    rw [pendingAt_clearPending_of_ne right.state (.position position) coordinate hne]
+    exact hrightBase
+
+set_option maxRecDepth 100000 in
+theorem FinalizationContextLE.materialize_position_both
+    {table : OtsSecretIndex → HashOutput} {left right : DeferredContext}
+    (hcontext : FinalizationContextLE table left right) (position : Position)
+    (output : HashOutput) :
+    FinalizationContextLE table
+      { state := left.state.materialize (.position position) output
+        values := left.values.install position output }
+      { state := right.state.materialize (.position position) output
+        values := right.values.install position output } := by
+  let leftMaterialized : DeferredContext :=
+    { state := left.state.materialize (.position position) output
+      values := left.values.install position output }
+  let rightMaterialized : DeferredContext :=
+    { state := right.state.materialize (.position position) output
+      values := right.values.install position output }
+  have hview := hcontext.view.materialize_position_both position output
+  obtain ⟨completion, hcompletion⟩ := hcontext.rightCompletable
+  let nextCompletion : Coordinate → HashOutput :=
+    Function.update completion (.position position) output
+  have hnextCompletion : DeferredCompletion table rightMaterialized nextCompletion := by
+    refine ⟨?_, ?_, ?_, ?_⟩
+    · intro coordinate cached hvalue
+      by_cases heq : coordinate = .position position
+      · subst coordinate
+        have hsame : cached = output := by
+          simpa [rightMaterialized, LazyRevealProbe.State.materialize] using hvalue.symm
+        simp [nextCompletion, hsame]
+      · have hold := hcompletion.1 coordinate cached (by
+          simpa [rightMaterialized, LazyRevealProbe.State.materialize,
+            Function.update_of_ne heq] using hvalue)
+        simpa [nextCompletion, Function.update_of_ne, heq] using hold
+    · intro other cached hvalue
+      by_cases heq : other = position
+      · subst other
+        have hsame : cached = output := by
+          simpa [rightMaterialized, DeferredStructuralValues.install] using hvalue.symm
+        simp [nextCompletion, hsame]
+      · have hold := hcompletion.2.1 other cached (by
+          simpa [rightMaterialized, DeferredStructuralValues.install, heq] using hvalue)
+        simpa [nextCompletion, Function.update_of_ne,
+          show Coordinate.position other ≠ Coordinate.position position by simpa using heq]
+          using hold
+    · intro coordinate candidate hmember
+      have hparts : (coordinate, candidate) ∈ right.state.pending ∧
+          coordinate ≠ .position position := by
+        change (coordinate, candidate) ∈
+          right.state.pendingAway (.position position) at hmember
+        simpa [LazyRevealProbe.State.pendingAway] using hmember
+      simpa [nextCompletion, Function.update_of_ne, hparts.2] using
+        hcompletion.2.2.1 coordinate candidate hparts.1
+    · intro index
+      simpa [nextCompletion, Function.update_of_ne,
+        show index.coordinate ≠ Coordinate.position position by
+          simp [OtsSecretIndex.coordinate]] using hcompletion.2.2.2 index
+  exact
+    { view := hview
+      leftValid := hview.leftValid_of_view
+      rightValid := hview.rightValid_of_view
+      rightCompletable := ⟨nextCompletion, hnextCompletion⟩ }
+
+theorem LazyRevealProbe.ValuesLE.materialize_both
+    {left right : LazyRevealProbe.State Coordinate}
+    (hvalues : LazyRevealProbe.ValuesLE left right)
+    (coordinate : Coordinate) (output : HashOutput) :
+    LazyRevealProbe.ValuesLE (left.materialize coordinate output)
+      (right.materialize coordinate output) := by
+  intro other cached hvalue
+  by_cases heq : other = coordinate
+  · subst other
+    have hsame : cached = output := by
+      simpa [LazyRevealProbe.State.materialize] using hvalue.symm
+    simp [LazyRevealProbe.State.materialize, hsame]
+  · have hbase : left.values other = some cached := by
+      simpa [LazyRevealProbe.State.materialize, Function.update_of_ne heq] using hvalue
+    simpa [LazyRevealProbe.State.materialize, Function.update_of_ne heq] using
+      hvalues other cached hbase
+
+theorem LazyRevealProbe.ValuesLE.materialize_left
+    {left right : LazyRevealProbe.State Coordinate}
+    (hvalues : LazyRevealProbe.ValuesLE left right)
+    (coordinate : Coordinate) (output : HashOutput)
+    (hright : right.values coordinate = some output) :
+    LazyRevealProbe.ValuesLE (left.materialize coordinate output) right := by
+  intro other cached hvalue
+  by_cases heq : other = coordinate
+  · subst other
+    have hsame : cached = output := by
+      simpa [LazyRevealProbe.State.materialize] using hvalue.symm
+    simpa [hsame] using hright
+  · apply hvalues other cached
+    simpa [LazyRevealProbe.State.materialize, Function.update_of_ne heq] using hvalue
+
+theorem FinalizationViewLE.publish
+    {table : OtsSecretIndex → HashOutput} {left right : DeferredContext}
+    (hview : FinalizationViewLE table left right) (coordinate : Coordinate) :
+    FinalizationViewLE table
+      { left with state := left.state.publish coordinate }
+      { right with state := right.state.publish coordinate } where
+  leftConsistent := hview.leftConsistent.publish coordinate
+  rightConsistent := hview.rightConsistent.publish coordinate
+  leftStarts := hview.leftStarts
+  rightStarts := hview.rightStarts
+  valueEq := hview.valueEq
+  leftClean := hview.leftClean
+  rightClean := hview.rightClean
+  pendingLE := hview.pendingLE
+
+theorem FinalizationContextLE.publish
+    {table : OtsSecretIndex → HashOutput} {left right : DeferredContext}
+    (hcontext : FinalizationContextLE table left right) (coordinate : Coordinate) :
+    FinalizationContextLE table
+      { left with state := left.state.publish coordinate }
+      { right with state := right.state.publish coordinate } where
+  view := hcontext.view.publish coordinate
+  leftValid := hcontext.leftValid.publish coordinate
+  rightValid := hcontext.rightValid.publish coordinate
+  rightCompletable := hcontext.rightCompletable.publish coordinate
+
+theorem PublishedValues.publish_of_value
+    {state : LazyRevealProbe.State Coordinate} (hpublished : PublishedValues state)
+    (coordinate : Coordinate) (output : HashOutput)
+    (hvalue : state.values coordinate = some output) :
+    PublishedValues (state.publish coordinate) := by
+  intro other hrevealed
+  simp only [LazyRevealProbe.State.publish, Finset.mem_insert] at hrevealed
+  rcases hrevealed with heq | hold
+  · subst other
+    simp [hvalue]
+  · exact hpublished other hold
+
 structure OrdinaryMaterializedRunEq (table : OtsSecretIndex → HashOutput)
     (left right : ResolvedRunResult (α × SplitHashCache)) : Prop where
   value_eq : left.value.1 = right.value.1
@@ -1256,6 +1628,801 @@ theorem runDirectResolvedDetailedFromTable_prepareLeafInputProbe
   rw [StateT.run_bind, runDirectResolvedDetailedFromTable_bind,
     runDirectResolvedDetailedFromTable_peekCoordinate]
   cases context.state.values candidate.coordinate <;> simp
+
+theorem runDirectResolvedDetailedFromTable_peekPositionValues_of_values
+    (completion : Coordinate → HashOutput) (context : DeferredContext)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    ∀ positions : List Position,
+      (∀ position, position ∈ positions →
+        context.state.values (.position position) = some (completion (.position position))) →
+      runDirectResolvedDetailedFromTable context fuel table
+          ((peekPositionValues positions).run cache) =
+        pure (.done ⟨context, fuel,
+          (some (positions.map (tableValue completion)), cache), table⟩)
+  | [], _ => by simp [peekPositionValues, runDirectResolvedDetailedFromTable]
+  | position :: remaining, hvalues => by
+      rw [peekPositionValues, StateT.run_bind, runDirectResolvedDetailedFromTable_bind,
+        runDirectResolvedDetailedFromTable_peekCoordinate]
+      rw [hvalues position (by simp)]
+      rw [show truncateHash <$> some (completion (.position position)) =
+        some (tableValue completion position) by rfl]
+      simp only [pure_bind]
+      rw [StateT.run_bind, runDirectResolvedDetailedFromTable_bind,
+        runDirectResolvedDetailedFromTable_peekPositionValues_of_values completion context fuel
+          table cache remaining (fun other hother => hvalues other (by simp [hother]))]
+      simp [runDirectResolvedDetailedFromTable, tableValue]
+
+theorem runDirectResolvedDetailedFromTable_peekPositionValues_of_prefix_values_of_missing
+    (completion : Coordinate → HashOutput) (context : DeferredContext)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (prior remaining : List Position) (position : Position)
+    (hvalues : ∀ other, other ∈ prior →
+      context.state.values (.position other) = some (completion (.position other)))
+    (hmissing : context.state.values (.position position) = none) :
+    runDirectResolvedDetailedFromTable context fuel table
+        ((peekPositionValues (prior ++ position :: remaining)).run cache) =
+      pure (.done ⟨context, fuel, (none, cache), table⟩) := by
+  induction prior with
+  | nil =>
+      rw [List.nil_append, peekPositionValues, StateT.run_bind,
+        runDirectResolvedDetailedFromTable_bind,
+        runDirectResolvedDetailedFromTable_peekCoordinate, hmissing]
+      simp [runDirectResolvedDetailedFromTable]
+  | cons head tail ih =>
+      rw [List.cons_append, peekPositionValues, StateT.run_bind,
+        runDirectResolvedDetailedFromTable_bind,
+        runDirectResolvedDetailedFromTable_peekCoordinate,
+        hvalues head (by simp)]
+      rw [show truncateHash <$> some (completion (.position head)) =
+        some (tableValue completion head) by rfl]
+      simp only [pure_bind]
+      rw [StateT.run_bind, runDirectResolvedDetailedFromTable_bind,
+        ih (fun other hother => hvalues other (by simp [hother]))]
+      simp [runDirectResolvedDetailedFromTable]
+
+theorem runDirectResolvedDetailedFromTable_peekTableInput_of_available
+    (parameter : PublicParameter) (completion : Coordinate → HashOutput)
+    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (cache : SplitHashCache) (coordinate : Coordinate)
+    (havailable : TableInputAvailable completion context.state coordinate) :
+    runDirectResolvedDetailedFromTable context fuel table
+        ((peekTableInput parameter coordinate).run cache) =
+      pure (.done ⟨context, fuel,
+        (some (tableInput parameter completion coordinate), cache), table⟩) := by
+  cases coordinate with
+  | chainStart lay tree leafIdx chainIdx =>
+      simp [TableInputAvailable] at havailable
+  | position position =>
+      cases position with
+      | chain lay tree leafIdx chainIdx step =>
+          rw [peekTableInput.eq_2]
+          by_cases hzero : step.val = 0
+          · rw [if_pos hzero, StateT.run_bind, runDirectResolvedDetailedFromTable_bind,
+              runDirectResolvedDetailedFromTable_peekCoordinate]
+            rw [show context.state.values (.chainStart lay tree leafIdx chainIdx) =
+                some (completion (.chainStart lay tree leafIdx chainIdx)) by
+              simpa [TableInputAvailable, hzero] using havailable]
+            simp [runDirectResolvedDetailedFromTable, tableInput, tablePayload, hzero]
+          · rw [if_neg hzero, StateT.run_bind, runDirectResolvedDetailedFromTable_bind,
+              runDirectResolvedDetailedFromTable_peekPositionValues_of_values completion context
+                fuel table cache _ (by simpa [TableInputAvailable, hzero] using havailable)]
+            simp [runDirectResolvedDetailedFromTable, tableInput, tablePayload, hzero]
+      | leaf lay tree leafIdx =>
+          rw [peekTableInput.eq_3 parameter (.leaf lay tree leafIdx) (by simp),
+            StateT.run_bind, runDirectResolvedDetailedFromTable_bind,
+            runDirectResolvedDetailedFromTable_peekPositionValues_of_values completion context
+              fuel table cache _ havailable]
+          simp [runDirectResolvedDetailedFromTable, tableInput, tablePayload]
+      | node lay tree level nodeIdx =>
+          rw [peekTableInput.eq_3 parameter (.node lay tree level nodeIdx) (by simp),
+            StateT.run_bind, runDirectResolvedDetailedFromTable_bind,
+            runDirectResolvedDetailedFromTable_peekPositionValues_of_values completion context
+              fuel table cache _ havailable]
+          simp [runDirectResolvedDetailedFromTable, tableInput, tablePayload]
+      | ftsLeaf index tree leafIdx =>
+          rw [peekTableInput.eq_3 parameter (.ftsLeaf index tree leafIdx) (by simp),
+            StateT.run_bind, runDirectResolvedDetailedFromTable_bind,
+            runDirectResolvedDetailedFromTable_peekPositionValues_of_values completion context
+              fuel table cache _ havailable]
+          simp [runDirectResolvedDetailedFromTable, tableInput, tablePayload]
+      | ftsNode index tree level nodeIdx =>
+          rw [peekTableInput.eq_3 parameter (.ftsNode index tree level nodeIdx) (by simp),
+            StateT.run_bind, runDirectResolvedDetailedFromTable_bind,
+            runDirectResolvedDetailedFromTable_peekPositionValues_of_values completion context
+              fuel table cache _ havailable]
+          simp [runDirectResolvedDetailedFromTable, tableInput, tablePayload]
+      | ftsRoots index =>
+          rw [peekTableInput.eq_3 parameter (.ftsRoots index) (by simp),
+            StateT.run_bind, runDirectResolvedDetailedFromTable_bind,
+            runDirectResolvedDetailedFromTable_peekPositionValues_of_values completion context
+              fuel table cache _ havailable]
+          simp [runDirectResolvedDetailedFromTable, tableInput, tablePayload]
+
+set_option maxRecDepth 100000 in
+theorem runDirectResolvedDetailedFromTable_peekTableInput_of_unavailable
+    (parameter : PublicParameter) (completion : Coordinate → HashOutput)
+    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (cache : SplitHashCache) (coordinate : Coordinate)
+    (hcompletion : DeferredCompletion table context completion)
+    (hots : ∀ position, coordinate = .position position → IsOtsPosition position)
+    (hunavailable : ¬TableInputAvailable completion context.state coordinate) :
+    runDirectResolvedDetailedFromTable context fuel table
+        ((peekTableInput parameter coordinate).run cache) =
+      pure (.done ⟨context, fuel, (none, cache), table⟩) := by
+  have htable : ∀ coordinate output,
+      context.state.values coordinate = some output → output = completion coordinate := by
+    intro other output hvalue
+    exact (hcompletion.1 other output hvalue).symm
+  cases coordinate with
+  | chainStart lay tree leafIdx chainIdx =>
+      simp [peekTableInput, runDirectResolvedDetailedFromTable]
+  | position position =>
+      cases position with
+      | chain lay tree leafIdx chainIdx step =>
+          rw [peekTableInput.eq_2]
+          by_cases hzero : step.val = 0
+          · rw [if_pos hzero, StateT.run_bind, runDirectResolvedDetailedFromTable_bind]
+            have hnone : context.state.values (.chainStart lay tree leafIdx chainIdx) = none := by
+              cases hvalue : context.state.values (.chainStart lay tree leafIdx chainIdx) with
+              | none => rfl
+              | some output =>
+                  have hsame := htable (.chainStart lay tree leafIdx chainIdx) output hvalue
+                  exfalso
+                  apply hunavailable
+                  simpa [TableInputAvailable, hzero, hsame] using hvalue
+            rw [runDirectResolvedDetailedFromTable_peekCoordinate, hnone]
+            simp [runDirectResolvedDetailedFromTable]
+          · rw [if_neg hzero, StateT.run_bind, runDirectResolvedDetailedFromTable_bind]
+            rcases positionValues_or_first_missing completion context.state
+              (Position.chain lay tree leafIdx chainIdx step).children
+              (fun other output hvalue =>
+                htable (.position other) output hvalue) with havailable |
+                ⟨prior, child, remaining, hchildren, hvalues, hmissing⟩
+            · exact (hunavailable (by simpa [TableInputAvailable, hzero] using havailable)).elim
+            · rw [hchildren,
+                runDirectResolvedDetailedFromTable_peekPositionValues_of_prefix_values_of_missing
+                  completion context fuel table cache prior remaining child hvalues hmissing]
+              simp [runDirectResolvedDetailedFromTable]
+      | leaf lay tree leafIdx =>
+          rw [peekTableInput.eq_3 parameter (.leaf lay tree leafIdx) (by simp),
+            StateT.run_bind, runDirectResolvedDetailedFromTable_bind]
+          rcases positionValues_or_first_missing completion context.state
+            (Position.leaf lay tree leafIdx).children (fun other output hvalue =>
+              htable (.position other) output hvalue) with havailable |
+              ⟨prior, child, remaining, hchildren, hvalues, hmissing⟩
+          · exact (hunavailable havailable).elim
+          · rw [hchildren,
+              runDirectResolvedDetailedFromTable_peekPositionValues_of_prefix_values_of_missing
+                completion context fuel table cache prior remaining child hvalues hmissing]
+            simp [runDirectResolvedDetailedFromTable]
+      | node lay tree level nodeIdx =>
+          rw [peekTableInput.eq_3 parameter (.node lay tree level nodeIdx) (by simp),
+            StateT.run_bind, runDirectResolvedDetailedFromTable_bind]
+          rcases positionValues_or_first_missing completion context.state
+            (Position.node lay tree level nodeIdx).children (fun other output hvalue =>
+              htable (.position other) output hvalue) with havailable |
+              ⟨prior, child, remaining, hchildren, hvalues, hmissing⟩
+          · exact (hunavailable havailable).elim
+          · rw [hchildren,
+              runDirectResolvedDetailedFromTable_peekPositionValues_of_prefix_values_of_missing
+                completion context fuel table cache prior remaining child hvalues hmissing]
+            simp [runDirectResolvedDetailedFromTable]
+      | ftsLeaf index tree leafIdx => simpa [IsOtsPosition] using hots _ rfl
+      | ftsNode index tree level nodeIdx => simpa [IsOtsPosition] using hots _ rfl
+      | ftsRoots index => simpa [IsOtsPosition] using hots _ rfl
+
+theorem runDirectResolvedDetailedFromTable_revealCoordinateOutput_of_value
+    (table : OtsSecretIndex → HashOutput) (coordinate : Coordinate)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (output : HashOutput)
+    (hvalue : context.state.values coordinate = some output) :
+    runDirectResolvedDetailedFromTable context fuel table
+        ((revealCoordinateOutput coordinate).run cache) =
+      pure (.done ⟨context, fuel,
+        (output, Function.update cache (.hidden coordinate) (some output)), table⟩) := by
+  unfold revealCoordinateOutput
+  rw [StateT.run_bind, runDirectResolvedDetailedFromTable_bind]
+  simp only [StateT.run_liftM]
+  rw [LazyRevealProbe.revealQuery,
+    runDirectResolvedDetailedFromTable_reveal_query_bind, hvalue]
+  simp [StateT.run_modify, runDirectResolvedDetailedFromTable]
+
+theorem runDirectResolvedDetailedFromTable_revealCoordinateOutput_position_of_private
+    (table : OtsSecretIndex → HashOutput) (position : Position)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (output : HashOutput)
+    (hhidden : context.state.values (.position position) = none)
+    (hprivate : context.values position = some output) :
+    runDirectResolvedDetailedFromTable context fuel table
+        ((revealCoordinateOutput (.position position)).run cache) =
+      if context.state.hitAt (.position position) output then
+        pure (.stopped .privateStructuralHit)
+      else
+        pure (.done ⟨
+          { state := context.state.materialize (.position position) output
+            values := context.values },
+          fuel,
+          (output, Function.update cache (.hidden (.position position)) (some output)),
+          table⟩) := by
+  unfold revealCoordinateOutput
+  rw [StateT.run_bind, runDirectResolvedDetailedFromTable_bind]
+  simp only [StateT.run_liftM]
+  rw [LazyRevealProbe.revealQuery,
+    runDirectResolvedDetailedFromTable_reveal_query_bind]
+  by_cases hhit : context.state.hitAt (.position position) output <;>
+    simp [hhidden, hprivate, hhit, StateT.run_modify,
+      runDirectResolvedDetailedFromTable]
+
+theorem runDirectResolvedDetailedFromTable_revealCoordinateOutput_position_of_fresh
+    (table : OtsSecretIndex → HashOutput) (position : Position)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (hhidden : context.state.values (.position position) = none)
+    (hprivate : context.values position = none) :
+    runDirectResolvedDetailedFromTable context fuel table
+        ((revealCoordinateOutput (.position position)).run cache) = (do
+      let output ← LazyRevealProbe.sampleHashOutput
+      if context.state.hitAt (.position position) output then
+        pure (.stopped .ordinaryHit)
+      else
+        pure (.done ⟨
+          { state := context.state.materialize (.position position) output
+            values := context.values.install position output },
+          fuel,
+          (output, Function.update cache (.hidden (.position position)) (some output)),
+          table⟩)) := by
+  unfold revealCoordinateOutput
+  rw [StateT.run_bind, runDirectResolvedDetailedFromTable_bind]
+  simp only [StateT.run_liftM]
+  rw [LazyRevealProbe.revealQuery,
+    runDirectResolvedDetailedFromTable_reveal_query_bind]
+  simp [hhidden, hprivate, StateT.run_modify, runDirectResolvedDetailedFromTable]
+  apply bind_congr
+  intro output
+  by_cases hhit : context.state.hitAt (.position position) output <;> simp [hhit]
+
+theorem runDirectResolvedDetailedFromTable_publishOrdinaryInput
+    (table : OtsSecretIndex → HashOutput) (coordinate : Coordinate)
+    (input : HashInput) (output : HashOutput) (context : DeferredContext)
+    (fuel : Nat) (cache : SplitHashCache) :
+    runDirectResolvedDetailedFromTable context fuel table
+        ((publishOrdinaryInput coordinate input output).run cache) =
+      pure (.done ⟨
+        { context with state := context.state.publish coordinate },
+        fuel,
+        (output, Function.update cache (.ordinary input) (some output)),
+        table⟩) := by
+  unfold publishOrdinaryInput publishCoordinate
+  rw [StateT.run_bind, runDirectResolvedDetailedFromTable_bind]
+  simp only [StateT.run_liftM, LazyRevealProbe.publishQuery]
+  rw [runDirectResolvedDetailedFromTable_publish_query_bind]
+  simp [StateT.run_modify, runDirectResolvedDetailedFromTable]
+
+noncomputable def revealPublishOrdinaryInput
+    (coordinate : Coordinate) (input : HashInput) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) HashOutput := do
+  let output ← revealCoordinateOutput coordinate
+  publishOrdinaryInput coordinate input output
+
+theorem runDirectResolvedDetailedFromTable_revealPublishOrdinaryInput_of_value
+    (table : OtsSecretIndex → HashOutput) (coordinate : Coordinate)
+    (input : HashInput) (context : DeferredContext) (fuel : Nat)
+    (cache : SplitHashCache) (output : HashOutput)
+    (hvalue : context.state.values coordinate = some output) :
+    runDirectResolvedDetailedFromTable context fuel table
+        ((revealPublishOrdinaryInput coordinate input).run cache) =
+      pure (.done ⟨
+        { context with state := context.state.publish coordinate },
+        fuel,
+        (output, Function.update
+          (Function.update cache (.hidden coordinate) (some output))
+          (.ordinary input) (some output)),
+        table⟩) := by
+  unfold revealPublishOrdinaryInput
+  rw [StateT.run_bind, runDirectResolvedDetailedFromTable_bind,
+    runDirectResolvedDetailedFromTable_revealCoordinateOutput_of_value table coordinate
+      context fuel cache output hvalue]
+  simp only [pure_bind]
+  rw [runDirectResolvedDetailedFromTable_publishOrdinaryInput]
+
+theorem runDirectResolvedDetailedFromTable_revealPublishOrdinaryInput_position_of_private
+    (table : OtsSecretIndex → HashOutput) (position : Position)
+    (input : HashInput) (context : DeferredContext) (fuel : Nat)
+    (cache : SplitHashCache) (output : HashOutput)
+    (hhidden : context.state.values (.position position) = none)
+    (hprivate : context.values position = some output) :
+    runDirectResolvedDetailedFromTable context fuel table
+        ((revealPublishOrdinaryInput (.position position) input).run cache) =
+      if context.state.hitAt (.position position) output then
+        pure (.stopped .privateStructuralHit)
+      else
+        pure (.done ⟨
+          { state := (context.state.materialize (.position position) output).publish
+              (.position position)
+            values := context.values },
+          fuel,
+          (output, Function.update
+            (Function.update cache (.hidden (.position position)) (some output))
+            (.ordinary input) (some output)),
+          table⟩) := by
+  unfold revealPublishOrdinaryInput
+  rw [StateT.run_bind, runDirectResolvedDetailedFromTable_bind,
+    runDirectResolvedDetailedFromTable_revealCoordinateOutput_position_of_private table position
+      context fuel cache output hhidden hprivate]
+  by_cases hhit : context.state.hitAt (.position position) output <;> simp [hhit]
+  rw [runDirectResolvedDetailedFromTable_publishOrdinaryInput]
+
+theorem runDirectResolvedDetailedFromTable_revealPublishOrdinaryInput_position_of_fresh
+    (table : OtsSecretIndex → HashOutput) (position : Position)
+    (input : HashInput) (context : DeferredContext) (fuel : Nat)
+    (cache : SplitHashCache)
+    (hhidden : context.state.values (.position position) = none)
+    (hprivate : context.values position = none) :
+    runDirectResolvedDetailedFromTable context fuel table
+        ((revealPublishOrdinaryInput (.position position) input).run cache) = (do
+      let output ← LazyRevealProbe.sampleHashOutput
+      if context.state.hitAt (.position position) output then
+        pure (.stopped .ordinaryHit)
+      else
+        pure (.done ⟨
+          { state := (context.state.materialize (.position position) output).publish
+              (.position position)
+            values := context.values.install position output },
+          fuel,
+          (output, Function.update
+            (Function.update cache (.hidden (.position position)) (some output))
+            (.ordinary input) (some output)),
+          table⟩)) := by
+  unfold revealPublishOrdinaryInput
+  rw [StateT.run_bind, runDirectResolvedDetailedFromTable_bind,
+    runDirectResolvedDetailedFromTable_revealCoordinateOutput_position_of_fresh table position
+      context fuel cache hhidden hprivate]
+  rw [bind_assoc]
+  apply bind_congr
+  intro output
+  by_cases hhit : context.state.hitAt (.position position) output
+  · simp [hhit]
+  · simp only [hhit, ↓reduceIte, pure_bind]
+    rw [runDirectResolvedDetailedFromTable_publishOrdinaryInput]
+
+set_option maxRecDepth 100000 in
+theorem relTriple_runDirectResolvedDetailed_splitHashQuery_ordinary
+    (table : OtsSecretIndex → HashOutput) (input : HashInput)
+    (left right : DeferredContext) (leftFuel rightFuel : Nat)
+    (leftCache rightCache : SplitHashCache)
+    (hcontext : FinalizationContextLE table left right)
+    (hfuel : leftFuel ≤ rightFuel)
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hvalues : LazyRevealProbe.ValuesLE left.state right.state)
+    (hpublished : PublishedValues left.state)
+    (hrightMaterialized : right = directDeferredContext right.state) :
+    RelTriple
+      (runDirectResolvedDetailedFromTable left leftFuel table
+        ((splitHashQuery (.ordinary input)).run leftCache))
+      (runDirectResolvedDetailedFromTable right rightFuel table
+        ((splitHashQuery (.ordinary input)).run rightCache))
+      (DirectDetailedOrdinaryRunEq table) := by
+  rw [splitHashQuery_run_eq, splitHashQuery_run_eq]
+  have hcacheAt : leftCache (.ordinary input) = rightCache (.ordinary input) :=
+    congrFun hcache input
+  cases hlookup : leftCache (.ordinary input) with
+  | some output =>
+      have hright : rightCache (.ordinary input) = some output := by
+        rw [← hcacheAt]
+        exact hlookup
+      simp only [hright]
+      exact relTriple_runDirectResolvedDetailed_pure_of_ordinaryMaterialized table output
+        left right leftFuel rightFuel leftCache rightCache hcontext hfuel hcache hrevealed
+          hvalues hpublished hrightMaterialized
+  | none =>
+      have hright : rightCache (.ordinary input) = none := by
+        rw [← hcacheAt]
+        exact hlookup
+      simp only [hright]
+      rw [LazyRevealProbe.hashOutputQuery,
+        runDirectResolvedDetailedFromTable_hashOutput_query_bind,
+        runDirectResolvedDetailedFromTable_hashOutput_query_bind]
+      apply relTriple_bind (relTriple_refl LazyRevealProbe.sampleHashOutput)
+      intro leftOutput rightOutput houtput
+      subst rightOutput
+      simp only [runDirectResolvedDetailedFromTable]
+      apply relTriple_pure_pure
+      left
+      exact
+        { value_eq := rfl
+          context_le := hcontext
+          remaining_le := hfuel
+          left_table := rfl
+          right_table := rfl
+          cache_eq := by
+            rw [ordinaryQueryCache_update, ordinaryQueryCache_update, hcache]
+          revealed_eq := hrevealed
+          values_le := hvalues
+          left_published := hpublished
+          right_materialized := hrightMaterialized }
+
+set_option maxRecDepth 100000 in
+theorem relTriple_runDirectResolvedDetailed_revealCoordinateOutput_position
+    (table : OtsSecretIndex → HashOutput) (position : Position)
+    (left right : DeferredContext) (leftFuel rightFuel : Nat)
+    (leftCache rightCache : SplitHashCache)
+    (hcontext : FinalizationContextLE table left right)
+    (hfuel : leftFuel ≤ rightFuel)
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hvalues : LazyRevealProbe.ValuesLE left.state right.state)
+    (hpublished : PublishedValues left.state)
+    (hrightMaterialized : right = directDeferredContext right.state) :
+    RelTriple
+      (runDirectResolvedDetailedFromTable left leftFuel table
+        ((revealCoordinateOutput (.position position)).run leftCache))
+      (runDirectResolvedDetailedFromTable right rightFuel table
+        ((revealCoordinateOutput (.position position)).run rightCache))
+      (DirectDetailedOrdinaryRunEq table) := by
+  cases hleftValue : left.state.values (.position position) with
+  | some output =>
+      have hrightValue : right.state.values (.position position) = some output :=
+        hvalues (.position position) output hleftValue
+      rw [runDirectResolvedDetailedFromTable_revealCoordinateOutput_of_value table
+          (.position position) left leftFuel leftCache output hleftValue,
+        runDirectResolvedDetailedFromTable_revealCoordinateOutput_of_value table
+          (.position position) right rightFuel rightCache output hrightValue]
+      apply relTriple_pure_pure
+      left
+      exact
+        { value_eq := rfl
+          context_le := hcontext
+          remaining_le := hfuel
+          left_table := rfl
+          right_table := rfl
+          cache_eq := by
+            rw [ordinaryQueryCache_update_hidden, ordinaryQueryCache_update_hidden, hcache]
+          revealed_eq := hrevealed
+          values_le := hvalues
+          left_published := hpublished
+          right_materialized := hrightMaterialized }
+  | none =>
+      cases hrightValue : right.state.values (.position position) with
+      | some output =>
+          have hprivate := hcontext.view.privateValue_of_left_hidden_of_right_materialized
+            position output hleftValue hrightValue
+          rw [runDirectResolvedDetailedFromTable_revealCoordinateOutput_position_of_private
+              table position left leftFuel leftCache output hleftValue hprivate,
+            runDirectResolvedDetailedFromTable_revealCoordinateOutput_of_value table
+              (.position position) right rightFuel rightCache output hrightValue]
+          by_cases hhit : left.state.hitAt (.position position) output
+          · simp only [hhit, ↓reduceIte]
+            exact relTriple_pure_pure trivial
+          · simp only [hhit, ↓reduceIte]
+            apply relTriple_pure_pure
+            left
+            exact
+              { value_eq := rfl
+                context_le := hcontext.materialize_position_left position output
+                  hleftValue hprivate
+                remaining_le := hfuel
+                left_table := rfl
+                right_table := rfl
+                cache_eq := by
+                  rw [ordinaryQueryCache_update_hidden, ordinaryQueryCache_update_hidden, hcache]
+                revealed_eq := by
+                  simpa [LazyRevealProbe.State.materialize] using hrevealed
+                values_le := hvalues.materialize_left (.position position) output hrightValue
+                left_published := hpublished.materialize (.position position) output
+                right_materialized := hrightMaterialized }
+      | none =>
+          have hrightPrivate : right.values position = none := by
+            rw [hrightMaterialized]
+            simpa [directDeferredContext, directDeferredValues] using hrightValue
+          have hleftPositionValue : left.positionValue position = none := by
+            change resolvedCompletionValue table left (.position position) = none
+            rw [hcontext.view.valueEq]
+            simp [resolvedCompletionValue, DeferredContext.positionValue, hrightValue,
+              hrightPrivate]
+          have hleftPrivate : left.values position = none := by
+            simpa [DeferredContext.positionValue, hleftValue] using hleftPositionValue
+          rw [runDirectResolvedDetailedFromTable_revealCoordinateOutput_position_of_fresh
+              table position left leftFuel leftCache hleftValue hleftPrivate,
+            runDirectResolvedDetailedFromTable_revealCoordinateOutput_position_of_fresh
+              table position right rightFuel rightCache hrightValue hrightPrivate]
+          apply relTriple_bind (relTriple_refl LazyRevealProbe.sampleHashOutput)
+          intro leftOutput rightOutput houtput
+          subst rightOutput
+          by_cases hleftHit : left.state.hitAt (.position position) leftOutput
+          · have hresolvedNone :
+                resolvedCompletionValue table left (.position position) = none := by
+              simpa [resolvedCompletionValue] using hleftPositionValue
+            have hrightHit : right.state.hitAt (.position position) leftOutput := by
+              unfold LazyRevealProbe.State.hitAt at hleftHit ⊢
+              exact hcontext.view.pendingLE (.position position) hresolvedNone hleftHit
+            simp only [hleftHit, hrightHit, ↓reduceIte]
+            exact relTriple_pure_pure trivial
+          · by_cases hrightHit : right.state.hitAt (.position position) leftOutput
+            · simp only [hleftHit, hrightHit, ↓reduceIte]
+              exact relTriple_pure_pure trivial
+            · simp only [hleftHit, hrightHit, ↓reduceIte]
+              apply relTriple_pure_pure
+              left
+              exact
+                { value_eq := rfl
+                  context_le := hcontext.materialize_position_both position leftOutput
+                  remaining_le := hfuel
+                  left_table := rfl
+                  right_table := rfl
+                  cache_eq := by
+                    rw [ordinaryQueryCache_update_hidden, ordinaryQueryCache_update_hidden,
+                      hcache]
+                  revealed_eq := by
+                    simpa [LazyRevealProbe.State.materialize] using hrevealed
+                  values_le := hvalues.materialize_both (.position position) leftOutput
+                  left_published := hpublished.materialize (.position position) leftOutput
+                  right_materialized := by
+                    rw [hrightMaterialized]
+                    simp [directDeferredContext, directDeferredValues_materialize_position] }
+
+set_option maxRecDepth 100000 in
+theorem relTriple_runDirectResolvedDetailed_revealPublishOrdinaryInput_position
+    (table : OtsSecretIndex → HashOutput) (position : Position) (input : HashInput)
+    (left right : DeferredContext) (leftFuel rightFuel : Nat)
+    (leftCache rightCache : SplitHashCache)
+    (hcontext : FinalizationContextLE table left right)
+    (hfuel : leftFuel ≤ rightFuel)
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hvalues : LazyRevealProbe.ValuesLE left.state right.state)
+    (hpublished : PublishedValues left.state)
+    (hrightMaterialized : right = directDeferredContext right.state) :
+    RelTriple
+      (runDirectResolvedDetailedFromTable left leftFuel table
+        ((revealPublishOrdinaryInput (.position position) input).run leftCache))
+      (runDirectResolvedDetailedFromTable right rightFuel table
+        ((revealPublishOrdinaryInput (.position position) input).run rightCache))
+      (DirectDetailedOrdinaryRunEq table) := by
+  cases hleftValue : left.state.values (.position position) with
+  | some output =>
+      have hrightValue : right.state.values (.position position) = some output :=
+        hvalues (.position position) output hleftValue
+      rw [runDirectResolvedDetailedFromTable_revealPublishOrdinaryInput_of_value table
+          (.position position) input left leftFuel leftCache output hleftValue,
+        runDirectResolvedDetailedFromTable_revealPublishOrdinaryInput_of_value table
+          (.position position) input right rightFuel rightCache output hrightValue]
+      apply relTriple_pure_pure
+      left
+      exact
+        { value_eq := rfl
+          context_le := hcontext.publish (.position position)
+          remaining_le := hfuel
+          left_table := rfl
+          right_table := rfl
+          cache_eq := by
+            rw [ordinaryQueryCache_update, ordinaryQueryCache_update,
+              ordinaryQueryCache_update_hidden, ordinaryQueryCache_update_hidden, hcache]
+          revealed_eq := by
+            simpa [LazyRevealProbe.State.publish] using
+              congrArg (insert (.position position)) hrevealed
+          values_le := hvalues
+          left_published :=
+            hpublished.publish_of_value (.position position) output hleftValue
+          right_materialized := by
+            rw [hrightMaterialized]
+            simp [directDeferredContext, directDeferredValues_publish] }
+  | none =>
+      cases hrightValue : right.state.values (.position position) with
+      | some output =>
+          have hprivate := hcontext.view.privateValue_of_left_hidden_of_right_materialized
+            position output hleftValue hrightValue
+          rw [runDirectResolvedDetailedFromTable_revealPublishOrdinaryInput_position_of_private
+              table position input left leftFuel leftCache output hleftValue hprivate,
+            runDirectResolvedDetailedFromTable_revealPublishOrdinaryInput_of_value table
+              (.position position) input right rightFuel rightCache output hrightValue]
+          by_cases hhit : left.state.hitAt (.position position) output
+          · simp only [hhit, ↓reduceIte]
+            exact relTriple_pure_pure trivial
+          · simp only [hhit, ↓reduceIte]
+            apply relTriple_pure_pure
+            left
+            exact
+              { value_eq := rfl
+                context_le :=
+                  (hcontext.materialize_position_left position output hleftValue hprivate).publish
+                    (.position position)
+                remaining_le := hfuel
+                left_table := rfl
+                right_table := rfl
+                cache_eq := by
+                  rw [ordinaryQueryCache_update, ordinaryQueryCache_update,
+                    ordinaryQueryCache_update_hidden, ordinaryQueryCache_update_hidden, hcache]
+                revealed_eq := by
+                  simpa [LazyRevealProbe.State.materialize, LazyRevealProbe.State.publish] using
+                    congrArg (insert (.position position)) hrevealed
+                values_le := hvalues.materialize_left (.position position) output hrightValue
+                left_published :=
+                  (hpublished.materialize (.position position) output).publish_of_value
+                    (.position position) output (by
+                      simp [LazyRevealProbe.State.materialize])
+                right_materialized := by
+                  rw [hrightMaterialized]
+                  simp [directDeferredContext, directDeferredValues_publish] }
+      | none =>
+          have hrightPrivate : right.values position = none := by
+            rw [hrightMaterialized]
+            simpa [directDeferredContext, directDeferredValues] using hrightValue
+          have hleftPositionValue : left.positionValue position = none := by
+            change resolvedCompletionValue table left (.position position) = none
+            rw [hcontext.view.valueEq]
+            simp [resolvedCompletionValue, DeferredContext.positionValue, hrightValue,
+              hrightPrivate]
+          have hleftPrivate : left.values position = none := by
+            simpa [DeferredContext.positionValue, hleftValue] using hleftPositionValue
+          rw [runDirectResolvedDetailedFromTable_revealPublishOrdinaryInput_position_of_fresh
+              table position input left leftFuel leftCache hleftValue hleftPrivate,
+            runDirectResolvedDetailedFromTable_revealPublishOrdinaryInput_position_of_fresh
+              table position input right rightFuel rightCache hrightValue hrightPrivate]
+          apply relTriple_bind (relTriple_refl LazyRevealProbe.sampleHashOutput)
+          intro leftOutput rightOutput houtput
+          subst rightOutput
+          by_cases hleftHit : left.state.hitAt (.position position) leftOutput
+          · have hresolvedNone :
+                resolvedCompletionValue table left (.position position) = none := by
+              simpa [resolvedCompletionValue] using hleftPositionValue
+            have hrightHit : right.state.hitAt (.position position) leftOutput := by
+              unfold LazyRevealProbe.State.hitAt at hleftHit ⊢
+              exact hcontext.view.pendingLE (.position position) hresolvedNone hleftHit
+            simp only [hleftHit, hrightHit, ↓reduceIte]
+            exact relTriple_pure_pure trivial
+          · by_cases hrightHit : right.state.hitAt (.position position) leftOutput
+            · simp only [hleftHit, hrightHit, ↓reduceIte]
+              exact relTriple_pure_pure trivial
+            · simp only [hleftHit, hrightHit, ↓reduceIte]
+              apply relTriple_pure_pure
+              left
+              exact
+                { value_eq := rfl
+                  context_le :=
+                    (hcontext.materialize_position_both position leftOutput).publish
+                      (.position position)
+                  remaining_le := hfuel
+                  left_table := rfl
+                  right_table := rfl
+                  cache_eq := by
+                    rw [ordinaryQueryCache_update, ordinaryQueryCache_update,
+                      ordinaryQueryCache_update_hidden, ordinaryQueryCache_update_hidden,
+                      hcache]
+                  revealed_eq := by
+                    simpa [LazyRevealProbe.State.materialize, LazyRevealProbe.State.publish] using
+                      congrArg (insert (.position position)) hrevealed
+                  values_le := hvalues.materialize_both (.position position) leftOutput
+                  left_published :=
+                    (hpublished.materialize (.position position) leftOutput).publish_of_value
+                      (.position position) leftOutput (by
+                        simp [LazyRevealProbe.State.materialize])
+                  right_materialized := by
+                    rw [hrightMaterialized]
+                    simp [directDeferredContext, directDeferredValues_materialize_position,
+                      directDeferredValues_publish] }
+
+set_option maxRecDepth 100000 in
+theorem relTriple_runDirectResolvedDetailed_resolveKnownInput_available
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (position : Position) (input : HashInput)
+    (left right : DeferredContext) (leftFuel rightFuel : Nat)
+    (leftCache rightCache : SplitHashCache)
+    (completion : Coordinate → HashOutput)
+    (havailable : TableInputAvailable completion left.state (.position position))
+    (hcontext : FinalizationContextLE table left right)
+    (hfuel : leftFuel ≤ rightFuel)
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hvalues : LazyRevealProbe.ValuesLE left.state right.state)
+    (hpublished : PublishedValues left.state)
+    (hrightMaterialized : right = directDeferredContext right.state) :
+    RelTriple
+      (runDirectResolvedDetailedFromTable left leftFuel table
+        ((resolveKnownInput parameter (.position position) input).run leftCache))
+      (runDirectResolvedDetailedFromTable right rightFuel table
+        ((resolveKnownInput parameter (.position position) input).run rightCache))
+      (DirectDetailedOrdinaryRunEq table) := by
+  have hrightAvailable :
+      TableInputAvailable completion right.state (.position position) :=
+    havailable.monoValues hvalues
+  unfold resolveKnownInput
+  rw [StateT.run_bind, StateT.run_bind,
+    runDirectResolvedDetailedFromTable_bind,
+    runDirectResolvedDetailedFromTable_bind,
+    runDirectResolvedDetailedFromTable_peekTableInput_of_available parameter completion left
+      leftFuel table leftCache (.position position) havailable,
+    runDirectResolvedDetailedFromTable_peekTableInput_of_available parameter completion right
+      rightFuel table rightCache (.position position) hrightAvailable]
+  simp only [pure_bind]
+  by_cases heq : tableInput parameter completion (.position position) = input
+  · simp only [heq, ↓reduceIte]
+    simpa [revealPublishOrdinaryInput, publishOrdinaryInput] using
+      relTriple_runDirectResolvedDetailed_revealPublishOrdinaryInput_position table position
+        input left right leftFuel rightFuel leftCache rightCache hcontext hfuel hcache hrevealed
+          hvalues hpublished hrightMaterialized
+  · simp only [heq, ↓reduceIte]
+    exact relTriple_runDirectResolvedDetailed_splitHashQuery_ordinary table input
+      left right leftFuel rightFuel leftCache rightCache hcontext hfuel hcache hrevealed hvalues
+        hpublished hrightMaterialized
+
+set_option maxRecDepth 100000 in
+theorem relTriple_runDirectResolvedDetailed_resolveKnownInput_completionOrdinary
+    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
+    (coordinate : Coordinate) (input : HashInput)
+    (left right : DeferredContext) (leftFuel rightFuel : Nat)
+    (leftCache rightCache : SplitHashCache)
+    (hcontext : FinalizationContextLE table left right)
+    (hfuel : leftFuel ≤ rightFuel)
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hvalues : LazyRevealProbe.ValuesLE left.state right.state)
+    (hpublished : PublishedValues left.state)
+    (hrightMaterialized : right = directDeferredContext right.state)
+    (hots : ∀ position, coordinate = .position position → IsOtsPosition position)
+    (hordinary : CompletionOrdinaryInput parameter table left input) :
+    RelTriple
+      (runDirectResolvedDetailedFromTable left leftFuel table
+        ((resolveKnownInput parameter coordinate input).run leftCache))
+      (runDirectResolvedDetailedFromTable right rightFuel table
+        ((resolveKnownInput parameter coordinate input).run rightCache))
+      (DirectDetailedOrdinaryRunEq table) := by
+  obtain ⟨completion, hrightCompletion⟩ := hcontext.rightCompletable
+  have hleftCompletion : DeferredCompletion table left completion :=
+    hcontext.view.deferredCompletion_left completion hrightCompletion
+  cases coordinate with
+  | chainStart lay tree leafIdx chainIdx =>
+      unfold resolveKnownInput
+      simp only [peekTableInput, pure_bind]
+      exact relTriple_runDirectResolvedDetailed_splitHashQuery_ordinary table input
+        left right leftFuel rightFuel leftCache rightCache hcontext hfuel hcache hrevealed
+          hvalues hpublished hrightMaterialized
+  | position position =>
+      have hotsPosition : IsOtsPosition position := hots position rfl
+      unfold resolveKnownInput
+      rw [StateT.run_bind, StateT.run_bind,
+        runDirectResolvedDetailedFromTable_bind,
+        runDirectResolvedDetailedFromTable_bind]
+      by_cases hleftAvailable :
+          TableInputAvailable completion left.state (.position position)
+      · have hrightAvailable :
+            TableInputAvailable completion right.state (.position position) :=
+          hleftAvailable.monoValues hvalues
+        rw [runDirectResolvedDetailedFromTable_peekTableInput_of_available parameter completion
+            left leftFuel table leftCache (.position position) hleftAvailable,
+          runDirectResolvedDetailedFromTable_peekTableInput_of_available parameter completion
+            right rightFuel table rightCache (.position position) hrightAvailable]
+        simp only [pure_bind]
+        have hne : tableInput parameter completion (.position position) ≠ input := by
+          intro heq
+          exact hordinary completion hleftCompletion position hotsPosition heq.symm
+        rw [if_neg hne]
+        exact relTriple_runDirectResolvedDetailed_splitHashQuery_ordinary table input
+          left right leftFuel rightFuel leftCache rightCache hcontext hfuel hcache hrevealed
+            hvalues hpublished hrightMaterialized
+      · rw [runDirectResolvedDetailedFromTable_peekTableInput_of_unavailable parameter completion
+          left leftFuel table leftCache (.position position) hleftCompletion
+            (fun other heq => by cases heq; exact hotsPosition) hleftAvailable]
+        simp only [pure_bind]
+        by_cases hrightAvailable :
+            TableInputAvailable completion right.state (.position position)
+        · rw [runDirectResolvedDetailedFromTable_peekTableInput_of_available parameter completion
+            right rightFuel table rightCache (.position position) hrightAvailable]
+          simp only [pure_bind]
+          have hne : tableInput parameter completion (.position position) ≠ input := by
+            intro heq
+            exact hordinary completion hleftCompletion position hotsPosition heq.symm
+          rw [if_neg hne]
+          exact relTriple_runDirectResolvedDetailed_splitHashQuery_ordinary table input
+            left right leftFuel rightFuel leftCache rightCache hcontext hfuel hcache hrevealed
+              hvalues hpublished hrightMaterialized
+        · rw [runDirectResolvedDetailedFromTable_peekTableInput_of_unavailable parameter completion
+            right rightFuel table rightCache (.position position) hrightCompletion
+              (fun other heq => by cases heq; exact hotsPosition) hrightAvailable]
+          simp only [pure_bind]
+          exact relTriple_runDirectResolvedDetailed_splitHashQuery_ordinary table input
+            left right leftFuel rightFuel leftCache rightCache hcontext hfuel hcache hrevealed
+              hvalues hpublished hrightMaterialized
 
 set_option maxRecDepth 100000 in
 theorem relTriple_runDirectResolvedDetailed_prepareLeafInputProbe
