@@ -214,6 +214,40 @@ theorem isQueryBoundP_expandedSigningTrace_all_tables_roots
   rw [simulateQ_bind] at hfull
   exact IsQueryBoundP.of_bind_left hfull
 
+theorem ordinaryMaterializedStableCouples_maskedPublishedTreeRoot
+    (table : OtsSecretIndex → HashOutput) :
+    OrdinaryMaterializedStableCouples table maskedPublishedTreeRoot := by
+  unfold maskedPublishedTreeRoot
+  apply (ordinaryMaterializedStableCouples_ensureTreeNode table topLayer rootTree
+    (layerHeight topLayer) 0).bind
+  intro _
+  exact ordinaryMaterializedStableCouples_revealPublishedCoordinate table
+    (.position (.node topLayer rootTree
+      ⟨layerHeight topLayer - 1, by norm_num [layerHeight, topLayer, maxLayerHeight]⟩ 0))
+
+theorem finalizationContextLE_empty
+    (table : OtsSecretIndex → HashOutput) :
+    FinalizationContextLE table
+      { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+        values := emptyDeferredStructuralValues }
+      (directDeferredContext
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)) := by
+  have hright : directDeferredContext
+      (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) =
+        { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+          values := emptyDeferredStructuralValues } := by
+    rfl
+  rw [hright]
+  refine
+    { view := FinalizationViewLE.refl table _ DeferredContext.valid_empty
+        (startTableAgrees_empty table) ?_
+      leftValid := DeferredContext.valid_empty
+      rightValid := DeferredContext.valid_empty
+      rightCompletable := deferredCompletable_empty table }
+  intro coordinate output _hvalue
+  simp [LazyRevealProbe.State.hitAt, LazyRevealProbe.State.pendingAt,
+    LazyRevealProbe.State.empty]
+
 def BoolImp (left right : Bool) : Prop := left = true → right = true
 
 theorem relTriple_any_true_of_evalDist_eq_true
@@ -242,6 +276,140 @@ theorem relTriple_false_any (right : ProbComp Bool) :
     simpa using hrelation.2
   rw [hfalse] at hleft
   contradiction
+
+theorem relTriple_finishDirectDetailedOrdinaryObserve_of_stableRunEq
+    (table : OtsSecretIndex → HashOutput)
+    (leftRun rightRun : ProbComp
+      (DirectDetailedResult (α × SplitHashCache)))
+    (leftObserve rightObserve : DeferredContext → Nat →
+      (α × SplitHashCache) → ProbComp Bool)
+    (hrun : RelTriple leftRun rightRun
+      (DirectDetailedOrdinaryStableRunEq table))
+    (hclean : ∀ leftResult rightResult,
+      DirectDetailedResult.done leftResult ∈ support leftRun →
+      DirectDetailedResult.done rightResult ∈ support rightRun →
+      OrdinaryMaterializedRunEq table leftResult rightResult →
+      RelTriple
+        (leftObserve leftResult.context leftResult.remaining leftResult.value)
+        (rightObserve rightResult.context rightResult.remaining rightResult.value)
+        BoolImp)
+    (hdoomed : ∀ result,
+      DirectDetailedResult.done result ∈ support rightRun →
+      OrdinaryMaterializedDoomedRun table result →
+      evalDist (rightObserve result.context result.remaining result.value) =
+        evalDist (pure true : ProbComp Bool)) :
+    RelTriple
+      (leftRun >>= finishDirectDetailedOrdinaryObserve leftObserve)
+      (rightRun >>= finishDirectDetailedOrdinaryObserve rightObserve)
+      BoolImp := by
+  have hleftSupport :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hrun
+      (fun result => result ∈ support leftRun) (fun result hresult => hresult)
+  have hbothSupport :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hleftSupport
+  apply relTriple_bind hbothSupport
+  intro leftResult rightResult hrelation
+  rcases hrelation with ⟨⟨hrelation, hleftMem⟩, hrightMem⟩
+  cases leftResult with
+  | stopped leftReason =>
+      cases leftReason with
+      | privateStructuralHit =>
+          exact relTriple_false_any
+            (finishDirectDetailedOrdinaryObserve rightObserve rightResult)
+      | ordinaryHit =>
+          cases rightResult with
+          | stopped rightReason =>
+              cases rightReason with
+              | privateStructuralHit => contradiction
+              | ordinaryHit => exact relTriple_pure_pure (fun h => h)
+              | fuelExhausted => exact relTriple_pure_pure (fun h => h)
+          | done rightResult =>
+              exact relTriple_any_true_of_evalDist_eq_true (pure true)
+                (rightObserve rightResult.context rightResult.remaining rightResult.value)
+                (hdoomed rightResult hrightMem hrelation)
+      | fuelExhausted =>
+          cases rightResult with
+          | stopped rightReason =>
+              cases rightReason with
+              | privateStructuralHit => contradiction
+              | ordinaryHit => exact relTriple_pure_pure (fun h => h)
+              | fuelExhausted => exact relTriple_pure_pure (fun h => h)
+          | done rightResult =>
+              exact relTriple_any_true_of_evalDist_eq_true (pure true)
+                (rightObserve rightResult.context rightResult.remaining rightResult.value)
+                (hdoomed rightResult hrightMem hrelation)
+  | done leftResult =>
+      cases rightResult with
+      | stopped rightReason =>
+          cases rightReason with
+          | privateStructuralHit => contradiction
+          | ordinaryHit =>
+              exact relTriple_any_true_of_evalDist_eq_true
+                (leftObserve leftResult.context leftResult.remaining leftResult.value)
+                (pure true) rfl
+          | fuelExhausted =>
+              exact relTriple_any_true_of_evalDist_eq_true
+                (leftObserve leftResult.context leftResult.remaining leftResult.value)
+                (pure true) rfl
+      | done rightResult =>
+          rcases hrelation with hcleanRelation | hdoomedRelation
+          · exact hclean leftResult rightResult hleftMem hrightMem hcleanRelation
+          · exact relTriple_any_true_of_evalDist_eq_true
+              (leftObserve leftResult.context leftResult.remaining leftResult.value)
+              (rightObserve rightResult.context rightResult.remaining rightResult.value)
+              (hdoomed rightResult hrightMem hdoomedRelation)
+
+set_option maxRecDepth 100000 in
+theorem relTriple_runDirectDetailedOrdinaryObserve_maskedPublishedTreeRoot
+    (table : OtsSecretIndex → HashOutput) (fuel : Nat)
+    (leftObserve rightObserve : DeferredContext → Nat →
+      (Digest × SplitHashCache) → ProbComp Bool)
+    (hclean : ∀ leftResult rightResult,
+      DirectDetailedResult.done leftResult ∈ support
+        (runDirectResolvedDetailedFromTable
+          { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+            values := emptyDeferredStructuralValues }
+          fuel table (maskedPublishedTreeRoot.run emptySplitHashCache)) →
+      DirectDetailedResult.done rightResult ∈ support
+        (runDirectResolvedDetailedFromTable
+          (directDeferredContext
+            (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate))
+          fuel table (maskedPublishedTreeRoot.run emptySplitHashCache)) →
+      OrdinaryMaterializedRunEq table leftResult rightResult →
+      RelTriple
+        (leftObserve leftResult.context leftResult.remaining leftResult.value)
+        (rightObserve rightResult.context rightResult.remaining rightResult.value)
+        BoolImp)
+    (hdoomed : ∀ result,
+      DirectDetailedResult.done result ∈ support
+        (runDirectResolvedDetailedFromTable
+          (directDeferredContext
+            (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate))
+          fuel table (maskedPublishedTreeRoot.run emptySplitHashCache)) →
+      OrdinaryMaterializedDoomedRun table result →
+      evalDist (rightObserve result.context result.remaining result.value) =
+        evalDist (pure true : ProbComp Bool)) :
+    RelTriple
+      (runDirectDetailedOrdinaryObserve leftObserve
+        { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+          values := emptyDeferredStructuralValues }
+        fuel table (maskedPublishedTreeRoot.run emptySplitHashCache))
+      (runDirectDetailedOrdinaryObserve rightObserve
+        (directDeferredContext
+          (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate))
+        fuel table (maskedPublishedTreeRoot.run emptySplitHashCache))
+      BoolImp := by
+  apply relTriple_finishDirectDetailedOrdinaryObserve_of_stableRunEq table
+  · exact ordinaryMaterializedStableCouples_maskedPublishedTreeRoot table
+      { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+        values := emptyDeferredStructuralValues }
+      (directDeferredContext
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate))
+      fuel fuel emptySplitHashCache emptySplitHashCache
+      (finalizationContextLE_empty table) le_rfl rfl rfl
+      (fun _ _ hvalue => hvalue) publishedValues_empty rfl
+  · exact hclean
+  · exact hdoomed
 
 theorem evalDist_runDirectDetailedOrdinaryObserve_bind
     (table : OtsSecretIndex → HashOutput)
