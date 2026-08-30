@@ -239,6 +239,177 @@ theorem probEvent_privateStructuralHit_canonicalize_presample_materialize_addPen
     _ ≤ _ := by
       rw [show Fintype.card Digest = 2 ^ digestBits by simp]
 
+noncomputable def resolveThenMaterializedPrivateProbeOutcome
+    (table : OtsSecretIndex → HashOutput) (context : DeferredContext)
+    (position : Position) (candidate : Digest) : ProbComp Bool := by
+  classical
+  exact do
+    let resolved ← resolveDeferredPositionValue position context
+    match resolved with
+    | none => pure false
+    | some resolved =>
+        let nextContext : DeferredContext :=
+          { resolved.toDeferredContext with
+            state := (resolved.state.materialize (.position position) resolved.output).addPending
+              (.position position) candidate }
+        pure (decide (PrivateStructuralHit
+          (canonicalizeMaterializedValues table nextContext)))
+
+theorem probEvent_resolveThenMaterializedPrivateProbeOutcome_le
+    (table : OtsSecretIndex → HashOutput) (context : DeferredContext)
+    (position : Position) (candidate : Digest)
+    (hpublished : PublishedValues context.state)
+    (hhidden : context.state.values (.position position) = none)
+    (hprivate : context.values position = none)
+    (hclean : ¬PrivateStructuralHit
+      (canonicalizeMaterializedValues table context)) :
+    Pr[= true |
+        resolveThenMaterializedPrivateProbeOutcome table context position candidate] ≤
+      ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  classical
+  have hrun : resolveThenMaterializedPrivateProbeOutcome table context position candidate = (do
+      let output ← LazyRevealProbe.sampleHashOutput
+      if context.state.hitAt (.position position) output then pure false
+      else
+        let nextContext : DeferredContext :=
+          { state := ((context.state.clearPending (.position position)).materialize
+              (.position position) output).addPending (.position position) candidate
+            values := context.values.install position output }
+        pure (decide (PrivateStructuralHit
+          (canonicalizeMaterializedValues table nextContext)))) := by
+    rw [resolveThenMaterializedPrivateProbeOutcome,
+      resolveDeferredPositionValue_fresh position context hhidden hprivate]
+    simp only [bind_assoc]
+    apply bind_congr
+    intro output
+    by_cases holdHit : context.state.hitAt (.position position) output
+    · simp [holdHit]
+    · simp [holdHit]
+  rw [hrun, ← probEvent_eq_eq_probOutput]
+  refine (probEvent_bind_le_probEvent_add
+    (mx := LazyRevealProbe.sampleHashOutput)
+    (my := fun output =>
+      if context.state.hitAt (.position position) output then pure false
+      else
+        let nextContext : DeferredContext :=
+          { state := ((context.state.clearPending (.position position)).materialize
+              (.position position) output).addPending (.position position) candidate
+            values := context.values.install position output }
+        pure (decide (PrivateStructuralHit
+          (canonicalizeMaterializedValues table nextContext))))
+    (q := fun hit : Bool => hit = true)
+    (p := fun output : HashOutput =>
+      let nextContext : DeferredContext :=
+        { state := ((context.state.clearPending (.position position)).materialize
+            (.position position) output).addPending (.position position) candidate
+          values := context.values.install position output }
+      PrivateStructuralHit (canonicalizeMaterializedValues table nextContext))
+    (ε := 0) ?_).trans ?_
+  · intro output _houtput hmiss
+    by_cases holdHit : context.state.hitAt (.position position) output
+    · simp [holdHit]
+    · simp [holdHit, hmiss]
+  · simpa only [add_zero] using
+      probEvent_privateStructuralHit_canonicalize_presample_materialize_addPending_le
+        table context position candidate hpublished hhidden hclean
+
+noncomputable def classifyCanonicalMaterializedPrivateObserve
+    (table : OtsSecretIndex → HashOutput)
+    (observe : DeferredContext → Nat → alpha → ProbComp Bool)
+    (context : DeferredContext) (fuel : Nat) (value : alpha) : ProbComp Bool := by
+  classical
+  exact if PrivateStructuralHit (canonicalizeMaterializedValues table context) then
+      pure true
+    else if DeferredCompletable table context then
+      observe context fuel value
+    else
+      pure false
+
+theorem probEvent_resolve_then_classifyCanonicalMaterializedPrivateObserve_le
+    (table : OtsSecretIndex → HashOutput)
+    (context : DeferredContext) (position : Position) (candidate : Digest)
+    (observe : DeferredContext → Nat → alpha → ProbComp Bool)
+    (fuel : Nat) (value : alpha) (bound : ℝ≥0∞)
+    (hpublished : PublishedValues context.state)
+    (hhidden : context.state.values (.position position) = none)
+    (hprivate : context.values position = none)
+    (hclean : ¬PrivateStructuralHit
+      (canonicalizeMaterializedValues table context))
+    (hobserve : ∀ resolved : DeferredResolution,
+      let nextContext : DeferredContext :=
+        { resolved.toDeferredContext with
+          state := (resolved.state.materialize (.position position) resolved.output).addPending
+            (.position position) candidate }
+      ¬PrivateStructuralHit (canonicalizeMaterializedValues table nextContext) →
+        DeferredCompletable table nextContext →
+        Pr[= true | observe nextContext fuel value] ≤ bound) :
+    Pr[= true | do
+      let resolved ← resolveDeferredPositionValue position context
+      match resolved with
+      | none => pure false
+      | some resolved =>
+          let nextContext : DeferredContext :=
+            { resolved.toDeferredContext with
+              state := (resolved.state.materialize (.position position) resolved.output).addPending
+                (.position position) candidate }
+          classifyCanonicalMaterializedPrivateObserve table observe nextContext fuel value] ≤
+      ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ + bound := by
+  classical
+  let nextContext : DeferredResolution → DeferredContext := fun resolved =>
+    { resolved.toDeferredContext with
+      state := (resolved.state.materialize (.position position) resolved.output).addPending
+        (.position position) candidate }
+  let fires : Option DeferredResolution → Prop
+    | none => False
+    | some resolved =>
+        PrivateStructuralHit (canonicalizeMaterializedValues table (nextContext resolved))
+  let continuation : Option DeferredResolution → ProbComp Bool
+    | none => pure false
+    | some resolved =>
+        classifyCanonicalMaterializedPrivateObserve table observe
+          (nextContext resolved) fuel value
+  rw [← probEvent_eq_eq_probOutput]
+  refine (probEvent_bind_le_probEvent_add
+    (mx := resolveDeferredPositionValue position context)
+    (my := continuation)
+    (q := fun hit : Bool => hit = true)
+    (p := fires)
+    (ε := bound) ?_).trans ?_
+  · intro resolved _hresolved hmiss
+    cases resolved with
+    | none => simp [continuation]
+    | some resolved =>
+        have hnotPrivate :
+            ¬PrivateStructuralHit
+              (canonicalizeMaterializedValues table (nextContext resolved)) := by
+          simpa [fires] using hmiss
+        unfold continuation classifyCanonicalMaterializedPrivateObserve
+        simp only [hnotPrivate, ↓reduceIte]
+        by_cases hcompletable : DeferredCompletable table (nextContext resolved)
+        · simpa [hcompletable] using hobserve resolved hnotPrivate hcompletable
+        · simp [hcompletable]
+  · have hsource :
+        Pr[fires | resolveDeferredPositionValue position context] ≤
+          ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+      have houtcome :
+          resolveThenMaterializedPrivateProbeOutcome table context position candidate =
+            (fun resolved => decide (fires resolved)) <$>
+              resolveDeferredPositionValue position context := by
+        unfold resolveThenMaterializedPrivateProbeOutcome
+        simp only [map_eq_bind_pure_comp]
+        apply bind_congr
+        intro resolved
+        cases resolved <;> simp [fires, nextContext]
+      exact calc
+        Pr[fires | resolveDeferredPositionValue position context] =
+            Pr[= true |
+              resolveThenMaterializedPrivateProbeOutcome table context position candidate] := by
+          rw [houtcome, ← probEvent_eq_eq_probOutput, probEvent_map]
+          exact OracleComp.probEvent_congr' (fun resolved _ => by simp) rfl
+        _ ≤ _ := probEvent_resolveThenMaterializedPrivateProbeOutcome_le
+          table context position candidate hpublished hhidden hprivate hclean
+    simpa [add_comm] using add_le_add_right hsource bound
+
 theorem publishedValues_of_done_runDirectResolvedDetailedFromTable
     (computation : StateT SplitHashCache
       (OracleComp (LazyRevealProbe.World Coordinate)) α)
