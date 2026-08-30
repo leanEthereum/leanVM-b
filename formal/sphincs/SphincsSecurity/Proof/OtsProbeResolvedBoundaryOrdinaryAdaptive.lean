@@ -3291,6 +3291,78 @@ noncomputable def materializedFlatResolvedFinalizationOrdinary
       (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate))
     fuel table (deferredCleanRetainedRun adversary parameter ftsSecret)
 
+/-! The guarded endpoint charges ordinary failure already visible in the final materialized
+context. It is one component of the ordinary comparison. The separate flat endpoint retains the
+actual lazy finalization and charges failures created only while completing unresolved values. -/
+
+noncomputable def materializedGuardedSafeOrdinaryRetained
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp Bool :=
+  runDirectResolvedDetailedFromTable
+      (directDeferredContext
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate))
+      fuel table (deferredCleanRetainedRun adversary parameter ftsSecret) >>=
+    finishDirectDetailedSafeOrdinaryObserve
+      guardedDirectDetailedSafeOrdinaryTerminalObserve
+
+noncomputable def sampledMaterializedGuardedSafeOrdinaryRetained
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp Bool := do
+  let table ← sampleOtsHashTable
+  materializedGuardedSafeOrdinaryRetained adversary parameter table ftsSecret fuel
+
+set_option linter.constructorNameAsVariable false in
+set_option maxRecDepth 100000 in
+theorem evalDist_sampledMaterializedGuardedSafeOrdinaryRetained_eq_completionTable
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    evalDist
+        (sampledMaterializedGuardedSafeOrdinaryRetained adversary parameter
+          ftsSecret fuel) =
+      evalDist
+        (runDirectDetailedSafeOrdinaryWithCompletionTable
+          guardedDirectDetailedSafeOrdinaryTerminalObserve
+          (directDeferredContext
+            (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate))
+          fuel (deferredCleanRetainedRun adversary parameter ftsSecret)) := by
+  unfold sampledMaterializedGuardedSafeOrdinaryRetained
+    materializedGuardedSafeOrdinaryRetained
+  have hsample := evalDist_sampled_runDirectDetailedSafeOrdinary_eq_completionTable
+    (deferredCleanRetainedRun adversary parameter ftsSecret)
+    guardedDirectDetailedSafeOrdinaryTerminalObserve
+    (directDeferredContext
+      (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)) fuel
+  simpa [directDeferredContext, completedStartTable_empty] using hsample
+
+set_option linter.constructorNameAsVariable false in
+set_option maxRecDepth 100000 in
+theorem probEvent_sampledMaterializedGuardedSafeOrdinaryRetained_le
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    Pr[= true |
+        sampledMaterializedGuardedSafeOrdinaryRetained adversary parameter
+          ftsSecret fuel] ≤
+      (fuel : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  calc
+    _ = Pr[= true |
+        runDirectDetailedSafeOrdinaryWithCompletionTable
+          guardedDirectDetailedSafeOrdinaryTerminalObserve
+          (directDeferredContext
+            (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate))
+          fuel (deferredCleanRetainedRun adversary parameter ftsSecret)] :=
+      OracleComp.probOutput_congr rfl
+        (evalDist_sampledMaterializedGuardedSafeOrdinaryRetained_eq_completionTable
+          adversary parameter ftsSecret fuel)
+    _ ≤ _ := by
+      simpa [directDeferredContext, LazyRevealProbe.State.empty] using
+        (probEvent_runDirectDetailedSafeOrdinaryGuardedTerminal_le
+          (deferredCleanRetainedRun adversary parameter ftsSecret)
+          (directDeferredContext
+            (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)) fuel)
+
 set_option maxRecDepth 100000 in
 theorem deferredCleanRetainedRun_eq_retainedGameRest_bind
     (adversary : Adversary) (parameter : PublicParameter)
