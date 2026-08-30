@@ -204,6 +204,8 @@ The materialized canonical private endpoint is in fact identically zero, so it n
 
 The granular hash handler now has a probe-free planning phase. It reads only materialization presence and returns at most one probe together with the probe-free suffix action. The finite first-missing scan and the leaf-specialized scan are each proved exactly equal to planning followed by executing the planned probe, and all three planners are probe-free. This isolates the chosen coordinate and candidate before any deferred private value is resolved, which is the interface needed to apply the one-position sampling commutation and first-fire bound.
 
+The planner is now also reflected as a pure function of the lazy state. Running either the finite first-missing planner or the leaf planner through the direct resolved interpreter is proved to return exactly that pure plan while leaving the deferred context, fuel, cache and fixed one-time table unchanged. Consequently the future first-fire proof can condition on the public plan without conditioning on a hidden structural output.
+
 Two places a proof can go wrong, both found by attacking the claim rather than by reading it:
 
 - **A strong forgery needs no chain inversion.** `Ver` does not check that the counter is the least admissible one, so a second `c'` with `Enc(P,lay,tau,e,M,c') = x` reuses the chain values verbatim and verifies. Since the codeword fixes the digest, that is one `2^-128` hit per query and it is harmless, but it is a branch of its own: the one-time signature is unforgeable on a *new* message by incomparability, and unforgeable on the *signed* message only by collision resistance at `tw_enc`.

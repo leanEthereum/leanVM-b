@@ -18,6 +18,42 @@ structure PlannedHashQuery where
   candidate? : Option Probe
   action : PlannedHashAction
 
+noncomputable def firstMissingInputCoordinatePlan (state : LazyRevealProbe.State Coordinate)
+    (input : HashInput) : Nat → List Coordinate → Option Probe
+  | _, [] => none
+  | slot, coordinate :: remaining =>
+      match state.values coordinate with
+      | none => some ⟨coordinate, slotDigest slot input⟩
+      | some _ => firstMissingInputCoordinatePlan state input (slot + 1) remaining
+
+noncomputable def leafInputProbePlan (state : LazyRevealProbe.State Coordinate)
+    (input : HashInput) (candidate : Probe)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) : Option Probe :=
+  match state.values candidate.coordinate with
+  | none => some candidate
+  | some _ =>
+      firstMissingInputCoordinatePlan state input 0
+        ((Position.leaf lay tree leafIdx).children.map Coordinate.position)
+
+noncomputable def probingHashQueryPlan (state : LazyRevealProbe.State Coordinate)
+    (parameter : PublicParameter) (input : HashInput) : PlannedHashQuery :=
+  match decodeProbe? parameter input with
+  | some candidate =>
+      match decodePosition? parameter input with
+      | some (.leaf lay tree leafIdx) =>
+          ⟨leafInputProbePlan state input candidate lay tree leafIdx,
+            .resolve candidate.outputCoordinate⟩
+      | _ => ⟨some candidate, .resolve candidate.outputCoordinate⟩
+  | none =>
+      match decodePosition? parameter input with
+      | some position@(.chain _ _ _ _ _) => ⟨none, .resolve (.position position)⟩
+      | some position@(.leaf _ _ _) => ⟨none, .resolve (.position position)⟩
+      | some position@(.node _ _ _ _) =>
+          ⟨firstMissingInputCoordinatePlan state input 0
+              (position.children.map Coordinate.position),
+            .resolve (.position position)⟩
+      | _ => ⟨none, .ordinary⟩
+
 noncomputable def planFirstMissingInputCoordinate (input : HashInput) :
     Nat → List Coordinate →
       StateT SplitHashCache
@@ -162,5 +198,64 @@ theorem planProbingHashQuery_probeFree
                     (⟨candidate?, .resolve (.position
                       (.node lay tree level nodeIdx))⟩ : PlannedHashQuery)
           | chain | leaf | ftsLeaf | ftsNode | ftsRoots => exact ProbeFree.pure _
+
+theorem runDirectResolvedDetailed_planFirstMissingInputCoordinate
+    (state : LazyRevealProbe.State Coordinate) (input : HashInput) :
+    ∀ slot coordinates context fuel table cache,
+      context.state = state →
+      runDirectResolvedDetailedFromTable context fuel table
+          ((planFirstMissingInputCoordinate input slot coordinates).run cache) =
+        pure (.done ⟨context, fuel,
+          (firstMissingInputCoordinatePlan state input slot coordinates, cache), table⟩) := by
+  intro slot coordinates
+  induction coordinates generalizing slot with
+  | nil =>
+      intro context fuel table cache hstate
+      simp [planFirstMissingInputCoordinate, firstMissingInputCoordinatePlan,
+        runDirectResolvedDetailedFromTable_pure]
+  | cons coordinate remaining ih =>
+      intro context fuel table cache hstate
+      rw [planFirstMissingInputCoordinate, StateT.run_bind,
+        runDirectResolvedDetailedFromTable_bind,
+        runDirectResolvedDetailedFromTable_peekCoordinate]
+      simp only [pure_bind]
+      rw [hstate]
+      cases hvalue : state.values coordinate with
+      | none =>
+          simp [hvalue, firstMissingInputCoordinatePlan,
+            runDirectResolvedDetailedFromTable_pure]
+      | some output =>
+          change runDirectResolvedDetailedFromTable context fuel table
+            ((planFirstMissingInputCoordinate input (slot + 1) remaining).run cache) = _
+          rw [ih (slot + 1) context fuel table cache hstate]
+          simp [firstMissingInputCoordinatePlan, hvalue]
+
+theorem runDirectResolvedDetailed_planLeafInputProbe
+    (state : LazyRevealProbe.State Coordinate)
+    (input : HashInput) (candidate : Probe)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (hstate : context.state = state) :
+    runDirectResolvedDetailedFromTable context fuel table
+        ((planLeafInputProbe input candidate lay tree leafIdx).run cache) =
+      pure (.done ⟨context, fuel,
+        (leafInputProbePlan state input candidate lay tree leafIdx, cache), table⟩) := by
+  rw [planLeafInputProbe, StateT.run_bind,
+    runDirectResolvedDetailedFromTable_bind,
+    runDirectResolvedDetailedFromTable_peekCoordinate]
+  simp only [pure_bind]
+  rw [hstate]
+  cases hvalue : state.values candidate.coordinate with
+  | none =>
+      simp [hvalue, leafInputProbePlan, runDirectResolvedDetailedFromTable_pure]
+  | some output =>
+      change runDirectResolvedDetailedFromTable context fuel table
+        ((planFirstMissingInputCoordinate input 0
+          ((Position.leaf lay tree leafIdx).children.map Coordinate.position)).run cache) = _
+      rw [runDirectResolvedDetailed_planFirstMissingInputCoordinate state input 0
+        ((Position.leaf lay tree leafIdx).children.map Coordinate.position)
+        context fuel table cache hstate]
+      simp [leafInputProbePlan, hvalue]
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
