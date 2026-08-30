@@ -728,4 +728,30 @@ theorem evalDist_fullyDirectBoundaryDeferredRetainedFinishIsNone_eq_allDirect
         rootResult.context rootResult.remaining rootResult.value.2 hcore.2.1 hcore.2.2
           hmirror hchainValid
 
+theorem evalDist_canonicalDeferredRetainedFinishIsNone_eq_allDirect
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    evalDist
+        (canonicalDeferredRetainedRunAfterFtsSecrets adversary parameter table ftsSecret fuel >>=
+          finishResolvedRunIsNone) =
+      evalDist (allDirectBoundaryDeferredRetainedFinishIsNone adversary parameter table
+        ftsSecret fuel) := by
+  calc
+    _ = evalDist
+        (boundaryDeferredRetainedFinishIsNone adversary parameter table ftsSecret fuel) :=
+      evalDist_canonicalDeferredRetainedFinishIsNone_eq_boundary adversary parameter table
+        ftsSecret fuel
+    _ = evalDist
+        (directBoundaryDeferredRetainedFinishIsNone adversary parameter table ftsSecret fuel) :=
+      evalDist_boundaryDeferredRetainedFinishIsNone_eq_direct adversary parameter table ftsSecret
+        fuel
+    _ = evalDist
+        (fullyDirectBoundaryDeferredRetainedFinishIsNone adversary parameter table ftsSecret
+          fuel) :=
+      evalDist_directBoundaryDeferredRetainedFinishIsNone_eq_fullyDirect adversary parameter
+        table ftsSecret fuel
+    _ = _ := evalDist_fullyDirectBoundaryDeferredRetainedFinishIsNone_eq_allDirect adversary
+      parameter table ftsSecret fuel
+
 end SphincsSecurity.Concrete.OtsProbeSimulation

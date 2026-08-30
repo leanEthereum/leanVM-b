@@ -610,6 +610,24 @@ noncomputable def sampledCanonicalDeferredFinishIsNone
     ftsSecret fuel
   finishResolvedRunIsNone result
 
+noncomputable def sampledAllDirectBoundaryFinishIsNone
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp Bool := do
+  let table ← sampleOtsHashTable
+  allDirectBoundaryDeferredRetainedFinishIsNone adversary parameter table ftsSecret fuel
+
+theorem evalDist_sampledCanonicalDeferredFinishIsNone_eq_allDirect
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    evalDist (sampledCanonicalDeferredFinishIsNone adversary parameter ftsSecret fuel) =
+      evalDist (sampledAllDirectBoundaryFinishIsNone adversary parameter ftsSecret fuel) := by
+  unfold sampledCanonicalDeferredFinishIsNone sampledAllDirectBoundaryFinishIsNone
+  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+  intro table
+  exact evalDist_canonicalDeferredRetainedFinishIsNone_eq_allDirect adversary parameter table
+    ftsSecret fuel
+
 theorem probEvent_finishResolvedRun_none_eq_isNone
     (run : ProbComp (Option (ResolvedRunResult α))) :
     Pr[= none | run >>= finishResolvedRun] =
