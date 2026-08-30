@@ -40,10 +40,6 @@ so a partial evaluation is again a multilinear, its values the $\eq(r,\cdot)$-we
 \end{fact}
 
 
-\begin{definition}[Table, column]\label{def:column}
-A \emph{column} of height $2^{\kappa}$ is a function $\cube{\kappa}\to\K$ committed at the beginning of the proof (via \S\ref{sec:stacking}), and a \emph{table} is a group of columns, of equal height, connected by polynomial constraints. A $192$-bit \emph{value} (such as memory words) is indirectly committed by three columns, read as $V=V_0+V_1y+V_2y^{2}$.
-\end{definition}
-
 \begin{lemma}[Every element outside $\K$ is a cubic generator]\label{lem:kbasis}
 For $\alpha\in\E\setminus\K$, the set $\{1,\alpha,\alpha^{2}\}$ is a $\K$-basis of $\E$.
 \end{lemma}
@@ -81,7 +77,7 @@ Apply Lemma~\ref{lem:sz} to $A-B$, nonzero of total degree at most $d$.
 
 
 \begin{fact}[Sumcheck~\cite{LFKN92}]\label{fact:sumcheck}
-Over $\kappa$ rounds, sumcheck reduces a claim $\sum_{x\in\cube{\kappa}}P(x)=s$, on a $P$ of degree at most $d$ in each variable, to one evaluation $P(\fc)$ at a random $\fc\in\E^{\kappa}$. Round $j$ carries a claim $s_{j-1}$, with $s_0=s$: the prover sends the univariate
+Over $\kappa$ rounds, sumcheck reduces a claim $\sum_{x\in\cube{\kappa}}P(x)=s$, on a polynomial $P$ of degree at most $d$ in each variable, to one evaluation $P(\fc)$ at a random $\fc\in\E^{\kappa}$. Round $j$ carries a claim $s_{j-1}$, with $s_0=s$: the prover sends the univariate
 \[
   h_j(Y)=\sum_{x\in\cube{\kappa-j}}P(\fc_1,\dots,\fc_{j-1},Y,x)
 \]
@@ -89,7 +85,7 @@ of degree at most $d$, the verifier checks $h_j(0)+h_j(1)\qeq s_{j-1}$, samples 
 \end{fact}
 
 \begin{definition}[Zerocheck]\label{def:zerocheck}
-To prove that $P$ vanishes on $\cube{\kappa}$, the verifier samples $r\in\E^{\kappa}$ and the two parties run sumcheck on
+To prove that a polynomial $P$ vanishes on $\cube{\kappa}$, the verifier samples $r\in\E^{\kappa}$ uniformly and the two parties run sumcheck on
 \[
   \sum_{x\in\cube{\kappa}}P(x)\,\eq(r,x)\qeq 0 .
 \]
@@ -111,7 +107,7 @@ Partially evaluate the first $\ell$ variables at $a$. By Fact~\ref{fact:eq}, the
 Because $g$ is nonzero, there is some $y\in\cube{m}$ for which the coefficients $\{g(b,y):b\in\cube{\ell}\}$ are not all zero. These coefficients lie in $\Ftwo$, so the assumed $\Ftwo$-linear independence of the values $\eq(a,b)$ gives $h(y)\neq0$. Thus $h$ is a nonzero multilinear. Its extension satisfies $\mle{h}(s)=\mle{g}(a,s)$, and Lemma~\ref{lem:sz} gives the claimed probability bound.
 \end{proof}
 
-\paragraph{Two savings on a round message~\cite{Gru24}.} A round polynomial of degree $D$ travels as its coefficients, and would take $D+1$ of them, but the round check $h_j(0)+h_j(1)\qeq s_{j-1}$ already pins one to the incoming claim, so $D$ are enough. In coefficients that check is an addition, $\sum_{i\ge1}c_i\qeq s_{j-1}$, pinning $c_1$; the verifier then reads $h_j$ at its challenge by Horner, with no interpolation. The same idea applies to the known factor: a zerocheck's summand carries $\eq(r,\cdot)$, which the verifier can form itself, so only the cofactor travels and it is one degree lower. A zerocheck round on a degree-$d$ cofactor therefore costs $d$ field elements.
+\paragraph{Two savings on a round message~\cite{Gru24}.} A round polynomial of degree $D$ travels as its coefficients, and would take $D+1$ of them, but the round check $h_j(0)+h_j(1)\qeq s_{j-1}$ already pins one to the incoming claim, so $D$ are enough. The same idea applies to the known factor: a zerocheck's summand carries $\eq(r,\cdot)$, which the verifier can form itself, so only the cofactor travels and it is one degree lower. A zerocheck round on a degree-$d$ cofactor therefore costs $d$ field elements.
 
 \begin{definition}[Inner-product commitment scheme]\label{def:ipcs}
 A \emph{weighted claim} about a multilinear $g:\cube{M}\to\K$ is a pair $(W,c)$ asserting $\inner{W}{g}=c$, with $c\in\E$ and the weight $W:\cube{M}\to\E$ \emph{MLE-friendly}: the verifier can evaluate $\mle{W}$ anywhere in $\mathrm{poly}(M)$ operations. An \emph{inner-product commitment scheme} commits to $g$ and later proves any such claim,

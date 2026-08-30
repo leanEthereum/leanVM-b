@@ -5,11 +5,11 @@ The arithmetization is inspired by the M3 model (multi-multiset matching)~\cite{
 
 \subsection{M3 model}\label{sec:m3}
 
-\paragraph{Tables and columns.} Recall that a column of height $2^{\kappa}$ is a function $\cube{\kappa}\to\K$, that a table is a group of columns of equal height. The arithmetization fixes the number of tables $\ntab$ and, for each table $T_j$, its number of columns $\ncol{j}$, its $\ncons{j}$ constraints and its $\nfl{j}$ bus flushes. The table heights are not fixed: the prover announces each table's log height $\tau_j$ at the beginning of the proof.
+\paragraph{Tables and columns.} A column of height $2^{\kappa}$ is a function $\cube{\kappa}\to\K$. A table is a group of columns of equal height. The arithmetization fixes the number of tables $\ntab$ and, for each table $T_j$, its number of columns $\ncol{j}$, its $\ncons{j}$ constraints and its $\nfl{j}$ bus flushes. The table heights are not fixed: the prover announces each table's log height $\tau_j$ at the beginning of the proof.
 
-\paragraph{Constraints.} The constraints of $T_j$ are $C_{j,1},\dots,C_{j,\ncons{j}}$, each a polynomial of degree at most $d$ ($d=2$ throughout) in the $\ncol{j}$ columns, required to vanish on every row.
+\paragraph{Constraints.} The constraints of $T_j$ are $C_{j,1},\dots,C_{j,\ncons{j}}$, each a polynomial of degree at most $d$ ($d=2$ throughout) in the $\ncol{j}$ columns, required to vanish on every row in $\cube{\tau_j}$.
 
-\paragraph{The bus.} All interactions (between tables) share a single \emph{bus}, a channel carrying tuples of up to $m=12$ $\K$-elements (shorter ones are zero-padded). Table $T_j$ has $\nfl{j}$ flushes $\btup_{j,1},\dots,\btup_{j,\nfl{j}}$, each is either a \emph{push} or a \emph{pull}. Each one of the $m$ coordinates in each tuple is a fixed polynomial of degree at most $d$ in the table's columns. A few \emph{boundary} tupples are pushed (resp. pulled) by default to the bus (for instance for the VM state $(\dsep{ST}, \pc, \fp)$, the initial $(\dsep{ST}, \gen^0, \gen^0)$ is pushed and the final $(\dsep{ST}, \gen^{\,\nprog-1}, \gen^{0})$ is pulled).
+\paragraph{The bus.} All interactions (between tables) share a single \emph{bus}, a channel carrying tuples of up to $m=16$ $\K$-elements (shorter ones are zero-padded). Table $T_j$ has $\nfl{j}$ flushes $\btup_{j,1},\dots,\btup_{j,\nfl{j}}$, each is either a \emph{push} or a \emph{pull}. Each one of the $m$ coordinates in each tuple is a fixed polynomial of degree at most $d$ in the table's columns. A few \emph{boundary} tuples are pushed (resp. pulled) by default to the bus (for instance for the VM state $(\dsep{ST}, \pc, \fp)$, the initial $(\dsep{ST}, \gen^0, \gen^0)$ is pushed and the final $(\dsep{ST}, \gen^{\,\nprog-1}, \gen^{0})$ is pulled).
 
 \paragraph{Balance.} The bus balances when its pushed tuples and its pulled tuples form the same multiset (\ref{def:multiset}).
 
@@ -17,22 +17,20 @@ The arithmetization is inspired by the M3 model (multi-multiset matching)~\cite{
 
 \subsection{Balancing the bus: grand product}\label{sec:gp}
 
-The bus balances when its pushed and pulled tuples form the same multiset (\S\ref{sec:m3}). Random challenges, $\alpha_0,\dots,\alpha_3$ then $\beta$, reduce this to a single product.
-
-\emph{Fingerprint.} Index a tuple's coordinates by the four bits of $i$, its $m=12$ of them living in $16$ slots. The verifier samples $\alpha=(\alpha_0,\dots,\alpha_3)\in\E^{4}$ and maps each tuple $\btup$ to a single $\E$-element,
+\emph{Fingerprint.} The verifier samples $\alpha=(\alpha_0,\dots,\alpha_3)\in\E^{4}$ and maps each tuple $\btup$ to a single $\E$-element:
 \[
 \pi_\alpha(\btup)\;=\;\sum_{i=0}^{15}\eq(\alpha,i)\,\btup_i ,
 \]
-weighting slot $i$ by the $\eq$ of Definition~\ref{def:eq} at the bits of $i$, the absent slots contributing nothing.
+(smaller tuples are padded to $16$ entries with $0$).
 
-\emph{Product check.} Both sides carry the same number of tuples, and padding each with factors of $1$, which change no product, makes that number a power of two, $2^{\mu}$. The verifier samples $\beta\in\E$, and balance becomes
+\emph{Product check.} Both sides (\emph{pulls} and \emph{pushes}) carry the same number of tuples, and padding each with factors of $1$, which change no product, makes that number a power of two, $2^{\mu}$. The verifier samples $\beta\in\E$, and balance becomes
 \begin{equation}
 \prod_{\btup\ \text{pushed}}\bigl(\beta-\pi_\alpha(\btup)\bigr)
 \;\qeq\;
 \prod_{\btup\ \text{pulled}}\bigl(\beta-\pi_\alpha(\btup)\bigr).
 \label{eq:gp}
 \end{equation}
-\emph{Why this is equivalent.} For a multiset $P$ of tuples write
+\emph{Motivation.} For a multiset $P$ of tuples write
 \[
   \Pi_P(A,X)\;=\;\prod_{\btup\in P}\bigl(X-\pi_A(\btup)\bigr),
 \]
@@ -46,11 +44,13 @@ For finite multisets $P,Q$ of width-$m$ tuples over $\K$, $\Pi_P=\Pi_Q$ if and o
 Easy
 \end{proof}
 
-\emph{Completeness and soundness.} A balanced bus makes \eqref{eq:gp} hold for every $\alpha$ and $\beta$, so completeness is immediate. An unbalanced one makes $\Pi_P\neq\Pi_Q$, by the lemma, and \eqref{eq:gp} tests them at the one point $(\alpha,\beta)$, so Corollary~\ref{cor:idtest} gives a soundness error of $5\cdot 2^{\mu}/|\E|$: each of the $2^{\mu}$ factors is of total degree four in $\alpha$ and one in $\beta$, whatever the tuple's width. 
+\emph{Completeness.} A balanced bus makes \eqref{eq:gp} hold for every $\alpha$ and $\beta$, so completeness is immediate.
 
-\subsection{Proving the grand product (GKR)}\label{sec:gkr}
+\emph{Soundness.} An unbalanced one makes $\Pi_P\neq\Pi_Q$, by the lemma, and \eqref{eq:gp} tests them at the one point $(\alpha,\beta)$, so Corollary~\ref{cor:idtest} gives a soundness error of $5\cdot 2^{\mu}/|\E|$: each of the $2^{\mu}$ factors is of total degree four in $\alpha$ and one in $\beta$, whatever the tuple's width. 
 
-Take one side of \eqref{eq:gp}. Its tuples give its $2^{\mu}$ leaves $v_k=\beta-\pi_\alpha(\btup_k)$, the ones past the last tuple being $1$, and the side's value is their product. Multiply the leaves two by two, then multiply the results two by two, and so on: after $\mu$ layers one value is left, the root $P=\prod_kv_k$. Layer $0$ is the leaves, layer $i$ has $2^{\mu-i}$ nodes, and layer $\mu$ is the root. The prover announces $P$, and what has to be proven is that this one number is the product of leaves the verifier never sees. GKR proves it by walking back down the tree, turning a claim about one layer into a claim about the layer below, until it reaches the leaves and \S\ref{sec:leafstack} takes over.
+\subsection{Proving the grand product}\label{sec:gkr}
+
+Take one side of \eqref{eq:gp}. Its tuples give its $2^{\mu}$ leaves $v_k=\beta-\pi_\alpha(\btup_k)$, the ones past the last tuple being $1$. Multiply the leaves two by two, then multiply the results two by two, and so on: after $\mu$ layers one value is left, the root $P=\prod_kv_k$. Layer $0$ is the leaves, layer $i$ has $2^{\mu-i}$ nodes, and layer $\mu$ is the root. The prover announces $P$. GKR proves it by walking back down the tree, turning a claim about one layer into a claim about the layer below, until it reaches the leaves and \S\ref{sec:leafstack} takes over.
 
 \subsubsection{Grand-Product argument via GKR}
 
@@ -66,13 +66,13 @@ which sumcheck (Fact~\ref{fact:sumcheck}) reduces to the two values $\widetilde 
 
 \subsubsection{Two layers at a time}
 
-Every layer costs one sumcheck and one round trip, so we contract two binary levels at once, a node being the product of its four grandchildren:
+For efficiency, we contract two binary levels at once, a node being the product of its four grandchildren:
 \[
 V_i(x)=\prod_{a,b\in\{0,1\}}V_{i-2}(a,b,x).
 \]
-The same sumcheck then reduces $\widetilde V_i(r)$ to the four values $\widetilde V_{i-2}(a,b,\fc)$, which the prover sends and two fresh challenges $(u_0,u_1)$ combine into one claim $\widetilde V_{i-2}(u_0,u_1,\fc)$, two layers down. Its cofactor has degree four, so a round costs four $\E$-elements (\S\ref{sec:prelim}), against three for the binary tree above.
+The same sumcheck then reduces $\widetilde V_i(r)$ to the four values $\widetilde V_{i-2}(a,b,\fc)$, which the prover sends and two fresh challenges $(u_0,u_1)$ combine into one claim $\widetilde V_{i-2}(u_0,u_1,\fc)$, two layers down.
 
-If $\mu$ is odd, GKR first processes the root-most binary layer, which has no sumcheck rounds, and then proceeds entirely in radix four. After $\lceil\mu/2\rceil$ layers a single leaf claim $\widetilde V_0(\zeta)$ remains, which \S\ref{sec:leafstack} settles against the columns. Prover work remains $O(2^\mu)$ and the proof remains $O(\mu^2)$ $\E$-elements, with fewer layers and a smaller constant.
+If $\mu$ is odd, GKR first processes the root-most binary layer, which has no sumcheck rounds, and then proceeds entirely in radix four.
 
 \subsubsection{Batching several grand-products}
 

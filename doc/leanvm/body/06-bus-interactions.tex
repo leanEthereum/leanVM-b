@@ -33,7 +33,7 @@ Tolerating closed walks is what lets a table be filled to a power of two (\S\ref
 
 We use a similar idea to~\cite[Protocol.~4.27]{DP23}.
 
-\paragraph{Setting.} A \emph{lookup array} $\lut$ holds $2^{\kappa}$ entries, entry $\lut[i]$ being a tuple of $\ncomp$ elements of $\K$. Its \emph{components} $\lut_0,\dots,\lut_{\ncomp-1}$ are the multilinears of height $2^{\kappa}$ holding one coordinate of the entry each: they are either committed or public. A \emph{read} is a row of a table (Definition~\ref{def:column}) naming an address $a\in\K$ and a value $v\in\K^{\ncomp}$, and is correct when $a=\gen^{i}$ and $v=\lut[i]$ for some $i<2^{\kappa}$.
+\paragraph{Setting.} A \emph{lookup array} $\lut$ holds $2^{\kappa}$ entries, entry $\lut[i]$ being a tuple of $\ncomp$ elements of $\K$. Its \emph{components} $\lut_0,\dots,\lut_{\ncomp-1}$ are the multilinears of height $2^{\kappa}$ holding one coordinate of the entry each: they are either committed or public. A \emph{read} is a row of a table (\S\ref{sec:m3}) naming an address $a\in\K$ and a value $v\in\K^{\ncomp}$, and is correct when $a=\gen^{i}$ and $v=\lut[i]$ for some $i<2^{\kappa}$.
 
 \paragraph{Tuple and columns.} The bus interaction uses a tuple of the form $\tup{\sep,\addr,\cnt,\val}$: a domain separator naming the array, the address, the count, then the entry in coordinates $3,\dots,\ncomp+2$. Every higher coordinate is zero, so $\ncomp\le m-3$ for the bus width $m$ (\S\ref{sec:m3}). Take every part of a read to be a committed column of the reading table: its address, its count, and the $\ncomp$ components of the value read. Committed on top of $\lut$ is one finalize-count column $\cntfin$ of height $2^{\kappa}$.
 
@@ -81,11 +81,11 @@ Under the same hypotheses every read address is an entry address $\gen^{i}$, $i<
 
 \subsection{Memory}\label{sec:memchan}
 
-The memory is an array of $2^{h}$ cells, $16\le h\le32$ (\S\ref{sec:vm}). Bus interraction uses domain separation $\sep=\dsep{MEM}$. A memory word is $192$-bit (i.e. one $\E$-element), so $\ncomp=3$, memory is committed as 3 $\K$-valued multilinears in $h$ variables $M_0,M_1,M_2$.
+The memory is an array of $2^{\kmem}$ cells, $16\le\kmem\le32$ (\S\ref{sec:vm}). Bus interaction uses domain separation $\sep=\dsep{MEM}$. A memory word is $192$-bit (i.e. one $\E$-element), so $\ncomp=3$, memory is committed as 3 $\K$-valued multilinears in $\kmem$ variables $M_0,M_1,M_2$.
 
 \subsection{Bytecode}\label{sec:bytecode}
 
-The bytecode is an array of $\nprog$ instructions, $\nprog\le2^{32}$ (\S\ref{sec:e2e-bc}). Bus interaction uses domain separation $\sep=\dsep{BC}$. An instruction is an opcode plus eight operand or immediate slots, so $\ncomp=9$: the widest entry on the bus, which is what fixes $m=12$ (\S\ref{sec:m3}). The program is public, i.e. not committed, the verifier can evaluate it directly.
+The bytecode is an array of $\nprog$ instructions, $\nprog\le2^{32}$ (\S\ref{sec:e2e-bc}). Bus interaction uses domain separation $\sep=\dsep{BC}$. An instruction is an opcode plus eight operand or immediate slots, so $\ncomp=9$: with the separator, the index and the counter ahead of them, this is the widest entry on the bus at $12$ coordinates, which is what forces the four index bits, hence the $m=16$ slots of \S\ref{sec:m3}. The program is public, i.e. not committed, the verifier can evaluate it directly.
 
 \subsection{The index column}\label{sec:idxcol}
 

@@ -254,33 +254,6 @@ def log2_strict(value: int) -> int:
     return value.bit_length() - 1
 
 
-@dataclass(frozen=True)
-class Placement:
-    """Where something sits in the stacked cube: a claim's point fills the `variables` coordinates above `low`, the bits of `index` fixing the rest.
-    `low` is zero for a block with a cube of its own, and the slot width for a column interleaved into a bigger block."""
-
-    variables: int
-    index: int
-    low: int = 0
-
-    def stack_point(self, point: MultilinearPoint, stack_log: int) -> MultilinearPoint:
-        bits = _selector_point(self.index, stack_log)
-        return bits[: self.low] + tuple(point) + bits[self.low + self.variables :]
-
-    def eq_above(self, point: Sequence[E]) -> E:
-        """eq weight of the coordinates above the window."""
-        return selector_eq(self.index >> (self.low + self.variables), point[self.low + self.variables :])
-
-
-def stack_offsets(sizes: Sequence[int]) -> tuple[list[int], int]:
-    offsets = [0] * len(sizes)
-    total = 0
-    for index, size in sorted(enumerate(sizes), key=lambda item: (-item[1], item[0])):
-        offsets[index] = total
-        total += 2**size
-    return offsets, log2_ceil(total)
-
-
 def eq_eval(left: Sequence[E], right: Sequence[E]) -> E:
     result = ONE
     for x, y in zip(left, right, strict=True):
@@ -293,14 +266,6 @@ def dot(left: Sequence[K | E], right: Sequence[K | E]) -> E:
     for x, y in zip(left, right, strict=True):
         result += E.lift(x) * y
     return result
-
-
-def _selector_point(selector: int, length: int) -> MultilinearPoint:
-    return tuple(E(selector >> bit & 1) for bit in range(length))
-
-
-def selector_eq(selector: int, point: Sequence[E]) -> E:
-    return eq_eval(_selector_point(selector, len(point)), point)
 
 
 def index_mle(point: MultilinearPoint) -> E:
@@ -316,6 +281,38 @@ def index_mle(point: MultilinearPoint) -> E:
 def poly_eval(coefficients: Sequence[E], point: E) -> E:
     """A polynomial at `point`, by Horner over its coefficients, constant first."""
     return reduce(lambda acc, c: acc * point + c, reversed(coefficients), ZERO)
+
+
+@dataclass(frozen=True)
+class Placement:
+    """Where something sits in the stacked cube: a claim's point fills the `variables` coordinates above `low`, the bits of `index` fixing the rest.
+    `low` is zero for a block with a cube of its own, and the slot width for a column interleaved into a bigger block."""
+
+    variables: int
+    index: int
+    low: int = 0
+
+    def stack_point(self, point: MultilinearPoint, stack_log: int) -> MultilinearPoint:
+        bits = _selector_point(self.index, stack_log)
+        return bits[: self.low] + tuple(point) + bits[self.low + self.variables :]
+
+    def eq_above(self, point: Sequence[E]) -> E:
+        """eq weight of the coordinates above the window."""
+        bits = _selector_point(self.index >> (self.low + self.variables), len(point) - self.low - self.variables)
+        return eq_eval(bits, point[self.low + self.variables :])
+
+
+def stack_offsets(sizes: Sequence[int]) -> tuple[list[int], int]:
+    offsets = [0] * len(sizes)
+    total = 0
+    for index, size in sorted(enumerate(sizes), key=lambda item: (-item[1], item[0])):
+        offsets[index] = total
+        total += 2**size
+    return offsets, log2_ceil(total)
+
+
+def _selector_point(selector: int, length: int) -> MultilinearPoint:
+    return tuple(E(selector >> bit & 1) for bit in range(length))
 
 
 # Proof transport ------------------------------------------------------------

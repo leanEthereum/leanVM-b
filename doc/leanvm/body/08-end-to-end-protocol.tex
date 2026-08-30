@@ -13,7 +13,7 @@ Fixed once, public, and shared by prover and verifier: the fields, the bus shape
 \E=\K[y]/(y^3+y+1),\qquad
 \gen=x,\qquad \operatorname{ord}(\gen)=2^{64}-1.
 \]
-Every column is $\K$-valued, and so is every constraint on them (\S\ref{sec:prelim}); a machine word is an $\E$-element only in the sense that its three $\K$-lanes are read as one, and challenges are $\E$-valued for soundness. Every bus tuple has width $m=12$ (the bytecode tuple); shorter tuples are zero-padded in their high coordinates (\S\ref{sec:m3}).
+Every column is $\K$-valued, and so is every constraint on them (\S\ref{sec:prelim}); a machine word is an $\E$-element only in the sense that its three $\K$-lanes are read as one, and challenges are $\E$-valued for soundness. Every bus tuple has width $m=16$; shorter tuples are zero-padded in their high coordinates (\S\ref{sec:m3}).
 
 \paragraph{Domain separators.} Coordinate $0$ of every tuple is a domain separator, naming the interaction it belongs to (\S\ref{sec:m3}):
 \[
@@ -69,7 +69,7 @@ The prover can thus leverage these "closed walks" to fill every table to its nex
 
 Each reduction below adds evaluation claims on columns to a shared \emph{claim pool}; the final \textsc{Opening} phase proves all of them with a single PCS opening.
 
-\paragraph{Setup and statement binding.} Fixed and shared in advance (\S\ref{sec:e2e-const} through \S\ref{sec:e2e-pi}): the fields and constants; the instance caps (\S\ref{sec:memchan}); the public program and its length; the initial state $(\pc_0,\fp_0)$ and final state $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$; and the public input $\mem[0],\mem[1]$. Before any challenge, the transcript is seeded by the public input and one environment digest that binds both the exact bytecode and flock's BLAKE2s R1CS. The prover then announces the memory log-size $h$ and the six table log-heights $\tau_j$; the verifier checks them against the caps and derives every table, stack, and leaf shape.
+\paragraph{Setup and statement binding.} Fixed and shared in advance (\S\ref{sec:e2e-const} through \S\ref{sec:e2e-pi}): the fields and constants; the instance caps (\S\ref{sec:memchan}); the public program and its length; the initial state $(\pc_0,\fp_0)$ and final state $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$; and the public input $\mem[0],\mem[1]$. Before any challenge, the transcript is seeded by the public input and one environment digest that binds both the exact bytecode and flock's BLAKE2s R1CS. The prover then announces the memory log-size $\kmem$ and the six table log-heights $\tau_j$; the verifier checks them against the caps and derives every table, stack, and leaf shape.
 
 \paragraph{Commitment.}
 \begin{enumerate}

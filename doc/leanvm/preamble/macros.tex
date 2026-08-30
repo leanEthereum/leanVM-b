@@ -77,14 +77,16 @@
 \newcommand{\opc}[1]{\mathsf{op}_{\mathsf{#1}}}
 \newcommand{\srcsel}[1]{\mathsf{src}(#1)}
 \newcommand{\nprog}{N_{\mathrm{prog}}}   % program length
+\newcommand{\nmem}{N_{\mathrm{mem}}}    % memory length
+\newcommand{\kbc}{\kappa_{\mathrm{bc}}}   % log program length: nprog = 2^kbc 
+\newcommand{\kmem}{\kappa_{\mathrm{mem}}}  % log memory length: nmem = 2^kmem
 \newcommand{\nread}{N_{\mathrm{read}}}   % total read flushes in a proof
-\newcommand{\kbc}{\kappa_{\mathrm{bc}}}   % log program length: nprog = 2^kbc instructions
 \newcommand{\ntab}{N_{\mathrm{tab}}}     % number of tables (fixed by the arithmetization)
 \newcommand{\taumax}{\tau_{\max}}      % rounds of the table sumcheck: the tallest table's log height
 \newcommand{\ncol}[1]{N_{\mathrm{col},#1}}  % columns of table #1
 \newcommand{\ncons}[1]{N_{\mathrm{cons},#1}}  % constraints of table #1
 \newcommand{\nfl}[1]{N_{\mathrm{flushes},#1}}    % bus flushes per row of table #1
-\newcommand{\btup}{\mathbf{t}}          % a bus tuple
+\newcommand{\btup}{\mathbf{f}}          % a bus tuple
 
 % ---------- codes and the PCS (Annex B) ----------
 % Letters that the main matter already spends on something else are routed
