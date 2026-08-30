@@ -629,6 +629,10 @@ def DirectBoundaryOutcome.privateStructural : DirectBoundaryOutcome → Bool
   | .privateStructuralFailure => true
   | _ => false
 
+def DirectBoundaryOutcome.ordinary : DirectBoundaryOutcome → Bool
+  | .ordinaryFailure => true
+  | _ => false
+
 def DirectBoundaryOutcome.ofFailed : Bool → DirectBoundaryOutcome
   | false => .success
   | true => .ordinaryFailure
@@ -637,11 +641,43 @@ def DirectBoundaryOutcome.ofFailed : Bool → DirectBoundaryOutcome
     (DirectBoundaryOutcome.ofFailed failed).failed = failed := by
   cases failed <;> rfl
 
+@[simp] theorem DirectBoundaryOutcome.ordinary_ofFailed (failed : Bool) :
+    (DirectBoundaryOutcome.ofFailed failed).ordinary = failed := by
+  cases failed <;> rfl
+
 theorem DirectBoundaryOutcome.failed_eq_true_iff
     (outcome : DirectBoundaryOutcome) :
     outcome.failed = true ↔
       outcome = .ordinaryFailure ∨ outcome = .privateStructuralFailure := by
   cases outcome <;> simp [DirectBoundaryOutcome.failed]
+
+@[simp] theorem DirectBoundaryOutcome.ordinary_eq_true_iff
+    (outcome : DirectBoundaryOutcome) :
+    outcome.ordinary = true ↔ outcome = .ordinaryFailure := by
+  cases outcome <;> simp [DirectBoundaryOutcome.ordinary]
+
+@[simp] theorem DirectBoundaryOutcome.privateStructural_eq_true_iff
+    (outcome : DirectBoundaryOutcome) :
+    outcome.privateStructural = true ↔ outcome = .privateStructuralFailure := by
+  cases outcome <;> simp [DirectBoundaryOutcome.privateStructural]
+
+theorem probEvent_ordinaryFailure_eq_map_ordinary
+    (run : ProbComp DirectBoundaryOutcome) :
+    Pr[= .ordinaryFailure | run] =
+      Pr[= true | DirectBoundaryOutcome.ordinary <$> run] := by
+  rw [← probEvent_eq_eq_probOutput, ← probEvent_eq_eq_probOutput]
+  rw [probEvent_map]
+  exact OracleComp.probEvent_congr'
+    (fun outcome _ => DirectBoundaryOutcome.ordinary_eq_true_iff outcome |>.symm) rfl
+
+theorem probEvent_privateStructuralFailure_eq_map_privateStructural
+    (run : ProbComp DirectBoundaryOutcome) :
+    Pr[= .privateStructuralFailure | run] =
+      Pr[= true | DirectBoundaryOutcome.privateStructural <$> run] := by
+  rw [← probEvent_eq_eq_probOutput, ← probEvent_eq_eq_probOutput]
+  rw [probEvent_map]
+  exact OracleComp.probEvent_congr'
+    (fun outcome _ => DirectBoundaryOutcome.privateStructural_eq_true_iff outcome |>.symm) rfl
 
 theorem probEvent_failed_le_ordinary_add_private
     (run : ProbComp DirectBoundaryOutcome) :
@@ -791,6 +827,108 @@ theorem evalDist_failed_canonicalizeDirectDetailedObserve
           (canonicalizeMaterializedValues_startTableAgrees table context) hproject
     · simp [hpublished, DirectBoundaryOutcome.failed]
 
+noncomputable def classifyDirectOrdinaryObserve
+    (table : OtsSecretIndex → HashOutput)
+    (observe : DeferredContext → Nat → alpha → ProbComp Bool)
+    (context : DeferredContext) (fuel : Nat) (value : alpha) :
+    ProbComp Bool := by
+  classical
+  exact if PrivateStructuralHit context then
+      pure false
+    else if DeferredCompletable table context then
+      observe context fuel value
+    else
+      pure true
+
+theorem evalDist_ordinary_classifyDirectObserve
+    (table : OtsSecretIndex → HashOutput)
+    (observe : DeferredContext → Nat → alpha → ProbComp Bool)
+    (context : DeferredContext) (fuel : Nat) (value : alpha) :
+    evalDist (DirectBoundaryOutcome.ordinary <$>
+        classifyDirectObserve table observe context fuel value) =
+      evalDist (classifyDirectOrdinaryObserve table observe context fuel value) := by
+  unfold classifyDirectObserve classifyDirectOrdinaryObserve
+  by_cases hprivate : PrivateStructuralHit context
+  · simp [hprivate, DirectBoundaryOutcome.ordinary]
+  · simp only [hprivate, ↓reduceIte]
+    by_cases hcompletable : DeferredCompletable table context
+    · simp [hcompletable, Functor.map_map]
+    · simp [hcompletable, DirectBoundaryOutcome.ordinary]
+
+noncomputable def finishDirectDetailedOrdinaryObserve
+    (observe : DeferredContext → Nat → alpha → ProbComp Bool) :
+    DirectDetailedResult alpha → ProbComp Bool
+  | .stopped .privateStructuralHit => pure false
+  | .stopped _ => pure true
+  | .done result => observe result.context result.remaining result.value
+
+noncomputable def classifyDirectDetailedOrdinaryObserve
+    (table : OtsSecretIndex → HashOutput)
+    (observe : DeferredContext → Nat → alpha → ProbComp Bool)
+    (context : DeferredContext) (fuel : Nat) (value : alpha) :
+    ProbComp Bool := by
+  classical
+  exact if PrivateStructuralHit context then
+      pure false
+    else if DeferredCompletable table context then
+      observe context fuel value
+    else
+      pure true
+
+theorem evalDist_ordinary_classifyDirectDetailedObserve
+    (table : OtsSecretIndex → HashOutput)
+    (detailedObserve : DeferredContext → Nat → alpha → ProbComp DirectBoundaryOutcome)
+    (observe : DeferredContext → Nat → alpha → ProbComp Bool)
+    (context : DeferredContext) (fuel : Nat) (value : alpha)
+    (hproject : evalDist (DirectBoundaryOutcome.ordinary <$>
+        detailedObserve context fuel value) =
+      evalDist (observe context fuel value)) :
+    evalDist (DirectBoundaryOutcome.ordinary <$>
+        classifyDirectDetailedObserve table detailedObserve context fuel value) =
+      evalDist (classifyDirectDetailedOrdinaryObserve table observe context fuel value) := by
+  unfold classifyDirectDetailedObserve classifyDirectDetailedOrdinaryObserve
+  by_cases hprivate : PrivateStructuralHit context
+  · simp [hprivate, DirectBoundaryOutcome.ordinary]
+  · simp only [hprivate, ↓reduceIte]
+    by_cases hcompletable : DeferredCompletable table context
+    · simpa [hcompletable] using hproject
+    · simp [hcompletable, DirectBoundaryOutcome.ordinary]
+
+noncomputable def canonicalizeDirectDetailedOrdinaryObserve
+    (table : OtsSecretIndex → HashOutput)
+    (observe : DeferredContext → Nat → alpha → ProbComp Bool)
+    (context : DeferredContext) (fuel : Nat) (value : alpha) :
+    ProbComp Bool := by
+  classical
+  exact if PrivateStructuralHit (canonicalizeMaterializedValues table context) then
+      pure false
+    else if PublishedValues context.state then
+      classifyDirectDetailedOrdinaryObserve table observe
+        (canonicalizeMaterializedValues table context) fuel value
+    else
+      pure true
+
+theorem evalDist_ordinary_canonicalizeDirectDetailedObserve
+    (table : OtsSecretIndex → HashOutput)
+    (detailedObserve : DeferredContext → Nat → alpha → ProbComp DirectBoundaryOutcome)
+    (observe : DeferredContext → Nat → alpha → ProbComp Bool)
+    (context : DeferredContext) (fuel : Nat) (value : alpha)
+    (hproject : evalDist (DirectBoundaryOutcome.ordinary <$>
+        detailedObserve (canonicalizeMaterializedValues table context) fuel value) =
+      evalDist (observe (canonicalizeMaterializedValues table context) fuel value)) :
+    evalDist (DirectBoundaryOutcome.ordinary <$>
+        canonicalizeDirectDetailedObserve table detailedObserve context fuel value) =
+      evalDist (canonicalizeDirectDetailedOrdinaryObserve table observe context fuel value) := by
+  unfold canonicalizeDirectDetailedObserve canonicalizeDirectDetailedOrdinaryObserve
+  by_cases hprivate : PrivateStructuralHit (canonicalizeMaterializedValues table context)
+  · simp [hprivate, DirectBoundaryOutcome.ordinary]
+  · simp only [hprivate, ↓reduceIte]
+    by_cases hpublished : PublishedValues context.state
+    · simp only [hpublished, ↓reduceIte]
+      exact evalDist_ordinary_classifyDirectDetailedObserve table detailedObserve observe
+        (canonicalizeMaterializedValues table context) fuel value hproject
+    · simp [hpublished, DirectBoundaryOutcome.ordinary]
+
 noncomputable def runDirectDetailedObserve
     (observe : DeferredContext → Nat → alpha → ProbComp DirectBoundaryOutcome)
     (context : DeferredContext) (fuel : Nat)
@@ -834,6 +972,40 @@ theorem evalDist_failed_runDirectDetailedObserve
       simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind, Function.comp_apply]
     _ = _ := by
       rw [map_toOption_runDirectResolvedDetailedFromTable]
+
+noncomputable def runDirectDetailedOrdinaryObserve
+    (observe : DeferredContext → Nat → alpha → ProbComp Bool)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha) :
+    ProbComp Bool :=
+  runDirectResolvedDetailedFromTable context fuel table computation >>=
+    finishDirectDetailedOrdinaryObserve observe
+
+theorem evalDist_ordinary_runDirectDetailedObserve
+    (detailedObserve : DeferredContext → Nat → alpha → ProbComp DirectBoundaryOutcome)
+    (observe : DeferredContext → Nat → alpha → ProbComp Bool)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (hproject : ∀ result,
+      DirectDetailedResult.done result ∈ support
+          (runDirectResolvedDetailedFromTable context fuel table computation) →
+        evalDist (DirectBoundaryOutcome.ordinary <$>
+            detailedObserve result.context result.remaining result.value) =
+          evalDist (observe result.context result.remaining result.value)) :
+    evalDist (DirectBoundaryOutcome.ordinary <$>
+        runDirectDetailedObserve detailedObserve context fuel table computation) =
+      evalDist (runDirectDetailedOrdinaryObserve observe context fuel table computation) := by
+  unfold runDirectDetailedObserve runDirectDetailedOrdinaryObserve
+  rw [map_bind]
+  apply evalDist_bind_congr
+  intro result hresult
+  cases result with
+  | stopped reason =>
+      cases reason <;> rfl
+  | done result =>
+      exact hproject result hresult
 
 noncomputable def directDetailedBoundaryObserve
     (impl : QueryImpl spec
@@ -915,6 +1087,61 @@ theorem evalDist_failed_directDetailedBoundaryObserve
           (canonicalizeMaterializedValues_valuesConsistent table result.context hcore.2.1)
           (canonicalizeMaterializedValues_startTableAgrees table result.context)
 
+noncomputable def directDetailedBoundaryOrdinaryObserve
+    (impl : QueryImpl spec
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))))
+    (computation : OracleComp spec alpha)
+    (observe : DeferredContext → Nat → (alpha × SplitHashCache) → ProbComp Bool)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    ProbComp Bool := by
+  classical
+  exact OracleComp.construct
+    (C := fun _ : OracleComp spec alpha =>
+      (DeferredContext → Nat → (alpha × SplitHashCache) → ProbComp Bool) →
+        DeferredContext → Nat → (OtsSecretIndex → HashOutput) → SplitHashCache →
+          ProbComp Bool)
+    (fun value observe context fuel _table cache => observe context fuel (value, cache))
+    (fun query _next recursivelyRun observe context fuel table cache =>
+      runDirectDetailedOrdinaryObserve
+        (canonicalizeDirectDetailedOrdinaryObserve table
+          (fun nextContext remaining value =>
+            recursivelyRun value.1 observe nextContext remaining table value.2))
+        context fuel table ((impl query).run cache))
+    computation observe context fuel table cache
+
+set_option maxRecDepth 100000 in
+theorem evalDist_ordinary_directDetailedBoundaryObserve
+    (impl : QueryImpl spec
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))))
+    (computation : OracleComp spec alpha)
+    (detailedObserve : DeferredContext → Nat → (alpha × SplitHashCache) →
+      ProbComp DirectBoundaryOutcome)
+    (observe : DeferredContext → Nat → (alpha × SplitHashCache) → ProbComp Bool)
+    (hobserve : ∀ context fuel value,
+      evalDist (DirectBoundaryOutcome.ordinary <$>
+          detailedObserve context fuel value) =
+        evalDist (observe context fuel value))
+    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (cache : SplitHashCache) :
+    evalDist (DirectBoundaryOutcome.ordinary <$>
+        directDetailedBoundaryObserve impl computation detailedObserve context fuel table cache) =
+      evalDist (directDetailedBoundaryOrdinaryObserve impl computation observe
+        context fuel table cache) := by
+  induction computation using OracleComp.inductionOn generalizing context fuel cache with
+  | pure value =>
+      rw [directDetailedBoundaryObserve, OracleComp.construct_pure,
+        directDetailedBoundaryOrdinaryObserve, OracleComp.construct_pure]
+      exact hobserve context fuel (value, cache)
+  | query_bind query next ih =>
+      rw [directDetailedBoundaryObserve, OracleComp.construct_query_bind,
+        directDetailedBoundaryOrdinaryObserve, OracleComp.construct_query_bind]
+      apply evalDist_ordinary_runDirectDetailedObserve
+      intro result _hresult
+      apply evalDist_ordinary_canonicalizeDirectDetailedObserve
+      exact ih result.value.1 (canonicalizeMaterializedValues table result.context)
+        result.remaining result.value.2
+
 noncomputable def directDetailedVerifierFinishObserve
     (table : OtsSecretIndex → HashOutput)
     (parameter : PublicParameter) (root : Digest)
@@ -958,6 +1185,31 @@ theorem evalDist_failed_directDetailedVerifierFinishObserve
   exact evalDist_failed_classifyDirectObserve table (resolvedFinalizationObserve table)
     result.context result.remaining result.value hcore.2.1 hcore.2.2
 
+noncomputable def directDetailedVerifierFinishOrdinaryObserve
+    (table : OtsSecretIndex → HashOutput)
+    (parameter : PublicParameter) (root : Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : (Forgery × QueryLog SigningSpec) × SplitHashCache) :
+    ProbComp Bool :=
+  runDirectDetailedOrdinaryObserve
+    (classifyDirectOrdinaryObserve table (resolvedFinalizationObserve table))
+    context fuel table ((canonicalVerifierFinish parameter root value.1).run value.2)
+
+theorem evalDist_ordinary_directDetailedVerifierFinishObserve
+    (table : OtsSecretIndex → HashOutput)
+    (parameter : PublicParameter) (root : Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : (Forgery × QueryLog SigningSpec) × SplitHashCache) :
+    evalDist (DirectBoundaryOutcome.ordinary <$>
+        directDetailedVerifierFinishObserve table parameter root context fuel value) =
+      evalDist (directDetailedVerifierFinishOrdinaryObserve table parameter root
+        context fuel value) := by
+  unfold directDetailedVerifierFinishObserve directDetailedVerifierFinishOrdinaryObserve
+  apply evalDist_ordinary_runDirectDetailedObserve
+  intro result _hresult
+  exact evalDist_ordinary_classifyDirectObserve table (resolvedFinalizationObserve table)
+    result.context result.remaining result.value
+
 noncomputable def allDirectDetailedRetainedRestObserve
     (adversary : Adversary) (parameter : PublicParameter)
     (table : OtsSecretIndex → HashOutput)
@@ -990,6 +1242,35 @@ theorem evalDist_failed_allDirectDetailedRetainedRestObserve
     nextContext remaining nextValue hnextConsistent hnextStarts
   exact hconsistent
   exact hstarts
+
+noncomputable def allDirectDetailedRetainedRestOrdinaryObserve
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : Digest × SplitHashCache) : ProbComp Bool :=
+  directDetailedBoundaryOrdinaryObserve
+    (maskedExpandedAdversaryImpl parameter value.1 ftsSecret)
+    (signingTraceComputation (adversary.main ⟨value.1, parameter⟩))
+    (directDetailedVerifierFinishOrdinaryObserve table parameter value.1)
+    context fuel table value.2
+
+theorem evalDist_ordinary_allDirectDetailedRetainedRestObserve
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : Digest × SplitHashCache) :
+    evalDist (DirectBoundaryOutcome.ordinary <$>
+        allDirectDetailedRetainedRestObserve adversary parameter table ftsSecret
+          context fuel value) =
+      evalDist (allDirectDetailedRetainedRestOrdinaryObserve adversary parameter table
+        ftsSecret context fuel value) := by
+  unfold allDirectDetailedRetainedRestObserve allDirectDetailedRetainedRestOrdinaryObserve
+  apply evalDist_ordinary_directDetailedBoundaryObserve
+  intro nextContext remaining nextValue
+  exact evalDist_ordinary_directDetailedVerifierFinishObserve table parameter value.1
+    nextContext remaining nextValue
 
 noncomputable def allDirectBoundaryDetailedRetainedOutcome
     (adversary : Adversary) (parameter : PublicParameter)
@@ -1027,12 +1308,61 @@ theorem evalDist_failed_allDirectBoundaryDetailedRetainedOutcome
   exact evalDist_failed_allDirectDetailedRetainedRestObserve adversary parameter table ftsSecret
     result.context result.remaining result.value hcore.2.1 hcore.2.2
 
+noncomputable def allDirectBoundaryDetailedRetainedOrdinary
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp Bool :=
+  runDirectDetailedOrdinaryObserve
+    (allDirectDetailedRetainedRestOrdinaryObserve adversary parameter table ftsSecret)
+    { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+      values := emptyDeferredStructuralValues }
+    fuel table (maskedPublishedTreeRoot.run emptySplitHashCache)
+
+theorem evalDist_ordinary_allDirectBoundaryDetailedRetainedOutcome
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    evalDist (DirectBoundaryOutcome.ordinary <$>
+        allDirectBoundaryDetailedRetainedOutcome adversary parameter table ftsSecret fuel) =
+      evalDist (allDirectBoundaryDetailedRetainedOrdinary adversary parameter table
+        ftsSecret fuel) := by
+  unfold allDirectBoundaryDetailedRetainedOutcome allDirectBoundaryDetailedRetainedOrdinary
+  apply evalDist_ordinary_runDirectDetailedObserve
+  intro result _hresult
+  exact evalDist_ordinary_allDirectDetailedRetainedRestObserve adversary parameter table ftsSecret
+    result.context result.remaining result.value
+
 noncomputable def sampledAllDirectBoundaryDetailedRetainedOutcome
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
     ProbComp DirectBoundaryOutcome := do
   let table ← sampleOtsHashTable
   allDirectBoundaryDetailedRetainedOutcome adversary parameter table ftsSecret fuel
+
+noncomputable def sampledAllDirectBoundaryDetailedRetainedOrdinary
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp Bool := do
+  let table ← sampleOtsHashTable
+  allDirectBoundaryDetailedRetainedOrdinary adversary parameter table ftsSecret fuel
+
+set_option linter.constructorNameAsVariable false in
+set_option maxRecDepth 100000 in
+theorem evalDist_ordinary_sampledAllDirectBoundaryDetailedRetainedOutcome
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    evalDist (DirectBoundaryOutcome.ordinary <$>
+        sampledAllDirectBoundaryDetailedRetainedOutcome adversary parameter ftsSecret fuel) =
+      evalDist (sampledAllDirectBoundaryDetailedRetainedOrdinary adversary parameter
+        ftsSecret fuel) := by
+  unfold sampledAllDirectBoundaryDetailedRetainedOutcome
+    sampledAllDirectBoundaryDetailedRetainedOrdinary
+  rw [map_bind]
+  apply evalDist_bind_congr
+  intro table _htable
+  exact evalDist_ordinary_allDirectBoundaryDetailedRetainedOutcome adversary parameter table
+    ftsSecret fuel
 
 set_option linter.constructorNameAsVariable false in
 set_option maxRecDepth 100000 in
