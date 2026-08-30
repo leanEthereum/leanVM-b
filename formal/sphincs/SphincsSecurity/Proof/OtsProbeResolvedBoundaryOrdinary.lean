@@ -1211,6 +1211,133 @@ theorem evalDist_runDirectDetailedSafeOrdinaryFinalize_eq_runRawFinish
       (evalDist_toRawResult_runDirectResolvedDetailedWithCompletionTable computation state fuel)
       LazyRevealProbe.RawResult.finish
 
+theorem evalDist_runDirectDetailedSafeOrdinaryFinalize_eq_experiment
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (hnotStopped : LazyRevealProbe.RawResult.stopped false ∉ support
+      (LazyRevealProbe.runRaw state fuel computation)) :
+    𝒟[runDirectDetailedSafeOrdinaryWithCompletionTable
+        (fun _ context _ _ => LazyRevealProbe.finalize context.state)
+        (directDeferredContext state) fuel computation] =
+      𝒟[LazyRevealProbe.experiment state fuel computation] := by
+  calc
+    _ = 𝒟[LazyRevealProbe.runRaw state fuel computation >>=
+        LazyRevealProbe.RawResult.finish] :=
+      evalDist_runDirectDetailedSafeOrdinaryFinalize_eq_runRawFinish computation state fuel
+    _ = _ :=
+      (LazyRevealProbe.evalDist_experiment_eq_runRaw_finish_of_not_stopped_false
+        state fuel computation hnotStopped).symm
+
+theorem probEvent_runDirectDetailedSafeOrdinaryFinalize_empty_le
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha) (fuel : Nat) :
+    Pr[= true |
+        runDirectDetailedSafeOrdinaryWithCompletionTable
+          (fun _ context _ _ => LazyRevealProbe.finalize context.state)
+          (directDeferredContext
+            (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate))
+          fuel computation] ≤
+      (fuel : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  simpa [directDeferredContext, LazyRevealProbe.State.empty] using
+    (probEvent_runDirectDetailedSafeOrdinaryFinalize_le computation
+      (directDeferredContext
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)) fuel)
+
+theorem fuelExhausted_not_mem_support_runDirectResolvedDetailedFromTable
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (hbound : computation.IsQueryBoundP LazyRevealProbe.IsProbe fuel) :
+    DirectDetailedResult.stopped .fuelExhausted ∉ support
+      (runDirectResolvedDetailedFromTable context fuel table computation) := by
+  induction computation using OracleComp.inductionOn generalizing context fuel with
+  | pure value =>
+      simp [runDirectResolvedDetailedFromTable_pure]
+  | query_bind input next ih =>
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
+      cases input with
+      | uniform n =>
+          rw [runDirectResolvedDetailedFromTable_uniform_query_bind, mem_support_bind_iff]
+          rintro ⟨output, _houtput, hrest⟩
+          exact ih output context fuel
+            (by simpa [LazyRevealProbe.IsProbe] using hbound.2 output) hrest
+      | hashOutput =>
+          rw [runDirectResolvedDetailedFromTable_hashOutput_query_bind, mem_support_bind_iff]
+          rintro ⟨output, _houtput, hrest⟩
+          exact ih output context fuel
+            (by simpa [LazyRevealProbe.IsProbe] using hbound.2 output) hrest
+      | ensure coordinate =>
+          rw [runDirectResolvedDetailedFromTable_ensure_query_bind]
+          exact ih () { context with state := context.state.ensure coordinate } fuel
+            (by simpa [LazyRevealProbe.IsProbe] using hbound.2 ())
+      | probe coordinate candidate =>
+          have hpositive : 0 < fuel := by
+            simpa [LazyRevealProbe.IsProbe] using hbound.1
+          cases fuel with
+          | zero => omega
+          | succ remaining =>
+              rw [runDirectResolvedDetailedFromTable_probe_query_bind]
+              by_cases hrevealed : coordinate ∈ context.state.revealed
+              · simp only [hrevealed, ↓reduceIte]
+                exact ih () context remaining
+                  (by simpa [LazyRevealProbe.IsProbe] using hbound.2 ())
+              · simp only [hrevealed, ↓reduceIte]
+                exact ih ()
+                  { context with
+                    state := context.state.addPending coordinate candidate }
+                  remaining
+                  (by simpa [LazyRevealProbe.IsProbe] using hbound.2 ())
+      | peek coordinate =>
+          rw [runDirectResolvedDetailedFromTable_peek_query_bind]
+          exact ih (context.state.values coordinate) context fuel
+            (by simpa [LazyRevealProbe.IsProbe] using
+              hbound.2 (context.state.values coordinate))
+      | publish coordinate =>
+          rw [runDirectResolvedDetailedFromTable_publish_query_bind]
+          exact ih () { context with state := context.state.publish coordinate } fuel
+            (by simpa [LazyRevealProbe.IsProbe] using hbound.2 ())
+      | reveal coordinate =>
+          rw [runDirectResolvedDetailedFromTable_reveal_query_bind]
+          cases hstate : context.state.values coordinate with
+          | some output =>
+              exact ih output context fuel
+                (by simpa [LazyRevealProbe.IsProbe] using hbound.2 output)
+          | none =>
+              cases coordinate with
+              | chainStart lay tree leafIdx chainIdx =>
+                  let output := table ⟨lay, tree, leafIdx, chainIdx⟩
+                  by_cases hhit : context.state.hitAt
+                      (.chainStart lay tree leafIdx chainIdx) output
+                  · simp [output, hhit]
+                  · simp only [output, hhit, ↓reduceIte]
+                    exact ih output
+                      { state := context.state.materialize
+                          (.chainStart lay tree leafIdx chainIdx) output
+                        values := context.values }
+                      fuel
+                      (by simpa [LazyRevealProbe.IsProbe] using hbound.2 output)
+              | position position =>
+                  cases hprivate : context.values position with
+                  | some output =>
+                      by_cases hhit : context.state.hitAt (.position position) output
+                      · simp [hprivate, hhit]
+                      · simp only [hprivate, hhit, ↓reduceIte]
+                        exact ih output
+                          { state := context.state.materialize (.position position) output
+                            values := context.values }
+                          fuel
+                          (by simpa [LazyRevealProbe.IsProbe] using hbound.2 output)
+                  | none =>
+                      simp only [hprivate, mem_support_bind_iff]
+                      rintro ⟨output, _houtput, hrest⟩
+                      by_cases hhit : context.state.hitAt (.position position) output
+                      · simp [hhit] at hrest
+                      · simp only [hhit, ↓reduceIte] at hrest
+                        exact ih output
+                          { state := context.state.materialize (.position position) output
+                            values := context.values.install position output }
+                          fuel
+                          (by simpa [LazyRevealProbe.IsProbe] using hbound.2 output) hrest
+
 theorem stopped_false_mem_support_runRaw_of_fuelExhausted_detailed
     (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
     (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
