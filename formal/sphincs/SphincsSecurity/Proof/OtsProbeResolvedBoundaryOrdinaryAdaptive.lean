@@ -2613,6 +2613,33 @@ noncomputable def materializedCanonicalDetailedRetainedRestObserve
     (retainedGameRestComputation adversary ⟨value.1, parameter⟩)
     (fun _ _ _ => pure .success) context fuel table value.2
 
+noncomputable def materializedCanonicalOrdinaryRetainedRestObserve
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : Digest × SplitHashCache) : ProbComp Bool :=
+  directDetailedBoundaryCanonicalMaterializedOrdinaryObserve
+    (maskedExpandedAdversaryImpl parameter value.1 ftsSecret)
+    (retainedGameRestComputation adversary ⟨value.1, parameter⟩)
+    (retainedResolvedFinalizationOrdinaryObserve table value.1)
+    context fuel table value.2
+
+noncomputable def materializedCanonicalFullDetailedRetainedRestObserve
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : Digest × SplitHashCache) : ProbComp DirectBoundaryOutcome :=
+  directDetailedBoundaryCanonicalMaterializedObserve
+    (maskedExpandedAdversaryImpl parameter value.1 ftsSecret)
+    (retainedGameRestComputation adversary ⟨value.1, parameter⟩)
+    (fun nextContext remaining nextValue =>
+      DirectBoundaryOutcome.ofFailed <$>
+        retainedResolvedFinalizationOrdinaryObserve table value.1
+          nextContext remaining nextValue)
+    context fuel table value.2
+
 noncomputable def materializedCanonicalPrivateRetained
     (adversary : Adversary) (parameter : PublicParameter)
     (table : OtsSecretIndex → HashOutput)
@@ -2635,6 +2662,28 @@ noncomputable def materializedCanonicalDetailedRetained
       (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate))
     fuel table (maskedPublishedTreeRoot.run emptySplitHashCache)
 
+noncomputable def materializedCanonicalOrdinaryRetained
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp Bool :=
+  runDirectDetailedOrdinaryObserve
+    (materializedCanonicalOrdinaryRetainedRestObserve adversary parameter table ftsSecret)
+    (directDeferredContext
+      (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate))
+    fuel table (maskedPublishedTreeRoot.run emptySplitHashCache)
+
+noncomputable def materializedCanonicalFullDetailedRetained
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp DirectBoundaryOutcome :=
+  runDirectDetailedObserve
+    (materializedCanonicalFullDetailedRetainedRestObserve adversary parameter table ftsSecret)
+    (directDeferredContext
+      (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate))
+    fuel table (maskedPublishedTreeRoot.run emptySplitHashCache)
+
 theorem evalDist_private_materializedCanonicalDetailedRetained
     (adversary : Adversary) (parameter : PublicParameter)
     (table : OtsSecretIndex → HashOutput)
@@ -2652,6 +2701,61 @@ theorem evalDist_private_materializedCanonicalDetailedRetained
   intro nextContext remaining value
   simp [DirectBoundaryOutcome.privateStructural]
 
+theorem evalDist_private_materializedCanonicalFullDetailedRetained
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    evalDist (DirectBoundaryOutcome.privateStructural <$>
+        materializedCanonicalFullDetailedRetained adversary parameter table
+          ftsSecret fuel) =
+      evalDist
+        (materializedCanonicalPrivateRetained adversary parameter table ftsSecret fuel) := by
+  unfold materializedCanonicalFullDetailedRetained materializedCanonicalPrivateRetained
+  apply evalDist_private_runDirectDetailedObserve
+  intro result _hresult
+  unfold materializedCanonicalFullDetailedRetainedRestObserve
+    materializedCanonicalPrivateRetainedRestObserve
+  apply evalDist_private_directDetailedBoundaryCanonicalMaterializedObserve
+  intro nextContext remaining value
+  let observe := retainedResolvedFinalizationOrdinaryObserve table result.value.1
+    nextContext remaining value
+  have hprojection :
+      (fun hit : Bool => (DirectBoundaryOutcome.ofFailed hit).privateStructural) =
+        fun _ => false := by
+    funext hit
+    cases hit <;> rfl
+  rw [Functor.map_map]
+  rw [hprojection]
+  change evalDist ((fun _ : Bool => false) <$> observe) =
+    evalDist (pure false : ProbComp Bool)
+  simp only [map_eq_bind_pure_comp]
+  exact OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+    observe (by simp [observe, retainedResolvedFinalizationOrdinaryObserve]) (pure false)
+
+theorem evalDist_ordinary_materializedCanonicalFullDetailedRetained
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    evalDist (DirectBoundaryOutcome.ordinary <$>
+        materializedCanonicalFullDetailedRetained adversary parameter table
+          ftsSecret fuel) =
+      evalDist
+        (materializedCanonicalOrdinaryRetained adversary parameter table ftsSecret fuel) := by
+  unfold materializedCanonicalFullDetailedRetained materializedCanonicalOrdinaryRetained
+  apply evalDist_ordinary_runDirectDetailedObserve
+  intro result _hresult
+  unfold materializedCanonicalFullDetailedRetainedRestObserve
+    materializedCanonicalOrdinaryRetainedRestObserve
+  apply evalDist_ordinary_directDetailedBoundaryCanonicalMaterializedObserve
+  intro nextContext remaining value
+  have hprojection :
+      (fun hit : Bool => (DirectBoundaryOutcome.ofFailed hit).ordinary) = id := by
+    funext hit
+    cases hit <;> rfl
+  rw [Functor.map_map]
+  rw [hprojection]
+  simp
+
 noncomputable def sampledMaterializedCanonicalPrivateRetained
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
@@ -2665,6 +2769,20 @@ noncomputable def sampledMaterializedCanonicalDetailedRetained
     ProbComp DirectBoundaryOutcome := do
   let table ← sampleOtsHashTable
   materializedCanonicalDetailedRetained adversary parameter table ftsSecret fuel
+
+noncomputable def sampledMaterializedCanonicalOrdinaryRetained
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp Bool := do
+  let table ← sampleOtsHashTable
+  materializedCanonicalOrdinaryRetained adversary parameter table ftsSecret fuel
+
+noncomputable def sampledMaterializedCanonicalFullDetailedRetained
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp DirectBoundaryOutcome := do
+  let table ← sampleOtsHashTable
+  materializedCanonicalFullDetailedRetained adversary parameter table ftsSecret fuel
 
 set_option linter.constructorNameAsVariable false in
 set_option maxRecDepth 100000 in
@@ -2685,6 +2803,42 @@ theorem evalDist_private_sampledMaterializedCanonicalDetailedRetained
 
 set_option linter.constructorNameAsVariable false in
 set_option maxRecDepth 100000 in
+theorem evalDist_private_sampledMaterializedCanonicalFullDetailedRetained
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    evalDist (DirectBoundaryOutcome.privateStructural <$>
+        sampledMaterializedCanonicalFullDetailedRetained adversary parameter
+          ftsSecret fuel) =
+      evalDist
+        (sampledMaterializedCanonicalPrivateRetained adversary parameter ftsSecret fuel) := by
+  unfold sampledMaterializedCanonicalFullDetailedRetained
+    sampledMaterializedCanonicalPrivateRetained
+  rw [map_bind]
+  apply evalDist_bind_congr
+  intro table _htable
+  exact evalDist_private_materializedCanonicalFullDetailedRetained adversary parameter table
+    ftsSecret fuel
+
+set_option linter.constructorNameAsVariable false in
+set_option maxRecDepth 100000 in
+theorem evalDist_ordinary_sampledMaterializedCanonicalFullDetailedRetained
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    evalDist (DirectBoundaryOutcome.ordinary <$>
+        sampledMaterializedCanonicalFullDetailedRetained adversary parameter
+          ftsSecret fuel) =
+      evalDist
+        (sampledMaterializedCanonicalOrdinaryRetained adversary parameter ftsSecret fuel) := by
+  unfold sampledMaterializedCanonicalFullDetailedRetained
+    sampledMaterializedCanonicalOrdinaryRetained
+  rw [map_bind]
+  apply evalDist_bind_congr
+  intro table _htable
+  exact evalDist_ordinary_materializedCanonicalFullDetailedRetained adversary parameter table
+    ftsSecret fuel
+
+set_option linter.constructorNameAsVariable false in
+set_option maxRecDepth 100000 in
 theorem probEvent_privateStructuralFailure_sampledMaterializedCanonicalDetailedRetained
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
@@ -2694,8 +2848,43 @@ theorem probEvent_privateStructuralFailure_sampledMaterializedCanonicalDetailedR
         sampledMaterializedCanonicalPrivateRetained adversary parameter ftsSecret fuel] := by
   rw [probEvent_privateStructuralFailure_eq_map_privateStructural]
   exact OracleComp.probOutput_congr rfl
-    (evalDist_private_sampledMaterializedCanonicalDetailedRetained adversary parameter
-      ftsSecret fuel)
+      (evalDist_private_sampledMaterializedCanonicalDetailedRetained adversary parameter
+        ftsSecret fuel)
+
+set_option linter.constructorNameAsVariable false in
+set_option maxRecDepth 100000 in
+theorem probEvent_failed_sampledMaterializedCanonicalFullDetailedRetained_le
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    Pr[fun outcome => outcome.failed = true |
+        sampledMaterializedCanonicalFullDetailedRetained adversary parameter
+          ftsSecret fuel] ≤
+      Pr[= true |
+          sampledMaterializedCanonicalOrdinaryRetained adversary parameter
+            ftsSecret fuel] +
+        Pr[= true |
+          sampledMaterializedCanonicalPrivateRetained adversary parameter
+            ftsSecret fuel] := by
+  calc
+    _ ≤ Pr[= .ordinaryFailure |
+          sampledMaterializedCanonicalFullDetailedRetained adversary parameter
+            ftsSecret fuel] +
+        Pr[= .privateStructuralFailure |
+          sampledMaterializedCanonicalFullDetailedRetained adversary parameter
+            ftsSecret fuel] :=
+      probEvent_failed_le_ordinary_add_private
+        (sampledMaterializedCanonicalFullDetailedRetained adversary parameter
+          ftsSecret fuel)
+    _ = _ := by
+      rw [probEvent_ordinaryFailure_eq_map_ordinary,
+        probEvent_privateStructuralFailure_eq_map_privateStructural]
+      apply congrArg₂ (· + ·)
+      · exact OracleComp.probOutput_congr rfl
+          (evalDist_ordinary_sampledMaterializedCanonicalFullDetailedRetained
+            adversary parameter ftsSecret fuel)
+      · exact OracleComp.probOutput_congr rfl
+          (evalDist_private_sampledMaterializedCanonicalFullDetailedRetained
+            adversary parameter ftsSecret fuel)
 
 set_option maxRecDepth 100000 in
 theorem fuel_le_remaining_of_done_maskedPublishedTreeRoot
