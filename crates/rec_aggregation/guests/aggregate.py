@@ -440,8 +440,14 @@ def decode_query_bits(squeezed_word, positions_out, bit_ptrs_out, depth: Const):
     # position (little-endian), with a pointer to its bit run (the Merkle
     # direction bits). Each field word packs FIELD_BITS // depth positions.
     per_word = FIELD_BITS // depth
-    bits_ptr = HeapBuf(GEN ** FIELD_BITS)
-    hint_decompose_bits(bits_ptr, squeezed_word, FIELD_BITS)
+    # The bits live in the FRAME: every index into them here is compile-time, so
+    # a stack run costs nothing to read where a heap buffer costs a DEREF each.
+    # `addr` then names the run so the direction-bit pointers below still point
+    # at it (frame cells are ordinary write-once memory, and they outlive the
+    # call like everything else).
+    bits = StackBuf(FIELD_BITS)
+    hint_decompose_bits(bits, squeezed_word, FIELD_BITS)
+    bits_ptr = addr(bits)
     reconstructed = 0
     for j in unroll(0, per_word):
         base_bit = j * depth
@@ -456,11 +462,10 @@ def decode_query_bits(squeezed_word, positions_out, bit_ptrs_out, depth: Const):
         p_lo = 0
         p_hi = 0
         for b in unroll(0, depth):
-            t = bits_ptr[GEN ** (base_bit + b)]
+            t = bits[base_bit + b]
             # Booleanity as a write-once pin: the cell already holds t, so
-            # storing t*t back IS the assert t*t == t, one instruction shorter
-            # (a Cell deref unifies the two sides).
-            bits_ptr[GEN ** (base_bit + b)] = t * t
+            # storing t*t back IS the assert t*t == t, at one MUL and no read.
+            bits[base_bit + b] = t * t
             # `b // cut == 0` IS `b < cut`, in compile-time integer arithmetic
             # (the DSL's `if` compares for equality only).
             if b // cut == 0:
@@ -477,8 +482,8 @@ def decode_query_bits(squeezed_word, positions_out, bit_ptrs_out, depth: Const):
             reconstructed += COORD_BASIS[base_bit] * p_lo
         bit_ptrs_out[GEN ** j] = bits_ptr * GEN ** base_bit
     for i in unroll(per_word * depth, FIELD_BITS):
-        t = bits_ptr[GEN ** i]
-        bits_ptr[GEN ** i] = t * t
+        t = bits[i]
+        bits[i] = t * t
         reconstructed += t * COORD_BASIS[i]
     assert reconstructed == squeezed_word
     return
@@ -507,18 +512,21 @@ def grind_check(state_0, state_1, nonce, nbits_g):
     hint_f192_limbs(lanes, out[0])
     high = (out[0] + lanes[0]) * Y_INV
     assert_in_k(lanes[0], high)
-    lane_bits = HeapBuf(GEN ** BASE_FIELD_BITS)
+    # Frame cells for the unrolled pass (no DEREF per bit), named by `addr` for
+    # the zero-check walk below, whose bound is runtime and so must index a pointer.
+    lane_bits = StackBuf(BASE_FIELD_BITS)
     hint_decompose_bits(lane_bits, lanes[0], BASE_FIELD_BITS)
     acc = 0
     for i in unroll(0, BASE_FIELD_BITS):
-        b = lane_bits[GEN ** i]
+        b = lane_bits[i]
         # Booleanity as a write-once pin: the cell already holds b, so storing b*b
         # back IS the assert, one instruction shorter (as in decode_query_bits).
-        lane_bits[GEN ** i] = b * b
+        lane_bits[i] = b * b
         acc += b * COORD_BASIS[i]  # bit i contributes the i-th coordinate basis vector
     assert acc == lanes[0]  # the bits ARE the lane's coordinates, so the pins below bind it
+    lane_ptr = addr(lane_bits)
     for xb in mul_range(1, nbits_g):
-        assert lane_bits[xb] == 0
+        assert lane_ptr[xb] == 0
     return
 
 

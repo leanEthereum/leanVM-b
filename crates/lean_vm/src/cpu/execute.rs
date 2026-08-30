@@ -151,7 +151,7 @@ impl Program {
         // they run after the chain has halted, by which point the program's own row
         // counts are final; a traversal costs exactly its block's size plus its closing
         // jump, so the solve is exact and no second run is needed to correct it.
-        use super::hints::{GPow, RHint};
+        use super::hints::{BitsDest, GPow, RHint};
 
         let ending_pc = (self.prog.len() - 1) as u32; // last bytecode slot, g^{B-1}
 
@@ -327,6 +327,22 @@ impl Program {
             panic!("hint_decompose_bits_exponent: value is not g^n for n < 2^{nbits}")
         }
 
+        // The cell a heap run starts at: read the pointer back out of memory and
+        // invert it. Shared by every hint that writes through one.
+        fn heap_base(m: &Mem, g: &mut GPow, cell: u32, what: &str) -> u32 {
+            let p = as_addr(m.get(cell)).unwrap_or_else(|| panic!("{what} pointer is not a K-valued g-power"));
+            g.log(p).unwrap_or_else(|| panic!("{what} pointer is not a g-power"))
+        }
+
+        // Where a computed-advice bit buffer starts: a frame run needs no lookup
+        // at all, which is the point of having one.
+        fn bits_base(m: &Mem, g: &mut GPow, fp: u32, dest: BitsDest, what: &str) -> u32 {
+            match dest {
+                BitsDest::Stack(base) => fp + base,
+                BitsDest::Heap(ptr) => heap_base(m, g, fp + ptr, what),
+            }
+        }
+
         // The program's own chain runs to the halt sentinel; the fill blocks then run, one
         // cycle at a time. A cycle is entered at its block's first instruction, in a frame
         // of its own, and traversed for the rows `filler::solve` asks of it, always a whole
@@ -478,27 +494,19 @@ impl Program {
                             }
                         }
                         RHint::WitnessHeap { name, ptr, lo, len } => {
-                            let p =
-                                as_addr(m.get(fp + ptr)).expect("hint_witness heap pointer is not a K-valued g-power");
-                            let b = g
-                                .log(p)
-                                .unwrap_or_else(|| panic!("hint_witness heap pointer is not a g-power"));
+                            let b = heap_base(&m, &mut g, fp + ptr, "hint_witness heap");
                             let values = pop_witness(&self.witness, &mut witness_positions, name, *len);
                             for (k, &value) in values.iter().enumerate() {
                                 m.put(b + lo + k as u32, value);
                             }
                         }
                         RHint::Log2Ceil {
-                            bits_ptr,
+                            bits,
                             dst,
                             nbits,
                             floor,
                         } => {
-                            let p = as_addr(m.get(fp + bits_ptr))
-                                .expect("log2_ceil bits pointer is not a K-valued g-power");
-                            let b = g
-                                .log(p)
-                                .unwrap_or_else(|| panic!("log2_ceil bits pointer is not a g-power"));
+                            let b = bits_base(&m, &mut g, fp, *bits, "log2_ceil");
                             let mut word: u128 = 0;
                             for j in 0..*nbits {
                                 if !m.get(b + j).is_zero() {
@@ -513,29 +521,21 @@ impl Program {
                             let mu = cl.max(*floor);
                             m.put(fp + dst, F192::from(primitives::field::g_pow(mu as usize)));
                         }
-                        RHint::BitDecompose { value, bits_ptr, nbits } => {
+                        RHint::BitDecompose { value, bits, nbits } => {
                             assert!(*nbits <= 192, "a machine word has 192 bits");
                             let v = m.get(fp + value);
                             let limbs = [v.c0, v.c1, v.c2];
-                            let bp = as_addr(m.get(fp + bits_ptr))
-                                .expect("decompose bits pointer is not a K-valued g-power");
-                            let bb = g
-                                .log(bp)
-                                .unwrap_or_else(|| panic!("decompose bits pointer is not a g-power"));
+                            let bb = bits_base(&m, &mut g, fp, *bits, "decompose");
                             for j in 0..*nbits {
                                 let bit = (limbs[j as usize / 64] >> (j % 64)) & 1;
                                 m.put(bb + j, F192::new(bit, 0, 0));
                             }
                         }
-                        RHint::BitDecomposeExp { value, bits_ptr, nbits } => {
+                        RHint::BitDecomposeExp { value, bits, nbits } => {
                             let x = as_addr(m.get(fp + value))
                                 .expect("hint_decompose_bits_exponent value is not a K-valued g-power");
                             let n = bounded_dlog(&mut dlog_cache, x, *nbits);
-                            let bp = as_addr(m.get(fp + bits_ptr))
-                                .expect("hint_decompose_bits_exponent bits pointer is not a K-valued g-power");
-                            let bb = g.log(bp).unwrap_or_else(|| {
-                                panic!("hint_decompose_bits_exponent bits pointer is not a g-power")
-                            });
+                            let bb = bits_base(&m, &mut g, fp, *bits, "hint_decompose_bits_exponent");
                             for j in 0..*nbits {
                                 let bit = ((n >> j) & 1) as u64;
                                 m.put(bb + j, F192::new(bit, 0, 0));

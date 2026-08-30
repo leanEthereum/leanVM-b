@@ -143,6 +143,16 @@ def StackBuf(n: int) -> _Elt:
     return _Elt()
 
 
+def addr(buf) -> _Elt:
+    """The g-address of a StackBuf's first cell, so a frame run can be pointed
+    at: `p = addr(sb)` binds a pointer whose `p[i]` / `p * GEN ** k` behave like
+    a HeapBuf's, while `sb[k]` itself stays a direct frame cell. Costs one
+    materialization of `fp` per function (2 DEREFs, amortized; free in `main`).
+    Only valid as the whole right-hand side of an assignment."""
+    _ = buf
+    return _Elt()
+
+
 def hint_witness(dest, name: str) -> None:
     """Fill `dest` (a StackBuf, or a StackBuf/HeapBuf slice of any length)
     with the next ENTRY (a slice of values) of the named prover witness

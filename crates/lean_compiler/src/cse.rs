@@ -3,7 +3,7 @@
 //! Candidates must be local, have one write including hints, and carry no hints themselves. The value map is cleared at control-flow boundaries. Effectful instructions are retained, although reads from them may be rewritten.
 
 use super::ir::{Hint, KVal, LInstr, LOp, Off};
-use lean_vm::cpu::hints::RHint;
+use lean_vm::cpu::hints::{BitsDest, RHint};
 use std::collections::{HashMap, HashSet};
 
 /// A pure operation's identity: the opcode plus its operand cells (commutative
@@ -73,6 +73,7 @@ pub(crate) fn cse(code: &mut Vec<LInstr>, abi_end: Off, frozen_from: usize) -> u
 fn write_counts(code: &[LInstr]) -> HashMap<Off, u32> {
     let mut writes: HashMap<Off, u32> = HashMap::new();
     let mut bump = |offset: Off| *writes.entry(offset).or_default() += 1;
+    let run = |bump: &mut dyn FnMut(Off), base: Off, len: u32| (0..len).for_each(|k| bump(base + k));
     for ins in code {
         match &ins.op {
             LOp::Set { o, .. } => bump(*o),
@@ -101,16 +102,24 @@ fn write_counts(code: &[LInstr]) -> HashMap<Off, u32> {
                 Hint::Resolved(r) => match r {
                     RHint::Alloc { ptr, .. } | RHint::AllocDyn { ptr, .. } => bump(*ptr),
                     RHint::WitnessStack { base, len, .. } | RHint::FieldLimbs { base, len, .. } => {
-                        for k in 0..*len {
-                            bump(*base + k);
+                        run(&mut bump, *base, *len)
+                    }
+                    RHint::Inverse { dst, .. } => bump(*dst),
+                    // A run is addressed by CONTIGUITY, so no cell of one may be
+                    // rewritten. `Log2Ceil` counts its buffer here although it only
+                    // READS it, since counting is the only way to say so.
+                    RHint::Log2Ceil { bits, nbits, dst, .. } => {
+                        bump(*dst);
+                        if let BitsDest::Stack(base) = bits {
+                            run(&mut bump, *base, *nbits);
                         }
                     }
-                    RHint::Log2Ceil { dst, .. } | RHint::Inverse { dst, .. } => bump(*dst),
-                    // These write HEAP cells through a pointer, not frame cells.
-                    RHint::WitnessHeap { .. }
-                    | RHint::BitDecompose { .. }
-                    | RHint::BitDecomposeExp { .. }
-                    | RHint::Print { .. } => {}
+                    RHint::BitDecompose { bits, nbits, .. } | RHint::BitDecomposeExp { bits, nbits, .. } => {
+                        if let BitsDest::Stack(base) = bits {
+                            run(&mut bump, *base, *nbits);
+                        }
+                    }
+                    RHint::WitnessHeap { .. } | RHint::Print { .. } => {}
                 },
             }
         }
@@ -167,10 +176,18 @@ fn rewrite_reads(ins: &mut LInstr, subst: &HashMap<Off, Off>) {
             Hint::Resolved(r) => match r {
                 RHint::AllocDyn { size, .. } => map(size),
                 RHint::WitnessHeap { ptr, .. } => map(ptr),
-                RHint::Log2Ceil { bits_ptr, .. } => map(bits_ptr),
-                RHint::BitDecompose { value, bits_ptr, .. } | RHint::BitDecomposeExp { value, bits_ptr, .. } => {
+                // Only a HEAP buffer reads a cell (its pointer); a stack one names
+                // frame offsets, which no substitution applies to.
+                RHint::Log2Ceil { bits, .. } => {
+                    if let BitsDest::Heap(ptr) = bits {
+                        map(ptr);
+                    }
+                }
+                RHint::BitDecompose { value, bits, .. } | RHint::BitDecomposeExp { value, bits, .. } => {
                     map(value);
-                    map(bits_ptr);
+                    if let BitsDest::Heap(ptr) = bits {
+                        map(ptr);
+                    }
                 }
                 RHint::FieldLimbs { value, .. } | RHint::Inverse { value, .. } => map(value),
                 RHint::Print { cell, .. } => map(cell),

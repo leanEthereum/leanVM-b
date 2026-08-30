@@ -165,6 +165,17 @@ fn slot_of(key: u64, mask: usize) -> usize {
     (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize & mask
 }
 
+/// Where a computed-advice bit buffer lives. Frame cells are ordinary memory, so
+/// a run of them serves as well as a heap region and costs no `DEREF` to index at
+/// a compile-time offset; the heap form stays for a buffer indexed at run time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BitsDest {
+    /// Frame cells `fp+base+k`.
+    Stack(Off),
+    /// Heap cells `m[fp+ptr]·g^k`, the pointer read at run time.
+    Heap(Off),
+}
+
 /// A hint resolved to concrete offsets/sizes, keyed by global program counter.
 #[derive(Clone, Debug)]
 pub enum RHint {
@@ -178,18 +189,18 @@ pub enum RHint {
     /// Pop stream `name`'s next entry (`len` values) into heap cells `m[fp+ptr]·g^{lo+k}`.
     WitnessHeap { name: String, ptr: Off, lo: u32, len: u32 },
     /// Write `g^max(log2_ceil(value), floor)` into `fp+dst`, where `value` is the
-    /// integer reconstructed from the `nbits` bits at the buffer `m[fp+bits_ptr]`.
+    /// integer reconstructed from the `nbits` bits at `bits`.
     Log2Ceil {
-        bits_ptr: Off,
+        bits: BitsDest,
         dst: Off,
         nbits: u32,
         floor: u32,
     },
-    /// Write the `nbits` bits of `m[fp+value]` into the buffer `m[fp+bits_ptr]`.
-    BitDecompose { value: Off, bits_ptr: Off, nbits: u32 },
+    /// Write the `nbits` bits of `m[fp+value]` into `bits`.
+    BitDecompose { value: Off, bits: BitsDest, nbits: u32 },
     /// Write the `nbits` bits of `n`, where `m[fp+value] = g^n` (a bounded
-    /// discrete log at witness generation), into the buffer `m[fp+bits_ptr]`.
-    BitDecomposeExp { value: Off, bits_ptr: Off, nbits: u32 },
+    /// discrete log at witness generation), into `bits`.
+    BitDecomposeExp { value: Off, bits: BitsDest, nbits: u32 },
     /// Write the first `len` K-coordinate limbs of `m[fp+value]` to
     /// `m[fp+base..]`. Computed advice; callers constrain the result.
     FieldLimbs { value: Off, base: Off, len: u32 },

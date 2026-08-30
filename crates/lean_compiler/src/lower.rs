@@ -1105,18 +1105,22 @@ impl FnLower<'_> {
             }
             // A well-formed one folds above, so this is a malformed call.
             Expr::Call(f, _) if f == "f192" => panic!("f192 needs three literal u64 limbs"),
+            Expr::Call(f, args) if f == "addr" => {
+                let ga = self.stack_addr(args);
+                self.materialize(ga)
+            }
             Expr::Call(f, args) if f == "hint_log2_ceil" => {
                 // Computed advice: the prover fills g^log2_ceil (base-2 ceil-log) of the value in
                 // `bits` (a `nbits`-bit buffer), floored at `floor`. Returned
                 // UNCONSTRAINED, so the caller (log2_ceil) re-verifies it. Same
                 // "prover computes, circuit checks" pattern as `/`.
                 assert_eq!(args.len(), 3, "hint_log2_ceil(bits, nbits, floor)");
-                let bits_ptr = self.expr(&args[0]);
                 let nbits = self.const_index(&args[1]);
                 let floor = self.const_index(&args[2]);
+                let bits = self.bits_dest(&args[0], nbits, "hint_log2_ceil");
                 let dst = self.fresh();
                 self.pending.push(Hint::Resolved(RHint::Log2Ceil {
-                    bits_ptr,
+                    bits,
                     dst,
                     nbits,
                     floor,
@@ -1180,11 +1184,44 @@ impl FnLower<'_> {
         base
     }
 
+    /// A computed-advice bit buffer's destination ([`BitsDest`]). Not
+    /// [`Self::cell_run`]: these builtins take a bare `HeapBuf` and carry the
+    /// length in `nbits`, where a cell run would demand a slice.
+    fn bits_dest(&mut self, e: &Expr, nbits: u32, what: &str) -> BitsDest {
+        match self.stack_of(e) {
+            Some((base, len)) => {
+                assert!(
+                    len >= nbits,
+                    "{what} needs {nbits} cells, its StackBuf destination has {len}"
+                );
+                // The hint names the physical cells, so a deferred alias sitting on
+                // one would win every later read (as for `hint_f192_limbs`).
+                self.materialize_run(base, nbits);
+                BitsDest::Stack(base)
+            }
+            None => BitsDest::Heap(self.expr(e)),
+        }
+    }
+
     /// If `e` names a `StackBuf` variable, its `(base, size)`.
     fn stack_of(&self, e: &Expr) -> Option<(Off, u32)> {
         match e {
             Expr::Var(v) => self.scope.stacks.get(v).copied(),
             _ => None,
+        }
+    }
+
+    /// `addr(sb)`: the g-address `fp·g^base` of a `StackBuf`'s first cell, so a
+    /// frame run can be pointed at (indexed at runtime, or handed to a callee)
+    /// while its own accesses stay direct frame cells. Materializing `fp` is the
+    /// ISA's one cost here, amortized per function ([`Self::self_fp`]); the
+    /// address is a folded [`GAddr`], so `addr(sb) * GEN ** k` stays virtual.
+    fn stack_addr(&mut self, args: &[Expr]) -> GAddr {
+        assert_eq!(args.len(), 1, "addr(buf) takes one StackBuf");
+        let (base, _) = self.stack_of(&args[0]).expect("addr() takes a StackBuf");
+        GAddr {
+            base: Some(self.self_fp()),
+            exp: base as u128,
         }
     }
 
@@ -2048,6 +2085,14 @@ impl FnLower<'_> {
                     self.scope.consts.remove(name);
                     self.rebind(name, Binding::Stack(base, es.len() as u32));
                 }
+                // `p = addr(sb)` binds the address itself, so the offset folds
+                // into every later access; in any other position `expr` has to
+                // materialize it into a cell instead.
+                Expr::Call(f, cargs) if f == "addr" => {
+                    let ga = self.stack_addr(cargs);
+                    self.scope.consts.remove(name);
+                    self.rebind(name, Binding::Gaddr(ga));
+                }
                 // `x = other_stackbuf`: a compile-time alias of the same cell
                 // run (zero instructions), the chaining-state idiom `st = sn`
                 // of an MD loop.
@@ -2211,13 +2256,13 @@ impl FnLower<'_> {
         match f {
             "hint_decompose_bits" | "hint_decompose_bits_exponent" => {
                 assert_eq!(args.len(), 3, "{f}(bits, value, nbits)");
-                let bits_ptr = self.expr(&args[0]);
-                let value = self.expr(&args[1]);
                 let nbits = self.const_index(&args[2]);
+                let bits = self.bits_dest(&args[0], nbits, f);
+                let value = self.expr(&args[1]);
                 self.pending.push(Hint::Resolved(if f == "hint_decompose_bits" {
-                    RHint::BitDecompose { value, bits_ptr, nbits }
+                    RHint::BitDecompose { value, bits, nbits }
                 } else {
-                    RHint::BitDecomposeExp { value, bits_ptr, nbits }
+                    RHint::BitDecomposeExp { value, bits, nbits }
                 }));
             }
             "blake2s" => self.lower_blake2s(args),

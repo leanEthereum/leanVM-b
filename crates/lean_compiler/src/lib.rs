@@ -27,7 +27,7 @@
 
 use std::collections::HashMap;
 
-use lean_vm::cpu::hints::RHint;
+use lean_vm::cpu::hints::{BitsDest, RHint};
 use lean_vm::cpu::{DerefMode, Op, Program};
 use primitives::{
     field::{F64, F192, g_pow},
