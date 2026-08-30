@@ -657,6 +657,22 @@ noncomputable def runDirectDetailedSafeOrdinaryWithCompletionTable
   runDirectResolvedDetailedWithCompletionTable context fuel computation >>=
     finishDirectDetailedSafeOrdinaryObserve observe
 
+theorem evalDist_sampled_runDirectDetailedSafeOrdinary_eq_completionTable
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (observe : (OtsSecretIndex → HashOutput) →
+      DeferredContext → Nat → alpha → ProbComp Bool)
+    (context : DeferredContext) (fuel : Nat) :
+    𝒟[(do
+        let base ← sampleOtsHashTable
+        let table := completedStartTable context.state base
+        runDirectResolvedDetailedFromTable context fuel table computation) >>=
+          finishDirectDetailedSafeOrdinaryObserve observe] =
+      𝒟[runDirectDetailedSafeOrdinaryWithCompletionTable observe context fuel computation] := by
+  unfold runDirectDetailedSafeOrdinaryWithCompletionTable
+  exact evalDist_bind_eq_of_evalDist_eq
+    (evalDist_sampled_runDirectResolvedDetailed_eq_completionTable computation context fuel)
+    (finishDirectDetailedSafeOrdinaryObserve observe)
+
 theorem runDirectDetailedSafeOrdinaryWithCompletionTable_pure
     (observe : (OtsSecretIndex → HashOutput) →
       DeferredContext → Nat → alpha → ProbComp Bool)
@@ -838,8 +854,10 @@ theorem probEvent_runDirectDetailedSafeOrdinaryWithCompletionTable_le
     (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
     (observe : (OtsSecretIndex → HashOutput) →
       DeferredContext → Nat → alpha → ProbComp Bool)
-    (hobserve : ∀ table context fuel value,
-      Pr[fun hit : Bool => hit = true | observe table context fuel value] ≤
+    (hobserve : ∀ (context : DeferredContext) (fuel : Nat) (value : alpha),
+      Pr[fun hit : Bool => hit = true | do
+        let base ← sampleOtsHashTable
+        observe (completedStartTable context.state base) context fuel value] ≤
         ((fuel + context.state.pending.card : Nat) : ℝ≥0∞) *
           ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹)
     (context : DeferredContext) (fuel : Nat) :
@@ -850,9 +868,7 @@ theorem probEvent_runDirectDetailedSafeOrdinaryWithCompletionTable_le
   induction computation using OracleComp.inductionOn generalizing context fuel with
   | pure value =>
       rw [runDirectDetailedSafeOrdinaryWithCompletionTable_pure]
-      apply probEvent_bind_le_of_forall_le
-      intro base _hbase
-      exact hobserve (completedStartTable context.state base) context fuel value
+      exact hobserve context fuel value
   | query_bind input next ih =>
       cases input with
       | uniform n =>
@@ -1022,5 +1038,207 @@ theorem probEvent_runDirectDetailedSafeOrdinaryWithCompletionTable_le
                                   fuel + context.state.pending.card := by omega
                             exact mul_le_mul_of_nonneg_right
                               (by exact_mod_cast hnat) zero_le
+
+theorem probEvent_runDirectDetailedSafeOrdinaryFinalize_le
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (context : DeferredContext) (fuel : Nat) :
+    Pr[fun hit : Bool => hit = true |
+        runDirectDetailedSafeOrdinaryWithCompletionTable
+          (fun _ nextContext _ _ => LazyRevealProbe.finalize nextContext.state)
+          context fuel computation] ≤
+      ((fuel + context.state.pending.card : Nat) : ℝ≥0∞) *
+        ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  apply probEvent_runDirectDetailedSafeOrdinaryWithCompletionTable_le
+  intro nextContext remaining value
+  have hdist :
+      𝒟[do
+        let _base ← sampleOtsHashTable
+        LazyRevealProbe.finalize nextContext.state] =
+        𝒟[LazyRevealProbe.finalize nextContext.state] :=
+    evalDist_sampleOtsHashTable_bind_const _
+  refine (OracleComp.probEvent_congr' (fun _ _ => Iff.rfl) hdist).le.trans ?_
+  refine (LazyRevealProbe.finalize_probability_le nextContext.state).trans ?_
+  have hnat : nextContext.state.pending.card ≤
+      remaining + nextContext.state.pending.card := by omega
+  exact mul_le_mul_of_nonneg_right (by exact_mod_cast hnat) zero_le
+
+def DirectDetailedResult.toRawResult :
+    DirectDetailedResult alpha → LazyRevealProbe.RawResult Coordinate alpha
+  | .stopped .ordinaryHit => .stopped true
+  | .stopped _ => .stopped false
+  | .done result => .done result.context.state result.remaining result.value
+
+set_option maxRecDepth 100000 in
+set_option maxHeartbeats 200000 in
+theorem evalDist_toRawResult_runDirectResolvedDetailedWithCompletionTable
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat) :
+    𝒟[DirectDetailedResult.toRawResult <$>
+        runDirectResolvedDetailedWithCompletionTable
+          (directDeferredContext state) fuel computation] =
+      𝒟[LazyRevealProbe.runRaw state fuel computation] := by
+  induction computation using OracleComp.inductionOn generalizing state fuel with
+  | pure value =>
+      rw [runDirectResolvedDetailedWithCompletionTable_pure]
+      calc
+        _ = 𝒟[sampleOtsHashTable >>= fun _ =>
+            (pure (.done state fuel value) :
+              ProbComp (LazyRevealProbe.RawResult Coordinate alpha))] := by
+          apply congrArg evalDist
+          rw [map_bind]
+          apply bind_congr
+          intro base
+          rfl
+        _ = 𝒟[pure (.done state fuel value)] :=
+          evalDist_sampleOtsHashTable_bind_const _
+        _ = _ := rfl
+  | query_bind input next ih =>
+      cases input with
+      | uniform n =>
+          rw [runDirectResolvedDetailedWithCompletionTable_uniform_query_bind,
+            LazyRevealProbe.runRaw_uniform_query_bind, map_bind]
+          apply evalDist_bind_congr
+          intro output _houtput
+          exact ih output state fuel
+      | hashOutput =>
+          rw [runDirectResolvedDetailedWithCompletionTable_hashOutput_query_bind,
+            LazyRevealProbe.runRaw_hashOutput_query_bind, map_bind]
+          apply evalDist_bind_congr
+          intro output _houtput
+          exact ih output state fuel
+      | ensure coordinate =>
+          rw [runDirectResolvedDetailedWithCompletionTable_ensure_query_bind,
+            LazyRevealProbe.runRaw_ensure_query_bind]
+          simpa [directDeferredContext, directDeferredValues_ensure] using
+            ih () (state.ensure coordinate) fuel
+      | probe coordinate candidate =>
+          rw [runDirectResolvedDetailedWithCompletionTable_probe_query_bind,
+            LazyRevealProbe.runRaw_probe_query_bind]
+          cases fuel with
+          | zero => simp [DirectDetailedResult.toRawResult]
+          | succ remaining =>
+              by_cases hrevealed : coordinate ∈ state.revealed
+              · simp only [directDeferredContext, hrevealed, ↓reduceIte]
+                exact ih () state remaining
+              · simp only [directDeferredContext, hrevealed, ↓reduceIte]
+                simpa [directDeferredContext, directDeferredValues_addPending] using
+                  ih () (state.addPending coordinate candidate) remaining
+      | peek coordinate =>
+          rw [runDirectResolvedDetailedWithCompletionTable_peek_query_bind,
+            LazyRevealProbe.runRaw_peek_query_bind]
+          exact ih (state.values coordinate) state fuel
+      | publish coordinate =>
+          rw [runDirectResolvedDetailedWithCompletionTable_publish_query_bind,
+            LazyRevealProbe.runRaw_publish_query_bind]
+          simpa [directDeferredContext, directDeferredValues_publish] using
+            ih () (state.publish coordinate) fuel
+      | reveal coordinate =>
+          rw [runDirectResolvedDetailedWithCompletionTable_reveal_query_bind,
+            LazyRevealProbe.runRaw_reveal_query_bind]
+          cases hstate : state.values coordinate with
+          | some output =>
+              simp only [directDeferredContext, hstate]
+              exact ih output state fuel
+          | none =>
+              cases coordinate with
+              | chainStart lay tree leafIdx chainIdx =>
+                  simp only [directDeferredContext, hstate, map_bind]
+                  apply evalDist_bind_congr
+                  intro output _houtput
+                  by_cases hhit : state.hitAt
+                      (.chainStart lay tree leafIdx chainIdx) output
+                  · simp [hhit, DirectDetailedResult.toRawResult]
+                  · simp only [hhit, ↓reduceIte]
+                    have hcontext :
+                        { state := state.materialize
+                            (.chainStart lay tree leafIdx chainIdx) output
+                          values := directDeferredValues state } =
+                          directDeferredContext
+                            (state.materialize
+                              (.chainStart lay tree leafIdx chainIdx) output) := by
+                      congr 1
+                    rw [hcontext]
+                    exact ih output
+                      (state.materialize
+                        (.chainStart lay tree leafIdx chainIdx) output) fuel
+              | position position =>
+                  simp only [directDeferredContext, directDeferredValues, hstate,
+                    map_bind]
+                  apply evalDist_bind_congr
+                  intro output _houtput
+                  by_cases hhit : state.hitAt (.position position) output
+                  · simp [hhit, DirectDetailedResult.toRawResult]
+                  · simp only [hhit, ↓reduceIte]
+                    have hcontext :
+                        { state := state.materialize (.position position) output
+                          values := (directDeferredValues state).install position output } =
+                          directDeferredContext
+                            (state.materialize (.position position) output) := by
+                      simp [directDeferredContext,
+                        directDeferredValues_materialize_position]
+                    rw [hcontext]
+                    exact ih output (state.materialize (.position position) output) fuel
+
+theorem finishDirectDetailedSafeOrdinaryFinalize_eq_rawFinish
+    (result : DirectDetailedResult alpha) :
+    finishDirectDetailedSafeOrdinaryObserve
+        (fun _ context _ _ => LazyRevealProbe.finalize context.state) result =
+      result.toRawResult.finish := by
+  cases result with
+  | stopped reason => cases reason <;> rfl
+  | done result => rfl
+
+theorem evalDist_runDirectDetailedSafeOrdinaryFinalize_eq_runRawFinish
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat) :
+    𝒟[runDirectDetailedSafeOrdinaryWithCompletionTable
+        (fun _ context _ _ => LazyRevealProbe.finalize context.state)
+        (directDeferredContext state) fuel computation] =
+      𝒟[LazyRevealProbe.runRaw state fuel computation >>=
+        LazyRevealProbe.RawResult.finish] := by
+  unfold runDirectDetailedSafeOrdinaryWithCompletionTable
+  calc
+    _ = 𝒟[(DirectDetailedResult.toRawResult <$>
+          runDirectResolvedDetailedWithCompletionTable
+            (directDeferredContext state) fuel computation) >>=
+        LazyRevealProbe.RawResult.finish] := by
+      apply congrArg evalDist
+      rw [map_eq_bind_pure_comp, bind_assoc]
+      apply bind_congr
+      intro result
+      exact finishDirectDetailedSafeOrdinaryFinalize_eq_rawFinish result
+    _ = _ := evalDist_bind_eq_of_evalDist_eq
+      (evalDist_toRawResult_runDirectResolvedDetailedWithCompletionTable computation state fuel)
+      LazyRevealProbe.RawResult.finish
+
+theorem stopped_false_mem_support_runRaw_of_fuelExhausted_detailed
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (hresult : DirectDetailedResult.stopped .fuelExhausted ∈ support
+      (runDirectResolvedDetailedWithCompletionTable
+        (directDeferredContext state) fuel computation)) :
+    LazyRevealProbe.RawResult.stopped false ∈ support
+      (LazyRevealProbe.runRaw state fuel computation) := by
+  have hmapped : LazyRevealProbe.RawResult.stopped false ∈ support
+      (DirectDetailedResult.toRawResult <$>
+        runDirectResolvedDetailedWithCompletionTable
+          (directDeferredContext state) fuel computation) := by
+    rw [support_map]
+    exact ⟨.stopped .fuelExhausted, hresult, rfl⟩
+  exact (mem_support_iff_of_evalDist_eq
+    (evalDist_toRawResult_runDirectResolvedDetailedWithCompletionTable computation state fuel)
+    (.stopped false)).mp hmapped
+
+theorem fuelExhausted_not_mem_support_detailed_of_runRaw
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (hnotStopped : LazyRevealProbe.RawResult.stopped false ∉ support
+      (LazyRevealProbe.runRaw state fuel computation)) :
+    DirectDetailedResult.stopped .fuelExhausted ∉ support
+      (runDirectResolvedDetailedWithCompletionTable
+        (directDeferredContext state) fuel computation) := by
+  intro hresult
+  exact hnotStopped
+    (stopped_false_mem_support_runRaw_of_fuelExhausted_detailed computation state fuel hresult)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
