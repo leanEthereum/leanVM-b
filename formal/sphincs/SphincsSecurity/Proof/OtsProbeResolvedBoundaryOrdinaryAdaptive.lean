@@ -860,6 +860,66 @@ theorem remaining_le_of_done_maskedExpandedAdversaryImpl
     hraw
 
 set_option maxRecDepth 100000 in
+theorem probEvent_materializedPrivateStep_uniform_le
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (n : Nat)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (nextObserve : DeferredContext → Nat →
+      (Fin (n + 1) × SplitHashCache) → ProbComp Bool)
+    (epsilon terminalBound : ℝ≥0∞)
+    (hclean : ¬PrivateStructuralHit
+      (canonicalizeMaterializedValues table context))
+    (hcompletable : DeferredCompletable table context)
+    (hcontinuation : ∀ result : ResolvedRunResult
+        (Fin (n + 1) × SplitHashCache),
+      DirectDetailedResult.done result ∈ support
+        (runDirectResolvedDetailedFromTable context fuel table
+          ((maskedExpandedAdversaryImpl parameter root ftsSecret
+            (.inl (.inl n))).run cache)) →
+      ¬PrivateStructuralHit
+          (canonicalizeMaterializedValues table result.context) →
+      DeferredCompletable table result.context →
+      Pr[= true | nextObserve result.context result.remaining result.value] ≤
+        (result.remaining : ℝ≥0∞) * epsilon + terminalBound) :
+    Pr[= true |
+      runDirectDetailedPrivateObserve
+        (classifyCanonicalMaterializedPrivateObserve table nextObserve)
+        context fuel table
+        ((maskedExpandedAdversaryImpl parameter root ftsSecret
+          (.inl (.inl n))).run cache)] ≤
+      (fuel : ℝ≥0∞) * epsilon + terminalBound := by
+  change Pr[= true |
+      runDirectDetailedPrivateObserve
+        (classifyCanonicalMaterializedPrivateObserve table nextObserve)
+        context fuel table ((splitUniformImpl n).run cache)] ≤
+      (fuel : ℝ≥0∞) * epsilon + terminalBound
+  unfold splitUniformImpl
+  rw [StateT.run_liftM, LazyRevealProbe.uniformQuery]
+  unfold runDirectDetailedPrivateObserve
+  rw [runDirectResolvedDetailedFromTable_uniform_query_bind]
+  simp only [runDirectResolvedDetailedFromTable_pure, bind_assoc, pure_bind,
+    finishDirectDetailedPrivateObserve, classifyCanonicalMaterializedPrivateObserve,
+    hclean, hcompletable, ↓reduceIte]
+  rw [← probEvent_eq_eq_probOutput]
+  apply probEvent_bind_le_of_forall_le
+  intro output houtput
+  have hmem : DirectDetailedResult.done
+      (⟨context, fuel, (output, cache), table⟩ :
+        ResolvedRunResult (Fin (n + 1) × SplitHashCache)) ∈ support
+      (runDirectResolvedDetailedFromTable context fuel table
+        ((maskedExpandedAdversaryImpl parameter root ftsSecret
+          (.inl (.inl n))).run cache)) := by
+    unfold maskedExpandedAdversaryImpl probingRomImpl
+    change DirectDetailedResult.done ⟨context, fuel, (output, cache), table⟩ ∈ support
+      (runDirectResolvedDetailedFromTable context fuel table ((splitUniformImpl n).run cache))
+    unfold splitUniformImpl
+    rw [StateT.run_liftM, LazyRevealProbe.uniformQuery,
+      runDirectResolvedDetailedFromTable_uniform_query_bind, mem_support_bind_iff]
+    exact ⟨output, houtput, by simp [runDirectResolvedDetailedFromTable_pure]⟩
+  simpa using hcontinuation ⟨context, fuel, (output, cache), table⟩ hmem hclean hcompletable
+
+set_option maxRecDepth 100000 in
 theorem probEvent_directDetailedBoundaryCanonicalMaterializedPrivateObserve_maskedExpanded_le
     (parameter : PublicParameter) (root : Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
@@ -3363,6 +3423,26 @@ theorem probEvent_sampledMaterializedGuardedSafeOrdinaryRetained_le
           (directDeferredContext
             (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)) fuel)
 
+set_option linter.constructorNameAsVariable false in
+set_option maxRecDepth 100000 in
+theorem probEvent_sampledFlat_add_materializedGuardedOrdinaryRetained_le_two_mul
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat) :
+    Pr[= true | sampledFlatDetailedOrdinaryRetained adversary parameter ftsSecret q] +
+        Pr[= true |
+          sampledMaterializedGuardedSafeOrdinaryRetained adversary parameter ftsSecret q] ≤
+      ((2 * q : Nat) : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  calc
+    _ ≤ (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ +
+          (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ :=
+      add_le_add
+        (probEvent_sampledFlatDetailedOrdinaryRetained_le adversary parameter ftsSecret q)
+        (probEvent_sampledMaterializedGuardedSafeOrdinaryRetained_le adversary parameter
+          ftsSecret q)
+    _ = _ := by
+      push_cast
+      ring
+
 set_option maxRecDepth 100000 in
 theorem deferredCleanRetainedRun_eq_retainedGameRest_bind
     (adversary : Adversary) (parameter : PublicParameter)
@@ -3839,6 +3919,94 @@ theorem probEvent_failed_sampledGranularAllDirectBoundaryDetailedRetainedOutcome
 set_option linter.constructorNameAsVariable false in
 set_option maxHeartbeats 1000000 in
 set_option maxRecDepth 100000 in
+theorem probEvent_failed_sampledGranularAllDirectBoundaryDetailedRetainedOutcome_le_canonical_add_private
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (hq : HasHashQueryBound scheme adversary q)
+    (hparameter : parameter ∈ support sampleParameter)
+    (hfts : ftsSecret ∈ support sampleFtsSecrets) :
+    Pr[fun outcome => outcome.failed = true |
+        sampledGranularAllDirectBoundaryDetailedRetainedOutcome adversary parameter
+          ftsSecret q] ≤
+      Pr[= true |
+          sampledMaterializedCanonicalFailedRetained adversary parameter ftsSecret q] +
+        Pr[= true |
+          sampledGranularAllDirectBoundaryDetailedRetainedPrivate adversary parameter
+            ftsSecret q] := by
+  calc
+    _ ≤ Pr[= true |
+          sampledMaterializedBoundaryDetailedRetainedOrdinary adversary parameter
+            ftsSecret q] +
+        Pr[= true |
+          sampledGranularAllDirectBoundaryDetailedRetainedPrivate adversary parameter
+            ftsSecret q] :=
+      probEvent_failed_sampledGranularAllDirectBoundaryDetailedRetainedOutcome_le_materialized_add_private
+        adversary parameter ftsSecret q hq hparameter hfts
+    _ ≤ _ := add_le_add
+      (probEvent_sampledMaterializedBoundaryDetailedRetainedOrdinary_le_canonicalFailed
+        adversary parameter ftsSecret q) le_rfl
+
+set_option linter.constructorNameAsVariable false in
+set_option maxHeartbeats 1000000 in
+set_option maxRecDepth 100000 in
+theorem probEvent_failed_sampledGranularAllDirectBoundaryDetailedRetainedOutcome_le_three_endpoints
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (hq : HasHashQueryBound scheme adversary q)
+    (hparameter : parameter ∈ support sampleParameter)
+    (hfts : ftsSecret ∈ support sampleFtsSecrets) :
+    Pr[fun outcome => outcome.failed = true |
+        sampledGranularAllDirectBoundaryDetailedRetainedOutcome adversary parameter
+          ftsSecret q] ≤
+      Pr[= true |
+          sampledMaterializedCanonicalOrdinaryRetained adversary parameter ftsSecret q] +
+        Pr[= true |
+          sampledMaterializedCanonicalPrivateRetained adversary parameter ftsSecret q] +
+        Pr[= true |
+          sampledGranularAllDirectBoundaryDetailedRetainedPrivate adversary parameter
+            ftsSecret q] := by
+  have hfailed :
+      Pr[= true |
+          sampledMaterializedCanonicalFailedRetained adversary parameter ftsSecret q] =
+        Pr[fun outcome => outcome.failed = true |
+          sampledMaterializedCanonicalFullDetailedRetained adversary parameter
+            ftsSecret q] := by
+    calc
+      _ = Pr[= true | DirectBoundaryOutcome.failed <$>
+          sampledMaterializedCanonicalFullDetailedRetained adversary parameter
+            ftsSecret q] :=
+        OracleComp.probOutput_congr rfl
+          (evalDist_failed_sampledMaterializedCanonicalFullDetailedRetained adversary parameter
+            ftsSecret q).symm
+      _ = Pr[fun hit : Bool => hit = true | DirectBoundaryOutcome.failed <$>
+          sampledMaterializedCanonicalFullDetailedRetained adversary parameter
+            ftsSecret q] :=
+        (probEvent_eq_eq_probOutput _ true).symm
+      _ = _ := by
+        rw [probEvent_map]
+        rfl
+  calc
+    _ ≤ Pr[= true |
+          sampledMaterializedCanonicalFailedRetained adversary parameter ftsSecret q] +
+        Pr[= true |
+          sampledGranularAllDirectBoundaryDetailedRetainedPrivate adversary parameter
+            ftsSecret q] :=
+      probEvent_failed_sampledGranularAllDirectBoundaryDetailedRetainedOutcome_le_canonical_add_private
+        adversary parameter ftsSecret q hq hparameter hfts
+    _ = Pr[fun outcome => outcome.failed = true |
+          sampledMaterializedCanonicalFullDetailedRetained adversary parameter
+            ftsSecret q] +
+        Pr[= true |
+          sampledGranularAllDirectBoundaryDetailedRetainedPrivate adversary parameter
+            ftsSecret q] := by
+      rw [hfailed]
+    _ ≤ _ := add_le_add
+      (probEvent_failed_sampledMaterializedCanonicalFullDetailedRetained_le adversary parameter
+        ftsSecret q) le_rfl
+
+set_option linter.constructorNameAsVariable false in
+set_option maxHeartbeats 1000000 in
+set_option maxRecDepth 100000 in
 theorem probEvent_failed_sampledGranularAllDirectBoundaryDetailedRetainedOutcome_le_two_mul
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
@@ -3871,6 +4039,58 @@ theorem probEvent_failed_sampledGranularAllDirectBoundaryDetailedRetainedOutcome
     _ ≤ (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ +
         (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ :=
       add_le_add hmaterialized hprivate
+    _ = _ := by
+      push_cast
+      ring
+
+set_option linter.constructorNameAsVariable false in
+set_option maxRecDepth 100000 in
+theorem probEvent_failed_sampledAllDirectBoundaryDetailedRetainedOutcome_le_four_mul_of_endpoints
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (hdomination :
+      Pr[fun outcome => outcome.failed = true |
+          sampledAllDirectBoundaryDetailedRetainedOutcome adversary parameter ftsSecret q] ≤
+        Pr[= true |
+            sampledFlatDetailedOrdinaryRetained adversary parameter ftsSecret q] +
+          Pr[= true |
+            sampledMaterializedGuardedSafeOrdinaryRetained adversary parameter ftsSecret q] +
+          Pr[= true |
+            sampledMaterializedCanonicalPrivateRetained adversary parameter ftsSecret q] +
+          Pr[= true |
+            sampledGranularAllDirectBoundaryDetailedRetainedPrivate adversary parameter
+              ftsSecret q])
+    (hmaterializedPrivate :
+      Pr[= true |
+          sampledMaterializedCanonicalPrivateRetained adversary parameter ftsSecret q] ≤
+        (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹)
+    (hgranularPrivate :
+      Pr[= true |
+          sampledGranularAllDirectBoundaryDetailedRetainedPrivate adversary parameter
+            ftsSecret q] ≤
+        (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹) :
+    Pr[fun outcome => outcome.failed = true |
+        sampledAllDirectBoundaryDetailedRetainedOutcome adversary parameter ftsSecret q] ≤
+      ((4 * q : Nat) : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  calc
+    _ ≤ Pr[= true |
+          sampledFlatDetailedOrdinaryRetained adversary parameter ftsSecret q] +
+        Pr[= true |
+          sampledMaterializedGuardedSafeOrdinaryRetained adversary parameter ftsSecret q] +
+        Pr[= true |
+          sampledMaterializedCanonicalPrivateRetained adversary parameter ftsSecret q] +
+        Pr[= true |
+          sampledGranularAllDirectBoundaryDetailedRetainedPrivate adversary parameter
+            ftsSecret q] := hdomination
+    _ ≤ ((2 * q : Nat) : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ +
+          (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ +
+          (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+      exact add_le_add
+        (add_le_add
+          (probEvent_sampledFlat_add_materializedGuardedOrdinaryRetained_le_two_mul
+            adversary parameter ftsSecret q)
+          hmaterializedPrivate)
+        hgranularPrivate
     _ = _ := by
       push_cast
       ring
