@@ -21,6 +21,15 @@ noncomputable def sampleOtsHashTable :
     ProbComp (OtsSecretIndex → HashOutput) :=
   $ᵗ (OtsSecretIndex → HashOutput)
 
+theorem probFailure_sampleOtsHashTable : Pr[⊥ | sampleOtsHashTable] = 0 := by
+  rw [sampleOtsHashTable]
+  exact probFailure_uniformSample _
+
+theorem evalDist_sampleOtsHashTable_bind_const (result : ProbComp alpha) :
+    𝒟[sampleOtsHashTable >>= fun _ => result] = 𝒟[result] := by
+  exact OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+    sampleOtsHashTable (by rw [sampleOtsHashTable]; simp) result
+
 structure CleanRunResult (alpha : Type) where
   state : LazyRevealProbe.State Coordinate
   remaining : Nat
