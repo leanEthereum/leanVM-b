@@ -167,6 +167,7 @@ impl Program {
             written: vec![false; n0],
             count: vec![F64::ONE; n0],
             dbg_pc: 0,
+            dbg_line: 0,
             dbg_hint: None,
         };
         // Seed the public input into m[0], m[1] (addresses g^0, g^1, §sec:e2e-pi).
@@ -240,6 +241,8 @@ impl Program {
             /// fields rather than thread-locals: this is written on every step,
             /// and a thread-local costs a lazy-init check each time.
             dbg_pc: u32,
+            /// Source line of that pc, or 0 when the program carries no table.
+            dbg_line: u32,
             dbg_hint: Option<&'static str>,
         }
         impl Mem {
@@ -273,8 +276,12 @@ impl Program {
                 if self.written[c] {
                     assert!(
                         self.cells[c] == v,
-                        "write-once conflict at cell {cell} (pc {}, hint {:?}): had {:x}:{:x}:{:x}, new {:x}:{:x}:{:x}",
-                        self.dbg_pc,
+                        "write-once conflict at cell {cell} ({}, hint {:?}): had {:x}:{:x}:{:x}, new {:x}:{:x}:{:x}",
+                        if self.dbg_line == 0 {
+                            format!("pc {}", self.dbg_pc)
+                        } else {
+                            format!("line {}, pc {}", self.dbg_line, self.dbg_pc)
+                        },
                         self.dbg_hint,
                         self.cells[c].c2,
                         self.cells[c].c1,
@@ -403,6 +410,7 @@ impl Program {
             }
             assert!(steps < 100_000_000, "step limit exceeded (runaway recursion?)");
             m.dbg_pc = pc;
+            m.dbg_line = self.src_lines.get(pc as usize).copied().unwrap_or(0);
             if let Some(p) = prof.as_mut() {
                 p[pc as usize] += 1;
             }
@@ -644,7 +652,7 @@ impl Program {
                     let p_addr = as_addr(p).unwrap_or_else(|| {
                         panic!(
                             "DEREF pointer is not a K-valued g-power at pc {pc} (in {}): {:x}:{:x}",
-                            self.fn_at(pc),
+                            self.site_at(pc),
                             p.c1,
                             p.c0
                         )
@@ -664,7 +672,7 @@ impl Program {
                                     "DEREF pointer is not a small g-power at pc {pc} (in {}): a wild \
                                      pointer, or a failed range check \
                                      (value 0x{:016x})",
-                                    self.fn_at(pc),
+                                    self.site_at(pc),
                                     p_addr.0
                                 )
                             })
@@ -682,8 +690,9 @@ impl Program {
                                 (true, true) => {
                                     assert!(
                                         m.cells[a2] == m.get(a3),
-                                        "DEREF mismatch at pc {pc}: m[{a2}] = {:x}:{:x}:{:x} but \
+                                        "DEREF mismatch at pc {pc} (in {}): m[{a2}] = {:x}:{:x}:{:x} but \
                                          m[fp+{gamma}] = {:x}:{:x}:{:x}",
+                                        self.site_at(pc),
                                         m.cells[a2].c2,
                                         m.cells[a2].c1,
                                         m.cells[a2].c0,

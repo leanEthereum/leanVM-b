@@ -265,3 +265,168 @@ def main():
     let exec = compile(&parse(src).expect("parse")).execute([F192::ZERO; 2]);
     assert!(exec.unconstrained_reads.is_empty(), "no prover-chosen read");
 }
+
+/// Every diagnostic names its source line. The line vector used to carry the
+/// INDENT, not the source index, and the collection loop skips blanks, comments
+/// and imports without counting, so nothing could name one: against a
+/// 3,274-line guest an error read `inconsistent indentation` and no more.
+#[test]
+fn a_parse_error_names_its_source_line() {
+    // Counting from 1: blank, comment, constant, blank, blank, def, let, error.
+    let src = "\n# a comment\nV = 8\n\n\ndef main():\n    x = 4\n    x != y\n    return\n";
+    let err = parse(src).unwrap_err();
+    assert!(err.starts_with("line 8:"), "{err}");
+
+    // A constant declaration, above the `def`s and parsed by a different loop.
+    let konst = "\nN = 1\n\nM = 1 +\n\ndef main():\n    return\n";
+    assert!(parse(konst).unwrap_err().starts_with("line 4:"), "{konst}");
+
+    // Inside a block, past a blank line.
+    let block =
+        "\n\ndef main():\n    a = StackBuf(2)\n\n    for i in mul_range(1, 10):\n        a[0] = 1\n    return\n";
+    assert!(parse(block).unwrap_err().starts_with("line 6:"));
+}
+
+/// The four diagnostics raised where no `func`/`stmt` frame is open: those two
+/// stamp the line they were ENTERED on, so an enclosing header would be named
+/// instead of the line that is wrong. `inconsistent indentation` is the one the
+/// whole change exists for, and stamping it from the enclosing frame put it
+/// 1,074 lines away from the fault in the real guest.
+#[test]
+fn an_error_raised_between_frames_still_names_its_line() {
+    // 1 blank, 2 def, 3 let, 4 if, 5 body, 6 stray deeper indent.
+    let indent = "\ndef main():\n    x = 4\n    if x == 4:\n        x = 5\n          x = 6\n    return\n";
+    assert!(parse(indent).unwrap_err().starts_with("line 6:"), "{:?}", parse(indent));
+
+    // 1 blank, 2 @inline, 3 the broken def.
+    let deco = "\n@inline\nde f(x):\n    return x\n";
+    assert!(parse(deco).unwrap_err().starts_with("line 3:"), "{:?}", parse(deco));
+
+    // 1 blank, 2 def, 3 let, 4 if, 5 body, 6 the broken elif.
+    let elif = "\ndef main():\n    x = 4\n    if x == 4:\n        x = 5\n    elif x ~~ 5:\n        x = 6\n    return\n";
+    assert!(parse(elif).unwrap_err().starts_with("line 6:"), "{:?}", parse(elif));
+
+    // 1 blank, 2 def, 3 let, 4 match, 5 case 0, 6 body, 7 the non-consecutive case.
+    let case = "\ndef main():\n    x = GEN ** 0\n    match log(x):\n        case 0:\n            x = 5\n        case 2:\n            x = 6\n    return\n";
+    assert!(parse(case).unwrap_err().starts_with("line 7:"), "{:?}", parse(case));
+}
+
+/// A replacement carrying a newline shifts every later line, so the numbers
+/// above would be wrong and the injected text would land at whatever
+/// indentation it fell on. A `#` is the same shape of hazard: it truncates the
+/// rest of the line and changes the compiled program with no diagnostic. All
+/// 134 of the guest's placeholders are clean; this keeps it that way.
+#[test]
+fn a_multi_line_placeholder_is_rejected() {
+    let mut reps = std::collections::BTreeMap::new();
+    let src = "FOO = 1\n\ndef main():\n    return\n";
+    for bad in ["1\nz = 9", "1 #"] {
+        reps.insert("FOO".to_string(), bad.to_string());
+        let err = lean_compiler::parse_with_replacements(src, &reps).unwrap_err();
+        assert!(err.contains("would reshape the line"), "{bad}: {err}");
+    }
+}
+
+/// A lowering error names its line too, not just a parse error. `lower.rs` works
+/// in frame cells and program counters, so the statement's line is the last
+/// place that knows where the program said it: 30 diagnostics used to print a
+/// Rust `Debug` dump of an AST node and nothing else.
+#[test]
+fn a_lowering_error_names_its_source_line() {
+    // 1 blank, 2 def, 3 let, 4 store, 5 blank, 6 let, 7 the unbound read.
+    let src = "\ndef main():\n    hb = HeapBuf(4)\n    hb[GEN] = 7\n\n    p = GEN ** 0\n    p[1] = nope\n    return\n";
+    let err = std::panic::catch_unwind(|| {
+        compile(&parse(src).expect("parse"));
+    })
+    .expect_err("an unbound variable must abort");
+    let msg = err
+        .downcast_ref::<String>()
+        .cloned()
+        .unwrap_or_else(|| err.downcast_ref::<&str>().map(|s| s.to_string()).unwrap_or_default());
+    assert!(msg.starts_with("line 7:"), "{msg}");
+}
+
+/// And a check that fails at witness generation names it, which is the one that
+/// matters day to day: a failed guest `assert` surfaces as a write-once
+/// conflict, and `AGENTS.md` used to say to disassemble around the reported pc.
+#[test]
+fn a_failed_assert_names_its_source_line() {
+    // 1 blank, 2 def, 3 let, 4 blank, 5 the assert that cannot hold.
+    let src = "\ndef main():\n    x = GEN ** 3\n\n    assert x == GEN ** 4\n    return\n";
+    let program = compile(&parse(src).expect("parse"));
+    let err = std::panic::catch_unwind(|| {
+        program.execute([F192::ZERO; 2]);
+    })
+    .expect_err("the assert cannot hold");
+    let msg = err
+        .downcast_ref::<String>()
+        .cloned()
+        .unwrap_or_else(|| err.downcast_ref::<&str>().map(|s| s.to_string()).unwrap_or_default());
+    assert!(msg.contains("line 5"), "{msg}");
+}
+
+/// An `@inline` body lowers through the CALLER's `FnLower`, so its statements
+/// move `cur_line`. Without restoring it, every instruction the caller emitted
+/// after the call was blamed on whatever line the callee ended on: a line that
+/// cannot fail, reported with confidence.
+#[test]
+fn an_inline_call_does_not_steal_the_call_site_line() {
+    // 1 blank, 2 @inline, 3 def, 4 let, 5 return, 6-7 blank, 8 def main, ... 12 the assert.
+    let src = "\n@inline\ndef idf(x):\n    y = x * x\n    return y\n\n\ndef main():\n    hb = HeapBuf(4)\n    hb[GEN] = GEN ** 3\n    a = hb[GEN]\n    assert idf(a) == GEN\n    return\n";
+    let program = compile(&parse(src).expect("parse"));
+    let err = std::panic::catch_unwind(|| {
+        program.execute([F192::ZERO; 2]);
+    })
+    .expect_err("the assert cannot hold");
+    let msg = err
+        .downcast_ref::<String>()
+        .cloned()
+        .unwrap_or_else(|| err.downcast_ref::<&str>().map(|s| s.to_string()).unwrap_or_default());
+    assert!(msg.contains("line 12"), "the call site, not the callee's line 5: {msg}");
+}
+
+/// The fill blocks are not source code, so they carry the unknown line rather
+/// than whatever `main` happened to end on. They are most of a small program's
+/// instructions, so blaming them on a real line makes the table mostly wrong.
+#[test]
+fn fill_blocks_carry_no_source_line() {
+    let src = "\ndef main():\n    hb = HeapBuf(4)\n    hb[GEN] = 7\n    return\n";
+    let program = compile(&parse(src).expect("parse"));
+    let start = program.filler.first().map(|b| b.pc).expect("main carries fill blocks") as usize;
+    assert!(
+        program.src_lines[start..].iter().all(|&l| l == 0),
+        "a fill block must not be attributed to a source line"
+    );
+    assert!(
+        program.src_lines[..start].iter().any(|&l| l != 0),
+        "real code keeps its lines"
+    );
+}
+
+/// A dispatched `match_range` join reads one cell per bound name, but a callee
+/// returning a `StackBuf` flattens it into several ABI cells, so the name would
+/// silently bind the run's FIRST cell and the rest would be written where
+/// nothing reads them. The guard against that is `all(is scalar)`; negating it
+/// as `all(is not scalar)` rather than `any(is not scalar)` left it firing only
+/// when EVERY return is a buffer, so a `(scalar, StackBuf)` pair walked through
+/// and no existing test noticed.
+#[test]
+#[should_panic(expected = "StackBuf return cannot cross a dispatched join")]
+fn a_mixed_stack_buf_return_cannot_cross_a_dispatched_join() {
+    let src = "\
+@inline
+def f(k: Const):
+    s = StackBuf(2)
+    s[0] = GEN ** 7
+    s[1] = GEN ** 9
+    return GEN ** k, s
+
+def main():
+    x = GEN
+    a, b = match_range(log(x), range(0, 2), lambda i: f(i))
+    assert a == a
+    assert b == GEN ** 7
+    return
+";
+    compile(&parse(src).expect("parse"));
+}

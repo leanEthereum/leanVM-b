@@ -18,10 +18,23 @@ pub fn parse(src: &str) -> Result<Ast, String> {
 /// and substituted into the `def`s below. See the "Placeholders" and "Global
 /// constants" sections of `zkDSL.md`.
 pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String>) -> Result<Ast, String> {
+    // Substitution runs over the RAW source, before lines are split, so a
+    // replacement carrying a newline would shift every line after it and make
+    // every diagnostic below name the wrong one. It would also inject statements
+    // at whatever indentation it landed on. Reject it instead.
+    // A `#` truncates the rest of the line just as silently, and changes the
+    // compiled program with no diagnostic at all.
+    if let Some((k, _)) = replacements.iter().find(|(_, v)| v.contains('\n') || v.contains('#')) {
+        return Err(format!(
+            "placeholder `{k}` contains a newline or `#`, which would reshape the line"
+        ));
+    }
     let src = apply_replacements(src, replacements);
-    // (indent, content) for each significant line.
-    let mut lines: Vec<(usize, String)> = Vec::new();
-    for raw in src.lines() {
+    // (source line, indent, content) for each significant line. The source line
+    // is what every diagnostic below names; blanks, comments and imports are
+    // skipped, so the index into this vector is NOT it.
+    let mut lines: Vec<Line> = Vec::new();
+    for (src_line, raw) in src.lines().enumerate() {
         let no_comment = raw.split('#').next().unwrap();
         if no_comment.trim().is_empty() {
             continue;
@@ -30,14 +43,19 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
         if let Some(rest) = t.strip_prefix("import ").or_else(|| t.strip_prefix("from ")) {
             let module = rest.split_whitespace().next().unwrap_or("");
             if module != "snark_lib" {
-                return Err(format!(
-                    "file imports are not supported (only the `snark_lib` stub): `{t}`"
+                return Err(locate(
+                    src_line + 1,
+                    format!("file imports are not supported (only the `snark_lib` stub): `{t}`"),
                 ));
             }
             continue; // the stub is for Python tooling; the compiler skips it
         }
         let indent = no_comment.len() - no_comment.trim_start().len();
-        lines.push((indent, no_comment.trim().to_string()));
+        lines.push(Line {
+            src: src_line + 1,
+            indent,
+            text: no_comment.trim().to_string(),
+        });
     }
     // Peel off the leading top-level constant declarations (before any `def`),
     // each evaluated to a field value and rendered as a single decimal literal.
@@ -49,27 +67,32 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
     let mut const_arrays: Vec<(String, Vec<F192>)> = Vec::new();
     let mut start = 0;
     while start < lines.len() {
-        let (indent, line) = &lines[start];
+        let Line {
+            src,
+            indent,
+            text: line,
+        } = &lines[start];
+        let at = |e: String| locate(*src, e);
         if *indent == 0 && (line.starts_with("def ") || line.starts_with('@')) {
             break;
         }
         if *indent != 0 {
-            return Err(format!("unexpected indentation at top level: `{line}`"));
+            return Err(at(format!("unexpected indentation at top level: `{line}`")));
         }
         let (lhs, rhs) = split_assign(line).ok_or_else(|| {
-            format!(
+            at(format!(
                 "top level: expected `def`, a global constant `NAME = value`, or the `snark_lib` import, got `{line}`"
-            )
+            ))
         })?;
         let name = lhs.trim().to_string();
         if !is_ident(&name) {
-            return Err(format!(
+            return Err(at(format!(
                 "global constant name must be a plain identifier: `{}`",
                 lhs.trim()
-            ));
+            )));
         }
         if consts.contains_key(&name) || const_arrays.iter().any(|(n, _)| n == &name) {
-            return Err(format!("global constant `{name}` is declared twice"));
+            return Err(at(format!("global constant `{name}` is declared twice")));
         }
         // Resolve earlier scalar constants inside the value first.
         let rhs = apply_replacements(rhs.trim(), &consts);
@@ -85,9 +108,9 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
                     continue; // tolerate a trailing comma
                 }
                 let elem = if let Some(v) = parse_f192_const(p) {
-                    v.map_err(|e| format!("global constant array `{name}`: {e}"))?
+                    v.map_err(|e| at(format!("global constant array `{name}`: {e}")))?
                 } else {
-                    let n = eval_const_int(p).map_err(|e| format!("global constant array `{name}`: {e}"))?;
+                    let n = eval_const_int(p).map_err(|e| at(format!("global constant array `{name}`: {e}")))?;
                     F192::new(n as u64, (n >> 64) as u64, 0)
                 };
                 elems.push(elem);
@@ -96,19 +119,23 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
         } else {
             // A scalar constant: evaluate it as a compile-time integer.
             if let Some(value) = parse_f192_const(rhs) {
-                let v = value.map_err(|e| format!("global constant `{name}`: {e}"))?;
+                let v = value.map_err(|e| at(format!("global constant `{name}`: {e}")))?;
                 consts.insert(name, format!("f192({},{},{})", v.c0, v.c1, v.c2));
             } else {
-                let value = eval_const_int(rhs).map_err(|e| format!("global constant `{name}`: {e}"))?;
+                let value = eval_const_int(rhs).map_err(|e| at(format!("global constant `{name}`: {e}")))?;
                 consts.insert(name, value.to_string());
             }
         }
         start += 1;
     }
     // Substitute the constants into every remaining (function) line, then parse.
-    let func_lines: Vec<(usize, String)> = lines[start..]
+    let func_lines: Vec<Line> = lines[start..]
         .iter()
-        .map(|(ind, l)| (*ind, apply_replacements(l, &consts)))
+        .map(|l| Line {
+            src: l.src,
+            indent: l.indent,
+            text: apply_replacements(&l.text, &consts),
+        })
         .collect();
     let mut p = Parser {
         lines: func_lines,
@@ -158,12 +185,12 @@ fn infer_return_shapes(funcs: &mut [Func]) -> Result<(), String> {
             params.iter().map(|p| (p.clone(), ReturnShape::Scalar)).collect();
         let mut returns = vec![ReturnShape::Scalar; n_ret];
         for stmt in body {
-            match stmt {
-                Stmt::Let(name, e) => {
+            match &stmt.kind {
+                StmtKind::Let(name, e) => {
                     let shape = expr_shape(e, &locals, known)?;
                     locals.insert(name.clone(), shape);
                 }
-                Stmt::LetTuple(names, f, _) => {
+                StmtKind::LetTuple(names, f, _) => {
                     let shapes = known.get(f);
                     for (i, name) in names.iter().enumerate() {
                         let shape = shapes.and_then(|s| s.get(i)).copied().unwrap_or(ReturnShape::Scalar);
@@ -173,16 +200,16 @@ fn infer_return_shapes(funcs: &mut [Func]) -> Result<(), String> {
                 // `unroll` is straight-line expansion, so a binding in its last
                 // copy remains visible afterward. One symbolic scan is enough
                 // for representation shapes (the iteration value is scalar).
-                Stmt::Unroll { var, body, .. } => {
+                StmtKind::Unroll { var, body, .. } => {
                     locals.insert(var.clone(), ReturnShape::Scalar);
                     for inner in body {
-                        if let Stmt::Let(name, e) = inner {
+                        if let StmtKind::Let(name, e) = &inner.kind {
                             let shape = expr_shape(e, &locals, known)?;
                             locals.insert(name.clone(), shape);
                         }
                     }
                 }
-                Stmt::Return(es) => {
+                StmtKind::Return(es) => {
                     returns = es
                         .iter()
                         .map(|e| expr_shape(e, &locals, known))
@@ -355,29 +382,75 @@ pub fn parse_file_with_replacements(
     parse_with_replacements(&src, replacements)
 }
 
+/// One significant source line: its 1-based position in the ORIGINAL file, its
+/// indentation, and its text with comments stripped and constants substituted.
+/// Prefix a diagnostic with the source line it came from, unless an inner frame
+/// already named a more specific one.
+fn locate(line: usize, e: String) -> String {
+    if e.starts_with("line ") {
+        e
+    } else {
+        format!("line {line}: {e}")
+    }
+}
+
+#[derive(Clone)]
+struct Line {
+    src: usize,
+    indent: usize,
+    text: String,
+}
+
 struct Parser {
-    lines: Vec<(usize, String)>,
+    lines: Vec<Line>,
     i: usize,
 }
 
 impl Parser {
+    /// The source line the cursor is on, for a diagnostic raised where no
+    /// `func`/`stmt` frame is open: those two stamp the line they were ENTERED
+    /// on, which is an enclosing header, not the line that is actually wrong.
+    fn here(&self) -> usize {
+        self.lines
+            .get(self.i)
+            .or_else(|| self.lines.last())
+            .map_or(0, |l| l.src)
+    }
+
     fn func(&mut self) -> Result<Func, String> {
-        let (mut indent, mut line) = self.lines[self.i].clone();
+        let here = self.lines.get(self.i).map_or(0, |l| l.src);
+        self.func_inner().map_err(|e| locate(here, e))
+    }
+
+    fn func_inner(&mut self) -> Result<Func, String> {
+        let Line {
+            mut indent,
+            text: mut line,
+            ..
+        } = self.lines[self.i].clone();
         // Optional `@inline` decorator on its own line before `def`.
         let inline = if let Some(dec) = line.strip_prefix('@') {
             if dec.trim() != "inline" {
                 return Err(format!("unknown decorator `@{}` (only `@inline`)", dec.trim()));
             }
             self.i += 1;
-            (indent, line) = self
+            let next = self
                 .lines
                 .get(self.i)
                 .cloned()
                 .ok_or("`@inline` must precede a `def`")?;
+            (indent, line) = (next.indent, next.text);
             true
         } else {
             false
         };
+        // Re-stamped here: the decorator path advanced past its own line, so
+        // `func`'s frame would name the `@inline` while quoting the `def`.
+        let at_def = self.here();
+        self.func_header(inline, indent, line).map_err(|e| locate(at_def, e))
+    }
+
+    fn func_header(&mut self, inline: bool, indent: usize, line: String) -> Result<Func, String> {
         let header = line
             .strip_prefix("def ")
             .ok_or_else(|| format!("expected `def`, got `{line}`"))?;
@@ -411,7 +484,13 @@ impl Parser {
         let body = self.block(indent)?;
         let n_ret = body
             .iter()
-            .filter_map(|s| if let Stmt::Return(es) = s { Some(es.len()) } else { None })
+            .filter_map(|s| {
+                if let StmtKind::Return(es) = &s.kind {
+                    Some(es.len())
+                } else {
+                    None
+                }
+            })
             .max()
             .unwrap_or(0);
         Ok(Func {
@@ -429,13 +508,13 @@ impl Parser {
     fn block(&mut self, parent: usize) -> Result<Vec<Stmt>, String> {
         let mut stmts = Vec::new();
         let block_indent = match self.lines.get(self.i) {
-            Some((ind, _)) if *ind > parent => *ind,
-            _ => return Err("expected an indented block".into()),
+            Some(Line { indent: ind, .. }) if *ind > parent => *ind,
+            _ => return Err(locate(self.here(), "expected an indented block".into())),
         };
-        while let Some((ind, _)) = self.lines.get(self.i) {
+        while let Some(Line { indent: ind, .. }) = self.lines.get(self.i) {
             if *ind != block_indent {
                 if *ind > parent && *ind > block_indent {
-                    return Err("inconsistent indentation".into());
+                    return Err(locate(self.here(), "inconsistent indentation".into()));
                 }
                 break;
             }
@@ -445,7 +524,14 @@ impl Parser {
     }
 
     fn stmt(&mut self, indent: usize) -> Result<Stmt, String> {
-        let line = self.lines[self.i].1.clone();
+        let here = self.lines.get(self.i).map_or(0, |l| l.src);
+        self.stmt_inner(indent)
+            .map(|kind| Stmt::new(here as u32, kind))
+            .map_err(|e| locate(here, e))
+    }
+
+    fn stmt_inner(&mut self, indent: usize) -> Result<StmtKind, String> {
+        let line = self.lines[self.i].text.clone();
         if let Some(rest) = line.strip_prefix("for ") {
             // for VAR in mul_range(START, STOP): the counter walks gᵏ from START
             // to STOP, ×g each iteration (STOP is exclusive). Bounds are field
@@ -462,7 +548,7 @@ impl Parser {
                 let (lo, hi) = (parse_expr(&parts[0])?, parse_expr(&parts[1])?);
                 self.i += 1;
                 let body = self.block(indent)?;
-                return Ok(Stmt::Unroll {
+                return Ok(StmtKind::Unroll {
                     var: binding_name(var, "loop counter")?,
                     lo,
                     hi,
@@ -508,7 +594,7 @@ impl Parser {
             };
             self.i += 1;
             let body = self.block(indent)?;
-            return Ok(Stmt::For {
+            return Ok(StmtKind::For {
                 var: binding_name(var, "loop counter")?,
                 lo,
                 hi,
@@ -525,10 +611,10 @@ impl Parser {
         }
         self.i += 1;
         if line == "return" {
-            return Ok(Stmt::Return(vec![]));
+            return Ok(StmtKind::Return(vec![]));
         }
         if let Some(rest) = line.strip_prefix("return ") {
-            return Ok(Stmt::Return(
+            return Ok(StmtKind::Return(
                 split_top(rest, ',')
                     .iter()
                     .map(|e| parse_expr(e))
@@ -546,7 +632,7 @@ impl Parser {
                 [v] => (v.trim().to_string(), v.trim()),
                 _ => return Err("print takes `print(expr)` or `print(\"label\", expr)`".into()),
             };
-            return Ok(Stmt::Print {
+            return Ok(StmtKind::Print {
                 label,
                 value: parse_expr(value)?,
             });
@@ -558,17 +644,17 @@ impl Parser {
                 return Err("hint_witness(dest, \"name\") takes two arguments".into());
             };
             let name = string_lit(name).ok_or("hint_witness's second argument is a string literal: \"name\"")?;
-            return Ok(Stmt::HintWitness {
+            return Ok(StmtKind::HintWitness {
                 dest: parse_expr(dest)?,
                 name: name.to_string(),
             });
         }
         if let Some(rest) = line.strip_prefix("assert ") {
             if let Some((a, b)) = split_once_top(rest, "==") {
-                return Ok(Stmt::AssertEq(parse_expr(&a)?, parse_expr(&b)?));
+                return Ok(StmtKind::AssertEq(parse_expr(&a)?, parse_expr(&b)?));
             }
             if let Some((a, b)) = split_once_top(rest, "!=") {
-                return Ok(Stmt::AssertNe(parse_expr(&a)?, parse_expr(&b)?));
+                return Ok(StmtKind::AssertNe(parse_expr(&a)?, parse_expr(&b)?));
             }
             // `assert log X < log Y` (`Y` a compile-time g-power, or any runtime
             // g-power) or `assert log X < k` (`k` an integer exponent) is a
@@ -603,7 +689,7 @@ impl Parser {
                         }
                     },
                 };
-                return Ok(Stmt::AssertLt(parse_expr(x)?, bound));
+                return Ok(StmtKind::AssertLt(parse_expr(x)?, bound));
             }
             return Err("`assert` needs `==`, `!=`, or `log _ < _`".into());
         }
@@ -627,11 +713,11 @@ impl Parser {
                 let open = lhs.find('[').ok_or("malformed store target")?;
                 let arr = parse_expr(&lhs[..open])?;
                 let idx = parse_expr(&lhs[open + 1..lhs.len() - 1])?;
-                return Ok(Stmt::Store(arr, idx, rhs_expr));
+                return Ok(StmtKind::Store(arr, idx, rhs_expr));
             }
             let targets = split_top(&lhs, ',');
             if targets.len() == 1 {
-                return Ok(Stmt::Let(binding_name(&targets[0], "binding name")?, rhs_expr));
+                return Ok(StmtKind::Let(binding_name(&targets[0], "binding name")?, rhs_expr));
             }
             // Tuple assignment: RHS must be a call.
             if let Expr::Call(f, args) = rhs_expr {
@@ -639,7 +725,7 @@ impl Parser {
                     .iter()
                     .map(|t| binding_name(t, "binding name"))
                     .collect::<Result<Vec<_>, _>>()?;
-                return Ok(Stmt::LetTuple(names, f, args));
+                return Ok(StmtKind::LetTuple(names, f, args));
             }
             return Err("tuple assignment requires a call on the right".into());
         }
@@ -662,7 +748,7 @@ impl Parser {
         }
         // Bare call statement.
         if let Expr::Call(f, args) = parse_expr(&line)? {
-            return Ok(Stmt::Call(f, args));
+            return Ok(StmtKind::Call(f, args));
         }
         Err(format!("statement has no effect: `{line}`"))
     }
@@ -671,7 +757,7 @@ impl Parser {
     /// prefix already stripped into `header`), with an optional `elif`/`else`
     /// tail at the same indent (an `elif` is sugar for an `else` holding a
     /// nested `if`).
-    fn if_stmt(&mut self, header: &str, indent: usize) -> Result<Stmt, String> {
+    fn if_stmt(&mut self, header: &str, indent: usize) -> Result<StmtKind, String> {
         let cond = header.strip_suffix(':').ok_or("`if` needs `:`")?;
         let (eq, l, r) = if let Some((l, r)) = split_once_top(cond, "==") {
             (true, l, r)
@@ -684,7 +770,11 @@ impl Parser {
         self.i += 1;
         let then = self.block(indent)?;
         let mut els = Vec::new();
-        if let Some((ind, line)) = self.lines.get(self.i).cloned()
+        if let Some(Line {
+            indent: ind,
+            text: line,
+            ..
+        }) = self.lines.get(self.i).cloned()
             && ind == indent
         {
             if line == "else:" {
@@ -692,10 +782,16 @@ impl Parser {
                 els = self.block(indent)?;
             } else if let Some(rest) = line.strip_prefix("elif ") {
                 let rest = rest.to_string();
-                els = vec![self.if_stmt(&rest, indent)?];
+                // `if_stmt` recurses into ITSELF for an `elif`, so no `stmt`
+                // frame opens and the whole chain would report the first `if`.
+                let at_elif = self.here();
+                els = vec![Stmt::new(
+                    at_elif as u32,
+                    self.if_stmt(&rest, indent).map_err(|e| locate(at_elif, e))?,
+                )];
             }
         }
-        Ok(Stmt::If {
+        Ok(StmtKind::If {
             eq,
             lhs,
             rhs,
@@ -707,33 +803,49 @@ impl Parser {
     /// `match log(x):` with `case 0:` … `case n-1:` bodies. The cases must
     /// be consecutive integers from 0 (the trampoline table is dense; there
     /// is no `case _`). Matching is on the *log*: `x = GEN ** j` runs case `j`.
-    fn match_stmt(&mut self, header: &str, indent: usize) -> Result<Stmt, String> {
+    fn match_stmt(&mut self, header: &str, indent: usize) -> Result<StmtKind, String> {
         let inner = header.strip_suffix(':').ok_or("`match` needs `:`")?;
         let x = strip_log(inner).ok_or("`match` matches logs: `match log(x):`")?;
         let x = parse_expr(x)?;
         self.i += 1;
         let case_indent = match self.lines.get(self.i) {
-            Some((ind, _)) if *ind > indent => *ind,
-            _ => return Err("`match` needs an indented `case` block".into()),
+            Some(Line { indent: ind, .. }) if *ind > indent => *ind,
+            _ => return Err(locate(self.here(), "`match` needs an indented `case` block".into())),
         };
         let mut cases = Vec::new();
-        while let Some((ind, line)) = self.lines.get(self.i).cloned() {
+        while let Some(Line {
+            indent: ind,
+            text: line,
+            ..
+        }) = self.lines.get(self.i).cloned()
+        {
             if ind != case_indent {
                 break;
             }
+            // Every error below is about the `case` line the cursor is on, not
+            // about the `match` header the enclosing `stmt` frame captured.
+            let at_case = self.here();
             let rest = line
                 .strip_prefix("case ")
-                .ok_or_else(|| format!("expected `case k:`, got `{line}`"))?;
+                .ok_or_else(|| locate(at_case, format!("expected `case k:`, got `{line}`")))?;
             let k: usize = rest
                 .strip_suffix(':')
-                .ok_or("`case` needs `:`")?
+                .ok_or_else(|| locate(at_case, "`case` needs `:`".into()))?
                 .trim()
                 .parse()
-                .map_err(|_| format!("a `case` value must be an integer literal, got `{rest}`"))?;
+                .map_err(|_| {
+                    locate(
+                        at_case,
+                        format!("a `case` value must be an integer literal, got `{rest}`"),
+                    )
+                })?;
             if k != cases.len() {
-                return Err(format!(
-                    "match cases must be consecutive from 0: expected `case {}:`, got `case {k}:`",
-                    cases.len()
+                return Err(locate(
+                    at_case,
+                    format!(
+                        "match cases must be consecutive from 0: expected `case {}:`, got `case {k}:`",
+                        cases.len()
+                    ),
                 ));
             }
             self.i += 1;
@@ -742,7 +854,7 @@ impl Parser {
         if cases.is_empty() {
             return Err("`match` needs at least one case".into());
         }
-        Ok(Stmt::Match { x, cases })
+        Ok(StmtKind::Match { x, cases })
     }
 }
 
@@ -1000,17 +1112,23 @@ pub(crate) fn subst_stmts(stmts: &[Stmt], name: &str, to: &Expr) -> Vec<Stmt> {
 
 /// One statement of [`subst_stmts`]; the flag says whether it rebinds `name`.
 fn subst_stmt(s: &Stmt, name: &str, to: &Expr) -> (Stmt, bool) {
+    let (kind, rebinds) = subst_kind(&s.kind, name, to);
+    (s.at(kind), rebinds)
+}
+
+/// The kind half of [`subst_stmt`]; the flag says whether it rebinds `name`.
+fn subst_kind(s: &StmtKind, name: &str, to: &Expr) -> (StmtKind, bool) {
     let e = |x: &Expr| subst_var(x, name, to);
     match s {
-        Stmt::Let(n, x) => (Stmt::Let(n.clone(), e(x)), n == name),
-        Stmt::LetTuple(ns, f, args) => (
-            Stmt::LetTuple(ns.clone(), f.clone(), args.iter().map(e).collect()),
+        StmtKind::Let(n, x) => (StmtKind::Let(n.clone(), e(x)), n == name),
+        StmtKind::LetTuple(ns, f, args) => (
+            StmtKind::LetTuple(ns.clone(), f.clone(), args.iter().map(e).collect()),
             ns.iter().any(|n| n == name),
         ),
-        Stmt::AssertEq(a, b) => (Stmt::AssertEq(e(a), e(b)), false),
-        Stmt::AssertNe(a, b) => (Stmt::AssertNe(e(a), e(b)), false),
-        Stmt::AssertLt(a, bound) => (
-            Stmt::AssertLt(
+        StmtKind::AssertEq(a, b) => (StmtKind::AssertEq(e(a), e(b)), false),
+        StmtKind::AssertNe(a, b) => (StmtKind::AssertNe(e(a), e(b)), false),
+        StmtKind::AssertLt(a, bound) => (
+            StmtKind::AssertLt(
                 e(a),
                 match bound {
                     LtBound::Const(k) => LtBound::Const(*k),
@@ -1019,28 +1137,28 @@ fn subst_stmt(s: &Stmt, name: &str, to: &Expr) -> (Stmt, bool) {
             ),
             false,
         ),
-        Stmt::Call(f, args) => (Stmt::Call(f.clone(), args.iter().map(e).collect()), false),
-        Stmt::Print { label, value } => (
-            Stmt::Print {
+        StmtKind::Call(f, args) => (StmtKind::Call(f.clone(), args.iter().map(e).collect()), false),
+        StmtKind::Print { label, value } => (
+            StmtKind::Print {
                 label: label.clone(),
                 value: e(value),
             },
             false,
         ),
-        Stmt::HintWitness { dest, name: n } => (
-            Stmt::HintWitness {
+        StmtKind::HintWitness { dest, name: n } => (
+            StmtKind::HintWitness {
                 dest: e(dest),
                 name: n.clone(),
             },
             false,
         ),
-        Stmt::Store(a, i, v) => (Stmt::Store(e(a), e(i), e(v)), false),
-        Stmt::Return(es) => (Stmt::Return(es.iter().map(e).collect()), false),
-        Stmt::CallIfNe(a, b, f, args) => (
-            Stmt::CallIfNe(e(a), e(b), f.clone(), args.iter().map(e).collect()),
+        StmtKind::Store(a, i, v) => (StmtKind::Store(e(a), e(i), e(v)), false),
+        StmtKind::Return(es) => (StmtKind::Return(es.iter().map(e).collect()), false),
+        StmtKind::CallIfNe(a, b, f, args) => (
+            StmtKind::CallIfNe(e(a), e(b), f.clone(), args.iter().map(e).collect()),
             false,
         ),
-        Stmt::For { var, lo, hi, body } => {
+        StmtKind::For { var, lo, hi, body } => {
             let hi = match hi {
                 ForBound::Const(k) => ForBound::Const(*k),
                 ForBound::Runtime(b) => ForBound::Runtime(e(b)),
@@ -1052,7 +1170,7 @@ fn subst_stmt(s: &Stmt, name: &str, to: &Expr) -> (Stmt, bool) {
                 subst_stmts(body, name, to)
             };
             (
-                Stmt::For {
+                StmtKind::For {
                     var: var.clone(),
                     lo: *lo,
                     hi,
@@ -1061,14 +1179,14 @@ fn subst_stmt(s: &Stmt, name: &str, to: &Expr) -> (Stmt, bool) {
                 false,
             )
         }
-        Stmt::Unroll { var, lo, hi, body } => {
+        StmtKind::Unroll { var, lo, hi, body } => {
             let body = if var == name {
                 body.clone()
             } else {
                 subst_stmts(body, name, to)
             };
             (
-                Stmt::Unroll {
+                StmtKind::Unroll {
                     var: var.clone(),
                     lo: e(lo),
                     hi: e(hi),
@@ -1077,14 +1195,14 @@ fn subst_stmt(s: &Stmt, name: &str, to: &Expr) -> (Stmt, bool) {
                 false,
             )
         }
-        Stmt::If {
+        StmtKind::If {
             eq,
             lhs,
             rhs,
             then,
             els,
         } => (
-            Stmt::If {
+            StmtKind::If {
                 eq: *eq,
                 lhs: e(lhs),
                 rhs: e(rhs),
@@ -1093,15 +1211,15 @@ fn subst_stmt(s: &Stmt, name: &str, to: &Expr) -> (Stmt, bool) {
             },
             false,
         ),
-        Stmt::Match { x, cases } => (
-            Stmt::Match {
+        StmtKind::Match { x, cases } => (
+            StmtKind::Match {
                 x: e(x),
                 cases: cases.iter().map(|c| subst_stmts(c, name, to)).collect(),
             },
             false,
         ),
-        Stmt::LetMatchRange { names, x, arms } => (
-            Stmt::LetMatchRange {
+        StmtKind::LetMatchRange { names, x, arms } => (
+            StmtKind::LetMatchRange {
                 names: names.clone(),
                 x: e(x),
                 arms: arms.iter().map(e).collect(),
@@ -1140,7 +1258,7 @@ fn subst_var(e: &Expr, name: &str, to: &Expr) -> Expr {
 /// parameter substituted by the literal `j`. The union of the ranges must be
 /// gapless and start at 0 (this compiler's `match` rule). Everything sits on
 /// one line, since there is no line continuation.
-fn parse_match_range(lhs: &str, rhs: &str) -> Result<Stmt, String> {
+fn parse_match_range(lhs: &str, rhs: &str) -> Result<StmtKind, String> {
     if lhs.trim_end().ends_with(']') {
         return Err("bind `match_range` results to names, not a store target".into());
     }
@@ -1180,7 +1298,7 @@ fn parse_match_range(lhs: &str, rhs: &str) -> Result<Stmt, String> {
             arms.push(subst_var(&body, param.trim(), &Expr::Lit(j)));
         }
     }
-    Ok(Stmt::LetMatchRange { names, x, arms })
+    Ok(StmtKind::LetMatchRange { names, x, arms })
 }
 
 /// Combine one tier's operands left-associatively: `node` builds the AST node

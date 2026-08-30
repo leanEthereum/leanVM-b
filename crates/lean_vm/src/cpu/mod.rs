@@ -207,6 +207,11 @@ pub struct Program {
     /// `DBG_PROF=1` per-function cycle profile ([`Program::execute`]). Purely
     /// diagnostic; empty for hand-assembled programs.
     pub fn_ranges: Vec<(String, u32, u32)>,
+    /// Source line of the statement that emitted each pc. Prover-side only, and
+    /// outside `bytecode_hash`, so it costs nothing in the proof: a failed guest
+    /// check reports a line rather than a pc to disassemble around. Empty for a
+    /// hand-assembled program, and shorter than `prog`, which is padded.
+    pub src_lines: Vec<u32>,
     /// The smallest stacked witness this program's proofs may commit to, as a
     /// log2. Zero (the default) asks for nothing.
     ///
@@ -245,14 +250,24 @@ impl Program {
             witness: HashMap::new(),
             filler: Vec::new(),
             fn_ranges: Vec::new(),
+            src_lines: Vec::new(),
             min_log_committed: 0,
         }
     }
 
-    /// The compiled function containing `pc`, for panic messages. A guest check
-    /// that fails surfaces as a raw pc (§the failed-assert note in `AGENTS.md`),
-    /// and naming the function is the difference between reading a disassembly of
-    /// half a million instructions and reading one.
+    /// Where `pc` came from: `"verify_sub (line 2204)"` when the compiler left a
+    /// line for it, the function name alone otherwise (a hand-assembled program,
+    /// a fill block, or padding). This is what a run-time failure reports, so
+    /// the reader gets a line instead of a pc to disassemble around.
+    pub fn site_at(&self, pc: u32) -> String {
+        match self.src_lines.get(pc as usize) {
+            Some(&line) if line != 0 => format!("{} (line {line})", self.fn_at(pc)),
+            _ => self.fn_at(pc).to_string(),
+        }
+    }
+
+    /// The compiled function containing `pc`. [`Self::site_at`] wraps this with
+    /// the source line when one is known.
     pub fn fn_at(&self, pc: u32) -> &str {
         self.fn_ranges
             .iter()

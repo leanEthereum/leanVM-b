@@ -38,8 +38,8 @@ def main():
     let ac = parse(with_const).expect("const program parses");
     let ai = parse(inlined).expect("inlined program parses");
     assert_eq!(
-        format!("{ac:?}"),
-        format!("{ai:?}"),
+        crate::common::without_lines(&ac),
+        crate::common::without_lines(&ai),
         "constant must inline to its value"
     );
     let _ = compile(&ac); // and it lowers to a real program
@@ -65,8 +65,8 @@ def main():
     return
 ";
     assert_eq!(
-        format!("{:?}", parse(src).unwrap()),
-        format!("{:?}", parse(inlined).unwrap()),
+        crate::common::without_lines(&parse(src).unwrap()),
+        crate::common::without_lines(&parse(inlined).unwrap()),
     );
     let _ = compile(&parse(src).unwrap());
 }
@@ -91,8 +91,8 @@ def main():
     return
 ";
     assert_eq!(
-        format!("{:?}", parse(src).unwrap()),
-        format!("{:?}", parse(inlined).unwrap()),
+        crate::common::without_lines(&parse(src).unwrap()),
+        crate::common::without_lines(&parse(inlined).unwrap()),
     );
     let _ = compile(&parse(src).unwrap());
 }
@@ -139,7 +139,10 @@ def main():
         assert a[0] == 8
     return
 ";
-    assert_eq!(format!("{filled:?}"), format!("{:?}", parse(concrete).unwrap()));
+    assert_eq!(
+        crate::common::without_lines(&filled),
+        crate::common::without_lines(&parse(concrete).unwrap())
+    );
     let _ = compile(&filled);
 }
 
@@ -167,7 +170,10 @@ def main():
     assert a[0] == 7
     return
 ";
-    assert_eq!(format!("{filled:?}"), format!("{:?}", parse(concrete).unwrap()));
+    assert_eq!(
+        crate::common::without_lines(&filled),
+        crate::common::without_lines(&parse(concrete).unwrap())
+    );
     let _ = compile(&filled);
 }
 
@@ -186,8 +192,8 @@ def main():
     repl.insert("FOO".to_string(), "999".to_string());
     // `FOO` must NOT rewrite the `FOO` inside `FOOBAR`.
     assert_eq!(
-        format!("{:?}", parse_with_replacements(src, &repl).unwrap()),
-        format!("{:?}", parse(src).unwrap()),
+        crate::common::without_lines(&parse_with_replacements(src, &repl).unwrap()),
+        crate::common::without_lines(&parse(src).unwrap()),
     );
 }
 

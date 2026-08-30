@@ -25,6 +25,9 @@ pub(crate) enum KVal {
 #[derive(Clone, Debug)]
 pub(crate) struct LInstr {
     pub(crate) op: LOp,
+    /// Source line of the statement that emitted this instruction. Survives CSE
+    /// (which moves whole `LInstr`s) and becomes `Program::src_lines`.
+    pub(crate) line: u32,
     /// Prover hints applied (in order) *before* this instruction during witness
     /// generation.
     pub(crate) hints: Vec<Hint>,

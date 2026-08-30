@@ -85,9 +85,31 @@ pub enum Expr {
     ListLit(Vec<Expr>),
 }
 
-/// A statement.
+/// A statement, with the source line it came from. The line is what every
+/// lowering diagnostic names and what the pc-to-line table is built from: the
+/// AST is the only place that still knows it, since lowering works in frame
+/// cells and program counters.
 #[derive(Clone, Debug)]
-pub enum Stmt {
+pub struct Stmt {
+    pub line: u32,
+    pub kind: StmtKind,
+}
+
+impl Stmt {
+    pub fn new(line: u32, kind: StmtKind) -> Self {
+        Self { line, kind }
+    }
+
+    /// A statement the compiler synthesized (a loop helper's body, a desugared
+    /// tail call): it inherits the line of whatever it was generated for.
+    pub fn at(&self, kind: StmtKind) -> Self {
+        Self { line: self.line, kind }
+    }
+}
+
+/// What a statement does.
+#[derive(Clone, Debug)]
+pub enum StmtKind {
     /// `x = expr` (immutable binding).
     Let(String, Expr),
     /// `x, y, … = f(args)`: call with multiple returns.
@@ -136,10 +158,10 @@ pub enum Stmt {
     /// runs case `j`). Dispatched through a trampoline table in the bytecode
     /// (doc §ISA programming / Match statements); the scrutinee must be known
     /// to lie in `[0, n)`, so range-check a hinted value first. Case bodies are
-    /// branch-local, like [`Stmt::If`] branches. See `FnLower::lower_match`.
+    /// branch-local, like [`StmtKind::If`] branches. See `FnLower::lower_match`.
     Match { x: Expr, cases: Vec<Vec<Stmt>> },
     /// `names = match_range(log(x), range(a, b), lambda i: expr, …)`: a
-    /// [`Stmt::Match`] with generated arms (leanVM's `match_range`): arm `j`
+    /// [`StmtKind::Match`] with generated arms (leanVM's `match_range`): arm `j`
     /// holds the lambda body with the parameter replaced by the integer
     /// literal `j` (expanded at parse time, one entry of `arms` per integer).
     /// Every arm writes its results into the same fresh cells (write-once is

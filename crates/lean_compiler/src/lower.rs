@@ -195,6 +195,9 @@ struct FnLower<'a> {
     /// deliberately NOT restored across a branch: if either arm gives the cell a
     /// value, a later store to it is an assertion on whichever arm ran.
     phys: HashSet<Off>,
+    /// Source line of the statement being lowered, for diagnostics and for the
+    /// pc-to-line table. Zero for a synthesized statement with no source.
+    cur_line: u32,
     /// Frame runs whose cells no longer have a visible writer, as `(base, len)`.
     /// Carried to [`crate::cse::cse`], which must leave their cells alone.
     opaque_runs: Vec<(Off, u32)>,
@@ -233,6 +236,17 @@ struct FnLower<'a> {
 }
 
 impl FnLower<'_> {
+    /// Abort with a diagnostic naming the source line being lowered. Every
+    /// deliberate user-facing error goes through here; a bare `assert!` left in
+    /// the file is an internal invariant, i.e. a compiler bug rather than a
+    /// program one, and deliberately does NOT get a line.
+    fn fail(&self, msg: impl std::fmt::Display) -> ! {
+        match self.cur_line {
+            0 => panic!("{msg}"),
+            n => panic!("line {n}: {msg}"),
+        }
+    }
+
     fn fresh(&mut self) -> Off {
         let o = self.next;
         self.next += 1;
@@ -257,7 +271,11 @@ impl FnLower<'_> {
             LOp::Jump { .. } => false,
         };
         let hints = std::mem::take(&mut self.pending);
-        self.code.push(LInstr { op, hints });
+        self.code.push(LInstr {
+            op,
+            line: self.cur_line,
+            hints,
+        });
     }
 
     /// Prepare a stack run that a consumer is about to name by its *physical*
@@ -316,11 +334,12 @@ impl FnLower<'_> {
     /// checks then run on the constant instead of on the witness. Reject the
     /// collision rather than pick a winner.
     fn check_not_reserved(&self, name: &str) {
-        assert!(
-            !self.const_arrays.contains_key(name),
-            "`{name}` is a top-level constant array, so the name is reserved: rename the local \
+        if self.const_arrays.contains_key(name) {
+            self.fail(format!(
+                "`{name}` is a top-level constant array, so the name is reserved: rename the local \
              or parameter (zkDSL.md §Global constants)"
-        );
+            ))
+        };
     }
 
     /// Bind `name` to `b`, dropping whatever the other three maps held for it:
@@ -518,6 +537,10 @@ impl FnLower<'_> {
     fn lower_filler_blocks(&mut self) -> Vec<Block> {
         use lean_vm::cpu::filler::{SIZES, frame as fr};
 
+        // No statement wrote these, so they get the "unknown" line rather than
+        // whatever `main` happened to end on.
+        self.cur_line = 0;
+
         // A block runs in a frame the interpreter carves out, so the cells it reads are at
         // fixed offsets in *that* frame rather than allocated from this function's
         // counter, and nothing here touches `main`'s frame at all.
@@ -681,7 +704,7 @@ impl FnLower<'_> {
                     .get(f)
                     .is_some_and(|d| !d.inline && d.return_shapes.iter().any(|s| matches!(s, ReturnShape::StackBuf(_))))
             {
-                panic!("a normal function's StackBuf return cannot cross a match_range join; bind it with `let`");
+                self.fail("a normal function's StackBuf return cannot cross a match_range join; bind it with `let`");
             }
         }
         // Fusion: when every arm is a direct call to the same function with
@@ -716,10 +739,10 @@ impl FnLower<'_> {
                     s.expr_into(&arms[j], *rcell);
                 } else {
                     let Expr::Call(f, cargs) = &arms[j] else {
-                        panic!(
+                        s.fail(format!(
                             "a multi-target match_range arm must be a function call, got `{:?}`",
                             arms[j]
-                        );
+                        ));
                     };
                     s.inline_stack_ret = None;
                     s.call_into(f, cargs, &rcells);
@@ -733,7 +756,9 @@ impl FnLower<'_> {
                                     s.copy(c, rc);
                                 }
                                 RetBind::Stack(base, size) => {
-                                    assert_eq!(size, 1, "a multi-cell StackBuf return cannot cross a match_range join");
+                                    if size != 1 {
+                                        s.fail("a multi-cell StackBuf return cannot cross a match_range join")
+                                    }
                                     // `copy` reads its source raw, so resolve the arm's
                                     // deferred alias first (as `take_inline_ret_cell` does).
                                     let src = s.word_src(base);
@@ -768,17 +793,18 @@ impl FnLower<'_> {
             let Some(shapes) = self.return_shapes_of(callee) else {
                 continue;
             };
-            assert_eq!(
-                shapes.len(),
-                names.len(),
-                "`{callee}` returns {} values, dispatched call binds {}",
-                shapes.len(),
-                names.len()
-            );
-            assert!(
-                shapes.iter().all(|s| *s == ReturnShape::Scalar),
-                "`{callee}`: a multi-cell StackBuf return cannot cross a dispatched join"
-            );
+            if shapes.len() != names.len() {
+                self.fail(format!(
+                    "`{callee}` returns {} values, dispatched call binds {}",
+                    shapes.len(),
+                    names.len()
+                ))
+            };
+            if shapes.iter().any(|s| *s != ReturnShape::Scalar) {
+                self.fail(format!(
+                    "`{callee}`: a multi-cell StackBuf return cannot cross a dispatched join"
+                ))
+            };
         }
         let rcells: Vec<Off> = names.iter().map(|_| self.fresh()).collect();
 
@@ -947,7 +973,9 @@ impl FnLower<'_> {
         // Restricted to plain literals so a field value is never confused with a
         // g-power index (unlike stack-index folding).
         if let (Expr::Lit(x), Expr::Lit(y)) = (a, b) {
-            assert!(x != y, "assert a != b: sides are the compile-time-equal literal {x}");
+            if x == y {
+                self.fail(format!("assert a != b: sides are the compile-time-equal literal {x}"))
+            };
             return;
         }
         let (la, lb) = (self.expr(a), self.expr(b));
@@ -989,10 +1017,14 @@ impl FnLower<'_> {
                 // Compile-time bounds: integer cell indexes `lo..hi` (frame
                 // offsets for a stack, g-power exponents for the heap).
                 (Some(lo), Some(hi)) => {
-                    assert!(lo < hi, "empty slice {lo}:{hi}");
+                    if lo >= hi {
+                        self.fail(format!("empty slice {lo}:{hi}"))
+                    };
                     let len = hi - lo;
                     if let Some((base, size)) = self.stack_of(arr) {
-                        assert!(hi <= size, "slice {lo}:{hi} out of bounds (StackBuf size {size})");
+                        if hi > size {
+                            self.fail(format!("slice {lo}:{hi} out of bounds (StackBuf size {size})"))
+                        };
                         CellRun::Stack { base: base + lo, len }
                     } else {
                         self.check_heap_bound(arr, lo as u128, len as u128);
@@ -1005,19 +1037,25 @@ impl FnLower<'_> {
                 // `hi` bound cannot be evaluated, only shape-checked against
                 // `lo`. One MUL folds `i` into the pointer.
                 _ => {
-                    assert!(
-                        self.stack_of(arr).is_none(),
-                        "a StackBuf slice needs compile-time bounds (frame offsets are baked into the bytecode)"
-                    );
-                    let k = plus_k(lo, hi)
-                        .unwrap_or_else(|| panic!("a runtime slice must be `buf[i:i + k]`, got `{lo:?}:{hi:?}`"));
+                    if self.stack_of(arr).is_some() {
+                        self.fail(
+                            "a StackBuf slice needs compile-time bounds (frame offsets are baked into the bytecode)",
+                        )
+                    };
+                    let k = plus_k(lo, hi).unwrap_or_else(|| {
+                        self.fail(format!("a runtime slice must be `buf[i:i + k]`, got `{lo:?}:{hi:?}`"))
+                    });
                     let len = u32::try_from(k).expect("slice length overflows u32");
-                    assert!(len > 0, "empty slice");
+                    if len == 0 {
+                        self.fail("empty slice")
+                    };
                     let (ptr, lo) = self.heap_addr(arr, lo);
                     CellRun::Heap { ptr, lo, len }
                 }
             },
-            other => panic!("expected a StackBuf, a StackBuf slice, or a HeapBuf slice, got `{other:?}`"),
+            other => self.fail(format!(
+                "expected a StackBuf, a StackBuf slice, or a HeapBuf slice, got `{other:?}`"
+            )),
         }
     }
 
@@ -1063,12 +1101,15 @@ impl FnLower<'_> {
     fn lower_assert_lt(&mut self, e: &Expr, bound: &LtBound) {
         let kcell = match bound {
             LtBound::Const(k) => {
-                assert!(*k >= 1, "range-check bound GEN ** 0 names the empty set");
-                assert!(
-                    *k <= 1 << lean_vm::cpu::MIN_LOG_MEM,
-                    "range-check bound GEN ** {k} exceeds 2^{} (the minimum memory size)",
-                    lean_vm::cpu::MIN_LOG_MEM,
-                );
+                if *k < 1 {
+                    self.fail("range-check bound GEN ** 0 names the empty set")
+                };
+                if *k > 1 << lean_vm::cpu::MIN_LOG_MEM {
+                    self.fail(format!(
+                        "range-check bound GEN ** {k} exceeds 2^{} (the minimum memory size)",
+                        lean_vm::cpu::MIN_LOG_MEM
+                    ))
+                };
                 self.bound_cell(*k)
             }
             LtBound::Runtime(b) => {
@@ -1076,12 +1117,13 @@ impl FnLower<'_> {
                 // `unroll`) reaches here rather than the arm above, and would then
                 // skip the `k <= 2^MIN_LOG_MEM` cap entirely. Reject it: the author
                 // wrote a compile-time bound and should get the compile-time check.
-                assert!(
-                    self.try_field_const(b).is_none(),
-                    "a compile-time range-check bound must be written as `log GEN ** k` or an \
+                if self.try_field_const(b).is_some() {
+                    self.fail(format!(
+                        "a compile-time range-check bound must be written as `log GEN ** k` or an \
                      integer, so that the 2^{} cap applies",
-                    lean_vm::cpu::MIN_LOG_MEM,
-                );
+                        lean_vm::cpu::MIN_LOG_MEM
+                    ))
+                };
                 let bcell = self.expr(b);
                 let inv = self.const_cell(F192::new(primitives::field::G.inv().0, 0, 0));
                 let c = self.fresh();
@@ -1115,7 +1157,7 @@ impl FnLower<'_> {
             Expr::Pow(b, e) => self.pow_expr(b, e),
             Expr::Var(v) => {
                 if self.scope.stacks.contains_key(v) {
-                    panic!("StackBuf `{v}` used as a scalar; index it (`{v}[k]`) or pass it to blake2s");
+                    self.fail(format!("StackBuf `{v}` used as a scalar; index it (`{v}[k]`) or pass it to blake2s"));
                 }
                 if let Some(&ga) = self.scope.gaddrs.get(v) {
                     return self.materialize(ga);
@@ -1124,7 +1166,7 @@ impl FnLower<'_> {
                     .scope
                     .vars
                     .get(v)
-                    .unwrap_or_else(|| panic!("unbound variable `{v}`"))
+                    .unwrap_or_else(|| self.fail(format!("unbound variable `{v}`")))
             }
             Expr::Add(a, b) => {
                 if let Some(x) = self.add_identity(a, b) {
@@ -1156,7 +1198,7 @@ impl FnLower<'_> {
                 q
             }
             // A well-formed one folds above, so this is a malformed call.
-            Expr::Call(f, _) if f == "f192" => panic!("f192 needs three literal u64 limbs"),
+            Expr::Call(f, _) if f == "f192" => self.fail("f192 needs three literal u64 limbs"),
             Expr::Call(f, args) if f == "addr" => {
                 let ga = self.stack_addr(args);
                 self.materialize(ga)
@@ -1166,7 +1208,9 @@ impl FnLower<'_> {
                 // `bits` (a `nbits`-bit buffer), floored at `floor`. Returned
                 // UNCONSTRAINED, so the caller (log2_ceil) re-verifies it. Same
                 // "prover computes, circuit checks" pattern as `/`.
-                assert_eq!(args.len(), 3, "hint_log2_ceil(bits, nbits, floor)");
+                if args.len() != 3 {
+    self.fail("hint_log2_ceil(bits, nbits, floor)")
+};
                 let nbits = self.const_index(&args[1]);
                 let floor = self.const_index(&args[2]);
                 let bits = self.bits_dest(&args[0], nbits, "hint_log2_ceil");
@@ -1202,14 +1246,16 @@ impl FnLower<'_> {
                 arr
             }
             Expr::StackBuf(_) => {
-                panic!("StackBuf(n) must be bound to a name: `x = StackBuf(n)`")
+                self.fail("StackBuf(n) must be bound to a name: `x = StackBuf(n)`")
             }
             Expr::Index(arr, idx) => {
                 // Stack read `sa[k]`: the frame cell `base + k` directly (no deref),
                 // forwarded through any deferred copy/zero alias.
                 if let Some((base, size)) = self.stack_of(arr) {
                     let k = self.const_index(idx);
-                    assert!(k < size, "stack index {k} out of bounds (size {size})");
+                    if k >= size {
+    self.fail(format!("stack index {k} out of bounds (size {size})"))
+};
                     return self.word_src(base + k);
                 }
                 // Heap read: bind dst := m[arr·idx] (the array cell, written earlier).
@@ -1219,12 +1265,12 @@ impl FnLower<'_> {
                 dst
             }
             Expr::Sub(..) | Expr::Div(..) | Expr::Mod(..) => {
-                panic!(
+                self.fail(format!(
                     "`-`, `//`, `%` are compile-time only (field subtraction is `+`); use them in an index, a bound, or a `Const` argument, got `{e:?}`"
-                )
+                ))
             }
-            Expr::Slice(..) => panic!("a slice is not a scalar; it is only a blake2s operand"),
-            Expr::ListLit(..) => panic!("a list literal must be bound to a name: `x = [a, b]`"),
+            Expr::Slice(..) => self.fail("a slice is not a scalar; it is only a blake2s operand"),
+            Expr::ListLit(..) => self.fail("a list literal must be bound to a name: `x = [a, b]`"),
         }
     }
 
@@ -1257,10 +1303,11 @@ impl FnLower<'_> {
     fn bits_dest(&mut self, e: &Expr, nbits: u32, what: &str) -> BitsDest {
         match self.stack_of(e) {
             Some((base, len)) => {
-                assert!(
-                    len >= nbits,
-                    "{what} needs {nbits} cells, its StackBuf destination has {len}"
-                );
+                if len < nbits {
+                    self.fail(format!(
+                        "{what} needs {nbits} cells, its StackBuf destination has {len}"
+                    ))
+                };
                 // The hint names the physical cells, so a deferred alias sitting on
                 // one would win every later read (as for `hint_f192_limbs`).
                 self.materialize_run(base, nbits);
@@ -1284,7 +1331,9 @@ impl FnLower<'_> {
     /// ISA's one cost here, amortized per function ([`Self::self_fp`]); the
     /// address is a folded [`GAddr`], so `addr(sb) * GEN ** k` stays virtual.
     fn stack_addr(&mut self, args: &[Expr]) -> GAddr {
-        assert_eq!(args.len(), 1, "addr(buf) takes one StackBuf");
+        if args.len() != 1 {
+            self.fail("addr(buf) takes one StackBuf")
+        };
         let (base, len) = self.stack_of(&args[0]).expect("addr() takes a StackBuf");
         // Once an address escapes, a write through it is a `DEREF` that names no
         // frame cell the lowerer can see, so every run has to be treated as
@@ -1318,12 +1367,16 @@ impl FnLower<'_> {
             Expr::Mul(a, b) => self.try_const_int(a)?.checked_mul(self.try_const_int(b)?),
             Expr::Div(a, b) => {
                 let d = self.try_const_int(b)?;
-                assert!(d != 0, "compile-time division by zero");
+                if d == 0 {
+                    self.fail("compile-time division by zero")
+                };
                 Some(self.try_const_int(a)? / d)
             }
             Expr::Mod(a, b) => {
                 let d = self.try_const_int(b)?;
-                assert!(d != 0, "compile-time modulo by zero");
+                if d == 0 {
+                    self.fail("compile-time modulo by zero")
+                };
                 Some(self.try_const_int(a)? % d)
             }
             Expr::Index(..) => self
@@ -1350,16 +1403,19 @@ impl FnLower<'_> {
             // An oversized literal is an index-shaped mistake, not a runtime
             // value, so diagnose it precisely (`sa[2^32]` must not wrap to `sa[0]`).
             if let Expr::Lit(k) = idx {
-                panic!("stack index {k} does not fit in u32");
+                self.fail(format!("stack index {k} does not fit in u32"));
             }
-            panic!("a StackBuf index must be a compile-time integer, got `{idx:?}`")
+            self.fail(format!(
+                "a StackBuf index must be a compile-time integer, got `{idx:?}`"
+            ))
         })
     }
 
     /// The exponent of `GEN ** e`: a compile-time integer, required to succeed.
     fn gpow_exp(&self, e: &Expr) -> u128 {
         self.try_const_index(e)
-            .unwrap_or_else(|| panic!("`GEN ** e` needs a compile-time integer exponent, got `{e:?}`")) as u128
+            .unwrap_or_else(|| self.fail(format!("`GEN ** e` needs a compile-time integer exponent, got `{e:?}`")))
+            as u128
     }
 
     /// `base ** e` (non-`GEN` base, compile-time exponent `e`): a fully-constant
@@ -1367,7 +1423,7 @@ impl FnLower<'_> {
     fn pow_expr(&mut self, b: &Expr, e: &Expr) -> Off {
         let k = self
             .try_const_index(e)
-            .unwrap_or_else(|| panic!("`**` exponent must be a compile-time integer, got `{e:?}`"));
+            .unwrap_or_else(|| self.fail(format!("`**` exponent must be a compile-time integer, got `{e:?}`")));
         // Fully constant: evaluate in the field and emit a single `SET`.
         if let Some(bc) = self.try_field_const(b) {
             return self.const_cell(field_pow(bc, k));
@@ -1403,8 +1459,9 @@ impl FnLower<'_> {
         {
             let i = self.try_const_index(idx)? as usize;
             return Some(
-                *a.get(i)
-                    .unwrap_or_else(|| panic!("const array `{v}` index {i} out of bounds (len {})", a.len())),
+                *a.get(i).unwrap_or_else(|| {
+                    self.fail(format!("const array `{v}` index {i} out of bounds (len {})", a.len()))
+                }),
             );
         }
         None
@@ -1482,10 +1539,9 @@ impl FnLower<'_> {
     /// `BLAKE2s` addresses only frame cells (see [`Self::blake2s_input`]).
     fn blake2s_operand(&mut self, e: &Expr) -> CellRun {
         let run = self.cell_run(e);
-        assert!(
-            run.cells() == 2,
-            "a blake2s operand must span exactly 2 cells (two 128-bit words); slice a larger buffer: `buf[lo:lo + 2]`"
-        );
+        if run.cells() != 2 {
+            self.fail("a blake2s operand must span exactly 2 cells (two 128-bit words); slice a larger buffer: `buf[lo:lo + 2]`")
+        };
         run
     }
 
@@ -1539,7 +1595,7 @@ impl FnLower<'_> {
                 _ => return cur,
             }
         }
-        panic!("alias cycle at frame cell {o}");
+        self.fail(format!("alias cycle at frame cell {o}"));
     }
 
     fn word_src(&mut self, o: Off) -> Off {
@@ -1556,7 +1612,7 @@ impl FnLower<'_> {
                 None => return cur,
             }
         }
-        panic!("alias cycle at frame cell {o}");
+        self.fail(format!("alias cycle at frame cell {o}"));
     }
 
     /// Evaluate `e` writing its value straight into cell `dst`, with no temporary +
@@ -1766,7 +1822,9 @@ impl FnLower<'_> {
                 } else {
                     format!("slice {off}:{}", off + span)
                 };
-                panic!("frame {what} out of bounds for the StackBuf({len}) named by `addr`");
+                self.fail(format!(
+                    "frame {what} out of bounds for the StackBuf({len}) named by `addr`"
+                ));
             }
             return;
         }
@@ -1782,12 +1840,14 @@ impl FnLower<'_> {
                 .map(|(n, _)| n.as_str())
                 .unwrap_or("?");
             if span == 1 {
-                panic!("heap index {exp} out of bounds for `{name}` (HeapBuf size {size})");
+                self.fail(format!(
+                    "heap index {exp} out of bounds for `{name}` (HeapBuf size {size})"
+                ));
             }
-            panic!(
+            self.fail(format!(
                 "heap slice {exp}:{} out of bounds for `{name}` (HeapBuf size {size})",
                 exp + span
-            );
+            ));
         }
     }
 
@@ -1829,11 +1889,11 @@ impl FnLower<'_> {
         if (bare_int || self.gaddr_of(idx).is_none())
             && let Some(c) = self.try_field_const(idx)
         {
-            panic!(
+            self.fail(format!(
                 "heap index folds to the field constant {:#x}:{:#x}, not a g-power: heap cell k is \
                  addressed as `buf[GEN ** k]` (did an integer index leak in from a StackBuf conversion?)",
                 c.c1, c.c0
-            );
+            ));
         }
         match self.gaddr_of(idx) {
             Some(GAddr { base: None, exp, .. }) => return self.heap_base(arr, exp),
@@ -1871,10 +1931,9 @@ impl FnLower<'_> {
         match self.inline_stack_ret.take().and_then(|b| b.into_iter().next()) {
             Some(RetBind::Gaddr(ga)) => self.materialize(ga),
             Some(RetBind::Stack(base, size)) => {
-                assert_eq!(
-                    size, 1,
-                    "a multi-cell StackBuf return needs a `let` binding, not an expression use"
-                );
+                if size != 1 {
+                    self.fail("a multi-cell StackBuf return needs a `let` binding, not an expression use")
+                };
                 // Through `word_src`, like every other read of a stack cell: the body may
                 // have filled this cell with a deferred copy or constant, which emits no
                 // instruction, and the raw cell would then be one no instruction writes.
@@ -1891,10 +1950,9 @@ impl FnLower<'_> {
     /// copied into a fresh consecutive run in the caller. `inline_stack_ret`
     /// describes those logical bindings to the surrounding let/tuple lowering.
     fn call(&mut self, callee: &str, args: &[Expr], n_ret: usize) -> Vec<Off> {
-        assert!(
-            callee != "blake2s",
-            "blake2s is a statement: `blake2s(a, b, out)` writes the digest into the 2-cell stack run `out`"
-        );
+        if callee == "blake2s" {
+            self.fail("blake2s is a statement: `blake2s(a, b, out)` writes the digest into the 2-cell stack run `out`")
+        };
         self.inline_stack_ret = None;
         if self.defs.get(callee).is_some_and(|d| d.inline) {
             let dsts: Vec<Off> = (0..n_ret).map(|_| self.fresh()).collect();
@@ -1907,12 +1965,12 @@ impl FnLower<'_> {
             .get(callee)
             .map(|d| d.return_shapes.clone())
             .unwrap_or_else(|| vec![ReturnShape::Scalar; n_ret]);
-        assert_eq!(
-            shapes.len(),
-            n_ret,
-            "`{callee}` returns {} values, call binds {n_ret}",
-            shapes.len()
-        );
+        if shapes.len() != n_ret {
+            self.fail(format!(
+                "`{callee}` returns {} values, call binds {n_ret}",
+                shapes.len()
+            ))
+        };
         let mut logical = Vec::with_capacity(n_ret);
         let mut physical = Vec::new();
         let mut binds = Vec::with_capacity(n_ret);
@@ -1925,7 +1983,9 @@ impl FnLower<'_> {
                     binds.push(RetBind::Scalar);
                 }
                 ReturnShape::StackBuf(size) => {
-                    assert!(size > 0, "a returned StackBuf must not be empty");
+                    if size == 0 {
+                        self.fail("a returned StackBuf must not be empty")
+                    };
                     let base = self.alloc_stack(size);
                     logical.push(base);
                     physical.extend(base..base + size);
@@ -1941,23 +2001,21 @@ impl FnLower<'_> {
     /// Evaluate `callee(args)` into `dsts`, inlining the callee when it is
     /// `@inline` ([`Self::try_inline`]), else a real call.
     fn call_into(&mut self, callee: &str, args: &[Expr], dsts: &[Off]) {
-        assert!(
-            callee != "blake2s",
-            "blake2s is a statement, not a value-returning call"
-        );
+        if callee == "blake2s" {
+            self.fail("blake2s is a statement, not a value-returning call")
+        };
         if !self.try_inline(callee, args, dsts) {
             if let Some(def) = self.defs.get(callee) {
-                assert_eq!(
-                    def.return_shapes.len(),
-                    dsts.len(),
-                    "`{callee}` returns {} values, call binds {}",
-                    def.return_shapes.len(),
-                    dsts.len()
-                );
-                assert!(
-                    def.return_shapes.iter().all(|s| *s == ReturnShape::Scalar),
-                    "a normal function's multi-cell StackBuf return needs a `let` binding"
-                );
+                if def.return_shapes.len() != dsts.len() {
+                    self.fail(format!(
+                        "`{callee}` returns {} values, call binds {}",
+                        def.return_shapes.len(),
+                        dsts.len()
+                    ))
+                };
+                if def.return_shapes.iter().any(|s| *s != ReturnShape::Scalar) {
+                    self.fail("a normal function's multi-cell StackBuf return needs a `let` binding")
+                };
             }
             self.lower_call(callee, args, dsts.len(), None, Some(dsts), false);
         }
@@ -2010,22 +2068,22 @@ impl FnLower<'_> {
         }
         let (params, rt_args, body, n_ret) = self
             .specialized_body(callee, args)
-            .unwrap_or_else(|| panic!("`@inline {callee}`: bad arity or unresolved Const argument"));
-        assert_eq!(
-            n_ret,
-            dsts.len(),
-            "`@inline {callee}` returns {n_ret} values, call binds {}",
-            dsts.len()
-        );
-        assert!(
-            body_inlinable(&body, self.defs),
-            "`@inline {callee}` must be a single tail `return` with only builtin or @inline calls, and no loop/match"
-        );
-        assert!(
-            !self.inline_calls.iter().any(|f| f == callee),
-            "recursive @inline expansion is not supported: {} -> {callee}",
-            self.inline_calls.join(" -> ")
-        );
+            .unwrap_or_else(|| self.fail(format!("`@inline {callee}`: bad arity or unresolved Const argument")));
+        if n_ret != dsts.len() {
+            self.fail(format!(
+                "`@inline {callee}` returns {n_ret} values, call binds {}",
+                dsts.len()
+            ))
+        };
+        if !(body_inlinable(&body, self.defs)) {
+            self.fail(format!("`@inline {callee}` must be a single tail `return` with only builtin or @inline calls, and no loop/match"))
+        };
+        if self.inline_calls.iter().any(|f| f == callee) {
+            self.fail(format!(
+                "recursive @inline expansion is not supported: {} -> {callee}",
+                self.inline_calls.join(" -> ")
+            ))
+        };
         // Bind the params from the caller-scope arguments (symbolically where we
         // can, so a shifted-pointer arg keeps folding into `β`; a `StackBuf` arg
         // aliases its cell run), then lower the body in a fresh variable
@@ -2073,6 +2131,11 @@ impl FnLower<'_> {
             }
         }
         let saved_ret = self.inline_ret.replace(dsts.to_vec());
+        // The body lowers through the CALLER's `FnLower`, so its statements move
+        // `cur_line` into the callee. Restoring it is what keeps the rest of the
+        // caller's expression attributed to the call site rather than to whatever
+        // line the callee happened to end on.
+        let saved_line = self.cur_line;
         self.inline_calls.push(callee.to_string());
         for s in &body {
             self.stmt(s);
@@ -2080,6 +2143,7 @@ impl FnLower<'_> {
         let popped = self.inline_calls.pop();
         debug_assert_eq!(popped.as_deref(), Some(callee));
         self.inline_ret = saved_ret;
+        self.cur_line = saved_line;
         (
             self.scope.vars,
             self.scope.stacks,
@@ -2116,7 +2180,9 @@ impl FnLower<'_> {
         if !def.const_params.contains(&true) {
             return (callee.to_string(), args.to_vec());
         }
-        assert_eq!(args.len(), def.params.len(), "call to `{callee}`: wrong arity");
+        if args.len() != def.params.len() {
+            self.fail(format!("call to `{callee}`: wrong arity"))
+        };
         let mut tag = String::new();
         let (mut rt_params, mut rt_args, mut substs) = (Vec::new(), Vec::new(), Vec::new());
         for ((p, &is_const), a) in def.params.iter().zip(&def.const_params).zip(args) {
@@ -2126,10 +2192,10 @@ impl FnLower<'_> {
                 continue;
             }
             let c = self.const_arg(a).unwrap_or_else(|| {
-                panic!(
+                self.fail(format!(
                     "argument for Const parameter `{p}` of `{callee}` must be a compile-time \
                      constant, got `{a:?}`"
-                )
+                ))
             });
             tag.push_str(&match &c {
                 Expr::Lit(n) => format!("_L{n}"),
@@ -2140,10 +2206,9 @@ impl FnLower<'_> {
         }
         let name = format!("{callee}_{tag}");
         if !self.queue.iter().any(|f| f.name == name) {
-            assert!(
-                self.queue.len() < 10_000,
-                "Const specialization explosion (recursive constants?)"
-            );
+            if self.queue.len() >= 10_000 {
+                self.fail("Const specialization explosion (recursive constants?)")
+            };
             let mut body = def.body.clone();
             for (p, c) in &substs {
                 body = subst_stmts(&body, p, c);
@@ -2218,8 +2283,11 @@ impl FnLower<'_> {
 
     fn stmt(&mut self, s: &Stmt) {
         let tail = std::mem::take(&mut self.tail_call);
-        match s {
-            Stmt::Let(name, e) => match e {
+        // Every diagnostic raised while lowering this statement, and every
+        // instruction it emits, is attributed to this line.
+        self.cur_line = s.line;
+        match &s.kind {
+            StmtKind::Let(name, e) => match e {
                 // `x = StackBuf(n)`: bind a run of `n` consecutive frame cells.
                 Expr::StackBuf(n) => {
                     let base = self.alloc_stack(*n as u32);
@@ -2304,7 +2372,7 @@ impl FnLower<'_> {
                     }
                 }
             },
-            Stmt::LetTuple(names, f, args) => {
+            StmtKind::LetTuple(names, f, args) => {
                 let dsts = self.call(f, args, names.len());
                 // Each returned value binds per its RetBind (alias a StackBuf run
                 // or folded g-address, else take the scalar dst cell); a real call
@@ -2320,15 +2388,15 @@ impl FnLower<'_> {
             // assertion, so the `SET .. = 0` a fresh destination needed is gone
             // and no cell is burned. CSE leaves the `XOR` alone because that
             // cell is written more than once ([`crate::cse`]).
-            Stmt::AssertEq(a, b) => {
+            StmtKind::AssertEq(a, b) => {
                 let (la, lb) = (self.expr(a), self.expr(b));
                 let z = self.zero();
                 self.emit(LOp::Xor { a: la, b: lb, c: z });
             }
-            Stmt::AssertNe(a, b) => self.lower_assert_ne(a, b),
-            Stmt::AssertLt(e, bound) => self.lower_assert_lt(e, bound),
-            Stmt::HintWitness { dest, name } => self.lower_hint_witness(dest, name),
-            Stmt::Print { label, value } => {
+            StmtKind::AssertNe(a, b) => self.lower_assert_ne(a, b),
+            StmtKind::AssertLt(e, bound) => self.lower_assert_lt(e, bound),
+            StmtKind::HintWitness { dest, name } => self.lower_hint_witness(dest, name),
+            StmtKind::Print { label, value } => {
                 // Prover-side debug print: evaluate the value into a cell, hang
                 // a Print hint on a no-op anchor so it fires exactly here (and
                 // only on this path), at witness generation. No constraints.
@@ -2339,25 +2407,27 @@ impl FnLower<'_> {
                 }));
                 self.anchor();
             }
-            Stmt::If {
+            StmtKind::If {
                 eq,
                 lhs,
                 rhs,
                 then,
                 els,
             } => self.lower_if(*eq, lhs, rhs, then, els),
-            Stmt::Match { x, cases } => self.lower_match(x, cases),
-            Stmt::LetMatchRange { names, x, arms } => self.lower_match_range(names, x, arms),
-            Stmt::Call(f, args) => {
+            StmtKind::Match { x, cases } => self.lower_match(x, cases),
+            StmtKind::LetMatchRange { names, x, arms } => self.lower_match_range(names, x, arms),
+            StmtKind::Call(f, args) => {
                 if !self.lower_builtin(f, args) {
                     self.call(f, args, 0);
                 }
             }
-            Stmt::Store(arr, idx, val) => {
+            StmtKind::Store(arr, idx, val) => {
                 // Stack write `sa[k] = val`: place `val` straight into cell `base+k`.
                 if let Some((base, size)) = self.stack_of(arr) {
                     let k = self.const_index(idx);
-                    assert!(k < size, "stack store index {k} out of bounds (size {size})");
+                    if k >= size {
+                        self.fail(format!("stack store index {k} out of bounds (size {size})"))
+                    };
                     self.stack_store(base + k, val);
                 } else {
                     // Heap store `arr[idx] = val`: assert m[arr·idx] == val (write-once).
@@ -2366,8 +2436,8 @@ impl FnLower<'_> {
                     self.deref(base, beta, v, DerefMode::Cell);
                 }
             }
-            Stmt::Return(es) => self.lower_return(es),
-            Stmt::CallIfNe(lhs, rhs, callee, args) => {
+            StmtKind::Return(es) => self.lower_return(es),
+            StmtKind::CallIfNe(lhs, rhs, callee, args) => {
                 // A conditional call: the frame setup runs either way, and the
                 // `JUMP`'s nonzero test decides whether the callee is entered,
                 // so the not-taken path continues straight after it. In tail
@@ -2379,18 +2449,21 @@ impl FnLower<'_> {
                 self.emit(LOp::Xor { a: la, b: lb, c: x }); // x = lhs + rhs; x != 0 ⇔ lhs != rhs
                 self.lower_call(callee, args, 0, Some(x), None, tail);
             }
-            Stmt::For { var, lo, hi, body } => self.lower_for(var, *lo, hi, body),
+            StmtKind::For { var, lo, hi, body } => self.lower_for(var, *lo, hi, body),
             // Compile-time unrolling: emit the body per integer, the counter
             // substituted as its literal. Every copy executes (this is
             // straight-line code, not a branch), so bindings simply rebind (a
             // fresh binding per iteration) and lazy caches persist.
-            Stmt::Unroll { var, lo, hi, body } => {
+            StmtKind::Unroll { var, lo, hi, body } => {
                 let bound = |s: &Self, e: &Expr| {
-                    s.try_const_index(e)
-                        .unwrap_or_else(|| panic!("unroll bounds must be compile-time integers, got `{e:?}`"))
+                    s.try_const_index(e).unwrap_or_else(|| {
+                        self.fail(format!("unroll bounds must be compile-time integers, got `{e:?}`"))
+                    })
                 };
                 let (lo, hi) = (bound(self, lo), bound(self, hi));
-                assert!(lo <= hi, "unroll(a, b) needs a <= b, got ({lo}, {hi})");
+                if lo > hi {
+                    self.fail(format!("unroll(a, b) needs a <= b, got ({lo}, {hi})"))
+                };
                 for j in lo..hi {
                     for s in subst_stmts(body, var, &Expr::Lit(j as u128)) {
                         self.stmt(&s);
@@ -2409,7 +2482,9 @@ impl FnLower<'_> {
     fn lower_builtin(&mut self, f: &str, args: &[Expr]) -> bool {
         match f {
             "hint_decompose_bits" | "hint_decompose_bits_exponent" => {
-                assert_eq!(args.len(), 3, "{f}(bits, value, nbits)");
+                if args.len() != 3 {
+                    self.fail(format!("{f}(bits, value, nbits)"))
+                };
                 let nbits = self.const_index(&args[2]);
                 let bits = self.bits_dest(&args[0], nbits, f);
                 let value = self.expr(&args[1]);
@@ -2421,21 +2496,24 @@ impl FnLower<'_> {
             }
             "blake2s" => self.lower_blake2s(args),
             "assert_in_k" => {
-                assert_eq!(args.len(), 2, "assert_in_k(a, b) takes two scalar cells");
+                if args.len() != 2 {
+                    self.fail("assert_in_k(a, b) takes two scalar cells")
+                };
                 let a = self.expr(&args[0]);
                 let b = self.expr(&args[1]);
                 let zero = self.zero();
                 self.emit(LOp::Jump { oc: zero, od: a, of: b });
             }
             "hint_f192_limbs" => {
-                assert_eq!(args.len(), 2, "hint_f192_limbs(dest, value)");
+                if args.len() != 2 {
+                    self.fail("hint_f192_limbs(dest, value)")
+                };
                 let (base, len) = self
                     .stack_of(&args[0])
                     .expect("hint_f192_limbs destination must be a StackBuf");
-                assert!(
-                    (1..=3).contains(&len),
-                    "hint_f192_limbs destination must have 1..=3 cells"
-                );
+                if !((1..=3).contains(&len)) {
+                    self.fail("hint_f192_limbs destination must have 1..=3 cells")
+                };
                 let value = self.expr(&args[1]);
                 let value = self.word_src(value);
                 // Names the physical cells, as the two consumers above do, so the run
@@ -2462,29 +2540,31 @@ impl FnLower<'_> {
             .iter()
             .position(|a| matches!(a, Expr::Call(name, _) if name.starts_with("__kw_")))
             .unwrap_or(args.len());
-        assert_eq!(first_kw, 3, "blake2s takes three positional arguments: (a, b, out)");
-        assert!(
-            args[first_kw..]
-                .iter()
-                .all(|a| matches!(a, Expr::Call(name, v) if name.starts_with("__kw_") && v.len() == 1)),
-            "keyword arguments must follow the three positional blake2s arguments"
-        );
+        if first_kw != 3 {
+            self.fail("blake2s takes three positional arguments: (a, b, out)")
+        };
+        if !(args[first_kw..]
+            .iter()
+            .all(|a| matches!(a, Expr::Call(name, v) if name.starts_with("__kw_") && v.len() == 1)))
+        {
+            self.fail("keyword arguments must follow the three positional blake2s arguments")
+        };
         let mut kwargs: HashMap<&str, &Expr> = HashMap::new();
         for kw in &args[first_kw..] {
             let Expr::Call(name, value) = kw else { unreachable!() };
             let key = name.strip_prefix("__kw_").unwrap();
-            assert!(
-                kwargs.insert(key, &value[0]).is_none(),
-                "duplicate blake2s keyword `{key}`"
-            );
+            if kwargs.insert(key, &value[0]).is_some() {
+                self.fail(format!("duplicate blake2s keyword `{key}`"))
+            };
         }
         let allowed = ["cv", "counter", "final", "last_node"];
-        assert!(kwargs.keys().all(|k| allowed.contains(k)), "unknown blake2s keyword");
+        if !(kwargs.keys().all(|k| allowed.contains(k))) {
+            self.fail("unknown blake2s keyword")
+        };
         let customized = kwargs.keys().any(|k| matches!(*k, "counter" | "final" | "last_node"));
-        assert!(
-            !kwargs.contains_key("cv") || customized,
-            "blake2s with cv= requires counter=, since a chained block is not the default one-block hash"
-        );
+        if kwargs.contains_key("cv") && !customized {
+            self.fail("blake2s with cv= requires counter=, since a chained block is not the default one-block hash")
+        };
 
         let a = self.blake2s_input(&args[0]);
         let b = self.blake2s_input(&args[1]);
@@ -2504,8 +2584,9 @@ impl FnLower<'_> {
             kwargs
                 .get(name)
                 .map(|e| {
-                    this.try_const_int(e)
-                        .unwrap_or_else(|| panic!("BLAKE2s `{name}` must be a compile-time integer, got `{e:?}`"))
+                    this.try_const_int(e).unwrap_or_else(|| {
+                        self.fail(format!("BLAKE2s `{name}` must be a compile-time integer, got `{e:?}`"))
+                    })
                 })
                 .unwrap_or(default)
         };
@@ -2573,13 +2654,13 @@ impl FnLower<'_> {
             return; // a `return` in main is a no-op; main halts via the trailing sentinel jump (lower_func).
         }
         let ret_base = 2 + self.n_args;
-        assert_eq!(
-            exprs.len(),
-            self.return_shapes.len(),
-            "function returns {} values here, but its ABI declares {}",
-            exprs.len(),
-            self.return_shapes.len()
-        );
+        if exprs.len() != self.return_shapes.len() {
+            self.fail(format!(
+                "function returns {} values here, but its ABI declares {}",
+                exprs.len(),
+                self.return_shapes.len()
+            ))
+        };
         // Each logical value lands straight in its flattened return area. A
         // StackBuf is copied cell-by-cell because its callee-frame offsets are
         // not meaningful after control returns to the caller.
@@ -2590,8 +2671,10 @@ impl FnLower<'_> {
                 ReturnShape::StackBuf(size) => {
                     let (base, actual) = self
                         .stack_of(e)
-                        .unwrap_or_else(|| panic!("expected a StackBuf({size}) return, got `{e:?}`"));
-                    assert_eq!(actual, size, "returned StackBuf has size {actual}, expected {size}");
+                        .unwrap_or_else(|| self.fail(format!("expected a StackBuf({size}) return, got `{e:?}`")));
+                    if actual != size {
+                        self.fail(format!("returned StackBuf has size {actual}, expected {size}"))
+                    };
                     for k in 0..size {
                         let src = self.word_src(base + k);
                         self.copy(src, ret + k);
@@ -2667,10 +2750,10 @@ impl FnLower<'_> {
             // would otherwise trigger). Keep it inside the loop body, or carry
             // state through a `HeapBuf`.
             if self.scope.stacks.contains_key(r) && !shadowed.contains(r) {
-                panic!(
+                self.fail(format!(
                     "StackBuf `{r}` cannot be captured into a `for` loop; \
                      define it inside the loop body or carry state via a `HeapBuf`"
-                );
+                ));
             }
             if (self.scope.vars.contains_key(r) || self.scope.gaddrs.contains_key(r)) && seen.insert(r.clone()) {
                 captures.push(r.clone());
@@ -2703,14 +2786,16 @@ impl FnLower<'_> {
         let next_var = format!("__next{id}");
         let next = Expr::Mul(Box::new(Expr::Var(var.to_string())), Box::new(Expr::Gen));
         let mut loop_body: Vec<Stmt> = body.to_vec();
-        loop_body.push(Stmt::Let(next_var.clone(), next));
-        loop_body.push(Stmt::CallIfNe(
+        // The counter advance and the self-call belong to the `for` header.
+        let at = |kind| Stmt::new(self.cur_line, kind);
+        loop_body.push(at(StmtKind::Let(next_var.clone(), next)));
+        loop_body.push(at(StmtKind::CallIfNe(
             Expr::Var(next_var.clone()),
             exit,
             loop_name.clone(),
             cap_args(Expr::Var(next_var), Expr::Var(bound_var.clone())),
-        ));
-        loop_body.push(Stmt::Return(vec![]));
+        )));
+        loop_body.push(at(StmtKind::Return(vec![])));
         let const_params = vec![false; params.len()];
         self.queue.push(Func {
             name: loop_name.clone(),
@@ -2736,11 +2821,14 @@ impl FnLower<'_> {
                 }
             }
             ForBound::Runtime(_) => {
-                let stmt = Stmt::CallIfNe(
-                    Expr::GPow(lo as u128),
-                    entry_bound.clone(),
-                    loop_name,
-                    cap_args(Expr::GPow(lo as u128), entry_bound),
+                let stmt = Stmt::new(
+                    self.cur_line,
+                    StmtKind::CallIfNe(
+                        Expr::GPow(lo as u128),
+                        entry_bound.clone(),
+                        loop_name,
+                        cap_args(Expr::GPow(lo as u128), entry_bound),
+                    ),
                 );
                 self.stmt(&stmt);
             }
@@ -2754,25 +2842,26 @@ impl FnLower<'_> {
 /// longer the callee's). Builtins and nested `@inline` calls are fine;
 /// `unroll`/`if` are compile-time / same-frame and recurse into.
 fn body_inlinable(body: &[Stmt], defs: &HashMap<String, Func>) -> bool {
-    matches!(body.split_last(), Some((Stmt::Return(_), rest)) if rest.iter().all(|s| stmt_inline_safe(s, defs)))
+    matches!(body.split_last(), Some((last, rest)) if matches!(last.kind, StmtKind::Return(_))
+        && rest.iter().all(|s| stmt_inline_safe(s, defs)))
 }
 
 fn stmt_inline_safe(s: &Stmt, defs: &HashMap<String, Func>) -> bool {
-    match s {
-        Stmt::Let(..)
-        | Stmt::Store(..)
-        | Stmt::HintWitness { .. }
-        | Stmt::Print { .. }
-        | Stmt::AssertEq(..)
-        | Stmt::AssertNe(..)
-        | Stmt::AssertLt(..) => true,
-        Stmt::Call(f, _) => {
+    match &s.kind {
+        StmtKind::Let(..)
+        | StmtKind::Store(..)
+        | StmtKind::HintWitness { .. }
+        | StmtKind::Print { .. }
+        | StmtKind::AssertEq(..)
+        | StmtKind::AssertNe(..)
+        | StmtKind::AssertLt(..) => true,
+        StmtKind::Call(f, _) => {
             f == "blake2s" || f == "assert_in_k" || f == "hint_f192_limbs" || defs.get(f).is_some_and(|d| d.inline)
         }
-        Stmt::If { then, els, .. } => {
+        StmtKind::If { then, els, .. } => {
             then.iter().all(|s| stmt_inline_safe(s, defs)) && els.iter().all(|s| stmt_inline_safe(s, defs))
         }
-        Stmt::Unroll { body, .. } => body.iter().all(|s| stmt_inline_safe(s, defs)),
+        StmtKind::Unroll { body, .. } => body.iter().all(|s| stmt_inline_safe(s, defs)),
         // Return (non-tail), For, Match, LetMatchRange, LetTuple, CallIfNe, user Call.
         _ => false,
     }
@@ -2823,19 +2912,19 @@ fn free_vars_expr(e: &Expr, refs: &mut Vec<String>) {
 /// discarded with the arm.
 fn binds_anywhere(body: &[Stmt], out: &mut std::collections::HashSet<String>) {
     for s in body {
-        match s {
-            Stmt::Let(n, _) => {
+        match &s.kind {
+            StmtKind::Let(n, _) => {
                 out.insert(n.clone());
             }
-            Stmt::LetTuple(ns, ..) | Stmt::LetMatchRange { names: ns, .. } => ns.iter().for_each(|n| {
+            StmtKind::LetTuple(ns, ..) | StmtKind::LetMatchRange { names: ns, .. } => ns.iter().for_each(|n| {
                 out.insert(n.clone());
             }),
-            Stmt::If { then, els, .. } => {
+            StmtKind::If { then, els, .. } => {
                 binds_anywhere(then, out);
                 binds_anywhere(els, out);
             }
-            Stmt::Match { cases, .. } => cases.iter().for_each(|c| binds_anywhere(c, out)),
-            Stmt::For { var, body, .. } | Stmt::Unroll { var, body, .. } => {
+            StmtKind::Match { cases, .. } => cases.iter().for_each(|c| binds_anywhere(c, out)),
+            StmtKind::For { var, body, .. } | StmtKind::Unroll { var, body, .. } => {
                 out.insert(var.clone());
                 binds_anywhere(body, out);
             }
@@ -2854,30 +2943,30 @@ fn scoped_vars(body: &[Stmt], refs: &mut Vec<String>, bound: &std::collections::
 }
 
 fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut std::collections::HashSet<String>) {
-    match s {
-        Stmt::Let(n, e) => {
+    match &s.kind {
+        StmtKind::Let(n, e) => {
             free_vars_expr(e, refs);
             bound.insert(n.clone());
         }
-        Stmt::LetTuple(ns, _, args) => {
+        StmtKind::LetTuple(ns, _, args) => {
             args.iter().for_each(|a| free_vars_expr(a, refs));
             ns.iter().for_each(|n| {
                 bound.insert(n.clone());
             });
         }
-        Stmt::AssertEq(a, b) | Stmt::AssertNe(a, b) => {
+        StmtKind::AssertEq(a, b) | StmtKind::AssertNe(a, b) => {
             free_vars_expr(a, refs);
             free_vars_expr(b, refs);
         }
-        Stmt::AssertLt(e, bound) => {
+        StmtKind::AssertLt(e, bound) => {
             free_vars_expr(e, refs);
             if let LtBound::Runtime(b) = bound {
                 free_vars_expr(b, refs);
             }
         }
-        Stmt::HintWitness { dest, .. } => free_vars_expr(dest, refs),
-        Stmt::Print { value, .. } => free_vars_expr(value, refs),
-        Stmt::If {
+        StmtKind::HintWitness { dest, .. } => free_vars_expr(dest, refs),
+        StmtKind::Print { value, .. } => free_vars_expr(value, refs),
+        StmtKind::If {
             lhs, rhs, then, els, ..
         } => {
             free_vars_expr(lhs, refs);
@@ -2901,30 +2990,30 @@ fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut std::collections
                 scoped_vars(els, refs, bound);
             }
         }
-        Stmt::Match { x, cases } => {
+        StmtKind::Match { x, cases } => {
             free_vars_expr(x, refs);
             cases.iter().for_each(|c| scoped_vars(c, refs, bound));
         }
-        Stmt::LetMatchRange { names, x, arms } => {
+        StmtKind::LetMatchRange { names, x, arms } => {
             free_vars_expr(x, refs);
             arms.iter().for_each(|a| free_vars_expr(a, refs));
             names.iter().for_each(|n| {
                 bound.insert(n.clone());
             });
         }
-        Stmt::CallIfNe(a, b, _, args) => {
+        StmtKind::CallIfNe(a, b, _, args) => {
             free_vars_expr(a, refs);
             free_vars_expr(b, refs);
             args.iter().for_each(|e| free_vars_expr(e, refs));
         }
-        Stmt::Call(_, args) => args.iter().for_each(|a| free_vars_expr(a, refs)),
-        Stmt::Store(arr, idx, val) => {
+        StmtKind::Call(_, args) => args.iter().for_each(|a| free_vars_expr(a, refs)),
+        StmtKind::Store(arr, idx, val) => {
             free_vars_expr(arr, refs);
             free_vars_expr(idx, refs);
             free_vars_expr(val, refs);
         }
-        Stmt::Return(es) => es.iter().for_each(|e| free_vars_expr(e, refs)),
-        Stmt::For { var, hi, body, .. } => {
+        StmtKind::Return(es) => es.iter().for_each(|e| free_vars_expr(e, refs)),
+        StmtKind::For { var, hi, body, .. } => {
             if let ForBound::Runtime(b) = hi {
                 free_vars_expr(b, refs);
             }
@@ -2936,7 +3025,7 @@ fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut std::collections
             inner.insert(var.clone());
             body.iter().for_each(|s| free_vars_stmt(s, refs, &mut inner));
         }
-        Stmt::Unroll { var, lo, hi, body } => {
+        StmtKind::Unroll { var, lo, hi, body } => {
             free_vars_expr(lo, refs);
             free_vars_expr(hi, refs);
             bound.insert(var.clone());
@@ -2981,6 +3070,7 @@ pub(crate) fn lower_func(
         fn_name: f.name.clone(),
         tail_call: false,
         code: Vec::new(),
+        cur_line: 0,
         opaque_runs: Vec::new(),
         stack_runs: Vec::new(),
         frame_escaped: false,
@@ -3003,8 +3093,8 @@ pub(crate) fn lower_func(
         // chain.
         lowerer.tail_call = !lowerer.is_main
             && f.n_ret == 0
-            && matches!(s, Stmt::CallIfNe(..))
-            && matches!(f.body.get(i + 1), Some(Stmt::Return(r)) if r.is_empty());
+            && matches!(s.kind, StmtKind::CallIfNe(..))
+            && matches!(f.body.get(i + 1).map(|n| &n.kind), Some(StmtKind::Return(r)) if r.is_empty());
         lowerer.stmt(s);
     }
     let mut filler = Vec::new();
@@ -3015,10 +3105,11 @@ pub(crate) fn lower_func(
             // the interpreter enters on its own ([`FnLower::lower_filler_blocks`]).
             filler = lowerer.lower_filler_blocks();
         }
-    } else if !matches!(f.body.last(), Some(Stmt::Return(_))) {
+    } else if !matches!(f.body.last().map(|s| &s.kind), Some(StmtKind::Return(_))) {
         // A function must never fall off its end into whatever code the
         // layout placed next: append the implicit bare return.
-        lowerer.stmt(&Stmt::Return(vec![]));
+        let last = f.body.last().map_or(0, |s| s.line);
+        lowerer.stmt(&Stmt::new(last, StmtKind::Return(vec![])));
     }
     let filler_start = lowerer.filler_start.unwrap_or(lowerer.code.len());
     Lowered {

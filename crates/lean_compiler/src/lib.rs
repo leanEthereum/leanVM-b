@@ -151,6 +151,8 @@ fn compile_inner(ast: &Ast, with_filler: bool) -> Program {
 
     // Resolve to bytecode + a hint map keyed by global pc.
     let mut prog: Vec<Op> = Vec::new();
+    // Source line per pc, so a run-time failure can name a line instead of a pc.
+    let mut src_lines: Vec<u32> = Vec::new();
     let mut hints: HashMap<u32, Vec<RHint>> = HashMap::new();
     for l in &lowered {
         let base = entry[&l.name];
@@ -176,6 +178,7 @@ fn compile_inner(ast: &Ast, with_filler: bool) -> Program {
                     .collect();
                 hints.insert(here, rhs);
             }
+            src_lines.push(ins.line);
             prog.push(resolve(&ins.op, &entry, sentinel, base));
         }
     }
@@ -183,6 +186,7 @@ fn compile_inner(ast: &Ast, with_filler: bool) -> Program {
     // Pad the bytecode to `B` (the sentinel slot g^{B-1} must exist for execution).
     prog.resize(bytecode_size, Op::Set { o: 0, k: F192::ZERO });
     let mut program = Program::assemble(prog, hints, frame_size["main"]);
+    program.src_lines = src_lines;
     program.fn_ranges = lowered
         .iter()
         .map(|l| (l.name.clone(), entry[&l.name], l.code.len() as u32))
