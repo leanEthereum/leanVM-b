@@ -441,4 +441,21 @@ theorem evalDist_fst_directDetailedBoundaryPrivatePlanObserve
         directDetailedBoundaryPrivateObserve] using
         ih finalValue.1 finalCandidates finalContext finalRemaining finalValue.2
 
+theorem evalDist_fst_retainedResolvedFinalizationPrivatePlanObserve
+    (table : OtsSecretIndex → HashOutput) (root : Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : RetainedRestResult × SplitHashCache) (candidates : List Probe) :
+    evalDist (Prod.fst <$>
+        retainedResolvedFinalizationPrivatePlanObserve table root context fuel value candidates) =
+      evalDist (retainedResolvedFinalizationPrivateObserve table root context fuel value) := by
+  unfold retainedResolvedFinalizationPrivatePlanObserve
+  simp
+
+noncomputable def sampledGranularAllDirectBoundaryDetailedRetainedPrivatePlan
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp (Bool × List Probe) := do
+  let table ← sampleOtsHashTable
+  granularAllDirectBoundaryDetailedRetainedPrivatePlan adversary parameter table ftsSecret fuel
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
