@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryOrdinarySigner
+import SphincsSecurity.Proof.QueryBound
 
 /-!
 # Adaptive ordinary boundary refinement
@@ -192,6 +193,27 @@ theorem relTriple_runDirectResolvedDetailed_maskedExpandedAdversaryImpl
           message left right leftFuel rightFuel leftCache rightCache hcontext hfuel hcache
           hrevealed hvalues hpublished hrightMaterialized
 
+set_option maxRecDepth 100000 in
+theorem isQueryBoundP_expandedSigningTrace_all_tables_roots
+    (adversary : Adversary) (q : Nat)
+    (hq : HasHashQueryBound scheme adversary q)
+    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (hfts : ftsSecret ∈ support sampleFtsSecrets)
+    (root : Digest) :
+    (simulateQ
+      (SphincsSecurity.expandedAdversaryImpl
+        (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ : SecretKey))
+      (signingTraceComputation
+        (adversary.main ⟨root, parameter⟩))).IsQueryBoundP
+          (· matches Sum.inr _) q := by
+  have hfull := isQueryBoundP_expandedRetained_all_tables_roots adversary q hq parameter
+    hparameter table ftsSecret hfts root
+  unfold retainedGameRestComputation at hfull
+  rw [simulateQ_bind] at hfull
+  exact IsQueryBoundP.of_bind_left hfull
+
 def BoolImp (left right : Bool) : Prop := left = true → right = true
 
 theorem relTriple_any_true_of_evalDist_eq_true
@@ -220,6 +242,34 @@ theorem relTriple_false_any (right : ProbComp Bool) :
     simpa using hrelation.2
   rw [hfalse] at hleft
   contradiction
+
+theorem evalDist_runDirectDetailedOrdinaryObserve_bind
+    (table : OtsSecretIndex → HashOutput)
+    (context : DeferredContext) (fuel : Nat)
+    (left : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (next : α → OracleComp (LazyRevealProbe.World Coordinate) β)
+    (observe : DeferredContext → Nat → β → ProbComp Bool)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table) :
+    evalDist
+      (runDirectDetailedOrdinaryObserve observe context fuel table (left >>= next)) =
+    evalDist (runDirectResolvedDetailedFromTable context fuel table left >>=
+        finishDirectDetailedOrdinaryObserve
+          (fun nextContext remaining value =>
+            runDirectDetailedOrdinaryObserve observe nextContext remaining table
+              (next value))) := by
+  unfold runDirectDetailedOrdinaryObserve
+  rw [runDirectResolvedDetailedFromTable_bind, bind_assoc]
+  apply evalDist_bind_congr
+  intro result hresult
+  cases result with
+  | stopped reason => cases reason <;> rfl
+  | done result =>
+      have hdirect := mem_support_runDirectResolvedFromTable_of_done_detailed
+        left context fuel table result hresult
+      have hcore := resolvedCore_of_mem_runDirectResolvedFromTable
+        left context fuel table result hconsistent hstarts hdirect
+      simp [finishDirectDetailedOrdinaryObserve, hcore.1]
 
 set_option maxRecDepth 100000 in
 theorem relTriple_finishDirectDetailedOrdinaryObserve_of_runEq
@@ -368,5 +418,198 @@ theorem evalDist_runDirectDetailedOrdinaryObserve_eq_true_of_materializedDoomed
     _ = _ := OracleComp.DeferredSampling.evalDist_bind_const_neverFails
       (runDirectResolvedDetailedFromTable context fuel table computation)
       (by simp [runDirectResolvedDetailedFromTable]) (pure true)
+
+set_option maxRecDepth 100000 in
+theorem relTriple_directDetailedBoundaryOrdinaryObserve_maskedExpandedAdversaryImpl
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (leftObserve rightObserve : DeferredContext → Nat →
+      (α × SplitHashCache) → ProbComp Bool)
+    (left right : DeferredContext) (leftFuel rightFuel : Nat)
+    (leftCache rightCache : SplitHashCache)
+    (hcontext : FinalizationContextLE table left right)
+    (hfuel : leftFuel ≤ rightFuel)
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hvalues : LazyRevealProbe.ValuesLE left.state right.state)
+    (hpublished : PublishedValues left.state)
+    (hrightMaterialized : right = directDeferredContext right.state)
+    (hbound :
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey)) computation).IsQueryBoundP
+              (fun query => query matches Sum.inr _) leftFuel)
+    (hterminal : ∀ value nextLeft nextRight nextLeftFuel nextRightFuel
+        nextLeftCache nextRightCache,
+      FinalizationContextLE table nextLeft nextRight →
+      nextLeftFuel ≤ nextRightFuel →
+      ordinaryQueryCache nextLeftCache = ordinaryQueryCache nextRightCache →
+      nextLeft.state.revealed = nextRight.state.revealed →
+      LazyRevealProbe.ValuesLE nextLeft.state nextRight.state →
+      PublishedValues nextLeft.state →
+      nextRight = directDeferredContext nextRight.state →
+      RelTriple
+        (leftObserve nextLeft nextLeftFuel (value, nextLeftCache))
+        (rightObserve nextRight nextRightFuel (value, nextRightCache)) BoolImp)
+    (hdoomed : ∀ result : ResolvedRunResult (α × SplitHashCache),
+      FinalizationDoomedRun table (some result) →
+      result.context = directDeferredContext result.context.state →
+      evalDist (rightObserve result.context result.remaining result.value) =
+        evalDist (pure true : ProbComp Bool)) :
+    RelTriple
+      (directDetailedBoundaryOrdinaryObserve
+        (maskedExpandedAdversaryImpl parameter root ftsSecret) computation leftObserve
+        left leftFuel table leftCache)
+      (runDirectDetailedOrdinaryObserve rightObserve right rightFuel table
+        ((simulateQ (maskedExpandedAdversaryImpl parameter root ftsSecret)
+          computation).run rightCache)) BoolImp := by
+  induction computation using OracleComp.inductionOn generalizing
+      left right leftFuel rightFuel leftCache rightCache with
+  | pure value =>
+      simp only [directDetailedBoundaryOrdinaryObserve, OracleComp.construct_pure,
+        simulateQ_pure, StateT.run_pure]
+      simpa [runDirectDetailedOrdinaryObserve, runDirectResolvedDetailedFromTable_pure,
+        finishDirectDetailedOrdinaryObserve] using
+          hterminal value left right leftFuel rightFuel leftCache rightCache hcontext hfuel
+            hcache hrevealed hvalues hpublished hrightMaterialized
+  | query_bind input next ih =>
+      rw [directDetailedBoundaryOrdinaryObserve, OracleComp.construct_query_bind]
+      let leftNextObserve : DeferredContext → Nat →
+          ((OracleWorld + SigningSpec).Range input × SplitHashCache) → ProbComp Bool :=
+        fun nextContext remaining value =>
+          directDetailedBoundaryOrdinaryObserve
+            (maskedExpandedAdversaryImpl parameter root ftsSecret) (next value.1)
+            leftObserve nextContext remaining table value.2
+      let rightNextObserve : DeferredContext → Nat →
+          ((OracleWorld + SigningSpec).Range input × SplitHashCache) → ProbComp Bool :=
+        fun nextContext remaining value =>
+          runDirectDetailedOrdinaryObserve rightObserve nextContext remaining table
+            ((simulateQ (maskedExpandedAdversaryImpl parameter root ftsSecret)
+              (next value.1)).run value.2)
+      have hrightFactor :
+          evalDist
+            (runDirectDetailedOrdinaryObserve rightObserve right rightFuel table
+              ((simulateQ (maskedExpandedAdversaryImpl parameter root ftsSecret)
+                (OracleSpec.query input >>= next)).run rightCache)) =
+          evalDist
+            (runDirectResolvedDetailedFromTable right rightFuel table
+              ((maskedExpandedAdversaryImpl parameter root ftsSecret input).run rightCache) >>=
+                finishDirectDetailedOrdinaryObserve rightNextObserve) := by
+        rw [simulateQ_query_bind, StateT.run_bind]
+        exact evalDist_runDirectDetailedOrdinaryObserve_bind table right rightFuel
+          ((maskedExpandedAdversaryImpl parameter root ftsSecret input).run rightCache)
+          (fun value =>
+            (simulateQ (maskedExpandedAdversaryImpl parameter root ftsSecret)
+              (next value.1)).run value.2)
+          rightObserve hcontext.rightValid.valuesConsistent hcontext.view.rightStarts
+      apply relTriple_of_evalDist_eq_right hrightFactor.symm
+      apply relTriple_finishDirectDetailedOrdinaryObserve_of_runEq table
+      · apply relTriple_runDirectResolvedDetailed_maskedExpandedAdversaryImpl
+        · exact hcontext
+        · intro houter
+          cases input with
+          | inl worldInput =>
+              cases worldInput with
+              | inl n => simp [IsOuterHash] at houter
+              | inr hashInput =>
+                  rw [simulateQ_expandedAdversaryImpl_query_bind_inl,
+                    OracleComp.isQueryBoundP_query_bind_iff] at hbound
+                  simpa using hbound.1
+          | inr message => simp [IsOuterHash] at houter
+        · exact hfuel
+        · exact hcache
+        · exact hrevealed
+        · exact hvalues
+        · exact hpublished
+        · exact hrightMaterialized
+      · intro result hresult
+        exact publishedValues_of_done_runDirectResolvedDetailedFromTable
+          (maskedExpandedAdversaryImpl parameter root ftsSecret input)
+          (preservesPublishedValuesImpl_maskedExpandedAdversaryImpl parameter root ftsSecret
+            input)
+          left leftFuel table leftCache result hpublished hresult
+      · rintro ⟨leftContext, leftRemaining, ⟨leftOutput, leftFinalCache⟩, leftTable⟩
+          ⟨rightContext, rightRemaining, ⟨rightOutput, rightFinalCache⟩, rightTable⟩
+          hleftMem hrightMem hrelation
+        have hdirect := mem_support_runDirectResolvedFromTable_of_done_detailed
+          ((maskedExpandedAdversaryImpl parameter root ftsSecret input).run leftCache)
+          left leftFuel table
+            ⟨leftContext, leftRemaining, (leftOutput, leftFinalCache), leftTable⟩ hleftMem
+        have hraw := raw_done_of_mem_runDirectResolvedFromTable
+          ((maskedExpandedAdversaryImpl parameter root ftsSecret input).run leftCache)
+          left leftFuel table
+            ⟨leftContext, leftRemaining, (leftOutput, leftFinalCache), leftTable⟩ hdirect
+        have hstepBound := maskedExpandedAdversaryImpl_step_isProbeBound parameter root
+          ftsSecret input leftCache
+        have hremaining := LazyRevealProbe.fuel_le_remaining_add_of_mem_support_runRaw_done
+          left.state leftContext.state leftFuel leftRemaining
+          (if IsOuterHash input then 1 else 0)
+          ((maskedExpandedAdversaryImpl parameter root ftsSecret input).run leftCache)
+          (leftOutput, leftFinalCache) hstepBound hraw
+        have htailBound :
+            (simulateQ
+              (SphincsSecurity.expandedAdversaryImpl
+                (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+                  SecretKey))
+              (next leftOutput)).IsQueryBoundP
+                (fun query => query matches Sum.inr _) leftRemaining := by
+          cases input with
+          | inl worldInput =>
+              rw [simulateQ_expandedAdversaryImpl_query_bind_inl,
+                OracleComp.isQueryBoundP_query_bind_iff] at hbound
+              cases worldInput with
+              | inl n =>
+                  exact (hbound.2 leftOutput).mono (by
+                    simpa [IsOuterHash] using hremaining)
+              | inr hashInput =>
+                  have htail :
+                      (simulateQ
+                        (SphincsSecurity.expandedAdversaryImpl
+                          (⟨parameter, root,
+                            tableOtsSecret (extendStartTable table), ftsSecret⟩ : SecretKey))
+                        (next leftOutput)).IsQueryBoundP
+                          (fun query => query matches Sum.inr _) (leftFuel - 1) := by
+                    simpa [IsOuterHash] using hbound.2 leftOutput
+                  apply htail.mono
+                  change leftFuel ≤ leftRemaining + 1 at hremaining
+                  omega
+          | inr message =>
+              rw [simulateQ_expandedAdversaryImpl_query_bind_inr] at hbound
+              change Option Signature at leftOutput
+              change LazyRevealProbe.RawResult.done leftContext.state
+                  leftRemaining (leftOutput, leftFinalCache) ∈ support
+                (LazyRevealProbe.runRaw left.state leftFuel
+                  ((maskedSigningImpl parameter root ftsSecret message).run leftCache)) at hraw
+              have houtput : leftOutput ∈ support
+                  (scheme.sign
+                    (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+                      SecretKey) message) := by
+                exact maskedSign_done_output_mem_support parameter root table ftsSecret
+                  message left.state leftContext.state leftCache leftFinalCache
+                  leftFuel leftRemaining leftOutput
+                    hrelation.context_le.view.leftStarts (by
+                      simpa only [SigningSpec, maskedExpandedAdversaryImpl,
+                        maskedSigningImpl] using hraw)
+              exact (isQueryBoundP_of_bind hbound leftOutput houtput).mono (by
+                simpa [IsOuterHash] using hremaining)
+        simp only [rightNextObserve]
+        have houtputEq : leftOutput = rightOutput := hrelation.value_eq
+        rw [← houtputEq]
+        exact ih leftOutput
+            (canonicalizeMaterializedValues table leftContext) rightContext
+            leftRemaining rightRemaining leftFinalCache rightFinalCache
+            hrelation.canonicalize_left.context_le hrelation.remaining_le hrelation.cache_eq
+            hrelation.canonicalize_left.revealed_eq hrelation.canonicalize_left.values_le
+            hrelation.canonicalize_left.left_published hrelation.right_materialized htailBound
+      · intro result hresult hdoomedRun
+        exact evalDist_runDirectDetailedOrdinaryObserve_eq_true_of_materializedDoomed
+          table
+          ((simulateQ (maskedExpandedAdversaryImpl parameter root ftsSecret)
+            (next result.value.1)).run result.value.2)
+          rightObserve result.context result.remaining hdoomedRun.1.2 hdoomedRun.2
+            (fun nextResult _ => hdoomed nextResult)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
