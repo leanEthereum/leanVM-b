@@ -1121,6 +1121,62 @@ theorem directBoundaryObserve_bind
           · simp [hpublished]
 
 set_option maxRecDepth 100000 in
+theorem evalDist_failed_directDetailedBoundaryObserve_bind
+    (impl : QueryImpl spec
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))))
+    (left : OracleComp spec α) (next : α → OracleComp spec β)
+    (detailedObserve : DeferredContext → Nat → (β × SplitHashCache) →
+      ProbComp DirectBoundaryOutcome)
+    (observe : DeferredContext → Nat → (β × SplitHashCache) → ProbComp Bool)
+    [ObserverDooms table observe]
+    (hobserve : ∀ nextContext remaining value,
+      nextContext.ValuesConsistent → StartTableAgrees nextContext.state table →
+      evalDist (DirectBoundaryOutcome.failed <$>
+          detailedObserve nextContext remaining value) =
+        evalDist (observe nextContext remaining value))
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table) :
+    evalDist (DirectBoundaryOutcome.failed <$>
+        directDetailedBoundaryObserve impl (left >>= next) detailedObserve
+          context fuel table cache) =
+      evalDist (DirectBoundaryOutcome.failed <$>
+        directDetailedBoundaryObserve impl left
+          (fun nextContext remaining value =>
+            directDetailedBoundaryObserve impl (next value.1) detailedObserve
+              nextContext remaining table value.2)
+          context fuel table cache) := by
+  let detailedNext : DeferredContext → Nat → (α × SplitHashCache) →
+      ProbComp DirectBoundaryOutcome := fun nextContext remaining value =>
+    directDetailedBoundaryObserve impl (next value.1) detailedObserve
+      nextContext remaining table value.2
+  let nextObserve : DeferredContext → Nat → (α × SplitHashCache) → ProbComp Bool :=
+    fun nextContext remaining value =>
+      directBoundaryObserve impl (next value.1) observe
+        nextContext remaining table value.2
+  letI : ObserverDooms table nextObserve := ⟨by
+    intro nextContext remaining value hnextConsistent hnextStarts hdoomed
+    exact directBoundaryObserve_dooms impl (next value.1) observe nextContext remaining
+      value.2 hnextConsistent hnextStarts hdoomed⟩
+  calc
+    _ = evalDist (directBoundaryObserve impl (left >>= next) observe
+          context fuel table cache) :=
+      evalDist_failed_directDetailedBoundaryObserve impl (left >>= next) detailedObserve observe
+        hobserve context fuel cache hconsistent hstarts
+    _ = evalDist (directBoundaryObserve impl left nextObserve
+          context fuel table cache) := by
+      rw [directBoundaryObserve_bind]
+    _ = _ := by
+      symm
+      apply evalDist_failed_directDetailedBoundaryObserve impl left detailedNext nextObserve
+      · intro nextContext remaining value hnextConsistent hnextStarts
+        exact evalDist_failed_directDetailedBoundaryObserve impl (next value.1)
+          detailedObserve observe hobserve nextContext remaining value.2 hnextConsistent
+            hnextStarts
+      · exact hconsistent
+      · exact hstarts
+
+set_option maxRecDepth 100000 in
 theorem directBoundaryObserve_liftOracleWorldLeft
     (left : QueryImpl OracleWorld
       (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))))
@@ -1214,6 +1270,93 @@ instance granularRetainedRestObserve_observerDooms
       (retainedGameRestComputation adversary ⟨value.1, parameter⟩)
       (retainedResolvedFinalizationObserve table value.1)
       context fuel value.2 hconsistent hstarts hdoomed
+
+noncomputable def granularDetailedVerifierFinishObserve
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : (Forgery × QueryLog SigningSpec) × SplitHashCache) :
+    ProbComp DirectBoundaryOutcome :=
+  directDetailedBoundaryObserve
+    (maskedExpandedAdversaryImpl parameter root ftsSecret)
+    (do
+      let verified ← liftOracleWorldLeft
+        (scheme.verify ⟨root, parameter⟩ value.1.1.message value.1.1.signature)
+      pure (value.1, verified))
+    (retainedResolvedFinalizationDetailedObserve table root)
+    context fuel table value.2
+
+noncomputable def granularVerifierFinishObserve
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : (Forgery × QueryLog SigningSpec) × SplitHashCache) : ProbComp Bool :=
+  directBoundaryObserve
+    (maskedExpandedAdversaryImpl parameter root ftsSecret)
+    (do
+      let verified ← liftOracleWorldLeft
+        (scheme.verify ⟨root, parameter⟩ value.1.1.message value.1.1.signature)
+      pure (value.1, verified))
+    (retainedResolvedFinalizationObserve table root)
+    context fuel table value.2
+
+instance granularVerifierFinishObserve_observerDooms
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    ObserverDooms table
+      (granularVerifierFinishObserve parameter root table ftsSecret) where
+  eq_true context fuel value hconsistent hstarts hdoomed := by
+    exact directBoundaryObserve_dooms
+      (maskedExpandedAdversaryImpl parameter root ftsSecret)
+      (do
+        let verified ← liftOracleWorldLeft
+          (scheme.verify ⟨root, parameter⟩ value.1.1.message value.1.1.signature)
+        pure (value.1, verified))
+      (retainedResolvedFinalizationObserve table root)
+      context fuel value.2 hconsistent hstarts hdoomed
+
+noncomputable def splitGranularDetailedRetainedRestObserve
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : Digest × SplitHashCache) : ProbComp DirectBoundaryOutcome :=
+  directDetailedBoundaryObserve
+    (maskedExpandedAdversaryImpl parameter value.1 ftsSecret)
+    (signingTraceComputation (adversary.main ⟨value.1, parameter⟩))
+    (granularDetailedVerifierFinishObserve parameter value.1 table ftsSecret)
+    context fuel table value.2
+
+set_option maxRecDepth 100000 in
+theorem evalDist_failed_granularDetailedRetainedRestObserve_eq_split
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : Digest × SplitHashCache)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table) :
+    evalDist (DirectBoundaryOutcome.failed <$>
+        granularDetailedRetainedRestObserve adversary parameter table ftsSecret
+          context fuel value) =
+      evalDist (DirectBoundaryOutcome.failed <$>
+        splitGranularDetailedRetainedRestObserve adversary parameter table ftsSecret
+          context fuel value) := by
+  unfold granularDetailedRetainedRestObserve splitGranularDetailedRetainedRestObserve
+    retainedGameRestComputation granularDetailedVerifierFinishObserve
+  apply evalDist_failed_directDetailedBoundaryObserve_bind
+    (observe := retainedResolvedFinalizationObserve table value.1)
+  · intro nextContext remaining nextValue hnextConsistent hnextStarts
+    unfold retainedResolvedFinalizationDetailedObserve
+      retainedResolvedFinalizationObserve
+    exact evalDist_failed_classifyDirectObserve table (resolvedFinalizationObserve table)
+      nextContext remaining ((value.1, nextValue.1), nextValue.2)
+        hnextConsistent hnextStarts
+  · exact hconsistent
+  · exact hstarts
 
 set_option maxRecDepth 100000 in
 theorem evalDist_failed_granularDetailedRetainedRestObserve
@@ -1321,6 +1464,48 @@ noncomputable def granularAllDirectBoundaryDetailedRetainedOutcome
     { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
       values := emptyDeferredStructuralValues }
     fuel table (maskedPublishedTreeRoot.run emptySplitHashCache)
+
+noncomputable def splitGranularAllDirectBoundaryDetailedRetainedOutcome
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp DirectBoundaryOutcome :=
+  runDirectDetailedObserve
+    (splitGranularDetailedRetainedRestObserve adversary parameter table ftsSecret)
+    { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+      values := emptyDeferredStructuralValues }
+    fuel table (maskedPublishedTreeRoot.run emptySplitHashCache)
+
+set_option maxRecDepth 100000 in
+theorem evalDist_failed_granularAllDirectBoundaryDetailedRetainedOutcome_eq_split
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    evalDist (DirectBoundaryOutcome.failed <$>
+        granularAllDirectBoundaryDetailedRetainedOutcome adversary parameter table
+          ftsSecret fuel) =
+      evalDist (DirectBoundaryOutcome.failed <$>
+        splitGranularAllDirectBoundaryDetailedRetainedOutcome adversary parameter table
+          ftsSecret fuel) := by
+  let initial : DeferredContext :=
+    { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+      values := emptyDeferredStructuralValues }
+  unfold granularAllDirectBoundaryDetailedRetainedOutcome
+    splitGranularAllDirectBoundaryDetailedRetainedOutcome runDirectDetailedObserve
+  rw [map_bind, map_bind]
+  apply evalDist_bind_congr
+  intro result hresult
+  cases result with
+  | stopped reason => cases reason <;> rfl
+  | done result =>
+      have hdirect := mem_support_runDirectResolvedFromTable_of_done_detailed
+        (maskedPublishedTreeRoot.run emptySplitHashCache) initial fuel table result hresult
+      have hcore := resolvedCore_of_mem_runDirectResolvedFromTable
+        (maskedPublishedTreeRoot.run emptySplitHashCache) initial fuel table result
+          DeferredContext.valid_empty.valuesConsistent (startTableAgrees_empty table) hdirect
+      simp only [finishDirectDetailedObserve]
+      exact evalDist_failed_granularDetailedRetainedRestObserve_eq_split adversary parameter
+        table ftsSecret result.context result.remaining result.value hcore.2.1 hcore.2.2
 
 noncomputable def granularAllDirectBoundaryRetainedFinishIsNone
     (adversary : Adversary) (parameter : PublicParameter)
@@ -1659,6 +1844,19 @@ noncomputable def sampledGranularAllDirectBoundaryDetailedRetainedOutcome
   let table ← sampleOtsHashTable
   granularAllDirectBoundaryDetailedRetainedOutcome adversary parameter table ftsSecret fuel
 
+noncomputable def sampledSplitGranularAllDirectBoundaryDetailedRetainedOutcome
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp DirectBoundaryOutcome := do
+  let table ← sampleOtsHashTable
+  splitGranularAllDirectBoundaryDetailedRetainedOutcome adversary parameter table ftsSecret fuel
+
+noncomputable def sampledGranularAllDirectBoundaryRetainedFinishIsNone
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) : ProbComp Bool := do
+  let table ← sampleOtsHashTable
+  granularAllDirectBoundaryRetainedFinishIsNone adversary parameter table ftsSecret fuel
+
 noncomputable def sampledGranularAllDirectBoundaryDetailedRetainedOrdinary
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) : ProbComp Bool := do
@@ -1821,6 +2019,67 @@ theorem evalDist_private_sampledGranularAllDirectBoundaryDetailedRetainedOutcome
   intro table _htable
   exact evalDist_private_granularAllDirectBoundaryDetailedRetainedOutcome adversary parameter
     table ftsSecret fuel
+
+set_option linter.constructorNameAsVariable false in
+set_option maxRecDepth 100000 in
+theorem evalDist_failed_sampledGranularAllDirectBoundaryDetailedRetainedOutcome
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    evalDist (DirectBoundaryOutcome.failed <$>
+        sampledGranularAllDirectBoundaryDetailedRetainedOutcome adversary parameter
+          ftsSecret fuel) =
+      evalDist (sampledGranularAllDirectBoundaryRetainedFinishIsNone adversary parameter
+        ftsSecret fuel) := by
+  unfold sampledGranularAllDirectBoundaryDetailedRetainedOutcome
+    sampledGranularAllDirectBoundaryRetainedFinishIsNone
+  rw [map_bind]
+  apply evalDist_bind_congr
+  intro table _htable
+  exact evalDist_failed_granularAllDirectBoundaryDetailedRetainedOutcome adversary parameter
+    table ftsSecret fuel
+
+set_option linter.constructorNameAsVariable false in
+set_option maxRecDepth 100000 in
+theorem evalDist_failed_sampledGranularAllDirectBoundaryDetailedRetainedOutcome_eq_split
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    evalDist (DirectBoundaryOutcome.failed <$>
+        sampledGranularAllDirectBoundaryDetailedRetainedOutcome adversary parameter
+          ftsSecret fuel) =
+      evalDist (DirectBoundaryOutcome.failed <$>
+        sampledSplitGranularAllDirectBoundaryDetailedRetainedOutcome adversary parameter
+          ftsSecret fuel) := by
+  unfold sampledGranularAllDirectBoundaryDetailedRetainedOutcome
+    sampledSplitGranularAllDirectBoundaryDetailedRetainedOutcome
+  rw [map_bind, map_bind]
+  apply evalDist_bind_congr
+  intro table _htable
+  exact evalDist_failed_granularAllDirectBoundaryDetailedRetainedOutcome_eq_split adversary
+    parameter table ftsSecret fuel
+
+set_option linter.constructorNameAsVariable false in
+set_option maxRecDepth 100000 in
+theorem probEvent_failed_sampledGranularAllDirectBoundaryDetailedRetainedOutcome
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    Pr[fun outcome => outcome.failed = true |
+        sampledGranularAllDirectBoundaryDetailedRetainedOutcome adversary parameter
+          ftsSecret fuel] =
+      Pr[= true |
+        sampledGranularAllDirectBoundaryRetainedFinishIsNone adversary parameter
+          ftsSecret fuel] := by
+  calc
+    _ = Pr[fun hit : Bool => hit = true | DirectBoundaryOutcome.failed <$>
+        sampledGranularAllDirectBoundaryDetailedRetainedOutcome adversary parameter
+          ftsSecret fuel] := by
+      rw [probEvent_map]
+      rfl
+    _ = Pr[= true | DirectBoundaryOutcome.failed <$>
+        sampledGranularAllDirectBoundaryDetailedRetainedOutcome adversary parameter
+          ftsSecret fuel] := probEvent_eq_eq_probOutput _ true
+    _ = _ := OracleComp.probOutput_congr rfl
+      (evalDist_failed_sampledGranularAllDirectBoundaryDetailedRetainedOutcome adversary
+        parameter ftsSecret fuel)
 
 set_option linter.constructorNameAsVariable false in
 set_option maxRecDepth 100000 in
