@@ -167,6 +167,7 @@ import SphincsSecurity.Proof.OtsProbeResolvedBoundaryOrdinaryAdaptive
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateSafe
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivatePlan
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateFresh
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivatePlannedCommute
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
