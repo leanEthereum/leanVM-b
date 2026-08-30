@@ -1366,6 +1366,20 @@ theorem evalDist_ordinary_sampledAllDirectBoundaryDetailedRetainedOutcome
 
 set_option linter.constructorNameAsVariable false in
 set_option maxRecDepth 100000 in
+theorem probEvent_ordinaryFailure_sampledAllDirectBoundaryDetailedRetainedOutcome
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    Pr[= .ordinaryFailure |
+        sampledAllDirectBoundaryDetailedRetainedOutcome adversary parameter ftsSecret fuel] =
+      Pr[= true |
+        sampledAllDirectBoundaryDetailedRetainedOrdinary adversary parameter ftsSecret fuel] := by
+  rw [probEvent_ordinaryFailure_eq_map_ordinary]
+  exact OracleComp.probOutput_congr rfl
+    (evalDist_ordinary_sampledAllDirectBoundaryDetailedRetainedOutcome adversary parameter
+      ftsSecret fuel)
+
+set_option linter.constructorNameAsVariable false in
+set_option maxRecDepth 100000 in
 theorem evalDist_failed_sampledAllDirectBoundaryDetailedRetainedOutcome
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
