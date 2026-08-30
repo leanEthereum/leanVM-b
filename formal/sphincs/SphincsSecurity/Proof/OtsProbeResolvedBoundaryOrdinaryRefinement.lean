@@ -236,6 +236,155 @@ theorem FinalizationContextLE.leftCompletable
   obtain ⟨completion, hcompletion⟩ := hcontext.rightCompletable
   exact ⟨completion, hcontext.view.deferredCompletion_left completion hcompletion⟩
 
+set_option maxRecDepth 100000 in
+theorem FinalizationViewLE.completeStart
+    {table : OtsSecretIndex → HashOutput} {left right : DeferredContext}
+    (hview : FinalizationViewLE table left right)
+    (index : OtsSecretIndex) :
+    FinalizationViewLE table
+      (left.completeResolved index.coordinate (table index))
+      (right.completeResolved index.coordinate (table index)) := by
+  have hleftState : (left.completeResolved index.coordinate (table index)).state =
+      left.state.complete index.coordinate (table index) := by
+    rcases index with ⟨lay, tree, leafIdx, chainIdx⟩
+    rfl
+  have hrightState : (right.completeResolved index.coordinate (table index)).state =
+      right.state.complete index.coordinate (table index) := by
+    rcases index with ⟨lay, tree, leafIdx, chainIdx⟩
+    rfl
+  refine ⟨hview.leftConsistent.completeResolved index.coordinate (table index),
+    hview.rightConsistent.completeResolved index.coordinate (table index),
+    ?_, ?_, ?_, ?_, ?_, ?_⟩
+  · rw [hleftState]
+    exact hview.leftStarts.complete_start index
+  · rw [hrightState]
+    exact hview.rightStarts.complete_start index
+  · funext other
+    by_cases heq : other = index.coordinate
+    · subst other
+      simp
+    · rw [resolvedCompletionValue_completeResolved_of_ne table left index.coordinate other
+          (table index) heq,
+        resolvedCompletionValue_completeResolved_of_ne table right index.coordinate other
+          (table index) heq,
+        hview.valueEq]
+  · intro other otherOutput hvalue
+    by_cases heq : other = index.coordinate
+    · subst other
+      have houtput : otherOutput = table index := by
+        simpa using hvalue.symm
+      subst otherOutput
+      rw [hleftState]
+      exact not_hitAt_complete_self left.state index.coordinate (table index)
+    · have horiginal : resolvedCompletionValue table left other = some otherOutput := by
+        rw [← resolvedCompletionValue_completeResolved_of_ne table left index.coordinate other
+          (table index) heq]
+        exact hvalue
+      have hclean := hview.leftClean other otherOutput horiginal
+      rw [hleftState]
+      exact (hitAt_complete_of_ne left.state index.coordinate other (table index) otherOutput
+        heq).not.mpr hclean
+  · intro other otherOutput hvalue
+    by_cases heq : other = index.coordinate
+    · subst other
+      have houtput : otherOutput = table index := by
+        simpa using hvalue.symm
+      subst otherOutput
+      rw [hrightState]
+      exact not_hitAt_complete_self right.state index.coordinate (table index)
+    · have horiginal : resolvedCompletionValue table right other = some otherOutput := by
+        rw [← resolvedCompletionValue_completeResolved_of_ne table right index.coordinate other
+          (table index) heq]
+        exact hvalue
+      have hclean := hview.rightClean other otherOutput horiginal
+      rw [hrightState]
+      exact (hitAt_complete_of_ne right.state index.coordinate other (table index) otherOutput
+        heq).not.mpr hclean
+  · intro other hvalue
+    have hne : other ≠ index.coordinate := by
+      intro heq
+      subst other
+      simp at hvalue
+    have horiginal : resolvedCompletionValue table left other = none := by
+      rw [← resolvedCompletionValue_completeResolved_of_ne table left index.coordinate other
+        (table index) hne]
+      exact hvalue
+    have hpending := hview.pendingLE other horiginal
+    rw [hleftState, hrightState]
+    rw [pendingAt_complete_of_ne left.state index.coordinate other (table index) hne,
+      pendingAt_complete_of_ne right.state index.coordinate other (table index) hne]
+    exact hpending
+
+set_option maxRecDepth 100000 in
+theorem FinalizationViewLE.completePosition
+    {table : OtsSecretIndex → HashOutput} {left right : DeferredContext}
+    (hview : FinalizationViewLE table left right)
+    (position : Position) (output : HashOutput) :
+    FinalizationViewLE table
+      (left.completeResolved (.position position) output)
+      (right.completeResolved (.position position) output) := by
+  have hleftState : (left.completeResolved (.position position) output).state =
+      left.state.complete (.position position) output := rfl
+  have hrightState : (right.completeResolved (.position position) output).state =
+      right.state.complete (.position position) output := rfl
+  refine ⟨hview.leftConsistent.completeResolved (.position position) output,
+    hview.rightConsistent.completeResolved (.position position) output,
+    hview.leftStarts.complete_position position output,
+    hview.rightStarts.complete_position position output, ?_, ?_, ?_, ?_⟩
+  · funext other
+    by_cases heq : other = .position position
+    · subst other
+      simp
+    · rw [resolvedCompletionValue_completeResolved_of_ne table left (.position position)
+          other output heq,
+        resolvedCompletionValue_completeResolved_of_ne table right (.position position)
+          other output heq,
+        hview.valueEq]
+  · intro other otherOutput hvalue
+    by_cases heq : other = .position position
+    · subst other
+      have houtput : otherOutput = output := by simpa using hvalue.symm
+      subst otherOutput
+      rw [hleftState]
+      exact not_hitAt_complete_self left.state (.position position) output
+    · have horiginal : resolvedCompletionValue table left other = some otherOutput := by
+        rw [← resolvedCompletionValue_completeResolved_of_ne table left (.position position)
+          other output heq]
+        exact hvalue
+      have hclean := hview.leftClean other otherOutput horiginal
+      rw [hleftState]
+      exact (hitAt_complete_of_ne left.state (.position position) other output otherOutput
+        heq).not.mpr hclean
+  · intro other otherOutput hvalue
+    by_cases heq : other = .position position
+    · subst other
+      have houtput : otherOutput = output := by simpa using hvalue.symm
+      subst otherOutput
+      rw [hrightState]
+      exact not_hitAt_complete_self right.state (.position position) output
+    · have horiginal : resolvedCompletionValue table right other = some otherOutput := by
+        rw [← resolvedCompletionValue_completeResolved_of_ne table right (.position position)
+          other output heq]
+        exact hvalue
+      have hclean := hview.rightClean other otherOutput horiginal
+      rw [hrightState]
+      exact (hitAt_complete_of_ne right.state (.position position) other output otherOutput
+        heq).not.mpr hclean
+  · intro other hvalue
+    have hne : other ≠ .position position := by
+      intro heq
+      subst other
+      simp at hvalue
+    have horiginal : resolvedCompletionValue table left other = none := by
+      rw [← resolvedCompletionValue_completeResolved_of_ne table left (.position position)
+        other output hne]
+      exact hvalue
+    have hpending := hview.pendingLE other horiginal
+    rw [hleftState, hrightState]
+    rw [pendingAt_complete_of_ne left.state (.position position) other output hne,
+      pendingAt_complete_of_ne right.state (.position position) other output hne]
+    exact hpending
+
 theorem FinalizationViewLE.not_rightCompletable_of_not_leftCompletable
     {table : OtsSecretIndex → HashOutput} {left right : DeferredContext}
     (hview : FinalizationViewLE table left right)
