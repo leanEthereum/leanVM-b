@@ -10,7 +10,7 @@ terminal verifier.
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
-open OracleComp OracleSpec
+open OracleComp OracleSpec ENNReal
 open OracleComp.ProgramLogic.Relational
 
 theorem FinalizationContextLE.canonicalize_left
@@ -2276,5 +2276,84 @@ theorem probEvent_privateStructuralFailure_sampledGranularAllDirectBoundaryDetai
   exact OracleComp.probOutput_congr rfl
     (evalDist_private_sampledGranularAllDirectBoundaryDetailedRetainedOutcome adversary
       parameter ftsSecret fuel)
+
+set_option linter.constructorNameAsVariable false in
+set_option maxHeartbeats 1000000 in
+set_option maxRecDepth 100000 in
+theorem probEvent_failed_sampledGranularAllDirectBoundaryDetailedRetainedOutcome_le_materialized_add_private
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (hq : HasHashQueryBound scheme adversary q)
+    (hparameter : parameter ∈ support sampleParameter)
+    (hfts : ftsSecret ∈ support sampleFtsSecrets) :
+    Pr[fun outcome => outcome.failed = true |
+        sampledGranularAllDirectBoundaryDetailedRetainedOutcome adversary parameter
+          ftsSecret q] ≤
+      Pr[= true |
+          sampledMaterializedBoundaryDetailedRetainedOrdinary adversary parameter
+            ftsSecret q] +
+        Pr[= true |
+          sampledGranularAllDirectBoundaryDetailedRetainedPrivate adversary parameter
+            ftsSecret q] := by
+  calc
+    _ ≤ Pr[= .ordinaryFailure |
+          sampledGranularAllDirectBoundaryDetailedRetainedOutcome adversary parameter
+            ftsSecret q] +
+        Pr[= .privateStructuralFailure |
+          sampledGranularAllDirectBoundaryDetailedRetainedOutcome adversary parameter
+            ftsSecret q] :=
+      probEvent_failed_le_ordinary_add_private
+        (sampledGranularAllDirectBoundaryDetailedRetainedOutcome adversary parameter
+          ftsSecret q)
+    _ = Pr[= true |
+          sampledGranularAllDirectBoundaryDetailedRetainedOrdinary adversary parameter
+            ftsSecret q] +
+        Pr[= true |
+          sampledGranularAllDirectBoundaryDetailedRetainedPrivate adversary parameter
+            ftsSecret q] := by
+      rw [probEvent_ordinaryFailure_sampledGranularAllDirectBoundaryDetailedRetainedOutcome,
+        probEvent_privateStructuralFailure_sampledGranularAllDirectBoundaryDetailedRetainedOutcome]
+    _ ≤ _ := add_le_add
+      (probEvent_sampledGranularAllDirectBoundaryDetailedRetainedOrdinary_le_materialized
+        adversary parameter ftsSecret q hq hparameter hfts) le_rfl
+
+set_option linter.constructorNameAsVariable false in
+set_option maxHeartbeats 1000000 in
+set_option maxRecDepth 100000 in
+theorem probEvent_failed_sampledGranularAllDirectBoundaryDetailedRetainedOutcome_le_two_mul
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (hq : HasHashQueryBound scheme adversary q)
+    (hparameter : parameter ∈ support sampleParameter)
+    (hfts : ftsSecret ∈ support sampleFtsSecrets)
+    (hmaterialized :
+      Pr[= true |
+          sampledMaterializedBoundaryDetailedRetainedOrdinary adversary parameter
+            ftsSecret q] ≤
+        (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹)
+    (hprivate :
+      Pr[= true |
+          sampledGranularAllDirectBoundaryDetailedRetainedPrivate adversary parameter
+            ftsSecret q] ≤
+        (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹) :
+    Pr[fun outcome => outcome.failed = true |
+        sampledGranularAllDirectBoundaryDetailedRetainedOutcome adversary parameter
+          ftsSecret q] ≤
+      ((2 * q : Nat) : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  calc
+    _ ≤ Pr[= true |
+          sampledMaterializedBoundaryDetailedRetainedOrdinary adversary parameter
+            ftsSecret q] +
+        Pr[= true |
+          sampledGranularAllDirectBoundaryDetailedRetainedPrivate adversary parameter
+            ftsSecret q] :=
+      probEvent_failed_sampledGranularAllDirectBoundaryDetailedRetainedOutcome_le_materialized_add_private
+        adversary parameter ftsSecret q hq hparameter hfts
+    _ ≤ (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ +
+        (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ :=
+      add_le_add hmaterialized hprivate
+    _ = _ := by
+      push_cast
+      ring
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
