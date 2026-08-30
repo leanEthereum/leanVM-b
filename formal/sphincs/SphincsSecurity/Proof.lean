@@ -159,6 +159,7 @@ import SphincsSecurity.Proof.OtsProbeResolvedPrivateSchedule
 import SphincsSecurity.Proof.OtsProbeResolvedAdaptiveClean
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryFirstFire
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivate
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryProbability
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
