@@ -502,6 +502,102 @@ theorem runDirectResolvedDetailedFromTable_reveal_query_bind
                       fuel table (next output)) := by
   cases coordinate <;> rfl
 
+theorem runDirectResolvedDetailedFromTable_bind
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (left : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (next : alpha → OracleComp (LazyRevealProbe.World Coordinate) beta) :
+    runDirectResolvedDetailedFromTable context fuel table (left >>= next) =
+      runDirectResolvedDetailedFromTable context fuel table left >>= fun result =>
+        match result with
+        | .stopped reason => pure (.stopped reason)
+        | .done result =>
+            runDirectResolvedDetailedFromTable result.context result.remaining result.table
+              (next result.value) := by
+  induction left using OracleComp.inductionOn generalizing context fuel with
+  | pure value => simp [runDirectResolvedDetailedFromTable]
+  | query_bind input continuation ih =>
+      cases input with
+      | uniform n =>
+          rw [bind_assoc, runDirectResolvedDetailedFromTable_uniform_query_bind,
+            runDirectResolvedDetailedFromTable_uniform_query_bind]
+          simp only [bind_assoc]
+          apply bind_congr
+          intro output
+          exact ih output context fuel
+      | hashOutput =>
+          rw [bind_assoc, runDirectResolvedDetailedFromTable_hashOutput_query_bind,
+            runDirectResolvedDetailedFromTable_hashOutput_query_bind]
+          simp only [bind_assoc]
+          apply bind_congr
+          intro output
+          exact ih output context fuel
+      | ensure coordinate =>
+          rw [bind_assoc, runDirectResolvedDetailedFromTable_ensure_query_bind,
+            runDirectResolvedDetailedFromTable_ensure_query_bind]
+          exact ih () { context with state := context.state.ensure coordinate } fuel
+      | probe coordinate candidate =>
+          rw [bind_assoc, runDirectResolvedDetailedFromTable_probe_query_bind,
+            runDirectResolvedDetailedFromTable_probe_query_bind]
+          cases fuel with
+          | zero => simp
+          | succ remaining =>
+              by_cases hrevealed : coordinate ∈ context.state.revealed
+              · simp only [hrevealed, ↓reduceIte]
+                exact ih () context remaining
+              · simp only [hrevealed, ↓reduceIte]
+                exact ih ()
+                  { context with state := context.state.addPending coordinate candidate }
+                  remaining
+      | peek coordinate =>
+          rw [bind_assoc, runDirectResolvedDetailedFromTable_peek_query_bind,
+            runDirectResolvedDetailedFromTable_peek_query_bind]
+          exact ih (context.state.values coordinate) context fuel
+      | publish coordinate =>
+          rw [bind_assoc, runDirectResolvedDetailedFromTable_publish_query_bind,
+            runDirectResolvedDetailedFromTable_publish_query_bind]
+          exact ih () { context with state := context.state.publish coordinate } fuel
+      | reveal coordinate =>
+          rw [bind_assoc, runDirectResolvedDetailedFromTable_reveal_query_bind,
+            runDirectResolvedDetailedFromTable_reveal_query_bind]
+          cases hvalue : context.state.values coordinate with
+          | some output =>
+              exact ih output context fuel
+          | none =>
+              cases coordinate with
+              | chainStart lay tree leafIdx chainIdx =>
+                  let output := table ⟨lay, tree, leafIdx, chainIdx⟩
+                  by_cases hhit : context.state.hitAt
+                      (.chainStart lay tree leafIdx chainIdx) output
+                  · simp [output, hhit]
+                  · simp only [output, hhit, ↓reduceIte]
+                    exact ih output
+                      { state := context.state.materialize
+                          (.chainStart lay tree leafIdx chainIdx) output
+                        values := context.values }
+                      fuel
+              | position position =>
+                  cases hprivate : context.values position with
+                  | some output =>
+                      by_cases hhit : context.state.hitAt (.position position) output
+                      · simp [hprivate, hhit]
+                      · simp only [hprivate, hhit, ↓reduceIte]
+                        exact ih output
+                          { state := context.state.materialize (.position position) output
+                            values := context.values }
+                          fuel
+                  | none =>
+                      simp only [hprivate, bind_assoc]
+                      apply bind_congr
+                      intro output
+                      by_cases hhit : context.state.hitAt (.position position) output
+                      · simp [hhit]
+                      · simp only [hhit, ↓reduceIte]
+                        exact ih output
+                          { state := context.state.materialize (.position position) output
+                            values := context.values.install position output }
+                          fuel
+
 set_option maxRecDepth 100000 in
 theorem map_toOption_runDirectResolvedDetailedFromTable
     (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
