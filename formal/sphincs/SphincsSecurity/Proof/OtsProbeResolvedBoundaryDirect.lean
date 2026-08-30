@@ -122,6 +122,18 @@ theorem canonicalizeMaterializedValues_chain_private_eq
   · exact hprivate
   · trivial
 
+theorem ChainValuesMirrored.canonicalizeMaterializedValues
+    {context : DeferredContext} (hmirror : ChainValuesMirrored context)
+    (table : OtsSecretIndex → HashOutput)
+    (hstarts : StartTableAgrees context.state table)
+    (hchainValid : ChainState.ValidFor allowed context.state) :
+    ChainValuesMirrored (canonicalizeMaterializedValues table context) := by
+  intro lay tree leafIdx chainIdx step
+  change context.values (.chain lay tree leafIdx chainIdx step) = _
+  rw [canonicalizeMaterializedValues_chain_value table context hstarts hchainValid]
+  · exact hmirror lay tree leafIdx chainIdx step
+  · trivial
+
 theorem ChainInvariant.canonicalizeMaterializedValues
     (table : OtsSecretIndex → HashOutput) (context : DeferredContext)
     (hstarts : StartTableAgrees context.state table)

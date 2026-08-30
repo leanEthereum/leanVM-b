@@ -349,6 +349,246 @@ theorem direct_context_of_mem_runDirectResolvedFromTable
                         (state.materialize (.position position) resolved.output) fuel result
                         (hcontext ▸ hrest)
 
+def ChainValuesMirrored (context : DeferredContext) : Prop :=
+  ∀ lay tree leafIdx chainIdx step,
+    context.values (.chain lay tree leafIdx chainIdx step) =
+      context.state.values (.position (.chain lay tree leafIdx chainIdx step))
+
+theorem chainValuesMirrored_directDeferredContext
+    (state : LazyRevealProbe.State Coordinate) :
+    ChainValuesMirrored (directDeferredContext state) := by
+  intro lay tree leafIdx chainIdx step
+  rfl
+
+theorem ChainValuesMirrored.resolve_materialize
+    {context : DeferredContext} (hmirror : ChainValuesMirrored context)
+    (position : Position) (resolved : DeferredResolution)
+    (hresolved : some resolved ∈ support
+      (resolveDeferredPositionValue position context)) :
+    ChainValuesMirrored
+      { state := context.state.materialize (.position position) resolved.output
+        values := resolved.values } := by
+  intro lay tree leafIdx chainIdx step
+  let chainPosition : Position := .chain lay tree leafIdx chainIdx step
+  by_cases heq : chainPosition = position
+  · subst position
+    rw [resolveDeferredPositionValue_installs chainPosition context resolved hresolved]
+    change some resolved.output = Function.update context.state.values
+      (.position chainPosition) (some resolved.output) (.position chainPosition)
+    simp [Function.update]
+  · rw [resolveDeferredPositionValue_preserves_other position chainPosition context resolved
+        heq hresolved,
+      hmirror lay tree leafIdx chainIdx step]
+    have hcoordinate : Coordinate.position chainPosition ≠ .position position := by
+      intro h
+      injection h with h
+      exact heq h
+    dsimp [chainPosition] at hcoordinate ⊢
+    simp [LazyRevealProbe.State.materialize, Function.update, hcoordinate]
+
+set_option maxRecDepth 100000 in
+theorem chainValuesMirrored_of_mem_runDirectResolvedFromTable
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (result : ResolvedRunResult α)
+    (hmirror : ChainValuesMirrored context)
+    (hresult : some result ∈ support
+      (runDirectResolvedFromTable context fuel table computation)) :
+    ChainValuesMirrored result.context := by
+  induction computation using OracleComp.inductionOn generalizing context fuel result with
+  | pure value =>
+      simp [runDirectResolvedFromTable] at hresult
+      subst result
+      exact hmirror
+  | query_bind input next ih =>
+      cases input with
+      | uniform n =>
+          rw [runDirectResolvedFromTable_uniform_query_bind, mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, hrest⟩ := hresult
+          exact ih output context fuel result hmirror hrest
+      | hashOutput =>
+          rw [runDirectResolvedFromTable_hashOutput_query_bind, mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, hrest⟩ := hresult
+          exact ih output context fuel result hmirror hrest
+      | ensure coordinate =>
+          rw [runDirectResolvedFromTable_ensure_query_bind] at hresult
+          apply ih () { context with state := context.state.ensure coordinate } fuel result
+          · intro lay tree leafIdx chainIdx step
+            exact hmirror lay tree leafIdx chainIdx step
+          · exact hresult
+      | probe coordinate candidate =>
+          rw [runDirectResolvedFromTable_probe_query_bind] at hresult
+          cases fuel with
+          | zero => simp at hresult
+          | succ remaining =>
+              by_cases hrevealed : coordinate ∈ context.state.revealed
+              · exact ih () context remaining result hmirror (by
+                  simpa [hrevealed] using hresult)
+              · apply ih () { context with
+                    state := context.state.addPending coordinate candidate } remaining result
+                · intro lay tree leafIdx chainIdx step
+                  exact hmirror lay tree leafIdx chainIdx step
+                · simpa [hrevealed] using hresult
+      | peek coordinate =>
+          rw [runDirectResolvedFromTable_peek_query_bind] at hresult
+          exact ih (context.state.values coordinate) context fuel result hmirror hresult
+      | publish coordinate =>
+          rw [runDirectResolvedFromTable_publish_query_bind] at hresult
+          apply ih () { context with state := context.state.publish coordinate } fuel result
+          · intro lay tree leafIdx chainIdx step
+            exact hmirror lay tree leafIdx chainIdx step
+          · exact hresult
+      | reveal coordinate =>
+          rw [runDirectResolvedFromTable_reveal_query_bind] at hresult
+          cases hvalue : context.state.values coordinate with
+          | some output =>
+              exact ih output context fuel result hmirror (by simpa [hvalue] using hresult)
+          | none =>
+              cases coordinate with
+              | chainStart lay tree leafIdx chainIdx =>
+                  let index : OtsSecretIndex := ⟨lay, tree, leafIdx, chainIdx⟩
+                  let output := table index
+                  by_cases hhit : context.state.hitAt index.coordinate output
+                  · change context.state.hitAt (.chainStart lay tree leafIdx chainIdx)
+                        (table ⟨lay, tree, leafIdx, chainIdx⟩) at hhit
+                    simp [hvalue, hhit] at hresult
+                  · change ¬context.state.hitAt (.chainStart lay tree leafIdx chainIdx)
+                        (table ⟨lay, tree, leafIdx, chainIdx⟩) at hhit
+                    simp only [hvalue, hhit, ↓reduceIte] at hresult
+                    apply ih output
+                      { state := context.state.materialize index.coordinate output
+                        values := context.values }
+                      fuel result
+                    · intro otherLay otherTree otherLeaf otherChain otherStep
+                      simpa [LazyRevealProbe.State.materialize, index,
+                        OtsSecretIndex.coordinate] using
+                        hmirror otherLay otherTree otherLeaf otherChain otherStep
+                    · simpa [index, output, OtsSecretIndex.coordinate] using hresult
+              | position position =>
+                  rw [hvalue, mem_support_bind_iff] at hresult
+                  obtain ⟨resolvedOption, hresolved, hrest⟩ := hresult
+                  cases resolvedOption with
+                  | none => simp at hrest
+                  | some resolved =>
+                      simp only at hrest
+                      exact ih resolved.output
+                        { state := context.state.materialize (.position position) resolved.output
+                          values := resolved.values }
+                        fuel result (hmirror.resolve_materialize position resolved hresolved) hrest
+
+set_option maxRecDepth 100000 in
+theorem raw_done_of_mem_runDirectResolvedFromTable
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (result : ResolvedRunResult α)
+    (hresult : some result ∈ support
+      (runDirectResolvedFromTable context fuel table computation)) :
+    LazyRevealProbe.RawResult.done result.context.state result.remaining result.value ∈
+      support (LazyRevealProbe.runRaw context.state fuel computation) := by
+  induction computation using OracleComp.inductionOn generalizing context fuel result with
+  | pure value =>
+      simp [runDirectResolvedFromTable] at hresult
+      subst result
+      simp [LazyRevealProbe.runRaw]
+  | query_bind input next ih =>
+      cases input with
+      | uniform n =>
+          rw [runDirectResolvedFromTable_uniform_query_bind, mem_support_bind_iff] at hresult
+          obtain ⟨output, houtput, hrest⟩ := hresult
+          rw [LazyRevealProbe.runRaw_uniform_query_bind, mem_support_bind_iff]
+          exact ⟨output, houtput, ih output context fuel result hrest⟩
+      | hashOutput =>
+          rw [runDirectResolvedFromTable_hashOutput_query_bind, mem_support_bind_iff] at hresult
+          obtain ⟨output, houtput, hrest⟩ := hresult
+          rw [LazyRevealProbe.runRaw_hashOutput_query_bind, mem_support_bind_iff]
+          exact ⟨output, houtput, ih output context fuel result hrest⟩
+      | ensure coordinate =>
+          rw [runDirectResolvedFromTable_ensure_query_bind] at hresult
+          rw [LazyRevealProbe.runRaw_ensure_query_bind]
+          exact ih () { context with state := context.state.ensure coordinate } fuel result hresult
+      | probe coordinate candidate =>
+          rw [runDirectResolvedFromTable_probe_query_bind] at hresult
+          cases fuel with
+          | zero => simp at hresult
+          | succ remaining =>
+              rw [LazyRevealProbe.runRaw_probe_query_bind]
+              by_cases hrevealed : coordinate ∈ context.state.revealed
+              · simp only [hrevealed, ↓reduceIte]
+                exact ih () context remaining result (by simpa [hrevealed] using hresult)
+              · simp only [hrevealed, ↓reduceIte]
+                exact ih () { context with
+                  state := context.state.addPending coordinate candidate } remaining result
+                    (by simpa [hrevealed] using hresult)
+      | peek coordinate =>
+          rw [runDirectResolvedFromTable_peek_query_bind] at hresult
+          rw [LazyRevealProbe.runRaw_peek_query_bind]
+          exact ih (context.state.values coordinate) context fuel result hresult
+      | publish coordinate =>
+          rw [runDirectResolvedFromTable_publish_query_bind] at hresult
+          rw [LazyRevealProbe.runRaw_publish_query_bind]
+          exact ih () { context with state := context.state.publish coordinate } fuel result hresult
+      | reveal coordinate =>
+          rw [runDirectResolvedFromTable_reveal_query_bind] at hresult
+          rw [LazyRevealProbe.runRaw_reveal_query_bind]
+          cases hvalue : context.state.values coordinate with
+          | some output =>
+              exact ih output context fuel result (by simpa [hvalue] using hresult)
+          | none =>
+              simp only
+              rw [mem_support_bind_iff]
+              cases coordinate with
+              | chainStart lay tree leafIdx chainIdx =>
+                  let index : OtsSecretIndex := ⟨lay, tree, leafIdx, chainIdx⟩
+                  let output := table index
+                  by_cases hhit : context.state.hitAt index.coordinate output
+                  · change context.state.hitAt (.chainStart lay tree leafIdx chainIdx)
+                        (table ⟨lay, tree, leafIdx, chainIdx⟩) at hhit
+                    simp [hvalue, hhit] at hresult
+                  · change ¬context.state.hitAt (.chainStart lay tree leafIdx chainIdx)
+                        (table ⟨lay, tree, leafIdx, chainIdx⟩) at hhit
+                    simp only [hvalue, hhit, ↓reduceIte] at hresult
+                    refine ⟨output, ?_, ?_⟩
+                    · simp [LazyRevealProbe.sampleHashOutput]
+                    · simp only [index, output, hhit, ↓reduceIte]
+                      exact ih output
+                        { state := context.state.materialize index.coordinate output
+                          values := context.values }
+                        fuel result (by
+                          simpa [index, output, OtsSecretIndex.coordinate] using hresult)
+              | position position =>
+                  rw [hvalue, mem_support_bind_iff] at hresult
+                  obtain ⟨resolvedOption, hresolved, hrest⟩ := hresult
+                  cases resolvedOption with
+                  | none => simp at hrest
+                  | some resolved =>
+                      simp only at hrest
+                      refine ⟨resolved.output, ?_, ?_⟩
+                      · simp [LazyRevealProbe.sampleHashOutput]
+                      · have hnotHit := resolveDeferredPositionValue_not_hit position context
+                            resolved hresolved
+                        simp only [hnotHit, ↓reduceIte]
+                        exact ih resolved.output
+                          { state := context.state.materialize (.position position) resolved.output
+                            values := resolved.values }
+                          fuel result hrest
+
+theorem chainInvariant_of_mem_runDirectResolvedFromTable
+    (parameter : PublicParameter) (allowed : Coordinate → Prop)
+    (computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (result : ResolvedRunResult (α × SplitHashCache))
+    (hpreserves : PreservesChainInvariant parameter allowed computation)
+    (hinvariant : ChainInvariant parameter allowed context.state cache)
+    (hresult : some result ∈ support
+      (runDirectResolvedFromTable context fuel table (computation.run cache))) :
+    ChainInvariant parameter allowed result.context.state result.value.2 := by
+  apply hpreserves context.state cache fuel result.context.state result.remaining
+    result.value.1 result.value.2 hinvariant
+  exact raw_done_of_mem_runDirectResolvedFromTable
+    (computation.run cache) context fuel table result hresult
+
 set_option maxRecDepth 100000 in
 theorem map_projectResolvedRunResult_runDirect_eq_runClean
     (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
