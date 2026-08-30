@@ -1835,4 +1835,85 @@ theorem probEvent_runDirectDetailedSafeOrdinaryGuardedTerminal_le
   exact probEvent_sampled_guardedDirectDetailedSafeOrdinaryTerminalObserve_le
     nextContext remaining value
 
+noncomputable def flatDetailedOrdinaryRetained
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp Bool :=
+  runDirectResolvedDetailedFromTable
+      (directDeferredContext
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate))
+      fuel table (deferredCleanRetainedRun adversary parameter ftsSecret) >>=
+    finishDirectDetailedSafeOrdinaryObserve
+      (fun _ context _ _ => LazyRevealProbe.finalize context.state)
+
+noncomputable def sampledFlatDetailedOrdinaryRetained
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp Bool := do
+  let table ← sampleOtsHashTable
+  flatDetailedOrdinaryRetained adversary parameter table ftsSecret fuel
+
+theorem completedStartTable_empty
+    (table : OtsSecretIndex → HashOutput) :
+    completedStartTable
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) table = table := by
+  funext index
+  simp [completedStartTable, LazyRevealProbe.State.empty]
+
+set_option linter.constructorNameAsVariable false in
+set_option maxRecDepth 100000 in
+theorem evalDist_sampledFlatDetailedOrdinaryRetained_eq_safe
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    𝒟[sampledFlatDetailedOrdinaryRetained adversary parameter ftsSecret fuel] =
+      𝒟[runDirectDetailedSafeOrdinaryWithCompletionTable
+        (fun _ context _ _ => LazyRevealProbe.finalize context.state)
+        (directDeferredContext
+          (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate))
+        fuel (deferredCleanRetainedRun adversary parameter ftsSecret)] := by
+  unfold sampledFlatDetailedOrdinaryRetained flatDetailedOrdinaryRetained
+  have hsample := evalDist_sampled_runDirectDetailedSafeOrdinary_eq_completionTable
+    (deferredCleanRetainedRun adversary parameter ftsSecret)
+    (fun _ context _ _ => LazyRevealProbe.finalize context.state)
+    (directDeferredContext
+      (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)) fuel
+  simpa [directDeferredContext, completedStartTable_empty] using hsample
+
+set_option linter.constructorNameAsVariable false in
+set_option maxRecDepth 100000 in
+theorem probEvent_sampledFlatDetailedOrdinaryRetained_le
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    Pr[= true | sampledFlatDetailedOrdinaryRetained adversary parameter ftsSecret fuel] ≤
+      (fuel : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  calc
+    _ = Pr[= true | runDirectDetailedSafeOrdinaryWithCompletionTable
+        (fun _ context _ _ => LazyRevealProbe.finalize context.state)
+        (directDeferredContext
+          (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate))
+        fuel (deferredCleanRetainedRun adversary parameter ftsSecret)] :=
+      OracleComp.probOutput_congr rfl
+        (evalDist_sampledFlatDetailedOrdinaryRetained_eq_safe adversary parameter
+          ftsSecret fuel)
+    _ ≤ _ := by
+      exact probEvent_runDirectDetailedSafeOrdinaryFinalize_empty_le
+        (deferredCleanRetainedRun adversary parameter ftsSecret) fuel
+
+set_option maxRecDepth 100000 in
+theorem deferredCleanRetainedRun_eq_boundary_bind
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    deferredCleanRetainedRun adversary parameter ftsSecret = (do
+      let rootResult ← maskedPublishedTreeRoot.run emptySplitHashCache
+      let forgeryLogResult ←
+        (simulateQ
+          (maskedExpandedAdversaryImpl parameter rootResult.1 ftsSecret)
+          (signingTraceComputation
+            (adversary.main ⟨rootResult.1, parameter⟩))).run rootResult.2
+      (canonicalVerifierFinish parameter rootResult.1 forgeryLogResult.1).run
+        forgeryLogResult.2) := by
+  unfold deferredCleanRetainedRun deferredCleanRetainedRest canonicalVerifierFinish
+  simp only [StateT.run_bind, StateT.run_pure, bind_assoc, pure_bind]
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
