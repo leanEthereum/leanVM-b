@@ -356,7 +356,8 @@ impl FnLower<'_> {
     }
 
     /// A frame cell holding `0`, set lazily once: the source for forwarded zero
-    /// words (a `BLAKE2s` padding half).
+    /// words (a `BLAKE2s` padding half), and the destination every `assert a == b`
+    /// in this scope XORs into.
     fn zero(&mut self) -> Off {
         if let Some(o) = self.scope.zero_off {
             return o;
@@ -2116,11 +2117,14 @@ impl FnLower<'_> {
                     self.rebind(n, b);
                 }
             }
+            // `a + b` into the frame's zero cell: the double write IS the
+            // assertion, so the `SET .. = 0` a fresh destination needed is gone
+            // and no cell is burned. CSE leaves the `XOR` alone because that
+            // cell is written more than once ([`crate::cse`]).
             Stmt::AssertEq(a, b) => {
                 let (la, lb) = (self.expr(a), self.expr(b));
-                let t = self.fresh();
-                self.emit(LOp::Xor { a: la, b: lb, c: t });
-                self.set_const(t, F192::ZERO);
+                let z = self.zero();
+                self.emit(LOp::Xor { a: la, b: lb, c: z });
             }
             Stmt::AssertNe(a, b) => self.lower_assert_ne(a, b),
             Stmt::AssertLt(e, bound) => self.lower_assert_lt(e, bound),

@@ -329,7 +329,7 @@ Statements without effect are rejected.
 
 ### `assert a == b`
 
-A proof-enforced equality: 2 cycles (`XOR` into a fresh cell + `SET` it to zero, using write-once double-write as the assert).
+A proof-enforced equality: 1 cycle (`XOR` into the frame's zero cell, whose write-once double write is the assert).
 
 ### `assert a != b`
 
@@ -474,7 +474,7 @@ Three builtins have the prover compute the values at witness generation instead 
 | `a / b` | 1 `MUL` (write-once back-solve; division by zero is undefined) |
 | heap read / store `buf[i]` | 1 `DEREF`; +1 `MUL` for a *runtime* index (a compile-time g-power offset folds into the `DEREF`, for free) |
 | stack read / store `sa[k]` | 0 (direct cell addressing) |
-| `assert a == b` | 2 |
+| `assert a == b` | 1 (+ 1 `SET` amortized per frame for the zero cell) |
 | `assert a != b` | 3 on the accepting path (+ amortized branch setup) |
 | `assert log x < k` | 3 (+1 `SET` amortized per bound per frame; a runtime bound costs 1 `MUL` instead) |
 | `if a == b: …` | 3 (+2 to skip a non-empty `else`; +2 amortized `self-fp` per branching function); **0 if the condition is compile-time** |

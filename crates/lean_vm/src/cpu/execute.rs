@@ -579,24 +579,24 @@ impl Program {
                     let (aa, ab, ac) = (fp + a, fp + b, fp + c);
                     // The row is the equality `m[c] = m[a] op m[b]` over write-once
                     // memory. Normally the operands are known and the result is
-                    // computed forward; with the result already m.written and exactly
-                    // one operand unwritten, the runner back-solves the operand
-                    // (leanVM's ADD deduction, multiplicatively: this is what
-                    // produces the range-check complement `y = g^{k-1}·x^{-1}` from
-                    // `MUL x·y = g^{k-1}`, with no dedicated hint).
+                    // computed forward; for a `MUL` whose result is already written
+                    // and exactly one of whose operands is not, the runner
+                    // back-solves that operand, which is what produces the
+                    // range-check complement `y = g^{k-1}·x^{-1}` from
+                    // `MUL x·y = g^{k-1}`, and the quotient of `a / b`, with no
+                    // dedicated hint.
+                    //
+                    // `XOR` deliberately does NOT deduce. Nothing asks it to (both
+                    // users are `MUL`), and an `XOR` into an already-written cell is
+                    // how `assert a == b` is spelled, so deducing there would define
+                    // the operand the assert exists to check instead of failing on it.
                     let is_set = |w: &[bool], cell: u32| (cell as usize) < w.len() && w[cell as usize];
-                    if is_set(&m.written, ac) {
+                    if !is_xor && is_set(&m.written, ac) {
                         let (ha, hb) = (is_set(&m.written, aa), is_set(&m.written, ab));
                         if ha ^ hb {
-                            let vc = m.get(ac);
                             let vk = m.get(if ha { aa } else { ab });
-                            let v = if is_xor {
-                                vc + vk
-                            } else {
-                                assert!(!vk.is_zero(), "cannot back-solve MUL through a zero operand");
-                                vc * vk.inv()
-                            };
-                            m.put(if ha { ab } else { aa }, v);
+                            assert!(!vk.is_zero(), "cannot back-solve MUL through a zero operand");
+                            m.put(if ha { ab } else { aa }, m.get(ac) * vk.inv());
                         }
                     }
                     let va = m.get(aa);
