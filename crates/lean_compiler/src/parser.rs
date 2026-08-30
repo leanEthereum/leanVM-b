@@ -266,6 +266,42 @@ fn apply_replacements(src: &str, replacements: &BTreeMap<String, String>) -> Str
     out
 }
 
+/// The first top-level comparison operator in `s`. Used only on a line that
+/// reached the bare-call fallback, so an `assert` or an assignment never gets
+/// here and a comparison nested in a call sits at depth > 0.
+fn top_level_cmp(s: &str) -> Option<&'static str> {
+    let b = s.as_bytes();
+    for (i, c) in depth0(s) {
+        let eq = b.get(i + 1) == Some(&b'=');
+        match c {
+            b'=' if eq => return Some("=="),
+            b'!' if eq => return Some("!="),
+            b'<' => return Some(if eq { "<=" } else { "<" }),
+            b'>' => return Some(if eq { ">=" } else { ">" }),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// A binding or parameter name, validated. Anything else reaching here is
+/// either a mis-split (`x /`, `x !`) or a top-level constant substituted into a
+/// binding position: constants are replaced textually before parsing, so
+/// `V = 8` followed by `def scale(V)` arrives as a parameter literally named
+/// `8`, and the body's `V` reads the constant. That compiled, and returned 16
+/// for `scale(3)`. `zkDSL.md` §Global constants reserves the name; this is what
+/// enforces it.
+fn binding_name(raw: &str, what: &str) -> Result<String, String> {
+    let n = raw.trim();
+    if is_ident(n) {
+        return Ok(n.to_string());
+    }
+    Err(format!(
+        "`{n}` is not a valid {what}: a name must be a plain identifier. A top-level constant's name is \
+         reserved, and is substituted before parsing, so a parameter or local may not reuse one."
+    ))
+}
+
 /// A plain identifier: non-empty, starts with a letter or `_`, all
 /// `[A-Za-z0-9_]` (no operators, brackets, or commas).
 fn is_ident(s: &str) -> bool {
@@ -352,6 +388,9 @@ impl Parser {
         let (mut params, mut const_params) = (Vec::new(), Vec::new());
         if !params_str.is_empty() {
             for part in params_str.split(',') {
+                if part.trim().is_empty() {
+                    return Err(format!("`def {name}`: empty parameter (a trailing comma?)"));
+                }
                 // `x` (runtime) or `x: Const` (compile-time, specialized).
                 if let Some((n, ann)) = part.split_once(':') {
                     if ann.trim() != "Const" {
@@ -360,10 +399,10 @@ impl Parser {
                             ann.trim()
                         ));
                     }
-                    params.push(n.trim().to_string());
+                    params.push(binding_name(n, "parameter name")?);
                     const_params.push(true);
                 } else {
-                    params.push(part.trim().to_string());
+                    params.push(binding_name(part, "parameter name")?);
                     const_params.push(false);
                 }
             }
@@ -424,7 +463,7 @@ impl Parser {
                 self.i += 1;
                 let body = self.block(indent)?;
                 return Ok(Stmt::Unroll {
-                    var: var.trim().to_string(),
+                    var: binding_name(var, "loop counter")?,
                     lo,
                     hi,
                     body,
@@ -449,7 +488,7 @@ impl Parser {
             self.i += 1;
             let body = self.block(indent)?;
             return Ok(Stmt::For {
-                var: var.trim().to_string(),
+                var: binding_name(var, "loop counter")?,
                 lo,
                 hi,
                 body,
@@ -549,7 +588,7 @@ impl Parser {
         }
         // Augmented assignment `x OP= rhs` (Python `*=`, `+=`, `//=`, `%=`,
         // `-=`) desugars to `x = x OP (rhs)`.
-        let line = match split_aug(&line) {
+        let line = match split_aug(&line)? {
             Some((lhs, op, rhs)) => format!("{lhs} = {lhs} {op} ({rhs})"),
             None => line,
         };
@@ -571,14 +610,34 @@ impl Parser {
             }
             let targets = split_top(&lhs, ',');
             if targets.len() == 1 {
-                return Ok(Stmt::Let(targets[0].trim().to_string(), rhs_expr));
+                return Ok(Stmt::Let(binding_name(&targets[0], "binding name")?, rhs_expr));
             }
             // Tuple assignment: RHS must be a call.
             if let Expr::Call(f, args) = rhs_expr {
-                let names = targets.iter().map(|t| t.trim().to_string()).collect();
+                let names = targets
+                    .iter()
+                    .map(|t| binding_name(t, "binding name"))
+                    .collect::<Result<Vec<_>, _>>()?;
                 return Ok(Stmt::LetTuple(names, f, args));
             }
             return Err("tuple assignment requires a call on the right".into());
+        }
+        // A bare comparison is not a statement, and `split_assign` used to split
+        // one on its `=` into a binding named `x !`. In a verifier that is an
+        // `assert` compiled to nothing, so name the fix rather than letting the
+        // expression parser fail on an operator it does not have.
+        // `while`/`elif`/`else` reach here as unknown keywords, not comparisons, so
+        // suggesting `assert while x < y:` would be worse than the generic error.
+        let keyword = ["while ", "elif ", "else", "for ", "def "]
+            .iter()
+            .any(|k| line.starts_with(k));
+        if let Some(op) = top_level_cmp(&line).filter(|_| !keyword) {
+            let fix = if matches!(op, "==" | "!=") {
+                format!("write `assert {line}`")
+            } else {
+                format!("`{op}` is not a predicate: order facts come from `assert log x < k`")
+            };
+            return Err(format!("`{line}` is a comparison, not a statement: {fix}"));
         }
         // Bare call statement.
         if let Expr::Call(f, args) = parse_expr(&line)? {
@@ -684,40 +743,75 @@ fn depth0(s: &str) -> impl Iterator<Item = (usize, u8)> + '_ {
     })
 }
 
+type Aug = Option<(String, &'static str, String)>;
+
 /// A top-level augmented assignment `lhs OP= rhs` -> `(lhs, "OP", rhs)`, for
-/// OP in `+ - * // %`. Returns `None` for a plain `=`, a comparison (`==`,
-/// `!=`, `<=`, `>=`), or `**=` (unused). The operator's `=` must sit at depth
-/// 0 and be immediately preceded by exactly the operator characters.
-fn split_aug(s: &str) -> Option<(String, &'static str, String)> {
+/// OP in `+ - * // %`. `Ok(None)` for a plain `=` or a comparison (`==`, `!=`,
+/// `<=`, `>=`); an `Err` for a compound spelling this language does not have.
+/// The operator's `=` must sit at depth 0 and be immediately preceded by
+/// exactly the operator characters.
+///
+/// The unsupported spellings must be REJECTED rather than declined: falling
+/// through left [`split_assign`] to split the bare `=`, so `x /= 2` became a
+/// binding named `x /` and the program silently kept the old `x`.
+fn split_aug(s: &str) -> Result<Aug, String> {
     let b = s.as_bytes();
     for (i, c) in depth0(s) {
         if c != b'=' {
             continue;
         }
-        // not `==` and not a comparison tail (`<=`, `>=`, `!=`)
-        if b.get(i + 1) == Some(&b'=') || matches!(b.get(i.wrapping_sub(1)), Some(b'=' | b'<' | b'>' | b'!')) {
-            return None;
+        // Nothing to the left is no assignment at all; `split_assign` and the
+        // binding-name check below give that its error.
+        if i == 0 {
+            return Ok(None);
         }
+        // not `==` and not a comparison tail (`<=`, `>=`, `!=`)
+        if b.get(i + 1) == Some(&b'=') || matches!(b[i - 1], b'=' | b'<' | b'>' | b'!') {
+            return Ok(None);
+        }
+        let prev2 = b.get(i.wrapping_sub(2)).copied();
         let (op, plen): (&str, usize) = match b[i - 1] {
             b'+' => ("+", 1),
             b'-' => ("-", 1),
             b'%' => ("%", 1),
-            b'*' if b[i - 2] != b'*' => ("*", 1),
-            b'/' if b[i - 2] == b'/' => ("//", 2),
-            _ => return None,
+            b'*' if prev2 == Some(b'*') => {
+                return Err("`**=` is not supported; write `x = x ** k`".into());
+            }
+            b'*' => ("*", 1),
+            b'/' if prev2 == Some(b'/') => ("//", 2),
+            b'/' => {
+                return Err(
+                    "`/=` is not supported; `/` is runtime field division, so write `x = x / y` (or `//=` for the \
+                     compile-time floor division)"
+                        .into(),
+                );
+            }
+            _ => return Ok(None),
         };
-        return Some((s[..i - plen].trim().to_string(), op, s[i + 1..].trim().to_string()));
+        return Ok(Some((
+            s[..i - plen].trim().to_string(),
+            op,
+            s[i + 1..].trim().to_string(),
+        )));
     }
-    None
+    Ok(None)
 }
 
-/// Split on a top-level single `=` that is not part of `==`.
+/// Split on a top-level BARE `=`: not part of `==`, not the tail of a
+/// comparison (`!=`, `<=`, `>=`), and not the tail of a compound assignment
+/// ([`split_aug`] owns those, and rejects the ones this language lacks).
+/// Without the last two exclusions a bare `x != y` split into a binding named
+/// `x !`, which in a verifier is an `assert` that compiled to nothing.
 fn split_assign(s: &str) -> Option<(String, String)> {
     let b = s.as_bytes();
     for (i, c) in depth0(s) {
-        if c == b'=' && b.get(i + 1) != Some(&b'=') && (i == 0 || b[i - 1] != b'=') {
-            return Some((s[..i].to_string(), s[i + 1..].to_string()));
+        if c != b'=' || b.get(i + 1) == Some(&b'=') {
+            continue;
         }
+        if i > 0 && matches!(b[i - 1], b'=' | b'<' | b'>' | b'!' | b'+' | b'-' | b'*' | b'/' | b'%') {
+            continue;
+        }
+        return Some((s[..i].to_string(), s[i + 1..].to_string()));
     }
     None
 }
@@ -1025,7 +1119,10 @@ fn parse_match_range(lhs: &str, rhs: &str) -> Result<Stmt, String> {
     if lhs.trim_end().ends_with(']') {
         return Err("bind `match_range` results to names, not a store target".into());
     }
-    let names: Vec<String> = split_top(lhs, ',').iter().map(|t| t.trim().to_string()).collect();
+    let names = split_top(lhs, ',')
+        .iter()
+        .map(|t| binding_name(t, "binding name"))
+        .collect::<Result<Vec<_>, _>>()?;
     let chunks = call_args(rhs, "match_range").ok_or("malformed `match_range(…)`")?;
     let (first, pairs) = chunks.split_first().ok_or("match_range needs arguments")?;
     let x = strip_log(first).ok_or("`match_range` matches logs: `match_range(log(x), …)`")?;

@@ -442,6 +442,28 @@ impl FnLower<'_> {
             && !self.phys.contains(&dst)
             && let Some(a) = self.copy_alias(val)
         {
+            // Record the end of the `Cell` chain, not its head. A `Cell` alias is
+            // otherwise free to point at another alias, and two of them can close
+            // a loop (`s[0] = s[1]` then `s[1] = s[0]`, or the one-line
+            // `s[0] = s[0]`) that `word_src` then walks forever. What rules a
+            // cycle out is that the recorded source has no outgoing `Cell` edge AT
+            // THE MOMENT IT IS RECORDED; it may acquire one later, so chains still
+            // grow and `word_src`'s bound is load-bearing, not decoration.
+            //
+            // [`Self::cell_src`] rather than [`Self::word_src`] on purpose: the
+            // latter resolves a trailing `Const` through `zero`/`const_cell`,
+            // which EMITS a `SET`. Paying it here rather than at the use would
+            // make `sa[k] = other` cost an instruction, which `zkDSL.md`
+            // §Variables promises it does not.
+            let a = match a {
+                Alias::Cell(src) => Alias::Cell(self.cell_src(src)),
+                other => other,
+            };
+            // A cell aliased to itself is the whole of `sb[k] = sb[k]`: write-once
+            // makes a second write of the same value a no-op, so emit nothing.
+            if a == Alias::Cell(dst) {
+                return;
+            }
             self.alias.insert(dst, a);
             return;
         }
@@ -1504,13 +1526,35 @@ impl FnLower<'_> {
 
     /// The cell holding the value of stack cell `o`, following a recorded copy /
     /// zero alias to its real source. Returns `o` when it holds a genuine value.
-    fn word_src(&mut self, o: Off) -> Off {
-        match self.alias.get(&o).copied() {
-            Some(Alias::Cell(s)) => self.word_src(s),
-            Some(Alias::Const(v)) if v.is_zero() => self.zero(),
-            Some(Alias::Const(v)) => self.const_cell(v),
-            None => o,
+    /// Follow `Cell` alias hops to the cell that ends the chain, emitting nothing.
+    /// This is what [`Self::stack_store`] records, so a recorded source never has
+    /// an outgoing `Cell` edge and no cycle can form.
+    fn cell_src(&self, o: Off) -> Off {
+        let mut cur = o;
+        for _ in 0..=self.next {
+            match self.alias.get(&cur) {
+                Some(Alias::Cell(s)) => cur = *s,
+                _ => return cur,
+            }
         }
+        panic!("alias cycle at frame cell {o}");
+    }
+
+    fn word_src(&mut self, o: Off) -> Off {
+        // Bounded because a chain can still GROW: a recorded source is unaliased
+        // when it is recorded, but nothing stops it acquiring an alias afterwards.
+        // A cycle here is a compiler that never returns and prints nothing, so
+        // more hops than there are frame cells is a hard error, not a hang.
+        let mut cur = o;
+        for _ in 0..=self.next {
+            match self.alias.get(&cur).copied() {
+                Some(Alias::Cell(s)) => cur = s,
+                Some(Alias::Const(v)) if v.is_zero() => return self.zero(),
+                Some(Alias::Const(v)) => return self.const_cell(v),
+                None => return cur,
+            }
+        }
+        panic!("alias cycle at frame cell {o}");
     }
 
     /// Evaluate `e` writing its value straight into cell `dst`, with no temporary +

@@ -28,5 +28,6 @@ mod range_check;
 mod soundness;
 mod stack_bits;
 mod stack_buf;
+mod statements;
 mod transcript_helpers;
 mod vm_proofs;
