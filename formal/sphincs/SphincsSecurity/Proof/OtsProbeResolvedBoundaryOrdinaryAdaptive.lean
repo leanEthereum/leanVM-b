@@ -88,6 +88,34 @@ theorem PrivateStructuralHit.canonicalizeMaterializedValues
   · change truncateHash output ∈ context.state.pendingAt (.position position)
     exact hhit
 
+theorem privateStructuralHit_canonicalizeMaterializedValues_iff
+    (table : OtsSecretIndex → HashOutput) (context : DeferredContext)
+    (hpublished : PublishedValues context.state) :
+    PrivateStructuralHit (canonicalizeMaterializedValues table context) ↔
+      ∃ position output,
+        Coordinate.position position ∉ context.state.revealed ∧
+          context.values position = some output ∧
+          context.state.hitAt (.position position) output := by
+  constructor
+  · rintro ⟨position, output, hhidden, hprivate, hhit⟩
+    refine ⟨position, output, ?_, hprivate, ?_⟩
+    · intro hrevealed
+      have hknown := hpublished (.position position) hrevealed
+      unfold canonicalizeMaterializedValues publicMaterializedValues at hhidden
+      simp only [hrevealed, ↓reduceIte] at hhidden
+      cases hvalue : context.state.values (.position position) with
+      | none => exact hknown hvalue
+      | some value =>
+          simp [resolvedCompletionValue, DeferredContext.positionValue, hvalue] at hhidden
+    · change truncateHash output ∈ context.state.pendingAt (.position position)
+      exact hhit
+  · rintro ⟨position, output, hnotRevealed, hprivate, hhit⟩
+    refine ⟨position, output, ?_, hprivate, ?_⟩
+    · change publicMaterializedValues table context (.position position) = none
+      simp [publicMaterializedValues, hnotRevealed]
+    · change truncateHash output ∈ context.state.pendingAt (.position position)
+      exact hhit
+
 theorem publishedValues_of_done_runDirectResolvedDetailedFromTable
     (computation : StateT SplitHashCache
       (OracleComp (LazyRevealProbe.World Coordinate)) α)
