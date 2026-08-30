@@ -569,6 +569,108 @@ theorem directDetailedBoundaryCanonicalMaterializedPrivateObserve_bind
               exact ih result.value.1 result.context result.remaining result.value.2
             · simp [hcompletable]
 
+set_option maxRecDepth 100000 in
+theorem probEvent_directDetailedBoundaryCanonicalMaterializedPrivateObserve_le
+    {iota : Type} {spec : OracleSpec iota}
+    (impl : QueryImpl spec
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))))
+    (isCharged : iota → Prop) [DecidablePred isCharged]
+    (computation : OracleComp spec alpha)
+    (observe : DeferredContext → Nat → (alpha × SplitHashCache) → ProbComp Bool)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (epsilon terminalBound : ℝ≥0∞)
+    (hstep : ∀ query nextContext remaining nextCache nextObserve,
+      ¬PrivateStructuralHit
+          (canonicalizeMaterializedValues table nextContext) →
+      DeferredCompletable table nextContext →
+      (∀ result : ResolvedRunResult (spec.Range query × SplitHashCache),
+        DirectDetailedResult.done result ∈ support
+          (runDirectResolvedDetailedFromTable nextContext remaining table
+            ((impl query).run nextCache)) →
+        ¬PrivateStructuralHit
+          (canonicalizeMaterializedValues table result.context) →
+        DeferredCompletable table result.context →
+        Pr[= true | nextObserve result.context result.remaining result.value] ≤
+          (result.remaining : ℝ≥0∞) * epsilon + terminalBound) →
+      Pr[= true |
+        runDirectDetailedPrivateObserve
+          (classifyCanonicalMaterializedPrivateObserve table nextObserve)
+          nextContext remaining table ((impl query).run nextCache)] ≤
+        (remaining : ℝ≥0∞) * epsilon + terminalBound)
+    (hremaining : ∀ query nextContext remaining nextCache result,
+      DirectDetailedResult.done result ∈ support
+        (runDirectResolvedDetailedFromTable nextContext remaining table
+          ((impl query).run nextCache)) →
+      remaining ≤ result.remaining + if isCharged query then 1 else 0)
+    (hterminal : ∀ nextContext remaining value nextCache,
+      ¬PrivateStructuralHit
+          (canonicalizeMaterializedValues table nextContext) →
+      DeferredCompletable table nextContext →
+      Pr[= true | observe nextContext remaining (value, nextCache)] ≤ terminalBound)
+    (hbound : computation.IsQueryBoundP isCharged fuel)
+    (hclean : ¬PrivateStructuralHit
+      (canonicalizeMaterializedValues table context))
+    (hcompletable : DeferredCompletable table context) :
+    Pr[= true |
+      directDetailedBoundaryCanonicalMaterializedPrivateObserve impl computation observe
+        context fuel table cache] ≤
+      (fuel : ℝ≥0∞) * epsilon + terminalBound := by
+  induction computation using OracleComp.inductionOn generalizing context fuel cache with
+  | pure value =>
+      simp only [directDetailedBoundaryCanonicalMaterializedPrivateObserve,
+        OracleComp.construct_pure]
+      exact (hterminal context fuel value cache hclean hcompletable).trans
+        (le_add_left le_rfl)
+  | query_bind query next ih =>
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
+      rw [directDetailedBoundaryCanonicalMaterializedPrivateObserve,
+        OracleComp.construct_query_bind]
+      apply hstep query context fuel cache
+      · exact hclean
+      · exact hcompletable
+      · intro result hresult hnextClean hnextCompletable
+        apply ih result.value.1 result.context result.remaining result.value.2
+        · apply (hbound.2 result.value.1).mono
+          have hfuel := hremaining query context fuel cache result hresult
+          by_cases hcharged : isCharged query
+          · simp only [hcharged, ↓reduceIte] at hfuel
+            have hpositive : 0 < fuel := by
+              rcases hbound.1 with hnotCharged | hpositive
+              · exact (hnotCharged hcharged).elim
+              · exact hpositive
+            simpa [hcharged] using (show fuel - 1 ≤ result.remaining by omega)
+          · simp only [hcharged, ↓reduceIte, add_zero] at hfuel
+            simpa [hcharged] using hfuel
+        · exact hnextClean
+        · exact hnextCompletable
+
+theorem remaining_le_of_done_maskedExpandedAdversaryImpl
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (query : (OracleWorld + SigningSpec).Domain)
+    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (cache : SplitHashCache)
+    (result : ResolvedRunResult
+      ((OracleWorld + SigningSpec).Range query × SplitHashCache))
+    (hresult : DirectDetailedResult.done result ∈ support
+      (runDirectResolvedDetailedFromTable context fuel table
+        ((maskedExpandedAdversaryImpl parameter root ftsSecret query).run cache))) :
+    fuel ≤ result.remaining + if IsOuterHash query then 1 else 0 := by
+  have hdirect := mem_support_runDirectResolvedFromTable_of_done_detailed
+    ((maskedExpandedAdversaryImpl parameter root ftsSecret query).run cache)
+    context fuel table result hresult
+  have hraw := raw_done_of_mem_runDirectResolvedFromTable
+    ((maskedExpandedAdversaryImpl parameter root ftsSecret query).run cache)
+    context fuel table result hdirect
+  exact LazyRevealProbe.fuel_le_remaining_add_of_mem_support_runRaw_done
+    context.state result.context.state fuel result.remaining
+    (if IsOuterHash query then 1 else 0)
+    ((maskedExpandedAdversaryImpl parameter root ftsSecret query).run cache)
+    result.value
+    (maskedExpandedAdversaryImpl_step_isProbeBound parameter root ftsSecret query cache)
+    hraw
+
 theorem publishedValues_of_done_runDirectResolvedDetailedFromTable
     (computation : StateT SplitHashCache
       (OracleComp (LazyRevealProbe.World Coordinate)) α)
