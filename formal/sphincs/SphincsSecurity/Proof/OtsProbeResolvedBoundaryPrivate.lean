@@ -80,6 +80,7 @@ theorem probEvent_resolve_then_classifyDirectDetailedPrivateObserve_le
     (hhidden : context.state.values (.position position) = none)
     (hprivate : context.values position = none)
     (hobserve : ∀ resolved : DeferredResolution,
+      some resolved ∈ support (resolveDeferredPositionValue position context) →
       let nextContext : DeferredContext :=
         { resolved.toDeferredContext with
           state := resolved.state.addPending (.position position) candidate }
@@ -114,7 +115,7 @@ theorem probEvent_resolve_then_classifyDirectDetailedPrivateObserve_le
     (q := fun hit : Bool => hit = true)
     (p := fires)
     (ε := bound) ?_).trans ?_
-  · intro resolved _hresolved hmiss
+  · intro resolved hresolved hmiss
     cases resolved with
     | none => simp [continuation]
     | some resolved =>
@@ -123,7 +124,7 @@ theorem probEvent_resolve_then_classifyDirectDetailedPrivateObserve_le
         unfold continuation classifyDirectDetailedPrivateObserve
         simp only [hnotPrivate, ↓reduceIte]
         by_cases hcompletable : DeferredCompletable table (nextContext resolved)
-        · simpa [hcompletable] using hobserve resolved hnotPrivate hcompletable
+        · simpa [hcompletable] using hobserve resolved hresolved hnotPrivate hcompletable
         · simp [hcompletable]
   · have hsource :
         Pr[fires | resolveDeferredPositionValue position context] ≤

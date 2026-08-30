@@ -35,24 +35,45 @@ noncomputable def leafInputProbePlan (state : LazyRevealProbe.State Coordinate)
       firstMissingInputCoordinatePlan state input 0
         ((Position.leaf lay tree leafIdx).children.map Coordinate.position)
 
-noncomputable def probingHashQueryPlan (state : LazyRevealProbe.State Coordinate)
-    (parameter : PublicParameter) (input : HashInput) : PlannedHashQuery :=
-  match decodeProbe? parameter input with
-  | some candidate =>
-      match decodePosition? parameter input with
-      | some (.leaf lay tree leafIdx) =>
-          ⟨leafInputProbePlan state input candidate lay tree leafIdx,
-            .resolve candidate.outputCoordinate⟩
-      | _ => ⟨some candidate, .resolve candidate.outputCoordinate⟩
+theorem firstMissingInputCoordinatePlan_some_value_none
+    (state : LazyRevealProbe.State Coordinate) (input : HashInput) :
+    ∀ slot coordinates candidate,
+      firstMissingInputCoordinatePlan state input slot coordinates = some candidate →
+      state.values candidate.coordinate = none := by
+  intro slot coordinates
+  induction coordinates generalizing slot with
+  | nil => simp [firstMissingInputCoordinatePlan]
+  | cons coordinate remaining ih =>
+      intro candidate hplan
+      rw [firstMissingInputCoordinatePlan] at hplan
+      cases hvalue : state.values coordinate with
+      | none =>
+          simp only [hvalue] at hplan
+          have hcand : candidate = ⟨coordinate, slotDigest slot input⟩ :=
+            Option.some.inj hplan.symm
+          subst candidate
+          exact hvalue
+      | some output =>
+          simp only [hvalue] at hplan
+          exact ih (slot + 1) candidate hplan
+
+theorem leafInputProbePlan_some_value_none
+    (state : LazyRevealProbe.State Coordinate)
+    (input : HashInput) (candidate planned : Probe)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (hplan : leafInputProbePlan state input candidate lay tree leafIdx = some planned) :
+    state.values planned.coordinate = none := by
+  unfold leafInputProbePlan at hplan
+  cases hvalue : state.values candidate.coordinate with
   | none =>
-      match decodePosition? parameter input with
-      | some position@(.chain _ _ _ _ _) => ⟨none, .resolve (.position position)⟩
-      | some position@(.leaf _ _ _) => ⟨none, .resolve (.position position)⟩
-      | some position@(.node _ _ _ _) =>
-          ⟨firstMissingInputCoordinatePlan state input 0
-              (position.children.map Coordinate.position),
-            .resolve (.position position)⟩
-      | _ => ⟨none, .ordinary⟩
+      simp only [hvalue] at hplan
+      have heq : planned = candidate := Option.some.inj hplan.symm
+      subst planned
+      exact hvalue
+  | some output =>
+      simp only [hvalue] at hplan
+      exact firstMissingInputCoordinatePlan_some_value_none state input 0
+        ((Position.leaf lay tree leafIdx).children.map Coordinate.position) planned hplan
 
 noncomputable def planFirstMissingInputCoordinate (input : HashInput) :
     Nat → List Coordinate →
@@ -142,6 +163,36 @@ theorem planLeafInputProbe_execute
   | some output =>
       simpa using planFirstMissingInputCoordinate_execute input 0
         ((Position.leaf lay tree leafIdx).children.map Coordinate.position)
+
+set_option maxRecDepth 100000 in
+theorem probingHashQuery_eq_planned_leaf
+    (parameter : PublicParameter) (input : HashInput) (candidate : Probe)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (hprobe : decodeProbe? parameter input = some candidate)
+    (hposition : decodePosition? parameter input = some (.leaf lay tree leafIdx)) :
+    probingHashQuery parameter input = (do
+      let planned ← planLeafInputProbe input candidate lay tree leafIdx
+      executeCandidate? planned
+      resolveKnownInput parameter candidate.outputCoordinate input) := by
+  unfold probingHashQuery
+  rw [hprobe, hposition]
+  rw [← bind_assoc, planLeafInputProbe_execute]
+
+set_option maxRecDepth 100000 in
+theorem probingHashQuery_eq_planned_node
+    (parameter : PublicParameter) (input : HashInput)
+    (lay : Layer) (tree : TreeIndex) (level : Fin maxLayerHeight)
+    (nodeIdx : LeafIndex)
+    (hprobe : decodeProbe? parameter input = none)
+    (hposition : decodePosition? parameter input = some (.node lay tree level nodeIdx)) :
+    probingHashQuery parameter input = (do
+      let planned ← planFirstMissingInputCoordinate input 0
+        ((Position.node lay tree level nodeIdx).children.map Coordinate.position)
+      executeCandidate? planned
+      resolveKnownInput parameter (.position (.node lay tree level nodeIdx)) input) := by
+  unfold probingHashQuery
+  rw [hprobe, hposition]
+  rw [← bind_assoc, planFirstMissingInputCoordinate_execute]
 
 theorem planFirstMissingInputCoordinate_probeFree
     (input : HashInput) (slot : Nat) (coordinates : List Coordinate) :
