@@ -1087,12 +1087,96 @@ theorem relTriple_directDetailedRetainedRestOrdinaryObserve
 
 attribute [local irreducible] maskedPublishedTreeRoot
 
+set_option maxRecDepth 100000 in
+theorem directBoundaryObserve_bind
+    (impl : QueryImpl spec
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))))
+    (left : OracleComp spec α) (next : α → OracleComp spec β)
+    (observe : DeferredContext → Nat → (β × SplitHashCache) → ProbComp Bool)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    directBoundaryObserve impl (left >>= next) observe context fuel table cache =
+      directBoundaryObserve impl left
+        (fun nextContext remaining value =>
+          directBoundaryObserve impl (next value.1) observe
+            nextContext remaining table value.2)
+        context fuel table cache := by
+  induction left using OracleComp.inductionOn generalizing context fuel cache with
+  | pure value =>
+      simp [directBoundaryObserve]
+  | query_bind query continuation ih =>
+      rw [bind_assoc, directBoundaryObserve, OracleComp.construct_query_bind,
+        directBoundaryObserve, OracleComp.construct_query_bind]
+      apply bind_congr
+      intro result
+      cases result with
+      | none => rfl
+      | some result =>
+          unfold finishObserve canonicalizeObserve
+          simp only
+          by_cases hpublished : PublishedValues result.context.state
+          · simp only [hpublished, ↓reduceIte]
+            exact ih result.value.1 (canonicalizeMaterializedValues table result.context)
+              result.remaining result.value.2
+          · simp [hpublished]
+
+set_option maxRecDepth 100000 in
+theorem directBoundaryObserve_liftOracleWorldLeft
+    (left : QueryImpl OracleWorld
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))))
+    (right : QueryImpl SigningSpec
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))))
+    (computation : OracleComp OracleWorld α)
+    (observe : DeferredContext → Nat → (α × SplitHashCache) → ProbComp Bool)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    directBoundaryObserve (left + right) (liftOracleWorldLeft computation)
+        observe context fuel table cache =
+      directBoundaryObserve left computation observe context fuel table cache := by
+  induction computation using OracleComp.inductionOn generalizing context fuel cache with
+  | pure value =>
+      simp [liftOracleWorldLeft, directBoundaryObserve]
+  | query_bind query next ih =>
+      change directBoundaryObserve (left + right)
+          (liftM ((OracleWorld + SigningSpec).query (.inl query)) >>= fun output =>
+            liftOracleWorldLeft (next output))
+          observe context fuel table cache =
+        directBoundaryObserve left (liftM (OracleWorld.query query) >>= next)
+          observe context fuel table cache
+      rw [directBoundaryObserve, OracleComp.construct_query_bind,
+        directBoundaryObserve, OracleComp.construct_query_bind]
+      apply bind_congr
+      intro result
+      cases result with
+      | none => rfl
+      | some result =>
+          unfold finishObserve canonicalizeObserve
+          simp only
+          by_cases hpublished : PublishedValues result.context.state
+          · simp only [hpublished, ↓reduceIte]
+            exact ih result.value.1 (canonicalizeMaterializedValues table result.context)
+              result.remaining result.value.2
+          · simp [hpublished]
+
 noncomputable def retainedResolvedFinalizationDetailedObserve
     (table : OtsSecretIndex → HashOutput) (root : Digest)
     (context : DeferredContext) (fuel : Nat)
     (value : RetainedRestResult × SplitHashCache) : ProbComp DirectBoundaryOutcome :=
   classifyDirectObserve table (resolvedFinalizationObserve table)
     context fuel ((root, value.1), value.2)
+
+noncomputable def retainedResolvedFinalizationObserve
+    (table : OtsSecretIndex → HashOutput) (root : Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : RetainedRestResult × SplitHashCache) : ProbComp Bool :=
+  resolvedFinalizationObserve table context fuel ((root, value.1), value.2)
+
+instance retainedResolvedFinalizationObserve_observerDooms
+    (table : OtsSecretIndex → HashOutput) (root : Digest) :
+    ObserverDooms table (retainedResolvedFinalizationObserve table root) where
+  eq_true context fuel value hconsistent hstarts hdoomed := by
+    exact ObserverDooms.eq_true context fuel ((root, value.1), value.2)
+      hconsistent hstarts hdoomed
 
 noncomputable def granularDetailedRetainedRestObserve
     (adversary : Adversary) (parameter : PublicParameter)
@@ -1105,6 +1189,56 @@ noncomputable def granularDetailedRetainedRestObserve
     (retainedGameRestComputation adversary ⟨value.1, parameter⟩)
     (retainedResolvedFinalizationDetailedObserve table value.1)
     context fuel table value.2
+
+noncomputable def granularRetainedRestObserve
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : Digest × SplitHashCache) : ProbComp Bool :=
+  directBoundaryObserve
+    (maskedExpandedAdversaryImpl parameter value.1 ftsSecret)
+    (retainedGameRestComputation adversary ⟨value.1, parameter⟩)
+    (retainedResolvedFinalizationObserve table value.1)
+    context fuel table value.2
+
+instance granularRetainedRestObserve_observerDooms
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    ObserverDooms table
+      (granularRetainedRestObserve adversary parameter table ftsSecret) where
+  eq_true context fuel value hconsistent hstarts hdoomed := by
+    exact directBoundaryObserve_dooms
+      (maskedExpandedAdversaryImpl parameter value.1 ftsSecret)
+      (retainedGameRestComputation adversary ⟨value.1, parameter⟩)
+      (retainedResolvedFinalizationObserve table value.1)
+      context fuel value.2 hconsistent hstarts hdoomed
+
+set_option maxRecDepth 100000 in
+theorem evalDist_failed_granularDetailedRetainedRestObserve
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : Digest × SplitHashCache)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table) :
+    evalDist (DirectBoundaryOutcome.failed <$>
+        granularDetailedRetainedRestObserve adversary parameter table ftsSecret
+          context fuel value) =
+      evalDist (granularRetainedRestObserve adversary parameter table ftsSecret
+        context fuel value) := by
+  unfold granularDetailedRetainedRestObserve granularRetainedRestObserve
+  apply evalDist_failed_directDetailedBoundaryObserve
+  · intro nextContext remaining nextValue hnextConsistent hnextStarts
+    unfold retainedResolvedFinalizationDetailedObserve
+      retainedResolvedFinalizationObserve
+    exact evalDist_failed_classifyDirectObserve table (resolvedFinalizationObserve table)
+      nextContext remaining ((value.1, nextValue.1), nextValue.2)
+        hnextConsistent hnextStarts
+  · exact hconsistent
+  · exact hstarts
 
 noncomputable def granularDetailedRetainedRestOrdinaryObserve
     (adversary : Adversary) (parameter : PublicParameter)
@@ -1187,6 +1321,42 @@ noncomputable def granularAllDirectBoundaryDetailedRetainedOutcome
     { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
       values := emptyDeferredStructuralValues }
     fuel table (maskedPublishedTreeRoot.run emptySplitHashCache)
+
+noncomputable def granularAllDirectBoundaryRetainedFinishIsNone
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) : ProbComp Bool :=
+  runDirectResolvedObserve
+    (granularRetainedRestObserve adversary parameter table ftsSecret)
+    { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+      values := emptyDeferredStructuralValues }
+    fuel table (maskedPublishedTreeRoot.run emptySplitHashCache)
+
+set_option maxHeartbeats 1000000 in
+set_option maxRecDepth 100000 in
+theorem evalDist_failed_granularAllDirectBoundaryDetailedRetainedOutcome
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    evalDist (DirectBoundaryOutcome.failed <$>
+        granularAllDirectBoundaryDetailedRetainedOutcome adversary parameter table
+          ftsSecret fuel) =
+      evalDist (granularAllDirectBoundaryRetainedFinishIsNone adversary parameter table
+        ftsSecret fuel) := by
+  let initial : DeferredContext :=
+    { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+      values := emptyDeferredStructuralValues }
+  unfold granularAllDirectBoundaryDetailedRetainedOutcome
+    granularAllDirectBoundaryRetainedFinishIsNone
+  apply evalDist_failed_runDirectDetailedObserve
+  intro result hresult
+  have hdirect := mem_support_runDirectResolvedFromTable_of_done_detailed
+    (maskedPublishedTreeRoot.run emptySplitHashCache) initial fuel table result hresult
+  have hcore := resolvedCore_of_mem_runDirectResolvedFromTable
+    (maskedPublishedTreeRoot.run emptySplitHashCache) initial fuel table result
+      DeferredContext.valid_empty.valuesConsistent (startTableAgrees_empty table) hdirect
+  exact evalDist_failed_granularDetailedRetainedRestObserve adversary parameter table ftsSecret
+    result.context result.remaining result.value hcore.2.1 hcore.2.2
 
 noncomputable def materializedDetailedRetainedRestOrdinaryObserve
     (adversary : Adversary) (parameter : PublicParameter)
@@ -1500,6 +1670,121 @@ noncomputable def sampledGranularAllDirectBoundaryDetailedRetainedPrivate
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) : ProbComp Bool := do
   let table ← sampleOtsHashTable
   granularAllDirectBoundaryDetailedRetainedPrivate adversary parameter table ftsSecret fuel
+
+set_option maxHeartbeats 1000000 in
+set_option maxRecDepth 100000 in
+theorem relTriple_sampledGranularAllDirectBoundaryDetailedRetainedOrdinary_materialized
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (hq : HasHashQueryBound scheme adversary q)
+    (hparameter : parameter ∈ support sampleParameter)
+    (hfts : ftsSecret ∈ support sampleFtsSecrets) :
+    RelTriple
+      (sampledGranularAllDirectBoundaryDetailedRetainedOrdinary adversary parameter
+        ftsSecret q)
+      (sampledMaterializedBoundaryDetailedRetainedOrdinary adversary parameter
+        ftsSecret q)
+      BoolImp := by
+  unfold sampledGranularAllDirectBoundaryDetailedRetainedOrdinary
+    sampledMaterializedBoundaryDetailedRetainedOrdinary
+  apply relTriple_bind (relTriple_refl sampleOtsHashTable)
+  intro leftTable rightTable htable
+  subst rightTable
+  exact relTriple_granularAllDirectBoundaryDetailedRetainedOrdinary adversary parameter
+    leftTable ftsSecret q hq hparameter hfts
+
+set_option linter.constructorNameAsVariable false in
+set_option maxHeartbeats 1000000 in
+set_option maxRecDepth 100000 in
+theorem probEvent_sampledGranularAllDirectBoundaryDetailedRetainedOrdinary_le_materialized
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (hq : HasHashQueryBound scheme adversary q)
+    (hparameter : parameter ∈ support sampleParameter)
+    (hfts : ftsSecret ∈ support sampleFtsSecrets) :
+    Pr[= true |
+        sampledGranularAllDirectBoundaryDetailedRetainedOrdinary adversary parameter
+          ftsSecret q] ≤
+      Pr[= true |
+        sampledMaterializedBoundaryDetailedRetainedOrdinary adversary parameter
+          ftsSecret q] := by
+  rw [← probEvent_eq_eq_probOutput, ← probEvent_eq_eq_probOutput]
+  apply probEvent_le_of_relTriple
+    (relTriple_sampledGranularAllDirectBoundaryDetailedRetainedOrdinary_materialized
+      adversary parameter ftsSecret q hq hparameter hfts)
+  intro leftValue rightValue himp hleft
+  exact himp hleft
+
+set_option linter.constructorNameAsVariable false in
+set_option maxRecDepth 100000 in
+theorem evalDist_sampledMaterializedBoundaryDetailedRetainedOrdinary_eq_flat
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    evalDist
+        (sampledMaterializedBoundaryDetailedRetainedOrdinary adversary parameter
+          ftsSecret fuel) =
+      evalDist (do
+        let table ← sampleOtsHashTable
+        materializedFlatResolvedFinalizationOrdinary adversary parameter table
+          ftsSecret fuel) := by
+  unfold sampledMaterializedBoundaryDetailedRetainedOrdinary
+  apply OracleComp.DeferredSampling.evalDist_bind_congr_left
+  intro table
+  exact evalDist_materializedBoundaryDetailedRetainedOrdinary_eq_flat adversary parameter
+    table ftsSecret fuel
+
+set_option maxRecDepth 100000 in
+theorem evalDist_finishDirectRunIsNone_eq_true_of_missingChainStartHit
+    (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput) (fuel : Nat) (value : α)
+    (hmissing : MissingChainStartHit table (directDeferredContext state)) :
+    evalDist (finishDirectRunIsNone
+        (some ⟨directDeferredContext state, fuel, value, table⟩)) =
+      evalDist (pure true : ProbComp Bool) := by
+  obtain ⟨index, hvalue, hhit⟩ := hmissing
+  have hstateValue : state.values index.coordinate = none := by
+    simpa only [directDeferredContext] using hvalue
+  have hmem : index.coordinate ∈ state.coordinates := by
+    by_contra hnotMem
+    exact (not_hitAt_of_not_mem_coordinates state index.coordinate (table index) hnotMem) hhit
+  have hexpose := evalDist_finalizeCleanFromTable_finset_expose_missing
+    index.coordinate state.coordinates state table hmem hstateValue
+  unfold finishDirectRunIsNone finishCleanRunIsNone projectResolvedRunResult
+  simp only [finishCleanRunFromTable, map_bind]
+  simp only [directDeferredContext]
+  rw [evalDist_bind, hexpose, ← evalDist_bind]
+  rcases index with ⟨lay, tree, leafIdx, chainIdx⟩
+  have hhitState : state.hitAt (.chainStart lay tree leafIdx chainIdx)
+      (table ⟨lay, tree, leafIdx, chainIdx⟩) := by
+    simpa only [directDeferredContext, OtsSecretIndex.coordinate] using hhit
+  simp [OtsSecretIndex.coordinate, completionOutputFromTable, hhitState]
+
+set_option maxRecDepth 100000 in
+theorem evalDist_finishResolvedRunIsNone_eq_finishDirectRunIsNone_of_materialized
+    (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput) (fuel : Nat) (value : α)
+    (hvalid : (directDeferredContext state).Valid)
+    (hstarts : StartTableAgrees state table)
+    (hcard : state.pending.card < Fintype.card Digest) :
+    evalDist (finishResolvedRunIsNone
+        (some ⟨directDeferredContext state, fuel, value, table⟩)) =
+      evalDist (finishDirectRunIsNone
+        (some ⟨directDeferredContext state, fuel, value, table⟩)) := by
+  by_cases hcompletable : DeferredCompletable table (directDeferredContext state)
+  · exact evalDist_finishResolvedRunIsNone_eq_finishDirectRunIsNone
+      state fuel value table hcompletable
+  · have hcause := privateStructuralHit_or_missingChainStartHit_of_not_completable
+      table (directDeferredContext state) hvalid hstarts hcard hcompletable
+    have hnotPrivate := not_privateStructuralHit_of_directDeferredContext
+      (directDeferredContext state) rfl
+    have hmissing : MissingChainStartHit table (directDeferredContext state) :=
+      hcause.resolve_left hnotPrivate
+    calc
+      _ = evalDist (pure true : ProbComp Bool) := by
+        simp [finishResolvedRunIsNone, finishResolvedRun, hcompletable]
+      _ = _ :=
+        (evalDist_finishDirectRunIsNone_eq_true_of_missingChainStartHit
+          state table fuel value hmissing).symm
 
 set_option linter.constructorNameAsVariable false in
 set_option maxRecDepth 100000 in
