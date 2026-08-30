@@ -46,12 +46,12 @@ For a given pair of bytecode and public input, there is more than one valid exec
 
 In particular, the memory log-size $\kmem$ is a non deterministic parameter, freely chosen at the beginning of execution, with the constraint $16\le\kmem\le 32$.
 
-\paragraph{Operands and addressing.} An operand is either an \emph{immediate}, a literal $\E$-element used as given, or an \emph{fp-relative reference}: an offset $j$ into the current frame, encoded as the $\gen$-power $o=\gen^{\,j}$. With the frame based at $\fp=\gen^{\mathrm{base}}$, the reference names the cell
+\paragraph{Operands and addressing.} An instruction is an opcode followed by a list of $\K$-valued operands. An operand is either an \emph{fp-relative reference}, an offset $j$ into the current frame encoded as the $\gen$-power $o=\gen^{\,j}$, or one $\K$-lane of an \emph{immediate} ($k_0,k_1,k_2$ in \texttt{SET\_CONSTANT}, or $\md_0,\md_1$ in \texttt{BLAKE2S}). With the frame based at $\fp=\gen^{\mathrm{base}}$, a reference names the cell
 \[
   \mem[\fp\cdot o],\qquad \fp\cdot o\;=\;\gen^{\mathrm{base}}\cdot\gen^{\,j}\;=\;\gen^{\,\mathrm{base}+j}.
 \]
 
-\paragraph{Instruction set.} The machine implements six instructions. Below, $o,o_A,\dots$ are fp-relative references in $\K$, $k$ is an immediate operand in $\E$.
+\paragraph{Instruction set.} The machine implements six instructions.
 \begin{center}
 \begin{tabularx}{\textwidth}{@{}llX@{}}
 \hline
@@ -59,10 +59,10 @@ Instruction & Operands & Semantics\\
 \hline
 \texttt{XOR}           & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}+\loc{o_B}$ \quad(addition in $\E$)\\
 \texttt{MUL\_NATIVE}   & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}\cdot\loc{o_B}$ (multiplication in $\E$)\\
-\texttt{SET\_CONSTANT} & $[o,k]$         & $\loc{o}=k$\\
+\texttt{SET\_CONSTANT} & $[o,k_0,k_1,k_2]$ & $\loc{o}=k_0+k_1y+k_2y^{2}$\\
 \texttt{DEREF}         & $[\alpha,\beta,\gamma;\,s]$ & $\mem[\loc{\alpha}\cdot\beta]=\srcsel{s}$ (see below)\\
 \texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (see below)\\
-\texttt{BLAKE2S}        & $[o_0,o_1,o_2,o_3,o_V,o_C,\md]$ & BLAKE2s compression (see below)\\
+\texttt{BLAKE2S}        & $[o_0,o_1,o_2,o_3,o_V,o_C,\md_0,\md_1]$ & BLAKE2s compression (see below)\\
 \hline
 \end{tabularx}
 \end{center}
@@ -87,7 +87,7 @@ Additionally, it asserts $\loc{\alpha} \in \K$.
 
 \vspace{5mm}
 
-\texttt{BLAKE2S} is the standard BLAKE2s compression, consuming a $64$-byte message block and a $32$-byte chaining value and producing $32$ bytes. Each $128$-bit chunk occupies one full $\E$ memory cell through the canonical embedding $a_0+a_1y\mapsto a_0+a_1y+0y^2$; using a cell as a BLAKE2s operand therefore constrains its top limb to zero. The four message chunks are addressed \emph{independently} by references $o_0,\dots,o_3$ (chunk $i$ at $\loc{o_i}=\fp\cdot o_i$), while $o_V$ names two \emph{consecutive} chaining-value cells $\loc{o_V},\loc{\gen\cdot o_V}$. The $256$-bit result is written to the consecutive cells $\loc{o_C},\loc{\gen\cdot o_C}$, so each row accesses eight cells. The $128$-bit immediate $\md \in \E$ (with top lane zero) packs the standard compression metadata in little-endian order,
+\texttt{BLAKE2S} is the standard BLAKE2s compression, consuming a $64$-byte message block and a $32$-byte chaining value and producing $32$ bytes. Each $128$-bit chunk occupies one full $\E$ memory cell through the canonical embedding $a_0+a_1y\mapsto a_0+a_1y+0y^2$; using a cell as a BLAKE2s operand therefore constrains its top limb to zero. The four message chunks are addressed \emph{independently} by references $o_0,\dots,o_3$ (chunk $i$ at $\loc{o_i}=\fp\cdot o_i$), while $o_V$ names two \emph{consecutive} chaining-value cells $\loc{o_V},\loc{\gen\cdot o_V}$. The $256$-bit result is written to the consecutive cells $\loc{o_C},\loc{\gen\cdot o_C}$, so each row accesses eight cells. The metadata immediate $\md=\md_0+\md_1y$ packs the standard compression metadata in little-endian order,
 \[
   \md=\mathit{counter}_{64}\;\Vert\;\mathit{final}_{32}\;\Vert\;\mathit{last\_node}_{32}.
 \]

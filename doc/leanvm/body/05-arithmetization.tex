@@ -7,7 +7,7 @@ The arithmetization is inspired by the M3 model (multi-multiset matching)~\cite{
 
 \paragraph{Tables and columns.} A column of height $2^{\kappa}$ is a function $\cube{\kappa}\to\K$. A table is a group of columns of equal height. The arithmetization fixes the number of tables $\ntab$ and, for each table $T_j$, its number of columns $\ncol{j}$, its $\ncons{j}$ constraints and its $\nfl{j}$ bus flushes. The table heights are not fixed: the prover announces each table's log height $\tau_j$ at the beginning of the proof.
 
-\paragraph{Constraints.} The constraints of $T_j$ are $C_{j,1},\dots,C_{j,\ncons{j}}$, each a polynomial of degree at most $d$ ($d=2$ throughout) in the $\ncol{j}$ columns, required to vanish on every row in $\cube{\tau_j}$.
+\paragraph{Constraints.} The constraints of $T_j$ are $C_{j,1},\dots,C_{j,\ncons{j}}$, each a polynomial in $\K$ of degree at most $d$ ($d=2$ throughout) in the $\ncol{j}$ columns, required to vanish on every row in $\cube{\tau_j}$.
 
 \paragraph{The bus.} All interactions (between tables) share a single \emph{bus}, a channel carrying tuples of up to $m=16$ $\K$-elements (shorter ones are zero-padded). Table $T_j$ has $\nfl{j}$ flushes $\btup_{j,1},\dots,\btup_{j,\nfl{j}}$, each is either a \emph{push} or a \emph{pull}. Each one of the $m$ coordinates in each tuple is a fixed polynomial of degree at most $d$ in the table's columns. A few \emph{boundary} tuples are pushed (resp. pulled) by default to the bus (for instance for the VM state $(\dsep{ST}, \pc, \fp)$, the initial $(\dsep{ST}, \gen^0, \gen^0)$ is pushed and the final $(\dsep{ST}, \gen^{\,\nprog-1}, \gen^{0})$ is pulled).
 
@@ -76,21 +76,21 @@ If $\mu$ is odd, GKR first processes the root-most binary layer, which has no su
 
 \subsubsection{Batching several grand-products}
 
-For recursion friendliness, $T$ grand products are proven in one pass, at one sumcheck per layer instead of $T$.
+For recursion friendliness, the $\nside$ grand products, numbered $s=1,\dots,\nside$, are proven in one pass, at one sumcheck per layer instead of $\nside$.
 
-Pad every tree with $1$-leaves up to the depth $\mu$ of the deepest. The verifier then samples a combiner $\lambda \in \E$, and each layer runs a single sumcheck on the random linear combination of the $T$ identities,
+Pad every tree with $1$-leaves up to the depth $\mu$ of the deepest. The verifier then samples at every layer a combiner $\lambda \in \E$, and each layer runs a single sumcheck on the random linear combination of the $\nside$ identities,
 \[
-\sum_t\lambda^t\widetilde V_i^t(r)=\sum_{x\in\cube{\mu-i}}\eq(r,x)\sum_t\lambda^t\prod_{a,b\in\{0,1\}}\widetilde V_{i-2}^t(a,b,x),\qquad t\in\{0,\dots,T-1\},
+\sum_{s=1}^{\nside}\lambda^{s-1}\widetilde V_i^{s}(r)=\sum_{x\in\cube{\mu-i}}\eq(r,x)\sum_{s=1}^{\nside}\lambda^{s-1}\prod_{a,b\in\{0,1\}}\widetilde V_{i-2}^{s}(a,b,x)
 \]
-drawing a fresh $\lambda$ after every layer, which binds each tree's own tail values and not merely the combination they entered in. A round costs what one tree's round costs; only the layer-end values are per tree. All $T$ trees leave the pass on claims at the one point $\zeta$.
+All $\nside$ trees leave the pass on claims at one shared terminal point $\zeta$.
 
 \subsection{Stacking the leaves}\label{sec:leafstack}
 
 The GKR grand-product argument reduces each side of \eqref{eq:gp} to a single evaluation $\widetilde V_0(\zeta)$ of its \emph{leaves}, the product's factors $\beta-\pi_\alpha(\btup)$, one per bus tuple $\btup$.
 
-\paragraph{Flush blocks.} The leaves split into \emph{blocks}, one per flush rule and one per boundary set. A block of a $2^{\kappa}$-row table holds $2^{\kappa}$ leaves; the row-$z$ leaf is $\beta-\sum_{i}\eq(\alpha,i)\,c_{i}(z)$, with $c_{i}(z)$ coordinate $i$ of the row's tuple. Each $c_i$ is a polynomial of degree at most $d$ in the row's columns (\S\ref{sec:m3}).
+\paragraph{Flush blocks.} The leaves split into \emph{blocks}, one per flush rule and one per boundary set. A block of a $2^{\kappa}$-row table holds $2^{\kappa}$ leaves; the row-$z$ leaf is $\beta-\sum_{i}\eq(\alpha,i)\,c_{i}(z)$, with $c_{i}(z)$ coordinate $i$ of the row's tuple. Each $c_i$ is a polynomial of degree at most $d = 2$ in the columns (at the corresponding row) (\S\ref{sec:m3}).
 
-\paragraph{Layout.} Order the blocks largest first at aligned offsets, padding to $2^{\mu}$ leaves with $1$s, which leave the product unchanged. This is the stacking of \S\ref{sec:stacking} applied to blocks: block $b$, of $2^{\kappa_b}$ leaves, occupies the subcube $\{(z,\mathsf{sel}_b):z\in\cube{\kappa_b}\}$ for a fixed selector $\mathsf{sel}_b$.
+\paragraph{Layout.} Order the blocks largest first at aligned offsets, padding to $2^{\mu}$ leaves with $1$s, which leave the product unchanged. This is the stacking of \S\ref{sec:stacking} applied to blocks: block $b$, of $2^{\kappa_b}$ leaves, occupies the subcube $\{(z,\mathsf{sel}_b):z\in\cube{\kappa_b}\}$ for a fixed selector $\mathsf{sel}_b$ (that depends only on the table, bytecode and memory sizes).
 
 \paragraph{Decomposition.} Split $\zeta=(\zeta^{b}_{\mathrm{lo}},\zeta^{b}_{\mathrm{hi}})$ at block $b$'s boundary. Each block is a subcube, so the leaf MLE splits into a public selector times the block's own MLE, plus what the padding contributes:
 \begin{equation}\label{eq:gkr_leaves}
@@ -98,52 +98,48 @@ The GKR grand-product argument reduces each side of \eqref{eq:gp} to a single ev
 \end{equation}
 That last term is the padding's weight, for the final $\dots 1111$.
 
-\paragraph{Settling it.} The boundary tuples (\S\ref{sec:m3}) and each array's seed and finalization (\S\ref{sec:lookup}) belong to no table. Their entries have degree one: a constant, the index column (\S\ref{sec:idxcol}), a public component, or one committed column. The prover sends, for each such committed multilinear, its evaluation at $\zeta^{b}_{\mathrm{lo}}$. These claims are then deferred to the PCS (\S\ref{sec:stacking}). The verifier finally evaluates each contribution, and subtracts them, with the corresponding padding term, from the claimed value of $\widetilde V_0(\zeta)$. Call the remainder $R_{\mathrm{side}}$: it remains to prove an equation similar to \eqref{eq:gkr_leaves}, summing only on the flush blocks from tables.
+\paragraph{Settling it.} Fix one side $s$. The boundary tuples (\S\ref{sec:m3}) and each array's seed and finalization (\S\ref{sec:lookup}) belong to no table. Their entries have degree one: a constant, the index column (\S\ref{sec:idxcol}), a public component, or one committed column. The prover sends, for each such committed multilinear, its evaluation at $\zeta^{b}_{\mathrm{lo}}$. These claims are then deferred to the PCS (\S\ref{sec:stacking}). The verifier finally evaluates each contribution, and subtracts them, with the corresponding padding term, from the claimed value of $\widetilde V^{s}_0(\zeta)$. Call the remainder $R_{s}$: it remains to prove an equation similar to \eqref{eq:gkr_leaves}, summing only on the flush blocks from tables.
 
 Let $\mathcal B$ be the blocks of $T_j$'s flushes in this leaf vector, one per flush rule (\S\ref{sec:m3}). Each holds one leaf per row of $T_j$, so each is $2^{\tau_j}$ tall and all of them split $\zeta$ at the same place, $\zeta^{b}_{\mathrm{lo}}=\zeta_{<\tau_j}$ and $\zeta^{b}_{\mathrm{hi}}=\zeta_{\ge\tau_j}$, differing only through their selector. Exchanging the two sums,
 \begin{align*}
-  \sum_{b\in\mathcal B}\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\Bigl(\beta-\sum_{i}\alpha^{i}c_{b,i}(x)\Bigr)
-  &\;=\;\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,B_j(x),\\
-  B_j&\;=\;\sum_{b\in\mathcal B}\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigl(\beta-\sum_i\alpha^{i}c_{b,i}\Bigr).
+  \sum_{b\in\mathcal B}\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\Bigl(\beta-\sum_{i}\eq(\alpha,i)\,c_{b,i}(x)\Bigr)
+  &\;=\;\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,B^{s}_j(x),\\
+  B^{s}_j&\;=\;\sum_{b\in\mathcal B}\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigl(\beta-\sum_i\eq(\alpha,i)\,c_{b,i}\Bigr).
 \end{align*}
-$B_j$ has degree at most $d$ in $T_j$'s columns, and the verifier builds its coefficients from $\alpha$, $\beta$ and the selectors. What remains to prove is
+$B^{s}_j$ has degree at most $d$ in $T_j$'s columns, and the verifier builds its coefficients from $\alpha$, $\beta$ and the selectors. What remains to prove is
 \[
-  \sum_j\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,B^{\mathrm{side}}_j(x)\;\qeq\;R_{\mathrm{side}} .
+  \sum_j\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,B^{s}_j(x)\;\qeq\;R_{s} .
 \]
-Nothing is sent for these blocks. Each constraint of $T_j$ owes a sum of the same shape, so one sumcheck over the tables' rows proves both (\S\ref{sec:air}).
+There is one such equation per side. Nothing is sent for these blocks. Each constraint of $T_j$ owes a sum of the same shape, so one sumcheck over the tables' rows proves them all (\S\ref{sec:air}).
 
 \subsection{Table sumcheck}\label{sec:air}
 
-Number the sides $s=1,\dots,T$, one per grand product (\S\ref{sec:gkr}), and write $B^{s}_j$ and $R_{s}$ for the forms and totals of \S\ref{sec:leafstack}. One sumcheck proves two types of statements:
-\begin{align*}
-  \sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,C_{j,i}(x)&\;\qeq\;0,\\
-  \sum_j\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,B^{s}_j(x)&\;\qeq\;R_{s},
-\end{align*}
-the first for every constraint of every table, the second for every side. Both are $\eq$-weighted sums over one table's rows of a polynomial of degree at most $d$ in its columns, which is what lets a single sumcheck carry them all.
-
-\paragraph{Constraints are $\K$-valued.} A constraint $C_{j,i}$ takes values in $\K$, like the columns it reads and like the bus coordinates (\S\ref{sec:m3}); only the $\xi$-powers and $\eq(\zeta,\cdot)$ that weight it lie in $\E$. A relation between machine words is therefore stated lane by lane, three $\K$ constraints rather than one $\E$ constraint, with the tower multiplication unrolled (\S\ref{sec:tab-mul}); the two have the same zero set, since $\{1,y,y^{2}\}$ is a $\K$-basis of $\E$. The prover gains by it: in the round a table joins the batch its columns are still $\K$-valued (below), so a $\K$ constraint is evaluated in $64$-bit arithmetic and meets $\E$ only in the mixed product against its $\xi$-power, while an $\E$ constraint would cost a full $\E$ multiplication per row.
-
-\paragraph{The point is already drawn.} A zerocheck tests its polynomial at a point drawn after the commitment (Definition~\ref{def:zerocheck}), and $\zeta$ is such a point: its coordinates are the challenges of the GKR pass (\S\ref{sec:gkr}), uniform in $\E$ and drawn after the witness was committed. The constraints played no part in producing them. So no fresh point is needed, and the constraints are zerochecked at $\zeta_{<\tau_j}$, where the bus forms already stand.
-
-\paragraph{One challenge.} The verifier samples $\xi\in\E$, after the totals are fixed. Each table mixes everything it owes into one polynomial in its own columns,
+\paragraph{Proving constraints via zerocheck.} $C_{j,i}$ is a polynomial in $T_j$'s columns, so it is a function $\cube{\tau_j}\to\K$ that must vanish on every row. Following Fact~\ref{fact:eq}, this can be proved by sampling $r\in\E^{\tau_j}$ uniformly at random and running sumcheck on:
 \[
-  C_j\;=\;\sum_{i=1}^{\ncons{j}}\xi^{\,o_j+i-1}\,C_{j,i}
-  \;+\;\sum_{s=1}^{T}\xi^{\,\sigma+s-1}B^{s}_j,
-  \qquad
-  S_j\;=\;\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,C_j(x),
+  \mle{C_{j,i}}(r)\;=\;\sum_{x\in\cube{\tau_j}}\eq(r,x)\,C_{j,i}(x)\;\qeq\;0
 \]
-with $\sigma=\sum_j\ncons{j}$ the total number of constraints and $o_j=\ncons{1}+\dots+\ncons{j-1}$. The constraint powers are disjoint across tables, so no table's violation is cancelled by another's. The $T$ bus powers are shared by every table, which is what the bus needs, only the totals being pinned. If every constraint vanishes then
+
+\paragraph{Zerocheck point recycling.} Nothing forces $r$ to be sampled just before the zerocheck: it may come from a previous sub-protocol, as long as it results from uniform sampling occurring after the table columns are committed. We take $r=\zeta_{<\tau_j}$, the first $\tau_j$ coordinates of the GKR terminal point $\zeta$ (\S\ref{sec:gkr}). Validity of the constraints is thus reduced to:
+\begin{equation}\label{eq:cons}
+  \sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,C_{j,i}(x)\;\qeq\;0,
+  \qquad \text{for } j\in\{1,\dots,\ntab\},\ i\in\{1,\dots,\ncons{j}\}.
+\end{equation}
+
+\paragraph{The bus claims join in.} \S\ref{sec:leafstack} left one per side, at that same point,
+\begin{equation}\label{eq:bus}
+  \sum_{j=1}^{\ntab}\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,B^{s}_j(x)\;\qeq\;R_{s},
+  \qquad \text{for } s\in\{1,\dots,\nside\}.
+\end{equation}
+Both \eqref{eq:cons} and \eqref{eq:bus} are built from $\eq(\zeta_{<\tau_j},\cdot)$-weighted sums over one table's rows of a polynomial of degree at most $d$ in its columns: we batch them in a single sumcheck.
+
+\paragraph{Back-loaded batched sumcheck.} The verifier samples $\xi\in\E$ and gives each claim its own power of it: $\xi^{\,s-1}$ for side $s$, and $\xi^{\,\nside+o_j+i-1}$ for $C_{j,i}$, with $o_j=\ncons{1}+\dots+\ncons{j-1}$ numbering the constraints table by table. A sumcheck runs over one cube, so write $\taumax=\max_j\tau_j$, let $X_{<\tau_j}=(X_0,\dots,X_{\tau_j-1})$ be the variables $T_j$ uses, and multiply in the ones it does not:
 \[
-  \sum_j S_j\;=\;\sum_{s=1}^{T}\xi^{\,\sigma+s-1}R_{s},
+  F(X_0,\dots,X_{\taumax-1})\;=\;\sum_{j=1}^{\ntab}\eq(\zeta_{<\tau_j},X_{<\tau_j})
+  \Bigl(\sum_{s=1}^{\nside}\xi^{\,s-1}B^{s}_j+\sum_{i=1}^{\ncons{j}}\xi^{\,\nside+o_j+i-1}C_{j,i}\Bigr)(X_{<\tau_j})
+  \prod_{k=\tau_j}^{\taumax-1}X_k .
 \]
-a number the verifier formed before drawing $\xi$. Reaching it forces the $T$ bus equations at once, and a zero in every constraint slot, up to $(n+\sigma+T)/|\E|$ over $\zeta$ and $\xi$ (Corollary~\ref{cor:idtest}), writing $\taumax=\max_j\tau_j$.
-
-\paragraph{One sumcheck.} The $S_j$ are claims of different lengths. Lift each onto $\cube{\taumax}$ by attaching the indicator of the all-ones assignment on the $\taumax-\tau_j$ variables $T_j$ does not use,
+Since $\sum_{x\in\cube{m}}x_0\cdots x_{m-1}=1$, the padded variables contribute a factor $1$, so summing $F$ over $\cube{\taumax}$ gives back what each table owes. We thus run a single sumcheck:
 \[
-  f_j(X_0,\dots,X_{\taumax-1})\;=\;\bigl(C_j\,\eq(\zeta_{<\tau_j},\cdot)\bigr)(X_0,\dots,X_{\tau_j-1})\cdot\prod_{i\ge\tau_j}X_i ,
+  \sum_{x\in\cube{\taumax}}F(x)\;\qeq\;\sum_{s=1}^{\nside}\xi^{\,s-1}R_{s},
 \]
-so that $\sum_{x\in\cube{\taumax}}f_j(x)=S_j$, since $\sum_x\prod_ix_i=1$. With $F=\sum_jf_j$ the whole statement is one claim, $\sum_{x\in\cube{\taumax}}F(x)=\sum_jS_j$, proven in $n$ rounds.
-
-The rounds bind $X_{\taumax-1}$ first and $X_0$ last, so the first $\taumax-\tau_j$ of them touch only variables $T_j$ does not use: there $f_j$ contributes the line $Y\,k\,S_j$, with $k$ the product of the challenges drawn so far. Table $T_j$ enters at round $\taumax-\tau_j$ and binds $X_{\tau_j-1},\dots,X_0$ in turn. A short claim waits, then joins weighted by the rounds it sat out.
-
-The batch ends with one claim per column of $T_j$, at that table's own point $\fc_{<\tau_j}$, each a prefix of the one $\fc$. Those are what the PCS opening settles (\S\ref{sec:stacking}); no column is ever opened at $\zeta$.
+the verifier computing the right side itself, at soundness error $\bigl(\taumax+\nside+\sum_j\ncons{j}\bigr)/|\E|$ (Corollary~\ref{cor:idtest}). Rounds bind $X_{\taumax-1}$ first, so $T_j$ joins only at round $\taumax-\tau_j$: hence \emph{back-loaded}. The end yields one claim per column, $T_j$'s at $\fc_{<\tau_j}$, settled by the PCS opening (\S\ref{sec:stacking}).
