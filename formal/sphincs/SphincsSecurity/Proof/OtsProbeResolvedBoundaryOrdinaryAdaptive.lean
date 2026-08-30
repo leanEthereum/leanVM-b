@@ -671,6 +671,137 @@ theorem remaining_le_of_done_maskedExpandedAdversaryImpl
     (maskedExpandedAdversaryImpl_step_isProbeBound parameter root ftsSecret query cache)
     hraw
 
+set_option maxRecDepth 100000 in
+theorem probEvent_directDetailedBoundaryCanonicalMaterializedPrivateObserve_maskedExpanded_le
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) alpha)
+    (observe : DeferredContext → Nat → (alpha × SplitHashCache) → ProbComp Bool)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (epsilon terminalBound : ℝ≥0∞)
+    (hstep : ∀ query nextContext remaining nextCache nextObserve,
+      ¬PrivateStructuralHit
+          (canonicalizeMaterializedValues table nextContext) →
+      DeferredCompletable table nextContext →
+      (∀ result : ResolvedRunResult
+          ((OracleWorld + SigningSpec).Range query × SplitHashCache),
+        DirectDetailedResult.done result ∈ support
+          (runDirectResolvedDetailedFromTable nextContext remaining table
+            ((maskedExpandedAdversaryImpl parameter root ftsSecret query).run nextCache)) →
+        ¬PrivateStructuralHit
+          (canonicalizeMaterializedValues table result.context) →
+        DeferredCompletable table result.context →
+        Pr[= true | nextObserve result.context result.remaining result.value] ≤
+          (result.remaining : ℝ≥0∞) * epsilon + terminalBound) →
+      Pr[= true |
+        runDirectDetailedPrivateObserve
+          (classifyCanonicalMaterializedPrivateObserve table nextObserve)
+          nextContext remaining table
+          ((maskedExpandedAdversaryImpl parameter root ftsSecret query).run nextCache)] ≤
+        (remaining : ℝ≥0∞) * epsilon + terminalBound)
+    (hterminal : ∀ nextContext remaining value nextCache,
+      ¬PrivateStructuralHit
+          (canonicalizeMaterializedValues table nextContext) →
+      DeferredCompletable table nextContext →
+      Pr[= true | observe nextContext remaining (value, nextCache)] ≤ terminalBound)
+    (hbound :
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ : SecretKey))
+        computation).IsQueryBoundP (· matches Sum.inr _) fuel)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table)
+    (hclean : ¬PrivateStructuralHit
+      (canonicalizeMaterializedValues table context))
+    (hcompletable : DeferredCompletable table context) :
+    Pr[= true |
+      directDetailedBoundaryCanonicalMaterializedPrivateObserve
+        (maskedExpandedAdversaryImpl parameter root ftsSecret) computation observe
+        context fuel table cache] ≤
+      (fuel : ℝ≥0∞) * epsilon + terminalBound := by
+  induction computation using OracleComp.inductionOn generalizing context fuel cache with
+  | pure value =>
+      simp only [directDetailedBoundaryCanonicalMaterializedPrivateObserve,
+        OracleComp.construct_pure]
+      exact (hterminal context fuel value cache hclean hcompletable).trans
+        (le_add_left le_rfl)
+  | query_bind query next ih =>
+      rw [directDetailedBoundaryCanonicalMaterializedPrivateObserve,
+        OracleComp.construct_query_bind]
+      apply hstep query context fuel cache
+      · exact hclean
+      · exact hcompletable
+      · rintro ⟨resultContext, resultRemaining, ⟨output, finalCache⟩, resultTable⟩
+          hresult hnextClean hnextCompletable
+        have hdirect := mem_support_runDirectResolvedFromTable_of_done_detailed
+          ((maskedExpandedAdversaryImpl parameter root ftsSecret query).run cache)
+          context fuel table
+          ⟨resultContext, resultRemaining, (output, finalCache), resultTable⟩ hresult
+        have hraw := raw_done_of_mem_runDirectResolvedFromTable
+          ((maskedExpandedAdversaryImpl parameter root ftsSecret query).run cache)
+          context fuel table
+          ⟨resultContext, resultRemaining, (output, finalCache), resultTable⟩ hdirect
+        have hcore := resolvedCore_of_mem_runDirectResolvedFromTable
+          ((maskedExpandedAdversaryImpl parameter root ftsSecret query).run cache)
+          context fuel table
+          ⟨resultContext, resultRemaining, (output, finalCache), resultTable⟩
+          hconsistent hstarts hdirect
+        have hremaining := remaining_le_of_done_maskedExpandedAdversaryImpl
+          parameter root ftsSecret query context fuel table cache
+          ⟨resultContext, resultRemaining, (output, finalCache), resultTable⟩ hresult
+        have htailBound :
+            (simulateQ
+              (SphincsSecurity.expandedAdversaryImpl
+                (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+                  SecretKey))
+              (next output)).IsQueryBoundP
+                (· matches Sum.inr _) resultRemaining := by
+          cases query with
+          | inl worldQuery =>
+              rw [simulateQ_expandedAdversaryImpl_query_bind_inl,
+                OracleComp.isQueryBoundP_query_bind_iff] at hbound
+              cases worldQuery with
+              | inl n =>
+                  exact (hbound.2 output).mono (by
+                    simpa [IsOuterHash] using hremaining)
+              | inr input =>
+                  have htail :
+                      (simulateQ
+                        (SphincsSecurity.expandedAdversaryImpl
+                          (⟨parameter, root,
+                            tableOtsSecret (extendStartTable table), ftsSecret⟩ : SecretKey))
+                        (next output)).IsQueryBoundP
+                          (· matches Sum.inr _) (fuel - 1) := by
+                    simpa [IsOuterHash] using hbound.2 output
+                  apply htail.mono
+                  change fuel ≤ resultRemaining + 1 at hremaining
+                  omega
+          | inr message =>
+              rw [simulateQ_expandedAdversaryImpl_query_bind_inr] at hbound
+              change Option Signature at output
+              change LazyRevealProbe.RawResult.done resultContext.state resultRemaining
+                  (output, finalCache) ∈ support
+                (LazyRevealProbe.runRaw context.state fuel
+                  ((maskedSigningImpl parameter root ftsSecret message).run cache)) at hraw
+              have houtput : output ∈ support
+                  (scheme.sign
+                    (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+                      SecretKey) message) := by
+                exact maskedSign_done_output_mem_support parameter root table ftsSecret
+                  message context.state resultContext.state cache finalCache
+                  fuel resultRemaining output hcore.2.2 (by
+                    simpa only [SigningSpec, maskedExpandedAdversaryImpl,
+                      maskedSigningImpl] using hraw)
+              exact (isQueryBoundP_of_bind hbound output houtput).mono (by
+                simpa [IsOuterHash] using hremaining)
+        apply ih output resultContext resultRemaining finalCache
+        · exact htailBound
+        · exact hcore.2.1
+        · exact hcore.2.2
+        · exact hnextClean
+        · exact hnextCompletable
+
 theorem publishedValues_of_done_runDirectResolvedDetailedFromTable
     (computation : StateT SplitHashCache
       (OracleComp (LazyRevealProbe.World Coordinate)) α)
