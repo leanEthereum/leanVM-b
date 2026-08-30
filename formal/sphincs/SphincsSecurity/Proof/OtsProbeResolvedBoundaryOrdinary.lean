@@ -1916,4 +1916,22 @@ theorem deferredCleanRetainedRun_eq_boundary_bind
   unfold deferredCleanRetainedRun deferredCleanRetainedRest canonicalVerifierFinish
   simp only [StateT.run_bind, StateT.run_pure, bind_assoc, pure_bind]
 
+set_option maxRecDepth 100000 in
+theorem evalDist_sampledFlatDetailedOrdinaryRetained_eq_experiment
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (hq : HasHashQueryBound scheme adversary q)
+    (hparameter : parameter ∈ support sampleParameter)
+    (hfts : ftsSecret ∈ support sampleFtsSecrets) :
+    𝒟[sampledFlatDetailedOrdinaryRetained adversary parameter ftsSecret q] =
+      𝒟[LazyRevealProbe.experiment
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) q
+        (deferredCleanRetainedRun adversary parameter ftsSecret)] := by
+  rw [evalDist_sampledFlatDetailedOrdinaryRetained_eq_safe]
+  exact evalDist_runDirectDetailedSafeOrdinaryFinalize_eq_experiment
+    (deferredCleanRetainedRun adversary parameter ftsSecret)
+    (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) q
+    (stopped_false_not_mem_support_deferredCleanRetainedRun adversary q hq parameter
+      hparameter ftsSecret hfts)
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
