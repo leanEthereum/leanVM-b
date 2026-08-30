@@ -1720,4 +1720,119 @@ theorem pending_card_lt_digest_card_of_remaining_add_le
     norm_num [securityBits, digestBits]
   exact hpending.trans_lt (hq.trans_lt hspace)
 
+noncomputable def directDetailedSafeOrdinaryTerminalObserve
+    (table : OtsSecretIndex → HashOutput)
+    (context : DeferredContext) (fuel : Nat) (value : alpha) : ProbComp Bool :=
+  classifyDirectDetailedOrdinaryObserve table (fun _ _ _ => pure false)
+    context fuel value
+
+set_option linter.constructorNameAsVariable false in
+set_option maxRecDepth 100000 in
+theorem probEvent_sampled_directDetailedSafeOrdinaryTerminalObserve_le
+    (context : DeferredContext) (fuel : Nat) (value : alpha)
+    (hvalid : context.Valid)
+    (hcard : context.state.pending.card < Fintype.card Digest) :
+    Pr[= true | do
+      let base ← sampleOtsHashTable
+      directDetailedSafeOrdinaryTerminalObserve
+        (completedStartTable context.state base) context fuel value] ≤
+      ((fuel + context.state.pending.card : Nat) : ℝ≥0∞) *
+        ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  classical
+  by_cases hprivate : PrivateStructuralHit context
+  · simp [directDetailedSafeOrdinaryTerminalObserve,
+      classifyDirectDetailedOrdinaryObserve, hprivate]
+  · calc
+      _ ≤ Pr[fun base : OtsSecretIndex → HashOutput =>
+          MissingChainStartHit (completedStartTable context.state base) context |
+            sampleOtsHashTable] := by
+        calc
+          _ ≤ Pr[= true | sampleOtsHashTable >>= fun base =>
+              pure (decide (MissingChainStartHit
+                (completedStartTable context.state base) context))] := by
+            rw [← probEvent_eq_eq_probOutput, ← probEvent_eq_eq_probOutput]
+            apply probEvent_bind_mono
+            intro base _hbase
+            unfold directDetailedSafeOrdinaryTerminalObserve
+            by_cases hcompletable : DeferredCompletable
+                (completedStartTable context.state base) context
+            · simp [classifyDirectDetailedOrdinaryObserve, hprivate, hcompletable]
+            · have hmissing :=
+                  privateStructuralHit_or_missingChainStartHit_of_not_completable
+                    (completedStartTable context.state base) context hvalid
+                    (startTableAgrees_completedStartTable context.state base) hcard
+                    hcompletable
+              have hmissing' : MissingChainStartHit
+                  (completedStartTable context.state base) context :=
+                hmissing.resolve_left hprivate
+              simp [classifyDirectDetailedOrdinaryObserve, hprivate, hcompletable,
+                hmissing']
+          _ = _ := by
+            rw [show (fun base : OtsSecretIndex → HashOutput =>
+                pure (decide (MissingChainStartHit
+                  (completedStartTable context.state base) context))) =
+                pure ∘ (fun base => decide (MissingChainStartHit
+                  (completedStartTable context.state base) context)) by rfl]
+            rw [← probEvent_eq_eq_probOutput, probEvent_bind_pure_comp]
+            apply OracleComp.probEvent_congr'
+            · intro base _hbase
+              simp
+            · rfl
+      _ ≤ (context.state.pending.card : ℝ≥0∞) *
+            ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ :=
+        probEvent_missingChainStartHit_completedStartTable_le context
+      _ ≤ ((fuel + context.state.pending.card : Nat) : ℝ≥0∞) *
+            ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+        apply mul_le_mul_of_nonneg_right
+        exact_mod_cast Nat.le_add_left context.state.pending.card fuel
+        positivity
+
+noncomputable def guardedDirectDetailedSafeOrdinaryTerminalObserve
+    (table : OtsSecretIndex → HashOutput)
+    (context : DeferredContext) (fuel : Nat) (value : alpha) : ProbComp Bool := by
+  classical
+  exact if context.Valid ∧ context.state.pending.card < Fintype.card Digest then
+      directDetailedSafeOrdinaryTerminalObserve table context fuel value
+    else
+      pure false
+
+set_option linter.constructorNameAsVariable false in
+set_option maxRecDepth 100000 in
+theorem probEvent_sampled_guardedDirectDetailedSafeOrdinaryTerminalObserve_le
+    (context : DeferredContext) (fuel : Nat) (value : alpha) :
+    Pr[= true | do
+      let base ← sampleOtsHashTable
+      guardedDirectDetailedSafeOrdinaryTerminalObserve
+        (completedStartTable context.state base) context fuel value] ≤
+      ((fuel + context.state.pending.card : Nat) : ℝ≥0∞) *
+        ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  classical
+  by_cases hguard : context.Valid ∧
+      context.state.pending.card < Fintype.card Digest
+  · simp only [guardedDirectDetailedSafeOrdinaryTerminalObserve, hguard]
+    exact probEvent_sampled_directDetailedSafeOrdinaryTerminalObserve_le
+      context fuel value hguard.1 hguard.2
+  · have hguard' : ¬(context.Valid ∧
+        context.state.pending.card < 2 ^ digestBits) := by
+      simpa using hguard
+    simp [guardedDirectDetailedSafeOrdinaryTerminalObserve, hguard']
+
+set_option linter.constructorNameAsVariable false in
+set_option maxRecDepth 100000 in
+theorem probEvent_runDirectDetailedSafeOrdinaryGuardedTerminal_le
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (context : DeferredContext) (fuel : Nat) :
+    Pr[= true |
+        runDirectDetailedSafeOrdinaryWithCompletionTable
+          guardedDirectDetailedSafeOrdinaryTerminalObserve
+          context fuel computation] ≤
+      ((fuel + context.state.pending.card : Nat) : ℝ≥0∞) *
+        ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  rw [← probEvent_eq_eq_probOutput]
+  apply probEvent_runDirectDetailedSafeOrdinaryWithCompletionTable_le
+  intro nextContext remaining value
+  rw [probEvent_eq_eq_probOutput]
+  exact probEvent_sampled_guardedDirectDetailedSafeOrdinaryTerminalObserve_le
+    nextContext remaining value
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
