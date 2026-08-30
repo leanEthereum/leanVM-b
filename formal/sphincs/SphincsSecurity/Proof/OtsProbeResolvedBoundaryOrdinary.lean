@@ -1604,4 +1604,120 @@ theorem fuelExhausted_not_mem_support_detailed_of_runRaw
   exact hnotStopped
     (stopped_false_mem_support_runRaw_of_fuelExhausted_detailed computation state fuel hresult)
 
+theorem remaining_add_pending_card_le_of_done_runDirectResolvedDetailedFromTable
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) alpha)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (result : ResolvedRunResult alpha)
+    (hresult : DirectDetailedResult.done result ∈ support
+      (runDirectResolvedDetailedFromTable context fuel table computation)) :
+    result.remaining + result.context.state.pending.card ≤
+      fuel + context.state.pending.card := by
+  induction computation using OracleComp.inductionOn generalizing context fuel with
+  | pure value =>
+      simp [runDirectResolvedDetailedFromTable] at hresult
+      rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+      simp
+  | query_bind input next ih =>
+      cases input with
+      | uniform n =>
+          rw [runDirectResolvedDetailedFromTable_uniform_query_bind,
+            mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, htail⟩ := hresult
+          exact ih output context fuel htail
+      | hashOutput =>
+          rw [runDirectResolvedDetailedFromTable_hashOutput_query_bind,
+            mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, htail⟩ := hresult
+          exact ih output context fuel htail
+      | ensure coordinate =>
+          rw [runDirectResolvedDetailedFromTable_ensure_query_bind] at hresult
+          simpa only [LazyRevealProbe.State.pending_card_ensure] using
+            ih () { context with state := context.state.ensure coordinate } fuel hresult
+      | probe coordinate candidate =>
+          cases fuel with
+          | zero => simp [runDirectResolvedDetailedFromTable_probe_query_bind] at hresult
+          | succ remaining =>
+              rw [runDirectResolvedDetailedFromTable_probe_query_bind] at hresult
+              by_cases hrevealed : coordinate ∈ context.state.revealed
+              · simp only [hrevealed, ↓reduceIte] at hresult
+                have htail := ih () context remaining hresult
+                omega
+              · simp only [hrevealed, ↓reduceIte] at hresult
+                have htail := ih ()
+                  { context with
+                    state := context.state.addPending coordinate candidate }
+                  remaining hresult
+                change result.remaining + result.context.state.pending.card ≤
+                  remaining + (context.state.addPending coordinate candidate).pending.card at htail
+                have hadd := context.state.pending_card_addPending_le coordinate candidate
+                omega
+      | peek coordinate =>
+          rw [runDirectResolvedDetailedFromTable_peek_query_bind] at hresult
+          exact ih (context.state.values coordinate) context fuel hresult
+      | publish coordinate =>
+          rw [runDirectResolvedDetailedFromTable_publish_query_bind] at hresult
+          exact ih () { context with state := context.state.publish coordinate } fuel hresult
+      | reveal coordinate =>
+          rw [runDirectResolvedDetailedFromTable_reveal_query_bind] at hresult
+          cases hstate : context.state.values coordinate with
+          | some output =>
+              simp only [hstate] at hresult
+              exact ih output context fuel hresult
+          | none =>
+              simp only [hstate] at hresult
+              cases coordinate with
+              | chainStart lay tree leafIdx chainIdx =>
+                  let output := table ⟨lay, tree, leafIdx, chainIdx⟩
+                  by_cases hhit : context.state.hitAt
+                      (.chainStart lay tree leafIdx chainIdx) output
+                  · simp [output, hhit] at hresult
+                  · simp only [output, hhit, ↓reduceIte] at hresult
+                    have htail := ih output
+                      { state := context.state.materialize
+                          (.chainStart lay tree leafIdx chainIdx) output
+                        values := context.values }
+                      fuel hresult
+                    have haway := context.state.pendingAway_card_add_pendingAt_card_le
+                      (.chainStart lay tree leafIdx chainIdx)
+                    simp only [LazyRevealProbe.State.pending_card_materialize] at htail
+                    omega
+              | position position =>
+                  cases hprivate : context.values position with
+                  | some output =>
+                      by_cases hhit : context.state.hitAt (.position position) output
+                      · simp [hprivate, hhit] at hresult
+                      · simp only [hprivate, hhit, ↓reduceIte] at hresult
+                        have htail := ih output
+                          { state := context.state.materialize (.position position) output
+                            values := context.values }
+                          fuel hresult
+                        have haway := context.state.pendingAway_card_add_pendingAt_card_le
+                          (.position position)
+                        simp only [LazyRevealProbe.State.pending_card_materialize] at htail
+                        omega
+                  | none =>
+                      simp only [hprivate, mem_support_bind_iff] at hresult
+                      obtain ⟨output, _houtput, htailResult⟩ := hresult
+                      by_cases hhit : context.state.hitAt (.position position) output
+                      · simp [hhit] at htailResult
+                      · simp only [hhit, ↓reduceIte] at htailResult
+                        have htail := ih output
+                          { state := context.state.materialize (.position position) output
+                            values := context.values.install position output }
+                          fuel htailResult
+                        have haway := context.state.pendingAway_card_add_pendingAt_card_le
+                          (.position position)
+                        simp only [LazyRevealProbe.State.pending_card_materialize] at htail
+                        omega
+
+theorem pending_card_lt_digest_card_of_remaining_add_le
+    (context : DeferredContext) (fuel q : Nat)
+    (hbudget : fuel + context.state.pending.card ≤ q)
+    (hq : q ≤ 2 ^ securityBits) :
+    context.state.pending.card < Fintype.card Digest := by
+  have hpending : context.state.pending.card ≤ q := by omega
+  have hspace : 2 ^ securityBits < Fintype.card Digest := by
+    norm_num [securityBits, digestBits]
+  exact hpending.trans_lt (hq.trans_lt hspace)
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
