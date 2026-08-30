@@ -76,6 +76,57 @@ theorem privateStructuralHit_addPending_iff
     exact (hitAt_addPending_self_iff context.state (.position position) candidate output).2
       (Or.inr hcandidate)
 
+theorem privateStructuralHit_addPending_imp
+    (context : DeferredContext) (coordinate : Coordinate) (candidate : Digest) :
+    PrivateStructuralHit
+        { context with state := context.state.addPending coordinate candidate } →
+      PrivateStructuralHit context ∨
+        ∃ position output,
+          coordinate = .position position ∧
+            context.state.values (.position position) = none ∧
+            context.values position = some output ∧
+            truncateHash output = candidate := by
+  rintro ⟨position, output, hhidden, hprivate, hhit⟩
+  cases coordinate with
+  | chainStart lay tree leafIdx chainIdx =>
+      left
+      refine ⟨position, output, hhidden, hprivate, ?_⟩
+      exact (hitAt_addPending_of_ne context.state
+        (.chainStart lay tree leafIdx chainIdx) (.position position) candidate output
+          (by simp)).mp hhit
+  | position added =>
+      by_cases heq : position = added
+      · subst position
+        rw [hitAt_addPending_self_iff] at hhit
+        exact hhit.elim
+          (fun hold => Or.inl ⟨added, output, hhidden, hprivate, hold⟩)
+          (fun hcandidate => Or.inr ⟨added, output, rfl, hhidden, hprivate, hcandidate⟩)
+      · left
+        refine ⟨position, output, hhidden, hprivate, ?_⟩
+        exact (hitAt_addPending_of_ne context.state (.position added)
+          (.position position) candidate output (by
+            intro hcoordinate
+            exact heq (Coordinate.position.inj hcoordinate.symm))).mp hhit
+
+theorem privateStructuralHit_addPending_iff_of_clean
+    (context : DeferredContext) (coordinate : Coordinate) (candidate : Digest)
+    (hclean : ¬PrivateStructuralHit context) :
+    PrivateStructuralHit
+        { context with state := context.state.addPending coordinate candidate } ↔
+      ∃ position output,
+        coordinate = .position position ∧
+          context.state.values (.position position) = none ∧
+          context.values position = some output ∧
+          truncateHash output = candidate := by
+  constructor
+  · intro hhit
+    exact (privateStructuralHit_addPending_imp context coordinate candidate hhit).resolve_left
+      hclean
+  · rintro ⟨position, output, rfl, hhidden, hprivate, hcandidate⟩
+    refine ⟨position, output, hhidden, hprivate, ?_⟩
+    exact (hitAt_addPending_self_iff context.state (.position position) candidate output).2
+      (Or.inr hcandidate)
+
 theorem deferredCompletable_addPending_position_iff
     {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
     {completion : Coordinate → HashOutput}
@@ -132,6 +183,110 @@ theorem privateStructuralHit_addPending_of_truncateHash_eq
   refine ⟨position, output, hhidden, hprivate, ?_⟩
   exact (hitAt_addPending_self_iff context.state (.position position) candidate output).2
     (Or.inr hcandidate)
+
+theorem not_privateStructuralHit_presamplePosition
+    (context : DeferredContext) (position : Position) (output : HashOutput)
+    (hclean : ¬PrivateStructuralHit context) :
+    ¬PrivateStructuralHit (context.presamplePosition position output) := by
+  rintro ⟨other, otherOutput, hhidden, hprivate, hhit⟩
+  by_cases heq : other = position
+  · subst other
+    exact (not_hitAt_clearPending_self context.state (.position position) otherOutput) hhit
+  · apply hclean
+    refine ⟨other, otherOutput, hhidden, ?_, ?_⟩
+    · simpa [DeferredContext.presamplePosition, DeferredStructuralValues.install,
+        Function.update_of_ne heq] using hprivate
+    · exact (hitAt_clearPending_of_ne context.state (.position position)
+        (.position other) otherOutput (by
+          intro hcoordinate
+          exact heq (Coordinate.position.inj hcoordinate))).mp hhit
+
+theorem probEvent_privateStructuralHit_presamplePosition_addPending_le
+    (context : DeferredContext) (position : Position) (candidate : Digest)
+    (hclean : ¬PrivateStructuralHit context)
+    (hhidden : context.state.values (.position position) = none) :
+    Pr[fun output : HashOutput =>
+        PrivateStructuralHit
+          { context.presamplePosition position output with
+            state := (context.presamplePosition position output).state.addPending
+              (.position position) candidate } |
+      LazyRevealProbe.sampleHashOutput] ≤
+      ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  calc
+    _ = Pr[fun output : HashOutput => truncateHash output = candidate |
+        LazyRevealProbe.sampleHashOutput] := by
+      apply OracleComp.probEvent_congr'
+      · intro output _houtput
+        apply privateStructuralHit_addPending_iff
+        · exact not_privateStructuralHit_presamplePosition context position output hclean
+        · simpa [DeferredContext.presamplePosition] using hhidden
+        · simp [DeferredContext.presamplePosition, DeferredStructuralValues.install]
+      · rfl
+    _ = (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
+      unfold LazyRevealProbe.sampleHashOutput
+      exact SphincsSecurity.probEvent_uniform_truncateHash_eq candidate
+    _ ≤ _ := by
+      rw [show Fintype.card Digest = 2 ^ digestBits by simp]
+
+noncomputable def resolveThenPrivateProbeOutcome
+    (context : DeferredContext) (position : Position) (candidate : Digest) :
+    ProbComp Bool := by
+  classical
+  exact do
+    let resolved ← resolveDeferredPositionValue position context
+    match resolved with
+    | none => pure false
+    | some resolved =>
+        pure (decide (PrivateStructuralHit
+          { resolved.toDeferredContext with
+            state := resolved.state.addPending (.position position) candidate }))
+
+theorem probEvent_resolveThenPrivateProbeOutcome_le
+    (context : DeferredContext) (position : Position) (candidate : Digest)
+    (hclean : ¬PrivateStructuralHit context)
+    (hhidden : context.state.values (.position position) = none)
+    (hprivate : context.values position = none) :
+    Pr[= true | resolveThenPrivateProbeOutcome context position candidate] ≤
+      ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  classical
+  have hrun : resolveThenPrivateProbeOutcome context position candidate = (do
+      let output ← LazyRevealProbe.sampleHashOutput
+      if context.state.hitAt (.position position) output then pure false
+      else pure (decide (PrivateStructuralHit
+        { context.presamplePosition position output with
+          state := (context.presamplePosition position output).state.addPending
+            (.position position) candidate }))) := by
+    rw [resolveThenPrivateProbeOutcome,
+      resolveDeferredPositionValue_fresh position context hhidden hprivate]
+    simp only [bind_assoc]
+    apply bind_congr
+    intro output
+    by_cases holdHit : context.state.hitAt (.position position) output
+    · simp [holdHit]
+    · simp [holdHit, DeferredContext.presamplePosition]
+  rw [hrun]
+  rw [← probEvent_eq_eq_probOutput]
+  refine (probEvent_bind_le_probEvent_add
+    (mx := LazyRevealProbe.sampleHashOutput)
+    (my := fun output =>
+      if context.state.hitAt (.position position) output then pure false
+      else pure (decide (PrivateStructuralHit
+        { context.presamplePosition position output with
+          state := (context.presamplePosition position output).state.addPending
+            (.position position) candidate })))
+    (q := fun hit : Bool => hit = true)
+    (p := fun output : HashOutput => PrivateStructuralHit
+      { context.presamplePosition position output with
+        state := (context.presamplePosition position output).state.addPending
+          (.position position) candidate })
+    (ε := 0) ?_).trans ?_
+  · intro output _houtput hmiss
+    by_cases holdHit : context.state.hitAt (.position position) output
+    · simp [holdHit]
+    · simp [holdHit, hmiss]
+  · simpa only [add_zero] using
+      probEvent_privateStructuralHit_presamplePosition_addPending_le
+        context position candidate hclean hhidden
 
 inductive DirectStopReason where
   | fuelExhausted
