@@ -134,6 +134,17 @@ theorem ChainValuesMirrored.canonicalizeMaterializedValues
   · exact hmirror lay tree leafIdx chainIdx step
   · trivial
 
+theorem ChainState.ValidFor.canonicalizeMaterializedValues
+    {context : DeferredContext} (hvalid : ChainState.ValidFor allowed context.state)
+    (table : OtsSecretIndex → HashOutput)
+    (hstarts : StartTableAgrees context.state table) :
+    ChainState.ValidFor allowed
+      (canonicalizeMaterializedValues table context).state := by
+  intro coordinate hchain
+  rw [canonicalizeMaterializedValues_chain_value table context hstarts hvalid coordinate hchain,
+    canonicalizeMaterializedValues_revealed]
+  exact hvalid coordinate hchain
+
 theorem ChainInvariant.canonicalizeMaterializedValues
     (table : OtsSecretIndex → HashOutput) (context : DeferredContext)
     (hstarts : StartTableAgrees context.state table)
@@ -150,6 +161,154 @@ theorem ChainInvariant.canonicalizeMaterializedValues
     have hpending := hinvariant.2 probe input hmatches hcached hnotAllowed
     simpa [LazyRevealProbe.State.pendingAt,
       canonicalizeMaterializedValues_pending] using hpending
+
+theorem preservesChainValid_maskedSignAfterDigest_true
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    PreservesChainValid (fun _ => True)
+      (maskedSignAfterDigest parameter ftsSecret randomness index leaves) := by
+  unfold maskedSignAfterDigest
+  apply ((preservesChainValidImpl_ordinaryHashImpl (fun _ => True)).simulateQ
+    (ftsOpen parameter index leaves (ftsSecret index))).bind
+  intro _ftsPath
+  apply (preservesChainValid_sequenceFin (fun _ => True) _ fun lay =>
+    preservesChainValid_maskedSignLayer (fun _ => True) parameter ftsSecret index lay).bind
+  intro layers
+  cases hparts : traverseOption layers with
+  | none =>
+      simp only
+      exact preservesChainValid_pure (fun _ => True) none
+  | some parts =>
+      simp only
+      apply (preservesChainValid_sequenceFin (fun _ => True) _ fun lay =>
+        preservesChainValid_revealLayerValues (fun _ => True) index lay (parts lay).2
+          (fun _ => trivial)).bind
+      intro _revealed
+      exact preservesChainValid_pure (fun _ => True) _
+
+theorem preservesChainValid_maskedSign_true
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message) :
+    PreservesChainValid (fun _ => True) (maskedSign parameter root ftsSecret message) := by
+  unfold maskedSign
+  apply ((preservesChainValidImpl_ordinaryRomImpl (fun _ => True)).simulateQ
+    (signDigestLoop digestAttemptLimit
+      (⟨parameter, root, fun _ _ _ _ => 0, ftsSecret⟩ : SecretKey) message)).bind
+  intro selected
+  cases selected with
+  | none => exact preservesChainValid_pure (fun _ => True) none
+  | some data =>
+      exact preservesChainValid_maskedSignAfterDigest_true parameter ftsSecret
+        data.1 data.2.1 data.2.2
+
+theorem preservesChainValidImpl_maskedExpandedAdversaryImpl_true
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    PreservesChainValidImpl (fun _ => True)
+      (maskedExpandedAdversaryImpl parameter root ftsSecret) := by
+  intro query
+  cases query with
+  | inl query =>
+      exact preservesChainValidImpl_probingRomImpl (fun _ => True)
+        (by intro candidate _hallowed _hchain; trivial) parameter query
+  | inr message =>
+      exact preservesChainValid_maskedSign_true parameter root ftsSecret message
+
+theorem preservesChainValid_publishCoordinate_of_not_chain
+    (allowed : Coordinate → Prop) (coordinate : Coordinate)
+    (hnotChain : ¬IsChainCoordinate coordinate) :
+    PreservesChainValid allowed (publishCoordinate coordinate) := by
+  intro state cache fuel finalState remaining value finalCache hvalid hresult
+  unfold publishCoordinate at hresult
+  change LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈
+    support (LazyRevealProbe.runRaw state fuel
+      (LazyRevealProbe.publishQuery coordinate >>= fun output => pure (output, cache))) at hresult
+  rw [LazyRevealProbe.publishQuery, LazyRevealProbe.runRaw_publish_query_bind] at hresult
+  simp [LazyRevealProbe.runRaw] at hresult
+  rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+  intro other hchain
+  have hne : other ≠ coordinate := by
+    intro heq
+    exact hnotChain (heq ▸ hchain)
+  simpa [LazyRevealProbe.State.publish, hne] using hvalid other hchain
+
+theorem preservesChainValid_maskedPublishedTreeRoot_true :
+    PreservesChainValid (fun _ => True) maskedPublishedTreeRoot := by
+  rw [maskedPublishedTreeRoot_eq]
+  apply (preservesChainValid_maskedTreeRoot (fun _ => True) topLayer rootTree).bind
+  intro root
+  apply (preservesChainValid_publishCoordinate_of_not_chain (fun _ => True)
+    (.position (.node topLayer rootTree
+      ⟨layerHeight topLayer - 1, by norm_num [layerHeight, topLayer, maxLayerHeight]⟩ 0))
+    (by simp [IsChainCoordinate])).bind
+  intro _
+  exact preservesChainValid_pure (fun _ => True) root
+
+theorem preservesChainValid_canonicalVerifierFinish_true
+    (parameter : PublicParameter) (root : Digest)
+    (forgeryLog : Forgery × QueryLog SigningSpec) :
+    PreservesChainValid (fun _ => True)
+      (canonicalVerifierFinish parameter root forgeryLog) := by
+  unfold canonicalVerifierFinish
+  exact ((preservesChainValidImpl_probingRomImpl (fun _ => True)
+    (by intro candidate _hallowed _hchain; trivial) parameter).simulateQ
+      (scheme.verify ⟨root, parameter⟩ forgeryLog.1.message forgeryLog.1.signature)).bind
+        fun _ => preservesChainValid_pure (fun _ => True) _
+
+set_option maxRecDepth 100000 in
+theorem evalDist_directBoundaryObserve_eq_of_chain_invariants
+    (impl : QueryImpl spec
+      (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))))
+    (himpl : PreservesChainValidImpl (fun _ => True) impl)
+    (computation : OracleComp spec α)
+    (left right : DeferredContext → Nat → (α × SplitHashCache) → ProbComp Bool)
+    (heq : ∀ context fuel value,
+      context.ValuesConsistent → StartTableAgrees context.state table →
+      ChainValuesMirrored context → ChainState.ValidFor (fun _ => True) context.state →
+      evalDist (left context fuel value) = evalDist (right context fuel value))
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table)
+    (hmirror : ChainValuesMirrored context)
+    (hchainValid : ChainState.ValidFor (fun _ => True) context.state) :
+    evalDist (directBoundaryObserve impl computation left context fuel table cache) =
+      evalDist (directBoundaryObserve impl computation right context fuel table cache) := by
+  induction computation using OracleComp.inductionOn generalizing context fuel cache with
+  | pure value =>
+      rw [directBoundaryObserve, OracleComp.construct_pure,
+        directBoundaryObserve, OracleComp.construct_pure]
+      exact heq context fuel (value, cache) hconsistent hstarts hmirror hchainValid
+  | query_bind query next ih =>
+      rw [directBoundaryObserve, OracleComp.construct_query_bind,
+        directBoundaryObserve, OracleComp.construct_query_bind]
+      apply evalDist_bind_congr
+      intro result hresult
+      cases result with
+      | none => rfl
+      | some result =>
+          have hcore := resolvedCore_of_mem_runDirectResolvedFromTable
+            ((impl query).run cache) context fuel table result hconsistent hstarts hresult
+          have hnextMirror := chainValuesMirrored_of_mem_runDirectResolvedFromTable
+            ((impl query).run cache) context fuel table result hmirror hresult
+          have hnextChainValid := chainValid_of_mem_runDirectResolvedFromTable
+            (fun _ => True) (impl query) context fuel table cache result (himpl query)
+              hchainValid hresult
+          unfold finishObserve canonicalizeObserve
+          by_cases hpublished : PublishedValues result.context.state
+          · simp only [hpublished, ↓reduceIte]
+            have hcanonicalConsistent :=
+              canonicalizeMaterializedValues_valuesConsistent table result.context hcore.2.1
+            have hcanonicalStarts :=
+              canonicalizeMaterializedValues_startTableAgrees table result.context
+            have hcanonicalMirror := hnextMirror.canonicalizeMaterializedValues table hcore.2.2
+              hnextChainValid
+            have hcanonicalChainValid := hnextChainValid.canonicalizeMaterializedValues table
+              hcore.2.2
+            exact ih result.value.1 (canonicalizeMaterializedValues table result.context)
+              result.remaining result.value.2 hcanonicalConsistent hcanonicalStarts
+                hcanonicalMirror hcanonicalChainValid
+          · simp [hpublished]
 
 set_option maxRecDepth 100000 in
 theorem evalDist_boundaryObserve_eq_directBoundaryObserve
@@ -440,5 +599,133 @@ theorem evalDist_directBoundaryDeferredRetainedFinishIsNone_eq_fullyDirect
     (observe := directRetainedRestObserve adversary parameter table ftsSecret)
     context fuel table (maskedPublishedTreeRoot.run emptySplitHashCache)
       DeferredContext.valid_empty (deferredCompletable_empty table)
+
+noncomputable def directVerifierFinishObserve
+    (table : OtsSecretIndex → HashOutput)
+    (parameter : PublicParameter) (root : Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : (Forgery × QueryLog SigningSpec) × SplitHashCache) : ProbComp Bool :=
+  runDirectResolvedFromTable context fuel table
+      ((canonicalVerifierFinish parameter root value.1).run value.2) >>=
+    finishObserve (resolvedFinalizationObserve table)
+
+theorem evalDist_verifierFinishObserve_eq_direct
+    (table : OtsSecretIndex → HashOutput)
+    (parameter : PublicParameter) (root : Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : (Forgery × QueryLog SigningSpec) × SplitHashCache)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table) :
+    evalDist (verifierFinishObserve table parameter root context fuel value) =
+      evalDist (directVerifierFinishObserve table parameter root context fuel value) := by
+  by_cases hcompletable : DeferredCompletable table context
+  · have hvalid := valid_of_resolvedCore_completable table context hconsistent hstarts
+      hcompletable
+    exact evalDist_runResolvedFinishIsNone_eq_runDirectResolvedFinalizationIsNone
+      context fuel table ((canonicalVerifierFinish parameter root value.1).run value.2)
+        hvalid hcompletable
+  · calc
+      _ = evalDist (pure true : ProbComp Bool) :=
+        ObserverDooms.eq_true context fuel value hconsistent hstarts hcompletable
+      _ = _ := (evalDist_runDirectResolvedObserve_eq_true_of_not_completable_auto
+        (observe := resolvedFinalizationObserve table) context fuel table
+          ((canonicalVerifierFinish parameter root value.1).run value.2)
+            hconsistent hstarts hcompletable).symm
+
+noncomputable def allDirectRetainedRestObserve
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : Digest × SplitHashCache) : ProbComp Bool :=
+  directBoundaryObserve (maskedExpandedAdversaryImpl parameter value.1 ftsSecret)
+    (signingTraceComputation (adversary.main ⟨value.1, parameter⟩))
+    (directVerifierFinishObserve table parameter value.1)
+    context fuel table value.2
+
+noncomputable def allDirectBoundaryDeferredRetainedFinishIsNone
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp Bool :=
+  runDirectResolvedObserve
+    (allDirectRetainedRestObserve adversary parameter table ftsSecret)
+    { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+      values := emptyDeferredStructuralValues }
+    fuel table (maskedPublishedTreeRoot.run emptySplitHashCache)
+
+set_option linter.constructorNameAsVariable false in
+set_option maxHeartbeats 1000000 in
+set_option maxRecDepth 100000 in
+theorem evalDist_fullyDirectBoundaryDeferredRetainedFinishIsNone_eq_allDirect
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    evalDist (fullyDirectBoundaryDeferredRetainedFinishIsNone adversary parameter table
+        ftsSecret fuel) =
+      evalDist (allDirectBoundaryDeferredRetainedFinishIsNone adversary parameter table
+        ftsSecret fuel) := by
+  unfold fullyDirectBoundaryDeferredRetainedFinishIsNone
+    allDirectBoundaryDeferredRetainedFinishIsNone runDirectResolvedObserve
+  apply evalDist_bind_congr
+  intro rootOption hroot
+  cases rootOption with
+  | none => rfl
+  | some rootResult =>
+      let initial : DeferredContext :=
+        { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+          values := emptyDeferredStructuralValues }
+      generalize hrootComputation : maskedPublishedTreeRoot.run emptySplitHashCache =
+        rootComputation at hroot
+      change some rootResult ∈ support (runDirectResolvedFromTable initial fuel table
+        rootComputation) at hroot
+      have hinitialConsistent : initial.ValuesConsistent := by
+        exact DeferredContext.valid_empty.valuesConsistent
+      have hinitialStarts : StartTableAgrees initial.state table := by
+        exact startTableAgrees_empty table
+      have hcore : rootResult.table = table ∧ rootResult.context.ValuesConsistent ∧
+          StartTableAgrees rootResult.context.state table := by
+        exact resolvedCore_of_mem_runDirectResolvedFromTable
+          (computation := rootComputation)
+          (context := initial) (fuel := fuel) (table := table) (result := rootResult)
+          hinitialConsistent hinitialStarts hroot
+      have hmirror := chainValuesMirrored_of_mem_runDirectResolvedFromTable
+        (computation := rootComputation)
+        (context := initial) (fuel := fuel) (table := table) (result := rootResult)
+        (by
+          intro lay tree leafIdx chainIdx step
+          rfl)
+        hroot
+      have hraw := raw_done_of_mem_runDirectResolvedFromTable rootComputation initial fuel table
+        rootResult hroot
+      have hrawRoot : LazyRevealProbe.RawResult.done rootResult.context.state
+          rootResult.remaining rootResult.value ∈ support (LazyRevealProbe.runRaw
+            (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel
+              (maskedPublishedTreeRoot.run emptySplitHashCache)) := by
+        rw [hrootComputation]
+        exact hraw
+      generalize hrootProgram : maskedPublishedTreeRoot = rootProgram at hrawRoot
+      have hpreserves : PreservesChainValid (fun _ => True) rootProgram := by
+        rw [← hrootProgram]
+        exact preservesChainValid_maskedPublishedTreeRoot_true
+      unfold PreservesChainValid at hpreserves
+      have hchainValid : ChainState.ValidFor (fun _ => True) rootResult.context.state := by
+        exact hpreserves
+          (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) emptySplitHashCache fuel
+            rootResult.context.state rootResult.remaining rootResult.value.1 rootResult.value.2
+              (ChainState.validFor_empty (fun _ => True)) hrawRoot
+      exact evalDist_directBoundaryObserve_eq_of_chain_invariants
+        (maskedExpandedAdversaryImpl parameter rootResult.value.1 ftsSecret)
+        (preservesChainValidImpl_maskedExpandedAdversaryImpl_true parameter
+          rootResult.value.1 ftsSecret)
+        (signingTraceComputation (adversary.main ⟨rootResult.value.1, parameter⟩))
+        (verifierFinishObserve table parameter rootResult.value.1)
+        (directVerifierFinishObserve table parameter rootResult.value.1)
+        (by
+          intro context remaining value hconsistent hstarts _hmirror _hchainValid
+          exact evalDist_verifierFinishObserve_eq_direct table parameter rootResult.value.1
+            context remaining value hconsistent hstarts)
+        rootResult.context rootResult.remaining rootResult.value.2 hcore.2.1 hcore.2.2
+          hmirror hchainValid
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

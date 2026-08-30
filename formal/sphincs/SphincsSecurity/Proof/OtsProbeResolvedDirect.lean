@@ -589,6 +589,23 @@ theorem chainInvariant_of_mem_runDirectResolvedFromTable
   exact raw_done_of_mem_runDirectResolvedFromTable
     (computation.run cache) context fuel table result hresult
 
+theorem chainValid_of_mem_runDirectResolvedFromTable
+    (allowed : Coordinate → Prop)
+    (computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (result : ResolvedRunResult (α × SplitHashCache))
+    (hpreserves : PreservesChainValid allowed computation)
+    (hvalid : ChainState.ValidFor allowed context.state)
+    (hresult : some result ∈ support
+      (runDirectResolvedFromTable context fuel table (computation.run cache))) :
+    ChainState.ValidFor allowed result.context.state := by
+  apply hpreserves context.state cache fuel result.context.state result.remaining
+    result.value.1 result.value.2 hvalid
+  exact raw_done_of_mem_runDirectResolvedFromTable
+    (computation.run cache) context fuel table result hresult
+
 set_option maxRecDepth 100000 in
 theorem map_projectResolvedRunResult_runDirect_eq_runClean
     (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
