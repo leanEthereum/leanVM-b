@@ -1121,6 +1121,93 @@ theorem directBoundaryObserve_bind
           · simp [hpublished]
 
 set_option maxRecDepth 100000 in
+theorem runDirectResolvedFromTable_bind_general
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (left : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (next : α → OracleComp (LazyRevealProbe.World Coordinate) β) :
+    runDirectResolvedFromTable context fuel table (left >>= next) =
+      runDirectResolvedFromTable context fuel table left >>= fun result =>
+        match result with
+        | none => pure none
+        | some result =>
+            runDirectResolvedFromTable result.context result.remaining result.table
+              (next result.value) := by
+  induction left using OracleComp.inductionOn generalizing context fuel with
+  | pure value => simp [runDirectResolvedFromTable]
+  | query_bind input continuation ih =>
+      cases input with
+      | uniform n =>
+          rw [bind_assoc, runDirectResolvedFromTable_uniform_query_bind,
+            runDirectResolvedFromTable_uniform_query_bind]
+          simp only [bind_assoc]
+          apply bind_congr
+          intro output
+          exact ih output context fuel
+      | hashOutput =>
+          rw [bind_assoc, runDirectResolvedFromTable_hashOutput_query_bind,
+            runDirectResolvedFromTable_hashOutput_query_bind]
+          simp only [bind_assoc]
+          apply bind_congr
+          intro output
+          exact ih output context fuel
+      | ensure coordinate =>
+          rw [bind_assoc, runDirectResolvedFromTable_ensure_query_bind,
+            runDirectResolvedFromTable_ensure_query_bind]
+          exact ih () { context with state := context.state.ensure coordinate } fuel
+      | probe coordinate candidate =>
+          rw [bind_assoc, runDirectResolvedFromTable_probe_query_bind,
+            runDirectResolvedFromTable_probe_query_bind]
+          cases fuel with
+          | zero => simp
+          | succ remaining =>
+              by_cases hrevealed : coordinate ∈ context.state.revealed
+              · simp only [hrevealed, ↓reduceIte]
+                exact ih () context remaining
+              · simp only [hrevealed, ↓reduceIte]
+                exact ih ()
+                  { context with state := context.state.addPending coordinate candidate }
+                  remaining
+      | peek coordinate =>
+          rw [bind_assoc, runDirectResolvedFromTable_peek_query_bind,
+            runDirectResolvedFromTable_peek_query_bind]
+          exact ih (context.state.values coordinate) context fuel
+      | publish coordinate =>
+          rw [bind_assoc, runDirectResolvedFromTable_publish_query_bind,
+            runDirectResolvedFromTable_publish_query_bind]
+          exact ih () { context with state := context.state.publish coordinate } fuel
+      | reveal coordinate =>
+          rw [bind_assoc, runDirectResolvedFromTable_reveal_query_bind,
+            runDirectResolvedFromTable_reveal_query_bind]
+          cases hvalue : context.state.values coordinate with
+          | some output =>
+              exact ih output context fuel
+          | none =>
+              cases coordinate with
+              | chainStart lay tree leafIdx chainIdx =>
+                  let output := table ⟨lay, tree, leafIdx, chainIdx⟩
+                  by_cases hhit : context.state.hitAt
+                      (.chainStart lay tree leafIdx chainIdx) output
+                  · simp [output, hhit]
+                  · simp only [output, hhit, ↓reduceIte]
+                    exact ih output
+                      { state := context.state.materialize
+                          (.chainStart lay tree leafIdx chainIdx) output
+                        values := context.values }
+                      fuel
+              | position position =>
+                  simp only [bind_assoc]
+                  apply bind_congr
+                  intro resolved
+                  cases resolved with
+                  | none => rfl
+                  | some resolved =>
+                      exact ih resolved.output
+                        { state := context.state.materialize (.position position) resolved.output
+                          values := resolved.values }
+                        fuel
+
+set_option maxRecDepth 100000 in
 theorem evalDist_failed_directDetailedBoundaryObserve_bind
     (impl : QueryImpl spec
       (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))))
@@ -1301,6 +1388,83 @@ noncomputable def granularVerifierFinishObserve
       pure (value.1, verified))
     (retainedResolvedFinalizationObserve table root)
     context fuel table value.2
+
+noncomputable def granularVerifierResultObserve
+    (table : OtsSecretIndex → HashOutput) (root : Digest)
+    (forgeryLog : Forgery × QueryLog SigningSpec)
+    (context : DeferredContext) (fuel : Nat)
+    (value : Bool × SplitHashCache) : ProbComp Bool :=
+  retainedResolvedFinalizationObserve table root context fuel
+    ((forgeryLog, value.1), value.2)
+
+set_option maxRecDepth 100000 in
+theorem granularVerifierFinishObserve_eq_body
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : (Forgery × QueryLog SigningSpec) × SplitHashCache) :
+    granularVerifierFinishObserve parameter root table ftsSecret context fuel value =
+      directBoundaryObserve (probingRomImpl parameter)
+        (scheme.verify ⟨root, parameter⟩ value.1.1.message value.1.1.signature)
+        (granularVerifierResultObserve table root value.1)
+        context fuel table value.2 := by
+  unfold granularVerifierFinishObserve
+  rw [directBoundaryObserve_bind]
+  change directBoundaryObserve
+      (maskedExpandedAdversaryImpl parameter root ftsSecret)
+      (liftOracleWorldLeft
+        (scheme.verify ⟨root, parameter⟩ value.1.1.message value.1.1.signature))
+      (granularVerifierResultObserve table root value.1)
+      context fuel table value.2 = _
+  unfold maskedExpandedAdversaryImpl
+  rw [directBoundaryObserve_liftOracleWorldLeft]
+
+set_option maxRecDepth 100000 in
+theorem directVerifierFinishObserve_eq_body
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (context : DeferredContext) (fuel : Nat)
+    (value : (Forgery × QueryLog SigningSpec) × SplitHashCache) :
+    directVerifierFinishObserve table parameter root context fuel value =
+      runDirectResolvedObserve (granularVerifierResultObserve table root value.1)
+        context fuel table
+          ((simulateQ (probingRomImpl parameter)
+            (scheme.verify ⟨root, parameter⟩ value.1.1.message
+              value.1.1.signature)).run value.2) := by
+  unfold directVerifierFinishObserve canonicalVerifierFinish runDirectResolvedObserve
+    granularVerifierResultObserve retainedResolvedFinalizationObserve
+  simp only [StateT.run_bind, StateT.run_pure]
+  rw [runDirectResolvedFromTable_bind_general]
+  simp only [bind_assoc]
+  apply bind_congr
+  intro result
+  cases result <;> rfl
+
+set_option maxRecDepth 100000 in
+theorem evalDist_failed_granularDetailedVerifierFinishObserve
+    (parameter : PublicParameter) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : (Forgery × QueryLog SigningSpec) × SplitHashCache)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table) :
+    evalDist (DirectBoundaryOutcome.failed <$>
+        granularDetailedVerifierFinishObserve parameter root table ftsSecret
+          context fuel value) =
+      evalDist (granularVerifierFinishObserve parameter root table ftsSecret
+        context fuel value) := by
+  unfold granularDetailedVerifierFinishObserve granularVerifierFinishObserve
+  apply evalDist_failed_directDetailedBoundaryObserve
+  · intro nextContext remaining nextValue hnextConsistent hnextStarts
+    unfold retainedResolvedFinalizationDetailedObserve
+      retainedResolvedFinalizationObserve
+    exact evalDist_failed_classifyDirectObserve table (resolvedFinalizationObserve table)
+      nextContext remaining ((root, nextValue.1), nextValue.2)
+        hnextConsistent hnextStarts
+  · exact hconsistent
+  · exact hstarts
 
 instance granularVerifierFinishObserve_observerDooms
     (parameter : PublicParameter) (root : Digest)
