@@ -370,4 +370,44 @@ theorem probEvent_selectedHashPlanWitnessUsesOrdinal_le
       (canonicalizeMaterializedValues_valuesConsistent table result.context hcore.2.1)
       (canonicalizeMaterializedValues_startTableAgrees table result.context) hterminal
 
+theorem probEvent_directDetailedBoundaryWitnessUsesOrdinal_le_of_selected
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (observe : DeferredContext → Nat → (α × SplitHashCache) →
+      List Probe → ProbComp PrivateWitnessPlanOutput)
+    (candidates : List Probe) (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (hselected : ordinal < candidates.length)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table)
+    (hterminal : ∀ nextContext remaining value nextCandidates,
+      nextContext.ValuesConsistent → StartTableAgrees nextContext.state table →
+      Pr[PrivateWitnessPlanMatchesCandidate (candidates.get ⟨ordinal, hselected⟩) |
+          observe nextContext remaining value nextCandidates] ≤
+        Pr[fun hit : Bool => hit = true |
+          privateCandidateFire (candidates.get ⟨ordinal, hselected⟩) nextContext])
+    (hobservePrefix : ∀ nextContext remaining value nextCandidates output,
+      output ∈ support (observe nextContext remaining value nextCandidates) →
+      PrivateWitnessPlanExtends nextCandidates output) :
+    Pr[WitnessUsesOrdinal ordinal |
+        directDetailedBoundaryNormalizedPrivateWitnessPlanObserve parameter root ftsSecret
+          computation observe candidates context fuel table cache] ≤
+      Pr[fun hit : Bool => hit = true |
+        privateCandidateFire (candidates.get ⟨ordinal, hselected⟩) context] := by
+  apply (probEvent_mono (mx :=
+    directDetailedBoundaryNormalizedPrivateWitnessPlanObserve parameter root ftsSecret computation
+      observe candidates context fuel table cache) (p := WitnessUsesOrdinal ordinal)
+    (q := PrivateWitnessPlanMatchesCandidate (candidates.get ⟨ordinal, hselected⟩)) ?_).trans
+  · exact probEvent_directDetailedBoundaryNormalizedPrivateWitnessPlanMatchesCandidate_le
+      (candidates.get ⟨ordinal, hselected⟩) parameter root ftsSecret computation observe
+      candidates context fuel table cache hconsistent hstarts hterminal
+  · intro output houtput huses
+    exact privateWitnessPlanMatchesCandidate_of_usesOrdinal_of_prefix candidates output ordinal
+      hselected
+      (privateWitnessPlanExtends_of_mem_directDetailedBoundaryNormalizedPrivateWitnessPlanObserve
+        parameter root ftsSecret computation observe candidates context fuel table cache
+        hobservePrefix output houtput)
+      huses
+
 end SphincsSecurity.Concrete.OtsProbeSimulation

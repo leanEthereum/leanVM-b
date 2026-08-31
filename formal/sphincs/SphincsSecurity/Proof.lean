@@ -194,6 +194,7 @@ import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalUnion
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalMatch
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalMatchLift
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalPrefix
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRisk
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
