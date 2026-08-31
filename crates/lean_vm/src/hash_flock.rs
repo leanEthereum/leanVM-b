@@ -16,7 +16,7 @@
 //! little-endian order. All inputs are witness values in `q_flock`; memory binds
 //! `a`, `b`, and `cv`, while the bytecode interaction binds `metadata`.
 //!
-//! ## The layout (aligned re-layout, `M_BASE = 640`, 64-bit words)
+//! ## The layout (aligned re-layout, `MSG_BASE = 640`, 64-bit words)
 //!
 //! Each compression's `2^K_LOG` bits pack into `2^(K_LOG-6)` `F64` words (the
 //! [`SLOT_STRIDE_LOG`] stride); each VM-visible 64-bit word is one whole packed
@@ -80,7 +80,7 @@ impl PreparedReductionWitness {
 
 // Within-instance packed-word (slot) indices of the VM-visible words, fixed by
 // the aligned flock layout (bit bases asserted by `layout_constants` there):
-// `CV_BASE = 0` → cv words 0..4, `OUT_LO_BASE = 256` → c words 4..8, `M_BASE
+// `CV_BASE = 0` → cv words 0..4, `OUT_BASE = 256` → c words 4..8, `MSG_BASE
 // = 640` → a words 10..14 and b words 14..18, metadata (counter, f0‖f1)
 // words 18..20.
 pub const SLOT_CV0: usize = 0;

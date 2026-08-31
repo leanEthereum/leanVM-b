@@ -297,13 +297,8 @@ impl FnLower<'_> {
         self.set(o, KVal::Const(v));
     }
 
-    fn deref(&mut self, alpha: Off, beta: u32, gamma: Off, mode: DerefMode) {
-        self.emit(LOp::Deref {
-            alpha,
-            beta,
-            gamma,
-            mode,
-        });
+    fn deref(&mut self, o1: Off, o2: u32, o3: Off, mode: DerefMode) {
+        self.emit(LOp::Deref { o1, o2, o3, mode });
     }
 
     /// A no-op instruction to hang a pending hint on, so it fires exactly here
@@ -499,9 +494,9 @@ impl FnLower<'_> {
                             k: KVal::Const(F192::ZERO),
                         },
                         FillerOp::Deref => LOp::Deref {
-                            alpha: fr::PTR,
-                            beta: 0,
-                            gamma: fr::SCRATCH,
+                            o1: fr::PTR,
+                            o2: 0,
+                            o3: fr::SCRATCH,
                             mode: DerefMode::Cell,
                         },
                         // Its condition is a cell nothing ever writes, so it reads as
@@ -1097,9 +1092,9 @@ impl FnLower<'_> {
                 if let Some(c) = self.frame_cell(arr, idx) {
                     return c;
                 }
-                let (ptr, beta) = self.heap_addr(arr, idx);
+                let (ptr, o2) = self.heap_addr(arr, idx);
                 let dst = self.fresh();
-                self.deref(ptr, beta, dst, DerefMode::Cell);
+                self.deref(ptr, o2, dst, DerefMode::Cell);
                 dst
             }
             Expr::Sub(..) | Expr::Div(..) | Expr::Mod(..) => {
@@ -1159,8 +1154,8 @@ impl FnLower<'_> {
             Expr::Index(arr, idx) => match self.frame_cell(arr, idx) {
                 Some(c) => self.copy(c, dst),
                 None => {
-                    let (ptr, beta) = self.heap_addr(arr, idx);
-                    self.deref(ptr, beta, dst, DerefMode::Cell);
+                    let (ptr, o2) = self.heap_addr(arr, idx);
+                    self.deref(ptr, o2, dst, DerefMode::Cell);
                 }
             },
             Expr::Pow(b, e) => {
@@ -1357,8 +1352,8 @@ impl FnLower<'_> {
                     self.stack_store(c, val);
                 } else {
                     let v = self.expr(val);
-                    let (ptr, beta) = self.heap_addr(arr, idx);
-                    self.deref(ptr, beta, v, DerefMode::Cell);
+                    let (ptr, o2) = self.heap_addr(arr, idx);
+                    self.deref(ptr, o2, v, DerefMode::Cell);
                 }
             }
             StmtKind::Return(es) => self.lower_return(es),

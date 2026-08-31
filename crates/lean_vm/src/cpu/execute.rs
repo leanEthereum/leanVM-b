@@ -641,13 +641,8 @@ impl Program {
                     });
                     pc += 1;
                 }
-                Op::Deref {
-                    alpha,
-                    beta,
-                    gamma,
-                    mode,
-                } => {
-                    let a1 = fp + alpha;
+                Op::Deref { o1, o2, o3, mode } => {
+                    let a1 = fp + o1;
                     let p = m.get(a1);
                     let p_addr = as_addr(p).unwrap_or_else(|| {
                         panic!(
@@ -678,8 +673,8 @@ impl Program {
                             })
                         }
                     };
-                    let a2 = (base + beta) as usize;
-                    let a3 = fp + gamma;
+                    let a2 = (base + o2) as usize;
+                    let a3 = fp + o3;
                     match mode {
                         DerefMode::Cell => {
                             // Equality m[a2] == m[a3]: fill the unset side.
@@ -691,7 +686,7 @@ impl Program {
                                     assert!(
                                         m.cells[a2] == m.get(a3),
                                         "DEREF mismatch at pc {pc} (in {}): m[{a2}] = {:x}:{:x}:{:x} but \
-                                         m[fp+{gamma}] = {:x}:{:x}:{:x}",
+                                         m[fp+{o3}] = {:x}:{:x}:{:x}",
                                         self.site_at(pc),
                                         m.cells[a2].c2,
                                         m.cells[a2].c1,

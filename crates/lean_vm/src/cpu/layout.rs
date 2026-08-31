@@ -232,7 +232,7 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 9] {
         .map(|op| match *op {
             Op::Xor { a, b, c } | Op::Mul { a, b, c } => a.max(b).max(c),
             Op::Set { o, .. } => o,
-            Op::Deref { alpha, beta, gamma, .. } => alpha.max(beta).max(gamma),
+            Op::Deref { o1, o2, o3, .. } => o1.max(o2).max(o3),
             Op::Jump { oc, od, of } => oc.max(od).max(of),
             Op::Blake2s { ins, cv, out, .. } => ins[0].max(ins[1]).max(ins[2]).max(ins[3]).max(cv).max(out),
         })
@@ -255,7 +255,7 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 9] {
             // The immediate's first two K-limbs ride operand slots o2/o3; c2
             // rides the fpc slot below.
             Op::Set { o, k } => (g_at(o), F64(k.c0), F64(k.c1)),
-            Op::Deref { alpha, beta, gamma, .. } => (g_at(alpha), g_at(beta), g_at(gamma)),
+            Op::Deref { o1, o2, o3, .. } => (g_at(o1), g_at(o2), g_at(o3)),
             Op::Jump { oc, od, of } => (g_at(oc), g_at(od), g_at(of)),
             // BLAKE2s's first three input-word offsets; the last two ride the
             // fpc/ffp bytecode slots below.

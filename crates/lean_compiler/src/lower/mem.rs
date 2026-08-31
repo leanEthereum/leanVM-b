@@ -245,14 +245,14 @@ impl FnLower<'_> {
     }
 
     /// Resolve a heap access `arr[idx]` to a `DEREF`-ready pair: a cell
-    /// holding a pointer `p` and a compile-time exponent `beta`, the accessed
-    /// cell being `m[p·g^beta]` (heap addressing in the exponent: cell `g^k`
+    /// holding a pointer `p` and a compile-time exponent `o2`, the accessed
+    /// cell being `m[p·g^o2]` (heap addressing in the exponent: cell `g^k`
     /// of the buffer sits at `arr·g^k`). The fallback of [`Self::heap_addr`],
     /// which has already folded away a wholly constant index: here a constant
-    /// g-power *factor* still goes into the `beta` immediate, so only the
+    /// g-power *factor* still goes into the `o2` immediate, so only the
     /// runtime factor costs a pointer `MUL`.
     fn array_ptr(&mut self, arr: &Expr, idx: &Expr) -> (Off, u32) {
-        // `buf[r * GEN ** k]` (either factor order): beta takes the constant,
+        // `buf[r * GEN ** k]` (either factor order): o2 takes the constant,
         // the pointer MUL takes only the runtime factor `r`.
         if let Expr::Mul(a, b) = idx {
             for (c, r) in [(a, b), (b, a)] {
