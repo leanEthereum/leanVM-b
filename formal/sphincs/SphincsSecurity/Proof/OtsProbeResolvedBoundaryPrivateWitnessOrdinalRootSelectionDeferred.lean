@@ -91,6 +91,23 @@ theorem rootAwareCandidateAvoidsRoots_iff
       candidate.AvoidsRoots target leftRoot rightRoot := by
   simp [RootAwareCandidateAvoidsRoots, Probe.AvoidsRoots]
 
+theorem not_goodForRoots_of_unsafe_prefix
+    {target : Position} {leftOutput : HashOutput} {rightRoot : Digest}
+    {ordinal : Nat} {selection : PrivateOrdinalSelection}
+    {initial : List Probe} {candidate : Probe}
+    (hgood : selection.GoodForRoots target leftOutput rightRoot ordinal)
+    (hprefix : initial.IsPrefix selection.candidates)
+    (hlength : initial.length ≤ ordinal)
+    (hmem : candidate ∈ initial)
+    (hunsafe : ¬candidate.AvoidsRoots target (truncateHash leftOutput) rightRoot) : False := by
+  have htake := hprefix.take ordinal
+  have htakePrefix : initial.IsPrefix (selection.candidates.take ordinal) := by
+    rw [(List.take_eq_self_iff initial).2 hlength] at htake
+    exact htake
+  have hcandidate : candidate ∈ selection.candidates.take ordinal :=
+    htakePrefix.sublist.subset hmem
+  exact hunsafe (hgood.2.2.2.2 candidate hcandidate)
+
 theorem firstMissingInputCoordinatePlan_eq_of_values_eq
     {left right : LazyRevealProbe.State Coordinate}
     (hvalues : left.values = right.values)

@@ -90,6 +90,25 @@ theorem relTriple_any_failed_rootSelectionBridge
   subst rightValue
   exact rootSelectionBridgeRel_failed_right target leftOutput rightRoot ordinal leftValue
 
+theorem relTriple_finished_none_of_no_good
+    (target : Position) (leftOutput : HashOutput)
+    (rightRoot : Digest) (ordinal : Nat)
+    (left : ProbComp (Option PrivateOrdinalSelection))
+    (hnotGood : ∀ output ∈ support left,
+      ¬privateOrdinalSelectionGoodForRoots target leftOutput rightRoot ordinal output) :
+    RelTriple left (pure (.finished none) : ProbComp MaterializedSelectionOutcome)
+      (RootSelectionBridgeRel target leftOutput rightRoot ordinal) := by
+  have hbase := relTriple_true left
+    (pure (.finished none) : ProbComp MaterializedSelectionOutcome)
+  have hleft :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+      (fun output => output ∈ support left) (fun output houtput => houtput)
+  have hboth :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hleft
+  apply relTriple_post_mono hboth
+  intro leftValue rightValue hrelation hgood
+  exact False.elim (hnotGood leftValue hrelation.1.2 hgood)
+
 noncomputable def guardPrivateOrdinalSelection
     (target : Position)
     (observe : DeferredContext → Nat → α → List Probe →
@@ -385,7 +404,7 @@ noncomputable def materializedRootAvoidingOrdinalSelectionOutcome
             let nextCandidates := appendPlannedCandidate candidates candidate?
             if hnextSelected : ordinal < nextCandidates.length then
               pure (.finished (some (nextCandidates.get ⟨ordinal, hnextSelected⟩)))
-            else if RootSafePlannedHash target leftRoot rightRoot plan candidate? then
+            else if RootAwareCandidateAvoidsRoots target leftRoot rightRoot candidate? then
               runDirectResolvedDetailedFromTable (directDeferredContext state) fuel table
                   ((probingHashQueryAfterPublicPlan parameter input publicContext.state plan).run
                     cache) >>=
