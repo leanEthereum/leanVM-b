@@ -305,6 +305,94 @@ theorem rootEncodingCacheCouples_executeCandidate
       simp only [executeCandidate?]
       exact rootEncodingCacheCouples_probe parameter target leftRoot rightRoot candidate
 
+theorem rootEncodingCacheCouples_planFirstMissingInputCoordinate
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (input : HashInput) :
+    ∀ slot coordinates,
+      RootEncodingCacheCouples parameter target leftRoot rightRoot
+        (planFirstMissingInputCoordinate input slot coordinates) := by
+  intro slot coordinates
+  induction coordinates generalizing slot with
+  | nil =>
+      rw [planFirstMissingInputCoordinate]
+      exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot none
+  | cons coordinate remaining ih =>
+      rw [planFirstMissingInputCoordinate]
+      apply (rootEncodingCacheCouples_peekCoordinate parameter target leftRoot rightRoot
+        coordinate).bind
+      intro value
+      cases value with
+      | none =>
+          exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot
+            (some (⟨coordinate, slotDigest slot input⟩ : Probe))
+      | some output => exact ih (slot + 1)
+
+theorem rootEncodingCacheCouples_planLeafInputProbe
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (input : HashInput) (candidate : Probe)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (planLeafInputProbe input candidate lay tree leafIdx) := by
+  unfold planLeafInputProbe
+  apply (rootEncodingCacheCouples_peekCoordinate parameter target leftRoot rightRoot
+    candidate.coordinate).bind
+  intro value
+  cases value with
+  | none =>
+      exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot (some candidate)
+  | some output =>
+      exact rootEncodingCacheCouples_planFirstMissingInputCoordinate parameter target leftRoot
+        rightRoot input 0 ((Position.leaf lay tree leafIdx).children.map Coordinate.position)
+
+theorem rootEncodingCacheCouples_planProbingHashQuery
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (input : HashInput) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (planProbingHashQuery parameter input) := by
+  unfold planProbingHashQuery
+  cases hprobe : decodeProbe? parameter input with
+  | some candidate =>
+      cases hposition : decodePosition? parameter input with
+      | none =>
+          exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot
+            (⟨some candidate, .resolve candidate.outputCoordinate⟩ : PlannedHashQuery)
+      | some position =>
+          cases position with
+          | leaf lay tree leafIdx =>
+              apply (rootEncodingCacheCouples_planLeafInputProbe parameter target leftRoot
+                rightRoot input candidate lay tree leafIdx).bind
+              intro candidate?
+              exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot
+                (⟨candidate?, .resolve candidate.outputCoordinate⟩ : PlannedHashQuery)
+          | chain | node | ftsLeaf | ftsNode | ftsRoots =>
+              exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot
+                (⟨some candidate, .resolve candidate.outputCoordinate⟩ : PlannedHashQuery)
+  | none =>
+      cases hposition : decodePosition? parameter input with
+      | none =>
+          exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot
+            (⟨none, .ordinary⟩ : PlannedHashQuery)
+      | some position =>
+          cases position with
+          | chain lay tree leafIdx chainIdx step =>
+              exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot
+                (⟨none, .resolve (.position (.chain lay tree leafIdx chainIdx step))⟩ :
+                  PlannedHashQuery)
+          | leaf lay tree leafIdx =>
+              exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot
+                (⟨none, .resolve (.position (.leaf lay tree leafIdx))⟩ : PlannedHashQuery)
+          | node lay tree level nodeIdx =>
+              apply (rootEncodingCacheCouples_planFirstMissingInputCoordinate parameter target
+                leftRoot rightRoot input 0
+                ((Position.node lay tree level nodeIdx).children.map Coordinate.position)).bind
+              intro candidate?
+              exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot
+                (⟨candidate?, .resolve (.position (.node lay tree level nodeIdx))⟩ :
+                  PlannedHashQuery)
+          | ftsLeaf | ftsNode | ftsRoots =>
+              exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot
+                (⟨none, .ordinary⟩ : PlannedHashQuery)
+
 theorem rootEncodingCacheCouples_probingHashQueryAfterPlan_avoids
     (parameter : PublicParameter) (target : Position)
     (leftRoot rightRoot : Digest) (input : HashInput) (plan : PlannedHashQuery)
@@ -323,6 +411,60 @@ theorem rootEncodingCacheCouples_probingHashQueryAfterPlan_avoids
   | resolve coordinate =>
       exact rootEncodingCacheCouples_resolveKnownInput_avoids parameter target leftRoot rightRoot
         coordinate input havoid
+
+theorem rootEncodingCacheCouples_probingHashQuery_avoids
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (input : HashInput)
+    (havoid : RootInputAvoids parameter target leftRoot rightRoot input) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (probingHashQuery parameter input) := by
+  have hcoupled : RootEncodingCacheCouples parameter target leftRoot rightRoot (do
+      let plan ← planProbingHashQuery parameter input
+      probingHashQueryAfterPlan parameter input plan) :=
+    (rootEncodingCacheCouples_planProbingHashQuery parameter target leftRoot rightRoot input).bind
+      fun plan => rootEncodingCacheCouples_probingHashQueryAfterPlan_avoids parameter target
+        leftRoot rightRoot input plan havoid
+  cases hprobe : decodeProbe? parameter input with
+  | some candidate =>
+      cases hposition : decodePosition? parameter input with
+      | none =>
+          rw [probingHashQuery_eq_plan_then_afterPlan_of_probe_some_nonleaf parameter input
+            candidate hprobe (by
+              rintro ⟨lay, tree, leafIdx, heq⟩
+              simp [hposition] at heq)]
+          exact hcoupled
+      | some position =>
+          cases position with
+          | leaf lay tree leafIdx =>
+              rw [probingHashQuery_eq_plan_then_afterPlan_leaf parameter input candidate lay tree
+                leafIdx hprobe hposition]
+              exact hcoupled
+          | chain | node | ftsLeaf | ftsNode | ftsRoots =>
+              rw [probingHashQuery_eq_plan_then_afterPlan_of_probe_some_nonleaf parameter input
+                candidate hprobe (by
+                  rintro ⟨lay, tree, leafIdx, heq⟩
+                  simp [hposition] at heq)]
+              exact hcoupled
+  | none =>
+      cases hposition : decodePosition? parameter input with
+      | none =>
+          rw [probingHashQuery_eq_plan_then_afterPlan_of_probe_none_nonnode parameter input hprobe
+            (by
+              rintro ⟨lay, tree, level, nodeIdx, heq⟩
+              simp [hposition] at heq)]
+          exact hcoupled
+      | some position =>
+          cases position with
+          | node lay tree level nodeIdx =>
+              rw [probingHashQuery_eq_plan_then_afterPlan_node parameter input lay tree level
+                nodeIdx hprobe hposition]
+              exact hcoupled
+          | chain | leaf | ftsLeaf | ftsNode | ftsRoots =>
+              rw [probingHashQuery_eq_plan_then_afterPlan_of_probe_none_nonnode parameter input
+                hprobe (by
+                  rintro ⟨lay, tree, level, nodeIdx, heq⟩
+                  simp [hposition] at heq)]
+              exact hcoupled
 
 theorem rootInput_hit_or_avoids
     (parameter : PublicParameter) (target : Position)
