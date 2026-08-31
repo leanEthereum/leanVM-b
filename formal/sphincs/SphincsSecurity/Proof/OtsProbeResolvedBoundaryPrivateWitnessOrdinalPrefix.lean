@@ -271,4 +271,103 @@ theorem probEvent_granularDetailedRetainedRestWitnessUsesOrdinal_le_of_selected
         adversary parameter table ftsSecret context fuel value candidates output houtput)
       huses
 
+theorem probEvent_witnessUses_newlyAppendedOrdinal_le
+    (run : ProbComp PrivateWitnessPlanOutput)
+    (current : List Probe) (candidate : Probe) (bound : ENNReal)
+    (hextends : ∀ output ∈ support run,
+      PrivateWitnessPlanExtends (current ++ [candidate]) output)
+    (hmatch : Pr[PrivateWitnessPlanMatchesCandidate candidate | run] ≤ bound) :
+    Pr[WitnessUsesOrdinal current.length | run] ≤ bound := by
+  apply (probEvent_mono (mx := run) (p := WitnessUsesOrdinal current.length)
+    (q := PrivateWitnessPlanMatchesCandidate candidate) ?_).trans hmatch
+  intro output houtput huses
+  have hlt : current.length < (current ++ [candidate]).length := by simp
+  have hselected := privateWitnessPlanMatchesCandidate_of_usesOrdinal_of_prefix
+    (current ++ [candidate]) output current.length hlt (hextends output houtput) huses
+  have hget : (current ++ [candidate]).get ⟨current.length, hlt⟩ = candidate := by
+    simp [List.get_eq_getElem]
+  simpa [hget] using hselected
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem probEvent_selectedHashPlanWitnessUsesOrdinal_le
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (input : HashInput)
+    (next : HashOutput → OracleComp (OracleWorld + SigningSpec) α)
+    (observe : DeferredContext → Nat → (α × SplitHashCache) →
+      List Probe → ProbComp PrivateWitnessPlanOutput)
+    (current : List Probe) (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (candidate : Probe)
+    (_hplan : (purePlanProbingHashQuery parameter input context.state).candidate? =
+      some candidate)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table)
+    (hterminal : ∀ nextContext remaining value nextCandidates,
+      nextContext.ValuesConsistent → StartTableAgrees nextContext.state table →
+      Pr[PrivateWitnessPlanMatchesCandidate candidate |
+          observe nextContext remaining value nextCandidates] ≤
+        Pr[fun hit : Bool => hit = true |
+          privateCandidateFire candidate nextContext])
+    (hobservePrefix : ∀ nextContext remaining value nextCandidates output,
+      output ∈ support (observe nextContext remaining value nextCandidates) →
+      PrivateWitnessPlanExtends nextCandidates output) :
+    Pr[WitnessUsesOrdinal current.length |
+        runDirectWitnessPlanObserve
+          (canonicalizeDirectWitnessPlanObserve table
+            (fun nextContext remaining value laterCandidates =>
+              directDetailedBoundaryNormalizedPrivateWitnessPlanObserve parameter root ftsSecret
+                (next value.1) observe laterCandidates nextContext remaining table value.2))
+          (current ++ [candidate]) context fuel table
+            ((probingHashQueryAfterPlan parameter input
+              (purePlanProbingHashQuery parameter input context.state)).run cache)] ≤
+      Pr[fun hit : Bool => hit = true | privateCandidateFire candidate context] := by
+  let plan := purePlanProbingHashQuery parameter input context.state
+  let branch := runDirectWitnessPlanObserve
+    (canonicalizeDirectWitnessPlanObserve table
+      (fun nextContext remaining value laterCandidates =>
+        directDetailedBoundaryNormalizedPrivateWitnessPlanObserve parameter root ftsSecret
+          (next value.1) observe laterCandidates nextContext remaining table value.2))
+    (current ++ [candidate]) context fuel table
+      ((probingHashQueryAfterPlan parameter input plan).run cache)
+  apply probEvent_witnessUses_newlyAppendedOrdinal_le branch current candidate _
+  · intro output houtput
+    unfold branch at houtput
+    apply privateWitnessPlanExtends_of_mem_runDirectWitnessPlanObserve _
+      (current ++ [candidate]) context fuel table
+      ((probingHashQueryAfterPlan parameter input plan).run cache) (output := output)
+      (houtput := houtput)
+    intro result _hresult nextOutput hnextOutput
+    apply privateWitnessPlanExtends_of_mem_canonicalizeDirectWitnessPlanObserve table _
+      result.context result.remaining result.value (current ++ [candidate])
+      (output := nextOutput) (houtput := hnextOutput)
+    intro finalOutput hfinalOutput
+    exact privateWitnessPlanExtends_of_mem_directDetailedBoundaryNormalizedPrivateWitnessPlanObserve
+      parameter root ftsSecret (next result.value.1) observe (current ++ [candidate])
+      (canonicalizeMaterializedValues table result.context) result.remaining table result.value.2
+      hobservePrefix finalOutput hfinalOutput
+  · unfold branch
+    apply probEvent_runDirectWitnessPlanMatchesCandidate_le candidate _ (current ++ [candidate])
+      context fuel table ((probingHashQueryAfterPlan parameter input plan).run cache)
+    intro result hresult
+    let inner := (probingHashQueryAfterPlan parameter input plan).run cache
+    have hdetailed : DirectDetailedResult.done result ∈ support
+        (runDirectResolvedDetailedFromTable context fuel table inner) := by
+      rw [← map_erase_runDirectResolvedWitnessFromTable inner context fuel table, support_map]
+      exact ⟨DirectWitnessResult.done result, hresult, rfl⟩
+    have hcore := resolvedCore_of_mem_runDirectResolvedFromTable inner context fuel table result
+      hconsistent hstarts
+      (mem_support_runDirectResolvedFromTable_of_done_detailed inner context fuel table result
+        hdetailed)
+    apply probEvent_canonicalizeDirectWitnessPlanMatchesCandidate_le table candidate _
+      result.context result.remaining result.value (current ++ [candidate]) hcore.2.1
+    dsimp only
+    intro _hprivate _hcompletable
+    exact probEvent_directDetailedBoundaryNormalizedPrivateWitnessPlanMatchesCandidate_le
+      candidate parameter root ftsSecret (next result.value.1) observe (current ++ [candidate])
+      (canonicalizeMaterializedValues table result.context) result.remaining table result.value.2
+      (canonicalizeMaterializedValues_valuesConsistent table result.context hcore.2.1)
+      (canonicalizeMaterializedValues_startTableAgrees table result.context) hterminal
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
