@@ -382,3 +382,70 @@ def pick(Q):
 ",
     );
 }
+
+/// A `StackBuf` target's index is bounds-checked. The arms write their return
+/// straight into that cell, so an unchecked index puts a callee's return into
+/// whatever buffer follows: with the check removed, a program that never assigns
+/// `b[0]` publishes a value from the arms and PROVES IT, which is the shape
+/// `copy_alias` had before its own bounds check went in.
+#[test]
+#[should_panic(expected = "out of bounds")]
+fn a_stackbuf_target_index_is_bounds_checked() {
+    super::build(
+        "\
+def main():
+    a = StackBuf(2)
+    b = StackBuf(2)
+    a[0] = 0
+    a[1] = 0
+    x = GEN ** 1
+    a[2], e = match_range(log(x), range(0, 2), lambda i: two(x, i))
+    p = GEN ** 0
+    p[1] = b[0]
+    p[GEN] = e
+    return
+
+
+def two(v, k: Const):
+    return v * GEN ** k, GEN ** k
+",
+    );
+}
+
+/// A `blake2s` input operand written as a list is the same hash as gathering the
+/// words into a buffer, so hashing one way and the other must agree.
+///
+/// Self-comparing on purpose: an equivalence pair cannot check this, because a
+/// trial that must be ACCEPTED has to name the digest and no test should carry a
+/// hash constant. Asserting the two digests equal needs no constant, and the two
+/// operands are DIFFERENT words so that reordering within a list is visible: with
+/// both operands equal the swap would cancel out.
+#[test]
+fn a_blake2s_word_list_hashes_like_the_buffer_it_replaces() {
+    check_case(&Case {
+        name: "a_blake2s_word_list_hashes_like_the_buffer_it_replaces",
+        src: "\
+def main():
+    v = StackBuf(2)
+    hint_witness(v, \"w\")
+    named = StackBuf(2)
+    blake2s([v[0], v[1]], [v[1], v[0]], named)
+    l = StackBuf(2)
+    l[0] = v[0]
+    l[1] = v[1]
+    r = StackBuf(2)
+    r[0] = v[1]
+    r[1] = v[0]
+    gathered = StackBuf(2)
+    blake2s(l, r, gathered)
+    assert named[0] == gathered[0]
+    assert named[1] == gathered[1]
+    p = GEN ** 0
+    p[1] = v[0]
+    p[GEN] = v[1]
+    return
+",
+        valid: Trial::new([k(11), k(22)]).stream("w", vec![vec![k(11), k(22)]]),
+        pokes: vec![wit("w", 0, k(12)), wit("w", 1, k(23))],
+    });
+}

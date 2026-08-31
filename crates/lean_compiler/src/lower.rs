@@ -9,8 +9,8 @@
 //!   function there takes `&self` and emits nothing, which is what lets a caller
 //!   ask without paying for the answer.
 //! - [`mod@mem`] asks which cell a name means, and what writing to it costs.
-//!   Every index is bounds-checked, in every position, and a deferred store is a
-//!   value fact rather than an instruction.
+//!   Every index is bounds-checked, in every position, and every store emits: the
+//!   machine's write-once memory is what separates an assertion from a definition.
 //! - [`mod@call`] is the call boundary. Caller and callee must agree on the
 //!   arity, because they place the return area from their own idea of it.
 //! - [`mod@builtins`] is the precompile and the hints: the two places a value
@@ -678,8 +678,8 @@ impl FnLower<'_> {
                                     if size != 1 {
                                         s.fail("a multi-cell StackBuf return cannot cross a match_range join")
                                     }
-                                    // `copy` reads its source raw, so resolve the arm's
-                                    // deferred alias first (as `take_inline_ret_cell` does).
+                                    // `copy` reads the run's first cell, which is where
+                                    // the arm's single returned value sits.
                                     let src = base;
                                     s.copy(src, rc);
                                 }
@@ -1073,8 +1073,7 @@ impl FnLower<'_> {
                 self.fail("StackBuf(n) must be bound to a name: `x = StackBuf(n)`")
             }
             Expr::Index(arr, idx) => {
-                // Stack read `sa[k]`: the frame cell `base + k` directly (no deref),
-                // forwarded through any deferred copy/zero alias.
+                // Stack read `sa[k]`: the frame cell `base + k` directly, no deref.
                 if let Some((base, size)) = self.stack_of(arr) {
                     let k = self.const_index(idx);
                     if k >= size {
@@ -1195,10 +1194,9 @@ impl FnLower<'_> {
                     self.rebind(name, Binding::Stack(base, *n as u32));
                 }
                 // `x = [a, b, …]`: an initialized StackBuf. Allocate the run and
-                // write each element in place (each write is the stack-store
-                // path, so copies/constants defer as aliases). Elements are
-                // lowered before `name` rebinds, so they may read its old
-                // binding (`fs = [fs[1], fs[0]]`).
+                // write each element in place, through the ordinary stack-store
+                // path. Elements are lowered before `name` rebinds, so they may
+                // read its old binding (`fs = [fs[1], fs[0]]`).
                 Expr::ListLit(es) => {
                     let base = self.alloc_stack(es.len() as u32);
                     for (k, el) in es.iter().enumerate() {
@@ -1292,12 +1290,8 @@ impl FnLower<'_> {
             StmtKind::AssertLt(e, bound) => self.lower_assert_lt(e, bound),
             StmtKind::HintWitness { dest, name } => self.lower_hint_witness(dest, name),
             // One hinted value into one fresh cell, bound to `name`. The run form
-            // has to materialize its destination first, since a deferred alias
-            // there would take the hint's place. A cell minted here has no alias
-            // to displace, and more than that it can never acquire one:
-            // `Slot::written` is read at exactly one site, `stack_store`, which is
-            // reached only through a `StackBuf` binding, so a scalar's cell is
-            // never a store target at all.
+            // names its destination's physical cells, and a scalar's cell is never
+            // a store target at all, being reachable only through a name.
             StmtKind::LetHintWitness { name, stream } => {
                 let dst = self.fresh();
                 self.pending.push(Hint::Resolved(RHint::WitnessStack {

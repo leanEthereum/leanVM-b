@@ -344,6 +344,8 @@ a, b = match_range(log(x), range(0, 2), lambda i: g(1), range(2, 6), lambda i: g
 
 A `match` with generated arms (leanVM's `match_range`): arm `j` is the lambda body with the parameter replaced by the **integer literal** `j` (usable as a field constant or a compile-time index), expanded at parse time over the contiguous `(range, lambda)` pairs, which must start at 0. Unlike `match` cases, the arms produce values: every arm writes its results into the same fresh cells (write-once is sound, since exactly one arm executes), and the targets name those cells after the join. Multiple targets take a multi-return call as the arm body. The whole call sits on one line (no line continuation), and the `match` soundness caveat applies unchanged.
 
+A target may be a name OR a **`StackBuf` element**: `sb[i], e = match_range(…)` has the arms write their return straight into `sb[i]`, which costs one instruction less than a name plus a store. The ABI returns into cells the CALLER picks, which is the same reason `sb[i] = f(x)` never needed a temporary, so this is the spelling to use wherever a returned value's home is a buffer slot. The index must be a compile-time integer and within the buffer, both errors naming the line; a `HeapBuf` element is not a target, its cells not being frame cells.
+
 **Dispatched-call fusion.** When *every* arm is a call to the same function with identical runtime arguments (the common `lambda k: f(a, b, k)`, where only a `Const` argument varies), the compiler builds the callee frame **once** and the dispatch jumps straight into the selected specialization's entry, which returns past the join. Each taken arm is then just the trampoline's two instructions (`SET entry; JUMP`) instead of a full call: no per-arm frame setup, call jump, or return jump. (The `walk`-per-digit dispatch in the XMSS verifier is the motivating case.)
 
 Statements without effect are rejected.
@@ -542,8 +544,6 @@ Three builtins have the prover compute the values at witness generation instead 
 | `if a == b: …` | 3 (+2 to skip a non-empty `else`; +2 amortized `self-fp` per branching function); **0 if the condition is compile-time** |
 | `match log(x): …` | ≈ 7, independent of the case count |
 | `… = match_range(log(x), …)` | the `match` + the arm; results written into the targets directly. Uniform-call arms (`lambda k: f(a, b, k)`) **fuse**: one shared frame + dispatch to entry, each arm just `SET`+`JUMP` |
-
-A multi-value target may be a name OR a `StackBuf` element, so `sb[i], e = match_range(…)` has the arms write straight into `sb[i]`. That costs one instruction less than a name plus a store, because the ABI returns into cells the CALLER picks, which is the same reason `sb[i] = f(x)` never needed a temporary. Use it wherever a returned value's home is a buffer slot.
 | function call | ≈ `n_args + n_returns + 4` (0 when the callee is `@inline`) |
 | `mul_range` iteration | body + ≈ 1 `MUL` + 1 `XOR` + call overhead |
 | `unroll` iteration | body only (compile-time replication) |

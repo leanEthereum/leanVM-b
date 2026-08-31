@@ -5,11 +5,11 @@
 //! side is an index as much as an expression is, and a slice checks its whole
 //! SPAN rather than its first cell.
 //!
-//! **A deferred store is a value fact, not an instruction.** `sa[k] = other`
-//! records an alias and emits nothing, which holds only while nothing else has
-//! given the cell a value. Once an instruction, a digest or a hint has written
-//! it, a store is the write-once equality assertion and must be emitted: that is
-//! what makes `s[k] = <checked value>` pin a hint.
+//! **A store always emits, and the machine decides what it means.** If the cell
+//! already holds a value the store is the write-once equality ASSERTION, which is
+//! what makes `s[k] = <checked value>` pin a hint; if it does not, the store is
+//! what gives the cell its value. The compiler tracks nothing to tell those
+//! apart, so there is no state here that could disagree with the machine.
 
 use super::*;
 

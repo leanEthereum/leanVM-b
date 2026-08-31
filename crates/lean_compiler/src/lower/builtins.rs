@@ -6,10 +6,10 @@
 //! instead of computing it, by the same write-once rule as any store.
 //!
 //! A hint writes values the prover chose and the circuit did not, so **the
-//! program must constrain them**. The compiler's job is only to make the
-//! destination real: a run carrying a deferred alias is materialised first, or
-//! the hint lands where nothing reads it and the store's equality assertion is
-//! gone.
+//! program must constrain them**. A hint names its destination's PHYSICAL cells,
+//! and since every store emits there is nothing for the compiler to prepare: a
+//! later `s[k] = <checked value>` is a second write of that cell, which is the
+//! assertion that pins the hinted value.
 
 use super::*;
 
@@ -164,10 +164,9 @@ impl FnLower<'_> {
                     self.fail("hint_f192_limbs destination must have 1..=3 cells")
                 };
                 let value = self.expr(&args[1]);
-                // Names the physical cells, as the two consumers above do, so the run
-                // has to hold real values before the hint fills it. The common
-                // destination is a list literal (`limbs = [0, 0, 0]`), whose every
-                // element goes through `stack_store` and so defers.
+                // Names the physical cells, as the two consumers above do: whatever
+                // the program stores into them afterwards is a second write, and so
+                // the assertion that pins these limbs.
                 self.pending
                     .push(Hint::Resolved(RHint::FieldLimbs { value, base, len }));
             }
@@ -247,8 +246,7 @@ impl FnLower<'_> {
                         "{what} needs {nbits} cells, its StackBuf destination has {len}"
                     ))
                 };
-                // The hint names the physical cells, so a deferred alias sitting on
-                // one would win every later read (as for `hint_f192_limbs`).
+                // The hint names the physical cells, as `hint_f192_limbs` does.
                 BitsDest::Stack(base)
             }
             None => {
@@ -277,8 +275,9 @@ impl FnLower<'_> {
     /// A BLAKE2s chaining value must occupy two consecutive frame cells because
     /// the opcode carries one base offset for both words. Preserve a genuine
     /// consecutive pair, including a heap pair already bridged by
-    /// [`Self::blake2s_input`]; if deferred copy forwarding exposes two
-    /// non-adjacent sources, materialize them into a fresh consecutive run.
+    /// [`Self::blake2s_input`]. A `cv` written as a two-word LIST exposes two
+    /// sources that need not be adjacent, so those are copied into a fresh
+    /// consecutive pair.
     fn blake2s_cv(&mut self, e: &Expr) -> Off {
         let pair = self.blake2s_input(e);
         if pair[1] == pair[0] + 1 {

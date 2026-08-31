@@ -648,11 +648,9 @@ impl FnLower<'_> {
                 if size != 1 {
                     self.fail("a multi-cell StackBuf return needs a `let` binding, not an expression use")
                 };
-                // Through `word_src`, like every other read of a stack cell: the body may
-                // have filled this cell with a deferred copy or constant, which emits no
-                // instruction, and the raw cell would then be one no instruction writes.
-                // The `let` consumer follows the alias by taking a `Binding::Stack`
-                // ([`ret_binding`]), and an expression use has to agree with it.
+                // The run's first cell: a single returned value sits there, and a
+                // `let` consumer reaches the same one by binding the run
+                // ([`ret_binding`]).
                 base
             }
             _ => dst,

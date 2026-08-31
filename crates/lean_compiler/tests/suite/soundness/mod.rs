@@ -228,7 +228,7 @@ pub struct Pair<'a> {
 pub fn check_pair(p: &Pair<'_>) {
     let (pa, pb) = (build(p.a), build(p.b));
     assert!(!p.trials.is_empty(), "{}: a pair with no trials checks nothing", p.name);
-    let mut agreed_reject = false;
+    let (mut agreed_reject, mut agreed_accept) = (false, false);
     for (i, t) in p.trials.iter().enumerate() {
         let (ra, rb) = (run(&pa, t), run(&pb, t));
         assert_eq!(
@@ -251,13 +251,22 @@ pub fn check_pair(p: &Pair<'_>) {
             }
         }
         agreed_reject |= !ra.accepted();
+        agreed_accept |= ra.accepted();
     }
-    // A pair whose every trial is accepted by both would also pass if both
-    // spellings dropped everything, so require at least one rejection.
+    // A pair needs a trial of each verdict. All-accepted would pass if both
+    // spellings dropped everything; all-REJECTED would pass if both spellings
+    // were nonsense, which is the easier mistake to make, since an accepting
+    // trial has to name the right answer and a rejecting one does not.
     assert!(
         agreed_reject,
         "{}: every trial was accepted by both spellings, so this pair would pass even \
          if both sides dropped the constraint. Add a trial that must be rejected.",
+        p.name
+    );
+    assert!(
+        agreed_accept,
+        "{}: no trial was accepted, so this pair compares two programs that always fail \
+         and would pass however either was broken. Add a trial that must be accepted.",
         p.name
     );
 }

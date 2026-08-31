@@ -153,7 +153,15 @@ fn subst_kind(s: &StmtKind, name: &str, to: &Expr) -> (StmtKind, bool) {
         ),
         StmtKind::LetMatchRange { targets, x, arms } => (
             StmtKind::LetMatchRange {
-                targets: targets.iter().map(e).collect(),
+                // A name target is a BINDER, so it is never substituted: the
+                // `shadow` flag below already stops substitution past this
+                // statement, and rewriting the binder itself turned `k, e = …`
+                // under a `Const k` into a literal target. An INDEX target is a
+                // use (`sb[k]` needs `k`), so it is substituted.
+                targets: targets
+                    .iter()
+                    .map(|t| if matches!(t, Expr::Var(_)) { t.clone() } else { e(t) })
+                    .collect(),
                 x: e(x),
                 arms: arms.iter().map(e).collect(),
             },
