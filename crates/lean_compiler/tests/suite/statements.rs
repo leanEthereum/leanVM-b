@@ -235,6 +235,72 @@ fn an_operator_missing_an_operand_says_so() {
     }
 }
 
+/// Three ways a program could read a frame or heap cell it does not own.
+///
+/// Each compiled clean and left a cell that nothing writes, which the prover
+/// then chooses, so an `assert` reading it proved nothing. The first also read
+/// the NEXT buffer and its assert passed.
+///
+/// They are one omission each, in three places that each had a checked
+/// counterpart: the store path's `copy_alias` did not bounds-check its stack
+/// index although the identical read in expression position did; `lower_call`
+/// did not compare a call's argument count against the callee's parameters
+/// although `try_inline` did; and a runtime-start heap slice bounds-checked one
+/// cell rather than its length although the compile-time-bounds arm beside it
+/// checked the whole span.
+#[test]
+fn a_program_cannot_reach_a_cell_it_does_not_own() {
+    let rejected = |src: &str, want: &str| {
+        let ast = parse(src).unwrap_or_else(|e| panic!("should parse: {e}"));
+        let Err(err) = std::panic::catch_unwind(|| compile(&ast)) else {
+            panic!("accepted:\n{src}");
+        };
+        let msg = err.downcast_ref::<String>().map(String::as_str).unwrap_or("");
+        assert!(msg.contains(want), "got `{msg}`, wanted `{want}`");
+    };
+    let tail = "    p = GEN ** 0\n    p[1] = GEN ** 0\n    p[GEN] = GEN ** 0\n    return\n";
+
+    // A store's RHS, and a list literal element, each index one past the end.
+    rejected(
+        &format!("def main():\n    a = StackBuf(2)\n    b = StackBuf(2)\n    c = StackBuf(2)\n    c[0] = a[2]\n{tail}"),
+        "stack index 2 out of bounds (size 2)",
+    );
+    rejected(
+        &format!("def main():\n    a = StackBuf(2)\n    b = StackBuf(2)\n    lst = [a[2], a[3]]\n{tail}"),
+        "stack index 2 out of bounds (size 2)",
+    );
+    // A call supplying too few arguments, and too many.
+    rejected(
+        &format!("def check(a, b):\n    assert a == b\n    return\n\ndef main():\n    check(0)\n{tail}"),
+        "`check` takes 2 arguments, got 1",
+    );
+    rejected(
+        &format!("def one(a):\n    return a\n\ndef main():\n    r = one(GEN ** 1, GEN ** 2)\n{tail}"),
+        "`one` takes 1 argument, got 2",
+    );
+    // A runtime-start slice whose start folds: the SPAN leaves the buffer.
+    rejected(
+        &format!("def main():\n    hb = HeapBuf(2)\n    nxt = HeapBuf(2)\n    hint_witness(hb[GEN ** 1:GEN ** 1 + 2], \"w\")\n{tail}"),
+        "heap slice 1:3 out of bounds",
+    );
+
+    // The in-bounds run of the same shape still compiles and proves.
+    let ok = "\
+def main():
+    hb = HeapBuf(4)
+    hint_witness(hb[GEN ** 1:GEN ** 1 + 2], \"w\")
+    p = GEN ** 0
+    p[1] = hb[GEN]
+    p[GEN] = GEN ** 0
+    return
+";
+    let mut program = compile(&parse(ok).expect("parse"));
+    program.set_witness("w", vec![vec![F192::new(1234, 0, 0), F192::new(5678, 0, 0)]]);
+    let want = [F192::new(1234, 0, 0), g_pow(0).into()];
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    verify(&program, &want, &proof).expect("an in-bounds runtime-start slice still works");
+}
+
 /// A `for` body that assigns to an enclosing name says why that cannot work.
 ///
 /// The capture set drops every name the body binds, so a body that ASSIGNS to

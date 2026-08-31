@@ -457,8 +457,20 @@ impl FnLower<'_> {
             // to the pooled const cell.
             Expr::Var(v) if self.scope.var(v).is_some() => self.scope.var(v).map(Alias::Cell),
             Expr::Index(arr, idx) => {
-                let (base, _) = self.stack_of(arr)?;
-                Some(Alias::Cell(base + self.try_const_index(idx)?))
+                // Bounds-checked here too. This is the ONE stack index that was
+                // not, and it is on the hot path: `sa[i] = sb[j]` and every
+                // element of a list literal reach it. Unchecked, `c[0] = a[2]`
+                // on a `StackBuf(2)` aliased the next buffer's first cell and
+                // its assert passed, while a further index named a cell nothing
+                // writes, so a prover chose it and the assert was vacuous. The
+                // identical read in expression position was rejected, so this
+                // was two spellings with two meanings.
+                let (base, size) = self.stack_of(arr)?;
+                let k = self.try_const_index(idx)?;
+                if k >= size {
+                    self.fail(format!("stack index {k} out of bounds (size {size})"))
+                }
+                Some(Alias::Cell(base + k))
             }
             _ => self.try_field_const(val).map(Alias::Const),
         }
@@ -806,6 +818,18 @@ impl FnLower<'_> {
         // ([`Self::call_into`]), so leaving it out here means one source is rejected
         // by one lowering of `match_range` and silently miscompiled by the other.
         for callee in callees {
+            // Arguments for the same reason as returns below: the shared frame
+            // is sized to the largest callee, so a callee expecting more than
+            // the arms supply reads a cell that exists and nothing writes.
+            if let Some(want) = self.arity_of(callee)
+                && want != rt_args.len()
+            {
+                let plural = if want == 1 { "argument" } else { "arguments" };
+                self.fail(format!(
+                    "`{callee}` takes {want} {plural}, dispatched call passes {}",
+                    rt_args.len()
+                ))
+            }
             let Some(shapes) = self.return_shapes_of(callee) else {
                 continue;
             };
@@ -1109,6 +1133,16 @@ impl FnLower<'_> {
                     if len == 0 {
                         self.fail(format!("a runtime slice `{lo:?}:{hi:?}` has length 0, so it names no cell"))
                     };
+                    // `heap_addr` bounds-checks ONE cell. A start that folds
+                    // (`GEN ** k`, or a name bound to one) arrives here because
+                    // it is not an INTEGER, yet its offset is known, so the run's
+                    // length has to be checked here or it never is: the same run
+                    // written with integer bounds was rejected, while this
+                    // spelling let a `hint_witness` write past the buffer into
+                    // the next one.
+                    if let Some(GAddr { base: None, exp, .. }) = self.gaddr_of(lo) {
+                        self.check_heap_bound(arr, exp, u128::from(len));
+                    }
                     let (ptr, lo) = self.heap_addr(arr, lo);
                     CellRun::Heap { ptr, lo, len }
                 }
@@ -1989,6 +2023,15 @@ impl FnLower<'_> {
     /// registered by [`Self::specialize`] in the queue under its mangled name and
     /// never reaches `defs`. A dispatched `match_range` names specializations, so a
     /// check that consults only `defs` silently passes on every one of them.
+    /// How many arguments `callee` takes, looked up the same way its return
+    /// shapes are, so a specialization or a generated helper answers too.
+    fn arity_of(&self, callee: &str) -> Option<usize> {
+        self.defs
+            .get(callee)
+            .map(|d| d.params.len())
+            .or_else(|| self.queue.iter().find(|f| f.name == callee).map(|f| f.params.len()))
+    }
+
     fn return_shapes_of(&self, callee: &str) -> Option<Vec<ReturnShape>> {
         self.defs.get(callee).map(|d| d.return_shapes.clone()).or_else(|| {
             self.queue
@@ -2065,6 +2108,18 @@ impl FnLower<'_> {
         dsts_in: Option<&[Off]>,
         tail: bool,
     ) -> Vec<Off> {
+        // Every parameter must be supplied. A missing argument leaves the
+        // callee's argument cell unwritten, hence prover-chosen, so an `assert`
+        // reading it is vacuous; a surplus one lands on the callee's first
+        // return slot, because caller and callee place the return area from
+        // their own idea of the argument count. Only `specialize` checked this,
+        // and only for a callee declaring `Const` parameters.
+        if let Some(want) = self.arity_of(callee)
+            && want != args.len()
+        {
+            let plural = if want == 1 { "argument" } else { "arguments" };
+            self.fail(format!("`{callee}` takes {want} {plural}, got {}", args.len()))
+        }
         let (callee, args) = self.specialize(callee, args);
         let (callee, args) = (callee.as_str(), args.as_slice());
         let arg_offs: Vec<Off> = args.iter().map(|a| self.expr(a)).collect();
