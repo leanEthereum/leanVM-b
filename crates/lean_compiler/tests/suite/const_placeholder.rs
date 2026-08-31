@@ -177,6 +177,67 @@ def main():
     let _ = compile(&filled);
 }
 
+/// `const(...)` is TRANSPARENT in a parse-time position, and the test is that
+/// the wrapped and bare spellings parse to the same AST.
+///
+/// The wrapper means "read this with integer arithmetic". A size, a count, an
+/// exponent, a bound and a stack index have no other reading, so it changes
+/// nothing there. It was a parse error in a `StackBuf` size, a `log` bound and a
+/// top-level constant while being accepted in a `HeapBuf` size, an `unroll` count
+/// and a `GEN **` exponent, which made one construct mean two things depending on
+/// where it stood.
+#[test]
+fn const_is_transparent_where_the_reading_is_already_integer() {
+    for (wrapped, bare) in [
+        ("s = StackBuf(const(2 + 2))", "s = StackBuf(4)"),
+        ("h = HeapBuf(const(2 + 2))", "h = HeapBuf(4)"),
+        ("x = GEN ** const(1 + 1)", "x = GEN ** 2"),
+    ] {
+        let src = |b: &str| format!("def main():\n    {b}\n    return\n");
+        assert_eq!(
+            crate::common::without_lines(&parse(&src(wrapped)).unwrap_or_else(|e| panic!("{wrapped}: {e}"))),
+            crate::common::without_lines(&parse(&src(bare)).expect("bare")),
+            "`{wrapped}` must parse as `{bare}`"
+        );
+    }
+    // A `log` bound and an `unroll` count, which are their own parse paths.
+    let bound = |b: &str| format!("def main():\n    v = GEN ** 2\n    assert log v < {b}\n    return\n");
+    assert_eq!(
+        crate::common::without_lines(&parse(&bound("const(4 + 4)")).expect("wrapped bound")),
+        crate::common::without_lines(&parse(&bound("8")).expect("bare bound")),
+    );
+    // An `unroll` count keeps its expression for the lowerer to fold, in either
+    // spelling, so the baseline is the unwrapped expression rather than a literal.
+    let count = |b: &str| format!("def main():\n    for i in unroll(0, {b}):\n        v = 1\n    return\n");
+    let unrolled = |b: &str| {
+        let program = compile(&parse(&count(b)).unwrap_or_else(|e| panic!("{b}: {e}")));
+        program.fn_ranges.iter().map(|(_, _, len)| *len as usize).sum::<usize>()
+    };
+    assert_eq!(
+        unrolled("const(1 + 1)"),
+        unrolled("1 + 1"),
+        "the count must fold the same"
+    );
+    assert_eq!(unrolled("const(1 + 1)"), unrolled("2"));
+    // And a global constant, where the whole declaration is already integer.
+    assert_eq!(
+        crate::common::without_lines(
+            &parse("N = const(3 + 1)\n\ndef main():\n    s = StackBuf(N)\n    return\n").expect("wrapped")
+        ),
+        crate::common::without_lines(&parse("N = 4\n\ndef main():\n    s = StackBuf(N)\n    return\n").expect("bare")),
+    );
+    // Transparent means transparent: an illegal value is still illegal, so the
+    // wrapper is no route past a bound the bare spelling would fail.
+    for b in ["0", "const(0)"] {
+        let ast = parse(&bound(b)).expect("parses");
+        let Err(err) = std::panic::catch_unwind(|| compile(&ast)) else {
+            panic!("`{b}` was accepted as a bound");
+        };
+        let msg = err.downcast_ref::<String>().map(String::as_str).unwrap_or("");
+        assert!(msg.contains("empty set"), "{b}: got `{msg}`");
+    }
+}
+
 /// A placeholder is text-replaced before parsing; feeding a constant is the
 /// idiom. The filled program equals the one written with the value inline.
 #[test]

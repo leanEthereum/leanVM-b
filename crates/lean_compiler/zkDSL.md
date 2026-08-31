@@ -371,6 +371,8 @@ The same wrapper, the same meaning: read this with **integer** arithmetic and em
 
 The inner expression must be a compile-time integer (a literal, a global constant, a `Const` parameter, an `unroll` counter, a name bound to one, a constant-array element, and `+ - * // % **` of those), and one that is not says so rather than falling back to a runtime computation. The result is one pooled `SET`, so a repeat costs nothing.
 
+In a position that is ALREADY integer arithmetic (a size, a count, an exponent, a bound, a stack index, a global constant) the wrapper is transparent: it asks for the only reading there is, so it changes nothing and is allowed rather than redundant. Where it earns its keep is a value, a condition, and anywhere `-`, `//` or `%` has to appear.
+
 The wrapper reinterprets the **operators**, not the leaves, and that is the whole of its meaning. Two consequences. A leaf whose own two readings disagree is rejected rather than silently read one way, so `n = 2 + 3` (the cell holds `2 XOR 3` = 1, the name's integer reading is 5) may not appear inside one: bind it in one regime and name that one. And the arithmetic runs on a leaf's **bit pattern**, so an element of a field-valued constant array is read as the integer those bits spell, which is not what field arithmetic on it would give: `const(TABLE[i] * 2)` doubles the bit pattern where `TABLE[i] * 2` is a field product.
 
 ## Assertions

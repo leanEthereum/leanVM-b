@@ -90,9 +90,11 @@ impl FnLower<'_> {
     /// required to succeed.
     pub(super) fn const_index(&self, idx: &Expr) -> u32 {
         self.try_const_index(idx).unwrap_or_else(|| {
-            // An oversized literal is an index-shaped mistake, not a runtime
-            // value, so diagnose it precisely (`sa[2^32]` must not wrap to `sa[0]`).
-            if let Expr::Lit(k) = idx {
+            // An oversized index is an index-shaped mistake, not a runtime value,
+            // so diagnose it precisely (`sa[2^32]` must not wrap to `sa[0]`). Read
+            // through the integer evaluator, so `const(2 ** 33)` gets the same
+            // message a bare literal does rather than "not a compile-time integer".
+            if let Some(k) = self.try_const_int(idx) {
                 self.fail(format!("stack index {k} does not fit in u32"));
             }
             self.fail(format!(

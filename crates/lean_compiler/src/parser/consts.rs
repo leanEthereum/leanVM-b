@@ -36,6 +36,13 @@ pub(super) fn eval_const_int(s: &str) -> Result<u128, String> {
 pub(super) fn const_int_expr(e: &Expr) -> Option<u128> {
     match e {
         Expr::Lit(k) => Some(*k),
+        // `const(e)` asks for the integer reading, which is the only reading a
+        // parse-time position has, so it is transparent rather than redundant. It
+        // used to be a parse error in a `StackBuf` size and a `log` bound while
+        // being accepted in a `HeapBuf` size, an `unroll` count and a `GEN **`
+        // exponent, which is one construct with two meanings depending on where it
+        // stood.
+        Expr::Call(f, args) if f == "const" && args.len() == 1 => const_int_expr(&args[0]),
         Expr::Add(a, b) => const_int_expr(a)?.checked_add(const_int_expr(b)?),
         Expr::Sub(a, b) => const_int_expr(a)?.checked_sub(const_int_expr(b)?),
         Expr::Mul(a, b) => const_int_expr(a)?.checked_mul(const_int_expr(b)?),
