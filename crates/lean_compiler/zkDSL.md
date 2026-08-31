@@ -531,6 +531,8 @@ Three builtins have the prover compute the values at witness generation instead 
 | `blake2s(a, b, out, ...)` | 1; plus two `SET`s once per frame when `cv` is omitted; message/CV words are read in place, +1 `DEREF` per heap input or CV word, +1 `MUL` per runtime slice start |
 | `hint_witness(dest, "name")` | 0 (+1 `MUL` for a runtime slice start) |
 
+Every cost above is the FIRST occurrence. Two identical pure operations in one function share one cell and the second is free, so `hb[i]` twice, or `row[i]` where `row = hb * GEN ** 2`, costs one pointer `MUL` between them. The sharing stops at a branch: a cell whose instruction sits inside an `if` is not reused after the join, because the other path leaves it unwritten and therefore prover-chosen.
+
 ## Example
 
 Fibonacci in the exponent (`tests/programs/fibonacci.py`): `fib[g^k]` holds `GEN ** F_k`, so one field `MUL` is one Fibonacci step.
