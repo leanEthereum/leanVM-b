@@ -36,8 +36,10 @@ noncomputable def firstPrivateWitnessOrdinal?
     (witness : PrivateHitWitness) (candidates : List Probe) :
     Option (Fin candidates.length) := by
   classical
-  exact if h : ∃ ordinal, PrivateWitnessAtOrdinal witness candidates ordinal then
-    some (Classical.choose h)
+  let matching := Finset.univ.filter fun ordinal : Fin candidates.length =>
+    PrivateWitnessAtOrdinal witness candidates ordinal
+  exact if h : matching.Nonempty then
+    some (matching.min' h)
   else
     none
 
@@ -47,10 +49,39 @@ theorem firstPrivateWitnessOrdinal?_eq_some_of_candidateListHits
     ∃ ordinal, firstPrivateWitnessOrdinal? witness candidates = some ordinal ∧
       PrivateWitnessAtOrdinal witness candidates ordinal := by
   classical
-  have hexists := exists_privateWitnessAtOrdinal_of_candidateListHits witness candidates hhit
+  obtain ⟨ordinal, hordinal⟩ :=
+    exists_privateWitnessAtOrdinal_of_candidateListHits witness candidates hhit
+  let matching := Finset.univ.filter fun selected : Fin candidates.length =>
+    PrivateWitnessAtOrdinal witness candidates selected
+  have hmatching : matching.Nonempty := by
+    exact ⟨ordinal, Finset.mem_filter.mpr ⟨Finset.mem_univ _, hordinal⟩⟩
   unfold firstPrivateWitnessOrdinal?
-  simp only [hexists, dif_pos]
-  exact ⟨Classical.choose hexists, rfl, Classical.choose_spec hexists⟩
+  simp only [matching, hmatching, dif_pos]
+  refine ⟨matching.min' hmatching, rfl, ?_⟩
+  exact (Finset.mem_filter.mp (matching.min'_mem hmatching)).2
+
+theorem firstPrivateWitnessOrdinal?_le_of_eq_some_of_matches
+    (witness : PrivateHitWitness) (candidates : List Probe)
+    (ordinal other : Fin candidates.length)
+    (hfirst : firstPrivateWitnessOrdinal? witness candidates = some ordinal)
+    (hother : PrivateWitnessAtOrdinal witness candidates other) :
+    ordinal.val ≤ other.val := by
+  classical
+  let matching := Finset.univ.filter fun selected : Fin candidates.length =>
+    PrivateWitnessAtOrdinal witness candidates selected
+  have hmatching : matching.Nonempty := by
+    exact ⟨other, Finset.mem_filter.mpr ⟨Finset.mem_univ _, hother⟩⟩
+  unfold firstPrivateWitnessOrdinal? at hfirst
+  simp only [matching, hmatching, dif_pos, Option.some.injEq] at hfirst
+  subst ordinal
+  exact_mod_cast matching.min'_le other
+    (Finset.mem_filter.mpr ⟨Finset.mem_univ _, hother⟩)
+
+def WitnessFirstUsesOrdinal
+    (ordinal : Nat) (output : PrivateWitnessPlanOutput) : Prop :=
+  ∃ witness sourceOrdinal,
+    output.1 = some witness ∧ sourceOrdinal.val = ordinal ∧
+      firstPrivateWitnessOrdinal? witness output.2 = some sourceOrdinal
 
 noncomputable def boundedPrivateWitnessOrdinal?
     (q : Nat) (output : PrivateWitnessPlanOutput) : Option (Fin q) := by

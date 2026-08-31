@@ -282,6 +282,23 @@ def WitnessUsesOrdinal
     output.1 = some witness ∧ sourceOrdinal.val = ordinal ∧
       PrivateWitnessAtOrdinal witness output.2 sourceOrdinal
 
+theorem witnessUsesOrdinal_of_witnessFirstUsesOrdinal
+    {ordinal : Nat} {output : PrivateWitnessPlanOutput}
+    (hfirst : WitnessFirstUsesOrdinal ordinal output) :
+    WitnessUsesOrdinal ordinal output := by
+  obtain ⟨witness, sourceOrdinal, hwitness, hvalue, hfirst⟩ := hfirst
+  have hmatch : PrivateWitnessAtOrdinal witness output.2 sourceOrdinal := by
+    classical
+    unfold firstPrivateWitnessOrdinal? at hfirst
+    let matching := Finset.univ.filter fun selected : Fin output.2.length =>
+      PrivateWitnessAtOrdinal witness output.2 selected
+    by_cases hmatching : matching.Nonempty
+    · simp only [matching, hmatching, dif_pos, Option.some.injEq] at hfirst
+      rw [← hfirst]
+      exact (Finset.mem_filter.mp (matching.min'_mem hmatching)).2
+    · simp [matching, hmatching] at hfirst
+  exact ⟨witness, sourceOrdinal, hwitness, hvalue, hmatch⟩
+
 theorem witnessUsesOrdinal_of_bounded_eq
     (q : Nat) (output : PrivateWitnessPlanOutput) (ordinal : Fin q)
     (hcovered : PrivateWitnessCovered output)
@@ -304,6 +321,44 @@ theorem witnessUsesOrdinal_of_bounded_eq
         have hval := congrArg Fin.val hordinal
         exact ⟨witness, sourceOrdinal, hwitness, hval, hsource⟩
       · simp [hlt] at hordinal
+
+theorem witnessFirstUsesOrdinal_of_bounded_eq
+    (q : Nat) (output : PrivateWitnessPlanOutput) (ordinal : Fin q)
+    (hordinal : boundedPrivateWitnessOrdinal? q output = some ordinal) :
+    WitnessFirstUsesOrdinal ordinal.val output := by
+  classical
+  cases hwitness : output.1 with
+  | none =>
+      unfold boundedPrivateWitnessOrdinal? at hordinal
+      simp [hwitness] at hordinal
+  | some witness =>
+      cases hfirst : firstPrivateWitnessOrdinal? witness output.2 with
+      | none =>
+          unfold boundedPrivateWitnessOrdinal? at hordinal
+          simp [hwitness, hfirst] at hordinal
+      | some sourceOrdinal =>
+          unfold boundedPrivateWitnessOrdinal? at hordinal
+          simp only [hwitness, hfirst] at hordinal
+          by_cases hlt : sourceOrdinal.val < q
+          · simp only [hlt, ↓reduceDIte, Option.some.injEq] at hordinal
+            have hval := congrArg Fin.val hordinal
+            exact ⟨witness, sourceOrdinal, hwitness, hval, hfirst⟩
+          · simp [hlt] at hordinal
+
+theorem not_privateWitnessAtOrdinal_of_witnessFirstUsesOrdinal_of_lt
+    {ordinal : Nat} {output : PrivateWitnessPlanOutput}
+    (hfirst : WitnessFirstUsesOrdinal ordinal output)
+    (earlier : Fin output.2.length) (hlt : earlier.val < ordinal) :
+    ∀ witness, output.1 = some witness →
+      ¬PrivateWitnessAtOrdinal witness output.2 earlier := by
+  intro witness hwitness hearlier
+  obtain ⟨selectedWitness, sourceOrdinal, hselectedWitness, hsourceValue, hsourceFirst⟩ := hfirst
+  have hwitnessEq : witness = selectedWitness := by
+    exact Option.some.inj (hwitness.symm.trans hselectedWitness)
+  subst witness
+  have hle := firstPrivateWitnessOrdinal?_le_of_eq_some_of_matches selectedWitness output.2
+    sourceOrdinal earlier hsourceFirst hearlier
+  omega
 
 theorem probEvent_privateWitness_le_of_bounded_ordinals
     (run : ProbComp PrivateWitnessPlanOutput) (q : Nat) (epsilon : ℝ≥0∞)
