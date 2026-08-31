@@ -410,4 +410,103 @@ theorem probEvent_runPrivatePreparation_le_guarded
                             candidates context
                       exact hbind.trans hright
 
+set_option maxRecDepth 100000 in
+theorem pendingCoveredBy_of_done_runDirectResolvedDetailedFromTable
+    (candidates : List Probe)
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (result : ResolvedRunResult α)
+    (hcovered : PendingCoveredBy candidates context)
+    (hbound : computation.IsQueryBoundP (IsUncoveredProbe candidates) 0)
+    (hresult : DirectDetailedResult.done result ∈ support
+      (runDirectResolvedDetailedFromTable context fuel table computation)) :
+    PendingCoveredBy candidates result.context := by
+  induction computation using OracleComp.inductionOn generalizing context fuel with
+  | pure value =>
+      simp [runDirectResolvedDetailedFromTable] at hresult
+      rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+      exact hcovered
+  | query_bind input next ih =>
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
+      cases input with
+      | uniform n =>
+          rw [runDirectResolvedDetailedFromTable_uniform_query_bind,
+            mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, htail⟩ := hresult
+          exact ih output context fuel hcovered (hbound.2 output) htail
+      | hashOutput =>
+          rw [runDirectResolvedDetailedFromTable_hashOutput_query_bind,
+            mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, htail⟩ := hresult
+          exact ih output context fuel hcovered (hbound.2 output) htail
+      | ensure coordinate =>
+          rw [runDirectResolvedDetailedFromTable_ensure_query_bind] at hresult
+          exact ih () { context with state := context.state.ensure coordinate } fuel hcovered
+            (hbound.2 ()) hresult
+      | probe coordinate digest =>
+          have hmem : (⟨coordinate, digest⟩ : Probe) ∈ candidates := by
+            simpa [IsUncoveredProbe] using hbound.1
+          have htail : (next ()).IsQueryBoundP (IsUncoveredProbe candidates) 0 := by
+            simpa [IsUncoveredProbe] using hbound.2 ()
+          cases fuel with
+          | zero => simp [runDirectResolvedDetailedFromTable_probe_query_bind] at hresult
+          | succ remaining =>
+              rw [runDirectResolvedDetailedFromTable_probe_query_bind] at hresult
+              by_cases hrevealed : coordinate ∈ context.state.revealed
+              · simp only [hrevealed, ↓reduceIte] at hresult
+                exact ih () context remaining hcovered htail hresult
+              · simp only [hrevealed, ↓reduceIte] at hresult
+                exact ih () { context with state := context.state.addPending coordinate digest }
+                  remaining (hcovered.addPending_of_mem ⟨coordinate, digest⟩ hmem) htail hresult
+      | peek coordinate =>
+          rw [runDirectResolvedDetailedFromTable_peek_query_bind] at hresult
+          exact ih (context.state.values coordinate) context fuel hcovered (hbound.2 _) hresult
+      | publish coordinate =>
+          rw [runDirectResolvedDetailedFromTable_publish_query_bind] at hresult
+          exact ih () { context with state := context.state.publish coordinate } fuel hcovered
+            (hbound.2 ()) hresult
+      | reveal coordinate =>
+          rw [runDirectResolvedDetailedFromTable_reveal_query_bind] at hresult
+          cases hstate : context.state.values coordinate with
+          | some output =>
+              simp only [hstate] at hresult
+              exact ih output context fuel hcovered (hbound.2 output) hresult
+          | none =>
+              simp only [hstate] at hresult
+              cases coordinate with
+              | chainStart lay tree leafIdx chainIdx =>
+                  let output := table ⟨lay, tree, leafIdx, chainIdx⟩
+                  by_cases hhit : context.state.hitAt
+                      (.chainStart lay tree leafIdx chainIdx) output
+                  · simp [output, hhit] at hresult
+                  · simp only [output, hhit, ↓reduceIte] at hresult
+                    exact ih output
+                      { state := context.state.materialize
+                          (.chainStart lay tree leafIdx chainIdx) output
+                        values := context.values }
+                      fuel (hcovered.clearPending (.chainStart lay tree leafIdx chainIdx))
+                        (hbound.2 output) hresult
+              | position position =>
+                  cases hprivate : context.values position with
+                  | some output =>
+                      by_cases hhit : context.state.hitAt (.position position) output
+                      · simp [hprivate, hhit] at hresult
+                      · simp only [hprivate, hhit, ↓reduceIte] at hresult
+                        exact ih output
+                          { state := context.state.materialize (.position position) output
+                            values := context.values }
+                          fuel (hcovered.clearPending (.position position)) (hbound.2 output)
+                            hresult
+                  | none =>
+                      simp only [hprivate, mem_support_bind_iff] at hresult
+                      obtain ⟨output, _houtput, htailResult⟩ := hresult
+                      by_cases hhit : context.state.hitAt (.position position) output
+                      · simp [hhit] at htailResult
+                      · simp only [hhit, ↓reduceIte] at htailResult
+                        exact ih output
+                          { state := context.state.materialize (.position position) output
+                            values := context.values.install position output }
+                          fuel (hcovered.clearPending (.position position)) (hbound.2 output)
+                            htailResult
+
 end SphincsSecurity.Concrete.OtsProbeSimulation

@@ -197,4 +197,45 @@ theorem evalDist_runDirectDetailedPrivateObserve_probingHashQuery_eq_afterPlan
     table cache rfl]
   simp only [pure_bind]
 
+theorem preservesPublishedValues_probe (candidate : Probe) :
+    PreservesPublishedValues (probe candidate) := by
+  intro state cache fuel finalState remaining value finalCache hpublished hresult
+  change LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈ support
+    (LazyRevealProbe.runRaw state fuel
+      (LazyRevealProbe.probeQuery candidate.coordinate candidate.candidate >>= fun result =>
+        pure (result, cache))) at hresult
+  rw [LazyRevealProbe.probeQuery, LazyRevealProbe.runRaw_probe_query_bind] at hresult
+  cases fuel with
+  | zero => simp at hresult
+  | succ remainingFuel =>
+      by_cases hrevealed : candidate.coordinate ∈ state.revealed
+      · simp [hrevealed, LazyRevealProbe.runRaw] at hresult
+        rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+        exact hpublished
+      · simp [hrevealed, LazyRevealProbe.runRaw] at hresult
+        rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+        simpa [PublishedValues, LazyRevealProbe.State.addPending] using hpublished
+
+theorem preservesPublishedValues_executeCandidate (planned : Option Probe) :
+    PreservesPublishedValues (executeCandidate? planned) := by
+  cases planned with
+  | none => exact PreservesPublishedValues.pure ()
+  | some candidate => exact preservesPublishedValues_probe candidate
+
+theorem preservesPublishedValues_splitHashQuery_ordinary (input : HashInput) :
+    PreservesPublishedValues (splitHashQuery (.ordinary input)) := by
+  have h := preservesPublishedValues_simulateQ_ordinaryHashImpl
+    (liftM (HashSpec.query input) : OracleComp HashSpec HashOutput)
+  simpa [simulateQ_query, ordinaryHashImpl] using h
+
+theorem preservesPublishedValues_probingHashQueryAfterPlan
+    (parameter : PublicParameter) (input : HashInput) (plan : PlannedHashQuery) :
+    PreservesPublishedValues (probingHashQueryAfterPlan parameter input plan) := by
+  unfold probingHashQueryAfterPlan executePlannedHashQuery
+  apply (preservesPublishedValues_executeCandidate plan.candidate?).bind
+  intro _
+  cases plan.action with
+  | ordinary => exact preservesPublishedValues_splitHashQuery_ordinary input
+  | resolve coordinate => exact preservesPublishedValues_resolveKnownInput parameter coordinate input
+
 end SphincsSecurity.Concrete.OtsProbeSimulation

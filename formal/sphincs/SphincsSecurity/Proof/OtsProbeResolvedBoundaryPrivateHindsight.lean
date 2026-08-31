@@ -223,6 +223,32 @@ theorem probEvent_canonicalizeDirectDetailedPlanHitObserve_le_guarded
     · change ¬DeferredCompletable table (canonicalizeMaterializedValues table context) at hcompletable
       simp [hcompletable]
 
+theorem probEvent_canonicalizeDirectDetailedPlanHitObserve_eq_zero
+    (table : OtsSecretIndex → HashOutput)
+    (finalCandidates currentCandidates : List Probe)
+    (observe : DeferredContext → Nat → α → ProbComp Bool)
+    (context : DeferredContext) (fuel : Nat) (value : α)
+    (hne : currentCandidates ≠ finalCandidates)
+    (hcontinuation :
+      let canonical := canonicalizeMaterializedValues table context
+      ¬PrivateStructuralHit canonical → DeferredCompletable table canonical →
+      Pr[= true | observe canonical fuel value] = 0) :
+    Pr[= true | canonicalizeDirectDetailedPlanHitObserve table finalCandidates
+      currentCandidates observe context fuel value] = 0 := by
+  let canonical := canonicalizeMaterializedValues table context
+  unfold canonicalizeDirectDetailedPlanHitObserve
+  by_cases hprivate : PrivateStructuralHit canonical
+  · simp [canonical, hprivate, hne]
+  · change ¬PrivateStructuralHit (canonicalizeMaterializedValues table context) at hprivate
+    by_cases hpublished : PublishedValues context.state
+    · by_cases hcompletable : DeferredCompletable table canonical
+      · change DeferredCompletable table (canonicalizeMaterializedValues table context) at hcompletable
+        simp only [hprivate, hpublished, hcompletable, ↓reduceIte]
+        exact hcontinuation hprivate hcompletable
+      · change ¬DeferredCompletable table (canonicalizeMaterializedValues table context) at hcompletable
+        simp [hprivate, hpublished, hcompletable]
+    · simp [hprivate, hpublished]
+
 noncomputable def directDetailedBoundaryNormalizedPlanHitObserve
     (finalCandidates : List Probe)
     (parameter : PublicParameter) (root : Digest)
