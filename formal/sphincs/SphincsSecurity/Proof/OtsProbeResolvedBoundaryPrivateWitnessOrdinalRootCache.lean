@@ -247,6 +247,24 @@ theorem decodeEncodingLayerRootCandidate?_encodingRetryInput
   · subst target
     simp [encodingRetryInput, slotDigest_zero_encodingInput]
 
+def EncodingInputGuessesRoot
+    (parameter : PublicParameter) (target : Position)
+    (guess : Digest) (input : HashInput) : Prop :=
+  decodeEncodingLayerRootCandidate? parameter input =
+    some ⟨.position target, guess⟩
+
+theorem guess_eq_of_encodingRetryInput_eq
+    {parameter : PublicParameter} {target : Position}
+    {position : EncodingPosition} (hposition : EncodingPositionNamesRoot target position)
+    {root guess : Digest} {counter : Nat} {input : HashInput}
+    (hinput : input = encodingRetryInput parameter position root counter)
+    (hguess : EncodingInputGuessesRoot parameter target guess input) :
+    guess = root := by
+  unfold EncodingInputGuessesRoot at hguess
+  rw [hinput, decodeEncodingLayerRootCandidate?_encodingRetryInput hposition root counter]
+    at hguess
+  exact congrArg Probe.candidate (Option.some.inj hguess.symm)
+
 theorem not_encodingInputNamesRoot_encodingRetryInput_of_not_positionNames
     {parameter : PublicParameter} {target : Position}
     {position : EncodingPosition}
@@ -269,29 +287,24 @@ theorem not_encodingInputNamesRoot_encodingRetryInput_of_not_positionNames
   simp only at hcoordinate
   exact Coordinate.position.inj hcoordinate.symm
 
-def RootEncodingCacheRel
+structure RootEncodingCacheRel
     (parameter : PublicParameter) (target : Position)
-    (leftRoot rightRoot : Digest) (left right : SplitHashCache) : Prop :=
-  (∀ input, ¬EncodingInputNamesRoot parameter target input →
-      left (.ordinary input) = right (.ordinary input)) ∧
-  (∀ position counter, EncodingPositionNamesRoot target position →
-      left (.ordinary (encodingRetryInput parameter position leftRoot counter)) =
-        right (.ordinary (encodingRetryInput parameter position rightRoot counter))) ∧
-  ∀ coordinate, left (.hidden coordinate) = right (.hidden coordinate)
+    (leftRoot rightRoot : Digest) (left right : SplitHashCache) : Prop where
+  nonroot : ∀ input, ¬EncodingInputNamesRoot parameter target input →
+    left (.ordinary input) = right (.ordinary input)
+  retry : ∀ position counter, EncodingPositionNamesRoot target position →
+    left (.ordinary (encodingRetryInput parameter position leftRoot counter)) =
+      right (.ordinary (encodingRetryInput parameter position rightRoot counter))
+  hidden : ∀ coordinate, left (.hidden coordinate) = right (.hidden coordinate)
+  wrong : ∀ input guess, EncodingInputGuessesRoot parameter target guess input →
+    guess ≠ leftRoot → guess ≠ rightRoot →
+      left (.ordinary input) = right (.ordinary input)
 
 theorem RootEncodingCacheRel.refl
     (parameter : PublicParameter) (target : Position) (root : Digest)
     (cache : SplitHashCache) :
     RootEncodingCacheRel parameter target root root cache cache := by
-  exact ⟨fun _ _ => rfl, fun _ _ _ => rfl, fun _ => rfl⟩
-
-theorem RootEncodingCacheRel.hidden
-    {parameter : PublicParameter} {target : Position} {leftRoot rightRoot : Digest}
-    {left right : SplitHashCache}
-    (hrel : RootEncodingCacheRel parameter target leftRoot rightRoot left right)
-    (coordinate : Coordinate) :
-    left (.hidden coordinate) = right (.hidden coordinate) :=
-  hrel.2.2 coordinate
+  exact ⟨fun _ _ => rfl, fun _ _ _ => rfl, fun _ => rfl, fun _ _ _ _ _ => rfl⟩
 
 theorem RootEncodingCacheRel.lookup_nonroot
     {parameter : PublicParameter} {target : Position} {leftRoot rightRoot : Digest}
@@ -300,26 +313,8 @@ theorem RootEncodingCacheRel.lookup_nonroot
     (key : SplitHashKey) (hkey : ¬RootEncodingKey parameter target key) :
     left key = right key := by
   cases key with
-  | ordinary input => exact hrel.1 input hkey
-  | hidden coordinate => exact hrel.2.2 coordinate
-
-theorem RootEncodingCacheRel.nonroot
-    {parameter : PublicParameter} {target : Position} {leftRoot rightRoot : Digest}
-    {left right : SplitHashCache}
-    (hrel : RootEncodingCacheRel parameter target leftRoot rightRoot left right)
-    (input : HashInput) (hinput : ¬EncodingInputNamesRoot parameter target input) :
-    left (.ordinary input) = right (.ordinary input) :=
-  hrel.1 input hinput
-
-theorem RootEncodingCacheRel.retry
-    {parameter : PublicParameter} {target : Position} {leftRoot rightRoot : Digest}
-    {left right : SplitHashCache}
-    (hrel : RootEncodingCacheRel parameter target leftRoot rightRoot left right)
-    (position : EncodingPosition) (counter : Nat)
-    (hposition : EncodingPositionNamesRoot target position) :
-    left (.ordinary (encodingRetryInput parameter position leftRoot counter)) =
-      right (.ordinary (encodingRetryInput parameter position rightRoot counter)) :=
-  hrel.2.1 position counter hposition
+  | ordinary input => exact hrel.nonroot input hkey
+  | hidden coordinate => exact hrel.hidden coordinate
 
 theorem encodingRetryInput_corresponding_eq
     {parameter : PublicParameter} {leftRoot rightRoot : Digest}
@@ -356,7 +351,7 @@ theorem RootEncodingCacheRel.update_retry
         (.ordinary (encodingRetryInput parameter position leftRoot counter)) (some output))
       (Function.update right
         (.ordinary (encodingRetryInput parameter position rightRoot counter)) (some output)) := by
-  refine ⟨?_, ?_, ?_⟩
+  refine ⟨?_, ?_, ?_, ?_⟩
   · intro input hinput
     have hleftNe : SplitHashKey.ordinary input ≠
         .ordinary (encodingRetryInput parameter position leftRoot counter) := by
@@ -393,6 +388,19 @@ theorem RootEncodingCacheRel.update_retry
         Function.update_of_ne, heq, hrightNe, hold]
   · intro coordinate
     simpa using hrel.hidden coordinate
+  · intro input guess hguess hleft hright
+    have hleftNe : SplitHashKey.ordinary input ≠
+        .ordinary (encodingRetryInput parameter position leftRoot counter) := by
+      intro heq
+      have hinput := SplitHashKey.ordinary.inj heq
+      exact hleft (guess_eq_of_encodingRetryInput_eq hposition hinput hguess)
+    have hrightNe : SplitHashKey.ordinary input ≠
+        .ordinary (encodingRetryInput parameter position rightRoot counter) := by
+      intro heq
+      have hinput := SplitHashKey.ordinary.inj heq
+      exact hright (guess_eq_of_encodingRetryInput_eq hposition hinput hguess)
+    simp [Function.update_of_ne hleftNe, Function.update_of_ne hrightNe,
+      hrel.wrong input guess hguess hleft hright]
 
 theorem RootEncodingCacheRel.update_same_nonroot
     {parameter : PublicParameter} {target : Position} {leftRoot rightRoot : Digest}
@@ -403,7 +411,7 @@ theorem RootEncodingCacheRel.update_same_nonroot
     RootEncodingCacheRel parameter target leftRoot rightRoot
       (Function.update left key (some output))
       (Function.update right key (some output)) := by
-  refine ⟨?_, ?_, ?_⟩
+  refine ⟨?_, ?_, ?_, ?_⟩
   · intro input hinput
     by_cases heq : SplitHashKey.ordinary input = key
     · simp [heq]
@@ -429,6 +437,10 @@ theorem RootEncodingCacheRel.update_same_nonroot
     by_cases heq : SplitHashKey.hidden coordinate = key
     · simp [heq]
     · simp [Function.update_of_ne heq, hrel.hidden coordinate]
+  · intro input guess hguess hleft hright
+    by_cases heq : SplitHashKey.ordinary input = key
+    · simp [heq]
+    · simp [Function.update_of_ne heq, hrel.wrong input guess hguess hleft hright]
 
 def RootEncodingCleanSameRel
     (parameter : PublicParameter) (target : Position)
