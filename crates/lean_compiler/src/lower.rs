@@ -392,6 +392,16 @@ impl FnLower<'_> {
     /// scope. The one cache for a lazily-`SET` constant: `1`, `0` and a range
     /// check's `g^{k-1}` each had their own field, so two of them could name two
     /// different cells holding the same value.
+    ///
+    /// The `SET` is emitted where the cell is allocated, always before anything
+    /// can name it, which is what makes every later write to it a write-once
+    /// equality against a bytecode constant rather than a chance to choose the
+    /// value. It also reverts at a branch join with the rest of [`Scope`]: a
+    /// `SET` first emitted inside a branch must not be named from outside it,
+    /// where the other path leaves the cell unwritten and so prover-chosen.
+    /// Several call sites hoist [`Self::one`] above a branch on purpose; the
+    /// revert is what makes that an optimization rather than the thing holding
+    /// the invariant up.
     fn const_cell(&mut self, v: F192) -> Off {
         let key = [v.c0, v.c1, v.c2];
         if let Some(&o) = self.scope.const_cells.get(&key) {
@@ -1008,8 +1018,16 @@ impl FnLower<'_> {
         self.set_const(p, F192::ONE);
     }
 
-    /// The frame cell holding `g^{k-1}`, the range-check product target, set
-    /// lazily once per distinct bound `k` and shared by that bound's checks.
+    /// The frame cell holding `g^{k-1}`, the range-check product target, shared
+    /// by every check of that bound.
+    ///
+    /// It is an ordinary [`Self::const_cell`], so it is also shared with any
+    /// plain use of the same constant. The sharpest case is `k = 1`, which is
+    /// legal and whose target is `g^0 = 1`: the cell is then the very one
+    /// [`Self::one`] hands out, and in `main` that is also `self_fp`. Sound,
+    /// because the `SET` is emitted at allocation and every later write is the
+    /// write-once equality; but a second WRITER added to any of those paths
+    /// would now land on all of them.
     fn bound_cell(&mut self, k: u64) -> Off {
         self.const_cell(g_pow_u128((k - 1) as u128).into())
     }
