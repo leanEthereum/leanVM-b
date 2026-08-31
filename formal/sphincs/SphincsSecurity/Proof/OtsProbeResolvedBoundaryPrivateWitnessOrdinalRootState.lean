@@ -310,6 +310,55 @@ theorem runCleanFromTable_planProbingHashQuery
           | chain | leaf | ftsLeaf | ftsNode | ftsRoots =>
               simp [runCleanFromTable]
 
+structure RootHiddenCacheRel
+    (target : Position) (leftOutput rightOutput : HashOutput)
+    (left right : SplitHashCache) : Prop where
+  ordinary : ∀ input, left (.ordinary input) = right (.ordinary input)
+  left_target : left (.hidden (.position target)) = some leftOutput
+  right_target : right (.hidden (.position target)) = some rightOutput
+  other_hidden : ∀ coordinate, coordinate ≠ .position target →
+    left (.hidden coordinate) = right (.hidden coordinate)
+
+theorem RootHiddenCacheRel.symm
+    {target : Position} {leftOutput rightOutput : HashOutput}
+    {left right : SplitHashCache}
+    (hrel : RootHiddenCacheRel target leftOutput rightOutput left right) :
+    RootHiddenCacheRel target rightOutput leftOutput right left :=
+  ⟨fun input => (hrel.ordinary input).symm, hrel.right_target, hrel.left_target,
+    fun coordinate hne => (hrel.other_hidden coordinate hne).symm⟩
+
+def replaceHiddenRootCache
+    (target : Position) (output : HashOutput) (cache : SplitHashCache) : SplitHashCache :=
+  Function.update cache (.hidden (.position target)) (some output)
+
+theorem rootHiddenCacheRel_replace
+    (target : Position) (leftOutput rightOutput : HashOutput)
+    (cache : SplitHashCache)
+    (hleft : cache (.hidden (.position target)) = some leftOutput) :
+    RootHiddenCacheRel target leftOutput rightOutput cache
+      (replaceHiddenRootCache target rightOutput cache) := by
+  refine ⟨?_, hleft, ?_, ?_⟩
+  · intro input
+    simp [replaceHiddenRootCache]
+  · simp [replaceHiddenRootCache]
+  · intro coordinate hne
+    have hkey : SplitHashKey.hidden coordinate ≠ .hidden (.position target) := by
+      intro heq
+      exact hne (SplitHashKey.hidden.inj heq)
+    simp [replaceHiddenRootCache, Function.update_of_ne hkey]
+
+theorem replaceHiddenRootCache_involutive
+    (target : Position) (leftOutput rightOutput : HashOutput)
+    (cache : SplitHashCache)
+    (hleft : cache (.hidden (.position target)) = some leftOutput) :
+    replaceHiddenRootCache target leftOutput
+        (replaceHiddenRootCache target rightOutput cache) = cache := by
+  funext key
+  by_cases heq : key = .hidden (.position target)
+  · subst key
+    simp [replaceHiddenRootCache, hleft]
+  · simp [replaceHiddenRootCache, Function.update_of_ne heq]
+
 def RootHiddenCleanSameRel
     (target : Position) (leftOutput rightOutput : HashOutput) :
     Option (CleanRunResult (α × SplitHashCache)) →
@@ -317,7 +366,8 @@ def RootHiddenCleanSameRel
   | some left, some right =>
       RootHiddenStateRel target leftOutput rightOutput left.state right.state ∧
         left.remaining = right.remaining ∧ left.table = right.table ∧
-        left.value.1 = right.value.1 ∧ left.value.2 = right.value.2
+        left.value.1 = right.value.1 ∧
+        RootHiddenCacheRel target leftOutput rightOutput left.value.2 right.value.2
   | none, none => True
   | _, _ => False
 
@@ -327,10 +377,11 @@ def RootHiddenRelates
       (OracleComp (LazyRevealProbe.World Coordinate)) α) : Prop :=
   ∀ leftState rightState,
     RootHiddenStateRel target leftOutput rightOutput leftState rightState →
-    ∀ fuel table cache,
+    ∀ fuel table leftCache rightCache,
+      RootHiddenCacheRel target leftOutput rightOutput leftCache rightCache →
       RelTriple
-        (runCleanFromTable leftState fuel table (left.run cache))
-        (runCleanFromTable rightState fuel table (right.run cache))
+        (runCleanFromTable leftState fuel table (left.run leftCache))
+        (runCleanFromTable rightState fuel table (right.run rightCache))
         (RootHiddenCleanSameRel target leftOutput rightOutput)
 
 theorem rootHiddenRelates_pure
@@ -340,9 +391,9 @@ theorem rootHiddenRelates_pure
         (OracleComp (LazyRevealProbe.World Coordinate)) α)
       (pure value : StateT SplitHashCache
         (OracleComp (LazyRevealProbe.World Coordinate)) α) := by
-  intro leftState rightState hstate fuel table cache
+  intro leftState rightState hstate fuel table leftCache rightCache hcache
   simp only [StateT.run_pure, runCleanFromTable, OracleComp.construct_pure]
-  exact relTriple_pure_pure ⟨hstate, rfl, rfl, rfl, rfl⟩
+  exact relTriple_pure_pure ⟨hstate, rfl, rfl, rfl, hcache⟩
 
 theorem RootHiddenRelates.bind
     {target : Position} {leftOutput rightOutput : HashOutput}
@@ -358,10 +409,11 @@ theorem RootHiddenRelates.bind
         (leftNext leftValue) (rightNext rightValue)) :
     RootHiddenRelates target leftOutput rightOutput
       (left >>= leftNext) (right >>= rightNext) := by
-  intro leftState rightState hstate fuel table cache
+  intro leftState rightState hstate fuel table leftCache rightCache hcache
   rw [StateT.run_bind, StateT.run_bind, runCleanFromTable_bind,
     runCleanFromTable_bind]
-  apply relTriple_bind (hfirst leftState rightState hstate fuel table cache)
+  apply relTriple_bind
+    (hfirst leftState rightState hstate fuel table leftCache rightCache hcache)
   intro leftResult rightResult hresult
   cases leftResult with
   | none =>
@@ -372,12 +424,12 @@ theorem RootHiddenRelates.bind
       cases rightResult with
       | none => simp [RootHiddenCleanSameRel] at hresult
       | some rightResult =>
-          rcases hresult with ⟨hnextState, hremaining, htable, hvalue, hcache⟩
+          rcases hresult with ⟨hnextState, hremaining, htable, hvalue, hnextCache⟩
           simp only
-          rw [← hremaining, ← htable, ← hvalue, ← hcache]
+          rw [← hremaining, ← htable, ← hvalue]
           exact hnext leftResult.value.1 leftResult.value.1 rfl
             leftResult.state rightResult.state hnextState leftResult.remaining
-              leftResult.table leftResult.value.2
+              leftResult.table leftResult.value.2 rightResult.value.2 hnextCache
 
 theorem rootHiddenRelates_planProbingHashQuery
     (target : Position) (leftOutput rightOutput : HashOutput)
@@ -385,11 +437,11 @@ theorem rootHiddenRelates_planProbingHashQuery
     RootHiddenRelates target leftOutput rightOutput
       (planProbingHashQuery parameter input)
       (planProbingHashQuery parameter input) := by
-  intro leftState rightState hstate fuel table cache
+  intro leftState rightState hstate fuel table leftCache rightCache hcache
   rw [runCleanFromTable_planProbingHashQuery,
     runCleanFromTable_planProbingHashQuery]
   apply relTriple_pure_pure
-  refine ⟨hstate, rfl, rfl, ?_, rfl⟩
+  refine ⟨hstate, rfl, rfl, ?_, hcache⟩
   exact congrArg id
     (purePlanProbingHashQuery_eq_of_rootHiddenStateRel hstate parameter input)
 
@@ -397,34 +449,34 @@ theorem rootHiddenRelates_splitUniformImpl
     (target : Position) (leftOutput rightOutput : HashOutput) (n : Nat) :
     RootHiddenRelates target leftOutput rightOutput
       (splitUniformImpl n) (splitUniformImpl n) := by
-  intro leftState rightState hstate fuel table cache
+  intro leftState rightState hstate fuel table leftCache rightCache hcache
   unfold splitUniformImpl LazyRevealProbe.uniformQuery
-  rw [StateT.run_liftM,
+  rw [StateT.run_liftM, StateT.run_liftM,
     runCleanFromTable_uniform_query_bind, runCleanFromTable_uniform_query_bind]
   apply relTriple_bind
     (relTriple_refl (liftM (unifSpec.query n) : ProbComp (Fin (n + 1))))
   intro leftValue rightValue hvalue
   subst rightValue
   simp only [runCleanFromTable, OracleComp.construct_pure]
-  exact relTriple_pure_pure ⟨hstate, rfl, rfl, rfl, rfl⟩
+  exact relTriple_pure_pure ⟨hstate, rfl, rfl, rfl, hcache⟩
 
 theorem rootHiddenRelates_ensureCoordinate
     (target : Position) (leftOutput rightOutput : HashOutput)
     (coordinate : Coordinate) :
     RootHiddenRelates target leftOutput rightOutput
       (ensureCoordinate coordinate) (ensureCoordinate coordinate) := by
-  intro leftState rightState hstate fuel table cache
+  intro leftState rightState hstate fuel table leftCache rightCache hcache
   rw [runCleanFromTable_ensureCoordinate, runCleanFromTable_ensureCoordinate]
-  exact relTriple_pure_pure ⟨hstate.ensure coordinate, rfl, rfl, rfl, rfl⟩
+  exact relTriple_pure_pure ⟨hstate.ensure coordinate, rfl, rfl, rfl, hcache⟩
 
 theorem rootHiddenRelates_probe
     (target : Position) (leftOutput rightOutput : HashOutput)
     (candidate : Probe) :
     RootHiddenRelates target leftOutput rightOutput
       (probe candidate) (probe candidate) := by
-  intro leftState rightState hstate fuel table cache
+  intro leftState rightState hstate fuel table leftCache rightCache hcache
   unfold probe LazyRevealProbe.probeQuery
-  rw [StateT.run_liftM,
+  rw [StateT.run_liftM, StateT.run_liftM,
     runCleanFromTable_probe_query_bind, runCleanFromTable_probe_query_bind]
   cases fuel with
   | zero => exact relTriple_pure_pure trivial
@@ -435,12 +487,12 @@ theorem rootHiddenRelates_probe
       · have hrightRevealed := hrevealed.mp hleftRevealed
         simp only [hleftRevealed, hrightRevealed, ↓reduceIte,
           runCleanFromTable, OracleComp.construct_pure]
-        exact relTriple_pure_pure ⟨hstate, rfl, rfl, rfl, rfl⟩
+        exact relTriple_pure_pure ⟨hstate, rfl, rfl, rfl, hcache⟩
       · have hrightRevealed : candidate.coordinate ∉ rightState.revealed :=
           fun hmem => hleftRevealed (hrevealed.mpr hmem)
         simp only [hleftRevealed, hrightRevealed, ↓reduceIte,
           runCleanFromTable, OracleComp.construct_pure]
         exact relTriple_pure_pure ⟨hstate.addPending candidate.coordinate candidate.candidate,
-          rfl, rfl, rfl, rfl⟩
+          rfl, rfl, rfl, hcache⟩
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
