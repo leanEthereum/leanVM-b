@@ -287,4 +287,71 @@ theorem evalDist_resolve_then_prepareCandidateListFails_of_pendingCovered
   · exact Or.inr
       (noPendingHit_of_pendingCovered_not_occurs position candidates context hcovered hoccurs)
 
+noncomputable def guardedPreparationObserve
+    (candidates : List Probe) (context : DeferredContext) : ProbComp Bool := by
+  classical
+  exact if PendingCoveredBy candidates context then
+    prepareCandidateListFails candidates context
+  else
+    pure true
+
+theorem pendingCoveredBy_of_resolveDeferredPositionValue
+    (position : Position) (candidates : List Probe) (context : DeferredContext)
+    (resolved : DeferredResolution)
+    (hcovered : PendingCoveredBy candidates context)
+    (hresolved : some resolved ∈ support
+      (resolveDeferredPositionValue position context)) :
+    PendingCoveredBy candidates resolved.toDeferredContext := by
+  apply hcovered.of_subset
+  rw [resolveDeferredPositionValue_pending position context resolved hresolved]
+  exact Finset.filter_subset _ _
+
+theorem evalDist_resolve_then_guardedPreparationObserve_of_covered
+    (position : Position) (candidates : List Probe) (context : DeferredContext)
+    (hcovered : PendingCoveredBy candidates context) :
+    evalDist (resolveDeferredPositionValue position context >>= fun resolved =>
+      match resolved with
+      | none => pure true
+      | some resolved => guardedPreparationObserve candidates resolved.toDeferredContext) =
+      evalDist (guardedPreparationObserve candidates context) := by
+  have hleft : evalDist (resolveDeferredPositionValue position context >>= fun resolved =>
+        match resolved with
+        | none => pure true
+        | some resolved => guardedPreparationObserve candidates resolved.toDeferredContext) =
+      evalDist (resolveDeferredPositionValue position context >>= fun resolved =>
+        match resolved with
+        | none => pure true
+        | some resolved => prepareCandidateListFails candidates resolved.toDeferredContext) := by
+    apply evalDist_bind_congr
+    intro resolved hresolved
+    cases resolved with
+    | none => rfl
+    | some resolved =>
+        have hnextCovered := pendingCoveredBy_of_resolveDeferredPositionValue position candidates
+          context resolved hcovered hresolved
+        simp [guardedPreparationObserve, hnextCovered]
+  calc
+    _ = evalDist (resolveDeferredPositionValue position context >>= fun resolved =>
+          match resolved with
+          | none => pure true
+          | some resolved => prepareCandidateListFails candidates resolved.toDeferredContext) :=
+      hleft
+    _ = evalDist (prepareCandidateListFails candidates context) :=
+      evalDist_resolve_then_prepareCandidateListFails_of_pendingCovered position candidates
+        context hcovered
+    _ = _ := by simp [guardedPreparationObserve, hcovered]
+
+theorem probEvent_resolve_then_guardedPreparationObserve_le
+    (position : Position) (candidates : List Probe) (context : DeferredContext) :
+    Pr[= true | resolveDeferredPositionValue position context >>= fun resolved =>
+      match resolved with
+      | none => pure true
+      | some resolved => guardedPreparationObserve candidates resolved.toDeferredContext] ≤
+      Pr[= true | guardedPreparationObserve candidates context] := by
+  by_cases hcovered : PendingCoveredBy candidates context
+  · exact le_of_eq (OracleComp.probOutput_congr rfl
+      (evalDist_resolve_then_guardedPreparationObserve_of_covered position candidates context
+        hcovered))
+  · simp [guardedPreparationObserve, hcovered]
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
