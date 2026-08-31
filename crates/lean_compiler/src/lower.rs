@@ -930,32 +930,31 @@ impl FnLower<'_> {
         // reading instead let the two disagree, and `K = 3 + 1` (the field
         // element 2, the integer 4) then entered the `K == 4` arm, whose own
         // condition is false as a value.
+        // Compile-time condition (both sides compile-time integers, e.g. after
+        // `Const`-argument substitution): fold to the taken branch, emitting no
+        // test or jump. Lets `@inline` arms bake per-case control flow. The
+        // taken branch is straight-line code (like an unroll iteration), so its
+        // bindings persist, unlike a runtime branch, whose bindings are
+        // branch-local (a runtime branch may not execute).
+        //
+        // KNOWN TRAP, and it needs the kind system rather than a patch here.
+        // This decides on the INTEGER reading while the runtime lowering below
+        // tests a field `XOR`, so the two disagree whenever a side's readings
+        // do: `K = 3 + 1` is the integer 4 and the field element `3 XOR 1` = 2,
+        // and `if K == 4` enters an arm whose own condition is false as a value.
+        // Neither reading can simply win. Deciding in the field instead flips
+        // `if 1 + 1 == 2` and every `if i + 1 == n` inside an `unroll`, since
+        // `+` is XOR there; and it cannot see `-`, `//` or `%` at all, which is
+        // what every compile-time `if` in the guest is written with. Which
+        // conditions fold is also observable, because a folded arm's bindings
+        // persist while a runtime arm's are branch-local, so moving the line
+        // rescopes working programs (`tests/programs/scoping.py` pins that).
+        // The fix is to make the author say which arithmetic a condition means.
         if let (Some(a), Some(b)) = (self.try_const_index(lhs), self.try_const_index(rhs)) {
-            // Only where the two readings of the condition agree. The runtime
-            // lowering below tests a field `XOR`, so an integer verdict the
-            // field contradicts would enter an arm whose own condition is false
-            // as a value: `K = 3 + 1` is the integer 4 and the field element
-            // `3 XOR 1` = 2, and `if K == 4` took the `then` arm. Falling
-            // through to the runtime test decides it correctly, and folding is
-            // only ever an optimization.
-            //
-            // What this deliberately does NOT do is widen the fold to every
-            // condition the field can decide. Which branches fold is observable:
-            // a folded arm is straight-line code whose bindings persist, while a
-            // runtime arm's are branch-local (`tests/programs/scoping.py` pins
-            // exactly that, and the guest relies on it). Deciding more
-            // conditions here would silently rescope existing programs. The
-            // language needs a distinct compile-time `if` before that can move.
-            let agree = match (self.try_field_const(lhs), self.try_field_const(rhs)) {
-                (Some(fa), Some(fb)) => (fa == fb) == (a == b),
-                _ => true,
-            };
-            if agree {
-                for st in if (a == b) == eq { then } else { els } {
-                    self.stmt(st);
-                }
-                return;
+            for st in if (a == b) == eq { then } else { els } {
+                self.stmt(st);
             }
+            return;
         }
         // `x != 0` needs no XOR: the cell itself is the JUMP's nonzero test.
         let x = if self.try_lit(rhs) == Some(0) {

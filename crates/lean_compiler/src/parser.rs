@@ -24,9 +24,14 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
     // at whatever indentation it landed on. Reject it instead.
     // A `#` truncates the rest of the line just as silently, and changes the
     // compiled program with no diagnostic at all.
-    if let Some((k, _)) = replacements.iter().find(|(_, v)| v.contains('\n') || v.contains('#')) {
+    // A `"` reshapes the line just as a `#` does, now that a string literal is one
+    // opaque token: an odd number of them swallows the rest of the line.
+    if let Some((k, _)) = replacements
+        .iter()
+        .find(|(_, v)| v.contains('\n') || v.contains('#') || v.contains('"'))
+    {
         return Err(format!(
-            "placeholder `{k}` contains a newline or `#`, which would reshape the line"
+            "placeholder `{k}` contains a newline, `#` or `\"`, which would reshape the line"
         ));
     }
     let src = apply_replacements(src, replacements);
@@ -494,6 +499,12 @@ impl Parser {
                     const_params.push(false);
                 }
             }
+        }
+        // A repeated parameter name binds twice, and the second binding used to
+        // land in a different one of the scope's maps than the first, so `a` was
+        // a StackBuf and a scalar at once inside the body.
+        if let Some(dup) = params.iter().enumerate().find_map(|(i, p)| params[..i].contains(p).then_some(p)) {
+            return Err(format!("parameter `{dup}` is declared twice"));
         }
         self.i += 1;
         let body = self.block(indent)?;

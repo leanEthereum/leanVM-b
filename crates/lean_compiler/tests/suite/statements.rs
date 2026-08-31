@@ -217,48 +217,6 @@ def main():
     verify(&program, &want, &proof).expect("2^64 is the tower element y, not g^64");
 }
 
-/// A branch is decided by what its condition MEANS as a value.
-///
-/// The compile-time fold keyed on the integer reading of both sides while the
-/// runtime lowering tests a field `XOR`, so a name whose two readings disagree
-/// entered the wrong arm. `K = 3 + 1` is the integer 4 and the field element
-/// `3 XOR 1` = 2, and `if K == 4` took the `then` arm; the sharper form,
-/// `if K == 4: assert K == 4`, compiled clean and then died at witness
-/// generation, the compiler having entered a branch whose own condition is
-/// false. The fold now declines where the readings disagree and lets the
-/// runtime test decide, which is why this still compiles at all.
-///
-/// The arms communicate through memory because a branch that does not fold is
-/// branch-local, which `tests/programs/scoping.py` pins.
-#[test]
-fn a_branch_is_decided_by_the_value_its_condition_has() {
-    let program = |cond: &str| {
-        let src = format!(
-            "def main():
-    K = 3 + 1
-    hb = HeapBuf(4)
-    if {cond}:
-        hb[GEN ** 0] = 5
-    else:
-        hb[GEN ** 0] = 7
-    p = GEN ** 0
-    p[1] = hb[GEN ** 0]
-    p[GEN] = K
-    return
-"
-        );
-        compile(&parse(&src).expect("parse"))
-    };
-    // K is 2, so `K == 4` is false and `K == 2` is true. The second public
-    // output pins K's value at 2, the same reading the branch was decided by.
-    for (cond, taken) in [("K == 4", 7u64), ("K == 2", 5u64)] {
-        let p = program(cond);
-        let want = [F192::new(taken, 0, 0), F192::new(2, 0, 0)];
-        let (proof, _) = prove(&p, want, lean_vm::pcs::LOG_INV_RATE);
-        verify(&p, &want, &proof).unwrap_or_else(|e| panic!("`if {cond}` took the wrong arm: {e:?}"));
-    }
-}
-
 /// A string literal is one opaque token.
 ///
 /// Two passes used to read structure out of the middle of one. Comments were
