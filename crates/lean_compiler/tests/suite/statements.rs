@@ -217,6 +217,24 @@ def main():
     verify(&program, &want, &proof).expect("2^64 is the tower element y, not g^64");
 }
 
+/// An operator missing a side says which operator and which side.
+///
+/// Every one of these used to report `cannot parse expression \`\``: the empty
+/// operand was handed to the expression parser, which had nothing to name. A
+/// leading `-` is the common one, since the language has no unary minus.
+#[test]
+fn an_operator_missing_an_operand_says_so() {
+    for (src, want) in [
+        ("-3 + 5", "`-` has no left operand"),
+        ("1 +", "`+` has no right operand"),
+        ("* 2", "`*` has no left operand"),
+        ("4 // ", "`//` has no right operand"),
+    ] {
+        let err = lean_compiler::parse_const(src).expect_err(src);
+        assert!(err.contains(want), "{src}: got `{err}`, wanted `{want}`");
+    }
+}
+
 /// A string literal is one opaque token.
 ///
 /// Two passes used to read structure out of the middle of one. Comments were

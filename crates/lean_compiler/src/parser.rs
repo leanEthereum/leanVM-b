@@ -1344,6 +1344,24 @@ fn parse_match_range(lhs: &str, rhs: &str) -> Result<StmtKind, String> {
 /// Combine one tier's operands left-associatively: `node` builds the AST node
 /// for each operator (as [`split_add`] / [`split_mul`] tag it).
 fn fold_ops(segs: &[String], ops: &[u8], node: impl Fn(u8, Box<Expr>, Box<Expr>) -> Expr) -> Result<Expr, String> {
+    // An empty operand is an operator missing a side: a leading `-`, a trailing
+    // operator, or two in a row. Naming it beats letting `parse_expr("")` report
+    // an empty backtick, which is what every one of these used to say.
+    if let Some(i) = segs.iter().position(|seg| seg.trim().is_empty()) {
+        let (op, side) = if i == 0 { (ops[0], "left") } else { (ops[i - 1], "right") };
+        // `split_mul` encodes the two divisions, so spell them back out.
+        let shown = match op {
+            b'/' => "//".to_string(),
+            b'd' => "/".to_string(),
+            c => (c as char).to_string(),
+        };
+        let hint = if op == b'-' && i == 0 {
+            ": there is no unary minus, and field subtraction is `+`"
+        } else {
+            ""
+        };
+        return Err(format!("`{shown}` has no {side} operand{hint}"));
+    }
     let mut acc = parse_expr(&segs[0])?;
     for (&op, seg) in ops.iter().zip(&segs[1..]) {
         let rhs = Box::new(parse_expr(seg)?);
@@ -1485,6 +1503,9 @@ fn parse_expr(s: &str) -> Result<Expr, String> {
     }
     if s.chars().all(|c| c.is_alphanumeric() || c == '_') && !s.is_empty() {
         return Ok(Expr::Var(s.to_string()));
+    }
+    if s.is_empty() {
+        return Err("expected an expression".into());
     }
     Err(format!("cannot parse expression `{s}`"))
 }
