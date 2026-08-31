@@ -31,6 +31,10 @@ def layerRootPosition (lay : Layer) (tree : TreeIndex) : Position :=
 def IsLayerRoot (position : Position) : Prop :=
   ∃ lay tree, position = layerRootPosition lay tree
 
+def Probe.IsLayerRoot (candidate : Probe) : Prop :=
+  ∃ position, candidate.coordinate = .position position ∧
+    SphincsSecurity.Concrete.OtsProbeSimulation.IsLayerRoot position
+
 theorem isShortLayerRoot_of_isLayerRoot_of_parent
     {position parent : Position} (hroot : IsLayerRoot position)
     (hparent : Position.parentOf position = some parent) :
@@ -115,7 +119,7 @@ theorem encodingLayerRootCandidateAt_isLayerRoot
 theorem decodeEncodingLayerRootCandidate?_some_isLayerRoot
     {parameter : PublicParameter} {input : HashInput} {candidate : Probe}
     (hdecode : decodeEncodingLayerRootCandidate? parameter input = some candidate) :
-    ∃ position, candidate.coordinate = .position position ∧ IsLayerRoot position :=
+    candidate.IsLayerRoot :=
   encodingLayerRootCandidateAt_isLayerRoot
     ((decodeEncodingLayerRootCandidate?_eq_some_iff parameter input candidate).mp hdecode)
 

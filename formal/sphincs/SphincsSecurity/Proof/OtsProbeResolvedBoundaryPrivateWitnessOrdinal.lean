@@ -83,6 +83,35 @@ def WitnessFirstUsesOrdinal
     output.1 = some witness ∧ sourceOrdinal.val = ordinal ∧
       firstPrivateWitnessOrdinal? witness output.2 = some sourceOrdinal
 
+def WitnessFirstUsesLayerRootOrdinal
+    (ordinal : Nat) (output : PrivateWitnessPlanOutput) : Prop :=
+  ∃ witness sourceOrdinal,
+    output.1 = some witness ∧ sourceOrdinal.val = ordinal ∧
+      firstPrivateWitnessOrdinal? witness output.2 = some sourceOrdinal ∧
+      (output.2.get sourceOrdinal).IsLayerRoot
+
+def WitnessFirstUsesNonLayerRootOrdinal
+    (ordinal : Nat) (output : PrivateWitnessPlanOutput) : Prop :=
+  ∃ witness sourceOrdinal,
+    output.1 = some witness ∧ sourceOrdinal.val = ordinal ∧
+      firstPrivateWitnessOrdinal? witness output.2 = some sourceOrdinal ∧
+      ¬(output.2.get sourceOrdinal).IsLayerRoot
+
+theorem witnessFirstUsesOrdinal_iff_root_or_nonRoot
+    {ordinal : Nat} {output : PrivateWitnessPlanOutput} :
+    WitnessFirstUsesOrdinal ordinal output ↔
+      WitnessFirstUsesLayerRootOrdinal ordinal output ∨
+        WitnessFirstUsesNonLayerRootOrdinal ordinal output := by
+  constructor
+  · rintro ⟨witness, sourceOrdinal, hwitness, hvalue, hfirst⟩
+    by_cases hroot : (output.2.get sourceOrdinal).IsLayerRoot
+    · exact Or.inl ⟨witness, sourceOrdinal, hwitness, hvalue, hfirst, hroot⟩
+    · exact Or.inr ⟨witness, sourceOrdinal, hwitness, hvalue, hfirst, hroot⟩
+  · rintro (⟨witness, sourceOrdinal, hwitness, hvalue, hfirst, _hroot⟩ |
+      ⟨witness, sourceOrdinal, hwitness, hvalue, hfirst, _hroot⟩)
+    · exact ⟨witness, sourceOrdinal, hwitness, hvalue, hfirst⟩
+    · exact ⟨witness, sourceOrdinal, hwitness, hvalue, hfirst⟩
+
 noncomputable def boundedPrivateWitnessOrdinal?
     (q : Nat) (output : PrivateWitnessPlanOutput) : Option (Fin q) := by
   classical

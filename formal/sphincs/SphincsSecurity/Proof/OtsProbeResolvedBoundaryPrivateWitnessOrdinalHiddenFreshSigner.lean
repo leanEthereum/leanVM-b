@@ -12,7 +12,7 @@ from the candidate-freshness argument.
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
-open OracleComp OracleSpec
+open OracleComp OracleSpec ENNReal
 
 theorem rootAwarePlannedCandidate?_hasStructuralParent
     {parameter : PublicParameter} {input : HashInput}
@@ -362,6 +362,39 @@ def CandidatePositionsFreshExceptLayerRoots (context : DeferredContext) : Prop :
     Coordinate.position position ∉ context.state.revealed →
     (context.state.values (.position position) = none ∧ context.values position = none) ∨
       IsLayerRoot position
+
+theorem probEvent_hiddenPrivateCandidateFire_le_of_freshExceptLayerRoots
+    (candidate : Probe) (context : DeferredContext)
+    (hparent : candidate.HasStructuralParent)
+    (hnotRoot : ¬ (Probe.IsLayerRoot candidate))
+    (hfresh : CandidatePositionsFreshExceptLayerRoots context) :
+    Pr[= true | hiddenPrivateCandidateFire candidate context] ≤
+      ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  by_cases hrevealed : candidate.coordinate ∈ context.state.revealed
+  · simp [hiddenPrivateCandidateFire, hrevealed]
+  · rw [hiddenPrivateCandidateFire_of_not_revealed candidate context hrevealed]
+    cases hcoordinate : candidate.coordinate with
+    | chainStart lay tree leafIdx chainIdx =>
+        simp [privateCandidateFire, hcoordinate]
+    | position position =>
+        simp only [Probe.HasStructuralParent, hcoordinate] at hparent
+        obtain ⟨parent, hpositionParent⟩ := hparent
+        have hpositionHidden : Coordinate.position position ∉ context.state.revealed := by
+          simpa [hcoordinate] using hrevealed
+        rcases hfresh position parent hpositionParent hpositionHidden with
+          hpositionFresh | hroot
+        · exact probEvent_privateCandidateFire_le_of_fresh candidate context
+            (by
+              intro other hother
+              have : position = other := by simpa [hcoordinate] using hother
+              subst other
+              exact hpositionFresh.1)
+            (by
+              intro other hother
+              have : position = other := by simpa [hcoordinate] using hother
+              subst other
+              exact hpositionFresh.2)
+        · exact False.elim (hnotRoot ⟨position, hcoordinate, hroot⟩)
 
 theorem CandidatePositionsFresh.exceptLayerRoots
     {context : DeferredContext} (hfresh : CandidatePositionsFresh context) :
