@@ -290,6 +290,32 @@ def main():
     verify(&program, &want, &proof).expect("one hint per iteration");
 }
 
+/// A trailing factor after a `hint_witness` call may not vanish into the
+/// stream name. `call_args` strips the line's LAST `)`, and the string
+/// argument then absorbs anything between the call's own `)` and there:
+/// `hint_witness(rb[0:1], "a") * f("b")` parsed as a hint for the stream
+/// `a") * f("b`, and the rest of the line was gone. Both forms are guarded
+/// by `whole_call`; the line then falls through to `parse_expr`, which
+/// refuses the string literal, with the line.
+#[test]
+fn a_hint_call_spans_its_whole_line() {
+    let stmt = "\
+def main():
+    rb = StackBuf(1)
+    hint_witness(rb[0:1], \"a\") * f(\"b\")
+    return
+";
+    let expr = "\
+def main():
+    m = hint_witness(\"a\") * f(\"b\")
+    return
+";
+    for src in [stmt, expr] {
+        let err = parse(src).expect_err("a trailing factor must not parse");
+        assert!(err.contains("cannot parse expression"), "{err}");
+    }
+}
+
 /// The scalar hint binds like any other statement that binds.
 ///
 /// Three `StmtKind` walkers have a catch-all arm, and each silently swallowed

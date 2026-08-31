@@ -682,8 +682,10 @@ impl Parser {
             });
         }
         // `hint_witness(dest, "name")`: the string literal is not an
-        // expression; parsed here.
-        if let Some(parts) = call_args(&line, "hint_witness") {
+        // expression; parsed here. `whole_call` for the same reason as the
+        // scalar form: the string arg is what lets a trailing `* f("b")`
+        // vanish into the stream name instead of failing to parse.
+        if let Some(parts) = call_args(&line, "hint_witness").filter(|_| whole_call(&line)) {
             let [dest, name] = parts.as_slice() else {
                 return Err("hint_witness(dest, \"name\") takes two arguments".into());
             };
