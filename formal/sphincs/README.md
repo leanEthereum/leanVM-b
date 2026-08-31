@@ -308,6 +308,8 @@ The state side of the swap now has its own quotient. `RootHiddenStateRel` permit
 
 The complete public planner is insensitive to the differing hidden root. Its first-missing and leaf scans are equal because they inspect only whether a cell is present, and `purePlanProbingHashQuery` plus the root-aware optional candidate are therefore identical in the two states. Running the monadic planners through `runCleanFromTable` is now proved exactly neutral: each returns that pure plan without changing state, fuel, table or cache. This supplies one common plan before the remaining suffix comparison.
 
+`RootHiddenRelates` now lifts the state quotient to complete clean runs, retaining equal fuel, fixed table, returned value and split cache, and it composes through monadic binds. Pure computations, the full planner, uniform outer draws, administrative ensures and proof-only probes are related. The remaining primitive work is narrowed to safe ordinary lookup, target-aware structural resolution, and the comparison signer.
+
 Two places a proof can go wrong, both found by attacking the claim rather than by reading it:
 
 - **A strong forgery needs no chain inversion.** `Ver` does not check that the counter is the least admissible one, so a second `c'` with `Enc(P,lay,tau,e,M,c') = x` reuses the chain values verbatim and verifies. Since the codeword fixes the digest, that is one `2^-128` hit per query and it is harmless, but it is a branch of its own: the one-time signature is unforgeable on a *new* message by incomparability, and unforgeable on the *signed* message only by collision resistance at `tw_enc`.

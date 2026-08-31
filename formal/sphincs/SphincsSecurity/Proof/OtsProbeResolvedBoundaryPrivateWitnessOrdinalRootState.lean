@@ -11,6 +11,7 @@ state-side companion of `RootEncodingCacheRel`.
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
 open OracleComp OracleSpec
+open OracleComp.ProgramLogic.Relational
 
 structure RootHiddenStateRel
     (target : Position) (leftOutput rightOutput : HashOutput)
@@ -308,5 +309,138 @@ theorem runCleanFromTable_planProbingHashQuery
               simp [runCleanFromTable]
           | chain | leaf | ftsLeaf | ftsNode | ftsRoots =>
               simp [runCleanFromTable]
+
+def RootHiddenCleanSameRel
+    (target : Position) (leftOutput rightOutput : HashOutput) :
+    Option (CleanRunResult (α × SplitHashCache)) →
+      Option (CleanRunResult (α × SplitHashCache)) → Prop
+  | some left, some right =>
+      RootHiddenStateRel target leftOutput rightOutput left.state right.state ∧
+        left.remaining = right.remaining ∧ left.table = right.table ∧
+        left.value.1 = right.value.1 ∧ left.value.2 = right.value.2
+  | none, none => True
+  | _, _ => False
+
+def RootHiddenRelates
+    (target : Position) (leftOutput rightOutput : HashOutput)
+    (left right : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α) : Prop :=
+  ∀ leftState rightState,
+    RootHiddenStateRel target leftOutput rightOutput leftState rightState →
+    ∀ fuel table cache,
+      RelTriple
+        (runCleanFromTable leftState fuel table (left.run cache))
+        (runCleanFromTable rightState fuel table (right.run cache))
+        (RootHiddenCleanSameRel target leftOutput rightOutput)
+
+theorem rootHiddenRelates_pure
+    (target : Position) (leftOutput rightOutput : HashOutput) (value : α) :
+    RootHiddenRelates target leftOutput rightOutput
+      (pure value : StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate)) α)
+      (pure value : StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate)) α) := by
+  intro leftState rightState hstate fuel table cache
+  simp only [StateT.run_pure, runCleanFromTable, OracleComp.construct_pure]
+  exact relTriple_pure_pure ⟨hstate, rfl, rfl, rfl, rfl⟩
+
+theorem RootHiddenRelates.bind
+    {target : Position} {leftOutput rightOutput : HashOutput}
+    {left : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α}
+    {right : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α}
+    {leftNext rightNext : α → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) β}
+    (hfirst : RootHiddenRelates target leftOutput rightOutput left right)
+    (hnext : ∀ leftValue rightValue, leftValue = rightValue →
+      RootHiddenRelates target leftOutput rightOutput
+        (leftNext leftValue) (rightNext rightValue)) :
+    RootHiddenRelates target leftOutput rightOutput
+      (left >>= leftNext) (right >>= rightNext) := by
+  intro leftState rightState hstate fuel table cache
+  rw [StateT.run_bind, StateT.run_bind, runCleanFromTable_bind,
+    runCleanFromTable_bind]
+  apply relTriple_bind (hfirst leftState rightState hstate fuel table cache)
+  intro leftResult rightResult hresult
+  cases leftResult with
+  | none =>
+      cases rightResult with
+      | none => exact relTriple_pure_pure trivial
+      | some rightResult => simp [RootHiddenCleanSameRel] at hresult
+  | some leftResult =>
+      cases rightResult with
+      | none => simp [RootHiddenCleanSameRel] at hresult
+      | some rightResult =>
+          rcases hresult with ⟨hnextState, hremaining, htable, hvalue, hcache⟩
+          simp only
+          rw [← hremaining, ← htable, ← hvalue, ← hcache]
+          exact hnext leftResult.value.1 leftResult.value.1 rfl
+            leftResult.state rightResult.state hnextState leftResult.remaining
+              leftResult.table leftResult.value.2
+
+theorem rootHiddenRelates_planProbingHashQuery
+    (target : Position) (leftOutput rightOutput : HashOutput)
+    (parameter : PublicParameter) (input : HashInput) :
+    RootHiddenRelates target leftOutput rightOutput
+      (planProbingHashQuery parameter input)
+      (planProbingHashQuery parameter input) := by
+  intro leftState rightState hstate fuel table cache
+  rw [runCleanFromTable_planProbingHashQuery,
+    runCleanFromTable_planProbingHashQuery]
+  apply relTriple_pure_pure
+  refine ⟨hstate, rfl, rfl, ?_, rfl⟩
+  exact congrArg id
+    (purePlanProbingHashQuery_eq_of_rootHiddenStateRel hstate parameter input)
+
+theorem rootHiddenRelates_splitUniformImpl
+    (target : Position) (leftOutput rightOutput : HashOutput) (n : Nat) :
+    RootHiddenRelates target leftOutput rightOutput
+      (splitUniformImpl n) (splitUniformImpl n) := by
+  intro leftState rightState hstate fuel table cache
+  unfold splitUniformImpl LazyRevealProbe.uniformQuery
+  rw [StateT.run_liftM,
+    runCleanFromTable_uniform_query_bind, runCleanFromTable_uniform_query_bind]
+  apply relTriple_bind
+    (relTriple_refl (liftM (unifSpec.query n) : ProbComp (Fin (n + 1))))
+  intro leftValue rightValue hvalue
+  subst rightValue
+  simp only [runCleanFromTable, OracleComp.construct_pure]
+  exact relTriple_pure_pure ⟨hstate, rfl, rfl, rfl, rfl⟩
+
+theorem rootHiddenRelates_ensureCoordinate
+    (target : Position) (leftOutput rightOutput : HashOutput)
+    (coordinate : Coordinate) :
+    RootHiddenRelates target leftOutput rightOutput
+      (ensureCoordinate coordinate) (ensureCoordinate coordinate) := by
+  intro leftState rightState hstate fuel table cache
+  rw [runCleanFromTable_ensureCoordinate, runCleanFromTable_ensureCoordinate]
+  exact relTriple_pure_pure ⟨hstate.ensure coordinate, rfl, rfl, rfl, rfl⟩
+
+theorem rootHiddenRelates_probe
+    (target : Position) (leftOutput rightOutput : HashOutput)
+    (candidate : Probe) :
+    RootHiddenRelates target leftOutput rightOutput
+      (probe candidate) (probe candidate) := by
+  intro leftState rightState hstate fuel table cache
+  unfold probe LazyRevealProbe.probeQuery
+  rw [StateT.run_liftM,
+    runCleanFromTable_probe_query_bind, runCleanFromTable_probe_query_bind]
+  cases fuel with
+  | zero => exact relTriple_pure_pure trivial
+  | succ remaining =>
+      have hrevealed : candidate.coordinate ∈ leftState.revealed ↔
+          candidate.coordinate ∈ rightState.revealed := by rw [hstate.revealed]
+      by_cases hleftRevealed : candidate.coordinate ∈ leftState.revealed
+      · have hrightRevealed := hrevealed.mp hleftRevealed
+        simp only [hleftRevealed, hrightRevealed, ↓reduceIte,
+          runCleanFromTable, OracleComp.construct_pure]
+        exact relTriple_pure_pure ⟨hstate, rfl, rfl, rfl, rfl⟩
+      · have hrightRevealed : candidate.coordinate ∉ rightState.revealed :=
+          fun hmem => hleftRevealed (hrevealed.mpr hmem)
+        simp only [hleftRevealed, hrightRevealed, ↓reduceIte,
+          runCleanFromTable, OracleComp.construct_pure]
+        exact relTriple_pure_pure ⟨hstate.addPending candidate.coordinate candidate.candidate,
+          rfl, rfl, rfl, rfl⟩
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
