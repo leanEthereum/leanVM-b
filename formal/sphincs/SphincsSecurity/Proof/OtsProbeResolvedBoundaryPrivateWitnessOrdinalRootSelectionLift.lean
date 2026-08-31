@@ -332,4 +332,34 @@ theorem relTriple_directRootSelection_materializedOutcome
             rw [hrightMaterialized] at hsign
             exact hsign
 
+theorem relTriple_directRootSelection_materializedShadow
+    (ordinal : Nat) (parameter : PublicParameter) (publicRoot : Digest)
+    (target : Position) (leftOutput : HashOutput) (rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (candidates : List Probe) (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (hvalid : context.Valid) (hcompletable : DeferredCompletable table context)
+    (hpublished : PublishedValues context.state)
+    (hcanonical : CanonicalMaterializedValues table context)
+    (hprefix : CandidatesAvoidRoots target (truncateHash leftOutput) rightRoot candidates) :
+    RelTriple
+      (directDetailedBoundaryPrivateOrdinalSelection ordinal parameter publicRoot ftsSecret
+        computation candidates context fuel table cache)
+      (materializedActualRootAvoidingOrdinalSelectionOutcome ordinal parameter publicRoot target
+        (truncateHash leftOutput) rightRoot ftsSecret computation candidates
+        (materializedDeferredState context) fuel table cache)
+      (RootSelectionBridgeRel target leftOutput rightRoot ordinal) := by
+  let right := materializedDeferredContext context
+  have hcontext := finalizationContextLE_materializedDeferredContext hvalid hcompletable
+  apply relTriple_directRootSelection_materializedOutcome ordinal parameter publicRoot target
+    leftOutput rightRoot ftsSecret computation candidates context right fuel fuel table cache cache
+    hcontext le_rfl rfl
+  · rfl
+  · exact valuesLE_materializedDeferredState context
+  · exact hpublished
+  · rfl
+  · exact hcanonical
+  · exact hprefix
+
 end SphincsSecurity.Concrete.OtsProbeSimulation

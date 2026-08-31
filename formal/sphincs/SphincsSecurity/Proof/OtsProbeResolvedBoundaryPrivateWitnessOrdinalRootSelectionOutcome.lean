@@ -109,6 +109,23 @@ theorem relTriple_finished_none_of_no_good
   intro leftValue rightValue hrelation hgood
   exact False.elim (hnotGood leftValue hrelation.1.2 hgood)
 
+theorem probEvent_goodSelection_le_failure_add_match
+    (target : Position) (leftOutput : HashOutput)
+    (rightRoot : Digest) (ordinal : Nat)
+    (left : ProbComp (Option PrivateOrdinalSelection))
+    (right : ProbComp MaterializedSelectionOutcome)
+    (hrel : RelTriple left right
+      (RootSelectionBridgeRel target leftOutput rightRoot ordinal)) :
+    Pr[privateOrdinalSelectionGoodForRoots target leftOutput rightRoot ordinal | left] ≤
+      Pr[MaterializedSelectionOutcome.isFailure | right] +
+        Pr[fun outcome => outcome.Matches target (truncateHash leftOutput) | right] := by
+  calc
+    _ ≤ Pr[fun outcome => outcome.isFailure ∨
+          outcome.Matches target (truncateHash leftOutput) | right] :=
+      probEvent_le_of_relTriple hrel (fun leftValue rightValue hrelation hgood =>
+        hrelation hgood)
+    _ ≤ _ := probEvent_or_le _ _ _
+
 noncomputable def guardPrivateOrdinalSelection
     (target : Position)
     (observe : DeferredContext → Nat → α → List Probe →
