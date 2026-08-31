@@ -328,6 +328,28 @@ fn strip_comment(raw: &str) -> &str {
     raw
 }
 
+/// The inside of a `const(...)` wrapping the WHOLE of `s`, or `None`.
+///
+/// `const(a) == b` is not one: its first `)` closes before the end, so the
+/// wrapper is a subterm and the condition as a whole is an ordinary one.
+fn strip_const_wrapper(s: &str) -> Option<&str> {
+    let inner = s.trim().strip_prefix("const(")?.strip_suffix(')')?;
+    let mut depth = 0i32;
+    for c in inner.bytes() {
+        match c {
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => {
+                depth -= 1;
+                if depth < 0 {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(inner)
+}
+
 /// The first top-level comparison operator in `s`. Used only on a line that
 /// reached the bare-call fallback, so an `assert` or an assignment never gets
 /// here and a comparison nested in a call sits at depth > 0.
@@ -800,6 +822,10 @@ impl Parser {
     /// nested `if`).
     fn if_stmt(&mut self, header: &str, indent: usize) -> Result<StmtKind, String> {
         let cond = header.strip_suffix(':').ok_or("`if` needs `:`")?;
+        let (cond, force_const) = match strip_const_wrapper(cond) {
+            Some(inner) => (inner, true),
+            None => (cond, false),
+        };
         let (eq, l, r) = if let Some((l, r)) = split_once_top(cond, "==") {
             (true, l, r)
         } else if let Some((l, r)) = split_once_top(cond, "!=") {
@@ -838,6 +864,7 @@ impl Parser {
             rhs,
             then,
             els,
+            force_const,
         })
     }
 
@@ -1256,6 +1283,7 @@ fn subst_kind(s: &StmtKind, name: &str, to: &Expr) -> (StmtKind, bool) {
             rhs,
             then,
             els,
+            force_const,
         } => (
             StmtKind::If {
                 eq: *eq,
@@ -1263,6 +1291,7 @@ fn subst_kind(s: &StmtKind, name: &str, to: &Expr) -> (StmtKind, bool) {
                 rhs: e(rhs),
                 then: subst_stmts(then, name, to),
                 els: subst_stmts(els, name, to),
+                force_const: *force_const,
             },
             false,
         ),

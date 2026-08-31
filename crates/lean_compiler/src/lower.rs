@@ -901,43 +901,44 @@ impl FnLower<'_> {
     }
 
     /// Lower `if` / `else`, arranging the blocks so the nonzero `XOR` result jumps to the correct arm.
-    fn lower_if(&mut self, eq: bool, lhs: &Expr, rhs: &Expr, then: &[Stmt], els: &[Stmt]) {
-        // Compile-time condition: fold to the taken branch, emitting no test or
-        // jump. Lets `@inline` arms bake per-case control flow. The taken branch
-        // is straight-line code (like an unroll iteration), so its bindings
-        // persist, unlike a runtime branch, whose bindings are branch-local (a
-        // runtime branch may not execute).
+    fn lower_if(&mut self, eq: bool, lhs: &Expr, rhs: &Expr, then: &[Stmt], els: &[Stmt], force_const: bool) {
+        // A compile-time condition folds to the taken branch, emitting no test or
+        // jump, which is what lets an `@inline` arm bake per-case control flow. The
+        // taken branch is then straight-line code, so its bindings persist, unlike
+        // a runtime branch's, which are branch-local because it may not execute.
         //
-        // Decided in the FIELD, because that is what the runtime lowering below
-        // decides: the test is an `XOR` against zero. Folding on the integer
-        // reading instead let the two disagree, and `K = 3 + 1` (the field
-        // element 2, the integer 4) then entered the `K == 4` arm, whose own
-        // condition is false as a value.
-        // Compile-time condition (both sides compile-time integers, e.g. after
-        // `Const`-argument substitution): fold to the taken branch, emitting no
-        // test or jump. Lets `@inline` arms bake per-case control flow. The
-        // taken branch is straight-line code (like an unroll iteration), so its
-        // bindings persist, unlike a runtime branch, whose bindings are
-        // branch-local (a runtime branch may not execute).
-        //
-        // KNOWN TRAP, and it needs the kind system rather than a patch here.
-        // This decides on the INTEGER reading while the runtime lowering below
-        // tests a field `XOR`, so the two disagree whenever a side's readings
-        // do: `K = 3 + 1` is the integer 4 and the field element `3 XOR 1` = 2,
-        // and `if K == 4` enters an arm whose own condition is false as a value.
-        // Neither reading can simply win. Deciding in the field instead flips
-        // `if 1 + 1 == 2` and every `if i + 1 == n` inside an `unroll`, since
-        // `+` is XOR there; and it cannot see `-`, `//` or `%` at all, which is
-        // what every compile-time `if` in the guest is written with. Which
-        // conditions fold is also observable, because a folded arm's bindings
-        // persist while a runtime arm's are branch-local, so moving the line
-        // rescopes working programs (`tests/programs/scoping.py` pins that).
-        // The fix is to make the author say which arithmetic a condition means.
+        // The fold decides on the INTEGER reading, the regime a compile-time
+        // constant lives in, while the runtime lowering below tests a field `XOR`.
+        // The two contradict each other whenever a side's readings do: `K = 3 + 1`
+        // is the integer 4 and the field element `3 XOR 1` = 2. Neither reading can
+        // simply win. Deciding in the field breaks `if 1 + 1 == 2` and every
+        // `if i + 1 == n` inside an `unroll`, and cannot read `-`, `//` or `%` at
+        // all, which is what most compile-time conditions are written with; and
+        // moving the fold's boundary either way rescopes working programs, since a
+        // folded arm's bindings escape. So an ambiguous condition is REJECTED, and
+        // `if const(...)` is how the author says the integer regime was meant.
         if let (Some(a), Some(b)) = (self.try_const_index(lhs), self.try_const_index(rhs)) {
+            if !force_const
+                && let (Some(fa), Some(fb)) = (self.try_field_const(lhs), self.try_field_const(rhs))
+                && (fa == fb) != (a == b)
+            {
+                let yes = |b: bool| if b { "equal" } else { "not equal" };
+                self.fail(format!(
+                    "this condition's two readings disagree: as compile-time integers the sides are \
+                     {}, and as values, where `+` is XOR, they are {}. Folding it would enter an arm \
+                     whose own condition is false the other way. Write `if const(...)` to decide it \
+                     with integer arithmetic, or spell the operands so the two readings agree.",
+                    yes(a == b),
+                    yes(fa == fb)
+                ))
+            }
             for st in if (a == b) == eq { then } else { els } {
                 self.stmt(st);
             }
             return;
+        }
+        if force_const {
+            self.fail("`if const(...)` asks for a compile-time decision, but this condition is not one: both sides must be compile-time integers")
         }
         // `x != 0` needs no XOR: the cell itself is the JUMP's nonzero test.
         let x = if self.try_lit(rhs) == Some(0) {
@@ -2168,7 +2169,8 @@ impl FnLower<'_> {
                 rhs,
                 then,
                 els,
-            } => self.lower_if(*eq, lhs, rhs, then, els),
+                force_const,
+            } => self.lower_if(*eq, lhs, rhs, then, els, *force_const),
             StmtKind::Match { x, cases } => self.lower_match(x, cases),
             StmtKind::LetMatchRange { names, x, arms } => self.lower_match_range(names, x, arms),
             StmtKind::Call(f, args) => {

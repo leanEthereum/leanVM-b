@@ -152,6 +152,11 @@ pub enum StmtKind {
         rhs: Expr,
         then: Vec<Stmt>,
         els: Vec<Stmt>,
+        /// Written `if const(a == b):`. The author is asking for the branch to be
+        /// decided while compiling, so a condition that cannot be decided then is
+        /// an error rather than a runtime test, and one whose integer and field
+        /// readings disagree is an error rather than a silent choice between them.
+        force_const: bool,
     },
     /// `match log(x):` with `case 0: … case n-1:`, consecutive integer cases
     /// from 0, matched against the log of the g-power scrutinee (`x = g^j`

@@ -235,6 +235,68 @@ fn an_operator_missing_an_operand_says_so() {
     }
 }
 
+/// A compile-time branch is decided by a regime the author names.
+///
+/// The fold decides on the integer reading while the runtime test of the same
+/// condition compares field values, so the two contradict each other whenever a
+/// side's readings do. `3 + 1` is the integer 4 and the field element
+/// `3 XOR 1` = 2, and `if 3 + 1 == 4` used to fold into an arm whose own
+/// condition is false as a value; `if K == 4: assert K == 4` compiled clean and
+/// died at witness generation.
+///
+/// Neither reading can win: deciding in the field breaks `if 1 + 1 == 2` and
+/// every `if i + 1 == n` in an `unroll`, and cannot read `-`, `//` or `%` at
+/// all. So an ambiguous condition is rejected, and `const(...)` is how the
+/// author says the integer regime was meant.
+#[test]
+fn an_ambiguous_compile_time_branch_must_be_declared() {
+    let prog = |cond: &str| {
+        format!(
+            "def main():
+    hb = HeapBuf(4)
+    if {cond}:
+        hb[GEN ** 0] = 5
+    else:
+        hb[GEN ** 0] = 7
+    p = GEN ** 0
+    p[1] = hb[GEN ** 0]
+    p[GEN] = GEN ** 0
+    return
+"
+        )
+    };
+    let fold = |cond: &str| {
+        let program = compile(&parse(&prog(cond)).unwrap_or_else(|e| panic!("{cond}: {e}")));
+        let want = [F192::new(5, 0, 0), g_pow(0).into()];
+        let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+        verify(&program, &want, &proof).unwrap_or_else(|e| panic!("`{cond}` did not take the then arm: {e:?}"));
+    };
+    // Declared, so it folds with integer arithmetic and the arm runs.
+    fold("const(3 + 1 == 4)");
+    fold("const(1 + 1 == 2)");
+    // Undeclared but unambiguous (6 either way), so it folds as it always did.
+    fold("2 * 3 == 6");
+
+    // Undeclared and ambiguous: rejected rather than silently decided.
+    for cond in ["3 + 1 == 4", "1 + 1 == 2"] {
+        let src = prog(cond);
+        let ast = parse(&src).expect("parses");
+        let Err(err) = std::panic::catch_unwind(|| compile(&ast)) else {
+            panic!("`{cond}` was accepted");
+        };
+        let msg = err.downcast_ref::<String>().map(String::as_str).unwrap_or("");
+        assert!(msg.contains("two readings disagree"), "{cond}: got `{msg}`");
+    }
+    // Declared, but not actually decidable while compiling.
+    let src = prog("const(hb == 4)");
+    let ast = parse(&src).expect("parses");
+    let Err(err) = std::panic::catch_unwind(|| compile(&ast)) else {
+        panic!("a runtime `if const(...)` was accepted");
+    };
+    let msg = err.downcast_ref::<String>().map(String::as_str).unwrap_or("");
+    assert!(msg.contains("asks for a compile-time decision"), "got `{msg}`");
+}
+
 /// A string literal is one opaque token.
 ///
 /// Two passes used to read structure out of the middle of one. Comments were

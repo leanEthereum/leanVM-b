@@ -82,6 +82,18 @@ def hint_log2_ceil(bits, nbits: int, floor: int) -> _Elt:
     return _Elt()
 
 
+def const(cond: bool) -> bool:
+    """`if const(a == b):` asks for the branch to be decided while compiling.
+
+    Two things follow. The condition must be decidable then (both sides
+    compile-time integers), and it is read with INTEGER arithmetic, which is the
+    regime a compile-time constant lives in. Without the wrapper, a condition
+    whose integer and field readings disagree is rejected rather than silently
+    decided one way, since `+` is XOR in a value. A folded branch is
+    straight-line code, so unlike a runtime branch its bindings outlive it."""
+    return cond
+
+
 def log(x) -> int:
     """The discrete log base GEN: `x = GEN ** log(x)`. Only meaningful inside
     a range-check assert (`assert log(x) < log(GEN ** k)`, equivalently

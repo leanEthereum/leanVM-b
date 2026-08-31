@@ -26,7 +26,7 @@ Machine **words** (the contents of a memory cell, an immediate, a hashed value, 
 - `GEN ** e` is the compile-time constant `g^e ∈ K` (`**` takes base `GEN` and a compile-time integer exponent: a literal, a constant, an `unroll` variable, `len(...)`, or index arithmetic of those). So `buf[GEN ** i]` names heap cell `i` directly inside an `unroll` loop, with no running-pointer cursor.
 - constant arithmetic means different things in the two positions, and this is a silent trap: `a + b` on two constants is **integer** addition in an index, a bound or a keyword (`buf[GEN ** (i + 1)]`, `unroll(0, n + 1)`, `counter=64 * (q + 1)`), and **XOR** in a value, where `1 + 1` is `0`. So a literal built in a value position must not add overlapping integers: `tweak = base + (level + 1) * SHIFT` drops the whole term on odd levels. Products are safe (an integer times a power of two is that shift, as long as the top bit stays inside the limb); to add, index a literal table with the integer arithmetic instead, `LEVELS[level + 1]`.
 - a **global constant** and a **`Const` parameter** are integer-arithmetic throughout, which is deliberate (it is what makes a derived size right) but means the same text means different things in the two places: `STEP = 3 + 1` is the integer `4` everywhere it appears, while the identical `x = 3 + 1` written inside a function is the field element `2`. Neither is wrong; they are two regimes, and a name crossing between them is where the trap bites.
-- a **compile-time `if`** is the one place the compiler contradicts itself rather than merely choosing: the fold decides on the integer reading while the runtime test compares field values, so `if K == 4` with `K = 3 + 1` enters an arm whose own condition is false as a value. Write such a condition so the two readings coincide, or keep the operands literal.
+- a **compile-time `if`** must say which regime it means when the two disagree. The fold decides on the integer reading while the runtime test of the same condition compares field values, so `if 3 + 1 == 4` is true one way and false the other. Such a condition is **rejected**; write `if const(3 + 1 == 4):` to decide it with integer arithmetic, or spell the operands so the two readings agree (a product or a shift rather than a sum of overlapping integers). A condition whose readings already agree needs no wrapper.
 - `base ** e` with a **non-`GEN`** base and a compile-time exponent `e` is square-and-multiply: integer arithmetic in an index/bound position (`2 ** c`), or field arithmetic in a value position (`x ** k`, e.g. a loop counter `g^i` raised to a stride to reach cell `i·stride`). The base may be runtime.
 
 A logical **index** `i` is carried as `g^i` in the 64-bit subfield (order `2^64 − 1`): incrementing is one multiplication by `GEN`, and memory/bytecode addresses are g-powers. This is the design idiom of the whole VM: loops, heap addressing, and range checks below all live in the exponent, in `K`.
@@ -328,6 +328,19 @@ A `match` with generated arms (leanVM's `match_range`): arm `j` is the lambda bo
 **Dispatched-call fusion.** When *every* arm is a call to the same function with identical runtime arguments (the common `lambda k: f(a, b, k)`, where only a `Const` argument varies), the compiler builds the callee frame **once** and the dispatch jumps straight into the selected specialization's entry, which returns past the join. Each taken arm is then just the trampoline's two instructions (`SET entry; JUMP`) instead of a full call: no per-arm frame setup, call jump, or return jump. (The `walk`-per-digit dispatch in the XMSS verifier is the motivating case.)
 
 Statements without effect are rejected.
+
+### `if const(...)`: a branch decided while compiling
+
+```python
+if const(level + 1 == DEPTH):   # decided now, with integer arithmetic
+    tail = 0
+```
+
+Wrapping a condition in `const(...)` asks for the branch to be decided while compiling. Two things follow. The condition must be decidable then, so both sides must be compile-time integers, and a runtime one is an error rather than a silent fallback to a runtime test. And it is read with **integer** arithmetic, the regime a compile-time constant lives in, which is what makes `const(...)` the answer when a condition's two readings disagree (see "The field, and indices in the exponent").
+
+A folded branch emits no test and no jump, and its body is straight-line code, so **its bindings outlive it** where a runtime branch's are branch-local. That is the other reason to reach for the wrapper: it states that the arm's bindings are meant to escape.
+
+A plain `if` still folds on its own when both sides are compile-time integers and the two readings agree, so the wrapper is needed only where they do not, or where you want the compiler to insist.
 
 ## Assertions
 
