@@ -340,6 +340,19 @@ fn an_ambiguous_compile_time_branch_must_be_declared() {
         let msg = err.downcast_ref::<String>().map(String::as_str).unwrap_or("");
         assert!(msg.contains("where a value is wanted"), "{cond}: got `{msg}`");
     }
+    // A near miss of the wrapper says the word, where the ordinary parse error
+    // for a malformed condition never would.
+    for cond in ["const (a == b)", "const(a) == const(b)", "const(a == b"] {
+        let err = parse(&prog(cond)).expect_err(cond);
+        assert!(err.contains("must wrap the WHOLE condition"), "{cond}: got `{err}`");
+    }
+    // A variable that merely starts with `const` is not a near miss.
+    let plain = "def main():\n    const = 4\n    hb = HeapBuf(4)\n    if const == 4:\n        hb[GEN ** 0] = 5\n    else:\n        hb[GEN ** 0] = 7\n    p = GEN ** 0\n    p[1] = hb[GEN ** 0]\n    p[GEN] = GEN ** 0\n    return\n";
+    let program = compile(&parse(plain).expect("a name beginning with `const` is an ordinary name"));
+    let want = [F192::new(5, 0, 0), g_pow(0).into()];
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    verify(&program, &want, &proof).expect("`const == 4` is a comparison, not a wrapper");
+
     // Declared, but not actually decidable while compiling.
     let src = prog("const(hb == 4)");
     let ast = parse(&src).expect("parses");

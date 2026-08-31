@@ -262,9 +262,21 @@ impl FnLower<'_> {
     /// the file is an internal invariant, i.e. a compiler bug rather than a
     /// program one, and deliberately does NOT get a line.
     fn fail(&self, msg: impl std::fmt::Display) -> ! {
-        match self.cur_line {
-            0 => panic!("{msg}"),
-            n => panic!("line {n}: {msg}"),
+        // The line alone is not the site when the function being lowered is one
+        // the author never wrote: `hash_pair__L1` exists because of a `Const`
+        // call site, `__loop3` because of a `for` header, and an `@inline` body
+        // is lowered through the CALLER, so its statements report the caller's
+        // line. Naming the function, and the inline chain when there is one, is
+        // what turns "line 19" back into somewhere to look.
+        let site = match (self.cur_line, self.fn_name.as_str()) {
+            (0, "main") => String::new(),
+            (0, f) => format!("in {f}: "),
+            (n, "main") => format!("line {n}: "),
+            (n, f) => format!("line {n} in {f}: "),
+        };
+        match self.inline_calls.as_slice() {
+            [] => panic!("{site}{msg}"),
+            chain => panic!("{site}{msg} (inlined through {})", chain.join(" -> ")),
         }
     }
 

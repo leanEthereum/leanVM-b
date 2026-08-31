@@ -824,6 +824,14 @@ impl Parser {
         let cond = header.strip_suffix(':').ok_or("`if` needs `:`")?;
         let (cond, force_const) = match strip_const_wrapper(cond) {
             Some(inner) => (inner, true),
+            // A near miss (`const (a == b)`, `const(a) == const(b)`, an
+            // unbalanced one) otherwise falls through to an ordinary parse error
+            // that never says the word, so name it here. `const == 4`, a variable
+            // that happens to be called `const`, is not a near miss: nothing
+            // follows the name but the comparison.
+            None if cond.trim_start().strip_prefix("const").is_some_and(|r| r.trim_start().starts_with('(')) => {
+                return Err("`const(...)` must wrap the WHOLE condition and balance its brackets: `if const(a == b):`".into());
+            }
             None => (cond, false),
         };
         let (eq, l, r) = if let Some((l, r)) = split_once_top(cond, "==") {
