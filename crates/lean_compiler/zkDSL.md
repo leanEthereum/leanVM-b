@@ -247,6 +247,8 @@ Stack indexes and slice bounds are **compile-time integers**, and index arithmet
 
 `p = addr(sb)` names the run's first cell as a **pointer** (`GEN ** k` times the frame pointer), so `p[i]` reads the same cells at a runtime index, `p` can be passed to a callee or stored, and `sb[k]` stays a direct frame cell throughout. Only valid as a whole right-hand side. It costs one materialization of `fp` per function (2 `DEREF`s, amortized with `if`'s; free in `main`), which is the price of the ISA having no fp-read. This is what lets a bit buffer live in the frame and still be walked by a `mul_range` loop.
 
+A runtime index through such a pointer is unchecked, as on the heap, but it fails more quietly: every frame cell is a real cell, so `p[i]` with a hinted `i` reaches any of them and usually neither faults nor conflicts. The program owes the range check itself (`assert log i < n`) wherever `i` is not a loop counter the compiler produced.
+
 ### Slices: `buf[lo:hi]`
 
 `buf[lo:hi]` names a run of cells (`hi` exclusive). BLAKE2s operands must span exactly two cells; `hint_witness` accepts any supported literal length. Two forms:
