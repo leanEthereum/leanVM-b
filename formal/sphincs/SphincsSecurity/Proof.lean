@@ -180,6 +180,7 @@ import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivatePreparationInterpret
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivatePlanExecution
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivatePlanNormalized
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivatePlanNormalizedCount
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivatePreparationCanonical
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
