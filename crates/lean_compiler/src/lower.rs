@@ -1176,9 +1176,24 @@ impl FnLower<'_> {
                 if let Some(ga) = self.scope.gaddr(v) {
                     return self.materialize(ga);
                 }
-                self.scope
-                    .var(v)
-                    .unwrap_or_else(|| self.fail(format!("unbound variable `{v}`")))
+                self.scope.var(v).unwrap_or_else(|| {
+                    // A `for` body that ASSIGNS to an enclosing name reads it before
+                    // it binds it, and the capture set drops every name the body
+                    // binds, so the read arrives here with nothing behind it. That is
+                    // the loop-carry limitation rather than a typo, and it deserves
+                    // the same courtesy the `StackBuf` case already gets: the
+                    // tail-recursive helper threads its captures IN, never out, so an
+                    // accumulator cannot come back.
+                    if self.fn_name.starts_with("__loop") {
+                        self.fail(format!(
+                            "unbound variable `{v}` in a `for` loop body. If `{v}` names a value from \
+                             outside the loop that this body also assigns to, the loop cannot carry it: \
+                             the helper threads its captures in, not out. Assign to a new name inside \
+                             the body, or carry state through a `HeapBuf`."
+                        ))
+                    }
+                    self.fail(format!("unbound variable `{v}`"))
+                })
             }
             Expr::Add(a, b) => {
                 if let Some(x) = self.add_identity(a, b) {

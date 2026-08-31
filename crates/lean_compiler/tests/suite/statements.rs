@@ -235,6 +235,43 @@ fn an_operator_missing_an_operand_says_so() {
     }
 }
 
+/// A `for` body that assigns to an enclosing name says why that cannot work.
+///
+/// The capture set drops every name the body binds, so a body that ASSIGNS to
+/// an enclosing name also loses the read that precedes the assignment, and the
+/// read arrived at lowering as a bare "unbound variable". That is the loop-carry
+/// limitation, not a typo: the tail-recursive helper threads its captures in and
+/// never out, so an accumulator cannot come back. The `StackBuf` form of the
+/// same limitation already said so; the scalar form did not.
+#[test]
+fn a_loop_that_cannot_carry_a_value_says_so() {
+    let accumulator = "\
+def main():
+    s = GEN ** 0
+    for i in mul_range(1, 8):
+        s = s * GEN
+    p = GEN ** 0
+    p[1] = s
+    p[GEN] = GEN ** 0
+    return
+";
+    let ast = parse(accumulator).expect("parses");
+    let Err(err) = std::panic::catch_unwind(|| compile(&ast)) else {
+        panic!("a loop-carried accumulator was accepted");
+    };
+    let msg = err.downcast_ref::<String>().map(String::as_str).unwrap_or("");
+    assert!(msg.contains("the loop cannot carry it"), "got `{msg}`");
+
+    // A real typo, outside any loop, still gets the plain message.
+    let typo = "def main():\n    p = GEN ** 0\n    p[1] = nosuch\n    p[GEN] = GEN ** 0\n    return\n";
+    let ast = parse(typo).expect("parses");
+    let Err(err) = std::panic::catch_unwind(|| compile(&ast)) else {
+        panic!("a typo was accepted");
+    };
+    let msg = err.downcast_ref::<String>().map(String::as_str).unwrap_or("");
+    assert!(msg.contains("unbound variable `nosuch`") && !msg.contains("loop"), "got `{msg}`");
+}
+
 /// A compile-time branch is decided by a regime the author names.
 ///
 /// The fold decides on the integer reading while the runtime test of the same
