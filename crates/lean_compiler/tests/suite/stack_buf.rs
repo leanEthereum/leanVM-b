@@ -596,6 +596,71 @@ fn heap_index_boundary_ok() {
     verify(&program, &pi, &proof).expect("boundary access verifies");
 }
 
+/// A store into a run PARAMETER is the write-once assertion, not a fresh store.
+///
+/// A run parameter's cells are already written, by the caller, before the
+/// callee's first instruction; a local `StackBuf`'s are not. That is the whole
+/// difference, and missing it dropped the assertion: `s[k] = <value>` inside a
+/// callee recorded a deferred alias and emitted nothing, so the idiom that pins
+/// an unconstrained hint pinned nothing and the prover kept its own values.
+#[test]
+fn a_store_into_a_run_parameter_asserts() {
+    let pin = "\
+def pin(s: StackBuf(2)):
+    s[0] = GEN ** 5
+    s[1] = GEN ** 6
+    return GEN ** 0
+
+def main():
+    b = StackBuf(2)
+    hint_witness(b, \"adv\")
+    z = pin(b)
+    p = GEN ** 0
+    p[1] = b[0]
+    p[GEN] = b[1]
+    return
+";
+    let ast = parse(pin).expect("parse");
+    // The honest prover hints what the callee asserts, and it verifies.
+    let mut program = compile(&ast);
+    program.set_witness("adv", vec![vec![g_pow(5).into(), g_pow(6).into()]]);
+    let want = [g_pow(5).into(), g_pow(6).into()];
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    verify(&program, &want, &proof).expect("the honest hint matches the pin");
+
+    // A prover hinting anything else must be rejected: that is what the pin is.
+    let mut bad = compile(&ast);
+    bad.set_witness("adv", vec![vec![g_pow(13).into(), g_pow(14).into()]]);
+    let dishonest = [g_pow(13).into(), g_pow(14).into()];
+    assert!(
+        std::panic::catch_unwind(|| bad.execute(dishonest)).is_err(),
+        "the pin must reject a hint it does not match"
+    );
+
+    // The same rule with no hint involved: one cell cannot hold two values.
+    let two = "\
+def f(s: StackBuf(2)):
+    s[0] = s[1]
+    return s[0]
+
+def main():
+    b = StackBuf(2)
+    b[0] = GEN ** 9
+    b[1] = GEN ** 3
+    r = f(b)
+    p = GEN ** 0
+    p[1] = r
+    p[GEN] = GEN ** 0
+    return
+";
+    let program = compile(&parse(two).expect("parse"));
+    let want = [g_pow(3).into(), g_pow(0).into()];
+    assert!(
+        std::panic::catch_unwind(|| program.execute(want)).is_err(),
+        "`s[0] = s[1]` asserts that they are equal"
+    );
+}
+
 /// A multi-cell value can cross a call in BOTH directions.
 ///
 /// It could always be returned as a run of cells and never passed as one, so a

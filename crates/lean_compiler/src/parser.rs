@@ -239,11 +239,18 @@ fn infer_return_shapes(funcs: &mut [Func]) -> Result<(), String> {
     fn scan(
         body: &[Stmt],
         params: &[String],
+        param_shapes: &[Shape],
         known: &HashMap<String, Vec<Shape>>,
         n_ret: usize,
     ) -> Result<Vec<Shape>, String> {
-        let mut locals: HashMap<String, Shape> =
-            params.iter().map(|p| (p.clone(), Shape::Scalar)).collect();
+        // Seeded from the DECLARED shapes: a `s: StackBuf(n)` parameter is a run
+        // here as much as a local one is, so `return s` returns the run rather
+        // than reporting it used as a scalar.
+        let mut locals: HashMap<String, Shape> = params
+            .iter()
+            .cloned()
+            .zip(param_shapes.iter().copied().chain(std::iter::repeat(Shape::Scalar)))
+            .collect();
         let mut returns = vec![Shape::Scalar; n_ret];
         for stmt in body {
             match &stmt.kind {
@@ -292,7 +299,7 @@ fn infer_return_shapes(funcs: &mut [Func]) -> Result<(), String> {
     for _ in 0..=funcs.len() {
         let next: HashMap<String, Vec<Shape>> = funcs
             .iter()
-            .map(|f| Ok((f.name.clone(), scan(&f.body, &f.params, &known, f.n_ret)?)))
+            .map(|f| Ok((f.name.clone(), scan(&f.body, &f.params, &f.param_shapes, &known, f.n_ret)?)))
             .collect::<Result<_, String>>()?;
         if next == known {
             break;

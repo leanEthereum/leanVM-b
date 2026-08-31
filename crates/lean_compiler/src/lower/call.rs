@@ -191,6 +191,19 @@ impl FnLower<'_> {
                 ))
             }
         }
+        // The arms resolve their arguments with `expr`, one cell each, so a run
+        // parameter cannot be filled here: passing a `StackBuf` fails in `expr`,
+        // and passing a SCALAR for one wrote 1 of its n cells and left the rest
+        // prover-chosen. Rejected until this path resolves by shape as an
+        // ordinary call does.
+        if let Some(i) = shared_shapes.iter().position(|s| !matches!(s, Shape::Scalar)) {
+            self.fail(format!(
+                "a `match_range` arm cannot pass a `StackBuf` parameter (parameter {i} of `{}`): the \
+                 fused dispatch writes one cell per argument. Give the arms `Const` arguments so each \
+                 specializes into its own call instead of fusing",
+                callees.first().map(String::as_str).unwrap_or("?")
+            ))
+        }
         let n_args = Abi::arg_cells(&shared_shapes);
         // The join below reads one return cell per bound name, so every callee has
         // to declare exactly that many. Unchecked, a name past a callee's arity
@@ -430,9 +443,19 @@ impl FnLower<'_> {
         };
         let mut tag = String::new();
         let (mut rt_params, mut rt_args, mut substs) = (Vec::new(), Vec::new(), Vec::new());
-        for ((p, &is_const), a) in def.params.iter().zip(&def.const_params).zip(args) {
+        // A retained parameter keeps its SHAPE. Dropping it made a specialization
+        // take a declared `StackBuf(n)` as one scalar cell, with no diagnostic.
+        let mut rt_shapes = Vec::new();
+        for (((p, &is_const), sh), a) in def
+            .params
+            .iter()
+            .zip(&def.const_params)
+            .zip(def.param_shapes.iter().copied())
+            .zip(args)
+        {
             if !is_const {
                 rt_params.push(p.clone());
+                rt_shapes.push(sh);
                 rt_args.push(a.clone());
                 continue;
             }
@@ -461,7 +484,7 @@ impl FnLower<'_> {
             let const_params = vec![false; rt_params.len()];
             self.queue.push(Func {
                 name: name.clone(),
-                param_shapes: vec![Shape::Scalar; rt_params.len()],
+                param_shapes: rt_shapes,
                 params: rt_params,
                 const_params,
                 n_ret: def.n_ret,

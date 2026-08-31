@@ -1808,7 +1808,23 @@ pub(crate) fn lower_func(
         inline_ret: None,
         inline_stack_ret: None,
         alias: HashMap::new(),
-        phys: HashSet::new(),
+        // A run parameter's cells are ALREADY WRITTEN, by the caller, before this
+        // function's first instruction. A local `StackBuf`'s are not, and that is
+        // the whole difference: an unwritten cell may take a deferred store, which
+        // emits nothing, while a written one may not, because a store into it is
+        // the write-once equality assertion instead. Without seeding these,
+        // `s[k] = <checked value>` inside a callee recorded an alias and vanished,
+        // so the idiom that pins an unconstrained hint pinned nothing.
+        phys: f
+            .param_shapes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, sh)| match sh {
+                Shape::StackBuf(n) => Some((Abi::arg(&f.param_shapes, i), *n)),
+                Shape::Scalar => None,
+            })
+            .flat_map(|(off, n)| off..off + n)
+            .collect(),
         pending: Vec::new(),
         inline_calls: Vec::new(),
         queue,

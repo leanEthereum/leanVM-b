@@ -140,9 +140,11 @@ def compress(cv: StackBuf(2), block: StackBuf(2)):
     return out
 ```
 
-`s: StackBuf(n)` marks a parameter as a **run of n cells**, passed whole. The caller must pass a `StackBuf` of exactly that size; the run is copied into the callee's frame, which owns it from then on (frame cells are write-once and outlive the call, like everything else).
+`s: StackBuf(n)` marks a parameter as a **run of n cells**, passed whole. The caller must pass a `StackBuf` of exactly that size (a whole named one: a slice is not yet accepted), and the run is copied into the callee's frame.
 
-This is the same mechanism a `StackBuf` **return** already used, in the other direction: the argument area is a width rather than a count, and a run occupies the cells its size asks for. Without it a two-cell value could come out of a function whole but only go in through a `HeapBuf` pointer or an `@inline` expansion, which grows the caller's frame at every call site.
+Those cells arrive **already written**, unlike a local `StackBuf`'s, so a store into one is the write-once equality *assertion* rather than a fresh store. That is what makes a callee able to pin its caller's values: `s[k] = <checked value>` inside the callee asserts that the caller's cell already held it. It also means a run parameter initializes nothing, so passing a partly-written buffer passes its unwritten cells, which the prover then chooses, exactly as anywhere else.
+
+A `match_range` arm cannot pass one: the fused dispatch writes one cell per argument, so give such arms `Const` arguments and let each specialize instead. This is otherwise the same mechanism a `StackBuf` **return** already used, in the other direction: the argument area is a width rather than a count, and a run occupies the cells its size asks for. Without it a two-cell value could come out of a function whole but only go in through a `HeapBuf` pointer or an `@inline` expansion, which grows the caller's frame at every call site.
 
 ### `Const` parameters
 
