@@ -44,6 +44,16 @@ theorem rootSafePlannedHash_swap
   · rintro ⟨⟨hright, hleft⟩, haction⟩
     exact ⟨⟨hleft, hright⟩, haction⟩
 
+theorem rootAwareCandidateAvoidsRoots_swap
+    (target : Position) (leftRoot rightRoot : Digest) (candidate? : Option Probe) :
+    RootAwareCandidateAvoidsRoots target leftRoot rightRoot candidate? ↔
+      RootAwareCandidateAvoidsRoots target rightRoot leftRoot candidate? := by
+  constructor
+  · intro h
+    exact ⟨h.2, h.1⟩
+  · intro h
+    exact ⟨h.2, h.1⟩
+
 noncomputable def purePeekPositionValues
     (state : LazyRevealProbe.State Coordinate) : List Position → Option (List Digest)
   | [] => some []
@@ -157,7 +167,7 @@ noncomputable def materializedRootAvoidingOrdinalSelection
             let nextCandidates := appendPlannedCandidate candidates candidate?
             if hnextSelected : ordinal < nextCandidates.length then
               pure (some (nextCandidates.get ⟨ordinal, hnextSelected⟩))
-            else if RootSafePlannedHash target leftRoot rightRoot plan candidate? then
+            else if RootAwareCandidateAvoidsRoots target leftRoot rightRoot candidate? then
               runCleanFromTable state fuel table
                   ((probingHashQueryAfterPublicPlan parameter input publicContext.state plan).run
                     cache) >>=
@@ -260,16 +270,12 @@ theorem materializedRootAvoidingOrdinalSelection_swap_roots
                             (materializedCanonicalContext table state).state))).length := by
                     simpa [publicContext, plan, candidate?, nextCandidates] using hnextSelected
                   simp only [hactual, ↓reduceDIte]
-                  have hsafe := rootSafePlannedHash_swap target leftRoot rightRoot
-                    (purePlanProbingHashQuery parameter input
-                      (materializedCanonicalContext table state).state)
+                  have hsafe := rootAwareCandidateAvoidsRoots_swap target leftRoot rightRoot
                     (rootAwareCandidateForPlan? parameter input
                       (purePlanProbingHashQuery parameter input
                         (materializedCanonicalContext table state).state))
                   rw [propext hsafe]
-                  by_cases hholds : RootSafePlannedHash target rightRoot leftRoot
-                      (purePlanProbingHashQuery parameter input
-                        (materializedCanonicalContext table state).state)
+                  by_cases hholds : RootAwareCandidateAvoidsRoots target rightRoot leftRoot
                       (rootAwareCandidateForPlan? parameter input
                         (purePlanProbingHashQuery parameter input
                           (materializedCanonicalContext table state).state))

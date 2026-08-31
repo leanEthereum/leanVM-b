@@ -32,6 +32,13 @@ def MaterializedSelectionOutcome.Matches
   | .failed => False
   | .finished selection => materializedOrdinalSelectionMatches target root selection
 
+def MaterializedOutcomeOptionRel
+    (target : Position) (root : Digest) :
+    MaterializedSelectionOutcome → Option Probe → Prop :=
+  fun outcome selection =>
+    outcome.Matches target root →
+      materializedOrdinalSelectionMatches target root selection
+
 def RootSelectionBridgeRel
     (target : Position) (leftOutput : HashOutput)
     (rightRoot : Digest) (ordinal : Nat) :
@@ -126,6 +133,31 @@ theorem probEvent_goodSelection_le_failure_add_match
         hrelation hgood)
     _ ≤ _ := probEvent_or_le _ _ _
 
+theorem probEvent_outcome_match_le_option_match
+    (target : Position) (root : Digest)
+    (outcome : ProbComp MaterializedSelectionOutcome)
+    (selection : ProbComp (Option Probe))
+    (hrel : RelTriple outcome selection (MaterializedOutcomeOptionRel target root)) :
+    Pr[fun result => result.Matches target root | outcome] ≤
+      Pr[materializedOrdinalSelectionMatches target root | selection] :=
+  probEvent_le_of_relTriple hrel (fun _ _ hrelation => hrelation)
+
+theorem relTriple_failed_any_option
+    (target : Position) (root : Digest) (right : ProbComp (Option Probe)) :
+    RelTriple (pure .failed : ProbComp MaterializedSelectionOutcome) right
+      (MaterializedOutcomeOptionRel target root) := by
+  have hbase := relTriple_true
+    (pure .failed : ProbComp MaterializedSelectionOutcome) right
+  have hsupported :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+      (fun outcome => outcome = .failed) (by
+        intro outcome houtput
+        simpa using houtput)
+  apply relTriple_post_mono hsupported
+  intro outcome selection hrelation hmatch
+  rw [hrelation.2] at hmatch
+  exact False.elim hmatch
+
 noncomputable def guardPrivateOrdinalSelection
     (target : Position)
     (observe : DeferredContext → Nat → α → List Probe →
@@ -150,6 +182,59 @@ noncomputable def finishMaterializedSelectionOutcome
             pure .failed
           else observe result.context.state result.remaining result.value.1 result.value.2 candidates
         else pure .failed
+
+theorem relTriple_finishMaterializedOutcome_option
+    (target : Position) (root : Digest)
+    (table : OtsSecretIndex → HashOutput)
+    (outcomeObserve : LazyRevealProbe.State Coordinate → Nat → α → SplitHashCache →
+      List Probe → ProbComp MaterializedSelectionOutcome)
+    (optionObserve : LazyRevealProbe.State Coordinate → Nat → α → SplitHashCache →
+      List Probe → ProbComp (Option Probe))
+    (candidates : List Probe)
+    (result : DirectDetailedResult (α × SplitHashCache))
+    (hrecursive : ∀ resolved : ResolvedRunResult (α × SplitHashCache),
+      DeferredCompletable table (directDeferredContext resolved.context.state) →
+      Coordinate.position target ∉ resolved.context.state.revealed →
+      RelTriple
+        (outcomeObserve resolved.context.state resolved.remaining resolved.value.1
+          resolved.value.2 candidates)
+        (optionObserve resolved.context.state resolved.remaining resolved.value.1
+          resolved.value.2 candidates)
+        (MaterializedOutcomeOptionRel target root)) :
+    RelTriple
+      (finishMaterializedSelectionOutcome target table outcomeObserve candidates result)
+      (finishDirectDetailedMaterializedSelection target optionObserve candidates result)
+      (MaterializedOutcomeOptionRel target root) := by
+  cases result with
+  | stopped reason =>
+      apply relTriple_pure_pure
+      intro hmatch
+      exact False.elim hmatch
+  | done resolved =>
+      unfold finishMaterializedSelectionOutcome finishDirectDetailedMaterializedSelection
+      by_cases hcompletable :
+          DeferredCompletable table (directDeferredContext resolved.context.state)
+      · simp only [hcompletable, ↓reduceIte]
+        by_cases hrevealed : Coordinate.position target ∈ resolved.context.state.revealed
+        · simp [continueMaterializedPrivateOrdinalSelection, hrevealed,
+            MaterializedOutcomeOptionRel, MaterializedSelectionOutcome.Matches]
+        · rw [if_neg hrevealed]
+          rw [show continueMaterializedPrivateOrdinalSelection target optionObserve
+              resolved.context.state resolved.remaining resolved.value.1 resolved.value.2
+              candidates = optionObserve resolved.context.state resolved.remaining
+                resolved.value.1 resolved.value.2 candidates by
+            simp [continueMaterializedPrivateOrdinalSelection, hrevealed]]
+          exact hrecursive resolved hcompletable hrevealed
+      · simp only [hcompletable, ↓reduceIte]
+        by_cases hrevealed : Coordinate.position target ∈ resolved.context.state.revealed
+        · simp [continueMaterializedPrivateOrdinalSelection, hrevealed,
+            MaterializedOutcomeOptionRel, MaterializedSelectionOutcome.Matches]
+        · rw [show continueMaterializedPrivateOrdinalSelection target optionObserve
+              resolved.context.state resolved.remaining resolved.value.1 resolved.value.2
+              candidates = optionObserve resolved.context.state resolved.remaining
+                resolved.value.1 resolved.value.2 candidates by
+            simp [continueMaterializedPrivateOrdinalSelection, hrevealed]]
+          exact relTriple_failed_any_option target root _
 
 set_option maxRecDepth 100000 in
 theorem relTriple_finishRootSelectionBridge

@@ -172,12 +172,10 @@ theorem evalDist_materializedRootAvoidingOrdinalSelection_encoding
                             (materializedCanonicalContext table state).state))).length := by
                     simpa [publicContext, plan, candidate?, nextCandidates] using hnextSelected
                   simp only [hactual, ↓reduceDIte]
-                  by_cases hsafe : RootSafePlannedHash target
-                      (truncateHash leftOutput) (truncateHash rightOutput) plan candidate?
-                  · have hsafeActual : RootSafePlannedHash target
+                  by_cases hsafe : RootAwareCandidateAvoidsRoots target
+                      (truncateHash leftOutput) (truncateHash rightOutput) candidate?
+                  · have hsafeActual : RootAwareCandidateAvoidsRoots target
                         (truncateHash leftOutput) (truncateHash rightOutput)
-                        (purePlanProbingHashQuery parameter input
-                          (materializedCanonicalContext table state).state)
                         (rootAwareCandidateForPlan? parameter input
                           (purePlanProbingHashQuery parameter input
                             (materializedCanonicalContext table state).state)) := by
@@ -186,7 +184,7 @@ theorem evalDist_materializedRootAvoidingOrdinalSelection_encoding
                     have hinput : RootInputAvoids parameter target
                         (truncateHash leftOutput) (truncateHash rightOutput) input := by
                       apply rootInputAvoids_of_rootAwareCandidateAvoidsRoots
-                      simpa [rootAwareCandidateForPlan?_purePlan] using hsafeActual.1
+                      simpa [rootAwareCandidateForPlan?_purePlan] using hsafeActual
                     apply evalDist_bind_eq_of_relTriple_next _ _ _ _ _
                       (((rootEncodingCacheCouples_probingHashQueryAfterPublicPlan_avoids parameter
                         target (truncateHash leftOutput) (truncateHash rightOutput) input
@@ -205,10 +203,8 @@ theorem evalDist_materializedRootAvoidingOrdinalSelection_encoding
                     · simp only [hrevealed, ↓reduceIte]
                       exact ih nextLeft.value.1 nextCandidates nextLeft.state nextLeft.remaining
                         nextLeft.value.2 nextRight.value.2 hnextCache hnextStored
-                  · have hsafeActual : ¬RootSafePlannedHash target
+                  · have hsafeActual : ¬RootAwareCandidateAvoidsRoots target
                         (truncateHash leftOutput) (truncateHash rightOutput)
-                        (purePlanProbingHashQuery parameter input
-                          (materializedCanonicalContext table state).state)
                         (rootAwareCandidateForPlan? parameter input
                           (purePlanProbingHashQuery parameter input
                             (materializedCanonicalContext table state).state)) := by
