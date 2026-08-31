@@ -122,6 +122,48 @@ theorem preservesPublishedValues_probingHashQueryAfterRootAwarePlan
   | ordinary => exact preservesPublishedValues_splitHashQuery_ordinary input
   | resolve coordinate => exact preservesPublishedValues_resolveKnownInput parameter coordinate input
 
+set_option maxRecDepth 100000 in
+theorem probingHashQuery_eq_plan_then_afterPlan
+    (parameter : PublicParameter) (input : HashInput) :
+    probingHashQuery parameter input = (do
+      let plan ← planProbingHashQuery parameter input
+      probingHashQueryAfterPlan parameter input plan) := by
+  cases hprobe : decodeProbe? parameter input with
+  | some candidate =>
+      cases hposition : decodePosition? parameter input with
+      | none =>
+          exact probingHashQuery_eq_plan_then_afterPlan_of_probe_some_nonleaf parameter input
+            candidate hprobe (by
+              rintro ⟨lay, tree, leafIdx, heq⟩
+              simp [hposition] at heq)
+      | some position =>
+          cases position with
+          | leaf lay tree leafIdx =>
+              exact probingHashQuery_eq_plan_then_afterPlan_leaf parameter input candidate lay
+                tree leafIdx hprobe hposition
+          | chain | node | ftsLeaf | ftsNode | ftsRoots =>
+              exact probingHashQuery_eq_plan_then_afterPlan_of_probe_some_nonleaf parameter input
+                candidate hprobe (by
+                  rintro ⟨lay, tree, leafIdx, heq⟩
+                  simp [hposition] at heq)
+  | none =>
+      cases hposition : decodePosition? parameter input with
+      | none =>
+          exact probingHashQuery_eq_plan_then_afterPlan_of_probe_none_nonnode parameter input
+            hprobe (by
+              rintro ⟨lay, tree, level, nodeIdx, heq⟩
+              simp [hposition] at heq)
+      | some position =>
+          cases position with
+          | node lay tree level nodeIdx =>
+              exact probingHashQuery_eq_plan_then_afterPlan_node parameter input lay tree level
+                nodeIdx hprobe hposition
+          | chain | leaf | ftsLeaf | ftsNode | ftsRoots =>
+              exact probingHashQuery_eq_plan_then_afterPlan_of_probe_none_nonnode parameter input
+                hprobe (by
+                  rintro ⟨lay, tree, level, nodeIdx, heq⟩
+                  simp [hposition] at heq)
+
 noncomputable def rootAwareProbingHashQuery
     (parameter : PublicParameter) (input : HashInput) :
     StateT SplitHashCache
@@ -262,5 +304,19 @@ theorem probEvent_rootAwareCleanRetainedRun_le
       (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ :=
   LazyRevealProbe.experiment_empty_probability_le q
     (rootAwareCleanRetainedRun adversary parameter ftsSecret)
+
+theorem probEvent_sampledRootAwareCleanRetainedRun_none_le
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (hbound : ∀ root,
+      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
+        IsOuterHash q) :
+    Pr[= none | sampledRunThenFinalizeClean
+      (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) q
+        (rootAwareCleanRetainedRun adversary parameter ftsSecret)] ≤
+      (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ :=
+  probEvent_sampledRunThenFinalizeClean_empty_none_le
+    (rootAwareCleanRetainedRun adversary parameter ftsSecret) q
+    (rootAwareCleanRetainedRun_isProbeBound adversary parameter ftsSecret q hbound)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

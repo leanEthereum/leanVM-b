@@ -210,6 +210,7 @@ import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalHidden
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalHiddenFreshSigner
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalNonRootRisk
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootProbe
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootProbeCoupling
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
