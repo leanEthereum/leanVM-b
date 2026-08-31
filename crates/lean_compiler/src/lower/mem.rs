@@ -141,8 +141,7 @@ impl FnLower<'_> {
                     && let (Some(ab), Some(total)) = (ga.base, ga.exp.checked_add(exp))
                     && total <= FOLD_MAX
                 {
-                    let ptr = self.fresh();
-                    self.emit(LOp::Mul { a: ab, b: ib, c: ptr });
+                    let ptr = self.pure(PureOp::Mul, ab, ib);
                     return (ptr, total as u32);
                 }
             }
@@ -340,9 +339,7 @@ impl FnLower<'_> {
         }
         let k = self.fresh();
         self.set_const(k, g_pow_u128(extra).into());
-        let ptr = self.fresh();
-        self.emit(LOp::Mul { a, b: k, c: ptr });
-        (ptr, 0)
+        (self.pure(PureOp::Mul, a, k), 0)
     }
 
     /// Resolve a heap access `arr[idx]` to a `DEREF`-ready pair: a cell
@@ -359,16 +356,12 @@ impl FnLower<'_> {
             for (c, r) in [(a, b), (b, a)] {
                 if let Some(k) = self.const_gpow(c) {
                     let (la, lr) = (self.expr(arr), self.expr(r));
-                    let ptr = self.fresh();
-                    self.emit(LOp::Mul { a: la, b: lr, c: ptr });
-                    return (ptr, k);
+                    return (self.pure(PureOp::Mul, la, lr), k);
                 }
             }
         }
         let (la, li) = (self.expr(arr), self.expr(idx));
-        let ptr = self.fresh();
-        self.emit(LOp::Mul { a: la, b: li, c: ptr });
-        (ptr, 0)
+        (self.pure(PureOp::Mul, la, li), 0)
     }
 
     pub(super) fn word_src(&mut self, o: Off) -> Off {
@@ -443,9 +436,7 @@ impl FnLower<'_> {
                 let k = self.fresh();
                 self.set_const(k, g_pow_u128(exp).into());
                 let Some(c) = base else { return k };
-                let o = self.fresh();
-                self.emit(LOp::Mul { a: c, b: k, c: o });
-                o
+                self.pure(PureOp::Mul, c, k)
             }
         }
     }

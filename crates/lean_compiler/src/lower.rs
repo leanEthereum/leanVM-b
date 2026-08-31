@@ -91,6 +91,14 @@ impl Abi {
 /// that folds an exponent into `β` measures it against this.
 const FOLD_MAX: u128 = 1 << lean_vm::cpu::MIN_LOG_MEM;
 
+/// The two pure operations worth interning. Both are commutative, so operands
+/// are stored sorted.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum PureOp {
+    Xor,
+    Mul,
+}
+
 /// What the lowerer knows about one frame cell: TWO ORTHOGONAL FACTS, not one
 /// exclusive state.
 ///
@@ -177,6 +185,8 @@ struct Scope {
     /// ([`FnLower::self_fp`]): local (`if`/`else`) jumps reload the frame
     /// pointer on the taken branch.
     self_fp_off: Option<Off>,
+    /// Results of pure operations: `(op, sorted operands)` → the cell holding it.
+    pure_cells: HashMap<(PureOp, Off, Off), Off>,
     /// Every lazily-`SET` constant cell: field value (as bits) → the frame cell
     /// holding it. Cells are write-once and read-many, so one `SET` serves every
     /// use in scope. A `SET` first emitted inside a branch must not be named from
@@ -445,6 +455,26 @@ impl FnLower<'_> {
         for (name, &cell) in names.iter().zip(cells) {
             self.rebind(name, Binding::Scalar(cell));
         }
+    }
+
+    /// The cell holding `a op b`, computed only if this scope has not already.
+    ///
+    /// Only ever mints a FRESH cell, which is the rule that makes sharing sound:
+    /// a pure op whose destination already exists is an assertion, not a
+    /// computation (the zero cell an `assert` XORs into, the `g^{k-1}` a range
+    /// check multiplies into), and must never be shared away.
+    fn pure(&mut self, op: PureOp, a: Off, b: Off) -> Off {
+        let key = (op, a.min(b), a.max(b));
+        if let Some(&o) = self.scope.pure_cells.get(&key) {
+            return o;
+        }
+        let o = self.fresh();
+        match op {
+            PureOp::Xor => self.emit(LOp::Xor { a, b, c: o }),
+            PureOp::Mul => self.emit(LOp::Mul { a, b, c: o }),
+        }
+        self.scope.pure_cells.insert(key, o);
+        o
     }
 
     /// A frame cell holding `1` (always-taken `JUMP` condition).
@@ -1081,18 +1111,14 @@ impl FnLower<'_> {
                     return self.expr(x);
                 }
                 let (la, lb) = (self.expr(a), self.expr(b));
-                let o = self.fresh();
-                self.emit(LOp::Xor { a: la, b: lb, c: o });
-                o
+                self.pure(PureOp::Xor, la, lb)
             }
             Expr::Mul(a, b) => {
                 if let Some(x) = self.mul_identity(a, b) {
                     return self.expr(x);
                 }
                 let (la, lb) = (self.expr(a), self.expr(b));
-                let o = self.fresh();
-                self.emit(LOp::Mul { a: la, b: lb, c: o });
-                o
+                self.pure(PureOp::Mul, la, lb)
             }
             Expr::FieldDiv(a, b) => {
                 // q = a / b via the MUL write-once back-solve: emit `a = q * b`
