@@ -12,6 +12,65 @@ namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
 open OracleComp OracleSpec
 
+theorem rootEncodingCacheCouples_splitHashQuery_avoids
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (input : HashInput)
+    (havoid : RootInputAvoids parameter target leftRoot rightRoot input) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (splitHashQuery (.ordinary input)) := by
+  intro leftCache rightCache hcache state fuel table
+  exact relTriple_splitHashQuery_same_avoids parameter target leftRoot rightRoot input havoid
+    leftCache rightCache hcache state fuel table
+
+theorem rootEncodingCacheCouples_resolvePublicKnownInput_avoids
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest)
+    (publicState : LazyRevealProbe.State Coordinate)
+    (coordinate : Coordinate) (input : HashInput)
+    (havoid : RootInputAvoids parameter target leftRoot rightRoot input) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (resolvePublicKnownInput parameter publicState coordinate input) := by
+  unfold resolvePublicKnownInput
+  cases hknown : purePeekTableInput parameter publicState coordinate with
+  | none =>
+      exact rootEncodingCacheCouples_splitHashQuery_avoids parameter target leftRoot
+        rightRoot input havoid
+  | some knownInput =>
+      by_cases heq : knownInput = input
+      · simp only [heq, ↓reduceIte]
+        apply (rootEncodingCacheCouples_revealCoordinateOutput parameter target leftRoot
+          rightRoot coordinate).bind
+        intro output
+        apply (rootEncodingCacheCouples_publishCoordinate parameter target leftRoot rightRoot
+          coordinate).bind
+        intro _
+        apply (rootEncodingCacheCouples_modifyOrdinary_avoids parameter target leftRoot rightRoot
+          input havoid output).bind
+        intro _
+        exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot output
+      · simp only [heq, ↓reduceIte]
+        exact rootEncodingCacheCouples_splitHashQuery_avoids parameter target leftRoot
+          rightRoot input havoid
+
+theorem rootEncodingCacheCouples_probingHashQueryAfterPublicPlan_avoids
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (input : HashInput)
+    (publicState : LazyRevealProbe.State Coordinate) (plan : PlannedHashQuery)
+    (havoid : RootInputAvoids parameter target leftRoot rightRoot input) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (probingHashQueryAfterPublicPlan parameter input publicState plan) := by
+  unfold probingHashQueryAfterPublicPlan
+  apply (rootEncodingCacheCouples_executeCandidate parameter target leftRoot rightRoot
+    plan.candidate?).bind
+  intro _
+  cases plan.action with
+  | ordinary =>
+      exact rootEncodingCacheCouples_splitHashQuery_avoids parameter target leftRoot
+        rightRoot input havoid
+  | resolve coordinate =>
+      exact rootEncodingCacheCouples_resolvePublicKnownInput_avoids parameter target leftRoot
+        rightRoot publicState coordinate input havoid
+
 theorem evalDist_finishMaterializedSelection_eq_of_rootEncoding
     (observeLeft observeRight : LazyRevealProbe.State Coordinate → Nat → α →
       SplitHashCache → List Probe → ProbComp (Option Probe))
@@ -113,10 +172,12 @@ theorem evalDist_materializedRootAvoidingOrdinalSelection_encoding
                             (materializedCanonicalContext table state).state))).length := by
                     simpa [publicContext, plan, candidate?, nextCandidates] using hnextSelected
                   simp only [hactual, ↓reduceDIte]
-                  by_cases hsafe : RootAwareCandidateAvoidsRoots target
-                      (truncateHash leftOutput) (truncateHash rightOutput) candidate?
-                  · have hsafeActual : RootAwareCandidateAvoidsRoots target
+                  by_cases hsafe : RootSafePlannedHash target
+                      (truncateHash leftOutput) (truncateHash rightOutput) plan candidate?
+                  · have hsafeActual : RootSafePlannedHash target
                         (truncateHash leftOutput) (truncateHash rightOutput)
+                        (purePlanProbingHashQuery parameter input
+                          (materializedCanonicalContext table state).state)
                         (rootAwareCandidateForPlan? parameter input
                           (purePlanProbingHashQuery parameter input
                             (materializedCanonicalContext table state).state)) := by
@@ -125,10 +186,11 @@ theorem evalDist_materializedRootAvoidingOrdinalSelection_encoding
                     have hinput : RootInputAvoids parameter target
                         (truncateHash leftOutput) (truncateHash rightOutput) input := by
                       apply rootInputAvoids_of_rootAwareCandidateAvoidsRoots
-                      simpa [rootAwareCandidateForPlan?_purePlan] using hsafeActual
+                      simpa [rootAwareCandidateForPlan?_purePlan] using hsafeActual.1
                     apply evalDist_bind_eq_of_relTriple_next _ _ _ _ _
-                      (((rootEncodingCacheCouples_probingHashQueryAfterPlan_avoids parameter target
-                        (truncateHash leftOutput) (truncateHash rightOutput) input plan hinput).relates.toStored)
+                      (((rootEncodingCacheCouples_probingHashQueryAfterPublicPlan_avoids parameter
+                        target (truncateHash leftOutput) (truncateHash rightOutput) input
+                        (materializedCanonicalContext table state).state plan hinput).relates.toStored)
                         leftCache rightCache hcache state fuel table hstored)
                     intro leftResult rightResult hresult
                     apply evalDist_finishMaterializedSelection_eq_of_rootEncoding _ _
@@ -143,8 +205,10 @@ theorem evalDist_materializedRootAvoidingOrdinalSelection_encoding
                     · simp only [hrevealed, ↓reduceIte]
                       exact ih nextLeft.value.1 nextCandidates nextLeft.state nextLeft.remaining
                         nextLeft.value.2 nextRight.value.2 hnextCache hnextStored
-                  · have hsafeActual : ¬RootAwareCandidateAvoidsRoots target
+                  · have hsafeActual : ¬RootSafePlannedHash target
                         (truncateHash leftOutput) (truncateHash rightOutput)
+                        (purePlanProbingHashQuery parameter input
+                          (materializedCanonicalContext table state).state)
                         (rootAwareCandidateForPlan? parameter input
                           (purePlanProbingHashQuery parameter input
                             (materializedCanonicalContext table state).state)) := by
