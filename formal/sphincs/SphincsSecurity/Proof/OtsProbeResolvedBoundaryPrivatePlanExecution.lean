@@ -176,4 +176,25 @@ theorem probingHashQueryAfterPlan_probeBound
           (isUncoveredProbe_imp_isProbe candidates)
           (resolveKnownInput_probeFree parameter coordinate input result.2)
 
+set_option maxRecDepth 100000 in
+theorem evalDist_runDirectDetailedPrivateObserve_probingHashQuery_eq_afterPlan
+    (parameter : PublicParameter) (input : HashInput)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (observe : DeferredContext → Nat → (HashOutput × SplitHashCache) → ProbComp Bool)
+    (hfactor : probingHashQuery parameter input = (do
+      let plan ← planProbingHashQuery parameter input
+      probingHashQueryAfterPlan parameter input plan)) :
+    evalDist (runDirectDetailedPrivateObserve observe context fuel table
+        ((probingHashQuery parameter input).run cache)) =
+      evalDist (runDirectDetailedPrivateObserve observe context fuel table
+        ((probingHashQueryAfterPlan parameter input
+          (purePlanProbingHashQuery parameter input context.state)).run cache)) := by
+  rw [hfactor]
+  unfold runDirectDetailedPrivateObserve
+  rw [StateT.run_bind, runDirectResolvedDetailedFromTable_bind]
+  rw [runDirectResolvedDetailed_planProbingHashQuery parameter input context.state context fuel
+    table cache rfl]
+  simp only [pure_bind]
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
