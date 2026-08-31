@@ -15,6 +15,61 @@ attribute [local instance] Classical.propDecidable
 def TargetOccurs (target : Position) (candidates : List Probe) : Prop :=
   ∃ candidate ∈ candidates, candidate.coordinate = .position target
 
+def NoPendingHit (target : Position) (context : DeferredContext) : Prop :=
+  ∀ output, ¬context.state.hitAt (.position target) output
+
+theorem noPendingHit_of_pendingCovered_not_occurs
+    (target : Position) (candidates : List Probe) (context : DeferredContext)
+    (hcovered : PendingCoveredBy candidates context)
+    (hnotOccurs : ¬TargetOccurs target candidates) :
+    NoPendingHit target context := by
+  intro output hhit
+  have hpending :
+      (Coordinate.position target, truncateHash output) ∈ context.state.pending := by
+    rw [← LazyRevealProbe.State.mem_pendingAt_iff]
+    exact hhit
+  obtain ⟨candidate, hcandidate, hcoordinate, _hdigest⟩ :=
+    hcovered (Coordinate.position target, truncateHash output) hpending
+  exact hnotOccurs ⟨candidate, hcandidate, hcoordinate⟩
+
+theorem noPendingHit_clearPending_of_ne
+    (target other : Position) (context : DeferredContext) (hne : target ≠ other)
+    (hnoHit : NoPendingHit target context) :
+    NoPendingHit target
+      { context with state := context.state.clearPending (.position other) } := by
+  intro output
+  rw [hitAt_clearPending_of_ne context.state (.position other) (.position target) output]
+  · exact hnoHit output
+  · intro heq
+    exact hne (Coordinate.position.inj heq)
+
+theorem evalDist_resolveDeferredPositionValue_isNone_of_noPendingHit
+    (target : Position) (context : DeferredContext)
+    (hnoHit : NoPendingHit target context) :
+    evalDist (resolveDeferredPositionValue target context >>= fun resolved =>
+      match resolved with
+      | none => pure true
+      | some _ => pure false) =
+      evalDist (pure false : ProbComp Bool) := by
+  unfold resolveDeferredPositionValue
+  cases hstate : context.state.values (.position target) with
+  | some output => simp [hstate, hnoHit output]
+  | none =>
+      simp only [hstate]
+      cases hprivate : context.values target with
+      | some output => simp [hnoHit output]
+      | none =>
+          simp only [bind_assoc]
+          calc
+            _ = evalDist (LazyRevealProbe.sampleHashOutput >>= fun _ => pure false) := by
+              apply evalDist_bind_congr
+              intro output _houtput
+              simp [hnoHit output]
+            _ = evalDist (pure false : ProbComp Bool) :=
+              OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+                LazyRevealProbe.sampleHashOutput (by
+                  simp [LazyRevealProbe.sampleHashOutput]) (pure false)
+
 theorem targetOccurs_removeTarget_of_ne
     (target other : Position) (candidates : List Probe) (hne : target ≠ other)
     (hoccurs : TargetOccurs target candidates) :
@@ -46,7 +101,7 @@ set_option maxRecDepth 100000 in
 theorem evalDist_resolve_then_prepareCandidateGroupsFails
     (position : Position) (fuel : Nat) (candidates : List Probe)
     (context : DeferredContext) (hlength : candidates.length ≤ fuel)
-    (hoccurs : TargetOccurs position candidates) :
+    (hready : TargetOccurs position candidates ∨ NoPendingHit position context) :
     evalDist (resolveDeferredPositionValue position context >>= fun resolved =>
       match resolved with
       | none => pure true
@@ -57,20 +112,31 @@ theorem evalDist_resolve_then_prepareCandidateGroupsFails
   | zero =>
       have hcandidates : candidates = [] := List.eq_nil_of_length_eq_zero (by omega)
       subst candidates
-      simp [TargetOccurs] at hoccurs
+      rcases hready with hoccurs | hnoHit
+      · simp [TargetOccurs] at hoccurs
+      · simp only [prepareCandidateGroupsFails, resolvedCandidateGroupsFire]
+        exact evalDist_resolveDeferredPositionValue_isNone_of_noPendingHit position context hnoHit
   | succ fuel ih =>
       cases candidates with
-      | nil => simp [TargetOccurs] at hoccurs
+      | nil =>
+          rcases hready with hoccurs | hnoHit
+          · simp [TargetOccurs] at hoccurs
+          · simp only [prepareCandidateGroupsFails, resolvedCandidateGroupsFire]
+            exact evalDist_resolveDeferredPositionValue_isNone_of_noPendingHit position context
+              hnoHit
       | cons candidate remaining =>
           cases hcoordinate : candidate.coordinate with
           | chainStart lay tree leafIdx chainIdx =>
               simp only [prepareCandidateGroupsFails, resolvedCandidateGroupsFire, hcoordinate]
-              exact ih remaining context (by simpa using hlength) (by
+              apply ih remaining context (by simpa using hlength)
+              rcases hready with hoccurs | hnoHit
+              · left
                 obtain ⟨found, hfound, hfoundCoordinate⟩ := hoccurs
                 simp only [List.mem_cons] at hfound
                 rcases hfound with rfl | hfound
                 · simp [hcoordinate] at hfoundCoordinate
-                · exact ⟨found, hfound, hfoundCoordinate⟩)
+                · exact ⟨found, hfound, hfoundCoordinate⟩
+              · exact Or.inr hnoHit
           | position target =>
               by_cases heq : position = target
               · subst position
@@ -103,9 +169,6 @@ theorem evalDist_resolve_then_prepareCandidateGroupsFails
                     rw [resolveDeferredPositionValue_of_resolved target context first hfirst]
                     rfl
               · let rest := removeTargetCandidates target (candidate :: remaining)
-                have hrestOccurs : TargetOccurs position rest :=
-                  targetOccurs_removeTarget_of_ne position target (candidate :: remaining) heq
-                    hoccurs
                 have hcommute := evalDist_resolvePositionValues_comm_of_ne position target
                   context heq
                 let continuation := continuePreparationAfterRevealed fuel target
@@ -168,6 +231,18 @@ theorem evalDist_resolve_then_prepareCandidateGroupsFails
                                 (candidate :: remaining)
                             dsimp only [rest]
                             omega
+                          have hrestReady : TargetOccurs position rest ∨
+                              NoPendingHit position targetResolved.toDeferredContext := by
+                            rcases hready with hoccurs | hnoHit
+                            · exact Or.inl (targetOccurs_removeTarget_of_ne position target
+                                (candidate :: remaining) heq hoccurs)
+                            · right
+                              have hstate := resolveDeferredPositionValue_state_eq_clearPending
+                                target context targetResolved htargetResolved
+                              intro output
+                              rw [hstate]
+                              exact noPendingHit_clearPending_of_ne position target context heq
+                                hnoHit output
                           calc
                             _ = evalDist (resolveDeferredPositionValue position
                                   targetResolved.toDeferredContext >>= fun resolved =>
@@ -180,7 +255,7 @@ theorem evalDist_resolve_then_prepareCandidateGroupsFails
                               intro first _hfirst
                               cases first <;> simp [hhit, prepareCandidateGroupsFails, rest]
                             _ = _ := ih rest targetResolved.toDeferredContext hrestLength
-                              hrestOccurs
+                              hrestReady
 
 noncomputable def prepareCandidateListFails
     (candidates : List Probe) (context : DeferredContext) : ProbComp Bool :=
@@ -195,6 +270,21 @@ theorem evalDist_resolve_then_prepareCandidateListFails
       | some resolved => prepareCandidateListFails candidates resolved.toDeferredContext) =
       evalDist (prepareCandidateListFails candidates context) := by
   exact evalDist_resolve_then_prepareCandidateGroupsFails position candidates.length candidates
-    context le_rfl hoccurs
+    context le_rfl (Or.inl hoccurs)
+
+theorem evalDist_resolve_then_prepareCandidateListFails_of_pendingCovered
+    (position : Position) (candidates : List Probe) (context : DeferredContext)
+    (hcovered : PendingCoveredBy candidates context) :
+    evalDist (resolveDeferredPositionValue position context >>= fun resolved =>
+      match resolved with
+      | none => pure true
+      | some resolved => prepareCandidateListFails candidates resolved.toDeferredContext) =
+      evalDist (prepareCandidateListFails candidates context) := by
+  apply evalDist_resolve_then_prepareCandidateGroupsFails position candidates.length candidates
+    context le_rfl
+  by_cases hoccurs : TargetOccurs position candidates
+  · exact Or.inl hoccurs
+  · exact Or.inr
+      (noPendingHit_of_pendingCovered_not_occurs position candidates context hcovered hoccurs)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
