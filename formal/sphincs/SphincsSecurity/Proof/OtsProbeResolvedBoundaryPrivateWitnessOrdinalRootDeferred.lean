@@ -32,6 +32,36 @@ structure RootMaterializedContextRel
   other_values : ∀ position, position ≠ target →
     left.values position = right.values position
 
+def RootDeferredCacheRel
+    (parameter : PublicParameter) (target : Position)
+    (leftOutput rightOutput : HashOutput)
+    (left right : SplitHashCache) : Prop :=
+  ∃ middle,
+    RootEncodingCacheRel parameter target
+      (truncateHash leftOutput) (truncateHash rightOutput) left middle ∧
+    RootHiddenCacheRel target leftOutput rightOutput middle right
+
+structure RootDeferredConfigRel
+    (parameter : PublicParameter) (target : Position)
+    (leftOutput rightOutput : HashOutput)
+    (leftContext rightContext : DeferredContext)
+    (leftCache rightCache : SplitHashCache) : Prop where
+  context : RootDeferredContextRel target leftOutput rightOutput leftContext rightContext
+  cache : RootDeferredCacheRel parameter target leftOutput rightOutput leftCache rightCache
+
+theorem rootDeferredCacheRel_fullSwapRootCache
+    (parameter : PublicParameter) (target : Position)
+    (leftOutput rightOutput : HashOutput) (cache : SplitHashCache)
+    (hleft : cache (.hidden (.position target)) = some leftOutput) :
+    RootDeferredCacheRel parameter target leftOutput rightOutput cache
+      (fullSwapRootCache parameter target (truncateHash leftOutput)
+        (truncateHash rightOutput) rightOutput cache) := by
+  refine ⟨swapCanonicalRootEncodingCache parameter target
+    (truncateHash leftOutput) (truncateHash rightOutput) cache, ?_, ?_⟩
+  · exact rootEncodingCacheRel_swapCanonical parameter target
+      (truncateHash leftOutput) (truncateHash rightOutput) cache
+  · exact rootHiddenCacheRel_fullSwapRootCache parameter target leftOutput rightOutput cache hleft
+
 theorem RootDeferredContextRel.symm
     {target : Position} {leftOutput rightOutput : HashOutput}
     {left right : DeferredContext}
