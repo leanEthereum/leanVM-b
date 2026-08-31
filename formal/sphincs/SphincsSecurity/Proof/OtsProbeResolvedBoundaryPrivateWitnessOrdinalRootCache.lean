@@ -846,6 +846,22 @@ theorem rootEncodingCacheCouples_maskedTreeRoot
   rootEncodingCacheCouples_maskedTreeNode parameter target leftRoot rightRoot lay tree
     (layerHeight lay) 0
 
+theorem rootEncodingCacheCouples_maskedLayerMessage
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (index : Index) (lay : Layer) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (maskedLayerMessage parameter ftsSecret index lay) := by
+  unfold maskedLayerMessage
+  by_cases hbelow : lay.val + 1 < numLayers
+  · rw [dif_pos hbelow]
+    exact rootEncodingCacheCouples_maskedTreeRoot parameter target leftRoot rightRoot
+      ⟨lay.val + 1, hbelow⟩ (treeIndexAt index ⟨lay.val + 1, hbelow⟩)
+  · rw [dif_neg hbelow]
+    exact rootEncodingCacheCouples_ftsKey parameter target leftRoot rightRoot index
+      (ftsSecret index)
+
 theorem relTriple_splitHashQuery_encodingRetryInput
     (parameter : PublicParameter) (target : Position)
     (leftRoot rightRoot : Digest) (position : EncodingPosition) (counter : Nat)
