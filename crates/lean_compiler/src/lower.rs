@@ -1107,7 +1107,7 @@ impl FnLower<'_> {
                     });
                     let len = u32::try_from(k).expect("slice length overflows u32");
                     if len == 0 {
-                        self.fail("empty slice")
+                        self.fail(format!("a runtime slice `{lo:?}:{hi:?}` has length 0, so it names no cell"))
                     };
                     let (ptr, lo) = self.heap_addr(arr, lo);
                     CellRun::Heap { ptr, lo, len }
@@ -1282,7 +1282,10 @@ impl FnLower<'_> {
                 // UNCONSTRAINED, so the caller (log2_ceil) re-verifies it. Same
                 // "prover computes, circuit checks" pattern as `/`.
                 if args.len() != 3 {
-    self.fail("hint_log2_ceil(bits, nbits, floor)")
+    self.fail(format!(
+                        "hint_log2_ceil takes three arguments, `(bits, nbits, floor)`, got {}",
+                        args.len()
+                    ))
 };
                 let nbits = self.const_index(&args[1]);
                 let floor = self.const_index(&args[2]);
@@ -2301,7 +2304,10 @@ impl FnLower<'_> {
         match f {
             "hint_decompose_bits" | "hint_decompose_bits_exponent" => {
                 if args.len() != 3 {
-                    self.fail(format!("{f}(bits, value, nbits)"))
+                    self.fail(format!(
+                        "{f} takes three arguments, `(bits, value, nbits)`, got {}",
+                        args.len()
+                    ))
                 };
                 let nbits = self.const_index(&args[2]);
                 let bits = self.bits_dest(&args[0], nbits, f);
@@ -2324,7 +2330,10 @@ impl FnLower<'_> {
             }
             "hint_f192_limbs" => {
                 if args.len() != 2 {
-                    self.fail("hint_f192_limbs(dest, value)")
+                    self.fail(format!(
+                        "hint_f192_limbs takes two arguments, `(dest, value)`, got {}",
+                        args.len()
+                    ))
                 };
                 let (base, len) = self
                     .stack_of(&args[0])
@@ -2377,7 +2386,10 @@ impl FnLower<'_> {
         }
         let allowed = ["cv", "counter", "final", "last_node"];
         if !(kwargs.keys().all(|k| allowed.contains(k))) {
-            self.fail("unknown blake2s keyword")
+            let bad: Vec<&&str> = kwargs.keys().filter(|k| !allowed.contains(k)).collect();
+            self.fail(format!(
+                "unknown blake2s keyword {bad:?}; the keywords are {allowed:?}"
+            ))
         };
         let customized = kwargs.keys().any(|k| matches!(*k, "counter" | "final" | "last_node"));
         if kwargs.contains_key("cv") && !customized {
