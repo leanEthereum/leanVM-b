@@ -306,6 +306,21 @@ theorem RootEncodingCacheRel.refl
     RootEncodingCacheRel parameter target root root cache cache := by
   exact ⟨fun _ _ => rfl, fun _ _ _ => rfl, fun _ => rfl, fun _ _ _ _ _ => rfl⟩
 
+theorem RootEncodingCacheRel.symm
+    {parameter : PublicParameter} {target : Position} {leftRoot rightRoot : Digest}
+    {left right : SplitHashCache}
+    (hrel : RootEncodingCacheRel parameter target leftRoot rightRoot left right) :
+    RootEncodingCacheRel parameter target rightRoot leftRoot right left := by
+  refine ⟨?_, ?_, ?_, ?_⟩
+  · intro input hinput
+    exact (hrel.nonroot input hinput).symm
+  · intro position counter hposition
+    exact (hrel.retry position counter hposition).symm
+  · intro coordinate
+    exact (hrel.hidden coordinate).symm
+  · intro input guess hguess hright hleft
+    exact (hrel.wrong input guess hguess hleft hright).symm
+
 theorem RootEncodingCacheRel.lookup_nonroot
     {parameter : PublicParameter} {target : Position} {leftRoot rightRoot : Digest}
     {left right : SplitHashCache}
@@ -599,6 +614,39 @@ theorem rootEncodingCacheCouples_peekPositionValues
           | some values =>
               exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot
                 (some (value :: values))
+
+theorem rootEncodingCacheCouples_peekTableInput
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (coordinate : Coordinate) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (peekTableInput parameter coordinate) := by
+  cases coordinate with
+  | chainStart =>
+      exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot none
+  | position position =>
+      cases position with
+      | chain lay tree leafIdx chainIdx step =>
+          rw [peekTableInput]
+          by_cases hzero : step.val = 0
+          · rw [if_pos hzero]
+            exact (rootEncodingCacheCouples_peekCoordinate parameter target leftRoot rightRoot
+              (.chainStart lay tree leafIdx chainIdx)).bind fun value =>
+                match value with
+                | none => rootEncodingCacheCouples_pure parameter target leftRoot rightRoot none
+                | some _ => rootEncodingCacheCouples_pure parameter target leftRoot rightRoot _
+          · rw [if_neg hzero]
+            exact (rootEncodingCacheCouples_peekPositionValues parameter target leftRoot rightRoot
+              (Position.chain lay tree leafIdx chainIdx step).children).bind fun values =>
+                match values with
+                | none => rootEncodingCacheCouples_pure parameter target leftRoot rightRoot none
+                | some _ => rootEncodingCacheCouples_pure parameter target leftRoot rightRoot _
+      | leaf | node | ftsLeaf | ftsNode | ftsRoots =>
+          simp only [peekTableInput]
+          exact (rootEncodingCacheCouples_peekPositionValues parameter target leftRoot rightRoot
+            _).bind fun values =>
+              match values with
+              | none => rootEncodingCacheCouples_pure parameter target leftRoot rightRoot none
+              | some _ => rootEncodingCacheCouples_pure parameter target leftRoot rightRoot _
 
 theorem RootEncodingCacheRelates.bind
     {parameter : PublicParameter} {target : Position}
@@ -1013,6 +1061,50 @@ theorem rootEncodingCacheCouples_ftsOpen
     (secret tree) level.val (Nat.xor ((leaves (ftsIndexOf tree)).val / 2 ^ level.val) 1)
       (Nat.le_of_lt level.isLt)
       (FtsProbeSimulation.ftsOpen_node_bound (leaves (ftsIndexOf tree)) level)
+
+theorem revealCoordinateOutput_run_eq
+    (coordinate : Coordinate) (cache : SplitHashCache) :
+    (revealCoordinateOutput coordinate).run cache = (do
+      let output ← LazyRevealProbe.revealQuery coordinate
+      pure (output, Function.update cache (.hidden coordinate) (some output))) := by
+  simp [revealCoordinateOutput, StateT.run_modify]
+
+theorem rootEncodingCacheCouples_revealCoordinateOutput
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (coordinate : Coordinate) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (revealCoordinateOutput coordinate) := by
+  intro leftCache rightCache hcache state fuel table
+  rw [revealCoordinateOutput_run_eq, revealCoordinateOutput_run_eq,
+    LazyRevealProbe.revealQuery, runCleanFromTable_reveal_query_bind,
+    runCleanFromTable_reveal_query_bind]
+  have hhidden : ¬RootEncodingKey parameter target (.hidden coordinate) :=
+    not_rootEncodingKey_hidden parameter target coordinate
+  cases hvalue : state.values coordinate with
+  | some output =>
+      simp only [runCleanFromTable, OracleComp.construct_pure]
+      exact relTriple_pure_pure ⟨rfl, rfl, rfl, rfl,
+        hcache.update_same_nonroot (.hidden coordinate) output hhidden⟩
+  | none =>
+      cases coordinate with
+      | chainStart lay tree leafIdx chainIdx =>
+          by_cases hhit : state.hitAt (.chainStart lay tree leafIdx chainIdx)
+              (table ⟨lay, tree, leafIdx, chainIdx⟩)
+          · simp [hhit, RootEncodingCleanSameRel]
+          · simp only [hhit, ↓reduceIte, runCleanFromTable, OracleComp.construct_pure]
+            exact relTriple_pure_pure ⟨rfl, rfl, rfl, rfl,
+              hcache.update_same_nonroot
+                (.hidden (.chainStart lay tree leafIdx chainIdx))
+                (table ⟨lay, tree, leafIdx, chainIdx⟩) hhidden⟩
+      | position position =>
+          apply relTriple_bind (relTriple_refl LazyRevealProbe.sampleHashOutput)
+          intro leftOutput rightOutput houtput
+          subst rightOutput
+          by_cases hhit : state.hitAt (.position position) leftOutput
+          · simp [hhit, RootEncodingCleanSameRel]
+          · simp only [hhit, ↓reduceIte, runCleanFromTable, OracleComp.construct_pure]
+            exact relTriple_pure_pure ⟨rfl, rfl, rfl, rfl,
+              hcache.update_same_nonroot (.hidden (.position position)) leftOutput hhidden⟩
 
 theorem rootEncodingCacheCouples_revealCoordinate
     (parameter : PublicParameter) (target : Position)

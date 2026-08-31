@@ -139,6 +139,31 @@ def RootInputAvoids
   ¬EncodingInputGuessesRoot parameter target leftRoot input ∧
     ¬EncodingInputGuessesRoot parameter target rightRoot input
 
+def NoEncodingRootGuessCached
+    (parameter : PublicParameter) (target : Position)
+    (root : Digest) (cache : SplitHashCache) : Prop :=
+  ∀ input, EncodingInputGuessesRoot parameter target root input →
+    cache (.ordinary input) = none
+
+theorem RootEncodingCacheRel.of_same_of_no_guesses
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (cache : SplitHashCache)
+    (hleft : NoEncodingRootGuessCached parameter target leftRoot cache)
+    (hright : NoEncodingRootGuessCached parameter target rightRoot cache) :
+    RootEncodingCacheRel parameter target leftRoot rightRoot cache cache := by
+  refine ⟨?_, ?_, ?_, ?_⟩
+  · intro input hinput
+    rfl
+  · intro position counter hposition
+    rw [hleft (encodingRetryInput parameter position leftRoot counter)
+      (decodeEncodingLayerRootCandidate?_encodingRetryInput hposition leftRoot counter)]
+    rw [hright (encodingRetryInput parameter position rightRoot counter)
+      (decodeEncodingLayerRootCandidate?_encodingRetryInput hposition rightRoot counter)]
+  · intro coordinate
+    rfl
+  · intro input guess hguess hguessLeft hguessRight
+    rfl
+
 theorem rootInputAvoids_classify
     {parameter : PublicParameter} {target : Position}
     {leftRoot rightRoot : Digest} {input : HashInput}
@@ -221,5 +246,110 @@ theorem relTriple_splitHashQuery_same_avoids
       simp only [runCleanFromTable, OracleComp.construct_pure]
       exact relTriple_pure_pure ⟨rfl, rfl, rfl, rfl,
         hcache.update_same_avoids input havoid leftOutput⟩
+
+theorem rootEncodingCacheCouples_modifyOrdinary_avoids
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (input : HashInput)
+    (havoid : RootInputAvoids parameter target leftRoot rightRoot input)
+    (output : HashOutput) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (modify fun cache : SplitHashCache =>
+        Function.update cache (.ordinary input) (some output)) := by
+  intro leftCache rightCache hcache state fuel table
+  simp only [StateT.run_modify, runCleanFromTable, OracleComp.construct_pure]
+  exact relTriple_pure_pure ⟨rfl, rfl, rfl, rfl,
+    hcache.update_same_avoids input havoid output⟩
+
+theorem rootEncodingCacheCouples_resolveKnownInput_avoids
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (coordinate : Coordinate) (input : HashInput)
+    (havoid : RootInputAvoids parameter target leftRoot rightRoot input) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (resolveKnownInput parameter coordinate input) := by
+  unfold resolveKnownInput
+  apply (rootEncodingCacheCouples_peekTableInput parameter target leftRoot rightRoot
+    coordinate).bind
+  intro knownInput
+  cases knownInput with
+  | none =>
+      intro leftCache rightCache hcache state fuel table
+      exact relTriple_splitHashQuery_same_avoids parameter target leftRoot rightRoot input havoid
+        leftCache rightCache hcache state fuel table
+  | some knownInput =>
+      simp only
+      by_cases heq : knownInput = input
+      · rw [if_pos heq]
+        apply (rootEncodingCacheCouples_revealCoordinateOutput parameter target leftRoot rightRoot
+          coordinate).bind
+        intro output
+        exact (rootEncodingCacheCouples_publishCoordinate parameter target leftRoot rightRoot
+          coordinate).bind fun _ =>
+            (rootEncodingCacheCouples_modifyOrdinary_avoids parameter target leftRoot rightRoot
+              input havoid output).bind fun _ =>
+                rootEncodingCacheCouples_pure parameter target leftRoot rightRoot output
+      · rw [if_neg heq]
+        intro leftCache rightCache hcache state fuel table
+        exact relTriple_splitHashQuery_same_avoids parameter target leftRoot rightRoot input havoid
+          leftCache rightCache hcache state fuel table
+
+theorem rootEncodingCacheCouples_executeCandidate
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (candidate? : Option Probe) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (executeCandidate? candidate?) := by
+  cases candidate? with
+  | none =>
+      simp only [executeCandidate?]
+      exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot ()
+  | some candidate =>
+      simp only [executeCandidate?]
+      exact rootEncodingCacheCouples_probe parameter target leftRoot rightRoot candidate
+
+theorem rootEncodingCacheCouples_probingHashQueryAfterPlan_avoids
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (input : HashInput) (plan : PlannedHashQuery)
+    (havoid : RootInputAvoids parameter target leftRoot rightRoot input) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (probingHashQueryAfterPlan parameter input plan) := by
+  unfold probingHashQueryAfterPlan executePlannedHashQuery
+  apply (rootEncodingCacheCouples_executeCandidate parameter target leftRoot rightRoot
+    plan.candidate?).bind
+  intro _
+  cases plan.action with
+  | ordinary =>
+      intro leftCache rightCache hcache state fuel table
+      exact relTriple_splitHashQuery_same_avoids parameter target leftRoot rightRoot input havoid
+        leftCache rightCache hcache state fuel table
+  | resolve coordinate =>
+      exact rootEncodingCacheCouples_resolveKnownInput_avoids parameter target leftRoot rightRoot
+        coordinate input havoid
+
+theorem rootInput_hit_or_avoids
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (input : HashInput) :
+    EncodingInputGuessesRoot parameter target leftRoot input ∨
+      EncodingInputGuessesRoot parameter target rightRoot input ∨
+        RootInputAvoids parameter target leftRoot rightRoot input := by
+  by_cases hleft : EncodingInputGuessesRoot parameter target leftRoot input
+  · exact Or.inl hleft
+  · by_cases hright : EncodingInputGuessesRoot parameter target rightRoot input
+    · exact Or.inr (Or.inl hright)
+    · exact Or.inr (Or.inr ⟨hleft, hright⟩)
+
+theorem probingHashQueryAfterPlan_root_trichotomy
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (input : HashInput) (plan : PlannedHashQuery) :
+    EncodingInputGuessesRoot parameter target leftRoot input ∨
+      EncodingInputGuessesRoot parameter target rightRoot input ∨
+        RootEncodingCacheRelatesStored parameter target leftRoot rightRoot
+          (probingHashQueryAfterPlan parameter input plan)
+          (probingHashQueryAfterPlan parameter input plan) := by
+  rcases rootInput_hit_or_avoids parameter target leftRoot rightRoot input with
+      hleft | hright | hsafe
+  · exact Or.inl hleft
+  · exact Or.inr (Or.inl hright)
+  · exact Or.inr (Or.inr
+      ((rootEncodingCacheCouples_probingHashQueryAfterPlan_avoids parameter target leftRoot
+        rightRoot input plan hsafe).relates.toStored))
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
