@@ -9,8 +9,9 @@
 //! A constant is read as a compile-time INTEGER, which is deliberate and
 //! load-bearing: it is what makes a derived size come out right. So the same
 //! text means different things here and in a value position, where it would fold
-//! in the field with `+` as XOR. Neither reading is wrong and the language has
-//! no way yet to say which was meant; see the crate's REVIEW.md.
+//! in the field with `+` as XOR. Neither reading is wrong, and `const(...)` is
+//! how an author says which was meant (`zkDSL.md`, "`const(...)` in a value
+//! position"). It is transparent here, a constant having only this reading.
 
 use super::*;
 
