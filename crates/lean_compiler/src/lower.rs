@@ -133,23 +133,12 @@ struct Scope {
     /// ([`FnLower::self_fp`]): local (`if`/`else`) jumps reload the frame
     /// pointer on the taken branch.
     self_fp_off: Option<Off>,
-    /// Range-check product-target cells: bound `k` → the frame cell holding
-    /// `g^{k-1}`, set lazily once and shared by every check of that bound.
-    bounds: HashMap<u64, Off>,
-    /// Constant cells: field value (as bits) → the frame cell holding it, SET
-    /// lazily once per distinct constant ([`FnLower::const_cell`]). Cells are
-    /// write-once and read-many, so one `SET` serves every use in scope.
+    /// Every lazily-`SET` constant cell: field value (as bits) → the frame cell
+    /// holding it. Cells are write-once and read-many, so one `SET` serves every
+    /// use in scope. A `SET` first emitted inside a branch must not be named from
+    /// outside it, where the other path leaves the cell unwritten and therefore
+    /// prover-chosen, which is why this reverts at a join with the bindings.
     const_cells: HashMap<[u64; 3], Off>,
-    /// A cached frame cell holding `0` (for forwarded zero words), set lazily.
-    zero_off: Option<Off>,
-    /// A cached frame cell holding `1` ([`FnLower::one`]), set lazily. Lives here
-    /// rather than on [`FnLower`] so it reverts at a branch join like every other
-    /// lazily-materialized cell: a `SET 1` first emitted inside a branch must not
-    /// be named from outside it, where the other path leaves the cell unwritten
-    /// and therefore prover-chosen. Several call sites hoist `one()` above a
-    /// branch on purpose; this is what makes that an optimization rather than the
-    /// thing holding the invariant up.
-    one_off: Option<Off>,
     /// Two consecutive frame cells holding the standard BLAKE2s IV, emitted
     /// lazily at the first dominating default-IV compression in this
     /// control-flow scope.
@@ -389,22 +378,16 @@ impl FnLower<'_> {
         }
     }
 
-    /// A frame cell holding `1` (always-taken `JUMP` condition), set lazily once.
+    /// A frame cell holding `1` (always-taken `JUMP` condition).
     fn one(&mut self) -> Off {
-        if let Some(o) = self.scope.one_off {
-            return o;
-        }
-        let o = self.fresh();
-        self.set_const(o, F192::ONE);
-        self.scope.one_off = Some(o);
-        o
+        self.const_cell(F192::ONE)
     }
 
-    /// A frame cell holding `v`, shared by every dominated use in the current scope.
+    /// A frame cell holding `v`, shared by every dominated use in the current
+    /// scope. The one cache for a lazily-`SET` constant: `1`, `0` and a range
+    /// check's `g^{k-1}` each had their own field, so two of them could name two
+    /// different cells holding the same value.
     fn const_cell(&mut self, v: F192) -> Off {
-        if v == F192::ONE {
-            return self.one();
-        }
         let key = [v.c0, v.c1, v.c2];
         if let Some(&o) = self.scope.const_cells.get(&key) {
             return o;
@@ -419,13 +402,7 @@ impl FnLower<'_> {
     /// words (a `BLAKE2s` padding half), and the destination every `assert a == b`
     /// in this scope XORs into.
     fn zero(&mut self) -> Off {
-        if let Some(o) = self.scope.zero_off {
-            return o;
-        }
-        let o = self.fresh();
-        self.set_const(o, F192::ZERO);
-        self.scope.zero_off = Some(o);
-        o
+        self.const_cell(F192::ZERO)
     }
 
     fn default_blake2s_cv(&mut self) -> Off {
@@ -437,7 +414,8 @@ impl FnLower<'_> {
             self.set_const(o + k as u32, value);
             self.scope
                 .const_cells
-                .insert([value.c0, value.c1, value.c2], o + k as u32);
+                .entry([value.c0, value.c1, value.c2])
+                .or_insert(o + k as u32);
         }
         self.scope.blake2s_iv = Some(o);
         o
@@ -1027,13 +1005,7 @@ impl FnLower<'_> {
     /// The frame cell holding `g^{k-1}`, the range-check product target, set
     /// lazily once per distinct bound `k` and shared by that bound's checks.
     fn bound_cell(&mut self, k: u64) -> Off {
-        if let Some(&o) = self.scope.bounds.get(&k) {
-            return o;
-        }
-        let o = self.fresh();
-        self.set_const(o, g_pow_u128((k - 1) as u128).into());
-        self.scope.bounds.insert(k, o);
-        o
+        self.const_cell(g_pow_u128((k - 1) as u128).into())
     }
 
     /// Resolve an expression naming a run of consecutive cells: a whole

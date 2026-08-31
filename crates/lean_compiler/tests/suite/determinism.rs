@@ -34,14 +34,14 @@ const GOLDEN: &[(&str, &str)] = &[
     ("hash_slices", "7146009faff5ace9a0c8446b63fd90de89aa82417709ddeee47dcc945848d85b"),
     ("heapbuf_dyn", "dc306f7cac8a664d85555fc746b0d54796dc654a87b9a63ea353d12597a25174"),
     ("hint", "b0fb2bce402a611a072382c85bf64ecbc95becebb33824c13853ed51ad3deeac"),
-    ("identities", "1dba65dc39a8d1c8cea5ac9d556f17ef3264fe2a1d6b37cf25ec6400c587d38c"),
+    ("identities", "d51dc227b94a4074b7950a4961ef31f834a2032adfa8fe62f3e85292193f2ea3"),
     ("match", "ee000b896f39eac651de4c4da05b1af7bdf5ea805954ddb3c5cd45f4e56fcd67"),
     ("match_range", "bbdb9183f56349cea48b268fccda310ec7bed631260a5ccdbfdca056724d853a"),
     ("nested", "bb03a048954a7162b63498cd6dee8dae7802b474a98b1d3e23b070eb3fb256b2"),
-    ("runtime_loop", "50de585f9115f835d231a3b4b6eaf155320a01b7838287fd01d568e16224b2d9"),
+    ("runtime_loop", "5cfe3fe7e99bd21a5d55c459470b087b1afc67e5057a530af953a96443303343"),
     ("scoping", "cb9612c923ca5f7b17aa7c399dae97ca54353ec63ebe9ff5c6e49f895b1a6a13"),
     ("unroll", "02ea947eee32d5d42f83eb294acbf93e31836eb08ae205ca95b69f6b8a177a8d"),
-    ("wots_walk", "3b56e89f5222596f772e4a78cbeaaf6ef81f8bba648e2b52530531b7af549ef0"),
+    ("wots_walk", "c04c1922e456e91fb577c948821fae37cba922b4f4d992bbcb41b8661a7a19cc"),
 ];
 
 fn digest(p: &Program) -> String {
