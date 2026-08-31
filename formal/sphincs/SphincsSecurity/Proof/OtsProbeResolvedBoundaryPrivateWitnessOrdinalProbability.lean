@@ -31,6 +31,117 @@ noncomputable def privateCandidateFire
       let output ← deferredPositionOutput position context
       pure (truncateHash output = candidate.candidate)
 
+noncomputable def preparePrivateCandidate
+    (candidate : Probe) (context : DeferredContext) :
+    ProbComp (Option DeferredContext) :=
+  match candidate.coordinate with
+  | .chainStart _ _ _ _ => pure (some context)
+  | .position position => do
+      let output ← deferredPositionOutput position context
+      if truncateHash output = candidate.candidate then
+        pure none
+      else
+        pure (some { context with values := context.values.install position output })
+
+theorem map_isNone_preparePrivateCandidate
+    (candidate : Probe) (context : DeferredContext) :
+    Option.isNone <$> preparePrivateCandidate candidate context =
+      privateCandidateFire candidate context := by
+  unfold preparePrivateCandidate privateCandidateFire
+  cases hcoordinate : candidate.coordinate with
+  | chainStart lay tree leafIdx chainIdx => simp
+  | position position =>
+      simp only [map_bind]
+      apply bind_congr
+      intro output
+      by_cases hhit : truncateHash output = candidate.candidate <;> simp [hhit]
+
+theorem privateCandidateFire_ensure
+    (candidate : Probe) (context : DeferredContext) (coordinate : Coordinate) :
+    privateCandidateFire candidate
+        { context with state := context.state.ensure coordinate } =
+      privateCandidateFire candidate context := by
+  cases hcandidate : candidate.coordinate with
+  | chainStart lay tree leafIdx chainIdx => simp [privateCandidateFire, hcandidate]
+  | position position => rfl
+
+theorem privateCandidateFire_addPending
+    (candidate : Probe) (context : DeferredContext)
+    (coordinate : Coordinate) (digest : Digest) :
+    privateCandidateFire candidate
+        { context with state := context.state.addPending coordinate digest } =
+      privateCandidateFire candidate context := by
+  cases hcandidate : candidate.coordinate with
+  | chainStart lay tree leafIdx chainIdx => simp [privateCandidateFire, hcandidate]
+  | position position => rfl
+
+theorem privateCandidateFire_publish
+    (candidate : Probe) (context : DeferredContext) (coordinate : Coordinate) :
+    privateCandidateFire candidate
+        { context with state := context.state.publish coordinate } =
+      privateCandidateFire candidate context := by
+  cases hcandidate : candidate.coordinate with
+  | chainStart lay tree leafIdx chainIdx => simp [privateCandidateFire, hcandidate]
+  | position position => rfl
+
+theorem privateCandidateFire_clearPending
+    (candidate : Probe) (context : DeferredContext) (coordinate : Coordinate) :
+    privateCandidateFire candidate
+        { context with state := context.state.clearPending coordinate } =
+      privateCandidateFire candidate context := by
+  cases hcandidate : candidate.coordinate with
+  | chainStart lay tree leafIdx chainIdx => simp [privateCandidateFire, hcandidate]
+  | position position => rfl
+
+theorem privateCandidateFire_canonicalize
+    (table : OtsSecretIndex → HashOutput)
+    (candidate : Probe) (context : DeferredContext)
+    (hconsistent : context.ValuesConsistent) :
+    privateCandidateFire candidate (canonicalizeMaterializedValues table context) =
+      privateCandidateFire candidate context := by
+  cases hcandidate : candidate.coordinate with
+  | chainStart lay tree leafIdx chainIdx => simp [privateCandidateFire, hcandidate]
+  | position position =>
+      simp only [privateCandidateFire, hcandidate]
+      unfold deferredPositionOutput
+      rw [canonicalizeMaterializedValues_positionValue table context hconsistent position]
+
+theorem candidateOutputsSafe_preparePrivateCandidate
+    (candidate : Probe) (context prepared : DeferredContext)
+    (hprepared : some prepared ∈ support (preparePrivateCandidate candidate context)) :
+    CandidateOutputsSafe prepared [candidate] := by
+  unfold preparePrivateCandidate at hprepared
+  cases hcoordinate : candidate.coordinate with
+  | chainStart lay tree leafIdx chainIdx =>
+      simp [hcoordinate, CandidateOutputsSafe]
+  | position position =>
+      simp only [hcoordinate, mem_support_bind_iff] at hprepared
+      obtain ⟨output, _houtput, hreturn⟩ := hprepared
+      by_cases hhit : truncateHash output = candidate.candidate
+      · simp [hhit] at hreturn
+      · simp [hhit] at hreturn
+        subst prepared
+        intro found hfound
+        simp only [List.mem_singleton] at hfound
+        subst found
+        simp only [hcoordinate]
+        exact ⟨output, by simp [DeferredStructuralValues.install], hhit⟩
+
+theorem not_recordedCandidateHit_of_preparePrivateCandidate_run
+    (candidate : Probe) (context prepared : DeferredContext)
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (result : ResolvedRunResult α)
+    (hprepared : some prepared ∈ support (preparePrivateCandidate candidate context))
+    (hresult : DirectDetailedResult.done result ∈ support
+      (runDirectResolvedDetailedFromTable prepared fuel table computation)) :
+    ¬RecordedCandidateHit result.context [candidate] := by
+  have hsafe := candidateOutputsSafe_preparePrivateCandidate candidate context prepared hprepared
+  have hvalues := privateValuesLE_of_done_runDirectResolvedDetailedFromTable
+    computation prepared fuel table result hresult
+  exact not_recordedCandidateHit_of_candidateOutputsSafe result.context [candidate]
+    (hsafe.of_privateValuesLE hvalues)
+
 theorem privateCandidateFire_eq_planned_of_fresh
     (candidate : Probe) (context : DeferredContext)
     (hstate : ∀ position, candidate.coordinate = .position position →
@@ -86,7 +197,36 @@ theorem probEvent_privateCandidateFire_empty_le (candidate : Probe) :
   · intro position _hcoordinate
     rfl
   · intro position _hcoordinate
-    rfl
+    simp [emptyDeferredStructuralValues]
+
+theorem probEvent_preparePrivateCandidate_empty_none_le (candidate : Probe) :
+    Pr[= none | preparePrivateCandidate candidate
+      { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+        values := emptyDeferredStructuralValues }] ≤
+      ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
+  calc
+    _ = Pr[fun result => Option.isNone result = true |
+        preparePrivateCandidate candidate
+        { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+          values := emptyDeferredStructuralValues }] := by
+      rw [← probEvent_eq_eq_probOutput]
+      apply OracleComp.probEvent_congr' (fun result _ => by cases result <;> simp) rfl
+    _ = Pr[fun hit : Bool => hit = true |
+        Option.isNone <$> preparePrivateCandidate candidate
+          { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+            values := emptyDeferredStructuralValues }] := by
+      rw [probEvent_map]
+      exact OracleComp.probEvent_congr' (fun result _ => by simp) rfl
+    _ = Pr[= true | Option.isNone <$> preparePrivateCandidate candidate
+        { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+          values := emptyDeferredStructuralValues }] :=
+      probEvent_eq_eq_probOutput _ true
+    _ = Pr[= true | privateCandidateFire candidate
+        { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+          values := emptyDeferredStructuralValues }] :=
+      OracleComp.probOutput_congr rfl
+        (congrArg evalDist (map_isNone_preparePrivateCandidate candidate _))
+    _ ≤ _ := probEvent_privateCandidateFire_empty_le candidate
 
 theorem probEvent_bind_privateCandidateFire_empty_le (candidates : ProbComp Probe) :
     Pr[= true | candidates >>= fun candidate => privateCandidateFire candidate
