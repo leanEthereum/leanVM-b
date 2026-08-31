@@ -928,27 +928,43 @@ impl FnLower<'_> {
         // folded arm's bindings escape. So an ambiguous condition is REJECTED, and
         // `if const(...)` is how the author says the integer regime was meant.
         if let (Some(a), Some(b)) = (self.try_const_index(lhs), self.try_const_index(rhs)) {
-            if !force_const
-                && let (Some(fa), Some(fb)) = (self.try_field_const(lhs), self.try_field_const(rhs))
-                && (fa == fb) != (a == b)
-            {
-                let yes = |b: bool| if b { "equal" } else { "not equal" };
-                self.fail(format!(
-                    "this condition's two readings disagree: as compile-time integers the sides are \
-                     {}, and as values, where `+` is XOR, they are {}. Folding it would enter an arm \
-                     whose own condition is false the other way. Write `if const(...)` to decide it \
-                     with integer arithmetic, or spell the operands so the two readings agree.",
-                    yes(a == b),
-                    yes(fa == fb)
-                ))
+            // Checked per SIDE, not by comparing the two verdicts. If each side's
+            // own readings agree then integer equality and field equality say the
+            // same thing, so a side that disagrees with ITSELF is the whole of the
+            // ambiguity. Comparing verdicts instead needs a field reading for both
+            // sides, and `try_field_const` has no arm for `-`, `//` or `%`, so
+            // `n == 3 - 1` slipped through and folded on the integer reading while
+            // `n == 2`, the same condition, was rejected.
+            if !force_const {
+                for e in [lhs, rhs] {
+                    if let Some((n, f)) = self.diverging_readings(e) {
+                        self.fail(format!(
+                            "`{e:?}` reads as the integer {n} where a condition folds, and as the field \
+                             element {:#x}:{:#x} where a value is wanted, so this branch would be decided \
+                             by one reading and its body run under the other. Write `if const(...)` to \
+                             decide it with integer arithmetic, or spell the operand so the two agree.",
+                            f.c1, f.c0
+                        ))
+                    }
+                }
             }
             for st in if (a == b) == eq { then } else { els } {
                 self.stmt(st);
             }
             return;
         }
+        // `const(...)` also decides a condition only the field can read (`GEN ** 3`,
+        // or anything past `u32`), which has no integer reading to be ambiguous
+        // against. A plain `if` must NOT: folding it would rescope the arm, whose
+        // bindings then outlive it.
         if force_const {
-            self.fail("`if const(...)` asks for a compile-time decision, but this condition is not one: both sides must be compile-time integers")
+            if let (Some(fa), Some(fb)) = (self.try_field_const(lhs), self.try_field_const(rhs)) {
+                for st in if (fa == fb) == eq { then } else { els } {
+                    self.stmt(st);
+                }
+                return;
+            }
+            self.fail("`if const(...)` asks for a compile-time decision, but this condition is not one: both sides must be compile-time constants")
         }
         // `x != 0` needs no XOR: the cell itself is the JUMP's nonzero test.
         let x = if self.try_lit(rhs) == Some(0) {
@@ -2759,7 +2775,12 @@ fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut std::collections
         StmtKind::HintWitness { dest, .. } => free_vars_expr(dest, refs),
         StmtKind::Print { value, .. } => free_vars_expr(value, refs),
         StmtKind::If {
-            lhs, rhs, then, els, ..
+            lhs,
+            rhs,
+            then,
+            els,
+            force_const,
+            ..
         } => {
             free_vars_expr(lhs, refs);
             free_vars_expr(rhs, refs);
@@ -2774,7 +2795,7 @@ fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut std::collections
             // body's. Modelling that as scoped over-captured, and the loop's own
             // self-call then read a name the folded arm had rebound to a
             // `StackBuf`. Both sides literal is the syntactic half of that test.
-            if matches!((lhs, rhs), (Expr::Lit(_), Expr::Lit(_))) {
+            if *force_const || matches!((lhs, rhs), (Expr::Lit(_), Expr::Lit(_))) {
                 then.iter().for_each(|s| free_vars_stmt(s, refs, bound));
                 els.iter().for_each(|s| free_vars_stmt(s, refs, bound));
             } else {

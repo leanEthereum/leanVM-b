@@ -289,7 +289,7 @@ else:
 
 Conditions are field-equality tests: `a == b` or `a != b` (there are no other predicates: order facts come from range-check asserts). The lowering is one `XOR` plus one conditional `JUMP` on it; the taken jump goes to whichever block the test doesn't fall into, so no negation gadget is needed. An `elif` is sugar for an `else` holding a nested `if`.
 
-When **both sides are compile-time integers** (e.g. after a `Const` parameter is substituted, `if k % 2 == 0:`), the condition is known at compile time and the `if` **folds** to just the taken branch: no `XOR`, no `JUMP`, no `self-fp`. This is what lets an `@inline` function bake different straight-line code per `Const` value.
+When **both sides are compile-time integers** (e.g. after a `Const` parameter is substituted, `if k % 2 == 0:`), the condition is known at compile time and the `if` **folds** to just the taken branch: no `XOR`, no `JUMP`, no `self-fp`. This is what lets an `@inline` function bake different straight-line code per `Const` value. A side whose integer reading and field reading disagree (`3 + 1` is the integer 4 and the field element 2) is **rejected** rather than folded either way, since the fold and a runtime test of the same condition would answer differently; write `if const(...)` below to decide it with integer arithmetic. Note that the rejection is per side, so it fires however the OTHER side is spelled.
 
 Two write-once-flavored rules:
 
@@ -340,7 +340,7 @@ Wrapping a condition in `const(...)` asks for the branch to be decided while com
 
 A folded branch emits no test and no jump, and its body is straight-line code, so **its bindings outlive it** where a runtime branch's are branch-local. That is the other reason to reach for the wrapper: it states that the arm's bindings are meant to escape.
 
-A plain `if` still folds on its own when both sides are compile-time integers and the two readings agree, so the wrapper is needed only where they do not, or where you want the compiler to insist.
+A plain `if` still folds on its own when both sides are compile-time integers and neither side's two readings disagree, so the wrapper is needed only where one does, where the condition is decidable only in the field (`GEN ** 3 == GEN ** 3`, which a plain `if` lowers to a real runtime branch), or where you want the compiler to insist.
 
 ## Assertions
 

@@ -311,18 +311,34 @@ fn an_ambiguous_compile_time_branch_must_be_declared() {
     // Declared, so it folds with integer arithmetic and the arm runs.
     fold("const(3 + 1 == 4)");
     fold("const(1 + 1 == 2)");
+    fold("const(1 + 1 == 3 - 1)");
+    // Only the field can read these, and `const(...)` decides them too. A plain
+    // `if` must not: folding one would rescope its arm.
+    fold("const(GEN ** 3 == GEN ** 3)");
+    fold("const(2 ** 40 == 2 ** 40)");
     // Undeclared but unambiguous (6 either way), so it folds as it always did.
     fold("2 * 3 == 6");
 
-    // Undeclared and ambiguous: rejected rather than silently decided.
-    for cond in ["3 + 1 == 4", "1 + 1 == 2"] {
+    // Undeclared and ambiguous: rejected rather than silently decided. The
+    // last three are the same condition as the first with the OTHER side
+    // written using an operator the field cannot read, which is how the first
+    // version of this check let them through: it compared the two sides'
+    // verdicts, and `try_field_const` has no arm for `-`, `//` or `%`, so one
+    // missing reading disabled the whole guard. The check is per side now.
+    for cond in [
+        "3 + 1 == 4",
+        "1 + 1 == 2",
+        "1 + 1 == 3 - 1",
+        "1 + 1 == 8 // 4",
+        "1 + 1 == 9 % 7",
+    ] {
         let src = prog(cond);
         let ast = parse(&src).expect("parses");
         let Err(err) = std::panic::catch_unwind(|| compile(&ast)) else {
             panic!("`{cond}` was accepted");
         };
         let msg = err.downcast_ref::<String>().map(String::as_str).unwrap_or("");
-        assert!(msg.contains("two readings disagree"), "{cond}: got `{msg}`");
+        assert!(msg.contains("where a value is wanted"), "{cond}: got `{msg}`");
     }
     // Declared, but not actually decidable while compiling.
     let src = prog("const(hb == 4)");

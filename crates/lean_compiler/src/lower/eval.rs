@@ -165,6 +165,20 @@ impl FnLower<'_> {
         }
     }
 
+    /// `e`'s two readings when they DISAGREE: the compile-time integer, and the
+    /// field element a value position would see. `None` when they agree, or when
+    /// `e` has only one of them (`3 - 1` has no field reading at all, so nothing
+    /// contradicts its integer one).
+    ///
+    /// One literal cannot stand for both, so an expression like this means
+    /// different things in an index and in a value, and any construct that must
+    /// pick one has to say which.
+    pub(super) fn diverging_readings(&self, e: &Expr) -> Option<(u128, F192)> {
+        let n = self.try_const_int(e)?;
+        let f = self.try_field_const(e)?;
+        (f != lit_field(n)).then_some((n, f))
+    }
+
     /// The exponent of `e` when it is a *constant* g-power small enough to ride a
     /// `DEREF` `β` immediate, for the constant factor of a product index.
     ///
