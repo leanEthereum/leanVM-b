@@ -468,12 +468,20 @@ impl FnLower<'_> {
 
     /// The cell holding `a op b`, computed only if this scope has not already.
     ///
-    /// **Route an operation here only when its result cell has no other writer.**
-    /// Minting a fresh cell is necessary but NOT sufficient, and the difference
-    /// matters: `assert a != b` also mints a fresh cell for `x·inv`, then writes
-    /// it again with `SET p = 1`, and that second write is the assertion. Share
-    /// that cell and the next `assert a != b` skips its `MUL`, finds `p` already
-    /// holding 1, and asserts nothing. The sites that must stay out are the ones
+    /// **Route an operation here only when no later write to its result cell
+    /// could be the assertion.** Minting a fresh cell is necessary but NOT
+    /// sufficient, and the difference matters: `assert a != b` also mints a fresh
+    /// cell for `x·inv`, then writes it again with `SET p = 1`, and that second
+    /// write is the assertion. Share that cell and the next `assert a != b` skips
+    /// its `MUL`, finds `p` already holding 1, and asserts nothing.
+    ///
+    /// A second writer is not disqualifying on its own, and one interned site has
+    /// one: `q = x ** k / w` lowers the division into the cell `pow_expr`
+    /// returned, because `FieldDiv` writes into its dividend's cell. That is safe
+    /// because the squaring chain is emitted FIRST and determines the value, so
+    /// the division's write is an equality against a value already pinned. What
+    /// must not happen is a later write that either determines the value or IS
+    /// the assertion. The sites that must stay out are the ones
     /// whose destination is written twice or already exists: the zero cell an
     /// `assert a == b` XORs into, the `g^{k-1}` a range check multiplies into,
     /// `assert a != b`'s product, a division's back-solve, and `expr_into`'s
@@ -825,8 +833,7 @@ impl FnLower<'_> {
         let kcell = self.fresh();
         let kset = self.code.len();
         self.set(kcell, KVal::Local(0)); // patched: table base T
-        let x2 = self.fresh();
-        self.emit(LOp::Mul { a: xo, b: xo, c: x2 });
+        let x2 = self.pure(PureOp::Mul, xo, xo);
         let d = self.fresh();
         self.emit(LOp::Mul { a: kcell, b: x2, c: d });
         self.emit(LOp::Jump { oc: one, od: d, of });
@@ -941,9 +948,8 @@ impl FnLower<'_> {
             self.expr(rhs)
         } else {
             let (la, lb) = (self.expr(lhs), self.expr(rhs));
-            let x = self.fresh();
-            self.emit(LOp::Xor { a: la, b: lb, c: x }); // x = lhs + rhs: nonzero ⇔ !=
-            x
+            // x = lhs + rhs: nonzero ⇔ !=
+            self.pure(PureOp::Xor, la, lb)
         };
         // Hoisted on purpose: these SETs must dominate the join.
         let sfp = self.self_fp();
@@ -993,8 +999,8 @@ impl FnLower<'_> {
             return;
         }
         let (la, lb) = (self.expr(a), self.expr(b));
-        let x = self.fresh();
-        self.emit(LOp::Xor { a: la, b: lb, c: x }); // x = a + b: nonzero ⇔ a != b
+        // x = a + b: nonzero ⇔ a != b
+        let x = self.pure(PureOp::Xor, la, lb);
         let inv = self.fresh();
         self.pending.push(Hint::Resolved(RHint::Inverse { value: x, dst: inv }));
         let p = self.fresh();
@@ -1248,13 +1254,9 @@ impl FnLower<'_> {
         let hi = 31 - k.leading_zeros(); // top set bit (k >= 1)
         let mut acc = base;
         for bit in (0..hi).rev() {
-            let sq = self.fresh();
-            self.emit(LOp::Mul { a: acc, b: acc, c: sq });
-            acc = sq;
+            acc = self.pure(PureOp::Mul, acc, acc);
             if (k >> bit) & 1 == 1 {
-                let m = self.fresh();
-                self.emit(LOp::Mul { a: acc, b: base, c: m });
-                acc = m;
+                acc = self.pure(PureOp::Mul, acc, base);
             }
         }
         acc
@@ -1521,8 +1523,8 @@ impl FnLower<'_> {
                 // a `mul_range` loop builds no unwind chain: only the final
                 // iteration returns, straight to the loop's original caller.
                 let (la, lb) = (self.expr(lhs), self.expr(rhs));
-                let x = self.fresh();
-                self.emit(LOp::Xor { a: la, b: lb, c: x }); // x = lhs + rhs; x != 0 ⇔ lhs != rhs
+                // x = lhs + rhs; x != 0 ⇔ lhs != rhs
+                let x = self.pure(PureOp::Xor, la, lb);
                 self.lower_call(callee, args, 0, Some(x), None, tail);
             }
             StmtKind::For { var, lo, hi, body } => self.lower_for(var, *lo, hi, body),

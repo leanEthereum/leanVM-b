@@ -28,7 +28,7 @@ use lean_vm::cpu::Program;
 /// without a digest.
 #[rustfmt::skip]
 const GOLDEN: &[(&str, &str)] = &[
-    ("conditionals", "c94c4c1fbe7f9aa0f373af7ec86123f0ba760ae11a39f7560682129f9566d4f4"),
+    ("conditionals", "b3637fcc6515be64b21ae1c9ab06a4cab1bcc8595e2aaa3b63fc8706f32dfd50"),
     ("const_params", "494a3e891f6e5b53b8946845f98990f36b0f1e01479db2c26f2fa27cfb9e7f00"),
     ("fibonacci", "68558b18c6c0facbc6b9496aa0a85036e1360922b23631f3d4ca7f82223ed2d8"),
     ("hash_heap_chain", "c0ba2a3f1a68d43f0ddeebfebf3918b489c1fef0c0d5ee45cd713c5cfbb17427"),
@@ -37,10 +37,10 @@ const GOLDEN: &[(&str, &str)] = &[
     ("hint", "b0fb2bce402a611a072382c85bf64ecbc95becebb33824c13853ed51ad3deeac"),
     ("identities", "d51dc227b94a4074b7950a4961ef31f834a2032adfa8fe62f3e85292193f2ea3"),
     ("match", "be0be17b8c84c39d36f25a34e276bd497c72cfe2d000a056f51e2589aaeac378"),
-    ("match_range", "bbdb9183f56349cea48b268fccda310ec7bed631260a5ccdbfdca056724d853a"),
+    ("match_range", "810e351e89177b21b4de098b241ab3b99c075ea3f0ce8d06c8c25bc368f9c868"),
     ("nested", "49d116d596c1e3190a553a693aac676f7b4fff6e7287d389ce795f9082624de1"),
     ("runtime_loop", "03576f38fbd593af5a5e47c062235434a2ab1c94ac1be3d6a3c59e7d31515491"),
-    ("scoping", "cb9612c923ca5f7b17aa7c399dae97ca54353ec63ebe9ff5c6e49f895b1a6a13"),
+    ("scoping", "52868d1dc24a1fd6f641dca9b93283fb3a4202e1dd482dbc8b768bc7fcaa344e"),
     ("unroll", "94f7066b2e850330fa6288a7ffd4b75dff4bbf8079cab82fca4ebec3438260f8"),
     ("wots_walk", "c04c1922e456e91fb577c948821fae37cba922b4f4d992bbcb41b8661a7a19cc"),
 ];
