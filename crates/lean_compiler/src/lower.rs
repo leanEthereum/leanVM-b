@@ -2114,11 +2114,22 @@ impl FnLower<'_> {
         // return slot, because caller and callee place the return area from
         // their own idea of the argument count. Only `specialize` checked this,
         // and only for a callee declaring `Const` parameters.
-        if let Some(want) = self.arity_of(callee)
-            && want != args.len()
-        {
-            let plural = if want == 1 { "argument" } else { "arguments" };
-            self.fail(format!("`{callee}` takes {want} {plural}, got {}", args.len()))
+        match self.arity_of(callee) {
+            Some(want) if want != args.len() => {
+                let plural = if want == 1 { "argument" } else { "arguments" };
+                self.fail(format!("`{callee}` takes {want} {plural}, got {}", args.len()))
+            }
+            // Nothing by that name is going to be lowered, so the entry pc it
+            // needs will not exist. Caught here, where there is a line: a typo, a
+            // statement-only builtin used as a value (`x = assert_in_k(a, b)`),
+            // or an `@inline` callee reached where inlining did not happen, all
+            // used to die later in `resolve` as a bare `no entry found for key`.
+            None => self.fail(format!(
+                "no function named `{callee}`. A builtin that writes into a destination \
+                 (`blake2s`, `assert_in_k`, a `hint_*`) is a statement and returns nothing, and an \
+                 `@inline` function is expanded at its call site rather than called"
+            )),
+            _ => {}
         }
         let (callee, args) = self.specialize(callee, args);
         let (callee, args) = (callee.as_str(), args.as_slice());
@@ -2640,8 +2651,16 @@ impl FnLower<'_> {
                      define it inside the loop body or carry state via a `HeapBuf`"
                 ));
             }
-            if matches!(self.scope.bound(r).map(|b| b.val), Some(Binding::Scalar(_) | Binding::Gaddr(_)))
-                && seen.insert(r.clone())
+            // A compile-time field constant is capturable too: the body becomes
+            // its own function, so the constant is not in scope there, and the
+            // helper takes it as a parameter that the call site materializes
+            // with one `SET`. Dropping it made `c = 5` followed by a loop that
+            // reads `c` fail as "unbound variable", which named neither the
+            // cause nor a fix.
+            if matches!(
+                self.scope.bound(r).map(|b| b.val),
+                Some(Binding::Scalar(_) | Binding::Gaddr(_) | Binding::FConst(_))
+            ) && seen.insert(r.clone())
             {
                 captures.push(r.clone());
             }

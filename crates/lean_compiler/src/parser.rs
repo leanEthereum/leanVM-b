@@ -165,6 +165,24 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
     while p.i < p.lines.len() {
         funcs.push(p.func()?);
     }
+    // Two names that used to be accepted and then silently picked a winner.
+    // A repeated `def` lowered both bodies and kept the last, and a name
+    // beginning with `__` can collide with a compiler-generated one: a loop
+    // helper is `__loopN`, and a `Const` specialization of `f` is `f__L1`, so a
+    // user function called `f__L1` took the specialization's place and the call
+    // ran the wrong body.
+    for (i, f) in funcs.iter().enumerate() {
+        if funcs[..i].iter().any(|g| g.name == f.name) {
+            return Err(format!("function `{}` is defined twice", f.name));
+        }
+        if f.name.contains("__") {
+            return Err(format!(
+                "function name `{}` may not contain `__`, which is reserved for the names the \
+                 compiler generates (a loop helper, a `Const` specialization)",
+                f.name
+            ));
+        }
+    }
     infer_return_shapes(&mut funcs)?;
     Ok(Ast { funcs, const_arrays })
 }

@@ -235,6 +235,51 @@ fn an_operator_missing_an_operand_says_so() {
     }
 }
 
+/// Four names and calls that used to pick a winner or die without a line.
+#[test]
+fn a_program_names_what_it_means() {
+    let tail = "    p = GEN ** 0\n    p[1] = GEN ** 0\n    p[GEN] = GEN ** 0\n    return\n";
+    // Both bodies used to be lowered, and the last definition won.
+    let dup = format!("def f(a):\n    return a\n\ndef f(a):\n    return a\n\ndef main():\n{tail}");
+    assert!(parse(&dup).expect_err("duplicate def").contains("defined twice"));
+    // `f__L1` is what a `Const` specialization of `f` is called, and `__loopN`
+    // what a loop helper is called, so a user function of that name took its
+    // place and the call ran the wrong body.
+    let reserved = format!("def f__L1(a):\n    return a\n\ndef main():\n{tail}");
+    assert!(parse(&reserved).expect_err("reserved name").contains("reserved"));
+
+    // A call to something that will never be lowered died in the assembler as a
+    // bare `no entry found for key`, with no line.
+    for callee in ["nosuchfn(1)", "assert_in_k(GEN ** 1, GEN ** 1)"] {
+        let src = format!("def main():\n    x = {callee}\n{tail}");
+        let ast = parse(&src).expect("parses");
+        let Err(err) = std::panic::catch_unwind(|| compile(&ast)) else {
+            panic!("`{callee}` was accepted");
+        };
+        let msg = err.downcast_ref::<String>().map(String::as_str).unwrap_or("");
+        assert!(msg.contains("no function named"), "{callee}: got `{msg}`");
+    }
+
+    // A compile-time constant is capturable into a `for` body: the body becomes
+    // its own function, so the constant is not in scope there. Dropping it made
+    // this "unbound variable", which named neither the cause nor a fix.
+    let captured = "\
+def main():
+    c = 5
+    hb = HeapBuf(4)
+    for i in mul_range(1, 4):
+        hb[i] = c
+    p = GEN ** 0
+    p[1] = hb[GEN]
+    p[GEN] = GEN ** 0
+    return
+";
+    let program = compile(&parse(captured).expect("a constant may be captured"));
+    let want = [F192::new(5, 0, 0), g_pow(0).into()];
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    verify(&program, &want, &proof).expect("the captured constant reaches the body");
+}
+
 /// Three ways a program could read a frame or heap cell it does not own.
 ///
 /// Each compiled clean and left a cell that nothing writes, which the prover
