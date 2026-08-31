@@ -144,7 +144,7 @@ def compress(cv: StackBuf(2), block: StackBuf(2)):
 
 Those cells arrive **already written**, unlike a local `StackBuf`'s, so a store into one is the write-once equality *assertion* rather than a fresh store. That is what makes a callee able to pin its caller's values: `s[k] = <checked value>` inside the callee asserts that the caller's cell already held it. It also means a run parameter initializes nothing, so passing a partly-written buffer passes its unwritten cells, which the prover then chooses, exactly as anywhere else.
 
-A `match_range` arm cannot pass one: the fused dispatch writes one cell per argument, so give such arms `Const` arguments and let each specialize instead. This is otherwise the same mechanism a `StackBuf` **return** already used, in the other direction: the argument area is a width rather than a count, and a run occupies the cells its size asks for. Without it a two-cell value could come out of a function whole but only go in through a `HeapBuf` pointer or an `@inline` expansion, which grows the caller's frame at every call site.
+A `match` arm cannot pass one: the fused dispatch writes one cell per argument, so give such arms `Const` arguments and let each specialize instead. This is otherwise the same mechanism a `StackBuf` **return** already used, in the other direction: the argument area is a width rather than a count, and a run occupies the cells its size asks for. Without it a two-cell value could come out of a function whole but only go in through a `HeapBuf` pointer or an `@inline` expansion, which grows the caller's frame at every call site.
 
 ### `Const` parameters
 
@@ -158,7 +158,7 @@ def hash_pair(buf, k: Const):
 `k: Const` marks a **compile-time parameter**: the call site must pass a constant (an integer literal, `GEN ** k`, or a literal-bound name), and the compiler *specializes* the function per distinct constant tuple, a monomorphized copy (`hash_pair__L1`) with the parameter substituted as its literal, shared by every call with the same constants; only the runtime arguments are passed. Inside the body the parameter *is* the literal, so it works in compile-time positions: stack indexes, slice bounds. A function with a `Const` parameter is a template: it is never lowered itself. The idiomatic pairing dispatches a runtime index to a const-indexed helper:
 
 ```python
-r = match_range(log(x), range(0, 4), lambda i: hash_pair(buf, i))
+r = match(log(x), range(0, 4), lambda i: hash_pair(buf, i))
 ```
 
 ### `@inline`: inline a function at its call sites
@@ -190,11 +190,11 @@ def obs(cb, x):          # Fiat-Shamir absorb: cb <- compress(cb, (x, SCALAR))
 cvb = obs(cvb, v)        # exactly 3 ops: two tag writes + one blake2s
 ```
 
-An `@inline` call may also sit in **expression position**: embedded in arithmetic, as a store's RHS, or as a single-target `match_range` arm. An aliased return (a folded g-address) then materializes into a plain cell (free for a var; one `MUL` for a shifted pointer); a multi-cell `StackBuf` return still needs a `let` binding, since only a name can alias a cell run.
+An `@inline` call may also sit in **expression position**: embedded in arithmetic, as a store's RHS, or as a single-target `match` arm. An aliased return (a folded g-address) then materializes into a plain cell (free for a var; one `MUL` for a shifted pointer); a multi-cell `StackBuf` return still needs a `let` binding, since only a name can alias a cell run.
 
-An `@inline` function that also takes a `Const` parameter and is used as a `match_range` arm is specialized rather than expanded: the fused dispatch enters one real function, so `@inline` is simply not honoured there. One without a `Const` parameter has no entry to dispatch to and is rejected.
+An `@inline` function that also takes a `Const` parameter and is used as a `match` arm is specialized rather than expanded: the fused dispatch enters one real function, so `@inline` is simply not honoured there. One without a `Const` parameter has no entry to dispatch to and is rejected.
 
-Because the body runs in the *caller's* frame, a `Const` parameter whose `if`s fold (below) bakes straight-line, per-case code, the idiom for a `match_range` arm that must specialize on the arm value. The trade-off is frame cells: each call site gets its own copy, so `@inline` pays off for small, hot callees; inlining a large body at many sites grows the committed witness (more data memory), so it is opt-in, not automatic.
+Because the body runs in the *caller's* frame, a `Const` parameter whose `if`s fold (below) bakes straight-line, per-case code, the idiom for a `match` arm that must specialize on the arm value. The trade-off is frame cells: each call site gets its own copy, so `@inline` pays off for small, hot callees; inlining a large body at many sites grows the committed witness (more data memory), so it is opt-in, not automatic.
 
 ## Variables
 
@@ -320,31 +320,21 @@ Local jumps must carry the frame pointer, which the ISA cannot read directly; ea
 ### `match`
 
 ```python
-match log(x):        # x = GEN ** j runs case j
-    case 0:
-        r[1] = 11
-    case 1:
-        r[1] = 17
-    case 2:
-        r[1] = 21
+r = match(log(x), range(0, 6), lambda j: f(j))
+a, b = match(log(x), range(0, 2), lambda j: g(1), range(2, 6), lambda j: g(j))
 ```
 
-Matches the **log** of a g-power scrutinee against integer cases, which must be consecutive from 0 (the dispatch table is dense; no `case _`). The lowering is two jumps through a *trampoline table* in the bytecode: the dispatch jumps to `g^T · x²`, the j-th two-instruction slot (`SET` the case block's address, `JUMP` to it) of a table at base `T`, and the slot jumps to the case block, which can sit anywhere, unaligned and of any length. Cost ≈ 7 cycles, independent of the case count.
+The one dispatch construct. It matches the **log** of a g-power scrutinee against integer arms, which must cover consecutive integers from 0 (the dispatch table is dense; there is no default arm). Arm `j` is the lambda body with the parameter replaced by the **integer literal** `j`, usable as a field constant or a compile-time index, expanded at parse time over the contiguous `(range, lambda)` pairs. The whole call sits on one line, there being no line continuation.
 
-(Why not leanVM's single-jump `pc = a + b·x`: that affine address needs integer *scaling* by the common block size `b`, which in the exponent becomes `x^b` (log₂ b squarings) plus padding every block to the longest; the trampoline collapses the aligned region to 2-instruction slots, so the scaling is the single squaring `x²`. Other layouts exist, e.g. a memory-resident address table dispatched with a single jump, worthwhile for many repeated small matches, but only the trampoline is implemented.)
+Arms produce VALUES: every arm writes its results into the same cells, which is sound under write-once because exactly one arm runs. A target may be a name, bound after the join, or a **`StackBuf` element**, which the arms write into directly and which costs one instruction less than a name plus a store. The ABI returns into cells the CALLER picks, the same reason `sb[i] = f(x)` never needed a temporary, so reach for the element form wherever a returned value's home is a buffer slot. A target index must be a compile-time integer inside the buffer, both errors naming the line; a `HeapBuf` element is not a target, its cells not being frame cells. Multiple targets take a multi-return call as the arm body.
 
-**Soundness**: nothing in the dispatch bounds `x`, so a scrutinee outside `[0, n)` jumps to an arbitrary pc. A hinted value must be range-checked first (`assert log(x) < n`, 3 cycles), as in leanVM. Case bodies are branch-local, like `if` branches.
+A branch body with statements in it goes in a function, and the arm calls it: that is the idiom the recursion guest uses throughout (`lambda k: walk(chain_start, tweaks, pp, k)`), and it names the body instead of inlining it.
 
-### `match_range`
+**Lowering** is two jumps through a *trampoline table* in the bytecode: the dispatch jumps to `g^T · x²`, the j-th two-instruction slot (`SET` the arm's address, `JUMP` to it) of a table at base `T`, and the slot jumps to the arm, which can sit anywhere, unaligned and of any length. Cost is about 7 cycles, independent of the arm count.
 
-```python
-r = match_range(log(x), range(0, 6), lambda i: f(i))
-a, b = match_range(log(x), range(0, 2), lambda i: g(1), range(2, 6), lambda i: g(i))
-```
+(Why not leanVM's single-jump `pc = a + b·x`: that affine address needs integer *scaling* by the common block size `b`, which in the exponent becomes `x^b`, log₂ b squarings, plus padding every block to the longest; the trampoline collapses the aligned region to 2-instruction slots, so the scaling is the single squaring `x²`. Other layouts exist, e.g. a memory-resident address table dispatched with a single jump, worthwhile for many repeated small matches, but only the trampoline is implemented.)
 
-A `match` with generated arms (leanVM's `match_range`): arm `j` is the lambda body with the parameter replaced by the **integer literal** `j` (usable as a field constant or a compile-time index), expanded at parse time over the contiguous `(range, lambda)` pairs, which must start at 0. Unlike `match` cases, the arms produce values: every arm writes its results into the same fresh cells (write-once is sound, since exactly one arm executes), and the targets name those cells after the join. Multiple targets take a multi-return call as the arm body. The whole call sits on one line (no line continuation), and the `match` soundness caveat applies unchanged.
-
-A target may be a name OR a **`StackBuf` element**: `sb[i], e = match_range(…)` has the arms write their return straight into `sb[i]`, which costs one instruction less than a name plus a store. The ABI returns into cells the CALLER picks, which is the same reason `sb[i] = f(x)` never needed a temporary, so this is the spelling to use wherever a returned value's home is a buffer slot. The index must be a compile-time integer and within the buffer, both errors naming the line; a `HeapBuf` element is not a target, its cells not being frame cells.
+**Soundness**: nothing in the dispatch bounds `x`, so a scrutinee outside `[0, n)` jumps to an arbitrary pc. A hinted value must be range-checked first (`assert log(x) < n`, 3 cycles), as in leanVM.
 
 **Dispatched-call fusion.** When *every* arm is a call to the same function with identical runtime arguments (the common `lambda k: f(a, b, k)`, where only a `Const` argument varies), the compiler builds the callee frame **once** and the dispatch jumps straight into the selected specialization's entry, which returns past the join. Each taken arm is then just the trampoline's two instructions (`SET entry; JUMP`) instead of a full call: no per-arm frame setup, call jump, or return jump. (The `walk`-per-digit dispatch in the XMSS verifier is the motivating case.)
 
@@ -542,8 +532,7 @@ Three builtins have the prover compute the values at witness generation instead 
 | `assert a != b` | 3 (`XOR`, `MUL`, `SET`), no branch, one hinted inverse |
 | `assert log x < k` | 3 (+1 `SET` amortized per bound per frame; a runtime bound costs 1 `MUL` instead) |
 | `if a == b: …` | 3 (+2 to skip a non-empty `else`; +2 amortized `self-fp` per branching function); **0 if the condition is compile-time** |
-| `match log(x): …` | ≈ 7, independent of the case count |
-| `… = match_range(log(x), …)` | the `match` + the arm; results written into the targets directly. Uniform-call arms (`lambda k: f(a, b, k)`) **fuse**: one shared frame + dispatch to entry, each arm just `SET`+`JUMP` |
+| `… = match(log(x), …)` | ≈ 7 for the dispatch + the arm; results written into the targets directly. Uniform-call arms (`lambda k: f(a, b, k)`) **fuse**: one shared frame + dispatch to entry, each arm just `SET`+`JUMP` |
 | function call | ≈ `n_args + n_returns + 4` (0 when the callee is `@inline`) |
 | `mul_range` iteration | body + ≈ 1 `MUL` + 1 `XOR` + call overhead |
 | `unroll` iteration | body only (compile-time replication) |

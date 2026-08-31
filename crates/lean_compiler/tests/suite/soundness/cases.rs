@@ -50,7 +50,7 @@ def main():
     });
 }
 
-/// The exponent range check and `match_range` dispatch. The dispatch is only
+/// The exponent range check and `match` dispatch. The dispatch is only
 /// sound because the matched value was range-checked first (doc §Match
 /// statements), so a poke past the bound must be caught by the check rather than
 /// land at an attacker-chosen arm.
@@ -63,7 +63,7 @@ def main():
     v = StackBuf(2)
     hint_witness(v, \"w\")
     assert log(v[0]) < 8
-    r = match_range(log(v[0]), range(0, 8), lambda i: sq(i))
+    r = match(log(v[0]), range(0, 8), lambda i: sq(i))
     assert r == v[1]
     p = GEN ** 0
     p[1] = v[0]
@@ -276,7 +276,7 @@ def main():
     p.execute([F192::ZERO, F192::ZERO]);
 }
 
-/// The fused `match_range` path must reject a call that binds more names than
+/// The fused `match` path must reject a call that binds more names than
 /// the callee returns, exactly as the non-fused path does. Before this check the
 /// surplus name `DEREF`ed a callee-frame offset nothing on the taken path wrote,
 /// and since the shared frame is sized to the largest callee that offset exists,
@@ -292,7 +292,7 @@ fn dispatched_call_rejects_a_mixed_arity_arm() {
         "\
 def main():
     x = GEN ** 2
-    a, b, c = match_range(log(x), range(0, 2), lambda i: three(x, i), range(2, 4), lambda i: one(x, i))
+    a, b, c = match(log(x), range(0, 2), lambda i: three(x, i), range(2, 4), lambda i: one(x, i))
     p = GEN ** 0
     p[1] = b
     p[GEN] = c
@@ -317,7 +317,7 @@ fn dispatched_call_rejects_an_over_bound_callee() {
         "\
 def main():
     x = GEN ** 1
-    a, b = match_range(log(x), range(0, 4), lambda i: one(x, i))
+    a, b = match(log(x), range(0, 4), lambda i: one(x, i))
     p = GEN ** 0
     p[1] = a
     p[GEN] = b
@@ -399,7 +399,7 @@ def main():
     a[0] = 0
     a[1] = 0
     x = GEN ** 1
-    a[2], e = match_range(log(x), range(0, 2), lambda i: two(x, i))
+    a[2], e = match(log(x), range(0, 2), lambda i: two(x, i))
     p = GEN ** 0
     p[1] = b[0]
     p[GEN] = e

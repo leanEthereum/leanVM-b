@@ -2005,7 +2005,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # dispatch independently for every inner proof in a mixed-rate batch.
     config_sel = size_sel * rate_sel ** LIG_N_LOG_SIZES
     assert log(config_sel) < LIG_N_CANDIDATES
-    sumcheck_target, point_fold, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g, point_tail, yr_at_tail = match_range(log(config_sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1, cursor))
+    sumcheck_target, point_fold, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g, point_tail, yr_at_tail = match(log(config_sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1, cursor))
     # `stream` is a fixed-capacity witness transport. The shape fixes the exact
     # consumed prefix, whose every word is transcript-bound; the unused suffix
     # is outside the recursively verified proof and intentionally unconstrained.
@@ -2352,7 +2352,7 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
         digit = hint_witness("digits")
         assert log(digit) < CHAIN_LENGTH
         chain_start = hint_witness("chain_starts")
-        tips[i], e = match_range(log(digit), range(0, CHAIN_LENGTH), lambda k: walk(chain_start, chain_tweaks, pp, k))
+        tips[i], e = match(log(digit), range(0, CHAIN_LENGTH), lambda k: walk(chain_start, chain_tweaks, pp, k))
         digit_product = digit_product * digit
         acc_lo = acc_lo + e * weight  # e_i in its monomial subspace of lane 0
         weight = weight * CHAIN_LENGTH
@@ -2363,7 +2363,7 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
         digit = hint_witness("digits")
         assert log(digit) < CHAIN_LENGTH
         chain_start = hint_witness("chain_starts")
-        tips[i], e = match_range(log(digit), range(0, CHAIN_LENGTH), lambda k: walk(chain_start, chain_tweaks, pp, k))
+        tips[i], e = match(log(digit), range(0, CHAIN_LENGTH), lambda k: walk(chain_start, chain_tweaks, pp, k))
         digit_product = digit_product * digit
         acc_hi = acc_hi + e * weight  # e_i in its monomial subspace of lane 1
         weight = weight * CHAIN_LENGTH
@@ -2486,7 +2486,7 @@ def sp_ots_leaf(tw_pos, pp, msg):
         assert log(digit) < SP_CHAIN_LENGTH
         chain_start = hint_witness("sp_chain_starts")
         tw_chain = tw_pos + SP_TW_CHAIN + i * SP_CHAIN_MUL
-        tips[i], e = match_range(log(digit), range(0, SP_CHAIN_LENGTH), lambda k: sp_walk(chain_start, tw_chain, pp, k))
+        tips[i], e = match(log(digit), range(0, SP_CHAIN_LENGTH), lambda k: sp_walk(chain_start, tw_chain, pp, k))
         digit_product = digit_product * digit
         acc_lo = acc_lo + e * weight
         weight = weight * SP_CHAIN_LENGTH
@@ -2497,7 +2497,7 @@ def sp_ots_leaf(tw_pos, pp, msg):
         assert log(digit) < SP_CHAIN_LENGTH
         chain_start = hint_witness("sp_chain_starts")
         tw_chain = tw_pos + SP_TW_CHAIN + i * SP_CHAIN_MUL
-        tips[i], e = match_range(log(digit), range(0, SP_CHAIN_LENGTH), lambda k: sp_walk(chain_start, tw_chain, pp, k))
+        tips[i], e = match(log(digit), range(0, SP_CHAIN_LENGTH), lambda k: sp_walk(chain_start, tw_chain, pp, k))
         digit_product = digit_product * digit
         acc_hi = acc_hi + e * weight
         weight = weight * SP_CHAIN_LENGTH

@@ -144,15 +144,8 @@ fn subst_kind(s: &StmtKind, name: &str, to: &Expr) -> (StmtKind, bool) {
             },
             false,
         ),
-        StmtKind::Match { x, cases } => (
+        StmtKind::Match { targets, x, arms } => (
             StmtKind::Match {
-                x: e(x),
-                cases: cases.iter().map(|c| subst_stmts(c, name, to)).collect(),
-            },
-            false,
-        ),
-        StmtKind::LetMatchRange { targets, x, arms } => (
-            StmtKind::LetMatchRange {
                 // A name target is a BINDER, so it is never substituted: the
                 // `shadow` flag below already stops substitution past this
                 // statement, and rewriting the binder itself turned `k, e = …`
@@ -170,7 +163,7 @@ fn subst_kind(s: &StmtKind, name: &str, to: &Expr) -> (StmtKind, bool) {
     }
 }
 
-/// `e` with every `Var(name)` replaced by `to`: the `match_range` arm
+/// `e` with every `Var(name)` replaced by `to`: the `match` arm
 /// expansion, where the lambda parameter becomes the arm's integer literal.
 pub(super) fn subst_var(e: &Expr, name: &str, to: &Expr) -> Expr {
     let s = |b: &Expr| Box::new(subst_var(b, name, to));

@@ -1,4 +1,4 @@
-# `match_range(log(x), range(a, b), lambda i: …, …)`: a match with generated
+# `match(log(x), range(a, b), lambda i: …, …)`: a match with generated
 # arms: arm j is the lambda body with i replaced by the integer literal j, and
 # every arm writes its results into the same fresh cells (write-once: exactly
 # one arm executes), bound to the assignment targets. Ranges are contiguous
@@ -10,9 +10,9 @@ from snark_lib import *
 
 def main():
     x = GEN ** 3
-    r = match_range(log(x), range(0, 6), lambda i: shift(i))
+    r = match(log(x), range(0, 6), lambda i: shift(i))
     assert r == 6
-    a, b = match_range(log(x), range(0, 2), lambda i: two(1), range(2, 6), lambda i: two(i))
+    a, b = match(log(x), range(0, 2), lambda i: two(1), range(2, 6), lambda i: two(i))
     p = GEN ** 0
     p[1] = r
     p[GEN] = a + b

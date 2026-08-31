@@ -236,6 +236,7 @@ const BUILTINS: &[&str] = &[
     "hint_log2_ceil",
     "hint_witness",
     "len",
+    "match",
     "HeapBuf",
     "StackBuf",
 ];
@@ -642,10 +643,6 @@ impl Parser {
             let rest = rest.to_string();
             return self.if_stmt(&rest, indent);
         }
-        if let Some(rest) = line.strip_prefix("match ") {
-            let rest = rest.to_string();
-            return self.match_stmt(&rest, indent);
-        }
         self.i += 1;
         if line == "return" {
             return Ok(StmtKind::Return(vec![]));
@@ -738,10 +735,10 @@ impl Parser {
         };
         // Assignment or bare call.
         if let Some((lhs, rhs)) = split_assign(&line) {
-            // `names = match_range(…)` carries lambdas, which `parse_expr`
+            // `names = match(…)` carries lambdas, which `parse_expr`
             // does not speak, so it gets its own parser.
-            if rhs.trim_start().starts_with("match_range(") {
-                return parse_match_range(&lhs, &rhs);
+            if rhs.trim_start().starts_with("match(") {
+                return parse_match(&lhs, &rhs);
             }
             // `x = hint_witness("stream")`: one hinted value, no buffer. The
             // string is not an expression, so like the run form it is parsed
@@ -876,63 +873,6 @@ impl Parser {
             force_const,
         })
     }
-
-    /// `match log(x):` with `case 0:` … `case n-1:` bodies. The cases must
-    /// be consecutive integers from 0 (the trampoline table is dense; there
-    /// is no `case _`). Matching is on the *log*: `x = GEN ** j` runs case `j`.
-    fn match_stmt(&mut self, header: &str, indent: usize) -> Result<StmtKind, String> {
-        let inner = header.strip_suffix(':').ok_or("`match` needs `:`")?;
-        let x = strip_log(inner).ok_or("`match` matches logs: `match log(x):`")?;
-        let x = parse_expr(x)?;
-        self.i += 1;
-        let case_indent = match self.lines.get(self.i) {
-            Some(Line { indent: ind, .. }) if *ind > indent => *ind,
-            _ => return Err(locate(self.here(), "`match` needs an indented `case` block".into())),
-        };
-        let mut cases = Vec::new();
-        while let Some(Line {
-            indent: ind,
-            text: line,
-            ..
-        }) = self.lines.get(self.i).cloned()
-        {
-            if ind != case_indent {
-                break;
-            }
-            // Every error below is about the `case` line the cursor is on, not
-            // about the `match` header the enclosing `stmt` frame captured.
-            let at_case = self.here();
-            let rest = line
-                .strip_prefix("case ")
-                .ok_or_else(|| locate(at_case, format!("expected `case k:`, got `{line}`")))?;
-            let k: usize = rest
-                .strip_suffix(':')
-                .ok_or_else(|| locate(at_case, "`case` needs `:`".into()))?
-                .trim()
-                .parse()
-                .map_err(|_| {
-                    locate(
-                        at_case,
-                        format!("a `case` value must be an integer literal, got `{rest}`"),
-                    )
-                })?;
-            if k != cases.len() {
-                return Err(locate(
-                    at_case,
-                    format!(
-                        "match cases must be consecutive from 0: expected `case {}:`, got `case {k}:`",
-                        cases.len()
-                    ),
-                ));
-            }
-            self.i += 1;
-            cases.push(self.block(case_indent)?);
-        }
-        if cases.is_empty() {
-            return Err("`match` needs at least one case".into());
-        }
-        Ok(StmtKind::Match { x, cases })
-    }
 }
 
 type Aug = Option<(String, &'static str, String)>;
@@ -944,44 +884,44 @@ fn strip_log(s: &str) -> Option<&str> {
     r.starts_with([' ', '(']).then_some(r)
 }
 
-/// `names = match_range(log(x), range(a, b), lambda i: expr, …)`: leanVM's
-/// `match_range`, expanded at parse time: one arm per integer of the
+/// `names = match(log(x), range(a, b), lambda i: expr, …)`: leanVM's
+/// `match`, expanded at parse time: one arm per integer of the
 /// contiguous `(range, lambda)` pairs, arm `j` being the lambda body with the
 /// parameter substituted by the literal `j`. The union of the ranges must be
 /// gapless and start at 0 (this compiler's `match` rule). Everything sits on
 /// one line, since there is no line continuation.
-fn parse_match_range(lhs: &str, rhs: &str) -> Result<StmtKind, String> {
+fn parse_match(lhs: &str, rhs: &str) -> Result<StmtKind, String> {
     // A target is a name, or a `StackBuf` element, which the arms then write
     // into directly: the ABI already returns into cells the caller picks, so
-    // `sb[i], e = match_range(…)` costs no copy where a name plus a store did.
+    // `sb[i], e = match(…)` costs no copy where a name plus a store did.
     let targets = split_top(lhs, ',')
         .iter()
         .map(|t| match parse_expr(t)? {
             e @ (Expr::Var(_) | Expr::Index(..)) => Ok(e),
             other => Err(format!(
-                "a `match_range` target must be a name or a StackBuf element, got `{other:?}`"
+                "a `match` target must be a name or a StackBuf element, got `{other:?}`"
             )),
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let chunks = call_args(rhs, "match_range").ok_or("malformed `match_range(…)`")?;
-    let (first, pairs) = chunks.split_first().ok_or("match_range needs arguments")?;
-    let x = strip_log(first).ok_or("`match_range` matches logs: `match_range(log(x), …)`")?;
+    let chunks = call_args(rhs, "match").ok_or("malformed `match(…)`")?;
+    let (first, pairs) = chunks.split_first().ok_or("match needs arguments")?;
+    let x = strip_log(first).ok_or("`match` matches logs: `match(log(x), …)`")?;
     let x = parse_expr(x)?;
     if pairs.is_empty() || !pairs.len().is_multiple_of(2) {
-        return Err("match_range needs `range(a, b), lambda i: …` pairs after the scrutinee".into());
+        return Err("match needs `range(a, b), lambda i: …` pairs after the scrutinee".into());
     }
     let mut arms = Vec::new();
     for pair in pairs.chunks(2) {
         let (lo, hi) = match parse_expr(&pair[0])? {
             Expr::Call(f, args) if f == "range" => match args.as_slice() {
                 [Expr::Lit(a), Expr::Lit(b)] if a < b => (*a, *b),
-                _ => return Err("match_range needs `range(a, b)` with integer literals, a < b".into()),
+                _ => return Err("match needs `range(a, b)` with integer literals, a < b".into()),
             },
             other => return Err(format!("expected `range(a, b)`, got `{other:?}`")),
         };
         if lo != arms.len() as u128 {
             return Err(format!(
-                "match_range ranges must be contiguous from 0: expected a range starting at {}, got {lo}",
+                "match ranges must be contiguous from 0: expected a range starting at {}, got {lo}",
                 arms.len()
             ));
         }
@@ -995,5 +935,5 @@ fn parse_match_range(lhs: &str, rhs: &str) -> Result<StmtKind, String> {
             arms.push(subst_var(&body, param.trim(), &Expr::Lit(j)));
         }
     }
-    Ok(StmtKind::LetMatchRange { targets, x, arms })
+    Ok(StmtKind::Match { targets, x, arms })
 }

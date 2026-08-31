@@ -571,13 +571,7 @@ impl FnLower<'_> {
         });
     }
 
-    /// `match log(x)` through a two-instruction trampoline slot per arm. The caller must range-check `x` before dispatch.
-    fn lower_match(&mut self, x: &Expr, cases: &[Vec<Stmt>]) {
-        let xo = self.expr(x);
-        self.lower_match_dispatch(xo, cases.len(), |s, j| s.branch(&cases[j]));
-    }
-
-    /// `names = match_range(log(x), …)`: the same dispatch as
+    /// `names = match(log(x), …)`: the same dispatch as
     /// [`Self::lower_match`], with generated arms: arm `j` evaluates its
     /// expression (the lambda body at `i = j`) and copies the results into
     /// cells shared by every arm (write-once: exactly one arm executes);
@@ -615,7 +609,7 @@ impl FnLower<'_> {
         (cells, binds)
     }
 
-    fn lower_match_range(&mut self, targets: &[Expr], x: &Expr, arms: &[Expr]) {
+    fn lower_match(&mut self, targets: &[Expr], x: &Expr, arms: &[Expr]) {
         for arm in arms {
             if let Expr::Call(f, _) = arm
                 && self
@@ -623,7 +617,7 @@ impl FnLower<'_> {
                     .get(f)
                     .is_some_and(|d| !d.inline && d.return_shapes.iter().any(|s| matches!(s, Shape::StackBuf(_))))
             {
-                self.fail("a normal function's StackBuf return cannot cross a match_range join; bind it with `let`");
+                self.fail("a normal function's StackBuf return cannot cross a match join; bind it with `let`");
             }
         }
         // Fusion: when every arm is a direct call to the same function with
@@ -659,7 +653,7 @@ impl FnLower<'_> {
                 } else {
                     let Expr::Call(f, cargs) = &arms[j] else {
                         s.fail(format!(
-                            "a multi-target match_range arm must be a function call, got `{:?}`",
+                            "a multi-target match arm must be a function call, got `{:?}`",
                             arms[j]
                         ));
                     };
@@ -676,7 +670,7 @@ impl FnLower<'_> {
                                 }
                                 RetBind::Stack(base, size) => {
                                     if size != 1 {
-                                        s.fail("a multi-cell StackBuf return cannot cross a match_range join")
+                                        s.fail("a multi-cell StackBuf return cannot cross a match join")
                                     }
                                     // `copy` reads the run's first cell, which is where
                                     // the arm's single returned value sits.
@@ -722,7 +716,7 @@ impl FnLower<'_> {
         slots
     }
 
-    /// The trampoline dispatch shared by `match` and `match_range`: jump to
+    /// The trampoline dispatch shared by `match` and `match`: jump to
     /// `d = g^T · x²` (slot `j` of the two-instruction table at bytecode base
     /// `T`), then to `body(j)`'s code; every non-final body exits to the
     /// join. `body` lowers arm `j`, with its own branch-local scope.
@@ -1320,8 +1314,7 @@ impl FnLower<'_> {
                 els,
                 force_const,
             } => self.lower_if(*eq, lhs, rhs, then, els, *force_const),
-            StmtKind::Match { x, cases } => self.lower_match(x, cases),
-            StmtKind::LetMatchRange { targets, x, arms } => self.lower_match_range(targets, x, arms),
+            StmtKind::Match { targets, x, arms } => self.lower_match(targets, x, arms),
             StmtKind::Call(f, args) => {
                 if !self.lower_builtin(f, args) {
                     self.call(f, args, 0);

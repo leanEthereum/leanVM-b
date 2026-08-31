@@ -860,9 +860,9 @@ fn an_error_raised_between_frames_still_names_its_line() {
     let elif = "\ndef main():\n    x = 4\n    if x == 4:\n        x = 5\n    elif x ~~ 5:\n        x = 6\n    return\n";
     assert!(parse(elif).unwrap_err().starts_with("line 6:"), "{:?}", parse(elif));
 
-    // 1 blank, 2 def, 3 let, 4 match, 5 case 0, 6 body, 7 the non-consecutive case.
-    let case = "\ndef main():\n    x = GEN ** 0\n    match log(x):\n        case 0:\n            x = 5\n        case 2:\n            x = 6\n    return\n";
-    assert!(parse(case).unwrap_err().starts_with("line 7:"), "{:?}", parse(case));
+    // 1 blank, 2 def, 3 let, 4 the match whose ranges are not contiguous.
+    let arms = "\ndef main():\n    x = GEN ** 0\n    v = match(log(x), range(0, 1), lambda j: 5, range(2, 3), lambda j: 6)\n    return\n";
+    assert!(parse(arms).unwrap_err().starts_with("line 4:"), "{:?}", parse(arms));
 }
 
 /// A replacement carrying a newline shifts every later line, so the numbers
@@ -957,7 +957,7 @@ fn fill_blocks_carry_no_source_line() {
     );
 }
 
-/// A dispatched `match_range` join reads one cell per bound name, but a callee
+/// A dispatched `match` join reads one cell per bound name, but a callee
 /// returning a `StackBuf` flattens it into several ABI cells, so the name would
 /// silently bind the run's FIRST cell and the rest would be written where
 /// nothing reads them. The guard against that is `all(is scalar)`; negating it
@@ -977,7 +977,7 @@ def f(k: Const):
 
 def main():
     x = GEN
-    a, b = match_range(log(x), range(0, 2), lambda i: f(i))
+    a, b = match(log(x), range(0, 2), lambda i: f(i))
     assert a == a
     assert b == GEN ** 7
     return

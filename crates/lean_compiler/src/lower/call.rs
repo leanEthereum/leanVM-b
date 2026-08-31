@@ -5,7 +5,7 @@
 //! ARITY: each places the return area from its own idea of the argument count,
 //! so a missing argument leaves the callee's cell unwritten and therefore
 //! prover-chosen, and a surplus one overwrites the callee's first return slot.
-//! Two paths need the check, the ordinary one and the fused `match_range`
+//! Two paths need the check, the ordinary one and the fused `match`
 //! dispatch.
 //!
 //! A callee vanishes into its caller two ways. `Const` specialization
@@ -63,7 +63,7 @@ fn stmt_inline_safe(s: &Stmt) -> bool {
 
 impl FnLower<'_> {
     /// Lower a call. Return values land in `dsts_in` when given (write-once, so
-    /// distinct arms of a `match_range` may share the same cells), else in fresh
+    /// distinct arms of a `match` may share the same cells), else in fresh
     /// cells, sparing the caller a temp-then-copy.
     pub(super) fn lower_call(
         &mut self,
@@ -170,7 +170,7 @@ impl FnLower<'_> {
         dsts
     }
 
-    /// `names = match_range(log(x), …, lambda k: f(args, k))` fused: the arms all
+    /// `names = match(log(x), …, lambda k: f(args, k))` fused: the arms all
     /// call one of `callees` (specializations sharing the arg/return layout) with
     /// the same runtime `args`, so build the callee frame **once** and let the
     /// dispatch jump straight into the selected entry, which returns to the join.
@@ -201,7 +201,7 @@ impl FnLower<'_> {
         // ordinary call does.
         if let Some(i) = shared_shapes.iter().position(|s| !matches!(s, Shape::Scalar)) {
             self.fail(format!(
-                "a `match_range` arm cannot pass a `StackBuf` parameter (parameter {i} of `{}`): the \
+                "a `match` arm cannot pass a `StackBuf` parameter (parameter {i} of `{}`): the \
                  fused dispatch writes one cell per argument. Give the arms `Const` arguments so each \
                  specializes into its own call instead of fusing",
                 callees.first().map(String::as_str).unwrap_or("?")
@@ -214,7 +214,7 @@ impl FnLower<'_> {
         // frame is sized to the LARGEST callee the offset exists: the surplus name
         // binds a prover-chosen word. The non-fused path enforces this
         // ([`Self::call_into`]), so leaving it out here means one source is rejected
-        // by one lowering of `match_range` and silently miscompiled by the other.
+        // by one lowering of `match` and silently miscompiled by the other.
         for callee in callees {
             // A fused dispatch enters ONE real function per arm, so an `@inline`
             // callee has no entry pc to jump to: it is expanded at a call site
@@ -223,7 +223,7 @@ impl FnLower<'_> {
             // and died there indexing a HashMap, with no line and no name.
             if self.defs.get(callee).is_some_and(|d| d.inline) {
                 self.fail(format!(
-                    "`@inline {callee}` cannot be a `match_range` arm's callee: the arms dispatch to \
+                    "`@inline {callee}` cannot be a `match` arm's callee: the arms dispatch to \
                      one real function, and an `@inline` body is expanded at its call site rather \
                      than lowered. Drop `@inline`, or give the arms `Const` arguments so each \
                      specializes instead of fusing"
@@ -623,7 +623,7 @@ impl FnLower<'_> {
     }
 
     /// A callee's declared return shapes, looked up the same way. A dispatched
-    /// `match_range` names specializations, so a check that consults only `defs`
+    /// `match` names specializations, so a check that consults only `defs`
     /// silently passes on every one of them.
     fn return_shapes_of(&self, callee: &str) -> Option<Vec<Shape>> {
         self.defs.get(callee).map(|d| d.return_shapes.clone()).or_else(|| {

@@ -450,7 +450,7 @@ fn branch3(a: F192, b: F192, c: F192) -> Trial {
     Trial::new([a, a]).stream("w", vec![vec![a, b, c]])
 }
 
-/// A multi-value target may be a `StackBuf` element, and `zkDSL.md` §match_range
+/// A multi-value target may be a `StackBuf` element, and `zkDSL.md` §match
 /// says the arms then write straight into it. That is only a saved copy, so it
 /// must accept exactly what the name-plus-store spelling accepts. The bug this
 /// guards is the arms writing PAST the buffer: the target cell is the callee's
@@ -475,15 +475,15 @@ def main():
 ";
     check_pair(&Pair {
         name: "a_stackbuf_target_and_a_name_plus_store_agree",
-        why: "zkDSL.md §match_range: a target may be a name or a StackBuf element; the element form \
+        why: "zkDSL.md §match: a target may be a name or a StackBuf element; the element form \
               only saves the copy.",
         a: &body.replace(
             "TARGET",
-            "sb[0], e = match_range(log(v[0]), range(0, 2), lambda i: pick(v[1], i))",
+            "sb[0], e = match(log(v[0]), range(0, 2), lambda i: pick(v[1], i))",
         ),
         b: &body.replace(
             "TARGET",
-            "t, e = match_range(log(v[0]), range(0, 2), lambda i: pick(v[1], i))\n    sb[0] = t",
+            "t, e = match(log(v[0]), range(0, 2), lambda i: pick(v[1], i))\n    sb[0] = t",
         ),
         trials: vec![
             Trial::new([g(4), g(0)]).stream("w", vec![vec![g(0), g(4)]]),

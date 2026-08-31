@@ -148,18 +148,13 @@ pub enum StmtKind {
         /// readings disagree is an error rather than a silent choice.
         force_const: bool,
     },
-    /// `match log(x):` over consecutive cases from 0, matched against the log of
-    /// the g-power scrutinee, dispatched through a trampoline table in the
-    /// bytecode (doc §ISA programming / Match statements). The scrutinee must be
-    /// known to lie in `[0, n)`, so range-check a hinted one first. Case bodies are branch-local, as for
-    /// [`StmtKind::If`]. See `FnLower::lower_match`.
-    Match { x: Expr, cases: Vec<Vec<Stmt>> },
-    /// `names = match_range(log(x), range(a, b), lambda i: expr, …)`: a
-    /// [`StmtKind::Match`] whose arm `j` is the lambda body with the parameter
-    /// replaced by the literal `j`, expanded at parse time. Every arm writes the
-    /// same fresh cells, exactly one arm running, and `names` bind them at the
-    /// join. See `FnLower::lower_match_range`.
-    LetMatchRange {
+    /// `targets = match(log(x), range(a, b), lambda i: expr, …)`: the one dispatch
+    /// construct. Arm `j` is the lambda body with the parameter replaced by the
+    /// literal `j`, expanded at parse time, and `x = g^j` runs arm `j` through a
+    /// trampoline table in the bytecode. Every arm writes the same cells, exactly
+    /// one of them running, so a target may be a name bound at the join or a
+    /// `StackBuf` element written in place. See `FnLower::lower_match`.
+    Match {
         targets: Vec<Expr>,
         x: Expr,
         arms: Vec<Expr>,
@@ -319,7 +314,7 @@ pub(crate) fn binds_anywhere(body: &[Stmt], out: &mut HashSet<String>) {
             StmtKind::LetTuple(ns, ..) => ns.iter().for_each(|n| {
                 out.insert(n.clone());
             }),
-            StmtKind::LetMatchRange { targets, .. } => targets.iter().for_each(|t| {
+            StmtKind::Match { targets, .. } => targets.iter().for_each(|t| {
                 if let Expr::Var(n) = t {
                     out.insert(n.clone());
                 }
@@ -328,7 +323,6 @@ pub(crate) fn binds_anywhere(body: &[Stmt], out: &mut HashSet<String>) {
                 binds_anywhere(then, out);
                 binds_anywhere(els, out);
             }
-            StmtKind::Match { cases, .. } => cases.iter().for_each(|c| binds_anywhere(c, out)),
             StmtKind::For { var, body, .. } | StmtKind::Unroll { var, body, .. } => {
                 out.insert(var.clone());
                 binds_anywhere(body, out);
@@ -403,11 +397,7 @@ pub(crate) fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut HashS
                 scoped_vars(els, refs, bound);
             }
         }
-        StmtKind::Match { x, cases } => {
-            free_vars_expr(x, refs);
-            cases.iter().for_each(|c| scoped_vars(c, refs, bound));
-        }
-        StmtKind::LetMatchRange { targets, x, arms } => {
+        StmtKind::Match { targets, x, arms } => {
             free_vars_expr(x, refs);
             arms.iter().for_each(|a| free_vars_expr(a, refs));
             for t in targets {

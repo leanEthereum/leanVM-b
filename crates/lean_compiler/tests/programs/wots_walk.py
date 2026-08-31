@@ -1,5 +1,5 @@
 # A miniature WOTS-style chain walk bundling the DSL's moving parts: a
-# runtime digit is range-checked (dispatch soundness), then match_range
+# runtime digit is range-checked (dispatch soundness), then match
 # dispatches it to a Const-specialized walker whose BLAKE2s chain is unrolled
 # over heap slices (a 256-bit BLAKE2s value occupies two canonical cells);
 # the walker also builds g^{2n} at runtime (unrolled MULs) to read its final
@@ -17,7 +17,7 @@ def main():
     buf[GEN] = 7
     d = GEN ** 2  # the runtime digit
     assert log(d) < 4  # bound the scrutinee before dispatching on it
-    t0, t1 = match_range(log(d), range(0, 4), lambda i: walk(buf, i))
+    t0, t1 = match(log(d), range(0, 4), lambda i: walk(buf, i))
     if d != GEN ** 2:
         assert 1 == 0  # dead branch: never executes
     v = StackBuf(2)

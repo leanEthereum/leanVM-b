@@ -2,7 +2,7 @@
 //! happens on text.
 //!
 //! Five syntactic positions demand a literal before lowering ever runs: a buffer
-//! size, a `mul_range` bound, a range-check bound, a `match_range` range, and a
+//! size, a `mul_range` bound, a range-check bound, a `match` range, and a
 //! `case`. That is why a global constant is substituted rather than bound, and
 //! it is the whole reason this module exists.
 //!
