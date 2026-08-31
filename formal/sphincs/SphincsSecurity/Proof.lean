@@ -221,6 +221,7 @@ import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootSt
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootStateSigner
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootStateHash
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootDeferred
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootSelection
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to

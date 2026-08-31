@@ -23,6 +23,15 @@ structure RootDeferredContextRel
   other_values : ∀ position, position ≠ target →
     left.values position = right.values position
 
+structure RootMaterializedContextRel
+    (target : Position) (leftOutput rightOutput : HashOutput)
+    (left right : DeferredContext) : Prop where
+  state : RootHiddenStateRel target leftOutput rightOutput left.state right.state
+  left_target : left.values target = some leftOutput
+  right_target : right.values target = some rightOutput
+  other_values : ∀ position, position ≠ target →
+    left.values position = right.values position
+
 theorem RootDeferredContextRel.symm
     {target : Position} {leftOutput rightOutput : HashOutput}
     {left right : DeferredContext}
@@ -75,6 +84,109 @@ theorem RootDeferredContextRel.positionValue_target
     exact hrel.target_hidden
   rw [hrel.target_hidden, hrightHidden]
   exact ⟨hrel.left_target, hrel.right_target⟩
+
+theorem RootDeferredContextRel.deferredPositionOutput_other
+    {target : Position} {leftOutput rightOutput : HashOutput}
+    {left right : DeferredContext}
+    (hrel : RootDeferredContextRel target leftOutput rightOutput left right)
+    (position : Position) (hne : position ≠ target) :
+    deferredPositionOutput position left = deferredPositionOutput position right := by
+  unfold deferredPositionOutput
+  rw [hrel.positionValue_other position hne]
+
+theorem RootDeferredContextRel.deferredPositionOutput_target_left
+    {target : Position} {leftOutput rightOutput : HashOutput}
+    {left right : DeferredContext}
+    (hrel : RootDeferredContextRel target leftOutput rightOutput left right) :
+    deferredPositionOutput target left = pure leftOutput := by
+  unfold deferredPositionOutput
+  rw [hrel.positionValue_target.1]
+
+theorem RootDeferredContextRel.deferredPositionOutput_target_right
+    {target : Position} {leftOutput rightOutput : HashOutput}
+    {left right : DeferredContext}
+    (hrel : RootDeferredContextRel target leftOutput rightOutput left right) :
+    deferredPositionOutput target right = pure rightOutput := by
+  unfold deferredPositionOutput
+  rw [hrel.positionValue_target.2]
+
+theorem RootDeferredContextRel.privateCandidateFire_other
+    {target : Position} {leftOutput rightOutput : HashOutput}
+    {left right : DeferredContext}
+    (hrel : RootDeferredContextRel target leftOutput rightOutput left right)
+    (candidate : Probe) (hne : candidate.coordinate ≠ .position target) :
+    privateCandidateFire candidate left = privateCandidateFire candidate right := by
+  cases hcoordinate : candidate.coordinate with
+  | chainStart lay tree leafIdx chainIdx =>
+      simp [privateCandidateFire, hcoordinate]
+  | position position =>
+      have hposition : position ≠ target := by
+        intro heq
+        apply hne
+        rw [hcoordinate, heq]
+      simp only [privateCandidateFire, hcoordinate]
+      rw [hrel.deferredPositionOutput_other position hposition]
+
+theorem RootDeferredContextRel.hiddenPrivateCandidateFire_other
+    {target : Position} {leftOutput rightOutput : HashOutput}
+    {left right : DeferredContext}
+    (hrel : RootDeferredContextRel target leftOutput rightOutput left right)
+    (candidate : Probe) (hne : candidate.coordinate ≠ .position target) :
+    hiddenPrivateCandidateFire candidate left = hiddenPrivateCandidateFire candidate right := by
+  unfold hiddenPrivateCandidateFire
+  have hrevealed : left.state.revealed = right.state.revealed := congrArg _ hrel.state
+  by_cases hleft : candidate.coordinate ∈ left.state.revealed
+  · have hright : candidate.coordinate ∈ right.state.revealed := by rwa [← hrevealed]
+    simp [hleft, hright]
+  · have hright : candidate.coordinate ∉ right.state.revealed := by
+      intro hmem
+      exact hleft (by rwa [hrevealed])
+    simp only [hleft, hright, ↓reduceIte]
+    exact hrel.privateCandidateFire_other candidate hne
+
+theorem RootDeferredContextRel.hiddenPrivateCandidateFire_target_left
+    {target : Position} {leftOutput rightOutput : HashOutput}
+    {left right : DeferredContext}
+    (hrel : RootDeferredContextRel target leftOutput rightOutput left right)
+    (candidate : Digest) :
+    hiddenPrivateCandidateFire ⟨.position target, candidate⟩ left =
+      pure (decide (truncateHash leftOutput = candidate)) := by
+  rw [hiddenPrivateCandidateFire_of_not_revealed _ _ hrel.target_private]
+  simp only [privateCandidateFire]
+  rw [hrel.deferredPositionOutput_target_left]
+  simp
+
+theorem RootDeferredContextRel.hiddenPrivateCandidateFire_target_right
+    {target : Position} {leftOutput rightOutput : HashOutput}
+    {left right : DeferredContext}
+    (hrel : RootDeferredContextRel target leftOutput rightOutput left right)
+    (candidate : Digest) :
+    hiddenPrivateCandidateFire ⟨.position target, candidate⟩ right =
+      pure (decide (truncateHash rightOutput = candidate)) := by
+  have hprivate : Coordinate.position target ∉ right.state.revealed := by
+    intro hmem
+    apply hrel.target_private
+    rwa [hrel.state]
+  rw [hiddenPrivateCandidateFire_of_not_revealed _ _ hprivate]
+  simp only [privateCandidateFire]
+  rw [hrel.deferredPositionOutput_target_right]
+  simp
+
+theorem RootDeferredContextRel.materialize_target
+    {target : Position} {leftOutput rightOutput : HashOutput}
+    {left right : DeferredContext}
+    (hrel : RootDeferredContextRel target leftOutput rightOutput left right) :
+    RootMaterializedContextRel target leftOutput rightOutput
+      { left with
+        state := left.state.materialize (.position target) leftOutput }
+      { right with
+        state := right.state.materialize (.position target) rightOutput } := by
+  refine ⟨?_, hrel.left_target, hrel.right_target, hrel.other_values⟩
+  rw [hrel.state]
+  exact rootHiddenStateRel_materialize target leftOutput rightOutput right.state (by
+    intro hmem
+    apply hrel.target_private
+    rwa [hrel.state])
 
 theorem RootDeferredContextRel.ensure
     {target : Position} {leftOutput rightOutput : HashOutput}
@@ -144,5 +256,52 @@ theorem RootDeferredContextRel.canonicalize
   · unfold canonicalizeMaterializedValues publicMaterializedValues
     simp [hrel.target_private]
   · simpa [canonicalizeMaterializedValues_revealed] using hrel.target_private
+
+theorem RootMaterializedContextRel.canonicalize
+    {target : Position} {leftOutput rightOutput : HashOutput}
+    {left right : DeferredContext}
+    (hrel : RootMaterializedContextRel target leftOutput rightOutput left right)
+    (table : OtsSecretIndex → HashOutput) :
+    RootDeferredContextRel target leftOutput rightOutput
+      (canonicalizeMaterializedValues table left)
+      (canonicalizeMaterializedValues table right) := by
+  have hpublic : publicMaterializedValues table left = publicMaterializedValues table right := by
+    funext coordinate
+    unfold publicMaterializedValues
+    have hreveal : left.state.revealed = right.state.revealed := hrel.state.revealed
+    by_cases hrevealed : coordinate ∈ left.state.revealed
+    · have hrightRevealed : coordinate ∈ right.state.revealed := by rwa [← hreveal]
+      simp only [hrevealed, hrightRevealed, ↓reduceIte]
+      cases coordinate with
+      | chainStart lay tree leafIdx chainIdx =>
+          simp [resolvedCompletionValue]
+      | position position =>
+          have hne : position ≠ target := by
+            intro heq
+            subst position
+            exact hrel.state.target_private hrevealed
+          unfold resolvedCompletionValue DeferredContext.positionValue
+          have hcoordinate : Coordinate.position position ≠ .position target := by
+            simpa using hne
+          change (match left.state.values (.position position) with
+            | some output => some output
+            | none => left.values position) =
+              (match right.state.values (.position position) with
+              | some output => some output
+              | none => right.values position)
+          rw [hrel.state.other_values (.position position) hcoordinate]
+          cases right.state.values (.position position) with
+          | some output => rfl
+          | none => exact hrel.other_values position hne
+    · have hrightRevealed : coordinate ∉ right.state.revealed := by
+        intro hmem
+        exact hrevealed (by rwa [hreveal])
+      simp [hrevealed, hrightRevealed]
+  refine ⟨?_, ?_, ?_, hrel.left_target, hrel.right_target, hrel.other_values⟩
+  · unfold canonicalizeMaterializedValues
+    simp [hrel.state.pending, hrel.state.revealed, hrel.state.ensured, hpublic]
+  · unfold canonicalizeMaterializedValues publicMaterializedValues
+    simp [hrel.state.target_private]
+  · simpa [canonicalizeMaterializedValues_revealed] using hrel.state.target_private
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
