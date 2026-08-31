@@ -44,6 +44,7 @@ pub(super) fn stmt_inline_safe(s: &Stmt, defs: &HashMap<String, Func>) -> bool {
         StmtKind::Let(..)
         | StmtKind::Store(..)
         | StmtKind::HintWitness { .. }
+        | StmtKind::LetHintWitness { .. }
         | StmtKind::Print { .. }
         | StmtKind::AssertEq(..)
         | StmtKind::AssertNe(..)

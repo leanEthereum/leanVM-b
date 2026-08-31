@@ -1349,8 +1349,11 @@ impl FnLower<'_> {
             StmtKind::HintWitness { dest, name } => self.lower_hint_witness(dest, name),
             // One hinted value into one fresh cell, bound to `name`. The run form
             // has to materialize its destination first, since a deferred alias
-            // there would take the hint's place; a cell minted here has no alias
-            // to displace.
+            // there would take the hint's place. A cell minted here has no alias
+            // to displace, and more than that it can never acquire one: `phys` is
+            // read at exactly one site, `stack_store`, which is reached only
+            // through a `StackBuf` binding, so a scalar's cell is never a store
+            // target at all.
             StmtKind::LetHintWitness { name, stream } => {
                 let dst = self.fresh();
                 self.pending.push(Hint::Resolved(RHint::WitnessStack {
@@ -1644,7 +1647,7 @@ fn free_vars_expr(e: &Expr, refs: &mut Vec<String>) {
 fn binds_anywhere(body: &[Stmt], out: &mut std::collections::HashSet<String>) {
     for s in body {
         match &s.kind {
-            StmtKind::Let(n, _) => {
+            StmtKind::Let(n, _) | StmtKind::LetHintWitness { name: n, .. } => {
                 out.insert(n.clone());
             }
             StmtKind::LetTuple(ns, ..) | StmtKind::LetMatchRange { names: ns, .. } => ns.iter().for_each(|n| {

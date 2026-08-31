@@ -277,6 +277,9 @@ fn infer_return_shapes(funcs: &mut [Func]) -> Result<(), String> {
                         }
                     }
                 }
+                StmtKind::LetHintWitness { name, .. } => {
+                    locals.insert(name.clone(), Shape::Scalar);
+                }
                 StmtKind::Return(es) => {
                     returns = es
                         .iter()
@@ -330,6 +333,39 @@ pub fn parse_file_with_replacements(
 /// indentation, and its text with comments stripped and constants substituted.
 /// Prefix a diagnostic with the source line it came from, unless an inner frame
 /// already named a more specific one.
+/// Does the leading call span the WHOLE of `s`?
+///
+/// `call_args` strips the first `(` and the LAST `)`, so it also matches a line
+/// where the call is only the first factor: `hint_witness("a") * f("b")` came
+/// back with the stream name `a") * f("b`, and the rest of the line vanished.
+/// A `)` that closes below depth zero means the call ended before the line did.
+fn whole_call(s: &str) -> bool {
+    let Some(inner) = s.find('(').map(|i| &s[i + 1..]) else {
+        return false;
+    };
+    let (mut depth, mut in_str) = (0i32, false);
+    for (i, c) in inner.bytes().enumerate() {
+        if in_str {
+            in_str = c != b'"';
+            continue;
+        }
+        match c {
+            b'"' => in_str = true,
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => {
+                depth -= 1;
+                // The close that matches the call's own `(`. It has to be the
+                // last thing on the line, or something followed the call.
+                if depth < 0 {
+                    return i + 1 == inner.len();
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 fn locate(line: usize, e: String) -> String {
     if e.starts_with("line ") {
         e
@@ -675,7 +711,7 @@ impl Parser {
             // `x = hint_witness("stream")`: one hinted value, no buffer. The
             // string is not an expression, so like the run form it is parsed
             // here rather than by `parse_expr`.
-            if let Some(parts) = call_args(rhs.trim(), "hint_witness") {
+            if let Some(parts) = call_args(rhs.trim(), "hint_witness").filter(|_| whole_call(rhs.trim())) {
                 let [stream] = parts.as_slice() else {
                     return Err(
                         "`x = hint_witness(\"stream\")` takes one argument; to fill a run, write \

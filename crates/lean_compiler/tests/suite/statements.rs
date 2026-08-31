@@ -269,7 +269,7 @@ fn one_hinted_value_needs_no_buffer() {
     let looped = "\
 def main():
     hb = HeapBuf(4)
-    for i in mul_range(1, 4):
+    for i in mul_range(1, 8):
         w = hint_witness(\"w\")
         hb[i] = w
     p = GEN ** 0
@@ -281,7 +281,55 @@ def main():
     program.set_witness("w", vec![vec![g_pow(1).into()], vec![g_pow(2).into()], vec![g_pow(3).into()]]);
     let want = [g_pow(2).into(), g_pow(0).into()];
     let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    // `mul_range(1, 8)` is g^0..g^3, so THREE iterations and all three entries
+    // are popped. With `mul_range(1, 4)` the third would sit unread and mask an
+    // off-by-one in that direction.
     verify(&program, &want, &proof).expect("one hint per iteration");
+}
+
+/// The scalar hint binds like any other statement that binds.
+///
+/// Three `StmtKind` walkers have a catch-all arm, and each silently swallowed
+/// the new variant: `@inline` rejected a body that is a single tail return,
+/// the `for` capture check raised a `StackBuf` false positive, and return-shape
+/// inference lost the binding. All three fail closed, so the cost was a
+/// diagnostic naming the wrong cause rather than a miscompile, and all three
+/// made the sugar not a drop-in for the idiom it replaces.
+#[test]
+fn the_scalar_hint_binds_like_any_other_binder() {
+    let tail = "    p = GEN ** 0\n    p[1] = r\n    p[GEN] = GEN ** 0\n    return\n";
+    // `@inline` accepts it: the body IS a single tail return.
+    let inlined = format!(
+        "@inline\ndef pick():\n    m = hint_witness(\"m\")\n    return m\n\ndef main():\n    r = pick()\n{tail}"
+    );
+    let mut program = compile(&parse(&inlined).expect("an @inline body may bind a hint"));
+    program.set_witness("m", vec![vec![g_pow(5).into()]]);
+    let want = [g_pow(5).into(), g_pow(0).into()];
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    verify(&program, &want, &proof).expect("the inlined binding fires");
+
+    // A `for` body that shadows an enclosing StackBuf's name from inside an arm
+    // is not capturing it, which is what `binds_anywhere` exists to notice.
+    let shadowed = "\
+def main():
+    sb = StackBuf(2)
+    sb[0] = GEN ** 1
+    sb[1] = GEN ** 2
+    hb = HeapBuf(4)
+    for i in mul_range(1, 4):
+        if i == i:
+            sb = hint_witness(\"w\")
+            hb[i] = sb
+    p = GEN ** 0
+    p[1] = sb[0]
+    p[GEN] = GEN ** 0
+    return
+";
+    let mut program = compile(&parse(shadowed).expect("shadowing is not capturing"));
+    program.set_witness("w", vec![vec![g_pow(7).into()], vec![g_pow(8).into()]]);
+    let want = [g_pow(1).into(), g_pow(0).into()];
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    verify(&program, &want, &proof).expect("the outer StackBuf is untouched");
 }
 
 /// A bit-decomposition hint checks its heap destination, like its stack one.
