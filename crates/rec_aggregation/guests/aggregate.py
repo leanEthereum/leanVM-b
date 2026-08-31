@@ -2376,11 +2376,8 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
 
     # WOTS public-key leaf = standard BLAKE2s over prefix + V tips: WOTS_PK_BLOCKS
     # full blocks, carrying the chaining value between instructions.
-    pk_tweak_pp = StackBuf(WORDS_PER_BLOCK)
-    pk_tweak_pp[0] = tweak_table[GEN ** (WORDS_PER_VALUE * WOTS_PK_TWEAK_IDX)]
-    pk_tweak_pp[1] = pp
     leaf = StackBuf(WORDS_PER_BLOCK)
-    blake2s(pk_tweak_pp, tips[0:2], leaf, counter=64, final=0)
+    blake2s([tweak_table[GEN ** (WORDS_PER_VALUE * WOTS_PK_TWEAK_IDX)], pp], tips[0:2], leaf, counter=64, final=0)
     for q in unroll(1, WOTS_PK_BLOCKS):
         next_leaf = StackBuf(WORDS_PER_BLOCK)
         blake2s(tips[4 * q - 2:4 * q], tips[4 * q:4 * q + 2], next_leaf, cv=leaf, counter=64 * (q + 1), final=(q + 1) // WOTS_PK_BLOCKS)
@@ -2412,19 +2409,12 @@ def walk(value, chain_tweaks, pp, k: Const):
     # Walk WOTS chain steps k..CHAIN_STEPS-1: value' = H(tweak|pp, value|0).
     # Step s reads its tweak at cell s off the chain's subtable: a compile-time
     # (beta) offset, one DEREF each; no cursor to advance.
-    block = StackBuf(WORDS_PER_BLOCK)
-    block[0] = value
-    block[1] = 0
+    word = value
     for s in unroll(k, CHAIN_STEPS):
-        step_tweak = StackBuf(WORDS_PER_BLOCK)
-        step_tweak[0] = chain_tweaks[GEN ** (WORDS_PER_VALUE * s)]
-        step_tweak[1] = pp
         out = StackBuf(WORDS_PER_BLOCK)
-        blake2s(step_tweak, block, out, counter=48, final=1)
-        block = StackBuf(WORDS_PER_BLOCK)
-        block[0] = out[0]
-        block[1] = 0
-    return block[0], k
+        blake2s([chain_tweaks[GEN ** (WORDS_PER_VALUE * s)], pp], [word, 0], out, counter=48, final=1)
+        word = out[0]
+    return word, k
 
 
 
@@ -2457,19 +2447,12 @@ def sp_walk(value, tw_base, pp, k: Const):
     # Walk chain steps k..SP_CHAIN_STEPS-1: value' = Th(P, tw_chain, value).
     # `tw_base` already carries the type byte, the layer, 2^w*i and the position
     # (tau, e), so step s's tweak is one addition of a compile-time literal.
-    block = StackBuf(WORDS_PER_BLOCK)
-    block[0] = value
-    block[1] = 0
+    word = value
     for s in unroll(k, SP_CHAIN_STEPS):
-        step_tweak = StackBuf(WORDS_PER_BLOCK)
-        step_tweak[0] = tw_base + s * SP_P_MUL
-        step_tweak[1] = pp
         out = StackBuf(WORDS_PER_BLOCK)
-        blake2s(step_tweak, block, out, counter=48, final=1)
-        block = StackBuf(WORDS_PER_BLOCK)
-        block[0] = out[0]
-        block[1] = 0
-    return block[0], k
+        blake2s([tw_base + s * SP_P_MUL, pp], [word, 0], out, counter=48, final=1)
+        word = out[0]
+    return word, k
 
 
 def sp_ots_leaf(tw_pos, pp, msg):
@@ -2489,14 +2472,8 @@ def sp_ots_leaf(tw_pos, pp, msg):
     assert ctr_acc == ctr  # LE_32: the counter's cell is four bytes and twelve of padding
 
     # D = Th(P, tw_enc, msg | LE_32(c)), a 52-byte one-block hash.
-    enc_tweak = StackBuf(WORDS_PER_BLOCK)
-    enc_tweak[0] = tw_pos + SP_TW_ENC
-    enc_tweak[1] = pp
-    enc_block = StackBuf(WORDS_PER_BLOCK)
-    enc_block[0] = msg
-    enc_block[1] = ctr
     digest = StackBuf(WORDS_PER_BLOCK)
-    blake2s(enc_tweak, enc_block, digest, counter=52, final=1)
+    blake2s([tw_pos + SP_TW_ENC, pp], [msg, ctr], digest, counter=52, final=1)
 
     # The codeword, as in XMSS: each digit is hinted in the exponent, range
     # checked and dispatched once, arm k walking the remaining steps; the product
@@ -2531,11 +2508,8 @@ def sp_ots_leaf(tw_pos, pp, msg):
     assert digit_product == GEN ** SP_TARGET_SUM
     assert acc_lo + acc_hi * Y_TOWER == digest[0]
 
-    leaf_tweak = StackBuf(WORDS_PER_BLOCK)
-    leaf_tweak[0] = tw_pos + SP_TW_LEAF
-    leaf_tweak[1] = pp
     leaf = StackBuf(WORDS_PER_BLOCK)
-    blake2s(leaf_tweak, tips[0:2], leaf, counter=64, final=0)
+    blake2s([tw_pos + SP_TW_LEAF, pp], tips[0:2], leaf, counter=64, final=0)
     for q in unroll(1, SP_LEAF_BLOCKS):
         next_leaf = StackBuf(WORDS_PER_BLOCK)
         blake2s(tips[4 * q - 2:4 * q], tips[4 * q:4 * q + 2], next_leaf, cv=leaf, counter=64 * (q + 1), final=(q + 1) // SP_LEAF_BLOCKS)
@@ -2552,22 +2526,13 @@ def verify_sig_sphincs(signer):
 
     # ---- the message digest, which chooses the few-time key ----
     # D = Truncate(H(tw_msg | P | rho | root | m)), 96 bytes in two blocks.
-    msg_tweak = StackBuf(WORDS_PER_BLOCK)
-    msg_tweak[0] = SP_TW_MSG
-    msg_tweak[1] = pp
     rho_root = StackBuf(WORDS_PER_BLOCK)
     hint_witness(rho_root[0:1], "sp_rand")
     rho_root[1] = signer[1]
     prefix = StackBuf(WORDS_PER_BLOCK)
-    blake2s(msg_tweak, rho_root, prefix, counter=64, final=0)
-    msg_block = StackBuf(WORDS_PER_BLOCK)
-    msg_block[0] = signer[GEN ** 2]
-    msg_block[1] = signer[GEN ** 3]
-    zero_block = StackBuf(WORDS_PER_BLOCK)
-    zero_block[0] = 0
-    zero_block[1] = 0
+    blake2s([SP_TW_MSG, pp], rho_root, prefix, counter=64, final=0)
     digest = StackBuf(WORDS_PER_BLOCK)
-    blake2s(msg_block, zero_block, digest, cv=prefix, counter=96, final=1)
+    blake2s([signer[GEN ** 2], signer[GEN ** 3]], [0, 0], digest, cv=prefix, counter=96, final=1)
 
     # The index and the k leaf indices are bit fields of that digest, so its bits
     # are advice-decomposed here and bound lane by lane. Nothing else derives
@@ -2600,12 +2565,8 @@ def verify_sig_sphincs(signer):
         leaf_off = SP_H + kappa * SP_A
         secret = StackBuf(WORDS_PER_BLOCK)
         hint_witness(secret[0:1], "sp_fts_secrets")
-        secret[1] = 0
-        fts_tweak = StackBuf(WORDS_PER_BLOCK)
-        fts_tweak[0] = SP_TW_FTS_LEAF + kappa * SP_LAY_MUL + idx_tau + sp_bit_field(bits, leaf_off, SP_A, SP_J_POS)
-        fts_tweak[1] = pp
         fts_leaf = StackBuf(WORDS_PER_BLOCK)
-        blake2s(fts_tweak, secret, fts_leaf, counter=48, final=1)
+        blake2s([SP_TW_FTS_LEAF + kappa * SP_LAY_MUL + idx_tau + sp_bit_field(bits, leaf_off, SP_A, SP_J_POS), pp], [secret[0], 0], fts_leaf, counter=48, final=1)
         node = fts_leaf[0]
         for level in unroll(0, SP_A):
             bit = bits[GEN ** (leaf_off + level)]
@@ -2617,18 +2578,12 @@ def verify_sig_sphincs(signer):
             children = StackBuf(WORDS_PER_BLOCK)
             children[0] = node + m
             children[1] = sibling + m
-            node_tweak = StackBuf(WORDS_PER_BLOCK)
-            node_tweak[0] = SP_TW_FTS_NODE + kappa * SP_LAY_MUL + const((level + 1) * SP_P_MUL) + idx_tau + sp_bit_field(bits, leaf_off + level + 1, SP_A - level - 1, SP_J_POS)
-            node_tweak[1] = pp
             parent = StackBuf(WORDS_PER_BLOCK)
-            blake2s(node_tweak, children, parent)
+            blake2s([SP_TW_FTS_NODE + kappa * SP_LAY_MUL + const((level + 1) * SP_P_MUL) + idx_tau + sp_bit_field(bits, leaf_off + level + 1, SP_A - level - 1, SP_J_POS), pp], children, parent)
             node = parent[0]
         roots[kappa] = node
-    roots_tweak = StackBuf(WORDS_PER_BLOCK)
-    roots_tweak[0] = SP_TW_FTS_ROOTS + idx_tau
-    roots_tweak[1] = pp
     fts_key = StackBuf(WORDS_PER_BLOCK)
-    blake2s(roots_tweak, roots[0:2], fts_key, counter=64, final=0)
+    blake2s([SP_TW_FTS_ROOTS + idx_tau, pp], roots[0:2], fts_key, counter=64, final=0)
     for q in unroll(1, SP_ROOT_BLOCKS):
         next_key = StackBuf(WORDS_PER_BLOCK)
         blake2s(roots[4 * q - 2:4 * q], roots[4 * q:4 * q + 2], next_key, cv=fts_key, counter=64 * (q + 1), final=(q + 1) // SP_ROOT_BLOCKS)
@@ -2652,11 +2607,8 @@ def verify_sig_sphincs(signer):
             children = StackBuf(WORDS_PER_BLOCK)
             children[0] = node + m
             children[1] = sibling + m
-            node_tweak = StackBuf(WORDS_PER_BLOCK)
-            node_tweak[0] = SP_TW_NODE + lay * SP_LAY_MUL + const((level + 1) * SP_P_MUL) + tau_field + sp_bit_field(bits, leaf_index_off + level + 1, SP_HEIGHTS[lay] - level - 1, SP_J_POS)
-            node_tweak[1] = pp
             parent = StackBuf(WORDS_PER_BLOCK)
-            blake2s(node_tweak, children, parent)
+            blake2s([SP_TW_NODE + lay * SP_LAY_MUL + const((level + 1) * SP_P_MUL) + tau_field + sp_bit_field(bits, leaf_index_off + level + 1, SP_HEIGHTS[lay] - level - 1, SP_J_POS), pp], children, parent)
             node = parent[0]
         signed = node
     assert signed == signer[1]
