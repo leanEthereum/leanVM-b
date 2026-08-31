@@ -328,7 +328,7 @@ The one dispatch construct. It matches the **log** of a g-power scrutinee agains
 
 Arms produce VALUES: every arm writes its results into the same cells, which is sound under write-once because exactly one arm runs. A target may be a name, bound after the join, or a **`StackBuf` element**, which the arms write into directly and which costs one instruction less than a name plus a store. The ABI returns into cells the CALLER picks, the same reason `sb[i] = f(x)` never needed a temporary, so reach for the element form wherever a returned value's home is a buffer slot. A target index must be a compile-time integer inside the buffer, both errors naming the line; a `HeapBuf` element is not a target, its cells not being frame cells. Multiple targets take a multi-return call as the arm body.
 
-A branch body with statements in it goes in a function, and the arm calls it: that is the idiom the recursion guest uses throughout (`lambda k: walk(chain_start, tweaks, pp, k)`), and it names the body instead of inlining it.
+A branch body with statements in it goes in a function, and the arm calls it: that is the idiom the recursion guest uses throughout (`lambda k: walk(chain_start, tweaks, pp, k)`), and it names the body instead of inlining it. Where the arms only PRODUCE values, as there, this costs nothing. Where each arm's real work is a WRITE, it costs: the writer function needs a return value and the statement a target, both dead, and the natural translation measures about twice the instructions of a body inlined into the dispatching frame. An arm cannot take a `StackBuf` parameter either, so it cannot hash or hint into the caller's frame buffer. If that shape matters to a program, dispatch on a value and write after the join.
 
 **Lowering** is two jumps through a *trampoline table* in the bytecode: the dispatch jumps to `g^T · x²`, the j-th two-instruction slot (`SET` the arm's address, `JUMP` to it) of a table at base `T`, and the slot jumps to the arm, which can sit anywhere, unaligned and of any length. Cost is about 7 cycles, independent of the arm count.
 
@@ -567,4 +567,4 @@ def main():
 
 ## Not (yet) supported
 
-Mutable variables; conditions other than field (in)equality; `match` defaults (`case _`) and non-contiguous cases; multi-file imports; `Const` parameters as `mul_range` or range-check bounds (a substituted literal is a bit-pattern element, not the g-power a bound needs); runtime slice starts on a `StackBuf`; precompiles beyond `BLAKE2s`.
+Mutable variables; conditions other than field (in)equality; `match` default and non-contiguous arms; multi-file imports; `Const` parameters as `mul_range` or range-check bounds (a substituted literal is a bit-pattern element, not the g-power a bound needs); runtime slice starts on a `StackBuf`; precompiles beyond `BLAKE2s`.

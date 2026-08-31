@@ -122,6 +122,16 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
         if consts.contains_key(&name) || const_arrays.iter().any(|(n, _)| n == &name) {
             return Err(at(format!("global constant `{name}` is declared twice")));
         }
+        // A scalar constant is substituted textually, so one named after a builtin
+        // rewrites the builtin's own call sites: `match = 4` turned
+        // `v = match(log(x), …)` into `4(log(x), …)`, whose diagnostic names
+        // neither the constant nor `match`.
+        if BUILTINS.contains(&name.as_str()) {
+            return Err(at(format!(
+                "`{name}` is a builtin, so a global constant of that name would be substituted \
+                 into its own call sites. Rename it"
+            )));
+        }
         // Resolve earlier scalar constants inside the value first.
         let rhs = apply_replacements(rhs.trim(), &consts);
         let rhs = rhs.trim();

@@ -56,7 +56,7 @@ fn stmt_inline_safe(s: &Stmt) -> bool {
         StmtKind::Call(..) => true,
         StmtKind::If { then, els, .. } => then.iter().all(stmt_inline_safe) && els.iter().all(stmt_inline_safe),
         StmtKind::Unroll { body, .. } => body.iter().all(stmt_inline_safe),
-        // Return (non-tail), For, Match, LetMatchRange, LetTuple, CallIfNe, user Call.
+        // Return (non-tail), For, Match, LetTuple, CallIfNe, user Call.
         _ => false,
     }
 }

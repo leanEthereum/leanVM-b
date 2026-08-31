@@ -132,7 +132,7 @@ K_LOG = K_LOG_PLACEHOLDER
 SLOT_STRIDE_LOG = SLOT_STRIDE_LOG_PLACEHOLDER  # = K_LOG - LOG_PACKING (=8); the q_flock slot stride
 # Phase E: the stacked mixed opening, then the WHIR opening over the stacked
 # commitment, dispatched by the certified committed log-size m through
-# match_range. The LIG_* tables carry one row per (rate, m), emitted from the
+# match. The LIG_* tables carry one row per (rate, m), emitted from the
 # same derive_profile/level_shapes the prover uses.
 # Scalars index as TBL[m_idx]; per-level values as TBL[m_idx * LIG_MAX_LEVELS + lvl],
 # where m_idx is the flattened (rate, size) configuration index; the subspace
@@ -1162,7 +1162,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
 
     # ---- structural logs: certify g^log_mem, compute the taus ----
     # The stream announced the sizes as integer WORDS; the shape-generic phases
-    # need them as G-POWERS (loop bounds, match_range scrutinees). dims_g[0] =
+    # need them as G-POWERS (loop bounds, match scrutinees). dims_g[0] =
     # g^log_mem arrives as a hint pinned to the word; dims_g[1 + t] = g^tau_t
     # is computed by the count gadget.
     dims_g = HeapBuf(N_TABLES + 1)  # [g^log_mem, g^tau_0 .. g^tau_{N_TABLES-1}]

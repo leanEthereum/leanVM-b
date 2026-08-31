@@ -536,6 +536,60 @@ def main():
     );
 }
 
+/// A `match` target is a BINDER, and every field of the statement is walked.
+///
+/// Four facts, none of which was pinned by anything in the crate: a name target
+/// is not substituted (a `Const k` used to rewrite the binder into a literal, and
+/// the target was then rejected); an INDEX target is, since `sb[k]` needs `k`; the
+/// scrutinee and the arms are; and the statement REBINDS its name targets, so
+/// substitution stops after it. The last is the dangerous one, being the only
+/// mutation of the four that produced a wrong published value rather than a
+/// diagnostic.
+#[test]
+fn a_match_target_binds_and_every_field_is_walked() {
+    let two = "def two(i: Const):\n    return GEN ** i, GEN ** i\n\n";
+    let publish = "    p = GEN ** 0\n    p[1] = r\n    p[GEN] = GEN ** 0\n    return\n";
+    // Arm 1 returns (g, g), so the two returns XOR to zero wherever they are read.
+    let want = [F192::ZERO, g_pow(0).into()];
+    let verifies = |src: &str, why: &str| {
+        let program = compile(&parse(src).unwrap_or_else(|e| panic!("{why}: {e}")));
+        let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+        verify(&program, &want, &proof).unwrap_or_else(|e| panic!("{why}: {e:?}"));
+    };
+
+    // A `Const` parameter whose name is also a target: the binder survives, and
+    // what is read after the statement is the DISPATCH's output, not the constant.
+    verifies(
+        &format!(
+            "{two}def pick(x, k: Const):\n    k, e = match(log(x), range(0, 2), lambda i: two(i))\n    return k + e\n\ndef main():\n    r = pick(GEN ** 1, 7)\n{publish}"
+        ),
+        "a Const name may also be a target",
+    );
+
+    // The scrutinee and the arms ARE substituted: both mention the constant, and a
+    // missed field shows up as a `Var` reaching a position that needs an integer.
+    verifies(
+        &format!(
+            "{two}def pick(k: Const):\n    a, b = match(log(GEN ** k), range(0, 2), lambda i: two(i + k))\n    return a + b\n\ndef main():\n    r = pick(1)\n{publish}"
+        ),
+        "the scrutinee and the arms see the constant",
+    );
+
+    // An INDEX target is substituted, so a `Const` index names a cell.
+    verifies(
+        &format!(
+            "{two}def pick(x, k: Const):\n    sb = StackBuf(2)\n    sb[0] = 0\n    sb[k], e = match(log(x), range(0, 2), lambda i: two(i))\n    return sb[1] + e\n\ndef main():\n    r = pick(GEN ** 1, 1)\n{publish}"
+        ),
+        "a Const index target resolves to its cell",
+    );
+
+    // An `unroll` counter as a target name obeys the same rule.
+    let counter = format!(
+        "{two}def main():\n    for j in unroll(0, 2):\n        j, e = match(log(GEN ** 1), range(0, 2), lambda i: two(i))\n    r = j + e\n{publish}"
+    );
+    let _ = compile(&parse(&counter).expect("an unroll counter may also be a target"));
+}
+
 /// The same construct in a VALUE position, for the same reason. `+` there is
 /// XOR, so `lvl + 1` with `lvl = 3` is 2 and not 4, silently: the SPHINCS guest
 /// could not write a Merkle level into a tweak and carried a generated table of
@@ -602,6 +656,14 @@ fn a_function_may_not_shadow_a_builtin() {
     for name in ["const", "f192", "addr", "blake2s", "len", "hint_witness", "StackBuf"] {
         let src = format!("def {name}(x):\n    assert x == 99\n    return x\n\ndef main():\n    return\n");
         let err = parse(&src).expect_err(&format!("`def {name}` must be rejected"));
+        assert!(err.contains("is a builtin"), "got `{err}`");
+    }
+    // A global CONSTANT of that name is rejected too, and for a sharper reason: a
+    // scalar constant is substituted textually, so `match = 4` rewrites
+    // `v = match(log(x), …)` into `4(log(x), …)`.
+    for name in ["match", "blake2s", "len"] {
+        let src = format!("{name} = 4\n\ndef main():\n    return\n");
+        let err = parse(&src).expect_err(&format!("`{name} = 4` must be rejected"));
         assert!(err.contains("is a builtin"), "got `{err}`");
     }
     // An ordinary name still works, including one that contains a builtin's.

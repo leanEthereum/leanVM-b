@@ -571,11 +571,6 @@ impl FnLower<'_> {
         });
     }
 
-    /// `names = match(log(x), …)`: the same dispatch as
-    /// [`Self::lower_match`], with generated arms: arm `j` evaluates its
-    /// expression (the lambda body at `i = j`) and copies the results into
-    /// cells shared by every arm (write-once: exactly one arm executes);
-    /// `names` bind to those cells at the join.
     /// The cell each multi-return target names, and the names still to bind.
     ///
     /// A plain name takes a fresh cell, as it always did. A `StackBuf` element IS
@@ -609,6 +604,10 @@ impl FnLower<'_> {
         (cells, binds)
     }
 
+    /// `targets = match(log(x), …)`: dispatch through the trampoline table
+    /// ([`Self::lower_match_dispatch`]), arm `j` evaluating the lambda body at
+    /// `i = j` into cells every arm shares. Write-once makes that sound, exactly
+    /// one arm running, and [`Self::ret_targets`] says which cells those are.
     fn lower_match(&mut self, targets: &[Expr], x: &Expr, arms: &[Expr]) {
         for arm in arms {
             if let Expr::Call(f, _) = arm
@@ -716,7 +715,7 @@ impl FnLower<'_> {
         slots
     }
 
-    /// The trampoline dispatch shared by `match` and `match`: jump to
+    /// The trampoline dispatch every `match` lowers through: jump to
     /// `d = g^T · x²` (slot `j` of the two-instruction table at bytecode base
     /// `T`), then to `body(j)`'s code; every non-final body exits to the
     /// join. `body` lowers arm `j`, with its own branch-local scope.

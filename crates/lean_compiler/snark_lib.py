@@ -99,7 +99,7 @@ def log(x) -> int:
     """The discrete log base GEN: `x = GEN ** log(x)`. Only meaningful inside
     a range-check assert (`assert log(x) < log(GEN ** k)`, equivalently
     `assert log(x) < k`, proves `x ∈ {GEN**0, …, GEN**(k-1)}` in 3 cycles),
-    or as the scrutinee of `match` / `match`."""
+    or as the scrutinee of `match`."""
     _ = x
     return 0
 
