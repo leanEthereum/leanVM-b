@@ -1,33 +1,35 @@
 % !TeX root = ../drafts/06-bus-interactions.tex
 \section{Bus interactions}\label{sec:omc}
 
-The machine runs three interactions on the bus, told apart by their domain separators (\S\ref{sec:m3}): the VM state, the read-only memory, and the public bytecode. The last two are lookups, handled by offline memory checking~\cite{BEGKN94}.
+The machine runs three interactions on the bus, differentiated by their domain separators (\S\ref{sec:m3}): the VM state, the read-only memory, and the public bytecode. The last two are lookups using offline memory checking~\cite{BEGKN94}.
 
-\subsection{State}\label{sec:state}
+\subsection{VM State}\label{sec:state}
 
-The state interaction carries the 2 registers, program counter and frame pointer: $\tup{\dsep{ST},\pc,\fp}$. Each instruction row pulls its current state and pushes its successor $\tup{\dsep{ST},\nxt{\pc},\nxt{\fp}}$; the bus is preseeded by pushing the initial state $\tup{\dsep{ST},\pc_0,\fp_0}$ and pulling the final state $\tup{\dsep{ST},\pc_{\mathrm{final}},\fp_{\mathrm{final}}}$ (boundary conditions).
-\begin{proposition}[Balance implies the existance of a valid execution]\label{prop:walk}
-Let $\mathcal R$ be a finite multiset of rows, each pulling a state $u(r)$ and pushing a state $v(r)$, and suppose the state channel balances:
+The state interaction uses domain separator $\dsep{ST} = \gen^{0}$, and carries the 2 registers, program counter and frame pointer: $\tup{\dsep{ST},\pc,\fp}$. Each instruction row pulls its current state and pushes its successor $\tup{\dsep{ST},\nxt{\pc},\nxt{\fp}}$; the bus is preseeded by pushing the initial state $\tup{\dsep{ST},\pc_{\mathrm{initial}},\fp_{\mathrm{initial}}} = \tup{\dsep{ST},\gen^0,\gen^0}$ and pulling the final state $\tup{\dsep{ST},\pc_{\mathrm{final}},\fp_{\mathrm{final}}} = \tup{\dsep{ST},\gen^{\nprog - 1},\gen^0}$ (boundary conditions).
+\begin{proposition}[Balance implies the existence of a valid execution]\label{prop:walk}
+Let $\mathcal R$ be a finite multiset of rows, each pulling a state $\bpull(r)$ and pushing a state $\bpush(r)$, and suppose the state channel balances:
 \[
-  \mset{v(r):r\in\mathcal R}\uplus\mset{(\pc_0,\fp_0)}
-  \;=\;\mset{u(r):r\in\mathcal R}\uplus\mset{(\pc_{\mathrm{final}},\fp_{\mathrm{final}})} .
+  \mset{\bpush(r):r\in\mathcal R}\uplus\mset{(\pc_{\mathrm{initial}},\fp_{\mathrm{initial}})}
+  \;=\;\mset{\bpull(r):r\in\mathcal R}\uplus\mset{(\pc_{\mathrm{final}},\fp_{\mathrm{final}})} .
 \]
 Then $\mathcal R$ splits into rows $r_1,\dots,r_L$ with
 \[
-  u(r_1)=(\pc_0,\fp_0),\qquad v(r_i)=u(r_{i+1}),\qquad v(r_L)=(\pc_{\mathrm{final}},\fp_{\mathrm{final}}),
+  \bpull(r_1)=(\pc_{\mathrm{initial}},\fp_{\mathrm{initial}}),\qquad \bpush(r_i)=\bpull(r_{i+1}),\qquad \bpush(r_L)=(\pc_{\mathrm{final}},\fp_{\mathrm{final}}),
 \]
 and rows forming closed walks.
 \end{proposition}
 
 \begin{proof}
-Build the directed multigraph $G$ on the states: one edge $u(r)\to v(r)$ per row, plus one edge $e$ from $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$ to $(\pc_0,\fp_0)$.
+Build the directed multigraph $G$ on the states: one edge $\bpull(r)\to \bpush(r)$ per row, plus one edge $e$ from $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$ to $(\pc_{\mathrm{initial}},\fp_{\mathrm{initial}})$.
 
-Fix a state $x$. Its in-degree in $G$ counts the rows with $v(r)=x$, plus $e$ if $x=(\pc_0,\fp_0)$, where $e$ ends. Its out-degree counts the rows with $u(r)=x$, plus $e$ if $x=(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$, where $e$ starts. Those two counts are the multiplicities of $x$ on the two sides of the hypothesis, so they are equal: $G$ is balanced at every state.
+Fix a state $x$. Its in-degree in $G$ counts the rows with $\bpush(r)=x$, plus $e$ if $x=(\pc_{\mathrm{initial}},\fp_{\mathrm{initial}})$. Its out-degree counts the rows with $\bpull(r)=x$, plus $e$ if $x=(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$. Those two counts are the multiplicities of $x$ on the two sides of the hypothesis, so they are equal: $G$ is balanced at every state.
 
 A finite balanced multigraph is a union of edge-disjoint closed walks: follow unused edges from any vertex, which balance always permits on entering one, until a vertex repeats; remove the closed walk found and repeat. Deleting $e$ from the closed walk that contains it leaves $r_1,\dots,r_L$.
 \end{proof}
 
-Tolerating closed walks is what lets a table be filled to a power of two (\S\ref{sec:e2e-pad}).
+\begin{remark}
+  Tolerating closed walks is what lets a table be filled to a power of two (\S\ref{sec:e2e-pad}).
+\end{remark}
 
 \subsection{The lookup protocol}\label{sec:lookup}
 
@@ -35,7 +37,7 @@ We use a similar idea to~\cite[Protocol.~4.27]{DP23}.
 
 \paragraph{Setting.} A \emph{lookup array} $\lut$ holds $2^{\kappa}$ entries, entry $\lut[i]$ being a tuple of $\ncomp$ elements of $\K$. Its \emph{components} $\lut_0,\dots,\lut_{\ncomp-1}$ are the multilinears of height $2^{\kappa}$ holding one coordinate of the entry each: they are either committed or public. A \emph{read} is a row of a table (\S\ref{sec:m3}) naming an address $a\in\K$ and a value $v\in\K^{\ncomp}$, and is correct when $a=\gen^{i}$ and $v=\lut[i]$ for some $i<2^{\kappa}$.
 
-\paragraph{Tuple and columns.} The bus interaction uses a tuple of the form $\tup{\sep,\addr,\cnt,\val}$: a domain separator naming the array, the address, the count, then the entry in coordinates $3,\dots,\ncomp+2$. Every higher coordinate is zero, so $\ncomp\le m-3$ for the bus width $m$ (\S\ref{sec:m3}). Take every part of a read to be a committed column of the reading table: its address, its count, and the $\ncomp$ components of the value read. Committed on top of $\lut$ is one finalize-count column $\cntfin$ of height $2^{\kappa}$.
+\paragraph{Tuple and columns.} The bus interaction uses a tuple of the form $\tup{\sep,\addr,\cnt,\val}$: a domain separator naming the array, the address, the count, then the entry in coordinates $3,\dots,\ncomp+2$. Every higher coordinate is zero, so $\ncomp\le m-3$ for the bus width $m$ (\S\ref{sec:m3}). Take every part of a read to be a committed $\K$-valued column of the reading table: its address, its count, and the $\ncomp$ components of the value read. Committed on top of $\lut$ is one finalize-count $\K$-valued column $\cntfin$ of height $2^{\kappa}$.
 
 \paragraph{Flush rules.} With $A[i]$ the number of reads of address $\gen^{i}$:
 \begin{itemize}
@@ -65,8 +67,8 @@ Writing $\rcnts$ for the multiset of counts of the reads at $(a,v)$, balance the
 
 \end{proof}
 
-\begin{corollary}[Addresses come out in range]\label{cor:addrrange}
-Under the same hypotheses every read address is an entry address $\gen^{i}$, $i<2^{\kappa}$: no read at any other address, $0$ included, occurs in an accepted proof.
+\begin{corollary}[Addresses are in range]\label{cor:addrrange}
+Under the same hypotheses every read address is an entry address $\gen^{i}$, $i<2^{\kappa}$: no read at any other address, $0$ included, occurs in an accepted proof (except with negligible soundness error).
 \end{corollary}
 
 \paragraph{Nothing checks the finalize counts.} $\cntfin$ appears nowhere in Theorem~\ref{thm:omc} or its proof. A wrong value (such as $0$ for instance) cannot make a bad read pass; it can only unbalance the bus at that entry, making the proof invalid.
@@ -75,21 +77,24 @@ Under the same hypotheses every read address is an entry address $\gen^{i}$, $i<
 
 \paragraph{The count product.} All counts are nonzero exactly when their product is. The prover therefore sends that product, one $\E$-element, and the verifier checks it is nonzero. It is proven like any other grand product, by GKR over the stacking of every count column (\S\ref{sec:leafstack}), batched with the two other GKRs of the bus (push / pull) (\S\ref{sec:gkr}).
 
-\paragraph{Instance caps.} The verifier checks the announced sizes against public caps (\S\ref{sec:e2e-unrolled}): at most $2^{32}$ rows per table, at most $2^{32}$ memory cells (\S\ref{sec:memchan}) and at most $2^{32}$ bytecode instructions (\S\ref{sec:bytecode}). A row reads at most nine times, so the six tables flush $\nread\le9\cdot6\cdot2^{32}<2^{38}$ reads, far under the $2^{64}-1$ that Lemma~\ref{lem:invcnt} needs.
+\paragraph{Instance caps.} The verifier checks the announced sizes against public caps (\S\ref{sec:e2e-unrolled}): at most $2^{32}$ rows per table, at most $2^{32}$ memory cells (\S\ref{sec:memchan}) and at most $2^{32}$ bytecode instructions (\S\ref{sec:bytecode}). A row reads at most nine times, so the six tables flush $\nread\le9\cdot6\cdot2^{32}<2^{38}$ reads, far under the $2^{64}-1$ that Lemma~\ref{lem:invcnt} requires.
 
-\paragraph{Relexing the hypotheses.} A bus entry may be any polynomial of degree at most $d$ in the row's columns (\S\ref{sec:m3}), so none of the three (address, count, value) need be committed. Example 1: we don't need to commit memory addresses of the form $\fp\cdot o$ (\S\ref{sec:memchan}) when $\fp$ and $o$ are already committed. Example 2: once the pull counter $\cnt$ is committed, no need to commit to the corrsponding push counter $\gen\cdot\cnt$.
+\paragraph{Relaxing the hypotheses.} A bus entry may be any polynomial of degree at most $d = 2$ in the row's columns (\S\ref{sec:m3}), so none of the three (address, count, value) need be committed. Example 1: we don't need to commit memory addresses of the form $\fp\cdot o$ (\S\ref{sec:memchan}) when $\fp$ and $o$ are already committed. Example 2: once the pull counter $\cnt$ is committed, no need to commit to the corresponding push counter $\gen\cdot\cnt$.
 
 \subsection{Memory}\label{sec:memchan}
 
-The memory is an array of $2^{\kmem}$ cells, $16\le\kmem\le32$ (\S\ref{sec:vm}). Bus interaction uses domain separation $\sep=\dsep{MEM}$. A memory word is $192$-bit (i.e. one $\E$-element), so $\ncomp=3$, memory is committed as 3 $\K$-valued multilinears in $\kmem$ variables $M_0,M_1,M_2$.
+The memory is an array of $\nmem = 2^{\kmem}$ cells, $16\le\kmem\le32$ (\S\ref{sec:vm}). Bus interaction uses domain separation $\sep=\dsep{MEM} = \gen^{1}$. A memory word is $192$-bit (i.e. one $\E$-element), so $\ncomp=3$, memory is committed as 3 $\K$-valued multilinears in $\kmem$ variables $M_0,M_1,M_2$.
 
 \subsection{Bytecode}\label{sec:bytecode}
 
-The bytecode is an array of $\nprog$ instructions, $\nprog\le2^{32}$ (\S\ref{sec:e2e-bc}). Bus interaction uses domain separation $\sep=\dsep{BC}$. An instruction is an opcode plus eight operand or immediate slots, so $\ncomp=9$: with the separator, the index and the counter ahead of them, this is the widest entry on the bus at $12$ coordinates, which is what forces the four index bits, hence the $m=16$ slots of \S\ref{sec:m3}. The program is public, i.e. not committed, the verifier can evaluate it directly.
+The bytecode is an array of $\nprog = 2^{\kbc}$ instructions, $\kbc \le 32$ (\S\ref{sec:e2e-bc}). Bus interaction uses domain separation $\sep=\dsep{BC} = \gen^{2}$. An instruction is an opcode plus eight operands, so $\ncomp=9$: with the separator, the index and the counter ahead of them, this is the widest entry on the bus at $12$ coordinates, which is what forces the four index bits, hence the $m=16$ slots of \S\ref{sec:m3}. Coordinate $3$ is the opcode, naming the instruction:
+\[
+  \opc{XOR}=\gen^{0},\quad \opc{MUL}=\gen^{1},\quad \opc{SET}=\gen^{2},\quad \opc{DRF}=\gen^{3},\quad \opc{JMP}=\gen^{4},\quad \opc{B3}=\gen^{5}.
+\] The program is public, i.e. not committed, the verifier can evaluate it directly.
 
 \subsection{The index column}\label{sec:idxcol}
 
-The seed and finalization blocks run over every address $\gen^{0},\dots,\gen^{2^{\kappa}-1}$, so the verifier needs the extension of that \emph{index column} $\mathrm{idx}$ at the point $\zeta$ (\S\ref{sec:leafstack}). It is not committed, and need not be: writing $w$ for the bits of $i$, $\gen^{\,i}=\prod_k(\gen^{\,2^{k}})^{w_k}$, whose $k$-th factor is $1+w_k(1+\gen^{\,2^{k}})$, which gives the efficient MLE formula:
+The seed and finalization blocks run over every address $\gen^{0},\dots,\gen^{2^{\kappa}-1}$, so the verifier needs the extension of that \emph{index column} $\mathrm{idx}$ at the point $\zeta$ (\S\ref{sec:leafstack}). Writing $w$ for the bits of $i$, $\gen^{\,i}=\prod_k(\gen^{\,2^{k}})^{w_k}$, whose $k$-th factor is $1+w_k(1+\gen^{\,2^{k}})$, which gives the efficient MLE formula:
 \[
   \mle{\mathrm{idx}}(\zeta)\;=\;\prod_{k=0}^{\kappa-1}\bigl(1+\zeta_k\,(1+\gen^{\,2^{k}})\bigr),
 \]

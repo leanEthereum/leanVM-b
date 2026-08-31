@@ -783,7 +783,7 @@ def _flushes_deref() -> Flushes:
 
 
 def _flushes_jump() -> Flushes:
-    pc, fp, o_c, o_d, o_f, cond, dest, frame, b = _cols(JUMP_COLUMNS, "pc", "fp", "o_c", "o_d", "o_f", "c", "dest", "frame", "b")
+    pc, fp, o_c, o_d, o_f, cond, dest, frame, b = _cols(JUMP_COLUMNS, "pc", "fp", "o_c", "o_d", "o_f", "v_cond", "v_pc", "v_fp", "b")
     cnt_c, cnt_d, cnt_f, cnt_bc = _cols(JUMP_COLUMNS, "cnt_c", "cnt_d", "cnt_f", "cnt_bc")
     flushes = Flushes()
     # next_pc = b*dest + (b+1)*g*pc, next_fp = b*frame + (b+1)*fp, both derived.
@@ -796,7 +796,7 @@ def _flushes_jump() -> Flushes:
 
 
 def _jump_constraints(columns: Sequence[E]) -> tuple[E, ...]:
-    condition, inverse, flag = (columns[index] for index in _cols(JUMP_COLUMNS, "c", "w", "b"))
+    condition, inverse, flag = (columns[index] for index in _cols(JUMP_COLUMNS, "v_cond", "w", "b"))
     return (flag + condition * inverse, condition * (flag + ONE))
 
 
@@ -821,7 +821,7 @@ OP_XOR, OP_MUL, OP_SET, OP_DEREF, OP_JUMP, OP_BLAKE2S = range(6)
 ARITH_COLUMNS = ("pc", "fp", "o_a", "o_b", "o_c", "va_0", "va_1", "va_2", "vb_0", "vb_1", "vb_2", "cnt_a", "cnt_b", "cnt_c", "cnt_bc",)  # fmt: skip
 SET_COLUMNS = ("pc", "fp", "o", "k_0", "k_1", "k_2", "cnt", "cnt_bc")
 DEREF_COLUMNS = ("pc", "fp", "alpha", "beta", "gamma", "f_pc", "f_fp", "ptr", "v3_0", "v3_1", "v3_2",  "cnt_ptr", "cnt_target", "cnt_local", "cnt_bc",)  # fmt: skip
-JUMP_COLUMNS = ("pc", "fp", "o_c", "o_d", "o_f", "c", "dest", "frame", "cnt_c", "cnt_d", "cnt_f", "cnt_bc", "w", "b",)  # fmt: skip
+JUMP_COLUMNS = ("pc", "fp", "o_c", "o_d", "o_f", "v_cond", "v_pc", "v_fp", "cnt_c", "cnt_d", "cnt_f", "cnt_bc", "w", "b",)  # fmt: skip
 BLAKE2S_COLUMNS = (
     "pc", "fp", "o_0", "o_1", "o_2", "o_3", "o_v", "o_out",
     # These eighteen value limbs live in q_flock, not here: each is already a flock witness slot.

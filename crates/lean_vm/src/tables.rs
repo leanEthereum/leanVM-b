@@ -70,7 +70,7 @@ fn tower_lane<T: ColVal>(lane: usize, x: [T; 3], y: [T; 3]) -> T {
 fn jump_identity<T: ColVal>(pows: &[F192], cols: &[T]) -> F192 {
     use jump::*;
     let b1 = cols[B] + T::ONE;
-    T::dot(pows, &[cols[B] + cols[C] * cols[W], cols[C] * b1], F192::ZERO)
+    T::dot(pows, &[cols[B] + cols[V_COND] * cols[W], cols[V_COND] * b1], F192::ZERO)
 }
 
 // ---- shared bus vocabulary ---------------------------------------------------
@@ -320,7 +320,7 @@ pub trait Table: Sync {
         0
     }
     /// Evaluate the table's degree-2 constraint at one row, reading column values
-    /// by local index from `cols` (e.g. `cols[jump::C_LO]`) and weighting identity
+    /// by local index from `cols` (e.g. `cols[jump::V_COND]`) and weighting identity
     /// `i` by `pows[i]`, this table's slice of the batch's `xi`-powers. The slice is
     /// is exactly [`n_constraints`](Table::n_constraints) long: an identity indexed
     /// past its end panics rather than silently reaching into the next table's
@@ -398,33 +398,33 @@ pub(crate) fn blake2s_metadata(prog: &[Op], pc: u32) -> F192 {
 /// slots, so `cpu` routes their memory-bus evaluation claims straight to `q_flock`
 /// (`slot_claims`): the value the bus flushes IS the flock-proven word.
 pub const BLAKE2S_VALUE_COLS: [usize; 18] = [
-    blake2st::VA0,
-    blake2st::VA0 + 1,
-    blake2st::VA0 + 2,
-    blake2st::VA0 + 3,
-    blake2st::VB0,
-    blake2st::VB0 + 1,
-    blake2st::VB0 + 2,
-    blake2st::VB0 + 3,
-    blake2st::VC0,
-    blake2st::VC0 + 1,
-    blake2st::VC0 + 2,
-    blake2st::VC0 + 3,
-    blake2st::VCV0,
-    blake2st::VCV0 + 1,
-    blake2st::VCV0 + 2,
-    blake2st::VCV0 + 3,
+    blake2st::V_M0,
+    blake2st::V_M0 + 1,
+    blake2st::V_M0 + 2,
+    blake2st::V_M0 + 3,
+    blake2st::V_M2,
+    blake2st::V_M2 + 1,
+    blake2st::V_M2 + 2,
+    blake2st::V_M2 + 3,
+    blake2st::V_OUT0,
+    blake2st::V_OUT0 + 1,
+    blake2st::V_OUT0 + 2,
+    blake2st::V_OUT0 + 3,
+    blake2st::V_CV0,
+    blake2st::V_CV0 + 1,
+    blake2st::V_CV0 + 2,
+    blake2st::V_CV0 + 3,
     blake2st::MD0,
     blake2st::MD1,
 ];
-// The eighteen value lanes are laid out contiguously (VA0..VA0+17), so they map
+// The eighteen value lanes are laid out contiguously (V_M0..V_M0+17), so they map
 // 1:1 onto `hash_flock::SLOTS`.
 const _: () = assert!(
-    blake2st::VB0 == blake2st::VA0 + 4
-        && blake2st::VC0 == blake2st::VA0 + 8
-        && blake2st::VCV0 == blake2st::VA0 + 12
-        && blake2st::MD0 == blake2st::VA0 + 16
-        && blake2st::MD1 == blake2st::VA0 + 17
+    blake2st::V_M2 == blake2st::V_M0 + 4
+        && blake2st::V_OUT0 == blake2st::V_M0 + 8
+        && blake2st::V_CV0 == blake2st::V_M0 + 12
+        && blake2st::MD0 == blake2st::V_M0 + 16
+        && blake2st::MD1 == blake2st::V_M0 + 17
 );
 
 // ---- XOR / MUL ---------------------------------------------------------------
@@ -707,9 +707,9 @@ mod jump {
     // into K, exactly as for the DEREF pointer. A guest branches on g-powers,
     // never on an arbitrary word: `assert a != b` takes an inverse hint instead
     // of a branch (§sec:prog-div-ne).
-    pub const C: usize = 5;
-    pub const D: usize = 6;
-    pub const F: usize = 7;
+    pub const V_COND: usize = 5;
+    pub const V_PC: usize = 6;
+    pub const V_FP: usize = 7;
     pub const RC: usize = 8;
     pub const RD: usize = 9;
     pub const RF: usize = 10;
@@ -747,8 +747,8 @@ impl Table for JumpTable {
         f.state_derived(
             PC,
             FP,
-            Coord::Sum(vec![Prod(B, D, 0), Prod(B, PC, 1), GCol(PC, 1)]),
-            Coord::Sum(vec![Prod(B, F, 0), Prod(B, FP, 0), Col(FP)]),
+            Coord::Sum(vec![Prod(B, V_PC, 0), Prod(B, PC, 1), GCol(PC, 1)]),
+            Coord::Sum(vec![Prod(B, V_FP, 0), Prod(B, FP, 0), Col(FP)]),
         );
         f.bytecode(
             PC,
@@ -756,9 +756,9 @@ impl Table for JumpTable {
             OP_JUMP,
             &[Col(OC), Col(OD), Col(OF), Const(F64::ZERO), Const(F64::ZERO)],
         );
-        f.memory_k(Prod(FP, OC, 0), RC, C);
-        f.memory_k(Prod(FP, OD, 0), RD, D);
-        f.memory_k(Prod(FP, OF, 0), RF, F);
+        f.memory_k(Prod(FP, OC, 0), RC, V_COND);
+        f.memory_k(Prod(FP, OD, 0), RD, V_PC);
+        f.memory_k(Prod(FP, OF, 0), RF, V_FP);
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
         use jump::*;
@@ -844,29 +844,29 @@ struct Blake2sTable;
 pub(crate) mod blake2st {
     pub const PC: usize = 0;
     pub const FP: usize = 1;
-    pub const OA0: usize = 2; // operand g-powers (offsets) of the four message cells …
-    pub const OA1: usize = 3;
-    pub const OB0: usize = 4;
-    pub const OB1: usize = 5;
-    pub const OCV: usize = 6; // … the chaining-value base …
-    pub const OC: usize = 7; // … and the output base
-    // The eighteen flock words as value lanes: a's cells (a0, a1), b's cells
-    // (b0, b1), c's cells (c, g·c), cv's cells (cv, g·cv), two lanes
-    // (lo, hi) each, then the bytecode metadata immediate's two lanes.
-    pub const VA0: usize = 8; // a0.lo, a0.hi, a1.lo, a1.hi
-    pub const VB0: usize = 12; // b0.lo, b0.hi, b1.lo, b1.hi
-    pub const VC0: usize = 16; // c.lo, c.hi, (g·c).lo, (g·c).hi
-    pub const VCV0: usize = 20; // cv.lo, cv.hi, (g·cv).lo, (g·cv).hi
+    pub const O_M0: usize = 2; // operand g-powers (offsets) of the four message cells …
+    pub const O_M1: usize = 3;
+    pub const O_M2: usize = 4;
+    pub const O_M3: usize = 5;
+    pub const O_CV: usize = 6; // … the chaining-value base …
+    pub const O_OUT: usize = 7; // … and the output base
+    // The eighteen flock lanes: a (lo, hi) pair for each of the eight cells,
+    // the four message cells first, then the output pair, then the chaining-value
+    // pair, and last the bytecode metadata immediate's two lanes.
+    pub const V_M0: usize = 8; // m0.lo, m0.hi, m1.lo, m1.hi
+    pub const V_M2: usize = 12; // m2.lo, m2.hi, m3.lo, m3.hi
+    pub const V_OUT0: usize = 16; // out0.lo, out0.hi, out1.lo, out1.hi
+    pub const V_CV0: usize = 20; // cv0.lo, cv0.hi, cv1.lo, cv1.hi
     pub const MD0: usize = 24; // metadata: the counter lane …
-    pub const MD1: usize = 25; // … and the f0‖f1 lane
-    pub const RA0: usize = 26; // per-cell read counts (two a cells) …
-    pub const RA1: usize = 27;
-    pub const RB0: usize = 28; // … two b cells …
-    pub const RB1: usize = 29;
-    pub const RCV0: usize = 30; // … two cv cells …
-    pub const RCV1: usize = 31;
-    pub const RC0: usize = 32; // … two c cells.
-    pub const RC1: usize = 33;
+    pub const MD1: usize = 25; // … and the final ‖ last_node lane
+    pub const R_M0: usize = 26; // one read count per cell: the four message cells …
+    pub const R_M1: usize = 27;
+    pub const R_M2: usize = 28;
+    pub const R_M3: usize = 29;
+    pub const R_CV0: usize = 30; // … the two chaining-value cells …
+    pub const R_CV1: usize = 31;
+    pub const R_OUT0: usize = 32; // … and the two output cells.
+    pub const R_OUT1: usize = 33;
     pub const RBC: usize = 34;
     pub const N: usize = 35;
 }
@@ -877,7 +877,7 @@ impl Table for Blake2sTable {
     }
     fn count_columns(&self) -> &'static [usize] {
         use blake2st::*;
-        &[RA0, RA1, RB0, RB1, RCV0, RCV1, RC0, RC1, RBC]
+        &[R_M0, R_M1, R_M2, R_M3, R_CV0, R_CV1, R_OUT0, R_OUT1, RBC]
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use blake2st::*;
@@ -887,12 +887,12 @@ impl Table for Blake2sTable {
             RBC,
             OP_BLAKE2S,
             &[
-                Col(OA0),
-                Col(OA1),
-                Col(OB0),
-                Col(OB1),
-                Col(OCV),
-                Col(OC),
+                Col(O_M0),
+                Col(O_M1),
+                Col(O_M2),
+                Col(O_M3),
+                Col(O_CV),
+                Col(O_OUT),
                 Col(MD0),
                 Col(MD1),
             ],
@@ -903,14 +903,14 @@ impl Table for Blake2sTable {
         // literal-zero top limb (`memory_128`), so the canonical embedding is
         // proof-enforced and the zero limbs are never committed.
         // A consecutive cell is a free ×g on the product's g-power.
-        f.memory_128(Prod(FP, OA0, 0), RA0, VA0, VA0 + 1);
-        f.memory_128(Prod(FP, OA1, 0), RA1, VA0 + 2, VA0 + 3);
-        f.memory_128(Prod(FP, OB0, 0), RB0, VB0, VB0 + 1);
-        f.memory_128(Prod(FP, OB1, 0), RB1, VB0 + 2, VB0 + 3);
-        f.memory_128(Prod(FP, OCV, 0), RCV0, VCV0, VCV0 + 1);
-        f.memory_128(Prod(FP, OCV, 1), RCV1, VCV0 + 2, VCV0 + 3);
-        f.memory_128(Prod(FP, OC, 0), RC0, VC0, VC0 + 1);
-        f.memory_128(Prod(FP, OC, 1), RC1, VC0 + 2, VC0 + 3);
+        f.memory_128(Prod(FP, O_M0, 0), R_M0, V_M0, V_M0 + 1);
+        f.memory_128(Prod(FP, O_M1, 0), R_M1, V_M0 + 2, V_M0 + 3);
+        f.memory_128(Prod(FP, O_M2, 0), R_M2, V_M2, V_M2 + 1);
+        f.memory_128(Prod(FP, O_M3, 0), R_M3, V_M2 + 2, V_M2 + 3);
+        f.memory_128(Prod(FP, O_CV, 0), R_CV0, V_CV0, V_CV0 + 1);
+        f.memory_128(Prod(FP, O_CV, 1), R_CV1, V_CV0 + 2, V_CV0 + 3);
+        f.memory_128(Prod(FP, O_OUT, 0), R_OUT0, V_OUT0, V_OUT0 + 1);
+        f.memory_128(Prod(FP, O_OUT, 1), R_OUT1, V_OUT0 + 2, V_OUT0 + 3);
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
         use blake2st::*;
@@ -918,8 +918,8 @@ impl Table for Blake2sTable {
         let ad = |r: &Brow| blake2s_addresses(ctx.prog, r);
         ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
         ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
-        // OA0..OC are the six base addresses' offsets, from the instruction decode.
-        ctx.cols(out, rows, OA0, |r| ad(r).map(|a| ctx.g_at(a - r.fp)));
+        // O_M0..O_OUT are the six base addresses' offsets, from the instruction decode.
+        ctx.cols(out, rows, O_M0, |r| ad(r).map(|a| ctx.g_at(a - r.fp)));
         // The sixteen memory-borne flock words are the eight cells' lo/hi lanes:
         // the four message cells, then the cv pair and the output pair. A cell's
         // two lanes are one read, so each group of four takes two.
@@ -927,19 +927,19 @@ impl Table for Blake2sTable {
             let (w0, w1) = (ctx.mem[c0 as usize], ctx.mem[c1 as usize]);
             [F64(w0.c0), F64(w0.c1), F64(w1.c0), F64(w1.c1)]
         };
-        ctx.cols(out, rows, VA0, |r| {
+        ctx.cols(out, rows, V_M0, |r| {
             let a = ad(r);
             word_pair(a[0], a[1])
         });
-        ctx.cols(out, rows, VB0, |r| {
+        ctx.cols(out, rows, V_M2, |r| {
             let a = ad(r);
             word_pair(a[2], a[3])
         });
-        ctx.cols(out, rows, VC0, |r| {
+        ctx.cols(out, rows, V_OUT0, |r| {
             let a = ad(r);
             word_pair(a[5], a[5] + 1)
         });
-        ctx.cols(out, rows, VCV0, |r| {
+        ctx.cols(out, rows, V_CV0, |r| {
             let a = ad(r);
             word_pair(a[4], a[4] + 1)
         });
@@ -947,7 +947,7 @@ impl Table for Blake2sTable {
             let md = blake2s_metadata(ctx.prog, r.pc);
             [F64(md.c0), F64(md.c1)]
         });
-        ctx.cols(out, rows, RA0, |r| {
+        ctx.cols(out, rows, R_M0, |r| {
             [r.ra[0], r.ra[1], r.rb[0], r.rb[1], r.rcv[0], r.rcv[1], r.rc[0], r.rc[1]]
         });
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
@@ -987,7 +987,7 @@ mod tests {
             } else {
                 F64(F192::from(cond).inv().c0)
             };
-            row[jump::C] = cond;
+            row[jump::V_COND] = cond;
             row[jump::W] = w;
             row[jump::B] = if cond.is_zero() { F64::ZERO } else { F64::ONE };
             assert_eq!(jump_identity(&pows, &row), F192::ZERO, "cond = {cond:?}");

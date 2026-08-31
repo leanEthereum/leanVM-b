@@ -72,7 +72,8 @@
 \newcommand{\ncomp}{N_{\mathrm{comp}}}    % components of a lookup entry (its width)
 \newcommand{\push}{\textsc{push}}
 \newcommand{\pull}{\textsc{pull}}
-\newcommand{\tup}[1]{\langle #1 \rangle}
+\newcommand{\tup}[1]{( #1 )}
+\newcommand{\rdf}[1]{\dsep{read}\,\tup{#1}}   % a pull/push pair differing only in the count
 \newcommand{\dsep}[1]{\mathsf{#1}}
 \newcommand{\opc}[1]{\mathsf{op}_{\mathsf{#1}}}
 \newcommand{\srcsel}[1]{\mathsf{src}(#1)}
@@ -88,6 +89,8 @@
 \newcommand{\ncons}[1]{N_{\mathrm{cons},#1}}  % constraints of table #1
 \newcommand{\nfl}[1]{N_{\mathrm{flushes},#1}}    % bus flushes per row of table #1
 \newcommand{\btup}{\mathbf{f}}          % a bus tuple
+\newcommand{\bpull}{\mathsf{pull}}        % the state a row pulls from the bus
+\newcommand{\bpush}{\mathsf{push}}        % the state a row pushes onto the bus
 
 % ---------- codes and the PCS (Annex B) ----------
 % Letters that the main matter already spends on something else are routed

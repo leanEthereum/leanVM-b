@@ -1669,7 +1669,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         if t == TABLE_JUMP:
             # `b = c*w` and `c*(b+1) = 0`. The condition is K-valued, its memory read
             # carrying literal zeros above the low limb, so both identities are
-            # single-lane (tables.rs jump_identity). Local columns: c at 5, w at 12,
+            # single-lane (tables.rs jump_identity). Local columns: v_cond at 5, w at 12,
             # the indicator b at 13.
             c = col_evals[5]
             w = col_evals[12]

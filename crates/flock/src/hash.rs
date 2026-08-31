@@ -139,17 +139,17 @@ pub use primitives::hash::{G_LANES, SIGMA};
 // Layout positions (bit indices into the per-block z slice of length K)
 // ---------------------------------------------------------------------------
 
-/// One 256-bit chaining value, `2^8`, so `h` and `out` are aligned slots.
+/// One 256-bit chaining value, `2^8`, so `cv` and `out` are aligned slots.
 pub const SLOT_BITS: usize = 256;
-pub const H_BASE: usize = 0; // input region, slot 0: [0, 256)
-pub const OUT_BASE: usize = SLOT_BITS; // output region, slot 1: [256, 512)
+pub const CV_BASE: usize = 0; // the input chaining value, slot 0: [0, 256)
+pub const OUT_BASE: usize = SLOT_BITS; // the compression result, slot 1: [256, 512)
 pub const Z_CONST_POS: usize = 2 * SLOT_BITS; // 512
-pub const M_BASE: usize = (Z_CONST_POS + 1).div_ceil(128) * 128; // 640 (128-aligned)
-pub const T_LO_BASE: usize = M_BASE + 16 * WORD_BITS; // 1152
-pub const T_HI_BASE: usize = T_LO_BASE + WORD_BITS; // 1184
-pub const F0_BASE: usize = T_HI_BASE + WORD_BITS; // 1216
-pub const F1_BASE: usize = F0_BASE + WORD_BITS; // 1248
-pub const GS_BASE: usize = F1_BASE + WORD_BITS; // 1280
+pub const MSG_BASE: usize = (Z_CONST_POS + 1).div_ceil(128) * 128; // the 512-bit message block, 640 (128-aligned)
+pub const COUNTER_LO_BASE: usize = MSG_BASE + 16 * WORD_BITS; // 1152
+pub const COUNTER_HI_BASE: usize = COUNTER_LO_BASE + WORD_BITS; // 1184
+pub const FINAL_BASE: usize = COUNTER_HI_BASE + WORD_BITS; // 1216
+pub const LAST_NODE_BASE: usize = FINAL_BASE + WORD_BITS; // 1248
+pub const GS_BASE: usize = LAST_NODE_BASE + WORD_BITS; // 1280
 pub const USEFUL_BITS: usize = GS_BASE + N_G * G_STRIDE; // 16,000
 
 const _: () = assert!(USEFUL_BITS <= K, "BLAKE2s does not fit the 2^K_LOG block");
@@ -164,12 +164,12 @@ const G_ADD_C2: usize = G_ADD3_A2 + ADD3_BITS; // c_1 + d_2 → c_new
 #[inline]
 fn h_bit(w: usize, b: usize) -> usize {
     debug_assert!(w < 8 && b < WORD_BITS);
-    H_BASE + WORD_BITS * w + b
+    CV_BASE + WORD_BITS * w + b
 }
 #[inline]
 fn m_bit(i: usize, b: usize) -> usize {
     debug_assert!(i < 16 && b < WORD_BITS);
-    M_BASE + WORD_BITS * i + b
+    MSG_BASE + WORD_BITS * i + b
 }
 #[inline]
 fn out_bit(w: usize, b: usize) -> usize {
@@ -296,9 +296,9 @@ fn forward_walk(sink: &mut crate::gf2::RowValues, w: &[F192]) {
     sink.bconst(Z_CONST_POS, w[Z_CONST_POS]);
     // Free-input rows: A = [slot], B = [Z_CONST].
     for (base, len) in [
-        (H_BASE, 8 * WORD_BITS),
-        (M_BASE, 16 * WORD_BITS),
-        (T_LO_BASE, 4 * WORD_BITS),
+        (CV_BASE, 8 * WORD_BITS),
+        (MSG_BASE, 16 * WORD_BITS),
+        (COUNTER_LO_BASE, 4 * WORD_BITS),
     ] {
         for s in base..base + len {
             sink.bconst(s, w[s]);
@@ -312,7 +312,7 @@ fn forward_walk(sink: &mut crate::gf2::RowValues, w: &[F192]) {
     for i in 0..4 {
         state[8 + i] = wire_from_const(w, BLAKE2S_IV[i], Z_CONST_POS);
     }
-    for (i, base) in [T_LO_BASE, T_HI_BASE, F0_BASE, F1_BASE].into_iter().enumerate() {
+    for (i, base) in [COUNTER_LO_BASE, COUNTER_HI_BASE, FINAL_BASE, LAST_NODE_BASE].into_iter().enumerate() {
         state[12 + i] = wire_xor(
             &wire_from_const(w, BLAKE2S_IV[4 + i], Z_CONST_POS),
             &wire_from_slot_base(w, base),
@@ -400,9 +400,9 @@ fn marginal_walk_side(side: MatrixSide, u: &[F192]) -> Vec<F192> {
 
     // Free-input rows: A = [slot], B = [Z_CONST].
     for (base, len) in [
-        (H_BASE, 8 * WORD_BITS),
-        (M_BASE, 16 * WORD_BITS),
-        (T_LO_BASE, 4 * WORD_BITS),
+        (CV_BASE, 8 * WORD_BITS),
+        (MSG_BASE, 16 * WORD_BITS),
+        (COUNTER_LO_BASE, 4 * WORD_BITS),
     ] {
         for s in base..base + len {
             let (a, b) = side.split(u[s]);
@@ -493,7 +493,7 @@ fn marginal_walk_side(side: MatrixSide, u: &[F192]) -> Vec<F192> {
             }
         }
     }
-    for (i, base) in [T_LO_BASE, T_HI_BASE, F0_BASE, F1_BASE].into_iter().enumerate() {
+    for (i, base) in [COUNTER_LO_BASE, COUNTER_HI_BASE, FINAL_BASE, LAST_NODE_BASE].into_iter().enumerate() {
         for b in 0..WORD_BITS {
             m[base + b] += adj[12 + i][b];
             if (BLAKE2S_IV[4 + i] >> b) & 1 == 1 {
@@ -610,10 +610,10 @@ fn build_block_witness_ab_packed_into(
     for i in 0..16 {
         write_lin_word_ab_packed(m_bit(i, 0), m[i], z, a, b);
     }
-    write_lin_word_ab_packed(T_LO_BASE, t as u32, z, a, b);
-    write_lin_word_ab_packed(T_HI_BASE, (t >> 32) as u32, z, a, b);
-    write_lin_word_ab_packed(F0_BASE, f0, z, a, b);
-    write_lin_word_ab_packed(F1_BASE, f1, z, a, b);
+    write_lin_word_ab_packed(COUNTER_LO_BASE, t as u32, z, a, b);
+    write_lin_word_ab_packed(COUNTER_HI_BASE, (t >> 32) as u32, z, a, b);
+    write_lin_word_ab_packed(FINAL_BASE, f0, z, a, b);
+    write_lin_word_ab_packed(LAST_NODE_BASE, f1, z, a, b);
 
     let mut v = initial_state(h, t, f0, f1);
     for r in 0..N_ROUNDS {
@@ -1094,11 +1094,11 @@ mod tests {
                 expected[s] = true;
             }
         };
-        claim(H_BASE, 8 * WORD_BITS);
+        claim(CV_BASE, 8 * WORD_BITS);
         claim(OUT_BASE, 8 * WORD_BITS);
         claim(Z_CONST_POS, 1);
-        claim(M_BASE, 16 * WORD_BITS);
-        claim(T_LO_BASE, 4 * WORD_BITS);
+        claim(MSG_BASE, 16 * WORD_BITS);
+        claim(COUNTER_LO_BASE, 4 * WORD_BITS);
         claim(GS_BASE, N_G * G_STRIDE);
         for s in 0..K {
             // A row is empty exactly when it sums nothing; at a random `w` a
