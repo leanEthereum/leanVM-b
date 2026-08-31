@@ -113,7 +113,7 @@ def main():
 }
 
 #[test]
-#[should_panic(expected = "BLAKE2s counter does not fit in u64")]
+#[should_panic(expected = "counter= 18446744073709551616 does not fit in u64")]
 fn blake2s_counter_rejects_values_above_u64() {
     let src = "\
 def main():

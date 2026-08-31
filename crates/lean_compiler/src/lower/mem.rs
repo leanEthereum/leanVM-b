@@ -31,7 +31,12 @@ impl FnLower<'_> {
             Expr::Var(_) => {
                 let (base, len) = self
                     .stack_of(e)
-                    .expect("only a StackBuf names a cell run unsliced; slice a HeapBuf: `buf[lo:lo + k]`");
+                    .unwrap_or_else(|| {
+                        self.fail(format!(
+                            "only a StackBuf names a run of cells unsliced, got `{e:?}`; slice a \
+                             HeapBuf instead: `buf[lo:lo + k]`"
+                        ))
+                    });
                 CellRun::Stack { base, len }
             }
             Expr::Slice(arr, lo, hi) => match (self.try_const_index(lo), self.try_const_index(hi)) {
@@ -66,7 +71,8 @@ impl FnLower<'_> {
                     let k = plus_k(lo, hi).unwrap_or_else(|| {
                         self.fail(format!("a runtime slice must be `buf[i:i + k]`, got `{lo:?}:{hi:?}`"))
                     });
-                    let len = u32::try_from(k).expect("slice length overflows u32");
+                    let len = u32::try_from(k)
+                        .unwrap_or_else(|_| self.fail(format!("slice length {k} does not fit in u32")));
                     if len == 0 {
                         self.fail(format!("a runtime slice `{lo:?}:{hi:?}` has length 0, so it names no cell"))
                     };
@@ -286,7 +292,12 @@ impl FnLower<'_> {
         if args.len() != 1 {
             self.fail("addr(buf) takes one StackBuf")
         };
-        let (base, len) = self.stack_of(&args[0]).expect("addr() takes a StackBuf");
+        let (base, len) = self.stack_of(&args[0]).unwrap_or_else(|| {
+            self.fail(format!(
+                "addr() names a frame run, so it takes a StackBuf, got `{:?}`",
+                args[0]
+            ))
+        });
         // Once an address escapes, a write through it is a `DEREF` that names no
         // frame cell the lowerer can see, so every run has to be treated as
         // already valued: `phys` keeps a later `sb[k] = v` the write-once

@@ -86,7 +86,9 @@ impl FnLower<'_> {
         // and `final = 1` on the last block. The default is the one-block hash of
         // a full 64-byte input, which is what `vmhash::compress` and every Merkle
         // node use.
-        let counter = u64::try_from(const_kw(self, "counter", 64)).expect("BLAKE2s counter does not fit in u64");
+        let counter = const_kw(self, "counter", 64);
+        let counter = u64::try_from(counter)
+            .unwrap_or_else(|_| self.fail(format!("blake2s counter= {counter} does not fit in u64")));
         let f0 = if const_kw(self, "final", if customized { 0 } else { 1 }) != 0 {
             lean_vm::hash_flock::FINAL_FLAG
         } else {
@@ -158,7 +160,13 @@ impl FnLower<'_> {
                 };
                 let (base, len) = self
                     .stack_of(&args[0])
-                    .expect("hint_f192_limbs destination must be a StackBuf");
+                    .unwrap_or_else(|| {
+                        self.fail(format!(
+                            "hint_f192_limbs writes 1..=3 frame cells, so its destination must be a \
+                             StackBuf, got `{:?}`",
+                            args[0]
+                        ))
+                    });
                 if !((1..=3).contains(&len)) {
                     self.fail("hint_f192_limbs destination must have 1..=3 cells")
                 };
