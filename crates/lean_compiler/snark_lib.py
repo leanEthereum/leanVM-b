@@ -165,15 +165,22 @@ def addr(buf) -> _Elt:
     return _Elt()
 
 
-def hint_witness(dest, name: str) -> None:
-    """Fill `dest` (a StackBuf, or a StackBuf/HeapBuf slice of any length)
-    with the next ENTRY (a slice of values) of the named prover witness
-    stream; the same symbol may be hinted many times, each call popping the
-    next entry (`Program::set_witness`; test programs declare one
-    `# witness name: v1, …` line per entry). Zero cycles, and the values are
-    completely UNCONSTRAINED: the program must constrain them itself
-    (asserts, range checks, hashes)."""
+def hint_witness(dest, name: Optional[str] = None) -> Any:
+    """Take the next ENTRY (a slice of values) of the named prover witness
+    stream.
+
+    Two forms. As a statement, `hint_witness(dest, "name")` fills `dest` (a
+    StackBuf, or a StackBuf/HeapBuf slice of any length). As an expression,
+    `x = hint_witness("name")` binds ONE value and needs no destination, the
+    entry then having to hold exactly one value.
+
+    The same symbol may be hinted many times, each call popping the next entry
+    (`Program::set_witness`; test programs declare one `# witness name: v1, …`
+    line per entry). Zero cycles either way, and the values are completely
+    UNCONSTRAINED: the program must constrain them itself (asserts, range
+    checks, hashes)."""
     _ = dest, name
+    return _Elt()
 
 
 def assert_in_k(a, b) -> None:
