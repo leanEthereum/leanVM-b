@@ -47,7 +47,10 @@ impl FnLower<'_> {
         }
         let allowed = ["cv", "counter", "final", "last_node"];
         if !(kwargs.keys().all(|k| allowed.contains(k))) {
-            let bad: Vec<&&str> = kwargs.keys().filter(|k| !allowed.contains(k)).collect();
+            // Sorted: a `HashMap`'s order would make the same mistake report
+            // differently between builds.
+            let mut bad: Vec<&&str> = kwargs.keys().filter(|k| !allowed.contains(k)).collect();
+            bad.sort_unstable();
             self.fail(format!(
                 "unknown blake2s keyword {bad:?}; the keywords are {allowed:?}"
             ))

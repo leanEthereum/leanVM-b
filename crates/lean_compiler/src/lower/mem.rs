@@ -191,6 +191,7 @@ impl FnLower<'_> {
                 return;
             }
             self.alias.insert(dst, a);
+            self.alias_journal.push(dst);
             return;
         }
         if aliased {
@@ -236,12 +237,16 @@ impl FnLower<'_> {
             return;
         };
         if exp + span > size {
+            // Several names can share a cell, so pick the first alphabetically
+            // rather than the first the map happens to yield: the same program
+            // must blame the same name on every build.
             let name = self
                 .scope
                 .names
                 .iter()
-                .find(|(_, b)| matches!(b.val, Binding::Scalar(c) if c == base))
+                .filter(|(_, b)| matches!(b.val, Binding::Scalar(c) if c == base))
                 .map(|(n, _)| n.as_str())
+                .min()
                 .unwrap_or("?");
             if span == 1 {
                 self.fail(format!(

@@ -225,6 +225,14 @@ struct FnLower<'a> {
     inline_stack_ret: Option<Vec<RetBind>>,
     /// Deferred stack-cell copies/zeros ([`Alias`]), forwarded at use.
     alias: HashMap<Off, Alias>,
+    /// The cells [`Self::stack_store`] has aliased, in the order it aliased
+    /// them. A branch's join needs to know which cells it touched, and diffing
+    /// two `HashMap`s to find out made the order of the copies it then emits
+    /// depend on iteration order, which is why a sort had to stand between this
+    /// compiler and a bytecode digest that changes between builds. Recording the
+    /// order instead makes the join say what it produced rather than reconstruct
+    /// it, which is the shape the middle IR needs.
+    alias_journal: Vec<Off>,
     /// Stack cells something already gives a real value to: an emitted
     /// instruction's destination, a `BLAKE2s` output, or a hint destination. A
     /// store into one of these cannot defer as an [`Alias`], because the store is
@@ -582,18 +590,24 @@ impl FnLower<'_> {
         let branch_start = self.next;
         let saved_aliases = self.alias.clone();
         let saved = self.scope.clone();
+        // The branch gets its own journal: an inner one restores `alias` at its
+        // own join, so nothing it aliased survives to be produced here.
+        let outer_journal = std::mem::take(&mut self.alias_journal);
         f(self);
         // A deferred store into a buffer declared outside the branch must be
         // materialized on that path before the branch-local aliases are dropped.
-        let mut branch_outputs: Vec<Off> = self
-            .alias
-            .iter()
-            .filter_map(|(&dst, alias)| (dst < branch_start && saved_aliases.get(&dst) != Some(alias)).then_some(dst))
+        // These are the cells the branch aliased, in the order it aliased them,
+        // which is what the journal is for: taken from the `alias` map instead,
+        // the order was the map's and a sort had to be interposed.
+        let mut seen = HashSet::new();
+        let branch_outputs: Vec<Off> = std::mem::replace(&mut self.alias_journal, outer_journal)
+            .into_iter()
+            .filter(|&dst| {
+                seen.insert(dst)
+                    && dst < branch_start
+                    && self.alias.get(&dst).is_some_and(|a| saved_aliases.get(&dst) != Some(a))
+            })
             .collect();
-        // Sorted, because the emitted copies must not depend on `HashMap` iteration
-        // order: the bytecode digest leads the Fiat--Shamir transcript, so two builds
-        // of one source have to be the same program.
-        branch_outputs.sort_unstable();
         for dst in branch_outputs {
             let src = self.word_src(dst);
             self.alias.remove(&dst);
@@ -1827,6 +1841,7 @@ pub(crate) fn lower_func(
         inline_ret: None,
         inline_stack_ret: None,
         alias: HashMap::new(),
+        alias_journal: Vec::new(),
         // A run parameter's cells are ALREADY WRITTEN, by the caller, before this
         // function's first instruction. A local `StackBuf`'s are not, and that is
         // the whole difference: an unwritten cell may take a deferred store, which
