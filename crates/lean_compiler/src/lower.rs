@@ -45,6 +45,31 @@ fn gmul(a: GAddr, b: GAddr) -> Option<GAddr> {
     })
 }
 
+/// The fixed prefix of every frame: the caller's return pc and frame pointer,
+/// then the arguments, then the flattened return area (a `StackBuf(n)` return
+/// occupies `n` consecutive cells). One place derives every offset in it, so a
+/// caller writing into a callee's frame and the callee reading its own cannot
+/// drift apart, and `2 + n_args + n_ret_cells` is not spelled out at each site.
+struct Abi;
+
+impl Abi {
+    /// Where the caller leaves the return pc and the return frame pointer.
+    const RET_PC: Off = 0;
+    const RET_FP: Off = 1;
+    /// Argument `i`, straight after the two return slots.
+    fn arg(i: u32) -> Off {
+        2 + i
+    }
+    /// Return cell `i` of a callee taking `n_args` arguments.
+    fn ret(n_args: u32, i: u32) -> Off {
+        2 + n_args + i
+    }
+    /// One past the last cell the CALLER touches, so the first local cell.
+    fn end(n_args: u32, n_ret_cells: u32) -> Off {
+        Self::ret(n_args, n_ret_cells)
+    }
+}
+
 /// Cap on a `β`-folded exponent, inclusive: the operand g-power table is sized to
 /// the largest immediate, so beyond this a huge constant index falls back to a
 /// materialized pointer instead of inflating that table. The one cap: every site
@@ -217,14 +242,17 @@ struct FnLower<'a> {
     /// Frame runs whose cells no longer have a visible writer, as `(base, len)`.
     /// Carried to [`crate::cse::cse`], which must leave their cells alone.
     opaque_runs: Vec<(Off, u32)>,
-    /// Every frame run this function has allocated, in order.
-    stack_runs: Vec<(Off, u32)>,
-    /// Set once a frame address escapes ([`Self::stack_addr`]). The pointer it
-    /// hands out addresses the WHOLE frame, not just the run it was taken from,
-    /// so from that point every run is opaque: an off-by-one in a callee lands
-    /// on the next `StackBuf`, and if that one is still transparent its later
-    /// store defers as an alias and the write-once assertion is gone.
-    frame_escaped: bool,
+    /// The frame runs allocated so far and not yet sealed, or `None` once a
+    /// frame address has escaped ([`Self::stack_addr`]). The pointer it hands out
+    /// addresses the WHOLE frame, not just the run it was taken from, so from
+    /// that point every run is opaque: an off-by-one in a callee lands on the
+    /// next `StackBuf`, and if that one were still transparent its later store
+    /// would defer as an alias and the write-once assertion would be gone.
+    ///
+    /// `None` IS the escaped state, so "escaped, with runs still unsealed"
+    /// cannot be written down. It was two fields, and keeping them consistent
+    /// was the caller's job.
+    unsealed_runs: Option<Vec<(Off, u32)>>,
     /// Where the fill blocks begin in `code`, once emitted.
     filler_start: Option<usize>,
     /// Hints queued to attach to the next emitted instruction.
@@ -810,13 +838,13 @@ impl FnLower<'_> {
             callees: callees.to_vec(),
         });
         for (i, &ao) in arg_offs.iter().enumerate() {
-            self.deref(nfp, 2 + i as u32, ao, DerefMode::Cell);
+            self.deref(nfp, Abi::arg(i as u32), ao, DerefMode::Cell);
         }
-        self.deref(nfp, 1, 0, DerefMode::Fp); // retfp
+        self.deref(nfp, Abi::RET_FP, 0, DerefMode::Fp);
         let join_cell = self.fresh();
         let join_set = self.code.len();
         self.set(join_cell, KVal::Local(0)); // patched: the join pc
-        self.deref(nfp, 0, join_cell, DerefMode::Cell); // retpc = join
+        self.deref(nfp, Abi::RET_PC, join_cell, DerefMode::Cell); // retpc = join
 
         let kset = self.emit_dispatch(xo, one, sfp);
 
@@ -828,7 +856,7 @@ impl FnLower<'_> {
         // Join: read the return values (written by whichever callee ran).
         self.patch_local(join_set, self.code.len());
         for (i, &r) in rcells.iter().enumerate() {
-            self.deref(nfp, 2 + n_args + i as u32, r, DerefMode::Cell);
+            self.deref(nfp, Abi::ret(n_args, i as u32), r, DerefMode::Cell);
         }
 
         self.bind_join(names, &rcells);
@@ -1287,10 +1315,10 @@ impl FnLower<'_> {
         self.next += n;
         // A run allocated after the escape is just as reachable as one before it,
         // so it is sealed on the spot and never needs recording.
-        if self.frame_escaped {
-            self.seal_run(base, n);
+        if let Some(runs) = &mut self.unsealed_runs {
+            runs.push((base, n));
         } else {
-            self.stack_runs.push((base, n));
+            self.seal_run(base, n);
         }
         base
     }
@@ -1349,9 +1377,8 @@ impl FnLower<'_> {
         // store folded into a canonical elsewhere would leave the cell unwritten,
         // hence prover-chosen). Every run, not just this one: the pointer is a
         // frame address, and one off-by-one in a callee reaches the next run.
-        if !self.frame_escaped {
-            self.frame_escaped = true;
-            for (b, l) in std::mem::take(&mut self.stack_runs) {
+        if let Some(runs) = self.unsealed_runs.take() {
+            for (b, l) in runs {
                 self.seal_run(b, l);
             }
         }
@@ -2253,7 +2280,7 @@ impl FnLower<'_> {
             callee: callee.to_string(),
         });
         for (i, &ao) in arg_offs.iter().enumerate() {
-            self.deref(nfp, 2 + i as u32, ao, DerefMode::Cell);
+            self.deref(nfp, Abi::arg(i as u32), ao, DerefMode::Cell);
         }
         if tail {
             // Tail call: hand the callee OUR return target, so it returns to our
@@ -2273,7 +2300,7 @@ impl FnLower<'_> {
             None => (0..n_ret).map(|_| self.fresh()).collect(),
         };
         for (i, &d) in dsts.iter().enumerate() {
-            self.deref(nfp, 2 + n_args + i as u32, d, DerefMode::Cell);
+            self.deref(nfp, Abi::ret(n_args, i as u32), d, DerefMode::Cell);
         }
         dsts
     }
@@ -2644,7 +2671,7 @@ impl FnLower<'_> {
         if self.is_main {
             return; // a `return` in main is a no-op; main halts via the trailing sentinel jump (lower_func).
         }
-        let ret_base = 2 + self.n_args;
+        let ret_base = Abi::ret(self.n_args, 0);
         if exprs.len() != self.return_shapes.len() {
             self.fail(format!(
                 "function returns {} values here, but its ABI declares {}",
@@ -3047,7 +3074,7 @@ pub(crate) fn lower_func(
         names.insert(
             p.clone(),
             Bound {
-                val: Binding::Scalar(2 + i as u32),
+                val: Binding::Scalar(Abi::arg(i as u32)),
                 int: None,
             },
         );
@@ -3055,14 +3082,14 @@ pub(crate) fn lower_func(
     // Reserve [0,1] retpc/retfp, params, then the flattened return area, then
     // locals. A StackBuf(n) return occupies n consecutive physical slots.
     let n_ret_cells: u32 = f.return_shapes.iter().map(|s| s.cells()).sum();
-    let next = 2 + f.params.len() as u32 + n_ret_cells;
+    let abi_end = Abi::end(f.params.len() as u32, n_ret_cells);
     let mut lowerer = FnLower {
         filler_start: None,
         scope: Scope {
             names,
             ..Default::default()
         },
-        next,
+        next: abi_end,
         n_args: f.params.len() as u32,
         return_shapes: f.return_shapes.clone(),
         is_main: f.name == "main",
@@ -3071,8 +3098,7 @@ pub(crate) fn lower_func(
         code: Vec::new(),
         cur_line: 0,
         opaque_runs: Vec::new(),
-        stack_runs: Vec::new(),
-        frame_escaped: false,
+        unsealed_runs: Some(Vec::new()),
         heap_sizes: HashMap::new(),
         inline_ret: None,
         inline_stack_ret: None,
@@ -3115,7 +3141,7 @@ pub(crate) fn lower_func(
         name: f.name.clone(),
         code: lowerer.code,
         frame_size: lowerer.next,
-        abi_end: 2 + f.params.len() as u32 + n_ret_cells,
+        abi_end,
         filler_start,
         opaque_runs: lowerer.opaque_runs,
         filler,
