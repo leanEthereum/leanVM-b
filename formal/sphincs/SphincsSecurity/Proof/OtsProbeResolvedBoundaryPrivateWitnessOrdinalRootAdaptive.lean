@@ -828,6 +828,56 @@ theorem evalDist_rootAvoidingComputation_returnedValue_eq
       hroot leftRoot rightRoot ftsSecret computation)
     leftCache rightCache hcache state fuel table hstored
 
+theorem probEvent_uniform_root_matches_distribution_independent_guess_le
+    (run : Digest → ProbComp α) (reference : ProbComp α)
+    (heq : ∀ root, evalDist (run root) = evalDist reference)
+    (guess : α → Digest) :
+    Pr[fun result : Digest × α => result.1 = guess result.2 | do
+        let root ← ($ᵗ Digest : ProbComp Digest)
+        let result ← run root
+        pure (root, result)] ≤
+      ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  let sampled := ($ᵗ Digest : ProbComp Digest)
+  let dependent : ProbComp (Digest × α) := do
+    let root ← sampled
+    let result ← run root
+    pure (root, result)
+  let independent : ProbComp (Digest × α) := do
+    let result ← reference
+    let root ← sampled
+    pure (root, result)
+  have hreplace : evalDist dependent = evalDist (do
+      let root ← sampled
+      let result ← reference
+      pure (root, result)) := by
+    unfold dependent
+    apply evalDist_bind_congr
+    intro root _hroot
+    rw [evalDist_bind, evalDist_bind, heq root]
+  have hcommute : evalDist (do
+      let root ← sampled
+      let result ← reference
+      pure (root, result)) = evalDist independent := by
+    unfold independent
+    exact OracleComp.DeferredSampling.evalDist_bind_comm sampled reference
+      (fun root result => pure (root, result))
+  change Pr[fun result : Digest × α => result.1 = guess result.2 | dependent] ≤ _
+  calc
+    _ = Pr[fun result : Digest × α => result.1 = guess result.2 | independent] := by
+      exact OracleComp.probEvent_congr' (fun _ _ => Iff.rfl) (hreplace.trans hcommute)
+    _ ≤ ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+      unfold independent
+      apply probEvent_bind_le_of_forall_le
+      intro result _hresult
+      rw [show (do
+          let root ← sampled
+          pure (root, result)) =
+        (fun root => (root, result)) <$> sampled by
+          simp [map_eq_bind_pure_comp], probEvent_map]
+      change Pr[fun root : Digest => root = guess result | sampled] ≤ _
+      rw [probEvent_eq_eq_probOutput, probOutput_uniformSample]
+      rw [show Fintype.card Digest = 2 ^ digestBits by simp]
+
 theorem privateWitnessAtOrdinal_of_firstPrivateWitnessOrdinal?_eq_some
     {witness : PrivateHitWitness} {candidates : List Probe}
     {ordinal : Fin candidates.length}
