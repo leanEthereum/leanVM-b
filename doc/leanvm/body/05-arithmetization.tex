@@ -34,7 +34,7 @@ The arithmetization is inspired by the M3 model (multi-multiset matching)~\cite{
 \[
   \Pi_P(A,X)\;=\;\prod_{\btup\in P}\bigl(X-\pi_A(\btup)\bigr),
 \]
-a polynomial in two formal variables with coefficients in $\K$. The two sides of \eqref{eq:gp} are $\Pi_P(\alpha,\beta)$ for $P$ the pushed multiset and the pulled one.
+a polynomial in the five formal variables $A=(A_0,\dots,A_3)$ and $X$, with coefficients in $\K$. The two sides of \eqref{eq:gp} are $\Pi_P(\alpha,\beta)$ for $P$ the pushed multiset and the pulled one.
 
 \begin{lemma}[A product identity is a multiset identity]\label{lem:gp}
 For finite multisets $P,Q$ of width-$m$ tuples over $\K$, $\Pi_P=\Pi_Q$ if and only if $P=Q$.
@@ -142,4 +142,4 @@ Since $\sum_{x\in\cube{m}}x_0\cdots x_{m-1}=1$, the padded variables contribute 
 \[
   \sum_{x\in\cube{\taumax}}F(x)\;\qeq\;\sum_{s=1}^{\nside}\xi^{\,s-1}R_{s},
 \]
-the verifier computing the right side itself, at soundness error $\bigl(\taumax+\nside+\sum_j\ncons{j}\bigr)/|\E|$ (Corollary~\ref{cor:idtest}). Rounds bind $X_{\taumax-1}$ first, so $T_j$ joins only at round $\taumax-\tau_j$: hence \emph{back-loaded}. The end yields one claim per column, $T_j$'s at $\fc_{<\tau_j}$, settled by the PCS opening (\S\ref{sec:stacking}).
+the verifier computing the right side itself. Each summand of $F$ has individual degree $d+1=3$, the constraint contributing $d$ and the $\eq$ factor one, so the soundness error is $\bigl(3\taumax+\nside+\sum_j\ncons{j}\bigr)/|\E|$: $3\taumax$ for the rounds (Fact~\ref{fact:sumcheck}) and $\nside+\sum_j\ncons{j}$ for the $\xi$-batching (Corollary~\ref{cor:idtest}). Rounds bind $X_{\taumax-1}$ first, so $T_j$ joins only at round $\taumax-\tau_j$: hence \emph{back-loaded}. The end yields one claim per column, $T_j$'s at $\fc_{<\tau_j}$, settled by the PCS opening (\S\ref{sec:stacking}).

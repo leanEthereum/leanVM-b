@@ -80,7 +80,7 @@ Each reduction below adds evaluation claims on columns to a shared \emph{claim p
 \paragraph{Row sumcheck.} One run for the six tables' constraints and their bus forms (\S\ref{sec:air}).
 \begin{enumerate}
 \item \textbf{Verifier.} Sends the batch challenge $\xi\in\E$. Each table takes a disjoint range of its powers, one per constraint, and the $\nside$ bus forms take one power each, shared by every table. No point is drawn: the batch runs at the bus point, table $T_j$ tested at $\zeta_{<\tau_j}$ (\S\ref{sec:air}).
-\item \textbf{Prover \& Verifier.} Run the table sumcheck, $\taumax=\max_j\tau_j$ rounds, a table of $2^{\tau}$ rows joining at round $\taumax-\tau$. The target is the one the verifier derived from the three leaf claims. Each round costs four $\E$-elements. The end yields one claim per column of every table, at that table's own point $\fc_{<\tau_j}$; these enter the pool, and the bus forms are read off them. \texttt{BLAKE2S}'s value columns are not committed here: their claims route to $\qflock$ (\S\ref{sec:tab-blake2s}).
+\item \textbf{Prover \& Verifier.} Run the table sumcheck, $\taumax=\max_j\tau_j$ rounds, a table of $2^{\tau}$ rows joining at round $\taumax-\tau$. The target is the one the verifier derived from the three leaf claims. A round message is a degree-three univariate, and the round check pins one of its four coefficients (\S\ref{sec:prelim}), so each round costs three $\E$-elements. The end yields one claim per column of every table, at that table's own point $\fc_{<\tau_j}$; these enter the pool, and the bus forms are read off them. \texttt{BLAKE2S}'s value columns are not committed here: their claims route to $\qflock$ (\S\ref{sec:tab-blake2s}).
 \end{enumerate}
 
 \paragraph{Public input.}
