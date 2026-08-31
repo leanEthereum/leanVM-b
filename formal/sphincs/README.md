@@ -316,6 +316,8 @@ Ordinary random-oracle lookup now preserves the quotient in both cached and fres
 
 The selected-root reveal now has its dedicated unequal-value relation. It returns the truncations of the respective full root outputs while preserving the hidden state and cache quotients. All finite chain and tree reservations are related compositionally, `maskedTreeRoot` is reduced to its reservation followed by the exact root reveal, and the complete target tree-root computations therefore satisfy that relation. This is the interface required by the matching layer, where the comparison signer deliberately discards the left root and supplies the right root to both encoding continuations.
 
+The complete common post-message work is now related: arbitrary `simulateQ` computations whose handlers preserve the quotient, ordinary hash queries, chain-prefix and tree-path reservations, the capped `maskedOtsSignFrom` counter loop, `maskedOtsSign`, and `maskedOtsLayerAfterMessage`. Composing this with the unequal target message proves that the unique matching comparison layer and the actual right-root layer return exactly the same optional layer signature while preserving both quotients.
+
 Two places a proof can go wrong, both found by attacking the claim rather than by reading it:
 
 - **A strong forgery needs no chain inversion.** `Ver` does not check that the counter is the least admissible one, so a second `c'` with `Enc(P,lay,tau,e,M,c') = x` reuses the chain values verbatim and verifies. Since the codeword fixes the digest, that is one `2^-128` hit per query and it is harmless, but it is a branch of its own: the one-time signature is unforgeable on a *new* message by incomparability, and unforgeable on the *signed* message only by collision resistance at `tw_enc`.
