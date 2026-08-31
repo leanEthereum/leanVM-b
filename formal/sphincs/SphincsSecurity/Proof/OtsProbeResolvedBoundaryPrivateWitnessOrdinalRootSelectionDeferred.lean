@@ -600,4 +600,121 @@ theorem relTriple_runDirectResolvedDetailed_afterPlan_publicPlan
     left.state plan left right leftFuel rightFuel leftCache rightCache hpositive hcontext hfuel
     hcache hrevealed hvalues hpublished hrightMaterialized
 
+noncomputable def finishDirectDetailedPrivateOrdinalSelection
+    (observe : DeferredContext → Nat → α → List Probe →
+      ProbComp (Option PrivateOrdinalSelection))
+    (candidates : List Probe) : DirectDetailedResult α →
+      ProbComp (Option PrivateOrdinalSelection)
+  | .stopped _ => pure none
+  | .done result => observe result.context result.remaining result.value candidates
+
+theorem finishDirectPrivateOrdinalSelection_eq_detailed
+    (observe : DeferredContext → Nat → α → List Probe →
+      ProbComp (Option PrivateOrdinalSelection))
+    (candidates : List Probe) (result : DirectWitnessResult α) :
+    finishDirectPrivateOrdinalSelection observe candidates result =
+      finishDirectDetailedPrivateOrdinalSelection observe candidates result.erase := by
+  cases result <;> rfl
+
+theorem evalDist_runWitnessSelection_eq_detailed
+    (observe : DeferredContext → Nat → α → List Probe →
+      ProbComp (Option PrivateOrdinalSelection))
+    (candidates : List Probe) (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α) :
+    evalDist
+        (runDirectResolvedWitnessFromTable context fuel table computation >>=
+          finishDirectPrivateOrdinalSelection observe candidates) =
+      evalDist
+        (runDirectResolvedDetailedFromTable context fuel table computation >>=
+          finishDirectDetailedPrivateOrdinalSelection observe candidates) := by
+  have herase := map_erase_runDirectResolvedWitnessFromTable computation context fuel table
+  calc
+    _ = evalDist
+        ((DirectWitnessResult.erase <$>
+            runDirectResolvedWitnessFromTable context fuel table computation) >>=
+          finishDirectDetailedPrivateOrdinalSelection observe candidates) := by
+      rw [map_eq_bind_pure_comp, bind_assoc]
+      apply evalDist_bind_congr
+      intro result _hresult
+      simp only [Function.comp_apply, pure_bind]
+      exact congrArg evalDist
+        (finishDirectPrivateOrdinalSelection_eq_detailed observe candidates result)
+    _ = _ := by rw [herase]
+
+def projectDirectDetailedClean
+    (result : DirectDetailedResult α) : Option (CleanRunResult α) :=
+  projectResolvedRunResult result.toOption
+
+theorem map_projectDirectDetailedClean_run_eq_clean
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) :
+    projectDirectDetailedClean <$>
+        runDirectResolvedDetailedFromTable (directDeferredContext state) fuel table computation =
+      runCleanFromTable state fuel table computation := by
+  unfold projectDirectDetailedClean
+  rw [← Functor.map_map, map_toOption_runDirectResolvedDetailedFromTable,
+    map_projectResolvedRunResult_runDirect_eq_runClean]
+
+noncomputable def finishDirectDetailedMaterializedSelection
+    (target : Position)
+    (observe : LazyRevealProbe.State Coordinate → Nat → α → SplitHashCache →
+      List Probe → ProbComp (Option Probe))
+    (candidates : List Probe) :
+    DirectDetailedResult (α × SplitHashCache) → ProbComp (Option Probe)
+  | .stopped _ => pure none
+  | .done result =>
+      continueMaterializedPrivateOrdinalSelection target observe result.context.state result.remaining
+        result.value.1 result.value.2 candidates
+
+theorem finishDirectDetailedMaterializedSelection_eq_clean
+    (target : Position)
+    (observe : LazyRevealProbe.State Coordinate → Nat → α → SplitHashCache →
+      List Probe → ProbComp (Option Probe))
+    (candidates : List Probe)
+    (result : DirectDetailedResult (α × SplitHashCache)) :
+    finishDirectDetailedMaterializedSelection target observe candidates result =
+      finishMaterializedPrivateOrdinalSelection
+        (continueMaterializedPrivateOrdinalSelection target observe) candidates
+      (projectDirectDetailedClean result) := by
+  cases result with
+  | stopped reason => rfl
+  | done result =>
+      simp [finishDirectDetailedMaterializedSelection,
+        finishMaterializedPrivateOrdinalSelection, projectDirectDetailedClean,
+        DirectDetailedResult.toOption, projectResolvedRunResult]
+
+theorem evalDist_runDetailedMaterializedSelection_eq_clean
+    (target : Position)
+    (observe : LazyRevealProbe.State Coordinate → Nat → α → SplitHashCache →
+      List Probe → ProbComp (Option Probe))
+    (candidates : List Probe)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (computation : OracleComp (LazyRevealProbe.World Coordinate)
+      (α × SplitHashCache)) :
+    evalDist
+        (runDirectResolvedDetailedFromTable (directDeferredContext state) fuel table computation >>=
+          finishDirectDetailedMaterializedSelection target observe candidates) =
+      evalDist
+        (runCleanFromTable state fuel table computation >>=
+          finishMaterializedPrivateOrdinalSelection
+            (continueMaterializedPrivateOrdinalSelection target observe) candidates) := by
+  have hproject := map_projectDirectDetailedClean_run_eq_clean computation state fuel table
+  calc
+    _ = evalDist
+        ((projectDirectDetailedClean <$>
+            runDirectResolvedDetailedFromTable (directDeferredContext state) fuel table
+              computation) >>=
+          finishMaterializedPrivateOrdinalSelection
+            (continueMaterializedPrivateOrdinalSelection target observe) candidates) := by
+      rw [map_eq_bind_pure_comp, bind_assoc]
+      apply evalDist_bind_congr
+      intro result _hresult
+      simp only [Function.comp_apply, pure_bind]
+      exact congrArg evalDist
+        (finishDirectDetailedMaterializedSelection_eq_clean target observe candidates result)
+    _ = _ := by rw [hproject]
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
