@@ -270,6 +270,15 @@ noncomputable def maskedSignLayerWithTargetComparison
   else
     maskedSignLayer parameter ftsSecret index lay
 
+noncomputable def maskedSignLayersWithTargetComparison
+    (parameter : PublicParameter) (target : Position) (comparisonRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (index : Index) :
+    StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))
+      (Layer → Option (Counter × (ChainIndex → Digit))) :=
+  sequenceFin fun lay =>
+    maskedSignLayerWithTargetComparison parameter target comparisonRoot ftsSecret index lay
+
 set_option maxHeartbeats 2000000 in
 set_option maxRecDepth 100000 in
 theorem relTriple_maskedSignLayer_comparisonRoot_of_message
@@ -364,5 +373,137 @@ theorem relTriple_maskedSignLayer_targetComparison
     exact (rootEncodingCacheCouples_maskedSignLayer_of_layerMessagePosition_ne parameter target
       leftRoot rightRoot ftsSecret index lay htarget).relates leftCache rightCache hcache
         state fuel table
+
+theorem rootEncodingCacheRelates_maskedSignLayers_targetComparison
+    (parameter : PublicParameter) (target : Position) (hroot : IsLayerRoot target)
+    (leftRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (index : Index)
+    (hmessageRoot : ∀ lay leftCache rightCache,
+      RootEncodingCacheRel parameter target leftRoot rightRoot leftCache rightCache →
+      ∀ state fuel table, layerMessagePosition index lay = target → ∀ result,
+        some result ∈ support (runCleanFromTable state fuel table
+          ((maskedLayerMessage parameter ftsSecret index lay).run leftCache)) →
+        result.value.1 = leftRoot) :
+    RootEncodingCacheRelates parameter target leftRoot rightRoot
+      (sequenceFin fun lay => maskedSignLayer parameter ftsSecret index lay)
+      (maskedSignLayersWithTargetComparison parameter target rightRoot ftsSecret index) := by
+  unfold maskedSignLayersWithTargetComparison
+  apply rootEncodingCacheRelates_sequenceFin
+  intro lay leftCache rightCache hcache state fuel table
+  exact relTriple_maskedSignLayer_targetComparison parameter target hroot leftRoot rightRoot
+    ftsSecret index lay leftCache rightCache hcache state fuel table
+      (fun htarget => hmessageRoot lay leftCache rightCache hcache state fuel table htarget)
+
+noncomputable def maskedSignAfterDigestWithTargetComparison
+    (parameter : PublicParameter) (target : Position) (comparisonRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))
+      (Option Signature) := do
+  let ftsPath ← simulateQ ordinaryHashImpl
+    (ftsOpen parameter index leaves (ftsSecret index))
+  let layers ←
+    maskedSignLayersWithTargetComparison parameter target comparisonRoot ftsSecret index
+  match traverseOption layers with
+  | none => pure none
+  | some parts =>
+      let revealed ← sequenceFin fun lay => revealLayerValues index lay (parts lay).2
+      pure (some
+        { randomness := randomness
+          ftsSecret := fun tree => ftsSecret index tree (leaves (ftsIndexOf tree))
+          ftsPath := ftsPath
+          counter := fun lay => (parts lay).1
+          chainValue := fun lay => (revealed lay).1
+          authPath := flattenPaths fun lay => (revealed lay).2 })
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem rootEncodingCacheRelates_maskedSignAfterDigest_targetComparison
+    (parameter : PublicParameter) (target : Position) (hroot : IsLayerRoot target)
+    (leftRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf)
+    (hmessageRoot : ∀ lay leftCache rightCache,
+      RootEncodingCacheRel parameter target leftRoot rightRoot leftCache rightCache →
+      ∀ state fuel table, layerMessagePosition index lay = target → ∀ result,
+        some result ∈ support (runCleanFromTable state fuel table
+          ((maskedLayerMessage parameter ftsSecret index lay).run leftCache)) →
+        result.value.1 = leftRoot) :
+    RootEncodingCacheRelates parameter target leftRoot rightRoot
+      (maskedSignAfterDigest parameter ftsSecret randomness index leaves)
+      (maskedSignAfterDigestWithTargetComparison parameter target rightRoot ftsSecret
+        randomness index leaves) := by
+  unfold maskedSignAfterDigest maskedSignAfterDigestWithTargetComparison
+  apply (rootEncodingCacheCouples_ftsOpen parameter target leftRoot rightRoot index leaves
+    (ftsSecret index)).relates.bind
+  intro leftPath rightPath hpath
+  subst rightPath
+  apply (rootEncodingCacheRelates_maskedSignLayers_targetComparison parameter target hroot
+    leftRoot rightRoot ftsSecret index hmessageRoot).bind
+  intro leftLayers rightLayers hlayers
+  subst rightLayers
+  cases hparts : traverseOption leftLayers with
+  | none =>
+      exact (rootEncodingCacheCouples_pure parameter target leftRoot rightRoot none).relates
+  | some parts =>
+      apply (rootEncodingCacheCouples_sequenceFin parameter target leftRoot rightRoot
+        (fun lay => revealLayerValues index lay (parts lay).2)
+        (fun lay => rootEncodingCacheCouples_revealLayerValues parameter target leftRoot
+          rightRoot index lay (parts lay).2)).bind
+      intro revealed
+      let signature : Signature :=
+        { randomness := randomness
+          ftsSecret := fun tree => ftsSecret index tree (leaves (ftsIndexOf tree))
+          ftsPath := leftPath
+          counter := fun lay => (parts lay).1
+          chainValue := fun lay => (revealed lay).1
+          authPath := flattenPaths fun lay => (revealed lay).2 }
+      exact (rootEncodingCacheCouples_pure parameter target leftRoot rightRoot
+        (some signature)).relates
+
+noncomputable def maskedSignWithTargetComparison
+    (parameter : PublicParameter) (publicRoot : Digest)
+    (target : Position) (comparisonRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message) :
+    StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))
+      (Option Signature) := do
+  let secretKey : SecretKey :=
+    ⟨parameter, publicRoot, fun _ _ _ _ => 0, ftsSecret⟩
+  match ← simulateQ ordinaryRomImpl
+      (signDigestLoop digestAttemptLimit secretKey message) with
+  | none => pure none
+  | some (randomness, index, leaves) =>
+      maskedSignAfterDigestWithTargetComparison parameter target comparisonRoot ftsSecret
+        randomness index leaves
+
+theorem rootEncodingCacheRelates_maskedSign_targetComparison
+    (parameter : PublicParameter) (publicRoot : Digest)
+    (target : Position) (hroot : IsLayerRoot target)
+    (leftRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message)
+    (hmessageRoot : ∀ index lay leftCache rightCache,
+      RootEncodingCacheRel parameter target leftRoot rightRoot leftCache rightCache →
+      ∀ state fuel table, layerMessagePosition index lay = target → ∀ result,
+        some result ∈ support (runCleanFromTable state fuel table
+          ((maskedLayerMessage parameter ftsSecret index lay).run leftCache)) →
+        result.value.1 = leftRoot) :
+    RootEncodingCacheRelates parameter target leftRoot rightRoot
+      (maskedSign parameter publicRoot ftsSecret message)
+      (maskedSignWithTargetComparison parameter publicRoot target rightRoot ftsSecret message) := by
+  unfold maskedSign maskedSignWithTargetComparison
+  let secretKey : SecretKey :=
+    ⟨parameter, publicRoot, fun _ _ _ _ => 0, ftsSecret⟩
+  apply (rootEncodingCacheCouples_signDigestLoop target leftRoot rightRoot secretKey message
+    digestAttemptLimit).relates.bind
+  intro leftSelected rightSelected hselected
+  subst rightSelected
+  cases leftSelected with
+  | none =>
+      exact (rootEncodingCacheCouples_pure parameter target leftRoot rightRoot none).relates
+  | some selected =>
+      exact rootEncodingCacheRelates_maskedSignAfterDigest_targetComparison parameter target
+        hroot leftRoot rightRoot ftsSecret selected.1 selected.2.1 selected.2.2
+          (hmessageRoot selected.2.1)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

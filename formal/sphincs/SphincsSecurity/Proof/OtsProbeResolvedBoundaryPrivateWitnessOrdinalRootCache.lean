@@ -727,6 +727,99 @@ theorem rootEncodingCacheCouples_splitHashQuery_same_nonroot
   exact relTriple_splitHashQuery_same_nonroot parameter target leftRoot rightRoot key hkey
     leftCache rightCache hcache state fuel table
 
+theorem rootEncodingCacheCouples_splitUniformImpl
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (n : Nat) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (splitUniformImpl n) := by
+  intro leftCache rightCache hcache state fuel table
+  unfold splitUniformImpl LazyRevealProbe.uniformQuery
+  rw [StateT.run_liftM, StateT.run_liftM,
+    runCleanFromTable_uniform_query_bind, runCleanFromTable_uniform_query_bind]
+  apply relTriple_bind
+    (relTriple_refl (liftM (unifSpec.query n) : ProbComp (Fin (n + 1))))
+  intro leftOutput rightOutput houtput
+  subst rightOutput
+  simp only [runCleanFromTable, OracleComp.construct_pure]
+  exact relTriple_pure_pure ⟨rfl, rfl, rfl, rfl, hcache⟩
+
+theorem rootEncodingCacheCouples_simulateQ_splitUniformImpl
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (computation : ProbComp α) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (simulateQ splitUniformImpl computation) := by
+  induction computation using OracleComp.inductionOn with
+  | pure value =>
+      rw [simulateQ_pure]
+      exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot value
+  | query_bind n next ih =>
+      rw [simulateQ_query_bind]
+      exact (rootEncodingCacheCouples_splitUniformImpl parameter target leftRoot rightRoot n).bind
+        fun output => ih output
+
+theorem rootEncodingCacheCouples_messageDigest
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (publicRoot : Digest)
+    (message : Message) (randomness : Randomness) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (simulateQ ordinaryHashImpl
+        (messageDigest parameter publicRoot message randomness)) := by
+  unfold messageDigest oracleHash
+  simp only [simulateQ_bind, HasQuery.instOfMonadLift_query, simulateQ_spec_query,
+    simulateQ_pure, ordinaryHashImpl]
+  exact (rootEncodingCacheCouples_splitHashQuery_same_nonroot parameter target leftRoot
+    rightRoot (.ordinary (tweakableHashInput parameter .message
+      (messageDigestPayload publicRoot message randomness)))
+    (not_encodingInputNamesRoot_tweakableHashInput_of_not_encoding parameter target .message
+      _ (by trivial) (by simp))).bind fun output =>
+        rootEncodingCacheCouples_pure parameter target leftRoot rightRoot
+          (truncateMessageDigest output)
+
+theorem rootEncodingCacheCouples_signAttempt
+    (target : Position) (leftRoot rightRoot : Digest)
+    (secretKey : SecretKey) (message : Message) (randomness : Randomness) :
+    RootEncodingCacheCouples secretKey.parameter target leftRoot rightRoot
+      (simulateQ ordinaryHashImpl (signAttempt secretKey message randomness)) := by
+  unfold signAttempt
+  simp only [simulateQ_bind]
+  exact (rootEncodingCacheCouples_messageDigest secretKey.parameter target leftRoot rightRoot
+    secretKey.root message randomness).bind fun digest => by
+      split <;> exact rootEncodingCacheCouples_pure secretKey.parameter target leftRoot rightRoot _
+
+theorem rootEncodingCacheCouples_signDigestLoop
+    (target : Position) (leftRoot rightRoot : Digest)
+    (secretKey : SecretKey) (message : Message) : ∀ attempts,
+    RootEncodingCacheCouples secretKey.parameter target leftRoot rightRoot
+      (simulateQ ordinaryRomImpl (signDigestLoop attempts secretKey message))
+  | 0 => by
+      rw [signDigestLoop, simulateQ_pure]
+      exact rootEncodingCacheCouples_pure secretKey.parameter target leftRoot rightRoot none
+  | attempts + 1 => by
+      rw [signDigestLoop, simulateQ_bind]
+      have hrandomness : RootEncodingCacheCouples secretKey.parameter target leftRoot rightRoot
+          (simulateQ ordinaryRomImpl (liftM sampleRandomness)) := by
+        rw [ordinaryRomImpl, QueryImpl.simulateQ_add_liftM_left]
+        exact rootEncodingCacheCouples_simulateQ_splitUniformImpl secretKey.parameter target
+          leftRoot rightRoot sampleRandomness
+      exact hrandomness.bind fun randomness => by
+        rw [simulateQ_bind]
+        have hattempt : RootEncodingCacheCouples secretKey.parameter target leftRoot rightRoot
+            (simulateQ ordinaryRomImpl
+              (liftM (signAttempt secretKey message randomness :
+                OracleComp HashSpec (Option (Index × (DigestTree → FtsLeaf)))))) := by
+          rw [ordinaryRomImpl, QueryImpl.simulateQ_add_liftM_right]
+          exact rootEncodingCacheCouples_signAttempt target leftRoot rightRoot secretKey message
+            randomness
+        exact hattempt.bind fun attempt => by
+          cases attempt with
+          | none =>
+              exact rootEncodingCacheCouples_signDigestLoop target leftRoot rightRoot secretKey
+                message attempts
+          | some selected =>
+              rw [simulateQ_pure]
+              exact rootEncodingCacheCouples_pure secretKey.parameter target leftRoot rightRoot
+                (some (randomness, selected.1, selected.2))
+
 theorem rootEncodingCacheCouples_tweakableHash_of_not_encoding
     (parameter : PublicParameter) (target : Position)
     (leftRoot rightRoot : Digest) (domain : HashDomain) (payload : HashInput)
@@ -815,6 +908,25 @@ theorem rootEncodingCacheCouples_ftsKey
         rootEncodingCacheCouples_tweakableHash_of_not_encoding parameter target leftRoot
           rightRoot (.ftsRoots index) (ftsRootsPayload roots) (by trivial) (by simp)
 
+theorem rootEncodingCacheCouples_ftsOpen
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (index : Index)
+    (leaves : DigestTree → FtsLeaf)
+    (secret : FtsTree → FtsLeaf → Digest) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (simulateQ ordinaryHashImpl (ftsOpen parameter index leaves secret)) := by
+  unfold ftsOpen
+  rw [simulateQ_ordinaryHashImpl_sequenceFin]
+  apply rootEncodingCacheCouples_sequenceFin
+  intro tree
+  rw [simulateQ_ordinaryHashImpl_sequenceFin]
+  apply rootEncodingCacheCouples_sequenceFin
+  intro level
+  exact rootEncodingCacheCouples_ftsNode parameter target leftRoot rightRoot index tree
+    (secret tree) level.val (Nat.xor ((leaves (ftsIndexOf tree)).val / 2 ^ level.val) 1)
+      (Nat.le_of_lt level.isLt)
+      (FtsProbeSimulation.ftsOpen_node_bound (leaves (ftsIndexOf tree)) level)
+
 theorem rootEncodingCacheCouples_revealCoordinate
     (parameter : PublicParameter) (target : Position)
     (leftRoot rightRoot : Digest) (coordinate : Coordinate) :
@@ -858,6 +970,64 @@ theorem rootEncodingCacheCouples_revealPosition
       (revealPosition position) :=
   rootEncodingCacheCouples_revealCoordinate parameter target leftRoot rightRoot
     (.position position)
+
+theorem rootEncodingCacheCouples_publishCoordinate
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (coordinate : Coordinate) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (publishCoordinate coordinate) := by
+  intro leftCache rightCache hcache state fuel table
+  rw [runCleanFromTable_publishCoordinate, runCleanFromTable_publishCoordinate]
+  exact relTriple_pure_pure ⟨rfl, rfl, rfl, rfl, hcache⟩
+
+theorem rootEncodingCacheCouples_revealPublishedCoordinate
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (coordinate : Coordinate) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (revealPublishedCoordinate coordinate) := by
+  unfold revealPublishedCoordinate
+  exact (rootEncodingCacheCouples_revealCoordinate parameter target leftRoot rightRoot
+    coordinate).bind fun _ =>
+      (rootEncodingCacheCouples_publishCoordinate parameter target leftRoot rightRoot
+        coordinate).bind fun _ =>
+          rootEncodingCacheCouples_pure parameter target leftRoot rightRoot _
+
+theorem rootEncodingCacheCouples_revealLayerValues
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (index : Index) (lay : Layer)
+    (encoding : ChainIndex → Digit) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (revealLayerValues index lay encoding) := by
+  unfold revealLayerValues
+  apply (rootEncodingCacheCouples_sequenceFin parameter target leftRoot rightRoot _
+    fun chainIdx => rootEncodingCacheCouples_revealPublishedCoordinate parameter target
+      leftRoot rightRoot
+        (chainValueCoordinate lay (treeIndexAt index lay) (leafIndexAt index lay) chainIdx
+          (encoding chainIdx))).bind
+  intro values
+  apply (rootEncodingCacheCouples_sequenceFin parameter target leftRoot rightRoot _
+    fun level => by
+      by_cases hlevel : level.val < layerHeight lay
+      · rw [if_pos hlevel]
+        cases hzero : level.val with
+        | zero =>
+            exact rootEncodingCacheCouples_revealPublishedCoordinate parameter target leftRoot
+              rightRoot (.position (.leaf lay (treeIndexAt index lay)
+                (leafOfNat (Nat.xor (leafIndexAt index lay).val 1))))
+        | succ current =>
+            rw [Nat.add_one]
+            simp only
+            by_cases hcurrent : current < maxLayerHeight
+            · rw [dif_pos hcurrent]
+              exact rootEncodingCacheCouples_revealPublishedCoordinate parameter target leftRoot
+                rightRoot (.position (.node lay (treeIndexAt index lay) ⟨current, hcurrent⟩
+                  (leafOfNat (Nat.xor ((leafIndexAt index lay).val / 2 ^ (current + 1)) 1))))
+            · rw [dif_neg hcurrent]
+              exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot 0
+      · rw [if_neg hlevel]
+        exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot 0).bind
+  intro path
+  exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot (values, path)
 
 theorem rootEncodingCacheCouples_maskedTreeNode
     (parameter : PublicParameter) (target : Position)
