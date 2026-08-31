@@ -99,19 +99,15 @@ enum PureOp {
     Mul,
 }
 
-/// What the lowerer knows about one frame cell: TWO ORTHOGONAL FACTS, not one
-/// exclusive state.
+/// What the lowerer knows about one frame cell: two orthogonal facts, not one
+/// exclusive state. A cell aliased before a branch and stored into inside it is
+/// materialized there (so written) and has its alias restored at the join (so
+/// aliased), soundly, since the copy wrote the alias's own value.
 ///
-/// A cell aliased before a branch and stored into inside it is materialized
-/// there, so it is written, and has its alias restored at the join, so it is
-/// also aliased. Both at once, and soundly: the copy wrote the alias's own
-/// value, and the path that did not run leaves the cell unwritten.
-///
-/// They also have different LIFETIMES, which is the other reason one enum
-/// cannot hold them. An alias is a value fact true on one path, so it reverts at
-/// a join. `written` is a fact about the CODE, conservative and permanent, and
-/// reverting it would let a later store alias a cell some instruction writes,
-/// which is the first soundness bug this crate ever fixed.
+/// Their LIFETIMES also differ, which is why one enum cannot hold both: an alias
+/// is a value fact true on one path and reverts at a join, while `written` is a
+/// fact about the code, conservative and permanent. Reverting it would let a
+/// later store alias a cell some instruction writes.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct Slot {
     /// The deferred store this cell stands for, if any: nothing has been emitted
@@ -161,23 +157,21 @@ enum Binding {
     FConst(F192),
 }
 
-/// Everything a runtime branch may not have executed: the name bindings, plus
-/// the lazily materialized cells whose `SET` sits wherever it was first needed.
-/// [`FnLower::scoped`] saves one of these and restores it at the join, so a
-/// cell written on one path is never trusted on another.
-/// What one name means: its single value binding, plus an OPTIONAL compile-time
-/// integer reading of the same expression. The two genuinely coexist (`x = 2`
-/// names the field element 2 AND the index 2, while `n = len(A) - 1` names an
-/// integer with no g-power reading at all), so `int` rides beside `val` instead
-/// of being a fifth variant. One entry per name is what makes a rebind atomic:
-/// five parallel maps meant five removes, and an arm that forgot one left a
-/// stale reading of a name that had moved on.
+/// What one name means: its value binding, plus an OPTIONAL compile-time integer
+/// reading of the same expression. The two genuinely coexist (`x = 2` names the
+/// field element 2 AND the index 2, while `n = len(A) - 1` has no g-power reading
+/// at all), so `int` rides beside `val` rather than being another variant. One
+/// entry per name is what makes a rebind atomic.
 #[derive(Clone, Copy)]
 struct Bound {
     val: Binding,
     int: Option<u128>,
 }
 
+/// Everything a runtime branch may not have executed: the name bindings, plus the
+/// lazily materialized cells whose `SET` sits wherever it was first needed.
+/// [`FnLower::scoped`] restores one of these at the join, so a cell written on one
+/// path is never trusted on another.
 #[derive(Clone, Default)]
 struct Scope {
     names: HashMap<String, Bound>,
@@ -270,27 +264,22 @@ struct FnLower<'a> {
     /// replacing the two side maps that answered "is this aliased" and "has this
     /// been written" separately.
     slots: HashMap<Off, Slot>,
-    /// The cells [`Self::stack_store`] has aliased, in the order it aliased
-    /// them. A branch's join needs to know which cells it touched, and diffing
-    /// two `HashMap`s to find out made the order of the copies it then emits
-    /// depend on iteration order, which is why a sort had to stand between this
-    /// compiler and a bytecode digest that changes between builds. Recording the
-    /// order instead makes the join say what it produced rather than reconstruct
-    /// it, which is the shape the middle IR needs.
+    /// The cells [`Self::stack_store`] has aliased, in the order it aliased them,
+    /// which is what a branch join replays. Diffing two `HashMap`s for that made
+    /// the order of the copies it emits depend on iteration order, so the bytecode
+    /// digest moved between builds.
     alias_journal: Vec<Off>,
     /// Source line of the statement being lowered, for diagnostics and for the
     /// pc-to-line table. Zero for a synthesized statement with no source.
     cur_line: u32,
-    /// The frame runs allocated so far and not yet sealed, or `None` once a
-    /// frame address has escaped ([`Self::stack_addr`]). The pointer it hands out
-    /// addresses the WHOLE frame, not just the run it was taken from, so from
-    /// that point every run is opaque: an off-by-one in a callee lands on the
-    /// next `StackBuf`, and if that one were still transparent its later store
-    /// would defer as an alias and the write-once assertion would be gone.
+    /// The frame runs allocated so far and not yet sealed, or `None` once a frame
+    /// address has escaped ([`Self::stack_addr`]). That pointer addresses the
+    /// WHOLE frame, so from then on EVERY run is opaque: an off-by-one in a callee
+    /// lands on the next `StackBuf`, whose later store would otherwise defer as an
+    /// alias and lose the write-once assertion.
     ///
-    /// `None` IS the escaped state, so "escaped, with runs still unsealed"
-    /// cannot be written down. It was two fields, and keeping them consistent
-    /// was the caller's job.
+    /// `None` IS the escaped state, so "escaped with runs still unsealed" cannot
+    /// be written down.
     unsealed_runs: Option<Vec<(Off, u32)>>,
     /// Hints queued to attach to the next emitted instruction.
     pending: Vec<Hint>,
@@ -414,17 +403,14 @@ impl FnLower<'_> {
         self.set_const(o, F192::ZERO);
     }
 
-    /// A top-level constant name is reserved (`zkDSL.md` §Global constants: "do not
-    /// reuse it as a parameter or local name"). A scalar constant enforces that by
-    /// construction, since the parser substitutes its value textually and a
-    /// shadowing binding becomes a literal, which fails loudly. A constant ARRAY is
-    /// carried to lowering instead, and [`Self::const_array_elem`] resolves
-    /// `NAME[i]` against it without consulting the scope, while `expr` folds
-    /// constants before its index arm could see the local. So a colliding local
-    /// silently has its compile-time-indexed reads folded to baked literals,
-    /// including reads of a `hint_witness` destination, whose asserts and range
-    /// checks then run on the constant instead of on the witness. Reject the
-    /// collision rather than pick a winner.
+    /// A top-level constant name is reserved (`zkDSL.md` §Global constants). A
+    /// scalar one enforces that by construction, its value being substituted
+    /// textually so a shadowing binding becomes a literal and fails loudly. A
+    /// constant ARRAY is carried to lowering instead and resolved without
+    /// consulting the scope, so a colliding local would have its
+    /// compile-time-indexed reads folded to baked literals, including reads of a
+    /// `hint_witness` destination whose asserts would then run on the constant.
+    /// Reject the collision rather than pick a winner.
     fn check_not_reserved(&self, name: &str) {
         if self.const_arrays.contains_key(name) {
             self.fail(format!(
@@ -457,23 +443,16 @@ impl FnLower<'_> {
     /// The cell holding `a op b`, computed only if this scope has not already.
     ///
     /// **Route an operation here only when no later write to its result cell
-    /// could be the assertion.** Minting a fresh cell is necessary but NOT
-    /// sufficient, and the difference matters: `assert a != b` also mints a fresh
-    /// cell for `x·inv`, then writes it again with `SET p = 1`, and that second
-    /// write is the assertion. Share that cell and the next `assert a != b` skips
-    /// its `MUL`, finds `p` already holding 1, and asserts nothing.
+    /// could be the assertion.** A fresh cell is not sufficient: `assert a != b`
+    /// mints one for `x·inv` and writes it again with `SET p = 1`, and THAT write
+    /// is the assertion, so sharing the cell would let the next `assert a != b`
+    /// skip its `MUL` and assert nothing. A second writer is fine where the value
+    /// is already pinned, as in `q = x ** k / w`, whose division writes into the
+    /// cell the squaring chain already determined.
     ///
-    /// A second writer is not disqualifying on its own, and one interned site has
-    /// one: `q = x ** k / w` lowers the division into the cell `pow_expr`
-    /// returned, because `FieldDiv` writes into its dividend's cell. That is safe
-    /// because the squaring chain is emitted FIRST and determines the value, so
-    /// the division's write is an equality against a value already pinned. What
-    /// must not happen is a later write that either determines the value or IS
-    /// the assertion. The sites that must stay out are the ones
-    /// whose destination is written twice or already exists: the zero cell an
-    /// `assert a == b` XORs into, the `g^{k-1}` a range check multiplies into,
-    /// `assert a != b`'s product, a division's back-solve, and `expr_into`'s
-    /// caller-chosen destination.
+    /// So these stay out: the zero cell an `assert a == b` XORs into, the
+    /// `g^{k-1}` a range check multiplies into, `assert a != b`'s product, a
+    /// division's back-solve, and `expr_into`'s caller-chosen destination.
     fn pure(&mut self, op: PureOp, a: Off, b: Off) -> Off {
         let key = (op, a.min(b), a.max(b));
         if let Some(&o) = self.scope.pure_cells.get(&key) {
@@ -494,19 +473,14 @@ impl FnLower<'_> {
     }
 
     /// A frame cell holding `v`, shared by every dominated use in the current
-    /// scope. The one cache for a lazily-`SET` constant: `1`, `0` and a range
-    /// check's `g^{k-1}` each had their own field, so two of them could name two
-    /// different cells holding the same value.
+    /// scope: the one cache for every lazily-`SET` constant.
     ///
-    /// The `SET` is emitted where the cell is allocated, always before anything
-    /// can name it, which is what makes every later write to it a write-once
-    /// equality against a bytecode constant rather than a chance to choose the
-    /// value. It also reverts at a branch join with the rest of [`Scope`]: a
-    /// `SET` first emitted inside a branch must not be named from outside it,
-    /// where the other path leaves the cell unwritten and so prover-chosen.
-    /// Several call sites hoist [`Self::one`] above a branch on purpose; the
-    /// revert is what makes that an optimization rather than the thing holding
-    /// the invariant up.
+    /// The `SET` is emitted where the cell is allocated, before anything can name
+    /// it, which is what makes every later write a write-once equality against a
+    /// bytecode constant rather than a chance to choose the value. It reverts at
+    /// a branch join with the rest of [`Scope`], since a `SET` first emitted
+    /// inside a branch must not be named outside it, where the other path leaves
+    /// the cell unwritten and so prover-chosen.
     fn const_cell(&mut self, v: F192) -> Off {
         let key = [v.c0, v.c1, v.c2];
         if let Some(&o) = self.scope.const_cells.get(&key) {
@@ -543,21 +517,16 @@ impl FnLower<'_> {
     /// that many dummy instructions of the table's opcode, then a `JUMP` back to the
     /// block's own first instruction, in the same frame.
     ///
-    /// So a block is a cycle, and nothing jumps into one. They sit past `main`'s halt,
-    /// unreachable from any program code, and the interpreter enters them itself once the
-    /// program has stopped: the state tuples a traversal pushes are the ones it pulls, so
-    /// the cycle balances on its own for any number of traversals, whatever else the run
-    /// did (`lean_vm::cpu::filler`).
+    /// A block is a cycle and nothing jumps into one: they sit past `main`'s halt
+    /// and the interpreter enters them itself once the program has stopped. The
+    /// state tuples a traversal pushes are the ones it pulls, so the cycle
+    /// balances for any number of traversals (`lean_vm::cpu::filler`).
     ///
-    /// The closing jump is always taken, its destination being a g-power and so nonzero,
-    /// and it reads that destination and its frame from cells the interpreter writes. A
-    /// traversal therefore costs the block's rows plus that one jump, and nothing else:
-    /// nothing here counts, tests, or allocates.
-    ///
-    /// A dummy uses one scratch cell as each of its operands, so the value it writes
-    /// there is the value already there, which write-once memory permits however many
-    /// traversals run: a block costs one cell for its dummies whatever its size.
-    /// Nothing folds or deletes them: there is no pass after lowering.
+    /// The closing jump is always taken (its destination is a g-power, so
+    /// nonzero) and reads its destination and frame from cells the interpreter
+    /// writes, so a traversal costs the block's rows plus that jump. A dummy uses
+    /// one scratch cell as each operand, writing the value already there, so a
+    /// block costs one cell whatever its size.
     fn lower_filler_blocks(&mut self) -> Vec<Block> {
         use lean_vm::cpu::filler::{SIZES, frame as fr};
 
@@ -873,21 +842,13 @@ impl FnLower<'_> {
 
     /// Lower `if` / `else`, arranging the blocks so the nonzero `XOR` result jumps to the correct arm.
     fn lower_if(&mut self, eq: bool, lhs: &Expr, rhs: &Expr, then: &[Stmt], els: &[Stmt], force_const: bool) {
-        // A compile-time condition folds to the taken branch, emitting no test or
-        // jump, which is what lets an `@inline` arm bake per-case control flow. The
-        // taken branch is then straight-line code, so its bindings persist, unlike
-        // a runtime branch's, which are branch-local because it may not execute.
+        // A folded condition emits no test and no jump, so the taken arm is
+        // straight-line code and its bindings persist, unlike a runtime branch's.
         //
-        // The fold decides on the INTEGER reading, the regime a compile-time
-        // constant lives in, while the runtime lowering below tests a field `XOR`.
-        // The two contradict each other whenever a side's readings do: `K = 3 + 1`
-        // is the integer 4 and the field element `3 XOR 1` = 2. Neither reading can
-        // simply win. Deciding in the field breaks `if 1 + 1 == 2` and every
-        // `if i + 1 == n` inside an `unroll`, and cannot read `-`, `//` or `%` at
-        // all, which is what most compile-time conditions are written with; and
-        // moving the fold's boundary either way rescopes working programs, since a
-        // folded arm's bindings escape. So an ambiguous condition is REJECTED, and
-        // `if const(...)` is how the author says the integer regime was meant.
+        // The fold reads INTEGERS while the runtime lowering below tests a field
+        // XOR, and the two disagree whenever a side's readings do. Neither can
+        // simply win, so an ambiguous condition is REJECTED and `const(...)` is
+        // how the author names the regime (`zkDSL.md`, "`if const(...)`").
         if let (Some(a), Some(b)) = (self.try_const_index(lhs), self.try_const_index(rhs)) {
             // Checked per SIDE, not by comparing the two verdicts. If each side's
             // own readings agree then integer equality and field equality say the
@@ -997,41 +958,32 @@ impl FnLower<'_> {
     /// The frame cell holding `g^{k-1}`, the range-check product target, shared
     /// by every check of that bound.
     ///
-    /// It is an ordinary [`Self::const_cell`], so it is also shared with any
-    /// plain use of the same constant. The sharpest case is `k = 1`, which is
-    /// legal and whose target is `g^0 = 1`: the cell is then the very one
-    /// [`Self::one`] hands out, and in `main` that is also `self_fp`. Sound,
-    /// because the `SET` is emitted at allocation and every later write is the
-    /// write-once equality; but a second WRITER added to any of those paths
-    /// would now land on all of them.
+    /// An ordinary [`Self::const_cell`], so it is shared with any plain use of
+    /// the same constant: at `k = 1` the target is `g^0 = 1`, the very cell
+    /// [`Self::one`] hands out, which in `main` is also `self_fp`. Sound, since
+    /// the `SET` precedes every use and each later write is the write-once
+    /// equality, but a second WRITER on any of those paths would land on all.
     fn bound_cell(&mut self, k: u64) -> Off {
         self.const_cell(g_pow_u128((k - 1) as u128).into())
     }
 
-    /// `assert log x < log GEN ** k`: the 3-cycle range check *in the
-    /// exponent* (leanVM's DEREF trick, see
-    /// `doc/leanvm/body/10-isa-programming.tex` §sec:prog-range-checks, transported to g-powers). With `x = g^e`:
+    /// `assert log x < log GEN ** k`: the 3-cycle range check in the exponent
+    /// (`doc/leanvm/body/10-isa-programming.tex` §sec:prog-range-checks). With
+    /// `x = g^e`:
     ///
-    /// 1. `DEREF` through `x`: the dereferenced address `x·g^0` must be one of
-    ///    the memory's `2^h` addresses `{g^0, …, g^{2^h-1}}` (doc §Memory), so
-    ///    the bus itself proves `x = g^e` with `e < 2^h`;
-    /// 2. `MUL x·y` into the write-once cell holding `g^{k-1}`: asserts
-    ///    `x·y = g^{k-1}`. The complement `y = g^{k-1-e}` needs no hint: the
-    ///    result cell is already written, so the runner back-solves the one
-    ///    unknown operand (leanVM's ADD deduction, multiplicatively);
-    /// 3. `DEREF` through `y`: proves `y = g^f` with `f < 2^h`.
+    /// 1. `DEREF` through `x`, so the bus proves `x = g^e` with `e < 2^h`;
+    /// 2. `MUL x·y` into the write-once cell holding `g^{k-1}`. The complement
+    ///    `y = g^{k-1-e}` needs no hint, the result cell being already written,
+    ///    so the runner back-solves the one unknown operand;
+    /// 3. `DEREF` through `y`, proving `y = g^f` with `f < 2^h`.
     ///
-    /// Then `e + f ≡ k-1 (mod 2^64-1)` with `e, f < 2^h`, and since a negative
-    /// `k-1-e` wraps to `≈ 2^64 ≫ 2^h`, this forces `e ≤ k-1`, for ANY memory
-    /// size the prover announces, provided `k ≤ 2^MIN_LOG_MEM`. The two `DEREF`
-    /// target cells are unconstrained touches (only the address matters),
-    /// back-filled at the end of execution; the constant cell is one amortized
-    /// `SET` per distinct bound.
+    /// Then `e + f ≡ k-1 (mod 2^64-1)` with `e, f < 2^h`, and a negative `k-1-e`
+    /// wraps to `≈ 2^64 ≫ 2^h`, so `e ≤ k-1` for ANY announced memory size,
+    /// provided `k ≤ 2^MIN_LOG_MEM`.
     ///
-    /// A [`LtBound::Runtime`] bound `Y = g^k` reaches the same gadget through one
-    /// extra `MUL` for `g^{k-1} = Y·g^{-1}`, which the runner has written before
-    /// the range-check `MUL` runs, so the complement is still back-solved rather
-    /// than hinted. The `k ≤ 2^MIN_LOG_MEM` obligation moves to the program.
+    /// A [`LtBound::Runtime`] bound reaches the same gadget through one extra
+    /// `MUL` for `g^{k-1} = Y·g^{-1}`, still back-solved rather than hinted, and
+    /// the `k ≤ 2^MIN_LOG_MEM` obligation moves to the program.
     fn lower_assert_lt(&mut self, e: &Expr, bound: &LtBound) {
         let kcell = match bound {
             LtBound::Const(k) => {

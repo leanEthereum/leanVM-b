@@ -8,34 +8,27 @@ pub enum Expr {
     /// Integer / field literal: the source syntax provides a raw 128-bit value,
     /// embedded into the low two limbs of the 192-bit tower element (`c2 = 0`).
     Lit(u128),
-    /// The generator `g`, written `GEN` in source. A logical index `i` is
-    /// carried "in the exponent" as `gⁱ`, so `GEN` is the unit step and
-    /// `GEN ** k` is `gᵏ`.
+    /// The generator `g`, written `GEN`. A logical index `i` rides the exponent
+    /// as `gⁱ`, so `GEN` is the unit step.
     Gen,
-    /// The field constant `g^k` (`GEN ** k`, and used by loop lowering). The
-    /// exponent is a `u128`, so an index can be a large logical value, e.g. a
-    /// Fibonacci number carried in the exponent.
+    /// The field constant `g^k`. The exponent is a `u128`, so an index can be a
+    /// large logical value.
     GPow(u128),
-    /// `GEN ** e` where `e` is a compile-time integer *expression* (an `unroll`
-    /// variable, a constant, `len(...)`, or index arithmetic of those) rather
-    /// than a bare literal. Resolved to a concrete `g^k` at lowering by
-    /// evaluating `e` in index space. Lets `buf[GEN ** i]` name cell `i` inside
-    /// an `unroll` loop without a running-pointer cursor.
+    /// `GEN ** e` for a compile-time integer *expression* `e` (an `unroll`
+    /// variable, a constant, index arithmetic of those), resolved to a concrete
+    /// `g^k` at lowering. Lets `buf[GEN ** i]` name cell `i` with no cursor.
     GenPow(Box<Expr>),
-    /// `base ** e` with a **non-`GEN`** base and a compile-time integer exponent
-    /// `e`. Evaluated by square-and-multiply at lowering: as integer arithmetic
-    /// in an index/bound position (`2 ** c`), or as field arithmetic in a value
-    /// position (`x ** k` = `x·x·…`, e.g. a loop counter `g^i` raised to a stride
-    /// `g^{i·stride}`). The exponent must be compile-time; the base may be runtime.
+    /// `base ** e` with a non-`GEN` base and a compile-time exponent, by
+    /// square-and-multiply at lowering: integer arithmetic in an index or bound
+    /// position, field arithmetic in a value. The base may be runtime.
     Pow(Box<Expr>, Box<Expr>),
     /// A variable in scope.
     Var(String),
     Add(Box<Expr>, Box<Expr>),
     Mul(Box<Expr>, Box<Expr>),
-    /// Integer subtraction `a - b`, **compile-time only**. In this field `+` is
-    /// XOR, so field subtraction *is* `+`; a `-` is therefore only meaningful in
-    /// index space (an index / slice bound / `unroll` count / `**` exponent /
-    /// folded `if`). Using one as a runtime field value is an error.
+    /// Integer subtraction, **compile-time only**: field subtraction is `+`
+    /// (XOR), so `-` means something only in index space. Using one as a runtime
+    /// field value is an error.
     Sub(Box<Expr>, Box<Expr>),
     /// Integer floor-division `a // b` and remainder `a % b`, **compile-time
     /// only** (the field has no integer division). Valid where an index /
@@ -116,69 +109,53 @@ pub enum StmtKind {
     LetTuple(Vec<String>, String, Vec<Expr>),
     /// `assert a == b`: a proof-enforced equality.
     AssertEq(Expr, Expr),
-    /// `assert a != b`: a proof-enforced inequality. Lowers to `x = a + b`, a
-    /// hinted `inv = x⁻¹`, `p = x·inv` and `SET p = 1`, the write-once conflict
-    /// being the assertion: `x = 0` forces `p = 0` whatever the hint. See
-    /// `FnLower::lower_assert_ne`.
+    /// `assert a != b`. Lowers to `x = a + b`, a hinted `inv = x⁻¹`, `p = x·inv`
+    /// and `SET p = 1`: `x = 0` forces `p = 0` whatever the hint, so the
+    /// write-once conflict is the assertion. See `FnLower::lower_assert_ne`.
     AssertNe(Expr, Expr),
-    /// `assert log X < log Y` (also `assert log X < k` with an integer
-    /// exponent), a *range check in the exponent*: with `X = g^x`, proves
-    /// `x < k`, i.e. `X ∈ {g^0, g^1, …, g^{k-1}}`. See
-    /// `FnLower::lower_assert_lt` for the 3-cycle gadget (leanVM's DEREF
-    /// range-check trick, transported to g-powers).
+    /// `assert log X < log Y`, or `assert log X < k`: a range check in the
+    /// exponent, proving `x < k` for `X = g^x`. See `FnLower::lower_assert_lt`.
     AssertLt(Expr, LtBound),
     /// `f(args)` as a statement (returns discarded).
     Call(String, Vec<Expr>),
-    /// `hint_witness(dest, "name")`: fill `dest` (a `StackBuf`, or a
-    /// `StackBuf`/`HeapBuf` slice of any length) with the next *entry* of the
-    /// named prover witness stream (`Program::set_witness`); the same symbol
-    /// may be hinted many times, each call popping the next entry, whose
-    /// length must match `dest`. Zero cycles: the values land through the
-    /// hint mechanism, completely unconstrained, so the program must constrain
-    /// them itself (asserts, range checks, hashes).
+    /// `hint_witness(dest, "name")`: fill `dest` from the next entry of the named
+    /// witness stream, whose length must match. Zero cycles and completely
+    /// unconstrained, so the program must constrain the values itself.
     HintWitness { dest: Expr, name: String },
-    /// `x = hint_witness("stream")`: ONE hinted value, bound to a name.
-    ///
-    /// The run form needs a destination that already exists, so a single hinted
-    /// scalar cost a one-cell `StackBuf`, a slice of it, and a read back out.
-    /// The guest declared thirty such buffers, twenty-eight of them for nothing
-    /// else. The value is as unconstrained as any other hint.
+    /// `x = hint_witness("stream")`: one hinted value bound to a name, as
+    /// unconstrained as any other hint. The run form above needs a destination
+    /// that already exists, so a lone scalar otherwise costs a one-cell
+    /// `StackBuf`, a slice of it, and a read back out.
     LetHintWitness { name: String, stream: String },
-    /// `print("label", expr)` / `print(expr)`: a prover-side debug print of the
-    /// value at this program point (witness generation only, no constraints).
+    /// `print("label", expr)`: a prover-side debug print, witness generation only.
     Print { label: String, value: Expr },
-    /// `if lhs == rhs:` (`eq`) / `if lhs != rhs:` (`!eq`) with an optional
-    /// `else` block (an `elif` parses as an `else` holding a nested `if`).
-    /// One conditional `JUMP` on the XOR of the two sides; bindings made
-    /// inside a branch are local to it, and branches communicate through
-    /// write-once memory (only one branch executes, so both may write the
-    /// same cell). See `FnLower::lower_if`.
+    /// `if lhs == rhs:` (`eq`) / `if lhs != rhs:`, with an optional `else` (an
+    /// `elif` parses as an `else` holding a nested `if`). One conditional `JUMP`
+    /// on the XOR of the sides. Bindings inside a branch are local to it, and the
+    /// branches communicate through write-once memory, only one of them running.
+    /// See `FnLower::lower_if`.
     If {
         eq: bool,
         lhs: Expr,
         rhs: Expr,
         then: Vec<Stmt>,
         els: Vec<Stmt>,
-        /// Written `if const(a == b):`. The author is asking for the branch to be
+        /// Written `if const(a == b):`. The author asks for the branch to be
         /// decided while compiling, so a condition that cannot be decided then is
         /// an error rather than a runtime test, and one whose integer and field
-        /// readings disagree is an error rather than a silent choice between them.
+        /// readings disagree is an error rather than a silent choice.
         force_const: bool,
     },
-    /// `match log(x):` with `case 0: … case n-1:`, consecutive integer cases
-    /// from 0, matched against the log of the g-power scrutinee (`x = g^j`
-    /// runs case `j`). Dispatched through a trampoline table in the bytecode
-    /// (doc §ISA programming / Match statements); the scrutinee must be known
-    /// to lie in `[0, n)`, so range-check a hinted value first. Case bodies are
-    /// branch-local, like [`StmtKind::If`] branches. See `FnLower::lower_match`.
+    /// `match log(x):` over consecutive cases from 0, matched against the log of
+    /// the g-power scrutinee. The scrutinee must be known to lie in `[0, n)`, so
+    /// range-check a hinted one first. Case bodies are branch-local, as for
+    /// [`StmtKind::If`]. See `FnLower::lower_match`.
     Match { x: Expr, cases: Vec<Vec<Stmt>> },
     /// `names = match_range(log(x), range(a, b), lambda i: expr, …)`: a
-    /// [`StmtKind::Match`] with generated arms (leanVM's `match_range`): arm `j`
-    /// holds the lambda body with the parameter replaced by the integer
-    /// literal `j` (expanded at parse time, one entry of `arms` per integer).
-    /// Every arm writes its results into the same fresh cells (write-once is
-    /// sound, since exactly one arm executes), and `names` bind to those cells
-    /// at the join. Multiple names take a multi-return call as the arm body.
+    /// [`StmtKind::Match`] whose arm `j` is the lambda body with the parameter
+    /// replaced by the literal `j`, expanded at parse time. Every arm writes the
+    /// same fresh cells, exactly one arm running, and `names` bind them at the
+    /// join. See `FnLower::lower_match_range`.
     LetMatchRange {
         names: Vec<String>,
         x: Expr,
@@ -186,28 +163,22 @@ pub enum StmtKind {
     },
     /// `arr[idx] = value`: store into a heap cell (write-once).
     Store(Expr, Expr, Expr),
-    /// `for i in mul_range(GEN**lo, stop): body`, where the counter is carried in
-    /// the exponent as `gⁱ`, starting at the `start` element `g^lo` and advancing
-    /// by `×g` each iteration until it reaches the `stop` element (the terminal
-    /// bound, not itself executed). The step is always `×g`: `mul_range` names
-    /// its bounds as field elements (e.g. `mul_range(1, GEN ** 10)` runs 10
-    /// times), so the multiplicative walk is explicit and there is no step knob.
-    /// `stop` is a compile-time power of `GEN`, or a *runtime* g-power element
-    /// (e.g. a hinted count), which the program must know to be reachable:
-    /// range-check its log first, or the walk never terminates.
+    /// `for i in mul_range(GEN ** lo, stop)`: the counter rides the exponent as
+    /// `gⁱ`, advancing by `×g` from `g^lo` until it reaches `stop`, which is not
+    /// itself executed. There is no step knob, the bounds being field elements
+    /// (`mul_range(1, GEN ** 10)` runs ten times). A runtime `stop` must be known
+    /// reachable: range-check its log, or the walk never terminates.
     For {
         var: String,
         lo: u64,
         hi: ForBound,
         body: Vec<Stmt>,
     },
-    /// `for i in unroll(a, b): body`, compile-time replication: the body is
-    /// emitted `b − a` times with `i` substituted by each integer literal in
-    /// turn (usable anywhere a literal is: stack indexes, slice bounds,
-    /// `Const` arguments). No call, no frame, no counter: zero loop
-    /// overhead, at the price of code size. The bounds are compile-time
-    /// integer *expressions*, evaluated at lowering, after `Const`-parameter
-    /// specialization, so `unroll(0, n)` with `n: Const` works.
+    /// `for i in unroll(a, b)`: the body emitted `b − a` times with `i`
+    /// substituted by each literal, so `i` is usable wherever a literal is. No
+    /// call, no frame, no counter, at the price of code size. The bounds are
+    /// compile-time integer expressions evaluated at lowering, after
+    /// `Const`-parameter specialization, so `unroll(0, n)` with `n: Const` works.
     Unroll {
         var: String,
         lo: Expr,
@@ -216,8 +187,8 @@ pub enum StmtKind {
     },
     /// `return e, …` (a bare `return` is the empty vector).
     Return(Vec<Expr>),
-    /// Internal (loop lowering): `if lhs != rhs: callee(args)`, a tail call on
-    /// the not-equal branch, dispatched by `JUMP`'s nonzero test.
+    /// Internal, from loop lowering: `if lhs != rhs: callee(args)` in tail
+    /// position, dispatched by `JUMP`'s nonzero test.
     CallIfNe(Expr, Expr, String, Vec<Expr>),
 }
 
@@ -231,14 +202,12 @@ pub enum ForBound {
 }
 
 /// A range-check bound (`assert log X < …`): a compile-time exponent, or a
-/// runtime `g^n`.
+/// runtime `g^n`. Same gadget either way, only the cell holding `g^{k-1}`
+/// differing.
 ///
-/// The gadget is the same either way, and so is what it proves: only the cell
-/// holding `g^{k-1}` differs (a pooled `SET` against one `MUL` off the runtime
-/// bound). What the compiler can no longer check is the `k ≤ 2^MIN_LOG_MEM` cap,
-/// so the program owes it: range-check the bound itself first. Without that,
-/// `log X < log n` bounds `X` only by the prover-*announced* memory size, and
-/// the honest complement `g^{k-1-log X}` may not even be an address.
+/// A runtime bound loses the `k ≤ 2^MIN_LOG_MEM` cap the compiler would check,
+/// so the PROGRAM owes it: range-check the bound itself first, or `log X < log n`
+/// bounds `X` only by the prover-announced memory size.
 #[derive(Clone, Debug)]
 pub enum LtBound {
     Const(u64),
@@ -282,19 +251,13 @@ pub struct Func {
     /// Compile-time shape of each source-level return value. Stack buffers use
     /// multiple physical ABI cells; everything else uses one cell.
     pub return_shapes: Vec<Shape>,
-    /// The same for each parameter, from a `s: StackBuf(n)` annotation. A value
-    /// could always be RETURNED as a run of cells and never passed as one, so a
-    /// two-cell digest went in through a pointer or an `@inline` expansion while
-    /// coming back out whole. The shapes are the same type in both directions
-    /// because it is the same question.
+    /// The same for each parameter, from a `s: StackBuf(n)` annotation. One type
+    /// in both directions, it being the same question.
     pub param_shapes: Vec<Shape>,
     pub body: Vec<Stmt>,
-    /// `@inline` decorator: expand this function at each call site instead of
-    /// emitting a real call: no frame, no argument/return plumbing (the
-    /// call-convention `DEREF`s and jumps vanish). The body must be a single
-    /// tail `return`; it is never lowered standalone. Named `@inline` because
-    /// the inlined body costs nothing at runtime (cf. `unroll(a, b)`, which
-    /// really does replicate a loop body).
+    /// `@inline`: expand at each call site instead of emitting a call, so the
+    /// frame and the argument and return plumbing vanish. The body must be a
+    /// single tail `return`, and is never lowered standalone.
     pub inline: bool,
 }
 
@@ -302,19 +265,15 @@ pub struct Func {
 #[derive(Clone, Debug)]
 pub struct Ast {
     pub funcs: Vec<Func>,
-    /// Top-level constant arrays `NAME = [a, b, c]` (declaration order). Each
-    /// element is a `u128` (a field value `extension-field::new(lo,hi)` where used as a
-    /// value, or a small integer where used as a compile-time index / bound /
-    /// `unroll` count). Indexed `NAME[i]` and measured `len(NAME)` at compile
-    /// time only (`i` a literal / constant / `unroll` var). Not textually
-    /// substituted (unlike scalar constants), and resolved at lowering.
+    /// Top-level constant arrays `NAME = [a, b, c]`, in declaration order.
+    /// Indexed `NAME[i]` and measured `len(NAME)` at compile time only, `i` being
+    /// a literal, a constant or an `unroll` variable. Unlike a scalar constant
+    /// these are not textually substituted, but resolved at lowering.
     pub const_arrays: Vec<(String, Vec<F192>)>,
 }
 
-// Free-variable analysis. Pure AST, no lowering state: the only consumer is the
-// `for` desugaring, which needs the names a loop body reads from outside itself,
-// but the question is about the syntax tree and is answered here rather than in
-// the middle of the walker.
+// Free-variable analysis: pure AST, no lowering state. Its one consumer is the
+// `for` desugaring, which needs the names a loop body reads from outside itself.
 
 use std::collections::HashSet;
 

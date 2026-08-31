@@ -1,17 +1,13 @@
 //! Compile-time evaluation: what an expression is worth before anything runs.
 //!
-//! Every function here takes `&self` and emits nothing. That is the boundary,
-//! and it is what lets a caller ask what an expression is worth without paying
-//! for the answer: an index that folds costs no instruction, and a query that
-//! comes back `None` has not already committed the program to something.
+//! Every function here takes `&self` and emits nothing, so asking costs nothing
+//! and a `None` has committed the program to no answer.
 //!
-//! There are two answers, not one, and the POSITION of a use decides which is
-//! wanted. [`FnLower::try_const_int`] reads an expression as a compile-time
-//! integer, which is what a size, an index, a bound and an exponent want.
-//! [`FnLower::try_field_const`] reads the same expression as a field element,
-//! where `+` is XOR, which is what a value wants. They disagree on anything
-//! carrying a sum of overlapping integers, and `const(...)` is how an author
-//! says the integer one was meant, in a condition or in a value.
+//! There are two answers and the POSITION of a use picks one:
+//! [`FnLower::try_const_int`] for a size, an index, a bound or an exponent,
+//! [`FnLower::try_field_const`] for a value, where `+` is XOR. They disagree on
+//! a sum of overlapping integers, and `const(...)` is how an author says which
+//! was meant.
 
 use super::*;
 

@@ -1,18 +1,15 @@
 //! The precompile and the hints: the two places a value arrives without an
 //! instruction computing it.
 //!
-//! `blake2s` is the VM's one precompile. It is a STATEMENT, not an expression:
-//! it writes its digest into a two-cell run the caller names, so a pre-written
-//! destination turns the call into a check of that digest rather than a
-//! computation of it, by the same write-once rule as every other store.
+//! `blake2s` is a STATEMENT, not an expression: it writes its digest into a
+//! two-cell run the caller names, so a pre-written destination checks the digest
+//! instead of computing it, by the same write-once rule as any store.
 //!
-//! A hint writes values the prover chose and the circuit did not. Nothing here
-//! constrains them, so **the program must**, and the compiler's job is only to
-//! make sure the destination is real: a run that already carries a deferred
-//! alias is materialised first, or the hint would land where nothing reads it
-//! and the store's equality assertion would be gone. What the hinted values MEAN
-//! is the guest's problem, and an unconstrained hint reaching anything
-//! security-relevant is a forged proof.
+//! A hint writes values the prover chose and the circuit did not, so **the
+//! program must constrain them**. The compiler's job is only to make the
+//! destination real: a run carrying a deferred alias is materialised first, or
+//! the hint lands where nothing reads it and the store's equality assertion is
+//! gone.
 
 use super::*;
 

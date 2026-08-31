@@ -421,13 +421,11 @@ pub(super) fn is_ident(s: &str) -> bool {
     matches!(cs.next(), Some(c) if c.is_alphabetic() || c == '_') && s.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
-/// A binding or parameter name, validated. Anything else reaching here is
-/// either a mis-split (`x /`, `x !`) or a top-level constant substituted into a
-/// binding position: constants are replaced textually before parsing, so
-/// `V = 8` followed by `def scale(V)` arrives as a parameter literally named
-/// `8`, and the body's `V` reads the constant. That compiled, and returned 16
-/// for `scale(3)`. `zkDSL.md` §Global constants reserves the name; this is what
-/// enforces it.
+/// A binding or parameter name, validated. Anything else here is a mis-split
+/// (`x /`, `x !`) or a top-level constant substituted into a binding position:
+/// constants are replaced textually, so `V = 8` with `def scale(V)` arrives as a
+/// parameter literally named `8` while the body's `V` reads the constant.
+/// `zkDSL.md` §Global constants reserves the name; this enforces it.
 pub(super) fn binding_name(raw: &str, what: &str) -> Result<String, String> {
     let n = raw.trim();
     if is_ident(n) {

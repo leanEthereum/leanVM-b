@@ -1,20 +1,17 @@
 //! The call boundary: arguments in, return values out, and the two ways a
 //! callee can disappear into its caller.
 //!
-//! Every frame here is laid out by [`Abi`], and the rule that makes a call sound
-//! is that CALLER AND CALLEE MUST AGREE ON THE ARITY. They place the return area
-//! from their own idea of the argument count, so a mismatch does not merely lose
-//! a value: a missing argument leaves the callee's cell unwritten and therefore
-//! prover-chosen, and makes the caller bind a callee parameter cell as a return;
-//! a surplus one overwrites the callee's first return slot. That check was
-//! missing outright until an audit of this crate found it, in both places at
-//! once: the ordinary path and the fused `match_range` dispatch.
+//! Every frame is laid out by [`Abi`], and CALLER AND CALLEE MUST AGREE ON THE
+//! ARITY: each places the return area from its own idea of the argument count,
+//! so a missing argument leaves the callee's cell unwritten and therefore
+//! prover-chosen, and a surplus one overwrites the callee's first return slot.
+//! Two paths need the check, the ordinary one and the fused `match_range`
+//! dispatch.
 //!
 //! A callee vanishes into its caller two ways. `Const` specialization
-//! monomorphises it per constant tuple and lowers the copy; `@inline` expands
-//! the body into the caller's own frame, which is why the caller's `one`,
-//! `self_fp` and constant cells stay valid across it and only the name bindings
-//! reset.
+//! monomorphises it per constant tuple; `@inline` expands the body into the
+//! caller's own frame, so the caller's `one`, `self_fp` and constant cells stay
+//! valid across it and only the name bindings reset.
 
 use super::*;
 

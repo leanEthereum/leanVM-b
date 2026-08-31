@@ -240,11 +240,10 @@ const BUILTINS: &[&str] = &[
     "StackBuf",
 ];
 
-/// Infer the compile-time representation of each tail-return value. The DSL's
-/// StackBuf constructor makes its size static. HeapBuf remains an ordinary
-/// one-cell pointer: its allocation hint already ran in the creating function,
-/// so no allocation metadata needs to cross the call. Iterate to a fixed point
-/// so a wrapper may return a stack buffer produced by a later function.
+/// Infer the compile-time representation of each tail-return value: a `StackBuf`
+/// carries its static size, a `HeapBuf` stays a one-cell pointer (its allocation
+/// hint ran in the creating function). Iterated to a fixed point, so a wrapper
+/// may return a buffer produced by a function declared later.
 fn infer_return_shapes(funcs: &mut [Func]) -> Result<(), String> {
     fn expr_shape(
         e: &Expr,

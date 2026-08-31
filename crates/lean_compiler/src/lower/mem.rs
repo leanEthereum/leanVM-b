@@ -1,22 +1,15 @@
 //! Addressing, and the store path: which cell a name means, and what a write to
-//! it costs.
-//!
-//! Two rules hold this together and both have been broken here before.
+//! it costs. Two rules, both of which have been broken here before.
 //!
 //! **Every index is bounds-checked, in every position.** A store's right-hand
-//! side is an index as much as an expression is, and when [`FnLower::copy_alias`]
-//! did not check one, `c[0] = a[2]` on a `StackBuf(2)` aliased the next buffer's
-//! first cell and its assert passed, while the identical read written as
-//! `x = a[2]` was rejected. A slice checks its whole SPAN, not its first cell: a
-//! runtime-start slice whose start folds reaches that arm because it is not an
-//! integer, and losing the span there let a hint write past its buffer.
+//! side is an index as much as an expression is, and a slice checks its whole
+//! SPAN rather than its first cell.
 //!
 //! **A deferred store is a value fact, not an instruction.** `sa[k] = other`
-//! records an alias and emits nothing, so assembling a `BLAKE2s` operand out of
-//! scattered values is free. It holds only while NOTHING ELSE has given the cell
-//! a value: once an instruction, a digest or a hint has written it, a store is
-//! the write-once equality assertion instead, and must be emitted. That is what
-//! makes `s[k] = <checked value>` pin a hint.
+//! records an alias and emits nothing, which holds only while nothing else has
+//! given the cell a value. Once an instruction, a digest or a hint has written
+//! it, a store is the write-once equality assertion and must be emitted: that is
+//! what makes `s[k] = <checked value>` pin a hint.
 
 use super::*;
 
@@ -77,12 +70,9 @@ impl FnLower<'_> {
                         ))
                     };
                     // `heap_addr` bounds-checks ONE cell. A start that folds
-                    // (`GEN ** k`, or a name bound to one) arrives here because
-                    // it is not an INTEGER, yet its offset is known, so the run's
-                    // length has to be checked here or it never is: the same run
-                    // written with integer bounds was rejected, while this
-                    // spelling let a `hint_witness` write past the buffer into
-                    // the next one.
+                    // (`GEN ** k`, or a name bound to one) reaches this arm because
+                    // it is not an INTEGER, yet its offset IS known, so the run's
+                    // length has to be checked here or it never is.
                     if let Some(GAddr { base: None, exp, .. }) = self.gaddr_of(lo) {
                         self.check_heap_bound(arr, exp, u128::from(len));
                     }
@@ -167,19 +157,15 @@ impl FnLower<'_> {
             && !self.is_written(dst)
             && let Some(a) = self.copy_alias(val)
         {
-            // Record the end of the `Cell` chain, not its head. A `Cell` alias is
-            // otherwise free to point at another alias, and two of them can close
-            // a loop (`s[0] = s[1]` then `s[1] = s[0]`, or the one-line
-            // `s[0] = s[0]`) that `word_src` then walks forever. What rules a
-            // cycle out is that the recorded source has no outgoing `Cell` edge AT
-            // THE MOMENT IT IS RECORDED; it may acquire one later, so chains still
-            // grow and `word_src`'s bound is load-bearing, not decoration.
+            // Record the END of the `Cell` chain: two aliases pointing at each
+            // other (`s[0] = s[1]` then `s[1] = s[0]`) would make `word_src` walk
+            // forever. What rules that out is that the recorded source has no
+            // outgoing `Cell` edge WHEN IT IS RECORDED; it may acquire one later,
+            // so `word_src`'s bound is load-bearing rather than decoration.
             //
-            // [`Self::cell_src`] rather than [`Self::word_src`] on purpose: the
-            // latter resolves a trailing `Const` through `zero`/`const_cell`,
-            // which EMITS a `SET`. Paying it here rather than at the use would
-            // make `sa[k] = other` cost an instruction, which `zkDSL.md`
-            // §Variables promises it does not.
+            // `cell_src` and not `word_src`: the latter resolves a trailing
+            // `Const` through `const_cell`, which EMITS a `SET`, and paying that
+            // here would make `sa[k] = other` cost an instruction.
             let a = match a {
                 Alias::Cell(src) => Alias::Cell(self.cell_src(src)),
                 other => other,
