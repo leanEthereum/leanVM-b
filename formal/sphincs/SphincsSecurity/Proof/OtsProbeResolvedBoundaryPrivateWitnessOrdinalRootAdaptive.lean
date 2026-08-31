@@ -1030,6 +1030,26 @@ theorem probEvent_uniform_root_matches_symmetric_two_root_run_le_mul
     outerRun (reference default) houter guess gate
   simpa only [outerRun, sampled, bind_assoc] using hbound
 
+theorem probEvent_le_of_uniform_weighted_fibers
+    {α ι : Type} (run : ProbComp α) (event : α → Prop) (classify : α → ι)
+    (epsilon : ENNReal)
+    (hfiber : ∀ index,
+      Pr[fun output => event output ∧ classify output = index | run] ≤
+        Pr[fun output => classify output = index | run] * epsilon) :
+    Pr[event | run] ≤ epsilon := by
+  rw [probEvent_eq_tsum_classify_fibers run event classify]
+  calc
+    _ ≤ ∑' index, Pr[fun output => classify output = index | run] * epsilon :=
+      ENNReal.tsum_le_tsum hfiber
+    _ = (∑' index, Pr[fun output => classify output = index | run]) * epsilon := by
+      rw [ENNReal.tsum_mul_right]
+    _ = Pr[fun _ : α => True | run] * epsilon := by
+      congr 1
+      rw [probEvent_eq_tsum_classify_fibers run (fun _ : α => True) classify]
+      simp
+    _ ≤ epsilon := by
+      simpa only [one_mul] using mul_le_mul' probEvent_le_one le_rfl
+
 theorem privateWitnessAtOrdinal_of_firstPrivateWitnessOrdinal?_eq_some
     {witness : PrivateHitWitness} {candidates : List Probe}
     {ordinal : Fin candidates.length}
