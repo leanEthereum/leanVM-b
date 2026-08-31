@@ -306,13 +306,11 @@ impl FnLower<'_> {
         // frame cell the lowerer can see, so every run has to be treated as
         // already valued: `phys` keeps a later `sb[k] = v` the write-once
         // equality assertion `zkDSL.md` §Memory promises instead of a deferred
-        // alias that would drop it, and `opaque_runs` keeps CSE off its cells (a
-        // store folded into a canonical elsewhere would leave the cell unwritten,
-        // hence prover-chosen). Every run, not just this one: the pointer is a
-        // frame address, and one off-by-one in a callee reaches the next run.
+        // alias that would drop it. Every run, not just this one: the pointer is
+        // a frame address, and one off-by-one in a callee reaches the next run.
         if let Some(runs) = self.unsealed_runs.take() {
             for (b, l) in runs {
-                self.seal_run(b, l);
+                self.materialize_run(b, l);
             }
         }
         GAddr {
@@ -404,6 +402,10 @@ impl FnLower<'_> {
     /// a real value in the cell, which is what turns the consumer's write back into
     /// that assertion; marking the run `phys` covers the other order, where the
     /// store comes after the consumer.
+    ///
+    /// Also how a run whose address escaped through `addr(sb)` is sealed: there
+    /// is no consumer to name, but the same two facts are what is wanted, since
+    /// a `DEREF` through the pointer names no frame cell the lowerer can see.
     pub(super) fn materialize_run(&mut self, base: Off, len: u32) {
         for o in base..base + len {
             if self.alias_of(o).is_some() {
@@ -413,14 +415,6 @@ impl FnLower<'_> {
             }
             self.mark_written(o);
         }
-    }
-
-    /// Give up on seeing writes to a frame run: materialize any deferred alias on
-    /// it, mark its cells `phys` so a later store stays the write-once equality
-    /// assertion rather than an alias, and hand it to CSE as untouchable.
-    pub(super) fn seal_run(&mut self, base: Off, len: u32) {
-        self.materialize_run(base, len);
-        self.opaque_runs.push((base, len));
     }
 
     /// Realize a [`GAddr`] into a frame cell holding its value: a constant is one
@@ -457,7 +451,7 @@ impl FnLower<'_> {
         if let Some(runs) = &mut self.unsealed_runs {
             runs.push((base, n));
         } else {
-            self.seal_run(base, n);
+            self.materialize_run(base, n);
         }
         base
     }

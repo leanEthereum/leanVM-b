@@ -1,5 +1,8 @@
-//! The value-numbering pass (`cse.rs`) folds away pure instructions the lowerer
-//! emitted twice. These programs pin the cases where a "duplicate" is NOT dead.
+//! The lowerer shares one cell between identical pure operations (`FnLower::pure`).
+//! These programs pin the cases where a "duplicate" is NOT dead, so sharing it
+//! would drop a constraint. They were written against a value-numbering pass that
+//! ran after lowering, and they outlived it: the hazard belongs to the sharing,
+//! not to where it happens.
 
 use lean_compiler::{compile, parse};
 use lean_vm::cpu::{prove, verify};
@@ -57,19 +60,24 @@ def main():
     verify(&program, &want, &proof).expect("duplicated call arguments are preserved");
 }
 
-/// A duplicate on one side of a branch must not be folded into the other side's
-/// computation: the value map is cleared at block boundaries, so each arm
-/// recomputes what it needs. If it were folded, the untaken arm's cell would be
-/// unwritten at the join.
+/// A duplicate on one side of a branch must not be shared with the other side's
+/// computation: the cache reverts at a join, so each arm recomputes what it
+/// needs. Shared, the arm that runs would read a cell only the untaken arm
+/// writes, leaving it unwritten and so prover-chosen.
+///
+/// The condition is FALSE on purpose, so the arm that runs is the SECOND one
+/// emitted. Written the other way the taken arm is the one that mints the cell,
+/// any sharing can only redirect the untaken arm, and the test cannot fail: it
+/// passed with both caches leaking past the join and with the scope revert
+/// deleted outright.
 #[test]
 fn duplicates_are_not_folded_across_a_branch() {
     let src = "\
 def main():
     x = GEN ** 3
     r = HeapBuf(2)
-    # The same constant in both arms: folding the second into the first would
-    # make the taken path store from a cell the untaken path was to write.
-    if x == GEN ** 3:
+    # The same constant in both arms, and the else arm is the one that runs.
+    if x == GEN ** 5:
         r[1] = GEN ** 4
     else:
         r[1] = GEN ** 4
@@ -78,23 +86,45 @@ def main():
     p[GEN] = x
     return
 ";
-    let program = compile(&parse(src).expect("parse"));
-    let want = [F192::from(g_pow(4)), F192::from(g_pow(3))];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
-    verify(&program, &want, &proof).expect("both branches keep their own constant");
+    let run = |pi: [F192; 2]| -> bool {
+        let program = compile(&parse(src).expect("parse"));
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (proof, _) = prove(&program, pi, lean_vm::pcs::LOG_INV_RATE);
+            verify(&program, &pi, &proof).is_ok()
+        }))
+        .unwrap_or(false)
+    };
+    assert!(
+        run([F192::from(g_pow(4)), F192::from(g_pow(3))]),
+        "the arm that runs keeps its own constant"
+    );
+    // The wrong value is the half that bites: a cell only the untaken arm writes
+    // is the prover's to choose, and the honest claim would verify anyway.
+    assert!(
+        !run([F192::from(g_pow(7)), F192::from(g_pow(3))]),
+        "the stored constant is pinned by the arm that ran"
+    );
 }
 
-/// The assert idiom is `XOR fp[t] = a ^ b` then `SET fp[t] = 0`, which panics as
-/// a write-once conflict when `a != b`. Both instructions write `fp[t]`, so
-/// neither may be folded away: otherwise a failing assert would silently pass.
-/// Here the compared difference is also computed as an ordinary value, giving the
-/// assert's `XOR` a duplicate to be folded into.
-#[test]
-fn assert_survives_a_duplicated_comparison() {
-    let src = "\
+/// The assert idiom is `XOR fp[t] = a ^ b` into the pooled zero cell, whose
+/// second write IS the assertion, so that cell must never be shared and the
+/// `XOR` must never be skipped in favour of one computed earlier.
+///
+/// The operands are HEAP READS on purpose. Written `a = GEN ** 9`, both sides
+/// fold and `diff = a + b` emits no `XOR` at all, so the duplicate the test
+/// names does not exist and the test cannot fail: skipping the assert on a cache
+/// hit then passed the whole suite. Read from a `HeapBuf` the two values are
+/// runtime cells, `diff` really does emit `XOR fp[t] = a ^ b`, and the assert's
+/// own `XOR` has a genuine duplicate to be folded into.
+fn duplicated_comparison(second: u32) -> String {
+    format!(
+        "\
 def main():
-    a = GEN ** 9
-    b = GEN ** 9
+    hb = HeapBuf(2)
+    hb[1] = GEN ** 9
+    hb[GEN] = GEN ** {second}
+    a = hb[1]
+    b = hb[GEN]
     # The same XOR the assert needs, as a live value.
     diff = a + b
     assert a == b
@@ -102,37 +132,31 @@ def main():
     p[1] = diff
     p[GEN] = a
     return
-";
-    let program = compile(&parse(src).expect("parse"));
+"
+    )
+}
+
+#[test]
+fn assert_survives_a_duplicated_comparison() {
+    let program = compile(&parse(&duplicated_comparison(9)).expect("parse"));
     let want = [F192::ZERO, F192::from(g_pow(9))];
     let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     verify(&program, &want, &proof).expect("passing assert still verifies");
 }
 
-/// The same shape, but with the assert failing: it must still panic (the `SET`
-/// that collides with the `XOR` was not eliminated).
+/// The same shape with the assert failing: it must still panic, which is what
+/// says the assertion is really there.
 #[test]
 #[should_panic(expected = "write-once conflict")]
 fn failing_assert_still_conflicts() {
-    let src = "\
-def main():
-    a = GEN ** 9
-    b = GEN ** 10
-    diff = a + b
-    assert a == b
-    p = 1
-    p[1] = diff
-    p[GEN] = a
-    return
-";
-    let program = compile(&parse(src).expect("parse"));
+    let program = compile(&parse(&duplicated_comparison(10)).expect("parse"));
     let want = [F192::ZERO, F192::from(g_pow(9))];
     let _ = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
 }
 
 /// A hint at the end of a runtime branch is attached to a no-op anchor by the
-/// lowerer. Even when that anchor repeats an earlier pure instruction, CSE must
-/// retain it: moving the hint to the next textual instruction would move it to
+/// lowerer. Even when that anchor repeats an earlier pure instruction, it has to
+/// be emitted: moving the hint to the next textual instruction would move it to
 /// the join and execute it when the branch is not taken.
 #[test]
 fn trailing_branch_hint_stays_in_its_branch() {

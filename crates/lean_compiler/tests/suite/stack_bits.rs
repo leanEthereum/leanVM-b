@@ -4,7 +4,7 @@
 
 use lean_compiler::{compile, parse};
 use lean_vm::cpu::{Stats, prove, verify};
-use primitives::field::{F64, F192, g_pow};
+use primitives::field::{F64, F192};
 
 const V: u64 = 0b1011_0110;
 
@@ -45,13 +45,13 @@ def main():
     );
 }
 
-/// A stack bit run is addressed by CONTIGUITY, so no cell of one may be rewritten
-/// to a CSE canonical elsewhere: `hint_log2_ceil` reads `fp+base+k` whatever the
-/// substitution says, so a folded-away store would leave it holding nothing. The
+/// A stack bit run is addressed by CONTIGUITY, so no cell of one may be given
+/// away to a duplicate elsewhere: `hint_log2_ceil` reads `fp+base+k` whatever the
+/// lowerer decided, so a dropped store would leave it holding nothing. The
 /// duplicate `MUL` here comes FIRST, which is the order that would make the store
 /// the one dropped.
 #[test]
-fn a_stack_bit_run_survives_cse() {
+fn a_stack_bit_run_survives_cell_sharing() {
     let src = "\
 def main():
     src = StackBuf(4)
@@ -146,48 +146,29 @@ def main():
     compile(&parse(src).expect("parse")).execute([F192::ZERO; 2]);
 }
 
-/// A pointed-at frame run is opaque to CSE: a write through the pointer is a
-/// `DEREF` naming no frame cell the pass can see, so a store into one of its
-/// cells must not be folded into a canonical elsewhere. Folding it left the cell
-/// unwritten, hence prover-chosen, and `unconstrained_reads` could not see it
-/// either (the `DEREF` had both sides unwritten, so the deferred fixup marked
-/// both written first).
-///
-/// The two programs differ only in whether the run is pointed at. Without
-/// `addr()` the duplicate store is genuinely dead, so it folds; with `addr()` it
-/// has to survive.
+/// The same hazard for a run declared AFTER the escape, which the test above
+/// does not reach: `unsealed_runs` is already `None` by then, so `alloc_stack`
+/// has to seal the run on the spot. Left transparent, `b[0] = GEN ** 9` defers
+/// as a constant alias, the assert folds to `const == const`, and the program
+/// proves that a cell holding `g^7` holds `g^9`.
 #[test]
-fn a_pointed_at_frame_run_is_opaque_to_cse() {
-    let mul = Stats::TABLES.iter().position(|&t| t == "MUL").expect("a MUL table");
-    let src = |read: &str| {
-        format!(
-            "\
-def stash(x, y):
-    b = StackBuf(1)
-    t = x * y
-    b[0] = x * y
-    {read}
-    return t, q
+#[should_panic(expected = "write-once conflict")]
+fn a_run_declared_after_the_escape_is_sealed_too() {
+    let src = "\
+def poke(q):
+    q[GEN ** 3] = GEN ** 7
+    return 0
 
 def main():
-    hb = HeapBuf(2)
-    hb[1] = GEN ** 3
-    hb[GEN] = GEN ** 5
-    t, q = stash(hb[1], hb[GEN])
-    p = 1
-    p[1] = t
-    p[GEN] = q
+    a = StackBuf(2)
+    pa = addr(a)
+    b = StackBuf(1)
+    z = poke(pa)
+    b[0] = GEN ** 9
+    assert b[0] == GEN ** 9
     return
-"
-        )
-    };
-    let want = [F192::from(g_pow(8)); 2];
-    let counts = |s: &str| crate::common::mix(s, want)[mul];
-    assert_eq!(
-        counts(&src("p = addr(b)\n    q = p[1]")) - counts(&src("q = b[0]")),
-        1,
-        "the store into a pointed-at run must survive CSE"
-    );
+";
+    compile(&parse(src).expect("parse")).execute([F192::ZERO; 2]);
 }
 
 /// A frame pointer carries the same compile-time bound a `HeapBuf` pointer gets.

@@ -192,9 +192,9 @@ struct Scope {
     /// clears this at a label target. That is sound only because every backward
     /// edge crosses a function boundary (a loop body is its own `Func` with a
     /// fresh `Scope`) and every `patch_local` target is a forward jump, so a
-    /// cached cell's defining instruction always precedes its reuse. `cse.rs` is
-    /// stricter and clears at every label target, since it runs after lowering
-    /// and cannot see which edges those are.
+    /// cached cell's defining instruction always precedes its reuse. A new
+    /// backward edge, or a `patch_local` that jumps backwards, would need this
+    /// cleared at the target.
     pure_cells: HashMap<(PureOp, Off, Off), Off>,
     /// Every lazily-`SET` constant cell: field value (as bits) → the frame cell
     /// holding it. Cells are write-once and read-many, so one `SET` serves every
@@ -288,9 +288,6 @@ struct FnLower<'a> {
     /// Source line of the statement being lowered, for diagnostics and for the
     /// pc-to-line table. Zero for a synthesized statement with no source.
     cur_line: u32,
-    /// Frame runs whose cells no longer have a visible writer, as `(base, len)`.
-    /// Carried to [`crate::cse::cse`], which must leave their cells alone.
-    opaque_runs: Vec<(Off, u32)>,
     /// The frame runs allocated so far and not yet sealed, or `None` once a
     /// frame address has escaped ([`Self::stack_addr`]). The pointer it hands out
     /// addresses the WHOLE frame, not just the run it was taken from, so from
@@ -302,8 +299,6 @@ struct FnLower<'a> {
     /// cannot be written down. It was two fields, and keeping them consistent
     /// was the caller's job.
     unsealed_runs: Option<Vec<(Off, u32)>>,
-    /// Where the fill blocks begin in `code`, once emitted.
-    filler_start: Option<usize>,
     /// Hints queued to attach to the next emitted instruction.
     pending: Vec<Hint>,
     /// Active `@inline` expansion stack. Nested inline helpers are allowed,
@@ -568,9 +563,8 @@ impl FnLower<'_> {
     ///
     /// A dummy uses one scratch cell as each of its operands, so the value it writes
     /// there is the value already there, which write-once memory permits however many
-    /// traversals run: a block costs one cell for its dummies whatever its size. CSE
-    /// leaves the copies alone (a cell written more than once is not a candidate) and
-    /// there is no dead-code pass.
+    /// traversals run: a block costs one cell for its dummies whatever its size.
+    /// Nothing folds or deletes them: there is no pass after lowering.
     fn lower_filler_blocks(&mut self) -> Vec<Block> {
         use lean_vm::cpu::filler::{SIZES, frame as fr};
 
@@ -581,7 +575,6 @@ impl FnLower<'_> {
         // A block runs in a frame the interpreter carves out, so the cells it reads are at
         // fixed offsets in *that* frame rather than allocated from this function's
         // counter, and nothing here touches `main`'s frame at all.
-        self.filler_start = Some(self.code.len());
         let mut blocks = Vec::new();
         for (table, op) in crate::filler::TABLES {
             for size in SIZES {
@@ -1447,8 +1440,8 @@ impl FnLower<'_> {
             }
             // `a + b` into the frame's zero cell: the double write IS the
             // assertion, so the `SET .. = 0` a fresh destination needed is gone
-            // and no cell is burned. CSE leaves the `XOR` alone because that
-            // cell is written more than once ([`crate::cse`]).
+            // and no cell is burned. Not through `pure`, for the same reason:
+            // sharing this cell would drop the assertion.
             StmtKind::AssertEq(a, b) => {
                 let (la, lb) = (self.expr(a), self.expr(b));
                 let z = self.zero();
@@ -1918,7 +1911,6 @@ pub(crate) fn lower_func(
     let arg_cells = Abi::arg_cells(&f.param_shapes);
     let abi_end = Abi::end(arg_cells, n_ret_cells);
     let mut lowerer = FnLower {
-        filler_start: None,
         scope: Scope {
             names,
             ..Default::default()
@@ -1931,7 +1923,6 @@ pub(crate) fn lower_func(
         tail_call: false,
         code: Vec::new(),
         cur_line: 0,
-        opaque_runs: Vec::new(),
         unsealed_runs: Some(Vec::new()),
         heap_sizes: HashMap::new(),
         inline_ret: None,
@@ -1994,14 +1985,10 @@ pub(crate) fn lower_func(
         let last = f.body.last().map_or(0, |s| s.line);
         lowerer.stmt(&Stmt::new(last, StmtKind::Return(vec![])));
     }
-    let filler_start = lowerer.filler_start.unwrap_or(lowerer.code.len());
     Lowered {
         name: f.name.clone(),
         code: lowerer.code,
         frame_size: lowerer.next,
-        abi_end,
-        filler_start,
-        opaque_runs: lowerer.opaque_runs,
         filler,
     }
 }
