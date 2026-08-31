@@ -90,6 +90,22 @@ impl Abi {
 /// that folds an exponent into `β` measures it against this.
 const FOLD_MAX: u128 = 1 << lean_vm::cpu::MIN_LOG_MEM;
 
+/// Which cell an indexed expression names. The ONE answer to "where does
+/// `arr[idx]` live", produced by [`FnLower::place`], which bounds-checks it.
+///
+/// Four sites used to resolve an index by hand, each repeating `stack_of` plus
+/// `const_index` plus its own `k >= size`, and two of them shipped WITHOUT the
+/// check: `copy_alias` aliased the next buffer's first cell and its assert
+/// passed, and a `match` target wrote a callee's return past the end of one. A
+/// single resolver makes that impossible rather than unlikely, since asking
+/// where a cell is IS the check.
+enum Place {
+    /// A frame cell, addressed directly by the instruction.
+    Frame(Off),
+    /// A heap cell `m[ptr·g^beta]`, reached by a `DEREF`.
+    Heap { ptr: Off, beta: u32 },
+}
+
 /// The two pure operations worth interning. Both are commutative, so operands
 /// are stored sorted.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -378,6 +394,21 @@ impl FnLower<'_> {
         o
     }
 
+    /// Where `arr[idx]` lives, bounds-checked. Every read, write and target goes
+    /// through here, so there is one check rather than one per caller.
+    fn place(&mut self, arr: &Expr, idx: &Expr) -> Place {
+        if let Some((base, size)) = self.stack_of(arr) {
+            let k = self.const_index(idx);
+            if k >= size {
+                self.fail(format!("index {k} out of bounds (StackBuf size {size})"))
+            };
+            return Place::Frame(base + k);
+        }
+        // `heap_addr` carries the heap's own bound check.
+        let (ptr, beta) = self.heap_addr(arr, idx);
+        Place::Heap { ptr, beta }
+    }
+
     /// A frame cell holding `1` (always-taken `JUMP` condition).
     fn one(&mut self) -> Off {
         self.const_cell(F192::ONE)
@@ -583,14 +614,14 @@ impl FnLower<'_> {
         let mut binds = Vec::new();
         for t in targets {
             match t {
-                Expr::Index(arr, idx) if self.stack_of(arr).is_some() => {
-                    let (base, size) = self.stack_of(arr).expect("checked");
-                    let k = self.const_index(idx);
-                    if k >= size {
-                        self.fail(format!("target index {k} out of bounds (StackBuf size {size})"))
-                    };
-                    cells.push(base + k);
-                }
+                Expr::Index(arr, idx) => match self.place(arr, idx) {
+                    Place::Frame(c) => cells.push(c),
+                    // A heap cell is not a frame cell, so an arm cannot return into it.
+                    Place::Heap { .. } => self.fail(format!(
+                        "a multi-value target must be a name or a StackBuf element, and `{arr:?}` is \
+                         a HeapBuf, whose cells are not frame cells"
+                    )),
+                },
                 Expr::Var(n) => {
                     let c = self.fresh();
                     cells.push(c);
@@ -1065,21 +1096,15 @@ impl FnLower<'_> {
             Expr::StackBuf(_) => {
                 self.fail("StackBuf(n) must be bound to a name: `x = StackBuf(n)`")
             }
-            Expr::Index(arr, idx) => {
-                // Stack read `sa[k]`: the frame cell `base + k` directly, no deref.
-                if let Some((base, size)) = self.stack_of(arr) {
-                    let k = self.const_index(idx);
-                    if k >= size {
-    self.fail(format!("stack index {k} out of bounds (size {size})"))
-};
-                    return base + k;
+            Expr::Index(arr, idx) => match self.place(arr, idx) {
+                // A frame cell is the answer; a heap cell needs a `DEREF` to read.
+                Place::Frame(c) => c,
+                Place::Heap { ptr, beta } => {
+                    let dst = self.fresh();
+                    self.deref(ptr, beta, dst, DerefMode::Cell);
+                    dst
                 }
-                // Heap read: bind dst := m[arr·idx] (the array cell, written earlier).
-                let (base, beta) = self.heap_addr(arr, idx);
-                let dst = self.fresh();
-                self.deref(base, beta, dst, DerefMode::Cell);
-                dst
-            }
+            },
             Expr::Sub(..) | Expr::Div(..) | Expr::Mod(..) => {
                 self.fail(format!(
                     "`-`, `//`, `%` are compile-time only (field subtraction is `+`); use them in an index, a bound, or a `Const` argument, got `{e:?}`"
@@ -1319,21 +1344,15 @@ impl FnLower<'_> {
                     self.call(f, args, 0);
                 }
             }
-            StmtKind::Store(arr, idx, val) => {
-                // Stack write `sa[k] = val`: place `val` straight into cell `base+k`.
-                if let Some((base, size)) = self.stack_of(arr) {
-                    let k = self.const_index(idx);
-                    if k >= size {
-                        self.fail(format!("stack store index {k} out of bounds (size {size})"))
-                    };
-                    self.stack_store(base + k, val);
-                } else {
-                    // Heap store `arr[idx] = val`: assert m[arr·idx] == val (write-once).
+            StmtKind::Store(arr, idx, val) => match self.place(arr, idx) {
+                // A frame write places the value in the cell; a heap write is the
+                // `DEREF` asserting `m[arr·idx] == val` (write-once).
+                Place::Frame(c) => self.stack_store(c, val),
+                Place::Heap { ptr, beta } => {
                     let v = self.expr(val);
-                    let (base, beta) = self.heap_addr(arr, idx);
-                    self.deref(base, beta, v, DerefMode::Cell);
+                    self.deref(ptr, beta, v, DerefMode::Cell);
                 }
-            }
+            },
             StmtKind::Return(es) => self.lower_return(es),
             StmtKind::CallIfNe(lhs, rhs, callee, args) => {
                 // A conditional call: the frame setup runs either way, and the

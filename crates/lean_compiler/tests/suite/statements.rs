@@ -456,11 +456,11 @@ fn a_program_cannot_reach_a_cell_it_does_not_own() {
     // A store's RHS, and a list literal element, each index one past the end.
     rejected(
         &format!("def main():\n    a = StackBuf(2)\n    b = StackBuf(2)\n    c = StackBuf(2)\n    c[0] = a[2]\n{tail}"),
-        "stack index 2 out of bounds (size 2)",
+        "index 2 out of bounds (StackBuf size 2)",
     );
     rejected(
         &format!("def main():\n    a = StackBuf(2)\n    b = StackBuf(2)\n    lst = [a[2], a[3]]\n{tail}"),
-        "stack index 2 out of bounds (size 2)",
+        "index 2 out of bounds (StackBuf size 2)",
     );
     // A call supplying too few arguments, and too many.
     rejected(
