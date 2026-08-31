@@ -186,4 +186,115 @@ theorem recordedCandidateHit_of_privateStructuralHit
     candidateListHits_of_mem position output candidate candidates hcandidate hcoordinate
       hdigest⟩
 
+def PrivateValuesLE (left right : DeferredContext) : Prop :=
+  ∀ position output, left.values position = some output →
+    right.values position = some output
+
+theorem PrivateValuesLE.refl (context : DeferredContext) :
+    PrivateValuesLE context context := by
+  intro position output hvalue
+  exact hvalue
+
+theorem PrivateValuesLE.trans {first second third : DeferredContext}
+    (hfirst : PrivateValuesLE first second) (hsecond : PrivateValuesLE second third) :
+    PrivateValuesLE first third := by
+  intro position output hvalue
+  exact hsecond position output (hfirst position output hvalue)
+
+set_option maxRecDepth 100000 in
+theorem privateValuesLE_of_done_runDirectResolvedDetailedFromTable
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (result : ResolvedRunResult α)
+    (hresult : DirectDetailedResult.done result ∈ support
+      (runDirectResolvedDetailedFromTable context fuel table computation)) :
+    PrivateValuesLE context result.context := by
+  induction computation using OracleComp.inductionOn generalizing context fuel with
+  | pure value =>
+      simp [runDirectResolvedDetailedFromTable] at hresult
+      rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+      exact PrivateValuesLE.refl context
+  | query_bind input next ih =>
+      cases input with
+      | uniform n =>
+          rw [runDirectResolvedDetailedFromTable_uniform_query_bind,
+            mem_support_bind_iff] at hresult
+          obtain ⟨value, _hvalue, htail⟩ := hresult
+          exact ih value context fuel htail
+      | hashOutput =>
+          rw [runDirectResolvedDetailedFromTable_hashOutput_query_bind,
+            mem_support_bind_iff] at hresult
+          obtain ⟨value, _hvalue, htail⟩ := hresult
+          exact ih value context fuel htail
+      | ensure coordinate =>
+          rw [runDirectResolvedDetailedFromTable_ensure_query_bind] at hresult
+          exact ih () { context with state := context.state.ensure coordinate } fuel hresult
+      | probe coordinate candidate =>
+          cases fuel with
+          | zero => simp [runDirectResolvedDetailedFromTable_probe_query_bind] at hresult
+          | succ remaining =>
+              rw [runDirectResolvedDetailedFromTable_probe_query_bind] at hresult
+              by_cases hrevealed : coordinate ∈ context.state.revealed
+              · simp only [hrevealed, ↓reduceIte] at hresult
+                exact ih () context remaining hresult
+              · simp only [hrevealed, ↓reduceIte] at hresult
+                exact ih ()
+                  { context with state := context.state.addPending coordinate candidate }
+                  remaining hresult
+      | peek coordinate =>
+          rw [runDirectResolvedDetailedFromTable_peek_query_bind] at hresult
+          exact ih (context.state.values coordinate) context fuel hresult
+      | publish coordinate =>
+          rw [runDirectResolvedDetailedFromTable_publish_query_bind] at hresult
+          exact ih () { context with state := context.state.publish coordinate } fuel hresult
+      | reveal coordinate =>
+          rw [runDirectResolvedDetailedFromTable_reveal_query_bind] at hresult
+          cases hstate : context.state.values coordinate with
+          | some value =>
+              simp only [hstate] at hresult
+              exact ih value context fuel hresult
+          | none =>
+              simp only [hstate] at hresult
+              cases coordinate with
+              | chainStart lay tree leafIdx chainIdx =>
+                  let value := table ⟨lay, tree, leafIdx, chainIdx⟩
+                  by_cases hhit : context.state.hitAt
+                      (.chainStart lay tree leafIdx chainIdx) value
+                  · simp [value, hhit] at hresult
+                  · simp only [value, hhit, ↓reduceIte] at hresult
+                    exact ih value
+                      { state := context.state.materialize
+                          (.chainStart lay tree leafIdx chainIdx) value
+                        values := context.values }
+                      fuel hresult
+              | position revealed =>
+                  cases hprivate : context.values revealed with
+                  | some value =>
+                      by_cases hhit : context.state.hitAt (.position revealed) value
+                      · simp [hprivate, hhit] at hresult
+                      · simp only [hprivate, hhit, ↓reduceIte] at hresult
+                        exact ih value
+                          { state := context.state.materialize (.position revealed) value
+                            values := context.values }
+                          fuel hresult
+                  | none =>
+                      simp only [hprivate, mem_support_bind_iff] at hresult
+                      obtain ⟨value, _hvalue, htail⟩ := hresult
+                      by_cases hhit : context.state.hitAt (.position revealed) value
+                      · simp [hhit] at htail
+                      · simp only [hhit, ↓reduceIte] at htail
+                        have hnext := ih value
+                          { state := context.state.materialize (.position revealed) value
+                            values := context.values.install revealed value }
+                          fuel htail
+                        intro position output hvalue
+                        apply hnext position output
+                        have hne : position ≠ revealed := by
+                          intro heq
+                          subst position
+                          rw [hprivate] at hvalue
+                          contradiction
+                        simpa [DeferredStructuralValues.install, Function.update_of_ne hne] using
+                          hvalue
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
