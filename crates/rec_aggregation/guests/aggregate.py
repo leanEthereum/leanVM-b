@@ -2320,14 +2320,14 @@ def fill_xmss_epoch_tables(epoch, merkle_bits, tweak_table):
         for s in unroll(0, CHAIN_STEPS):
             tweak_table[GEN ** (1 + CHAIN_STEPS * i + s)] = index + XM_CHAIN_TWEAKS[CHAIN_STEPS * i + s]
     tweak_table[GEN ** WOTS_PK_TWEAK_IDX] = index + XM_PK_TWEAK
-    # Merkle level l - 1 hashes the parent at index `epoch >> l`, which is the
-    # epoch's bits from l up, each weighed l places down. The top level gets the
+    # Merkle level lvl - 1 hashes the parent at index `epoch >> lvl`, which is the
+    # epoch's bits from lvl up, each weighed lvl places down. The top level gets the
     # empty sum, the root's index being zero.
-    for l in unroll(1, LOG_LIFETIME + 1):
+    for lvl in unroll(1, LOG_LIFETIME + 1):
         parent = 0
-        for b in unroll(l, LOG_LIFETIME):
-            parent = parent + bits[b] * XM_INDEX_WEIGHT[b - l]
-        tweak_table[GEN ** (MERKLE_TWEAK_IDX + l - 1)] = parent + XM_MERKLE_TWEAKS[l - 1]
+        for b in unroll(lvl, LOG_LIFETIME):
+            parent = parent + bits[b] * XM_INDEX_WEIGHT[b - lvl]
+        tweak_table[GEN ** (MERKLE_TWEAK_IDX + lvl - 1)] = parent + XM_MERKLE_TWEAKS[lvl - 1]
     return
 
 
@@ -2410,8 +2410,8 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     # Merkle path from the leaf to the root: the epoch bit orders the two
     # children at each level, and the tweak carries that level's parent index.
     node = leaf[0]
-    for l in unroll(0, LOG_LIFETIME):
-        bit = merkle_bits[GEN ** (WORDS_PER_VALUE * l)]
+    for lvl in unroll(0, LOG_LIFETIME):
+        bit = merkle_bits[GEN ** (WORDS_PER_VALUE * lvl)]
         sibling = hint_witness("siblings")
         # Branchless child ordering: bit ∈ {0,1} (pinned at its decomposition),
         # so the swap is a select, not a branch. m = bit·(node⊕sibling) is 0
@@ -2423,7 +2423,7 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
         children[0] = node + m
         children[1] = sibling + m
         merkle_tweak_pp = StackBuf(WORDS_PER_BLOCK)
-        merkle_tweak_pp[0] = tweak_table[GEN ** (WORDS_PER_VALUE * (MERKLE_TWEAK_IDX + l))]
+        merkle_tweak_pp[0] = tweak_table[GEN ** (WORDS_PER_VALUE * (MERKLE_TWEAK_IDX + lvl))]
         merkle_tweak_pp[1] = pp
         parent = StackBuf(WORDS_PER_BLOCK)
         blake2s(merkle_tweak_pp, children, parent)
