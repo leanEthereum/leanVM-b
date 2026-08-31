@@ -347,7 +347,7 @@ assert log(x) < 8               # the same check
 assert log(x) < log(n)          # n = g^k runtime: same gadget, +1 cycle
 ```
 
-A **runtime** bound costs one extra `MUL` for `g^{k-1} = n·g⁻¹` and is otherwise identical, except that the `k ≤ 2^16` cap becomes the program's to enforce: range-check the bound itself first, `assert log n < 2^16`. WIthout this check => unsound.
+A **runtime** bound costs one extra `MUL` for `g^{k-1} = n·g⁻¹` and is otherwise identical, except that the `k ≤ 2^16` cap becomes the program's to enforce: range-check the bound itself first, with `assert log n < 2^16`. That check is not optional: without it the gadget is unsound.
 
 Cost: **3 cycles** (leanVM's DEREF range-check trick, in the exponent) plus one amortized `SET` per distinct bound per frame:
 
@@ -516,4 +516,4 @@ def main():
 
 ## Not (yet) supported
 
-Mutable variables; conditions other than field (in)equality; `match` defaults (`case _`) and non-contiguous cases; multi-file imports; `Const` parameters as `mul_range` or range-check bounds (a substituted literal is a bit-pattern element, not the g-power a bound needs); runtime slice starts on a `StackBuf`; runtime range-check bounds (`assert log a < log b` with runtime `b`); precompiles beyond `BLAKE2s`.
+Mutable variables; conditions other than field (in)equality; `match` defaults (`case _`) and non-contiguous cases; multi-file imports; `Const` parameters as `mul_range` or range-check bounds (a substituted literal is a bit-pattern element, not the g-power a bound needs); runtime slice starts on a `StackBuf`; precompiles beyond `BLAKE2s`.
