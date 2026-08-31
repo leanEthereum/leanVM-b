@@ -233,6 +233,28 @@ theorem encodingRetryInput_namesRoot
   · subst target
     simp [candidate, encodingRetryInput, slotDigest_zero_encodingInput]
 
+theorem not_encodingInputNamesRoot_encodingRetryInput_of_not_positionNames
+    {parameter : PublicParameter} {target : Position}
+    {position : EncodingPosition}
+    (hnotPosition : ¬EncodingPositionNamesRoot target position)
+    (message : Digest) (counter : Nat) :
+    ¬EncodingInputNamesRoot parameter target
+      (encodingRetryInput parameter position message counter) := by
+  intro hnames
+  obtain ⟨candidate, hdecode, hcoordinate⟩ := hnames
+  obtain ⟨queriedPosition, index, hat, htree, hleaf, hnotBottom, hcandidate⟩ :=
+    (decodeEncodingLayerRootCandidate?_eq_some_iff parameter _ candidate).mp hdecode
+  have hcurrentAt : AtEncodingPosition parameter
+      (encodingRetryInput parameter position message counter) position := by
+    exact ⟨digestBytes message ++ counterBytes (BitVec.ofNat counterBits counter), rfl⟩
+  have hposition : queriedPosition = position := atEncodingPosition_unique hat hcurrentAt
+  subst queriedPosition
+  apply hnotPosition
+  refine ⟨index, htree, hleaf, hnotBottom, ?_⟩
+  subst candidate
+  simp only at hcoordinate
+  exact Coordinate.position.inj hcoordinate.symm
+
 def RootEncodingCacheRel
     (parameter : PublicParameter) (target : Position)
     (leftRoot rightRoot : Digest) (left right : SplitHashCache) : Prop :=
@@ -546,6 +568,30 @@ theorem rootEncodingCacheCouples_sequenceFin
         (ih (fun index : Fin n => computation index.succ)
           (fun index => hcomponent index.succ)).bind fun _ =>
             rootEncodingCacheCouples_pure parameter target leftRoot rightRoot _
+
+theorem rootEncodingCacheRelates_sequenceFin
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) {n : Nat}
+    (left right : Fin n → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α)
+    (hcomponent : ∀ index,
+      RootEncodingCacheRelates parameter target leftRoot rightRoot
+        (left index) (right index)) :
+    RootEncodingCacheRelates parameter target leftRoot rightRoot
+      (sequenceFin left) (sequenceFin right) := by
+  induction n with
+  | zero =>
+      simp only [sequenceFin]
+      exact (rootEncodingCacheCouples_pure parameter target leftRoot rightRoot Fin.elim0).relates
+  | succ n ih =>
+      rw [sequenceFin, sequenceFin]
+      exact (hcomponent 0).bind fun leftHead rightHead hhead =>
+        (ih (fun index : Fin n => left index.succ) (fun index : Fin n => right index.succ)
+          (fun index => hcomponent index.succ)).bind fun leftTail rightTail htail => by
+            subst rightHead
+            subst rightTail
+            exact (rootEncodingCacheCouples_pure parameter target leftRoot rightRoot
+              (Fin.cases leftHead leftTail : Fin (n + 1) → α)).relates
 
 theorem rootEncodingCacheCouples_ensureChainPrefix
     (parameter : PublicParameter) (target : Position)
@@ -1048,6 +1094,84 @@ theorem rootEncodingCacheRelates_maskedOtsSign
       (maskedOtsSign parameter lay tree leafIdx rightRoot) :=
   rootEncodingCacheRelates_maskedOtsSignFrom parameter target leftRoot rightRoot lay tree leafIdx
     hposition encodingAttemptLimit 0
+
+set_option maxHeartbeats 1000000 in
+theorem rootEncodingCacheCouples_encode_of_not_positionNames
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (position : EncodingPosition)
+    (message : Digest) (counter : Nat)
+    (hnotPosition : ¬EncodingPositionNamesRoot target position) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (simulateQ ordinaryHashImpl
+        (encode parameter position.lay position.tree position.leafIdx message
+          (BitVec.ofNat counterBits counter))) := by
+  unfold encode tweakableHash oracleHash
+  simp only [simulateQ_bind, HasQuery.instOfMonadLift_query, simulateQ_spec_query,
+    simulateQ_pure, ordinaryHashImpl, bind_assoc, pure_bind]
+  exact (rootEncodingCacheCouples_splitHashQuery_same_nonroot parameter target leftRoot
+    rightRoot (.ordinary (encodingRetryInput parameter position message counter))
+    (not_encodingInputNamesRoot_encodingRetryInput_of_not_positionNames hnotPosition message
+      counter)).bind fun output =>
+        rootEncodingCacheCouples_pure parameter target leftRoot rightRoot
+          (TargetSum.decodeDigest (truncateHash output))
+
+set_option maxHeartbeats 1000000 in
+theorem rootEncodingCacheCouples_maskedOtsSignFrom_of_not_positionNames
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (message : Digest)
+    (hnotPosition : ¬EncodingPositionNamesRoot target ⟨lay, tree, leafIdx⟩) :
+    ∀ attempts counter,
+      RootEncodingCacheCouples parameter target leftRoot rightRoot
+        (maskedOtsSignFrom parameter lay tree leafIdx message attempts counter)
+  | 0, counter => by
+      rw [maskedOtsSignFrom]
+      exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot none
+  | attempts + 1, counter => by
+      rw [maskedOtsSignFrom]
+      apply (rootEncodingCacheCouples_encode_of_not_positionNames parameter target leftRoot
+        rightRoot ⟨lay, tree, leafIdx⟩ message counter hnotPosition).bind
+      intro encoded
+      cases encoded with
+      | none =>
+          exact rootEncodingCacheCouples_maskedOtsSignFrom_of_not_positionNames parameter target
+            leftRoot rightRoot lay tree leafIdx message hnotPosition attempts (counter + 1)
+      | some encoding =>
+          exact (rootEncodingCacheCouples_sequenceFin parameter target leftRoot rightRoot
+            (fun chainIdx => ensureChainPrefix lay tree leafIdx chainIdx (encoding chainIdx))
+            (fun chainIdx => rootEncodingCacheCouples_ensureChainPrefix parameter target
+              leftRoot rightRoot lay tree leafIdx chainIdx (encoding chainIdx))).bind fun _ =>
+                rootEncodingCacheCouples_pure parameter target leftRoot rightRoot
+                  (some (BitVec.ofNat counterBits counter, encoding))
+
+theorem rootEncodingCacheCouples_maskedOtsSign_of_not_positionNames
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (message : Digest)
+    (hnotPosition : ¬EncodingPositionNamesRoot target ⟨lay, tree, leafIdx⟩) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (maskedOtsSign parameter lay tree leafIdx message) :=
+  rootEncodingCacheCouples_maskedOtsSignFrom_of_not_positionNames parameter target leftRoot
+    rightRoot lay tree leafIdx message hnotPosition encodingAttemptLimit 0
+
+theorem rootEncodingCacheCouples_maskedOtsLayerAfterMessage_of_not_positionNames
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (index : Index) (lay : Layer)
+    (message : Digest)
+    (hnotPosition : ¬EncodingPositionNamesRoot target
+      ⟨lay, treeIndexAt index lay, leafIndexAt index lay⟩) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (maskedOtsLayerAfterMessage parameter index lay message) := by
+  unfold maskedOtsLayerAfterMessage
+  apply (rootEncodingCacheCouples_maskedOtsSign_of_not_positionNames parameter target leftRoot
+    rightRoot lay (treeIndexAt index lay) (leafIndexAt index lay) message hnotPosition).bind
+  intro selected
+  cases selected with
+  | none => exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot none
+  | some selected =>
+      exact (rootEncodingCacheCouples_ensureTreePath parameter target leftRoot rightRoot lay
+        (treeIndexAt index lay) (leafIndexAt index lay)).bind fun _ =>
+          rootEncodingCacheCouples_pure parameter target leftRoot rightRoot (some selected)
 
 theorem rootEncodingCacheRelates_maskedOtsLayerAfterMessage
     (parameter : PublicParameter) (index : Index) (lay : Layer)

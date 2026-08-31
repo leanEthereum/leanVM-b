@@ -222,6 +222,54 @@ noncomputable def maskedSignLayerWithComparisonRoot
   let _ ← maskedLayerMessage parameter ftsSecret index lay
   maskedOtsLayerAfterMessage parameter index lay comparisonRoot
 
+theorem not_encodingPositionNamesRoot_of_layerMessagePosition_ne
+    (target : Position) (index : Index) (lay : Layer)
+    (hne : layerMessagePosition index lay ≠ target) :
+    ¬EncodingPositionNamesRoot target
+      ⟨lay, treeIndexAt index lay, leafIndexAt index lay⟩ := by
+  rintro ⟨otherIndex, htree, hleaf, _hnotBottom, htarget⟩
+  apply hne
+  rw [htarget]
+  exact (layerMessagePosition_eq_of_position_eq otherIndex index lay htree hleaf).symm
+
+theorem rootEncodingCacheCouples_maskedSignLayer_of_layerMessagePosition_ne
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (index : Index) (lay : Layer)
+    (hne : layerMessagePosition index lay ≠ target) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (maskedSignLayer parameter ftsSecret index lay) := by
+  unfold maskedSignLayer
+  apply (rootEncodingCacheCouples_maskedLayerMessage parameter target leftRoot rightRoot
+    ftsSecret index lay).bind
+  intro message
+  exact rootEncodingCacheCouples_maskedOtsLayerAfterMessage_of_not_positionNames parameter
+    target leftRoot rightRoot index lay message
+      (not_encodingPositionNamesRoot_of_layerMessagePosition_ne target index lay hne)
+
+theorem layer_ne_bottom_of_layerMessagePosition_isLayerRoot
+    {target : Position} {index : Index} {lay : Layer}
+    (htarget : layerMessagePosition index lay = target)
+    (hroot : IsLayerRoot target) : lay ≠ bottomLayer := by
+  intro hbottom
+  subst lay
+  obtain ⟨rootLay, rootTree, hrootPosition⟩ := hroot
+  rw [layerMessagePosition_bottom] at htarget
+  rw [← htarget] at hrootPosition
+  simp [layerRootPosition] at hrootPosition
+
+noncomputable def maskedSignLayerWithTargetComparison
+    (parameter : PublicParameter) (target : Position) (comparisonRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (index : Index) (lay : Layer) :
+    StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))
+      (Option (Counter × (ChainIndex → Digit))) :=
+  if layerMessagePosition index lay = target then
+    maskedSignLayerWithComparisonRoot parameter ftsSecret index lay comparisonRoot
+  else
+    maskedSignLayer parameter ftsSecret index lay
+
 set_option maxHeartbeats 2000000 in
 set_option maxRecDepth 100000 in
 theorem relTriple_maskedSignLayer_comparisonRoot_of_message
@@ -283,5 +331,38 @@ theorem relTriple_maskedSignLayer_comparisonRoot_of_message
           exact rootEncodingCacheRelates_maskedOtsLayerAfterMessage parameter index lay
             hnotBottom leftRoot rightRoot leftResult.value.2 rightResult.value.2 hnextCache
               leftResult.state leftResult.remaining leftResult.table
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem relTriple_maskedSignLayer_targetComparison
+    (parameter : PublicParameter) (target : Position) (hroot : IsLayerRoot target)
+    (leftRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (index : Index) (lay : Layer)
+    (leftCache rightCache : SplitHashCache)
+    (hcache : RootEncodingCacheRel parameter target leftRoot rightRoot leftCache rightCache)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (hmessageRoot : layerMessagePosition index lay = target → ∀ result,
+      some result ∈ support (runCleanFromTable state fuel table
+        ((maskedLayerMessage parameter ftsSecret index lay).run leftCache)) →
+      result.value.1 = leftRoot) :
+    RelTriple
+      (runCleanFromTable state fuel table
+        ((maskedSignLayer parameter ftsSecret index lay).run leftCache))
+      (runCleanFromTable state fuel table
+        ((maskedSignLayerWithTargetComparison parameter target rightRoot ftsSecret index lay).run
+          rightCache))
+      (RootEncodingCleanSameRel parameter target leftRoot rightRoot) := by
+  by_cases htarget : layerMessagePosition index lay = target
+  · rw [maskedSignLayerWithTargetComparison, if_pos htarget]
+    rw [← htarget] at hcache ⊢
+    exact relTriple_maskedSignLayer_comparisonRoot_of_message parameter ftsSecret index lay
+      (layer_ne_bottom_of_layerMessagePosition_isLayerRoot htarget hroot) leftRoot rightRoot
+      leftCache rightCache hcache state fuel table (hmessageRoot htarget)
+  · rw [maskedSignLayerWithTargetComparison, if_neg htarget]
+    exact (rootEncodingCacheCouples_maskedSignLayer_of_layerMessagePosition_ne parameter target
+      leftRoot rightRoot ftsSecret index lay htarget).relates leftCache rightCache hcache
+        state fuel table
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
