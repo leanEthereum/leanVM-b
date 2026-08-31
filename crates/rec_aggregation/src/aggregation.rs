@@ -2707,6 +2707,26 @@ mod tests {
             .collect()
     }
 
+    /// The guest compiles to one program, always.
+    ///
+    /// `unified_guest` finds a fixed point by compiling repeatedly and comparing
+    /// the result's log size, so a compiler that read a hash seed would not just
+    /// produce two incompatible transcripts, it could fail to converge at all.
+    /// The small programs in `lean_compiler`'s `determinism` suite pin the
+    /// digests; this pins the one program large enough to hit every path that
+    /// walks a map. A fixed `kbc` is enough: reproducibility does not depend on
+    /// the size being the fixed point.
+    #[test]
+    fn guest_compiles_reproducibly() {
+        let (one, two) = (compile_guest(20), compile_guest(20));
+        assert_eq!(
+            format!("{:?}", one.prog),
+            format!("{:?}", two.prog),
+            "two compilations of the guest produced different bytecode, \
+             so the compiler is reading a hash seed"
+        );
+    }
+
     /// `MAX_KEYS` is exclusive at both host checks: one key short of it passes,
     /// the cap itself is the documented error. The cap counts both schemes, so
     /// one XMSS key short of it plus one SPHINCS claim is already over. No proof

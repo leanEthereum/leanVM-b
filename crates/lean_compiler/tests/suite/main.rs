@@ -15,6 +15,7 @@ mod common;
 mod assert_ne;
 mod const_placeholder;
 mod cse;
+mod determinism;
 mod disassemble;
 mod field_div;
 mod field_towers;
