@@ -233,6 +233,20 @@ theorem encodingRetryInput_namesRoot
   · subst target
     simp [candidate, encodingRetryInput, slotDigest_zero_encodingInput]
 
+theorem decodeEncodingLayerRootCandidate?_encodingRetryInput
+    {parameter : PublicParameter} {target : Position}
+    {position : EncodingPosition} (hposition : EncodingPositionNamesRoot target position)
+    (root : Digest) (counter : Nat) :
+    decodeEncodingLayerRootCandidate? parameter
+        (encodingRetryInput parameter position root counter) =
+      some ⟨.position target, root⟩ := by
+  rw [decodeEncodingLayerRootCandidate?_eq_some_iff]
+  obtain ⟨index, htree, hleaf, hnotBottom, htarget⟩ := hposition
+  refine ⟨position, index, ?_, htree, hleaf, hnotBottom, ?_⟩
+  · exact ⟨digestBytes root ++ counterBytes (BitVec.ofNat counterBits counter), rfl⟩
+  · subst target
+    simp [encodingRetryInput, slotDigest_zero_encodingInput]
+
 theorem not_encodingInputNamesRoot_encodingRetryInput_of_not_positionNames
     {parameter : PublicParameter} {target : Position}
     {position : EncodingPosition}
