@@ -647,4 +647,68 @@ theorem rootHiddenRelates_revealPosition_of_ne
   exact rootHiddenRelates_revealCoordinate_of_ne target leftOutput rightOutput
     (.position position) (by simpa using hne)
 
+theorem rootHiddenRelates_publishCoordinate_of_ne
+    (target : Position) (leftOutput rightOutput : HashOutput)
+    (coordinate : Coordinate) (hne : coordinate ≠ .position target) :
+    RootHiddenRelates target leftOutput rightOutput
+      (publishCoordinate coordinate) (publishCoordinate coordinate) := by
+  intro leftState rightState hstate fuel table leftCache rightCache hcache
+  rw [runCleanFromTable_publishCoordinate, runCleanFromTable_publishCoordinate]
+  exact relTriple_pure_pure ⟨hstate.publish_of_ne coordinate hne, rfl, rfl, rfl, hcache⟩
+
+theorem rootHiddenRelates_revealPublishedCoordinate_of_ne
+    (target : Position) (leftOutput rightOutput : HashOutput)
+    (coordinate : Coordinate) (hne : coordinate ≠ .position target) :
+    RootHiddenRelates target leftOutput rightOutput
+      (revealPublishedCoordinate coordinate) (revealPublishedCoordinate coordinate) := by
+  unfold revealPublishedCoordinate
+  exact (rootHiddenRelates_revealCoordinate_of_ne target leftOutput rightOutput coordinate
+    hne).bind fun leftValue rightValue hvalue =>
+      (rootHiddenRelates_publishCoordinate_of_ne target leftOutput rightOutput coordinate
+        hne).bind fun _ _ _ => by
+          subst rightValue
+          exact rootHiddenRelates_pure target leftOutput rightOutput leftValue
+
+theorem evalDist_cleanRunReturnedValue_eq_of_rootHidden
+    {target : Position} {leftOutput rightOutput : HashOutput}
+    {left right : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α}
+    (hrelates : RootHiddenRelates target leftOutput rightOutput left right)
+    (leftState rightState : LazyRevealProbe.State Coordinate)
+    (hstate : RootHiddenStateRel target leftOutput rightOutput leftState rightState)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (leftCache rightCache : SplitHashCache)
+    (hcache : RootHiddenCacheRel target leftOutput rightOutput leftCache rightCache) :
+    evalDist (cleanRunReturnedValue? <$>
+        runCleanFromTable leftState fuel table (left.run leftCache)) =
+      evalDist (cleanRunReturnedValue? <$>
+        runCleanFromTable rightState fuel table (right.run rightCache)) := by
+  have hrun := hrelates leftState rightState hstate fuel table leftCache rightCache hcache
+  have hprojected : RelTriple
+      (runCleanFromTable leftState fuel table (left.run leftCache))
+      (runCleanFromTable rightState fuel table (right.run rightCache))
+      (fun leftResult rightResult =>
+        cleanRunReturnedValue? leftResult = cleanRunReturnedValue? rightResult) := by
+    apply relTriple_post_mono hrun
+    intro leftResult rightResult hresult
+    cases leftResult with
+    | none =>
+        cases rightResult with
+        | none => rfl
+        | some rightResult => simp [RootHiddenCleanSameRel] at hresult
+    | some leftResult =>
+        cases rightResult with
+        | none => simp [RootHiddenCleanSameRel] at hresult
+        | some rightResult =>
+            simp only [RootHiddenCleanSameRel] at hresult
+            simp [cleanRunReturnedValue?, hresult.2.2.2.1]
+  have hmapped : RelTriple
+      (cleanRunReturnedValue? <$>
+        runCleanFromTable leftState fuel table (left.run leftCache))
+      (cleanRunReturnedValue? <$>
+        runCleanFromTable rightState fuel table (right.run rightCache))
+      (fun leftValue rightValue => leftValue = rightValue) :=
+    relTriple_map hprojected
+  exact evalDist_eq_of_relTriple_eqRel hmapped
+
 end SphincsSecurity.Concrete.OtsProbeSimulation

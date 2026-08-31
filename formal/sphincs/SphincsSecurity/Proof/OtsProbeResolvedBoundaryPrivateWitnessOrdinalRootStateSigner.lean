@@ -360,4 +360,292 @@ theorem rootHiddenRelates_maskedSignLayer_comparison_actual
               hnextState leftMessage.remaining leftMessage.table leftMessage.value.2
                 rightMessage.value.2 hnextCache
 
+theorem rootHiddenRelates_maskedTreeRoot_of_ne
+    (target : Position) (leftOutput rightOutput : HashOutput)
+    (lay : Layer) (tree : TreeIndex)
+    (hne : layerRootPosition lay tree ≠ target) :
+    RootHiddenRelates target leftOutput rightOutput
+      (maskedTreeRoot lay tree) (maskedTreeRoot lay tree) := by
+  rw [maskedTreeRoot_eq_ensure_reveal]
+  exact (rootHiddenRelates_ensureTreeNode target leftOutput rightOutput lay tree
+    (layerHeight lay) 0).bind fun _ _ _ =>
+      rootHiddenRelates_revealPosition_of_ne target leftOutput rightOutput
+        (layerRootPosition lay tree) hne
+
+theorem rootHiddenRelates_maskedLayerMessage_of_ne
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (leftOutput rightOutput : HashOutput)
+    (index : Index) (lay : Layer)
+    (hne : layerMessagePosition index lay ≠ target) :
+    RootHiddenRelates target leftOutput rightOutput
+      (maskedLayerMessage parameter ftsSecret index lay)
+      (maskedLayerMessage parameter ftsSecret index lay) := by
+  fin_cases lay
+  · rw [maskedLayerMessage, dif_pos (by decide)]
+    apply rootHiddenRelates_maskedTreeRoot_of_ne
+    simpa [layerMessagePosition_top, layerRootPosition]
+  · rw [maskedLayerMessage, dif_pos (by decide)]
+    apply rootHiddenRelates_maskedTreeRoot_of_ne
+    simpa [layerMessagePosition_middle, layerRootPosition]
+  · rw [maskedLayerMessage, dif_neg (by decide)]
+    exact rootHiddenRelates_simulateQ target leftOutput rightOutput ordinaryHashImpl
+      ordinaryHashImpl (rootHiddenRelates_ordinaryHashImpl target leftOutput rightOutput)
+        (ftsKey parameter index (ftsSecret index))
+
+theorem rootHiddenRelates_maskedSignLayer_of_ne
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (leftOutput rightOutput : HashOutput)
+    (index : Index) (lay : Layer)
+    (hne : layerMessagePosition index lay ≠ target) :
+    RootHiddenRelates target leftOutput rightOutput
+      (maskedSignLayer parameter ftsSecret index lay)
+      (maskedSignLayer parameter ftsSecret index lay) := by
+  unfold maskedSignLayer
+  exact (rootHiddenRelates_maskedLayerMessage_of_ne parameter ftsSecret target leftOutput
+    rightOutput index lay hne).bind fun leftMessage rightMessage hmessage => by
+      subst rightMessage
+      exact rootHiddenRelates_maskedOtsLayerAfterMessage target leftOutput rightOutput
+        parameter index lay leftMessage
+
+theorem rootHiddenRelates_maskedSignLayerWithTargetComparison_actual
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (hroot : IsLayerRoot target)
+    (leftOutput rightOutput : HashOutput)
+    (index : Index) (lay : Layer) :
+    RootHiddenRelates target leftOutput rightOutput
+      (maskedSignLayerWithTargetComparison parameter target (truncateHash rightOutput)
+        ftsSecret index lay)
+      (maskedSignLayer parameter ftsSecret index lay) := by
+  unfold maskedSignLayerWithTargetComparison
+  by_cases htarget : layerMessagePosition index lay = target
+  · rw [if_pos htarget]
+    exact rootHiddenRelates_maskedSignLayer_comparison_actual parameter ftsSecret target hroot
+      index lay htarget leftOutput rightOutput
+  · rw [if_neg htarget]
+    exact rootHiddenRelates_maskedSignLayer_of_ne parameter ftsSecret target leftOutput
+      rightOutput index lay htarget
+
+theorem rootHiddenRelates_maskedSignLayersWithTargetComparison_actual
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (hroot : IsLayerRoot target)
+    (leftOutput rightOutput : HashOutput) (index : Index) :
+    RootHiddenRelates target leftOutput rightOutput
+      (maskedSignLayersWithTargetComparison parameter target (truncateHash rightOutput)
+        ftsSecret index)
+      (sequenceFin fun lay => maskedSignLayer parameter ftsSecret index lay) := by
+  unfold maskedSignLayersWithTargetComparison
+  exact rootHiddenRelates_sequenceFin target leftOutput rightOutput _ _ fun lay =>
+    rootHiddenRelates_maskedSignLayerWithTargetComparison_actual parameter ftsSecret target
+      hroot leftOutput rightOutput index lay
+
+theorem chainValueCoordinate_ne_layerRoot
+    {target : Position} (hroot : IsLayerRoot target)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (chainIdx : ChainIndex) (digit : Digit) :
+    chainValueCoordinate lay tree leafIdx chainIdx digit ≠ .position target := by
+  obtain ⟨rootLay, rootTree, rfl⟩ := hroot
+  unfold chainValueCoordinate
+  split <;> simp [layerRootPosition]
+
+theorem pathNode_ne_layerRoot
+    {target : Position} (hroot : IsLayerRoot target)
+    (lay : Layer) (tree : TreeIndex) (current : Nat)
+    (hcurrent : current < maxLayerHeight) (nodeIdx : LeafIndex)
+    (hlt : current + 1 < layerHeight lay) :
+    Position.node lay tree ⟨current, hcurrent⟩ nodeIdx ≠ target := by
+  obtain ⟨rootLay, rootTree, rfl⟩ := hroot
+  intro heq
+  simp only [layerRootPosition, Position.node.injEq] at heq
+  have hlay : lay = rootLay := heq.1
+  subst rootLay
+  have hlevel := congrArg Fin.val heq.2.2.1
+  simp only at hlevel
+  have hpos : 0 < layerHeight lay := by
+    unfold layerHeight
+    split <;> norm_num [maxLayerHeight]
+  have hmax : 0 < maxLayerHeight := by norm_num [maxLayerHeight]
+  omega
+
+theorem rootHiddenRelates_revealLayerValues
+    (target : Position) (hroot : IsLayerRoot target)
+    (leftOutput rightOutput : HashOutput)
+    (index : Index) (lay : Layer) (encoding : ChainIndex → Digit) :
+    RootHiddenRelates target leftOutput rightOutput
+      (revealLayerValues index lay encoding) (revealLayerValues index lay encoding) := by
+  unfold revealLayerValues
+  apply (rootHiddenRelates_sequenceFin target leftOutput rightOutput _ _ fun chainIdx =>
+    rootHiddenRelates_revealPublishedCoordinate_of_ne target leftOutput rightOutput
+      (chainValueCoordinate lay (treeIndexAt index lay) (leafIndexAt index lay) chainIdx
+        (encoding chainIdx))
+      (chainValueCoordinate_ne_layerRoot hroot lay (treeIndexAt index lay)
+        (leafIndexAt index lay) chainIdx (encoding chainIdx))).bind
+  intro leftValues rightValues hvalues
+  subst rightValues
+  apply (rootHiddenRelates_sequenceFin target leftOutput rightOutput _ _ fun level => by
+    by_cases hlevel : level.val < layerHeight lay
+    · rw [if_pos hlevel]
+      cases hzero : level.val with
+      | zero =>
+          exact rootHiddenRelates_revealPublishedCoordinate_of_ne target leftOutput rightOutput
+            (.position (.leaf lay (treeIndexAt index lay)
+              (leafOfNat (Nat.xor (leafIndexAt index lay).val 1)))) (by
+                obtain ⟨rootLay, rootTree, rfl⟩ := hroot
+                simp [layerRootPosition])
+      | succ current =>
+          rw [Nat.add_one]
+          simp only
+          by_cases hcurrent : current < maxLayerHeight
+          · rw [dif_pos hcurrent]
+            exact rootHiddenRelates_revealPublishedCoordinate_of_ne target leftOutput rightOutput
+              (.position (.node lay (treeIndexAt index lay) ⟨current, hcurrent⟩
+                (leafOfNat (Nat.xor ((leafIndexAt index lay).val / 2 ^ (current + 1)) 1))))
+              (by
+                intro heq
+                exact (pathNode_ne_layerRoot hroot lay (treeIndexAt index lay) current hcurrent _
+                  (by omega)) (Coordinate.position.inj heq))
+          · rw [dif_neg hcurrent]
+            exact rootHiddenRelates_pure target leftOutput rightOutput 0
+    · rw [if_neg hlevel]
+      exact rootHiddenRelates_pure target leftOutput rightOutput 0).bind
+  intro leftPath rightPath hpath
+  subst rightPath
+  exact rootHiddenRelates_pure target leftOutput rightOutput (leftValues, leftPath)
+
+theorem rootHiddenRelates_maskedSignAfterDigestWithTargetComparison_actual
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (hroot : IsLayerRoot target)
+    (leftOutput rightOutput : HashOutput)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    RootHiddenRelates target leftOutput rightOutput
+      (maskedSignAfterDigestWithTargetComparison parameter target (truncateHash rightOutput)
+        ftsSecret randomness index leaves)
+      (maskedSignAfterDigest parameter ftsSecret randomness index leaves) := by
+  unfold maskedSignAfterDigestWithTargetComparison maskedSignAfterDigest
+  apply (rootHiddenRelates_simulateQ target leftOutput rightOutput ordinaryHashImpl
+    ordinaryHashImpl (rootHiddenRelates_ordinaryHashImpl target leftOutput rightOutput)
+      (ftsOpen parameter index leaves (ftsSecret index))).bind
+  intro leftPath rightPath hpath
+  subst rightPath
+  apply (rootHiddenRelates_maskedSignLayersWithTargetComparison_actual parameter ftsSecret
+    target hroot leftOutput rightOutput index).bind
+  intro leftLayers rightLayers hlayers
+  subst rightLayers
+  cases hparts : traverseOption leftLayers with
+  | none => exact rootHiddenRelates_pure target leftOutput rightOutput none
+  | some parts =>
+      apply (rootHiddenRelates_sequenceFin target leftOutput rightOutput _ _ fun lay =>
+        rootHiddenRelates_revealLayerValues target hroot leftOutput rightOutput index lay
+          (parts lay).2).bind
+      intro leftRevealed rightRevealed hrevealed
+      subst rightRevealed
+      let signature : Signature :=
+        { randomness := randomness
+          ftsSecret := fun tree => ftsSecret index tree (leaves (ftsIndexOf tree))
+          ftsPath := leftPath
+          counter := fun lay => (parts lay).1
+          chainValue := fun lay => (leftRevealed lay).1
+          authPath := flattenPaths fun lay => (leftRevealed lay).2 }
+      exact rootHiddenRelates_pure target leftOutput rightOutput (some signature)
+
+theorem rootHiddenRelates_ordinaryRomImpl
+    (target : Position) (leftOutput rightOutput : HashOutput)
+    (query : OracleWorld.Domain) :
+    RootHiddenRelates target leftOutput rightOutput
+      (ordinaryRomImpl query) (ordinaryRomImpl query) := by
+  cases query with
+  | inl n => exact rootHiddenRelates_splitUniformImpl target leftOutput rightOutput n
+  | inr input => exact rootHiddenRelates_ordinaryHashImpl target leftOutput rightOutput input
+
+theorem rootHiddenRelates_maskedSignWithTargetComparison_actual
+    (parameter : PublicParameter) (publicRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (hroot : IsLayerRoot target)
+    (leftOutput rightOutput : HashOutput) (message : Message) :
+    RootHiddenRelates target leftOutput rightOutput
+      (maskedSignWithTargetComparison parameter publicRoot target (truncateHash rightOutput)
+        ftsSecret message)
+      (maskedSign parameter publicRoot ftsSecret message) := by
+  unfold maskedSignWithTargetComparison maskedSign
+  let secretKey : SecretKey :=
+    ⟨parameter, publicRoot, fun _ _ _ _ => 0, ftsSecret⟩
+  apply (rootHiddenRelates_simulateQ target leftOutput rightOutput ordinaryRomImpl
+    ordinaryRomImpl (rootHiddenRelates_ordinaryRomImpl target leftOutput rightOutput)
+      (signDigestLoop digestAttemptLimit secretKey message)).bind
+  intro leftSelected rightSelected hselected
+  subst rightSelected
+  cases leftSelected with
+  | none => exact rootHiddenRelates_pure target leftOutput rightOutput none
+  | some selected =>
+      exact rootHiddenRelates_maskedSignAfterDigestWithTargetComparison_actual parameter
+        ftsSecret target hroot leftOutput rightOutput selected.1 selected.2.1 selected.2.2
+
+noncomputable def fullSwapRootCache
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (rightOutput : HashOutput)
+    (cache : SplitHashCache) : SplitHashCache :=
+  replaceHiddenRootCache target rightOutput
+    (swapCanonicalRootEncodingCache parameter target leftRoot rightRoot cache)
+
+theorem rootHiddenCacheRel_fullSwapRootCache
+    (parameter : PublicParameter) (target : Position)
+    (leftOutput rightOutput : HashOutput) (cache : SplitHashCache)
+    (hleft : cache (.hidden (.position target)) = some leftOutput) :
+    RootHiddenCacheRel target leftOutput rightOutput
+      (swapCanonicalRootEncodingCache parameter target (truncateHash leftOutput)
+        (truncateHash rightOutput) cache)
+      (fullSwapRootCache parameter target (truncateHash leftOutput)
+        (truncateHash rightOutput) rightOutput cache) := by
+  apply rootHiddenCacheRel_replace
+  exact hleft
+
+theorem evalDist_swappedRoot_maskedSign_eq
+    (parameter : PublicParameter) (publicRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (hroot : IsLayerRoot target)
+    (leftOutput rightOutput : HashOutput)
+    (state : LazyRevealProbe.State Coordinate)
+    (hprivate : Coordinate.position target ∉ state.revealed)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (cache : SplitHashCache)
+    (hhidden : cache (.hidden (.position target)) = some leftOutput)
+    (message : Message) :
+    evalDist (cleanRunReturnedValue? <$>
+        runCleanFromTable (state.materialize (.position target) leftOutput) fuel table
+          ((maskedSign parameter publicRoot ftsSecret message).run cache)) =
+      evalDist (cleanRunReturnedValue? <$>
+        runCleanFromTable (state.materialize (.position target) rightOutput) fuel table
+          ((maskedSign parameter publicRoot ftsSecret message).run
+            (fullSwapRootCache parameter target (truncateHash leftOutput)
+              (truncateHash rightOutput) rightOutput cache))) := by
+  let comparisonCache := swapCanonicalRootEncodingCache parameter target
+    (truncateHash leftOutput) (truncateHash rightOutput) cache
+  let rightCache := fullSwapRootCache parameter target
+    (truncateHash leftOutput) (truncateHash rightOutput) rightOutput cache
+  have hstored : StoredLayerRoot
+      (state.materialize (.position target) leftOutput) target (truncateHash leftOutput) := by
+    refine ⟨leftOutput, ?_, rfl⟩
+    simp [LazyRevealProbe.State.materialize]
+  have hencoding := rootEncodingCacheRel_swapCanonical parameter target
+    (truncateHash leftOutput) (truncateHash rightOutput) cache
+  have hab := evalDist_cleanRunReturnedValue_eq_of_rootEncodingStored
+    (rootEncodingCacheRelatesStored_maskedSign_targetComparison parameter publicRoot target hroot
+      (truncateHash leftOutput) (truncateHash rightOutput) ftsSecret message)
+    cache comparisonCache hencoding
+    (state.materialize (.position target) leftOutput) fuel table hstored
+  have hstate := rootHiddenStateRel_materialize target leftOutput rightOutput state hprivate
+  have hcache : RootHiddenCacheRel target leftOutput rightOutput comparisonCache rightCache := by
+    exact rootHiddenCacheRel_fullSwapRootCache parameter target leftOutput rightOutput cache hhidden
+  have hbc := evalDist_cleanRunReturnedValue_eq_of_rootHidden
+    (rootHiddenRelates_maskedSignWithTargetComparison_actual parameter publicRoot ftsSecret
+      target hroot leftOutput rightOutput message)
+    (state.materialize (.position target) leftOutput)
+    (state.materialize (.position target) rightOutput) hstate fuel table
+    comparisonCache rightCache hcache
+  exact hab.trans hbc
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
