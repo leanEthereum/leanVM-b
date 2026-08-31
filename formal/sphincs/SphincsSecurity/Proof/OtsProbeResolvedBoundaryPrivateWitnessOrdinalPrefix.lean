@@ -245,6 +245,24 @@ theorem privateWitnessPlanMatchesCandidate_of_usesOrdinal_of_prefix
   rw [hselected]
   exact hsource
 
+theorem not_witnessFirstUsesNonLayerRootOrdinal_of_prefix_of_root
+    (current : List Probe) (output : PrivateWitnessPlanOutput) (ordinal : Nat)
+    (hlt : ordinal < current.length)
+    (hprefix : PrivateWitnessPlanExtends current output)
+    (hroot : (current.get ⟨ordinal, hlt⟩).IsLayerRoot) :
+    ¬WitnessFirstUsesNonLayerRootOrdinal ordinal output := by
+  rintro ⟨witness, sourceOrdinal, hwitness, hvalue, hfirst, hnotRoot⟩
+  have hselected : current.get ⟨sourceOrdinal.val, by simpa [hvalue] using hlt⟩ =
+      output.2.get sourceOrdinal := by
+    change current[sourceOrdinal.val] = output.2[sourceOrdinal.val]
+    exact hprefix.getElem (by simpa [hvalue] using hlt)
+  have hcurrent : current.get ⟨sourceOrdinal.val, by simpa [hvalue] using hlt⟩ =
+      current.get ⟨ordinal, hlt⟩ := by
+    congr
+  apply hnotRoot
+  rw [← hselected, hcurrent]
+  exact hroot
+
 theorem probEvent_granularDetailedRetainedRestWitnessUsesOrdinal_le_of_selected
     (adversary : Adversary) (parameter : PublicParameter)
     (table : OtsSecretIndex → HashOutput)

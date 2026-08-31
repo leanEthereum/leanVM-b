@@ -299,6 +299,14 @@ theorem witnessUsesOrdinal_of_witnessFirstUsesOrdinal
     · simp [matching, hmatching] at hfirst
   exact ⟨witness, sourceOrdinal, hwitness, hvalue, hmatch⟩
 
+theorem witnessUsesOrdinal_of_witnessFirstUsesNonLayerRootOrdinal
+    {ordinal : Nat} {output : PrivateWitnessPlanOutput}
+    (hfirst : WitnessFirstUsesNonLayerRootOrdinal ordinal output) :
+    WitnessUsesOrdinal ordinal output := by
+  obtain ⟨witness, sourceOrdinal, hwitness, hvalue, hselected, _hroot⟩ := hfirst
+  exact witnessUsesOrdinal_of_witnessFirstUsesOrdinal
+    ⟨witness, sourceOrdinal, hwitness, hvalue, hselected⟩
+
 theorem witnessUsesOrdinal_of_bounded_eq
     (q : Nat) (output : PrivateWitnessPlanOutput) (ordinal : Fin q)
     (hcovered : PrivateWitnessCovered output)
