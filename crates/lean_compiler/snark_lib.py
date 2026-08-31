@@ -92,7 +92,7 @@ def const(e):
     whose integer and field readings disagree is rejected rather than silently
     decided one way, since `+` is XOR in a value. A folded branch is
     straight-line code, so unlike a runtime branch its bindings outlive it."""
-    return cond
+    return e
 
 
 def log(x) -> int:
