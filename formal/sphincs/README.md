@@ -322,6 +322,8 @@ Every unrelated layer is now related as well: its tree root is distinct from the
 
 The direct hash side now has a value-parametric clean relation. `peekCoordinate`, recursive `peekPositionValues` and complete `peekTableInput` agree on option shape even when their reconstructed bytes differ at the hidden root slot. Strengthening this coupling with support witnesses proves the exact safe `resolveKnownInput` rule: if neither reconstructed input equals the adversarial input, both executions take the same ordinary random-oracle branch and preserve the swapped-root quotients. The next step derives those miss premises from the recorded root-aware candidate and least-ordinal condition.
 
+The combined cache transformation used by the state swap is now involutive as well: swapping the two root digests in canonical encoding keys and replacing the hidden target output, then reversing both operations, restores every split-cache key exactly.
+
 Two places a proof can go wrong, both found by attacking the claim rather than by reading it:
 
 - **A strong forgery needs no chain inversion.** `Ver` does not check that the counter is the least admissible one, so a second `c'` with `Enc(P,lay,tau,e,M,c') = x` reuses the chain values verbatim and verifies. Since the codeword fixes the digest, that is one `2^-128` hit per query and it is harmless, but it is a branch of its own: the one-time signature is unforgeable on a *new* message by incomparability, and unforgeable on the *signed* message only by collision resistance at `tw_enc`.

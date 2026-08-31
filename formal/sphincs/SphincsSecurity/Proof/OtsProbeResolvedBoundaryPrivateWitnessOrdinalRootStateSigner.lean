@@ -603,6 +603,30 @@ theorem rootHiddenCacheRel_fullSwapRootCache
   apply rootHiddenCacheRel_replace
   exact hleft
 
+theorem fullSwapRootCache_involutive
+    (parameter : PublicParameter) (target : Position)
+    (leftOutput rightOutput : HashOutput) (cache : SplitHashCache)
+    (hleft : cache (.hidden (.position target)) = some leftOutput) :
+    fullSwapRootCache parameter target (truncateHash rightOutput)
+        (truncateHash leftOutput) leftOutput
+        (fullSwapRootCache parameter target (truncateHash leftOutput)
+          (truncateHash rightOutput) rightOutput cache) = cache := by
+  funext key
+  cases key with
+  | ordinary input =>
+      simp [fullSwapRootCache, replaceHiddenRootCache,
+        swapCanonicalRootEncodingCache,
+        swapCanonicalRootEncodingInput_involutive]
+  | hidden coordinate =>
+      by_cases heq : coordinate = .position target
+      · subst coordinate
+        simp [fullSwapRootCache, replaceHiddenRootCache, hleft]
+      · have hkey : SplitHashKey.hidden coordinate ≠ .hidden (.position target) := by
+          intro h
+          exact heq (SplitHashKey.hidden.inj h)
+        simp [fullSwapRootCache, replaceHiddenRootCache,
+          swapCanonicalRootEncodingCache, Function.update_of_ne hkey]
+
 theorem evalDist_swappedRoot_maskedSign_eq
     (parameter : PublicParameter) (publicRoot : Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
