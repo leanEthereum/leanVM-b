@@ -96,8 +96,10 @@ theorem probEvent_directDetailedBoundaryPrivateOrdinalHiddenRisk_le
     (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
     (hparents : CandidatesHaveStructuralParent candidates)
     (hfresh : CandidatePositionsFresh context)
+    (hpublishedContext : PublishedValues context.state)
     (huniformFresh : ∀ n nextContext remaining nextCache result,
       CandidatePositionsFresh nextContext →
+      PublishedValues nextContext.state →
       DirectWitnessResult.done result ∈ support
         (runDirectResolvedWitnessFromTable nextContext remaining table
           ((splitUniformImpl n).run nextCache)) →
@@ -105,6 +107,7 @@ theorem probEvent_directDetailedBoundaryPrivateOrdinalHiddenRisk_le
       CandidatePositionsFresh (canonicalizeMaterializedValues table result.context))
     (hhashFresh : ∀ input plan nextContext remaining nextCache result,
       CandidatePositionsFresh nextContext →
+      PublishedValues nextContext.state →
       DirectWitnessResult.done result ∈ support
         (runDirectResolvedWitnessFromTable nextContext remaining table
           ((probingHashQueryAfterPlan parameter input plan).run nextCache)) →
@@ -112,6 +115,7 @@ theorem probEvent_directDetailedBoundaryPrivateOrdinalHiddenRisk_le
       CandidatePositionsFresh (canonicalizeMaterializedValues table result.context))
     (hsignFresh : ∀ message nextContext remaining nextCache result,
       CandidatePositionsFresh nextContext →
+      PublishedValues nextContext.state →
       DirectWitnessResult.done result ∈ support
         (runDirectResolvedWitnessFromTable nextContext remaining table
           ((maskedSign parameter root ftsSecret message).run nextCache)) →
@@ -151,7 +155,9 @@ theorem probEvent_directDetailedBoundaryPrivateOrdinalHiddenRisk_le
                 exact ih resolved.value.1 candidates
                   (canonicalizeMaterializedValues table resolved.context) resolved.remaining
                   resolved.value.2 hparents
-                  (huniformFresh n context fuel cache resolved hfresh hresult hpublished)
+                  (huniformFresh n context fuel cache resolved hfresh hpublishedContext hresult
+                    hpublished)
+                  hpublished.to_canonicalizedMaterializedValues
           | inr input =>
               rw [directDetailedBoundaryPrivateOrdinalHiddenRisk,
                 OracleComp.construct_query_bind]
@@ -191,7 +197,9 @@ theorem probEvent_directDetailedBoundaryPrivateOrdinalHiddenRisk_le
                   exact ih resolved.value.1 nextCandidates
                     (canonicalizeMaterializedValues table resolved.context) resolved.remaining
                     resolved.value.2 hnextParents
-                    (hhashFresh input plan context fuel cache resolved hfresh hresult hpublished)
+                    (hhashFresh input plan context fuel cache resolved hfresh hpublishedContext
+                      hresult hpublished)
+                    hpublished.to_canonicalizedMaterializedValues
       | inr message =>
           rw [directDetailedBoundaryPrivateOrdinalHiddenRisk,
             OracleComp.construct_query_bind]
@@ -209,7 +217,9 @@ theorem probEvent_directDetailedBoundaryPrivateOrdinalHiddenRisk_le
             exact ih resolved.value.1 candidates
               (canonicalizeMaterializedValues table resolved.context) resolved.remaining
               resolved.value.2 hparents
-              (hsignFresh message context fuel cache resolved hfresh hresult hpublished)
+              (hsignFresh message context fuel cache resolved hfresh hpublishedContext hresult
+                hpublished)
+              hpublished.to_canonicalizedMaterializedValues
 
 theorem probEvent_granularDetailedRetainedRestPrivateOrdinalHiddenRisk_le
     (adversary : Adversary) (parameter : PublicParameter)
@@ -219,8 +229,10 @@ theorem probEvent_granularDetailedRetainedRestPrivateOrdinalHiddenRisk_le
     (value : Digest × SplitHashCache) (candidates : List Probe)
     (hparents : CandidatesHaveStructuralParent candidates)
     (hfresh : CandidatePositionsFresh context)
+    (hpublished : PublishedValues context.state)
     (huniformFresh : ∀ n nextContext remaining nextCache result,
       CandidatePositionsFresh nextContext →
+      PublishedValues nextContext.state →
       DirectWitnessResult.done result ∈ support
         (runDirectResolvedWitnessFromTable nextContext remaining table
           ((splitUniformImpl n).run nextCache)) →
@@ -228,6 +240,7 @@ theorem probEvent_granularDetailedRetainedRestPrivateOrdinalHiddenRisk_le
       CandidatePositionsFresh (canonicalizeMaterializedValues table result.context))
     (hhashFresh : ∀ input plan nextContext remaining nextCache result,
       CandidatePositionsFresh nextContext →
+      PublishedValues nextContext.state →
       DirectWitnessResult.done result ∈ support
         (runDirectResolvedWitnessFromTable nextContext remaining table
           ((probingHashQueryAfterPlan parameter input plan).run nextCache)) →
@@ -235,6 +248,7 @@ theorem probEvent_granularDetailedRetainedRestPrivateOrdinalHiddenRisk_le
       CandidatePositionsFresh (canonicalizeMaterializedValues table result.context))
     (hsignFresh : ∀ message nextContext remaining nextCache result,
       CandidatePositionsFresh nextContext →
+      PublishedValues nextContext.state →
       DirectWitnessResult.done result ∈ support
         (runDirectResolvedWitnessFromTable nextContext remaining table
           ((maskedSign parameter value.1 ftsSecret message).run nextCache)) →
@@ -247,6 +261,7 @@ theorem probEvent_granularDetailedRetainedRestPrivateOrdinalHiddenRisk_le
   unfold granularDetailedRetainedRestPrivateOrdinalHiddenRisk
   exact probEvent_directDetailedBoundaryPrivateOrdinalHiddenRisk_le ordinal parameter value.1
     ftsSecret (retainedGameRestComputation adversary ⟨value.1, parameter⟩)
-    candidates context fuel table value.2 hparents hfresh huniformFresh hhashFresh hsignFresh
+    candidates context fuel table value.2 hparents hfresh hpublished huniformFresh hhashFresh
+      hsignFresh
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
