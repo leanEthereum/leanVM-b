@@ -108,7 +108,7 @@ enum PureOp {
 /// is a value fact true on one path and reverts at a join, while `written` is a
 /// fact about the code, conservative and permanent. Reverting it would let a
 /// later store alias a cell some instruction writes.
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Default)]
 struct Slot {
     /// The deferred store this cell stands for, if any: nothing has been emitted
     /// for it and every read forwards to the source.
@@ -260,9 +260,7 @@ struct FnLower<'a> {
     /// or a folded g-address, or take the scalar dst cell). `None` outside an
     /// inlined return.
     inline_stack_ret: Option<Vec<RetBind>>,
-    /// What is known about each frame cell ([`Slot`]). One entry per cell,
-    /// replacing the two side maps that answered "is this aliased" and "has this
-    /// been written" separately.
+    /// What is known about each frame cell ([`Slot`]), one entry per cell.
     slots: HashMap<Off, Slot>,
     /// The cells [`Self::stack_store`] has aliased, in the order it aliased them,
     /// which is what a branch join replays. Diffing two `HashMap`s for that made
@@ -480,7 +478,9 @@ impl FnLower<'_> {
     /// bytecode constant rather than a chance to choose the value. It reverts at
     /// a branch join with the rest of [`Scope`], since a `SET` first emitted
     /// inside a branch must not be named outside it, where the other path leaves
-    /// the cell unwritten and so prover-chosen.
+    /// the cell unwritten and so prover-chosen. Several call sites hoist
+    /// [`Self::one`] above a branch on purpose; the revert is what makes that an
+    /// optimization rather than the thing holding the invariant up.
     fn const_cell(&mut self, v: F192) -> Off {
         let key = [v.c0, v.c1, v.c2];
         if let Some(&o) = self.scope.const_cells.get(&key) {
@@ -979,7 +979,9 @@ impl FnLower<'_> {
     ///
     /// Then `e + f ≡ k-1 (mod 2^64-1)` with `e, f < 2^h`, and a negative `k-1-e`
     /// wraps to `≈ 2^64 ≫ 2^h`, so `e ≤ k-1` for ANY announced memory size,
-    /// provided `k ≤ 2^MIN_LOG_MEM`.
+    /// provided `k ≤ 2^MIN_LOG_MEM`. Both `DEREF` destinations are unconstrained
+    /// touches, back-filled at the end of execution: only the ADDRESS matters, so
+    /// nothing reading their results is correct rather than an omission.
     ///
     /// A [`LtBound::Runtime`] bound reaches the same gadget through one extra
     /// `MUL` for `g^{k-1} = Y·g^{-1}`, still back-solved rather than hinted, and
@@ -1211,22 +1213,6 @@ impl FnLower<'_> {
         acc
     }
 
-    /// A BLAKE2s chaining value must occupy two consecutive frame cells because
-    /// the opcode carries one base offset for both words. Preserve a genuine
-    /// consecutive pair, including a heap pair already bridged by
-    /// [`Self::blake2s_input`]; if deferred copy forwarding exposes two
-    /// non-adjacent sources, materialize them into a fresh consecutive run.
-    fn blake2s_cv(&mut self, e: &Expr) -> Off {
-        let pair = self.blake2s_input(e);
-        if pair[1] == pair[0] + 1 {
-            return pair[0];
-        }
-        let cv = self.alloc_stack(2);
-        self.copy(pair[0], cv);
-        self.copy(pair[1], cv + 1);
-        cv
-    }
-
     /// Evaluate `e` writing its value straight into cell `dst`, with no temporary +
     /// copy for the common cases (a heap read DEREFs directly into `dst`; a
     /// constant / arithmetic emits into `dst`). Falls back to `expr` + `copy` for
@@ -1281,20 +1267,6 @@ impl FnLower<'_> {
                 self.copy(v, dst);
             }
         }
-    }
-
-    /// The value a `Const` parameter takes, as the literal that substitutes for
-    /// it: a `GEN ** k` argument stays a g-power, everything else must fold to a
-    /// compile-time integer (a bound name, a const-array element `DEPTH[lvl]`,
-    /// `len(...)`, index arithmetic over other `Const` params). `None` when it
-    /// does not fold.
-    fn const_arg(&self, a: &Expr) -> Option<Expr> {
-        Some(match a {
-            Expr::Lit(n) => Expr::Lit(*n),
-            Expr::Gen => Expr::GPow(1),
-            Expr::GPow(k) => Expr::GPow(*k),
-            other => Expr::Lit(self.try_const_index(other)? as u128),
-        })
     }
 
     fn stmt(&mut self, s: &Stmt) {

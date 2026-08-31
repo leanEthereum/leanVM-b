@@ -108,7 +108,7 @@ impl FnLower<'_> {
 
     /// If `e` is `NAME[i]` for a top-level constant array `NAME` with a
     /// compile-time index `i`, its element (a raw `u128`).
-    pub(super) fn const_array_elem(&self, e: &Expr) -> Option<F192> {
+    fn const_array_elem(&self, e: &Expr) -> Option<F192> {
         if let Expr::Index(arr, idx) = e
             && let Expr::Var(v) = arr.as_ref()
             && let Some(a) = self.const_arrays.get(v)
@@ -124,7 +124,7 @@ impl FnLower<'_> {
     }
 
     /// If `e` is `len(NAME)` for a top-level constant array `NAME`, its length.
-    pub(super) fn const_len(&self, e: &Expr) -> Option<usize> {
+    fn const_len(&self, e: &Expr) -> Option<usize> {
         if let Expr::Call(f, args) = e
             && f == "len"
             && args.len() == 1
@@ -193,7 +193,7 @@ impl FnLower<'_> {
     /// integer reading is 5, so `assert n == 1` and `assert const(n) == 5` both
     /// passed, in one program. This is the ambiguity `if const(...)` already
     /// rejects per side, one level up, and the rule is the same one.
-    pub(super) fn check_const_leaves(&self, e: &Expr) {
+    fn check_const_leaves(&self, e: &Expr) {
         match e {
             Expr::Add(a, b)
             | Expr::Sub(a, b)

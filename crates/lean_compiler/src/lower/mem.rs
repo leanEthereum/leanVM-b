@@ -247,7 +247,7 @@ impl FnLower<'_> {
 
     /// A stack store `sa[k] = val` whose value is a plain copy or a zero, which we
     /// defer as an [`Alias`] (forwarded at use) instead of emitting.
-    pub(super) fn copy_alias(&self, val: &Expr) -> Option<Alias> {
+    fn copy_alias(&self, val: &Expr) -> Option<Alias> {
         match val {
             // A live var / stack cell aliases to that cell directly (no new
             // material); anything else that is a compile-time constant defers
@@ -309,7 +309,7 @@ impl FnLower<'_> {
     /// Address `arr·g^extra` as `(base_cell, β)`, folding `arr`'s symbolic shift
     /// and the constant `extra` into `β`. Falls back to a materialized pointer
     /// (`β = 0`) when there is no runtime base or the offset exceeds [`FOLD_MAX`].
-    pub(super) fn heap_base(&mut self, arr: &Expr, extra: u128) -> (Off, u32) {
+    fn heap_base(&mut self, arr: &Expr, extra: u128) -> (Off, u32) {
         self.check_heap_bound(arr, extra, 1);
         if let Some(ga) = self.gaddr_of(arr)
             && let (Some(base), Some(exp)) = (ga.base, ga.exp.checked_add(extra))
@@ -332,7 +332,7 @@ impl FnLower<'_> {
     /// which has already folded away a wholly constant index: here a constant
     /// g-power *factor* still goes into the `beta` immediate, so only the
     /// runtime factor costs a pointer `MUL`.
-    pub(super) fn array_ptr(&mut self, arr: &Expr, idx: &Expr) -> (Off, u32) {
+    fn array_ptr(&mut self, arr: &Expr, idx: &Expr) -> (Off, u32) {
         // `buf[r * GEN ** k]` (either factor order): beta takes the constant,
         // the pointer MUL takes only the runtime factor `r`.
         if let Expr::Mul(a, b) = idx {
@@ -369,7 +369,7 @@ impl FnLower<'_> {
     /// Follow `Cell` alias hops to the cell that ends the chain, emitting nothing.
     /// This is what [`Self::stack_store`] records, so a recorded source never has
     /// an outgoing `Cell` edge and no cycle can form.
-    pub(super) fn cell_src(&self, o: Off) -> Off {
+    fn cell_src(&self, o: Off) -> Off {
         let mut cur = o;
         for _ in 0..=self.next {
             match self.alias_of(cur) {

@@ -31,12 +31,12 @@ pub(super) fn ret_binding(b: Option<RetBind>, dst: Off) -> Binding {
 /// runtime loop, or a match (which would reload a frame pointer that is no
 /// longer the callee's). Builtins and nested `@inline` calls are fine;
 /// `unroll`/`if` are compile-time / same-frame and recurse into.
-pub(super) fn body_inlinable(body: &[Stmt]) -> bool {
+fn body_inlinable(body: &[Stmt]) -> bool {
     matches!(body.split_last(), Some((last, rest)) if matches!(last.kind, StmtKind::Return(_))
         && rest.iter().all(stmt_inline_safe))
 }
 
-pub(super) fn stmt_inline_safe(s: &Stmt) -> bool {
+fn stmt_inline_safe(s: &Stmt) -> bool {
     match &s.kind {
         StmtKind::Let(..)
         | StmtKind::Store(..)
@@ -603,7 +603,7 @@ impl FnLower<'_> {
     /// never reaches `defs`. `defs` is consulted first and answers with the
     /// PRE-specialization count, Const parameters included, which is what a call
     /// site passes.
-    pub(super) fn arity_of(&self, callee: &str) -> Option<usize> {
+    fn arity_of(&self, callee: &str) -> Option<usize> {
         self.defs
             .get(callee)
             .map(|d| d.params.len())
@@ -613,7 +613,7 @@ impl FnLower<'_> {
     /// A callee's declared PARAMETER shapes, looked up the same way as its
     /// arity. A generated function (a loop helper, a `Const` specialization) is
     /// all scalars.
-    pub(super) fn param_shapes_of(&self, callee: &str) -> Option<Vec<Shape>> {
+    fn param_shapes_of(&self, callee: &str) -> Option<Vec<Shape>> {
         self.defs.get(callee).map(|d| d.param_shapes.clone()).or_else(|| {
             self.queue
                 .iter()
@@ -625,7 +625,7 @@ impl FnLower<'_> {
     /// A callee's declared return shapes, looked up the same way. A dispatched
     /// `match_range` names specializations, so a check that consults only `defs`
     /// silently passes on every one of them.
-    pub(super) fn return_shapes_of(&self, callee: &str) -> Option<Vec<Shape>> {
+    fn return_shapes_of(&self, callee: &str) -> Option<Vec<Shape>> {
         self.defs.get(callee).map(|d| d.return_shapes.clone()).or_else(|| {
             self.queue
                 .iter()
@@ -657,5 +657,18 @@ impl FnLower<'_> {
             }
             _ => dst,
         }
+    }
+    /// The value a `Const` parameter takes, as the literal that substitutes for
+    /// it: a `GEN ** k` argument stays a g-power, everything else must fold to a
+    /// compile-time integer (a bound name, a const-array element `DEPTH[lvl]`,
+    /// `len(...)`, index arithmetic over other `Const` params). `None` when it
+    /// does not fold.
+    fn const_arg(&self, a: &Expr) -> Option<Expr> {
+        Some(match a {
+            Expr::Lit(n) => Expr::Lit(*n),
+            Expr::Gen => Expr::GPow(1),
+            Expr::GPow(k) => Expr::GPow(*k),
+            other => Expr::Lit(self.try_const_index(other)? as u128),
+        })
     }
 }

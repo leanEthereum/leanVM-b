@@ -33,13 +33,13 @@ pub(crate) fn subst_stmts(stmts: &[Stmt], name: &str, to: &Expr) -> Vec<Stmt> {
 }
 
 /// One statement of [`subst_stmts`]; the flag says whether it rebinds `name`.
-pub(super) fn subst_stmt(s: &Stmt, name: &str, to: &Expr) -> (Stmt, bool) {
+fn subst_stmt(s: &Stmt, name: &str, to: &Expr) -> (Stmt, bool) {
     let (kind, rebinds) = subst_kind(&s.kind, name, to);
     (s.at(kind), rebinds)
 }
 
 /// The kind half of [`subst_stmt`]; the flag says whether it rebinds `name`.
-pub(super) fn subst_kind(s: &StmtKind, name: &str, to: &Expr) -> (StmtKind, bool) {
+fn subst_kind(s: &StmtKind, name: &str, to: &Expr) -> (StmtKind, bool) {
     let e = |x: &Expr| subst_var(x, name, to);
     match s {
         StmtKind::Let(n, x) => (StmtKind::Let(n.clone(), e(x)), n == name),

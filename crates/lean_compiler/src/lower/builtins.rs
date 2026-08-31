@@ -20,7 +20,7 @@ impl FnLower<'_> {
     /// fresh stack pair and two `DEREF`s after the hash, the store direction
     /// being the same instruction as the load (write-once fills the unset side).
     /// Keyword arguments set the compile-time metadata.
-    pub(super) fn lower_blake2s(&mut self, args: &[Expr]) {
+    fn lower_blake2s(&mut self, args: &[Expr]) {
         let first_kw = args
             .iter()
             .position(|a| matches!(a, Expr::Call(name, _) if name.starts_with("__kw_")))
@@ -185,7 +185,7 @@ impl FnLower<'_> {
     /// cells, a 256-bit value being two 128-bit cells. Stack operands are used
     /// in place; heap operands must be bridged through the stack, since
     /// `BLAKE2s` addresses only frame cells (see [`Self::blake2s_input`]).
-    pub(super) fn blake2s_operand(&mut self, e: &Expr) -> CellRun {
+    fn blake2s_operand(&mut self, e: &Expr) -> CellRun {
         let run = self.cell_run(e);
         if run.cells() != 2 {
             self.fail("a blake2s operand must span exactly 2 cells (two 128-bit words); slice a larger buffer: `buf[lo:lo + 2]`")
@@ -214,7 +214,7 @@ impl FnLower<'_> {
         }
     }
 
-    pub(super) fn default_blake2s_cv(&mut self) -> Off {
+    fn default_blake2s_cv(&mut self) -> Off {
         if let Some(o) = self.scope.blake2s_iv {
             return o;
         }
@@ -271,5 +271,20 @@ impl FnLower<'_> {
             CellRun::Heap { ptr, lo, len } => RHint::WitnessHeap { name, ptr, lo, len },
         };
         self.pending.push(Hint::Resolved(hint));
+    }
+    /// A BLAKE2s chaining value must occupy two consecutive frame cells because
+    /// the opcode carries one base offset for both words. Preserve a genuine
+    /// consecutive pair, including a heap pair already bridged by
+    /// [`Self::blake2s_input`]; if deferred copy forwarding exposes two
+    /// non-adjacent sources, materialize them into a fresh consecutive run.
+    fn blake2s_cv(&mut self, e: &Expr) -> Off {
+        let pair = self.blake2s_input(e);
+        if pair[1] == pair[0] + 1 {
+            return pair[0];
+        }
+        let cv = self.alloc_stack(2);
+        self.copy(pair[0], cv);
+        self.copy(pair[1], cv + 1);
+        cv
     }
 }

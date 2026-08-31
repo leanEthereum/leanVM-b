@@ -158,11 +158,7 @@ pub(super) fn parse_expr(s: &str) -> Result<Expr, String> {
 
 /// Combine one tier's operands left-associatively: `node` builds the AST node
 /// for each operator (as [`split_add`] / [`split_mul`] tag it).
-pub(super) fn fold_ops(
-    segs: &[String],
-    ops: &[u8],
-    node: impl Fn(u8, Box<Expr>, Box<Expr>) -> Expr,
-) -> Result<Expr, String> {
+fn fold_ops(segs: &[String], ops: &[u8], node: impl Fn(u8, Box<Expr>, Box<Expr>) -> Expr) -> Result<Expr, String> {
     // An empty operand is an operator missing a side: a leading `-`, a trailing
     // operator, or two in a row. Naming it beats letting `parse_expr("")` report
     // an empty backtick, which is what every one of these used to say.
@@ -228,7 +224,7 @@ pub(super) fn depth0(s: &str) -> impl Iterator<Item = (usize, u8)> + '_ {
 /// Split `s` at the top-level additive tier: operands and the `+` / `-`
 /// operators between them. Left-associative; parenthesised/bracketed sub-terms
 /// are left intact.
-pub(super) fn split_add(s: &str) -> (Vec<String>, Vec<u8>) {
+fn split_add(s: &str) -> (Vec<String>, Vec<u8>) {
     let (mut segs, mut ops) = (Vec::new(), Vec::new());
     let mut start = 0usize;
     for (i, c) in depth0(s) {
@@ -246,7 +242,7 @@ pub(super) fn split_add(s: &str) -> (Vec<String>, Vec<u8>) {
 /// operators between them (`*`, `//` for floor-division, `/` for runtime field
 /// division, `%` for remainder). A `**` power is left intact (bound tighter).
 /// Left-associative.
-pub(super) fn split_mul(s: &str) -> (Vec<String>, Vec<u8>) {
+fn split_mul(s: &str) -> (Vec<String>, Vec<u8>) {
     let b = s.as_bytes();
     let (mut segs, mut ops) = (Vec::new(), Vec::new());
     let (mut start, mut next) = (0usize, 0usize);

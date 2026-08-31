@@ -333,6 +333,19 @@ def main():
     let want = [g_pow(1).into(), g_pow(0).into()];
     let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     verify(&program, &want, &proof).expect("the outer StackBuf is untouched");
+
+    // Return-shape inference, the third walker: rebinding a `StackBuf` name to a
+    // scalar hint has to REPLACE the shape, or the callee is inferred to return a
+    // run of cells and the caller dies on "StackBuf used as a scalar". Only a
+    // rebinding reaches it, which is why the other two cases above do not.
+    let rebound = format!(
+        "def pick():\n    s = StackBuf(2)\n    s[0] = GEN ** 1\n    s[1] = GEN ** 2\n    s = hint_witness(\"m\")\n    return s\n\ndef main():\n    r = pick()\n{tail}"
+    );
+    let mut program = compile(&parse(&rebound).expect("a hint may rebind a StackBuf name"));
+    program.set_witness("m", vec![vec![g_pow(6).into()]]);
+    let want = [g_pow(6).into(), g_pow(0).into()];
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    verify(&program, &want, &proof).expect("the rebound name returns as a scalar");
 }
 
 /// A bit-decomposition hint checks its heap destination, like its stack one.

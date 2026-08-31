@@ -1,21 +1,24 @@
-//! One source compiles to one program, always.
+//! One source compiles to one program, always, and the same program it compiled
+//! to yesterday.
 //!
 //! The bytecode digest leads the Fiat--Shamir transcript, so two builds of one
 //! source that disagree are two incompatible proof systems, and the symptom is a
-//! proof that stops verifying rather than a crash. The compiler walks several
-//! `HashMap`s; one `sort_unstable` in `lower::scoped` is what currently keeps
-//! their iteration order out of the bytecode, and nothing tested it.
+//! proof that stops verifying rather than a crash.
 //!
-//! Two properties, both covered here:
+//! Two different properties, and only the first is about determinism:
 //!
-//! * *Within a process.* `RandomState` bumps its seed once per map, so the
-//!   second compilation hashes with different keys than the first. Compiling
-//!   twice is a real perturbation, not a repeat.
-//! * *Across processes.* The digests below were produced by an earlier process,
-//!   under a different global seed. Matching them today is the check.
+//! * *Within a process*, compiling twice is a real perturbation rather than a
+//!   repeat, since `RandomState` bumps its seed once per map, so the second
+//!   compilation hashes with different keys than the first.
+//! * *Across commits*, `GOLDEN` is a SNAPSHOT of the compiler's output. It does
+//!   not prove determinism (nothing iterating a hash container reaches the
+//!   bytecode today, and deliberately reversing the branch-output order at a join
+//!   moves no digest). It earns its place a different way: a codegen change that
+//!   was not intended shows up here and nowhere else, and every entry that moved
+//!   this far was a change someone then had to justify.
 //!
-//! A digest moves only when the compiler's output moves. That is a deliberate
-//! act: update `GOLDEN` in the same commit, and say in the message what changed.
+//! So a moved digest is a question, not a chore: update `GOLDEN` in the same
+//! commit and say in the message which change moved it.
 
 use std::collections::BTreeMap;
 use std::fs;

@@ -119,8 +119,10 @@ pub enum StmtKind {
     /// `f(args)` as a statement (returns discarded).
     Call(String, Vec<Expr>),
     /// `hint_witness(dest, "name")`: fill `dest` from the next entry of the named
-    /// witness stream, whose length must match. Zero cycles and completely
-    /// unconstrained, so the program must constrain the values itself.
+    /// witness stream (`Program::set_witness`), whose length must match. The same
+    /// name may be hinted many times, each call popping the next entry. Zero
+    /// cycles and completely unconstrained, so the program must constrain the
+    /// values itself.
     HintWitness { dest: Expr, name: String },
     /// `x = hint_witness("stream")`: one hinted value bound to a name, as
     /// unconstrained as any other hint. The run form above needs a destination
@@ -147,8 +149,9 @@ pub enum StmtKind {
         force_const: bool,
     },
     /// `match log(x):` over consecutive cases from 0, matched against the log of
-    /// the g-power scrutinee. The scrutinee must be known to lie in `[0, n)`, so
-    /// range-check a hinted one first. Case bodies are branch-local, as for
+    /// the g-power scrutinee, dispatched through a trampoline table in the
+    /// bytecode (doc §ISA programming / Match statements). The scrutinee must be
+    /// known to lie in `[0, n)`, so range-check a hinted one first. Case bodies are branch-local, as for
     /// [`StmtKind::If`]. See `FnLower::lower_match`.
     Match { x: Expr, cases: Vec<Vec<Stmt>> },
     /// `names = match_range(log(x), range(a, b), lambda i: expr, …)`: a
