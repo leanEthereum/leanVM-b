@@ -1,0 +1,459 @@
+//! Addressing, and the store path: which cell a name means, and what a write to
+//! it costs.
+//!
+//! Two rules hold this together and both have been broken here before.
+//!
+//! **Every index is bounds-checked, in every position.** A store's right-hand
+//! side is an index as much as an expression is, and when [`FnLower::copy_alias`]
+//! did not check one, `c[0] = a[2]` on a `StackBuf(2)` aliased the next buffer's
+//! first cell and its assert passed, while the identical read written as
+//! `x = a[2]` was rejected. A slice checks its whole SPAN, not its first cell: a
+//! runtime-start slice whose start folds reaches that arm because it is not an
+//! integer, and losing the span there let a hint write past its buffer.
+//!
+//! **A deferred store is a value fact, not an instruction.** `sa[k] = other`
+//! records an alias and emits nothing, so assembling a `BLAKE2s` operand out of
+//! scattered values is free. It holds only while NOTHING ELSE has given the cell
+//! a value: once an instruction, a digest or a hint has written it, a store is
+//! the write-once equality assertion instead, and must be emitted. That is what
+//! makes `s[k] = <checked value>` pin a hint.
+
+use super::*;
+
+impl FnLower<'_> {
+    /// Resolve an expression naming a run of consecutive cells: a whole
+    /// `StackBuf`, a `StackBuf` slice, a `HeapBuf` slice with compile-time
+    /// bounds, or a runtime-start heap slice `buf[i:i + k]` (whose length is
+    /// the only thing its bounds reveal). Heap runs fold the buffer's symbolic
+    /// shift and the slice start into the pointer offset.
+    pub(super) fn cell_run(&mut self, e: &Expr) -> CellRun {
+        match e {
+            Expr::Var(_) => {
+                let (base, len) = self
+                    .stack_of(e)
+                    .expect("only a StackBuf names a cell run unsliced; slice a HeapBuf: `buf[lo:lo + k]`");
+                CellRun::Stack { base, len }
+            }
+            Expr::Slice(arr, lo, hi) => match (self.try_const_index(lo), self.try_const_index(hi)) {
+                // Compile-time bounds: integer cell indexes `lo..hi` (frame
+                // offsets for a stack, g-power exponents for the heap).
+                (Some(lo), Some(hi)) => {
+                    if lo >= hi {
+                        self.fail(format!("empty slice {lo}:{hi}"))
+                    };
+                    let len = hi - lo;
+                    if let Some((base, size)) = self.stack_of(arr) {
+                        if hi > size {
+                            self.fail(format!("slice {lo}:{hi} out of bounds (StackBuf size {size})"))
+                        };
+                        CellRun::Stack { base: base + lo, len }
+                    } else {
+                        self.check_heap_bound(arr, lo as u128, len as u128);
+                        let (ptr, lo) = self.heap_base(arr, lo as u128);
+                        CellRun::Heap { ptr, lo, len }
+                    }
+                }
+                // Runtime start (heap only): `buf[i:i + k]` with a runtime
+                // g-power index `i` names the cells `buf·i·g^j`, j < k. The
+                // `hi` bound cannot be evaluated, only shape-checked against
+                // `lo`. One MUL folds `i` into the pointer.
+                _ => {
+                    if self.stack_of(arr).is_some() {
+                        self.fail(
+                            "a StackBuf slice needs compile-time bounds (frame offsets are baked into the bytecode)",
+                        )
+                    };
+                    let k = plus_k(lo, hi).unwrap_or_else(|| {
+                        self.fail(format!("a runtime slice must be `buf[i:i + k]`, got `{lo:?}:{hi:?}`"))
+                    });
+                    let len = u32::try_from(k).expect("slice length overflows u32");
+                    if len == 0 {
+                        self.fail(format!("a runtime slice `{lo:?}:{hi:?}` has length 0, so it names no cell"))
+                    };
+                    // `heap_addr` bounds-checks ONE cell. A start that folds
+                    // (`GEN ** k`, or a name bound to one) arrives here because
+                    // it is not an INTEGER, yet its offset is known, so the run's
+                    // length has to be checked here or it never is: the same run
+                    // written with integer bounds was rejected, while this
+                    // spelling let a `hint_witness` write past the buffer into
+                    // the next one.
+                    if let Some(GAddr { base: None, exp, .. }) = self.gaddr_of(lo) {
+                        self.check_heap_bound(arr, exp, u128::from(len));
+                    }
+                    let (ptr, lo) = self.heap_addr(arr, lo);
+                    CellRun::Heap { ptr, lo, len }
+                }
+            },
+            other => self.fail(format!(
+                "expected a StackBuf, a StackBuf slice, or a HeapBuf slice, got `{other:?}`"
+            )),
+        }
+    }
+
+    /// Address `arr[idx]` as `(base_cell, β)`. A constant g-power `idx` folds
+    /// into `β` ([`Self::heap_base`]); a runtime index materializes the pointer.
+    pub(super) fn heap_addr(&mut self, arr: &Expr, idx: &Expr) -> (Off, u32) {
+        // A compile-time index that is a plain field constant but NOT a
+        // g-power (`buf[0]`, `buf[2]`, an integer unroll var) can never name
+        // a heap cell (cell k lives at `buf · g^k`) and would deref a wild
+        // address at proving time. Reject it here, where the source is known.
+        // A BARE literal index is rejected even now that `gaddr_of` reads `2^k`
+        // as `g^k` in a pointer: `hb[2]` would silently mean cell 1, while slice
+        // bounds stayed integer (`hb[2:4]` starts at cell 2), so one spelling
+        // would name two different cells. An index built from `GEN` is fine, and
+        // `1` is `g^0` either way.
+        let bare_int = matches!(self.try_lit(idx), Some(n) if n != 1);
+        if (bare_int || self.gaddr_of(idx).is_none())
+            && let Some(c) = self.try_field_const(idx)
+        {
+            // Two reasons reach here and they read differently. A bare integer
+            // index may well BE a g-power (4 is g²), and is rejected for being
+            // ambiguous against slice syntax rather than for naming nothing.
+            let why = match self.const_gpow(idx) {
+                Some(k) => format!(
+                    "is a plain integer naming cell {k}, while the slice `buf[n:n + 1]` reads the \
+                     same number as cell n. Write `buf[GEN ** {k}]` and say which you mean"
+                ),
+                None => format!(
+                    "folds to the field constant {:#x}:{:#x}, which is not a g-power, so it names \
+                     no heap cell (did an integer index leak in from a StackBuf conversion?)",
+                    c.c1, c.c0
+                ),
+            };
+            self.fail(format!("heap index {why}"));
+        }
+        match self.gaddr_of(idx) {
+            Some(GAddr { base: None, exp, .. }) => return self.heap_base(arr, exp),
+            // A runtime-base index carrying a constant g-power shift
+            // (`buf[cursor * GEN ** k]`): fold the whole constant part (the
+            // index's shift plus `arr`'s own symbolic shift) into `β`, and
+            // emit ONE pointer multiply instead of materializing g^k.
+            Some(GAddr {
+                base: Some(ib), exp, ..
+            }) => {
+                if let Some(ga) = self.gaddr_of(arr)
+                    && let (Some(ab), Some(total)) = (ga.base, ga.exp.checked_add(exp))
+                    && total <= FOLD_MAX
+                {
+                    let ptr = self.fresh();
+                    self.emit(LOp::Mul { a: ab, b: ib, c: ptr });
+                    return (ptr, total as u32);
+                }
+            }
+            None => {}
+        }
+        // Fall back to the constant-g-power-factor fold (a runtime index still
+        // materializes the pointer `MUL`, with any constant factor in `β`).
+        self.array_ptr(arr, idx)
+    }
+
+    /// Write `val` into the stack cell `dst`. A plain copy or a constant is
+    /// deferred as an [`Alias`] and forwarded at its uses (write-once, so the
+    /// source cell keeps its value): the assembling `MUL`/`SET` is never emitted.
+    pub(super) fn stack_store(&mut self, dst: Off, val: &Expr) {
+        // Deferring is only sound while nothing else has given `dst` a value. Once
+        // something has, the store IS the write-once equality assertion of
+        // `zkDSL.md` §Memory, so it has to be emitted: an alias would silently
+        // redirect every later read to the source and drop the assertion. This is
+        // what makes `s[k] = <checked value>` pin a hint, and what makes a
+        // pre-written `blake2s` output assert the digest.
+        let aliased = self.alias.contains_key(&dst);
+        if !aliased
+            && !self.phys.contains(&dst)
+            && let Some(a) = self.copy_alias(val)
+        {
+            // Record the end of the `Cell` chain, not its head. A `Cell` alias is
+            // otherwise free to point at another alias, and two of them can close
+            // a loop (`s[0] = s[1]` then `s[1] = s[0]`, or the one-line
+            // `s[0] = s[0]`) that `word_src` then walks forever. What rules a
+            // cycle out is that the recorded source has no outgoing `Cell` edge AT
+            // THE MOMENT IT IS RECORDED; it may acquire one later, so chains still
+            // grow and `word_src`'s bound is load-bearing, not decoration.
+            //
+            // [`Self::cell_src`] rather than [`Self::word_src`] on purpose: the
+            // latter resolves a trailing `Const` through `zero`/`const_cell`,
+            // which EMITS a `SET`. Paying it here rather than at the use would
+            // make `sa[k] = other` cost an instruction, which `zkDSL.md`
+            // §Variables promises it does not.
+            let a = match a {
+                Alias::Cell(src) => Alias::Cell(self.cell_src(src)),
+                other => other,
+            };
+            // A cell aliased to itself is the whole of `sb[k] = sb[k]`: write-once
+            // makes a second write of the same value a no-op, so emit nothing.
+            if a == Alias::Cell(dst) {
+                return;
+            }
+            self.alias.insert(dst, a);
+            return;
+        }
+        if aliased {
+            // Give the cell the value it already stood for, so the store below is a
+            // second write of that cell and therefore the assertion. Without this the
+            // second alias would simply replace the first and the two values would
+            // never meet.
+            let src = self.word_src(dst);
+            self.alias.remove(&dst);
+            self.copy(src, dst);
+        }
+        self.expr_into(val, dst);
+    }
+
+    /// Compile-time bounds check: when `arr` resolves to a sized `HeapBuf`
+    /// (directly or through shifted aliases) and the whole index is the
+    /// compile-time exponent `exp`, reject `exp + span > size`. Runtime
+    /// indices are not checked (their value is not known here).
+    pub(super) fn check_heap_bound(&self, arr: &Expr, extra: u128, span: u128) {
+        let Some(ga) = self.gaddr_of(arr) else { return };
+        let (Some(base), Some(exp)) = (ga.base, ga.exp.checked_add(extra)) else {
+            return;
+        };
+        // A frame pointer from `addr(sb)`: `exp` is an absolute frame offset and
+        // `base` is the shared `fp` cell, so the run comes from the address's own
+        // provenance rather than from `heap_sizes`.
+        if let Some((start, len)) = ga.run {
+            let (start, len) = (start as u128, len as u128);
+            if exp < start || exp + span > start + len {
+                let off = exp.saturating_sub(start); // `exp < start` is unreachable: gmul only adds
+                let what = if span == 1 {
+                    format!("index {off}")
+                } else {
+                    format!("slice {off}:{}", off + span)
+                };
+                self.fail(format!(
+                    "frame {what} out of bounds for the StackBuf({len}) named by `addr`"
+                ));
+            }
+            return;
+        }
+        let Some(&size) = self.heap_sizes.get(&base) else {
+            return;
+        };
+        if exp + span > size {
+            let name = self
+                .scope
+                .names
+                .iter()
+                .find(|(_, b)| matches!(b.val, Binding::Scalar(c) if c == base))
+                .map(|(n, _)| n.as_str())
+                .unwrap_or("?");
+            if span == 1 {
+                self.fail(format!(
+                    "heap index {exp} out of bounds for `{name}` (HeapBuf size {size})"
+                ));
+            }
+            self.fail(format!(
+                "heap slice {exp}:{} out of bounds for `{name}` (HeapBuf size {size})",
+                exp + span
+            ));
+        }
+    }
+
+    /// A stack store `sa[k] = val` whose value is a plain copy or a zero, which we
+    /// defer as an [`Alias`] (forwarded at use) instead of emitting.
+    pub(super) fn copy_alias(&self, val: &Expr) -> Option<Alias> {
+        match val {
+            // A live var / stack cell aliases to that cell directly (no new
+            // material); anything else that is a compile-time constant defers
+            // to the pooled const cell.
+            Expr::Var(v) if self.scope.var(v).is_some() => self.scope.var(v).map(Alias::Cell),
+            Expr::Index(arr, idx) => {
+                // Bounds-checked here too. This is the ONE stack index that was
+                // not, and it is on the hot path: `sa[i] = sb[j]` and every
+                // element of a list literal reach it. Unchecked, `c[0] = a[2]`
+                // on a `StackBuf(2)` aliased the next buffer's first cell and
+                // its assert passed, while a further index named a cell nothing
+                // writes, so a prover chose it and the assert was vacuous. The
+                // identical read in expression position was rejected, so this
+                // was two spellings with two meanings.
+                let (base, size) = self.stack_of(arr)?;
+                let k = self.try_const_index(idx)?;
+                if k >= size {
+                    self.fail(format!("stack index {k} out of bounds (size {size})"))
+                }
+                Some(Alias::Cell(base + k))
+            }
+            _ => self.try_field_const(val).map(Alias::Const),
+        }
+    }
+
+    /// `addr(sb)`: the g-address `fp·g^base` of a `StackBuf`'s first cell, so a
+    /// frame run can be pointed at (indexed at runtime, or handed to a callee)
+    /// while its own accesses stay direct frame cells. Materializing `fp` is the
+    /// ISA's one cost here, amortized per function ([`Self::self_fp`]); the
+    /// address is a folded [`GAddr`], so `addr(sb) * GEN ** k` stays virtual.
+    pub(super) fn stack_addr(&mut self, args: &[Expr]) -> GAddr {
+        if args.len() != 1 {
+            self.fail("addr(buf) takes one StackBuf")
+        };
+        let (base, len) = self.stack_of(&args[0]).expect("addr() takes a StackBuf");
+        // Once an address escapes, a write through it is a `DEREF` that names no
+        // frame cell the lowerer can see, so every run has to be treated as
+        // already valued: `phys` keeps a later `sb[k] = v` the write-once
+        // equality assertion `zkDSL.md` §Memory promises instead of a deferred
+        // alias that would drop it, and `opaque_runs` keeps CSE off its cells (a
+        // store folded into a canonical elsewhere would leave the cell unwritten,
+        // hence prover-chosen). Every run, not just this one: the pointer is a
+        // frame address, and one off-by-one in a callee reaches the next run.
+        if let Some(runs) = self.unsealed_runs.take() {
+            for (b, l) in runs {
+                self.seal_run(b, l);
+            }
+        }
+        GAddr {
+            base: Some(self.self_fp()),
+            exp: base as u128,
+            run: Some((base, len)),
+        }
+    }
+
+    /// Address `arr·g^extra` as `(base_cell, β)`, folding `arr`'s symbolic shift
+    /// and the constant `extra` into `β`. Falls back to a materialized pointer
+    /// (`β = 0`) when there is no runtime base or the offset exceeds [`FOLD_MAX`].
+    pub(super) fn heap_base(&mut self, arr: &Expr, extra: u128) -> (Off, u32) {
+        self.check_heap_bound(arr, extra, 1);
+        if let Some(ga) = self.gaddr_of(arr)
+            && let (Some(base), Some(exp)) = (ga.base, ga.exp.checked_add(extra))
+            && exp <= FOLD_MAX
+        {
+            return (base, exp as u32);
+        }
+        let a = self.expr(arr);
+        if extra == 0 {
+            return (a, 0);
+        }
+        let k = self.fresh();
+        self.set_const(k, g_pow_u128(extra).into());
+        let ptr = self.fresh();
+        self.emit(LOp::Mul { a, b: k, c: ptr });
+        (ptr, 0)
+    }
+
+    /// Resolve a heap access `arr[idx]` to a `DEREF`-ready pair: a cell
+    /// holding a pointer `p` and a compile-time exponent `beta`, the accessed
+    /// cell being `m[p·g^beta]` (heap addressing in the exponent: cell `g^k`
+    /// of the buffer sits at `arr·g^k`). The fallback of [`Self::heap_addr`],
+    /// which has already folded away a wholly constant index: here a constant
+    /// g-power *factor* still goes into the `beta` immediate, so only the
+    /// runtime factor costs a pointer `MUL`.
+    pub(super) fn array_ptr(&mut self, arr: &Expr, idx: &Expr) -> (Off, u32) {
+        // `buf[r * GEN ** k]` (either factor order): beta takes the constant,
+        // the pointer MUL takes only the runtime factor `r`.
+        if let Expr::Mul(a, b) = idx {
+            for (c, r) in [(a, b), (b, a)] {
+                if let Some(k) = self.const_gpow(c) {
+                    let (la, lr) = (self.expr(arr), self.expr(r));
+                    let ptr = self.fresh();
+                    self.emit(LOp::Mul { a: la, b: lr, c: ptr });
+                    return (ptr, k);
+                }
+            }
+        }
+        let (la, li) = (self.expr(arr), self.expr(idx));
+        let ptr = self.fresh();
+        self.emit(LOp::Mul { a: la, b: li, c: ptr });
+        (ptr, 0)
+    }
+
+    pub(super) fn word_src(&mut self, o: Off) -> Off {
+        // Bounded because a chain can still GROW: a recorded source is unaliased
+        // when it is recorded, but nothing stops it acquiring an alias afterwards.
+        // A cycle here is a compiler that never returns and prints nothing, so
+        // more hops than there are frame cells is a hard error, not a hang.
+        let mut cur = o;
+        for _ in 0..=self.next {
+            match self.alias.get(&cur).copied() {
+                Some(Alias::Cell(s)) => cur = s,
+                Some(Alias::Const(v)) if v.is_zero() => return self.zero(),
+                Some(Alias::Const(v)) => return self.const_cell(v),
+                None => return cur,
+            }
+        }
+        self.fail(format!("alias cycle at frame cell {o}"));
+    }
+
+    /// The cell holding the value of stack cell `o`, following a recorded copy /
+    /// zero alias to its real source. Returns `o` when it holds a genuine value.
+    /// Follow `Cell` alias hops to the cell that ends the chain, emitting nothing.
+    /// This is what [`Self::stack_store`] records, so a recorded source never has
+    /// an outgoing `Cell` edge and no cycle can form.
+    pub(super) fn cell_src(&self, o: Off) -> Off {
+        let mut cur = o;
+        for _ in 0..=self.next {
+            match self.alias.get(&cur) {
+                Some(Alias::Cell(s)) => cur = *s,
+                _ => return cur,
+            }
+        }
+        self.fail(format!("alias cycle at frame cell {o}"));
+    }
+
+    /// Prepare a stack run that a consumer is about to name by its *physical*
+    /// cells: a `BLAKE2s` output, or a hint destination. Those consumers do not go
+    /// through [`Self::word_src`], so a cell still carrying a deferred alias would
+    /// have the consumer's write land where nothing reads it, and the equality
+    /// assertion the source wrote would be gone. Materializing the alias first puts
+    /// a real value in the cell, which is what turns the consumer's write back into
+    /// that assertion; marking the run `phys` covers the other order, where the
+    /// store comes after the consumer.
+    pub(super) fn materialize_run(&mut self, base: Off, len: u32) {
+        for o in base..base + len {
+            if self.alias.contains_key(&o) {
+                let src = self.word_src(o);
+                self.alias.remove(&o);
+                self.copy(src, o);
+            }
+            self.phys.insert(o);
+        }
+    }
+
+    /// Give up on seeing writes to a frame run: materialize any deferred alias on
+    /// it, mark its cells `phys` so a later store stays the write-once equality
+    /// assertion rather than an alias, and hand it to CSE as untouchable.
+    pub(super) fn seal_run(&mut self, base: Off, len: u32) {
+        self.materialize_run(base, len);
+        self.opaque_runs.push((base, len));
+    }
+
+    /// Realize a [`GAddr`] into a frame cell holding its value: a constant is one
+    /// `SET`; a base with no shift is already that cell; a shifted base is a
+    /// `SET`+`MUL`.
+    pub(super) fn materialize(&mut self, ga: GAddr) -> Off {
+        match ga {
+            GAddr {
+                base: Some(c), exp: 0, ..
+            } => c,
+            GAddr { base, exp, .. } => {
+                let k = self.fresh();
+                self.set_const(k, g_pow_u128(exp).into());
+                let Some(c) = base else { return k };
+                let o = self.fresh();
+                self.emit(LOp::Mul { a: c, b: k, c: o });
+                o
+            }
+        }
+    }
+
+    /// If `e` names a `StackBuf` variable, its `(base, size)`.
+    pub(super) fn stack_of(&self, e: &Expr) -> Option<(Off, u32)> {
+        match e {
+            Expr::Var(v) => self.scope.stack(v),
+            _ => None,
+        }
+    }
+
+    /// Allocate `n` *consecutive* fresh frame cells (a stack run), returning the
+    /// base. Nothing else may `fresh()` between them, so they stay adjacent.
+    pub(super) fn alloc_stack(&mut self, n: u32) -> Off {
+        let base = self.next;
+        self.next += n;
+        // A run allocated after the escape is just as reachable as one before it,
+        // so it is sealed on the spot and never needs recording.
+        if let Some(runs) = &mut self.unsealed_runs {
+            runs.push((base, n));
+        } else {
+            self.seal_run(base, n);
+        }
+        base
+    }
+}
