@@ -878,6 +878,46 @@ theorem probEvent_uniform_root_matches_distribution_independent_guess_le
       rw [probEvent_eq_eq_probOutput, probOutput_uniformSample]
       rw [show Fintype.card Digest = 2 ^ digestBits by simp]
 
+theorem probEvent_uniform_root_matches_symmetric_two_root_run_le
+    (run : Digest → Digest → ProbComp α)
+    (reference : Digest → ProbComp α)
+    (hright : ∀ leftRoot rightRoot,
+      evalDist (run leftRoot rightRoot) = evalDist (reference leftRoot))
+    (hswap : ∀ leftRoot rightRoot,
+      evalDist (run leftRoot rightRoot) = evalDist (run rightRoot leftRoot))
+    (guess : α → Digest) :
+    Pr[fun result : Digest × α => result.1 = guess result.2 | do
+        let leftRoot ← ($ᵗ Digest : ProbComp Digest)
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        let result ← run leftRoot rightRoot
+        pure (leftRoot, result)] ≤
+      ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  let sampled := ($ᵗ Digest : ProbComp Digest)
+  let outerRun (leftRoot : Digest) : ProbComp α := do
+    let rightRoot ← sampled
+    run leftRoot rightRoot
+  have hreference (leftRoot : Digest) :
+      evalDist (reference leftRoot) = evalDist (reference (default : Digest)) := by
+    calc
+      _ = evalDist (run leftRoot default) := (hright leftRoot default).symm
+      _ = evalDist (run default leftRoot) := hswap leftRoot default
+      _ = _ := hright default leftRoot
+  have houter (leftRoot : Digest) :
+      evalDist (outerRun leftRoot) = evalDist (reference (default : Digest)) := by
+    calc
+      _ = evalDist (sampled >>= fun _ => reference leftRoot) := by
+        unfold outerRun
+        apply evalDist_bind_congr
+        intro rightRoot _hrightRoot
+        exact hright leftRoot rightRoot
+      _ = evalDist (reference leftRoot) :=
+        OracleComp.DeferredSampling.evalDist_bind_const_neverFails sampled (by simp [sampled])
+          (reference leftRoot)
+      _ = _ := hreference leftRoot
+  have hbound := probEvent_uniform_root_matches_distribution_independent_guess_le
+    outerRun (reference default) houter guess
+  simpa only [outerRun, sampled, bind_assoc] using hbound
+
 theorem privateWitnessAtOrdinal_of_firstPrivateWitnessOrdinal?_eq_some
     {witness : PrivateHitWitness} {candidates : List Probe}
     {ordinal : Fin candidates.length}
