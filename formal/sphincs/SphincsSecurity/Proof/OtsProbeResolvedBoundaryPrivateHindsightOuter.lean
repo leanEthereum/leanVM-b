@@ -360,4 +360,47 @@ theorem probEvent_granularDetailedRetainedRestNormalizedPlanHitObserve_le_guarde
     exact probEvent_retainedResolvedFinalizationPrivatePlanObserve_planHit_eq_zero table value.1
       finalCandidates nextCandidates nextContext remaining nextValue hnextNotPrefix
 
+theorem probEvent_granularDetailedRetainedRestNormalized_planHit_le_guarded
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (finalCandidates currentCandidates : List Probe)
+    (context : DeferredContext) (fuel : Nat)
+    (value : Digest × SplitHashCache)
+    (hprefix : currentCandidates.IsPrefix finalCandidates)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table)
+    (hpublished : PublishedValues context.state)
+    (hcovered : PendingCoveredBy finalCandidates context) :
+    Pr[PlanHitAt finalCandidates |
+        granularDetailedRetainedRestNormalizedPrivatePlanObserve adversary parameter table
+          ftsSecret context fuel value currentCandidates] ≤
+      Pr[= true | guardedPreparationObserve finalCandidates context] := by
+  unfold granularDetailedRetainedRestNormalizedPrivatePlanObserve
+  calc
+    _ = Pr[= true | directDetailedBoundaryNormalizedPlanHitObserve finalCandidates parameter
+          value.1 ftsSecret (retainedGameRestComputation adversary ⟨value.1, parameter⟩)
+          (retainedResolvedFinalizationPrivatePlanObserve table value.1)
+          currentCandidates context fuel table value.2] :=
+      probEvent_planHit_directDetailedBoundaryNormalizedPrivatePlanObserve_eq finalCandidates
+        parameter value.1 ftsSecret
+        (retainedGameRestComputation adversary ⟨value.1, parameter⟩)
+        (retainedResolvedFinalizationPrivatePlanObserve table value.1)
+        currentCandidates context fuel table value.2
+    _ ≤ _ := probEvent_granularDetailedRetainedRestNormalizedPlanHitObserve_le_guarded
+      adversary parameter table ftsSecret finalCandidates currentCandidates context fuel value
+      hprefix hconsistent hstarts hpublished hcovered
+
+set_option maxHeartbeats 1000000 in
+set_option maxRecDepth 100000 in
+theorem preservesPublishedValues_maskedPublishedTreeRoot :
+    PreservesPublishedValues maskedPublishedTreeRoot := by
+  unfold maskedPublishedTreeRoot
+  apply (preservesPublishedValues_ensureTreeNode topLayer rootTree
+    (layerHeight topLayer) 0).bind
+  intro _
+  exact preservesPublishedValues_revealPublishedCoordinate
+    (.position (.node topLayer rootTree
+      ⟨layerHeight topLayer - 1, by norm_num [layerHeight, topLayer, maxLayerHeight]⟩ 0))
+
 end SphincsSecurity.Concrete.OtsProbeSimulation

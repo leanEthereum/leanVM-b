@@ -164,6 +164,39 @@ theorem evalDist_planHit_canonicalizeDirectDetailedPrivatePlanObserve
       · simp [hcompletable, PlanHitAt]
     · simp [canonical, hprivate, hpublished, PlanHitAt]
 
+theorem probEvent_planHit_canonicalizeDirectDetailedPrivatePlanObserve_eq
+    (table : OtsSecretIndex → HashOutput)
+    (finalCandidates currentCandidates : List Probe)
+    (observe : DeferredContext → Nat → α → List Probe → ProbComp (Bool × List Probe))
+    (boolObserve : DeferredContext → Nat → α → ProbComp Bool)
+    (context : DeferredContext) (fuel : Nat) (value : α)
+    (hproject : ∀ nextContext remaining nextValue,
+      Pr[PlanHitAt finalCandidates |
+          observe nextContext remaining nextValue currentCandidates] =
+        Pr[= true | boolObserve nextContext remaining nextValue]) :
+    Pr[PlanHitAt finalCandidates |
+        canonicalizeDirectDetailedPrivatePlanObserve table observe context fuel value
+          currentCandidates] =
+      Pr[= true | canonicalizeDirectDetailedPlanHitObserve table finalCandidates
+        currentCandidates boolObserve context fuel value] := by
+  unfold canonicalizeDirectDetailedPrivatePlanObserve
+    canonicalizeDirectDetailedPlanHitObserve
+  let canonical := canonicalizeMaterializedValues table context
+  by_cases hprivate : PrivateStructuralHit canonical
+  · simp [canonical, hprivate, PlanHitAt]
+  · by_cases hpublished : PublishedValues context.state
+    · simp only [canonical, hprivate, hpublished, ↓reduceIte]
+      unfold classifyDirectDetailedPrivatePlanObserve
+      change ¬PrivateStructuralHit (canonicalizeMaterializedValues table context) at hprivate
+      simp only [hprivate, ↓reduceIte]
+      by_cases hcompletable : DeferredCompletable table canonical
+      · change DeferredCompletable table (canonicalizeMaterializedValues table context) at hcompletable
+        simp only [hcompletable, ↓reduceIte]
+        exact hproject canonical fuel value
+      · change ¬DeferredCompletable table (canonicalizeMaterializedValues table context) at hcompletable
+        simp [hcompletable, PlanHitAt]
+    · simp [canonical, hprivate, hpublished, PlanHitAt]
+
 theorem evalDist_planHit_finishDirectDetailedPrivatePlanObserve
     (finalCandidates currentCandidates : List Probe)
     (observe : DeferredContext → Nat → α → List Probe → ProbComp (Bool × List Probe))
@@ -181,6 +214,37 @@ theorem evalDist_planHit_finishDirectDetailedPrivatePlanObserve
   | stopped reason => cases reason <;> simp [finishDirectDetailedPrivatePlanObserve,
       finishDirectDetailedPlanHitObserve, PlanHitAt]
   | done result => exact hproject result.context result.remaining result.value
+
+theorem probEvent_planHit_runDirectDetailedPrivatePlanObserve_eq
+    (finalCandidates currentCandidates : List Probe)
+    (observe : DeferredContext → Nat → α → List Probe → ProbComp (Bool × List Probe))
+    (boolObserve : DeferredContext → Nat → α → ProbComp Bool)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (hproject : ∀ nextContext remaining nextValue,
+      Pr[PlanHitAt finalCandidates |
+          observe nextContext remaining nextValue currentCandidates] =
+        Pr[= true | boolObserve nextContext remaining nextValue]) :
+    Pr[PlanHitAt finalCandidates |
+        runDirectDetailedPrivatePlanObserve observe currentCandidates context fuel table
+          computation] =
+      Pr[= true | runDirectDetailedPlanHitObserve finalCandidates currentCandidates boolObserve
+        context fuel table computation] := by
+  unfold runDirectDetailedPrivatePlanObserve runDirectDetailedPlanHitObserve
+  rw [← probEvent_eq_eq_probOutput, probEvent_bind_eq_tsum, probEvent_bind_eq_tsum]
+  apply tsum_congr
+  intro result
+  congr 1
+  cases result with
+  | stopped reason =>
+      cases reason <;>
+        simp [finishDirectDetailedPrivatePlanObserve, finishDirectDetailedPlanHitObserve,
+          PlanHitAt]
+  | done result =>
+      simpa [finishDirectDetailedPrivatePlanObserve, finishDirectDetailedPlanHitObserve,
+        probEvent_eq_eq_probOutput] using
+        hproject result.context result.remaining result.value
 
 theorem probEvent_canonicalizeDirectDetailedPlanHitObserve_le_guarded
     (table : OtsSecretIndex → HashOutput)
@@ -291,5 +355,64 @@ noncomputable def directDetailedBoundaryNormalizedPlanHitObserve
                 recursivelyRun value.1 observe candidates nextContext remaining table value.2))
             context fuel table ((maskedSign parameter root ftsSecret message).run cache))
     computation observe candidates context fuel table cache
+
+set_option maxHeartbeats 4000000 in
+set_option maxRecDepth 100000 in
+theorem probEvent_planHit_directDetailedBoundaryNormalizedPrivatePlanObserve_eq
+    (finalCandidates : List Probe)
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (observe : DeferredContext → Nat → (α × SplitHashCache) →
+      List Probe → ProbComp (Bool × List Probe))
+    (candidates : List Probe) (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    Pr[PlanHitAt finalCandidates |
+        directDetailedBoundaryNormalizedPrivatePlanObserve parameter root ftsSecret computation
+          observe candidates context fuel table cache] =
+      Pr[= true | directDetailedBoundaryNormalizedPlanHitObserve finalCandidates parameter root
+        ftsSecret computation observe candidates context fuel table cache] := by
+  induction computation using OracleComp.inductionOn generalizing candidates context fuel cache with
+  | pure value =>
+      rw [directDetailedBoundaryNormalizedPrivatePlanObserve, OracleComp.construct_pure,
+        directDetailedBoundaryNormalizedPlanHitObserve, OracleComp.construct_pure,
+        ← probEvent_eq_eq_probOutput, probEvent_map]
+      exact OracleComp.probEvent_congr' (fun output _ => by simp) rfl
+  | query_bind query next ih =>
+      cases query with
+      | inl worldQuery =>
+          cases worldQuery with
+          | inl n =>
+              rw [directDetailedBoundaryNormalizedPrivatePlanObserve,
+                OracleComp.construct_query_bind,
+                directDetailedBoundaryNormalizedPlanHitObserve,
+                OracleComp.construct_query_bind]
+              apply probEvent_planHit_runDirectDetailedPrivatePlanObserve_eq
+              intro nextContext remaining nextValue
+              apply probEvent_planHit_canonicalizeDirectDetailedPrivatePlanObserve_eq
+              intro finalContext finalRemaining finalValue
+              exact ih finalValue.1 candidates finalContext finalRemaining finalValue.2
+          | inr input =>
+              rw [directDetailedBoundaryNormalizedPrivatePlanObserve,
+                OracleComp.construct_query_bind,
+                directDetailedBoundaryNormalizedPlanHitObserve,
+                OracleComp.construct_query_bind]
+              let plan := purePlanProbingHashQuery parameter input context.state
+              let nextCandidates := appendPlannedCandidate candidates plan.candidate?
+              apply probEvent_planHit_runDirectDetailedPrivatePlanObserve_eq
+              intro nextContext remaining nextValue
+              apply probEvent_planHit_canonicalizeDirectDetailedPrivatePlanObserve_eq
+              intro finalContext finalRemaining finalValue
+              exact ih finalValue.1 nextCandidates finalContext finalRemaining finalValue.2
+      | inr message =>
+          rw [directDetailedBoundaryNormalizedPrivatePlanObserve,
+            OracleComp.construct_query_bind,
+            directDetailedBoundaryNormalizedPlanHitObserve,
+            OracleComp.construct_query_bind]
+          apply probEvent_planHit_runDirectDetailedPrivatePlanObserve_eq
+          intro nextContext remaining nextValue
+          apply probEvent_planHit_canonicalizeDirectDetailedPrivatePlanObserve_eq
+          intro finalContext finalRemaining finalValue
+          exact ih finalValue.1 candidates finalContext finalRemaining finalValue.2
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
