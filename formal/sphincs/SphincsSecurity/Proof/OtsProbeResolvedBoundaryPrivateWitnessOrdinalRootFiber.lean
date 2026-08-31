@@ -14,6 +14,110 @@ open OracleComp OracleSpec ENNReal
 
 attribute [local instance] Classical.propDecidable
 
+abbrev RootOutputHigh := BitVec (hashOutputBits - digestBits)
+
+noncomputable def rootOutputOfParts (root : Digest) (high : RootOutputHigh) : HashOutput :=
+  (splitHashOutputEquiv digestBits (by decide)).symm (root, high)
+
+@[simp] theorem truncateHash_rootOutputOfParts (root : Digest) (high : RootOutputHigh) :
+    truncateHash (rootOutputOfParts root high) = root := by
+  change (splitHashOutput digestBits
+    ((splitHashOutputEquiv digestBits (by decide)).symm (root, high))).1 = root
+  rw [show splitHashOutput digestBits = splitHashOutputEquiv digestBits (by decide) from rfl,
+    Equiv.apply_symm_apply]
+
+theorem evalDist_sample_rootOutputOfParts :
+    evalDist (do
+      let root ← ($ᵗ Digest : ProbComp Digest)
+      let high ← ($ᵗ RootOutputHigh : ProbComp RootOutputHigh)
+      pure (rootOutputOfParts root high)) =
+      evalDist LazyRevealProbe.sampleHashOutput := by
+  let split := splitHashOutputEquiv digestBits (by decide)
+  let pairSample :=
+    ($ᵗ (Digest × RootOutputHigh) : ProbComp (Digest × RootOutputHigh))
+  have hpair : evalDist (do
+      let root ← ($ᵗ Digest : ProbComp Digest)
+      let high ← ($ᵗ RootOutputHigh : ProbComp RootOutputHigh)
+      pure (root, high)) = evalDist pairSample := by
+    exact evalDist_independent_uniform_pair
+  have hleft : (do
+      let root ← ($ᵗ Digest : ProbComp Digest)
+      let high ← ($ᵗ RootOutputHigh : ProbComp RootOutputHigh)
+      pure (rootOutputOfParts root high)) =
+      split.symm <$> (do
+        let root ← ($ᵗ Digest : ProbComp Digest)
+        let high ← ($ᵗ RootOutputHigh : ProbComp RootOutputHigh)
+        pure (root, high)) := by
+    simp [rootOutputOfParts, split, map_eq_bind_pure_comp, bind_assoc]
+  calc
+    _ = evalDist (split.symm <$> pairSample) := by
+      rw [hleft, evalDist_map, hpair, ← evalDist_map]
+    _ = evalDist ($ᵗ HashOutput : ProbComp HashOutput) :=
+      evalDist_map_bijective_uniform_cross _ split.symm split.symm.bijective
+    _ = _ := rfl
+
+noncomputable def freshRootResolution (target : Position) (context : DeferredContext)
+    (output : HashOutput) : Option DeferredResolution :=
+  if context.state.hitAt (.position target) output then none
+  else some (DeferredResolution.mk
+    { state := context.state.clearPending (.position target)
+      values := context.values.install target output }
+    output)
+
+theorem resolveDeferredPositionValue_fresh_eq_bind_rootResolution
+    (target : Position) (context : DeferredContext)
+    (hstate : context.state.values (.position target) = none)
+    (hvalue : context.values target = none) :
+    resolveDeferredPositionValue target context = (do
+      let output ← LazyRevealProbe.sampleHashOutput
+      pure (freshRootResolution target context output)) := by
+  rw [resolveDeferredPositionValue_fresh target context hstate hvalue]
+  apply bind_congr
+  intro output
+  unfold freshRootResolution
+  by_cases hhit : context.state.hitAt (.position target) output <;> simp [hhit]
+
+theorem evalDist_resolveDeferredPositionValue_fresh_root_parts
+    (target : Position) (context : DeferredContext)
+    (hstate : context.state.values (.position target) = none)
+    (hvalue : context.values target = none) :
+    evalDist (resolveDeferredPositionValue target context) = evalDist (do
+      let root ← ($ᵗ Digest : ProbComp Digest)
+      let high ← ($ᵗ RootOutputHigh : ProbComp RootOutputHigh)
+      pure (freshRootResolution target context (rootOutputOfParts root high))) := by
+  rw [resolveDeferredPositionValue_fresh_eq_bind_rootResolution target context hstate hvalue]
+  let parts : ProbComp HashOutput := do
+    let root ← ($ᵗ Digest : ProbComp Digest)
+    let high ← ($ᵗ RootOutputHigh : ProbComp RootOutputHigh)
+    pure (rootOutputOfParts root high)
+  calc
+    evalDist (LazyRevealProbe.sampleHashOutput >>=
+        fun output => pure (freshRootResolution target context output)) =
+      evalDist (parts >>= fun output =>
+        pure (freshRootResolution target context output)) := by
+        rw [evalDist_bind, evalDist_bind, evalDist_sample_rootOutputOfParts]
+    _ = _ := by simp [parts]
+
+theorem storedLayerRoot_materializeResolvedPosition
+    (context : DeferredContext) (target : Position) (result : DeferredResolution) :
+    StoredLayerRoot (materializeResolvedPosition context target result).state target
+      (truncateHash result.output) := by
+  refine ⟨result.output, ?_, rfl⟩
+  simp [materializeResolvedPosition, LazyRevealProbe.State.materialize]
+
+theorem storedLayerRoot_materialize_freshRootResolution
+    (context : DeferredContext) (target : Position) (output : HashOutput)
+    (result : DeferredResolution)
+    (hresult : freshRootResolution target context output = some result) :
+    StoredLayerRoot (materializeResolvedPosition context target result).state target
+      (truncateHash output) := by
+  unfold freshRootResolution at hresult
+  by_cases hhit : context.state.hitAt (.position target) output
+  · simp [hhit] at hresult
+  · simp [hhit] at hresult
+    subst result
+    exact storedLayerRoot_materializeResolvedPosition context target _
+
 noncomputable def candidateLayerRootPosition? (candidate : Probe) : Option Position :=
   match candidate.coordinate with
   | .position position => if IsLayerRoot position then some position else none
