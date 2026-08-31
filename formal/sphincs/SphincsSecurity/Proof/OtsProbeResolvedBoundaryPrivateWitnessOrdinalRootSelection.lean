@@ -124,6 +124,184 @@ theorem directDetailedBoundaryPrivateOrdinalSelection_eq_selected
       rw [directDetailedBoundaryPrivateOrdinalSelection, OracleComp.construct_query_bind]
       simp only [hselected, ↓reduceDIte]
 
+def PrivateOrdinalSelectionExtends
+    (initial : List Probe) : Option PrivateOrdinalSelection → Prop
+  | none => True
+  | some selection => initial.IsPrefix selection.candidates
+
+theorem PrivateOrdinalSelectionExtends.mono
+    {first second : List Probe} {selection : Option PrivateOrdinalSelection}
+    (hprefix : first.IsPrefix second)
+    (hextends : PrivateOrdinalSelectionExtends second selection) :
+    PrivateOrdinalSelectionExtends first selection := by
+  cases selection with
+  | none => trivial
+  | some selection => exact hprefix.trans hextends
+
+theorem privateOrdinalSelectionExtends_selectedPrivateOrdinal
+    (ordinal : Nat) (candidates : List Probe) (context : DeferredContext) :
+    PrivateOrdinalSelectionExtends candidates
+      (selectedPrivateOrdinal? ordinal candidates context) := by
+  unfold selectedPrivateOrdinal?
+  split <;> simp [PrivateOrdinalSelectionExtends]
+
+theorem privateOrdinalSelectionExtends_of_mem_finish
+    (observe : DeferredContext → Nat → α → List Probe →
+      ProbComp (Option PrivateOrdinalSelection))
+    (candidates : List Probe) (result : DirectWitnessResult α)
+    (hobserve : ∀ resolved output,
+      result = .done resolved →
+      output ∈ support
+        (observe resolved.context resolved.remaining resolved.value candidates) →
+      PrivateOrdinalSelectionExtends candidates output)
+    (output : Option PrivateOrdinalSelection)
+    (houtput : output ∈ support
+      (finishDirectPrivateOrdinalSelection observe candidates result)) :
+    PrivateOrdinalSelectionExtends candidates output := by
+  cases result with
+  | stoppedFuel => simp [finishDirectPrivateOrdinalSelection] at houtput; subst output; trivial
+  | stoppedOrdinary => simp [finishDirectPrivateOrdinalSelection] at houtput; subst output; trivial
+  | stoppedPrivate witness =>
+      simp [finishDirectPrivateOrdinalSelection] at houtput
+      subst output
+      trivial
+  | done resolved =>
+      exact hobserve resolved output rfl houtput
+
+theorem privateOrdinalSelectionExtends_of_mem_canonicalize
+    (table : OtsSecretIndex → HashOutput)
+    (observe : DeferredContext → Nat → α → List Probe →
+      ProbComp (Option PrivateOrdinalSelection))
+    (context : DeferredContext) (fuel : Nat) (value : α)
+    (candidates : List Probe)
+    (hobserve : ∀ nextContext output,
+      output ∈ support (observe nextContext fuel value candidates) →
+      PrivateOrdinalSelectionExtends candidates output)
+    (output : Option PrivateOrdinalSelection)
+    (houtput : output ∈ support
+      (canonicalizeDirectPrivateOrdinalSelection table observe context fuel value candidates)) :
+    PrivateOrdinalSelectionExtends candidates output := by
+  classical
+  unfold canonicalizeDirectPrivateOrdinalSelection at houtput
+  let canonical := canonicalizeMaterializedValues table context
+  by_cases hhit : PrivateStructuralHit canonical
+  · simp [canonical, hhit] at houtput
+    subst output
+    trivial
+  · simp only [canonical, hhit, ↓reduceIte] at houtput
+    by_cases hpublished : PublishedValues context.state
+    · simp only [hpublished, ↓reduceIte] at houtput
+      by_cases hcompletable : DeferredCompletable table canonical
+      · change DeferredCompletable table (canonicalizeMaterializedValues table context)
+          at hcompletable
+        rw [if_pos hcompletable] at houtput
+        exact hobserve canonical output houtput
+      · change ¬DeferredCompletable table (canonicalizeMaterializedValues table context)
+          at hcompletable
+        rw [if_neg hcompletable] at houtput
+        simp only [support_pure, Set.mem_singleton_iff] at houtput
+        subst output
+        trivial
+    · simp [hpublished] at houtput
+      subst output
+      trivial
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem privateOrdinalSelectionExtends_of_mem_direct
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (candidates : List Probe) (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (output : Option PrivateOrdinalSelection)
+    (houtput : output ∈ support
+      (directDetailedBoundaryPrivateOrdinalSelection ordinal parameter root ftsSecret computation
+        candidates context fuel table cache)) :
+    PrivateOrdinalSelectionExtends candidates output := by
+  induction computation using OracleComp.inductionOn generalizing
+      candidates context fuel cache output with
+  | pure value =>
+      rw [directDetailedBoundaryPrivateOrdinalSelection, OracleComp.construct_pure] at houtput
+      simp only [support_pure, Set.mem_singleton_iff] at houtput
+      subst output
+      exact privateOrdinalSelectionExtends_selectedPrivateOrdinal ordinal candidates context
+  | query_bind query next ih =>
+      rw [directDetailedBoundaryPrivateOrdinalSelection,
+        OracleComp.construct_query_bind] at houtput
+      by_cases hselected : ordinal < candidates.length
+      · simp only [hselected, ↓reduceDIte, support_pure, Set.mem_singleton_iff] at houtput
+        subst output
+        simp [PrivateOrdinalSelectionExtends]
+      · simp only [hselected, ↓reduceDIte] at houtput
+        cases query with
+        | inl worldQuery =>
+            cases worldQuery with
+            | inl n =>
+                rw [mem_support_bind_iff] at houtput
+                obtain ⟨result, hresult, hfinish⟩ := houtput
+                apply privateOrdinalSelectionExtends_of_mem_finish _ candidates result
+                  (output := output) (houtput := hfinish)
+                intro resolved nextOutput heq hnextOutput
+                subst result
+                apply privateOrdinalSelectionExtends_of_mem_canonicalize table _
+                  resolved.context resolved.remaining resolved.value candidates
+                  (output := nextOutput) (houtput := hnextOutput)
+                intro nextContext finalOutput hfinalOutput
+                exact ih resolved.value.1 candidates nextContext resolved.remaining
+                  resolved.value.2 finalOutput hfinalOutput
+            | inr input =>
+                let publicContext := context
+                let plan := purePlanProbingHashQuery parameter input context.state
+                let nextCandidates := appendPlannedCandidate candidates
+                  (rootAwarePlannedCandidate? parameter input context.state)
+                by_cases hnextSelected : ordinal < nextCandidates.length
+                · have hactual : ordinal <
+                      (appendPlannedCandidate candidates
+                        (rootAwarePlannedCandidate? parameter input context.state)).length := by
+                    simpa [nextCandidates] using hnextSelected
+                  simp only [hactual, ↓reduceDIte, support_pure,
+                    Set.mem_singleton_iff] at houtput
+                  subst output
+                  have hprefix : candidates.IsPrefix nextCandidates := by
+                    unfold nextCandidates appendPlannedCandidate
+                    cases rootAwarePlannedCandidate? parameter input context.state <;> simp
+                  exact hprefix
+                · have hactual : ¬ordinal <
+                      (appendPlannedCandidate candidates
+                        (rootAwarePlannedCandidate? parameter input context.state)).length := by
+                    simpa [nextCandidates] using hnextSelected
+                  simp only [hactual, ↓reduceDIte] at houtput
+                  rw [mem_support_bind_iff] at houtput
+                  obtain ⟨result, hresult, hfinish⟩ := houtput
+                  have hprefix : candidates.IsPrefix nextCandidates := by
+                    unfold nextCandidates appendPlannedCandidate
+                    cases rootAwarePlannedCandidate? parameter input context.state <;> simp
+                  apply PrivateOrdinalSelectionExtends.mono hprefix
+                  apply privateOrdinalSelectionExtends_of_mem_finish _ nextCandidates result
+                    (output := output) (houtput := hfinish)
+                  intro resolved nextOutput heq hnextOutput
+                  subst result
+                  apply privateOrdinalSelectionExtends_of_mem_canonicalize table _
+                    resolved.context resolved.remaining resolved.value nextCandidates
+                    (output := nextOutput) (houtput := hnextOutput)
+                  intro nextContext finalOutput hfinalOutput
+                  exact ih resolved.value.1 nextCandidates nextContext resolved.remaining
+                    resolved.value.2 finalOutput hfinalOutput
+        | inr message =>
+            rw [mem_support_bind_iff] at houtput
+            obtain ⟨result, hresult, hfinish⟩ := houtput
+            apply privateOrdinalSelectionExtends_of_mem_finish _ candidates result
+              (output := output) (houtput := hfinish)
+            intro resolved nextOutput heq hnextOutput
+            subst result
+            apply privateOrdinalSelectionExtends_of_mem_canonicalize table _
+              resolved.context resolved.remaining resolved.value candidates
+              (output := nextOutput) (houtput := hnextOutput)
+            intro nextContext finalOutput hfinalOutput
+            exact ih resolved.value.1 candidates nextContext resolved.remaining
+              resolved.value.2 finalOutput hfinalOutput
+
 theorem finishDirectPrivateOrdinalSelection_bind_fire
     (selectionObserve : DeferredContext → Nat → α → List Probe →
       ProbComp (Option PrivateOrdinalSelection))
