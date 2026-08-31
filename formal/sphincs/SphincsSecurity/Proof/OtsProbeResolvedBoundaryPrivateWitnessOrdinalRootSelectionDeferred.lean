@@ -641,6 +641,20 @@ theorem resolvePublicKnownInput_eq_of_values_eq
   unfold resolvePublicKnownInput
   rw [purePeekTableInput_eq_of_values_eq parameter hvalues coordinate]
 
+theorem probingHashQueryAfterPublicPlan_eq_of_values_eq
+    (parameter : PublicParameter) (input : HashInput)
+    {left right : LazyRevealProbe.State Coordinate}
+    (hvalues : left.values = right.values) (plan : PlannedHashQuery) :
+    probingHashQueryAfterPublicPlan parameter input left plan =
+      probingHashQueryAfterPublicPlan parameter input right plan := by
+  unfold probingHashQueryAfterPublicPlan
+  apply bind_congr
+  intro _
+  cases plan.action with
+  | ordinary => rfl
+  | resolve coordinate =>
+      exact resolvePublicKnownInput_eq_of_values_eq parameter hvalues coordinate input
+
 set_option maxRecDepth 100000 in
 theorem runDirectResolvedDetailedFromTable_afterPlan_eq_publicPlan
     (parameter : PublicParameter) (input : HashInput) (plan : PlannedHashQuery)

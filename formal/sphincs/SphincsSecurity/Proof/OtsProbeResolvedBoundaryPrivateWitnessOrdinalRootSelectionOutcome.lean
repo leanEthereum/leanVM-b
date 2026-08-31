@@ -148,6 +148,7 @@ theorem relTriple_finishRootSelectionBridge
     (hrecursive : ∀ originalLeft originalRight left right,
       leftResult = .done originalLeft → rightResult = .done originalRight →
       OrdinaryMaterializedRunEq table left right →
+      CanonicalMaterializedValues table left.context →
       RelTriple
         (leftObserve left.context left.remaining left.value candidates)
         (rightObserve right.context.state right.remaining right.value.1 right.value.2 candidates)
@@ -195,8 +196,12 @@ theorem relTriple_finishRootSelectionBridge
                 intro hmem
                 exact htargetRevealed (by rwa [hrevealed])
               simp only [hrightRevealed, ↓reduceIte]
+              have hcanonicalValues : CanonicalMaterializedValues table canonical :=
+                canonicalizeMaterializedValues_canonical table left.context
+                  hclean.context_le.view.leftConsistent
               exact hrecursive
                 left right { left with context := canonical } right rfl rfl hcanonical
+                  hcanonicalValues
           · unfold finishMaterializedSelectionOutcome
             have hnotCompletable :
                 ¬DeferredCompletable table (directDeferredContext right.context.state) := by
@@ -226,6 +231,7 @@ theorem relTriple_rootSelection_uniform_step
     (hrightMaterialized : right = directDeferredContext right.state)
     (hrecursive : ∀ nextLeft nextRight,
       OrdinaryMaterializedRunEq table nextLeft nextRight →
+      CanonicalMaterializedValues table nextLeft.context →
       RelTriple
         (leftObserve nextLeft.context nextLeft.remaining nextLeft.value candidates)
         (rightObserve nextRight.context.state nextRight.remaining nextRight.value.1
@@ -251,8 +257,8 @@ theorem relTriple_rootSelection_uniform_step
   intro leftResult rightResult hrelation
   exact relTriple_finishRootSelectionBridge target leftOutput rightRoot ordinal table leftObserve
     rightObserve candidates leftResult rightResult hrelation
-    (fun originalLeft originalRight nextLeft nextRight _ _ hnext =>
-      hrecursive nextLeft nextRight hnext)
+    (fun originalLeft originalRight nextLeft nextRight _ _ hnext hcanonical =>
+      hrecursive nextLeft nextRight hnext hcanonical)
 
 set_option maxRecDepth 100000 in
 theorem relTriple_rootSelection_sign_step
@@ -277,6 +283,7 @@ theorem relTriple_rootSelection_sign_step
     (hrightMaterialized : right = directDeferredContext right.state)
     (hrecursive : ∀ nextLeft nextRight,
       OrdinaryMaterializedRunEq table nextLeft nextRight →
+      CanonicalMaterializedValues table nextLeft.context →
       RelTriple
         (leftObserve nextLeft.context nextLeft.remaining nextLeft.value candidates)
         (rightObserve nextRight.context.state nextRight.remaining nextRight.value.1
@@ -302,8 +309,8 @@ theorem relTriple_rootSelection_sign_step
   intro leftResult rightResult hrelation
   exact relTriple_finishRootSelectionBridge target leftOutput rightRoot ordinal table leftObserve
     rightObserve candidates leftResult rightResult hrelation
-    (fun originalLeft originalRight nextLeft nextRight _ _ hnext =>
-      hrecursive nextLeft nextRight hnext)
+    (fun originalLeft originalRight nextLeft nextRight _ _ hnext hcanonical =>
+      hrecursive nextLeft nextRight hnext hcanonical)
 
 set_option maxRecDepth 100000 in
 theorem relTriple_rootSelection_hash_step
@@ -328,6 +335,7 @@ theorem relTriple_rootSelection_hash_step
     (hrightMaterialized : right = directDeferredContext right.state)
     (hrecursive : ∀ nextLeft nextRight,
       OrdinaryMaterializedRunEq table nextLeft nextRight →
+      CanonicalMaterializedValues table nextLeft.context →
       RelTriple
         (leftObserve nextLeft.context nextLeft.remaining nextLeft.value candidates)
         (rightObserve nextRight.context.state nextRight.remaining nextRight.value.1
@@ -363,8 +371,8 @@ theorem relTriple_rootSelection_hash_step
   intro leftResult rightResult hrelation
   exact relTriple_finishRootSelectionBridge target leftOutput rightRoot ordinal table leftObserve
     rightObserve candidates leftResult rightResult hrelation
-    (fun originalLeft originalRight nextLeft nextRight _ _ hnext =>
-      hrecursive nextLeft nextRight hnext)
+    (fun originalLeft originalRight nextLeft nextRight _ _ hnext hcanonical =>
+      hrecursive nextLeft nextRight hnext hcanonical)
 
 noncomputable def materializedRootAvoidingOrdinalSelectionOutcome
     (ordinal : Nat) (parameter : PublicParameter) (target : Position)
