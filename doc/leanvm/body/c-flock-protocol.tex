@@ -180,7 +180,7 @@ What Flock leaves is one family of $64$ claims for Ring-Switching (\S\ref{flock:
 
 \subsection{Evaluating the matrices}\label{flock:matrices}
 
-$A_0$ and $B_0$ encodes a Boolean circuit, but are never materialized.
+$A_0$ and $B_0$ encode a Boolean circuit, but are never materialized.
 
 \subsubsection{The circuit}\label{flock:circuit}
 
@@ -215,7 +215,7 @@ For every empty position $k$, set $A_0(k,\cdot)=B_0(k,\cdot)=0$. This specifies 
 
 \vspace{3mm}
 
-$A_0$, $B_0$ and $C_0=I$ corresponding R1CS constraints faithfully encode the circuit.
+The R1CS constraints given by $A_0$, $B_0$ and $C_0=I$ faithfully encode the circuit.
 \subsubsection{Forward algorithm}\label{flock:forward}
 
 Given a column vector $W:\cube{\kblock}\to\E$, the forward algorithm computes the two row-indexed vectors $A_0W$ and $B_0W$ without constructing either matrix. The native lincheck verifier uses $W=\wcol$ and retains only the scalar $\inner{\erow}{A_0W}+\lcalpha\inner{\erow}{B_0W}$. The prover of the deferred matrix sumcheck in \S\ref{sec:deferred-claims} instead stores both vectors and folds them through its first $\kblock$ rounds.

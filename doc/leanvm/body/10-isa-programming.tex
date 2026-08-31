@@ -52,7 +52,7 @@ Then $e+f\equiv k-1\pmod{2^{64}-1}$ with $e,f<2^{\kmem}\le2^{32}$, so $e+f<2^{33
 
 \subsection{Match statements}\label{sec:prog-match}
 
-leanVM dispatches a switch with a single jump to $\pc=a+b\cdot x$: the case blocks, padded to a common length $b$, sit consecutively from base $a$, and its integer arithmetic forms the affine address in one instruction. That computation does not transport to this VM. Addresses here are $\gen$-powers: the additive offset $a+j$ is the cheap product $\gen^{a}\cdot x$, but the \emph{scaling} $b\cdot j$ is the power $x^{b}$ ($\log_2 b$ squarings per dispatch), with every block still padded to the longest. Instead, the aligned region collapses to fixed two-instruction \emph{trampoline slots} and the real blocks move out of line: matching on $x=\gen^{j}$, $j\in[0,n)$, the dispatch jumps to
+leanVM dispatches a switch with a single jump to $\pc=a+b\cdot x$: the case blocks, padded to a common length $b$, sit consecutively from base $a$, and its integer arithmetic forms the affine address in one instruction. That computation does not transport to this VM. Addresses here are $\gen$-powers: the additive offset $a+j$ is the cheap product $\gen^{a}\cdot x$, but the \emph{scaling} $b\cdot j$ is the power $x^{b}$ ($O(\log b)$ multiplications per dispatch), with every block still padded to the longest. Instead, the aligned region collapses to fixed two-instruction \emph{trampoline slots} and the real blocks move out of line: matching on $x=\gen^{j}$, $j\in[0,n)$, the dispatch jumps to
 \[
   d \;=\; \gen^{T}\cdot x^{2} \;=\; \gen^{T+2j},
 \]
