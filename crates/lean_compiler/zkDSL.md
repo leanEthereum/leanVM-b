@@ -542,6 +542,8 @@ Three builtins have the prover compute the values at witness generation instead 
 | `if a == b: …` | 3 (+2 to skip a non-empty `else`; +2 amortized `self-fp` per branching function); **0 if the condition is compile-time** |
 | `match log(x): …` | ≈ 7, independent of the case count |
 | `… = match_range(log(x), …)` | the `match` + the arm; results written into the targets directly. Uniform-call arms (`lambda k: f(a, b, k)`) **fuse**: one shared frame + dispatch to entry, each arm just `SET`+`JUMP` |
+
+A multi-value target may be a name OR a `StackBuf` element, so `sb[i], e = match_range(…)` has the arms write straight into `sb[i]`. That costs one instruction less than a name plus a store, because the ABI returns into cells the CALLER picks, which is the same reason `sb[i] = f(x)` never needed a temporary. Use it wherever a returned value's home is a buffer slot.
 | function call | ≈ `n_args + n_returns + 4` (0 when the callee is `@inline`) |
 | `mul_range` iteration | body + ≈ 1 `MUL` + 1 `XOR` + call overhead |
 | `unroll` iteration | body only (compile-time replication) |

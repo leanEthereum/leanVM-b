@@ -951,12 +951,17 @@ fn strip_log(s: &str) -> Option<&str> {
 /// gapless and start at 0 (this compiler's `match` rule). Everything sits on
 /// one line, since there is no line continuation.
 fn parse_match_range(lhs: &str, rhs: &str) -> Result<StmtKind, String> {
-    if lhs.trim_end().ends_with(']') {
-        return Err("bind `match_range` results to names, not a store target".into());
-    }
-    let names = split_top(lhs, ',')
+    // A target is a name, or a `StackBuf` element, which the arms then write
+    // into directly: the ABI already returns into cells the caller picks, so
+    // `sb[i], e = match_range(…)` costs no copy where a name plus a store did.
+    let targets = split_top(lhs, ',')
         .iter()
-        .map(|t| binding_name(t, "binding name"))
+        .map(|t| match parse_expr(t)? {
+            e @ (Expr::Var(_) | Expr::Index(..)) => Ok(e),
+            other => Err(format!(
+                "a `match_range` target must be a name or a StackBuf element, got `{other:?}`"
+            )),
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let chunks = call_args(rhs, "match_range").ok_or("malformed `match_range(…)`")?;
     let (first, pairs) = chunks.split_first().ok_or("match_range needs arguments")?;
@@ -990,5 +995,5 @@ fn parse_match_range(lhs: &str, rhs: &str) -> Result<StmtKind, String> {
             arms.push(subst_var(&body, param.trim(), &Expr::Lit(j)));
         }
     }
-    Ok(StmtKind::LetMatchRange { names, x, arms })
+    Ok(StmtKind::LetMatchRange { targets, x, arms })
 }

@@ -176,7 +176,7 @@ impl FnLower<'_> {
     /// dispatch jump straight into the selected entry, which returns to the join.
     /// Each taken arm is then just the trampoline's `SET entry; JUMP`: no
     /// per-arm frame setup, call, or return jump.
-    pub(super) fn lower_dispatched_call(&mut self, names: &[String], x: &Expr, callees: &[String], rt_args: &[Expr]) {
+    pub(super) fn lower_dispatched_call(&mut self, targets: &[Expr], x: &Expr, callees: &[String], rt_args: &[Expr]) {
         // The arms share ONE frame, so they must share one argument layout too:
         // a `StackBuf` parameter in one callee and a scalar in another at the
         // same position would put the return area in two places. The arity check
@@ -244,11 +244,11 @@ impl FnLower<'_> {
             let Some(shapes) = self.return_shapes_of(callee) else {
                 continue;
             };
-            if shapes.len() != names.len() {
+            if shapes.len() != targets.len() {
                 self.fail(format!(
                     "`{callee}` returns {} values, dispatched call binds {}",
                     shapes.len(),
-                    names.len()
+                    targets.len()
                 ))
             };
             if shapes.iter().any(|s| *s != Shape::Scalar) {
@@ -257,7 +257,7 @@ impl FnLower<'_> {
                 ))
             };
         }
-        let rcells: Vec<Off> = names.iter().map(|_| self.fresh()).collect();
+        let (rcells, binds) = self.ret_targets(targets);
 
         // Shared callee frame: args, retfp, and retpc = the join (so the callee
         // returns straight past the dispatch). Evaluated once.
@@ -293,7 +293,7 @@ impl FnLower<'_> {
             self.deref(nfp, Abi::ret(n_args, i as u32), r, DerefMode::Cell);
         }
 
-        self.bind_join(names, &rcells);
+        self.bind_targets(&binds);
     }
 
     /// Inline an `@inline` `callee(args)` into the current frame, binding its

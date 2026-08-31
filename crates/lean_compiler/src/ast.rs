@@ -160,7 +160,7 @@ pub enum StmtKind {
     /// same fresh cells, exactly one arm running, and `names` bind them at the
     /// join. See `FnLower::lower_match_range`.
     LetMatchRange {
-        names: Vec<String>,
+        targets: Vec<Expr>,
         x: Expr,
         arms: Vec<Expr>,
     },
@@ -316,8 +316,13 @@ pub(crate) fn binds_anywhere(body: &[Stmt], out: &mut HashSet<String>) {
             StmtKind::Let(n, _) | StmtKind::LetHintWitness { name: n, .. } => {
                 out.insert(n.clone());
             }
-            StmtKind::LetTuple(ns, ..) | StmtKind::LetMatchRange { names: ns, .. } => ns.iter().for_each(|n| {
+            StmtKind::LetTuple(ns, ..) => ns.iter().for_each(|n| {
                 out.insert(n.clone());
+            }),
+            StmtKind::LetMatchRange { targets, .. } => targets.iter().for_each(|t| {
+                if let Expr::Var(n) = t {
+                    out.insert(n.clone());
+                }
             }),
             StmtKind::If { then, els, .. } => {
                 binds_anywhere(then, out);
@@ -402,12 +407,18 @@ pub(crate) fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut HashS
             free_vars_expr(x, refs);
             cases.iter().for_each(|c| scoped_vars(c, refs, bound));
         }
-        StmtKind::LetMatchRange { names, x, arms } => {
+        StmtKind::LetMatchRange { targets, x, arms } => {
             free_vars_expr(x, refs);
             arms.iter().for_each(|a| free_vars_expr(a, refs));
-            names.iter().for_each(|n| {
-                bound.insert(n.clone());
-            });
+            for t in targets {
+                match t {
+                    Expr::Var(n) => {
+                        bound.insert(n.clone());
+                    }
+                    // A store target is READ, not bound: `sb[i], e = …` needs `sb`.
+                    other => free_vars_expr(other, refs),
+                }
+            }
         }
         StmtKind::CallIfNe(a, b, _, args) => {
             free_vars_expr(a, refs);

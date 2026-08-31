@@ -151,13 +151,13 @@ fn subst_kind(s: &StmtKind, name: &str, to: &Expr) -> (StmtKind, bool) {
             },
             false,
         ),
-        StmtKind::LetMatchRange { names, x, arms } => (
+        StmtKind::LetMatchRange { targets, x, arms } => (
             StmtKind::LetMatchRange {
-                names: names.clone(),
+                targets: targets.iter().map(e).collect(),
                 x: e(x),
                 arms: arms.iter().map(e).collect(),
             },
-            names.iter().any(|n| n == name),
+            targets.iter().any(|t| matches!(t, Expr::Var(n) if n == name)),
         ),
     }
 }

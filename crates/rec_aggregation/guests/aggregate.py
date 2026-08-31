@@ -2352,8 +2352,7 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
         digit = hint_witness("digits")
         assert log(digit) < CHAIN_LENGTH
         chain_start = hint_witness("chain_starts")
-        t, e = match_range(log(digit), range(0, CHAIN_LENGTH), lambda k: walk(chain_start, chain_tweaks, pp, k))
-        tips[i] = t
+        tips[i], e = match_range(log(digit), range(0, CHAIN_LENGTH), lambda k: walk(chain_start, chain_tweaks, pp, k))
         digit_product = digit_product * digit
         acc_lo = acc_lo + e * weight  # e_i in its monomial subspace of lane 0
         weight = weight * CHAIN_LENGTH
@@ -2364,8 +2363,7 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
         digit = hint_witness("digits")
         assert log(digit) < CHAIN_LENGTH
         chain_start = hint_witness("chain_starts")
-        t, e = match_range(log(digit), range(0, CHAIN_LENGTH), lambda k: walk(chain_start, chain_tweaks, pp, k))
-        tips[i] = t
+        tips[i], e = match_range(log(digit), range(0, CHAIN_LENGTH), lambda k: walk(chain_start, chain_tweaks, pp, k))
         digit_product = digit_product * digit
         acc_hi = acc_hi + e * weight  # e_i in its monomial subspace of lane 1
         weight = weight * CHAIN_LENGTH
@@ -2488,8 +2486,7 @@ def sp_ots_leaf(tw_pos, pp, msg):
         assert log(digit) < SP_CHAIN_LENGTH
         chain_start = hint_witness("sp_chain_starts")
         tw_chain = tw_pos + SP_TW_CHAIN + i * SP_CHAIN_MUL
-        t, e = match_range(log(digit), range(0, SP_CHAIN_LENGTH), lambda k: sp_walk(chain_start, tw_chain, pp, k))
-        tips[i] = t
+        tips[i], e = match_range(log(digit), range(0, SP_CHAIN_LENGTH), lambda k: sp_walk(chain_start, tw_chain, pp, k))
         digit_product = digit_product * digit
         acc_lo = acc_lo + e * weight
         weight = weight * SP_CHAIN_LENGTH
@@ -2500,8 +2497,7 @@ def sp_ots_leaf(tw_pos, pp, msg):
         assert log(digit) < SP_CHAIN_LENGTH
         chain_start = hint_witness("sp_chain_starts")
         tw_chain = tw_pos + SP_TW_CHAIN + i * SP_CHAIN_MUL
-        t, e = match_range(log(digit), range(0, SP_CHAIN_LENGTH), lambda k: sp_walk(chain_start, tw_chain, pp, k))
-        tips[i] = t
+        tips[i], e = match_range(log(digit), range(0, SP_CHAIN_LENGTH), lambda k: sp_walk(chain_start, tw_chain, pp, k))
         digit_product = digit_product * digit
         acc_hi = acc_hi + e * weight
         weight = weight * SP_CHAIN_LENGTH

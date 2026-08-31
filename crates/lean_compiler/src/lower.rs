@@ -345,9 +345,9 @@ impl FnLower<'_> {
 
     /// Bind each of `names` to the join cell holding its value, after a `match`
     /// dispatch: whichever arm ran wrote them, so they are plain scalars now.
-    fn bind_join(&mut self, names: &[String], cells: &[Off]) {
-        for (name, &cell) in names.iter().zip(cells) {
-            self.rebind(name, Binding::Scalar(cell));
+    fn bind_targets(&mut self, binds: &[(String, Off)]) {
+        for (name, cell) in binds {
+            self.rebind(name, Binding::Scalar(*cell));
         }
     }
 
@@ -582,7 +582,40 @@ impl FnLower<'_> {
     /// expression (the lambda body at `i = j`) and copies the results into
     /// cells shared by every arm (write-once: exactly one arm executes);
     /// `names` bind to those cells at the join.
-    fn lower_match_range(&mut self, names: &[String], x: &Expr, arms: &[Expr]) {
+    /// The cell each multi-return target names, and the names still to bind.
+    ///
+    /// A plain name takes a fresh cell, as it always did. A `StackBuf` element IS
+    /// its cell, so the arms write the value where the program wants it and the
+    /// store that used to follow is gone: the ABI already returns into cells the
+    /// CALLER picks ([`Self::call_into`]), and a single-value assignment has
+    /// always exploited that, so this only lets a multi-value one say the same.
+    fn ret_targets(&mut self, targets: &[Expr]) -> (Vec<Off>, Vec<(String, Off)>) {
+        let mut cells = Vec::with_capacity(targets.len());
+        let mut binds = Vec::new();
+        for t in targets {
+            match t {
+                Expr::Index(arr, idx) if self.stack_of(arr).is_some() => {
+                    let (base, size) = self.stack_of(arr).expect("checked");
+                    let k = self.const_index(idx);
+                    if k >= size {
+                        self.fail(format!("target index {k} out of bounds (StackBuf size {size})"))
+                    };
+                    cells.push(base + k);
+                }
+                Expr::Var(n) => {
+                    let c = self.fresh();
+                    cells.push(c);
+                    binds.push((n.clone(), c));
+                }
+                other => self.fail(format!(
+                    "a multi-value target must be a name or a StackBuf element, got `{other:?}`"
+                )),
+            }
+        }
+        (cells, binds)
+    }
+
+    fn lower_match_range(&mut self, targets: &[Expr], x: &Expr, arms: &[Expr]) {
         for arm in arms {
             if let Expr::Call(f, _) = arm
                 && self
@@ -611,14 +644,14 @@ impl FnLower<'_> {
             if specialized.iter().all(|(_, rt)| rt == rt0) {
                 let callees: Vec<String> = specialized.iter().map(|(c, _)| c.clone()).collect();
                 let rt_args = rt0.clone();
-                self.lower_dispatched_call(names, x, &callees, &rt_args);
+                self.lower_dispatched_call(targets, x, &callees, &rt_args);
                 return;
             }
             // Not uniform: fall through (the specializations queued above are
             // re-requested idempotently by `call_into`).
         }
         let xo = self.expr(x);
-        let rcells: Vec<Off> = names.iter().map(|_| self.fresh()).collect();
+        let (rcells, binds) = self.ret_targets(targets);
         self.lower_match_dispatch(xo, arms.len(), |s, j| {
             s.scoped(|s| {
                 if let [rcell] = rcells.as_slice() {
@@ -657,7 +690,7 @@ impl FnLower<'_> {
                 }
             });
         });
-        self.bind_join(names, &rcells);
+        self.bind_targets(&binds);
     }
 
     /// The two-jump dispatch itself: `d = g^T · x²` names slot `x` of the
@@ -1294,7 +1327,7 @@ impl FnLower<'_> {
                 force_const,
             } => self.lower_if(*eq, lhs, rhs, then, els, *force_const),
             StmtKind::Match { x, cases } => self.lower_match(x, cases),
-            StmtKind::LetMatchRange { names, x, arms } => self.lower_match_range(names, x, arms),
+            StmtKind::LetMatchRange { targets, x, arms } => self.lower_match_range(targets, x, arms),
             StmtKind::Call(f, args) => {
                 if !self.lower_builtin(f, args) {
                     self.call(f, args, 0);
