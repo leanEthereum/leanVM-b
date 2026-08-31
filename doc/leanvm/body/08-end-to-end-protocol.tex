@@ -32,9 +32,9 @@ Instruction & $3$ & $4$ & $5$ & $6$ & $7$ & $8$ & $9$ & $10$ & $11$\\
 \texttt{XOR}           & $\opc{XOR}$ & $o_A$ & $o_B$ & $o_C$ & $0$ & $0$ & $0$ & $0$ & $0$\\
 \texttt{MUL\_NATIVE}   & $\opc{MUL}$ & $o_A$ & $o_B$ & $o_C$ & $0$ & $0$ & $0$ & $0$ & $0$\\
 \texttt{SET\_CONSTANT} & $\opc{SET}$ & $o$   & $k_0$ & $k_1$ & $k_2$ & $0$ & $0$ & $0$ & $0$\\
-\texttt{DEREF}         & $\opc{DRF}$ & $\alpha$ & $\beta$ & $\gamma$ & $f_{\pc}$ & $f_{\fp}$ & $0$ & $0$ & $0$\\
+\texttt{DEREF}         & $\opc{DRF}$ & $o_1$ & $o_2$ & $o_3$ & $f_{\pc}$ & $f_{\fp}$ & $0$ & $0$ & $0$\\
 \texttt{JUMP}          & $\opc{JMP}$ & $o_c$ & $o_d$ & $o_f$ & $0$ & $0$ & $0$ & $0$ & $0$\\
-\texttt{BLAKE2S}        & $\opc{B3}$  & $o_{m_0}$ & $o_{m_1}$ & $o_{m_2}$ & $o_{m_3}$ & $o_{\mathit{cv}}$ & $o_{\mathit{out}}$ & $\md_0$ & $\md_1$\\
+\texttt{BLAKE2S}        & $\opc{B2S}$  & $o_{m_0}$ & $o_{m_1}$ & $o_{m_2}$ & $o_{m_3}$ & $o_{\mathit{cv}}$ & $o_{\mathit{out}}$ & $\md_0$ & $\md_1$\\
 \hline
 \end{tabular}
 \end{center}
@@ -42,9 +42,9 @@ The program is padded to $\nprog=2^{\kbc}$ instructions (\S\ref{sec:idxcol}) and
 
 \subsection{Public input}\label{sec:e2e-pi}
 
-The public input is the first two memory cells $\mem[0],\mem[1]$, each a $192$-bit word, fixed and agreed by both parties. Cells $0$ and $1$ span the subcube of the address hypercube $\cube h$ with the $h-1$ high coordinates $0$ and the low one free, so on \emph{each} memory limb $M_\ell$ ($\ell\in\{0,1,2\}$, \S\ref{sec:memchan}) the MLE restricts there to the line $\widetilde{\mathrm{PI}}_\ell(r)=(1-r)\,\mem[0]_\ell+r\,\mem[1]_\ell$, which the verifier forms itself from the public words. It samples $r_m\in\E$ and checks all three limbs,
+The public input is the first two memory cells $\mem[\gen^{0}],\mem[\gen^{1}]$, each a $192$-bit word, fixed and agreed by both parties. Those two cells span the subcube of the address hypercube $\cube{\kmem}$ with the $\kmem-1$ high coordinates $0$ and the low one free, so on \emph{each} memory limb $\mem_\ell$ ($\ell\in\{0,1,2\}$, \S\ref{sec:memchan}) the MLE restricts there to the line $\widetilde{\mathrm{PI}}_\ell(r)=(1+r)\,\mem[\gen^{0}]_\ell+r\,\mem[\gen^{1}]_\ell$, which the verifier forms itself from the public words. It samples $r_m\in\E$ and checks all three limbs,
 \[
-  \widetilde M_\ell(r_m,0,\dots,0)\;\qeq\;\widetilde{\mathrm{PI}}_\ell(r_m),\qquad \ell\in\{0,1,2\}.
+  \mle{\mem_\ell}(r_m,0,\dots,0)\;\qeq\;\widetilde{\mathrm{PI}}_\ell(r_m),\qquad \ell\in\{0,1,2\}.
 \]
 The prover sends the three claimed values, the verifier checks each against the line, and the three claims are deferred to the PCS (\S\ref{sec:stacking}).
 
@@ -61,7 +61,7 @@ The prover can thus leverage these "closed walks" to fill every table to its nex
 
 Each reduction below adds evaluation claims on columns to a shared \emph{claim pool}; the final \textsc{Opening} phase proves all of them with a single PCS opening.
 
-\paragraph{Setup and statement binding.} Fixed and shared in advance (\S\ref{sec:e2e-const} through \S\ref{sec:e2e-pi}): the fields and constants; the instance caps (\S\ref{sec:memchan}); the public program and its length; the initial state $(\pc_0,\fp_0)$ and final state $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$; and the public input $\mem[0],\mem[1]$. Before any challenge, the transcript is seeded by the public input and one environment digest that binds both the exact bytecode and flock's BLAKE2s R1CS. The prover then announces the memory log-size $\kmem$ and the six table log-heights $\tau_j$; the verifier checks them against the caps and derives every table, stack, and leaf shape.
+\paragraph{Setup and statement binding.} Fixed and shared in advance (\S\ref{sec:e2e-const} through \S\ref{sec:e2e-pi}): the fields and constants; the instance caps (\S\ref{sec:lookup}); the public program and its length; the initial state $(\pc_0,\fp_0)$ and final state $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$; and the public input $\mem[\gen^{0}],\mem[\gen^{1}]$. Before any challenge, the transcript is seeded by the public input and one environment digest that binds both the exact bytecode and flock's BLAKE2s R1CS. The prover then announces the memory log-size $\kmem$ and the six table log-heights $\tau_j$; the verifier checks them against the caps and derives every table, stack, and leaf shape.
 
 \paragraph{Commitment.}
 \begin{enumerate}
@@ -72,8 +72,8 @@ Each reduction below adds evaluation claims on columns to a shared \emph{claim p
 \paragraph{Bus.}
 \begin{enumerate}
 \item \textbf{Verifier.} Sends the fingerprint challenge $\alpha\in\E^{4}$ and the multiset challenge $\beta\in\E$ (\S\ref{sec:gp}).
-\item \textbf{Prover.} Forms the push, pull, and \emph{count} leaf vectors (\S\ref{sec:leafstack}; the count leaves are the count columns themselves, \S\ref{sec:memchan}), stacked into blocks and padded with $1$s. Sends the count root $R_c$ and one bus root $R$, the value both the push and the pull product must take (\S\ref{sec:gp}).
-\item \textbf{Prover \& Verifier.} Run the one batched GKR (\S\ref{sec:gkr}) over all three trees. For the bus, the verifier checks each side's product against $R$; one $R$ for both sides is the balance check (\S\ref{sec:gp}). For the counts it checks $R_c\neq0$ (no read self-cancels, \S\ref{sec:memchan}). The pass yields three leaf claims $\widetilde V^{s}_0(\zeta)$ at one shared $\zeta$.
+\item \textbf{Prover.} Forms the push, pull, and \emph{count} leaf vectors (\S\ref{sec:leafstack}; the count leaves are the count columns themselves, \S\ref{sec:lookup}), stacked into blocks and padded with $1$s. Sends the count root $R_c$ and one bus root $R$, the value both the push and the pull product must take (\S\ref{sec:gp}).
+\item \textbf{Prover \& Verifier.} Run the one batched GKR (\S\ref{sec:gkr}) over all three trees. For the bus, the verifier checks each side's product against $R$; one $R$ for both sides is the balance check (\S\ref{sec:gp}). For the counts it checks $R_c\neq0$ (no read self-cancels, \S\ref{sec:lookup}). The pass yields three leaf claims $\widetilde V^{s}_0(\zeta)$ at one shared $\zeta$.
 \item \textbf{Prover \& Verifier.} Decompose each leaf claim (\S\ref{sec:leafstack}). The verifier forms every public part itself: the block selectors, the constant entries, the index column (\S\ref{sec:idxcol}), and the program's whole share of the two bytecode blocks, one evaluation at $(\zeta,\alpha)$ (\S\ref{sec:e2e-bc}). Three blocks per side belong to no table: the state boundary, and each array's seed and finalization. For those the prover sends one value per committed column, which enter the claim pool. Every other block belongs to a table, and for those it sends nothing: what they owe is the leaf claim less the part the verifier just formed, and the table sumcheck settles it (\S\ref{sec:air}).
 \end{enumerate}
 
@@ -86,7 +86,7 @@ Each reduction below adds evaluation claims on columns to a shared \emph{claim p
 \paragraph{Public input.}
 \begin{enumerate}
 \item \textbf{Verifier.} Sends $r_m\in\E$ and forms the line $\widetilde{\mathrm{PI}}_\ell(r_m)$ from the public words.
-\item \textbf{Prover \& Verifier.} The prover sends one evaluation per memory limb; the verifier checks the three against the line and pools them as claims on $M_0,M_1,M_2$ at $(r_m,0,\dots,0)$ (\S\ref{sec:e2e-pi}).
+\item \textbf{Prover \& Verifier.} The prover sends one evaluation per memory limb; the verifier checks the three against the line and pools them as claims on $\mem_0,\mem_1,\mem_2$ at $(r_m,0,\dots,0)$ (\S\ref{sec:e2e-pi}).
 \end{enumerate}
 
 \paragraph{BLAKE2s validity.}

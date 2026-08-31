@@ -592,9 +592,9 @@ struct DerefTable;
 mod deref {
     pub const PC: usize = 0;
     pub const FP: usize = 1;
-    pub const OAL: usize = 2;
-    pub const OBE: usize = 3;
-    pub const OGA: usize = 4;
+    pub const O1: usize = 2;
+    pub const O2: usize = 3;
+    pub const O3: usize = 4;
     pub const FPC: usize = 5;
     pub const FFP: usize = 6;
     // The pointer word is a SINGLE K-lane, so its extension limbs are provably
@@ -639,13 +639,13 @@ impl Table for DerefTable {
     fn flushes(&self, f: &mut FlushBuilder) {
         use deref::*;
         f.state_step(PC, FP);
-        f.bytecode(PC, RBC, OP_DEREF, &[Col(OAL), Col(OBE), Col(OGA), Col(FPC), Col(FFP)]);
+        f.bytecode(PC, RBC, OP_DEREF, &[Col(O1), Col(O2), Col(O3), Col(FPC), Col(FFP)]);
         // The pointer cell and the local cell are frame-relative; the store target
         // is pointer-relative, so its address is `p·obe`, and its value is the
         // flag-selected source rather than a column.
-        f.memory_k(Prod(FP, OAL, 0), R1, P);
-        f.memory_coords(Prod(P, OBE, 0), R2, deref_store());
-        f.memory(Prod(FP, OGA, 0), R3, V3_LO, V3_HI, V3_TOP);
+        f.memory_k(Prod(FP, O1, 0), R1, P);
+        f.memory_coords(Prod(P, O2, 0), R2, deref_store());
+        f.memory(Prod(FP, O3, 0), R3, V3_LO, V3_HI, V3_TOP);
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
         use deref::*;
@@ -653,12 +653,7 @@ impl Table for DerefTable {
         // Offsets and store mode are the instruction's. Neither the store target's
         // address nor its value is committed.
         let ins = |r: &Drow| match ctx.prog[r.pc as usize] {
-            Op::Deref {
-                alpha,
-                beta,
-                gamma,
-                mode,
-            } => (alpha, beta, gamma, mode),
+            Op::Deref { o1, o2, o3, mode } => (o1, o2, o3, mode),
             op => unreachable!("a DEREF row's pc {} holds {op:?}", r.pc),
         };
         ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
@@ -672,16 +667,16 @@ impl Table for DerefTable {
         );
         // The three offsets, the two mode flags, the pointer lane and the local
         // word all follow from ONE bytecode decode.
-        ctx.cols(out, rows, OAL, |r| {
-            let (alpha, beta, gamma, mode) = ins(r);
-            let v3 = ctx.limbs(r.fp + gamma);
+        ctx.cols(out, rows, O1, |r| {
+            let (o1, o2, o3, mode) = ins(r);
+            let v3 = ctx.limbs(r.fp + o3);
             [
-                ctx.g_at(alpha),
-                ctx.g_at(beta),
-                ctx.g_at(gamma),
+                ctx.g_at(o1),
+                ctx.g_at(o2),
+                ctx.g_at(o3),
                 mode.f_pc(),
                 mode.f_fp(),
-                F64(ctx.mem[(r.fp + alpha) as usize].c0),
+                F64(ctx.mem[(r.fp + o1) as usize].c0),
                 v3[0],
                 v3[1],
                 v3[2],

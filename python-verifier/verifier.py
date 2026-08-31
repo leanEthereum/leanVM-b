@@ -764,7 +764,7 @@ def _flushes_set() -> Flushes:
 
 
 def _flushes_deref() -> Flushes:
-    pc, fp, alpha, beta, gamma, f_pc, f_fp, ptr = _cols(DEREF_COLUMNS, "pc", "fp", "alpha", "beta", "gamma", "f_pc", "f_fp", "ptr")
+    pc, fp, o1, o2, o3, f_pc, f_fp, ptr = _cols(DEREF_COLUMNS, "pc", "fp", "o1", "o2", "o3", "f_pc", "f_fp", "ptr")
     cnt_ptr, cnt_target, cnt_local, cnt_bc = _cols(DEREF_COLUMNS, "cnt_ptr", "cnt_target", "cnt_local", "cnt_bc")
     v3 = _cols(DEREF_COLUMNS, "v3_0", "v3_1", "v3_2")
 
@@ -775,10 +775,10 @@ def _flushes_deref() -> Flushes:
     store = (Form.sum((*gated(v3[0]), _prod(f_pc, pc, 2), _prod(f_fp, fp))), Form.sum(gated(v3[1])), Form.sum(gated(v3[2])))
     flushes = Flushes()
     flushes.state_step(pc, fp)
-    flushes.bytecode(pc, cnt_bc, OP_DEREF, (_col(alpha), _col(beta), _col(gamma), _col(f_pc), _col(f_fp)))
-    flushes.memory_cols(_prod(fp, alpha), cnt_ptr, ptr)
-    flushes.memory(_prod(ptr, beta), cnt_target, store)
-    flushes.memory_cols(_prod(fp, gamma), cnt_local, *v3)
+    flushes.bytecode(pc, cnt_bc, OP_DEREF, (_col(o1), _col(o2), _col(o3), _col(f_pc), _col(f_fp)))
+    flushes.memory_cols(_prod(fp, o1), cnt_ptr, ptr)
+    flushes.memory(_prod(ptr, o2), cnt_target, store)
+    flushes.memory_cols(_prod(fp, o3), cnt_local, *v3)
     return flushes
 
 
@@ -820,7 +820,7 @@ OP_XOR, OP_MUL, OP_SET, OP_DEREF, OP_JUMP, OP_BLAKE2S = range(6)
 
 ARITH_COLUMNS = ("pc", "fp", "o_a", "o_b", "o_c", "va_0", "va_1", "va_2", "vb_0", "vb_1", "vb_2", "cnt_a", "cnt_b", "cnt_c", "cnt_bc",)  # fmt: skip
 SET_COLUMNS = ("pc", "fp", "o", "k_0", "k_1", "k_2", "cnt", "cnt_bc")
-DEREF_COLUMNS = ("pc", "fp", "alpha", "beta", "gamma", "f_pc", "f_fp", "ptr", "v3_0", "v3_1", "v3_2",  "cnt_ptr", "cnt_target", "cnt_local", "cnt_bc",)  # fmt: skip
+DEREF_COLUMNS = ("pc", "fp", "o1", "o2", "o3", "f_pc", "f_fp", "ptr", "v3_0", "v3_1", "v3_2",  "cnt_ptr", "cnt_target", "cnt_local", "cnt_bc",)  # fmt: skip
 JUMP_COLUMNS = ("pc", "fp", "o_c", "o_d", "o_f", "v_cond", "v_pc", "v_fp", "cnt_c", "cnt_d", "cnt_f", "cnt_bc", "w", "b",)  # fmt: skip
 BLAKE2S_COLUMNS = (
     "pc", "fp", "o_0", "o_1", "o_2", "o_3", "o_v", "o_out",

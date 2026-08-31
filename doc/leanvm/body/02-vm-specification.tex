@@ -60,7 +60,7 @@ Instruction & Operands & Semantics\\
 \texttt{XOR}           & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}+\loc{o_B}$ \quad(addition in $\E$)\\
 \texttt{MUL\_NATIVE}   & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}\cdot\loc{o_B}$ (multiplication in $\E$)\\
 \texttt{SET\_CONSTANT} & $[o,k_0,k_1,k_2]$ & $\loc{o}=k_0+k_1y+k_2y^{2}$\\
-\texttt{DEREF}         & $[\alpha,\beta,\gamma;\,s]$ & $\mem[\loc{\alpha}\cdot\beta]=\srcsel{s}$ (see below)\\
+\texttt{DEREF}         & $[o_1,o_2,o_3;\,\dmode]$ & $\mem[\loc{o_1}\cdot o_2]=\srcsel{\dmode}$ (see below)\\
 \texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (see below)\\
 \texttt{BLAKE2S}        & $[o_{m_0},o_{m_1},o_{m_2},o_{m_3},o_{\mathit{cv}},o_{\mathit{out}},\md_0,\md_1]$ & BLAKE2s compression (see below)\\
 \hline
@@ -68,17 +68,17 @@ Instruction & Operands & Semantics\\
 \end{center}
 
 
-\texttt{DEREF} stores, at the dereferenced address $\loc{\alpha}\cdot\beta$, a value chosen by a \emph{store mode} $s\in\{\texttt{deref\_cell}[\gamma],\texttt{deref\_pc},\texttt{deref\_fp}\}$:
+\texttt{DEREF} stores, at the dereferenced address $\loc{o_1}\cdot o_2$, a value chosen by a \emph{store mode} $\dmode\in\{\texttt{deref\_cell}[o_3],\texttt{deref\_pc},\texttt{deref\_fp}\}$:
 \[
-  \srcsel{s}\;=\;
+  \srcsel{\dmode}\;=\;
   \begin{cases}
-    \loc{\gamma} & s=\texttt{deref\_cell}[\gamma] \quad(\text{the local cell at offset }\gamma \in \K),\\
-    \gen^{2}\cdot\pc & s=\texttt{deref\_pc} \quad(\text{the current program counter advanced by two}),\\
-    \fp & s=\texttt{deref\_fp} \quad(\text{the current frame pointer}).
+    \loc{o_3} & \dmode=\texttt{deref\_cell}[o_3] \quad(\text{the local cell at offset }o_3 \in \K),\\
+    \gen^{2}\cdot\pc & \dmode=\texttt{deref\_pc} \quad(\text{the current program counter advanced by two}),\\
+    \fp & \dmode=\texttt{deref\_fp} \quad(\text{the current frame pointer}).
   \end{cases}
 \]
 
-Additionally, it asserts $\loc{\alpha} \in \K$.
+Additionally, it asserts $\loc{o_1} \in \K$.
 
 \vspace{5mm}
 

@@ -94,11 +94,11 @@ The GKR grand-product argument reduces each side of \eqref{eq:gp} to a single ev
 
 \paragraph{Decomposition.} Split $\zeta=(\zeta^{b}_{\mathrm{lo}},\zeta^{b}_{\mathrm{hi}})$ at block $b$'s boundary. Each block is a subcube, so the leaf MLE splits into a public selector times the block's own MLE, plus what the padding contributes:
 \begin{equation}\label{eq:gkr_leaves}
-  \widetilde V_0(\zeta)\;=\;\sum_b \eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigl(\beta-\sum_{i}\eq(\alpha,i)\,\widetilde c_{b,i}(\zeta^{b}_{\mathrm{lo}})\Bigr)\;+\;\Bigl(1-\sum_b\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigr).
+  \widetilde V_0(\zeta)\;=\;\sum_b \eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigl(\beta-\sum_{i}\eq(\alpha,i)\,\widetilde c_{b,i}(\zeta^{b}_{\mathrm{lo}})\Bigr)\;+\;\Bigl(1+\sum_b\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigr).
 \end{equation}
 That last term is the padding's weight, for the final $\dots 1111$.
 
-\paragraph{Settling it.} Fix one side $s$. The boundary tuples (\S\ref{sec:m3}) and each array's seed and finalization (\S\ref{sec:lookup}) belong to no table. Their entries have degree one: a constant, the index column (\S\ref{sec:idxcol}), a public component, or one committed column. The prover sends, for each such committed multilinear, its evaluation at $\zeta^{b}_{\mathrm{lo}}$. These claims are then deferred to the PCS (\S\ref{sec:stacking}). The verifier finally evaluates each contribution, and subtracts them, with the corresponding padding term, from the claimed value of $\widetilde V^{s}_0(\zeta)$. Call the remainder $R_{s}$: it remains to prove an equation similar to \eqref{eq:gkr_leaves}, summing only on the flush blocks from tables.
+\paragraph{Settling it.} Fix one side $s$. The boundary tuples (\S\ref{sec:m3}) and each array's seed and finalization (\S\ref{sec:lookup}) belong to no table. Their entries have degree one: a constant, the index column (\S\ref{sec:idxcol}), a public component, or one committed column. The prover sends, for each such committed multilinear, its evaluation at $\zeta^{b}_{\mathrm{lo}}$. These claims are then deferred to the PCS (\S\ref{sec:stacking}). The verifier finally evaluates each contribution, and subtracts them, with the corresponding padding term, from the claimed value of $\widetilde V^{s}_0(\zeta)$. Call the remainder $\mathsf{rem}_{s}$: it remains to prove an equation similar to \eqref{eq:gkr_leaves}, summing only on the flush blocks from tables.
 
 Let $\mathcal B$ be the blocks of $T_j$'s flushes in this leaf vector, one per flush rule (\S\ref{sec:m3}). Each holds one leaf per row of $T_j$, so each is $2^{\tau_j}$ tall and all of them split $\zeta$ at the same place, $\zeta^{b}_{\mathrm{lo}}=\zeta_{<\tau_j}$ and $\zeta^{b}_{\mathrm{hi}}=\zeta_{\ge\tau_j}$, differing only through their selector. Exchanging the two sums,
 \begin{align*}
@@ -108,7 +108,7 @@ Let $\mathcal B$ be the blocks of $T_j$'s flushes in this leaf vector, one per f
 \end{align*}
 $B^{s}_j$ has degree at most $d$ in $T_j$'s columns, and the verifier builds its coefficients from $\alpha$, $\beta$ and the selectors. What remains to prove is
 \[
-  \sum_j\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,B^{s}_j(x)\;\qeq\;R_{s} .
+  \sum_j\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,B^{s}_j(x)\;\qeq\;\mathsf{rem}_{s} .
 \]
 There is one such equation per side. Nothing is sent for these blocks. Each constraint of $T_j$ owes a sum of the same shape, so one sumcheck over the tables' rows proves them all (\S\ref{sec:air}).
 
@@ -127,7 +127,7 @@ There is one such equation per side. Nothing is sent for these blocks. Each cons
 
 \paragraph{The bus claims join in.} \S\ref{sec:leafstack} left one per side, at that same point,
 \begin{equation}\label{eq:bus}
-  \sum_{j=1}^{\ntab}\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,B^{s}_j(x)\;\qeq\;R_{s},
+  \sum_{j=1}^{\ntab}\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,B^{s}_j(x)\;\qeq\;\mathsf{rem}_{s},
   \qquad \text{for } s\in\{1,\dots,\nside\}.
 \end{equation}
 Both \eqref{eq:cons} and \eqref{eq:bus} are built from $\eq(\zeta_{<\tau_j},\cdot)$-weighted sums over one table's rows of a polynomial of degree at most $d$ in its columns: we batch them in a single sumcheck.
@@ -140,6 +140,6 @@ Both \eqref{eq:cons} and \eqref{eq:bus} are built from $\eq(\zeta_{<\tau_j},\cdo
 \]
 Since $\sum_{x\in\cube{m}}x_0\cdots x_{m-1}=1$, the padded variables contribute a factor $1$, so summing $F$ over $\cube{\taumax}$ gives back what each table owes. We thus run a single sumcheck:
 \[
-  \sum_{x\in\cube{\taumax}}F(x)\;\qeq\;\sum_{s=1}^{\nside}\xi^{\,s-1}R_{s},
+  \sum_{x\in\cube{\taumax}}F(x)\;\qeq\;\sum_{s=1}^{\nside}\xi^{\,s-1}\mathsf{rem}_{s},
 \]
 the verifier computing the right side itself. Each summand of $F$ has individual degree $d+1=3$, the constraint contributing $d$ and the $\eq$ factor one, so the soundness error is $\bigl(3\taumax+\nside+\sum_j\ncons{j}\bigr)/|\E|$: $3\taumax$ for the rounds (Fact~\ref{fact:sumcheck}) and $\nside+\sum_j\ncons{j}$ for the $\xi$-batching (Corollary~\ref{cor:idtest}). Rounds bind $X_{\taumax-1}$ first, so $T_j$ joins only at round $\taumax-\tau_j$: hence \emph{back-loaded}. The end yields one claim per column, $T_j$'s at $\fc_{<\tau_j}$, settled by the PCS opening (\S\ref{sec:stacking}).

@@ -22,9 +22,9 @@ pub enum Op {
         k: F192,
     },
     Deref {
-        alpha: u32,
-        beta: u32,
-        gamma: u32,
+        o1: u32,
+        o2: u32,
+        o3: u32,
         mode: DerefMode,
     },
     Jump {
@@ -52,7 +52,7 @@ pub enum Op {
     },
 }
 
-/// The source `DEREF` stores at `mem[loc_α·β]`: a local cell, the return
+/// The source `DEREF` stores at `mem[loc_o1·o2]`: a local cell, the return
 /// address `g²·pc`, or the frame pointer. Encoded as two boolean flags `(f_pc,
 /// f_fp)`: `Cell=(0,0)`, `Pc=(1,0)`, `Fp=(0,1)`, keeping the store constraint degree 2.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

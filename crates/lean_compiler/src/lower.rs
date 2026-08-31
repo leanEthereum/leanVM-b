@@ -13,7 +13,7 @@ type SpecializedBody = (Vec<String>, Vec<Expr>, Vec<Stmt>, usize);
 /// A value equal to `pointer(base)·g^exp`, or the pure constant `g^exp` when
 /// `base` is `None`. Heap-address arithmetic (`ptr·gᵏ`, and constant g-power
 /// cursors such as a tweak-table index) is tracked symbolically so a later
-/// access folds the whole offset into `DEREF`'s `β` immediate rather than
+/// access folds the whole offset into `DEREF`'s `o2` immediate rather than
 /// emitting a `SET`+`MUL` per step. A cursor read only as an index thus costs
 /// nothing; one used as a value is materialized on demand ([`FnLower::materialize`]).
 #[derive(Clone, Copy)]
@@ -45,11 +45,11 @@ fn gmul(a: GAddr, b: GAddr) -> Option<GAddr> {
     })
 }
 
-/// Cap on a `β`-folded exponent: the operand g-power table is sized to the
+/// Cap on an `o2`-folded exponent: the operand g-power table is sized to the
 /// largest immediate, so beyond this a huge constant index falls back to a
 /// materialized pointer instead of inflating that table. Inclusive, and one more
 /// than [`FnLower::try_gpow_index`]'s cap, which is fine: `layout::bytecode_columns`
-/// sizes the table from the program's own largest operand, so a folded `β` is
+/// sizes the table from the program's own largest operand, so a folded `o2` is
 /// never one the table cannot represent. The two caps measure different things.
 const FOLD_MAX: u128 = 1 << lean_vm::cpu::MIN_LOG_MEM;
 
@@ -130,7 +130,7 @@ struct Scope {
     /// means in a scalar expression.
     consts: HashMap<String, u128>,
     /// Variables bound to a symbolic g-address ([`GAddr`]): index cursors and
-    /// shifted pointers, kept virtual so their offsets fold into `DEREF`'s `β`.
+    /// shifted pointers, kept virtual so their offsets fold into `DEREF`'s `o2`.
     gaddrs: HashMap<String, GAddr>,
     /// Variables bound to a compile-time *field* constant that isn't a g-power
     /// (e.g. a running weight `CHAIN_LENGTH^i`). Kept virtual: folded through
@@ -263,7 +263,7 @@ impl FnLower<'_> {
         match op {
             LOp::Set { o, .. } => self.phys.insert(o),
             LOp::Xor { c, .. } | LOp::Mul { c, .. } => self.phys.insert(c),
-            LOp::Deref { gamma, .. } => self.phys.insert(gamma),
+            LOp::Deref { o3, .. } => self.phys.insert(o3),
             LOp::Blake2s { c, .. } => {
                 self.phys.insert(c);
                 self.phys.insert(c + 1)
@@ -305,13 +305,8 @@ impl FnLower<'_> {
         self.set(o, KVal::Const(v));
     }
 
-    fn deref(&mut self, alpha: Off, beta: u32, gamma: Off, mode: DerefMode) {
-        self.emit(LOp::Deref {
-            alpha,
-            beta,
-            gamma,
-            mode,
-        });
+    fn deref(&mut self, o1: Off, o2: u32, o3: Off, mode: DerefMode) {
+        self.emit(LOp::Deref { o1, o2, o3, mode });
     }
 
     /// A no-op instruction to hang a pending hint on, so it fires exactly here
@@ -570,9 +565,9 @@ impl FnLower<'_> {
                             k: KVal::Const(F192::ZERO),
                         },
                         FillerOp::Deref => LOp::Deref {
-                            alpha: fr::PTR,
-                            beta: 0,
-                            gamma: fr::SCRATCH,
+                            o1: fr::PTR,
+                            o2: 0,
+                            o3: fr::SCRATCH,
                             mode: DerefMode::Cell,
                         },
                         // Its condition is a cell nothing ever writes, so it reads as
@@ -1259,9 +1254,9 @@ impl FnLower<'_> {
                     return self.word_src(base + k);
                 }
                 // Heap read: bind dst := m[arr·idx] (the array cell, written earlier).
-                let (base, beta) = self.heap_addr(arr, idx);
+                let (base, o2) = self.heap_addr(arr, idx);
                 let dst = self.fresh();
-                self.deref(base, beta, dst, DerefMode::Cell);
+                self.deref(base, o2, dst, DerefMode::Cell);
                 dst
             }
             Expr::Sub(..) | Expr::Div(..) | Expr::Mod(..) => {
@@ -1517,7 +1512,7 @@ impl FnLower<'_> {
     /// (`g = x`, so the literal `2^j` IS `g^j`), names bound to such
     /// literals, and products of those (exponents add). `None` for runtime
     /// values, and for exponents ≥ 2^MIN_LOG_MEM, which must not become a
-    /// `DEREF` `beta` immediate (`beta` is capped by the smallest admissible
+    /// `DEREF` `o2` immediate (`o2` is capped by the smallest admissible
     /// memory size; the fallback MUL path handles any element).
     fn try_gpow_index(&self, idx: &Expr) -> Option<u32> {
         let cap = |k: u32| (k < (1u32 << lean_vm::cpu::MIN_LOG_MEM)).then_some(k);
@@ -1548,7 +1543,7 @@ impl FnLower<'_> {
     /// A `blake2s` *input* operand as its two independently-addressed 128-bit
     /// chunk bases (each chunk is ONE 128-bit cell): stack runs in place; a heap
     /// slice is pulled into a fresh stack pair first, one `DEREF` per cell
-    /// (`m[ptr·g^{lo+k}] == m[fp+t+k]`, the `β` immediate doing the pointer
+    /// (`m[ptr·g^{lo+k}] == m[fp+t+k]`, the `o2` immediate doing the pointer
     /// offset). The heap cells must already be written.
     fn blake2s_input(&mut self, e: &Expr) -> [Off; 2] {
         match self.blake2s_operand(e) {
@@ -1629,8 +1624,8 @@ impl FnLower<'_> {
         match e {
             // Heap read straight into dst (a stack read falls through to the copy).
             Expr::Index(arr, idx) if self.stack_of(arr).is_none() => {
-                let (base, beta) = self.heap_addr(arr, idx);
-                self.deref(base, beta, dst, DerefMode::Cell);
+                let (base, o2) = self.heap_addr(arr, idx);
+                self.deref(base, o2, dst, DerefMode::Cell);
             }
             Expr::Pow(b, e) => {
                 let v = self.pow_expr(b, e);
@@ -1670,14 +1665,14 @@ impl FnLower<'_> {
     }
 
     /// Resolve a heap access `arr[idx]` to a `DEREF`-ready pair: a cell
-    /// holding a pointer `p` and a compile-time exponent `beta`, the accessed
-    /// cell being `m[p·g^beta]` (heap addressing in the exponent: cell `g^k`
+    /// holding a pointer `p` and a compile-time exponent `o2`, the accessed
+    /// cell being `m[p·g^o2]` (heap addressing in the exponent: cell `g^k`
     /// of the buffer sits at `arr·g^k`). The fallback of [`Self::heap_addr`],
     /// which has already folded away a wholly constant index: here a constant
-    /// g-power *factor* still goes into the `beta` immediate, so only the
+    /// g-power *factor* still goes into the `o2` immediate, so only the
     /// runtime factor costs a pointer `MUL`.
     fn array_ptr(&mut self, arr: &Expr, idx: &Expr) -> (Off, u32) {
-        // `buf[r * GEN ** k]` (either factor order): beta takes the constant,
+        // `buf[r * GEN ** k]` (either factor order): o2 takes the constant,
         // the pointer MUL takes only the runtime factor `r`.
         if let Expr::Mul(a, b) = idx {
             for (c, r) in [(a, b), (b, a)] {
@@ -1851,9 +1846,9 @@ impl FnLower<'_> {
         }
     }
 
-    /// Address `arr·g^extra` as `(base_cell, β)`, folding `arr`'s symbolic shift
-    /// and the constant `extra` into `β`. Falls back to a materialized pointer
-    /// (`β = 0`) when there is no runtime base or the offset exceeds [`FOLD_MAX`].
+    /// Address `arr·g^extra` as `(base_cell, o2)`, folding `arr`'s symbolic shift
+    /// and the constant `extra` into `o2`. Falls back to a materialized pointer
+    /// (`o2 = 0`) when there is no runtime base or the offset exceeds [`FOLD_MAX`].
     fn heap_base(&mut self, arr: &Expr, extra: u128) -> (Off, u32) {
         self.check_heap_bound(arr, extra, 1);
         if let Some(ga) = self.gaddr_of(arr)
@@ -1873,8 +1868,8 @@ impl FnLower<'_> {
         (ptr, 0)
     }
 
-    /// Address `arr[idx]` as `(base_cell, β)`. A constant g-power `idx` folds
-    /// into `β` ([`Self::heap_base`]); a runtime index materializes the pointer.
+    /// Address `arr[idx]` as `(base_cell, o2)`. A constant g-power `idx` folds
+    /// into `o2` ([`Self::heap_base`]); a runtime index materializes the pointer.
     fn heap_addr(&mut self, arr: &Expr, idx: &Expr) -> (Off, u32) {
         // A compile-time index that is a plain field constant but NOT a
         // g-power (`buf[0]`, `buf[2]`, an integer unroll var) can never name
@@ -1899,7 +1894,7 @@ impl FnLower<'_> {
             Some(GAddr { base: None, exp, .. }) => return self.heap_base(arr, exp),
             // A runtime-base index carrying a constant g-power shift
             // (`buf[cursor * GEN ** k]`): fold the whole constant part (the
-            // index's shift plus `arr`'s own symbolic shift) into `β`, and
+            // index's shift plus `arr`'s own symbolic shift) into `o2`, and
             // emit ONE pointer multiply instead of materializing g^k.
             Some(GAddr {
                 base: Some(ib), exp, ..
@@ -1916,7 +1911,7 @@ impl FnLower<'_> {
             None => {}
         }
         // Fall back to the constant-g-power-factor fold (a runtime index still
-        // materializes the pointer `MUL`, with any constant factor in `β`).
+        // materializes the pointer `MUL`, with any constant factor in `o2`).
         self.array_ptr(arr, idx)
     }
 
@@ -2085,7 +2080,7 @@ impl FnLower<'_> {
             ))
         };
         // Bind the params from the caller-scope arguments (symbolically where we
-        // can, so a shifted-pointer arg keeps folding into `β`; a `StackBuf` arg
+        // can, so a shifted-pointer arg keeps folding into `o2`; a `StackBuf` arg
         // aliases its cell run), then lower the body in a fresh variable
         // environment, since a function sees only its params. The frame, `one`,
         // `self_fp`, and range-check bounds stay the caller's: the inlined code
@@ -2432,8 +2427,8 @@ impl FnLower<'_> {
                 } else {
                     // Heap store `arr[idx] = val`: assert m[arr·idx] == val (write-once).
                     let v = self.expr(val);
-                    let (base, beta) = self.heap_addr(arr, idx);
-                    self.deref(base, beta, v, DerefMode::Cell);
+                    let (base, o2) = self.heap_addr(arr, idx);
+                    self.deref(base, o2, v, DerefMode::Cell);
                 }
             }
             StmtKind::Return(es) => self.lower_return(es),

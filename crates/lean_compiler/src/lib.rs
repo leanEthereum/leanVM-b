@@ -230,18 +230,13 @@ pub fn disassemble(prog: &[Op]) -> String {
             Op::Set { o, k } => format!("SET    fp[{o}] = {}", kfmt(*k)),
             Op::Xor { a, b, c } => format!("XOR    fp[{c}] = fp[{a}] ^ fp[{b}]"),
             Op::Mul { a, b, c } => format!("MUL    fp[{c}] = fp[{a}] * fp[{b}]"),
-            Op::Deref {
-                alpha,
-                beta,
-                gamma,
-                mode,
-            } => {
+            Op::Deref { o1, o2, o3, mode } => {
                 let src = match mode {
-                    DerefMode::Cell => format!("fp[{gamma}]"),
+                    DerefMode::Cell => format!("fp[{o3}]"),
                     DerefMode::Pc => "g²·pc".to_string(),
                     DerefMode::Fp => "fp".to_string(),
                 };
-                format!("DEREF  *(fp[{alpha}]·g^{beta}) = {src}  [{mode:?}]")
+                format!("DEREF  *(fp[{o1}]·g^{o2}) = {src}  [{mode:?}]")
             }
             Op::Jump { oc, od, of } => {
                 format!("JUMP   if fp[{oc}]≠0: pc=fp[{od}], fp=fp[{of}]")
@@ -301,15 +296,10 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32) -> 
         },
         LOp::Xor { a, b, c } => Op::Xor { a: *a, b: *b, c: *c },
         LOp::Mul { a, b, c } => Op::Mul { a: *a, b: *b, c: *c },
-        LOp::Deref {
-            alpha,
-            beta,
-            gamma,
-            mode,
-        } => Op::Deref {
-            alpha: *alpha,
-            beta: *beta,
-            gamma: *gamma,
+        LOp::Deref { o1, o2, o3, mode } => Op::Deref {
+            o1: *o1,
+            o2: *o2,
+            o3: *o3,
             mode: *mode,
         },
         LOp::Jump { oc, od, of } => Op::Jump {

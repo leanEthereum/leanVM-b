@@ -52,10 +52,11 @@
 \newcommand{\erow}{e_{\mathrm{row}}}                % lincheck's row weight, the quirky eq table
 \newcommand{\wcol}{w_{\mathrm{col}}}                % lincheck's column weight
 \newcommand{\chg}[1]{\Gamma_{#1}}                 % a wire's coefficient in the backward walk
-\newcommand{\colmar}{M_{\mathrm{col}}}           % alpha-batched column marginal of (A_0, B_0)
+\newcommand{\colmar}{M_{\mathrm{col}}}           % column marginal of one matrix, A_0 or B_0
 
 % ---------- VM ----------
 \newcommand{\loc}[1]{\mem[\fp\cdot #1]}
+\newcommand{\dmode}{\mathsf{mode}}   % a DEREF store mode
 \newcommand{\pc}{\mathbf{pc}}
 \newcommand{\fp}{\mathbf{fp}}
 \newcommand{\nxt}[1]{\mathrm{next}(#1)}   % the successor of a register: next(pc), next(fp)
@@ -65,7 +66,7 @@
 \newcommand{\cnt}{\mathit{count}}
 \newcommand{\md}{\mathrm{md}}       % BLAKE2s metadata immediate: byte counter, final and last-node flags
 \newcommand{\cntfin}{\mathit{count}^{\mathrm{fin}}}  % committed finalize-count column
-\newcommand{\rcnts}{\mathcal{R}}          % multiset of read counts at one (address, value)
+\newcommand{\rcnts}{\mathcal{N}}          % multiset of read counts at one (address, value)
 \newcommand{\mset}[1]{\{\!\{#1\}\!\}}     % a multiset (plain braces stay sets)
 \newcommand{\lut}{\mathbf{L}}             % a lookup array (memory, or the program)
 \newcommand{\sep}{\dsep{sep}}             % the domain separator of a generic lookup array
@@ -119,7 +120,7 @@
 \newcommand{\cood}{c_{\mathrm{ood}}}     % out-of-domain answer        (was y)
 \newcommand{\mcanum}{A_{\mathrm{mca}}}   % MCA error numerator         (was a)
 \newcommand{\mcanumi}[1]{A_{\mathrm{mca},#1}}  % ... at level #1
-\newcommand{\polyset}{\mathcal{S}}       % polynomials bound by a commitment
+\newcommand{\polyset}{\mathcal{G}}       % polynomials bound by a commitment
 \newcommand{\relopen}{\mathsf{R}_{\mathrm{open}}}
 \newcommand{\subsp}{\mathcal{U}}         % F_2-subspace                (was U_i)
 \newcommand{\vansub}{\mathcal{V}}        % subspace vanishing poly     (was W_i)

@@ -105,9 +105,9 @@ For $\rexp \ge 1$ and $\kappa + \rexp \le 64$, \S\ref{app:ntt} constructs, follo
 \textbf{Commit}$(f : \cube{\nv} \to \K)$: $\mathbf{P}$ sends the oracle $\orc^{(0)}[u, \cdot] := \Enc_0(f(u, \cdot))$, $u \in \cube{\ell_0}$, whose entries are $\K$ elements. No OOD sample is taken.
 
 \smallskip
-\textbf{Open}$\bigl(\{(W_\tau, c_\tau)\}_{\tau = 1, \dots, J_0}\bigr)$, $J_0 \ge 1$ weighted claims about $f$: set $f^{(0)} := f$. For $i = 0, 1, \dots, \nlev - 1$:
+\textbf{Open}$\bigl(\{(W_t, c_t)\}_{t = 1, \dots, J_0}\bigr)$, $J_0 \ge 1$ weighted claims about $f$: set $f^{(0)} := f$. For $i = 0, 1, \dots, \nlev - 1$:
 \begin{enumerate}[itemsep=0.5pt,topsep=2pt]
-\item \emph{(batch)} $\mathbf{V}$ sends $\lambda \leftarrow \E$; the \emph{batched claim} is $(W, \rc{0}) := \bigl(\sum_{\tau = 1}^{J_i} \lambda^{\tau-1} W_\tau,\; \sum_{\tau} \lambda^{\tau-1} c_\tau\bigr)$.
+\item \emph{(batch)} $\mathbf{V}$ sends $\lambda \leftarrow \E$; the \emph{batched claim} is $(W, \rc{0}) := \bigl(\sum_{t = 1}^{J_i} \lambda^{t-1} W_t,\; \sum_{t} \lambda^{t-1} c_t\bigr)$.
 \item \emph{(sumcheck~\cite{LFKN92})} For $j = 1, \dots, \ell_i$: $\mathbf{P}$ sends $h_j \in \E[X]$ with $\deg h_j \le 2$, honestly $h_j(X) = \sum_{x} \mle{W}(\fc^{<j}, X, x)\, \mle{f^{(i)}}(\fc^{<j}, X, x)$ where $\fc^{<j} := (\fc_1, \dots, \fc_{j-1})$; $\mathbf{V}$ checks $h_j(0) + h_j(1) \qeq \rc{j-1}$, samples $\fc_j \leftarrow \E$ and sends it to the prover; both set $\rc{j} := h_j(\fc_j)$.\\
 Set $\fc := (\fc_1, \dots, \fc_{\ell_i})$, $c' := \rc{\ell_i}$, and, for $x \in \cube{\nv_{i+1}}$: \ $f^{(i+1)}(x) := \mle{f^{(i)}}(\fc, x)$, \ $W'(x) := \mle{W}(\fc, x)$. The \emph{residual claim} $(W', c')$ is a weighted claim about the folded multilinear $f^{(i+1)} : \cube{\nv_{i+1}} \to \E$.
 \item If $i < \nlev - 1$:
@@ -130,9 +130,9 @@ Completeness is perfect: the honest prover passes every check ($h_j(0) + h_j(1) 
 \subsection{Round-by-round soundness}\label{sec:soundness}
 %=====================================================================
 
-Fix a commitment $\mathsf{cm} = \orc^{(0)}$ and input claims $\{(W_\tau, c_\tau)\}_\tau$, and define the relation
+Fix a commitment $\mathsf{cm} = \orc^{(0)}$ and input claims $\{(W_t, c_t)\}_t$, and define the relation
 \[
-\relopen \;:=\; \Bigl\{ \bigl(\orc^{(0)}, \{(W_\tau, c_\tau)\}_\tau\bigr) \;:\; \exists\, U \in \lst_{\rad_0}(\orc^{(0)}) \text{ with } \inner{W_\tau}{g_U} = c_\tau \text{ for all } \tau \Bigr\}.
+\relopen \;:=\; \Bigl\{ \bigl(\orc^{(0)}, \{(W_t, c_t)\}_t\bigr) \;:\; \exists\, U \in \lst_{\rad_0}(\orc^{(0)}) \text{ with } \inner{W_t}{g_U} = c_t \text{ for all } t \Bigr\}.
 \]
 The commitment binds the prover to the list $\polyset_{\mathsf{cm}} := \{\mle{g_U} : U \in \lst_{\rad_0}(\orc^{(0)})\}$, of size at most $L_0 := \tfrac{1}{2\slack_0\sqrt{\rate_0}}$ for $\rad_0 = 1 - \sqrt{\rate_0} - \slack_0$, by the Johnson bound (Theorem~\ref{thm:johnson-interleaved}).
 
@@ -227,7 +227,7 @@ Conditions (i), (ii), (iv) of Definition~\ref{def:rbr} hold by inspection: on a 
 If the statement lies outside $\relopen$, then before any message is sent every $U \in \lst_{\rad_0}(\orc^{(0)})$ violates at least one input claim, so the invariant holds. We follow the protocol and bound, for each verifier message, the probability that the invariant fails to carry over. Every list below consists of interleaved words of $\mathcal{C}_i$ within radius $\rad_i$, hence has size at most $L_i$ by Theorem~\ref{thm:johnson-interleaved}.
 
 \medskip\noindent\emph{Batching challenge $\lambda$.}
-Assume that every $U \in \lst_{\rad_i}(\orc^{(i)})$ violates at least one of the $J_i$ claims $(W_\tau, c_\tau)$. Fix such a $U$. Its discrepancy against the batched claim is $\sum_{\tau} \lambda^{\tau - 1} d_\tau$ with $d_\tau := \inner{W_\tau}{g_U} - c_\tau$, a polynomial in $\lambda$ of degree less than $J_i$, nonzero because the $d_\tau$ are not all zero. By Lemma~\ref{lem:sz} it vanishes with probability at most $(J_i - 1)/|\E|$, so a union bound over the at most $L_i$ list members leaves every $U$ violating the round-$0$ claim except with probability $(J_i - 1) L_i / |\E|$.
+Assume that every $U \in \lst_{\rad_i}(\orc^{(i)})$ violates at least one of the $J_i$ claims $(W_t, c_t)$. Fix such a $U$. Its discrepancy against the batched claim is $\sum_{t} \lambda^{t - 1} d_t$ with $d_t := \inner{W_t}{g_U} - c_t$, a polynomial in $\lambda$ of degree less than $J_i$, nonzero because the $d_t$ are not all zero. By Lemma~\ref{lem:sz} it vanishes with probability at most $(J_i - 1)/|\E|$, so a union bound over the at most $L_i$ list members leaves every $U$ violating the round-$0$ claim except with probability $(J_i - 1) L_i / |\E|$.
 
 \medskip\noindent\emph{Fold challenge $\fc_j$.}
 Assume that every $U \in \lst := \lst_{\rad_i}(\orc^{(i)}_{\fc^{<j}})$ violates the round-$(j{-}1)$ claim. Since all checks so far pass (otherwise the verifier trivially rejects), $h_j(0) + h_j(1) = \rc{j-1}$. For $U \in \lst$, let
@@ -309,9 +309,9 @@ a linear injection onto $\RS[\E, \dom, 2^{\kappa}]$ of rate $\rate = 2^{-\rexp}$
 \begin{lemma}[Column weights are tensors]\label{lem:colweight}
 For $x \in \dom$ let $W_x(u) := \prod_i \Wn{i}(x)^{u_i}$. Then $\Enc_{\kappa,\rexp}(g)[x] = \inner{W_x}{g} := \sum_u W_x(u) g(u)$, and
 \[
-\mle{W_x}(r) \;=\; \prod_{i=0}^{\kappa-1} \bigl( (1-r_i) + r_i \Wn{i}(x) \bigr),
+\mle{W_x}(r) \;=\; \prod_{i=0}^{\kappa-1} \bigl( (1+r_i) + r_i \Wn{i}(x) \bigr),
 \]
-so one evaluation of $\mle{W_x}$ costs $O(\kappa)$ multiplications and additions in total: the values $\Wn{i}(x)$ follow the chain of Lemma~\ref{lem:chain}, $\Wn{0}(x) = x$ and $\Wn{i+1}(x) = q_i\bigl(\Wn{i}(x)\bigr)$, at two multiplications and one addition per step (the constants of the $q_i$ are precomputed once, shared by all levels and queries), and the $\kappa$-factor product costs the same again.
+so one evaluation of $\mle{W_x}$ costs $O(\kappa)$ multiplications and additions in total: the values $\Wn{i}(x)$ follow the chain of Lemma~\ref{lem:chain}, $\Wn{0}(x) = x$ and $\Wn{i+1}(x) = \ntmap_i\bigl(\Wn{i}(x)\bigr)$, at two multiplications and one addition per step (the constants of the $\ntmap_i$ are precomputed once, shared by all levels and queries), and the $\kappa$-factor product costs the same again.
 \end{lemma}
 
 \begin{proof}
@@ -321,9 +321,9 @@ The first identity is Definition~\ref{def:enc} expanded: $\mpoly_g(x) = \sum_u g
 \]
 Each factor of the summand depends on a single bit $u_i$, so by distributivity the sum over $\cube{\kappa}$ factors into a product of one-bit sums:
 \[
-\mle{W_x}(r) \;=\; \prod_{i=0}^{\kappa-1} \; \sum_{u_i \in \{0,1\}} \eq(u_i, r_i)\, \Wn{i}(x)^{u_i} \;=\; \prod_{i=0}^{\kappa-1} \bigl( (1-r_i) \cdot 1 + r_i \cdot \Wn{i}(x) \bigr),
+\mle{W_x}(r) \;=\; \prod_{i=0}^{\kappa-1} \; \sum_{u_i \in \{0,1\}} \eq(u_i, r_i)\, \Wn{i}(x)^{u_i} \;=\; \prod_{i=0}^{\kappa-1} \bigl( (1+r_i) \cdot 1 + r_i \cdot \Wn{i}(x) \bigr),
 \]
-using $\eq(0, r_i) = 1 - r_i$ and $\eq(1, r_i) = r_i$.
+using $\eq(0, r_i) = 1 + r_i$ and $\eq(1, r_i) = r_i$.
 \end{proof}
 
 \subsubsection{The additive NTT}\label{sec:ntt}
@@ -342,7 +342,7 @@ $X(X+1) = X^2 + X$ is linear with kernel $\{0,1\}$. By Lemma~\ref{lem:subspace}(
 \end{proof}
 
 \begin{lemma}[Even--odd refinement]\label{lem:evenodd}
-For $0 \le d \le \kappa$ define $\Wn{b}^{(d)} := \ntmap_{d+b-1} \circ \dots \circ \ntmap_d$ (and $\Wn{0}^{(d)} := X$), and $\novel^{(d)}_j := \prod_b (\Wn{b}^{(d)})^{j_b}$, so $\novel^{(0)}_j = X_j$. If $d < \kappa$, $\mpoly = \sum_{j < 2^{\kappa-d}} a_j \novel^{(d)}_j$, and $\mpoly_\iota := \sum_j a_{2j+\iota} \novel^{(d+1)}_j$, then
+For $0 \le d \le \kappa$ define $\Wn{b}^{(d)} := \ntmap_{d+b-1} \circ \dots \circ \ntmap_d$ (and $\Wn{0}^{(d)} := X$), and $\novel^{(d)}_j := \prod_b (\Wn{b}^{(d)})^{j_b}$, so $\novel^{(0)}_j = \novel_j$. If $d < \kappa$, $\mpoly = \sum_{j < 2^{\kappa-d}} a_j \novel^{(d)}_j$, and $\mpoly_\iota := \sum_j a_{2j+\iota} \novel^{(d+1)}_j$, then
 \[
 \mpoly(X) \;=\; \mpoly_0\bigl(\ntmap_d(X)\bigr) + X \cdot \mpoly_1\bigl(\ntmap_d(X)\bigr).
 \]

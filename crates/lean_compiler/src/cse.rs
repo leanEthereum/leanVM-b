@@ -19,7 +19,7 @@ enum Key {
 ///
 /// `opaque` lists frame runs whose ADDRESS escaped (`addr(sb)`, see
 /// [`crate::lower::FnLower::stack_addr`]). A write through such a pointer is a
-/// `DEREF` whose only counted cell is `gamma`, so the run's own cells look
+/// `DEREF` whose only counted cell is `o3`, so the run's own cells look
 /// unwritten here; without this a store into one would fold into a canonical
 /// elsewhere and leave the cell prover-chosen. Same rule the stack-run hints
 /// already follow in [`write_counts`]: a run is addressed by contiguity, so no
@@ -91,12 +91,12 @@ fn write_counts(code: &[LInstr]) -> HashMap<Off, u32> {
         match &ins.op {
             LOp::Set { o, .. } => bump(*o),
             LOp::Xor { c, .. } | LOp::Mul { c, .. } => bump(*c),
-            // A `Cell` deref unifies `m[p·g^beta]` with `fp[gamma]`, which writes
-            // `fp[gamma]` when it acts as a load. The `Pc`/`Fp` modes take their
-            // source from the machine state and leave `gamma` unused.
-            LOp::Deref { gamma, mode, .. } => {
+            // A `Cell` deref unifies `m[p·g^o2]` with `fp[o3]`, which writes
+            // `fp[o3]` when it acts as a load. The `Pc`/`Fp` modes take their
+            // source from the machine state and leave `o3` unused.
+            LOp::Deref { o3, mode, .. } => {
                 if matches!(mode, super::DerefMode::Cell) {
-                    bump(*gamma);
+                    bump(*o3);
                 }
             }
             // The 32-byte digest lands in two consecutive cells.
@@ -174,10 +174,10 @@ fn rewrite_reads(ins: &mut LInstr, subst: &HashMap<Off, Off>) {
             map(a);
             map(b);
         }
-        LOp::Deref { alpha, gamma, mode, .. } => {
-            map(alpha);
+        LOp::Deref { o1, o3, mode, .. } => {
+            map(o1);
             if matches!(mode, super::DerefMode::Cell) {
-                map(gamma);
+                map(o3);
             }
         }
         LOp::Jump { oc, od, of } => {

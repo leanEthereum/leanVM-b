@@ -67,25 +67,25 @@ Write $\rdf{\sep,\addr,\cnt,\val_0,\val_1, \dots}$ for the pair \pull\ $\tup{\se
 
 \subsection{\texttt{DEREF}}\label{sec:tab-deref}
 
-\texttt{DEREF}\ $[\alpha,\beta,\gamma;\,s]$ reads a pointer and asserts the cell it points to. The row reads three cells:
+\texttt{DEREF}\ $[o_1,o_2,o_3;\,\dmode]$ reads a pointer and asserts the cell it points to. The row reads three cells:
 \begin{itemize}
-\item the \emph{pointer} $p$, at $\fp\cdot\alpha$;
-\item the \emph{target} $v_2$, at the dereferenced address $p\cdot\beta$;
-\item the \emph{local} value $v_3$, at $\fp\cdot\gamma$.
+\item the \emph{pointer} $p$, at $\fp\cdot o_1$;
+\item the \emph{target} $v_2$, at the dereferenced address $p\cdot o_2$;
+\item the \emph{local} value $v_3$, at $\fp\cdot o_3$.
 \end{itemize}
-The store asserts that $v_2$ equals the source chosen by the mode $s$ (\S\ref{sec:vm}): the local cell $v_3$, the return address $\gen^{2}\cdot\pc$, or the frame pointer $\fp$. The mode is two boolean flags $(f_{\pc},f_{\fp})$: $(0,0)$ for $\texttt{deref\_cell}[\gamma]$, $(1,0)$ for $\texttt{deref\_pc}$, $(0,1)$ for $\texttt{deref\_fp}$.
+The store asserts that $v_2$ equals the source chosen by the mode $\dmode$ (\S\ref{sec:vm}): the local cell $v_3$, the return address $\gen^{2}\cdot\pc$, or the frame pointer $\fp$. The mode is two boolean flags $(f_{\pc},f_{\fp})$: $(0,0)$ for $\texttt{deref\_cell}[o_3]$, $(1,0)$ for $\texttt{deref\_pc}$, $(0,1)$ for $\texttt{deref\_fp}$.
 \begin{itemize}
-\item \textbf{Columns:} $\pc,\fp$; operands $\alpha,\beta,\gamma$; flags $f_{\pc},f_{\fp}$; pointer $p$ (a single $\K$-limb); the local value $(v_{3,i})_{i\in\{0,1,2\}}$; memory counts $r_1,r_2,r_3$; bytecode count $r_{\mathrm{bc}}$.
+\item \textbf{Columns:} $\pc,\fp$; operands $o_1,o_2,o_3$; flags $f_{\pc},f_{\fp}$; pointer $p$ (a single $\K$-limb); the local value $(v_{3,i})_{i\in\{0,1,2\}}$; memory counts $r_1,r_2,r_3$; bytecode count $r_{\mathrm{bc}}$.
 \item \textbf{Constraints:} none.
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
-  \item \textbf{Bytecode:} $\rdf{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{DRF},\alpha,\beta,\gamma,f_{\pc},f_{\fp}}$.
+  \item \textbf{Bytecode:} $\rdf{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{DRF},o_1,o_2,o_3,f_{\pc},f_{\fp}}$.
   \item \textbf{Memory}, the target giving $v_3$, $\gen^{2}\cdot\pc$ or $\fp$ at the three flag settings:
     \begin{align*}
-      &\rdf{\dsep{MEM},\fp\cdot\alpha,r_1,p,0,0},\\
-      &\rdf{\dsep{MEM},\fp\cdot\gamma,r_3,v_{3,0},v_{3,1},v_{3,2}},\\
-      &\rdf{\dsep{MEM},p\cdot\beta,r_2,\bar f\,v_{3,0}+f_{\pc}\,(\gen^{2}\cdot\pc)+f_{\fp}\,\fp,\ \bar f\,v_{3,1},\ \bar f\,v_{3,2}},
+      &\rdf{\dsep{MEM},\fp\cdot o_1,r_1,p,0,0},\\
+      &\rdf{\dsep{MEM},\fp\cdot o_3,r_3,v_{3,0},v_{3,1},v_{3,2}},\\
+      &\rdf{\dsep{MEM},p\cdot o_2,r_2,\bar f\,v_{3,0}+f_{\pc}\,(\gen^{2}\cdot\pc)+f_{\fp}\,\fp,\ \bar f\,v_{3,1},\ \bar f\,v_{3,2}},
       \qquad \bar f=1+f_{\pc}+f_{\fp}.
     \end{align*}
   \end{itemize}
@@ -124,7 +124,7 @@ The message, result, chaining value and metadata are all committed in $\qflock$:
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
-  \item \textbf{Bytecode:} $\rdf{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{B3},o_{m_0},o_{m_1},o_{m_2},o_{m_3},o_{\mathit{cv}},o_{\mathit{out}},\md_0,\md_1}$.
+  \item \textbf{Bytecode:} $\rdf{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{B2S},o_{m_0},o_{m_1},o_{m_2},o_{m_3},o_{\mathit{cv}},o_{\mathit{out}},\md_0,\md_1}$.
   \item \textbf{Memory:}
     \begin{align*}
       &\rdf{\dsep{MEM},\fp\cdot o_{m_i},r_{m_i},m_{i,0},m_{i,1},0}\quad(i=0,\dots,3),\\
