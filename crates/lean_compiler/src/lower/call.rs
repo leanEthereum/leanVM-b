@@ -121,7 +121,7 @@ impl FnLower<'_> {
                         ))
                     }
                     for k in 0..n {
-                        let cell = self.word_src(src + k);
+                        let cell = src + k;
                         arg_offs.push((base + k, cell));
                     }
                 }
@@ -418,7 +418,7 @@ impl FnLower<'_> {
                         self.fail(format!("returned StackBuf has size {actual}, expected {size}"))
                     };
                     for k in 0..size {
-                        let src = self.word_src(base + k);
+                        let src = base + k;
                         self.copy(src, ret + k);
                     }
                 }
@@ -653,7 +653,7 @@ impl FnLower<'_> {
                 // instruction, and the raw cell would then be one no instruction writes.
                 // The `let` consumer follows the alias by taking a `Binding::Stack`
                 // ([`ret_binding`]), and an expression use has to agree with it.
-                self.word_src(base)
+                base
             }
             _ => dst,
         }

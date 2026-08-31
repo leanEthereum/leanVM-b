@@ -202,11 +202,11 @@ Bindings are **immutable**: `x = e` names a fresh cell. Re-binding a name is all
 
 A name bound to an integer literal (`x = 2`) additionally acts as a **compile-time index constant**, usable in stack indexes and slice bounds (see below). Any other re-binding clears that role.
 
-Three families of binding are folded and carried **virtually**, costing no instruction until used as a value:
+Two families of binding are folded and carried **virtually**, costing no instruction until used as a value:
 
 - **g-powers and shifted pointers**: a cursor like `s = s * GEN` or a pointer view `p = buf * GEN ** k`. The offset folds into the `DEREF` address of each access; only a scalar use materializes it.
 - **field constants**: a value built from literals / `GEN ** k` by field `+` and `*`, e.g. a running weight `w = w * CHAIN_LENGTH` in an unrolled loop. The arithmetic that advances it is compile-time (zero instructions); each use is one `SET` of the folded constant.
-- **stack-cell copies and zeros**: a store `sa[k] = other` or `sa[k] = 0` is recorded as an alias rather than emitting a `MUL`/`SET`; every read of `sa[k]` forwards to the real source (write-once keeps it valid). This is what makes assembling a `BLAKE2s` operand from scattered values free (see "BLAKE2s"). It applies only while **nothing else gives the cell a value**: once an instruction, a `BLAKE2s` output or a hint destination has written `sa[k]`, a store into it is the write-once equality *assertion* below rather than an assembly copy, so it is emitted. That is what makes `s[k] = <checked value>` pin a hint and a pre-written `blake2s` output verify a digest, and it holds in either order (the assembling store may come first, in which case the consumer materializes it).
+A store into a stack cell is NOT virtual: `sa[k] = other` always emits. If the cell already holds a value the store is the write-once equality *assertion* below, which is what makes `s[k] = <checked value>` pin a hint and a pre-written `blake2s` output verify a digest; if it does not, the store is what gives the cell its value. The compiler tracks nothing to tell those apart, the machine's write-once memory being what distinguishes them.
 
 ## Debugging
 
@@ -234,14 +234,14 @@ The index is a field element; cell `k` of the buffer lives at address `buf · g^
 
 ```python
 sa = StackBuf(3)      # n consecutive cells of the current frame
-sa[0] = 3             # direct frame cell: zero instructions to address
+sa[0] = 3             # direct frame cell: no DEREF, but the store is an instruction
 sa[2] = sa[0] + sa[1]
 x = 1
 v = sa[x + 1]         # indexes: literals, literal-bound names, and + * // % of those
 tg = [v, 7]           # list literal: an initialized StackBuf, one cell per element
 ```
 
-A **list literal** `x = [a, b, …]` is an initialized `StackBuf`: it allocates one cell per element and writes each element in place, exactly the alloc-then-store idiom above, in one line. Elements are arbitrary runtime expressions; each write goes through the same stack-store path (so copies and constants defer as aliases, see "Variables"). It exists only as the RHS of a plain assignment inside a function; a *top-level* `NAME = [...]` is a constant array (see "Constant arrays"). The elements are lowered before the name rebinds, so `s = [s[1], s[0]]` swaps through the old binding.
+A **list literal** `x = [a, b, …]` is an initialized `StackBuf`: it allocates one cell per element and writes each element in place, exactly the alloc-then-store idiom above, in one line. Elements are arbitrary runtime expressions; each write goes through the same stack-store path. It exists only as the RHS of a plain assignment inside a function; a *top-level* `NAME = [...]` is a constant array (see "Constant arrays"). The elements are lowered before the name rebinds, so `s = [s[1], s[0]]` swaps through the old binding.
 
 Stack indexes and slice bounds are **compile-time integers**, and index arithmetic (`+ * // %`) is *integer* arithmetic (`x + 1` above is 2, `k // 2` floor-divides, `k % 2` is a remainder: index space, not the field, where XOR is what `+` means and `//`/`%` have no meaning at all: using one as a runtime field value is a compile error). Bounds are checked at compile time. A `StackBuf` name is a run of cells, not a scalar: using it as one is an error, and it cannot be captured into a `for` loop body (carry state through a `HeapBuf` instead).
 
@@ -479,8 +479,8 @@ The metadata is packed as `counter:u64 | f0:u32 | f1:u32`, little-endian, and is
 
 Operands are size-2 `StackBuf`s or 2-cell slices:
 
-- **stack operands** are read/written in place, at zero copies; a self-hash `blake2s(h, h, out)` aliases one 2-cell pair into both inputs;
-- the instruction addresses its **four canonical 128-bit message chunks independently** (each is a full F192 memory cell constrained at this use to the BLAKE2s subspace `c2 = 0`), so when a 256-bit operand is *assembled* from values that live in different places (the idiom `p = StackBuf(2); p[0] = t0; p[1] = t1; blake2s(p, …)`), the copies vanish: a stack store of a plain copy or a zero is forwarded to its source (see "Variables"), and `BLAKE2s` reads each chunk where it already is. The saving is for *assembly* only: if `out`'s cells were assembled this way, the digest write would have nowhere to land, so the compiler materializes them first and the store below stays an assertion;
+- **stack operands** are read in place, at zero copies; a self-hash `blake2s(h, h, out)` names one 2-cell pair as both inputs;
+- the instruction addresses its **four canonical 128-bit message chunks independently** (each is a full F192 memory cell constrained at this use to the BLAKE2s subspace `c2 = 0`), so a 256-bit operand assembled from values living in different places (the idiom `p = StackBuf(2); p[0] = t0; p[1] = t1; blake2s(p, …)`) costs one instruction per assembling store and no more;
 - the chaining value has only one opcode offset and therefore must be consecutive. If a 2-cell `cv` was assembled from non-adjacent copied cells, the compiler materializes those two cells into a fresh consecutive run;
 - **heap slices** are still bridged through the stack for the *input pull* (the operand's words come from the heap): +1 `DEREF` per heap cell, and the output, if a heap slice, is stored after: write-once memory fills whichever side is unset.
 
@@ -534,7 +534,7 @@ Three builtins have the prover compute the values at witness generation instead 
 | `a * b` | 1 `MUL` |
 | `a / b` | 1 `MUL` (write-once back-solve; division by zero is undefined) |
 | heap read / store `buf[i]` | 1 `DEREF`; +1 `MUL` for a *runtime* index (a compile-time g-power offset folds into the `DEREF`, for free) |
-| stack read / store `sa[k]` | 0 (direct cell addressing) |
+| stack read `sa[k]` | 0 (direct cell addressing); a *store* is 1, like any other write |
 | `assert a == b` | 1 (+ 1 `SET` amortized per frame for the zero cell) |
 | `assert a != b` | 3 (`XOR`, `MUL`, `SET`), no branch, one hinted inverse |
 | `assert log x < k` | 3 (+1 `SET` amortized per bound per frame; a runtime bound costs 1 `MUL` instead) |

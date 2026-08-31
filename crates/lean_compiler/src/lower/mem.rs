@@ -142,52 +142,10 @@ impl FnLower<'_> {
         self.array_ptr(arr, idx)
     }
 
-    /// Write `val` into the stack cell `dst`. A plain copy or a constant is
-    /// deferred as an [`Alias`] and forwarded at its uses (write-once, so the
-    /// source cell keeps its value): the assembling `MUL`/`SET` is never emitted.
+    /// Write `val` into the stack cell `dst`. Always an instruction: if `dst`
+    /// already holds a value the store is the write-once equality ASSERTION of
+    /// `zkDSL.md` §Memory, and if it does not, this is what gives it one.
     pub(super) fn stack_store(&mut self, dst: Off, val: &Expr) {
-        // Deferring is only sound while nothing else has given `dst` a value. Once
-        // something has, the store IS the write-once equality assertion of
-        // `zkDSL.md` §Memory, so it has to be emitted: an alias would silently
-        // redirect every later read to the source and drop the assertion. This is
-        // what makes `s[k] = <checked value>` pin a hint, and what makes a
-        // pre-written `blake2s` output assert the digest.
-        let aliased = self.alias_of(dst).is_some();
-        if !aliased
-            && !self.is_written(dst)
-            && let Some(a) = self.copy_alias(val)
-        {
-            // Record the END of the `Cell` chain: two aliases pointing at each
-            // other (`s[0] = s[1]` then `s[1] = s[0]`) would make `word_src` walk
-            // forever. What rules that out is that the recorded source has no
-            // outgoing `Cell` edge WHEN IT IS RECORDED; it may acquire one later,
-            // so `word_src`'s bound is load-bearing rather than decoration.
-            //
-            // `cell_src` and not `word_src`: the latter resolves a trailing
-            // `Const` through `const_cell`, which EMITS a `SET`, and paying that
-            // here would make `sa[k] = other` cost an instruction.
-            let a = match a {
-                Alias::Cell(src) => Alias::Cell(self.cell_src(src)),
-                other => other,
-            };
-            // A cell aliased to itself is the whole of `sb[k] = sb[k]`: write-once
-            // makes a second write of the same value a no-op, so emit nothing.
-            if a == Alias::Cell(dst) {
-                return;
-            }
-            self.set_alias(dst, Some(a));
-            self.alias_journal.push(dst);
-            return;
-        }
-        if aliased {
-            // Give the cell the value it already stood for, so the store below is a
-            // second write of that cell and therefore the assertion. Without this the
-            // second alias would simply replace the first and the two values would
-            // never meet.
-            let src = self.word_src(dst);
-            self.set_alias(dst, None);
-            self.copy(src, dst);
-        }
         self.expr_into(val, dst);
     }
 
@@ -245,34 +203,6 @@ impl FnLower<'_> {
         }
     }
 
-    /// A stack store `sa[k] = val` whose value is a plain copy or a zero, which we
-    /// defer as an [`Alias`] (forwarded at use) instead of emitting.
-    fn copy_alias(&self, val: &Expr) -> Option<Alias> {
-        match val {
-            // A live var / stack cell aliases to that cell directly (no new
-            // material); anything else that is a compile-time constant defers
-            // to the pooled const cell.
-            Expr::Var(v) if self.scope.var(v).is_some() => self.scope.var(v).map(Alias::Cell),
-            Expr::Index(arr, idx) => {
-                // Bounds-checked here too. This is the ONE stack index that was
-                // not, and it is on the hot path: `sa[i] = sb[j]` and every
-                // element of a list literal reach it. Unchecked, `c[0] = a[2]`
-                // on a `StackBuf(2)` aliased the next buffer's first cell and
-                // its assert passed, while a further index named a cell nothing
-                // writes, so a prover chose it and the assert was vacuous. The
-                // identical read in expression position was rejected, so this
-                // was two spellings with two meanings.
-                let (base, size) = self.stack_of(arr)?;
-                let k = self.try_const_index(idx)?;
-                if k >= size {
-                    self.fail(format!("stack index {k} out of bounds (size {size})"))
-                }
-                Some(Alias::Cell(base + k))
-            }
-            _ => self.try_field_const(val).map(Alias::Const),
-        }
-    }
-
     /// `addr(sb)`: the g-address `fp·g^base` of a `StackBuf`'s first cell, so a
     /// frame run can be pointed at (indexed at runtime, or handed to a callee)
     /// while its own accesses stay direct frame cells. Materializing `fp` is the
@@ -288,17 +218,6 @@ impl FnLower<'_> {
                 args[0]
             ))
         });
-        // Once an address escapes, a write through it is a `DEREF` that names no
-        // frame cell the lowerer can see, so every run has to be treated as
-        // already valued: `Slot::written` keeps a later `sb[k] = v` the write-once
-        // equality assertion `zkDSL.md` §Memory promises instead of a deferred
-        // alias that would drop it. Every run, not just this one: the pointer is
-        // a frame address, and one off-by-one in a callee reaches the next run.
-        if let Some(runs) = self.unsealed_runs.take() {
-            for (b, l) in runs {
-                self.materialize_run(b, l);
-            }
-        }
         GAddr {
             base: Some(self.self_fp()),
             exp: base as u128,
@@ -347,62 +266,6 @@ impl FnLower<'_> {
         (self.pure(PureOp::Mul, la, li), 0)
     }
 
-    pub(super) fn word_src(&mut self, o: Off) -> Off {
-        // Bounded because a chain can still GROW: a recorded source is unaliased
-        // when it is recorded, but nothing stops it acquiring an alias afterwards.
-        // A cycle here is a compiler that never returns and prints nothing, so
-        // more hops than there are frame cells is a hard error, not a hang.
-        let mut cur = o;
-        for _ in 0..=self.next {
-            match self.alias_of(cur) {
-                Some(Alias::Cell(s)) => cur = s,
-                Some(Alias::Const(v)) if v.is_zero() => return self.zero(),
-                Some(Alias::Const(v)) => return self.const_cell(v),
-                None => return cur,
-            }
-        }
-        self.fail(format!("alias cycle at frame cell {o}"));
-    }
-
-    /// The cell holding the value of stack cell `o`, following a recorded copy /
-    /// zero alias to its real source. Returns `o` when it holds a genuine value.
-    /// Follow `Cell` alias hops to the cell that ends the chain, emitting nothing.
-    /// This is what [`Self::stack_store`] records, so a recorded source never has
-    /// an outgoing `Cell` edge and no cycle can form.
-    fn cell_src(&self, o: Off) -> Off {
-        let mut cur = o;
-        for _ in 0..=self.next {
-            match self.alias_of(cur) {
-                Some(Alias::Cell(s)) => cur = s,
-                _ => return cur,
-            }
-        }
-        self.fail(format!("alias cycle at frame cell {o}"));
-    }
-
-    /// Prepare a stack run that a consumer is about to name by its *physical*
-    /// cells: a `BLAKE2s` output, or a hint destination. Those consumers do not go
-    /// through [`Self::word_src`], so a cell still carrying a deferred alias would
-    /// have the consumer's write land where nothing reads it, and the equality
-    /// assertion the source wrote would be gone. Materializing the alias first puts
-    /// a real value in the cell, which is what turns the consumer's write back into
-    /// that assertion; marking the run written covers the other order, where the
-    /// store comes after the consumer.
-    ///
-    /// Also how a run whose address escaped through `addr(sb)` is sealed: there
-    /// is no consumer to name, but the same two facts are what is wanted, since
-    /// a `DEREF` through the pointer names no frame cell the lowerer can see.
-    pub(super) fn materialize_run(&mut self, base: Off, len: u32) {
-        for o in base..base + len {
-            if self.alias_of(o).is_some() {
-                let src = self.word_src(o);
-                self.set_alias(o, None);
-                self.copy(src, o);
-            }
-            self.mark_written(o);
-        }
-    }
-
     /// Realize a [`GAddr`] into a frame cell holding its value: a constant is one
     /// `SET`; a base with no shift is already that cell; a shifted base is a
     /// `SET`+`MUL`.
@@ -432,13 +295,6 @@ impl FnLower<'_> {
     pub(super) fn alloc_stack(&mut self, n: u32) -> Off {
         let base = self.next;
         self.next += n;
-        // A run allocated after the escape is just as reachable as one before it,
-        // so it is sealed on the spot and never needs recording.
-        if let Some(runs) = &mut self.unsealed_runs {
-            runs.push((base, n));
-        } else {
-            self.materialize_run(base, n);
-        }
         base
     }
 }

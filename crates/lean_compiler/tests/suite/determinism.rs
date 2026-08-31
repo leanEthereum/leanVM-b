@@ -35,7 +35,7 @@ const GOLDEN: &[(&str, &str)] = &[
     ("const_params", "494a3e891f6e5b53b8946845f98990f36b0f1e01479db2c26f2fa27cfb9e7f00"),
     ("fibonacci", "68558b18c6c0facbc6b9496aa0a85036e1360922b23631f3d4ca7f82223ed2d8"),
     ("hash_heap_chain", "c0ba2a3f1a68d43f0ddeebfebf3918b489c1fef0c0d5ee45cd713c5cfbb17427"),
-    ("hash_slices", "7146009faff5ace9a0c8446b63fd90de89aa82417709ddeee47dcc945848d85b"),
+    ("hash_slices", "5278a0c0d77e06f45a767c8c0fc6d6c93d3486a085ac8aaee526516325237495"),
     ("heapbuf_dyn", "dc306f7cac8a664d85555fc746b0d54796dc654a87b9a63ea353d12597a25174"),
     ("hint", "b0fb2bce402a611a072382c85bf64ecbc95becebb33824c13853ed51ad3deeac"),
     ("identities", "d51dc227b94a4074b7950a4961ef31f834a2032adfa8fe62f3e85292193f2ea3"),
@@ -43,9 +43,9 @@ const GOLDEN: &[(&str, &str)] = &[
     ("match_range", "810e351e89177b21b4de098b241ab3b99c075ea3f0ce8d06c8c25bc368f9c868"),
     ("nested", "49d116d596c1e3190a553a693aac676f7b4fff6e7287d389ce795f9082624de1"),
     ("runtime_loop", "03576f38fbd593af5a5e47c062235434a2ab1c94ac1be3d6a3c59e7d31515491"),
-    ("scoping", "52868d1dc24a1fd6f641dca9b93283fb3a4202e1dd482dbc8b768bc7fcaa344e"),
-    ("unroll", "94f7066b2e850330fa6288a7ffd4b75dff4bbf8079cab82fca4ebec3438260f8"),
-    ("wots_walk", "c04c1922e456e91fb577c948821fae37cba922b4f4d992bbcb41b8661a7a19cc"),
+    ("scoping", "39f01bbf25caeb910cccfdda6dcaa108bb3e51f120762621ddea7488d5a6ad9a"),
+    ("unroll", "fe6371bf9a02f8dd1c91a151e86b0795206f2d9352f67fdae3095fb156ea1e2f"),
+    ("wots_walk", "61c7a3f038ae92f2fa0beb415ae08a68e4ad1883728ee42b9e2cec4fdb9bd09c"),
 ];
 
 fn digest(p: &Program) -> String {

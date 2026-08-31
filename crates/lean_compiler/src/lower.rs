@@ -22,7 +22,6 @@
 use super::*;
 use crate::filler::FillerOp;
 use lean_vm::cpu::filler::Block;
-use std::collections::HashSet;
 
 mod builtins;
 mod call;
@@ -97,42 +96,6 @@ const FOLD_MAX: u128 = 1 << lean_vm::cpu::MIN_LOG_MEM;
 enum PureOp {
     Xor,
     Mul,
-}
-
-/// What the lowerer knows about one frame cell: two orthogonal facts, not one
-/// exclusive state. A cell aliased before a branch and stored into inside it is
-/// materialized there (so written) and has its alias restored at the join (so
-/// aliased), soundly, since the copy wrote the alias's own value.
-///
-/// Their LIFETIMES also differ, which is why one enum cannot hold both: an alias
-/// is a value fact true on one path and reverts at a join, while `written` is a
-/// fact about the code, conservative and permanent. Reverting it would let a
-/// later store alias a cell some instruction writes.
-#[derive(Clone, Copy, Default)]
-struct Slot {
-    /// The deferred store this cell stands for, if any: nothing has been emitted
-    /// for it and every read forwards to the source.
-    alias: Option<Alias>,
-    /// An instruction, a digest, a hint, or a write through an escaped pointer
-    /// has given this cell a value, so a further store is the write-once
-    /// equality ASSERTION rather than a rebind, and must be emitted.
-    written: bool,
-}
-
-/// A deferred stack-cell store: the cell is a copy of another cell, or a zero.
-/// Recorded instead of emitting the `MUL`/`SET`, and forwarded to the source at
-/// each use ([`FnLower::word_src`]), so `BLAKE2s`, which addresses its four
-/// two-cell input chunks independently, reads them in place without assembling
-/// copies.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Alias {
-    Cell(Off),
-    /// A compile-time constant: forwarded at its uses to the pooled cell
-    /// holding that value (`const_cell`), so a constant stored into a
-    /// `blake2s` operand cell (the `obs`/`squeeze` tag words, padding
-    /// halves) costs ONE `SET` per distinct value per function, not one
-    /// per store. A zero constant routes through the zero pool.
-    Const(F192),
 }
 
 /// How an inlined `@inline` tail-return value binds into the caller
@@ -260,25 +223,9 @@ struct FnLower<'a> {
     /// or a folded g-address, or take the scalar dst cell). `None` outside an
     /// inlined return.
     inline_stack_ret: Option<Vec<RetBind>>,
-    /// What is known about each frame cell ([`Slot`]), one entry per cell.
-    slots: HashMap<Off, Slot>,
-    /// The cells [`Self::stack_store`] has aliased, in the order it aliased them,
-    /// which is what a branch join replays. Diffing two `HashMap`s for that made
-    /// the order of the copies it emits depend on iteration order, so the bytecode
-    /// digest moved between builds.
-    alias_journal: Vec<Off>,
     /// Source line of the statement being lowered, for diagnostics and for the
     /// pc-to-line table. Zero for a synthesized statement with no source.
     cur_line: u32,
-    /// The frame runs allocated so far and not yet sealed, or `None` once a frame
-    /// address has escaped ([`Self::stack_addr`]). That pointer addresses the
-    /// WHOLE frame, so from then on EVERY run is opaque: an off-by-one in a callee
-    /// lands on the next `StackBuf`, whose later store would otherwise defer as an
-    /// alias and lose the write-once assertion.
-    ///
-    /// `None` IS the escaped state, so "escaped with runs still unsealed" cannot
-    /// be written down.
-    unsealed_runs: Option<Vec<(Off, u32)>>,
     /// Hints queued to attach to the next emitted instruction.
     pending: Vec<Hint>,
     /// Active `@inline` expansion stack. Nested inline helpers are allowed,
@@ -327,24 +274,6 @@ impl FnLower<'_> {
         }
     }
 
-    /// The deferred store `o` stands for, if it has one.
-    fn alias_of(&self, o: Off) -> Option<Alias> {
-        self.slots.get(&o).and_then(|s| s.alias)
-    }
-
-    /// Has anything given `o` a value? Then a store into it is the assertion.
-    fn is_written(&self, o: Off) -> bool {
-        self.slots.get(&o).is_some_and(|s| s.written)
-    }
-
-    fn set_alias(&mut self, o: Off, a: Option<Alias>) {
-        self.slots.entry(o).or_default().alias = a;
-    }
-
-    fn mark_written(&mut self, o: Off) {
-        self.slots.entry(o).or_default().written = true;
-    }
-
     fn fresh(&mut self) -> Off {
         let o = self.next;
         self.next += 1;
@@ -352,22 +281,6 @@ impl FnLower<'_> {
     }
 
     fn emit(&mut self, op: LOp) {
-        // Record the stack cells this instruction gives a real value to, so
-        // [`Self::stack_store`] will not defer an alias onto one of them: the alias
-        // would win every later read and the store's write-once equality assertion,
-        // which is what `zkDSL.md` §Memory promises a second write is, would vanish.
-        // `Deref`'s local cell counts, since the interpreter fills whichever side of
-        // the equality it names is still unset.
-        match op {
-            LOp::Set { o, .. } => self.mark_written(o),
-            LOp::Xor { c, .. } | LOp::Mul { c, .. } => self.mark_written(c),
-            LOp::Deref { gamma, .. } => self.mark_written(gamma),
-            LOp::Blake2s { c, .. } => {
-                self.mark_written(c);
-                self.mark_written(c + 1);
-            }
-            LOp::Jump { .. } => {}
-        }
         let hints = std::mem::take(&mut self.pending);
         self.code.push(LInstr {
             op,
@@ -638,34 +551,8 @@ impl FnLower<'_> {
     /// afterwards, since a cell whose `SET` sits inside a conditionally-executed
     /// region must not be trusted outside it.
     fn scoped(&mut self, f: impl FnOnce(&mut Self)) {
-        let branch_start = self.next;
-        let saved_slots = self.slots.clone();
         let saved_scope = self.scope.clone();
-        // The branch gets its own journal: an inner one restores `alias` at its
-        // own join, so nothing it aliased survives to be produced here.
-        let outer_journal = std::mem::take(&mut self.alias_journal);
         f(self);
-        // A deferred store into a buffer declared outside the branch must be
-        // materialized on that path before the branch-local aliases are dropped.
-        // These are the cells the branch aliased, in the order it aliased them,
-        // which is what the journal is for: taken from the `alias` map instead,
-        // the order was the map's and a sort had to be interposed.
-        let mut seen = HashSet::new();
-        let branch_outputs: Vec<Off> = std::mem::replace(&mut self.alias_journal, outer_journal)
-            .into_iter()
-            .filter(|&dst| {
-                seen.insert(dst)
-                    && dst < branch_start
-                    && self
-                        .alias_of(dst)
-                        .is_some_and(|a| saved_slots.get(&dst).and_then(|s| s.alias) != Some(a))
-            })
-            .collect();
-        for dst in branch_outputs {
-            let src = self.word_src(dst);
-            self.set_alias(dst, None);
-            self.copy(src, dst);
-        }
         // A hint pending at the end of a branch (e.g. a trailing
         // `hint_witness`) must not attach to whatever instruction follows the
         // join, which would fire it unconditionally.
@@ -673,13 +560,6 @@ impl FnLower<'_> {
             self.anchor();
         }
         self.scope = saved_scope;
-        // Only the ALIASES revert. `written` is a fact about the code, so a cell
-        // an instruction wrote inside the branch stays written here: reverting
-        // that would let a later store defer as an alias onto a cell something
-        // already writes, and drop the assertion the second write is.
-        for (o, slot) in &mut self.slots {
-            slot.alias = saved_slots.get(o).and_then(|s| s.alias);
-        }
     }
 
     /// Lower a branch body with branch-local scope ([`Self::scoped`]).
@@ -767,7 +647,7 @@ impl FnLower<'_> {
                                     }
                                     // `copy` reads its source raw, so resolve the arm's
                                     // deferred alias first (as `take_inline_ret_cell` does).
-                                    let src = s.word_src(base);
+                                    let src = base;
                                     s.copy(src, rc);
                                 }
                                 RetBind::Scalar => {}
@@ -1167,7 +1047,7 @@ impl FnLower<'_> {
                     if k >= size {
     self.fail(format!("stack index {k} out of bounds (size {size})"))
 };
-                    return self.word_src(base + k);
+                    return base + k;
                 }
                 // Heap read: bind dst := m[arr·idx] (the array cell, written earlier).
                 let (base, beta) = self.heap_addr(arr, idx);
@@ -1689,36 +1569,10 @@ pub(crate) fn lower_func(
         tail_call: false,
         code: Vec::new(),
         cur_line: 0,
-        unsealed_runs: Some(Vec::new()),
         heap_sizes: HashMap::new(),
         inline_ret: None,
         inline_stack_ret: None,
 
-        alias_journal: Vec::new(),
-        // A run parameter's cells are ALREADY WRITTEN, by the caller, before this
-        // function's first instruction. A local `StackBuf`'s are not, and that is
-        // the whole difference: an unwritten cell may take a deferred store, which
-        // emits nothing, while a written one may not, because a store into it is
-        // the write-once equality assertion instead. Without seeding these,
-        // `s[k] = <checked value>` inside a callee recorded an alias and vanished,
-        // so the idiom that pins an unconstrained hint pinned nothing.
-        slots: f
-            .param_shapes
-            .iter()
-            .enumerate()
-            .filter_map(|(i, sh)| match sh {
-                Shape::StackBuf(n) => Some((Abi::arg(&f.param_shapes, i), *n)),
-                Shape::Scalar => None,
-            })
-            .flat_map(|(off, n)| off..off + n)
-            .map(|o| {
-                let slot = Slot {
-                    alias: None,
-                    written: true,
-                };
-                (o, slot)
-            })
-            .collect(),
         pending: Vec::new(),
         inline_calls: Vec::new(),
         queue,

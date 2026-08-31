@@ -58,10 +58,7 @@ impl FnLower<'_> {
         let a = self.blake2s_input(&args[0]);
         let b = self.blake2s_input(&args[1]);
         let (c, heap_out) = match self.blake2s_operand(&args[2]) {
-            CellRun::Stack { base, .. } => {
-                self.materialize_run(base, 2);
-                (base, None)
-            }
+            CellRun::Stack { base, .. } => (base, None),
             CellRun::Heap { ptr, lo, .. } => (self.alloc_stack(2), Some((ptr, lo))),
         };
         let cv = if let Some(value) = kwargs.get("cv") {
@@ -167,12 +164,10 @@ impl FnLower<'_> {
                     self.fail("hint_f192_limbs destination must have 1..=3 cells")
                 };
                 let value = self.expr(&args[1]);
-                let value = self.word_src(value);
                 // Names the physical cells, as the two consumers above do, so the run
                 // has to hold real values before the hint fills it. The common
                 // destination is a list literal (`limbs = [0, 0, 0]`), whose every
                 // element goes through `stack_store` and so defers.
-                self.materialize_run(base, len);
                 self.pending
                     .push(Hint::Resolved(RHint::FieldLimbs { value, base, len }));
             }
@@ -203,7 +198,7 @@ impl FnLower<'_> {
             // A stack operand: the two chunk cells are `o, o+1`; forward each
             // cell's real source where known (a copy or a zero), so a hash of
             // non-adjacent values needs no assembling copies.
-            CellRun::Stack { base, .. } => [self.word_src(base), self.word_src(base + 1)],
+            CellRun::Stack { base, .. } => [base, base + 1],
             CellRun::Heap { ptr, lo, .. } => {
                 let t = self.alloc_stack(2);
                 for k in 0..2 {
@@ -243,7 +238,6 @@ impl FnLower<'_> {
                 };
                 // The hint names the physical cells, so a deferred alias sitting on
                 // one would win every later read (as for `hint_f192_limbs`).
-                self.materialize_run(base, nbits);
                 BitsDest::Stack(base)
             }
             None => {
@@ -264,10 +258,7 @@ impl FnLower<'_> {
     pub(super) fn lower_hint_witness(&mut self, dest: &Expr, name: &str) {
         let name = name.to_string();
         let hint = match self.cell_run(dest) {
-            CellRun::Stack { base, len } => {
-                self.materialize_run(base, len);
-                RHint::WitnessStack { name, base, len }
-            }
+            CellRun::Stack { base, len } => RHint::WitnessStack { name, base, len },
             CellRun::Heap { ptr, lo, len } => RHint::WitnessHeap { name, ptr, lo, len },
         };
         self.pending.push(Hint::Resolved(hint));
