@@ -350,7 +350,8 @@ noncomputable def directDetailedBoundaryNormalizedPrivateWitnessPlanObserve
             candidates context fuel table ((splitUniformImpl n).run cache)
       | .inl (.inr input) =>
           let plan := purePlanProbingHashQuery parameter input context.state
-          let nextCandidates := appendPlannedCandidate candidates plan.candidate?
+          let nextCandidates := appendPlannedCandidate candidates
+            (rootAwarePlannedCandidate? parameter input context.state)
           runDirectWitnessPlanObserve
             (canonicalizeDirectWitnessPlanObserve table
               (fun nextContext remaining value laterCandidates =>
@@ -415,7 +416,8 @@ theorem map_erase_directDetailedBoundaryNormalizedPrivateWitnessPlanObserve
                 directDetailedBoundaryNormalizedPrivatePlanObserve,
                 OracleComp.construct_query_bind]
               let plan := purePlanProbingHashQuery parameter input context.state
-              let nextCandidates := appendPlannedCandidate candidates plan.candidate?
+              let nextCandidates := appendPlannedCandidate candidates
+                (rootAwarePlannedCandidate? parameter input context.state)
               apply map_erase_runDirectWitnessPlanObserve
               intro nextContext remaining value laterCandidates
               apply map_erase_canonicalizeDirectWitnessPlanObserve
@@ -485,20 +487,20 @@ theorem privateWitnessCovered_of_mem_directDetailedBoundaryNormalizedPrivateWitn
                 result.value.2 hcanonicalCovered (output := finalOutput) hfinalOutput
           | inr input =>
               let plan := purePlanProbingHashQuery parameter input context.state
-              let nextCandidates := appendPlannedCandidate candidates plan.candidate?
+              let nextCandidates := appendPlannedCandidate candidates
+                (rootAwarePlannedCandidate? parameter input context.state)
               have hplanMem : ∀ candidate, plan.candidate? = some candidate →
                   candidate ∈ nextCandidates := by
                 intro candidate hcandidate
-                simp [nextCandidates, appendPlannedCandidate, hcandidate]
+                have hrecorded := rootAwarePlannedCandidate?_eq_of_plan_some hcandidate
+                simp [nextCandidates, appendPlannedCandidate, hrecorded]
               have hprobeBound := probingHashQueryAfterPlan_probeBound parameter input plan
                 nextCandidates hplanMem cache
               have hnextCovered : PendingCoveredBy nextCandidates context := by
-                cases hcandidate : plan.candidate? with
-                | none => simpa [nextCandidates, appendPlannedCandidate, hcandidate] using hcovered
-                | some candidate =>
-                    have hsublist : candidates.Sublist nextCandidates := by
-                      simp [nextCandidates, appendPlannedCandidate, hcandidate]
-                    exact hcovered.mono_candidates hsublist
+                have hsublist : candidates.Sublist nextCandidates := by
+                  unfold nextCandidates appendPlannedCandidate
+                  cases rootAwarePlannedCandidate? parameter input context.state <;> simp
+                exact hcovered.mono_candidates hsublist
               apply privateWitnessCovered_of_mem_runDirectWitnessPlanObserve _ nextCandidates
                 context fuel table ((probingHashQueryAfterPlan parameter input plan).run cache)
                 hnextCovered hprobeBound (output := output) (houtput := houtput)

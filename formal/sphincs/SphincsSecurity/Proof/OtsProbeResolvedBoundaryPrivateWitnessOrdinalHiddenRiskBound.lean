@@ -97,6 +97,9 @@ theorem probEvent_directDetailedBoundaryPrivateOrdinalHiddenRisk_le
     (hparents : CandidatesHaveStructuralParent candidates)
     (hfresh : CandidatePositionsFresh context)
     (hpublishedContext : PublishedValues context.state)
+    (hrootAwareParent : ∀ input state candidate,
+      rootAwarePlannedCandidate? parameter input state = some candidate →
+      candidate.HasStructuralParent)
     (huniformFresh : ∀ n nextContext remaining nextCache result,
       CandidatePositionsFresh nextContext →
       PublishedValues nextContext.state →
@@ -168,16 +171,17 @@ theorem probEvent_directDetailedBoundaryPrivateOrdinalHiddenRisk_le
                   (candidateHasStructuralParent_get hparents ordinal hselected) hfresh
               · simp only [hselected, ↓reduceDIte]
                 let plan := purePlanProbingHashQuery parameter input context.state
-                let nextCandidates := appendPlannedCandidate candidates plan.candidate?
+                let nextCandidates := appendPlannedCandidate candidates
+                  (rootAwarePlannedCandidate? parameter input context.state)
                 have hnextParents : CandidatesHaveStructuralParent nextCandidates := by
-                  apply hparents.appendPlanned plan.candidate?
+                  apply hparents.appendPlanned
+                    (rootAwarePlannedCandidate? parameter input context.state)
                   intro candidate hcandidate
-                  exact purePlanProbingHashQuery_candidate_hasStructuralParent parameter input
-                    context.state candidate hcandidate
+                  exact hrootAwareParent input context.state candidate hcandidate
                 by_cases hnextSelected : ordinal < nextCandidates.length
                 · have hactual : ordinal <
                       (appendPlannedCandidate candidates
-                        (purePlanProbingHashQuery parameter input context.state).candidate?).length := by
+                        (rootAwarePlannedCandidate? parameter input context.state)).length := by
                     simpa [nextCandidates, plan] using hnextSelected
                   rw [dif_pos hactual]
                   simpa [nextCandidates, plan] using
@@ -186,7 +190,7 @@ theorem probEvent_directDetailedBoundaryPrivateOrdinalHiddenRisk_le
                       (candidateHasStructuralParent_get hnextParents ordinal hnextSelected) hfresh)
                 · have hactual : ¬ordinal <
                       (appendPlannedCandidate candidates
-                        (purePlanProbingHashQuery parameter input context.state).candidate?).length := by
+                        (rootAwarePlannedCandidate? parameter input context.state)).length := by
                     simpa [nextCandidates, plan] using hnextSelected
                   rw [dif_neg hactual]
                   apply probEvent_bind_le_of_forall_le
@@ -230,6 +234,9 @@ theorem probEvent_granularDetailedRetainedRestPrivateOrdinalHiddenRisk_le
     (hparents : CandidatesHaveStructuralParent candidates)
     (hfresh : CandidatePositionsFresh context)
     (hpublished : PublishedValues context.state)
+    (hrootAwareParent : ∀ input state candidate,
+      rootAwarePlannedCandidate? parameter input state = some candidate →
+      candidate.HasStructuralParent)
     (huniformFresh : ∀ n nextContext remaining nextCache result,
       CandidatePositionsFresh nextContext →
       PublishedValues nextContext.state →
@@ -261,7 +268,7 @@ theorem probEvent_granularDetailedRetainedRestPrivateOrdinalHiddenRisk_le
   unfold granularDetailedRetainedRestPrivateOrdinalHiddenRisk
   exact probEvent_directDetailedBoundaryPrivateOrdinalHiddenRisk_le ordinal parameter value.1
     ftsSecret (retainedGameRestComputation adversary ⟨value.1, parameter⟩)
-    candidates context fuel table value.2 hparents hfresh hpublished huniformFresh hhashFresh
-      hsignFresh
+    candidates context fuel table value.2 hparents hfresh hpublished hrootAwareParent
+      huniformFresh hhashFresh hsignFresh
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

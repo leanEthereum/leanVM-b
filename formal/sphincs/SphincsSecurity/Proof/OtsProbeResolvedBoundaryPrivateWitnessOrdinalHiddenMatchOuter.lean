@@ -77,7 +77,8 @@ theorem probEvent_directDetailedBoundaryNormalizedPrivateWitnessPlanMatchesCandi
               rw [directDetailedBoundaryNormalizedPrivateWitnessPlanObserve,
                 OracleComp.construct_query_bind]
               let plan := purePlanProbingHashQuery parameter input context.state
-              let nextCandidates := appendPlannedCandidate candidates plan.candidate?
+              let nextCandidates := appendPlannedCandidate candidates
+                (rootAwarePlannedCandidate? parameter input context.state)
               let inner := (probingHashQueryAfterPlan parameter input plan).run cache
               apply probEvent_runDirectWitnessPlanMatchesCandidate_le_hidden candidate _
                 nextCandidates context fuel table inner hpublished

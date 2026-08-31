@@ -162,9 +162,10 @@ theorem privateWitnessPlanExtends_of_mem_directDetailedBoundaryNormalizedPrivate
                 result.value.2 finalOutput hfinalOutput
           | inr input =>
               let plan := purePlanProbingHashQuery parameter input context.state
-              let nextCandidates := appendPlannedCandidate candidates plan.candidate?
+              let nextCandidates := appendPlannedCandidate candidates
+                (rootAwarePlannedCandidate? parameter input context.state)
               have hprefix : candidates.IsPrefix nextCandidates := by
-                cases hcandidate : plan.candidate? <;>
+                cases hcandidate : rootAwarePlannedCandidate? parameter input context.state <;>
                   simp [nextCandidates, appendPlannedCandidate, hcandidate]
               have hnext : PrivateWitnessPlanExtends nextCandidates output := by
                 apply privateWitnessPlanExtends_of_mem_runDirectWitnessPlanObserve _ nextCandidates
@@ -300,8 +301,6 @@ theorem probEvent_selectedHashPlanWitnessUsesOrdinal_le
     (current : List Probe) (context : DeferredContext) (fuel : Nat)
     (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
     (candidate : Probe)
-    (_hplan : (purePlanProbingHashQuery parameter input context.state).candidate? =
-      some candidate)
     (hconsistent : context.ValuesConsistent)
     (hstarts : StartTableAgrees context.state table)
     (hterminal : ∀ nextContext remaining value nextCandidates,

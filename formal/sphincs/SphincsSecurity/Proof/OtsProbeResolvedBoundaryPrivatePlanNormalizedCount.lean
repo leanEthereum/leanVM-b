@@ -66,7 +66,8 @@ theorem support_directDetailedBoundaryNormalizedPrivatePlanObserve_length_le
               exact htail
           | inr input =>
               let plan := purePlanProbingHashQuery parameter input context.state
-              let nextCandidates := appendPlannedCandidate candidates plan.candidate?
+              let nextCandidates := appendPlannedCandidate candidates
+                (rootAwarePlannedCandidate? parameter input context.state)
               have hpositive : 0 < q := by
                 rcases hbound.1 with hnot | hpositive
                 · exact (hnot (by simp [IsOuterHash])).elim
@@ -93,7 +94,8 @@ theorem support_directDetailedBoundaryNormalizedPrivatePlanObserve_length_le
                     nextOutput hnextOutput
                 · exact houtput
               have hnextLength : nextCandidates.length ≤ candidates.length + 1 :=
-                appendPlannedCandidate_length_le candidates plan.candidate?
+                appendPlannedCandidate_length_le candidates
+                  (rootAwarePlannedCandidate? parameter input context.state)
               omega
       | inr message =>
           have htail : output.2.length ≤ candidates.length + q := by

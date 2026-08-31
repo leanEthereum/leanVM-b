@@ -342,7 +342,8 @@ noncomputable def directDetailedBoundaryNormalizedPlanHitObserve
             context fuel table ((splitUniformImpl n).run cache)
       | .inl (.inr input) =>
           let plan := purePlanProbingHashQuery parameter input context.state
-          let nextCandidates := appendPlannedCandidate candidates plan.candidate?
+          let nextCandidates := appendPlannedCandidate candidates
+            (rootAwarePlannedCandidate? parameter input context.state)
           runDirectDetailedPlanHitObserve finalCandidates nextCandidates
             (canonicalizeDirectDetailedPlanHitObserve table finalCandidates nextCandidates
               (fun nextContext remaining value =>
@@ -398,7 +399,8 @@ theorem probEvent_planHit_directDetailedBoundaryNormalizedPrivatePlanObserve_eq
                 directDetailedBoundaryNormalizedPlanHitObserve,
                 OracleComp.construct_query_bind]
               let plan := purePlanProbingHashQuery parameter input context.state
-              let nextCandidates := appendPlannedCandidate candidates plan.candidate?
+              let nextCandidates := appendPlannedCandidate candidates
+                (rootAwarePlannedCandidate? parameter input context.state)
               apply probEvent_planHit_runDirectDetailedPrivatePlanObserve_eq
               intro nextContext remaining nextValue
               apply probEvent_planHit_canonicalizeDirectDetailedPrivatePlanObserve_eq

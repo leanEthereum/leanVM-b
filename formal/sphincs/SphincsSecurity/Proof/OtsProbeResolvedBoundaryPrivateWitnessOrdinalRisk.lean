@@ -70,7 +70,8 @@ noncomputable def directDetailedBoundaryPrivateOrdinalRisk
                 candidates
         | .inl (.inr input) =>
             let plan := purePlanProbingHashQuery parameter input context.state
-            let nextCandidates := appendPlannedCandidate candidates plan.candidate?
+            let nextCandidates := appendPlannedCandidate candidates
+              (rootAwarePlannedCandidate? parameter input context.state)
             if hnextSelected : ordinal < nextCandidates.length then
               privateCandidateFire (nextCandidates.get ⟨ordinal, hnextSelected⟩) context
             else

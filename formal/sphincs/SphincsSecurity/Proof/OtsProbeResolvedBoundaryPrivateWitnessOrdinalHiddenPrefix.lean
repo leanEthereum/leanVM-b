@@ -54,8 +54,6 @@ theorem probEvent_selectedHashPlanWitnessUsesOrdinal_le_hidden
     (current : List Probe) (context : DeferredContext) (fuel : Nat)
     (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
     (candidate : Probe)
-    (_hplan : (purePlanProbingHashQuery parameter input context.state).candidate? =
-      some candidate)
     (hconsistent : context.ValuesConsistent)
     (hstarts : StartTableAgrees context.state table)
     (hpublished : PublishedValues context.state)

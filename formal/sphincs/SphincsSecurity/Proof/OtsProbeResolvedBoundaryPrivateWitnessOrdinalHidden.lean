@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateRootCandidate
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRiskLift
 
 /-!
@@ -16,11 +17,6 @@ open OracleComp OracleSpec ENNReal
 def NoAuxiliaryPrivateValues (context : DeferredContext) : Prop :=
   ∀ position, context.state.values (.position position) = none →
     context.values position = none
-
-def Probe.HasStructuralParent (candidate : Probe) : Prop :=
-  match candidate.coordinate with
-  | .chainStart _ _ _ _ => True
-  | .position position => ∃ parent, Position.parentOf position = some parent
 
 def CandidatePositionsFresh (context : DeferredContext) : Prop :=
   ∀ position parent, Position.parentOf position = some parent →

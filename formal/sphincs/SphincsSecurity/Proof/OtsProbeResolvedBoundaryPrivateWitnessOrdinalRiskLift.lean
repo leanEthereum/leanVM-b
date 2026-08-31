@@ -100,7 +100,8 @@ theorem probEvent_hashBranchWitnessUsesOrdinal_le_ordinalRisk
       output ∈ support (observe nextContext remaining value nextCandidates) →
       PrivateWitnessPlanExtends nextCandidates output) :
     let plan := purePlanProbingHashQuery parameter input context.state
-    let nextCandidates := appendPlannedCandidate candidates plan.candidate?
+    let nextCandidates := appendPlannedCandidate candidates
+      (rootAwarePlannedCandidate? parameter input context.state)
     Pr[WitnessUsesOrdinal ordinal |
         runDirectWitnessPlanObserve
           (canonicalizeDirectWitnessPlanObserve table
@@ -123,11 +124,13 @@ theorem probEvent_hashBranchWitnessUsesOrdinal_le_ordinalRisk
               nextCandidates] := by
   dsimp only
   let plan := purePlanProbingHashQuery parameter input context.state
-  let nextCandidates := appendPlannedCandidate candidates plan.candidate?
+  let nextCandidates := appendPlannedCandidate candidates
+    (rootAwarePlannedCandidate? parameter input context.state)
   by_cases hnextSelected : ordinal < nextCandidates.length
   · rw [dif_pos hnextSelected]
-    have hexists : ∃ candidate, plan.candidate? = some candidate := by
-      cases hcandidate : plan.candidate? with
+    have hexists : ∃ candidate,
+        rootAwarePlannedCandidate? parameter input context.state = some candidate := by
+      cases hcandidate : rootAwarePlannedCandidate? parameter input context.state with
       | none =>
           have hsame : nextCandidates = candidates := by
             simp [nextCandidates, appendPlannedCandidate, hcandidate]
@@ -142,20 +145,14 @@ theorem probEvent_hashBranchWitnessUsesOrdinal_le_ordinalRisk
     have hget : nextCandidates.get ⟨candidates.length, hnextSelected⟩ = candidate := by
       simp [nextCandidates, appendPlannedCandidate, hcandidate, List.get_eq_getElem]
     rw [hget]
-    have hactual :
-        (purePlanProbingHashQuery parameter input context.state).candidate? = some candidate := by
-      simpa [plan] using hcandidate
-    rw [hactual]
-    simp only [appendPlannedCandidate]
-    apply probEvent_selectedHashPlanWitnessUsesOrdinal_le parameter root ftsSecret input next
-      observe candidates context fuel table cache candidate
-    · exact hactual
-    · exact hconsistent
-    · exact hstarts
-    · intro nextContext remaining value laterCandidates hnextConsistent hnextStarts
-      exact hterminalMatch candidate nextContext remaining value laterCandidates
-        hnextConsistent hnextStarts
-    · exact hterminalPrefix
+    have hbound := probEvent_selectedHashPlanWitnessUsesOrdinal_le parameter root ftsSecret input
+      next observe candidates context fuel table cache candidate hconsistent hstarts
+      (by
+        intro nextContext remaining value laterCandidates hnextConsistent hnextStarts
+        exact hterminalMatch candidate nextContext remaining value laterCandidates
+          hnextConsistent hnextStarts)
+      hterminalPrefix
+    simpa only [nextCandidates, hcandidate, appendPlannedCandidate, plan] using hbound
   · rw [dif_neg hnextSelected]
     apply probEvent_unselectedDirectWitnessStep_le_ordinalRisk ordinal _ _ nextCandidates
       context fuel table ((probingHashQueryAfterPlan parameter input plan).run cache)

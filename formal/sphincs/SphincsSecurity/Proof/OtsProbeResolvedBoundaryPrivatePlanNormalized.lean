@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivatePlanExecution
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateRootCandidate
 
 /-!
 # Normalized outer plan trace
@@ -39,7 +39,8 @@ noncomputable def directDetailedBoundaryNormalizedPrivatePlanObserve
             candidates context fuel table ((splitUniformImpl n).run cache)
       | .inl (.inr input) =>
           let plan := purePlanProbingHashQuery parameter input context.state
-          let nextCandidates := appendPlannedCandidate candidates plan.candidate?
+          let nextCandidates := appendPlannedCandidate candidates
+            (rootAwarePlannedCandidate? parameter input context.state)
           runDirectDetailedPrivatePlanObserve
             (canonicalizeDirectDetailedPrivatePlanObserve table
               (fun nextContext remaining value finalCandidates =>
@@ -100,7 +101,8 @@ theorem evalDist_fst_directDetailedBoundaryNormalizedPrivatePlanObserve
               exact ih finalValue.1 finalCandidates finalContext finalRemaining finalValue.2
           | inr input =>
               let plan := purePlanProbingHashQuery parameter input context.state
-              let nextCandidates := appendPlannedCandidate candidates plan.candidate?
+              let nextCandidates := appendPlannedCandidate candidates
+                (rootAwarePlannedCandidate? parameter input context.state)
               change evalDist (Prod.fst <$> runDirectDetailedPrivatePlanObserve _ nextCandidates
                   context fuel table ((probingHashQueryAfterPlan parameter input plan).run cache)) =
                 evalDist (runDirectDetailedPrivateObserve _ context fuel table

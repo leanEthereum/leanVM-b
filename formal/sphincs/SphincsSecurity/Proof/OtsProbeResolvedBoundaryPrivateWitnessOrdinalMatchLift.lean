@@ -218,7 +218,8 @@ theorem probEvent_directDetailedBoundaryNormalizedPrivateWitnessPlanMatchesCandi
                 (canonicalizeMaterializedValues_startTableAgrees table result.context)
           | inr input =>
               let plan := purePlanProbingHashQuery parameter input context.state
-              let nextCandidates := appendPlannedCandidate candidates plan.candidate?
+              let nextCandidates := appendPlannedCandidate candidates
+                (rootAwarePlannedCandidate? parameter input context.state)
               let inner := (probingHashQueryAfterPlan parameter input plan).run cache
               apply probEvent_runDirectWitnessPlanMatchesCandidate_le candidate _ nextCandidates
                 context fuel table inner

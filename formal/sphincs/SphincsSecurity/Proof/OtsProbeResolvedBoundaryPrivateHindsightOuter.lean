@@ -66,10 +66,11 @@ theorem probEvent_directDetailedBoundaryNormalizedPlanHitObserve_eq_zero_of_not_
               rw [directDetailedBoundaryNormalizedPlanHitObserve,
                 OracleComp.construct_query_bind]
               let plan := purePlanProbingHashQuery parameter input context.state
-              let nextCandidates := appendPlannedCandidate candidates plan.candidate?
+              let nextCandidates := appendPlannedCandidate candidates
+                (rootAwarePlannedCandidate? parameter input context.state)
               have hcurrentPrefix : candidates.IsPrefix nextCandidates := by
                 unfold nextCandidates appendPlannedCandidate
-                cases plan.candidate? <;> simp
+                cases rootAwarePlannedCandidate? parameter input context.state <;> simp
               have hnextNotPrefix : ¬nextCandidates.IsPrefix finalCandidates := fun hnext =>
                 hnotPrefix (hcurrentPrefix.trans hnext)
               apply probEvent_runDirectDetailedPlanHitObserve_eq_zero finalCandidates
@@ -181,13 +182,15 @@ theorem probEvent_directDetailedBoundaryNormalizedPlanHitObserve_le_guarded
               rw [directDetailedBoundaryNormalizedPlanHitObserve,
                 OracleComp.construct_query_bind]
               let plan := purePlanProbingHashQuery parameter input context.state
-              let nextCandidates := appendPlannedCandidate candidates plan.candidate?
+              let nextCandidates := appendPlannedCandidate candidates
+                (rootAwarePlannedCandidate? parameter input context.state)
               by_cases hnextPrefix : nextCandidates.IsPrefix finalCandidates
               · have hplanMem : ∀ candidate, plan.candidate? = some candidate →
                     candidate ∈ finalCandidates := by
                   intro candidate hcandidate
                   apply hnextPrefix.subset
-                  simp [nextCandidates, appendPlannedCandidate, hcandidate]
+                  have hrecorded := rootAwarePlannedCandidate?_eq_of_plan_some hcandidate
+                  simp [nextCandidates, appendPlannedCandidate, hrecorded]
                 let inner := (probingHashQueryAfterPlan parameter input plan).run cache
                 have hprobeBound := probingHashQueryAfterPlan_probeBound parameter input plan
                   finalCandidates hplanMem cache
