@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.FewTimeOriginProbability
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootSigner
 
 /-!
@@ -878,6 +879,75 @@ theorem probEvent_uniform_root_matches_distribution_independent_guess_le
       rw [probEvent_eq_eq_probOutput, probOutput_uniformSample]
       rw [show Fintype.card Digest = 2 ^ digestBits by simp]
 
+theorem probEvent_uniform_root_matches_distribution_independent_guess_le_mul
+    (run : Digest → ProbComp α) (reference : ProbComp α)
+    (heq : ∀ root, evalDist (run root) = evalDist reference)
+    (guess : α → Digest) (gate : α → Prop) :
+    Pr[fun result : Digest × α =>
+        gate result.2 ∧ result.1 = guess result.2 | do
+        let root ← ($ᵗ Digest : ProbComp Digest)
+        let result ← run root
+        pure (root, result)] ≤
+      Pr[gate | reference] * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  let sampled := ($ᵗ Digest : ProbComp Digest)
+  let dependent : ProbComp (Digest × α) := do
+    let root ← sampled
+    let result ← run root
+    pure (root, result)
+  let independent : ProbComp (Digest × α) := do
+    let result ← reference
+    let root ← sampled
+    pure (root, result)
+  have hreplace : evalDist dependent = evalDist (do
+      let root ← sampled
+      let result ← reference
+      pure (root, result)) := by
+    unfold dependent
+    apply evalDist_bind_congr
+    intro root _hroot
+    rw [evalDist_bind, evalDist_bind, heq root]
+  have hcommute : evalDist (do
+      let root ← sampled
+      let result ← reference
+      pure (root, result)) = evalDist independent := by
+    unfold independent
+    exact OracleComp.DeferredSampling.evalDist_bind_comm sampled reference
+      (fun root result => pure (root, result))
+  change Pr[fun result : Digest × α =>
+      gate result.2 ∧ result.1 = guess result.2 | dependent] ≤ _
+  calc
+    _ = Pr[fun result : Digest × α =>
+        gate result.2 ∧ result.1 = guess result.2 | independent] := by
+      exact OracleComp.probEvent_congr' (fun _ _ => Iff.rfl) (hreplace.trans hcommute)
+    _ ≤ Pr[gate | reference] * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+      unfold independent
+      apply SphincsSecurity.probEvent_bind_le_gated_mul
+      · intro result _hresult hnotGate
+        rw [show (do
+            let root ← sampled
+            pure (root, result)) =
+          (fun root => (root, result)) <$> sampled by
+            simp [map_eq_bind_pure_comp], probEvent_map]
+        simp [hnotGate]
+      · intro result _hresult hgate
+        have hbound : Pr[fun pair : Digest × α =>
+            gate pair.2 ∧ pair.1 = guess pair.2 | do
+              let root ← sampled
+              pure (root, result)] ≤
+            ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+          rw [show (do
+              let root ← sampled
+              pure (root, result)) =
+            (fun root => (root, result)) <$> sampled by
+              simp [map_eq_bind_pure_comp], probEvent_map]
+          change Pr[fun root : Digest => gate result ∧ root = guess result | sampled] ≤ _
+          simpa [hgate] using
+            (show Pr[fun root : Digest => root = guess result | sampled] ≤
+                ((2 ^ digestBits : Nat) : ENNReal)⁻¹ by
+              rw [probEvent_eq_eq_probOutput, probOutput_uniformSample]
+              rw [show Fintype.card Digest = 2 ^ digestBits by simp])
+        exact hbound
+
 theorem probEvent_uniform_root_matches_symmetric_two_root_run_le
     (run : Digest → Digest → ProbComp α)
     (reference : Digest → ProbComp α)
@@ -916,6 +986,48 @@ theorem probEvent_uniform_root_matches_symmetric_two_root_run_le
       _ = _ := hreference leftRoot
   have hbound := probEvent_uniform_root_matches_distribution_independent_guess_le
     outerRun (reference default) houter guess
+  simpa only [outerRun, sampled, bind_assoc] using hbound
+
+theorem probEvent_uniform_root_matches_symmetric_two_root_run_le_mul
+    (run : Digest → Digest → ProbComp α)
+    (reference : Digest → ProbComp α)
+    (hright : ∀ leftRoot rightRoot,
+      evalDist (run leftRoot rightRoot) = evalDist (reference leftRoot))
+    (hswap : ∀ leftRoot rightRoot,
+      evalDist (run leftRoot rightRoot) = evalDist (run rightRoot leftRoot))
+    (guess : α → Digest) (gate : α → Prop) :
+    Pr[fun result : Digest × α =>
+        gate result.2 ∧ result.1 = guess result.2 | do
+        let leftRoot ← ($ᵗ Digest : ProbComp Digest)
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        let result ← run leftRoot rightRoot
+        pure (leftRoot, result)] ≤
+      Pr[gate | reference default] *
+        ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  let sampled := ($ᵗ Digest : ProbComp Digest)
+  let outerRun (leftRoot : Digest) : ProbComp α := do
+    let rightRoot ← sampled
+    run leftRoot rightRoot
+  have hreference (leftRoot : Digest) :
+      evalDist (reference leftRoot) = evalDist (reference (default : Digest)) := by
+    calc
+      _ = evalDist (run leftRoot default) := (hright leftRoot default).symm
+      _ = evalDist (run default leftRoot) := hswap leftRoot default
+      _ = _ := hright default leftRoot
+  have houter (leftRoot : Digest) :
+      evalDist (outerRun leftRoot) = evalDist (reference (default : Digest)) := by
+    calc
+      _ = evalDist (sampled >>= fun _ => reference leftRoot) := by
+        unfold outerRun
+        apply evalDist_bind_congr
+        intro rightRoot _hrightRoot
+        exact hright leftRoot rightRoot
+      _ = evalDist (reference leftRoot) :=
+        OracleComp.DeferredSampling.evalDist_bind_const_neverFails sampled (by simp [sampled])
+          (reference leftRoot)
+      _ = _ := hreference leftRoot
+  have hbound := probEvent_uniform_root_matches_distribution_independent_guess_le_mul
+    outerRun (reference default) houter guess gate
   simpa only [outerRun, sampled, bind_assoc] using hbound
 
 theorem privateWitnessAtOrdinal_of_firstPrivateWitnessOrdinal?_eq_some
