@@ -324,6 +324,8 @@ The direct hash side now has a value-parametric clean relation. `peekCoordinate`
 
 The combined cache transformation used by the state swap is now involutive as well: swapping the two root digests in canonical encoding keys and replacing the hidden target output, then reversing both operations, restores every split-cache key exactly.
 
+The adaptive boundary now has its canonical deferred quotient. The two contexts have exactly equal visible lazy state, the selected root is absent and unpublished there, their private tables store the respective full root outputs at that one position, and every other private value agrees. The relation is symmetric, initialized by installing the two outputs, preserved by administrative state changes, gives equal `positionValue` away from the target, and survives `canonicalizeMaterializedValues`. This is the representation used by the normalized retained trace between signer invocations.
+
 Two places a proof can go wrong, both found by attacking the claim rather than by reading it:
 
 - **A strong forgery needs no chain inversion.** `Ver` does not check that the counter is the least admissible one, so a second `c'` with `Enc(P,lay,tau,e,M,c') = x` reuses the chain values verbatim and verifies. Since the codeword fixes the digest, that is one `2^-128` hit per query and it is harmless, but it is a branch of its own: the one-time signature is unforgeable on a *new* message by incomparability, and unforgeable on the *signed* message only by collision resistance at `tw_enc`.
