@@ -72,6 +72,15 @@ theorem RootHiddenStateRel.values_isSome_eq
     rfl
   · rw [hrel.other_values coordinate heq]
 
+theorem RootHiddenStateRel.hitAt_eq
+    {target : Position} {leftOutput rightOutput : HashOutput}
+    {left right : LazyRevealProbe.State Coordinate}
+    (hrel : RootHiddenStateRel target leftOutput rightOutput left right)
+    (coordinate : Coordinate) (output : HashOutput) :
+    left.hitAt coordinate output ↔ right.hitAt coordinate output := by
+  unfold LazyRevealProbe.State.hitAt LazyRevealProbe.State.pendingAt
+  rw [hrel.pending]
+
 theorem RootHiddenStateRel.ensure
     {target : Position} {leftOutput rightOutput : HashOutput}
     {left right : LazyRevealProbe.State Coordinate}
@@ -327,6 +336,49 @@ theorem RootHiddenCacheRel.symm
   ⟨fun input => (hrel.ordinary input).symm, hrel.right_target, hrel.left_target,
     fun coordinate hne => (hrel.other_hidden coordinate hne).symm⟩
 
+theorem RootHiddenCacheRel.update_same_ordinary
+    {target : Position} {leftOutput rightOutput : HashOutput}
+    {left right : SplitHashCache}
+    (hrel : RootHiddenCacheRel target leftOutput rightOutput left right)
+    (input : HashInput) (output : HashOutput) :
+    RootHiddenCacheRel target leftOutput rightOutput
+      (Function.update left (.ordinary input) (some output))
+      (Function.update right (.ordinary input) (some output)) := by
+  refine ⟨?_, ?_, ?_, ?_⟩
+  · intro other
+    by_cases heq : SplitHashKey.ordinary other = .ordinary input
+    · simp [heq]
+    · simp [Function.update_of_ne heq, hrel.ordinary other]
+  · simp [hrel.left_target]
+  · simp [hrel.right_target]
+  · intro coordinate hne
+    simp [hrel.other_hidden coordinate hne]
+
+theorem RootHiddenCacheRel.update_same_hidden_of_ne
+    {target : Position} {leftOutput rightOutput : HashOutput}
+    {left right : SplitHashCache}
+    (hrel : RootHiddenCacheRel target leftOutput rightOutput left right)
+    (coordinate : Coordinate) (output : HashOutput)
+    (hne : coordinate ≠ .position target) :
+    RootHiddenCacheRel target leftOutput rightOutput
+      (Function.update left (.hidden coordinate) (some output))
+      (Function.update right (.hidden coordinate) (some output)) := by
+  refine ⟨?_, ?_, ?_, ?_⟩
+  · intro input
+    simp [hrel.ordinary input]
+  · have hkey : SplitHashKey.hidden (.position target) ≠ .hidden coordinate := by
+      intro heq
+      exact hne (SplitHashKey.hidden.inj heq).symm
+    simp [Function.update_of_ne hkey, hrel.left_target]
+  · have hkey : SplitHashKey.hidden (.position target) ≠ .hidden coordinate := by
+      intro heq
+      exact hne (SplitHashKey.hidden.inj heq).symm
+    simp [Function.update_of_ne hkey, hrel.right_target]
+  · intro other hother
+    by_cases heq : SplitHashKey.hidden other = .hidden coordinate
+    · simp [heq]
+    · simp [Function.update_of_ne heq, hrel.other_hidden other hother]
+
 def replaceHiddenRootCache
     (target : Position) (output : HashOutput) (cache : SplitHashCache) : SplitHashCache :=
   Function.update cache (.hidden (.position target)) (some output)
@@ -494,5 +546,105 @@ theorem rootHiddenRelates_probe
           runCleanFromTable, OracleComp.construct_pure]
         exact relTriple_pure_pure ⟨hstate.addPending candidate.coordinate candidate.candidate,
           rfl, rfl, rfl, hcache⟩
+
+theorem rootHiddenRelates_splitHashQuery_ordinary
+    (target : Position) (leftOutput rightOutput : HashOutput)
+    (input : HashInput) :
+    RootHiddenRelates target leftOutput rightOutput
+      (splitHashQuery (.ordinary input)) (splitHashQuery (.ordinary input)) := by
+  intro leftState rightState hstate fuel table leftCache rightCache hcache
+  have hlookup := hcache.ordinary input
+  rw [splitHashQuery_run_eq, splitHashQuery_run_eq]
+  cases hleft : leftCache (.ordinary input) with
+  | some output =>
+      have hright : rightCache (.ordinary input) = some output := by
+        rw [← hlookup]
+        exact hleft
+      simp only [hright, runCleanFromTable, OracleComp.construct_pure]
+      exact relTriple_pure_pure ⟨hstate, rfl, rfl, rfl, hcache⟩
+  | none =>
+      have hright : rightCache (.ordinary input) = none := by
+        rw [← hlookup]
+        exact hleft
+      simp only [hright]
+      unfold LazyRevealProbe.hashOutputQuery
+      rw [runCleanFromTable_hashOutput_query_bind,
+        runCleanFromTable_hashOutput_query_bind]
+      apply relTriple_bind (relTriple_refl LazyRevealProbe.sampleHashOutput)
+      intro leftSample rightSample hsample
+      subst rightSample
+      simp only [runCleanFromTable, OracleComp.construct_pure]
+      exact relTriple_pure_pure ⟨hstate, rfl, rfl, rfl,
+        hcache.update_same_ordinary input leftSample⟩
+
+theorem rootHiddenRelates_revealCoordinate_of_ne
+    (target : Position) (leftOutput rightOutput : HashOutput)
+    (coordinate : Coordinate) (hne : coordinate ≠ .position target) :
+    RootHiddenRelates target leftOutput rightOutput
+      (revealCoordinate coordinate) (revealCoordinate coordinate) := by
+  intro leftState rightState hstate fuel table leftCache rightCache hcache
+  rw [revealCoordinate_run, revealCoordinate_run, LazyRevealProbe.revealQuery,
+    runCleanFromTable_reveal_query_bind, runCleanFromTable_reveal_query_bind]
+  have hvalue := hstate.other_values coordinate hne
+  cases hleft : leftState.values coordinate with
+  | some output =>
+      have hright : rightState.values coordinate = some output := by
+        rw [← hvalue]
+        exact hleft
+      simp only [hright, runCleanFromTable, OracleComp.construct_pure]
+      exact relTriple_pure_pure ⟨hstate, rfl, rfl, rfl,
+        hcache.update_same_hidden_of_ne coordinate output hne⟩
+  | none =>
+      have hright : rightState.values coordinate = none := by
+        rw [← hvalue]
+        exact hleft
+      simp only [hright]
+      cases coordinate with
+      | chainStart lay tree leafIdx chainIdx =>
+          simp only
+          let output := table ⟨lay, tree, leafIdx, chainIdx⟩
+          have hhit := hstate.hitAt_eq (.chainStart lay tree leafIdx chainIdx) output
+          by_cases hleftHit : leftState.hitAt (.chainStart lay tree leafIdx chainIdx) output
+          · have hrightHit := hhit.mp hleftHit
+            change leftState.hitAt (.chainStart lay tree leafIdx chainIdx)
+              (table ⟨lay, tree, leafIdx, chainIdx⟩) at hleftHit
+            change rightState.hitAt (.chainStart lay tree leafIdx chainIdx)
+              (table ⟨lay, tree, leafIdx, chainIdx⟩) at hrightHit
+            rw [if_pos hleftHit, if_pos hrightHit]
+            exact relTriple_pure_pure trivial
+          · have hrightHit : ¬rightState.hitAt
+                (.chainStart lay tree leafIdx chainIdx) output :=
+              fun h => hleftHit (hhit.mpr h)
+            simp only [output, hleftHit, hrightHit, ↓reduceIte,
+              runCleanFromTable, OracleComp.construct_pure]
+            exact relTriple_pure_pure ⟨hstate.materialize_other
+                (.chainStart lay tree leafIdx chainIdx) output hne,
+              rfl, rfl, rfl,
+              hcache.update_same_hidden_of_ne
+                (.chainStart lay tree leafIdx chainIdx) output hne⟩
+      | position position =>
+          apply relTriple_bind (relTriple_refl LazyRevealProbe.sampleHashOutput)
+          intro leftSample rightSample hsample
+          subst rightSample
+          have hhit := hstate.hitAt_eq (.position position) leftSample
+          by_cases hleftHit : leftState.hitAt (.position position) leftSample
+          · have hrightHit := hhit.mp hleftHit
+            simp [hleftHit, hrightHit, RootHiddenCleanSameRel]
+          · have hrightHit : ¬rightState.hitAt (.position position) leftSample :=
+              fun h => hleftHit (hhit.mpr h)
+            simp only [hleftHit, hrightHit, ↓reduceIte,
+              runCleanFromTable, OracleComp.construct_pure]
+            exact relTriple_pure_pure ⟨hstate.materialize_other
+                (.position position) leftSample hne,
+              rfl, rfl, rfl,
+              hcache.update_same_hidden_of_ne (.position position) leftSample hne⟩
+
+theorem rootHiddenRelates_revealPosition_of_ne
+    (target : Position) (leftOutput rightOutput : HashOutput)
+    (position : Position) (hne : position ≠ target) :
+    RootHiddenRelates target leftOutput rightOutput
+      (revealPosition position) (revealPosition position) := by
+  exact rootHiddenRelates_revealCoordinate_of_ne target leftOutput rightOutput
+    (.position position) (by simpa using hne)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

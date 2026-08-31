@@ -312,6 +312,8 @@ The complete public planner is insensitive to the differing hidden root. Its fir
 
 The clean-run quotient now includes the split cache as well. Ordinary entries remain exactly equal, all hidden entries away from the target remain equal, and the target hidden key stores the respective full root output. Replacing that one entry constructs the relation from an actual materialized cache and is involutive. The monadic, planner, uniform, ensure and probe rules all preserve this stronger cache relation.
 
+Ordinary random-oracle lookup now preserves the quotient in both cached and fresh cases, with a shared fresh answer updating both ordinary caches. Revealing any coordinate other than the selected root is coupled too: cached values agree, fresh structural outputs are sampled together, pending-hit stops agree because pending sets are equal, and successful materialization plus the hidden-cache update preserve both quotients. The only reveal still outside the equality-valued relation is the selected root itself.
+
 Two places a proof can go wrong, both found by attacking the claim rather than by reading it:
 
 - **A strong forgery needs no chain inversion.** `Ver` does not check that the counter is the least admissible one, so a second `c'` with `Enc(P,lay,tau,e,M,c') = x` reuses the chain values verbatim and verifies. Since the codeword fixes the digest, that is one `2^-128` hit per query and it is harmless, but it is a branch of its own: the one-time signature is unforgeable on a *new* message by incomparability, and unforgeable on the *signed* message only by collision resistance at `tw_enc`.
