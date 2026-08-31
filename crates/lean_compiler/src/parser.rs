@@ -35,7 +35,7 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
     // skipped, so the index into this vector is NOT it.
     let mut lines: Vec<Line> = Vec::new();
     for (src_line, raw) in src.lines().enumerate() {
-        let no_comment = raw.split('#').next().unwrap();
+        let no_comment = strip_comment(raw);
         if no_comment.trim().is_empty() {
             continue;
         }
@@ -291,6 +291,21 @@ fn apply_replacements(src: &str, replacements: &BTreeMap<String, String>) -> Str
     }
     flush(&mut out, &mut word);
     out
+}
+
+/// `raw` without its trailing comment. A `#` inside a string literal is part of
+/// the string: truncating there dropped the rest of the line, and the shortened
+/// line usually still parsed.
+fn strip_comment(raw: &str) -> &str {
+    let mut in_str = false;
+    for (i, c) in raw.char_indices() {
+        match c {
+            '"' => in_str = !in_str,
+            '#' if !in_str => return &raw[..i],
+            _ => {}
+        }
+    }
+    raw
 }
 
 /// The first top-level comparison operator in `s`. Used only on a line that
@@ -863,16 +878,30 @@ impl Parser {
 /// themselves are never yielded, so a separator that is a bracket never splits.
 fn depth0(s: &str) -> impl Iterator<Item = (usize, u8)> + '_ {
     let mut depth = 0i32;
-    s.as_bytes().iter().enumerate().filter_map(move |(i, &c)| match c {
-        b'(' | b'[' => {
-            depth += 1;
-            None
+    let mut in_str = false;
+    s.as_bytes().iter().enumerate().filter_map(move |(i, &c)| {
+        // A string literal is one opaque token. Without this every splitter
+        // below reads the brackets and operators SPELLED INSIDE a stream name as
+        // structure: `hint_witness(b, "a,b")` split into three arguments.
+        if in_str {
+            in_str = c != b'"';
+            return None;
         }
-        b')' | b']' => {
-            depth -= 1;
-            None
+        match c {
+            b'"' => {
+                in_str = true;
+                None
+            }
+            b'(' | b'[' => {
+                depth += 1;
+                None
+            }
+            b')' | b']' => {
+                depth -= 1;
+                None
+            }
+            _ => (depth == 0).then_some((i, c)),
         }
-        _ => (depth == 0).then_some((i, c)),
     })
 }
 

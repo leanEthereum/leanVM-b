@@ -217,6 +217,32 @@ def main():
     verify(&program, &want, &proof).expect("2^64 is the tower element y, not g^64");
 }
 
+/// A string literal is one opaque token.
+///
+/// Two passes used to read structure out of the middle of one. Comments were
+/// stripped with `raw.split('#')`, so a `#` in a stream name truncated the line,
+/// and the shortened line often still parsed. Bracket depth was counted without
+/// any notion of a string, so every top-level splitter (arguments, `+`/`-`,
+/// `*`//`/`%`, `**`, augmented assignment, comparisons) read a `,` or a `]`
+/// spelled inside the name as structure: this call split into three arguments.
+#[test]
+fn a_string_literal_is_not_scanned_for_syntax() {
+    let src = "\
+def main():
+    rb = StackBuf(1)
+    hint_witness(rb[0:1], \"x,y#z]w\")
+    p = GEN ** 0
+    p[1] = rb[0]
+    p[GEN] = GEN ** 0
+    return
+";
+    let mut program = compile(&parse(src).expect("a `,`, `#` or `]` inside a string is part of the name"));
+    program.set_witness("x,y#z]w", vec![vec![F192::new(7, 0, 0)]]);
+    let want = [F192::new(7, 0, 0), g_pow(0).into()];
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    verify(&program, &want, &proof).expect("the stream name survived parsing intact");
+}
+
 /// A loop body that merely SHADOWS an enclosing `StackBuf` never touches it, so
 /// rejecting the program names a capture that is not happening. Scoping the
 /// arms took the arm-local binding out of the set the rejection consults, which
