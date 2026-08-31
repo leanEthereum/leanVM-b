@@ -31,20 +31,20 @@ use lean_vm::cpu::Program;
 /// without a digest.
 #[rustfmt::skip]
 const GOLDEN: &[(&str, &str)] = &[
-    ("conditionals", "583644bbf4d2a2b4cd9a87e52fa8d4a325a13acba4686b874d4c027dc3be21f7"),
-    ("const_params", "6fa2cdbe74ca9df078e10050f9f295866ef3605ce351951ca2390795bf56da99"),
+    ("conditionals", "b3637fcc6515be64b21ae1c9ab06a4cab1bcc8595e2aaa3b63fc8706f32dfd50"),
+    ("const_params", "494a3e891f6e5b53b8946845f98990f36b0f1e01479db2c26f2fa27cfb9e7f00"),
     ("fibonacci", "68558b18c6c0facbc6b9496aa0a85036e1360922b23631f3d4ca7f82223ed2d8"),
-    ("hash_heap_chain", "875da272156250028125833405931700be63e01e7fe5634b4e4ad98680406e20"),
-    ("hash_slices", "a499a753adec66a0730e48ed6f7c4a38ab82a8f4ca12599d70135db9f4235013"),
-    ("heapbuf_dyn", "2dcdf13305dac3636d14710580e272648faae223b3cd401a13155a7cc7ac207f"),
-    ("hint", "c7269c0a692ee499ca2afedb1b13a03c09cb179d99023decded43afe59dc4655"),
+    ("hash_heap_chain", "c0ba2a3f1a68d43f0ddeebfebf3918b489c1fef0c0d5ee45cd713c5cfbb17427"),
+    ("hash_slices", "5278a0c0d77e06f45a767c8c0fc6d6c93d3486a085ac8aaee526516325237495"),
+    ("heapbuf_dyn", "dc306f7cac8a664d85555fc746b0d54796dc654a87b9a63ea353d12597a25174"),
+    ("hint", "b0fb2bce402a611a072382c85bf64ecbc95becebb33824c13853ed51ad3deeac"),
     ("identities", "d51dc227b94a4074b7950a4961ef31f834a2032adfa8fe62f3e85292193f2ea3"),
-    ("match", "7e271cc69737625428f9152b46effa4e3972cf936c8725b75e729ec6c727da9f"),
-    ("match_arms", "bcbf2e2d320f77aa27c53d80bdcaa7b1547b029a9db0575ec59c2f73f89bdaec"),
-    ("nested", "fd9b17b056722d4264316d8d3050d27ceaa9eb9ca9d06410e37c4c0216aa1efb"),
+    ("match", "6fbdc1514e0cfdef54838b0189113bdb388665d481043e8a190ca6fff9faf6d9"),
+    ("match_arms", "810e351e89177b21b4de098b241ab3b99c075ea3f0ce8d06c8c25bc368f9c868"),
+    ("nested", "cdaf98bc7cd24e93bd82e695a11e7c390f15e3ce1467923e4d70b04e9314c91f"),
     ("runtime_loop", "03576f38fbd593af5a5e47c062235434a2ab1c94ac1be3d6a3c59e7d31515491"),
     ("scoping", "39f01bbf25caeb910cccfdda6dcaa108bb3e51f120762621ddea7488d5a6ad9a"),
-    ("unroll", "4572616c299f71da744df342fdd5f178709e0145036acec199cd2ae6e425aee4"),
+    ("unroll", "fe6371bf9a02f8dd1c91a151e86b0795206f2d9352f67fdae3095fb156ea1e2f"),
     ("wots_walk", "61c7a3f038ae92f2fa0beb415ae08a68e4ad1883728ee42b9e2cec4fdb9bd09c"),
 ];
 

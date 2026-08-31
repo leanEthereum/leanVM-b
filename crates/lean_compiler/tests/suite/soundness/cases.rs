@@ -449,3 +449,29 @@ def main():
         pokes: vec![wit("w", 0, k(12)), wit("w", 1, k(23))],
     });
 }
+
+/// A frame STORE's index is bounds-checked, like a read's and a target's.
+///
+/// The three callers of `frame_cell` each need their own case: with the check
+/// removed at the store site alone, all 148 tests still passed, and `a[2] = …` on
+/// a `StackBuf(2)` wrote the next buffer's first cell, published it, and the proof
+/// VERIFIED. That is the `copy_alias` bug reappearing at a different caller.
+#[test]
+#[should_panic(expected = "out of bounds")]
+fn a_frame_store_index_is_bounds_checked() {
+    super::build(
+        "\
+def main():
+    a = StackBuf(2)
+    b = StackBuf(2)
+    a[0] = 0
+    a[1] = 0
+    b[1] = 0
+    a[2] = GEN ** 7
+    p = GEN ** 0
+    p[1] = b[0]
+    p[GEN] = b[1]
+    return
+",
+    );
+}

@@ -90,22 +90,6 @@ impl Abi {
 /// that folds an exponent into `β` measures it against this.
 const FOLD_MAX: u128 = 1 << lean_vm::cpu::MIN_LOG_MEM;
 
-/// Which cell an indexed expression names. The ONE answer to "where does
-/// `arr[idx]` live", produced by [`FnLower::place`], which bounds-checks it.
-///
-/// Four sites used to resolve an index by hand, each repeating `stack_of` plus
-/// `const_index` plus its own `k >= size`, and two of them shipped WITHOUT the
-/// check: `copy_alias` aliased the next buffer's first cell and its assert
-/// passed, and a `match` target wrote a callee's return past the end of one. A
-/// single resolver makes that impossible rather than unlikely, since asking
-/// where a cell is IS the check.
-enum Place {
-    /// A frame cell, addressed directly by the instruction.
-    Frame(Off),
-    /// A heap cell `m[ptr·g^beta]`, reached by a `DEREF`.
-    Heap { ptr: Off, beta: u32 },
-}
-
 /// The two pure operations worth interning. Both are commutative, so operands
 /// are stored sorted.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -394,19 +378,28 @@ impl FnLower<'_> {
         o
     }
 
-    /// Where `arr[idx]` lives, bounds-checked. Every read, write and target goes
-    /// through here, so there is one check rather than one per caller.
-    fn place(&mut self, arr: &Expr, idx: &Expr) -> Place {
-        if let Some((base, size)) = self.stack_of(arr) {
-            let k = self.const_index(idx);
-            if k >= size {
-                self.fail(format!("index {k} out of bounds (StackBuf size {size})"))
-            };
-            return Place::Frame(base + k);
-        }
-        // `heap_addr` carries the heap's own bound check.
-        let (ptr, beta) = self.heap_addr(arr, idx);
-        Place::Heap { ptr, beta }
+    /// The frame cell `arr[idx]` names, bounds-checked, or `None` when `arr` is
+    /// not a `StackBuf` and the caller should take its heap path.
+    ///
+    /// The ONE place a frame index is resolved. Four sites used to repeat
+    /// `stack_of` then `const_index` then their own `k >= size`, and two of them
+    /// shipped without the check: `copy_alias`, where `c[0] = a[2]` on a
+    /// `StackBuf(2)` aliased the next buffer's first cell and its assert passed,
+    /// and a `match` target, where an arm wrote a callee's return past the end.
+    /// Asking where the cell is IS the check now.
+    ///
+    /// Emits nothing, deliberately. An earlier version resolved the heap address
+    /// here too, which moved the pointer `MUL` ahead of the caller's other work
+    /// and broke `hb[sb[0]] = f(sb, …)`, where the address reads a cell the value
+    /// writes. Each caller keeps its own evaluation order, and the heap bound
+    /// lives where the heap address is formed ([`Self::heap_addr`]).
+    fn frame_cell(&mut self, arr: &Expr, idx: &Expr) -> Option<Off> {
+        let (base, size) = self.stack_of(arr)?;
+        let k = self.const_index(idx);
+        if k >= size {
+            self.fail(format!("index {k} out of bounds (StackBuf size {size})"))
+        };
+        Some(base + k)
     }
 
     /// A frame cell holding `1` (always-taken `JUMP` condition).
@@ -614,12 +607,15 @@ impl FnLower<'_> {
         let mut binds = Vec::new();
         for t in targets {
             match t {
-                Expr::Index(arr, idx) => match self.place(arr, idx) {
-                    Place::Frame(c) => cells.push(c),
-                    // A heap cell is not a frame cell, so an arm cannot return into it.
-                    Place::Heap { .. } => self.fail(format!(
-                        "a multi-value target must be a name or a StackBuf element, and `{arr:?}` is \
-                         a HeapBuf, whose cells are not frame cells"
+                // Only a frame cell can be a return slot. Rejecting here rather
+                // than after forming the address keeps a pointer `MUL` out of the
+                // program and reports the actual problem: routing a heap target
+                // through the heap path lectured about g-powers instead, and told a
+                // scalar it was a HeapBuf.
+                Expr::Index(arr, idx) => match self.frame_cell(arr, idx) {
+                    Some(c) => cells.push(c),
+                    None => self.fail(format!(
+                        "a multi-value target must be a name or a StackBuf element, got `{t:?}`"
                     )),
                 },
                 Expr::Var(n) => {
@@ -1096,15 +1092,16 @@ impl FnLower<'_> {
             Expr::StackBuf(_) => {
                 self.fail("StackBuf(n) must be bound to a name: `x = StackBuf(n)`")
             }
-            Expr::Index(arr, idx) => match self.place(arr, idx) {
-                // A frame cell is the answer; a heap cell needs a `DEREF` to read.
-                Place::Frame(c) => c,
-                Place::Heap { ptr, beta } => {
-                    let dst = self.fresh();
-                    self.deref(ptr, beta, dst, DerefMode::Cell);
-                    dst
+            // A frame cell IS the answer; a heap cell needs a `DEREF` to read.
+            Expr::Index(arr, idx) => {
+                if let Some(c) = self.frame_cell(arr, idx) {
+                    return c;
                 }
-            },
+                let (ptr, beta) = self.heap_addr(arr, idx);
+                let dst = self.fresh();
+                self.deref(ptr, beta, dst, DerefMode::Cell);
+                dst
+            }
             Expr::Sub(..) | Expr::Div(..) | Expr::Mod(..) => {
                 self.fail(format!(
                     "`-`, `//`, `%` are compile-time only (field subtraction is `+`); use them in an index, a bound, or a `Const` argument, got `{e:?}`"
@@ -1156,10 +1153,16 @@ impl FnLower<'_> {
         }
         match e {
             // Heap read straight into dst (a stack read falls through to the copy).
-            Expr::Index(arr, idx) if self.stack_of(arr).is_none() => {
-                let (base, beta) = self.heap_addr(arr, idx);
-                self.deref(base, beta, dst, DerefMode::Cell);
-            }
+            // Through the same resolver as every other index, so the frame/heap
+            // split is written once: a heap read `DEREF`s straight into `dst`, and a
+            // frame read is the cell, copied.
+            Expr::Index(arr, idx) => match self.frame_cell(arr, idx) {
+                Some(c) => self.copy(c, dst),
+                None => {
+                    let (ptr, beta) = self.heap_addr(arr, idx);
+                    self.deref(ptr, beta, dst, DerefMode::Cell);
+                }
+            },
             Expr::Pow(b, e) => {
                 let v = self.pow_expr(b, e);
                 self.copy(v, dst);
@@ -1344,15 +1347,20 @@ impl FnLower<'_> {
                     self.call(f, args, 0);
                 }
             }
-            StmtKind::Store(arr, idx, val) => match self.place(arr, idx) {
+            StmtKind::Store(arr, idx, val) => {
                 // A frame write places the value in the cell; a heap write is the
-                // `DEREF` asserting `m[arr·idx] == val` (write-once).
-                Place::Frame(c) => self.stack_store(c, val),
-                Place::Heap { ptr, beta } => {
+                // `DEREF` asserting `m[arr·idx] == val` (write-once). The VALUE is
+                // lowered first on the heap path, since the address may read a cell
+                // the value writes (`hb[sb[0]] = f(sb, …)`), and Python's own
+                // evaluation order for `a[i] = v` is the same.
+                if let Some(c) = self.frame_cell(arr, idx) {
+                    self.stack_store(c, val);
+                } else {
                     let v = self.expr(val);
+                    let (ptr, beta) = self.heap_addr(arr, idx);
                     self.deref(ptr, beta, v, DerefMode::Cell);
                 }
-            },
+            }
             StmtKind::Return(es) => self.lower_return(es),
             StmtKind::CallIfNe(lhs, rhs, callee, args) => {
                 // A conditional call: the frame setup runs either way, and the
