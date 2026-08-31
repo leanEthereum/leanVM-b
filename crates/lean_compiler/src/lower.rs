@@ -1142,6 +1142,17 @@ impl FnLower<'_> {
             }
             // A well-formed one folds above, so this is a malformed call.
             Expr::Call(f, _) if f == "f192" => self.fail("f192 needs three literal u64 limbs"),
+            // Folded above when it is what it claims to be, so reaching here means
+            // it is not: name that, rather than reporting an unknown function.
+            Expr::Call(f, args) if f == "const" => {
+                if args.len() != 1 {
+                    self.fail(format!("const(...) takes one expression, got {}", args.len()))
+                };
+                self.fail(format!(
+                    "const(...) asks for a compile-time integer, and `{:?}` is not one",
+                    args[0]
+                ))
+            }
             Expr::Call(f, args) if f == "addr" => {
                 let ga = self.stack_addr(args);
                 self.materialize(ga)

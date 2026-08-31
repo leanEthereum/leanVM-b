@@ -523,6 +523,81 @@ def main():
     );
 }
 
+/// The same construct in a VALUE position, for the same reason. `+` there is
+/// XOR, so `lvl + 1` with `lvl = 3` is 2 and not 4, silently: the SPHINCS guest
+/// could not write a Merkle level into a tweak and carried a generated table of
+/// one literal per level to get the integer reading instead.
+///
+/// `const(e)` reads `e` with integer arithmetic and emits the literal, so one
+/// construct means one thing in both positions. The two readings must really
+/// differ here, or the test proves nothing.
+#[test]
+fn a_value_may_ask_for_the_integer_regime() {
+    // Parse and compile OUTSIDE the catch, so a negative arm can only fail on the
+    // assert. Inside, `!accepted` would also hold if the program stopped parsing.
+    let accepted = |expr: &str, want: u64| {
+        let src = format!(
+            "def main():\n    for i in unroll(3, 4):\n        v = {expr}\n        assert v == {want}\n    return\n"
+        );
+        let program = compile(&parse(&src).expect("parse"));
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            program.execute([F192::ZERO, F192::ZERO]);
+        }))
+        .is_ok()
+    };
+
+    // i = 3: the integer reading is 4, the field reading `3 XOR 1` is 2.
+    assert!(accepted("const(i + 1)", 4), "const(...) is the integer reading");
+    assert!(!accepted("const(i + 1)", 2), "and not the field one");
+    assert!(accepted("i + 1", 2), "undeclared, `+` in a value position stays XOR");
+    assert!(!accepted("i + 1", 4));
+
+    // Subtraction has no field meaning at all, so it is only reachable this way.
+    assert!(accepted("const(i - 1)", 2));
+
+    let rejected = |src: &str, want: &str| {
+        let ast = parse(src).expect("parses");
+        let Err(err) = std::panic::catch_unwind(|| compile(&ast)) else {
+            panic!("accepted: {src}");
+        };
+        let msg = err.downcast_ref::<String>().map(String::as_str).unwrap_or("");
+        assert!(msg.contains(want), "wanted `{want}`, got `{msg}`");
+    };
+    // A `const(...)` that is not a compile-time integer names itself.
+    rejected(
+        "def main():\n    w = GEN ** 0\n    v = const(w + 1)\n    return\n",
+        "compile-time integer",
+    );
+    // The wrapper reinterprets its OPERATORS, and cannot reinterpret a leaf, so a
+    // leaf whose own two readings diverge is rejected rather than silently read one
+    // way: `n = 2 + 3` holds `2 XOR 3` = 1 while its integer reading is 5, and
+    // `assert n == 1` and `assert const(n) == 5` both used to pass in one program.
+    rejected(
+        "def main():\n    n = 2 + 3\n    v = const(n)\n    return\n",
+        "cannot reinterpret",
+    );
+}
+
+/// A `def` may not take a builtin's name. The builtin wins at the call site, so
+/// the body is never reached and its constraints silently disappear: `def const(x)`
+/// with an `assert` in it was skipped outright by `v = const(4)`, and skipped or
+/// not depending on whether the ARGUMENT folded, so one call site had two
+/// meanings. True of `f192` before `const` existed, so this is the class, not one
+/// name.
+#[test]
+fn a_function_may_not_shadow_a_builtin() {
+    for name in ["const", "f192", "addr", "blake2s", "len", "hint_witness", "StackBuf"] {
+        let src = format!("def {name}(x):\n    assert x == 99\n    return x\n\ndef main():\n    return\n");
+        let err = parse(&src).expect_err(&format!("`def {name}` must be rejected"));
+        assert!(err.contains("is a builtin"), "got `{err}`");
+    }
+    // An ordinary name still works, including one that contains a builtin's.
+    for name in ["helper", "constant", "addr_of"] {
+        let src = format!("def {name}(x):\n    return x\n\ndef main():\n    return\n");
+        parse(&src).unwrap_or_else(|e| panic!("`def {name}` must be accepted: {e}"));
+    }
+}
+
 /// A compile-time branch is decided by a regime the author names.
 ///
 /// The fold decides on the integer reading while the runtime test of the same
@@ -592,11 +667,16 @@ fn an_ambiguous_compile_time_branch_must_be_declared() {
         assert!(msg.contains("where a value is wanted"), "{cond}: got `{msg}`");
     }
     // A near miss of the wrapper says the word, where the ordinary parse error
-    // for a malformed condition never would.
-    for cond in ["const (a == b)", "const(a) == const(b)", "const(a == b"] {
+    // for a malformed condition never would. A condition carrying a comparison of
+    // its own is NOT a near miss, since `const(...)` is a value expression too.
+    for cond in ["const (a == b)", "const(a == b"] {
         let err = parse(&prog(cond)).expect_err(cond);
         assert!(err.contains("must wrap the WHOLE condition"), "{cond}: got `{err}`");
     }
+    // So one side of an ordinary comparison may be a `const(...)`, in either
+    // order. Rejecting these made the two operand orders behave differently.
+    fold("const(1 + 1) == 2");
+    fold("2 == const(1 + 1)");
     // A variable that merely starts with `const` is not a near miss.
     let plain = "def main():\n    const = 4\n    hb = HeapBuf(4)\n    if const == 4:\n        hb[GEN ** 0] = 5\n    else:\n        hb[GEN ** 0] = 7\n    p = GEN ** 0\n    p[1] = hb[GEN ** 0]\n    p[GEN] = GEN ** 0\n    return\n";
     let program = compile(&parse(plain).expect("a name beginning with `const` is an ordinary name"));

@@ -82,8 +82,9 @@ def hint_log2_ceil(bits, nbits: int, floor: int) -> _Elt:
     return _Elt()
 
 
-def const(cond: bool) -> bool:
-    """`if const(a == b):` asks for the branch to be decided while compiling.
+def const(e):
+    """`if const(a == b):` asks for the branch to be decided while compiling, and
+    `const(e)` in a value position asks for `e` itself to be read that way.
 
     Two things follow. The condition must be decidable then (both sides
     compile-time integers), and it is read with INTEGER arithmetic, which is the

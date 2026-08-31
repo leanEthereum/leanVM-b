@@ -350,12 +350,6 @@ SP_LAY_MUL = 2 ** 8
 SP_P_MUL = 2 ** 48
 SP_TAU_POS = 16
 SP_J_POS = BASE_FIELD_BITS + 16
-# A value expression's constants fold IN THE FIELD, where `1 + 1` is 0, so a
-# Merkle level cannot be written `level + 1` there (it would be `level XOR 1`,
-# and the p field would silently vanish on odd levels). SP_P_LEVEL[lambda] is
-# the literal `lambda * 2^48` outright, indexed with the integer arithmetic that
-# an index position does support.
-SP_P_LEVEL = SP_P_LEVEL_PLACEHOLDER
 SP_CHAIN_MUL = SP_CHAIN_LENGTH * SP_P_MUL   # chain i's tweaks start at p = 2^w * i
 
 # The encoding counter, LE_32 in the low four bytes of its cell: bounded by
@@ -2642,7 +2636,7 @@ def verify_sig_sphincs(signer):
             children[0] = node + m
             children[1] = sibling + m
             node_tweak = StackBuf(WORDS_PER_BLOCK)
-            node_tweak[0] = SP_TW_FTS_NODE + kappa * SP_LAY_MUL + SP_P_LEVEL[level + 1] + idx_tau + sp_bit_field(bits, leaf_off + level + 1, SP_A - level - 1, SP_J_POS)
+            node_tweak[0] = SP_TW_FTS_NODE + kappa * SP_LAY_MUL + const((level + 1) * SP_P_MUL) + idx_tau + sp_bit_field(bits, leaf_off + level + 1, SP_A - level - 1, SP_J_POS)
             node_tweak[1] = pp
             parent = StackBuf(WORDS_PER_BLOCK)
             blake2s(node_tweak, children, parent)
@@ -2677,7 +2671,7 @@ def verify_sig_sphincs(signer):
             children[0] = node + m
             children[1] = sibling + m
             node_tweak = StackBuf(WORDS_PER_BLOCK)
-            node_tweak[0] = SP_TW_NODE + lay * SP_LAY_MUL + SP_P_LEVEL[level + 1] + tau_field + sp_bit_field(bits, leaf_index_off + level + 1, SP_HEIGHTS[lay] - level - 1, SP_J_POS)
+            node_tweak[0] = SP_TW_NODE + lay * SP_LAY_MUL + const((level + 1) * SP_P_MUL) + tau_field + sp_bit_field(bits, leaf_index_off + level + 1, SP_HEIGHTS[lay] - level - 1, SP_J_POS)
             node_tweak[1] = pp
             parent = StackBuf(WORDS_PER_BLOCK)
             blake2s(node_tweak, children, parent)

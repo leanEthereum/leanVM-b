@@ -2625,11 +2625,6 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("SP_K", sphincs::K.to_string());
     ps("SP_H", sphincs::H.to_string());
     ps("SP_HEIGHTS", dsl_list(&sphincs::HEIGHTS));
-    // One literal per Merkle level, since the guest cannot compute `level + 1`
-    // in a tweak: a value expression folds its constants in the field.
-    let deepest = sphincs::A.max(sphincs::HEIGHTS.iter().copied().max().expect("d >= 1"));
-    let p_levels: Vec<usize> = (0..=deepest).map(|level| level << 48).collect();
-    ps("SP_P_LEVEL", dsl_list(&p_levels));
     ps("SP_SUFFIX", dsl_list(&sphincs::SUFFIX));
     rep
 }

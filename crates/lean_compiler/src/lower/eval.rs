@@ -10,8 +10,8 @@
 //! integer, which is what a size, an index, a bound and an exponent want.
 //! [`FnLower::try_field_const`] reads the same expression as a field element,
 //! where `+` is XOR, which is what a value wants. They disagree on anything
-//! carrying a sum of overlapping integers, and the language has no way yet for
-//! an author to say which was meant; see `REVIEW.md`.
+//! carrying a sum of overlapping integers, and `const(...)` is how an author
+//! says the integer one was meant, in a condition or in a value.
 
 use super::*;
 
@@ -67,6 +67,11 @@ impl FnLower<'_> {
             Expr::Index(..) => self
                 .const_array_elem(e)
                 .and_then(|value| (value.c2 == 0).then_some(value.c0 as u128 | ((value.c1 as u128) << 64))),
+            // `const(e)` is already the integer reading, so it is transparent here.
+            Expr::Call(f, args) if f == "const" && args.len() == 1 => {
+                self.check_const_leaves(&args[0]);
+                self.try_const_int(&args[0])
+            }
             Expr::Call(..) => self.const_len(e).map(|n| n as u128),
             Expr::Pow(b, e) => self
                 .try_const_int(b)?
@@ -179,6 +184,42 @@ impl FnLower<'_> {
         (f != lit_field(n)).then_some((n, f))
     }
 
+    /// Check the LEAVES of a `const(...)`. The wrapper reinterprets the
+    /// OPERATORS as integer arithmetic, which is its whole purpose, so their two
+    /// readings are expected to diverge (`3 + 1` is the integer 4 and the value
+    /// 2). A LEAF is different: `const(...)` cannot change what a name already
+    /// stands for, so a leaf whose own two readings disagree would have the
+    /// wrapper hand back a value that leaf never had.
+    ///
+    /// `n = 2 + 3` is the case. The cell holds `2 XOR 3` = 1 while the name's
+    /// integer reading is 5, so `assert n == 1` and `assert const(n) == 5` both
+    /// passed, in one program. This is the ambiguity `if const(...)` already
+    /// rejects per side, one level up, and the rule is the same one.
+    pub(super) fn check_const_leaves(&self, e: &Expr) {
+        match e {
+            Expr::Add(a, b)
+            | Expr::Sub(a, b)
+            | Expr::Mul(a, b)
+            | Expr::Div(a, b)
+            | Expr::Mod(a, b)
+            | Expr::Pow(a, b) => {
+                self.check_const_leaves(a);
+                self.check_const_leaves(b);
+            }
+            Expr::Call(f, args) if f == "const" && args.len() == 1 => self.check_const_leaves(&args[0]),
+            leaf => {
+                if let Some((n, f)) = self.diverging_readings(leaf) {
+                    self.fail(format!(
+                        "const(...) reads its operators as integer arithmetic, but it cannot reinterpret \
+                         `{leaf:?}`, which is the integer {n} and the value {:#x}:{:#x}: two different \
+                         numbers. Bind it in one regime and name that one",
+                        f.c1, f.c0
+                    ))
+                }
+            }
+        }
+    }
+
     /// The exponent of `e` when it is a *constant* g-power small enough to ride a
     /// `DEREF` `β` immediate, for the constant factor of a product index.
     ///
@@ -287,6 +328,13 @@ impl FnLower<'_> {
                     _ => None,
                 };
                 Some(F192::new(limb(0)?, limb(1)?, limb(2)?))
+            }
+            // `const(e)`: the one place a value position reads INTEGER arithmetic,
+            // because the author asked for it. Without it `v = lvl + 1` is
+            // `lvl XOR 1`, silently, since `+` in a value position is XOR.
+            Expr::Call(f, args) if f == "const" && args.len() == 1 => {
+                self.check_const_leaves(&args[0]);
+                Some(lit_field(self.try_const_int(&args[0])?))
             }
             Expr::Call(..) => self.const_len(e).map(|n| F192::new(n as u64, 0, 0)),
             // `b ** e` as a field constant (constant base, compile-time exponent).

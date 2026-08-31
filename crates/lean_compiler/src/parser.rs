@@ -205,10 +205,40 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
                 f.name
             ));
         }
+        // A builtin wins at the call site, so a function with a builtin's name is
+        // never called and its body, constraints included, silently disappears.
+        // `def const(x): assert x == 99` was skipped outright by `v = const(4)`,
+        // and by whether the ARGUMENT folded, so one call site had two meanings.
+        if BUILTINS.contains(&f.name.as_str()) {
+            return Err(format!(
+                "`{}` is a builtin, so a function of that name could never be called: \
+                 the builtin takes every call site. Rename it",
+                f.name
+            ));
+        }
     }
     infer_return_shapes(&mut funcs)?;
     Ok(Ast { funcs, const_arrays })
 }
+
+/// Every name the lowerer resolves before it looks for a user function. A `def`
+/// may not take one of these, since the builtin would win and the body would be
+/// dead code that still looked live.
+const BUILTINS: &[&str] = &[
+    "addr",
+    "assert_in_k",
+    "blake2s",
+    "const",
+    "f192",
+    "hint_decompose_bits",
+    "hint_decompose_bits_exponent",
+    "hint_f192_limbs",
+    "hint_log2_ceil",
+    "hint_witness",
+    "len",
+    "HeapBuf",
+    "StackBuf",
+];
 
 /// Infer the compile-time representation of each tail-return value. The DSL's
 /// StackBuf constructor makes its size static. HeapBuf remains an ordinary
@@ -786,15 +816,19 @@ impl Parser {
         let cond = header.strip_suffix(':').ok_or("`if` needs `:`")?;
         let (cond, force_const) = match strip_const_wrapper(cond) {
             Some(inner) => (inner, true),
-            // A near miss (`const (a == b)`, `const(a) == const(b)`, an
-            // unbalanced one) otherwise falls through to an ordinary parse error
-            // that never says the word, so name it here. `const == 4`, a variable
-            // that happens to be called `const`, is not a near miss: nothing
-            // follows the name but the comparison.
-            None if cond
-                .trim_start()
-                .strip_prefix("const")
-                .is_some_and(|r| r.trim_start().starts_with('(')) =>
+            // A near miss (`const (a == b)`, an unbalanced one) otherwise falls
+            // through to an ordinary parse error that never says the word, so name
+            // it here. Two things are NOT near misses: `const == 4`, a variable
+            // that happens to be called `const`, since nothing follows the name but
+            // the comparison; and a condition with a comparison of its own, since
+            // `const(...)` is a value expression too, so `if const(k) == n:` is an
+            // ordinary runtime test of a folded literal and rejecting it made the
+            // two operand orders behave differently.
+            None if top_level_cmp(cond).is_none()
+                && cond
+                    .trim_start()
+                    .strip_prefix("const")
+                    .is_some_and(|r| r.trim_start().starts_with('(')) =>
             {
                 return Err(
                     "`const(...)` must wrap the WHOLE condition and balance its brackets: `if const(a == b):`".into(),
