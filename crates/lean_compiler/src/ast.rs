@@ -137,6 +137,13 @@ pub enum StmtKind {
     /// hint mechanism, completely unconstrained, so the program must constrain
     /// them itself (asserts, range checks, hashes).
     HintWitness { dest: Expr, name: String },
+    /// `x = hint_witness("stream")`: ONE hinted value, bound to a name.
+    ///
+    /// The run form needs a destination that already exists, so a single hinted
+    /// scalar cost a one-cell `StackBuf`, a slice of it, and a read back out.
+    /// The guest declared thirty such buffers, twenty-eight of them for nothing
+    /// else. The value is as unconstrained as any other hint.
+    LetHintWitness { name: String, stream: String },
     /// `print("label", expr)` / `print(expr)`: a prover-side debug print of the
     /// value at this program point (witness generation only, no constraints).
     Print { label: String, value: Expr },

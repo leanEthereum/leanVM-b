@@ -235,6 +235,55 @@ fn an_operator_missing_an_operand_says_so() {
     }
 }
 
+/// One hinted value needs no buffer, and costs exactly what the buffer did.
+///
+/// `hint_witness` fills a destination that already exists, so a single hinted
+/// scalar cost a one-cell `StackBuf`, a slice of it, and a read back out. The
+/// guest declared thirty such buffers, twenty-eight of them for nothing else.
+#[test]
+fn one_hinted_value_needs_no_buffer() {
+    let body = |bind: &str| {
+        format!(
+            "def main():
+{bind}    assert log m < 8
+    p = GEN ** 0
+    p[1] = m
+    p[GEN] = GEN ** 0
+    return
+"
+        )
+    };
+    let old = body("    mb = StackBuf(1)\n    hint_witness(mb[0:1], \"m\")\n    m = mb[0]\n");
+    let new = body("    m = hint_witness(\"m\")\n");
+    let run = |src: &str| {
+        let mut program = compile(&parse(src).expect("parse"));
+        program.set_witness("m", vec![vec![g_pow(5).into()]]);
+        let want = [g_pow(5).into(), g_pow(0).into()];
+        let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+        verify(&program, &want, &proof).expect("verifies");
+        program.execute(want).base_counts.iter().sum::<usize>()
+    };
+    assert_eq!(run(&old), run(&new), "the sugar must cost what it replaces");
+
+    // It binds inside a loop body too, where substitution walks the statement.
+    let looped = "\
+def main():
+    hb = HeapBuf(4)
+    for i in mul_range(1, 4):
+        w = hint_witness(\"w\")
+        hb[i] = w
+    p = GEN ** 0
+    p[1] = hb[GEN]
+    p[GEN] = GEN ** 0
+    return
+";
+    let mut program = compile(&parse(looped).expect("parse"));
+    program.set_witness("w", vec![vec![g_pow(1).into()], vec![g_pow(2).into()], vec![g_pow(3).into()]]);
+    let want = [g_pow(2).into(), g_pow(0).into()];
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    verify(&program, &want, &proof).expect("one hint per iteration");
+}
+
 /// A bit-decomposition hint checks its heap destination, like its stack one.
 ///
 /// `bits_dest`'s `StackBuf` arm rejected a destination too small for `nbits`;

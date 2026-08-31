@@ -1347,6 +1347,19 @@ impl FnLower<'_> {
             StmtKind::AssertNe(a, b) => self.lower_assert_ne(a, b),
             StmtKind::AssertLt(e, bound) => self.lower_assert_lt(e, bound),
             StmtKind::HintWitness { dest, name } => self.lower_hint_witness(dest, name),
+            // One hinted value into one fresh cell, bound to `name`. The run form
+            // has to materialize its destination first, since a deferred alias
+            // there would take the hint's place; a cell minted here has no alias
+            // to displace.
+            StmtKind::LetHintWitness { name, stream } => {
+                let dst = self.fresh();
+                self.pending.push(Hint::Resolved(RHint::WitnessStack {
+                    name: stream.clone(),
+                    base: dst,
+                    len: 1,
+                }));
+                self.rebind(name, Binding::Scalar(dst));
+            }
             StmtKind::Print { label, value } => {
                 // Prover-side debug print: evaluate the value into a cell, hang
                 // a Print hint on a no-op anchor so it fires exactly here (and
@@ -1683,6 +1696,9 @@ fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut std::collections
             }
         }
         StmtKind::HintWitness { dest, .. } => free_vars_expr(dest, refs),
+        StmtKind::LetHintWitness { name, .. } => {
+            bound.insert(name.clone());
+        }
         StmtKind::Print { value, .. } => free_vars_expr(value, refs),
         StmtKind::If {
             lhs,

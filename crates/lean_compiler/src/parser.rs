@@ -672,6 +672,23 @@ impl Parser {
             if rhs.trim_start().starts_with("match_range(") {
                 return parse_match_range(&lhs, &rhs);
             }
+            // `x = hint_witness("stream")`: one hinted value, no buffer. The
+            // string is not an expression, so like the run form it is parsed
+            // here rather than by `parse_expr`.
+            if let Some(parts) = call_args(rhs.trim(), "hint_witness") {
+                let [stream] = parts.as_slice() else {
+                    return Err(
+                        "`x = hint_witness(\"stream\")` takes one argument; to fill a run, write \
+                         `hint_witness(dest, \"stream\")` as a statement"
+                            .into(),
+                    );
+                };
+                let stream = string_lit(stream).ok_or("hint_witness's argument is a string literal: \"stream\"")?;
+                return Ok(StmtKind::LetHintWitness {
+                    name: binding_name(&lhs, "binding name")?,
+                    stream: stream.to_string(),
+                });
+            }
             let rhs_expr = parse_expr(&rhs)?;
             // Indexed LHS `arr[idx] = value` is a heap store.
             if lhs.trim_end().ends_with(']') {

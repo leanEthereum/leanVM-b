@@ -479,6 +479,15 @@ hint_witness(hb[0:3], "h")   # or any StackBuf/HeapBuf slice (any length)
 assert log(sb[0]) < 8        # hinted values are UNCONSTRAINED: pin them down
 ```
 
+A single hinted value needs no destination at all:
+
+```python
+m = hint_witness("m")        # one value, bound to a name
+assert log m < 8             # still unconstrained: pin it
+```
+
+which is the one-line form of allocating a `StackBuf(1)`, filling a slice of it, and reading the cell back out, and costs exactly the same (nothing). Everything below about a stream's entries applies to it: each such binding pops one entry, whose length must be 1.
+
 Prover-supplied data (leanVM's `hint_witness`): a stream is a sequence of **entries**, one slice of values per `hint_witness` call, and the same symbol may be hinted many times. Each call pops the stream's next entry (whose length must match the destination run) and writes it into `dest` through the hint mechanism, at **zero cycles**. The values are completely unconstrained; the program must constrain them itself (asserts, range checks, hashes): an unconstrained hint consumed by anything security-relevant is a critical vulnerability. Runtime-start heap slices (`buf[i:i + k]`, `k` a literal) work too.
 
 The prover supplies streams with `program.set_witness("name", entries)` (`Vec<Vec<extension-field>>`); test programs declare them as annotations, one line per entry, and repeated lines with the same name are its successive entries:

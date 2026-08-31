@@ -67,6 +67,15 @@ pub(super) fn subst_kind(s: &StmtKind, name: &str, to: &Expr) -> (StmtKind, bool
             },
             false,
         ),
+        // Binds `name` and mentions no expression, so a substitution stops at it
+        // exactly as it does at any other binder.
+        StmtKind::LetHintWitness { name: n, stream } => (
+            StmtKind::LetHintWitness {
+                name: n.clone(),
+                stream: stream.clone(),
+            },
+            n == name,
+        ),
         StmtKind::HintWitness { dest, name: n } => (
             StmtKind::HintWitness {
                 dest: e(dest),
