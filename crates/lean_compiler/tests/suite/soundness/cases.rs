@@ -475,3 +475,47 @@ def main():
 ",
     );
 }
+
+/// One spelling of a heap index must not name two different cells.
+///
+/// A heap index is a g-power: `buf[GEN ** k]` is cell `k`, and a plain integer is
+/// rejected because `buf[4]` reads as cell 2 (`4 = g^2`) while the slice
+/// `buf[4:4+2]` reads as cells 4 and 5. Only a LITERAL carries that g-power
+/// reading, and briefly `const(...)` and `len(...)` carried it too, so
+/// `buf[const(8)]` on a `HeapBuf(4)` compiled and aliased cell 3 while the bare
+/// `buf[8]` it means was rejected. The golden digests cannot see this: the guest's
+/// only `const(...)` uses are blake2s operands, not indexes.
+#[test]
+fn an_integer_heap_index_is_rejected_however_it_is_spelled() {
+    for idx in ["8", "const(8)", "const(4 + 4)", "len(EIGHT)", "GEN * const(4)"] {
+        let src = format!(
+            "EIGHT = [0, 0, 0, 0, 0, 0, 0, 0]\n\ndef main():\n    buf = HeapBuf(4)\n    buf[{idx}] = 9\n    p = GEN ** 0\n    p[1] = GEN ** 0\n    p[GEN] = GEN ** 0\n    return\n"
+        );
+        let Err(err) = std::panic::catch_unwind(|| super::build(&src)) else {
+            panic!("`buf[{idx}]` was accepted as a heap index");
+        };
+        let msg = err.downcast_ref::<String>().map(String::as_str).unwrap_or("");
+        assert!(
+            msg.contains("plain integer naming cell") || msg.contains("not a g-power"),
+            "`{idx}`: wanted the ambiguity guard, got `{msg}`"
+        );
+    }
+}
+
+/// A large `**` exponent costs its LOG, not its value.
+///
+/// The field reading of `b ** k` is computed whether or not the caller wants it,
+/// and `field_pow` multiplied `k` times, so this program (which compiles: the
+/// index is `1`) took 39 seconds. Square-and-multiply makes it under a
+/// millisecond, and a test that would otherwise hang is the way to keep it so.
+#[test]
+fn a_large_exponent_does_not_cost_its_value() {
+    let src = "def main():\n    sa = StackBuf(2)\n    sa[1 ** 4294967295] = 7\n    p = GEN ** 0\n    p[1] = sa[0]\n    p[GEN] = GEN ** 0\n    return\n";
+    let started = std::time::Instant::now();
+    let _ = super::build(src);
+    let took = started.elapsed();
+    assert!(
+        took < std::time::Duration::from_secs(2),
+        "a u32::MAX exponent took {took:?}: field_pow is multiplying k times again"
+    );
+}

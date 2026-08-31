@@ -40,10 +40,21 @@ fn gmul(a: GAddr, b: GAddr) -> Option<GAddr> {
 }
 
 /// `b^k` for a compile-time exponent (small, so plain repeated multiplication).
-pub(super) fn field_pow(b: F192, k: u32) -> F192 {
-    let mut acc = F192::ONE;
-    for _ in 0..k {
-        acc *= b;
+/// `b^k` by square-and-multiply, so the exponent's SIZE costs nothing.
+///
+/// It was a `for _ in 0..k` loop, and the field reading of `Expr::Pow` is computed
+/// whether or not the caller wants it, so `sa[1 ** 4294967295]` (a program that
+/// compiles) spent 39 seconds in here.
+pub(super) fn field_pow(b: F192, mut k: u32) -> F192 {
+    let (mut acc, mut sq) = (F192::ONE, b);
+    while k > 0 {
+        if k & 1 == 1 {
+            acc *= sq;
+        }
+        k >>= 1;
+        if k > 0 {
+            sq *= sq;
+        }
     }
     acc
 }
@@ -67,19 +78,17 @@ impl FnLower<'_> {
     /// fields at the point of use rather than an invariant spread across
     /// functions that nothing checks.
     fn eval(&self, e: &Expr) -> Known {
+        // Deliberately NO address: only a LITERAL reads as one, and only under the
+        // guard below. Attaching it here gave `const(2^k)` and `len(A)` an address
+        // that `Expr::Lit` alone used to have, which slipped them past
+        // `heap_addr`'s ambiguity guard: `buf[const(8)]` on a `HeapBuf(4)`
+        // compiled and aliased cell 3, while the bare `buf[8]` it means was
+        // rejected. One spelling naming two different cells is exactly what that
+        // guard exists to stop.
         let int = |n: u128| Known {
             int: Some(n),
             field: Some(lit_field(n)),
-            // `g = x`, so the literal `2^k` IS `g^k`, but ONLY while `k < 64`: at
-            // and above it the modulus folds the monomial back into the low limb
-            // while the literal's bit `k` lands in the next limb, the tower
-            // coefficient of `y`. Without the guard the guest's own `Y_TOWER =
-            // 2^64` would read as `g^64` in a pointer position.
-            addr: (n.is_power_of_two() && n < (1 << 64)).then(|| GAddr {
-                base: None,
-                exp: n.trailing_zeros() as u128,
-                run: None,
-            }),
+            addr: None,
         };
         let gpow = |exp: u128| Known {
             int: None,
@@ -91,7 +100,19 @@ impl FnLower<'_> {
             }),
         };
         match e {
-            Expr::Lit(n) => int(*n),
+            // `g = x`, so the literal `2^k` IS `g^k`, but ONLY while `k < 64`: at
+            // and above it the modulus folds the monomial back into the low limb
+            // while the literal's bit `k` lands in the next limb, the tower
+            // coefficient of `y`. Without the guard the guest's own `Y_TOWER =
+            // 2^64` would read as `g^64` in a pointer position.
+            Expr::Lit(n) => Known {
+                addr: (n.is_power_of_two() && *n < (1 << 64)).then(|| GAddr {
+                    base: None,
+                    exp: n.trailing_zeros() as u128,
+                    run: None,
+                }),
+                ..int(*n)
+            },
             Expr::Gen => gpow(1),
             Expr::GPow(k) => gpow(*k),
             Expr::GenPow(x) => match self.eval(x).int.and_then(|n| u32::try_from(n).ok()) {
