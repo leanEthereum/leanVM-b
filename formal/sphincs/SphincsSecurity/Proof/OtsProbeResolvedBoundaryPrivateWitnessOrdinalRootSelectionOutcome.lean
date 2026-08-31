@@ -186,6 +186,167 @@ theorem relTriple_finishRootSelectionBridge
             simp only [hnotCompletable, ↓reduceIte]
             exact relTriple_any_failed_rootSelectionBridge target leftOutput rightRoot ordinal _
 
+set_option maxRecDepth 100000 in
+theorem relTriple_rootSelection_uniform_step
+    (target : Position) (leftOutput : HashOutput) (rightRoot : Digest)
+    (ordinal : Nat) (table : OtsSecretIndex → HashOutput) (n : Nat)
+    (leftObserve : DeferredContext → Nat →
+      (Fin (n + 1) × SplitHashCache) → List Probe →
+        ProbComp (Option PrivateOrdinalSelection))
+    (rightObserve : LazyRevealProbe.State Coordinate → Nat → Fin (n + 1) →
+      SplitHashCache → List Probe → ProbComp MaterializedSelectionOutcome)
+    (candidates : List Probe)
+    (left right : DeferredContext) (leftFuel rightFuel : Nat)
+    (leftCache rightCache : SplitHashCache)
+    (hcontext : FinalizationContextLE table left right)
+    (hfuel : leftFuel ≤ rightFuel)
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hvalues : LazyRevealProbe.ValuesLE left.state right.state)
+    (hpublished : PublishedValues left.state)
+    (hrightMaterialized : right = directDeferredContext right.state)
+    (hrecursive : ∀ nextLeft nextRight,
+      OrdinaryMaterializedRunEq table nextLeft nextRight →
+      RelTriple
+        (leftObserve nextLeft.context nextLeft.remaining nextLeft.value candidates)
+        (rightObserve nextRight.context.state nextRight.remaining nextRight.value.1
+          nextRight.value.2 candidates)
+        (RootSelectionBridgeRel target leftOutput rightRoot ordinal)) :
+    RelTriple
+      (runDirectResolvedWitnessFromTable left leftFuel table
+          ((splitUniformImpl n).run leftCache) >>=
+        finishDirectPrivateOrdinalSelection
+          (canonicalizeDirectPrivateOrdinalSelection table leftObserve) candidates)
+      (runDirectResolvedDetailedFromTable right rightFuel table
+          ((splitUniformImpl n).run rightCache) >>=
+        finishMaterializedSelectionOutcome target table rightObserve candidates)
+      (RootSelectionBridgeRel target leftOutput rightRoot ordinal) := by
+  apply relTriple_of_evalDist_eq_left
+    (evalDist_runWitnessSelection_eq_detailed
+      (canonicalizeDirectPrivateOrdinalSelection table leftObserve) candidates left leftFuel table
+      ((splitUniformImpl n).run leftCache))
+  apply relTriple_bind
+    ((ordinaryMaterializedStableCouples_splitUniformImpl table n).toBetween
+      left right leftFuel rightFuel leftCache rightCache hcontext hfuel hcache hrevealed hvalues
+      hpublished hrightMaterialized)
+  intro leftResult rightResult hrelation
+  exact relTriple_finishRootSelectionBridge target leftOutput rightRoot ordinal table leftObserve
+    rightObserve candidates leftResult rightResult hrelation
+    (fun originalLeft originalRight nextLeft nextRight _ _ hnext =>
+      hrecursive nextLeft nextRight hnext)
+
+set_option maxRecDepth 100000 in
+theorem relTriple_rootSelection_sign_step
+    (target : Position) (leftOutput : HashOutput) (rightRoot : Digest)
+    (ordinal : Nat) (table : OtsSecretIndex → HashOutput)
+    (parameter : PublicParameter) (publicRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message)
+    (leftObserve : DeferredContext → Nat →
+      (Option Signature × SplitHashCache) → List Probe →
+        ProbComp (Option PrivateOrdinalSelection))
+    (rightObserve : LazyRevealProbe.State Coordinate → Nat → Option Signature →
+      SplitHashCache → List Probe → ProbComp MaterializedSelectionOutcome)
+    (candidates : List Probe)
+    (left right : DeferredContext) (leftFuel rightFuel : Nat)
+    (leftCache rightCache : SplitHashCache)
+    (hcontext : FinalizationContextLE table left right)
+    (hfuel : leftFuel ≤ rightFuel)
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hvalues : LazyRevealProbe.ValuesLE left.state right.state)
+    (hpublished : PublishedValues left.state)
+    (hrightMaterialized : right = directDeferredContext right.state)
+    (hrecursive : ∀ nextLeft nextRight,
+      OrdinaryMaterializedRunEq table nextLeft nextRight →
+      RelTriple
+        (leftObserve nextLeft.context nextLeft.remaining nextLeft.value candidates)
+        (rightObserve nextRight.context.state nextRight.remaining nextRight.value.1
+          nextRight.value.2 candidates)
+        (RootSelectionBridgeRel target leftOutput rightRoot ordinal)) :
+    RelTriple
+      (runDirectResolvedWitnessFromTable left leftFuel table
+          ((maskedSign parameter publicRoot ftsSecret message).run leftCache) >>=
+        finishDirectPrivateOrdinalSelection
+          (canonicalizeDirectPrivateOrdinalSelection table leftObserve) candidates)
+      (runDirectResolvedDetailedFromTable right rightFuel table
+          ((maskedSign parameter publicRoot ftsSecret message).run rightCache) >>=
+        finishMaterializedSelectionOutcome target table rightObserve candidates)
+      (RootSelectionBridgeRel target leftOutput rightRoot ordinal) := by
+  apply relTriple_of_evalDist_eq_left
+    (evalDist_runWitnessSelection_eq_detailed
+      (canonicalizeDirectPrivateOrdinalSelection table leftObserve) candidates left leftFuel table
+      ((maskedSign parameter publicRoot ftsSecret message).run leftCache))
+  apply relTriple_bind
+    ((ordinaryMaterializedStableCouples_maskedSign table parameter publicRoot ftsSecret message).toBetween
+      left right leftFuel rightFuel leftCache rightCache hcontext hfuel hcache hrevealed hvalues
+      hpublished hrightMaterialized)
+  intro leftResult rightResult hrelation
+  exact relTriple_finishRootSelectionBridge target leftOutput rightRoot ordinal table leftObserve
+    rightObserve candidates leftResult rightResult hrelation
+    (fun originalLeft originalRight nextLeft nextRight _ _ hnext =>
+      hrecursive nextLeft nextRight hnext)
+
+set_option maxRecDepth 100000 in
+theorem relTriple_rootSelection_hash_step
+    (target : Position) (leftOutput : HashOutput) (rightRoot : Digest)
+    (ordinal : Nat) (table : OtsSecretIndex → HashOutput)
+    (parameter : PublicParameter) (input : HashInput) (plan : PlannedHashQuery)
+    (leftObserve : DeferredContext → Nat →
+      (HashOutput × SplitHashCache) → List Probe →
+        ProbComp (Option PrivateOrdinalSelection))
+    (rightObserve : LazyRevealProbe.State Coordinate → Nat → HashOutput →
+      SplitHashCache → List Probe → ProbComp MaterializedSelectionOutcome)
+    (candidates : List Probe)
+    (left right : DeferredContext) (leftFuel rightFuel : Nat)
+    (leftCache rightCache : SplitHashCache)
+    (hprobeFuel : plan.candidate? = none ∨ 0 < leftFuel)
+    (hcontext : FinalizationContextLE table left right)
+    (hfuel : leftFuel ≤ rightFuel)
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hvalues : LazyRevealProbe.ValuesLE left.state right.state)
+    (hpublished : PublishedValues left.state)
+    (hrightMaterialized : right = directDeferredContext right.state)
+    (hrecursive : ∀ nextLeft nextRight,
+      OrdinaryMaterializedRunEq table nextLeft nextRight →
+      RelTriple
+        (leftObserve nextLeft.context nextLeft.remaining nextLeft.value candidates)
+        (rightObserve nextRight.context.state nextRight.remaining nextRight.value.1
+          nextRight.value.2 candidates)
+        (RootSelectionBridgeRel target leftOutput rightRoot ordinal)) :
+    RelTriple
+      (runDirectResolvedWitnessFromTable left leftFuel table
+          ((probingHashQueryAfterPlan parameter input plan).run leftCache) >>=
+        finishDirectPrivateOrdinalSelection
+          (canonicalizeDirectPrivateOrdinalSelection table leftObserve) candidates)
+      (runDirectResolvedDetailedFromTable right rightFuel table
+          ((probingHashQueryAfterPublicPlan parameter input left.state plan).run rightCache) >>=
+        finishMaterializedSelectionOutcome target table rightObserve candidates)
+      (RootSelectionBridgeRel target leftOutput rightRoot ordinal) := by
+  apply relTriple_of_evalDist_eq_left
+    (evalDist_runWitnessSelection_eq_detailed
+      (canonicalizeDirectPrivateOrdinalSelection table leftObserve) candidates left leftFuel table
+      ((probingHashQueryAfterPlan parameter input plan).run leftCache))
+  have hstep : RelTriple
+      (runDirectResolvedDetailedFromTable left leftFuel table
+        ((probingHashQueryAfterPlan parameter input plan).run leftCache))
+      (runDirectResolvedDetailedFromTable right rightFuel table
+        ((probingHashQueryAfterPublicPlan parameter input left.state plan).run rightCache))
+      (DirectDetailedOrdinaryStableRunEq table) := by
+    rcases hprobeFuel with hnone | hpositive
+    · exact relTriple_runDirectResolvedDetailed_afterPlan_publicPlan_of_none table parameter input
+        plan left right leftFuel rightFuel leftCache rightCache hnone hcontext hfuel hcache
+        hrevealed hvalues hpublished hrightMaterialized
+    · exact relTriple_runDirectResolvedDetailed_afterPlan_publicPlan table parameter input plan
+        left right leftFuel rightFuel leftCache rightCache hpositive hcontext hfuel hcache
+        hrevealed hvalues hpublished hrightMaterialized
+  apply relTriple_bind hstep
+  intro leftResult rightResult hrelation
+  exact relTriple_finishRootSelectionBridge target leftOutput rightRoot ordinal table leftObserve
+    rightObserve candidates leftResult rightResult hrelation
+    (fun originalLeft originalRight nextLeft nextRight _ _ hnext =>
+      hrecursive nextLeft nextRight hnext)
+
 noncomputable def materializedRootAvoidingOrdinalSelectionOutcome
     (ordinal : Nat) (parameter : PublicParameter) (target : Position)
     (leftRoot rightRoot : Digest)

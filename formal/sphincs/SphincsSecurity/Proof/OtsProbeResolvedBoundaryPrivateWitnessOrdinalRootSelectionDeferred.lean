@@ -458,6 +458,24 @@ theorem ordinaryMaterializedStableCouplesBetweenPositive_publicPlan
       exact ordinaryMaterializedStableCouplesBetween_resolvePublicKnownInput table parameter
         publicState coordinate input
 
+theorem ordinaryMaterializedStableCouplesBetween_publicPlan_of_none
+    (table : OtsSecretIndex → HashOutput)
+    (parameter : PublicParameter) (input : HashInput)
+    (publicState : LazyRevealProbe.State Coordinate) (plan : PlannedHashQuery)
+    (hcandidate : plan.candidate? = none) :
+    OrdinaryMaterializedStableCouplesBetween table
+      (probingHashQueryAfterPublicPlan parameter input publicState plan)
+      (probingHashQueryAfterPublicPlan parameter input publicState plan) := by
+  unfold probingHashQueryAfterPublicPlan
+  rw [show executeCandidate? plan.candidate? = pure () by simp [hcandidate]]
+  simp only [pure_bind]
+  cases plan.action with
+  | ordinary =>
+      exact (ordinaryMaterializedStableCouples_splitHashQuery_ordinary table input).toBetween
+  | resolve coordinate =>
+      exact ordinaryMaterializedStableCouplesBetween_resolvePublicKnownInput table parameter
+        publicState coordinate input
+
 theorem runDirectResolvedDetailedFromTable_peekPositionValues_eq_pure
     (context : DeferredContext) (fuel : Nat)
     (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
@@ -684,6 +702,31 @@ theorem relTriple_runDirectResolvedDetailed_afterPlan_publicPlan
     leftFuel table leftCache]
   exact ordinaryMaterializedStableCouplesBetweenPositive_publicPlan table parameter input
     left.state plan left right leftFuel rightFuel leftCache rightCache hpositive hcontext hfuel
+    hcache hrevealed hvalues hpublished hrightMaterialized
+
+theorem relTriple_runDirectResolvedDetailed_afterPlan_publicPlan_of_none
+    (table : OtsSecretIndex → HashOutput)
+    (parameter : PublicParameter) (input : HashInput) (plan : PlannedHashQuery)
+    (left right : DeferredContext) (leftFuel rightFuel : Nat)
+    (leftCache rightCache : SplitHashCache)
+    (hcandidate : plan.candidate? = none)
+    (hcontext : FinalizationContextLE table left right)
+    (hfuel : leftFuel ≤ rightFuel)
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hvalues : LazyRevealProbe.ValuesLE left.state right.state)
+    (hpublished : PublishedValues left.state)
+    (hrightMaterialized : right = directDeferredContext right.state) :
+    RelTriple
+      (runDirectResolvedDetailedFromTable left leftFuel table
+        ((probingHashQueryAfterPlan parameter input plan).run leftCache))
+      (runDirectResolvedDetailedFromTable right rightFuel table
+        ((probingHashQueryAfterPublicPlan parameter input left.state plan).run rightCache))
+      (DirectDetailedOrdinaryStableRunEq table) := by
+  rw [runDirectResolvedDetailedFromTable_afterPlan_eq_publicPlan parameter input plan left
+    leftFuel table leftCache]
+  exact ordinaryMaterializedStableCouplesBetween_publicPlan_of_none table parameter input
+    left.state plan hcandidate left right leftFuel rightFuel leftCache rightCache hcontext hfuel
     hcache hrevealed hvalues hpublished hrightMaterialized
 
 noncomputable def finishDirectDetailedPrivateOrdinalSelection
