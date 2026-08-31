@@ -126,7 +126,8 @@ theorem relTriple_finishRootSelectionBridge
     (candidates : List Probe)
     (leftResult rightResult : DirectDetailedResult (α × SplitHashCache))
     (hrelation : DirectDetailedOrdinaryStableRunEq table leftResult rightResult)
-    (hrecursive : ∀ left right,
+    (hrecursive : ∀ originalLeft originalRight left right,
+      leftResult = .done originalLeft → rightResult = .done originalRight →
       OrdinaryMaterializedRunEq table left right →
       RelTriple
         (leftObserve left.context left.remaining left.value candidates)
@@ -176,7 +177,7 @@ theorem relTriple_finishRootSelectionBridge
                 exact htargetRevealed (by rwa [hrevealed])
               simp only [hrightRevealed, ↓reduceIte]
               exact hrecursive
-                { left with context := canonical } right hcanonical
+                left right { left with context := canonical } right rfl rfl hcanonical
           · unfold finishMaterializedSelectionOutcome
             have hnotCompletable :
                 ¬DeferredCompletable table (directDeferredContext right.context.state) := by

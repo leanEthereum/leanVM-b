@@ -47,6 +47,26 @@ def materializedOrdinalSelectionMatches
   | none => False
   | some candidate => candidate = ⟨.position target, root⟩
 
+theorem canonicalized_right_values_eq_of_finalizationContextLE
+    {table : OtsSecretIndex → HashOutput} {left right : DeferredContext}
+    (hcontext : FinalizationContextLE table left right)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hcanonical : CanonicalMaterializedValues table left) :
+    (canonicalizeMaterializedValues table right).state.values = left.state.values := by
+  funext coordinate
+  rw [hcanonical]
+  unfold canonicalizeMaterializedValues publicMaterializedValues
+  by_cases hleftRevealed : coordinate ∈ left.state.revealed
+  · have hrightRevealed : coordinate ∈ right.state.revealed := by
+      rw [← hrevealed]
+      exact hleftRevealed
+    simp only [hleftRevealed, hrightRevealed, ↓reduceIte]
+    exact (congrFun hcontext.view.valueEq coordinate).symm
+  · have hrightRevealed : coordinate ∉ right.state.revealed := by
+      intro hmem
+      exact hleftRevealed (by rwa [hrevealed])
+    simp [hleftRevealed, hrightRevealed]
+
 theorem CandidatesAvoidRoots.nil
     (target : Position) (leftRoot rightRoot : Digest) :
     CandidatesAvoidRoots target leftRoot rightRoot [] := by
@@ -70,6 +90,72 @@ theorem rootAwareCandidateAvoidsRoots_iff
     RootAwareCandidateAvoidsRoots target leftRoot rightRoot (some candidate) ↔
       candidate.AvoidsRoots target leftRoot rightRoot := by
   simp [RootAwareCandidateAvoidsRoots, Probe.AvoidsRoots]
+
+theorem firstMissingInputCoordinatePlan_eq_of_values_eq
+    {left right : LazyRevealProbe.State Coordinate}
+    (hvalues : left.values = right.values)
+    (input : HashInput) : ∀ slot coordinates,
+    firstMissingInputCoordinatePlan left input slot coordinates =
+      firstMissingInputCoordinatePlan right input slot coordinates := by
+  intro slot coordinates
+  induction coordinates generalizing slot with
+  | nil => rfl
+  | cons coordinate remaining ih =>
+      rw [firstMissingInputCoordinatePlan, firstMissingInputCoordinatePlan]
+      have hvalue := congrFun hvalues coordinate
+      cases hleft : left.values coordinate with
+      | none =>
+          have hright : right.values coordinate = none := by rwa [← hvalue]
+          rw [hright]
+      | some output =>
+          have hright : right.values coordinate = some output := by rwa [← hvalue]
+          rw [hright]
+          exact ih (slot + 1)
+
+theorem leafInputProbePlan_eq_of_values_eq
+    {left right : LazyRevealProbe.State Coordinate}
+    (hvalues : left.values = right.values)
+    (input : HashInput) (candidate : Probe)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) :
+    leafInputProbePlan left input candidate lay tree leafIdx =
+      leafInputProbePlan right input candidate lay tree leafIdx := by
+  unfold leafInputProbePlan
+  have hvalue := congrFun hvalues candidate.coordinate
+  cases hleft : left.values candidate.coordinate with
+  | none =>
+      have hright : right.values candidate.coordinate = none := by rwa [← hvalue]
+      rw [hright]
+  | some output =>
+      have hright : right.values candidate.coordinate = some output := by rwa [← hvalue]
+      rw [hright]
+      exact firstMissingInputCoordinatePlan_eq_of_values_eq hvalues input 0 _
+
+theorem purePlanProbingHashQuery_eq_of_values_eq
+    {left right : LazyRevealProbe.State Coordinate}
+    (hvalues : left.values = right.values)
+    (parameter : PublicParameter) (input : HashInput) :
+    purePlanProbingHashQuery parameter input left =
+      purePlanProbingHashQuery parameter input right := by
+  unfold purePlanProbingHashQuery
+  cases hprobe : decodeProbe? parameter input with
+  | some candidate =>
+      cases hposition : decodePosition? parameter input with
+      | none => rfl
+      | some position =>
+          cases position with
+          | leaf lay tree leafIdx =>
+              simp only
+              rw [leafInputProbePlan_eq_of_values_eq hvalues]
+          | chain | node | ftsLeaf | ftsNode | ftsRoots => rfl
+  | none =>
+      cases hposition : decodePosition? parameter input with
+      | none => rfl
+      | some position =>
+          cases position with
+          | node lay tree level nodeIdx =>
+              simp only
+              rw [firstMissingInputCoordinatePlan_eq_of_values_eq hvalues]
+          | chain | leaf | ftsLeaf | ftsNode | ftsRoots => rfl
 
 def OrdinaryMaterializedStableCouplesBetween
     (table : OtsSecretIndex → HashOutput)
