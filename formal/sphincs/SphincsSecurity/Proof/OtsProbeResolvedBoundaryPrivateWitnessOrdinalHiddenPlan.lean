@@ -119,4 +119,22 @@ theorem purePlan_candidate_parent_node
     (firstMissingInputCoordinatePlan_some_mem state input 0
       ((Position.node lay tree level nodeIdx).children.map Coordinate.position) candidate hplan)
 
+set_option maxRecDepth 100000 in
+theorem purePlan_candidate_none_of_probe_none_nonnode
+    (parameter : PublicParameter) (input : HashInput)
+    (state : LazyRevealProbe.State Coordinate)
+    (hprobe : decodeProbe? parameter input = none)
+    (hposition : ¬∃ lay tree level nodeIdx,
+      decodePosition? parameter input = some (.node lay tree level nodeIdx)) :
+    (purePlanProbingHashQuery parameter input state).candidate? = none := by
+  unfold purePlanProbingHashQuery
+  rw [hprobe]
+  cases hdecoded : decodePosition? parameter input with
+  | none => rfl
+  | some position =>
+      cases position with
+      | node lay tree level nodeIdx =>
+          exact False.elim (hposition ⟨lay, tree, level, nodeIdx, hdecoded⟩)
+      | chain | leaf | ftsLeaf | ftsNode | ftsRoots => rfl
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
