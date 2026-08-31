@@ -192,6 +192,8 @@ cvb = obs(cvb, v)        # exactly 3 ops: two tag writes + one blake2s
 
 An `@inline` call may also sit in **expression position**: embedded in arithmetic, as a store's RHS, or as a single-target `match_range` arm. An aliased return (a folded g-address) then materializes into a plain cell (free for a var; one `MUL` for a shifted pointer); a multi-cell `StackBuf` return still needs a `let` binding, since only a name can alias a cell run.
 
+An `@inline` function that also takes a `Const` parameter and is used as a `match_range` arm is specialized rather than expanded: the fused dispatch enters one real function, so `@inline` is simply not honoured there. One without a `Const` parameter has no entry to dispatch to and is rejected.
+
 Because the body runs in the *caller's* frame, a `Const` parameter whose `if`s fold (below) bakes straight-line, per-case code, the idiom for a `match_range` arm that must specialize on the arm value. The trade-off is frame cells: each call site gets its own copy, so `@inline` pays off for small, hot callees; inlining a large body at many sites grows the committed witness (more data memory), so it is opt-in, not automatic.
 
 ## Variables
@@ -365,7 +367,7 @@ A proof-enforced equality: 1 cycle (`XOR` into the frame's zero cell, whose writ
 
 ### `assert a != b`
 
-A proof-enforced inequality. The compiler computes `a + b` with one `XOR` and conditionally jumps over a poison path when it is nonzero. If the values are equal, execution jumps to `GEN ** -1` conceptually, the field element `g⁻¹`, which lies outside the committed bytecode cube, so the bytecode bus cannot balance a continuing trace. The honest path is 3 executed instructions (`XOR`, target `SET`, `JUMP`), plus the same amortized self-frame/constant setup used by other branches; no inverse hint is needed. A compile-time assertion such as `assert 5 != 5` is rejected while compiling.
+A proof-enforced inequality, in **3 instructions and no branch**: `XOR` for `x = a + b`, a prover-hinted `inv = x⁻¹`, then `MUL p = x·inv` and `SET p = 1`, where the write-once conflict is the assertion, exactly as for `assert a == b`. It is sound because `x = 0` forces `p = 0` whatever the prover hints, and `p` cannot then also be `1`; the hint needs no checking of its own, which is why an unconstrained value is safe here. Since there is no `JUMP` there is no self-frame or branch setup to amortize either. A compile-time assertion such as `assert 5 != 5` is rejected while compiling.
 
 ### Range checks: `assert log x < log Y` and `assert log x < k`
 
@@ -518,7 +520,7 @@ Three builtins have the prover compute the values at witness generation instead 
 | heap read / store `buf[i]` | 1 `DEREF`; +1 `MUL` for a *runtime* index (a compile-time g-power offset folds into the `DEREF`, for free) |
 | stack read / store `sa[k]` | 0 (direct cell addressing) |
 | `assert a == b` | 1 (+ 1 `SET` amortized per frame for the zero cell) |
-| `assert a != b` | 3 on the accepting path (+ amortized branch setup) |
+| `assert a != b` | 3 (`XOR`, `MUL`, `SET`), no branch, one hinted inverse |
 | `assert log x < k` | 3 (+1 `SET` amortized per bound per frame; a runtime bound costs 1 `MUL` instead) |
 | `if a == b: …` | 3 (+2 to skip a non-empty `else`; +2 amortized `self-fp` per branching function); **0 if the condition is compile-time** |
 | `match log(x): …` | ≈ 7, independent of the case count |

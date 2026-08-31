@@ -82,6 +82,11 @@ pub(crate) fn cse(code: &mut Vec<LInstr>, abi_end: Off, frozen_from: usize, opaq
 
 /// How many times each frame cell is written, instructions and hints together.
 /// Over-counting is safe (it only forgoes an optimization), so ambiguous cases
+/// Note it scans the WHOLE of `code`, fill blocks included, so their writes to
+/// the filler's own scratch offsets land on this function's cells of the same
+/// number and push those counts above one. That only forgoes an optimization,
+/// which is the safe direction, but it is why `compile` and
+/// `compile_without_filler` can differ in a frame's contents for one source.
 /// count as writes.
 fn write_counts(code: &[LInstr]) -> HashMap<Off, u32> {
     let mut writes: HashMap<Off, u32> = HashMap::new();

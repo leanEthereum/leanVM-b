@@ -34,12 +34,12 @@ pub(super) fn ret_binding(b: Option<RetBind>, dst: Off) -> Binding {
 /// runtime loop, or a match (which would reload a frame pointer that is no
 /// longer the callee's). Builtins and nested `@inline` calls are fine;
 /// `unroll`/`if` are compile-time / same-frame and recurse into.
-pub(super) fn body_inlinable(body: &[Stmt], defs: &HashMap<String, Func>) -> bool {
+pub(super) fn body_inlinable(body: &[Stmt]) -> bool {
     matches!(body.split_last(), Some((last, rest)) if matches!(last.kind, StmtKind::Return(_))
-        && rest.iter().all(|s| stmt_inline_safe(s, defs)))
+        && rest.iter().all(stmt_inline_safe))
 }
 
-pub(super) fn stmt_inline_safe(s: &Stmt, defs: &HashMap<String, Func>) -> bool {
+pub(super) fn stmt_inline_safe(s: &Stmt) -> bool {
     match &s.kind {
         StmtKind::Let(..)
         | StmtKind::Store(..)
@@ -49,13 +49,18 @@ pub(super) fn stmt_inline_safe(s: &Stmt, defs: &HashMap<String, Func>) -> bool {
         | StmtKind::AssertEq(..)
         | StmtKind::AssertNe(..)
         | StmtKind::AssertLt(..) => true,
-        StmtKind::Call(f, _) => {
-            f == "blake2s" || f == "assert_in_k" || f == "hint_f192_limbs" || defs.get(f).is_some_and(|d| d.inline)
-        }
+        // Any call. The allowlist here named three of the five statement builtins
+        // and left out both `hint_decompose_bits` forms, and it excluded a real
+        // user call although the SAME call in expression position was always
+        // allowed and is sound: `lower_call` builds the callee's frame from
+        // `fresh()` and writes retfp and retpc with `DerefMode::Fp`/`Pc`, none of
+        // which assumes whose frame is current. So the rule was stricter than it
+        // needed to be in one position and leakier than it claimed in the other.
+        StmtKind::Call(..) => true,
         StmtKind::If { then, els, .. } => {
-            then.iter().all(|s| stmt_inline_safe(s, defs)) && els.iter().all(|s| stmt_inline_safe(s, defs))
+            then.iter().all(stmt_inline_safe) && els.iter().all(stmt_inline_safe)
         }
-        StmtKind::Unroll { body, .. } => body.iter().all(|s| stmt_inline_safe(s, defs)),
+        StmtKind::Unroll { body, .. } => body.iter().all(stmt_inline_safe),
         // Return (non-tail), For, Match, LetMatchRange, LetTuple, CallIfNe, user Call.
         _ => false,
     }
@@ -312,7 +317,7 @@ impl FnLower<'_> {
                 dsts.len()
             ))
         };
-        if !(body_inlinable(&body, self.defs)) {
+        if !(body_inlinable(&body)) {
             self.fail(format!("`@inline {callee}` must be a single tail `return` with only builtin or @inline calls, and no loop/match"))
         };
         if self.inline_calls.iter().any(|f| f == callee) {
