@@ -80,6 +80,73 @@ noncomputable def probingHashQueryAfterPlan
       (OracleComp (LazyRevealProbe.World Coordinate)) HashOutput :=
   executePlannedHashQuery parameter input plan
 
+set_option maxRecDepth 100000 in
+theorem probingHashQuery_eq_plan_then_afterPlan_leaf
+    (parameter : PublicParameter) (input : HashInput) (candidate : Probe)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (hprobe : decodeProbe? parameter input = some candidate)
+    (hposition : decodePosition? parameter input = some (.leaf lay tree leafIdx)) :
+    probingHashQuery parameter input = (do
+      let plan ← planProbingHashQuery parameter input
+      probingHashQueryAfterPlan parameter input plan) := by
+  rw [probingHashQuery_eq_planned_leaf parameter input candidate lay tree leafIdx hprobe
+    hposition]
+  unfold planProbingHashQuery probingHashQueryAfterPlan executePlannedHashQuery
+  rw [hprobe, hposition]
+  simp
+
+set_option maxRecDepth 100000 in
+theorem probingHashQuery_eq_plan_then_afterPlan_node
+    (parameter : PublicParameter) (input : HashInput)
+    (lay : Layer) (tree : TreeIndex) (level : Fin maxLayerHeight)
+    (nodeIdx : LeafIndex)
+    (hprobe : decodeProbe? parameter input = none)
+    (hposition : decodePosition? parameter input = some (.node lay tree level nodeIdx)) :
+    probingHashQuery parameter input = (do
+      let plan ← planProbingHashQuery parameter input
+      probingHashQueryAfterPlan parameter input plan) := by
+  rw [probingHashQuery_eq_planned_node parameter input lay tree level nodeIdx hprobe hposition]
+  unfold planProbingHashQuery probingHashQueryAfterPlan executePlannedHashQuery
+  rw [hprobe, hposition]
+  simp
+
+set_option maxRecDepth 100000 in
+theorem probingHashQuery_eq_plan_then_afterPlan_of_probe_some_nonleaf
+    (parameter : PublicParameter) (input : HashInput) (candidate : Probe)
+    (hprobe : decodeProbe? parameter input = some candidate)
+    (hposition : ¬∃ lay tree leafIdx,
+      decodePosition? parameter input = some (.leaf lay tree leafIdx)) :
+    probingHashQuery parameter input = (do
+      let plan ← planProbingHashQuery parameter input
+      probingHashQueryAfterPlan parameter input plan) := by
+  unfold probingHashQuery planProbingHashQuery probingHashQueryAfterPlan executePlannedHashQuery
+  rw [hprobe]
+  cases hdecoded : decodePosition? parameter input with
+  | none => simp
+  | some position =>
+      cases position with
+      | leaf lay tree leafIdx => exact False.elim (hposition ⟨lay, tree, leafIdx, hdecoded⟩)
+      | chain | node | ftsLeaf | ftsNode | ftsRoots => simp
+
+set_option maxRecDepth 100000 in
+theorem probingHashQuery_eq_plan_then_afterPlan_of_probe_none_nonnode
+    (parameter : PublicParameter) (input : HashInput)
+    (hprobe : decodeProbe? parameter input = none)
+    (hposition : ¬∃ lay tree level nodeIdx,
+      decodePosition? parameter input = some (.node lay tree level nodeIdx)) :
+    probingHashQuery parameter input = (do
+      let plan ← planProbingHashQuery parameter input
+      probingHashQueryAfterPlan parameter input plan) := by
+  unfold probingHashQuery planProbingHashQuery probingHashQueryAfterPlan executePlannedHashQuery
+  rw [hprobe]
+  cases hdecoded : decodePosition? parameter input with
+  | none => simp
+  | some position =>
+      cases position with
+      | node lay tree level nodeIdx =>
+          exact False.elim (hposition ⟨lay, tree, level, nodeIdx, hdecoded⟩)
+      | chain | leaf | ftsLeaf | ftsNode | ftsRoots => simp
+
 theorem probingHashQueryAfterPlan_probeBound
     (parameter : PublicParameter) (input : HashInput) (plan : PlannedHashQuery)
     (candidates : List Probe) (hplanned : ∀ candidate, plan.candidate? = some candidate →
