@@ -14,6 +14,63 @@ namespace SphincsSecurity.Concrete.OtsProbeSimulation
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
 
+def Probe.AvoidsRoots
+    (target : Position) (leftRoot rightRoot : Digest) (candidate : Probe) : Prop :=
+  candidate ≠ ⟨.position target, leftRoot⟩ ∧
+    candidate ≠ ⟨.position target, rightRoot⟩
+
+def CandidatesAvoidRoots
+    (target : Position) (leftRoot rightRoot : Digest)
+    (candidates : List Probe) : Prop :=
+  ∀ candidate ∈ candidates, candidate.AvoidsRoots target leftRoot rightRoot
+
+def PrivateOrdinalSelection.GoodForRoots
+    (target : Position) (leftOutput : HashOutput)
+    (rightRoot : Digest) (ordinal : Nat)
+    (selection : PrivateOrdinalSelection) : Prop :=
+  selection.candidate = ⟨.position target, truncateHash leftOutput⟩ ∧
+    selection.context.state.values (.position target) = none ∧
+    Coordinate.position target ∉ selection.context.state.revealed ∧
+    selection.context.values target = some leftOutput ∧
+    CandidatesAvoidRoots target (truncateHash leftOutput) rightRoot
+      (selection.candidates.take ordinal)
+
+def privateOrdinalSelectionGoodForRoots
+    (target : Position) (leftOutput : HashOutput)
+    (rightRoot : Digest) (ordinal : Nat) :
+    Option PrivateOrdinalSelection → Prop
+  | none => False
+  | some selection => selection.GoodForRoots target leftOutput rightRoot ordinal
+
+def materializedOrdinalSelectionMatches
+    (target : Position) (root : Digest) : Option Probe → Prop
+  | none => False
+  | some candidate => candidate = ⟨.position target, root⟩
+
+theorem CandidatesAvoidRoots.nil
+    (target : Position) (leftRoot rightRoot : Digest) :
+    CandidatesAvoidRoots target leftRoot rightRoot [] := by
+  simp [CandidatesAvoidRoots]
+
+theorem CandidatesAvoidRoots.append
+    {target : Position} {leftRoot rightRoot : Digest}
+    {candidates : List Probe}
+    (hprefix : CandidatesAvoidRoots target leftRoot rightRoot candidates)
+    (candidate : Probe) (hcandidate : candidate.AvoidsRoots target leftRoot rightRoot) :
+    CandidatesAvoidRoots target leftRoot rightRoot (candidates ++ [candidate]) := by
+  intro other hmem
+  rcases List.mem_append.mp hmem with hleft | hright
+  · exact hprefix other hleft
+  · have heq : other = candidate := by simpa using hright
+    subst other
+    exact hcandidate
+
+theorem rootAwareCandidateAvoidsRoots_iff
+    (target : Position) (leftRoot rightRoot : Digest) (candidate : Probe) :
+    RootAwareCandidateAvoidsRoots target leftRoot rightRoot (some candidate) ↔
+      candidate.AvoidsRoots target leftRoot rightRoot := by
+  simp [RootAwareCandidateAvoidsRoots, Probe.AvoidsRoots]
+
 def OrdinaryMaterializedStableCouplesBetween
     (table : OtsSecretIndex → HashOutput)
     (left right : StateT SplitHashCache
@@ -205,6 +262,115 @@ theorem ordinaryMaterializedStableCouplesBetween_executeCandidate
       exact ordinaryMaterializedStableCouplesBetween_pure table () () rfl
         left right leftFuel rightFuel leftCache rightCache
   | some candidate => exact ordinaryMaterializedStableCouplesBetween_probe table candidate
+
+theorem relTriple_runDirectResolvedDetailed_publishOrdinaryInput_stable
+    (table : OtsSecretIndex → HashOutput) (coordinate : Coordinate)
+    (input : HashInput) (output : HashOutput)
+    (left right : DeferredContext) (leftFuel rightFuel : Nat)
+    (leftCache rightCache : SplitHashCache)
+    (hcontext : FinalizationContextLE table left right)
+    (hfuel : leftFuel ≤ rightFuel)
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hvalues : LazyRevealProbe.ValuesLE left.state right.state)
+    (hpublished : PublishedValues left.state)
+    (hleftValue : left.state.values coordinate = some output)
+    (hrightMaterialized : right = directDeferredContext right.state) :
+    RelTriple
+      (runDirectResolvedDetailedFromTable left leftFuel table
+        ((publishOrdinaryInput coordinate input output).run leftCache))
+      (runDirectResolvedDetailedFromTable right rightFuel table
+        ((publishOrdinaryInput coordinate input output).run rightCache))
+      (DirectDetailedOrdinaryStableRunEq table) := by
+  have hrightValue : right.state.values coordinate = some output :=
+    hvalues coordinate output hleftValue
+  rw [runDirectResolvedDetailedFromTable_publishOrdinaryInput,
+    runDirectResolvedDetailedFromTable_publishOrdinaryInput]
+  apply relTriple_pure_pure
+  left
+  exact
+    { value_eq := rfl
+      context_le := hcontext.publish coordinate
+      remaining_le := hfuel
+      left_table := rfl
+      right_table := rfl
+      cache_eq := by
+        rw [ordinaryQueryCache_update, ordinaryQueryCache_update, hcache]
+      revealed_eq := by
+        simpa [LazyRevealProbe.State.publish] using congrArg (insert coordinate) hrevealed
+      values_le := hvalues
+      left_published := hpublished.publish_of_value coordinate output hleftValue
+      right_materialized := by
+        rw [hrightMaterialized]
+        simp [directDeferredContext, directDeferredValues_publish] }
+
+set_option maxRecDepth 100000 in
+theorem ordinaryMaterializedStableCouplesBetween_revealPublishOrdinaryInput
+    (table : OtsSecretIndex → HashOutput)
+    (coordinate : Coordinate) (input : HashInput) :
+    OrdinaryMaterializedStableCouplesBetween table
+      (revealPublishOrdinaryInput coordinate input)
+      (revealPublishOrdinaryInput coordinate input) := by
+  intro left right leftFuel rightFuel leftCache rightCache hcontext hfuel hcache hrevealed
+    hvalues hpublished hrightMaterialized
+  unfold revealPublishOrdinaryInput
+  rw [StateT.run_bind, StateT.run_bind]
+  apply relTriple_runDirectResolvedDetailed_bind_with_support_stable table
+    ((revealCoordinateOutput coordinate).run leftCache)
+    ((revealCoordinateOutput coordinate).run rightCache)
+    (fun output cache => (publishOrdinaryInput coordinate input output).run cache)
+    (fun output cache => (publishOrdinaryInput coordinate input output).run cache)
+    left right leftFuel rightFuel
+  · exact ordinaryMaterializedStableCouples_revealCoordinateOutput table coordinate
+      left right leftFuel rightFuel leftCache rightCache hcontext hfuel hcache hrevealed hvalues
+      hpublished hrightMaterialized
+  · intro leftResult rightResult hleftSupport _hrightSupport hrelation
+    have hleftValue :=
+      value_of_done_runDirectResolvedDetailedFromTable_revealCoordinateOutput table coordinate
+        left leftFuel leftCache leftResult hleftSupport
+    rw [hrelation.left_table, hrelation.right_table, ← hrelation.value_eq]
+    exact relTriple_runDirectResolvedDetailed_publishOrdinaryInput_stable table coordinate input
+      leftResult.value.1 leftResult.context rightResult.context leftResult.remaining
+      rightResult.remaining leftResult.value.2 rightResult.value.2 hrelation.context_le
+      hrelation.remaining_le hrelation.cache_eq hrelation.revealed_eq hrelation.values_le
+      hrelation.left_published hleftValue hrelation.right_materialized
+
+theorem ordinaryMaterializedStableCouplesBetween_resolvePublicKnownInput
+    (table : OtsSecretIndex → HashOutput)
+    (parameter : PublicParameter) (publicState : LazyRevealProbe.State Coordinate)
+    (coordinate : Coordinate) (input : HashInput) :
+    OrdinaryMaterializedStableCouplesBetween table
+      (resolvePublicKnownInput parameter publicState coordinate input)
+      (resolvePublicKnownInput parameter publicState coordinate input) := by
+  unfold resolvePublicKnownInput
+  cases hknown : purePeekTableInput parameter publicState coordinate with
+  | none =>
+      exact (ordinaryMaterializedStableCouples_splitHashQuery_ordinary table input).toBetween
+  | some knownInput =>
+      by_cases heq : knownInput = input
+      · simp only [heq, ↓reduceIte]
+        simpa [revealPublishOrdinaryInput, publishOrdinaryInput] using
+          ordinaryMaterializedStableCouplesBetween_revealPublishOrdinaryInput table coordinate
+            input
+      · simp only [heq, ↓reduceIte]
+        exact (ordinaryMaterializedStableCouples_splitHashQuery_ordinary table input).toBetween
+
+theorem ordinaryMaterializedStableCouplesBetweenPositive_publicPlan
+    (table : OtsSecretIndex → HashOutput)
+    (parameter : PublicParameter) (input : HashInput)
+    (publicState : LazyRevealProbe.State Coordinate) (plan : PlannedHashQuery) :
+    OrdinaryMaterializedStableCouplesBetweenPositive table
+      (probingHashQueryAfterPublicPlan parameter input publicState plan)
+      (probingHashQueryAfterPublicPlan parameter input publicState plan) := by
+  unfold probingHashQueryAfterPublicPlan
+  apply (ordinaryMaterializedStableCouplesBetween_executeCandidate table plan.candidate?).bind
+  intro _
+  cases plan.action with
+  | ordinary =>
+      exact (ordinaryMaterializedStableCouples_splitHashQuery_ordinary table input).toBetween
+  | resolve coordinate =>
+      exact ordinaryMaterializedStableCouplesBetween_resolvePublicKnownInput table parameter
+        publicState coordinate input
 
 theorem runDirectResolvedDetailedFromTable_peekPositionValues_eq_pure
     (context : DeferredContext) (fuel : Nat)
@@ -408,5 +574,30 @@ theorem runDirectResolvedDetailedFromTable_afterPlan_eq_publicPlan
                     rfl) coordinate input
                 rw [hpublic] at hbase
                 exact hbase
+
+theorem relTriple_runDirectResolvedDetailed_afterPlan_publicPlan
+    (table : OtsSecretIndex → HashOutput)
+    (parameter : PublicParameter) (input : HashInput) (plan : PlannedHashQuery)
+    (left right : DeferredContext) (leftFuel rightFuel : Nat)
+    (leftCache rightCache : SplitHashCache)
+    (hpositive : 0 < leftFuel)
+    (hcontext : FinalizationContextLE table left right)
+    (hfuel : leftFuel ≤ rightFuel)
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hvalues : LazyRevealProbe.ValuesLE left.state right.state)
+    (hpublished : PublishedValues left.state)
+    (hrightMaterialized : right = directDeferredContext right.state) :
+    RelTriple
+      (runDirectResolvedDetailedFromTable left leftFuel table
+        ((probingHashQueryAfterPlan parameter input plan).run leftCache))
+      (runDirectResolvedDetailedFromTable right rightFuel table
+        ((probingHashQueryAfterPublicPlan parameter input left.state plan).run rightCache))
+      (DirectDetailedOrdinaryStableRunEq table) := by
+  rw [runDirectResolvedDetailedFromTable_afterPlan_eq_publicPlan parameter input plan left
+    leftFuel table leftCache]
+  exact ordinaryMaterializedStableCouplesBetweenPositive_publicPlan table parameter input
+    left.state plan left right leftFuel rightFuel leftCache rightCache hpositive hcontext hfuel
+    hcache hrevealed hvalues hpublished hrightMaterialized
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
