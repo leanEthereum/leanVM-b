@@ -459,10 +459,16 @@ impl FnLower<'_> {
 
     /// The cell holding `a op b`, computed only if this scope has not already.
     ///
-    /// Only ever mints a FRESH cell, which is the rule that makes sharing sound:
-    /// a pure op whose destination already exists is an assertion, not a
-    /// computation (the zero cell an `assert` XORs into, the `g^{k-1}` a range
-    /// check multiplies into), and must never be shared away.
+    /// **Route an operation here only when its result cell has no other writer.**
+    /// Minting a fresh cell is necessary but NOT sufficient, and the difference
+    /// matters: `assert a != b` also mints a fresh cell for `x·inv`, then writes
+    /// it again with `SET p = 1`, and that second write is the assertion. Share
+    /// that cell and the next `assert a != b` skips its `MUL`, finds `p` already
+    /// holding 1, and asserts nothing. The sites that must stay out are the ones
+    /// whose destination is written twice or already exists: the zero cell an
+    /// `assert a == b` XORs into, the `g^{k-1}` a range check multiplies into,
+    /// `assert a != b`'s product, a division's back-solve, and `expr_into`'s
+    /// caller-chosen destination.
     fn pure(&mut self, op: PureOp, a: Off, b: Off) -> Off {
         let key = (op, a.min(b), a.max(b));
         if let Some(&o) = self.scope.pure_cells.get(&key) {
