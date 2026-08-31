@@ -133,6 +133,140 @@ theorem storedLayerRoot_of_mem_runCleanFromTable
                   · exact ih output (state.materialize (.position revealedPosition) output)
                       fuel (hroot.materialize_of_ne _ _ hne) (by simpa [hhit] using hrest)
 
+def RootEncodingStoredCleanSameRel
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) :
+    Option (CleanRunResult (α × SplitHashCache)) →
+      Option (CleanRunResult (α × SplitHashCache)) → Prop
+  | some left, some right =>
+      RootEncodingCleanSameRel parameter target leftRoot rightRoot (some left) (some right) ∧
+        StoredLayerRoot left.state target leftRoot
+  | none, none => True
+  | _, _ => False
+
+def RootEncodingCacheRelatesStored
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest)
+    (left right : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α) : Prop :=
+  ∀ leftCache rightCache,
+    RootEncodingCacheRel parameter target leftRoot rightRoot leftCache rightCache →
+    ∀ state fuel table, StoredLayerRoot state target leftRoot →
+      RelTriple
+        (runCleanFromTable state fuel table (left.run leftCache))
+        (runCleanFromTable state fuel table (right.run rightCache))
+        (RootEncodingStoredCleanSameRel parameter target leftRoot rightRoot)
+
+theorem relTriple_rootEncoding_add_stored
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest)
+    (left right : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α)
+    (leftCache rightCache : SplitHashCache)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (hrelation : RelTriple
+      (runCleanFromTable state fuel table (left.run leftCache))
+      (runCleanFromTable state fuel table (right.run rightCache))
+      (RootEncodingCleanSameRel parameter target leftRoot rightRoot))
+    (hstored : StoredLayerRoot state target leftRoot) :
+    RelTriple
+      (runCleanFromTable state fuel table (left.run leftCache))
+      (runCleanFromTable state fuel table (right.run rightCache))
+      (RootEncodingStoredCleanSameRel parameter target leftRoot rightRoot) := by
+  let leftRun := runCleanFromTable state fuel table (left.run leftCache)
+  have hsupported :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hrelation
+      (fun result => result ∈ support leftRun) (fun result hresult => hresult)
+  apply relTriple_post_mono hsupported
+  intro leftResult rightResult hresult
+  rcases hresult with ⟨hrel, hleftSupport⟩
+  cases leftResult with
+  | none =>
+      cases rightResult with
+      | none => trivial
+      | some rightResult => simp [RootEncodingCleanSameRel] at hrel
+  | some leftResult =>
+      cases rightResult with
+      | none => simp [RootEncodingCleanSameRel] at hrel
+      | some rightResult =>
+          exact ⟨hrel, storedLayerRoot_of_mem_runCleanFromTable (left.run leftCache)
+            state fuel table leftResult target leftRoot hstored hleftSupport⟩
+
+theorem RootEncodingCacheRelates.toStored
+    {parameter : PublicParameter} {target : Position}
+    {leftRoot rightRoot : Digest}
+    {left right : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α}
+    (hrel : RootEncodingCacheRelates parameter target leftRoot rightRoot left right) :
+    RootEncodingCacheRelatesStored parameter target leftRoot rightRoot left right := by
+  intro leftCache rightCache hcache state fuel table hstored
+  exact relTriple_rootEncoding_add_stored parameter target leftRoot rightRoot left right
+    leftCache rightCache state fuel table
+      (hrel leftCache rightCache hcache state fuel table) hstored
+
+theorem RootEncodingCacheRelatesStored.bind
+    {parameter : PublicParameter} {target : Position}
+    {leftRoot rightRoot : Digest}
+    {left : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α}
+    {right : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α}
+    {leftNext rightNext : α → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) β}
+    (hfirst : RootEncodingCacheRelatesStored parameter target leftRoot rightRoot left right)
+    (hnext : ∀ leftValue rightValue, leftValue = rightValue →
+      RootEncodingCacheRelatesStored parameter target leftRoot rightRoot
+        (leftNext leftValue) (rightNext rightValue)) :
+    RootEncodingCacheRelatesStored parameter target leftRoot rightRoot
+      (left >>= leftNext) (right >>= rightNext) := by
+  intro leftCache rightCache hcache state fuel table hstored
+  rw [StateT.run_bind, StateT.run_bind, runCleanFromTable_bind,
+    runCleanFromTable_bind]
+  apply relTriple_bind (hfirst leftCache rightCache hcache state fuel table hstored)
+  intro leftResult rightResult hresult
+  cases leftResult with
+  | none =>
+      cases rightResult with
+      | none => exact relTriple_pure_pure trivial
+      | some rightResult => simp [RootEncodingStoredCleanSameRel] at hresult
+  | some leftResult =>
+      cases rightResult with
+      | none => simp [RootEncodingStoredCleanSameRel] at hresult
+      | some rightResult =>
+          rcases hresult with
+            ⟨⟨hstate, hremaining, htable, hvalue, hnextCache⟩, hnextStored⟩
+          simp only
+          rw [← hstate, ← hremaining, ← htable, ← hvalue]
+          exact hnext leftResult.value.1 leftResult.value.1 rfl leftResult.value.2
+            rightResult.value.2 hnextCache leftResult.state leftResult.remaining
+              leftResult.table hnextStored
+
+theorem rootEncodingCacheRelatesStored_sequenceFin
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) {n : Nat}
+    (left right : Fin n → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α)
+    (hcomponent : ∀ index,
+      RootEncodingCacheRelatesStored parameter target leftRoot rightRoot
+        (left index) (right index)) :
+    RootEncodingCacheRelatesStored parameter target leftRoot rightRoot
+      (sequenceFin left) (sequenceFin right) := by
+  induction n with
+  | zero =>
+      simp only [sequenceFin]
+      exact ((rootEncodingCacheCouples_pure parameter target leftRoot rightRoot
+        Fin.elim0).relates).toStored
+  | succ n ih =>
+      rw [sequenceFin, sequenceFin]
+      exact (hcomponent 0).bind fun leftHead rightHead hhead =>
+        (ih (fun index : Fin n => left index.succ) (fun index : Fin n => right index.succ)
+          (fun index => hcomponent index.succ)).bind fun leftTail rightTail htail => by
+            subst rightHead
+            subst rightTail
+            exact ((rootEncodingCacheCouples_pure parameter target leftRoot rightRoot
+              (Fin.cases leftHead leftTail : Fin (n + 1) → α)).relates).toStored
+
 set_option maxRecDepth 100000 in
 theorem maskedTreeRoot_eq_of_stored_clean
     (lay : Layer) (tree : TreeIndex)
@@ -172,6 +306,85 @@ theorem maskedTreeRoot_eq_of_stored_clean
       simp at hreveal
       subst result
       exact ⟨htruncate, ⟨output, hstored, htruncate⟩⟩
+
+theorem maskedLayerMessage_eq_of_stored_clean_of_eq
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (index : Index) (lay below : Layer)
+    (hcomputation : maskedLayerMessage parameter ftsSecret index lay =
+      maskedTreeRoot below (treeIndexAt index below))
+    (hposition : layerMessagePosition index lay =
+      layerRootPosition below (treeIndexAt index below))
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (result : CleanRunResult (Digest × SplitHashCache)) (root : Digest)
+    (hroot : StoredLayerRoot state (layerMessagePosition index lay) root)
+    (hresult : some result ∈ support
+      (runCleanFromTable state fuel table
+        ((maskedLayerMessage parameter ftsSecret index lay).run cache))) :
+    result.value.1 = root ∧
+      StoredLayerRoot result.state (layerMessagePosition index lay) root := by
+  rw [hcomputation] at hresult
+  rw [hposition] at hroot ⊢
+  exact maskedTreeRoot_eq_of_stored_clean below (treeIndexAt index below)
+    state cache fuel table result root hroot hresult
+
+theorem layerMessage_root_witness_of_isLayerRoot
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (hroot : IsLayerRoot target)
+    (index : Index) (lay : Layer)
+    (htarget : layerMessagePosition index lay = target) :
+    ∃ below : Layer,
+      maskedLayerMessage parameter ftsSecret index lay =
+          maskedTreeRoot below (treeIndexAt index below) ∧
+        layerMessagePosition index lay =
+          layerRootPosition below (treeIndexAt index below) := by
+  have hnotBottom : lay ≠ bottomLayer := by
+    intro hbottom
+    subst lay
+    obtain ⟨rootLay, rootTree, hrootPosition⟩ := hroot
+    rw [layerMessagePosition_bottom] at htarget
+    rw [← htarget] at hrootPosition
+    simp [layerRootPosition] at hrootPosition
+  fin_cases lay
+  · have hbelow : topLayer.val + 1 < numLayers := by
+      norm_num [topLayer, numLayers]
+    refine ⟨middleLayer, maskedLayerMessage_eq_of_lt' parameter ftsSecret index topLayer
+      middleLayer hbelow (Fin.ext (by norm_num [topLayer, middleLayer, numLayers])), ?_⟩
+    change layerMessagePosition index topLayer =
+      layerRootPosition middleLayer (treeIndexAt index middleLayer)
+    simp [layerRootPosition]
+  · have hbelow : middleLayer.val + 1 < numLayers := by
+      norm_num [middleLayer, numLayers]
+    refine ⟨bottomLayer, maskedLayerMessage_eq_of_lt' parameter ftsSecret index middleLayer
+      bottomLayer hbelow (Fin.ext (by norm_num [middleLayer, bottomLayer, numLayers])), ?_⟩
+    change layerMessagePosition index middleLayer =
+      layerRootPosition bottomLayer (treeIndexAt index bottomLayer)
+    simp [layerRootPosition]
+  · exact False.elim (hnotBottom rfl)
+
+theorem maskedLayerMessage_value_eq_of_stored_clean
+    (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (hroot : IsLayerRoot target) (root : Digest)
+    (index : Index) (lay : Layer)
+    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (result : CleanRunResult (Digest × SplitHashCache))
+    (hstored : StoredLayerRoot state target root)
+    (htarget : layerMessagePosition index lay = target)
+    (hresult : some result ∈ support
+      (runCleanFromTable state fuel table
+        ((maskedLayerMessage parameter ftsSecret index lay).run cache))) :
+    result.value.1 = root := by
+  obtain ⟨below, hcomputation, hposition⟩ :=
+    layerMessage_root_witness_of_isLayerRoot parameter ftsSecret target hroot index lay htarget
+  have hstoredMessage : StoredLayerRoot state (layerMessagePosition index lay) root := by
+    rw [htarget]
+    exact hstored
+  exact (maskedLayerMessage_eq_of_stored_clean_of_eq parameter ftsSecret index lay below
+    hcomputation hposition state cache fuel table result root hstoredMessage hresult).1
 
 set_option maxRecDepth 100000 in
 theorem maskedTreeRoot_eq_of_stored
@@ -374,6 +587,25 @@ theorem relTriple_maskedSignLayer_targetComparison
       leftRoot rightRoot ftsSecret index lay htarget).relates leftCache rightCache hcache
         state fuel table
 
+theorem rootEncodingCacheRelatesStored_maskedSignLayer_targetComparison
+    (parameter : PublicParameter) (target : Position) (hroot : IsLayerRoot target)
+    (leftRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (index : Index) (lay : Layer) :
+    RootEncodingCacheRelatesStored parameter target leftRoot rightRoot
+      (maskedSignLayer parameter ftsSecret index lay)
+      (maskedSignLayerWithTargetComparison parameter target rightRoot ftsSecret index lay) := by
+  intro leftCache rightCache hcache state fuel table hstored
+  have hbase := relTriple_maskedSignLayer_targetComparison parameter target hroot leftRoot
+    rightRoot ftsSecret index lay leftCache rightCache hcache state fuel table
+      (fun htarget result hresult =>
+        maskedLayerMessage_value_eq_of_stored_clean parameter ftsSecret target hroot leftRoot
+          index lay state leftCache fuel table result hstored htarget hresult)
+  exact relTriple_rootEncoding_add_stored parameter target leftRoot rightRoot
+    (maskedSignLayer parameter ftsSecret index lay)
+    (maskedSignLayerWithTargetComparison parameter target rightRoot ftsSecret index lay)
+    leftCache rightCache state fuel table hbase hstored
+
 theorem rootEncodingCacheRelates_maskedSignLayers_targetComparison
     (parameter : PublicParameter) (target : Position) (hroot : IsLayerRoot target)
     (leftRoot rightRoot : Digest)
@@ -394,6 +626,20 @@ theorem rootEncodingCacheRelates_maskedSignLayers_targetComparison
   exact relTriple_maskedSignLayer_targetComparison parameter target hroot leftRoot rightRoot
     ftsSecret index lay leftCache rightCache hcache state fuel table
       (fun htarget => hmessageRoot lay leftCache rightCache hcache state fuel table htarget)
+
+theorem rootEncodingCacheRelatesStored_maskedSignLayers_targetComparison
+    (parameter : PublicParameter) (target : Position) (hroot : IsLayerRoot target)
+    (leftRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (index : Index) :
+    RootEncodingCacheRelatesStored parameter target leftRoot rightRoot
+      (sequenceFin fun lay => maskedSignLayer parameter ftsSecret index lay)
+      (maskedSignLayersWithTargetComparison parameter target rightRoot ftsSecret index) := by
+  unfold maskedSignLayersWithTargetComparison
+  apply rootEncodingCacheRelatesStored_sequenceFin
+  intro lay
+  exact rootEncodingCacheRelatesStored_maskedSignLayer_targetComparison parameter target hroot
+    leftRoot rightRoot ftsSecret index lay
 
 noncomputable def maskedSignAfterDigestWithTargetComparison
     (parameter : PublicParameter) (target : Position) (comparisonRoot : Digest)
@@ -462,6 +708,46 @@ theorem rootEncodingCacheRelates_maskedSignAfterDigest_targetComparison
       exact (rootEncodingCacheCouples_pure parameter target leftRoot rightRoot
         (some signature)).relates
 
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem rootEncodingCacheRelatesStored_maskedSignAfterDigest_targetComparison
+    (parameter : PublicParameter) (target : Position) (hroot : IsLayerRoot target)
+    (leftRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    RootEncodingCacheRelatesStored parameter target leftRoot rightRoot
+      (maskedSignAfterDigest parameter ftsSecret randomness index leaves)
+      (maskedSignAfterDigestWithTargetComparison parameter target rightRoot ftsSecret
+        randomness index leaves) := by
+  unfold maskedSignAfterDigest maskedSignAfterDigestWithTargetComparison
+  apply ((rootEncodingCacheCouples_ftsOpen parameter target leftRoot rightRoot index leaves
+    (ftsSecret index)).relates.toStored).bind
+  intro leftPath rightPath hpath
+  subst rightPath
+  apply (rootEncodingCacheRelatesStored_maskedSignLayers_targetComparison parameter target hroot
+    leftRoot rightRoot ftsSecret index).bind
+  intro leftLayers rightLayers hlayers
+  subst rightLayers
+  cases hparts : traverseOption leftLayers with
+  | none =>
+      exact ((rootEncodingCacheCouples_pure parameter target leftRoot rightRoot none).relates).toStored
+  | some parts =>
+      apply ((rootEncodingCacheCouples_sequenceFin parameter target leftRoot rightRoot
+        (fun lay => revealLayerValues index lay (parts lay).2)
+        (fun lay => rootEncodingCacheCouples_revealLayerValues parameter target leftRoot
+          rightRoot index lay (parts lay).2)).relates.toStored).bind
+      intro leftRevealed rightRevealed hrevealed
+      subst rightRevealed
+      let signature : Signature :=
+        { randomness := randomness
+          ftsSecret := fun tree => ftsSecret index tree (leaves (ftsIndexOf tree))
+          ftsPath := leftPath
+          counter := fun lay => (parts lay).1
+          chainValue := fun lay => (leftRevealed lay).1
+          authPath := flattenPaths fun lay => (leftRevealed lay).2 }
+      exact ((rootEncodingCacheCouples_pure parameter target leftRoot rightRoot
+        (some signature)).relates).toStored
+
 noncomputable def maskedSignWithTargetComparison
     (parameter : PublicParameter) (publicRoot : Digest)
     (target : Position) (comparisonRoot : Digest)
@@ -505,5 +791,27 @@ theorem rootEncodingCacheRelates_maskedSign_targetComparison
       exact rootEncodingCacheRelates_maskedSignAfterDigest_targetComparison parameter target
         hroot leftRoot rightRoot ftsSecret selected.1 selected.2.1 selected.2.2
           (hmessageRoot selected.2.1)
+
+theorem rootEncodingCacheRelatesStored_maskedSign_targetComparison
+    (parameter : PublicParameter) (publicRoot : Digest)
+    (target : Position) (hroot : IsLayerRoot target)
+    (leftRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message) :
+    RootEncodingCacheRelatesStored parameter target leftRoot rightRoot
+      (maskedSign parameter publicRoot ftsSecret message)
+      (maskedSignWithTargetComparison parameter publicRoot target rightRoot ftsSecret message) := by
+  unfold maskedSign maskedSignWithTargetComparison
+  let secretKey : SecretKey :=
+    ⟨parameter, publicRoot, fun _ _ _ _ => 0, ftsSecret⟩
+  apply ((rootEncodingCacheCouples_signDigestLoop target leftRoot rightRoot secretKey message
+    digestAttemptLimit).relates.toStored).bind
+  intro leftSelected rightSelected hselected
+  subst rightSelected
+  cases leftSelected with
+  | none =>
+      exact ((rootEncodingCacheCouples_pure parameter target leftRoot rightRoot none).relates).toStored
+  | some selected =>
+      exact rootEncodingCacheRelatesStored_maskedSignAfterDigest_targetComparison parameter
+        target hroot leftRoot rightRoot ftsSecret selected.1 selected.2.1 selected.2.2
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
