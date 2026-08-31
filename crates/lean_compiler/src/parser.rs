@@ -122,13 +122,28 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
             }
             const_arrays.push((name, elems));
         } else {
-            // A scalar constant: evaluate it as a compile-time integer.
+            // A scalar constant: an `f192` literal, else a compile-time integer,
+            // else a field-valued expression.
             if let Some(value) = parse_f192_const(rhs) {
                 let v = value.map_err(|e| at(format!("global constant `{name}`: {e}")))?;
                 consts.insert(name, format!("f192({},{},{})", v.c0, v.c1, v.c2));
-            } else {
-                let value = eval_const_int(rhs).map_err(|e| at(format!("global constant `{name}`: {e}")))?;
+            } else if let Ok(value) = eval_const_int(rhs) {
                 consts.insert(name, value.to_string());
+            } else {
+                // `GEN ** 2` and friends. The ISA is written in g-powers, so this
+                // is the natural spelling for a constant one, and it is not an
+                // integer expression. Rendered as a decimal wherever the value
+                // fits the low two limbs, so the constant still works in the
+                // positions that demand a literal rather than only as a value.
+                let v = parse_const(rhs).map_err(|e| at(format!("global constant `{name}`: {e}")))?;
+                consts.insert(
+                    name,
+                    if v.c2 == 0 {
+                        (v.c0 as u128 | ((v.c1 as u128) << 64)).to_string()
+                    } else {
+                        format!("f192({},{},{})", v.c0, v.c1, v.c2)
+                    },
+                );
             }
         }
         start += 1;
