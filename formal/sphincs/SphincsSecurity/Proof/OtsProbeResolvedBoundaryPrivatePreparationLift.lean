@@ -590,4 +590,407 @@ theorem probEvent_resolveDeferredChainStart_then_guardedPreparationObserve_le
       exact probEvent_guardedPreparationObserve_clearPending_chainStart_le candidates context
         index
 
+def DeferredResolution.setStateValue (resolved : DeferredResolution)
+    (coordinate : Coordinate) (output : HashOutput) : DeferredResolution :=
+  ⟨{ resolved.toDeferredContext with
+      state := { resolved.state with
+        values := Function.update resolved.state.values coordinate (some output) } },
+    resolved.output⟩
+
+theorem clearPending_setStateValue_comm
+    (state : LazyRevealProbe.State Coordinate) (cleared coordinate : Coordinate)
+    (output : HashOutput) :
+    ({ state with values := Function.update state.values coordinate (some output) }).clearPending
+        cleared =
+      { state.clearPending cleared with
+        values := Function.update (state.clearPending cleared).values coordinate (some output) } := by
+  rfl
+
+@[simp] theorem hitAt_setStateValue
+    (state : LazyRevealProbe.State Coordinate) (updated coordinate : Coordinate)
+    (updatedOutput output : HashOutput) :
+    ({ state with values := Function.update state.values updated (some updatedOutput) }).hitAt
+        coordinate output = state.hitAt coordinate output := rfl
+
+theorem resolveDeferredPositionValue_setStateValue_of_ne
+    (position : Position) (context : DeferredContext) (coordinate : Coordinate)
+    (output : HashOutput) (hne : coordinate ≠ .position position) :
+    resolveDeferredPositionValue position
+        { context with
+          state := { context.state with
+            values := Function.update context.state.values coordinate (some output) } } =
+      (fun result => result.map fun resolved => resolved.setStateValue coordinate output) <$>
+        resolveDeferredPositionValue position context := by
+  unfold resolveDeferredPositionValue DeferredResolution.setStateValue
+  have hlookup : Function.update context.state.values coordinate (some output)
+      (.position position) = context.state.values (.position position) :=
+    Function.update_of_ne (a := .position position) (a' := coordinate) (Ne.symm hne)
+      (some output) context.state.values
+  simp only [hlookup]
+  cases hstate : context.state.values (.position position) with
+  | some positionOutput =>
+      by_cases hhit : context.state.hitAt (.position position) positionOutput
+      · simp [hhit]
+      · simp [hhit, clearPending_setStateValue_comm]
+  | none =>
+      cases hprivate : context.values position with
+      | some positionOutput =>
+          by_cases hhit : context.state.hitAt (.position position) positionOutput
+          · simp [hhit]
+          · simp [hhit, clearPending_setStateValue_comm]
+      | none =>
+          simp only [map_bind]
+          apply bind_congr
+          intro positionOutput
+          by_cases hhit : context.state.hitAt (.position position) positionOutput
+          · simp [hhit]
+          · simp [hhit, clearPending_setStateValue_comm]
+
+set_option maxRecDepth 100000 in
+theorem evalDist_prepareCandidateGroupsFails_setChainStartValue
+    (fuel : Nat) (candidates : List Probe) (context : DeferredContext)
+    (index : OtsSecretIndex) (output : HashOutput) :
+    evalDist (prepareCandidateGroupsFails fuel candidates
+      { context with
+        state := { context.state with
+          values := Function.update context.state.values index.coordinate (some output) } }) =
+      evalDist (prepareCandidateGroupsFails fuel candidates context) := by
+  induction fuel generalizing candidates context with
+  | zero => simp [prepareCandidateGroupsFails, resolvedCandidateGroupsFire]
+  | succ fuel ih =>
+      cases candidates with
+      | nil => simp [prepareCandidateGroupsFails, resolvedCandidateGroupsFire]
+      | cons candidate remaining =>
+          cases hcandidate : candidate.coordinate with
+          | chainStart lay tree leafIdx chainIdx =>
+              simp only [prepareCandidateGroupsFails, resolvedCandidateGroupsFire, hcandidate]
+              exact ih remaining context
+          | position target =>
+              simp only [prepareCandidateGroupsFails, resolvedCandidateGroupsFire, hcandidate]
+              rw [resolveDeferredPositionValue_setStateValue_of_ne target context index.coordinate
+                output (by cases index; simp [OtsSecretIndex.coordinate])]
+              simp only [map_eq_bind_pure_comp, bind_assoc]
+              apply evalDist_bind_congr
+              intro resolved _hresolved
+              cases resolved with
+              | none => rfl
+              | some resolved =>
+                  simp only [Function.comp_apply, pure_bind, Option.map_some,
+                    DeferredResolution.setStateValue]
+                  by_cases hhit : candidateListHits target (candidate :: remaining)
+                      resolved.output
+                  · simp [hhit]
+                  · simp only [hhit, ↓reduceIte]
+                    exact ih (removeTargetCandidates target (candidate :: remaining))
+                      resolved.toDeferredContext
+
+set_option maxRecDepth 100000 in
+theorem evalDist_prepareCandidateGroupsFails_setPositionValue_of_not_occurs
+    (fuel : Nat) (candidates : List Probe) (context : DeferredContext)
+    (position : Position) (output : HashOutput)
+    (hnotOccurs : ¬TargetOccurs position candidates) :
+    evalDist (prepareCandidateGroupsFails fuel candidates
+      { context with
+        state := { context.state with
+          values := Function.update context.state.values (.position position) (some output) } }) =
+      evalDist (prepareCandidateGroupsFails fuel candidates context) := by
+  induction fuel generalizing candidates context with
+  | zero => simp [prepareCandidateGroupsFails, resolvedCandidateGroupsFire]
+  | succ fuel ih =>
+      cases candidates with
+      | nil => simp [prepareCandidateGroupsFails, resolvedCandidateGroupsFire]
+      | cons candidate remaining =>
+          cases hcandidate : candidate.coordinate with
+          | chainStart lay tree leafIdx chainIdx =>
+              simp only [prepareCandidateGroupsFails, resolvedCandidateGroupsFire, hcandidate]
+              apply ih remaining context
+              intro htail
+              exact hnotOccurs ⟨htail.choose, List.mem_cons_of_mem candidate htail.choose_spec.1,
+                htail.choose_spec.2⟩
+          | position target =>
+              have hne : Coordinate.position position ≠ .position target := by
+                intro heq
+                have hposition : position = target := Coordinate.position.inj heq
+                apply hnotOccurs
+                exact ⟨candidate, by simp, by simpa [hposition] using hcandidate⟩
+              simp only [prepareCandidateGroupsFails, resolvedCandidateGroupsFire, hcandidate]
+              rw [resolveDeferredPositionValue_setStateValue_of_ne target context
+                (.position position) output hne]
+              simp only [map_eq_bind_pure_comp, bind_assoc]
+              apply evalDist_bind_congr
+              intro resolved _hresolved
+              cases resolved with
+              | none => rfl
+              | some resolved =>
+                  simp only [Function.comp_apply, pure_bind, Option.map_some,
+                    DeferredResolution.setStateValue]
+                  by_cases hhit : candidateListHits target (candidate :: remaining)
+                      resolved.output
+                  · simp [hhit]
+                  · simp only [hhit, ↓reduceIte]
+                    apply ih (removeTargetCandidates target (candidate :: remaining))
+                      resolved.toDeferredContext
+                    intro hrest
+                    obtain ⟨found, hfound, hfoundCoordinate⟩ := hrest
+                    apply hnotOccurs
+                    exact ⟨found, (List.mem_filter.mp hfound).1, hfoundCoordinate⟩
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem evalDist_prepareCandidateGroupsFails_promotePrivatePosition
+    (fuel : Nat) (candidates : List Probe) (context : DeferredContext)
+    (position : Position) (output : HashOutput)
+    (hstate : context.state.values (.position position) = none)
+    (hprivate : context.values position = some output) :
+    evalDist (prepareCandidateGroupsFails fuel candidates
+      { context with
+        state := { context.state with
+          values := Function.update context.state.values (.position position) (some output) } }) =
+      evalDist (prepareCandidateGroupsFails fuel candidates context) := by
+  induction fuel generalizing candidates context with
+  | zero => simp [prepareCandidateGroupsFails, resolvedCandidateGroupsFire]
+  | succ fuel ih =>
+      cases candidates with
+      | nil => simp [prepareCandidateGroupsFails, resolvedCandidateGroupsFire]
+      | cons candidate remaining =>
+          cases hcandidate : candidate.coordinate with
+          | chainStart lay tree leafIdx chainIdx =>
+              simp only [prepareCandidateGroupsFails, resolvedCandidateGroupsFire, hcandidate]
+              exact ih remaining context hstate hprivate
+          | position target =>
+              by_cases heq : position = target
+              · subst position
+                let promoted : DeferredContext :=
+                  { context with
+                    state := { context.state with
+                      values := Function.update context.state.values (.position target)
+                        (some output) } }
+                change evalDist (prepareCandidateGroupsFails (fuel + 1)
+                    (candidate :: remaining) promoted) = _
+                have hupdatedValue : Function.update context.state.values (.position target)
+                    (some output) (.position target) = some output := by simp
+                simp only [prepareCandidateGroupsFails, resolvedCandidateGroupsFire, hcandidate]
+                rw [resolveDeferredPositionValue_of_state_value target
+                    promoted output (by simp [promoted]),
+                  resolveDeferredPositionValue_of_deferred_value target context output hstate
+                    hprivate]
+                have hhitEq :
+                    promoted.state.hitAt (.position target) output =
+                      context.state.hitAt (.position target) output := rfl
+                by_cases hhit : context.state.hitAt (.position target) output
+                · have hpromotedHit : promoted.state.hitAt (.position target) output := by
+                    rwa [hhitEq]
+                  simp [hhit, hpromotedHit]
+                · have hpromotedMiss : ¬promoted.state.hitAt (.position target) output := by
+                    rwa [hhitEq]
+                  simp only [hhit, hpromotedMiss, ↓reduceIte, pure_bind]
+                  by_cases hcandidateHit : candidateListHits target (candidate :: remaining) output
+                  · simp [hcandidateHit]
+                  · simp only [hcandidateHit, ↓reduceIte]
+                    have hinstall : context.values.install target output = context.values := by
+                      unfold DeferredStructuralValues.install
+                      conv_lhs => rw [← hprivate]
+                      exact Function.update_eq_self _ _
+                    rw [hinstall]
+                    let rest := removeTargetCandidates target (candidate :: remaining)
+                    have hnotOccurs : ¬TargetOccurs target rest := by
+                      rintro ⟨found, hfound, hfoundCoordinate⟩
+                      have hnotTarget := (List.mem_filter.mp hfound).2
+                      simp [candidateTargets, hfoundCoordinate] at hnotTarget
+                    exact evalDist_prepareCandidateGroupsFails_setPositionValue_of_not_occurs
+                      fuel rest
+                      { context with state := context.state.clearPending (.position target) }
+                      target output hnotOccurs
+              · have hcoordinateNe : Coordinate.position position ≠ .position target := by
+                  intro hold
+                  exact heq (Coordinate.position.inj hold)
+                simp only [prepareCandidateGroupsFails, resolvedCandidateGroupsFire, hcandidate]
+                rw [resolveDeferredPositionValue_setStateValue_of_ne target context
+                  (.position position) output hcoordinateNe]
+                simp only [map_eq_bind_pure_comp, bind_assoc]
+                apply evalDist_bind_congr
+                intro resolved hresolved
+                cases resolved with
+                | none => rfl
+                | some resolved =>
+                    simp only [Function.comp_apply, pure_bind, Option.map_some,
+                      DeferredResolution.setStateValue]
+                    by_cases hhit : candidateListHits target (candidate :: remaining)
+                        resolved.output
+                    · simp [hhit]
+                    · simp only [hhit, ↓reduceIte]
+                      have hnextState : resolved.state.values (.position position) = none := by
+                        rw [resolveDeferredPositionValue_preserves_state_values target context
+                          resolved hresolved]
+                        exact hstate
+                      have hnextPrivate : resolved.values position = some output := by
+                        rw [resolveDeferredPositionValue_preserves_other target position context
+                          resolved heq hresolved]
+                        exact hprivate
+                      exact ih (removeTargetCandidates target (candidate :: remaining))
+                        resolved.toDeferredContext hnextState hnextPrivate
+
+theorem evalDist_prepareCandidateListFails_materializePrivate_eq_clear
+    (candidates : List Probe) (context : DeferredContext)
+    (position : Position) (output : HashOutput)
+    (hstate : context.state.values (.position position) = none)
+    (hprivate : context.values position = some output) :
+    evalDist (prepareCandidateListFails candidates
+      { state := context.state.materialize (.position position) output
+        values := context.values }) =
+      evalDist (prepareCandidateListFails candidates
+        { context with state := context.state.clearPending (.position position) }) := by
+  let cleared : DeferredContext :=
+    { context with state := context.state.clearPending (.position position) }
+  let promoted : DeferredContext :=
+    { cleared with state := { cleared.state with
+        values := Function.update cleared.state.values (.position position) (some output) } }
+  have hclearedState : cleared.state.values (.position position) = none := by
+    exact hstate
+  have hclearedPrivate : cleared.values position = some output := hprivate
+  change evalDist (prepareCandidateListFails candidates
+      { promoted with state := promoted.state.ensure (.position position) }) =
+    evalDist (prepareCandidateListFails candidates cleared)
+  calc
+    _ = evalDist (prepareCandidateListFails candidates promoted) :=
+      evalDist_prepareCandidateGroupsFails_ensure candidates.length candidates promoted
+        (.position position)
+    _ = _ := evalDist_prepareCandidateGroupsFails_promotePrivatePosition candidates.length
+      candidates cleared position output hclearedState hclearedPrivate
+
+theorem evalDist_guardedPreparationObserve_materializePrivate_eq_clear_of_covered
+    (candidates : List Probe) (context : DeferredContext)
+    (position : Position) (output : HashOutput)
+    (hstate : context.state.values (.position position) = none)
+    (hprivate : context.values position = some output)
+    (hcovered : PendingCoveredBy candidates context) :
+    evalDist (guardedPreparationObserve candidates
+      { state := context.state.materialize (.position position) output
+        values := context.values }) =
+      evalDist (guardedPreparationObserve candidates
+        { context with state := context.state.clearPending (.position position) }) := by
+  have hleftCovered : PendingCoveredBy candidates
+      { state := context.state.materialize (.position position) output
+        values := context.values } := hcovered.clearPending (.position position)
+  have hrightCovered : PendingCoveredBy candidates
+      { context with state := context.state.clearPending (.position position) } :=
+    hcovered.clearPending (.position position)
+  unfold guardedPreparationObserve
+  simp only [hleftCovered, hrightCovered, ↓reduceIte]
+  exact evalDist_prepareCandidateListFails_materializePrivate_eq_clear candidates context
+    position output hstate hprivate
+
+theorem evalDist_guardedPreparationObserve_eq_true_of_privateStructuralHit
+    (candidates : List Probe) (context : DeferredContext)
+    (hcovered : PendingCoveredBy candidates context)
+    (hhit : PrivateStructuralHit context) :
+    evalDist (guardedPreparationObserve candidates context) =
+      evalDist (pure true : ProbComp Bool) := by
+  obtain ⟨position, output, hstate, hprivate, hpositionHit⟩ := hhit
+  have hcommute :=
+    evalDist_resolve_then_prepareCandidateListFails_of_pendingCovered position candidates
+      context hcovered
+  rw [resolveDeferredPositionValue_of_deferred_value position context output hstate hprivate]
+    at hcommute
+  simp only [hpositionHit, ↓reduceIte, pure_bind] at hcommute
+  unfold guardedPreparationObserve
+  simp only [hcovered, ↓reduceIte]
+  exact hcommute.symm
+
+theorem evalDist_guardedPreparationObserve_materializePrivate_eq_of_miss
+    (candidates : List Probe) (context : DeferredContext)
+    (position : Position) (output : HashOutput)
+    (hstate : context.state.values (.position position) = none)
+    (hprivate : context.values position = some output)
+    (hmiss : ¬context.state.hitAt (.position position) output)
+    (hcovered : PendingCoveredBy candidates context) :
+    evalDist (guardedPreparationObserve candidates
+      { state := context.state.materialize (.position position) output
+        values := context.values }) =
+      evalDist (guardedPreparationObserve candidates context) := by
+  let resolved : DeferredResolution :=
+    ⟨{ state := context.state.clearPending (.position position)
+       values := context.values }, output⟩
+  have hresolver : resolveDeferredPositionValue position context = pure (some resolved) := by
+    rw [resolveDeferredPositionValue_of_deferred_value position context output hstate hprivate]
+    simp [hmiss, resolved]
+  have hcommute :=
+    evalDist_resolve_then_guardedPreparationObserve_of_covered position candidates context
+      hcovered
+  rw [hresolver] at hcommute
+  simp only [pure_bind] at hcommute
+  calc
+    _ = evalDist (guardedPreparationObserve candidates resolved.toDeferredContext) :=
+      evalDist_guardedPreparationObserve_materializePrivate_eq_clear_of_covered candidates
+        context position output hstate hprivate hcovered
+    _ = _ := hcommute
+
+theorem evalDist_prepareCandidateListFails_materializeChainStart_eq_clear
+    (candidates : List Probe) (context : DeferredContext)
+    (index : OtsSecretIndex) (output : HashOutput) :
+    evalDist (prepareCandidateListFails candidates
+      { context with state := context.state.materialize index.coordinate output }) =
+      evalDist (prepareCandidateListFails candidates
+        { context with state := context.state.clearPending index.coordinate }) := by
+  change evalDist (prepareCandidateListFails candidates
+      { context with
+        state := { (context.state.clearPending index.coordinate) with
+          values := Function.update (context.state.clearPending index.coordinate).values
+            index.coordinate (some output)
+          ensured := insert index.coordinate context.state.ensured } }) = _
+  calc
+    _ = evalDist (prepareCandidateListFails candidates
+          { context with
+            state := { (context.state.clearPending index.coordinate) with
+              values := Function.update (context.state.clearPending index.coordinate).values
+                index.coordinate (some output) } }) :=
+      evalDist_prepareCandidateGroupsFails_ensure candidates.length candidates
+        { context with state :=
+          { (context.state.clearPending index.coordinate) with
+            values := Function.update (context.state.clearPending index.coordinate).values
+              index.coordinate (some output) } }
+        index.coordinate
+    _ = _ := evalDist_prepareCandidateGroupsFails_setChainStartValue candidates.length candidates
+      { context with state := context.state.clearPending index.coordinate } index output
+
+theorem pendingCoveredBy_materializeChainStart_iff_clear
+    (candidates : List Probe) (context : DeferredContext)
+    (index : OtsSecretIndex) (output : HashOutput) :
+    PendingCoveredBy candidates
+        { context with state := context.state.materialize index.coordinate output } ↔
+      PendingCoveredBy candidates
+        { context with state := context.state.clearPending index.coordinate } := by
+  rfl
+
+theorem evalDist_guardedPreparationObserve_materializeChainStart_eq_clear
+    (candidates : List Probe) (context : DeferredContext)
+    (index : OtsSecretIndex) (output : HashOutput) :
+    evalDist (guardedPreparationObserve candidates
+      { context with state := context.state.materialize index.coordinate output }) =
+      evalDist (guardedPreparationObserve candidates
+        { context with state := context.state.clearPending index.coordinate }) := by
+  unfold guardedPreparationObserve
+  rw [pendingCoveredBy_materializeChainStart_iff_clear candidates context index output]
+  by_cases hcovered : PendingCoveredBy candidates
+      { context with state := context.state.clearPending index.coordinate }
+  · simp only [hcovered, ↓reduceIte]
+    exact evalDist_prepareCandidateListFails_materializeChainStart_eq_clear candidates context
+      index output
+  · simp [hcovered]
+
+theorem probEvent_guardedPreparationObserve_materializeChainStart_le
+    (candidates : List Probe) (context : DeferredContext)
+    (index : OtsSecretIndex) (output : HashOutput) :
+    Pr[= true | guardedPreparationObserve candidates
+      { context with state := context.state.materialize index.coordinate output }] ≤
+      Pr[= true | guardedPreparationObserve candidates context] := by
+  calc
+    _ = Pr[= true | guardedPreparationObserve candidates
+          { context with state := context.state.clearPending index.coordinate }] :=
+      OracleComp.probOutput_congr rfl
+        (evalDist_guardedPreparationObserve_materializeChainStart_eq_clear candidates context
+          index output)
+    _ ≤ _ := probEvent_guardedPreparationObserve_clearPending_chainStart_le candidates context
+      index
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
