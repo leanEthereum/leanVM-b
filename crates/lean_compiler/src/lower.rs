@@ -186,6 +186,15 @@ struct Scope {
     /// pointer on the taken branch.
     self_fp_off: Option<Off>,
     /// Results of pure operations: `(op, sorted operands)` → the cell holding it.
+    ///
+    /// Reverting at a branch join (with `const_cells`, below) is the whole
+    /// invalidation: a cached cell must dominate every later use, and nothing
+    /// clears this at a label target. That is sound only because every backward
+    /// edge crosses a function boundary (a loop body is its own `Func` with a
+    /// fresh `Scope`) and every `patch_local` target is a forward jump, so a
+    /// cached cell's defining instruction always precedes its reuse. `cse.rs` is
+    /// stricter and clears at every label target, since it runs after lowering
+    /// and cannot see which edges those are.
     pure_cells: HashMap<(PureOp, Off, Off), Off>,
     /// Every lazily-`SET` constant cell: field value (as bits) → the frame cell
     /// holding it. Cells are write-once and read-many, so one `SET` serves every
@@ -684,7 +693,9 @@ impl FnLower<'_> {
             .filter(|&dst| {
                 seen.insert(dst)
                     && dst < branch_start
-                    && self.alias_of(dst).is_some_and(|a| saved_slots.get(&dst).and_then(|s| s.alias) != Some(a))
+                    && self
+                        .alias_of(dst)
+                        .is_some_and(|a| saved_slots.get(&dst).and_then(|s| s.alias) != Some(a))
             })
             .collect();
         for dst in branch_outputs {
@@ -1290,6 +1301,8 @@ impl FnLower<'_> {
                 if let Some(x) = self.add_identity(a, b) {
                     self.expr_into(x, dst);
                 } else {
+                    // Not `pure`: `dst` is the caller's, so it may be written
+                    // again and the second write be the assertion. See its doc.
                     let (la, lb) = (self.expr(a), self.expr(b));
                     self.emit(LOp::Xor { a: la, b: lb, c: dst });
                 }

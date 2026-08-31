@@ -26,21 +26,22 @@ use lean_vm::cpu::Program;
 /// `tests/programs/<name>.py` against the digest of the bytecode it compiles to.
 /// The list is closed: a new program must be added here, so one cannot be added
 /// without a digest.
+#[rustfmt::skip]
 const GOLDEN: &[(&str, &str)] = &[
-    ("conditionals", "924339ba2db7e6f063c62ea5ac80034f9cdf9490426973ba316b38e87c2b0b51"),
-    ("const_params", "608e54cfeaf5eb13f7d423a1f251079a5528e753448a31fb5ee4e12c9ab1ca2c"),
-    ("fibonacci", "929519de50dcef8aa919c523458f88ad67da4abfc3974c00acf8fd4a5996b7b2"),
-    ("hash_heap_chain", "b704c994f1972e9f1610625b5877c75be4ed70b7a1cc71dee3feebefe2da78af"),
+    ("conditionals", "c94c4c1fbe7f9aa0f373af7ec86123f0ba760ae11a39f7560682129f9566d4f4"),
+    ("const_params", "494a3e891f6e5b53b8946845f98990f36b0f1e01479db2c26f2fa27cfb9e7f00"),
+    ("fibonacci", "68558b18c6c0facbc6b9496aa0a85036e1360922b23631f3d4ca7f82223ed2d8"),
+    ("hash_heap_chain", "c0ba2a3f1a68d43f0ddeebfebf3918b489c1fef0c0d5ee45cd713c5cfbb17427"),
     ("hash_slices", "7146009faff5ace9a0c8446b63fd90de89aa82417709ddeee47dcc945848d85b"),
     ("heapbuf_dyn", "dc306f7cac8a664d85555fc746b0d54796dc654a87b9a63ea353d12597a25174"),
     ("hint", "b0fb2bce402a611a072382c85bf64ecbc95becebb33824c13853ed51ad3deeac"),
     ("identities", "d51dc227b94a4074b7950a4961ef31f834a2032adfa8fe62f3e85292193f2ea3"),
-    ("match", "ee000b896f39eac651de4c4da05b1af7bdf5ea805954ddb3c5cd45f4e56fcd67"),
+    ("match", "be0be17b8c84c39d36f25a34e276bd497c72cfe2d000a056f51e2589aaeac378"),
     ("match_range", "bbdb9183f56349cea48b268fccda310ec7bed631260a5ccdbfdca056724d853a"),
-    ("nested", "bb03a048954a7162b63498cd6dee8dae7802b474a98b1d3e23b070eb3fb256b2"),
-    ("runtime_loop", "55a2ca8dc9d75980c6d5eec96245967cabb2e0fb7f41b11d504cb398cb109667"),
+    ("nested", "49d116d596c1e3190a553a693aac676f7b4fff6e7287d389ce795f9082624de1"),
+    ("runtime_loop", "03576f38fbd593af5a5e47c062235434a2ab1c94ac1be3d6a3c59e7d31515491"),
     ("scoping", "cb9612c923ca5f7b17aa7c399dae97ca54353ec63ebe9ff5c6e49f895b1a6a13"),
-    ("unroll", "02ea947eee32d5d42f83eb294acbf93e31836eb08ae205ca95b69f6b8a177a8d"),
+    ("unroll", "94f7066b2e850330fa6288a7ffd4b75dff4bbf8079cab82fca4ebec3438260f8"),
     ("wots_walk", "c04c1922e456e91fb577c948821fae37cba922b4f4d992bbcb41b8661a7a19cc"),
 ];
 
@@ -89,7 +90,10 @@ fn bytecode_is_reproducible() {
         .copied()
         .filter(|n| !actual.iter().any(|(a, _)| a == n))
         .collect();
-    assert!(dropped.is_empty(), "GOLDEN names a program that no longer exists: {dropped:?}");
+    assert!(
+        dropped.is_empty(),
+        "GOLDEN names a program that no longer exists: {dropped:?}"
+    );
     if !moved.is_empty() {
         let table: String = actual
             .iter()

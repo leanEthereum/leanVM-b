@@ -29,14 +29,12 @@ impl FnLower<'_> {
     pub(super) fn cell_run(&mut self, e: &Expr) -> CellRun {
         match e {
             Expr::Var(_) => {
-                let (base, len) = self
-                    .stack_of(e)
-                    .unwrap_or_else(|| {
-                        self.fail(format!(
-                            "only a StackBuf names a run of cells unsliced, got `{e:?}`; slice a \
+                let (base, len) = self.stack_of(e).unwrap_or_else(|| {
+                    self.fail(format!(
+                        "only a StackBuf names a run of cells unsliced, got `{e:?}`; slice a \
                              HeapBuf instead: `buf[lo:lo + k]`"
-                        ))
-                    });
+                    ))
+                });
                 CellRun::Stack { base, len }
             }
             Expr::Slice(arr, lo, hi) => match (self.try_const_index(lo), self.try_const_index(hi)) {
@@ -71,10 +69,12 @@ impl FnLower<'_> {
                     let k = plus_k(lo, hi).unwrap_or_else(|| {
                         self.fail(format!("a runtime slice must be `buf[i:i + k]`, got `{lo:?}:{hi:?}`"))
                     });
-                    let len = u32::try_from(k)
-                        .unwrap_or_else(|_| self.fail(format!("slice length {k} does not fit in u32")));
+                    let len =
+                        u32::try_from(k).unwrap_or_else(|_| self.fail(format!("slice length {k} does not fit in u32")));
                     if len == 0 {
-                        self.fail(format!("a runtime slice `{lo:?}:{hi:?}` has length 0, so it names no cell"))
+                        self.fail(format!(
+                            "a runtime slice `{lo:?}:{hi:?}` has length 0, so it names no cell"
+                        ))
                     };
                     // `heap_addr` bounds-checks ONE cell. A start that folds
                     // (`GEN ** k`, or a name bound to one) arrives here because
@@ -337,8 +337,7 @@ impl FnLower<'_> {
         if extra == 0 {
             return (a, 0);
         }
-        let k = self.fresh();
-        self.set_const(k, g_pow_u128(extra).into());
+        let k = self.const_cell(g_pow_u128(extra).into());
         (self.pure(PureOp::Mul, a, k), 0)
     }
 
@@ -433,8 +432,7 @@ impl FnLower<'_> {
                 base: Some(c), exp: 0, ..
             } => c,
             GAddr { base, exp, .. } => {
-                let k = self.fresh();
-                self.set_const(k, g_pow_u128(exp).into());
+                let k = self.const_cell(g_pow_u128(exp).into());
                 let Some(c) = base else { return k };
                 self.pure(PureOp::Mul, c, k)
             }
