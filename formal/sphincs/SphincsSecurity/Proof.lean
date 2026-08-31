@@ -188,6 +188,8 @@ import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitness
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessPlan
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinal
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalProbability
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalCommute
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalInterpreter
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
