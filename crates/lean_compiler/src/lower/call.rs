@@ -6,9 +6,9 @@
 //! from their own idea of the argument count, so a mismatch does not merely lose
 //! a value: a missing argument leaves the callee's cell unwritten and therefore
 //! prover-chosen, and makes the caller bind a callee parameter cell as a return;
-//! a surplus one overwrites the callee's first return slot. Two of the three
-//! soundness bugs found in an audit of this crate were that check missing, once
-//! on the ordinary path and once on the fused `match_range` dispatch.
+//! a surplus one overwrites the callee's first return slot. That check was
+//! missing outright until an audit of this crate found it, in both places at
+//! once: the ordinary path and the fused `match_range` dispatch.
 //!
 //! A callee vanishes into its caller two ways. `Const` specialization
 //! monomorphises it per constant tuple and lowers the copy; `@inline` expands
@@ -91,8 +91,8 @@ impl FnLower<'_> {
             // used to die later in `resolve` as a bare `no entry found for key`.
             None => self.fail(format!(
                 "no function named `{callee}`. A builtin that writes into a destination \
-                 (`blake2s`, `assert_in_k`, a `hint_*`) is a statement and returns nothing, and an \
-                 `@inline` function is expanded at its call site rather than called"
+                 (`blake2s`, `assert_in_k`, a `hint_*`) is a statement and returns nothing, so it \
+                 cannot be called for a value"
             )),
             _ => {}
         }
@@ -154,6 +154,19 @@ impl FnLower<'_> {
         // ([`Self::call_into`]), so leaving it out here means one source is rejected
         // by one lowering of `match_range` and silently miscompiled by the other.
         for callee in callees {
+            // A fused dispatch enters ONE real function per arm, so an `@inline`
+            // callee has no entry pc to jump to: it is expanded at a call site
+            // and never lowered on its own. This path does not consult
+            // `try_inline`, so without saying so the call reached the assembler
+            // and died there indexing a HashMap, with no line and no name.
+            if self.defs.get(callee).is_some_and(|d| d.inline) {
+                self.fail(format!(
+                    "`@inline {callee}` cannot be a `match_range` arm's callee: the arms dispatch to \
+                     one real function, and an `@inline` body is expanded at its call site rather \
+                     than lowered. Drop `@inline`, or give the arms `Const` arguments so each \
+                     specializes instead of fusing"
+                ))
+            }
             // Arguments for the same reason as returns below: the shared frame
             // is sized to the largest callee, so a callee expecting more than
             // the arms supply reads a cell that exists and nothing writes.
@@ -354,6 +367,10 @@ impl FnLower<'_> {
         self.emit(LOp::Jump { oc: one, od: 0, of: 1 });
     }
 
+    /// If `callee` declares `Const` parameters, monomorphize: the constant
+    /// arguments (literals, `GEN ** k`, or literal-bound names) substitute into a
+    /// copy of the callee, queued once per distinct constant tuple and named
+    /// `callee__L5_G3`-style, and only the runtime arguments remain.
     pub(super) fn specialize(&mut self, callee: &str, args: &[Expr]) -> (String, Vec<Expr>) {
         let defs: &HashMap<String, Func> = self.defs;
         let Some(def) = defs.get(callee) else {
@@ -507,17 +524,12 @@ impl FnLower<'_> {
         Some((rt_params, rt_args, body, def.n_ret))
     }
 
-    /// If `callee` declares `Const` parameters, monomorphize: the constant
-    /// arguments (literals, `GEN ** k`, or literal-bound names) substitute into
-    /// a copy of the callee, queued once per distinct constant tuple and named
-    /// `callee__L5_G3`-style, and only the runtime arguments remain.
-    /// A callee's declared return shapes, looked up wherever it lives: an
+    /// How many arguments `callee` takes, looked up wherever it lives: an
     /// ordinary definition sits in `defs`, while a `Const` specialization is
     /// registered by [`Self::specialize`] in the queue under its mangled name and
-    /// never reaches `defs`. A dispatched `match_range` names specializations, so a
-    /// check that consults only `defs` silently passes on every one of them.
-    /// How many arguments `callee` takes, looked up the same way its return
-    /// shapes are, so a specialization or a generated helper answers too.
+    /// never reaches `defs`. `defs` is consulted first and answers with the
+    /// PRE-specialization count, Const parameters included, which is what a call
+    /// site passes.
     pub(super) fn arity_of(&self, callee: &str) -> Option<usize> {
         self.defs
             .get(callee)
@@ -525,6 +537,9 @@ impl FnLower<'_> {
             .or_else(|| self.queue.iter().find(|f| f.name == callee).map(|f| f.params.len()))
     }
 
+    /// A callee's declared return shapes, looked up the same way. A dispatched
+    /// `match_range` names specializations, so a check that consults only `defs`
+    /// silently passes on every one of them.
     pub(super) fn return_shapes_of(&self, callee: &str) -> Option<Vec<ReturnShape>> {
         self.defs.get(callee).map(|d| d.return_shapes.clone()).or_else(|| {
             self.queue

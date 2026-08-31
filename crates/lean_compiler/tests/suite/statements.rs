@@ -235,6 +235,41 @@ fn an_operator_missing_an_operand_says_so() {
     }
 }
 
+/// A bit-decomposition hint checks its heap destination, like its stack one.
+///
+/// `bits_dest`'s `StackBuf` arm rejected a destination too small for `nbits`;
+/// its `HeapBuf` arm checked nothing, so the bits ran on into the next buffer.
+/// The same shape as three earlier bugs: one omission beside a checked
+/// counterpart. The guest uses the shifted-alias form, so that is checked here
+/// too.
+#[test]
+fn a_bit_decomposition_cannot_overrun_its_heap_destination() {
+    let prog = |decl: &str, dest: &str| {
+        format!(
+            "def main():
+    hb = HeapBuf({decl})
+    v = GEN ** 5
+    hint_decompose_bits_exponent({dest}, v, 8)
+    p = GEN ** 0
+    p[1] = hb[1]
+    p[GEN] = GEN ** 0
+    return
+"
+        )
+    };
+    for (decl, dest, want) in [("2", "hb", "0:8"), ("8", "hb * GEN ** 4", "4:12")] {
+        let ast = parse(&prog(decl, dest)).expect("parses");
+        let Err(err) = std::panic::catch_unwind(|| compile(&ast)) else {
+            panic!("HeapBuf({decl}) accepted 8 bits at `{dest}`");
+        };
+        let msg = err.downcast_ref::<String>().map(String::as_str).unwrap_or("");
+        assert!(msg.contains(want) && msg.contains("out of bounds"), "got `{msg}`");
+    }
+    // Both forms still compile where the buffer really does hold the bits.
+    compile(&parse(&prog("8", "hb")).expect("parses"));
+    compile(&parse(&prog("16", "hb * GEN ** 4")).expect("parses"));
+}
+
 /// Four names and calls that used to pick a winner or die without a line.
 #[test]
 fn a_program_names_what_it_means() {

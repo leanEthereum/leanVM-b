@@ -242,7 +242,15 @@ impl FnLower<'_> {
                 self.materialize_run(base, nbits);
                 BitsDest::Stack(base)
             }
-            None => BitsDest::Heap(self.expr(e)),
+            None => {
+                // Bounds-checked like the `StackBuf` arm above, and like every
+                // other heap consumer. Without this a `HeapBuf` destination wrote
+                // `nbits` cells with nothing checking the buffer held them, so the
+                // bits ran on into the next buffer while the same call with a
+                // `StackBuf` destination was rejected.
+                self.check_heap_bound(e, 0, u128::from(nbits));
+                BitsDest::Heap(self.expr(e))
+            }
         }
     }
 
