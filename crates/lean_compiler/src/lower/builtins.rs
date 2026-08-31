@@ -193,11 +193,22 @@ impl FnLower<'_> {
     /// slice is pulled into a fresh stack pair first, one `DEREF` per cell
     /// (`m[ptr·g^{lo+k}] == m[fp+t+k]`, the `β` immediate doing the pointer
     /// offset). The heap cells must already be written.
+    ///
+    /// A LIST LITERAL names its two words directly and allocates nothing. The
+    /// opcode addresses its four input chunks independently, so an operand
+    /// assembled out of values living elsewhere never has to be gathered into a
+    /// consecutive run: `blake2s([a, b], …)` is the spelling that says so.
     pub(super) fn blake2s_input(&mut self, e: &Expr) -> [Off; 2] {
+        if let Expr::ListLit(words) = e {
+            if words.len() != 2 {
+                self.fail(format!(
+                    "a blake2s operand written as a list needs exactly 2 words, got {}",
+                    words.len()
+                ))
+            };
+            return [self.expr(&words[0]), self.expr(&words[1])];
+        }
         match self.blake2s_operand(e) {
-            // A stack operand: the two chunk cells are `o, o+1`; forward each
-            // cell's real source where known (a copy or a zero), so a hash of
-            // non-adjacent values needs no assembling copies.
             CellRun::Stack { base, .. } => [base, base + 1],
             CellRun::Heap { ptr, lo, .. } => {
                 let t = self.alloc_stack(2);

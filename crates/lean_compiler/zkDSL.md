@@ -479,8 +479,9 @@ The metadata is packed as `counter:u64 | f0:u32 | f1:u32`, little-endian, and is
 
 Operands are size-2 `StackBuf`s or 2-cell slices:
 
+- an **input operand written as a list**, `blake2s([a, b], [c, d], out)`, names its two words directly and allocates nothing: the opcode addresses its four input chunks independently, so an operand whose words live in different places never has to be gathered into a consecutive run. This is the spelling to reach for instead of `p = StackBuf(2); p[0] = a; p[1] = b`;
 - **stack operands** are read in place, at zero copies; a self-hash `blake2s(h, h, out)` names one 2-cell pair as both inputs;
-- the instruction addresses its **four canonical 128-bit message chunks independently** (each is a full F192 memory cell constrained at this use to the BLAKE2s subspace `c2 = 0`), so a 256-bit operand assembled from values living in different places (the idiom `p = StackBuf(2); p[0] = t0; p[1] = t1; blake2s(p, …)`) costs one instruction per assembling store and no more;
+- the instruction addresses its **four canonical 128-bit message chunks independently** (each is a full F192 memory cell constrained at this use to the BLAKE2s subspace `c2 = 0`), so an operand gathered into a buffer (`p = StackBuf(2); p[0] = t0; p[1] = t1; blake2s(p, …)`) costs one instruction per assembling store, which the list form above avoids entirely;
 - the chaining value has only one opcode offset and therefore must be consecutive. If a 2-cell `cv` was assembled from non-adjacent copied cells, the compiler materializes those two cells into a fresh consecutive run;
 - **heap slices** are still bridged through the stack for the *input pull* (the operand's words come from the heap): +1 `DEREF` per heap cell, and the output, if a heap slice, is stored after: write-once memory fills whichever side is unset.
 

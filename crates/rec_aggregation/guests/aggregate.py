@@ -1144,14 +1144,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # The ONE shared GKR leaf point (all three trees reduce to it).
 
     # ---- seed (statement pre-bound: hinted sub pi + baked program digest) ----
-    iv = StackBuf(2)
-    iv[0] = seed_0
-    iv[1] = seed_1
-    stmt = StackBuf(2)
-    stmt[0] = pi_0
-    stmt[1] = pi_1
     fs = StackBuf(2)
-    blake2s(iv, stmt, fs)
+    blake2s([seed_0, seed_1], [pi_0, pi_1], fs)
     stream = HeapBuf(STREAM_CAP)
     hint_witness(stream[0:STREAM_CAP], "stream")
     cursor = stream  # the proof stream is replayed word by word; cursor walks it (advance = * g)
@@ -2331,24 +2325,15 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     # Encoding digest D = BLAKE2s(tweak | pp | msg | randomness | zero-pad), 96 bytes:
     # one full 64-byte block followed by a 32-byte final block (24 bytes of
     # randomness and the specified 8-byte zero pad).
-    tweak_pp = StackBuf(WORDS_PER_BLOCK)
-    tweak_pp[0] = tweak_table[1]
-    tweak_pp[1] = pp
-    msg_block = StackBuf(WORDS_PER_BLOCK)
-    msg_block[0] = message[1]
-    msg_block[1] = message[GEN]
     after_msg = StackBuf(WORDS_PER_BLOCK)
-    blake2s(tweak_pp, msg_block, after_msg, counter=64, final=0)
+    blake2s([tweak_table[1], pp], [message[1], message[GEN]], after_msg, counter=64, final=0)
     rand_block = StackBuf(WORDS_PER_BLOCK)
     hint_witness(rand_block, "rand")
     # The spec's pad: cell 1 is randomness bytes 16..24 then 8 zero bytes. A packing helper
     # source is read as (lo, 0, 0) where BLAKE2s reads (lo, hi, 0); the dest is unused.
     assert_in_k(rand_block[1], 0)
     digest = StackBuf(WORDS_PER_BLOCK)
-    zero_block = StackBuf(WORDS_PER_BLOCK)
-    zero_block[0] = 0
-    zero_block[1] = 0
-    blake2s(rand_block, zero_block, digest, cv=after_msg, counter=96, final=1)
+    blake2s(rand_block, [0, 0], digest, cv=after_msg, counter=96, final=1)
 
     # V WOTS chains. Per chain: the digit is hinted in the exponent (g^{e_i}),
     # range checked, and dispatched once; arm k walks the remaining
@@ -2416,11 +2401,8 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
         children = StackBuf(WORDS_PER_BLOCK)
         children[0] = node + m
         children[1] = sibling + m
-        merkle_tweak_pp = StackBuf(WORDS_PER_BLOCK)
-        merkle_tweak_pp[0] = tweak_table[GEN ** (WORDS_PER_VALUE * (MERKLE_TWEAK_IDX + lvl))]
-        merkle_tweak_pp[1] = pp
         parent = StackBuf(WORDS_PER_BLOCK)
-        blake2s(merkle_tweak_pp, children, parent)
+        blake2s([tweak_table[GEN ** (WORDS_PER_VALUE * (MERKLE_TWEAK_IDX + lvl))], pp], children, parent)
         node = parent[0]
     assert node == pk_ptr[1]
     return
