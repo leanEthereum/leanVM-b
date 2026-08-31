@@ -1720,20 +1720,20 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # ---- public-input binding claim: MEM as ONE logical E-column ----
     # The VM's bind_pi_claim makes a SINGLE E-claim at [rm, 0..]:
     #   MEM(rm) = interp(pi_0, pi_1, rm) = pi_0 + rm*(pi_0 + pi_1)
-    # over the E-valued public input (no lane splitting, no Frobenius). One
-    # evaluation per limb rides the stream and the three must reassemble it:
-    # MEM = v_lo + Y*v_hi + Y²*v_top (doc sec:e2e-pi).
+    # over the E-valued public input (no lane splitting, no Frobenius). Both
+    # public words have a zero top limb, so that limb's evaluation is zero at
+    # every rm; only the two low ones ride the stream and must reassemble it:
+    # MEM = v_lo + Y*v_hi (doc sec:e2e-pi).
     fs, rm = squeeze(fs)
     mem = pi_0 + rm * (pi_0 + pi_1)
     fs, mem_lo, cursor = fs_next(fs, cursor)
     fs, mem_hi, cursor = fs_next(fs, cursor)
-    fs, mem_top, cursor = fs_next(fs, cursor)
-    assert mem == mem_lo + mem_hi * Y_TOWER + mem_top * Y_TOWER * Y_TOWER
+    assert mem == mem_lo + mem_hi * Y_TOWER
     claim_pool[GEN ** claim_idx] = mem_lo
     claim_idx += 1
     claim_pool[GEN ** claim_idx] = mem_hi
     claim_idx += 1
-    claim_pool[GEN ** claim_idx] = mem_top
+    claim_pool[GEN ** claim_idx] = 0
     claim_idx += 1
 
     # ---- flock zerocheck (univariate skip, k_skip = 6) ----

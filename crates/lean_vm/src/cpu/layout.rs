@@ -341,7 +341,7 @@ pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: 
     let final_pc = (bytecode_size - 1) as u32;
 
     let one = F64::ONE;
-    // The public program columns map operand *offsets* (small, ≤ frame size) to
+    // The bytecode columns map operand *offsets* (small, ≤ frame size) to
     // g-powers (not memory addresses), so precompute only up to the largest
     // operand, an O(1) lookup each, rather than over the whole 2^log_mem memory.
     // Shared between the seed and finalize blocks: at kbc = 19 a copy is tens of

@@ -312,7 +312,10 @@ fn forward_walk(sink: &mut crate::gf2::RowValues, w: &[F192]) {
     for i in 0..4 {
         state[8 + i] = wire_from_const(w, BLAKE2S_IV[i], Z_CONST_POS);
     }
-    for (i, base) in [COUNTER_LO_BASE, COUNTER_HI_BASE, FINAL_BASE, LAST_NODE_BASE].into_iter().enumerate() {
+    for (i, base) in [COUNTER_LO_BASE, COUNTER_HI_BASE, FINAL_BASE, LAST_NODE_BASE]
+        .into_iter()
+        .enumerate()
+    {
         state[12 + i] = wire_xor(
             &wire_from_const(w, BLAKE2S_IV[4 + i], Z_CONST_POS),
             &wire_from_slot_base(w, base),
@@ -493,7 +496,10 @@ fn marginal_walk_side(side: MatrixSide, u: &[F192]) -> Vec<F192> {
             }
         }
     }
-    for (i, base) in [COUNTER_LO_BASE, COUNTER_HI_BASE, FINAL_BASE, LAST_NODE_BASE].into_iter().enumerate() {
+    for (i, base) in [COUNTER_LO_BASE, COUNTER_HI_BASE, FINAL_BASE, LAST_NODE_BASE]
+        .into_iter()
+        .enumerate()
+    {
         for b in 0..WORD_BITS {
             m[base + b] += adj[12 + i][b];
             if (BLAKE2S_IV[4 + i] >> b) & 1 == 1 {

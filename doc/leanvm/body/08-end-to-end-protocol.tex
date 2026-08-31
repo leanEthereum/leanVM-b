@@ -1,29 +1,13 @@
 % !TeX root = ../drafts/08-end-to-end-protocol.tex
 \section{End-to-end protocol}\label{sec:e2e}
 
-This section assembles the primitives into the executable protocol, beginning with the constants, encodings, and padding fixed in advance.
-
-\subsection{Constants}\label{sec:e2e-const}
-
-Fixed once, public, and shared by prover and verifier: the fields, the bus shape, and the tags naming interactions and instructions on it.
-
-\paragraph{Fields, generator, and bus.}
-\[
-\K=\F_2[x]/(x^{64}+x^4+x^3+x+1),\qquad
-\E=\K[y]/(y^3+y+1),\qquad
-\gen=x,\qquad \operatorname{ord}(\gen)=2^{64}-1.
-\]
-Every column is $\K$-valued, and so is every constraint on them (\S\ref{sec:prelim}); a machine word is an $\E$-element only in the sense that its three $\K$-lanes are read as one, and challenges are $\E$-valued for soundness. Every bus tuple has width $m=16$; shorter tuples are zero-padded in their high coordinates (\S\ref{sec:m3}).
-
-\paragraph{Tags.} Coordinate $0$ of every tuple is a domain separator naming its interaction, and coordinate $3$ of a bytecode tuple is an opcode naming its instruction; both take the values of \S\ref{sec:omc}.
-
 \subsection{Bytecode encoding}\label{sec:e2e-bc}
 
-The program is public. The bus interaction carrying the bytecode lookup has the following shape:
-\[
-  \tup{\dsep{BC},\pc,\cnt,\cdot}.
-\]
-Coordinate $3$ holds the opcode and coordinates $4,\ldots,11$ hold eight operands or immediate lanes. Each reference operand is a $\gen$-power. Immediates occupy their $\K$-lanes: $k_0,k_1,k_2$ for \texttt{SET\_CONSTANT}, and $\md_0,\md_1$ for \texttt{BLAKE2S}.
+The bytecode (of $\nprog=2^{\kbc}$ instructions) is encoded as one $\K$-valued multilinear $P$ in $\kbc+4$ variables:
+\begin{enumerate}[itemsep=1pt,topsep=3pt]
+\item lay instruction $z$ out as $16$ slots of $\K$: the opcode in slot $3$, the operands and immediate lanes in slots $4,\dots,11$, and $0$ everywhere else.
+\item read the resulting $2^{\kbc}\times16$ table as $P$, the low $\kbc$ variables indexing the instruction and the high four its slot, bits low first.
+\end{enumerate}
 \begin{center}
 \begin{tabular}{llllllllll}
 \hline
@@ -38,15 +22,15 @@ Instruction & $3$ & $4$ & $5$ & $6$ & $7$ & $8$ & $9$ & $10$ & $11$\\
 \hline
 \end{tabular}
 \end{center}
-The program is padded to $\nprog=2^{\kbc}$ instructions (\S\ref{sec:idxcol}) and read as one $\K$-valued multilinear $P$ in $\kbc+4$ variables: the low $\kbc$ index the instruction, the high four its slot. Slot $i$ holds tuple coordinate $i$: the opcode at $3$, the operands and immediates at $4,\dots,11$, the rest zero. Writing slot bits low first, $P(z,1,1,0,0)$ is instruction $z$'s opcode, $P(z,0,0,1,0)$ its first operand, and $P(z,0,0,0,0)=P(z,0,0,1,1)=0$.
+So $P(z,1,1,0,0)$ is instruction $z$'s opcode, $P(z,0,0,1,0)$ its first operand, and $P(z,0,0,0,0)=P(z,0,0,1,1)=0$.
 
 \subsection{Public input}\label{sec:e2e-pi}
 
-The public input is the first two memory cells $\mem[\gen^{0}],\mem[\gen^{1}]$, each a $192$-bit word, fixed and agreed by both parties. Those two cells span the subcube of the address hypercube $\cube{\kmem}$ with the $\kmem-1$ high coordinates $0$ and the low one free, so on \emph{each} memory limb $\mem_\ell$ ($\ell\in\{0,1,2\}$, \S\ref{sec:memchan}) the MLE restricts there to the line $\widetilde{\mathrm{PI}}_\ell(r)=(1+r)\,\mem[\gen^{0}]_\ell+r\,\mem[\gen^{1}]_\ell$, which the verifier forms itself from the public words. It samples $r_m\in\E$ and checks all three limbs,
+The public input is the first two memory cells $\mem[\gen^{0}],\mem[\gen^{1}]$, two $192$-bit words (with top limb $0$) both parties know. The verifier samples $r_m\in\E$, the prover sends $c_0,c_1$ claiming $c_\ell=\mle{\mem_\ell}(r_m,0,\dots,0)$, and the verifier checks
 \[
-  \mle{\mem_\ell}(r_m,0,\dots,0)\;\qeq\;\widetilde{\mathrm{PI}}_\ell(r_m),\qquad \ell\in\{0,1,2\}.
+  c_\ell\;\qeq\;(1+r_m)\,\mem[\gen^{0}]_\ell+r_m\,\mem[\gen^{1}]_\ell,\qquad \ell\in\{0,1\}.
 \]
-The prover sends the three claimed values, the verifier checks each against the line, and the three claims are deferred to the PCS (\S\ref{sec:stacking}).
+Both sides are degree one in $r_m$, so a limb disagreeing with the public words survives with probability at most $1/|\E|$ (Lemma~\ref{lem:sz}). The claims $c_0$, $c_1$ are discharged to the PCS.
 
 \subsection{Filling the tables}\label{sec:e2e-pad}
 
@@ -55,13 +39,13 @@ A table is proven over a power-of-two number of rows. The prover reaches one by 
 \item one walk from $(\pc_0,\fp_0)$ to $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$
 \item closed walks
 \end{itemize}
-The prover can thus leverage these "closed walks" to fill every table to its next power of 2. (important for completeness, but not for soundness)
+The prover can thus leverage these \emph{closed walks} to fill every table to its next power of 2. (important for completeness, but not for soundness)
 
 \subsection{The unrolled protocol}\label{sec:e2e-unrolled}
 
 Each reduction below adds evaluation claims on columns to a shared \emph{claim pool}; the final \textsc{Opening} phase proves all of them with a single PCS opening.
 
-\paragraph{Setup and statement binding.} Fixed and shared in advance (\S\ref{sec:e2e-const} through \S\ref{sec:e2e-pi}): the fields and constants; the instance caps (\S\ref{sec:lookup}); the public program and its length; the initial state $(\pc_0,\fp_0)$ and final state $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$; and the public input $\mem[\gen^{0}],\mem[\gen^{1}]$. Before any challenge, the transcript is seeded by the public input and one environment digest that binds both the exact bytecode and flock's BLAKE2s R1CS. The prover then announces the memory log-size $\kmem$ and the six table log-heights $\tau_j$; the verifier checks them against the caps and derives every table, stack, and leaf shape.
+\paragraph{Setup and statement binding.} Fixed and shared in advance through \S\ref{sec:e2e-pi}): the fields and constants; the instance caps (\S\ref{sec:lookup}); the bytecode and its length; the initial state $(\pc_0,\fp_0)$ and final state $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$; and the public input $\mem[\gen^{0}],\mem[\gen^{1}]$. Before any challenge, the transcript is seeded by the public input and one environment digest that binds both the exact bytecode and flock's BLAKE2s R1CS. The prover then announces the memory log-size $\kmem$ and the six table log-heights $\tau_j$; the verifier checks them against the caps and derives every table, stack, and leaf shape.
 
 \paragraph{Commitment.}
 \begin{enumerate}
@@ -86,7 +70,7 @@ Each reduction below adds evaluation claims on columns to a shared \emph{claim p
 \paragraph{Public input.}
 \begin{enumerate}
 \item \textbf{Verifier.} Sends $r_m\in\E$ and forms the line $\widetilde{\mathrm{PI}}_\ell(r_m)$ from the public words.
-\item \textbf{Prover \& Verifier.} The prover sends one evaluation per memory limb; the verifier checks the three against the line and pools them as claims on $\mem_0,\mem_1,\mem_2$ at $(r_m,0,\dots,0)$ (\S\ref{sec:e2e-pi}).
+\item \textbf{Prover \& Verifier.} The prover sends $c_0,c_1$; the verifier checks them against the line and pools them, with $0$ for the top limb, as claims on $\mem_0,\mem_1,\mem_2$ at $(r_m,0,\dots,0)$ (\S\ref{sec:e2e-pi}).
 \end{enumerate}
 
 \paragraph{BLAKE2s validity.}

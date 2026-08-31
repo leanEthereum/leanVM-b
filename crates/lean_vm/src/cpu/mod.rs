@@ -603,16 +603,18 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     };
     let l = &w.layout;
 
-    // The PI binding transmits one evaluation per memory limb (§sec:e2e-pi); the
-    // verifier checks each against the public-input line at `r_pi`.
+    // The PI binding transmits the two LOW memory limbs' evaluations
+    // (§sec:e2e-pi); the verifier checks them against the public-input line at
+    // `r_pi`. The top limb of both public words is zero, so its evaluation is
+    // zero at every `r_pi` and rides no scalar.
     let r_pi = ps.sample();
     let pi_limbs = [
         primitives::multilinear::interp_k(F64(l.pi[0].c0), F64(l.pi[1].c0), r_pi),
         primitives::multilinear::interp_k(F64(l.pi[0].c1), F64(l.pi[1].c1), r_pi),
-        primitives::multilinear::interp_k(F64(l.pi[0].c2), F64(l.pi[1].c2), r_pi),
+        F192::ZERO,
     ];
-    for v in pi_limbs {
-        ps.add_scalar(v);
+    for v in &pi_limbs[..2] {
+        ps.add_scalar(*v);
     }
     // Memory binds the message, chaining-value, and output words; bytecode binds
     // the counter and flags. All corresponding value columns are virtual and route
@@ -742,12 +744,13 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
 
     let r_pi = vs.sample();
     let mut pi_limbs = [F192::ZERO; 3];
-    for v in &mut pi_limbs {
+    for v in &mut pi_limbs[..2] {
         *v = vs.next_scalar().map_err(Error::Transcript)?;
     }
-    // Each limb's claimed evaluation must sit on the public-input line (§sec:e2e-pi).
+    // The two claimed evaluations must sit on the public-input line, the top
+    // limb's being zero (§sec:e2e-pi).
     let want = primitives::multilinear::interp(l.pi[0], l.pi[1], r_pi);
-    if pi_limbs[0] + F192::Y * pi_limbs[1] + F192::Y * F192::Y * pi_limbs[2] != want {
+    if pi_limbs[0] + F192::Y * pi_limbs[1] != want {
         return Err(Error::PublicInput);
     }
     let slots = finish_claims(&l, bus.claims, &table_claims, r_pi, pi_limbs);

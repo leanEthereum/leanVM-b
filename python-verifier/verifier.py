@@ -1394,7 +1394,7 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
 
     # 5] binding the public input
     public_challenge = transcript.sample()
-    public_limbs = transcript.next_scalars(3)
+    public_limbs = (*transcript.next_scalars(2), ZERO)
     require(poly_eval(public_limbs, Y) == multilinear_eval(public_input.halves(), [public_challenge]), "public input check failed")
     public_point = (public_challenge, *[ZERO] * (layout.placements[MEMORY_0].variables - 1))
     claims.extend(ColumnClaim(column, public_point, value) for column, value in zip((MEMORY_0, MEMORY_1, MEMORY_2), public_limbs))
