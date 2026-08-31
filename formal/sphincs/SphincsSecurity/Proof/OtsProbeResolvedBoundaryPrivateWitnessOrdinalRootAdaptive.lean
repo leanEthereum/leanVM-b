@@ -753,6 +753,81 @@ theorem rootInputAvoids_of_rootAwareCandidateAvoidsRoots
     exact havoid.2
       (rootAwarePlannedCandidate?_eq_some_of_encodingInputGuessesRoot state hguess)
 
+def cleanRunReturnedValue? : Option (CleanRunResult (α × SplitHashCache)) → Option α
+  | none => none
+  | some result => some result.value.1
+
+theorem evalDist_cleanRunReturnedValue_eq_of_rootEncodingStored
+    {parameter : PublicParameter} {target : Position}
+    {leftRoot rightRoot : Digest}
+    {left right : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α}
+    (hrelates : RootEncodingCacheRelatesStored parameter target leftRoot rightRoot left right)
+    (leftCache rightCache : SplitHashCache)
+    (hcache : RootEncodingCacheRel parameter target leftRoot rightRoot leftCache rightCache)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (hstored : StoredLayerRoot state target leftRoot) :
+    evalDist (cleanRunReturnedValue? <$>
+        runCleanFromTable state fuel table (left.run leftCache)) =
+      evalDist (cleanRunReturnedValue? <$>
+        runCleanFromTable state fuel table (right.run rightCache)) := by
+  have hrun := hrelates leftCache rightCache hcache state fuel table hstored
+  have hprojected : RelTriple
+      (runCleanFromTable state fuel table (left.run leftCache))
+      (runCleanFromTable state fuel table (right.run rightCache))
+      (fun leftResult rightResult =>
+        cleanRunReturnedValue? leftResult = cleanRunReturnedValue? rightResult) := by
+    apply relTriple_post_mono hrun
+    intro leftResult rightResult hresult
+    cases leftResult with
+    | none =>
+        cases rightResult with
+        | none => rfl
+        | some rightResult => simp [RootEncodingStoredCleanSameRel] at hresult
+    | some leftResult =>
+        cases rightResult with
+        | none => simp [RootEncodingStoredCleanSameRel] at hresult
+        | some rightResult =>
+            simp only [RootEncodingStoredCleanSameRel, RootEncodingCleanSameRel] at hresult
+            simp [cleanRunReturnedValue?, hresult.1.2.2.2.1]
+  have hmapped : RelTriple
+      (cleanRunReturnedValue? <$>
+        runCleanFromTable state fuel table (left.run leftCache))
+      (cleanRunReturnedValue? <$>
+        runCleanFromTable state fuel table (right.run rightCache))
+      (fun leftValue rightValue => leftValue = rightValue) :=
+    relTriple_map hprojected
+  exact evalDist_eq_of_relTriple_eqRel hmapped
+
+theorem evalDist_rootAvoidingComputation_returnedValue_eq
+    (parameter : PublicParameter) (publicRoot : Digest)
+    (target : Position) (hroot : IsLayerRoot target)
+    (leftRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (leftCache rightCache : SplitHashCache)
+    (hcache : RootEncodingCacheRel parameter target leftRoot rightRoot leftCache rightCache)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (hstored : StoredLayerRoot state target leftRoot) :
+    evalDist (cleanRunReturnedValue? <$>
+        runCleanFromTable state fuel table
+          ((simulateQ (maskedExpandedAdversaryImpl parameter publicRoot ftsSecret)
+            (rootAvoidingComputation parameter target leftRoot rightRoot computation)).run
+              leftCache)) =
+      evalDist (cleanRunReturnedValue? <$>
+        runCleanFromTable state fuel table
+          ((simulateQ
+            (maskedExpandedAdversaryImplWithTargetComparison parameter publicRoot target
+              rightRoot ftsSecret)
+            (rootAvoidingComputation parameter target leftRoot rightRoot computation)).run
+              rightCache)) :=
+  evalDist_cleanRunReturnedValue_eq_of_rootEncodingStored
+    (rootEncodingCacheRelatesStored_simulateQ_rootAvoidingComputation parameter publicRoot target
+      hroot leftRoot rightRoot ftsSecret computation)
+    leftCache rightCache hcache state fuel table hstored
+
 theorem privateWitnessAtOrdinal_of_firstPrivateWitnessOrdinal?_eq_some
     {witness : PrivateHitWitness} {candidates : List Probe}
     {ordinal : Fin candidates.length}
