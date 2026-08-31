@@ -171,6 +171,7 @@ import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivatePlannedCommute
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateTrace
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateCount
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateCandidateGame
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateCandidateResolve
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
