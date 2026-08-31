@@ -251,10 +251,26 @@ def selectedProbeDigest : Option Probe → Digest
   | none => 0
   | some candidate => candidate.candidate
 
+def materializedOrdinalSelectionAt
+    (target : Position) : Option Probe → Prop
+  | none => False
+  | some candidate => candidate.coordinate = .position target
+
 theorem materializedOrdinalSelectionMatches_root_eq_selectedProbeDigest
     {target : Position} {root : Digest} {selection : Option Probe}
     (hmatch : materializedOrdinalSelectionMatches target root selection) :
     root = selectedProbeDigest selection := by
+  cases selection with
+  | none => exact False.elim hmatch
+  | some candidate =>
+      unfold materializedOrdinalSelectionMatches at hmatch
+      subst candidate
+      rfl
+
+theorem materializedOrdinalSelectionAt_of_matches
+    {target : Position} {root : Digest} {selection : Option Probe}
+    (hmatch : materializedOrdinalSelectionMatches target root selection) :
+    materializedOrdinalSelectionAt target selection := by
   cases selection with
   | none => exact False.elim hmatch
   | some candidate =>
@@ -317,5 +333,334 @@ theorem probEvent_sampledComparisonRoot_materializedSelectionMatches_le
         (fun _rightRoot => reference) reference
       · intro rightRoot
         rfl
+
+set_option maxRecDepth 100000 in
+theorem probEvent_sampledComparisonRoot_materializedSelectionMatches_le_mul
+    (ordinal : Nat) (parameter : PublicParameter) (target : Position)
+    (leftRoot : Digest)
+    (signer : Message → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) (Option Signature))
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (candidates : List Probe) (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    Pr[fun result : Digest × Option Probe =>
+        materializedOrdinalSelectionMatches target result.1 result.2 | do
+      let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+      let selection ← materializedRootAvoidingOrdinalSelection ordinal parameter target
+        leftRoot rightRoot signer computation candidates state fuel table cache
+      pure (rightRoot, selection)] ≤
+      Pr[materializedOrdinalSelectionAt target |
+          materializedRootAvoidingOrdinalSelection ordinal parameter target leftRoot leftRoot signer
+            computation candidates state fuel table cache] *
+        ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  let reference := materializedRootAvoidingOrdinalSelection ordinal parameter target leftRoot
+    leftRoot signer computation candidates state fuel table cache
+  calc
+    _ ≤ Pr[fun result : Digest × Option Probe =>
+          materializedOrdinalSelectionMatches target result.1 result.2 | do
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        let selection ← reference
+        pure (rightRoot, selection)] := by
+      apply probEvent_bind_le_bind_of_forall_le
+      intro rightRoot _hrightRoot
+      rw [show (do
+          let selection ← materializedRootAvoidingOrdinalSelection ordinal parameter target
+            leftRoot rightRoot signer computation candidates state fuel table cache
+          pure (rightRoot, selection)) =
+        (fun selection => (rightRoot, selection)) <$>
+          materializedRootAvoidingOrdinalSelection ordinal parameter target leftRoot rightRoot
+            signer computation candidates state fuel table cache by
+          simp [map_eq_bind_pure_comp],
+        show (do
+          let selection ← reference
+          pure (rightRoot, selection)) =
+        (fun selection => (rightRoot, selection)) <$> reference by
+          simp [map_eq_bind_pure_comp], probEvent_map, probEvent_map]
+      exact probEvent_materializedRootAvoidingOrdinalSelection_match_le_actual_guard ordinal
+        parameter target leftRoot rightRoot rightRoot signer computation candidates state fuel table
+        cache
+    _ ≤ Pr[fun result : Digest × Option Probe =>
+          materializedOrdinalSelectionAt target result.2 ∧
+            result.1 = selectedProbeDigest result.2 | do
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        let selection ← reference
+        pure (rightRoot, selection)] := by
+      apply probEvent_mono
+      intro result _hresult hmatch
+      exact ⟨materializedOrdinalSelectionAt_of_matches hmatch,
+        materializedOrdinalSelectionMatches_root_eq_selectedProbeDigest hmatch⟩
+    _ ≤ _ := by
+      apply probEvent_uniform_root_matches_distribution_independent_guess_le_mul
+        (fun _rightRoot => reference) reference
+      intro rightRoot
+      rfl
+
+set_option maxRecDepth 100000 in
+theorem probEvent_uniformActualRoot_match_le_of_swap_of_comparison
+    (target : Position)
+    (run : Digest → Digest → ProbComp (Option Probe))
+    (reference : Digest → ProbComp (Option Probe))
+    (hswap : ∀ leftRoot rightRoot,
+      evalDist (run leftRoot rightRoot) = evalDist (run rightRoot leftRoot))
+    (hcomparison : ∀ leftRoot rightRoot,
+      Pr[materializedOrdinalSelectionMatches target rightRoot | run leftRoot rightRoot] ≤
+        Pr[materializedOrdinalSelectionMatches target rightRoot | reference leftRoot]) :
+    Pr[fun result : Digest × Digest × Option Probe =>
+        materializedOrdinalSelectionMatches target result.1 result.2.2 | do
+      let leftRoot ← ($ᵗ Digest : ProbComp Digest)
+      let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+      let selection ← run leftRoot rightRoot
+      pure (leftRoot, rightRoot, selection)] ≤
+      ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  let sampled := ($ᵗ Digest : ProbComp Digest)
+  let actual : ProbComp (Digest × Digest × Option Probe) := do
+    let leftRoot ← sampled
+    let rightRoot ← sampled
+    let selection ← run leftRoot rightRoot
+    pure (leftRoot, rightRoot, selection)
+  let swapped : ProbComp (Digest × Digest × Option Probe) := do
+    let leftRoot ← sampled
+    let rightRoot ← sampled
+    let selection ← run rightRoot leftRoot
+    pure (leftRoot, rightRoot, selection)
+  let comparison : ProbComp (Digest × Digest × Option Probe) := do
+    let leftRoot ← sampled
+    let rightRoot ← sampled
+    let selection ← run leftRoot rightRoot
+    pure (rightRoot, leftRoot, selection)
+  let referenceComparison : ProbComp (Digest × Digest × Option Probe) := do
+    let leftRoot ← sampled
+    let rightRoot ← sampled
+    let selection ← reference leftRoot
+    pure (rightRoot, leftRoot, selection)
+  have hreplace : evalDist actual = evalDist swapped := by
+    unfold actual swapped
+    apply evalDist_bind_congr
+    intro leftRoot _hleftRoot
+    apply evalDist_bind_congr
+    intro rightRoot _hrightRoot
+    rw [evalDist_bind, evalDist_bind, hswap leftRoot rightRoot]
+  have hcommute : evalDist swapped = evalDist comparison := by
+    unfold swapped comparison
+    exact OracleComp.DeferredSampling.evalDist_bind_comm sampled sampled
+      (fun leftRoot rightRoot => do
+        let selection ← run rightRoot leftRoot
+        pure (leftRoot, rightRoot, selection))
+  change Pr[fun result : Digest × Digest × Option Probe =>
+      materializedOrdinalSelectionMatches target result.1 result.2.2 | actual] ≤ _
+  calc
+    _ = Pr[fun result : Digest × Digest × Option Probe =>
+          materializedOrdinalSelectionMatches target result.1 result.2.2 | comparison] :=
+      OracleComp.probEvent_congr' (fun _ _ => Iff.rfl) (hreplace.trans hcommute)
+    _ ≤ Pr[fun result : Digest × Digest × Option Probe =>
+          materializedOrdinalSelectionMatches target result.1 result.2.2 |
+          referenceComparison] := by
+      unfold comparison referenceComparison
+      apply probEvent_bind_le_bind_of_forall_le
+      intro leftRoot _hleftRoot
+      apply probEvent_bind_le_bind_of_forall_le
+      intro rightRoot _hrightRoot
+      rw [show (do
+          let selection ← run leftRoot rightRoot
+          pure (rightRoot, leftRoot, selection)) =
+        (fun selection => (rightRoot, leftRoot, selection)) <$> run leftRoot rightRoot by
+          simp [map_eq_bind_pure_comp],
+        show (do
+          let selection ← reference leftRoot
+          pure (rightRoot, leftRoot, selection)) =
+        (fun selection => (rightRoot, leftRoot, selection)) <$> reference leftRoot by
+          simp [map_eq_bind_pure_comp], probEvent_map, probEvent_map]
+      exact hcomparison leftRoot rightRoot
+    _ ≤ ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+      unfold referenceComparison
+      apply probEvent_bind_le_of_forall_le
+      intro leftRoot _hleftRoot
+      let fixed : ProbComp (Digest × Option Probe) := do
+        let rightRoot ← sampled
+        let selection ← reference leftRoot
+        pure (rightRoot, selection)
+      have hfixed : Pr[fun result : Digest × Option Probe =>
+          materializedOrdinalSelectionMatches target result.1 result.2 | fixed] ≤
+          ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+        calc
+          _ ≤ Pr[fun result : Digest × Option Probe =>
+                result.1 = selectedProbeDigest result.2 | fixed] := by
+            apply probEvent_mono
+            intro result _hresult hmatch
+            exact materializedOrdinalSelectionMatches_root_eq_selectedProbeDigest hmatch
+          _ ≤ _ := by
+            unfold fixed
+            apply probEvent_uniform_root_matches_distribution_independent_guess_le
+              (fun _rightRoot => reference leftRoot) (reference leftRoot)
+            intro rightRoot
+            rfl
+      calc
+        _ = Pr[fun result : Digest × Option Probe =>
+            materializedOrdinalSelectionMatches target result.1 result.2 | fixed] := by
+          rw [show (do
+              let rightRoot ← sampled
+              let selection ← reference leftRoot
+              pure (rightRoot, leftRoot, selection)) =
+            (fun result : Digest × Option Probe => (result.1, leftRoot, result.2)) <$>
+              fixed by
+                simp [fixed, map_eq_bind_pure_comp], probEvent_map]
+          rfl
+        _ ≤ _ := hfixed
+
+set_option maxRecDepth 100000 in
+theorem probEvent_uniformActualRoot_match_le_of_swap_of_comparison_mul
+    (target : Position)
+    (run : Digest → Digest → ProbComp (Option Probe))
+    (reference : Digest → ProbComp (Option Probe))
+    (hswap : ∀ leftRoot rightRoot,
+      evalDist (run leftRoot rightRoot) = evalDist (run rightRoot leftRoot))
+    (hcomparison : ∀ leftRoot,
+      Pr[fun result : Digest × Option Probe =>
+          materializedOrdinalSelectionMatches target result.1 result.2 | do
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        let selection ← run leftRoot rightRoot
+        pure (rightRoot, selection)] ≤
+        Pr[materializedOrdinalSelectionAt target | reference leftRoot] *
+          ((2 ^ digestBits : Nat) : ENNReal)⁻¹) :
+    Pr[fun result : Digest × Digest × Option Probe =>
+        materializedOrdinalSelectionMatches target result.1 result.2.2 | do
+      let leftRoot ← ($ᵗ Digest : ProbComp Digest)
+      let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+      let selection ← run leftRoot rightRoot
+      pure (leftRoot, rightRoot, selection)] ≤
+      Pr[fun result : Digest × Option Probe =>
+          materializedOrdinalSelectionAt target result.2 | do
+        let leftRoot ← ($ᵗ Digest : ProbComp Digest)
+        let selection ← reference leftRoot
+        pure (leftRoot, selection)] *
+        ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  let sampled := ($ᵗ Digest : ProbComp Digest)
+  let actual : ProbComp (Digest × Digest × Option Probe) := do
+    let leftRoot ← sampled
+    let rightRoot ← sampled
+    let selection ← run leftRoot rightRoot
+    pure (leftRoot, rightRoot, selection)
+  let swapped : ProbComp (Digest × Digest × Option Probe) := do
+    let leftRoot ← sampled
+    let rightRoot ← sampled
+    let selection ← run rightRoot leftRoot
+    pure (leftRoot, rightRoot, selection)
+  let comparison : ProbComp (Digest × Digest × Option Probe) := do
+    let leftRoot ← sampled
+    let rightRoot ← sampled
+    let selection ← run leftRoot rightRoot
+    pure (rightRoot, leftRoot, selection)
+  let referenceRun : ProbComp (Digest × Option Probe) := do
+    let leftRoot ← sampled
+    let selection ← reference leftRoot
+    pure (leftRoot, selection)
+  have hreplace : evalDist actual = evalDist swapped := by
+    unfold actual swapped
+    apply evalDist_bind_congr
+    intro leftRoot _hleftRoot
+    apply evalDist_bind_congr
+    intro rightRoot _hrightRoot
+    rw [evalDist_bind, evalDist_bind, hswap leftRoot rightRoot]
+  have hcommute : evalDist swapped = evalDist comparison := by
+    unfold swapped comparison
+    exact OracleComp.DeferredSampling.evalDist_bind_comm sampled sampled
+      (fun leftRoot rightRoot => do
+        let selection ← run rightRoot leftRoot
+        pure (leftRoot, rightRoot, selection))
+  change Pr[fun result : Digest × Digest × Option Probe =>
+      materializedOrdinalSelectionMatches target result.1 result.2.2 | actual] ≤ _
+  calc
+    _ = Pr[fun result : Digest × Digest × Option Probe =>
+          materializedOrdinalSelectionMatches target result.1 result.2.2 | comparison] :=
+      OracleComp.probEvent_congr' (fun _ _ => Iff.rfl) (hreplace.trans hcommute)
+    _ = ∑' leftRoot, (evalDist sampled) leftRoot *
+          Pr[fun result : Digest × Digest × Option Probe =>
+              materializedOrdinalSelectionMatches target result.1 result.2.2 | do
+            let rightRoot ← sampled
+            let selection ← run leftRoot rightRoot
+            pure (rightRoot, leftRoot, selection)] := by
+      unfold comparison
+      rw [probEvent_bind_eq_tsum]
+      simp only [probOutput_def]
+    _ ≤ ∑' leftRoot, (evalDist sampled) leftRoot *
+          (Pr[materializedOrdinalSelectionAt target | reference leftRoot] *
+            ((2 ^ digestBits : Nat) : ENNReal)⁻¹) := by
+      apply ENNReal.tsum_le_tsum
+      intro leftRoot
+      rw [show ((do
+          let rightRoot ← sampled
+          let selection ← run leftRoot rightRoot
+          pure (rightRoot, leftRoot, selection)) :
+            ProbComp (Digest × Digest × Option Probe)) =
+        (fun result : Digest × Option Probe => (result.1, leftRoot, result.2)) <$>
+          ((do
+            let rightRoot ← sampled
+            let selection ← run leftRoot rightRoot
+            pure (rightRoot, selection)) : ProbComp (Digest × Option Probe)) by
+          simp [map_eq_bind_pure_comp], probEvent_map]
+      gcongr
+      exact hcomparison leftRoot
+    _ = (∑' leftRoot, (evalDist sampled) leftRoot *
+          Pr[materializedOrdinalSelectionAt target | reference leftRoot]) *
+          ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+      simp_rw [← mul_assoc]
+      rw [ENNReal.tsum_mul_right]
+    _ = Pr[fun result : Digest × Option Probe =>
+          materializedOrdinalSelectionAt target result.2 | referenceRun] *
+          ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+      unfold referenceRun
+      rw [probEvent_bind_eq_tsum]
+      apply congrArg (fun value => value * ((2 ^ digestBits : Nat) : ENNReal)⁻¹)
+      apply tsum_congr
+      intro leftRoot
+      rw [show (do
+          let selection ← reference leftRoot
+          pure (leftRoot, selection)) =
+        (fun selection => (leftRoot, selection)) <$> reference leftRoot by
+          simp [map_eq_bind_pure_comp], probEvent_map]
+      rfl
+
+set_option maxRecDepth 100000 in
+theorem probEvent_uniformActualRoot_materializedActualSelectionMatches_le
+    (ordinal : Nat) (parameter : PublicParameter) (publicRoot : Digest)
+    (target : Position)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (candidates : List Probe)
+    (state : Digest → LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : Digest → SplitHashCache)
+    (hswap : ∀ leftRoot rightRoot,
+      evalDist
+          (materializedActualRootAvoidingOrdinalSelection ordinal parameter publicRoot target
+            leftRoot rightRoot ftsSecret computation candidates (state leftRoot) fuel table
+            (cache leftRoot)) =
+        evalDist
+          (materializedActualRootAvoidingOrdinalSelection ordinal parameter publicRoot target
+            rightRoot leftRoot ftsSecret computation candidates (state rightRoot) fuel table
+            (cache rightRoot))) :
+    Pr[fun result : Digest × Digest × Option Probe =>
+        materializedOrdinalSelectionMatches target result.1 result.2.2 | do
+      let leftRoot ← ($ᵗ Digest : ProbComp Digest)
+      let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+      let selection ← materializedActualRootAvoidingOrdinalSelection ordinal parameter
+        publicRoot target leftRoot rightRoot ftsSecret computation candidates (state leftRoot) fuel
+        table (cache leftRoot)
+      pure (leftRoot, rightRoot, selection)] ≤
+      ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  let run : Digest → Digest → ProbComp (Option Probe) :=
+    fun leftRoot rightRoot =>
+      materializedActualRootAvoidingOrdinalSelection ordinal parameter publicRoot target leftRoot
+        rightRoot ftsSecret computation candidates (state leftRoot) fuel table (cache leftRoot)
+  let reference : Digest → ProbComp (Option Probe) :=
+    fun leftRoot =>
+      materializedActualRootAvoidingOrdinalSelection ordinal parameter publicRoot target leftRoot
+        leftRoot ftsSecret computation candidates (state leftRoot) fuel table (cache leftRoot)
+  apply probEvent_uniformActualRoot_match_le_of_swap_of_comparison target run reference
+  · intro leftRoot rightRoot
+    exact hswap leftRoot rightRoot
+  · intro leftRoot rightRoot
+    exact probEvent_materializedRootAvoidingOrdinalSelection_match_le_actual_guard ordinal
+      parameter target leftRoot rightRoot rightRoot (maskedSign parameter publicRoot ftsSecret)
+      computation candidates (state leftRoot) fuel table (cache leftRoot)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
