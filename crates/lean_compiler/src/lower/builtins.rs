@@ -51,9 +51,7 @@ impl FnLower<'_> {
             // differently between builds.
             let mut bad: Vec<&&str> = kwargs.keys().filter(|k| !allowed.contains(k)).collect();
             bad.sort_unstable();
-            self.fail(format!(
-                "unknown blake2s keyword {bad:?}; the keywords are {allowed:?}"
-            ))
+            self.fail(format!("unknown blake2s keyword {bad:?}; the keywords are {allowed:?}"))
         };
         let customized = kwargs.keys().any(|k| matches!(*k, "counter" | "final" | "last_node"));
         if kwargs.contains_key("cv") && !customized {
@@ -161,15 +159,13 @@ impl FnLower<'_> {
                         args.len()
                     ))
                 };
-                let (base, len) = self
-                    .stack_of(&args[0])
-                    .unwrap_or_else(|| {
-                        self.fail(format!(
-                            "hint_f192_limbs writes 1..=3 frame cells, so its destination must be a \
+                let (base, len) = self.stack_of(&args[0]).unwrap_or_else(|| {
+                    self.fail(format!(
+                        "hint_f192_limbs writes 1..=3 frame cells, so its destination must be a \
                              StackBuf, got `{:?}`",
-                            args[0]
-                        ))
-                    });
+                        args[0]
+                    ))
+                });
                 if !((1..=3).contains(&len)) {
                     self.fail("hint_f192_limbs destination must have 1..=3 cells")
                 };

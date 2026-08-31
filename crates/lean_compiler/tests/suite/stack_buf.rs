@@ -694,10 +694,15 @@ def main():
 
     // The shape is checked at the call, in both directions of mismatch.
     for (arg, want) in [
-        ("b = StackBuf(3)\n    b[0] = GEN ** 1\n    r = f(b)", "got a StackBuf(3)"),
+        (
+            "b = StackBuf(3)\n    b[0] = GEN ** 1\n    r = f(b)",
+            "got a StackBuf(3)",
+        ),
         ("r = f(GEN ** 1)", "pass one"),
     ] {
-        let src = format!("def f(s: StackBuf(2)):\n    return s[0]\n\ndef main():\n    {arg}\n    p = GEN ** 0\n    p[1] = r\n    p[GEN] = GEN ** 0\n    return\n");
+        let src = format!(
+            "def f(s: StackBuf(2)):\n    return s[0]\n\ndef main():\n    {arg}\n    p = GEN ** 0\n    p[1] = r\n    p[GEN] = GEN ** 0\n    return\n"
+        );
         let ast = parse(&src).expect("parses");
         let Err(err) = std::panic::catch_unwind(|| compile(&ast)) else {
             panic!("accepted: {arg}");

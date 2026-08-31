@@ -21,8 +21,8 @@ mod subst;
 pub use consts::parse_const;
 use consts::{apply_replacements, const_int_expr, eval_const_int, gpow_bound, parse_f192_const, parse_gpow_bound};
 use expr::{
-    binding_name, call_args, is_ident, parse_expr, split_assign, split_aug, split_once_top, split_top, strip_comment,
-    strip_const_wrapper, string_lit, top_level_cmp,
+    binding_name, call_args, is_ident, parse_expr, split_assign, split_aug, split_once_top, split_top, string_lit,
+    strip_comment, strip_const_wrapper, top_level_cmp,
 };
 pub(crate) use subst::subst_stmts;
 use subst::subst_var;
@@ -302,7 +302,12 @@ fn infer_return_shapes(funcs: &mut [Func]) -> Result<(), String> {
     for _ in 0..=funcs.len() {
         let next: HashMap<String, Vec<Shape>> = funcs
             .iter()
-            .map(|f| Ok((f.name.clone(), scan(&f.body, &f.params, &f.param_shapes, &known, f.n_ret)?)))
+            .map(|f| {
+                Ok((
+                    f.name.clone(),
+                    scan(&f.body, &f.params, &f.param_shapes, &known, f.n_ret)?,
+                ))
+            })
             .collect::<Result<_, String>>()?;
         if next == known {
             break;
@@ -310,9 +315,7 @@ fn infer_return_shapes(funcs: &mut [Func]) -> Result<(), String> {
         known = next;
     }
     for f in funcs {
-        f.return_shapes = known
-            .remove(&f.name)
-            .unwrap_or_else(|| vec![Shape::Scalar; f.n_ret]);
+        f.return_shapes = known.remove(&f.name).unwrap_or_else(|| vec![Shape::Scalar; f.n_ret]);
     }
     Ok(())
 }
@@ -459,8 +462,7 @@ impl Parser {
                     const_params.push(true);
                     param_shapes.push(Shape::Scalar);
                 } else if let Some(size) = ann.strip_prefix("StackBuf(").and_then(|r| r.strip_suffix(')')) {
-                    let k = eval_const_int(size)
-                        .map_err(|e| format!("`def {name}`: StackBuf parameter size: {e}"))?;
+                    let k = eval_const_int(size).map_err(|e| format!("`def {name}`: StackBuf parameter size: {e}"))?;
                     let k = u32::try_from(k).map_err(|_| format!("`def {name}`: StackBuf({k}) is too large"))?;
                     if k == 0 {
                         return Err(format!("`def {name}`: a StackBuf parameter needs at least one cell"));
@@ -478,7 +480,11 @@ impl Parser {
         // A repeated parameter name binds twice, and the second binding used to
         // land in a different one of the scope's maps than the first, so `a` was
         // a StackBuf and a scalar at once inside the body.
-        if let Some(dup) = params.iter().enumerate().find_map(|(i, p)| params[..i].contains(p).then_some(p)) {
+        if let Some(dup) = params
+            .iter()
+            .enumerate()
+            .find_map(|(i, p)| params[..i].contains(p).then_some(p))
+        {
             return Err(format!("parameter `{dup}` is declared twice"));
         }
         self.i += 1;
@@ -785,8 +791,14 @@ impl Parser {
             // that never says the word, so name it here. `const == 4`, a variable
             // that happens to be called `const`, is not a near miss: nothing
             // follows the name but the comparison.
-            None if cond.trim_start().strip_prefix("const").is_some_and(|r| r.trim_start().starts_with('(')) => {
-                return Err("`const(...)` must wrap the WHOLE condition and balance its brackets: `if const(a == b):`".into());
+            None if cond
+                .trim_start()
+                .strip_prefix("const")
+                .is_some_and(|r| r.trim_start().starts_with('(')) =>
+            {
+                return Err(
+                    "`const(...)` must wrap the WHOLE condition and balance its brackets: `if const(a == b):`".into(),
+                );
             }
             None => (cond, false),
         };

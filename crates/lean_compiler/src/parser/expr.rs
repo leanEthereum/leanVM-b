@@ -158,12 +158,20 @@ pub(super) fn parse_expr(s: &str) -> Result<Expr, String> {
 
 /// Combine one tier's operands left-associatively: `node` builds the AST node
 /// for each operator (as [`split_add`] / [`split_mul`] tag it).
-pub(super) fn fold_ops(segs: &[String], ops: &[u8], node: impl Fn(u8, Box<Expr>, Box<Expr>) -> Expr) -> Result<Expr, String> {
+pub(super) fn fold_ops(
+    segs: &[String],
+    ops: &[u8],
+    node: impl Fn(u8, Box<Expr>, Box<Expr>) -> Expr,
+) -> Result<Expr, String> {
     // An empty operand is an operator missing a side: a leading `-`, a trailing
     // operator, or two in a row. Naming it beats letting `parse_expr("")` report
     // an empty backtick, which is what every one of these used to say.
     if let Some(i) = segs.iter().position(|seg| seg.trim().is_empty()) {
-        let (op, side) = if i == 0 { (ops[0], "left") } else { (ops[i - 1], "right") };
+        let (op, side) = if i == 0 {
+            (ops[0], "left")
+        } else {
+            (ops[i - 1], "right")
+        };
         // `split_mul` encodes the two divisions, so spell them back out.
         let shown = match op {
             b'/' => "//".to_string(),

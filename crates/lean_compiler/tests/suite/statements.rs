@@ -278,7 +278,10 @@ def main():
     return
 ";
     let mut program = compile(&parse(looped).expect("parse"));
-    program.set_witness("w", vec![vec![g_pow(1).into()], vec![g_pow(2).into()], vec![g_pow(3).into()]]);
+    program.set_witness(
+        "w",
+        vec![vec![g_pow(1).into()], vec![g_pow(2).into()], vec![g_pow(3).into()]],
+    );
     let want = [g_pow(2).into(), g_pow(0).into()];
     let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
     // `mul_range(1, 8)` is g^0..g^3, so THREE iterations and all three entries
@@ -457,7 +460,9 @@ fn a_program_cannot_reach_a_cell_it_does_not_own() {
     );
     // A runtime-start slice whose start folds: the SPAN leaves the buffer.
     rejected(
-        &format!("def main():\n    hb = HeapBuf(2)\n    nxt = HeapBuf(2)\n    hint_witness(hb[GEN ** 1:GEN ** 1 + 2], \"w\")\n{tail}"),
+        &format!(
+            "def main():\n    hb = HeapBuf(2)\n    nxt = HeapBuf(2)\n    hint_witness(hb[GEN ** 1:GEN ** 1 + 2], \"w\")\n{tail}"
+        ),
         "heap slice 1:3 out of bounds",
     );
 
@@ -512,7 +517,10 @@ def main():
         panic!("a typo was accepted");
     };
     let msg = err.downcast_ref::<String>().map(String::as_str).unwrap_or("");
-    assert!(msg.contains("unbound variable `nosuch`") && !msg.contains("loop"), "got `{msg}`");
+    assert!(
+        msg.contains("unbound variable `nosuch`") && !msg.contains("loop"),
+        "got `{msg}`"
+    );
 }
 
 /// A compile-time branch is decided by a regime the author names.
@@ -662,10 +670,7 @@ def main():
 ";
     let mut program = compile(&parse(src).expect("parse"));
     program.set_witness("r", vec![vec![g_pow(0).into()]]);
-    program.set_witness(
-        "vals",
-        vec![(10u64..14).map(|v| F192::new(v, 0, 0)).collect()],
-    );
+    program.set_witness("vals", vec![(10u64..14).map(|v| F192::new(v, 0, 0)).collect()]);
     // `r` is 1, so the index is `K` itself: cell 1, holding 11. Reading the
     // integer view instead would name cell 2, holding 12.
     let want = [F192::new(11, 0, 0), g_pow(0).into()];

@@ -57,9 +57,7 @@ pub(super) fn stmt_inline_safe(s: &Stmt) -> bool {
         // which assumes whose frame is current. So the rule was stricter than it
         // needed to be in one position and leakier than it claimed in the other.
         StmtKind::Call(..) => true,
-        StmtKind::If { then, els, .. } => {
-            then.iter().all(stmt_inline_safe) && els.iter().all(stmt_inline_safe)
-        }
+        StmtKind::If { then, els, .. } => then.iter().all(stmt_inline_safe) && els.iter().all(stmt_inline_safe),
         StmtKind::Unroll { body, .. } => body.iter().all(stmt_inline_safe),
         // Return (non-tail), For, Match, LetMatchRange, LetTuple, CallIfNe, user Call.
         _ => false,
@@ -116,7 +114,9 @@ impl FnLower<'_> {
             match shapes.get(i).copied().unwrap_or(Shape::Scalar) {
                 Shape::StackBuf(n) => {
                     let (src, len) = self.stack_of(a).unwrap_or_else(|| {
-                        self.fail(format!("`{callee}` parameter {i} is a StackBuf({n}); pass one, got `{a:?}`"))
+                        self.fail(format!(
+                            "`{callee}` parameter {i} is a StackBuf({n}); pass one, got `{a:?}`"
+                        ))
                     });
                     if len != n {
                         self.fail(format!(
