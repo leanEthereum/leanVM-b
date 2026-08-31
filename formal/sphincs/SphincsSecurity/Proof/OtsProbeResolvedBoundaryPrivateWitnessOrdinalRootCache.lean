@@ -508,6 +508,42 @@ theorem rootEncodingCacheCouples_ensureCoordinate
   rw [runCleanFromTable_ensureCoordinate, runCleanFromTable_ensureCoordinate]
   exact relTriple_pure_pure ⟨rfl, rfl, rfl, rfl, hcache⟩
 
+theorem peekCoordinate_run_eq
+    (coordinate : Coordinate) (cache : SplitHashCache) :
+    (peekCoordinate coordinate).run cache = (do
+      let output ← LazyRevealProbe.peekQuery coordinate
+      pure (truncateHash <$> output, cache)) := by
+  simp [peekCoordinate]
+
+theorem rootEncodingCacheCouples_peekCoordinate
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (coordinate : Coordinate) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (peekCoordinate coordinate) := by
+  intro leftCache rightCache hcache state fuel table
+  rw [peekCoordinate_run_eq, peekCoordinate_run_eq, LazyRevealProbe.peekQuery,
+    runCleanFromTable_peek_query_bind, runCleanFromTable_peek_query_bind]
+  simp only [runCleanFromTable, OracleComp.construct_pure]
+  exact relTriple_pure_pure ⟨rfl, rfl, rfl, rfl, hcache⟩
+
+theorem rootEncodingCacheCouples_probe
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (candidate : Probe) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (probe candidate) := by
+  intro leftCache rightCache hcache state fuel table
+  unfold probe LazyRevealProbe.probeQuery
+  rw [StateT.run_liftM, StateT.run_liftM,
+    runCleanFromTable_probe_query_bind, runCleanFromTable_probe_query_bind]
+  cases fuel with
+  | zero => exact relTriple_pure_pure trivial
+  | succ remaining =>
+      by_cases hrevealed : candidate.coordinate ∈ state.revealed
+      · simp only [hrevealed, ↓reduceIte, runCleanFromTable, OracleComp.construct_pure]
+        exact relTriple_pure_pure ⟨rfl, rfl, rfl, rfl, hcache⟩
+      · simp only [hrevealed, ↓reduceIte, runCleanFromTable, OracleComp.construct_pure]
+        exact relTriple_pure_pure ⟨rfl, rfl, rfl, rfl, hcache⟩
+
 theorem RootEncodingCacheCouples.bind
     {parameter : PublicParameter} {target : Position}
     {leftRoot rightRoot : Digest}
@@ -538,6 +574,31 @@ theorem RootEncodingCacheCouples.bind
           rw [← hstate, ← hremaining, ← htable, ← hvalue]
           exact hnext leftResult.value.1 leftResult.value.2 rightResult.value.2 hnextCache
             leftResult.state leftResult.remaining leftResult.table
+
+theorem rootEncodingCacheCouples_peekPositionValues
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) : ∀ positions,
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (peekPositionValues positions)
+  | [] => by
+      rw [peekPositionValues]
+      exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot (some [])
+  | position :: remaining => by
+      rw [peekPositionValues]
+      apply (rootEncodingCacheCouples_peekCoordinate parameter target leftRoot rightRoot
+        (.position position)).bind
+      intro value
+      cases value with
+      | none => exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot none
+      | some value =>
+          apply (rootEncodingCacheCouples_peekPositionValues parameter target leftRoot rightRoot
+            remaining).bind
+          intro values
+          cases values with
+          | none => exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot none
+          | some values =>
+              exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot
+                (some (value :: values))
 
 theorem RootEncodingCacheRelates.bind
     {parameter : PublicParameter} {target : Position}

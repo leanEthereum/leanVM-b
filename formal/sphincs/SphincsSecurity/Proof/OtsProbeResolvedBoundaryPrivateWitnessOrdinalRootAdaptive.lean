@@ -133,4 +133,93 @@ theorem splitHashQuery_root_guess_trichotomy
         (relTriple_splitHashQuery_same_wrong parameter target leftRoot rightRoot input guess
           hguess hleft hright leftCache rightCache hcache state fuel table))
 
+def RootInputAvoids
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (input : HashInput) : Prop :=
+  ¬EncodingInputGuessesRoot parameter target leftRoot input ∧
+    ¬EncodingInputGuessesRoot parameter target rightRoot input
+
+theorem rootInputAvoids_classify
+    {parameter : PublicParameter} {target : Position}
+    {leftRoot rightRoot : Digest} {input : HashInput}
+    (havoid : RootInputAvoids parameter target leftRoot rightRoot input) :
+    ¬EncodingInputNamesRoot parameter target input ∨
+      ∃ guess, EncodingInputGuessesRoot parameter target guess input ∧
+        guess ≠ leftRoot ∧ guess ≠ rightRoot := by
+  by_cases hnames : EncodingInputNamesRoot parameter target input
+  · obtain ⟨candidate, hdecode, hcoordinate⟩ := hnames
+    let guess := candidate.candidate
+    have hcandidate : candidate = ⟨.position target, guess⟩ := by
+      cases candidate with
+      | mk coordinate candidate =>
+          simp only at hcoordinate
+          subst coordinate
+          rfl
+    have hguess : EncodingInputGuessesRoot parameter target guess input := by
+      unfold EncodingInputGuessesRoot
+      rwa [← hcandidate]
+    exact Or.inr ⟨guess, hguess,
+      fun heq => havoid.1 (heq ▸ hguess),
+      fun heq => havoid.2 (heq ▸ hguess)⟩
+  · exact Or.inl hnames
+
+theorem RootEncodingCacheRel.lookup_avoids
+    {parameter : PublicParameter} {target : Position} {leftRoot rightRoot : Digest}
+    {left right : SplitHashCache}
+    (hrel : RootEncodingCacheRel parameter target leftRoot rightRoot left right)
+    (input : HashInput) (havoid : RootInputAvoids parameter target leftRoot rightRoot input) :
+    left (.ordinary input) = right (.ordinary input) := by
+  rcases rootInputAvoids_classify havoid with hnonroot | ⟨guess, hguess, hleft, hright⟩
+  · exact hrel.nonroot input hnonroot
+  · exact hrel.wrong input guess hguess hleft hright
+
+theorem RootEncodingCacheRel.update_same_avoids
+    {parameter : PublicParameter} {target : Position} {leftRoot rightRoot : Digest}
+    {left right : SplitHashCache}
+    (hrel : RootEncodingCacheRel parameter target leftRoot rightRoot left right)
+    (input : HashInput) (havoid : RootInputAvoids parameter target leftRoot rightRoot input)
+    (output : HashOutput) :
+    RootEncodingCacheRel parameter target leftRoot rightRoot
+      (Function.update left (.ordinary input) (some output))
+      (Function.update right (.ordinary input) (some output)) := by
+  rcases rootInputAvoids_classify havoid with hnonroot | ⟨guess, hguess, hleft, hright⟩
+  · exact hrel.update_same_nonroot (.ordinary input) output hnonroot
+  · exact hrel.update_same_wrong input guess hguess hleft hright output
+
+theorem relTriple_splitHashQuery_same_avoids
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (input : HashInput)
+    (havoid : RootInputAvoids parameter target leftRoot rightRoot input)
+    (leftCache rightCache : SplitHashCache)
+    (hcache : RootEncodingCacheRel parameter target leftRoot rightRoot leftCache rightCache)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) :
+    RelTriple
+      (runCleanFromTable state fuel table ((splitHashQuery (.ordinary input)).run leftCache))
+      (runCleanFromTable state fuel table ((splitHashQuery (.ordinary input)).run rightCache))
+      (RootEncodingCleanSameRel parameter target leftRoot rightRoot) := by
+  have hlookup := hcache.lookup_avoids input havoid
+  rw [splitHashQuery_run_eq, splitHashQuery_run_eq]
+  cases hleftLookup : leftCache (.ordinary input) with
+  | some output =>
+      have hrightLookup : rightCache (.ordinary input) = some output := by
+        rw [← hlookup]
+        exact hleftLookup
+      simp only [hrightLookup, runCleanFromTable, OracleComp.construct_pure]
+      exact relTriple_pure_pure ⟨rfl, rfl, rfl, rfl, hcache⟩
+  | none =>
+      have hrightLookup : rightCache (.ordinary input) = none := by
+        rw [← hlookup]
+        exact hleftLookup
+      simp only [hrightLookup]
+      unfold LazyRevealProbe.hashOutputQuery
+      rw [runCleanFromTable_hashOutput_query_bind,
+        runCleanFromTable_hashOutput_query_bind]
+      apply relTriple_bind (relTriple_refl LazyRevealProbe.sampleHashOutput)
+      intro leftOutput rightOutput houtput
+      subst rightOutput
+      simp only [runCleanFromTable, OracleComp.construct_pure]
+      exact relTriple_pure_pure ⟨rfl, rfl, rfl, rfl,
+        hcache.update_same_avoids input havoid leftOutput⟩
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
