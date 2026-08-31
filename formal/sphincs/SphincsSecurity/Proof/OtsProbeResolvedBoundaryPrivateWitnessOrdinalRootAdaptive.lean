@@ -494,4 +494,156 @@ theorem probingHashQueryAfterPlan_root_trichotomy
       ((rootEncodingCacheCouples_probingHashQueryAfterPlan_avoids parameter target leftRoot
         rightRoot input plan hsafe).relates.toStored))
 
+noncomputable def maskedComparisonSigningImpl
+    (parameter : PublicParameter) (publicRoot : Digest)
+    (target : Position) (comparisonRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    QueryImpl SigningSpec
+      (StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate))) :=
+  fun message =>
+    maskedSignWithTargetComparison parameter publicRoot target comparisonRoot ftsSecret message
+
+noncomputable def maskedExpandedAdversaryImplWithTargetComparison
+    (parameter : PublicParameter) (publicRoot : Digest)
+    (target : Position) (comparisonRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
+    QueryImpl (OracleWorld + SigningSpec)
+      (StateT SplitHashCache
+        (OracleComp (LazyRevealProbe.World Coordinate))) :=
+  probingRomImpl parameter +
+    maskedComparisonSigningImpl parameter publicRoot target comparisonRoot ftsSecret
+
+def ExpandedQueryGuessesRoot
+    (parameter : PublicParameter) (target : Position) (root : Digest)
+    (query : (OracleWorld + SigningSpec).Domain) : Prop :=
+  ∃ input, query = .inl (.inr input) ∧
+    EncodingInputGuessesRoot parameter target root input
+
+def ExpandedQueryAvoidsRoots
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest)
+    (query : (OracleWorld + SigningSpec).Domain) : Prop :=
+  match query with
+  | .inl (.inr input) => RootInputAvoids parameter target leftRoot rightRoot input
+  | _ => True
+
+theorem not_expandedQueryGuessesRoot_of_avoids
+    {parameter : PublicParameter} {target : Position}
+    {leftRoot rightRoot : Digest}
+    {query : (OracleWorld + SigningSpec).Domain}
+    (havoid : ExpandedQueryAvoidsRoots parameter target leftRoot rightRoot query) :
+    ¬ExpandedQueryGuessesRoot parameter target leftRoot query ∧
+      ¬ExpandedQueryGuessesRoot parameter target rightRoot query := by
+  cases query with
+  | inl worldQuery =>
+      cases worldQuery with
+      | inl n => simp [ExpandedQueryGuessesRoot]
+      | inr input =>
+          constructor
+          · rintro ⟨otherInput, heq, hguess⟩
+            cases heq
+            exact havoid.1 hguess
+          · rintro ⟨otherInput, heq, hguess⟩
+            cases heq
+            exact havoid.2 hguess
+  | inr message => simp [ExpandedQueryGuessesRoot]
+
+theorem maskedExpandedAdversaryImpl_step_root_trichotomy
+    (parameter : PublicParameter) (publicRoot : Digest)
+    (target : Position) (hroot : IsLayerRoot target)
+    (leftRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (query : (OracleWorld + SigningSpec).Domain) :
+    ExpandedQueryGuessesRoot parameter target leftRoot query ∨
+      ExpandedQueryGuessesRoot parameter target rightRoot query ∨
+        RootEncodingCacheRelatesStored parameter target leftRoot rightRoot
+          (maskedExpandedAdversaryImpl parameter publicRoot ftsSecret query)
+          (maskedExpandedAdversaryImplWithTargetComparison parameter publicRoot target rightRoot
+            ftsSecret query) := by
+  cases query with
+  | inl worldQuery =>
+      cases worldQuery with
+      | inl n =>
+          exact Or.inr (Or.inr
+            ((rootEncodingCacheCouples_splitUniformImpl parameter target leftRoot rightRoot
+              n).relates.toStored))
+      | inr input =>
+          rcases rootInput_hit_or_avoids parameter target leftRoot rightRoot input with
+              hleft | hright | hsafe
+          · exact Or.inl ⟨input, rfl, hleft⟩
+          · exact Or.inr (Or.inl ⟨input, rfl, hright⟩)
+          · exact Or.inr (Or.inr
+              ((rootEncodingCacheCouples_probingHashQuery_avoids parameter target leftRoot
+                rightRoot input hsafe).relates.toStored))
+  | inr message =>
+      exact Or.inr (Or.inr
+        (rootEncodingCacheRelatesStored_maskedSign_targetComparison parameter publicRoot target
+          hroot leftRoot rightRoot ftsSecret message))
+
+theorem rootEncodingCacheRelatesStored_maskedExpandedAdversaryImpl_of_avoids
+    (parameter : PublicParameter) (publicRoot : Digest)
+    (target : Position) (hroot : IsLayerRoot target)
+    (leftRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (query : (OracleWorld + SigningSpec).Domain)
+    (havoid : ExpandedQueryAvoidsRoots parameter target leftRoot rightRoot query) :
+    RootEncodingCacheRelatesStored parameter target leftRoot rightRoot
+      (maskedExpandedAdversaryImpl parameter publicRoot ftsSecret query)
+      (maskedExpandedAdversaryImplWithTargetComparison parameter publicRoot target rightRoot
+        ftsSecret query) := by
+  have hnot := not_expandedQueryGuessesRoot_of_avoids havoid
+  rcases maskedExpandedAdversaryImpl_step_root_trichotomy parameter publicRoot target hroot
+      leftRoot rightRoot ftsSecret query with hleft | hright | hsafe
+  · exact False.elim (hnot.1 hleft)
+  · exact False.elim (hnot.2 hright)
+  · exact hsafe
+
+noncomputable def rootAvoidingComputation
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α) :
+    OracleComp (OracleWorld + SigningSpec) (Option α) := by
+  classical
+  exact OracleComp.construct
+    (C := fun _ => OracleComp (OracleWorld + SigningSpec) (Option α))
+    (fun value => pure (some value))
+    (fun query _next recursivelyRun =>
+      if ExpandedQueryAvoidsRoots parameter target leftRoot rightRoot query then do
+        let output ← liftM ((OracleWorld + SigningSpec).query query)
+        recursivelyRun output
+      else pure none)
+    computation
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem rootEncodingCacheRelatesStored_simulateQ_rootAvoidingComputation
+    (parameter : PublicParameter) (publicRoot : Digest)
+    (target : Position) (hroot : IsLayerRoot target)
+    (leftRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α) :
+    RootEncodingCacheRelatesStored parameter target leftRoot rightRoot
+      (simulateQ (maskedExpandedAdversaryImpl parameter publicRoot ftsSecret)
+        (rootAvoidingComputation parameter target leftRoot rightRoot computation))
+      (simulateQ (maskedExpandedAdversaryImplWithTargetComparison parameter publicRoot target
+          rightRoot ftsSecret)
+        (rootAvoidingComputation parameter target leftRoot rightRoot computation)) := by
+  induction computation using OracleComp.inductionOn with
+  | pure value =>
+      rw [rootAvoidingComputation, OracleComp.construct_pure, simulateQ_pure, simulateQ_pure]
+      exact ((rootEncodingCacheCouples_pure parameter target leftRoot rightRoot
+        (some value)).relates).toStored
+  | query_bind query next ih =>
+      rw [rootAvoidingComputation, OracleComp.construct_query_bind]
+      by_cases hsafe : ExpandedQueryAvoidsRoots parameter target leftRoot rightRoot query
+      · rw [if_pos hsafe, simulateQ_query_bind, simulateQ_query_bind]
+        apply (rootEncodingCacheRelatesStored_maskedExpandedAdversaryImpl_of_avoids parameter
+          publicRoot target hroot leftRoot rightRoot ftsSecret query hsafe).bind
+        intro leftOutput rightOutput houtput
+        subst rightOutput
+        exact ih leftOutput
+      · rw [if_neg hsafe, simulateQ_pure, simulateQ_pure]
+        exact ((rootEncodingCacheCouples_pure parameter target leftRoot rightRoot none).relates).toStored
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
