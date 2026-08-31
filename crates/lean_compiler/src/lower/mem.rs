@@ -163,9 +163,9 @@ impl FnLower<'_> {
         // redirect every later read to the source and drop the assertion. This is
         // what makes `s[k] = <checked value>` pin a hint, and what makes a
         // pre-written `blake2s` output assert the digest.
-        let aliased = self.alias.contains_key(&dst);
+        let aliased = self.alias_of(dst).is_some();
         if !aliased
-            && !self.phys.contains(&dst)
+            && !self.is_written(dst)
             && let Some(a) = self.copy_alias(val)
         {
             // Record the end of the `Cell` chain, not its head. A `Cell` alias is
@@ -190,7 +190,7 @@ impl FnLower<'_> {
             if a == Alias::Cell(dst) {
                 return;
             }
-            self.alias.insert(dst, a);
+            self.set_alias(dst, Some(a));
             self.alias_journal.push(dst);
             return;
         }
@@ -200,7 +200,7 @@ impl FnLower<'_> {
             // second alias would simply replace the first and the two values would
             // never meet.
             let src = self.word_src(dst);
-            self.alias.remove(&dst);
+            self.set_alias(dst, None);
             self.copy(src, dst);
         }
         self.expr_into(val, dst);
@@ -378,7 +378,7 @@ impl FnLower<'_> {
         // more hops than there are frame cells is a hard error, not a hang.
         let mut cur = o;
         for _ in 0..=self.next {
-            match self.alias.get(&cur).copied() {
+            match self.alias_of(cur) {
                 Some(Alias::Cell(s)) => cur = s,
                 Some(Alias::Const(v)) if v.is_zero() => return self.zero(),
                 Some(Alias::Const(v)) => return self.const_cell(v),
@@ -396,8 +396,8 @@ impl FnLower<'_> {
     pub(super) fn cell_src(&self, o: Off) -> Off {
         let mut cur = o;
         for _ in 0..=self.next {
-            match self.alias.get(&cur) {
-                Some(Alias::Cell(s)) => cur = *s,
+            match self.alias_of(cur) {
+                Some(Alias::Cell(s)) => cur = s,
                 _ => return cur,
             }
         }
@@ -414,12 +414,12 @@ impl FnLower<'_> {
     /// store comes after the consumer.
     pub(super) fn materialize_run(&mut self, base: Off, len: u32) {
         for o in base..base + len {
-            if self.alias.contains_key(&o) {
+            if self.alias_of(o).is_some() {
                 let src = self.word_src(o);
-                self.alias.remove(&o);
+                self.set_alias(o, None);
                 self.copy(src, o);
             }
-            self.phys.insert(o);
+            self.mark_written(o);
         }
     }
 

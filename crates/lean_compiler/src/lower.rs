@@ -91,6 +91,30 @@ impl Abi {
 /// that folds an exponent into `β` measures it against this.
 const FOLD_MAX: u128 = 1 << lean_vm::cpu::MIN_LOG_MEM;
 
+/// What the lowerer knows about one frame cell: TWO ORTHOGONAL FACTS, not one
+/// exclusive state.
+///
+/// A cell aliased before a branch and stored into inside it is materialized
+/// there, so it is written, and has its alias restored at the join, so it is
+/// also aliased. Both at once, and soundly: the copy wrote the alias's own
+/// value, and the path that did not run leaves the cell unwritten.
+///
+/// They also have different LIFETIMES, which is the other reason one enum
+/// cannot hold them. An alias is a value fact true on one path, so it reverts at
+/// a join. `written` is a fact about the CODE, conservative and permanent, and
+/// reverting it would let a later store alias a cell some instruction writes,
+/// which is the first soundness bug this crate ever fixed.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct Slot {
+    /// The deferred store this cell stands for, if any: nothing has been emitted
+    /// for it and every read forwards to the source.
+    alias: Option<Alias>,
+    /// An instruction, a digest, a hint, or a write through an escaped pointer
+    /// has given this cell a value, so a further store is the write-once
+    /// equality ASSERTION rather than a rebind, and must be emitted.
+    written: bool,
+}
+
 /// A deferred stack-cell store: the cell is a copy of another cell, or a zero.
 /// Recorded instead of emitting the `MUL`/`SET`, and forwarded to the source at
 /// each use ([`FnLower::word_src`]), so `BLAKE2s`, which addresses its four
@@ -224,7 +248,10 @@ struct FnLower<'a> {
     /// inlined return.
     inline_stack_ret: Option<Vec<RetBind>>,
     /// Deferred stack-cell copies/zeros ([`Alias`]), forwarded at use.
-    alias: HashMap<Off, Alias>,
+    /// What is known about each frame cell. One entry per cell, replacing the two
+    /// side maps that answered "is this aliased" and "has this been written"
+    /// separately.
+    slots: HashMap<Off, Slot>,
     /// The cells [`Self::stack_store`] has aliased, in the order it aliased
     /// them. A branch's join needs to know which cells it touched, and diffing
     /// two `HashMap`s to find out made the order of the copies it then emits
@@ -239,8 +266,6 @@ struct FnLower<'a> {
     /// then the write-once equality assertion of `zkDSL.md` §Memory rather than an
     /// assembly copy, and an alias would drop it. Accumulated monotonically, and
     /// deliberately NOT restored across a branch: if either arm gives the cell a
-    /// value, a later store to it is an assertion on whichever arm ran.
-    phys: HashSet<Off>,
     /// Source line of the statement being lowered, for diagnostics and for the
     /// pc-to-line table. Zero for a synthesized statement with no source.
     cur_line: u32,
@@ -308,6 +333,24 @@ impl FnLower<'_> {
         }
     }
 
+    /// The deferred store `o` stands for, if it has one.
+    fn alias_of(&self, o: Off) -> Option<Alias> {
+        self.slots.get(&o).and_then(|s| s.alias)
+    }
+
+    /// Has anything given `o` a value? Then a store into it is the assertion.
+    fn is_written(&self, o: Off) -> bool {
+        self.slots.get(&o).is_some_and(|s| s.written)
+    }
+
+    fn set_alias(&mut self, o: Off, a: Option<Alias>) {
+        self.slots.entry(o).or_default().alias = a;
+    }
+
+    fn mark_written(&mut self, o: Off) {
+        self.slots.entry(o).or_default().written = true;
+    }
+
     fn fresh(&mut self) -> Off {
         let o = self.next;
         self.next += 1;
@@ -322,15 +365,15 @@ impl FnLower<'_> {
         // `Deref`'s local cell counts, since the interpreter fills whichever side of
         // the equality it names is still unset.
         match op {
-            LOp::Set { o, .. } => self.phys.insert(o),
-            LOp::Xor { c, .. } | LOp::Mul { c, .. } => self.phys.insert(c),
-            LOp::Deref { gamma, .. } => self.phys.insert(gamma),
+            LOp::Set { o, .. } => self.mark_written(o),
+            LOp::Xor { c, .. } | LOp::Mul { c, .. } => self.mark_written(c),
+            LOp::Deref { gamma, .. } => self.mark_written(gamma),
             LOp::Blake2s { c, .. } => {
-                self.phys.insert(c);
-                self.phys.insert(c + 1)
+                self.mark_written(c);
+                self.mark_written(c + 1);
             }
-            LOp::Jump { .. } => false,
-        };
+            LOp::Jump { .. } => {}
+        }
         let hints = std::mem::take(&mut self.pending);
         self.code.push(LInstr {
             op,
@@ -588,8 +631,8 @@ impl FnLower<'_> {
     /// region must not be trusted outside it.
     fn scoped(&mut self, f: impl FnOnce(&mut Self)) {
         let branch_start = self.next;
-        let saved_aliases = self.alias.clone();
-        let saved = self.scope.clone();
+        let saved_slots = self.slots.clone();
+        let saved_scope = self.scope.clone();
         // The branch gets its own journal: an inner one restores `alias` at its
         // own join, so nothing it aliased survives to be produced here.
         let outer_journal = std::mem::take(&mut self.alias_journal);
@@ -605,12 +648,12 @@ impl FnLower<'_> {
             .filter(|&dst| {
                 seen.insert(dst)
                     && dst < branch_start
-                    && self.alias.get(&dst).is_some_and(|a| saved_aliases.get(&dst) != Some(a))
+                    && self.alias_of(dst).is_some_and(|a| saved_slots.get(&dst).and_then(|s| s.alias) != Some(a))
             })
             .collect();
         for dst in branch_outputs {
             let src = self.word_src(dst);
-            self.alias.remove(&dst);
+            self.set_alias(dst, None);
             self.copy(src, dst);
         }
         // A hint pending at the end of a branch (e.g. a trailing
@@ -619,8 +662,14 @@ impl FnLower<'_> {
         if !self.pending.is_empty() {
             self.anchor();
         }
-        self.scope = saved;
-        self.alias = saved_aliases;
+        self.scope = saved_scope;
+        // Only the ALIASES revert. `written` is a fact about the code, so a cell
+        // an instruction wrote inside the branch stays written here: reverting
+        // that would let a later store defer as an alias onto a cell something
+        // already writes, and drop the assertion the second write is.
+        for (o, slot) in &mut self.slots {
+            slot.alias = saved_slots.get(o).and_then(|s| s.alias);
+        }
     }
 
     /// Lower a branch body with branch-local scope ([`Self::scoped`]).
@@ -1840,7 +1889,7 @@ pub(crate) fn lower_func(
         heap_sizes: HashMap::new(),
         inline_ret: None,
         inline_stack_ret: None,
-        alias: HashMap::new(),
+
         alias_journal: Vec::new(),
         // A run parameter's cells are ALREADY WRITTEN, by the caller, before this
         // function's first instruction. A local `StackBuf`'s are not, and that is
@@ -1849,7 +1898,7 @@ pub(crate) fn lower_func(
         // the write-once equality assertion instead. Without seeding these,
         // `s[k] = <checked value>` inside a callee recorded an alias and vanished,
         // so the idiom that pins an unconstrained hint pinned nothing.
-        phys: f
+        slots: f
             .param_shapes
             .iter()
             .enumerate()
@@ -1858,6 +1907,13 @@ pub(crate) fn lower_func(
                 Shape::Scalar => None,
             })
             .flat_map(|(off, n)| off..off + n)
+            .map(|o| {
+                let slot = Slot {
+                    alias: None,
+                    written: true,
+                };
+                (o, slot)
+            })
             .collect(),
         pending: Vec::new(),
         inline_calls: Vec::new(),
