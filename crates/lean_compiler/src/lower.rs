@@ -65,16 +65,23 @@ impl Abi {
     const RET_PC: Off = 0;
     const RET_FP: Off = 1;
     /// Argument `i`, straight after the two return slots.
-    fn arg(i: u32) -> Off {
-        2 + i
+    /// Where argument `i` starts, which depends on the WIDTHS of the ones before
+    /// it: a `StackBuf(n)` parameter occupies `n` consecutive cells, exactly as a
+    /// `StackBuf(n)` return value does.
+    fn arg(shapes: &[Shape], i: usize) -> Off {
+        2 + shapes[..i].iter().map(|s| s.cells()).sum::<u32>()
     }
-    /// Return cell `i` of a callee taking `n_args` arguments.
-    fn ret(n_args: u32, i: u32) -> Off {
-        2 + n_args + i
+    /// Total width of the argument area.
+    fn arg_cells(shapes: &[Shape]) -> u32 {
+        shapes.iter().map(|s| s.cells()).sum()
+    }
+    /// Return cell `i` of a callee whose arguments occupy `arg_cells` cells.
+    fn ret(arg_cells: u32, i: u32) -> Off {
+        2 + arg_cells + i
     }
     /// One past the last cell the CALLER touches, so the first local cell.
-    fn end(n_args: u32, n_ret_cells: u32) -> Off {
-        Self::ret(n_args, n_ret_cells)
+    fn end(arg_cells: u32, n_ret_cells: u32) -> Off {
+        Self::ret(arg_cells, n_ret_cells)
     }
 }
 
@@ -195,10 +202,12 @@ impl Scope {
 struct FnLower<'a> {
     scope: Scope,
     next: Off,
-    n_args: u32,
+    /// Physical width of this function's argument area, which is not its
+    /// parameter COUNT once a parameter can be a run of cells.
+    arg_cells: u32,
     /// Source-level return shapes for this function. Their physical cell widths
     /// determine the reserved return area immediately after the arguments.
-    return_shapes: Vec<ReturnShape>,
+    return_shapes: Vec<Shape>,
     is_main: bool,
     code: Vec<LInstr>,
     /// Declared size of each `HeapBuf`, keyed by its pointer cell. Shifted
@@ -626,7 +635,7 @@ impl FnLower<'_> {
                 && self
                     .defs
                     .get(f)
-                    .is_some_and(|d| !d.inline && d.return_shapes.iter().any(|s| matches!(s, ReturnShape::StackBuf(_))))
+                    .is_some_and(|d| !d.inline && d.return_shapes.iter().any(|s| matches!(s, Shape::StackBuf(_))))
             {
                 self.fail("a normal function's StackBuf return cannot cross a match_range join; bind it with `let`");
             }
@@ -1538,6 +1547,7 @@ impl FnLower<'_> {
         let const_params = vec![false; params.len()];
         self.queue.push(Func {
             name: loop_name.clone(),
+            param_shapes: vec![Shape::Scalar; params.len()],
             params,
             const_params,
             n_ret: 0,
@@ -1764,18 +1774,20 @@ pub(crate) fn lower_func(
              reserved (zkDSL.md §Global constants)",
             f.name
         );
-        names.insert(
-            p.clone(),
-            Bound {
-                val: Binding::Scalar(Abi::arg(i as u32)),
-                int: None,
-            },
-        );
+        // A `StackBuf(n)` parameter binds the run the caller wrote, exactly as a
+        // local `StackBuf(n)` binds one it allocated.
+        let off = Abi::arg(&f.param_shapes, i);
+        let val = match f.param_shapes.get(i).copied().unwrap_or(Shape::Scalar) {
+            Shape::StackBuf(n) => Binding::Stack(off, n),
+            Shape::Scalar => Binding::Scalar(off),
+        };
+        names.insert(p.clone(), Bound { val, int: None });
     }
     // Reserve [0,1] retpc/retfp, params, then the flattened return area, then
     // locals. A StackBuf(n) return occupies n consecutive physical slots.
     let n_ret_cells: u32 = f.return_shapes.iter().map(|s| s.cells()).sum();
-    let abi_end = Abi::end(f.params.len() as u32, n_ret_cells);
+    let arg_cells = Abi::arg_cells(&f.param_shapes);
+    let abi_end = Abi::end(arg_cells, n_ret_cells);
     let mut lowerer = FnLower {
         filler_start: None,
         scope: Scope {
@@ -1783,7 +1795,7 @@ pub(crate) fn lower_func(
             ..Default::default()
         },
         next: abi_end,
-        n_args: f.params.len() as u32,
+        arg_cells,
         return_shapes: f.return_shapes.clone(),
         is_main: f.name == "main",
         fn_name: f.name.clone(),

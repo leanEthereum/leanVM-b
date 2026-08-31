@@ -131,6 +131,19 @@ f(p, q)                   # statement: returns discarded
 
 Functions may recurse. Each call gets a **fresh frame**: the frame pointer is prover-hinted (write-once memory makes an unconstrained cell prover-chosen), arguments and the return address/frame are stored with `DEREF`s, and control transfers with one `JUMP`. Cost: about `n_args + n_returns + 4` instructions per call. Every non-`main` function must end in an explicit `return`; in `main`, `return` is a no-op (main halts at a sentinel automatically).
 
+### `StackBuf` parameters
+
+```python
+def compress(cv: StackBuf(2), block: StackBuf(2)):
+    out = StackBuf(2)
+    blake2s(cv, block, out)
+    return out
+```
+
+`s: StackBuf(n)` marks a parameter as a **run of n cells**, passed whole. The caller must pass a `StackBuf` of exactly that size; the run is copied into the callee's frame, which owns it from then on (frame cells are write-once and outlive the call, like everything else).
+
+This is the same mechanism a `StackBuf` **return** already used, in the other direction: the argument area is a width rather than a count, and a run occupies the cells its size asks for. Without it a two-cell value could come out of a function whole but only go in through a `HeapBuf` pointer or an `@inline` expansion, which grows the caller's frame at every call site.
+
 ### `Const` parameters
 
 ```python

@@ -218,33 +218,33 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
 fn infer_return_shapes(funcs: &mut [Func]) -> Result<(), String> {
     fn expr_shape(
         e: &Expr,
-        locals: &HashMap<String, ReturnShape>,
-        known: &HashMap<String, Vec<ReturnShape>>,
-    ) -> Result<ReturnShape, String> {
+        locals: &HashMap<String, Shape>,
+        known: &HashMap<String, Vec<Shape>>,
+    ) -> Result<Shape, String> {
         let fits = |n: u64| u32::try_from(n).map_err(|_| format!("StackBuf size {n} does not fit in u32"));
         Ok(match e {
-            Expr::Var(v) => locals.get(v).copied().unwrap_or(ReturnShape::Scalar),
-            Expr::StackBuf(n) => ReturnShape::StackBuf(fits(*n)?),
-            Expr::ListLit(es) => ReturnShape::StackBuf(fits(es.len() as u64)?),
+            Expr::Var(v) => locals.get(v).copied().unwrap_or(Shape::Scalar),
+            Expr::StackBuf(n) => Shape::StackBuf(fits(*n)?),
+            Expr::ListLit(es) => Shape::StackBuf(fits(es.len() as u64)?),
             Expr::Call(f, _) => known
                 .get(f)
                 .filter(|r| r.len() == 1)
                 .and_then(|r| r.first())
                 .copied()
-                .unwrap_or(ReturnShape::Scalar),
-            _ => ReturnShape::Scalar,
+                .unwrap_or(Shape::Scalar),
+            _ => Shape::Scalar,
         })
     }
 
     fn scan(
         body: &[Stmt],
         params: &[String],
-        known: &HashMap<String, Vec<ReturnShape>>,
+        known: &HashMap<String, Vec<Shape>>,
         n_ret: usize,
-    ) -> Result<Vec<ReturnShape>, String> {
-        let mut locals: HashMap<String, ReturnShape> =
-            params.iter().map(|p| (p.clone(), ReturnShape::Scalar)).collect();
-        let mut returns = vec![ReturnShape::Scalar; n_ret];
+    ) -> Result<Vec<Shape>, String> {
+        let mut locals: HashMap<String, Shape> =
+            params.iter().map(|p| (p.clone(), Shape::Scalar)).collect();
+        let mut returns = vec![Shape::Scalar; n_ret];
         for stmt in body {
             match &stmt.kind {
                 StmtKind::Let(name, e) => {
@@ -254,7 +254,7 @@ fn infer_return_shapes(funcs: &mut [Func]) -> Result<(), String> {
                 StmtKind::LetTuple(names, f, _) => {
                     let shapes = known.get(f);
                     for (i, name) in names.iter().enumerate() {
-                        let shape = shapes.and_then(|s| s.get(i)).copied().unwrap_or(ReturnShape::Scalar);
+                        let shape = shapes.and_then(|s| s.get(i)).copied().unwrap_or(Shape::Scalar);
                         locals.insert(name.clone(), shape);
                     }
                 }
@@ -262,7 +262,7 @@ fn infer_return_shapes(funcs: &mut [Func]) -> Result<(), String> {
                 // copy remains visible afterward. One symbolic scan is enough
                 // for representation shapes (the iteration value is scalar).
                 StmtKind::Unroll { var, body, .. } => {
-                    locals.insert(var.clone(), ReturnShape::Scalar);
+                    locals.insert(var.clone(), Shape::Scalar);
                     for inner in body {
                         if let StmtKind::Let(name, e) = &inner.kind {
                             let shape = expr_shape(e, &locals, known)?;
@@ -282,15 +282,15 @@ fn infer_return_shapes(funcs: &mut [Func]) -> Result<(), String> {
         Ok(returns)
     }
 
-    let mut known: HashMap<String, Vec<ReturnShape>> = funcs
+    let mut known: HashMap<String, Vec<Shape>> = funcs
         .iter()
-        .map(|f| (f.name.clone(), vec![ReturnShape::Scalar; f.n_ret]))
+        .map(|f| (f.name.clone(), vec![Shape::Scalar; f.n_ret]))
         .collect();
     // A shape can only move from Scalar to one of the finite constructor
     // shapes (or acquire one through a call), so `funcs.len() + 1` rounds are
     // sufficient for the longest acyclic wrapper chain.
     for _ in 0..=funcs.len() {
-        let next: HashMap<String, Vec<ReturnShape>> = funcs
+        let next: HashMap<String, Vec<Shape>> = funcs
             .iter()
             .map(|f| Ok((f.name.clone(), scan(&f.body, &f.params, &known, f.n_ret)?)))
             .collect::<Result<_, String>>()?;
@@ -302,7 +302,7 @@ fn infer_return_shapes(funcs: &mut [Func]) -> Result<(), String> {
     for f in funcs {
         f.return_shapes = known
             .remove(&f.name)
-            .unwrap_or_else(|| vec![ReturnShape::Scalar; f.n_ret]);
+            .unwrap_or_else(|| vec![Shape::Scalar; f.n_ret]);
     }
     Ok(())
 }
@@ -396,24 +396,39 @@ impl Parser {
         let name = header[..open].trim().to_string();
         let params_str = header[open + 1..header.rfind(')').ok_or("missing `)`")?].trim();
         let (mut params, mut const_params) = (Vec::new(), Vec::new());
+        let mut param_shapes = Vec::new();
         if !params_str.is_empty() {
             for part in params_str.split(',') {
                 if part.trim().is_empty() {
                     return Err(format!("`def {name}`: empty parameter (a trailing comma?)"));
                 }
-                // `x` (runtime) or `x: Const` (compile-time, specialized).
-                if let Some((n, ann)) = part.split_once(':') {
-                    if ann.trim() != "Const" {
-                        return Err(format!(
-                            "unsupported parameter annotation `{}` (only `Const`)",
-                            ann.trim()
-                        ));
-                    }
-                    params.push(binding_name(n, "parameter name")?);
-                    const_params.push(true);
-                } else {
+                // `x`, `x: Const` (compile-time, specialized), or
+                // `x: StackBuf(n)` (a run of n cells, passed whole).
+                let Some((n, ann)) = part.split_once(':') else {
                     params.push(binding_name(part, "parameter name")?);
                     const_params.push(false);
+                    param_shapes.push(Shape::Scalar);
+                    continue;
+                };
+                let ann = ann.trim();
+                if ann == "Const" {
+                    params.push(binding_name(n, "parameter name")?);
+                    const_params.push(true);
+                    param_shapes.push(Shape::Scalar);
+                } else if let Some(size) = ann.strip_prefix("StackBuf(").and_then(|r| r.strip_suffix(')')) {
+                    let k = eval_const_int(size)
+                        .map_err(|e| format!("`def {name}`: StackBuf parameter size: {e}"))?;
+                    let k = u32::try_from(k).map_err(|_| format!("`def {name}`: StackBuf({k}) is too large"))?;
+                    if k == 0 {
+                        return Err(format!("`def {name}`: a StackBuf parameter needs at least one cell"));
+                    }
+                    params.push(binding_name(n, "parameter name")?);
+                    const_params.push(false);
+                    param_shapes.push(Shape::StackBuf(k));
+                } else {
+                    return Err(format!(
+                        "unsupported parameter annotation `{ann}` (`Const`, or `StackBuf(n)` to pass a run of cells)"
+                    ));
                 }
             }
         }
@@ -441,7 +456,8 @@ impl Parser {
             params,
             const_params,
             n_ret,
-            return_shapes: vec![ReturnShape::Scalar; n_ret],
+            return_shapes: vec![Shape::Scalar; n_ret],
+            param_shapes,
             body,
             inline,
         })

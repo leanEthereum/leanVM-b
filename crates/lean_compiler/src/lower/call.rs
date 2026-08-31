@@ -98,7 +98,37 @@ impl FnLower<'_> {
         }
         let (callee, args) = self.specialize(callee, args);
         let (callee, args) = (callee.as_str(), args.as_slice());
-        let arg_offs: Vec<Off> = args.iter().map(|a| self.expr(a)).collect();
+        // Each argument goes where its SHAPE puts it: a `StackBuf(n)` parameter
+        // takes n consecutive cells, exactly as a `StackBuf(n)` return value
+        // does. Resolved before the frame pointer is allocated, as before.
+        let shapes = self
+            .param_shapes_of(callee)
+            .unwrap_or_else(|| vec![Shape::Scalar; args.len()]);
+        let mut arg_offs: Vec<(Off, Off)> = Vec::new();
+        for (i, a) in args.iter().enumerate() {
+            let base = Abi::arg(&shapes, i);
+            match shapes.get(i).copied().unwrap_or(Shape::Scalar) {
+                Shape::StackBuf(n) => {
+                    let (src, len) = self.stack_of(a).unwrap_or_else(|| {
+                        self.fail(format!("`{callee}` parameter {i} is a StackBuf({n}); pass one, got `{a:?}`"))
+                    });
+                    if len != n {
+                        self.fail(format!(
+                            "`{callee}` parameter {i} is a StackBuf({n}), got a StackBuf({len})"
+                        ))
+                    }
+                    for k in 0..n {
+                        let cell = self.word_src(src + k);
+                        arg_offs.push((base + k, cell));
+                    }
+                }
+                Shape::Scalar => {
+                    let cell = self.expr(a);
+                    arg_offs.push((base, cell));
+                }
+            }
+        }
+        let callee_arg_cells = Abi::arg_cells(&shapes);
         let nfp = self.fresh();
         let entry = self.fresh();
         // Resolve the jump condition up front: `self.one()` may emit a `SET`, and
@@ -112,8 +142,8 @@ impl FnLower<'_> {
             ptr: nfp,
             callee: callee.to_string(),
         });
-        for (i, &ao) in arg_offs.iter().enumerate() {
-            self.deref(nfp, Abi::arg(i as u32), ao, DerefMode::Cell);
+        for &(off, ao) in &arg_offs {
+            self.deref(nfp, off, ao, DerefMode::Cell);
         }
         if tail {
             // Tail call: hand the callee OUR return target, so it returns to our
@@ -127,13 +157,12 @@ impl FnLower<'_> {
         }
         self.emit(LOp::Jump { oc, od: entry, of: nfp });
 
-        let n_args = args.len() as u32;
         let dsts: Vec<Off> = match dsts_in {
             Some(d) => d.to_vec(),
             None => (0..n_ret).map(|_| self.fresh()).collect(),
         };
         for (i, &d) in dsts.iter().enumerate() {
-            self.deref(nfp, Abi::ret(n_args, i as u32), d, DerefMode::Cell);
+            self.deref(nfp, Abi::ret(callee_arg_cells, i as u32), d, DerefMode::Cell);
         }
         dsts
     }
@@ -145,7 +174,24 @@ impl FnLower<'_> {
     /// Each taken arm is then just the trampoline's `SET entry; JUMP`: no
     /// per-arm frame setup, call, or return jump.
     pub(super) fn lower_dispatched_call(&mut self, names: &[String], x: &Expr, callees: &[String], rt_args: &[Expr]) {
-        let n_args = rt_args.len() as u32;
+        // The arms share ONE frame, so they must share one argument layout too:
+        // a `StackBuf` parameter in one callee and a scalar in another at the
+        // same position would put the return area in two places. The arity check
+        // below is the count; this is the widths.
+        let shared_shapes = callees
+            .iter()
+            .find_map(|c| self.param_shapes_of(c))
+            .unwrap_or_else(|| vec![Shape::Scalar; rt_args.len()]);
+        for c in callees {
+            if let Some(shapes) = self.param_shapes_of(c)
+                && shapes != shared_shapes
+            {
+                self.fail(format!(
+                    "`{c}` does not take the same parameter shapes as the other arms of this dispatch"
+                ))
+            }
+        }
+        let n_args = Abi::arg_cells(&shared_shapes);
         // The join below reads one return cell per bound name, so every callee has
         // to declare exactly that many. Unchecked, a name past a callee's arity
         // `DEREF`s a frame offset nothing on that path writes, and since the shared
@@ -189,7 +235,7 @@ impl FnLower<'_> {
                     names.len()
                 ))
             };
-            if shapes.iter().any(|s| *s != ReturnShape::Scalar) {
+            if shapes.iter().any(|s| *s != Shape::Scalar) {
                 self.fail(format!(
                     "`{callee}`: a multi-cell StackBuf return cannot cross a dispatched join"
                 ))
@@ -210,7 +256,7 @@ impl FnLower<'_> {
             callees: callees.to_vec(),
         });
         for (i, &ao) in arg_offs.iter().enumerate() {
-            self.deref(nfp, Abi::arg(i as u32), ao, DerefMode::Cell);
+            self.deref(nfp, Abi::arg(&shared_shapes, i), ao, DerefMode::Cell);
         }
         self.deref(nfp, Abi::RET_FP, 0, DerefMode::Fp);
         let join_cell = self.fresh();
@@ -333,7 +379,7 @@ impl FnLower<'_> {
         if self.is_main {
             return; // a `return` in main is a no-op; main halts via the trailing sentinel jump (lower_func).
         }
-        let ret_base = Abi::ret(self.n_args, 0);
+        let ret_base = Abi::ret(self.arg_cells, 0);
         if exprs.len() != self.return_shapes.len() {
             self.fail(format!(
                 "function returns {} values here, but its ABI declares {}",
@@ -347,8 +393,8 @@ impl FnLower<'_> {
         let mut ret = ret_base;
         for (e, shape) in exprs.iter().zip(self.return_shapes.clone()) {
             match shape {
-                ReturnShape::Scalar => self.expr_into(e, ret),
-                ReturnShape::StackBuf(size) => {
+                Shape::Scalar => self.expr_into(e, ret),
+                Shape::StackBuf(size) => {
                     let (base, actual) = self
                         .stack_of(e)
                         .unwrap_or_else(|| self.fail(format!("expected a StackBuf({size}) return, got `{e:?}`")));
@@ -415,6 +461,7 @@ impl FnLower<'_> {
             let const_params = vec![false; rt_params.len()];
             self.queue.push(Func {
                 name: name.clone(),
+                param_shapes: vec![Shape::Scalar; rt_params.len()],
                 params: rt_params,
                 const_params,
                 n_ret: def.n_ret,
@@ -445,7 +492,7 @@ impl FnLower<'_> {
             .defs
             .get(callee)
             .map(|d| d.return_shapes.clone())
-            .unwrap_or_else(|| vec![ReturnShape::Scalar; n_ret]);
+            .unwrap_or_else(|| vec![Shape::Scalar; n_ret]);
         if shapes.len() != n_ret {
             self.fail(format!(
                 "`{callee}` returns {} values, call binds {n_ret}",
@@ -457,13 +504,13 @@ impl FnLower<'_> {
         let mut binds = Vec::with_capacity(n_ret);
         for shape in shapes {
             match shape {
-                ReturnShape::Scalar => {
+                Shape::Scalar => {
                     let dst = self.fresh();
                     logical.push(dst);
                     physical.push(dst);
                     binds.push(RetBind::Scalar);
                 }
-                ReturnShape::StackBuf(size) => {
+                Shape::StackBuf(size) => {
                     if size == 0 {
                         self.fail("a returned StackBuf must not be empty")
                     };
@@ -494,7 +541,7 @@ impl FnLower<'_> {
                         dsts.len()
                     ))
                 };
-                if def.return_shapes.iter().any(|s| *s != ReturnShape::Scalar) {
+                if def.return_shapes.iter().any(|s| *s != Shape::Scalar) {
                     self.fail("a normal function's multi-cell StackBuf return needs a `let` binding")
                 };
             }
@@ -537,10 +584,22 @@ impl FnLower<'_> {
             .or_else(|| self.queue.iter().find(|f| f.name == callee).map(|f| f.params.len()))
     }
 
+    /// A callee's declared PARAMETER shapes, looked up the same way as its
+    /// arity. A generated function (a loop helper, a `Const` specialization) is
+    /// all scalars.
+    pub(super) fn param_shapes_of(&self, callee: &str) -> Option<Vec<Shape>> {
+        self.defs.get(callee).map(|d| d.param_shapes.clone()).or_else(|| {
+            self.queue
+                .iter()
+                .find(|f| f.name == callee)
+                .map(|f| f.param_shapes.clone())
+        })
+    }
+
     /// A callee's declared return shapes, looked up the same way. A dispatched
     /// `match_range` names specializations, so a check that consults only `defs`
     /// silently passes on every one of them.
-    pub(super) fn return_shapes_of(&self, callee: &str) -> Option<Vec<ReturnShape>> {
+    pub(super) fn return_shapes_of(&self, callee: &str) -> Option<Vec<Shape>> {
         self.defs.get(callee).map(|d| d.return_shapes.clone()).or_else(|| {
             self.queue
                 .iter()

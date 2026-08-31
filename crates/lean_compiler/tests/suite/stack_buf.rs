@@ -596,6 +596,52 @@ fn heap_index_boundary_ok() {
     verify(&program, &pi, &proof).expect("boundary access verifies");
 }
 
+/// A multi-cell value can cross a call in BOTH directions.
+///
+/// It could always be returned as a run of cells and never passed as one, so a
+/// two-cell digest went in through a pointer or an `@inline` expansion while
+/// coming back out whole. A `s: StackBuf(n)` parameter takes the same n
+/// consecutive cells a `StackBuf(n)` return value occupies, placed by the same
+/// `Abi`, which is why the argument area is now a WIDTH rather than a count.
+#[test]
+fn a_stack_buf_can_be_passed_as_well_as_returned() {
+    let src = "\
+def swap(s: StackBuf(2)):
+    t = StackBuf(2)
+    t[0] = s[1]
+    t[1] = s[0]
+    return t
+
+def main():
+    b = StackBuf(2)
+    b[0] = GEN ** 1
+    b[1] = GEN ** 2
+    r = swap(b)
+    p = GEN ** 0
+    p[1] = r[0]
+    p[GEN] = r[1]
+    return
+";
+    let program = compile(&parse(src).expect("parse"));
+    let want = [g_pow(2).into(), g_pow(1).into()];
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    verify(&program, &want, &proof).expect("the run went in and the swapped run came back");
+
+    // The shape is checked at the call, in both directions of mismatch.
+    for (arg, want) in [
+        ("b = StackBuf(3)\n    b[0] = GEN ** 1\n    r = f(b)", "got a StackBuf(3)"),
+        ("r = f(GEN ** 1)", "pass one"),
+    ] {
+        let src = format!("def f(s: StackBuf(2)):\n    return s[0]\n\ndef main():\n    {arg}\n    p = GEN ** 0\n    p[1] = r\n    p[GEN] = GEN ** 0\n    return\n");
+        let ast = parse(&src).expect("parses");
+        let Err(err) = std::panic::catch_unwind(|| compile(&ast)) else {
+            panic!("accepted: {arg}");
+        };
+        let msg = err.downcast_ref::<String>().map(String::as_str).unwrap_or("");
+        assert!(msg.contains(want), "got `{msg}`");
+    }
+}
+
 /// `g` is `x`, so the literal `2^k` IS `g^k`. `try_gpow_index` always knew that
 /// and `gaddr_of` did not, so one field element had three answers: `hb[GEN * 2]`
 /// was rejected as "not a g-power" while `hb[GEN * GEN]` compiled, and

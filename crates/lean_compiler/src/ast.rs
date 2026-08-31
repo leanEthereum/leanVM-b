@@ -240,15 +240,15 @@ pub enum LtBound {
 
 /// Compile-time representation of one source-level return value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReturnShape {
+pub enum Shape {
     /// One ordinary field element or address cell. Heap buffers use this shape:
-    /// allocation happens in the callee and only their pointer is returned.
+    /// allocation happens in the callee and only their pointer crosses.
     Scalar,
     /// A compile-time-sized run of consecutive frame cells.
     StackBuf(u32),
 }
 
-impl ReturnShape {
+impl Shape {
     /// Number of physical call-frame return cells occupied by this source-level
     /// return value.
     pub(crate) fn cells(self) -> u32 {
@@ -274,7 +274,13 @@ pub struct Func {
     pub n_ret: usize,
     /// Compile-time shape of each source-level return value. Stack buffers use
     /// multiple physical ABI cells; everything else uses one cell.
-    pub return_shapes: Vec<ReturnShape>,
+    pub return_shapes: Vec<Shape>,
+    /// The same for each parameter, from a `s: StackBuf(n)` annotation. A value
+    /// could always be RETURNED as a run of cells and never passed as one, so a
+    /// two-cell digest went in through a pointer or an `@inline` expansion while
+    /// coming back out whole. The shapes are the same type in both directions
+    /// because it is the same question.
+    pub param_shapes: Vec<Shape>,
     pub body: Vec<Stmt>,
     /// `@inline` decorator: expand this function at each call site instead of
     /// emitting a real call: no frame, no argument/return plumbing (the
