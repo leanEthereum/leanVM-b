@@ -88,8 +88,9 @@ enum RetBind {
     Scalar,
 }
 
-/// What a name is bound to, i.e. which of [`Scope`]'s maps holds it. The kinds
-/// are mutually exclusive, so binding one clears the others ([`FnLower::rebind`]).
+/// What a name is bound to. The kinds are mutually exclusive: a name has exactly
+/// one of them, which is why they are one enum and not four maps.
+#[derive(Clone, Copy)]
 enum Binding {
     Scalar(Off),
     Stack(Off, u32),
@@ -112,28 +113,22 @@ fn ret_binding(b: Option<RetBind>, dst: Off) -> Binding {
 /// the lazily materialized cells whose `SET` sits wherever it was first needed.
 /// [`FnLower::scoped`] saves one of these and restores it at the join, so a
 /// cell written on one path is never trusted on another.
+/// What one name means: its single value binding, plus an OPTIONAL compile-time
+/// integer reading of the same expression. The two genuinely coexist (`x = 2`
+/// names the field element 2 AND the index 2, while `n = len(A) - 1` names an
+/// integer with no g-power reading at all), so `int` rides beside `val` instead
+/// of being a fifth variant. One entry per name is what makes a rebind atomic:
+/// five parallel maps meant five removes, and an arm that forgot one left a
+/// stale reading of a name that had moved on.
+#[derive(Clone, Copy)]
+struct Bound {
+    val: Binding,
+    int: Option<u128>,
+}
+
 #[derive(Clone, Default)]
 struct Scope {
-    vars: HashMap<String, Off>,
-    /// `StackBuf` bindings: name → (base offset, size). The `size` cells
-    /// `base..base+size` are consecutive frame cells (so a size-2 one, or a
-    /// 2-cell slice of a larger one, is a direct `blake2s` operand). Kept
-    /// separate from `vars` since a stack value is a run of cells, not a
-    /// single scalar.
-    stacks: HashMap<String, (Off, u32)>,
-    /// Names bound to compile-time integer expressions (`x = 10`), usable in
-    /// index positions and instruction metadata. Cleared on rebind to anything
-    /// else. Index users narrow to `u32`; metadata may consume a wider value.
-    /// Integer arithmetic is distinct from the field arithmetic the same syntax
-    /// means in a scalar expression.
-    consts: HashMap<String, u128>,
-    /// Variables bound to a symbolic g-address ([`GAddr`]): index cursors and
-    /// shifted pointers, kept virtual so their offsets fold into `DEREF`'s `β`.
-    gaddrs: HashMap<String, GAddr>,
-    /// Variables bound to a compile-time *field* constant that isn't a g-power
-    /// (e.g. a running weight `CHAIN_LENGTH^i`). Kept virtual: folded through
-    /// constant field arithmetic and materialized (one `SET`) only when used.
-    fconsts: HashMap<String, F192>,
+    names: HashMap<String, Bound>,
     /// The cell holding this function's own `fp`, materialized lazily
     /// ([`FnLower::self_fp`]): local (`if`/`else`) jumps reload the frame
     /// pointer on the taken branch.
@@ -159,6 +154,40 @@ struct Scope {
     /// lazily at the first dominating default-IV compression in this
     /// control-flow scope.
     blake2s_iv: Option<Off>,
+}
+
+impl Scope {
+    fn bound(&self, n: &str) -> Option<Bound> {
+        self.names.get(n).copied()
+    }
+    fn var(&self, n: &str) -> Option<Off> {
+        match self.bound(n)?.val {
+            Binding::Scalar(o) => Some(o),
+            _ => None,
+        }
+    }
+    fn stack(&self, n: &str) -> Option<(Off, u32)> {
+        match self.bound(n)?.val {
+            Binding::Stack(base, size) => Some((base, size)),
+            _ => None,
+        }
+    }
+    fn gaddr(&self, n: &str) -> Option<GAddr> {
+        match self.bound(n)?.val {
+            Binding::Gaddr(ga) => Some(ga),
+            _ => None,
+        }
+    }
+    /// The compile-time integer reading of `n`, when it has one.
+    fn int(&self, n: &str) -> Option<u128> {
+        self.bound(n)?.int
+    }
+    /// Attach the integer reading to the binding just made for `n`.
+    fn set_int(&mut self, n: &str, k: u128) {
+        if let Some(b) = self.names.get_mut(n) {
+            b.int = Some(k);
+        }
+    }
 }
 
 struct FnLower<'a> {
@@ -347,31 +376,15 @@ impl FnLower<'_> {
     /// that must drop it do so themselves.
     fn rebind(&mut self, name: &str, b: Binding) {
         self.check_not_reserved(name);
-        self.scope.vars.remove(name);
-        self.scope.stacks.remove(name);
-        self.scope.gaddrs.remove(name);
-        self.scope.fconsts.remove(name);
-        match b {
-            Binding::Scalar(o) => {
-                self.scope.vars.insert(name.to_string(), o);
-            }
-            Binding::Stack(base, size) => {
-                self.scope.stacks.insert(name.to_string(), (base, size));
-            }
-            Binding::Gaddr(ga) => {
-                self.scope.gaddrs.insert(name.to_string(), ga);
-            }
-            Binding::FConst(c) => {
-                self.scope.fconsts.insert(name.to_string(), c);
-            }
-        }
+        // Every reading of the old name goes with it, the integer one included:
+        // one entry replaced, so none can be left behind.
+        self.scope.names.insert(name.to_string(), Bound { val: b, int: None });
     }
 
     /// Bind each of `names` to the join cell holding its value, after a `match`
     /// dispatch: whichever arm ran wrote them, so they are plain scalars now.
     fn bind_join(&mut self, names: &[String], cells: &[Off]) {
         for (name, &cell) in names.iter().zip(cells) {
-            self.scope.consts.remove(name);
             self.rebind(name, Binding::Scalar(cell));
         }
     }
@@ -437,7 +450,7 @@ impl FnLower<'_> {
             // A live var / stack cell aliases to that cell directly (no new
             // material); anything else that is a compile-time constant defers
             // to the pooled const cell.
-            Expr::Var(v) if self.scope.vars.contains_key(v) => self.scope.vars.get(v).map(|&c| Alias::Cell(c)),
+            Expr::Var(v) if self.scope.var(v).is_some() => self.scope.var(v).map(Alias::Cell),
             Expr::Index(arr, idx) => {
                 let (base, _) = self.stack_of(arr)?;
                 Some(Alias::Cell(base + self.try_const_index(idx)?))
@@ -906,12 +919,17 @@ impl FnLower<'_> {
 
     /// Lower `if` / `else`, arranging the blocks so the nonzero `XOR` result jumps to the correct arm.
     fn lower_if(&mut self, eq: bool, lhs: &Expr, rhs: &Expr, then: &[Stmt], els: &[Stmt]) {
-        // Compile-time condition (both sides compile-time integers, e.g. after
-        // `Const`-argument substitution): fold to the taken branch, emitting no
-        // test or jump. Lets `@inline` arms bake per-case control flow. The
-        // taken branch is straight-line code (like an unroll iteration), so its
-        // bindings persist, unlike a runtime branch, whose bindings are
-        // branch-local (a runtime branch may not execute).
+        // Compile-time condition: fold to the taken branch, emitting no test or
+        // jump. Lets `@inline` arms bake per-case control flow. The taken branch
+        // is straight-line code (like an unroll iteration), so its bindings
+        // persist, unlike a runtime branch, whose bindings are branch-local (a
+        // runtime branch may not execute).
+        //
+        // Decided in the FIELD, because that is what the runtime lowering below
+        // decides: the test is an `XOR` against zero. Folding on the integer
+        // reading instead let the two disagree, and `K = 3 + 1` (the field
+        // element 2, the integer 4) then entered the `K == 4` arm, whose own
+        // condition is false as a value.
         if let (Some(a), Some(b)) = (self.try_const_index(lhs), self.try_const_index(rhs)) {
             // Only where the two readings of the condition agree. The runtime
             // lowering below tests a field `XOR`, so an integer verdict the
@@ -1175,16 +1193,14 @@ impl FnLower<'_> {
             }
             Expr::Pow(b, e) => self.pow_expr(b, e),
             Expr::Var(v) => {
-                if self.scope.stacks.contains_key(v) {
+                if self.scope.stack(v).is_some() {
                     self.fail(format!("StackBuf `{v}` used as a scalar; index it (`{v}[k]`) or pass it to blake2s"));
                 }
-                if let Some(&ga) = self.scope.gaddrs.get(v) {
+                if let Some(ga) = self.scope.gaddr(v) {
                     return self.materialize(ga);
                 }
-                *self
-                    .scope
-                    .vars
-                    .get(v)
+                self.scope
+                    .var(v)
                     .unwrap_or_else(|| self.fail(format!("unbound variable `{v}`")))
             }
             Expr::Add(a, b) => {
@@ -1339,7 +1355,7 @@ impl FnLower<'_> {
     /// If `e` names a `StackBuf` variable, its `(base, size)`.
     fn stack_of(&self, e: &Expr) -> Option<(Off, u32)> {
         match e {
-            Expr::Var(v) => self.scope.stacks.get(v).copied(),
+            Expr::Var(v) => self.scope.stack(v),
             _ => None,
         }
     }
@@ -1380,7 +1396,7 @@ impl FnLower<'_> {
     fn try_const_int(&self, e: &Expr) -> Option<u128> {
         match e {
             Expr::Lit(k) => Some(*k),
-            Expr::Var(v) => self.scope.consts.get(v).copied(),
+            Expr::Var(v) => self.scope.int(v),
             Expr::Add(a, b) => self.try_const_int(a)?.checked_add(self.try_const_int(b)?),
             Expr::Sub(a, b) => self.try_const_int(a)?.checked_sub(self.try_const_int(b)?),
             Expr::Mul(a, b) => self.try_const_int(a)?.checked_mul(self.try_const_int(b)?),
@@ -1525,7 +1541,7 @@ impl FnLower<'_> {
     fn try_lit(&self, e: &Expr) -> Option<u64> {
         match e {
             Expr::Lit(n) => u64::try_from(*n).ok(),
-            Expr::Var(v) => self.scope.consts.get(v).and_then(|&n| u64::try_from(n).ok()),
+            Expr::Var(v) => self.scope.int(v).and_then(|n| u64::try_from(n).ok()),
             Expr::GPow(0) => Some(1),
             _ => None,
         }
@@ -1729,13 +1745,16 @@ impl FnLower<'_> {
                 exp: self.try_const_index(e)? as u128,
                 run: None,
             }),
-            Expr::Var(v) => self.scope.gaddrs.get(v).copied().or_else(|| {
-                self.scope.vars.get(v).map(|&c| GAddr {
+            Expr::Var(v) => match self.scope.bound(v)?.val {
+                Binding::Gaddr(ga) => Some(ga),
+                // A plain scalar is its own base, unshifted.
+                Binding::Scalar(c) => Some(GAddr {
                     base: Some(c),
                     exp: 0,
                     run: None,
-                })
-            }),
+                }),
+                _ => None,
+            },
             Expr::Mul(a, b) => gmul(self.gaddr_of(a)?, self.gaddr_of(b)?),
             _ => None,
         }
@@ -1783,15 +1802,11 @@ impl FnLower<'_> {
             Expr::Gen => Some(g_pow(1).into()),
             Expr::GPow(k) => Some(g_pow_u128(*k).into()),
             Expr::GenPow(e) => Some(g_pow_u128(self.try_const_index(e)? as u128).into()),
-            Expr::Var(v) => self
-                .scope
-                .fconsts
-                .get(v)
-                .copied()
-                .or_else(|| match self.scope.gaddrs.get(v) {
-                    Some(GAddr { base: None, exp, .. }) => Some(g_pow_u128(*exp).into()),
-                    _ => None,
-                }),
+            Expr::Var(v) => match self.scope.bound(v)?.val {
+                Binding::FConst(c) => Some(c),
+                Binding::Gaddr(GAddr { base: None, exp, .. }) => Some(g_pow_u128(exp).into()),
+                _ => None,
+            },
             Expr::Add(a, b) => Some(self.try_field_const(a)? + self.try_field_const(b)?),
             Expr::Mul(a, b) => Some(self.try_field_const(a)? * self.try_field_const(b)?),
             // A constant-array element `NAME[i]` as a field value, or `len(NAME)`.
@@ -1862,9 +1877,9 @@ impl FnLower<'_> {
         if exp + span > size {
             let name = self
                 .scope
-                .vars
+                .names
                 .iter()
-                .find(|(_, c)| **c == base)
+                .find(|(_, b)| matches!(b.val, Binding::Scalar(c) if c == base))
                 .map(|(n, _)| n.as_str())
                 .unwrap_or("?");
             if span == 1 {
@@ -2128,45 +2143,24 @@ impl FnLower<'_> {
         // environment, since a function sees only its params. The frame, `one`,
         // `self_fp`, and range-check bounds stay the caller's: the inlined code
         // runs in the caller's frame, so they fit.
-        enum Bind {
-            Stack(Off, u32),
-            Addr(GAddr),
-            Cell(Off),
-        }
-        let mut binds: Vec<(String, Bind)> = Vec::new();
+        let mut binds: Vec<(String, Binding)> = Vec::new();
         for (p, a) in params.iter().zip(&rt_args) {
             let b = if let Some((base, size)) = self.stack_of(a) {
-                Bind::Stack(base, size)
+                Binding::Stack(base, size)
             } else if let Some(ga) = self.gaddr_of(a) {
-                Bind::Addr(ga)
+                Binding::Gaddr(ga)
             } else {
-                Bind::Cell(self.expr(a))
+                Binding::Scalar(self.expr(a))
             };
             binds.push((p.clone(), b));
         }
         // Only the name bindings reset: the inlined body runs in the caller's
         // frame, so the caller's `one`, `self_fp`, constant and bound cells all
         // still name valid cells and stay live.
-        let saved = (
-            std::mem::take(&mut self.scope.vars),
-            std::mem::take(&mut self.scope.stacks),
-            std::mem::take(&mut self.scope.consts),
-            std::mem::take(&mut self.scope.gaddrs),
-            std::mem::take(&mut self.scope.fconsts),
-        );
+        let saved = std::mem::take(&mut self.scope.names);
         for (p, b) in binds {
             self.check_not_reserved(&p);
-            match b {
-                Bind::Stack(base, size) => {
-                    self.scope.stacks.insert(p, (base, size));
-                }
-                Bind::Addr(ga) => {
-                    self.scope.gaddrs.insert(p, ga);
-                }
-                Bind::Cell(cell) => {
-                    self.scope.vars.insert(p, cell);
-                }
-            }
+            self.scope.names.insert(p, Bound { val: b, int: None });
         }
         let saved_ret = self.inline_ret.replace(dsts.to_vec());
         // The body lowers through the CALLER's `FnLower`, so its statements move
@@ -2182,13 +2176,7 @@ impl FnLower<'_> {
         debug_assert_eq!(popped.as_deref(), Some(callee));
         self.inline_ret = saved_ret;
         self.cur_line = saved_line;
-        (
-            self.scope.vars,
-            self.scope.stacks,
-            self.scope.consts,
-            self.scope.gaddrs,
-            self.scope.fconsts,
-        ) = saved;
+        self.scope.names = saved;
         true
     }
 
@@ -2329,7 +2317,6 @@ impl FnLower<'_> {
                 // `x = StackBuf(n)`: bind a run of `n` consecutive frame cells.
                 Expr::StackBuf(n) => {
                     let base = self.alloc_stack(*n as u32);
-                    self.scope.consts.remove(name);
                     self.rebind(name, Binding::Stack(base, *n as u32));
                 }
                 // `x = [a, b, …]`: an initialized StackBuf. Allocate the run and
@@ -2342,7 +2329,6 @@ impl FnLower<'_> {
                     for (k, el) in es.iter().enumerate() {
                         self.stack_store(base + k as u32, el);
                     }
-                    self.scope.consts.remove(name);
                     self.rebind(name, Binding::Stack(base, es.len() as u32));
                 }
                 // `p = addr(sb)` binds the address itself, so the offset folds
@@ -2350,15 +2336,13 @@ impl FnLower<'_> {
                 // materialize it into a cell instead.
                 Expr::Call(f, cargs) if f == "addr" => {
                     let ga = self.stack_addr(cargs);
-                    self.scope.consts.remove(name);
                     self.rebind(name, Binding::Gaddr(ga));
                 }
                 // `x = other_stackbuf`: a compile-time alias of the same cell
                 // run (zero instructions), the chaining-state idiom `st = sn`
                 // of an MD loop.
-                Expr::Var(v) if self.scope.stacks.contains_key(v) => {
-                    let (base, size) = self.scope.stacks[v];
-                    self.scope.consts.remove(name);
+                Expr::Var(v) if self.scope.stack(v).is_some() => {
+                    let (base, size) = self.scope.stack(v).expect("guarded above");
                     self.rebind(name, Binding::Stack(base, size));
                 }
                 _ => {
@@ -2370,14 +2354,6 @@ impl FnLower<'_> {
                     // usable as a compile-time index / bound / exponent, and that
                     // role survives the value binding chosen below.
                     let k_int = self.try_const_int(e);
-                    match k_int {
-                        Some(k) => {
-                            self.scope.consts.insert(name.clone(), k);
-                        }
-                        None => {
-                            self.scope.consts.remove(name);
-                        }
-                    }
                     // A symbolic g-address (a constant g-power or a shifted
                     // pointer) or a compile-time field constant stays virtual:
                     // no instruction here, folded / materialized only on demand.
@@ -2408,6 +2384,13 @@ impl FnLower<'_> {
                         let o = self.expr(e);
                         self.rebind(name, Binding::Scalar(o));
                     }
+                    // The integer reading of the SAME expression, if it has one,
+                    // rides alongside whichever value binding was chosen above.
+                    // It is attached after, because a rebind clears it, and the
+                    // RHS above still had to see `name`'s old reading.
+                    if let Some(k) = k_int {
+                        self.scope.set_int(name, k);
+                    }
                 }
             },
             StmtKind::LetTuple(names, f, args) => {
@@ -2418,7 +2401,6 @@ impl FnLower<'_> {
                 let binds = self.inline_stack_ret.take();
                 for (i, (n, d)) in names.iter().zip(&dsts).enumerate() {
                     let b = ret_binding(binds.as_ref().and_then(|b| b.get(i).copied()), *d);
-                    self.scope.consts.remove(n);
                     self.rebind(n, b);
                 }
             }
@@ -2787,13 +2769,15 @@ impl FnLower<'_> {
             // clear error (not the misleading "unbound variable" the capture drop
             // would otherwise trigger). Keep it inside the loop body, or carry
             // state through a `HeapBuf`.
-            if self.scope.stacks.contains_key(r) && !shadowed.contains(r) {
+            if self.scope.stack(r).is_some() && !shadowed.contains(r) {
                 self.fail(format!(
                     "StackBuf `{r}` cannot be captured into a `for` loop; \
                      define it inside the loop body or carry state via a `HeapBuf`"
                 ));
             }
-            if (self.scope.vars.contains_key(r) || self.scope.gaddrs.contains_key(r)) && seen.insert(r.clone()) {
+            if matches!(self.scope.bound(r).map(|b| b.val), Some(Binding::Scalar(_) | Binding::Gaddr(_)))
+                && seen.insert(r.clone())
+            {
                 captures.push(r.clone());
             }
         }
@@ -3081,7 +3065,7 @@ pub(crate) fn lower_func(
     const_arrays: &HashMap<String, Vec<F192>>,
     with_filler: bool,
 ) -> Lowered {
-    let mut vars = HashMap::new();
+    let mut names: HashMap<String, Bound> = HashMap::new();
     for (i, p) in f.params.iter().enumerate() {
         assert!(
             !const_arrays.contains_key(p),
@@ -3089,7 +3073,13 @@ pub(crate) fn lower_func(
              reserved (zkDSL.md §Global constants)",
             f.name
         );
-        vars.insert(p.clone(), 2 + i as u32);
+        names.insert(
+            p.clone(),
+            Bound {
+                val: Binding::Scalar(2 + i as u32),
+                int: None,
+            },
+        );
     }
     // Reserve [0,1] retpc/retfp, params, then the flattened return area, then
     // locals. A StackBuf(n) return occupies n consecutive physical slots.
@@ -3098,7 +3088,7 @@ pub(crate) fn lower_func(
     let mut lowerer = FnLower {
         filler_start: None,
         scope: Scope {
-            vars,
+            names,
             ..Default::default()
         },
         next,
