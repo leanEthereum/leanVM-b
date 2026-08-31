@@ -113,7 +113,7 @@ def main():
 }
 
 #[test]
-#[should_panic(expected = "BLAKE2s counter does not fit in u64")]
+#[should_panic(expected = "counter= 18446744073709551616 does not fit in u64")]
 fn blake2s_counter_rejects_values_above_u64() {
     let src = "\
 def main():
@@ -594,6 +594,122 @@ fn heap_index_boundary_ok() {
     let pi = [F192::from(F64(3)), F192::from(F64(4))];
     let (proof, _) = prove(&program, pi, lean_vm::pcs::LOG_INV_RATE);
     verify(&program, &pi, &proof).expect("boundary access verifies");
+}
+
+/// A store into a run PARAMETER is the write-once assertion, not a fresh store.
+///
+/// A run parameter's cells are already written, by the caller, before the
+/// callee's first instruction; a local `StackBuf`'s are not. That is the whole
+/// difference, and missing it dropped the assertion: `s[k] = <value>` inside a
+/// callee recorded a deferred alias and emitted nothing, so the idiom that pins
+/// an unconstrained hint pinned nothing and the prover kept its own values.
+#[test]
+fn a_store_into_a_run_parameter_asserts() {
+    let pin = "\
+def pin(s: StackBuf(2)):
+    s[0] = GEN ** 5
+    s[1] = GEN ** 6
+    return GEN ** 0
+
+def main():
+    b = StackBuf(2)
+    hint_witness(b, \"adv\")
+    z = pin(b)
+    p = GEN ** 0
+    p[1] = b[0]
+    p[GEN] = b[1]
+    return
+";
+    let ast = parse(pin).expect("parse");
+    // The honest prover hints what the callee asserts, and it verifies.
+    let mut program = compile(&ast);
+    program.set_witness("adv", vec![vec![g_pow(5).into(), g_pow(6).into()]]);
+    let want = [g_pow(5).into(), g_pow(6).into()];
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    verify(&program, &want, &proof).expect("the honest hint matches the pin");
+
+    // A prover hinting anything else must be rejected: that is what the pin is.
+    let mut bad = compile(&ast);
+    bad.set_witness("adv", vec![vec![g_pow(13).into(), g_pow(14).into()]]);
+    let dishonest = [g_pow(13).into(), g_pow(14).into()];
+    assert!(
+        std::panic::catch_unwind(|| bad.execute(dishonest)).is_err(),
+        "the pin must reject a hint it does not match"
+    );
+
+    // The same rule with no hint involved: one cell cannot hold two values.
+    let two = "\
+def f(s: StackBuf(2)):
+    s[0] = s[1]
+    return s[0]
+
+def main():
+    b = StackBuf(2)
+    b[0] = GEN ** 9
+    b[1] = GEN ** 3
+    r = f(b)
+    p = GEN ** 0
+    p[1] = r
+    p[GEN] = GEN ** 0
+    return
+";
+    let program = compile(&parse(two).expect("parse"));
+    let want = [g_pow(3).into(), g_pow(0).into()];
+    assert!(
+        std::panic::catch_unwind(|| program.execute(want)).is_err(),
+        "`s[0] = s[1]` asserts that they are equal"
+    );
+}
+
+/// A multi-cell value can cross a call in BOTH directions.
+///
+/// It could always be returned as a run of cells and never passed as one, so a
+/// two-cell digest went in through a pointer or an `@inline` expansion while
+/// coming back out whole. A `s: StackBuf(n)` parameter takes the same n
+/// consecutive cells a `StackBuf(n)` return value occupies, placed by the same
+/// `Abi`, which is why the argument area is now a WIDTH rather than a count.
+#[test]
+fn a_stack_buf_can_be_passed_as_well_as_returned() {
+    let src = "\
+def swap(s: StackBuf(2)):
+    t = StackBuf(2)
+    t[0] = s[1]
+    t[1] = s[0]
+    return t
+
+def main():
+    b = StackBuf(2)
+    b[0] = GEN ** 1
+    b[1] = GEN ** 2
+    r = swap(b)
+    p = GEN ** 0
+    p[1] = r[0]
+    p[GEN] = r[1]
+    return
+";
+    let program = compile(&parse(src).expect("parse"));
+    let want = [g_pow(2).into(), g_pow(1).into()];
+    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    verify(&program, &want, &proof).expect("the run went in and the swapped run came back");
+
+    // The shape is checked at the call, in both directions of mismatch.
+    for (arg, want) in [
+        (
+            "b = StackBuf(3)\n    b[0] = GEN ** 1\n    r = f(b)",
+            "got a StackBuf(3)",
+        ),
+        ("r = f(GEN ** 1)", "pass one"),
+    ] {
+        let src = format!(
+            "def f(s: StackBuf(2)):\n    return s[0]\n\ndef main():\n    {arg}\n    p = GEN ** 0\n    p[1] = r\n    p[GEN] = GEN ** 0\n    return\n"
+        );
+        let ast = parse(&src).expect("parses");
+        let Err(err) = std::panic::catch_unwind(|| compile(&ast)) else {
+            panic!("accepted: {arg}");
+        };
+        let msg = err.downcast_ref::<String>().map(String::as_str).unwrap_or("");
+        assert!(msg.contains(want), "got `{msg}`");
+    }
 }
 
 /// `g` is `x`, so the literal `2^k` IS `g^k`. `try_gpow_index` always knew that

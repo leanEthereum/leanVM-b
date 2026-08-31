@@ -25,8 +25,8 @@ pub(crate) enum KVal {
 #[derive(Clone, Debug)]
 pub(crate) struct LInstr {
     pub(crate) op: LOp,
-    /// Source line of the statement that emitted this instruction. Survives CSE
-    /// (which moves whole `LInstr`s) and becomes `Program::src_lines`.
+    /// Source line of the statement that emitted this instruction. Becomes
+    /// `Program::src_lines`.
     pub(crate) line: u32,
     /// Prover hints applied (in order) *before* this instruction during witness
     /// generation.
@@ -97,22 +97,6 @@ pub(crate) struct Lowered {
     pub(crate) name: String,
     pub(crate) code: Vec<LInstr>,
     pub(crate) frame_size: u32,
-    /// One past the last frame cell the CALLER touches: `2 + n_args +
-    /// n_ret_cells` (retpc/retfp, the arguments, then the flattened return
-    /// area). Cells below it cross the frame boundary (the caller writes the
-    /// arguments and reads the returns), so a write to one of them is
-    /// observable outside this function even when no instruction here reads it.
-    /// Everything at or above it is a local temporary.
-    pub(crate) abi_end: u32,
-    /// Where the fill blocks start, so CSE can leave them alone: their operands are
-    /// offsets into the frames the interpreter gives them, not this function's
-    /// ([`crate::cse::cse`]). `code.len()` when there are none.
-    pub(crate) filler_start: usize,
-    /// Frame runs whose address escaped through `addr(sb)`, as `(base, len)`.
-    /// Writes and reads through the resulting pointer are `DEREF`s that name no
-    /// frame cell CSE can see, so these runs are excluded from it
-    /// ([`crate::cse::cse`]).
-    pub(crate) opaque_runs: Vec<(Off, u32)>,
     /// The fill blocks this function carries, with `code`-relative pcs; only `main` has
     /// any ([`crate::lower::FnLower::lower_filler_blocks`]).
     pub(crate) filler: Vec<lean_vm::cpu::filler::Block>,

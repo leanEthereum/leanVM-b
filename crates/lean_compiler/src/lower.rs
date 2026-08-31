@@ -1,11 +1,34 @@
 //! Lowering: each function AST is compiled to a sequence of intermediate
 //! [`LOp`] instructions (fp-relative offsets, backpatched jump targets).
+//!
+//! This file holds the walk itself, control flow, instruction emission, and
+//! [`Scope`]. The rest is split by the question it answers, because each of the
+//! four has an invariant worth stating once rather than rediscovering:
+//!
+//! - [`mod@eval`] asks what an expression is worth before anything runs. Every
+//!   function there takes `&self` and emits nothing, which is what lets a caller
+//!   ask without paying for the answer.
+//! - [`mod@mem`] asks which cell a name means, and what writing to it costs.
+//!   Every index is bounds-checked, in every position, and every store emits: the
+//!   machine's write-once memory is what separates an assertion from a definition.
+//! - [`mod@call`] is the call boundary. Caller and callee must agree on the
+//!   arity, because they place the return area from their own idea of it.
+//! - [`mod@builtins`] is the precompile and the hints: the two places a value
+//!   arrives without an instruction computing it.
+//!
+//! [`Scope`] is what a name means HERE, and it reverts at a branch join, so a
+//! cell whose `SET` sits inside a branch is never trusted outside it.
 
 use super::*;
 use crate::filler::FillerOp;
 use lean_vm::cpu::filler::Block;
-use std::collections::HashSet;
 
+mod builtins;
+mod call;
+mod eval;
+mod mem;
+use call::ret_binding;
+use eval::field_pow;
 /// [`FnLower::specialized_body`]'s pieces: runtime param names, runtime args,
 /// the `Const`-substituted body, and the callee's return arity.
 type SpecializedBody = (Vec<String>, Vec<Expr>, Vec<Stmt>, usize);
@@ -13,7 +36,7 @@ type SpecializedBody = (Vec<String>, Vec<Expr>, Vec<Stmt>, usize);
 /// A value equal to `pointer(base)·g^exp`, or the pure constant `g^exp` when
 /// `base` is `None`. Heap-address arithmetic (`ptr·gᵏ`, and constant g-power
 /// cursors such as a tweak-table index) is tracked symbolically so a later
-/// access folds the whole offset into `DEREF`'s `o2` immediate rather than
+/// access folds the whole offset into `DEREF`'s `β` immediate rather than
 /// emitting a `SET`+`MUL` per step. A cursor read only as an index thus costs
 /// nothing; one used as a value is materialized on demand ([`FnLower::materialize`]).
 #[derive(Clone, Copy)]
@@ -29,53 +52,50 @@ struct GAddr {
     run: Option<(Off, u32)>,
 }
 
-/// `a·b` in the [`GAddr`] representation: exponents add, and at most one factor
-/// may carry a runtime base (two pointers can't be multiplied symbolically).
-fn gmul(a: GAddr, b: GAddr) -> Option<GAddr> {
-    let base = match (a.base, b.base) {
-        (None, x) | (x, None) => x,
-        (Some(_), Some(_)) => return None,
-    };
-    Some(GAddr {
-        base,
-        exp: a.exp.checked_add(b.exp)?,
-        // Only a based address carries a run, and at most one side is based, so
-        // the shift keeps its origin: `addr(sb) * GEN ** k` stays bounded by `sb`.
-        run: a.run.or(b.run),
-    })
+/// The fixed prefix of every frame: the caller's return pc and frame pointer,
+/// then the arguments, then the flattened return area (a `StackBuf(n)` return
+/// occupies `n` consecutive cells). One place derives every offset in it, so a
+/// caller writing into a callee's frame and the callee reading its own cannot
+/// drift apart, and `2 + n_args + n_ret_cells` is not spelled out at each site.
+struct Abi;
+
+impl Abi {
+    /// Where the caller leaves the return pc and the return frame pointer.
+    const RET_PC: Off = 0;
+    const RET_FP: Off = 1;
+    /// Argument `i`, straight after the two return slots.
+    /// Where argument `i` starts, which depends on the WIDTHS of the ones before
+    /// it: a `StackBuf(n)` parameter occupies `n` consecutive cells, exactly as a
+    /// `StackBuf(n)` return value does.
+    fn arg(shapes: &[Shape], i: usize) -> Off {
+        2 + shapes[..i].iter().map(|s| s.cells()).sum::<u32>()
+    }
+    /// Total width of the argument area.
+    fn arg_cells(shapes: &[Shape]) -> u32 {
+        shapes.iter().map(|s| s.cells()).sum()
+    }
+    /// Return cell `i` of a callee whose arguments occupy `arg_cells` cells.
+    fn ret(arg_cells: u32, i: u32) -> Off {
+        2 + arg_cells + i
+    }
+    /// One past the last cell the CALLER touches, so the first local cell.
+    fn end(arg_cells: u32, n_ret_cells: u32) -> Off {
+        Self::ret(arg_cells, n_ret_cells)
+    }
 }
 
-/// Cap on an `o2`-folded exponent: the operand g-power table is sized to the
-/// largest immediate, so beyond this a huge constant index falls back to a
-/// materialized pointer instead of inflating that table. Inclusive, and one more
-/// than [`FnLower::try_gpow_index`]'s cap, which is fine: `layout::bytecode_columns`
-/// sizes the table from the program's own largest operand, so a folded `o2` is
-/// never one the table cannot represent. The two caps measure different things.
+/// Cap on a `β`-folded exponent, inclusive: the operand g-power table is sized to
+/// the largest immediate, so beyond this a huge constant index falls back to a
+/// materialized pointer instead of inflating that table. The one cap: every site
+/// that folds an exponent into `β` measures it against this.
 const FOLD_MAX: u128 = 1 << lean_vm::cpu::MIN_LOG_MEM;
 
-/// `b^k` for a compile-time exponent (small, so plain repeated multiplication).
-fn field_pow(b: F192, k: u32) -> F192 {
-    let mut acc = F192::ONE;
-    for _ in 0..k {
-        acc *= b;
-    }
-    acc
-}
-
-/// A deferred stack-cell store: the cell is a copy of another cell, or a zero.
-/// Recorded instead of emitting the `MUL`/`SET`, and forwarded to the source at
-/// each use ([`FnLower::word_src`]), so `BLAKE2s`, which addresses its four
-/// two-cell input chunks independently, reads them in place without assembling
-/// copies.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Alias {
-    Cell(Off),
-    /// A compile-time constant: forwarded at its uses to the pooled cell
-    /// holding that value (`const_cell`), so a constant stored into a
-    /// `blake2s` operand cell (the `obs`/`squeeze` tag words, padding
-    /// halves) costs ONE `SET` per distinct value per function, not one
-    /// per store. A zero constant routes through the zero pool.
-    Const(F192),
+/// The two pure operations worth interning. Both are commutative, so operands
+/// are stored sorted.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum PureOp {
+    Xor,
+    Mul,
 }
 
 /// How an inlined `@inline` tail-return value binds into the caller
@@ -90,8 +110,9 @@ enum RetBind {
     Scalar,
 }
 
-/// What a name is bound to, i.e. which of [`Scope`]'s maps holds it. The kinds
-/// are mutually exclusive, so binding one clears the others ([`FnLower::rebind`]).
+/// What a name is bound to. The kinds are mutually exclusive: a name has exactly
+/// one of them, which is why they are one enum and not four maps.
+#[derive(Clone, Copy)]
 enum Binding {
     Scalar(Off),
     Stack(Off, u32),
@@ -99,77 +120,94 @@ enum Binding {
     FConst(F192),
 }
 
-/// How an inlined tail return binds in the caller: a `StackBuf` run and a folded
-/// g-address alias at zero copies, while anything else (a plain scalar, or a real
-/// call, which records no [`RetBind`]) takes the destination cell it wrote.
-fn ret_binding(b: Option<RetBind>, dst: Off) -> Binding {
-    match b {
-        Some(RetBind::Stack(base, size)) => Binding::Stack(base, size),
-        Some(RetBind::Gaddr(ga)) => Binding::Gaddr(ga),
-        _ => Binding::Scalar(dst),
-    }
+/// What one name means: its value binding, plus an OPTIONAL compile-time integer
+/// reading of the same expression. The two genuinely coexist (`x = 2` names the
+/// field element 2 AND the index 2, while `n = len(A) - 1` has no g-power reading
+/// at all), so `int` rides beside `val` rather than being another variant. One
+/// entry per name is what makes a rebind atomic.
+#[derive(Clone, Copy)]
+struct Bound {
+    val: Binding,
+    int: Option<u128>,
 }
 
-/// Everything a runtime branch may not have executed: the name bindings, plus
-/// the lazily materialized cells whose `SET` sits wherever it was first needed.
-/// [`FnLower::scoped`] saves one of these and restores it at the join, so a
-/// cell written on one path is never trusted on another.
+/// Everything a runtime branch may not have executed: the name bindings, plus the
+/// lazily materialized cells whose `SET` sits wherever it was first needed.
+/// [`FnLower::scoped`] restores one of these at the join, so a cell written on one
+/// path is never trusted on another.
 #[derive(Clone, Default)]
 struct Scope {
-    vars: HashMap<String, Off>,
-    /// `StackBuf` bindings: name → (base offset, size). The `size` cells
-    /// `base..base+size` are consecutive frame cells (so a size-2 one, or a
-    /// 2-cell slice of a larger one, is a direct `blake2s` operand). Kept
-    /// separate from `vars` since a stack value is a run of cells, not a
-    /// single scalar.
-    stacks: HashMap<String, (Off, u32)>,
-    /// Names bound to compile-time integer expressions (`x = 10`), usable in
-    /// index positions and instruction metadata. Cleared on rebind to anything
-    /// else. Index users narrow to `u32`; metadata may consume a wider value.
-    /// Integer arithmetic is distinct from the field arithmetic the same syntax
-    /// means in a scalar expression.
-    consts: HashMap<String, u128>,
-    /// Variables bound to a symbolic g-address ([`GAddr`]): index cursors and
-    /// shifted pointers, kept virtual so their offsets fold into `DEREF`'s `o2`.
-    gaddrs: HashMap<String, GAddr>,
-    /// Variables bound to a compile-time *field* constant that isn't a g-power
-    /// (e.g. a running weight `CHAIN_LENGTH^i`). Kept virtual: folded through
-    /// constant field arithmetic and materialized (one `SET`) only when used.
-    fconsts: HashMap<String, F192>,
+    names: HashMap<String, Bound>,
     /// The cell holding this function's own `fp`, materialized lazily
     /// ([`FnLower::self_fp`]): local (`if`/`else`) jumps reload the frame
     /// pointer on the taken branch.
     self_fp_off: Option<Off>,
-    /// Range-check product-target cells: bound `k` → the frame cell holding
-    /// `g^{k-1}`, set lazily once and shared by every check of that bound.
-    bounds: HashMap<u64, Off>,
-    /// Constant cells: field value (as bits) → the frame cell holding it, SET
-    /// lazily once per distinct constant ([`FnLower::const_cell`]). Cells are
-    /// write-once and read-many, so one `SET` serves every use in scope.
+    /// Results of pure operations: `(op, sorted operands)` → the cell holding it.
+    ///
+    /// Reverting at a branch join (with `const_cells`, below) is the whole
+    /// invalidation: a cached cell must dominate every later use, and nothing
+    /// clears this at a label target. That is sound only because every backward
+    /// edge crosses a function boundary (a loop body is its own `Func` with a
+    /// fresh `Scope`) and every `patch_local` target is a forward jump, so a
+    /// cached cell's defining instruction always precedes its reuse. A new
+    /// backward edge, or a `patch_local` that jumps backwards, would need this
+    /// cleared at the target.
+    pure_cells: HashMap<(PureOp, Off, Off), Off>,
+    /// Every lazily-`SET` constant cell: field value (as bits) → the frame cell
+    /// holding it. Cells are write-once and read-many, so one `SET` serves every
+    /// use in scope. A `SET` first emitted inside a branch must not be named from
+    /// outside it, where the other path leaves the cell unwritten and therefore
+    /// prover-chosen, which is why this reverts at a join with the bindings.
     const_cells: HashMap<[u64; 3], Off>,
-    /// A cached frame cell holding `0` (for forwarded zero words), set lazily.
-    zero_off: Option<Off>,
-    /// A cached frame cell holding `1` ([`FnLower::one`]), set lazily. Lives here
-    /// rather than on [`FnLower`] so it reverts at a branch join like every other
-    /// lazily-materialized cell: a `SET 1` first emitted inside a branch must not
-    /// be named from outside it, where the other path leaves the cell unwritten
-    /// and therefore prover-chosen. Several call sites hoist `one()` above a
-    /// branch on purpose; this is what makes that an optimization rather than the
-    /// thing holding the invariant up.
-    one_off: Option<Off>,
     /// Two consecutive frame cells holding the standard BLAKE2s IV, emitted
     /// lazily at the first dominating default-IV compression in this
     /// control-flow scope.
     blake2s_iv: Option<Off>,
 }
 
+impl Scope {
+    fn bound(&self, n: &str) -> Option<Bound> {
+        self.names.get(n).copied()
+    }
+    fn var(&self, n: &str) -> Option<Off> {
+        match self.bound(n)?.val {
+            Binding::Scalar(o) => Some(o),
+            _ => None,
+        }
+    }
+    fn stack(&self, n: &str) -> Option<(Off, u32)> {
+        match self.bound(n)?.val {
+            Binding::Stack(base, size) => Some((base, size)),
+            _ => None,
+        }
+    }
+    fn gaddr(&self, n: &str) -> Option<GAddr> {
+        match self.bound(n)?.val {
+            Binding::Gaddr(ga) => Some(ga),
+            _ => None,
+        }
+    }
+    /// The compile-time integer reading of `n`, when it has one.
+    fn int(&self, n: &str) -> Option<u128> {
+        self.bound(n)?.int
+    }
+    /// Attach the integer reading to the binding just made for `n`.
+    fn set_int(&mut self, n: &str, k: u128) {
+        if let Some(b) = self.names.get_mut(n) {
+            b.int = Some(k);
+        }
+    }
+}
+
 struct FnLower<'a> {
     scope: Scope,
     next: Off,
-    n_args: u32,
+    /// Physical width of this function's argument area, which is not its
+    /// parameter COUNT once a parameter can be a run of cells.
+    arg_cells: u32,
     /// Source-level return shapes for this function. Their physical cell widths
     /// determine the reserved return area immediately after the arguments.
-    return_shapes: Vec<ReturnShape>,
+    return_shapes: Vec<Shape>,
     is_main: bool,
     code: Vec<LInstr>,
     /// Declared size of each `HeapBuf`, keyed by its pointer cell. Shifted
@@ -185,32 +223,9 @@ struct FnLower<'a> {
     /// or a folded g-address, or take the scalar dst cell). `None` outside an
     /// inlined return.
     inline_stack_ret: Option<Vec<RetBind>>,
-    /// Deferred stack-cell copies/zeros ([`Alias`]), forwarded at use.
-    alias: HashMap<Off, Alias>,
-    /// Stack cells something already gives a real value to: an emitted
-    /// instruction's destination, a `BLAKE2s` output, or a hint destination. A
-    /// store into one of these cannot defer as an [`Alias`], because the store is
-    /// then the write-once equality assertion of `zkDSL.md` §Memory rather than an
-    /// assembly copy, and an alias would drop it. Accumulated monotonically, and
-    /// deliberately NOT restored across a branch: if either arm gives the cell a
-    /// value, a later store to it is an assertion on whichever arm ran.
-    phys: HashSet<Off>,
     /// Source line of the statement being lowered, for diagnostics and for the
     /// pc-to-line table. Zero for a synthesized statement with no source.
     cur_line: u32,
-    /// Frame runs whose cells no longer have a visible writer, as `(base, len)`.
-    /// Carried to [`crate::cse::cse`], which must leave their cells alone.
-    opaque_runs: Vec<(Off, u32)>,
-    /// Every frame run this function has allocated, in order.
-    stack_runs: Vec<(Off, u32)>,
-    /// Set once a frame address escapes ([`Self::stack_addr`]). The pointer it
-    /// hands out addresses the WHOLE frame, not just the run it was taken from,
-    /// so from that point every run is opaque: an off-by-one in a callee lands
-    /// on the next `StackBuf`, and if that one is still transparent its later
-    /// store defers as an alias and the write-once assertion is gone.
-    frame_escaped: bool,
-    /// Where the fill blocks begin in `code`, once emitted.
-    filler_start: Option<usize>,
     /// Hints queued to attach to the next emitted instruction.
     pending: Vec<Hint>,
     /// Active `@inline` expansion stack. Nested inline helpers are allowed,
@@ -241,9 +256,21 @@ impl FnLower<'_> {
     /// the file is an internal invariant, i.e. a compiler bug rather than a
     /// program one, and deliberately does NOT get a line.
     fn fail(&self, msg: impl std::fmt::Display) -> ! {
-        match self.cur_line {
-            0 => panic!("{msg}"),
-            n => panic!("line {n}: {msg}"),
+        // The line alone is not the site when the function being lowered is one
+        // the author never wrote: `hash_pair__L1` exists because of a `Const`
+        // call site, `__loop3` because of a `for` header, and an `@inline` body
+        // is lowered through the CALLER, so its statements report the caller's
+        // line. Naming the function, and the inline chain when there is one, is
+        // what turns "line 19" back into somewhere to look.
+        let site = match (self.cur_line, self.fn_name.as_str()) {
+            (0, "main") => String::new(),
+            (0, f) => format!("in {f}: "),
+            (n, "main") => format!("line {n}: "),
+            (n, f) => format!("line {n} in {f}: "),
+        };
+        match self.inline_calls.as_slice() {
+            [] => panic!("{site}{msg}"),
+            chain => panic!("{site}{msg} (inlined through {})", chain.join(" -> ")),
         }
     }
 
@@ -254,47 +281,12 @@ impl FnLower<'_> {
     }
 
     fn emit(&mut self, op: LOp) {
-        // Record the stack cells this instruction gives a real value to, so
-        // [`Self::stack_store`] will not defer an alias onto one of them: the alias
-        // would win every later read and the store's write-once equality assertion,
-        // which is what `zkDSL.md` §Memory promises a second write is, would vanish.
-        // `Deref`'s local cell counts, since the interpreter fills whichever side of
-        // the equality it names is still unset.
-        match op {
-            LOp::Set { o, .. } => self.phys.insert(o),
-            LOp::Xor { c, .. } | LOp::Mul { c, .. } => self.phys.insert(c),
-            LOp::Deref { o3, .. } => self.phys.insert(o3),
-            LOp::Blake2s { c, .. } => {
-                self.phys.insert(c);
-                self.phys.insert(c + 1)
-            }
-            LOp::Jump { .. } => false,
-        };
         let hints = std::mem::take(&mut self.pending);
         self.code.push(LInstr {
             op,
             line: self.cur_line,
             hints,
         });
-    }
-
-    /// Prepare a stack run that a consumer is about to name by its *physical*
-    /// cells: a `BLAKE2s` output, or a hint destination. Those consumers do not go
-    /// through [`Self::word_src`], so a cell still carrying a deferred alias would
-    /// have the consumer's write land where nothing reads it, and the equality
-    /// assertion the source wrote would be gone. Materializing the alias first puts
-    /// a real value in the cell, which is what turns the consumer's write back into
-    /// that assertion; marking the run `phys` covers the other order, where the
-    /// store comes after the consumer.
-    fn materialize_run(&mut self, base: Off, len: u32) {
-        for o in base..base + len {
-            if self.alias.contains_key(&o) {
-                let src = self.word_src(o);
-                self.alias.remove(&o);
-                self.copy(src, o);
-            }
-            self.phys.insert(o);
-        }
     }
 
     fn set(&mut self, o: Off, k: KVal) {
@@ -317,17 +309,14 @@ impl FnLower<'_> {
         self.set_const(o, F192::ZERO);
     }
 
-    /// A top-level constant name is reserved (`zkDSL.md` §Global constants: "do not
-    /// reuse it as a parameter or local name"). A scalar constant enforces that by
-    /// construction, since the parser substitutes its value textually and a
-    /// shadowing binding becomes a literal, which fails loudly. A constant ARRAY is
-    /// carried to lowering instead, and [`Self::const_array_elem`] resolves
-    /// `NAME[i]` against it without consulting the scope, while `expr` folds
-    /// constants before its index arm could see the local. So a colliding local
-    /// silently has its compile-time-indexed reads folded to baked literals,
-    /// including reads of a `hint_witness` destination, whose asserts and range
-    /// checks then run on the constant instead of on the witness. Reject the
-    /// collision rather than pick a winner.
+    /// A top-level constant name is reserved (`zkDSL.md` §Global constants). A
+    /// scalar one enforces that by construction, its value being substituted
+    /// textually so a shadowing binding becomes a literal and fails loudly. A
+    /// constant ARRAY is carried to lowering instead and resolved without
+    /// consulting the scope, so a colliding local would have its
+    /// compile-time-indexed reads folded to baked literals, including reads of a
+    /// `hint_witness` destination whose asserts would then run on the constant.
+    /// Reject the collision rather than pick a winner.
     fn check_not_reserved(&self, name: &str) {
         if self.const_arrays.contains_key(name) {
             self.fail(format!(
@@ -344,51 +333,87 @@ impl FnLower<'_> {
     /// that must drop it do so themselves.
     fn rebind(&mut self, name: &str, b: Binding) {
         self.check_not_reserved(name);
-        self.scope.vars.remove(name);
-        self.scope.stacks.remove(name);
-        self.scope.gaddrs.remove(name);
-        self.scope.fconsts.remove(name);
-        match b {
-            Binding::Scalar(o) => {
-                self.scope.vars.insert(name.to_string(), o);
-            }
-            Binding::Stack(base, size) => {
-                self.scope.stacks.insert(name.to_string(), (base, size));
-            }
-            Binding::Gaddr(ga) => {
-                self.scope.gaddrs.insert(name.to_string(), ga);
-            }
-            Binding::FConst(c) => {
-                self.scope.fconsts.insert(name.to_string(), c);
-            }
-        }
+        // Every reading of the old name goes with it, the integer one included:
+        // one entry replaced, so none can be left behind.
+        self.scope.names.insert(name.to_string(), Bound { val: b, int: None });
     }
 
     /// Bind each of `names` to the join cell holding its value, after a `match`
     /// dispatch: whichever arm ran wrote them, so they are plain scalars now.
-    fn bind_join(&mut self, names: &[String], cells: &[Off]) {
-        for (name, &cell) in names.iter().zip(cells) {
-            self.scope.consts.remove(name);
-            self.rebind(name, Binding::Scalar(cell));
+    fn bind_targets(&mut self, binds: &[(String, Off)]) {
+        for (name, cell) in binds {
+            self.rebind(name, Binding::Scalar(*cell));
         }
     }
 
-    /// A frame cell holding `1` (always-taken `JUMP` condition), set lazily once.
-    fn one(&mut self) -> Off {
-        if let Some(o) = self.scope.one_off {
+    /// The cell holding `a op b`, computed only if this scope has not already.
+    ///
+    /// **Route an operation here only when no later write to its result cell
+    /// could be the assertion.** A fresh cell is not sufficient: `assert a != b`
+    /// mints one for `x·inv` and writes it again with `SET p = 1`, and THAT write
+    /// is the assertion, so sharing the cell would let the next `assert a != b`
+    /// skip its `MUL` and assert nothing. A second writer is fine where the value
+    /// is already pinned, as in `q = x ** k / w`, whose division writes into the
+    /// cell the squaring chain already determined.
+    ///
+    /// So these stay out: the zero cell an `assert a == b` XORs into, the
+    /// `g^{k-1}` a range check multiplies into, `assert a != b`'s product, a
+    /// division's back-solve, and `expr_into`'s caller-chosen destination.
+    fn pure(&mut self, op: PureOp, a: Off, b: Off) -> Off {
+        let key = (op, a.min(b), a.max(b));
+        if let Some(&o) = self.scope.pure_cells.get(&key) {
             return o;
         }
         let o = self.fresh();
-        self.set_const(o, F192::ONE);
-        self.scope.one_off = Some(o);
+        match op {
+            PureOp::Xor => self.emit(LOp::Xor { a, b, c: o }),
+            PureOp::Mul => self.emit(LOp::Mul { a, b, c: o }),
+        }
+        self.scope.pure_cells.insert(key, o);
         o
     }
 
-    /// A frame cell holding `v`, shared by every dominated use in the current scope.
+    /// The frame cell `arr[idx]` names, bounds-checked, or `None` when `arr` is
+    /// not a `StackBuf` and the caller should take its heap path.
+    ///
+    /// The ONE place a frame index is resolved. Four sites used to repeat
+    /// `stack_of` then `const_index` then their own `k >= size`, and two of them
+    /// shipped without the check: `copy_alias`, where `c[0] = a[2]` on a
+    /// `StackBuf(2)` aliased the next buffer's first cell and its assert passed,
+    /// and a `match` target, where an arm wrote a callee's return past the end.
+    /// Asking where the cell is IS the check now.
+    ///
+    /// Emits nothing, deliberately. An earlier version resolved the heap address
+    /// here too, which moved the pointer `MUL` ahead of the caller's other work
+    /// and broke `hb[sb[0]] = f(sb, …)`, where the address reads a cell the value
+    /// writes. Each caller keeps its own evaluation order, and the heap bound
+    /// lives where the heap address is formed ([`Self::heap_addr`]).
+    fn frame_cell(&mut self, arr: &Expr, idx: &Expr) -> Option<Off> {
+        let (base, size) = self.stack_of(arr)?;
+        let k = self.const_index(idx);
+        if k >= size {
+            self.fail(format!("index {k} out of bounds (StackBuf size {size})"))
+        };
+        Some(base + k)
+    }
+
+    /// A frame cell holding `1` (always-taken `JUMP` condition).
+    fn one(&mut self) -> Off {
+        self.const_cell(F192::ONE)
+    }
+
+    /// A frame cell holding `v`, shared by every dominated use in the current
+    /// scope: the one cache for every lazily-`SET` constant.
+    ///
+    /// The `SET` is emitted where the cell is allocated, before anything can name
+    /// it, which is what makes every later write a write-once equality against a
+    /// bytecode constant rather than a chance to choose the value. It reverts at
+    /// a branch join with the rest of [`Scope`], since a `SET` first emitted
+    /// inside a branch must not be named outside it, where the other path leaves
+    /// the cell unwritten and so prover-chosen. Several call sites hoist
+    /// [`Self::one`] above a branch on purpose; the revert is what makes that an
+    /// optimization rather than the thing holding the invariant up.
     fn const_cell(&mut self, v: F192) -> Off {
-        if v == F192::ONE {
-            return self.one();
-        }
         let key = [v.c0, v.c1, v.c2];
         if let Some(&o) = self.scope.const_cells.get(&key) {
             return o;
@@ -403,96 +428,7 @@ impl FnLower<'_> {
     /// words (a `BLAKE2s` padding half), and the destination every `assert a == b`
     /// in this scope XORs into.
     fn zero(&mut self) -> Off {
-        if let Some(o) = self.scope.zero_off {
-            return o;
-        }
-        let o = self.fresh();
-        self.set_const(o, F192::ZERO);
-        self.scope.zero_off = Some(o);
-        o
-    }
-
-    fn default_blake2s_cv(&mut self) -> Off {
-        if let Some(o) = self.scope.blake2s_iv {
-            return o;
-        }
-        let o = self.alloc_stack(2);
-        for (k, value) in lean_vm::hash_flock::IV_CELLS.into_iter().enumerate() {
-            self.set_const(o + k as u32, value);
-            self.scope
-                .const_cells
-                .insert([value.c0, value.c1, value.c2], o + k as u32);
-        }
-        self.scope.blake2s_iv = Some(o);
-        o
-    }
-
-    /// A stack store `sa[k] = val` whose value is a plain copy or a zero, which we
-    /// defer as an [`Alias`] (forwarded at use) instead of emitting.
-    fn copy_alias(&self, val: &Expr) -> Option<Alias> {
-        match val {
-            // A live var / stack cell aliases to that cell directly (no new
-            // material); anything else that is a compile-time constant defers
-            // to the pooled const cell.
-            Expr::Var(v) if self.scope.vars.contains_key(v) => self.scope.vars.get(v).map(|&c| Alias::Cell(c)),
-            Expr::Index(arr, idx) => {
-                let (base, _) = self.stack_of(arr)?;
-                Some(Alias::Cell(base + self.try_const_index(idx)?))
-            }
-            _ => self.try_field_const(val).map(Alias::Const),
-        }
-    }
-
-    /// Write `val` into the stack cell `dst`. A plain copy or a constant is
-    /// deferred as an [`Alias`] and forwarded at its uses (write-once, so the
-    /// source cell keeps its value): the assembling `MUL`/`SET` is never emitted.
-    fn stack_store(&mut self, dst: Off, val: &Expr) {
-        // Deferring is only sound while nothing else has given `dst` a value. Once
-        // something has, the store IS the write-once equality assertion of
-        // `zkDSL.md` §Memory, so it has to be emitted: an alias would silently
-        // redirect every later read to the source and drop the assertion. This is
-        // what makes `s[k] = <checked value>` pin a hint, and what makes a
-        // pre-written `blake2s` output assert the digest.
-        let aliased = self.alias.contains_key(&dst);
-        if !aliased
-            && !self.phys.contains(&dst)
-            && let Some(a) = self.copy_alias(val)
-        {
-            // Record the end of the `Cell` chain, not its head. A `Cell` alias is
-            // otherwise free to point at another alias, and two of them can close
-            // a loop (`s[0] = s[1]` then `s[1] = s[0]`, or the one-line
-            // `s[0] = s[0]`) that `word_src` then walks forever. What rules a
-            // cycle out is that the recorded source has no outgoing `Cell` edge AT
-            // THE MOMENT IT IS RECORDED; it may acquire one later, so chains still
-            // grow and `word_src`'s bound is load-bearing, not decoration.
-            //
-            // [`Self::cell_src`] rather than [`Self::word_src`] on purpose: the
-            // latter resolves a trailing `Const` through `zero`/`const_cell`,
-            // which EMITS a `SET`. Paying it here rather than at the use would
-            // make `sa[k] = other` cost an instruction, which `zkDSL.md`
-            // §Variables promises it does not.
-            let a = match a {
-                Alias::Cell(src) => Alias::Cell(self.cell_src(src)),
-                other => other,
-            };
-            // A cell aliased to itself is the whole of `sb[k] = sb[k]`: write-once
-            // makes a second write of the same value a no-op, so emit nothing.
-            if a == Alias::Cell(dst) {
-                return;
-            }
-            self.alias.insert(dst, a);
-            return;
-        }
-        if aliased {
-            // Give the cell the value it already stood for, so the store below is a
-            // second write of that cell and therefore the assertion. Without this the
-            // second alias would simply replace the first and the two values would
-            // never meet.
-            let src = self.word_src(dst);
-            self.alias.remove(&dst);
-            self.copy(src, dst);
-        }
-        self.expr_into(val, dst);
+        self.const_cell(F192::ZERO)
     }
 
     /// Terminate `main`: jump to the halt sentinel `g^{B-1}` with `fp = g^0`.
@@ -513,22 +449,16 @@ impl FnLower<'_> {
     /// that many dummy instructions of the table's opcode, then a `JUMP` back to the
     /// block's own first instruction, in the same frame.
     ///
-    /// So a block is a cycle, and nothing jumps into one. They sit past `main`'s halt,
-    /// unreachable from any program code, and the interpreter enters them itself once the
-    /// program has stopped: the state tuples a traversal pushes are the ones it pulls, so
-    /// the cycle balances on its own for any number of traversals, whatever else the run
-    /// did (`lean_vm::cpu::filler`).
+    /// A block is a cycle and nothing jumps into one: they sit past `main`'s halt
+    /// and the interpreter enters them itself once the program has stopped. The
+    /// state tuples a traversal pushes are the ones it pulls, so the cycle
+    /// balances for any number of traversals (`lean_vm::cpu::filler`).
     ///
-    /// The closing jump is always taken, its destination being a g-power and so nonzero,
-    /// and it reads that destination and its frame from cells the interpreter writes. A
-    /// traversal therefore costs the block's rows plus that one jump, and nothing else:
-    /// nothing here counts, tests, or allocates.
-    ///
-    /// A dummy uses one scratch cell as each of its operands, so the value it writes
-    /// there is the value already there, which write-once memory permits however many
-    /// traversals run: a block costs one cell for its dummies whatever its size. CSE
-    /// leaves the copies alone (a cell written more than once is not a candidate) and
-    /// there is no dead-code pass.
+    /// The closing jump is always taken (its destination is a g-power, so
+    /// nonzero) and reads its destination and frame from cells the interpreter
+    /// writes, so a traversal costs the block's rows plus that jump. A dummy uses
+    /// one scratch cell as each operand, writing the value already there, so a
+    /// block costs one cell whatever its size.
     fn lower_filler_blocks(&mut self) -> Vec<Block> {
         use lean_vm::cpu::filler::{SIZES, frame as fr};
 
@@ -539,7 +469,6 @@ impl FnLower<'_> {
         // A block runs in a frame the interpreter carves out, so the cells it reads are at
         // fixed offsets in *that* frame rather than allocated from this function's
         // counter, and nothing here touches `main`'s frame at all.
-        self.filler_start = Some(self.code.len());
         let mut blocks = Vec::new();
         for (table, op) in crate::filler::TABLES {
             for size in SIZES {
@@ -641,34 +570,15 @@ impl FnLower<'_> {
     /// afterwards, since a cell whose `SET` sits inside a conditionally-executed
     /// region must not be trusted outside it.
     fn scoped(&mut self, f: impl FnOnce(&mut Self)) {
-        let branch_start = self.next;
-        let saved_aliases = self.alias.clone();
-        let saved = self.scope.clone();
+        let saved_scope = self.scope.clone();
         f(self);
-        // A deferred store into a buffer declared outside the branch must be
-        // materialized on that path before the branch-local aliases are dropped.
-        let mut branch_outputs: Vec<Off> = self
-            .alias
-            .iter()
-            .filter_map(|(&dst, alias)| (dst < branch_start && saved_aliases.get(&dst) != Some(alias)).then_some(dst))
-            .collect();
-        // Sorted, because the emitted copies must not depend on `HashMap` iteration
-        // order: the bytecode digest leads the Fiat--Shamir transcript, so two builds
-        // of one source have to be the same program.
-        branch_outputs.sort_unstable();
-        for dst in branch_outputs {
-            let src = self.word_src(dst);
-            self.alias.remove(&dst);
-            self.copy(src, dst);
-        }
         // A hint pending at the end of a branch (e.g. a trailing
         // `hint_witness`) must not attach to whatever instruction follows the
         // join, which would fire it unconditionally.
         if !self.pending.is_empty() {
             self.anchor();
         }
-        self.scope = saved;
-        self.alias = saved_aliases;
+        self.scope = saved_scope;
     }
 
     /// Lower a branch body with branch-local scope ([`Self::scoped`]).
@@ -680,26 +590,55 @@ impl FnLower<'_> {
         });
     }
 
-    /// `match log(x)` through a two-instruction trampoline slot per arm. The caller must range-check `x` before dispatch.
-    fn lower_match(&mut self, x: &Expr, cases: &[Vec<Stmt>]) {
-        let xo = self.expr(x);
-        self.lower_match_dispatch(xo, cases.len(), |s, j| s.branch(&cases[j]));
+    /// The cell each multi-return target names, and the names still to bind.
+    ///
+    /// A plain name takes a fresh cell, as it always did. A `StackBuf` element IS
+    /// its cell, so the arms write the value where the program wants it and the
+    /// store that used to follow is gone: the ABI already returns into cells the
+    /// CALLER picks ([`Self::call_into`]), and a single-value assignment has
+    /// always exploited that, so this only lets a multi-value one say the same.
+    fn ret_targets(&mut self, targets: &[Expr]) -> (Vec<Off>, Vec<(String, Off)>) {
+        let mut cells = Vec::with_capacity(targets.len());
+        let mut binds = Vec::new();
+        for t in targets {
+            match t {
+                // Only a frame cell can be a return slot. Rejecting here rather
+                // than after forming the address keeps a pointer `MUL` out of the
+                // program and reports the actual problem: routing a heap target
+                // through the heap path lectured about g-powers instead, and told a
+                // scalar it was a HeapBuf.
+                Expr::Index(arr, idx) => match self.frame_cell(arr, idx) {
+                    Some(c) => cells.push(c),
+                    None => self.fail(format!(
+                        "a multi-value target must be a name or a StackBuf element, got `{t:?}`"
+                    )),
+                },
+                Expr::Var(n) => {
+                    let c = self.fresh();
+                    cells.push(c);
+                    binds.push((n.clone(), c));
+                }
+                other => self.fail(format!(
+                    "a multi-value target must be a name or a StackBuf element, got `{other:?}`"
+                )),
+            }
+        }
+        (cells, binds)
     }
 
-    /// `names = match_range(log(x), …)`: the same dispatch as
-    /// [`Self::lower_match`], with generated arms: arm `j` evaluates its
-    /// expression (the lambda body at `i = j`) and copies the results into
-    /// cells shared by every arm (write-once: exactly one arm executes);
-    /// `names` bind to those cells at the join.
-    fn lower_match_range(&mut self, names: &[String], x: &Expr, arms: &[Expr]) {
+    /// `targets = match(log(x), …)`: dispatch through the trampoline table
+    /// ([`Self::lower_match_dispatch`]), arm `j` evaluating the lambda body at
+    /// `i = j` into cells every arm shares. Write-once makes that sound, exactly
+    /// one arm running, and [`Self::ret_targets`] says which cells those are.
+    fn lower_match(&mut self, targets: &[Expr], x: &Expr, arms: &[Expr]) {
         for arm in arms {
             if let Expr::Call(f, _) = arm
                 && self
                     .defs
                     .get(f)
-                    .is_some_and(|d| !d.inline && d.return_shapes.iter().any(|s| matches!(s, ReturnShape::StackBuf(_))))
+                    .is_some_and(|d| !d.inline && d.return_shapes.iter().any(|s| matches!(s, Shape::StackBuf(_))))
             {
-                self.fail("a normal function's StackBuf return cannot cross a match_range join; bind it with `let`");
+                self.fail("a normal function's StackBuf return cannot cross a match join; bind it with `let`");
             }
         }
         // Fusion: when every arm is a direct call to the same function with
@@ -720,14 +659,14 @@ impl FnLower<'_> {
             if specialized.iter().all(|(_, rt)| rt == rt0) {
                 let callees: Vec<String> = specialized.iter().map(|(c, _)| c.clone()).collect();
                 let rt_args = rt0.clone();
-                self.lower_dispatched_call(names, x, &callees, &rt_args);
+                self.lower_dispatched_call(targets, x, &callees, &rt_args);
                 return;
             }
             // Not uniform: fall through (the specializations queued above are
             // re-requested idempotently by `call_into`).
         }
         let xo = self.expr(x);
-        let rcells: Vec<Off> = names.iter().map(|_| self.fresh()).collect();
+        let (rcells, binds) = self.ret_targets(targets);
         self.lower_match_dispatch(xo, arms.len(), |s, j| {
             s.scoped(|s| {
                 if let [rcell] = rcells.as_slice() {
@@ -735,7 +674,7 @@ impl FnLower<'_> {
                 } else {
                     let Expr::Call(f, cargs) = &arms[j] else {
                         s.fail(format!(
-                            "a multi-target match_range arm must be a function call, got `{:?}`",
+                            "a multi-target match arm must be a function call, got `{:?}`",
                             arms[j]
                         ));
                     };
@@ -752,11 +691,11 @@ impl FnLower<'_> {
                                 }
                                 RetBind::Stack(base, size) => {
                                     if size != 1 {
-                                        s.fail("a multi-cell StackBuf return cannot cross a match_range join")
+                                        s.fail("a multi-cell StackBuf return cannot cross a match join")
                                     }
-                                    // `copy` reads its source raw, so resolve the arm's
-                                    // deferred alias first (as `take_inline_ret_cell` does).
-                                    let src = s.word_src(base);
+                                    // `copy` reads the run's first cell, which is where
+                                    // the arm's single returned value sits.
+                                    let src = base;
                                     s.copy(src, rc);
                                 }
                                 RetBind::Scalar => {}
@@ -766,78 +705,7 @@ impl FnLower<'_> {
                 }
             });
         });
-        self.bind_join(names, &rcells);
-    }
-
-    /// `names = match_range(log(x), …, lambda k: f(args, k))` fused: the arms all
-    /// call one of `callees` (specializations sharing the arg/return layout) with
-    /// the same runtime `args`, so build the callee frame **once** and let the
-    /// dispatch jump straight into the selected entry, which returns to the join.
-    /// Each taken arm is then just the trampoline's `SET entry; JUMP`: no
-    /// per-arm frame setup, call, or return jump.
-    fn lower_dispatched_call(&mut self, names: &[String], x: &Expr, callees: &[String], rt_args: &[Expr]) {
-        let n_args = rt_args.len() as u32;
-        // The join below reads one return cell per bound name, so every callee has
-        // to declare exactly that many. Unchecked, a name past a callee's arity
-        // `DEREF`s a frame offset nothing on that path writes, and since the shared
-        // frame is sized to the LARGEST callee the offset exists: the surplus name
-        // binds a prover-chosen word. The non-fused path enforces this
-        // ([`Self::call_into`]), so leaving it out here means one source is rejected
-        // by one lowering of `match_range` and silently miscompiled by the other.
-        for callee in callees {
-            let Some(shapes) = self.return_shapes_of(callee) else {
-                continue;
-            };
-            if shapes.len() != names.len() {
-                self.fail(format!(
-                    "`{callee}` returns {} values, dispatched call binds {}",
-                    shapes.len(),
-                    names.len()
-                ))
-            };
-            if shapes.iter().any(|s| *s != ReturnShape::Scalar) {
-                self.fail(format!(
-                    "`{callee}`: a multi-cell StackBuf return cannot cross a dispatched join"
-                ))
-            };
-        }
-        let rcells: Vec<Off> = names.iter().map(|_| self.fresh()).collect();
-
-        // Shared callee frame: args, retfp, and retpc = the join (so the callee
-        // returns straight past the dispatch). Evaluated once.
-        let arg_offs: Vec<Off> = rt_args.iter().map(|a| self.expr(a)).collect();
-        let xo = self.expr(x);
-        let one = self.one();
-        let sfp = self.self_fp();
-
-        let nfp = self.fresh();
-        self.pending.push(Hint::AllocFrameMax {
-            ptr: nfp,
-            callees: callees.to_vec(),
-        });
-        for (i, &ao) in arg_offs.iter().enumerate() {
-            self.deref(nfp, 2 + i as u32, ao, DerefMode::Cell);
-        }
-        self.deref(nfp, 1, 0, DerefMode::Fp); // retfp
-        let join_cell = self.fresh();
-        let join_set = self.code.len();
-        self.set(join_cell, KVal::Local(0)); // patched: the join pc
-        self.deref(nfp, 0, join_cell, DerefMode::Cell); // retpc = join
-
-        let kset = self.emit_dispatch(xo, one, sfp);
-
-        // Trampoline: slot j enters `callees[j]` with fp = nfp; the callee's own
-        // `return` jumps to retpc (the join) in the caller frame.
-        self.patch_local(kset, self.code.len());
-        self.emit_slots(callees.len(), one, nfp, |j| KVal::Entry(callees[j].clone()));
-
-        // Join: read the return values (written by whichever callee ran).
-        self.patch_local(join_set, self.code.len());
-        for (i, &r) in rcells.iter().enumerate() {
-            self.deref(nfp, 2 + n_args + i as u32, r, DerefMode::Cell);
-        }
-
-        self.bind_join(names, &rcells);
+        self.bind_targets(&binds);
     }
 
     /// The two-jump dispatch itself: `d = g^T · x²` names slot `x` of the
@@ -848,8 +716,7 @@ impl FnLower<'_> {
         let kcell = self.fresh();
         let kset = self.code.len();
         self.set(kcell, KVal::Local(0)); // patched: table base T
-        let x2 = self.fresh();
-        self.emit(LOp::Mul { a: xo, b: xo, c: x2 });
+        let x2 = self.pure(PureOp::Mul, xo, xo);
         let d = self.fresh();
         self.emit(LOp::Mul { a: kcell, b: x2, c: d });
         self.emit(LOp::Jump { oc: one, od: d, of });
@@ -870,7 +737,7 @@ impl FnLower<'_> {
         slots
     }
 
-    /// The trampoline dispatch shared by `match` and `match_range`: jump to
+    /// The trampoline dispatch every `match` lowers through: jump to
     /// `d = g^T · x²` (slot `j` of the two-instruction table at bytecode base
     /// `T`), then to `body(j)`'s code; every non-final body exits to the
     /// join. `body` lowers arm `j`, with its own branch-local scope.
@@ -902,18 +769,52 @@ impl FnLower<'_> {
     }
 
     /// Lower `if` / `else`, arranging the blocks so the nonzero `XOR` result jumps to the correct arm.
-    fn lower_if(&mut self, eq: bool, lhs: &Expr, rhs: &Expr, then: &[Stmt], els: &[Stmt]) {
-        // Compile-time condition (both sides compile-time integers, e.g. after
-        // `Const`-argument substitution): fold to the taken branch, emitting no
-        // test or jump. Lets `@inline` arms bake per-case control flow. The
-        // taken branch is straight-line code (like an unroll iteration), so its
-        // bindings persist, unlike a runtime branch, whose bindings are
-        // branch-local (a runtime branch may not execute).
+    fn lower_if(&mut self, eq: bool, lhs: &Expr, rhs: &Expr, then: &[Stmt], els: &[Stmt], force_const: bool) {
+        // A folded condition emits no test and no jump, so the taken arm is
+        // straight-line code and its bindings persist, unlike a runtime branch's.
+        //
+        // The fold reads INTEGERS while the runtime lowering below tests a field
+        // XOR, and the two disagree whenever a side's readings do. Neither can
+        // simply win, so an ambiguous condition is REJECTED and `const(...)` is
+        // how the author names the regime (`zkDSL.md`, "`if const(...)`").
         if let (Some(a), Some(b)) = (self.try_const_index(lhs), self.try_const_index(rhs)) {
+            // Checked per SIDE, not by comparing the two verdicts. If each side's
+            // own readings agree then integer equality and field equality say the
+            // same thing, so a side that disagrees with ITSELF is the whole of the
+            // ambiguity. Comparing verdicts instead needs a field reading for both
+            // sides, and `try_field_const` has no arm for `-`, `//` or `%`, so
+            // `n == 3 - 1` slipped through and folded on the integer reading while
+            // `n == 2`, the same condition, was rejected.
+            if !force_const {
+                for e in [lhs, rhs] {
+                    if let Some((n, f)) = self.diverging_readings(e) {
+                        self.fail(format!(
+                            "`{e:?}` reads as the integer {n} where a condition folds, and as the field \
+                             element {:#x}:{:#x} where a value is wanted, so this branch would be decided \
+                             by one reading and its body run under the other. Write `if const(...)` to \
+                             decide it with integer arithmetic, or spell the operand so the two agree.",
+                            f.c1, f.c0
+                        ))
+                    }
+                }
+            }
             for st in if (a == b) == eq { then } else { els } {
                 self.stmt(st);
             }
             return;
+        }
+        // `const(...)` also decides a condition only the field can read (`GEN ** 3`,
+        // or anything past `u32`), which has no integer reading to be ambiguous
+        // against. A plain `if` must NOT: folding it would rescope the arm, whose
+        // bindings then outlive it.
+        if force_const {
+            if let (Some(fa), Some(fb)) = (self.try_field_const(lhs), self.try_field_const(rhs)) {
+                for st in if (fa == fb) == eq { then } else { els } {
+                    self.stmt(st);
+                }
+                return;
+            }
+            self.fail("`if const(...)` asks for a compile-time decision, but this condition is not one: both sides must be compile-time constants")
         }
         // `x != 0` needs no XOR: the cell itself is the JUMP's nonzero test.
         let x = if self.try_lit(rhs) == Some(0) {
@@ -922,9 +823,8 @@ impl FnLower<'_> {
             self.expr(rhs)
         } else {
             let (la, lb) = (self.expr(lhs), self.expr(rhs));
-            let x = self.fresh();
-            self.emit(LOp::Xor { a: la, b: lb, c: x }); // x = lhs + rhs: nonzero ⇔ !=
-            x
+            // x = lhs + rhs: nonzero ⇔ !=
+            self.pure(PureOp::Xor, la, lb)
         };
         // Hoisted on purpose: these SETs must dominate the join.
         let sfp = self.self_fp();
@@ -974,8 +874,8 @@ impl FnLower<'_> {
             return;
         }
         let (la, lb) = (self.expr(a), self.expr(b));
-        let x = self.fresh();
-        self.emit(LOp::Xor { a: la, b: lb, c: x }); // x = a + b: nonzero ⇔ a != b
+        // x = a + b: nonzero ⇔ a != b
+        let x = self.pure(PureOp::Xor, la, lb);
         let inv = self.fresh();
         self.pending.push(Hint::Resolved(RHint::Inverse { value: x, dst: inv }));
         let p = self.fresh();
@@ -983,116 +883,37 @@ impl FnLower<'_> {
         self.set_const(p, F192::ONE);
     }
 
-    /// The frame cell holding `g^{k-1}`, the range-check product target, set
-    /// lazily once per distinct bound `k` and shared by that bound's checks.
+    /// The frame cell holding `g^{k-1}`, the range-check product target, shared
+    /// by every check of that bound.
+    ///
+    /// An ordinary [`Self::const_cell`], so it is shared with any plain use of
+    /// the same constant: at `k = 1` the target is `g^0 = 1`, the very cell
+    /// [`Self::one`] hands out, which in `main` is also `self_fp`. Sound, since
+    /// the `SET` precedes every use and each later write is the write-once
+    /// equality, but a second WRITER on any of those paths would land on all.
     fn bound_cell(&mut self, k: u64) -> Off {
-        if let Some(&o) = self.scope.bounds.get(&k) {
-            return o;
-        }
-        let o = self.fresh();
-        self.set_const(o, g_pow_u128((k - 1) as u128).into());
-        self.scope.bounds.insert(k, o);
-        o
+        self.const_cell(g_pow_u128((k - 1) as u128).into())
     }
 
-    /// Resolve an expression naming a run of consecutive cells: a whole
-    /// `StackBuf`, a `StackBuf` slice, a `HeapBuf` slice with compile-time
-    /// bounds, or a runtime-start heap slice `buf[i:i + k]` (whose length is
-    /// the only thing its bounds reveal). Heap runs fold the buffer's symbolic
-    /// shift and the slice start into the pointer offset.
-    fn cell_run(&mut self, e: &Expr) -> CellRun {
-        match e {
-            Expr::Var(_) => {
-                let (base, len) = self
-                    .stack_of(e)
-                    .expect("only a StackBuf names a cell run unsliced; slice a HeapBuf: `buf[lo:lo + k]`");
-                CellRun::Stack { base, len }
-            }
-            Expr::Slice(arr, lo, hi) => match (self.try_const_index(lo), self.try_const_index(hi)) {
-                // Compile-time bounds: integer cell indexes `lo..hi` (frame
-                // offsets for a stack, g-power exponents for the heap).
-                (Some(lo), Some(hi)) => {
-                    if lo >= hi {
-                        self.fail(format!("empty slice {lo}:{hi}"))
-                    };
-                    let len = hi - lo;
-                    if let Some((base, size)) = self.stack_of(arr) {
-                        if hi > size {
-                            self.fail(format!("slice {lo}:{hi} out of bounds (StackBuf size {size})"))
-                        };
-                        CellRun::Stack { base: base + lo, len }
-                    } else {
-                        self.check_heap_bound(arr, lo as u128, len as u128);
-                        let (ptr, lo) = self.heap_base(arr, lo as u128);
-                        CellRun::Heap { ptr, lo, len }
-                    }
-                }
-                // Runtime start (heap only): `buf[i:i + k]` with a runtime
-                // g-power index `i` names the cells `buf·i·g^j`, j < k. The
-                // `hi` bound cannot be evaluated, only shape-checked against
-                // `lo`. One MUL folds `i` into the pointer.
-                _ => {
-                    if self.stack_of(arr).is_some() {
-                        self.fail(
-                            "a StackBuf slice needs compile-time bounds (frame offsets are baked into the bytecode)",
-                        )
-                    };
-                    let k = plus_k(lo, hi).unwrap_or_else(|| {
-                        self.fail(format!("a runtime slice must be `buf[i:i + k]`, got `{lo:?}:{hi:?}`"))
-                    });
-                    let len = u32::try_from(k).expect("slice length overflows u32");
-                    if len == 0 {
-                        self.fail("empty slice")
-                    };
-                    let (ptr, lo) = self.heap_addr(arr, lo);
-                    CellRun::Heap { ptr, lo, len }
-                }
-            },
-            other => self.fail(format!(
-                "expected a StackBuf, a StackBuf slice, or a HeapBuf slice, got `{other:?}`"
-            )),
-        }
-    }
-
-    /// `hint_witness(dest, "name")`: resolve `dest` to a run of cells and
-    /// queue the witness-fill hint (no instructions: the values are written
-    /// by the runner before the next instruction executes, unconstrained).
-    fn lower_hint_witness(&mut self, dest: &Expr, name: &str) {
-        let name = name.to_string();
-        let hint = match self.cell_run(dest) {
-            CellRun::Stack { base, len } => {
-                self.materialize_run(base, len);
-                RHint::WitnessStack { name, base, len }
-            }
-            CellRun::Heap { ptr, lo, len } => RHint::WitnessHeap { name, ptr, lo, len },
-        };
-        self.pending.push(Hint::Resolved(hint));
-    }
-
-    /// `assert log x < log GEN ** k`: the 3-cycle range check *in the
-    /// exponent* (leanVM's DEREF trick, see
-    /// `doc/leanvm/body/10-isa-programming.tex` §sec:prog-range-checks, transported to g-powers). With `x = g^e`:
+    /// `assert log x < log GEN ** k`: the 3-cycle range check in the exponent
+    /// (`doc/leanvm/body/10-isa-programming.tex` §sec:prog-range-checks). With
+    /// `x = g^e`:
     ///
-    /// 1. `DEREF` through `x`: the dereferenced address `x·g^0` must be one of
-    ///    the memory's `2^h` addresses `{g^0, …, g^{2^h-1}}` (doc §Memory), so
-    ///    the bus itself proves `x = g^e` with `e < 2^h`;
-    /// 2. `MUL x·y` into the write-once cell holding `g^{k-1}`: asserts
-    ///    `x·y = g^{k-1}`. The complement `y = g^{k-1-e}` needs no hint: the
-    ///    result cell is already written, so the runner back-solves the one
-    ///    unknown operand (leanVM's ADD deduction, multiplicatively);
-    /// 3. `DEREF` through `y`: proves `y = g^f` with `f < 2^h`.
+    /// 1. `DEREF` through `x`, so the bus proves `x = g^e` with `e < 2^h`;
+    /// 2. `MUL x·y` into the write-once cell holding `g^{k-1}`. The complement
+    ///    `y = g^{k-1-e}` needs no hint, the result cell being already written,
+    ///    so the runner back-solves the one unknown operand;
+    /// 3. `DEREF` through `y`, proving `y = g^f` with `f < 2^h`.
     ///
-    /// Then `e + f ≡ k-1 (mod 2^64-1)` with `e, f < 2^h`, and since a negative
-    /// `k-1-e` wraps to `≈ 2^64 ≫ 2^h`, this forces `e ≤ k-1`, for ANY memory
-    /// size the prover announces, provided `k ≤ 2^MIN_LOG_MEM`. The two `DEREF`
-    /// target cells are unconstrained touches (only the address matters),
-    /// back-filled at the end of execution; the constant cell is one amortized
-    /// `SET` per distinct bound.
+    /// Then `e + f ≡ k-1 (mod 2^64-1)` with `e, f < 2^h`, and a negative `k-1-e`
+    /// wraps to `≈ 2^64 ≫ 2^h`, so `e ≤ k-1` for ANY announced memory size,
+    /// provided `k ≤ 2^MIN_LOG_MEM`. Both `DEREF` destinations are unconstrained
+    /// touches, back-filled at the end of execution: only the ADDRESS matters, so
+    /// nothing reading their results is correct rather than an omission.
     ///
-    /// A [`LtBound::Runtime`] bound `Y = g^k` reaches the same gadget through one
-    /// extra `MUL` for `g^{k-1} = Y·g^{-1}`, which the runner has written before
-    /// the range-check `MUL` runs, so the complement is still back-solved rather
-    /// than hinted. The `k ≤ 2^MIN_LOG_MEM` obligation moves to the program.
+    /// A [`LtBound::Runtime`] bound reaches the same gadget through one extra
+    /// `MUL` for `g^{k-1} = Y·g^{-1}`, still back-solved rather than hinted, and
+    /// the `k ≤ 2^MIN_LOG_MEM` obligation moves to the program.
     fn lower_assert_lt(&mut self, e: &Expr, bound: &LtBound) {
         let kcell = match bound {
             LtBound::Const(k) => {
@@ -1151,35 +972,44 @@ impl FnLower<'_> {
             }
             Expr::Pow(b, e) => self.pow_expr(b, e),
             Expr::Var(v) => {
-                if self.scope.stacks.contains_key(v) {
+                if self.scope.stack(v).is_some() {
                     self.fail(format!("StackBuf `{v}` used as a scalar; index it (`{v}[k]`) or pass it to blake2s"));
                 }
-                if let Some(&ga) = self.scope.gaddrs.get(v) {
+                if let Some(ga) = self.scope.gaddr(v) {
                     return self.materialize(ga);
                 }
-                *self
-                    .scope
-                    .vars
-                    .get(v)
-                    .unwrap_or_else(|| self.fail(format!("unbound variable `{v}`")))
+                self.scope.var(v).unwrap_or_else(|| {
+                    // A `for` body that ASSIGNS to an enclosing name reads it before
+                    // it binds it, and the capture set drops every name the body
+                    // binds, so the read arrives here with nothing behind it. That is
+                    // the loop-carry limitation rather than a typo, and it deserves
+                    // the same courtesy the `StackBuf` case already gets: the
+                    // tail-recursive helper threads its captures IN, never out, so an
+                    // accumulator cannot come back.
+                    if self.fn_name.starts_with("__loop") {
+                        self.fail(format!(
+                            "unbound variable `{v}` in a `for` loop body. If `{v}` names a value from \
+                             outside the loop that this body also assigns to, the loop cannot carry it: \
+                             the helper threads its captures in, not out. Assign to a new name inside \
+                             the body, or carry state through a `HeapBuf`."
+                        ))
+                    }
+                    self.fail(format!("unbound variable `{v}`"))
+                })
             }
             Expr::Add(a, b) => {
                 if let Some(x) = self.add_identity(a, b) {
                     return self.expr(x);
                 }
                 let (la, lb) = (self.expr(a), self.expr(b));
-                let o = self.fresh();
-                self.emit(LOp::Xor { a: la, b: lb, c: o });
-                o
+                self.pure(PureOp::Xor, la, lb)
             }
             Expr::Mul(a, b) => {
                 if let Some(x) = self.mul_identity(a, b) {
                     return self.expr(x);
                 }
                 let (la, lb) = (self.expr(a), self.expr(b));
-                let o = self.fresh();
-                self.emit(LOp::Mul { a: la, b: lb, c: o });
-                o
+                self.pure(PureOp::Mul, la, lb)
             }
             Expr::FieldDiv(a, b) => {
                 // q = a / b via the MUL write-once back-solve: emit `a = q * b`
@@ -1194,6 +1024,17 @@ impl FnLower<'_> {
             }
             // A well-formed one folds above, so this is a malformed call.
             Expr::Call(f, _) if f == "f192" => self.fail("f192 needs three literal u64 limbs"),
+            // Folded above when it is what it claims to be, so reaching here means
+            // it is not: name that, rather than reporting an unknown function.
+            Expr::Call(f, args) if f == "const" => {
+                if args.len() != 1 {
+                    self.fail(format!("const(...) takes one expression, got {}", args.len()))
+                };
+                self.fail(format!(
+                    "const(...) asks for a compile-time integer, and `{:?}` is not one",
+                    args[0]
+                ))
+            }
             Expr::Call(f, args) if f == "addr" => {
                 let ga = self.stack_addr(args);
                 self.materialize(ga)
@@ -1204,7 +1045,10 @@ impl FnLower<'_> {
                 // UNCONSTRAINED, so the caller (log2_ceil) re-verifies it. Same
                 // "prover computes, circuit checks" pattern as `/`.
                 if args.len() != 3 {
-    self.fail("hint_log2_ceil(bits, nbits, floor)")
+    self.fail(format!(
+                        "hint_log2_ceil takes three arguments, `(bits, nbits, floor)`, got {}",
+                        args.len()
+                    ))
 };
                 let nbits = self.const_index(&args[1]);
                 let floor = self.const_index(&args[2]);
@@ -1243,20 +1087,14 @@ impl FnLower<'_> {
             Expr::StackBuf(_) => {
                 self.fail("StackBuf(n) must be bound to a name: `x = StackBuf(n)`")
             }
+            // A frame cell IS the answer; a heap cell needs a `DEREF` to read.
             Expr::Index(arr, idx) => {
-                // Stack read `sa[k]`: the frame cell `base + k` directly (no deref),
-                // forwarded through any deferred copy/zero alias.
-                if let Some((base, size)) = self.stack_of(arr) {
-                    let k = self.const_index(idx);
-                    if k >= size {
-    self.fail(format!("stack index {k} out of bounds (size {size})"))
-};
-                    return self.word_src(base + k);
+                if let Some(c) = self.frame_cell(arr, idx) {
+                    return c;
                 }
-                // Heap read: bind dst := m[arr·idx] (the array cell, written earlier).
-                let (base, o2) = self.heap_addr(arr, idx);
+                let (ptr, o2) = self.heap_addr(arr, idx);
                 let dst = self.fresh();
-                self.deref(base, o2, dst, DerefMode::Cell);
+                self.deref(ptr, o2, dst, DerefMode::Cell);
                 dst
             }
             Expr::Sub(..) | Expr::Div(..) | Expr::Mod(..) => {
@@ -1267,150 +1105,6 @@ impl FnLower<'_> {
             Expr::Slice(..) => self.fail("a slice is not a scalar; it is only a blake2s operand"),
             Expr::ListLit(..) => self.fail("a list literal must be bound to a name: `x = [a, b]`"),
         }
-    }
-
-    /// Allocate `n` *consecutive* fresh frame cells (a stack run), returning the
-    /// base. Nothing else may `fresh()` between them, so they stay adjacent.
-    fn alloc_stack(&mut self, n: u32) -> Off {
-        let base = self.next;
-        self.next += n;
-        // A run allocated after the escape is just as reachable as one before it,
-        // so it is sealed on the spot and never needs recording.
-        if self.frame_escaped {
-            self.seal_run(base, n);
-        } else {
-            self.stack_runs.push((base, n));
-        }
-        base
-    }
-
-    /// Give up on seeing writes to a frame run: materialize any deferred alias on
-    /// it, mark its cells `phys` so a later store stays the write-once equality
-    /// assertion rather than an alias, and hand it to CSE as untouchable.
-    fn seal_run(&mut self, base: Off, len: u32) {
-        self.materialize_run(base, len);
-        self.opaque_runs.push((base, len));
-    }
-
-    /// A computed-advice bit buffer's destination ([`BitsDest`]). Not
-    /// [`Self::cell_run`]: these builtins take a bare `HeapBuf` and carry the
-    /// length in `nbits`, where a cell run would demand a slice.
-    fn bits_dest(&mut self, e: &Expr, nbits: u32, what: &str) -> BitsDest {
-        match self.stack_of(e) {
-            Some((base, len)) => {
-                if len < nbits {
-                    self.fail(format!(
-                        "{what} needs {nbits} cells, its StackBuf destination has {len}"
-                    ))
-                };
-                // The hint names the physical cells, so a deferred alias sitting on
-                // one would win every later read (as for `hint_f192_limbs`).
-                self.materialize_run(base, nbits);
-                BitsDest::Stack(base)
-            }
-            None => BitsDest::Heap(self.expr(e)),
-        }
-    }
-
-    /// If `e` names a `StackBuf` variable, its `(base, size)`.
-    fn stack_of(&self, e: &Expr) -> Option<(Off, u32)> {
-        match e {
-            Expr::Var(v) => self.scope.stacks.get(v).copied(),
-            _ => None,
-        }
-    }
-
-    /// `addr(sb)`: the g-address `fp·g^base` of a `StackBuf`'s first cell, so a
-    /// frame run can be pointed at (indexed at runtime, or handed to a callee)
-    /// while its own accesses stay direct frame cells. Materializing `fp` is the
-    /// ISA's one cost here, amortized per function ([`Self::self_fp`]); the
-    /// address is a folded [`GAddr`], so `addr(sb) * GEN ** k` stays virtual.
-    fn stack_addr(&mut self, args: &[Expr]) -> GAddr {
-        if args.len() != 1 {
-            self.fail("addr(buf) takes one StackBuf")
-        };
-        let (base, len) = self.stack_of(&args[0]).expect("addr() takes a StackBuf");
-        // Once an address escapes, a write through it is a `DEREF` that names no
-        // frame cell the lowerer can see, so every run has to be treated as
-        // already valued: `phys` keeps a later `sb[k] = v` the write-once
-        // equality assertion `zkDSL.md` §Memory promises instead of a deferred
-        // alias that would drop it, and `opaque_runs` keeps CSE off its cells (a
-        // store folded into a canonical elsewhere would leave the cell unwritten,
-        // hence prover-chosen). Every run, not just this one: the pointer is a
-        // frame address, and one off-by-one in a callee reaches the next run.
-        if !self.frame_escaped {
-            self.frame_escaped = true;
-            for (b, l) in std::mem::take(&mut self.stack_runs) {
-                self.seal_run(b, l);
-            }
-        }
-        GAddr {
-            base: Some(self.self_fp()),
-            exp: base as u128,
-            run: Some((base, len)),
-        }
-    }
-
-    /// A compile-time integer expression. `None` means either a runtime value
-    /// or arithmetic outside the source language's `u128` literal domain.
-    fn try_const_int(&self, e: &Expr) -> Option<u128> {
-        match e {
-            Expr::Lit(k) => Some(*k),
-            Expr::Var(v) => self.scope.consts.get(v).copied(),
-            Expr::Add(a, b) => self.try_const_int(a)?.checked_add(self.try_const_int(b)?),
-            Expr::Sub(a, b) => self.try_const_int(a)?.checked_sub(self.try_const_int(b)?),
-            Expr::Mul(a, b) => self.try_const_int(a)?.checked_mul(self.try_const_int(b)?),
-            Expr::Div(a, b) => {
-                let d = self.try_const_int(b)?;
-                if d == 0 {
-                    self.fail("compile-time division by zero")
-                };
-                Some(self.try_const_int(a)? / d)
-            }
-            Expr::Mod(a, b) => {
-                let d = self.try_const_int(b)?;
-                if d == 0 {
-                    self.fail("compile-time modulo by zero")
-                };
-                Some(self.try_const_int(a)? % d)
-            }
-            Expr::Index(..) => self
-                .const_array_elem(e)
-                .and_then(|value| (value.c2 == 0).then_some(value.c0 as u128 | ((value.c1 as u128) << 64))),
-            Expr::Call(..) => self.const_len(e).map(|n| n as u128),
-            Expr::Pow(b, e) => self
-                .try_const_int(b)?
-                .checked_pow(u32::try_from(self.try_const_int(e)?).ok()?),
-            _ => None,
-        }
-    }
-
-    /// A compile-time integer index. The general integer evaluator is narrowed
-    /// here so stack offsets, bounds, and immediate exponents remain `u32`.
-    fn try_const_index(&self, idx: &Expr) -> Option<u32> {
-        u32::try_from(self.try_const_int(idx)?).ok()
-    }
-
-    /// A stack index or compile-time slice bound: [`Self::try_const_index`],
-    /// required to succeed.
-    fn const_index(&self, idx: &Expr) -> u32 {
-        self.try_const_index(idx).unwrap_or_else(|| {
-            // An oversized literal is an index-shaped mistake, not a runtime
-            // value, so diagnose it precisely (`sa[2^32]` must not wrap to `sa[0]`).
-            if let Expr::Lit(k) = idx {
-                self.fail(format!("stack index {k} does not fit in u32"));
-            }
-            self.fail(format!(
-                "a StackBuf index must be a compile-time integer, got `{idx:?}`"
-            ))
-        })
-    }
-
-    /// The exponent of `GEN ** e`: a compile-time integer, required to succeed.
-    fn gpow_exp(&self, e: &Expr) -> u128 {
-        self.try_const_index(e)
-            .unwrap_or_else(|| self.fail(format!("`GEN ** e` needs a compile-time integer exponent, got `{e:?}`")))
-            as u128
     }
 
     /// `base ** e` (non-`GEN` base, compile-time exponent `e`): a fully-constant
@@ -1433,181 +1127,12 @@ impl FnLower<'_> {
         let hi = 31 - k.leading_zeros(); // top set bit (k >= 1)
         let mut acc = base;
         for bit in (0..hi).rev() {
-            let sq = self.fresh();
-            self.emit(LOp::Mul { a: acc, b: acc, c: sq });
-            acc = sq;
+            acc = self.pure(PureOp::Mul, acc, acc);
             if (k >> bit) & 1 == 1 {
-                let m = self.fresh();
-                self.emit(LOp::Mul { a: acc, b: base, c: m });
-                acc = m;
+                acc = self.pure(PureOp::Mul, acc, base);
             }
         }
         acc
-    }
-
-    /// If `e` is `NAME[i]` for a top-level constant array `NAME` with a
-    /// compile-time index `i`, its element (a raw `u128`).
-    fn const_array_elem(&self, e: &Expr) -> Option<F192> {
-        if let Expr::Index(arr, idx) = e
-            && let Expr::Var(v) = arr.as_ref()
-            && let Some(a) = self.const_arrays.get(v)
-        {
-            let i = self.try_const_index(idx)? as usize;
-            return Some(
-                *a.get(i).unwrap_or_else(|| {
-                    self.fail(format!("const array `{v}` index {i} out of bounds (len {})", a.len()))
-                }),
-            );
-        }
-        None
-    }
-
-    /// If `e` is `len(NAME)` for a top-level constant array `NAME`, its length.
-    fn const_len(&self, e: &Expr) -> Option<usize> {
-        if let Expr::Call(f, args) = e
-            && f == "len"
-            && args.len() == 1
-            && let Expr::Var(v) = &args[0]
-        {
-            return self.const_arrays.get(v).map(|a| a.len());
-        }
-        None
-    }
-
-    /// The surviving operand of `a + b` when the other is a compile-time zero,
-    /// which contributes nothing and (being a constant) has no side effect to
-    /// preserve. So `x + 0` lowers to just `x`: no cell, no XOR. Kills the
-    /// `acc = 0; acc = acc + t` accumulator seed and similar.
-    fn add_identity<'e>(&self, a: &'e Expr, b: &'e Expr) -> Option<&'e Expr> {
-        if self.try_field_const(a) == Some(F192::ZERO) {
-            return Some(b);
-        }
-        (self.try_field_const(b) == Some(F192::ZERO)).then_some(a)
-    }
-
-    /// The surviving operand of `a * b` when the other is a compile-time one, a
-    /// no-op multiply. Kills the `acc = GEN ** 0` (= 1) accumulator seed's first
-    /// `1 * f` in every product loop.
-    fn mul_identity<'e>(&self, a: &'e Expr, b: &'e Expr) -> Option<&'e Expr> {
-        if self.try_field_const(a) == Some(F192::ONE) {
-            return Some(b);
-        }
-        (self.try_field_const(b) == Some(F192::ONE)).then_some(a)
-    }
-
-    /// The field value of `e` when it is a trivial compile-time constant (a
-    /// literal, a literal-bound name, or `GEN ** 0`), for the `x*1`/`x+0`
-    /// arithmetic identities and the `== 0` test of [`Self::lower_if`].
-    fn try_lit(&self, e: &Expr) -> Option<u64> {
-        match e {
-            Expr::Lit(n) => u64::try_from(*n).ok(),
-            Expr::Var(v) => self.scope.consts.get(v).and_then(|&n| u64::try_from(n).ok()),
-            Expr::GPow(0) => Some(1),
-            _ => None,
-        }
-    }
-
-    /// The compile-time g-power exponent of a heap-index expression, when it
-    /// has one: `1` (= `g^0`), `GEN`, `GEN ** k`, power-of-two literals
-    /// (`g = x`, so the literal `2^j` IS `g^j`), names bound to such
-    /// literals, and products of those (exponents add). `None` for runtime
-    /// values, and for exponents ≥ 2^MIN_LOG_MEM, which must not become a
-    /// `DEREF` `o2` immediate (`o2` is capped by the smallest admissible
-    /// memory size; the fallback MUL path handles any element).
-    fn try_gpow_index(&self, idx: &Expr) -> Option<u32> {
-        let cap = |k: u32| (k < (1u32 << lean_vm::cpu::MIN_LOG_MEM)).then_some(k);
-        let pow2 = |n: u128| (n.is_power_of_two() && n < (1 << 64)).then(|| n.trailing_zeros());
-        match idx {
-            Expr::Lit(n) => pow2(*n).and_then(cap),
-            Expr::Var(v) => pow2(*self.scope.consts.get(v)?).and_then(cap),
-            Expr::Gen => Some(1),
-            Expr::GPow(k) => cap(u32::try_from(*k).ok()?),
-            Expr::GenPow(e) => cap(self.try_const_index(e)?),
-            Expr::Mul(a, b) => cap(self.try_gpow_index(a)?.checked_add(self.try_gpow_index(b)?)?),
-            _ => None,
-        }
-    }
-
-    /// Resolve a `blake2s` operand: a [`Self::cell_run`] pinned to exactly 2
-    /// cells, a 256-bit value being two 128-bit cells. Stack operands are used
-    /// in place; heap operands must be bridged through the stack, since
-    /// `BLAKE2s` addresses only frame cells (see [`Self::blake2s_input`]).
-    fn blake2s_operand(&mut self, e: &Expr) -> CellRun {
-        let run = self.cell_run(e);
-        if run.cells() != 2 {
-            self.fail("a blake2s operand must span exactly 2 cells (two 128-bit words); slice a larger buffer: `buf[lo:lo + 2]`")
-        };
-        run
-    }
-
-    /// A `blake2s` *input* operand as its two independently-addressed 128-bit
-    /// chunk bases (each chunk is ONE 128-bit cell): stack runs in place; a heap
-    /// slice is pulled into a fresh stack pair first, one `DEREF` per cell
-    /// (`m[ptr·g^{lo+k}] == m[fp+t+k]`, the `o2` immediate doing the pointer
-    /// offset). The heap cells must already be written.
-    fn blake2s_input(&mut self, e: &Expr) -> [Off; 2] {
-        match self.blake2s_operand(e) {
-            // A stack operand: the two chunk cells are `o, o+1`; forward each
-            // cell's real source where known (a copy or a zero), so a hash of
-            // non-adjacent values needs no assembling copies.
-            CellRun::Stack { base, .. } => [self.word_src(base), self.word_src(base + 1)],
-            CellRun::Heap { ptr, lo, .. } => {
-                let t = self.alloc_stack(2);
-                for k in 0..2 {
-                    self.deref(ptr, lo + k, t + k, DerefMode::Cell);
-                }
-                [t, t + 1]
-            }
-        }
-    }
-
-    /// A BLAKE2s chaining value must occupy two consecutive frame cells because
-    /// the opcode carries one base offset for both words. Preserve a genuine
-    /// consecutive pair, including a heap pair already bridged by
-    /// [`Self::blake2s_input`]; if deferred copy forwarding exposes two
-    /// non-adjacent sources, materialize them into a fresh consecutive run.
-    fn blake2s_cv(&mut self, e: &Expr) -> Off {
-        let pair = self.blake2s_input(e);
-        if pair[1] == pair[0] + 1 {
-            return pair[0];
-        }
-        let cv = self.alloc_stack(2);
-        self.copy(pair[0], cv);
-        self.copy(pair[1], cv + 1);
-        cv
-    }
-
-    /// The cell holding the value of stack cell `o`, following a recorded copy /
-    /// zero alias to its real source. Returns `o` when it holds a genuine value.
-    /// Follow `Cell` alias hops to the cell that ends the chain, emitting nothing.
-    /// This is what [`Self::stack_store`] records, so a recorded source never has
-    /// an outgoing `Cell` edge and no cycle can form.
-    fn cell_src(&self, o: Off) -> Off {
-        let mut cur = o;
-        for _ in 0..=self.next {
-            match self.alias.get(&cur) {
-                Some(Alias::Cell(s)) => cur = *s,
-                _ => return cur,
-            }
-        }
-        self.fail(format!("alias cycle at frame cell {o}"));
-    }
-
-    fn word_src(&mut self, o: Off) -> Off {
-        // Bounded because a chain can still GROW: a recorded source is unaliased
-        // when it is recorded, but nothing stops it acquiring an alias afterwards.
-        // A cycle here is a compiler that never returns and prints nothing, so
-        // more hops than there are frame cells is a hard error, not a hang.
-        let mut cur = o;
-        for _ in 0..=self.next {
-            match self.alias.get(&cur).copied() {
-                Some(Alias::Cell(s)) => cur = s,
-                Some(Alias::Const(v)) if v.is_zero() => return self.zero(),
-                Some(Alias::Const(v)) => return self.const_cell(v),
-                None => return cur,
-            }
-        }
-        self.fail(format!("alias cycle at frame cell {o}"));
     }
 
     /// Evaluate `e` writing its value straight into cell `dst`, with no temporary +
@@ -1623,10 +1148,16 @@ impl FnLower<'_> {
         }
         match e {
             // Heap read straight into dst (a stack read falls through to the copy).
-            Expr::Index(arr, idx) if self.stack_of(arr).is_none() => {
-                let (base, o2) = self.heap_addr(arr, idx);
-                self.deref(base, o2, dst, DerefMode::Cell);
-            }
+            // Through the same resolver as every other index, so the frame/heap
+            // split is written once: a heap read `DEREF`s straight into `dst`, and a
+            // frame read is the cell, copied.
+            Expr::Index(arr, idx) => match self.frame_cell(arr, idx) {
+                Some(c) => self.copy(c, dst),
+                None => {
+                    let (ptr, o2) = self.heap_addr(arr, idx);
+                    self.deref(ptr, o2, dst, DerefMode::Cell);
+                }
+            },
             Expr::Pow(b, e) => {
                 let v = self.pow_expr(b, e);
                 self.copy(v, dst);
@@ -1635,6 +1166,8 @@ impl FnLower<'_> {
                 if let Some(x) = self.add_identity(a, b) {
                     self.expr_into(x, dst);
                 } else {
+                    // Not `pure`: `dst` is the caller's, so it may be written
+                    // again and the second write be the assertion. See its doc.
                     let (la, lb) = (self.expr(a), self.expr(b));
                     self.emit(LOp::Xor { a: la, b: lb, c: dst });
                 }
@@ -1664,618 +1197,6 @@ impl FnLower<'_> {
         }
     }
 
-    /// Resolve a heap access `arr[idx]` to a `DEREF`-ready pair: a cell
-    /// holding a pointer `p` and a compile-time exponent `o2`, the accessed
-    /// cell being `m[p·g^o2]` (heap addressing in the exponent: cell `g^k`
-    /// of the buffer sits at `arr·g^k`). The fallback of [`Self::heap_addr`],
-    /// which has already folded away a wholly constant index: here a constant
-    /// g-power *factor* still goes into the `o2` immediate, so only the
-    /// runtime factor costs a pointer `MUL`.
-    fn array_ptr(&mut self, arr: &Expr, idx: &Expr) -> (Off, u32) {
-        // `buf[r * GEN ** k]` (either factor order): o2 takes the constant,
-        // the pointer MUL takes only the runtime factor `r`.
-        if let Expr::Mul(a, b) = idx {
-            for (c, r) in [(a, b), (b, a)] {
-                if let Some(k) = self.try_gpow_index(c) {
-                    let (la, lr) = (self.expr(arr), self.expr(r));
-                    let ptr = self.fresh();
-                    self.emit(LOp::Mul { a: la, b: lr, c: ptr });
-                    return (ptr, k);
-                }
-            }
-        }
-        let (la, li) = (self.expr(arr), self.expr(idx));
-        let ptr = self.fresh();
-        self.emit(LOp::Mul { a: la, b: li, c: ptr });
-        (ptr, 0)
-    }
-
-    /// The symbolic g-address of `e`, when it is one: a constant g-power
-    /// (`1 = g⁰`, `GEN`, `GEN ** k`), a tracked cursor/shifted pointer, or a
-    /// plain scalar var as its own base (`base·g⁰`). Products of these combine
-    /// via [`gmul`]. `None` for anything with a runtime, non-g-power value.
-    fn gaddr_of(&self, e: &Expr) -> Option<GAddr> {
-        match e {
-            // A literal `2^k` IS `g^k` here, since `g = x`. `try_gpow_index`
-            // always knew that; without this arm `hb[GEN * 2]` was rejected as
-            // "not a g-power" while `hb[GEN * GEN]`, the same field element,
-            // compiled, and `hb[r * 2]` compiled again once `r` was runtime.
-            // `g = x`, so the literal `2^k` IS `g^k` -- but ONLY while `k < 64`.
-            // At and above that the modulus `x^64 + x^4 + x^3 + x + 1` folds the
-            // monomial back into the low limb, while the literal's bit `k` lands
-            // in the NEXT limb, the tower coefficient of `y`. `try_gpow_index`
-            // carries this guard; without it here the guest's own
-            // `Y_TOWER = 2^64` would read as `g^64` in a pointer position.
-            Expr::Lit(n) if n.is_power_of_two() && *n < (1 << 64) => Some(GAddr {
-                base: None,
-                exp: n.trailing_zeros() as u128,
-                run: None,
-            }),
-            Expr::Gen => Some(GAddr {
-                base: None,
-                exp: 1,
-                run: None,
-            }),
-            Expr::GPow(k) => Some(GAddr {
-                base: None,
-                exp: *k,
-                run: None,
-            }),
-            Expr::GenPow(e) => Some(GAddr {
-                base: None,
-                exp: self.try_const_index(e)? as u128,
-                run: None,
-            }),
-            Expr::Var(v) => self.scope.gaddrs.get(v).copied().or_else(|| {
-                self.scope.vars.get(v).map(|&c| GAddr {
-                    base: Some(c),
-                    exp: 0,
-                    run: None,
-                })
-            }),
-            Expr::Mul(a, b) => gmul(self.gaddr_of(a)?, self.gaddr_of(b)?),
-            _ => None,
-        }
-    }
-
-    /// `e` as a compile-time *field* constant, when it is one: a literal, `GEN`,
-    /// `GEN ** k`, a var bound to a field constant (or a constant g-power), or
-    /// `+`/`*` of those evaluated in the field (XOR / `K`-mul). `None` for a
-    /// runtime value, a literal exceeding the 64-bit word, or a compile-time
-    /// *integer* op (`//`/`%` are index-only).
-    fn try_field_const(&self, e: &Expr) -> Option<F192> {
-        match e {
-            // A source literal fills the low 128 bits; g-powers/addresses embed in K.
-            Expr::Lit(n) => Some(lit_field(*n)),
-            Expr::Gen => Some(g_pow(1).into()),
-            Expr::GPow(k) => Some(g_pow_u128(*k).into()),
-            Expr::GenPow(e) => Some(g_pow_u128(self.try_const_index(e)? as u128).into()),
-            Expr::Var(v) => self
-                .scope
-                .fconsts
-                .get(v)
-                .copied()
-                .or_else(|| match self.scope.gaddrs.get(v) {
-                    Some(GAddr { base: None, exp, .. }) => Some(g_pow_u128(*exp).into()),
-                    _ => None,
-                }),
-            Expr::Add(a, b) => Some(self.try_field_const(a)? + self.try_field_const(b)?),
-            Expr::Mul(a, b) => Some(self.try_field_const(a)? * self.try_field_const(b)?),
-            // A constant-array element `NAME[i]` as a field value, or `len(NAME)`.
-            Expr::Index(..) => self.const_array_elem(e),
-            Expr::Call(f, args) if f == "f192" && args.len() == 3 => {
-                let limb = |i: usize| match &args[i] {
-                    Expr::Lit(n) => u64::try_from(*n).ok(),
-                    _ => None,
-                };
-                Some(F192::new(limb(0)?, limb(1)?, limb(2)?))
-            }
-            Expr::Call(..) => self.const_len(e).map(|n| F192::new(n as u64, 0, 0)),
-            // `b ** e` as a field constant (constant base, compile-time exponent).
-            Expr::Pow(b, e) => Some(field_pow(self.try_field_const(b)?, self.try_const_index(e)?)),
-            _ => None,
-        }
-    }
-
-    /// Realize a [`GAddr`] into a frame cell holding its value: a constant is one
-    /// `SET`; a base with no shift is already that cell; a shifted base is a
-    /// `SET`+`MUL`.
-    fn materialize(&mut self, ga: GAddr) -> Off {
-        match ga {
-            GAddr {
-                base: Some(c), exp: 0, ..
-            } => c,
-            GAddr { base, exp, .. } => {
-                let k = self.fresh();
-                self.set_const(k, g_pow_u128(exp).into());
-                let Some(c) = base else { return k };
-                let o = self.fresh();
-                self.emit(LOp::Mul { a: c, b: k, c: o });
-                o
-            }
-        }
-    }
-
-    /// Compile-time bounds check: when `arr` resolves to a sized `HeapBuf`
-    /// (directly or through shifted aliases) and the whole index is the
-    /// compile-time exponent `exp`, reject `exp + span > size`. Runtime
-    /// indices are not checked (their value is not known here).
-    fn check_heap_bound(&self, arr: &Expr, extra: u128, span: u128) {
-        let Some(ga) = self.gaddr_of(arr) else { return };
-        let (Some(base), Some(exp)) = (ga.base, ga.exp.checked_add(extra)) else {
-            return;
-        };
-        // A frame pointer from `addr(sb)`: `exp` is an absolute frame offset and
-        // `base` is the shared `fp` cell, so the run comes from the address's own
-        // provenance rather than from `heap_sizes`.
-        if let Some((start, len)) = ga.run {
-            let (start, len) = (start as u128, len as u128);
-            if exp < start || exp + span > start + len {
-                let off = exp.saturating_sub(start); // `exp < start` is unreachable: gmul only adds
-                let what = if span == 1 {
-                    format!("index {off}")
-                } else {
-                    format!("slice {off}:{}", off + span)
-                };
-                self.fail(format!(
-                    "frame {what} out of bounds for the StackBuf({len}) named by `addr`"
-                ));
-            }
-            return;
-        }
-        let Some(&size) = self.heap_sizes.get(&base) else {
-            return;
-        };
-        if exp + span > size {
-            let name = self
-                .scope
-                .vars
-                .iter()
-                .find(|(_, c)| **c == base)
-                .map(|(n, _)| n.as_str())
-                .unwrap_or("?");
-            if span == 1 {
-                self.fail(format!(
-                    "heap index {exp} out of bounds for `{name}` (HeapBuf size {size})"
-                ));
-            }
-            self.fail(format!(
-                "heap slice {exp}:{} out of bounds for `{name}` (HeapBuf size {size})",
-                exp + span
-            ));
-        }
-    }
-
-    /// Address `arr·g^extra` as `(base_cell, o2)`, folding `arr`'s symbolic shift
-    /// and the constant `extra` into `o2`. Falls back to a materialized pointer
-    /// (`o2 = 0`) when there is no runtime base or the offset exceeds [`FOLD_MAX`].
-    fn heap_base(&mut self, arr: &Expr, extra: u128) -> (Off, u32) {
-        self.check_heap_bound(arr, extra, 1);
-        if let Some(ga) = self.gaddr_of(arr)
-            && let (Some(base), Some(exp)) = (ga.base, ga.exp.checked_add(extra))
-            && exp <= FOLD_MAX
-        {
-            return (base, exp as u32);
-        }
-        let a = self.expr(arr);
-        if extra == 0 {
-            return (a, 0);
-        }
-        let k = self.fresh();
-        self.set_const(k, g_pow_u128(extra).into());
-        let ptr = self.fresh();
-        self.emit(LOp::Mul { a, b: k, c: ptr });
-        (ptr, 0)
-    }
-
-    /// Address `arr[idx]` as `(base_cell, o2)`. A constant g-power `idx` folds
-    /// into `o2` ([`Self::heap_base`]); a runtime index materializes the pointer.
-    fn heap_addr(&mut self, arr: &Expr, idx: &Expr) -> (Off, u32) {
-        // A compile-time index that is a plain field constant but NOT a
-        // g-power (`buf[0]`, `buf[2]`, an integer unroll var) can never name
-        // a heap cell (cell k lives at `buf · g^k`) and would deref a wild
-        // address at proving time. Reject it here, where the source is known.
-        // A BARE literal index is rejected even now that `gaddr_of` reads `2^k`
-        // as `g^k` in a pointer: `hb[2]` would silently mean cell 1, while slice
-        // bounds stayed integer (`hb[2:4]` starts at cell 2), so one spelling
-        // would name two different cells. An index built from `GEN` is fine, and
-        // `1` is `g^0` either way.
-        let bare_int = matches!(self.try_lit(idx), Some(n) if n != 1);
-        if (bare_int || self.gaddr_of(idx).is_none())
-            && let Some(c) = self.try_field_const(idx)
-        {
-            self.fail(format!(
-                "heap index folds to the field constant {:#x}:{:#x}, not a g-power: heap cell k is \
-                 addressed as `buf[GEN ** k]` (did an integer index leak in from a StackBuf conversion?)",
-                c.c1, c.c0
-            ));
-        }
-        match self.gaddr_of(idx) {
-            Some(GAddr { base: None, exp, .. }) => return self.heap_base(arr, exp),
-            // A runtime-base index carrying a constant g-power shift
-            // (`buf[cursor * GEN ** k]`): fold the whole constant part (the
-            // index's shift plus `arr`'s own symbolic shift) into `o2`, and
-            // emit ONE pointer multiply instead of materializing g^k.
-            Some(GAddr {
-                base: Some(ib), exp, ..
-            }) => {
-                if let Some(ga) = self.gaddr_of(arr)
-                    && let (Some(ab), Some(total)) = (ga.base, ga.exp.checked_add(exp))
-                    && total <= FOLD_MAX
-                {
-                    let ptr = self.fresh();
-                    self.emit(LOp::Mul { a: ab, b: ib, c: ptr });
-                    return (ptr, total as u32);
-                }
-            }
-            None => {}
-        }
-        // Fall back to the constant-g-power-factor fold (a runtime index still
-        // materializes the pointer `MUL`, with any constant factor in `o2`).
-        self.array_ptr(arr, idx)
-    }
-
-    /// Consume the [`RetBind`] a single-value inlined tail return recorded,
-    /// for a call in EXPRESSION position (embedded in arithmetic, a store
-    /// RHS, a single-target match arm): there is no name to alias-bind, so an
-    /// aliased return materializes into a plain cell (free for a var / an
-    /// exp-0 g-address; one `MUL` for a shifted pointer). `dst` is the call's
-    /// destination cell, already written by a real call or a plain-scalar
-    /// return, so it is the fallback.
-    fn take_inline_ret_cell(&mut self, dst: Off) -> Off {
-        match self.inline_stack_ret.take().and_then(|b| b.into_iter().next()) {
-            Some(RetBind::Gaddr(ga)) => self.materialize(ga),
-            Some(RetBind::Stack(base, size)) => {
-                if size != 1 {
-                    self.fail("a multi-cell StackBuf return needs a `let` binding, not an expression use")
-                };
-                // Through `word_src`, like every other read of a stack cell: the body may
-                // have filled this cell with a deferred copy or constant, which emits no
-                // instruction, and the raw cell would then be one no instruction writes.
-                // The `let` consumer follows the alias by taking a `Binding::Stack`
-                // ([`ret_binding`]), and an expression use has to agree with it.
-                self.word_src(base)
-            }
-            _ => dst,
-        }
-    }
-
-    /// Lower a call; returns one caller offset per source-level return value.
-    /// A real-call StackBuf return is flattened into consecutive ABI cells and
-    /// copied into a fresh consecutive run in the caller. `inline_stack_ret`
-    /// describes those logical bindings to the surrounding let/tuple lowering.
-    fn call(&mut self, callee: &str, args: &[Expr], n_ret: usize) -> Vec<Off> {
-        if callee == "blake2s" {
-            self.fail("blake2s is a statement: `blake2s(a, b, out)` writes the digest into the 2-cell stack run `out`")
-        };
-        self.inline_stack_ret = None;
-        if self.defs.get(callee).is_some_and(|d| d.inline) {
-            let dsts: Vec<Off> = (0..n_ret).map(|_| self.fresh()).collect();
-            self.call_into(callee, args, &dsts);
-            return dsts;
-        }
-
-        let shapes = self
-            .defs
-            .get(callee)
-            .map(|d| d.return_shapes.clone())
-            .unwrap_or_else(|| vec![ReturnShape::Scalar; n_ret]);
-        if shapes.len() != n_ret {
-            self.fail(format!(
-                "`{callee}` returns {} values, call binds {n_ret}",
-                shapes.len()
-            ))
-        };
-        let mut logical = Vec::with_capacity(n_ret);
-        let mut physical = Vec::new();
-        let mut binds = Vec::with_capacity(n_ret);
-        for shape in shapes {
-            match shape {
-                ReturnShape::Scalar => {
-                    let dst = self.fresh();
-                    logical.push(dst);
-                    physical.push(dst);
-                    binds.push(RetBind::Scalar);
-                }
-                ReturnShape::StackBuf(size) => {
-                    if size == 0 {
-                        self.fail("a returned StackBuf must not be empty")
-                    };
-                    let base = self.alloc_stack(size);
-                    logical.push(base);
-                    physical.extend(base..base + size);
-                    binds.push(RetBind::Stack(base, size));
-                }
-            }
-        }
-        self.lower_call(callee, args, physical.len(), None, Some(&physical), false);
-        self.inline_stack_ret = Some(binds);
-        logical
-    }
-
-    /// Evaluate `callee(args)` into `dsts`, inlining the callee when it is
-    /// `@inline` ([`Self::try_inline`]), else a real call.
-    fn call_into(&mut self, callee: &str, args: &[Expr], dsts: &[Off]) {
-        if callee == "blake2s" {
-            self.fail("blake2s is a statement, not a value-returning call")
-        };
-        if !self.try_inline(callee, args, dsts) {
-            if let Some(def) = self.defs.get(callee) {
-                if def.return_shapes.len() != dsts.len() {
-                    self.fail(format!(
-                        "`{callee}` returns {} values, call binds {}",
-                        def.return_shapes.len(),
-                        dsts.len()
-                    ))
-                };
-                if def.return_shapes.iter().any(|s| *s != ReturnShape::Scalar) {
-                    self.fail("a normal function's multi-cell StackBuf return needs a `let` binding")
-                };
-            }
-            self.lower_call(callee, args, dsts.len(), None, Some(dsts), false);
-        }
-    }
-
-    /// The value a `Const` parameter takes, as the literal that substitutes for
-    /// it: a `GEN ** k` argument stays a g-power, everything else must fold to a
-    /// compile-time integer (a bound name, a const-array element `DEPTH[lvl]`,
-    /// `len(...)`, index arithmetic over other `Const` params). `None` when it
-    /// does not fold.
-    fn const_arg(&self, a: &Expr) -> Option<Expr> {
-        Some(match a {
-            Expr::Lit(n) => Expr::Lit(*n),
-            Expr::Gen => Expr::GPow(1),
-            Expr::GPow(k) => Expr::GPow(*k),
-            other => Expr::Lit(self.try_const_index(other)? as u128),
-        })
-    }
-
-    /// The runtime params, runtime args, and `Const`-substituted body of a call
-    /// to a user function: the ingredients for inlining. `None` for a builtin or
-    /// unknown callee, an arity mismatch, or an unresolved `Const` argument.
-    fn specialized_body(&self, callee: &str, args: &[Expr]) -> Option<SpecializedBody> {
-        let def = self.defs.get(callee)?;
-        if args.len() != def.params.len() {
-            return None;
-        }
-        let mut body = def.body.clone();
-        let (mut rt_params, mut rt_args) = (Vec::new(), Vec::new());
-        for ((p, &is_const), a) in def.params.iter().zip(&def.const_params).zip(args) {
-            if !is_const {
-                rt_params.push(p.clone());
-                rt_args.push(a.clone());
-                continue;
-            }
-            let c = self.const_arg(a)?;
-            body = subst_stmts(&body, p, &c);
-        }
-        Some((rt_params, rt_args, body, def.n_ret))
-    }
-
-    /// Inline an `@inline` `callee(args)` into the current frame, binding its
-    /// return values straight into `dsts`: no frame setup, no argument/return
-    /// plumbing, no call/return jumps. Returns `false` for a non-`@inline`
-    /// callee (the caller emits a real call). Panics if an `@inline` function
-    /// isn't inlinable ([`body_inlinable`]) or its `Const` args don't resolve.
-    fn try_inline(&mut self, callee: &str, args: &[Expr], dsts: &[Off]) -> bool {
-        if !self.defs.get(callee).is_some_and(|d| d.inline) {
-            return false;
-        }
-        let (params, rt_args, body, n_ret) = self
-            .specialized_body(callee, args)
-            .unwrap_or_else(|| self.fail(format!("`@inline {callee}`: bad arity or unresolved Const argument")));
-        if n_ret != dsts.len() {
-            self.fail(format!(
-                "`@inline {callee}` returns {n_ret} values, call binds {}",
-                dsts.len()
-            ))
-        };
-        if !(body_inlinable(&body, self.defs)) {
-            self.fail(format!("`@inline {callee}` must be a single tail `return` with only builtin or @inline calls, and no loop/match"))
-        };
-        if self.inline_calls.iter().any(|f| f == callee) {
-            self.fail(format!(
-                "recursive @inline expansion is not supported: {} -> {callee}",
-                self.inline_calls.join(" -> ")
-            ))
-        };
-        // Bind the params from the caller-scope arguments (symbolically where we
-        // can, so a shifted-pointer arg keeps folding into `o2`; a `StackBuf` arg
-        // aliases its cell run), then lower the body in a fresh variable
-        // environment, since a function sees only its params. The frame, `one`,
-        // `self_fp`, and range-check bounds stay the caller's: the inlined code
-        // runs in the caller's frame, so they fit.
-        enum Bind {
-            Stack(Off, u32),
-            Addr(GAddr),
-            Cell(Off),
-        }
-        let mut binds: Vec<(String, Bind)> = Vec::new();
-        for (p, a) in params.iter().zip(&rt_args) {
-            let b = if let Some((base, size)) = self.stack_of(a) {
-                Bind::Stack(base, size)
-            } else if let Some(ga) = self.gaddr_of(a) {
-                Bind::Addr(ga)
-            } else {
-                Bind::Cell(self.expr(a))
-            };
-            binds.push((p.clone(), b));
-        }
-        // Only the name bindings reset: the inlined body runs in the caller's
-        // frame, so the caller's `one`, `self_fp`, constant and bound cells all
-        // still name valid cells and stay live.
-        let saved = (
-            std::mem::take(&mut self.scope.vars),
-            std::mem::take(&mut self.scope.stacks),
-            std::mem::take(&mut self.scope.consts),
-            std::mem::take(&mut self.scope.gaddrs),
-            std::mem::take(&mut self.scope.fconsts),
-        );
-        for (p, b) in binds {
-            self.check_not_reserved(&p);
-            match b {
-                Bind::Stack(base, size) => {
-                    self.scope.stacks.insert(p, (base, size));
-                }
-                Bind::Addr(ga) => {
-                    self.scope.gaddrs.insert(p, ga);
-                }
-                Bind::Cell(cell) => {
-                    self.scope.vars.insert(p, cell);
-                }
-            }
-        }
-        let saved_ret = self.inline_ret.replace(dsts.to_vec());
-        // The body lowers through the CALLER's `FnLower`, so its statements move
-        // `cur_line` into the callee. Restoring it is what keeps the rest of the
-        // caller's expression attributed to the call site rather than to whatever
-        // line the callee happened to end on.
-        let saved_line = self.cur_line;
-        self.inline_calls.push(callee.to_string());
-        for s in &body {
-            self.stmt(s);
-        }
-        let popped = self.inline_calls.pop();
-        debug_assert_eq!(popped.as_deref(), Some(callee));
-        self.inline_ret = saved_ret;
-        self.cur_line = saved_line;
-        (
-            self.scope.vars,
-            self.scope.stacks,
-            self.scope.consts,
-            self.scope.gaddrs,
-            self.scope.fconsts,
-        ) = saved;
-        true
-    }
-
-    /// If `callee` declares `Const` parameters, monomorphize: the constant
-    /// arguments (literals, `GEN ** k`, or literal-bound names) substitute into
-    /// a copy of the callee, queued once per distinct constant tuple and named
-    /// `callee__L5_G3`-style, and only the runtime arguments remain.
-    /// A callee's declared return shapes, looked up wherever it lives: an
-    /// ordinary definition sits in `defs`, while a `Const` specialization is
-    /// registered by [`Self::specialize`] in the queue under its mangled name and
-    /// never reaches `defs`. A dispatched `match_range` names specializations, so a
-    /// check that consults only `defs` silently passes on every one of them.
-    fn return_shapes_of(&self, callee: &str) -> Option<Vec<ReturnShape>> {
-        self.defs.get(callee).map(|d| d.return_shapes.clone()).or_else(|| {
-            self.queue
-                .iter()
-                .find(|f| f.name == callee)
-                .map(|f| f.return_shapes.clone())
-        })
-    }
-
-    fn specialize(&mut self, callee: &str, args: &[Expr]) -> (String, Vec<Expr>) {
-        let defs: &HashMap<String, Func> = self.defs;
-        let Some(def) = defs.get(callee) else {
-            return (callee.to_string(), args.to_vec()); // loop helpers, unknown names
-        };
-        if !def.const_params.contains(&true) {
-            return (callee.to_string(), args.to_vec());
-        }
-        if args.len() != def.params.len() {
-            self.fail(format!("call to `{callee}`: wrong arity"))
-        };
-        let mut tag = String::new();
-        let (mut rt_params, mut rt_args, mut substs) = (Vec::new(), Vec::new(), Vec::new());
-        for ((p, &is_const), a) in def.params.iter().zip(&def.const_params).zip(args) {
-            if !is_const {
-                rt_params.push(p.clone());
-                rt_args.push(a.clone());
-                continue;
-            }
-            let c = self.const_arg(a).unwrap_or_else(|| {
-                self.fail(format!(
-                    "argument for Const parameter `{p}` of `{callee}` must be a compile-time \
-                     constant, got `{a:?}`"
-                ))
-            });
-            tag.push_str(&match &c {
-                Expr::Lit(n) => format!("_L{n}"),
-                Expr::GPow(k) => format!("_G{k}"),
-                _ => unreachable!(),
-            });
-            substs.push((p.clone(), c));
-        }
-        let name = format!("{callee}_{tag}");
-        if !self.queue.iter().any(|f| f.name == name) {
-            if self.queue.len() >= 10_000 {
-                self.fail("Const specialization explosion (recursive constants?)")
-            };
-            let mut body = def.body.clone();
-            for (p, c) in &substs {
-                body = subst_stmts(&body, p, c);
-            }
-            let const_params = vec![false; rt_params.len()];
-            self.queue.push(Func {
-                name: name.clone(),
-                params: rt_params,
-                const_params,
-                n_ret: def.n_ret,
-                return_shapes: def.return_shapes.clone(),
-                body,
-                inline: false,
-            });
-        }
-        (name, rt_args)
-    }
-
-    /// Lower a call. Return values land in `dsts_in` when given (write-once, so
-    /// distinct arms of a `match_range` may share the same cells), else in fresh
-    /// cells, sparing the caller a temp-then-copy.
-    fn lower_call(
-        &mut self,
-        callee: &str,
-        args: &[Expr],
-        n_ret: usize,
-        cond: Option<Off>,
-        dsts_in: Option<&[Off]>,
-        tail: bool,
-    ) -> Vec<Off> {
-        let (callee, args) = self.specialize(callee, args);
-        let (callee, args) = (callee.as_str(), args.as_slice());
-        let arg_offs: Vec<Off> = args.iter().map(|a| self.expr(a)).collect();
-        let nfp = self.fresh();
-        let entry = self.fresh();
-        // Resolve the jump condition up front: `self.one()` may emit a `SET`, and
-        // nothing may sit between the retpc `DEREF` and the `JUMP` (the `g²·pc`
-        // return target assumes the `JUMP` is exactly one instruction later).
-        let oc = cond.unwrap_or_else(|| self.one());
-        self.set(entry, KVal::Entry(callee.to_string()));
-
-        // The frame-pointer hint fires before the first DEREF that reads `nfp`.
-        self.pending.push(Hint::AllocFrame {
-            ptr: nfp,
-            callee: callee.to_string(),
-        });
-        for (i, &ao) in arg_offs.iter().enumerate() {
-            self.deref(nfp, 2 + i as u32, ao, DerefMode::Cell);
-        }
-        if tail {
-            // Tail call: hand the callee OUR return target, so it returns to our
-            // caller and we are never resumed. Cells 0/1 of this frame already
-            // hold that target (written by whoever called us).
-            self.deref(nfp, 1, 1, DerefMode::Cell); // retfp := our retfp
-            self.deref(nfp, 0, 0, DerefMode::Cell); // retpc := our retpc
-        } else {
-            self.deref(nfp, 1, 0, DerefMode::Fp); // retfp
-            self.deref(nfp, 0, 0, DerefMode::Pc); // retpc = g²·pc
-        }
-        self.emit(LOp::Jump { oc, od: entry, of: nfp });
-
-        let n_args = args.len() as u32;
-        let dsts: Vec<Off> = match dsts_in {
-            Some(d) => d.to_vec(),
-            None => (0..n_ret).map(|_| self.fresh()).collect(),
-        };
-        for (i, &d) in dsts.iter().enumerate() {
-            self.deref(nfp, 2 + n_args + i as u32, d, DerefMode::Cell);
-        }
-        dsts
-    }
-
     fn stmt(&mut self, s: &Stmt) {
         let tail = std::mem::take(&mut self.tail_call);
         // Every diagnostic raised while lowering this statement, and every
@@ -2286,20 +1207,17 @@ impl FnLower<'_> {
                 // `x = StackBuf(n)`: bind a run of `n` consecutive frame cells.
                 Expr::StackBuf(n) => {
                     let base = self.alloc_stack(*n as u32);
-                    self.scope.consts.remove(name);
                     self.rebind(name, Binding::Stack(base, *n as u32));
                 }
                 // `x = [a, b, …]`: an initialized StackBuf. Allocate the run and
-                // write each element in place (each write is the stack-store
-                // path, so copies/constants defer as aliases). Elements are
-                // lowered before `name` rebinds, so they may read its old
-                // binding (`fs = [fs[1], fs[0]]`).
+                // write each element in place, through the ordinary stack-store
+                // path. Elements are lowered before `name` rebinds, so they may
+                // read its old binding (`fs = [fs[1], fs[0]]`).
                 Expr::ListLit(es) => {
                     let base = self.alloc_stack(es.len() as u32);
                     for (k, el) in es.iter().enumerate() {
                         self.stack_store(base + k as u32, el);
                     }
-                    self.scope.consts.remove(name);
                     self.rebind(name, Binding::Stack(base, es.len() as u32));
                 }
                 // `p = addr(sb)` binds the address itself, so the offset folds
@@ -2307,15 +1225,13 @@ impl FnLower<'_> {
                 // materialize it into a cell instead.
                 Expr::Call(f, cargs) if f == "addr" => {
                     let ga = self.stack_addr(cargs);
-                    self.scope.consts.remove(name);
                     self.rebind(name, Binding::Gaddr(ga));
                 }
                 // `x = other_stackbuf`: a compile-time alias of the same cell
                 // run (zero instructions), the chaining-state idiom `st = sn`
                 // of an MD loop.
-                Expr::Var(v) if self.scope.stacks.contains_key(v) => {
-                    let (base, size) = self.scope.stacks[v];
-                    self.scope.consts.remove(name);
+                Expr::Var(v) if self.scope.stack(v).is_some() => {
+                    let (base, size) = self.scope.stack(v).expect("guarded above");
                     self.rebind(name, Binding::Stack(base, size));
                 }
                 _ => {
@@ -2327,14 +1243,6 @@ impl FnLower<'_> {
                     // usable as a compile-time index / bound / exponent, and that
                     // role survives the value binding chosen below.
                     let k_int = self.try_const_int(e);
-                    match k_int {
-                        Some(k) => {
-                            self.scope.consts.insert(name.clone(), k);
-                        }
-                        None => {
-                            self.scope.consts.remove(name);
-                        }
-                    }
                     // A symbolic g-address (a constant g-power or a shifted
                     // pointer) or a compile-time field constant stays virtual:
                     // no instruction here, folded / materialized only on demand.
@@ -2365,6 +1273,13 @@ impl FnLower<'_> {
                         let o = self.expr(e);
                         self.rebind(name, Binding::Scalar(o));
                     }
+                    // The integer reading of the SAME expression, if it has one,
+                    // rides alongside whichever value binding was chosen above.
+                    // It is attached after, because a rebind clears it, and the
+                    // RHS above still had to see `name`'s old reading.
+                    if let Some(k) = k_int {
+                        self.scope.set_int(name, k);
+                    }
                 }
             },
             StmtKind::LetTuple(names, f, args) => {
@@ -2375,14 +1290,13 @@ impl FnLower<'_> {
                 let binds = self.inline_stack_ret.take();
                 for (i, (n, d)) in names.iter().zip(&dsts).enumerate() {
                     let b = ret_binding(binds.as_ref().and_then(|b| b.get(i).copied()), *d);
-                    self.scope.consts.remove(n);
                     self.rebind(n, b);
                 }
             }
             // `a + b` into the frame's zero cell: the double write IS the
             // assertion, so the `SET .. = 0` a fresh destination needed is gone
-            // and no cell is burned. CSE leaves the `XOR` alone because that
-            // cell is written more than once ([`crate::cse`]).
+            // and no cell is burned. Not through `pure`, for the same reason:
+            // sharing this cell would drop the assertion.
             StmtKind::AssertEq(a, b) => {
                 let (la, lb) = (self.expr(a), self.expr(b));
                 let z = self.zero();
@@ -2391,6 +1305,18 @@ impl FnLower<'_> {
             StmtKind::AssertNe(a, b) => self.lower_assert_ne(a, b),
             StmtKind::AssertLt(e, bound) => self.lower_assert_lt(e, bound),
             StmtKind::HintWitness { dest, name } => self.lower_hint_witness(dest, name),
+            // One hinted value into one fresh cell, bound to `name`. The run form
+            // names its destination's physical cells, and a scalar's cell is never
+            // a store target at all, being reachable only through a name.
+            StmtKind::LetHintWitness { name, stream } => {
+                let dst = self.fresh();
+                self.pending.push(Hint::Resolved(RHint::WitnessStack {
+                    name: stream.clone(),
+                    base: dst,
+                    len: 1,
+                }));
+                self.rebind(name, Binding::Scalar(dst));
+            }
             StmtKind::Print { label, value } => {
                 // Prover-side debug print: evaluate the value into a cell, hang
                 // a Print hint on a no-op anchor so it fires exactly here (and
@@ -2408,27 +1334,26 @@ impl FnLower<'_> {
                 rhs,
                 then,
                 els,
-            } => self.lower_if(*eq, lhs, rhs, then, els),
-            StmtKind::Match { x, cases } => self.lower_match(x, cases),
-            StmtKind::LetMatchRange { names, x, arms } => self.lower_match_range(names, x, arms),
+                force_const,
+            } => self.lower_if(*eq, lhs, rhs, then, els, *force_const),
+            StmtKind::Match { targets, x, arms } => self.lower_match(targets, x, arms),
             StmtKind::Call(f, args) => {
                 if !self.lower_builtin(f, args) {
                     self.call(f, args, 0);
                 }
             }
             StmtKind::Store(arr, idx, val) => {
-                // Stack write `sa[k] = val`: place `val` straight into cell `base+k`.
-                if let Some((base, size)) = self.stack_of(arr) {
-                    let k = self.const_index(idx);
-                    if k >= size {
-                        self.fail(format!("stack store index {k} out of bounds (size {size})"))
-                    };
-                    self.stack_store(base + k, val);
+                // A frame write places the value in the cell; a heap write is the
+                // `DEREF` asserting `m[arr·idx] == val` (write-once). The VALUE is
+                // lowered first on the heap path, since the address may read a cell
+                // the value writes (`hb[sb[0]] = f(sb, …)`), and Python's own
+                // evaluation order for `a[i] = v` is the same.
+                if let Some(c) = self.frame_cell(arr, idx) {
+                    self.stack_store(c, val);
                 } else {
-                    // Heap store `arr[idx] = val`: assert m[arr·idx] == val (write-once).
                     let v = self.expr(val);
-                    let (base, o2) = self.heap_addr(arr, idx);
-                    self.deref(base, o2, v, DerefMode::Cell);
+                    let (ptr, o2) = self.heap_addr(arr, idx);
+                    self.deref(ptr, o2, v, DerefMode::Cell);
                 }
             }
             StmtKind::Return(es) => self.lower_return(es),
@@ -2440,8 +1365,8 @@ impl FnLower<'_> {
                 // a `mul_range` loop builds no unwind chain: only the final
                 // iteration returns, straight to the loop's original caller.
                 let (la, lb) = (self.expr(lhs), self.expr(rhs));
-                let x = self.fresh();
-                self.emit(LOp::Xor { a: la, b: lb, c: x }); // x = lhs + rhs; x != 0 ⇔ lhs != rhs
+                // x = lhs + rhs; x != 0 ⇔ lhs != rhs
+                let x = self.pure(PureOp::Xor, la, lb);
                 self.lower_call(callee, args, 0, Some(x), None, tail);
             }
             StmtKind::For { var, lo, hi, body } => self.lower_for(var, *lo, hi, body),
@@ -2466,220 +1391,6 @@ impl FnLower<'_> {
                 }
             }
         }
-    }
-
-    /// The statement-position builtins, `true` if `f` was one of them (else the
-    /// caller emits an ordinary call). The `hint_*` ones queue prover-side
-    /// advice, re-checked in-circuit by their caller: `hint_decompose_bits`
-    /// writes a value's bits into a buffer, `hint_decompose_bits_exponent` the
-    /// bits of `n` where the value is `g^n` (a bounded dlog at witness
-    /// generation), `hint_f192_limbs` a value's coordinate limbs.
-    fn lower_builtin(&mut self, f: &str, args: &[Expr]) -> bool {
-        match f {
-            "hint_decompose_bits" | "hint_decompose_bits_exponent" => {
-                if args.len() != 3 {
-                    self.fail(format!("{f}(bits, value, nbits)"))
-                };
-                let nbits = self.const_index(&args[2]);
-                let bits = self.bits_dest(&args[0], nbits, f);
-                let value = self.expr(&args[1]);
-                self.pending.push(Hint::Resolved(if f == "hint_decompose_bits" {
-                    RHint::BitDecompose { value, bits, nbits }
-                } else {
-                    RHint::BitDecomposeExp { value, bits, nbits }
-                }));
-            }
-            "blake2s" => self.lower_blake2s(args),
-            "assert_in_k" => {
-                if args.len() != 2 {
-                    self.fail("assert_in_k(a, b) takes two scalar cells")
-                };
-                let a = self.expr(&args[0]);
-                let b = self.expr(&args[1]);
-                let zero = self.zero();
-                self.emit(LOp::Jump { oc: zero, od: a, of: b });
-            }
-            "hint_f192_limbs" => {
-                if args.len() != 2 {
-                    self.fail("hint_f192_limbs(dest, value)")
-                };
-                let (base, len) = self
-                    .stack_of(&args[0])
-                    .expect("hint_f192_limbs destination must be a StackBuf");
-                if !((1..=3).contains(&len)) {
-                    self.fail("hint_f192_limbs destination must have 1..=3 cells")
-                };
-                let value = self.expr(&args[1]);
-                let value = self.word_src(value);
-                // Names the physical cells, as the two consumers above do, so the run
-                // has to hold real values before the hint fills it. The common
-                // destination is a list literal (`limbs = [0, 0, 0]`), whose every
-                // element goes through `stack_store` and so defers.
-                self.materialize_run(base, len);
-                self.pending
-                    .push(Hint::Resolved(RHint::FieldLimbs { value, base, len }));
-            }
-            _ => return false,
-        }
-        true
-    }
-
-    /// `blake2s(a, b, out)`: the digest of the two 256-bit operands lands in the
-    /// existing 2-cell run `out` (write-once: if `out` was already written, this
-    /// asserts the digest equals it). A heap `out` slice takes the digest via a
-    /// fresh stack pair and two `DEREF`s after the hash, the store direction
-    /// being the same instruction as the load (write-once fills the unset side).
-    /// Keyword arguments set the compile-time metadata.
-    fn lower_blake2s(&mut self, args: &[Expr]) {
-        let first_kw = args
-            .iter()
-            .position(|a| matches!(a, Expr::Call(name, _) if name.starts_with("__kw_")))
-            .unwrap_or(args.len());
-        if first_kw != 3 {
-            self.fail("blake2s takes three positional arguments: (a, b, out)")
-        };
-        if !(args[first_kw..]
-            .iter()
-            .all(|a| matches!(a, Expr::Call(name, v) if name.starts_with("__kw_") && v.len() == 1)))
-        {
-            self.fail("keyword arguments must follow the three positional blake2s arguments")
-        };
-        let mut kwargs: HashMap<&str, &Expr> = HashMap::new();
-        for kw in &args[first_kw..] {
-            let Expr::Call(name, value) = kw else { unreachable!() };
-            let key = name.strip_prefix("__kw_").unwrap();
-            if kwargs.insert(key, &value[0]).is_some() {
-                self.fail(format!("duplicate blake2s keyword `{key}`"))
-            };
-        }
-        let allowed = ["cv", "counter", "final", "last_node"];
-        if !(kwargs.keys().all(|k| allowed.contains(k))) {
-            self.fail("unknown blake2s keyword")
-        };
-        let customized = kwargs.keys().any(|k| matches!(*k, "counter" | "final" | "last_node"));
-        if kwargs.contains_key("cv") && !customized {
-            self.fail("blake2s with cv= requires counter=, since a chained block is not the default one-block hash")
-        };
-
-        let a = self.blake2s_input(&args[0]);
-        let b = self.blake2s_input(&args[1]);
-        let (c, heap_out) = match self.blake2s_operand(&args[2]) {
-            CellRun::Stack { base, .. } => {
-                self.materialize_run(base, 2);
-                (base, None)
-            }
-            CellRun::Heap { ptr, lo, .. } => (self.alloc_stack(2), Some((ptr, lo))),
-        };
-        let cv = if let Some(value) = kwargs.get("cv") {
-            self.blake2s_cv(value)
-        } else {
-            self.default_blake2s_cv()
-        };
-        let const_kw = |this: &Self, name: &str, default: u128| -> u128 {
-            kwargs
-                .get(name)
-                .map(|e| {
-                    this.try_const_int(e).unwrap_or_else(|| {
-                        self.fail(format!("BLAKE2s `{name}` must be a compile-time integer, got `{e:?}`"))
-                    })
-                })
-                .unwrap_or(default)
-        };
-        // BLAKE2s metadata is just the cumulative byte counter and two flags, so
-        // a multi-block hash is `counter = 64 * blocks_before + bytes_in_this_block`
-        // and `final = 1` on the last block. The default is the one-block hash of
-        // a full 64-byte input, which is what `vmhash::compress` and every Merkle
-        // node use.
-        let counter = u64::try_from(const_kw(self, "counter", 64)).expect("BLAKE2s counter does not fit in u64");
-        let f0 = if const_kw(self, "final", if customized { 0 } else { 1 }) != 0 {
-            lean_vm::hash_flock::FINAL_FLAG
-        } else {
-            0
-        };
-        let f1 = if const_kw(self, "last_node", 0) != 0 {
-            u32::MAX
-        } else {
-            0
-        };
-        let metadata = lean_vm::hash_flock::metadata(counter, f0, f1);
-        // Each operand is two 128-bit chunk cells; the flexible opcode addresses
-        // the four input cells independently (`blake2s_input` forwards the real
-        // chunk sources where it can). The digest occupies the two consecutive
-        // output cells `c, g·c`.
-        self.emit(LOp::Blake2s {
-            ins: [a[0], a[1], b[0], b[1]],
-            cv,
-            c,
-            metadata,
-        });
-        if let Some((ptr, lo)) = heap_out {
-            for k in 0..2 {
-                self.deref(ptr, lo + k, c + k, DerefMode::Cell);
-            }
-        }
-    }
-
-    fn lower_return(&mut self, exprs: &[Expr]) {
-        // Inlined (`@inline`): bind the return values into the caller's cells
-        // and fall through: this is the body's tail return, so no jump is needed.
-        if let Some(dsts) = self.inline_ret.clone() {
-            // Each returned value is bound into the caller independently, exactly
-            // as a `let name = <that expr>` would: a `StackBuf` or a folded
-            // g-address hands over its run/pointer (alias, not copies: allocated
-            // in the caller's frame, so it outlives the inline scope), a scalar is
-            // copied into its dst cell. The per-slot record lets the caller's
-            // `let`/tuple pick the right binding, so a fused
-            // `fs, x, cur = fs_next(fs, cur)` returns a StackBuf, a scalar, and an
-            // advanced cursor together.
-            let mut binds = Vec::with_capacity(dsts.len());
-            for (e, &d) in exprs.iter().zip(&dsts) {
-                binds.push(if let Some((base, size)) = self.stack_of(e) {
-                    RetBind::Stack(base, size)
-                } else if let Some(ga) = self.gaddr_of(e) {
-                    RetBind::Gaddr(ga)
-                } else {
-                    self.expr_into(e, d);
-                    RetBind::Scalar
-                });
-            }
-            self.inline_stack_ret = Some(binds);
-            return;
-        }
-        if self.is_main {
-            return; // a `return` in main is a no-op; main halts via the trailing sentinel jump (lower_func).
-        }
-        let ret_base = 2 + self.n_args;
-        if exprs.len() != self.return_shapes.len() {
-            self.fail(format!(
-                "function returns {} values here, but its ABI declares {}",
-                exprs.len(),
-                self.return_shapes.len()
-            ))
-        };
-        // Each logical value lands straight in its flattened return area. A
-        // StackBuf is copied cell-by-cell because its callee-frame offsets are
-        // not meaningful after control returns to the caller.
-        let mut ret = ret_base;
-        for (e, shape) in exprs.iter().zip(self.return_shapes.clone()) {
-            match shape {
-                ReturnShape::Scalar => self.expr_into(e, ret),
-                ReturnShape::StackBuf(size) => {
-                    let (base, actual) = self
-                        .stack_of(e)
-                        .unwrap_or_else(|| self.fail(format!("expected a StackBuf({size}) return, got `{e:?}`")));
-                    if actual != size {
-                        self.fail(format!("returned StackBuf has size {actual}, expected {size}"))
-                    };
-                    for k in 0..size {
-                        let src = self.word_src(base + k);
-                        self.copy(src, ret + k);
-                    }
-                }
-            }
-            ret += shape.cells();
-        }
-        let one = self.one();
-        self.emit(LOp::Jump { oc: one, od: 0, of: 1 });
     }
 
     /// `for i in mul_range(GEN**lo, GEN**hi)` → a single tail-recursive helper, with the
@@ -2744,13 +1455,23 @@ impl FnLower<'_> {
             // clear error (not the misleading "unbound variable" the capture drop
             // would otherwise trigger). Keep it inside the loop body, or carry
             // state through a `HeapBuf`.
-            if self.scope.stacks.contains_key(r) && !shadowed.contains(r) {
+            if self.scope.stack(r).is_some() && !shadowed.contains(r) {
                 self.fail(format!(
                     "StackBuf `{r}` cannot be captured into a `for` loop; \
                      define it inside the loop body or carry state via a `HeapBuf`"
                 ));
             }
-            if (self.scope.vars.contains_key(r) || self.scope.gaddrs.contains_key(r)) && seen.insert(r.clone()) {
+            // A compile-time field constant is capturable too: the body becomes
+            // its own function, so the constant is not in scope there, and the
+            // helper takes it as a parameter that the call site materializes
+            // with one `SET`. Dropping it made `c = 5` followed by a loop that
+            // reads `c` fail as "unbound variable", which named neither the
+            // cause nor a fix.
+            if matches!(
+                self.scope.bound(r).map(|b| b.val),
+                Some(Binding::Scalar(_) | Binding::Gaddr(_) | Binding::FConst(_))
+            ) && seen.insert(r.clone())
+            {
                 captures.push(r.clone());
             }
         }
@@ -2794,6 +1515,7 @@ impl FnLower<'_> {
         let const_params = vec![false; params.len()];
         self.queue.push(Func {
             name: loop_name.clone(),
+            param_shapes: vec![Shape::Scalar; params.len()],
             params,
             const_params,
             n_ret: 0,
@@ -2831,37 +1553,6 @@ impl FnLower<'_> {
     }
 }
 
-/// A body safe to inline: a single **tail** `return`, and no construct whose
-/// lowering needs its own frame or a dispatch: a non-inline user call, a
-/// runtime loop, or a match (which would reload a frame pointer that is no
-/// longer the callee's). Builtins and nested `@inline` calls are fine;
-/// `unroll`/`if` are compile-time / same-frame and recurse into.
-fn body_inlinable(body: &[Stmt], defs: &HashMap<String, Func>) -> bool {
-    matches!(body.split_last(), Some((last, rest)) if matches!(last.kind, StmtKind::Return(_))
-        && rest.iter().all(|s| stmt_inline_safe(s, defs)))
-}
-
-fn stmt_inline_safe(s: &Stmt, defs: &HashMap<String, Func>) -> bool {
-    match &s.kind {
-        StmtKind::Let(..)
-        | StmtKind::Store(..)
-        | StmtKind::HintWitness { .. }
-        | StmtKind::Print { .. }
-        | StmtKind::AssertEq(..)
-        | StmtKind::AssertNe(..)
-        | StmtKind::AssertLt(..) => true,
-        StmtKind::Call(f, _) => {
-            f == "blake2s" || f == "assert_in_k" || f == "hint_f192_limbs" || defs.get(f).is_some_and(|d| d.inline)
-        }
-        StmtKind::If { then, els, .. } => {
-            then.iter().all(|s| stmt_inline_safe(s, defs)) && els.iter().all(|s| stmt_inline_safe(s, defs))
-        }
-        StmtKind::Unroll { body, .. } => body.iter().all(|s| stmt_inline_safe(s, defs)),
-        // Return (non-tail), For, Match, LetMatchRange, LetTuple, CallIfNe, user Call.
-        _ => false,
-    }
-}
-
 /// The literal `k` when `hi` is syntactically `lo + k` (either operand order):
 /// the shape of a runtime slice, whose bounds cannot be evaluated at compile
 /// time.
@@ -2875,160 +1566,6 @@ fn plus_k(lo: &Expr, hi: &Expr) -> Option<u128> {
     }
 }
 
-/// Collect variable references in `e` into `refs` (in source order).
-fn free_vars_expr(e: &Expr, refs: &mut Vec<String>) {
-    match e {
-        Expr::Var(v) => refs.push(v.clone()),
-        Expr::Add(a, b)
-        | Expr::Mul(a, b)
-        | Expr::Sub(a, b)
-        | Expr::Div(a, b)
-        | Expr::FieldDiv(a, b)
-        | Expr::Mod(a, b)
-        | Expr::Index(a, b)
-        | Expr::Pow(a, b) => {
-            free_vars_expr(a, refs);
-            free_vars_expr(b, refs);
-        }
-        Expr::Slice(a, lo, hi) => {
-            free_vars_expr(a, refs);
-            free_vars_expr(lo, refs);
-            free_vars_expr(hi, refs);
-        }
-        Expr::Call(_, args) | Expr::ListLit(args) => args.iter().for_each(|a| free_vars_expr(a, refs)),
-        Expr::HeapBufDyn(sz) | Expr::GenPow(sz) => free_vars_expr(sz, refs),
-        Expr::Lit(_) | Expr::Gen | Expr::GPow(_) | Expr::HeapBuf(_) | Expr::StackBuf(_) => {}
-    }
-}
-
-/// Collect references in `s` into `refs` and names it binds into `bound`.
-/// Every name the block binds, ignoring scope. [`free_vars_stmt`] deliberately
-/// does not answer this: its `bound` set is scoped, so an arm-local binding is
-/// discarded with the arm.
-fn binds_anywhere(body: &[Stmt], out: &mut std::collections::HashSet<String>) {
-    for s in body {
-        match &s.kind {
-            StmtKind::Let(n, _) => {
-                out.insert(n.clone());
-            }
-            StmtKind::LetTuple(ns, ..) | StmtKind::LetMatchRange { names: ns, .. } => ns.iter().for_each(|n| {
-                out.insert(n.clone());
-            }),
-            StmtKind::If { then, els, .. } => {
-                binds_anywhere(then, out);
-                binds_anywhere(els, out);
-            }
-            StmtKind::Match { cases, .. } => cases.iter().for_each(|c| binds_anywhere(c, out)),
-            StmtKind::For { var, body, .. } | StmtKind::Unroll { var, body, .. } => {
-                out.insert(var.clone());
-                binds_anywhere(body, out);
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Free variables of a block whose bindings do NOT escape it: it sees everything
-/// bound so far, and anything it binds stays inside.
-fn scoped_vars(body: &[Stmt], refs: &mut Vec<String>, bound: &std::collections::HashSet<String>) {
-    let mut inner = bound.clone();
-    for s in body {
-        free_vars_stmt(s, refs, &mut inner);
-    }
-}
-
-fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut std::collections::HashSet<String>) {
-    match &s.kind {
-        StmtKind::Let(n, e) => {
-            free_vars_expr(e, refs);
-            bound.insert(n.clone());
-        }
-        StmtKind::LetTuple(ns, _, args) => {
-            args.iter().for_each(|a| free_vars_expr(a, refs));
-            ns.iter().for_each(|n| {
-                bound.insert(n.clone());
-            });
-        }
-        StmtKind::AssertEq(a, b) | StmtKind::AssertNe(a, b) => {
-            free_vars_expr(a, refs);
-            free_vars_expr(b, refs);
-        }
-        StmtKind::AssertLt(e, bound) => {
-            free_vars_expr(e, refs);
-            if let LtBound::Runtime(b) = bound {
-                free_vars_expr(b, refs);
-            }
-        }
-        StmtKind::HintWitness { dest, .. } => free_vars_expr(dest, refs),
-        StmtKind::Print { value, .. } => free_vars_expr(value, refs),
-        StmtKind::If {
-            lhs, rhs, then, els, ..
-        } => {
-            free_vars_expr(lhs, refs);
-            free_vars_expr(rhs, refs);
-            // An arm's bindings are local to it (`zkDSL.md` §Control flow), so each
-            // gets its own scope. Sharing one made a name rebound in ONE arm count
-            // as loop-local everywhere, so the OUTER binding the other arm reads
-            // was never captured and a legal program failed with `unbound
-            // variable`. Over-collecting into `refs` is harmless: a capture naming
-            // nothing in the enclosing scope is dropped.
-            // `lower_if` FOLDS a compile-time condition and runs the taken branch
-            // without `scoped`, so its bindings persist exactly like an `unroll`
-            // body's. Modelling that as scoped over-captured, and the loop's own
-            // self-call then read a name the folded arm had rebound to a
-            // `StackBuf`. Both sides literal is the syntactic half of that test.
-            if matches!((lhs, rhs), (Expr::Lit(_), Expr::Lit(_))) {
-                then.iter().for_each(|s| free_vars_stmt(s, refs, bound));
-                els.iter().for_each(|s| free_vars_stmt(s, refs, bound));
-            } else {
-                scoped_vars(then, refs, bound);
-                scoped_vars(els, refs, bound);
-            }
-        }
-        StmtKind::Match { x, cases } => {
-            free_vars_expr(x, refs);
-            cases.iter().for_each(|c| scoped_vars(c, refs, bound));
-        }
-        StmtKind::LetMatchRange { names, x, arms } => {
-            free_vars_expr(x, refs);
-            arms.iter().for_each(|a| free_vars_expr(a, refs));
-            names.iter().for_each(|n| {
-                bound.insert(n.clone());
-            });
-        }
-        StmtKind::CallIfNe(a, b, _, args) => {
-            free_vars_expr(a, refs);
-            free_vars_expr(b, refs);
-            args.iter().for_each(|e| free_vars_expr(e, refs));
-        }
-        StmtKind::Call(_, args) => args.iter().for_each(|a| free_vars_expr(a, refs)),
-        StmtKind::Store(arr, idx, val) => {
-            free_vars_expr(arr, refs);
-            free_vars_expr(idx, refs);
-            free_vars_expr(val, refs);
-        }
-        StmtKind::Return(es) => es.iter().for_each(|e| free_vars_expr(e, refs)),
-        StmtKind::For { var, hi, body, .. } => {
-            if let ForBound::Runtime(b) = hi {
-                free_vars_expr(b, refs);
-            }
-            // A nested loop's body becomes its own function, so neither its
-            // counter nor its bindings exist out here. `unroll` below is the
-            // opposite: it replicates straight-line code into THIS scope, so its
-            // bindings really do persist and it keeps the shared set.
-            let mut inner = bound.clone();
-            inner.insert(var.clone());
-            body.iter().for_each(|s| free_vars_stmt(s, refs, &mut inner));
-        }
-        StmtKind::Unroll { var, lo, hi, body } => {
-            free_vars_expr(lo, refs);
-            free_vars_expr(hi, refs);
-            bound.insert(var.clone());
-            body.iter().for_each(|s| free_vars_stmt(s, refs, bound));
-        }
-    }
-}
-
 /// Lower one function to its instruction list and frame size.
 pub(crate) fn lower_func(
     f: &Func,
@@ -3038,7 +1575,7 @@ pub(crate) fn lower_func(
     const_arrays: &HashMap<String, Vec<F192>>,
     with_filler: bool,
 ) -> Lowered {
-    let mut vars = HashMap::new();
+    let mut names: HashMap<String, Bound> = HashMap::new();
     for (i, p) in f.params.iter().enumerate() {
         assert!(
             !const_arrays.contains_key(p),
@@ -3046,34 +1583,37 @@ pub(crate) fn lower_func(
              reserved (zkDSL.md §Global constants)",
             f.name
         );
-        vars.insert(p.clone(), 2 + i as u32);
+        // A `StackBuf(n)` parameter binds the run the caller wrote, exactly as a
+        // local `StackBuf(n)` binds one it allocated.
+        let off = Abi::arg(&f.param_shapes, i);
+        let val = match f.param_shapes.get(i).copied().unwrap_or(Shape::Scalar) {
+            Shape::StackBuf(n) => Binding::Stack(off, n),
+            Shape::Scalar => Binding::Scalar(off),
+        };
+        names.insert(p.clone(), Bound { val, int: None });
     }
     // Reserve [0,1] retpc/retfp, params, then the flattened return area, then
     // locals. A StackBuf(n) return occupies n consecutive physical slots.
     let n_ret_cells: u32 = f.return_shapes.iter().map(|s| s.cells()).sum();
-    let next = 2 + f.params.len() as u32 + n_ret_cells;
+    let arg_cells = Abi::arg_cells(&f.param_shapes);
+    let abi_end = Abi::end(arg_cells, n_ret_cells);
     let mut lowerer = FnLower {
-        filler_start: None,
         scope: Scope {
-            vars,
+            names,
             ..Default::default()
         },
-        next,
-        n_args: f.params.len() as u32,
+        next: abi_end,
+        arg_cells,
         return_shapes: f.return_shapes.clone(),
         is_main: f.name == "main",
         fn_name: f.name.clone(),
         tail_call: false,
         code: Vec::new(),
         cur_line: 0,
-        opaque_runs: Vec::new(),
-        stack_runs: Vec::new(),
-        frame_escaped: false,
         heap_sizes: HashMap::new(),
         inline_ret: None,
         inline_stack_ret: None,
-        alias: HashMap::new(),
-        phys: HashSet::new(),
+
         pending: Vec::new(),
         inline_calls: Vec::new(),
         queue,
@@ -3106,14 +1646,10 @@ pub(crate) fn lower_func(
         let last = f.body.last().map_or(0, |s| s.line);
         lowerer.stmt(&Stmt::new(last, StmtKind::Return(vec![])));
     }
-    let filler_start = lowerer.filler_start.unwrap_or(lowerer.code.len());
     Lowered {
         name: f.name.clone(),
         code: lowerer.code,
         frame_size: lowerer.next,
-        abi_end: 2 + f.params.len() as u32 + n_ret_cells,
-        filler_start,
-        opaque_runs: lowerer.opaque_runs,
         filler,
     }
 }

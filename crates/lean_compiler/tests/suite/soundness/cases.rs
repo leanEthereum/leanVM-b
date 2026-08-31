@@ -50,7 +50,7 @@ def main():
     });
 }
 
-/// The exponent range check and `match_range` dispatch. The dispatch is only
+/// The exponent range check and `match` dispatch. The dispatch is only
 /// sound because the matched value was range-checked first (doc §Match
 /// statements), so a poke past the bound must be caught by the check rather than
 /// land at an attacker-chosen arm.
@@ -63,7 +63,7 @@ def main():
     v = StackBuf(2)
     hint_witness(v, \"w\")
     assert log(v[0]) < 8
-    r = match_range(log(v[0]), range(0, 8), lambda i: sq(i))
+    r = match(log(v[0]), range(0, 8), lambda i: sq(i))
     assert r == v[1]
     p = GEN ** 0
     p[1] = v[0]
@@ -276,7 +276,7 @@ def main():
     p.execute([F192::ZERO, F192::ZERO]);
 }
 
-/// The fused `match_range` path must reject a call that binds more names than
+/// The fused `match` path must reject a call that binds more names than
 /// the callee returns, exactly as the non-fused path does. Before this check the
 /// surplus name `DEREF`ed a callee-frame offset nothing on the taken path wrote,
 /// and since the shared frame is sized to the largest callee that offset exists,
@@ -292,7 +292,7 @@ fn dispatched_call_rejects_a_mixed_arity_arm() {
         "\
 def main():
     x = GEN ** 2
-    a, b, c = match_range(log(x), range(0, 2), lambda i: three(x, i), range(2, 4), lambda i: one(x, i))
+    a, b, c = match(log(x), range(0, 2), lambda i: three(x, i), range(2, 4), lambda i: one(x, i))
     p = GEN ** 0
     p[1] = b
     p[GEN] = c
@@ -317,7 +317,7 @@ fn dispatched_call_rejects_an_over_bound_callee() {
         "\
 def main():
     x = GEN ** 1
-    a, b = match_range(log(x), range(0, 4), lambda i: one(x, i))
+    a, b = match(log(x), range(0, 4), lambda i: one(x, i))
     p = GEN ** 0
     p[1] = a
     p[GEN] = b
@@ -380,5 +380,142 @@ def main():
 def pick(Q):
     return Q * GEN
 ",
+    );
+}
+
+/// A `StackBuf` target's index is bounds-checked. The arms write their return
+/// straight into that cell, so an unchecked index puts a callee's return into
+/// whatever buffer follows: with the check removed, a program that never assigns
+/// `b[0]` publishes a value from the arms and PROVES IT, which is the shape
+/// `copy_alias` had before its own bounds check went in.
+#[test]
+#[should_panic(expected = "out of bounds")]
+fn a_stackbuf_target_index_is_bounds_checked() {
+    super::build(
+        "\
+def main():
+    a = StackBuf(2)
+    b = StackBuf(2)
+    a[0] = 0
+    a[1] = 0
+    x = GEN ** 1
+    a[2], e = match(log(x), range(0, 2), lambda i: two(x, i))
+    p = GEN ** 0
+    p[1] = b[0]
+    p[GEN] = e
+    return
+
+
+def two(v, k: Const):
+    return v * GEN ** k, GEN ** k
+",
+    );
+}
+
+/// A `blake2s` input operand written as a list is the same hash as gathering the
+/// words into a buffer, so hashing one way and the other must agree.
+///
+/// Self-comparing on purpose: an equivalence pair cannot check this, because a
+/// trial that must be ACCEPTED has to name the digest and no test should carry a
+/// hash constant. Asserting the two digests equal needs no constant, and the two
+/// operands are DIFFERENT words so that reordering within a list is visible: with
+/// both operands equal the swap would cancel out.
+#[test]
+fn a_blake2s_word_list_hashes_like_the_buffer_it_replaces() {
+    check_case(&Case {
+        name: "a_blake2s_word_list_hashes_like_the_buffer_it_replaces",
+        src: "\
+def main():
+    v = StackBuf(2)
+    hint_witness(v, \"w\")
+    named = StackBuf(2)
+    blake2s([v[0], v[1]], [v[1], v[0]], named)
+    l = StackBuf(2)
+    l[0] = v[0]
+    l[1] = v[1]
+    r = StackBuf(2)
+    r[0] = v[1]
+    r[1] = v[0]
+    gathered = StackBuf(2)
+    blake2s(l, r, gathered)
+    assert named[0] == gathered[0]
+    assert named[1] == gathered[1]
+    p = GEN ** 0
+    p[1] = v[0]
+    p[GEN] = v[1]
+    return
+",
+        valid: Trial::new([k(11), k(22)]).stream("w", vec![vec![k(11), k(22)]]),
+        pokes: vec![wit("w", 0, k(12)), wit("w", 1, k(23))],
+    });
+}
+
+/// A frame STORE's index is bounds-checked, like a read's and a target's.
+///
+/// The three callers of `frame_cell` each need their own case: with the check
+/// removed at the store site alone, all 148 tests still passed, and `a[2] = …` on
+/// a `StackBuf(2)` wrote the next buffer's first cell, published it, and the proof
+/// VERIFIED. That is the `copy_alias` bug reappearing at a different caller.
+#[test]
+#[should_panic(expected = "out of bounds")]
+fn a_frame_store_index_is_bounds_checked() {
+    super::build(
+        "\
+def main():
+    a = StackBuf(2)
+    b = StackBuf(2)
+    a[0] = 0
+    a[1] = 0
+    b[1] = 0
+    a[2] = GEN ** 7
+    p = GEN ** 0
+    p[1] = b[0]
+    p[GEN] = b[1]
+    return
+",
+    );
+}
+
+/// One spelling of a heap index must not name two different cells.
+///
+/// A heap index is a g-power: `buf[GEN ** k]` is cell `k`, and a plain integer is
+/// rejected because `buf[4]` reads as cell 2 (`4 = g^2`) while the slice
+/// `buf[4:4+2]` reads as cells 4 and 5. Only a LITERAL carries that g-power
+/// reading, and briefly `const(...)` and `len(...)` carried it too, so
+/// `buf[const(8)]` on a `HeapBuf(4)` compiled and aliased cell 3 while the bare
+/// `buf[8]` it means was rejected. The golden digests cannot see this: the guest's
+/// only `const(...)` uses are blake2s operands, not indexes.
+#[test]
+fn an_integer_heap_index_is_rejected_however_it_is_spelled() {
+    for idx in ["8", "const(8)", "const(4 + 4)", "len(EIGHT)", "GEN * const(4)"] {
+        let src = format!(
+            "EIGHT = [0, 0, 0, 0, 0, 0, 0, 0]\n\ndef main():\n    buf = HeapBuf(4)\n    buf[{idx}] = 9\n    p = GEN ** 0\n    p[1] = GEN ** 0\n    p[GEN] = GEN ** 0\n    return\n"
+        );
+        let Err(err) = std::panic::catch_unwind(|| super::build(&src)) else {
+            panic!("`buf[{idx}]` was accepted as a heap index");
+        };
+        let msg = err.downcast_ref::<String>().map(String::as_str).unwrap_or("");
+        assert!(
+            msg.contains("plain integer naming cell") || msg.contains("not a g-power"),
+            "`{idx}`: wanted the ambiguity guard, got `{msg}`"
+        );
+    }
+}
+
+/// A large `**` exponent costs its LOG, not its value.
+///
+/// The field reading of `b ** k` is computed whether or not the caller wants it,
+/// and `field_pow` multiplied `k` times, so this program (which compiles: the
+/// index is `1`) took 39 seconds. Square-and-multiply makes it under a
+/// millisecond, and a test that would otherwise hang is the way to keep it so.
+#[test]
+fn a_large_exponent_does_not_cost_its_value() {
+    let src = "def main():\n    sa = StackBuf(2)\n    sa[1 ** 4294967295] = 7\n    p = GEN ** 0\n    p[1] = sa[0]\n    p[GEN] = GEN ** 0\n    return\n";
+    let started = std::time::Instant::now();
+    let _ = super::build(src);
+    let took = started.elapsed();
+    assert!(
+        took < std::time::Duration::from_secs(2),
+        "a u32::MAX exponent took {took:?}: field_pow is multiplying k times again"
     );
 }

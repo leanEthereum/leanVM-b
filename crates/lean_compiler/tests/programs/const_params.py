@@ -1,7 +1,7 @@
 # `Const` parameters: `def hash_pair(buf, k: Const)` is a template: each call
 # site passes a compile-time constant and gets a monomorphized copy with `k`
 # substituted as the integer literal, usable in compile-time positions (the
-# slice bounds below). The direct call and match_range arm 0 share the k=0
+# slice bounds below). The direct call and match arm 0 share the k=0
 # specialization. A 256-bit BLAKE2s value occupies two canonical cells.
 # Published: the two 128-bit digest cells of H(quad0, quad0) XOR H(quad1, quad1)
 #: the direct k=0 digest XORed with the arm the runtime x = GEN selects (k=1).
@@ -17,7 +17,7 @@ def main():
     buf[GEN ** 3] = 13
     a0, a1 = hash_pair(buf, 0)
     x = GEN
-    b0, b1 = match_range(log(x), range(0, 2), lambda i: hash_pair(buf, i))
+    b0, b1 = match(log(x), range(0, 2), lambda i: hash_pair(buf, i))
     p = GEN ** 0
     p[1] = a0 + b0
     p[GEN] = a1 + b1

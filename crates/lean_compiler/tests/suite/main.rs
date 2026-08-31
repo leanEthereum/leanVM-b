@@ -14,7 +14,7 @@ mod common;
 
 mod assert_ne;
 mod const_placeholder;
-mod cse;
+mod determinism;
 mod disassemble;
 mod field_div;
 mod field_towers;
@@ -25,6 +25,7 @@ mod pack64x2;
 mod print_debug;
 mod py_source;
 mod range_check;
+mod sharing;
 mod soundness;
 mod stack_bits;
 mod stack_buf;

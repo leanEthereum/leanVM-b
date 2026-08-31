@@ -137,14 +137,14 @@ def main():
     assert_eq!(delta, (1, 1, 0), "one XOR, one MUL, no JUMP");
 }
 
-/// The check survives CSE. `SET p = 1` writes a constant another cell may
-/// already hold, and `MUL p = x·inv` a product CSE could otherwise share; both
-/// are kept because `p` is written twice, which is what makes the write-once
-/// conflict the assertion. Dropping either would delete the check silently, so
-/// this pins it: the same product exists elsewhere in the frame, and a `1` is
-/// already live.
+/// The check survives cell sharing. `SET p = 1` writes a constant another cell
+/// may already hold, and `MUL p = x·inv` a product that could otherwise be
+/// shared; both are kept because `p` is written twice, which is what makes the
+/// write-once conflict the assertion. Dropping either would delete the check
+/// silently, so this pins it: the same product exists elsewhere in the frame,
+/// and a `1` is already live.
 #[test]
-fn assert_ne_not_eliminated_by_cse() {
+fn assert_ne_survives_cell_sharing() {
     let src = "\
 def main():
     one = 1

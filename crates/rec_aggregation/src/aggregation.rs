@@ -2625,11 +2625,6 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("SP_K", sphincs::K.to_string());
     ps("SP_H", sphincs::H.to_string());
     ps("SP_HEIGHTS", dsl_list(&sphincs::HEIGHTS));
-    // One literal per Merkle level, since the guest cannot compute `level + 1`
-    // in a tweak: a value expression folds its constants in the field.
-    let deepest = sphincs::A.max(sphincs::HEIGHTS.iter().copied().max().expect("d >= 1"));
-    let p_levels: Vec<usize> = (0..=deepest).map(|level| level << 48).collect();
-    ps("SP_P_LEVEL", dsl_list(&p_levels));
     ps("SP_SUFFIX", dsl_list(&sphincs::SUFFIX));
     rep
 }
@@ -2705,6 +2700,26 @@ mod tests {
                 public_param: [0; xmss::PUBLIC_PARAM_LEN],
             })
             .collect()
+    }
+
+    /// The guest compiles to one program, always.
+    ///
+    /// `unified_guest` finds a fixed point by compiling repeatedly and comparing
+    /// the result's log size, so a compiler that read a hash seed would not just
+    /// produce two incompatible transcripts, it could fail to converge at all.
+    /// The small programs in `lean_compiler`'s `determinism` suite pin the
+    /// digests; this pins the one program large enough to hit every path that
+    /// walks a map. A fixed `kbc` is enough: reproducibility does not depend on
+    /// the size being the fixed point.
+    #[test]
+    fn guest_compiles_reproducibly() {
+        let (one, two) = (compile_guest(20), compile_guest(20));
+        assert_eq!(
+            format!("{:?}", one.prog),
+            format!("{:?}", two.prog),
+            "two compilations of the guest produced different bytecode, \
+             so the compiler is reading a hash seed"
+        );
     }
 
     /// `MAX_KEYS` is exclusive at both host checks: one key short of it passes,

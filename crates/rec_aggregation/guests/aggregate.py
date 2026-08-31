@@ -132,7 +132,7 @@ K_LOG = K_LOG_PLACEHOLDER
 SLOT_STRIDE_LOG = SLOT_STRIDE_LOG_PLACEHOLDER  # = K_LOG - LOG_PACKING (=8); the q_flock slot stride
 # Phase E: the stacked mixed opening, then the WHIR opening over the stacked
 # commitment, dispatched by the certified committed log-size m through
-# match_range. The LIG_* tables carry one row per (rate, m), emitted from the
+# match. The LIG_* tables carry one row per (rate, m), emitted from the
 # same derive_profile/level_shapes the prover uses.
 # Scalars index as TBL[m_idx]; per-level values as TBL[m_idx * LIG_MAX_LEVELS + lvl],
 # where m_idx is the flattened (rate, size) configuration index; the subspace
@@ -350,12 +350,6 @@ SP_LAY_MUL = 2 ** 8
 SP_P_MUL = 2 ** 48
 SP_TAU_POS = 16
 SP_J_POS = BASE_FIELD_BITS + 16
-# A value expression's constants fold IN THE FIELD, where `1 + 1` is 0, so a
-# Merkle level cannot be written `level + 1` there (it would be `level XOR 1`,
-# and the p field would silently vanish on odd levels). SP_P_LEVEL[lambda] is
-# the literal `lambda * 2^48` outright, indexed with the integer arithmetic that
-# an index position does support.
-SP_P_LEVEL = SP_P_LEVEL_PLACEHOLDER
 SP_CHAIN_MUL = SP_CHAIN_LENGTH * SP_P_MUL   # chain i's tweaks start at p = 2^w * i
 
 # The encoding counter, LE_32 in the low four bytes of its cell: bounded by
@@ -1150,14 +1144,8 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # The ONE shared GKR leaf point (all three trees reduce to it).
 
     # ---- seed (statement pre-bound: hinted sub pi + baked program digest) ----
-    iv = StackBuf(2)
-    iv[0] = seed_0
-    iv[1] = seed_1
-    stmt = StackBuf(2)
-    stmt[0] = pi_0
-    stmt[1] = pi_1
     fs = StackBuf(2)
-    blake2s(iv, stmt, fs)
+    blake2s([seed_0, seed_1], [pi_0, pi_1], fs)
     stream = HeapBuf(STREAM_CAP)
     hint_witness(stream[0:STREAM_CAP], "stream")
     cursor = stream  # the proof stream is replayed word by word; cursor walks it (advance = * g)
@@ -1174,7 +1162,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
 
     # ---- structural logs: certify g^log_mem, compute the taus ----
     # The stream announced the sizes as integer WORDS; the shape-generic phases
-    # need them as G-POWERS (loop bounds, match_range scrutinees). dims_g[0] =
+    # need them as G-POWERS (loop bounds, match scrutinees). dims_g[0] =
     # g^log_mem arrives as a hint pinned to the word; dims_g[1 + t] = g^tau_t
     # is computed by the count gadget.
     dims_g = HeapBuf(N_TABLES + 1)  # [g^log_mem, g^tau_0 .. g^tau_{N_TABLES-1}]
@@ -1451,9 +1439,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # polynomial: its slots are aligned with the tuple and the weights are eq(α⃗, ·),
     # so the share IS that polynomial at (ζ_lo, α⃗) (doc sec:e2e-bc). One hinted
     # value, no per-coordinate values and no selector challenge.
-    bytecode_hint = StackBuf(1)
-    hint_witness(bytecode_hint[0:1], "bytecode_val")
-    bc_share = bytecode_hint[0]
+    bc_share = hint_witness("bytecode_val")
     # Reconstruct Ṽ₀(ζ) per side and assert it equals the GKR leaf value. The
     # committed-coordinate values ride the stream (observed, pooled); the Public
     # (bytecode) coordinate values are hinted (bytecode_vals) and exported as deferred
@@ -1579,9 +1565,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # g^n for n = max_t tau_t, the batch's round count. Hinted, then pinned
     # exactly: the product identity forces it to BE one of the certified taus, and
     # the range-checked division slacks force it to dominate every one of them.
-    zc_n_hint = StackBuf(1)
-    hint_witness(zc_n_hint[0:1], "zc_tau_max")
-    g_zc_n = zc_n_hint[0]
+    g_zc_n = hint_witness("zc_tau_max")
     zc_is_a_tau = 1
     for t in unroll(0, N_TABLES):
         zc_is_a_tau *= g_zc_n + dims_g[GEN ** (t + 1)]
@@ -1838,8 +1822,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     lag64(zerocheck_z, claim_nums, 0)
 
     # ---- flock lincheck (matrix evaluation DEFERRED) ----
-    matrix_eval = StackBuf(1)
-    hint_witness(matrix_eval[0:1], "matpart")
+    matrix_eval = hint_witness("matpart")
     fs, lincheck_alpha = squeeze(fs)
     lincheck_beta = lincheck_alpha * lincheck_alpha
     lincheck_cube = lincheck_beta * lincheck_alpha
@@ -1873,7 +1856,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for i in unroll(0, 2 ** K_SKIP):
         c_slice_value += claim_nums[i] * z_partial[GEN ** i]
     c_slice_value *= LAGRANGE_INV_S
-    matrix_part = matrix_eval[0]
+    matrix_part = matrix_eval
     lincheck_final = matrix_part + pin_term + lincheck_beta * c_point_eq * c_slice_value  # deferred matrix eval + pin + C
     assert lc_running == lincheck_final
     # z_partial IS the claim: the terminal identity above pins its 64 slices,
@@ -2022,7 +2005,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # dispatch independently for every inner proof in a mixed-rate batch.
     config_sel = size_sel * rate_sel ** LIG_N_LOG_SIZES
     assert log(config_sel) < LIG_N_CANDIDATES
-    sumcheck_target, point_fold, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g, point_tail, yr_at_tail = match_range(log(config_sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1, cursor))
+    sumcheck_target, point_fold, inner_total, yr_log_n_g, yr_pad_g, fold_cap_g, point_tail, yr_at_tail = match(log(config_sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1, cursor))
     # `stream` is a fixed-capacity witness transport. The shape fixes the exact
     # consumed prefix, whose every word is transcript-bound; the unused suffix
     # is outside the recursively verified proof and intentionally unconstrained.
@@ -2036,8 +2019,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     #                             # overlap pointers below re-read it)
     claim_nover = HeapBuf(N_CLAIMS)
     hint_witness(claim_nover[0:N_CLAIMS], "claim_nover")
-    pi_cplen = StackBuf(1)
-    hint_witness(pi_cplen[0:1], "pi_cplen")
+    pi_cplen = hint_witness("pi_cplen")
     # baked prefix-mask table replacing the hinted overlap mask: row t holds
     # [k < t] for k in [0, YR_LOG_CAP); the y-slot loop below selects row nover
     # by pointer arithmetic, so the mask is a prefix of exactly nover ones BY
@@ -2087,7 +2069,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         if CLAIM_POINT_BUF[j] == POINT_BUF_PI:
             # pi: cplen = min(log_mem, lenris), certified as a min (<= both via
             # the range-checked division slacks, == one via the product).
-            cplen_g = pi_cplen[0]
+            cplen_g = pi_cplen
             mem_slack = g_log_mem / cplen_g
             assert log(mem_slack) < SIZE_BITS
             fold_slack = fold_cap_g / cplen_g
@@ -2163,9 +2145,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # pinned exactly as the point claims pin theirs: rs_low = qflockv - rs_nover
     # and rs_len = lenris + rs_nover - qflockv are divisions off it, so the two
     # range checks plus the either/or leave rs_nover = max(0, qflockv - lenris).
-    rs_nover_hint = StackBuf(1)
-    hint_witness(rs_nover_hint[0:1], "rs_nover")
-    rs_nover_g = rs_nover_hint[0]
+    rs_nover_g = hint_witness("rs_nover")
     assert log(rs_nover_g) < YR_LOG_CAP + 1
     rs_low_g = qflockv_g / rs_nover_g
     assert log(rs_low_g) < SIZE_BITS
@@ -2287,7 +2267,7 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
         defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + LINCHECK_ROUNDS + k)] = lincheck_rs[GEN ** k]
     for k in unroll(0, 2 ** K_SKIP):
         defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 * LINCHECK_ROUNDS + k)] = z_partial[GEN ** k]
-    defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)] = matrix_eval[0]
+    defer_out[GEN ** (BYTECODE_LOG + LOG2_BYTECODE_COLS + 3 + 2 ** K_SKIP + 2 * LINCHECK_ROUNDS)] = matrix_eval
     return
 
 
@@ -2328,14 +2308,14 @@ def fill_xmss_epoch_tables(epoch, merkle_bits, tweak_table):
         for s in unroll(0, CHAIN_STEPS):
             tweak_table[GEN ** (1 + CHAIN_STEPS * i + s)] = index + XM_CHAIN_TWEAKS[CHAIN_STEPS * i + s]
     tweak_table[GEN ** WOTS_PK_TWEAK_IDX] = index + XM_PK_TWEAK
-    # Merkle level l - 1 hashes the parent at index `epoch >> l`, which is the
-    # epoch's bits from l up, each weighed l places down. The top level gets the
+    # Merkle level lvl - 1 hashes the parent at index `epoch >> lvl`, which is the
+    # epoch's bits from lvl up, each weighed lvl places down. The top level gets the
     # empty sum, the root's index being zero.
-    for l in unroll(1, LOG_LIFETIME + 1):
+    for lvl in unroll(1, LOG_LIFETIME + 1):
         parent = 0
-        for b in unroll(l, LOG_LIFETIME):
-            parent = parent + bits[b] * XM_INDEX_WEIGHT[b - l]
-        tweak_table[GEN ** (MERKLE_TWEAK_IDX + l - 1)] = parent + XM_MERKLE_TWEAKS[l - 1]
+        for b in unroll(lvl, LOG_LIFETIME):
+            parent = parent + bits[b] * XM_INDEX_WEIGHT[b - lvl]
+        tweak_table[GEN ** (MERKLE_TWEAK_IDX + lvl - 1)] = parent + XM_MERKLE_TWEAKS[lvl - 1]
     return
 
 
@@ -2345,24 +2325,15 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     # Encoding digest D = BLAKE2s(tweak | pp | msg | randomness | zero-pad), 96 bytes:
     # one full 64-byte block followed by a 32-byte final block (24 bytes of
     # randomness and the specified 8-byte zero pad).
-    tweak_pp = StackBuf(WORDS_PER_BLOCK)
-    tweak_pp[0] = tweak_table[1]
-    tweak_pp[1] = pp
-    msg_block = StackBuf(WORDS_PER_BLOCK)
-    msg_block[0] = message[1]
-    msg_block[1] = message[GEN]
     after_msg = StackBuf(WORDS_PER_BLOCK)
-    blake2s(tweak_pp, msg_block, after_msg, counter=64, final=0)
+    blake2s([tweak_table[1], pp], [message[1], message[GEN]], after_msg, counter=64, final=0)
     rand_block = StackBuf(WORDS_PER_BLOCK)
     hint_witness(rand_block, "rand")
     # The spec's pad: cell 1 is randomness bytes 16..24 then 8 zero bytes. A packing helper
     # source is read as (lo, 0, 0) where BLAKE2s reads (lo, hi, 0); the dest is unused.
     assert_in_k(rand_block[1], 0)
     digest = StackBuf(WORDS_PER_BLOCK)
-    zero_block = StackBuf(WORDS_PER_BLOCK)
-    zero_block[0] = 0
-    zero_block[1] = 0
-    blake2s(rand_block, zero_block, digest, cv=after_msg, counter=96, final=1)
+    blake2s(rand_block, [0, 0], digest, cv=after_msg, counter=96, final=1)
 
     # V WOTS chains. Per chain: the digit is hinted in the exponent (g^{e_i}),
     # range checked, and dispatched once; arm k walks the remaining
@@ -2378,28 +2349,22 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     acc_lo = 0
     weight = 1
     for i in unroll(0, DIGITS_PER_WORD):
-        digit = StackBuf(1)
-        hint_witness(digit[0:1], "digits")
-        assert log(digit[0]) < CHAIN_LENGTH
-        chain_start = StackBuf(1)
-        hint_witness(chain_start, "chain_starts")
-        t, e = match_range(log(digit[0]), range(0, CHAIN_LENGTH), lambda k: walk(chain_start[0], chain_tweaks, pp, k))
-        tips[i] = t
-        digit_product = digit_product * digit[0]
+        digit = hint_witness("digits")
+        assert log(digit) < CHAIN_LENGTH
+        chain_start = hint_witness("chain_starts")
+        tips[i], e = match(log(digit), range(0, CHAIN_LENGTH), lambda k: walk(chain_start, chain_tweaks, pp, k))
+        digit_product = digit_product * digit
         acc_lo = acc_lo + e * weight  # e_i in its monomial subspace of lane 0
         weight = weight * CHAIN_LENGTH
         chain_tweaks = chain_tweaks * GEN ** (WORDS_PER_VALUE * CHAIN_STEPS)
     acc_hi = 0
     weight = 1
     for i in unroll(DIGITS_PER_WORD, V):
-        digit = StackBuf(1)
-        hint_witness(digit[0:1], "digits")
-        assert log(digit[0]) < CHAIN_LENGTH
-        chain_start = StackBuf(1)
-        hint_witness(chain_start, "chain_starts")
-        t, e = match_range(log(digit[0]), range(0, CHAIN_LENGTH), lambda k: walk(chain_start[0], chain_tweaks, pp, k))
-        tips[i] = t
-        digit_product = digit_product * digit[0]
+        digit = hint_witness("digits")
+        assert log(digit) < CHAIN_LENGTH
+        chain_start = hint_witness("chain_starts")
+        tips[i], e = match(log(digit), range(0, CHAIN_LENGTH), lambda k: walk(chain_start, chain_tweaks, pp, k))
+        digit_product = digit_product * digit
         acc_hi = acc_hi + e * weight  # e_i in its monomial subspace of lane 1
         weight = weight * CHAIN_LENGTH
         chain_tweaks = chain_tweaks * GEN ** (WORDS_PER_VALUE * CHAIN_STEPS)
@@ -2409,11 +2374,8 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
 
     # WOTS public-key leaf = standard BLAKE2s over prefix + V tips: WOTS_PK_BLOCKS
     # full blocks, carrying the chaining value between instructions.
-    pk_tweak_pp = StackBuf(WORDS_PER_BLOCK)
-    pk_tweak_pp[0] = tweak_table[GEN ** (WORDS_PER_VALUE * WOTS_PK_TWEAK_IDX)]
-    pk_tweak_pp[1] = pp
     leaf = StackBuf(WORDS_PER_BLOCK)
-    blake2s(pk_tweak_pp, tips[0:2], leaf, counter=64, final=0)
+    blake2s([tweak_table[GEN ** (WORDS_PER_VALUE * WOTS_PK_TWEAK_IDX)], pp], tips[0:2], leaf, counter=64, final=0)
     for q in unroll(1, WOTS_PK_BLOCKS):
         next_leaf = StackBuf(WORDS_PER_BLOCK)
         blake2s(tips[4 * q - 2:4 * q], tips[4 * q:4 * q + 2], next_leaf, cv=leaf, counter=64 * (q + 1), final=(q + 1) // WOTS_PK_BLOCKS)
@@ -2422,24 +2384,20 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     # Merkle path from the leaf to the root: the epoch bit orders the two
     # children at each level, and the tweak carries that level's parent index.
     node = leaf[0]
-    for l in unroll(0, LOG_LIFETIME):
-        bit = merkle_bits[GEN ** (WORDS_PER_VALUE * l)]
-        sibling = StackBuf(1)
-        hint_witness(sibling, "siblings")
+    for lvl in unroll(0, LOG_LIFETIME):
+        bit = merkle_bits[GEN ** (WORDS_PER_VALUE * lvl)]
+        sibling = hint_witness("siblings")
         # Branchless child ordering: bit ∈ {0,1} (pinned at its decomposition),
         # so the swap is a select, not a branch. m = bit·(node⊕sibling) is 0
         # when bit=0 and node⊕sibling when bit=1, so children[0] = node⊕m is
         # node for bit=0 and sibling for bit=1 (children[1] the complement).
-        diff = node + sibling[0]
+        diff = node + sibling
         m = bit * diff
         children = StackBuf(WORDS_PER_BLOCK)
         children[0] = node + m
-        children[1] = sibling[0] + m
-        merkle_tweak_pp = StackBuf(WORDS_PER_BLOCK)
-        merkle_tweak_pp[0] = tweak_table[GEN ** (WORDS_PER_VALUE * (MERKLE_TWEAK_IDX + l))]
-        merkle_tweak_pp[1] = pp
+        children[1] = sibling + m
         parent = StackBuf(WORDS_PER_BLOCK)
-        blake2s(merkle_tweak_pp, children, parent)
+        blake2s([tweak_table[GEN ** (WORDS_PER_VALUE * (MERKLE_TWEAK_IDX + lvl))], pp], children, parent)
         node = parent[0]
     assert node == pk_ptr[1]
     return
@@ -2449,19 +2407,12 @@ def walk(value, chain_tweaks, pp, k: Const):
     # Walk WOTS chain steps k..CHAIN_STEPS-1: value' = H(tweak|pp, value|0).
     # Step s reads its tweak at cell s off the chain's subtable: a compile-time
     # (beta) offset, one DEREF each; no cursor to advance.
-    block = StackBuf(WORDS_PER_BLOCK)
-    block[0] = value
-    block[1] = 0
+    word = value
     for s in unroll(k, CHAIN_STEPS):
-        step_tweak = StackBuf(WORDS_PER_BLOCK)
-        step_tweak[0] = chain_tweaks[GEN ** (WORDS_PER_VALUE * s)]
-        step_tweak[1] = pp
         out = StackBuf(WORDS_PER_BLOCK)
-        blake2s(step_tweak, block, out, counter=48, final=1)
-        block = StackBuf(WORDS_PER_BLOCK)
-        block[0] = out[0]
-        block[1] = 0
-    return block[0], k
+        blake2s([chain_tweaks[GEN ** (WORDS_PER_VALUE * s)], pp], [word, 0], out, counter=48, final=1)
+        word = out[0]
+    return word, k
 
 
 
@@ -2494,19 +2445,12 @@ def sp_walk(value, tw_base, pp, k: Const):
     # Walk chain steps k..SP_CHAIN_STEPS-1: value' = Th(P, tw_chain, value).
     # `tw_base` already carries the type byte, the layer, 2^w*i and the position
     # (tau, e), so step s's tweak is one addition of a compile-time literal.
-    block = StackBuf(WORDS_PER_BLOCK)
-    block[0] = value
-    block[1] = 0
+    word = value
     for s in unroll(k, SP_CHAIN_STEPS):
-        step_tweak = StackBuf(WORDS_PER_BLOCK)
-        step_tweak[0] = tw_base + s * SP_P_MUL
-        step_tweak[1] = pp
         out = StackBuf(WORDS_PER_BLOCK)
-        blake2s(step_tweak, block, out, counter=48, final=1)
-        block = StackBuf(WORDS_PER_BLOCK)
-        block[0] = out[0]
-        block[1] = 0
-    return block[0], k
+        blake2s([tw_base + s * SP_P_MUL, pp], [word, 0], out, counter=48, final=1)
+        word = out[0]
+    return word, k
 
 
 def sp_ots_leaf(tw_pos, pp, msg):
@@ -2515,26 +2459,19 @@ def sp_ots_leaf(tw_pos, pp, msg):
     # hash to. `tw_pos` is the position's tweak base (layer, tau, e); this
     # function is called once per layer, so the V dispatch tables are compiled
     # once for the whole scheme.
-    ctr = StackBuf(1)
-    hint_witness(ctr, "sp_counter")
+    ctr = hint_witness("sp_counter")
     ctr_bits = HeapBuf(GEN ** SP_COUNTER_BITS)
-    hint_decompose_bits(ctr_bits, ctr[0], SP_COUNTER_BITS)
+    hint_decompose_bits(ctr_bits, ctr, SP_COUNTER_BITS)
     ctr_acc = 0
     for i in unroll(0, SP_COUNTER_BITS):
         b = ctr_bits[GEN ** i]
         ctr_bits[GEN ** i] = b * b
         ctr_acc += b * COORD_BASIS[i]
-    assert ctr_acc == ctr[0]  # LE_32: the counter's cell is four bytes and twelve of padding
+    assert ctr_acc == ctr  # LE_32: the counter's cell is four bytes and twelve of padding
 
     # D = Th(P, tw_enc, msg | LE_32(c)), a 52-byte one-block hash.
-    enc_tweak = StackBuf(WORDS_PER_BLOCK)
-    enc_tweak[0] = tw_pos + SP_TW_ENC
-    enc_tweak[1] = pp
-    enc_block = StackBuf(WORDS_PER_BLOCK)
-    enc_block[0] = msg
-    enc_block[1] = ctr[0]
     digest = StackBuf(WORDS_PER_BLOCK)
-    blake2s(enc_tweak, enc_block, digest, counter=52, final=1)
+    blake2s([tw_pos + SP_TW_ENC, pp], [msg, ctr], digest, counter=52, final=1)
 
     # The codeword, as in XMSS: each digit is hinted in the exponent, range
     # checked and dispatched once, arm k walking the remaining steps; the product
@@ -2545,39 +2482,30 @@ def sp_ots_leaf(tw_pos, pp, msg):
     acc_lo = 0
     weight = 1
     for i in unroll(0, SP_DIGITS_PER_WORD):
-        digit = StackBuf(1)
-        hint_witness(digit[0:1], "sp_digits")
-        assert log(digit[0]) < SP_CHAIN_LENGTH
-        chain_start = StackBuf(1)
-        hint_witness(chain_start, "sp_chain_starts")
+        digit = hint_witness("sp_digits")
+        assert log(digit) < SP_CHAIN_LENGTH
+        chain_start = hint_witness("sp_chain_starts")
         tw_chain = tw_pos + SP_TW_CHAIN + i * SP_CHAIN_MUL
-        t, e = match_range(log(digit[0]), range(0, SP_CHAIN_LENGTH), lambda k: sp_walk(chain_start[0], tw_chain, pp, k))
-        tips[i] = t
-        digit_product = digit_product * digit[0]
+        tips[i], e = match(log(digit), range(0, SP_CHAIN_LENGTH), lambda k: sp_walk(chain_start, tw_chain, pp, k))
+        digit_product = digit_product * digit
         acc_lo = acc_lo + e * weight
         weight = weight * SP_CHAIN_LENGTH
     acc_hi = 0
     weight = 1
     for i in unroll(SP_DIGITS_PER_WORD, SP_V):
-        digit = StackBuf(1)
-        hint_witness(digit[0:1], "sp_digits")
-        assert log(digit[0]) < SP_CHAIN_LENGTH
-        chain_start = StackBuf(1)
-        hint_witness(chain_start, "sp_chain_starts")
+        digit = hint_witness("sp_digits")
+        assert log(digit) < SP_CHAIN_LENGTH
+        chain_start = hint_witness("sp_chain_starts")
         tw_chain = tw_pos + SP_TW_CHAIN + i * SP_CHAIN_MUL
-        t, e = match_range(log(digit[0]), range(0, SP_CHAIN_LENGTH), lambda k: sp_walk(chain_start[0], tw_chain, pp, k))
-        tips[i] = t
-        digit_product = digit_product * digit[0]
+        tips[i], e = match(log(digit), range(0, SP_CHAIN_LENGTH), lambda k: sp_walk(chain_start, tw_chain, pp, k))
+        digit_product = digit_product * digit
         acc_hi = acc_hi + e * weight
         weight = weight * SP_CHAIN_LENGTH
     assert digit_product == GEN ** SP_TARGET_SUM
     assert acc_lo + acc_hi * Y_TOWER == digest[0]
 
-    leaf_tweak = StackBuf(WORDS_PER_BLOCK)
-    leaf_tweak[0] = tw_pos + SP_TW_LEAF
-    leaf_tweak[1] = pp
     leaf = StackBuf(WORDS_PER_BLOCK)
-    blake2s(leaf_tweak, tips[0:2], leaf, counter=64, final=0)
+    blake2s([tw_pos + SP_TW_LEAF, pp], tips[0:2], leaf, counter=64, final=0)
     for q in unroll(1, SP_LEAF_BLOCKS):
         next_leaf = StackBuf(WORDS_PER_BLOCK)
         blake2s(tips[4 * q - 2:4 * q], tips[4 * q:4 * q + 2], next_leaf, cv=leaf, counter=64 * (q + 1), final=(q + 1) // SP_LEAF_BLOCKS)
@@ -2594,22 +2522,13 @@ def verify_sig_sphincs(signer):
 
     # ---- the message digest, which chooses the few-time key ----
     # D = Truncate(H(tw_msg | P | rho | root | m)), 96 bytes in two blocks.
-    msg_tweak = StackBuf(WORDS_PER_BLOCK)
-    msg_tweak[0] = SP_TW_MSG
-    msg_tweak[1] = pp
     rho_root = StackBuf(WORDS_PER_BLOCK)
     hint_witness(rho_root[0:1], "sp_rand")
     rho_root[1] = signer[1]
     prefix = StackBuf(WORDS_PER_BLOCK)
-    blake2s(msg_tweak, rho_root, prefix, counter=64, final=0)
-    msg_block = StackBuf(WORDS_PER_BLOCK)
-    msg_block[0] = signer[GEN ** 2]
-    msg_block[1] = signer[GEN ** 3]
-    zero_block = StackBuf(WORDS_PER_BLOCK)
-    zero_block[0] = 0
-    zero_block[1] = 0
+    blake2s([SP_TW_MSG, pp], rho_root, prefix, counter=64, final=0)
     digest = StackBuf(WORDS_PER_BLOCK)
-    blake2s(msg_block, zero_block, digest, cv=prefix, counter=96, final=1)
+    blake2s([signer[GEN ** 2], signer[GEN ** 3]], [0, 0], digest, cv=prefix, counter=96, final=1)
 
     # The index and the k leaf indices are bit fields of that digest, so its bits
     # are advice-decomposed here and bound lane by lane. Nothing else derives
@@ -2642,36 +2561,25 @@ def verify_sig_sphincs(signer):
         leaf_off = SP_H + kappa * SP_A
         secret = StackBuf(WORDS_PER_BLOCK)
         hint_witness(secret[0:1], "sp_fts_secrets")
-        secret[1] = 0
-        fts_tweak = StackBuf(WORDS_PER_BLOCK)
-        fts_tweak[0] = SP_TW_FTS_LEAF + kappa * SP_LAY_MUL + idx_tau + sp_bit_field(bits, leaf_off, SP_A, SP_J_POS)
-        fts_tweak[1] = pp
         fts_leaf = StackBuf(WORDS_PER_BLOCK)
-        blake2s(fts_tweak, secret, fts_leaf, counter=48, final=1)
+        blake2s([SP_TW_FTS_LEAF + kappa * SP_LAY_MUL + idx_tau + sp_bit_field(bits, leaf_off, SP_A, SP_J_POS), pp], [secret[0], 0], fts_leaf, counter=48, final=1)
         node = fts_leaf[0]
         for level in unroll(0, SP_A):
             bit = bits[GEN ** (leaf_off + level)]
-            sibling = StackBuf(1)
-            hint_witness(sibling, "sp_fts_paths")
+            sibling = hint_witness("sp_fts_paths")
             # Branchless child ordering, as in verify_sig: bit is one of the
             # boolean-pinned digest bits, so the swap is a select.
-            diff = node + sibling[0]
+            diff = node + sibling
             m = bit * diff
             children = StackBuf(WORDS_PER_BLOCK)
             children[0] = node + m
-            children[1] = sibling[0] + m
-            node_tweak = StackBuf(WORDS_PER_BLOCK)
-            node_tweak[0] = SP_TW_FTS_NODE + kappa * SP_LAY_MUL + SP_P_LEVEL[level + 1] + idx_tau + sp_bit_field(bits, leaf_off + level + 1, SP_A - level - 1, SP_J_POS)
-            node_tweak[1] = pp
+            children[1] = sibling + m
             parent = StackBuf(WORDS_PER_BLOCK)
-            blake2s(node_tweak, children, parent)
+            blake2s([SP_TW_FTS_NODE + kappa * SP_LAY_MUL + const((level + 1) * SP_P_MUL) + idx_tau + sp_bit_field(bits, leaf_off + level + 1, SP_A - level - 1, SP_J_POS), pp], children, parent)
             node = parent[0]
         roots[kappa] = node
-    roots_tweak = StackBuf(WORDS_PER_BLOCK)
-    roots_tweak[0] = SP_TW_FTS_ROOTS + idx_tau
-    roots_tweak[1] = pp
     fts_key = StackBuf(WORDS_PER_BLOCK)
-    blake2s(roots_tweak, roots[0:2], fts_key, counter=64, final=0)
+    blake2s([SP_TW_FTS_ROOTS + idx_tau, pp], roots[0:2], fts_key, counter=64, final=0)
     for q in unroll(1, SP_ROOT_BLOCKS):
         next_key = StackBuf(WORDS_PER_BLOCK)
         blake2s(roots[4 * q - 2:4 * q], roots[4 * q:4 * q + 2], next_key, cv=fts_key, counter=64 * (q + 1), final=(q + 1) // SP_ROOT_BLOCKS)
@@ -2689,18 +2597,14 @@ def verify_sig_sphincs(signer):
         node = sp_ots_leaf(tw_pos, pp, signed)
         for level in unroll(0, SP_HEIGHTS[lay]):
             bit = bits[GEN ** (leaf_index_off + level)]
-            sibling = StackBuf(1)
-            hint_witness(sibling, "sp_siblings")
-            diff = node + sibling[0]
+            sibling = hint_witness("sp_siblings")
+            diff = node + sibling
             m = bit * diff
             children = StackBuf(WORDS_PER_BLOCK)
             children[0] = node + m
-            children[1] = sibling[0] + m
-            node_tweak = StackBuf(WORDS_PER_BLOCK)
-            node_tweak[0] = SP_TW_NODE + lay * SP_LAY_MUL + SP_P_LEVEL[level + 1] + tau_field + sp_bit_field(bits, leaf_index_off + level + 1, SP_HEIGHTS[lay] - level - 1, SP_J_POS)
-            node_tweak[1] = pp
+            children[1] = sibling + m
             parent = StackBuf(WORDS_PER_BLOCK)
-            blake2s(node_tweak, children, parent)
+            blake2s([SP_TW_NODE + lay * SP_LAY_MUL + const((level + 1) * SP_P_MUL) + tau_field + sp_bit_field(bits, leaf_index_off + level + 1, SP_HEIGHTS[lay] - level - 1, SP_J_POS), pp], children, parent)
             node = parent[0]
         signed = node
     assert signed == signer[1]
@@ -2811,11 +2715,10 @@ def hash_child_sphincs(state_0, state_1, entries_ptr, cover, base, origin_g, lim
     chain[1] = state_0
     chain[GEN] = state_1
     for xe in mul_range(1, n_g):
-        off_hint = StackBuf(1)
-        hint_witness(off_hint, "child_sphincs_index")
-        assert log(off_hint[0]) < log(limit_g)  # precondition as in the raw loops
-        cover[origin_g * off_hint[0]] = base * xe
-        entry = entries_ptr * (off_hint[0] ** 4)
+        off_hint = hint_witness("child_sphincs_index")
+        assert log(off_hint) < log(limit_g)  # precondition as in the raw loops
+        cover[origin_g * off_hint] = base * xe
+        entry = entries_ptr * (off_hint ** 4)
         quad = xe ** 4
         state = chain * quad
         blake2s(state[0:2], entry[0:2], state[2:4])
@@ -2856,10 +2759,9 @@ def hash_child_keys(state_0, state_1, keys_ptr, cover, base, limit_g, half_g, od
         out[0] = paired_end[1]
         out[1] = paired_end[GEN]
     else:
-        tail_hint = StackBuf(1)
-        hint_witness(tail_hint, "child_index")
-        assert log(tail_hint[0]) < log(limit_g)
-        tail_idx = tail_hint[0]
+        tail_hint = hint_witness("child_index")
+        assert log(tail_hint) < log(limit_g)
+        tail_idx = tail_hint
         cover[tail_idx] = base * (half_g * half_g)
         key_last = keys_ptr * (tail_idx * tail_idx)
         blake2s(paired_end[0:2], key_last[0:2], out)
@@ -2933,9 +2835,7 @@ def main():
     # against the u32 the outer verifier holds, and any descendant that verifies
     # a raw signature bounds it again. Only a node holding raw XMSS signatures
     # needs the tables, and they cost the same for one signature or a thousand.
-    epoch_hint = StackBuf(1)
-    hint_witness(epoch_hint, "epoch")
-    epoch = epoch_hint[0]
+    epoch = hint_witness("epoch")
     merkle_bits = HeapBuf(MERKLE_BIT_CELLS)
     tweak_table = HeapBuf(N_TWEAK_CELLS)
     if n_raw_x_g != 1:
@@ -2990,9 +2890,7 @@ def main():
     # verified child, which is the whole security claim of the aggregate.
     cover = HeapBuf(n_total_g)
     for xi in mul_range(1, n_raw_x_g):
-        idx_hint = StackBuf(1)
-        hint_witness(idx_hint, "raw_index")
-        idx = idx_hint[0]
+        idx = hint_witness("raw_index")
         # A runtime bound, whose `n_total < 2^MIN_LOG_MEM` precondition is
         # discharged by the compile-time `assert log(n_total_g) < MAX_KEYS`
         # above. Without it this degenerates to what DEREF alone gives and an
@@ -3002,11 +2900,10 @@ def main():
         signer = xmss_table * (idx * idx)
         verify_sig(xmss_msg, tweak_table, merkle_bits, signer)
     for xj in mul_range(1, n_raw_s_g):
-        off_hint = StackBuf(1)
-        hint_witness(off_hint, "sp_raw_index")
-        assert log(off_hint[0]) < log(sphincs_slots_g)
-        cover[xmss_slots_g * off_hint[0]] = n_raw_x_g * xj
-        verify_sig_sphincs(sphincs_table * (off_hint[0] ** 4))
+        off_hint = hint_witness("sp_raw_index")
+        assert log(off_hint) < log(sphincs_slots_g)
+        cover[xmss_slots_g * off_hint] = n_raw_x_g * xj
+        verify_sig_sphincs(sphincs_table * (off_hint ** 4))
 
     # ---- children ----
     g_logs_pow2, g_squares = exponent_tables()
@@ -3101,8 +2998,7 @@ def aggregate_claims(n_children_g, child_pi, child_fresh, child_carried, defer_s
     hint_witness(bc_sumcheck_msgs[0:2 * BYTECODE_VARS], "bc_sumcheck_msgs")
     mat_sumcheck_msgs = HeapBuf(4 * K_LOG)
     hint_witness(mat_sumcheck_msgs[0:4 * K_LOG], "mat_sumcheck_msgs")
-    bc_star_hint = StackBuf(1)
-    hint_witness(bc_star_hint[0:1], "bc_star_hint")
+    bc_star_hint = hint_witness("bc_star_hint")
     mat_stars_hint = StackBuf(2)
     hint_witness(mat_stars_hint[0:2], "mat_stars_hint")
 
@@ -3178,7 +3074,7 @@ def aggregate_claims(n_children_g, child_pi, child_fresh, child_carried, defer_s
             ec *= (1 + carried[GEN ** k] + rk)
         x2 = xc * xc
         bc_wsum[xc * GEN] = bc_wsum[xc] + lam_bc[x2] * ef + lam_bc[x2 * GEN] * ec
-    bytecode_star = bc_star_hint[0]
+    bytecode_star = bc_star_hint
     assert bc_running == bytecode_star * bc_wsum[n_children_g]
 
     # ---- matrix batching sumcheck (2*K_LOG variables, 3 claims per child) ----

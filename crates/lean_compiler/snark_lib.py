@@ -82,11 +82,24 @@ def hint_log2_ceil(bits, nbits: int, floor: int) -> _Elt:
     return _Elt()
 
 
+def const(e):
+    """`if const(a == b):` asks for the branch to be decided while compiling, and
+    `const(e)` in a value position asks for `e` itself to be read that way.
+
+    Two things follow. The condition must be decidable then (both sides
+    compile-time integers), and it is read with INTEGER arithmetic, which is the
+    regime a compile-time constant lives in. Without the wrapper, a condition
+    whose integer and field readings disagree is rejected rather than silently
+    decided one way, since `+` is XOR in a value. A folded branch is
+    straight-line code, so unlike a runtime branch its bindings outlive it."""
+    return e
+
+
 def log(x) -> int:
     """The discrete log base GEN: `x = GEN ** log(x)`. Only meaningful inside
     a range-check assert (`assert log(x) < log(GEN ** k)`, equivalently
     `assert log(x) < k`, proves `x ∈ {GEN**0, …, GEN**(k-1)}` in 3 cycles),
-    or as the scrutinee of `match` / `match_range`."""
+    or as the scrutinee of `match`."""
     _ = x
     return 0
 
@@ -95,8 +108,8 @@ def inline(fn):
     return fn
 
 
-def match_range(value: int, *args):
-    """A `match` with generated arms: `match_range(log(x), range(a, b),
+def match(value: int, *args):
+    """A `match` with generated arms: `match(log(x), range(a, b),
     lambda i: …, …)` expands to one arm per integer of the contiguous ranges
     (which must start at 0), the lambda applied to the concrete value; the
     results bind to the assignment targets. In Python execution, finds the
@@ -153,15 +166,22 @@ def addr(buf) -> _Elt:
     return _Elt()
 
 
-def hint_witness(dest, name: str) -> None:
-    """Fill `dest` (a StackBuf, or a StackBuf/HeapBuf slice of any length)
-    with the next ENTRY (a slice of values) of the named prover witness
-    stream; the same symbol may be hinted many times, each call popping the
-    next entry (`Program::set_witness`; test programs declare one
-    `# witness name: v1, …` line per entry). Zero cycles, and the values are
-    completely UNCONSTRAINED: the program must constrain them itself
-    (asserts, range checks, hashes)."""
+def hint_witness(dest, name: Optional[str] = None) -> Any:
+    """Take the next ENTRY (a slice of values) of the named prover witness
+    stream.
+
+    Two forms. As a statement, `hint_witness(dest, "name")` fills `dest` (a
+    StackBuf, or a StackBuf/HeapBuf slice of any length). As an expression,
+    `x = hint_witness("name")` binds ONE value and needs no destination, the
+    entry then having to hold exactly one value.
+
+    The same symbol may be hinted many times, each call popping the next entry
+    (`Program::set_witness`; test programs declare one `# witness name: v1, …`
+    line per entry). Zero cycles either way, and the values are completely
+    UNCONSTRAINED: the program must constrain them itself (asserts, range
+    checks, hashes)."""
     _ = dest, name
+    return _Elt()
 
 
 def assert_in_k(a, b) -> None:
