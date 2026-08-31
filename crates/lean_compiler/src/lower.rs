@@ -45,12 +45,10 @@ fn gmul(a: GAddr, b: GAddr) -> Option<GAddr> {
     })
 }
 
-/// Cap on a `β`-folded exponent: the operand g-power table is sized to the
-/// largest immediate, so beyond this a huge constant index falls back to a
-/// materialized pointer instead of inflating that table. Inclusive, and one more
-/// than [`FnLower::try_gpow_index`]'s cap, which is fine: `layout::bytecode_columns`
-/// sizes the table from the program's own largest operand, so a folded `β` is
-/// never one the table cannot represent. The two caps measure different things.
+/// Cap on a `β`-folded exponent, inclusive: the operand g-power table is sized to
+/// the largest immediate, so beyond this a huge constant index falls back to a
+/// materialized pointer instead of inflating that table. The one cap: every site
+/// that folds an exponent into `β` measures it against this.
 const FOLD_MAX: u128 = 1 << lean_vm::cpu::MIN_LOG_MEM;
 
 /// `b^k` for a compile-time exponent (small, so plain repeated multiplication).
@@ -915,10 +913,31 @@ impl FnLower<'_> {
         // bindings persist, unlike a runtime branch, whose bindings are
         // branch-local (a runtime branch may not execute).
         if let (Some(a), Some(b)) = (self.try_const_index(lhs), self.try_const_index(rhs)) {
-            for st in if (a == b) == eq { then } else { els } {
-                self.stmt(st);
+            // Only where the two readings of the condition agree. The runtime
+            // lowering below tests a field `XOR`, so an integer verdict the
+            // field contradicts would enter an arm whose own condition is false
+            // as a value: `K = 3 + 1` is the integer 4 and the field element
+            // `3 XOR 1` = 2, and `if K == 4` took the `then` arm. Falling
+            // through to the runtime test decides it correctly, and folding is
+            // only ever an optimization.
+            //
+            // What this deliberately does NOT do is widen the fold to every
+            // condition the field can decide. Which branches fold is observable:
+            // a folded arm is straight-line code whose bindings persist, while a
+            // runtime arm's are branch-local (`tests/programs/scoping.py` pins
+            // exactly that, and the guest relies on it). Deciding more
+            // conditions here would silently rescope existing programs. The
+            // language needs a distinct compile-time `if` before that can move.
+            let agree = match (self.try_field_const(lhs), self.try_field_const(rhs)) {
+                (Some(fa), Some(fb)) => (fa == fb) == (a == b),
+                _ => true,
+            };
+            if agree {
+                for st in if (a == b) == eq { then } else { els } {
+                    self.stmt(st);
+                }
+                return;
             }
-            return;
         }
         // `x != 0` needs no XOR: the cell itself is the JUMP's nonzero test.
         let x = if self.try_lit(rhs) == Some(0) {
@@ -1512,27 +1531,6 @@ impl FnLower<'_> {
         }
     }
 
-    /// The compile-time g-power exponent of a heap-index expression, when it
-    /// has one: `1` (= `g^0`), `GEN`, `GEN ** k`, power-of-two literals
-    /// (`g = x`, so the literal `2^j` IS `g^j`), names bound to such
-    /// literals, and products of those (exponents add). `None` for runtime
-    /// values, and for exponents ≥ 2^MIN_LOG_MEM, which must not become a
-    /// `DEREF` `beta` immediate (`beta` is capped by the smallest admissible
-    /// memory size; the fallback MUL path handles any element).
-    fn try_gpow_index(&self, idx: &Expr) -> Option<u32> {
-        let cap = |k: u32| (k < (1u32 << lean_vm::cpu::MIN_LOG_MEM)).then_some(k);
-        let pow2 = |n: u128| (n.is_power_of_two() && n < (1 << 64)).then(|| n.trailing_zeros());
-        match idx {
-            Expr::Lit(n) => pow2(*n).and_then(cap),
-            Expr::Var(v) => pow2(*self.scope.consts.get(v)?).and_then(cap),
-            Expr::Gen => Some(1),
-            Expr::GPow(k) => cap(u32::try_from(*k).ok()?),
-            Expr::GenPow(e) => cap(self.try_const_index(e)?),
-            Expr::Mul(a, b) => cap(self.try_gpow_index(a)?.checked_add(self.try_gpow_index(b)?)?),
-            _ => None,
-        }
-    }
-
     /// Resolve a `blake2s` operand: a [`Self::cell_run`] pinned to exactly 2
     /// cells, a 256-bit value being two 128-bit cells. Stack operands are used
     /// in place; heap operands must be bridged through the stack, since
@@ -1681,7 +1679,7 @@ impl FnLower<'_> {
         // the pointer MUL takes only the runtime factor `r`.
         if let Expr::Mul(a, b) = idx {
             for (c, r) in [(a, b), (b, a)] {
-                if let Some(k) = self.try_gpow_index(c) {
+                if let Some(k) = self.const_gpow(c) {
                     let (la, lr) = (self.expr(arr), self.expr(r));
                     let ptr = self.fresh();
                     self.emit(LOp::Mul { a: la, b: lr, c: ptr });
@@ -1741,6 +1739,36 @@ impl FnLower<'_> {
             Expr::Mul(a, b) => gmul(self.gaddr_of(a)?, self.gaddr_of(b)?),
             _ => None,
         }
+    }
+
+    /// The exponent of `e` when it is a *constant* g-power small enough to ride a
+    /// `DEREF` `β` immediate, for the constant factor of a product index.
+    ///
+    /// The one g-power recognizer. A second one used to match `Expr::Var`
+    /// against the *integer* reading of a name and take that integer's bit
+    /// position as the exponent, which is a different question: `K = 3 + 1` is
+    /// the integer 4 and the field element `3 XOR 1` = 2, so it folded to `g²`
+    /// in an index position while being `g¹` everywhere else.
+    ///
+    /// The rule that replaces it never picks a reading. It folds `e` only where
+    /// the readings **agree**: either the compiler already tracks `e` as an
+    /// address, or `e` is the integer `2^j` AND its field value is `g^j`, in
+    /// which case both readings name cell `j` and folding decides nothing.
+    fn const_gpow(&self, e: &Expr) -> Option<u32> {
+        if let Some(GAddr { base: None, exp, .. }) = self.gaddr_of(e)
+            && exp <= FOLD_MAX
+        {
+            return Some(exp as u32);
+        }
+        // `g = x`, so the integer `2^j` reads as `g^j`, but ONLY for `j < 64`:
+        // at and above that the modulus folds the monomial back into the low
+        // limb while the literal's bit lands in the tower coefficient of `y`.
+        let n = self.try_const_int(e)?;
+        if !n.is_power_of_two() || n >= (1 << 64) {
+            return None;
+        }
+        let j = n.trailing_zeros();
+        (u128::from(j) <= FOLD_MAX && self.try_field_const(e)? == g_pow_u128(u128::from(j)).into()).then_some(j)
     }
 
     /// `e` as a compile-time *field* constant, when it is one: a literal, `GEN`,
@@ -1889,11 +1917,21 @@ impl FnLower<'_> {
         if (bare_int || self.gaddr_of(idx).is_none())
             && let Some(c) = self.try_field_const(idx)
         {
-            self.fail(format!(
-                "heap index folds to the field constant {:#x}:{:#x}, not a g-power: heap cell k is \
-                 addressed as `buf[GEN ** k]` (did an integer index leak in from a StackBuf conversion?)",
-                c.c1, c.c0
-            ));
+            // Two reasons reach here and they read differently. A bare integer
+            // index may well BE a g-power (4 is g²), and is rejected for being
+            // ambiguous against slice syntax rather than for naming nothing.
+            let why = match self.const_gpow(idx) {
+                Some(k) => format!(
+                    "is a plain integer naming cell {k}, while the slice `buf[n:n + 1]` reads the \
+                     same number as cell n. Write `buf[GEN ** {k}]` and say which you mean"
+                ),
+                None => format!(
+                    "folds to the field constant {:#x}:{:#x}, which is not a g-power, so it names \
+                     no heap cell (did an integer index leak in from a StackBuf conversion?)",
+                    c.c1, c.c0
+                ),
+            };
+            self.fail(format!("heap index {why}"));
         }
         match self.gaddr_of(idx) {
             Some(GAddr { base: None, exp, .. }) => return self.heap_base(arr, exp),
