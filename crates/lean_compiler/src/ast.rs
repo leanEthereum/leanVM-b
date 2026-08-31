@@ -310,3 +310,172 @@ pub struct Ast {
     /// substituted (unlike scalar constants), and resolved at lowering.
     pub const_arrays: Vec<(String, Vec<F192>)>,
 }
+
+// Free-variable analysis. Pure AST, no lowering state: the only consumer is the
+// `for` desugaring, which needs the names a loop body reads from outside itself,
+// but the question is about the syntax tree and is answered here rather than in
+// the middle of the walker.
+
+use std::collections::HashSet;
+
+/// Collect variable references in `e` into `refs` (in source order).
+fn free_vars_expr(e: &Expr, refs: &mut Vec<String>) {
+    match e {
+        Expr::Var(v) => refs.push(v.clone()),
+        Expr::Add(a, b)
+        | Expr::Mul(a, b)
+        | Expr::Sub(a, b)
+        | Expr::Div(a, b)
+        | Expr::FieldDiv(a, b)
+        | Expr::Mod(a, b)
+        | Expr::Index(a, b)
+        | Expr::Pow(a, b) => {
+            free_vars_expr(a, refs);
+            free_vars_expr(b, refs);
+        }
+        Expr::Slice(a, lo, hi) => {
+            free_vars_expr(a, refs);
+            free_vars_expr(lo, refs);
+            free_vars_expr(hi, refs);
+        }
+        Expr::Call(_, args) | Expr::ListLit(args) => args.iter().for_each(|a| free_vars_expr(a, refs)),
+        Expr::HeapBufDyn(sz) | Expr::GenPow(sz) => free_vars_expr(sz, refs),
+        Expr::Lit(_) | Expr::Gen | Expr::GPow(_) | Expr::HeapBuf(_) | Expr::StackBuf(_) => {}
+    }
+}
+
+/// Collect references in `s` into `refs` and names it binds into `bound`.
+/// Every name the block binds, ignoring scope. [`free_vars_stmt`] deliberately
+/// does not answer this: its `bound` set is scoped, so an arm-local binding is
+/// discarded with the arm.
+pub(crate) fn binds_anywhere(body: &[Stmt], out: &mut HashSet<String>) {
+    for s in body {
+        match &s.kind {
+            StmtKind::Let(n, _) | StmtKind::LetHintWitness { name: n, .. } => {
+                out.insert(n.clone());
+            }
+            StmtKind::LetTuple(ns, ..) | StmtKind::LetMatchRange { names: ns, .. } => ns.iter().for_each(|n| {
+                out.insert(n.clone());
+            }),
+            StmtKind::If { then, els, .. } => {
+                binds_anywhere(then, out);
+                binds_anywhere(els, out);
+            }
+            StmtKind::Match { cases, .. } => cases.iter().for_each(|c| binds_anywhere(c, out)),
+            StmtKind::For { var, body, .. } | StmtKind::Unroll { var, body, .. } => {
+                out.insert(var.clone());
+                binds_anywhere(body, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Free variables of a block whose bindings do NOT escape it: it sees everything
+/// bound so far, and anything it binds stays inside.
+fn scoped_vars(body: &[Stmt], refs: &mut Vec<String>, bound: &HashSet<String>) {
+    let mut inner = bound.clone();
+    for s in body {
+        free_vars_stmt(s, refs, &mut inner);
+    }
+}
+
+pub(crate) fn free_vars_stmt(s: &Stmt, refs: &mut Vec<String>, bound: &mut HashSet<String>) {
+    match &s.kind {
+        StmtKind::Let(n, e) => {
+            free_vars_expr(e, refs);
+            bound.insert(n.clone());
+        }
+        StmtKind::LetTuple(ns, _, args) => {
+            args.iter().for_each(|a| free_vars_expr(a, refs));
+            ns.iter().for_each(|n| {
+                bound.insert(n.clone());
+            });
+        }
+        StmtKind::AssertEq(a, b) | StmtKind::AssertNe(a, b) => {
+            free_vars_expr(a, refs);
+            free_vars_expr(b, refs);
+        }
+        StmtKind::AssertLt(e, bound) => {
+            free_vars_expr(e, refs);
+            if let LtBound::Runtime(b) = bound {
+                free_vars_expr(b, refs);
+            }
+        }
+        StmtKind::HintWitness { dest, .. } => free_vars_expr(dest, refs),
+        StmtKind::LetHintWitness { name, .. } => {
+            bound.insert(name.clone());
+        }
+        StmtKind::Print { value, .. } => free_vars_expr(value, refs),
+        StmtKind::If {
+            lhs,
+            rhs,
+            then,
+            els,
+            force_const,
+            ..
+        } => {
+            free_vars_expr(lhs, refs);
+            free_vars_expr(rhs, refs);
+            // An arm's bindings are local to it (`zkDSL.md` §Control flow), so each
+            // gets its own scope. Sharing one made a name rebound in ONE arm count
+            // as loop-local everywhere, so the OUTER binding the other arm reads
+            // was never captured and a legal program failed with `unbound
+            // variable`. Over-collecting into `refs` is harmless: a capture naming
+            // nothing in the enclosing scope is dropped.
+            // `lower_if` FOLDS a compile-time condition and runs the taken branch
+            // without `scoped`, so its bindings persist exactly like an `unroll`
+            // body's. Modelling that as scoped over-captured, and the loop's own
+            // self-call then read a name the folded arm had rebound to a
+            // `StackBuf`. Both sides literal is the syntactic half of that test.
+            if *force_const || matches!((lhs, rhs), (Expr::Lit(_), Expr::Lit(_))) {
+                then.iter().for_each(|s| free_vars_stmt(s, refs, bound));
+                els.iter().for_each(|s| free_vars_stmt(s, refs, bound));
+            } else {
+                scoped_vars(then, refs, bound);
+                scoped_vars(els, refs, bound);
+            }
+        }
+        StmtKind::Match { x, cases } => {
+            free_vars_expr(x, refs);
+            cases.iter().for_each(|c| scoped_vars(c, refs, bound));
+        }
+        StmtKind::LetMatchRange { names, x, arms } => {
+            free_vars_expr(x, refs);
+            arms.iter().for_each(|a| free_vars_expr(a, refs));
+            names.iter().for_each(|n| {
+                bound.insert(n.clone());
+            });
+        }
+        StmtKind::CallIfNe(a, b, _, args) => {
+            free_vars_expr(a, refs);
+            free_vars_expr(b, refs);
+            args.iter().for_each(|e| free_vars_expr(e, refs));
+        }
+        StmtKind::Call(_, args) => args.iter().for_each(|a| free_vars_expr(a, refs)),
+        StmtKind::Store(arr, idx, val) => {
+            free_vars_expr(arr, refs);
+            free_vars_expr(idx, refs);
+            free_vars_expr(val, refs);
+        }
+        StmtKind::Return(es) => es.iter().for_each(|e| free_vars_expr(e, refs)),
+        StmtKind::For { var, hi, body, .. } => {
+            if let ForBound::Runtime(b) = hi {
+                free_vars_expr(b, refs);
+            }
+            // A nested loop's body becomes its own function, so neither its
+            // counter nor its bindings exist out here. `unroll` below is the
+            // opposite: it replicates straight-line code into THIS scope, so its
+            // bindings really do persist and it keeps the shared set.
+            let mut inner = bound.clone();
+            inner.insert(var.clone());
+            body.iter().for_each(|s| free_vars_stmt(s, refs, &mut inner));
+        }
+        StmtKind::Unroll { var, lo, hi, body } => {
+            free_vars_expr(lo, refs);
+            free_vars_expr(hi, refs);
+            bound.insert(var.clone());
+            body.iter().for_each(|s| free_vars_stmt(s, refs, bound));
+        }
+    }
+}

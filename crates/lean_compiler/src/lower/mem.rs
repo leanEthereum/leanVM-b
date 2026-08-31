@@ -304,7 +304,7 @@ impl FnLower<'_> {
         });
         // Once an address escapes, a write through it is a `DEREF` that names no
         // frame cell the lowerer can see, so every run has to be treated as
-        // already valued: `phys` keeps a later `sb[k] = v` the write-once
+        // already valued: `Slot::written` keeps a later `sb[k] = v` the write-once
         // equality assertion `zkDSL.md` §Memory promises instead of a deferred
         // alias that would drop it. Every run, not just this one: the pointer is
         // a frame address, and one off-by-one in a callee reaches the next run.
@@ -400,7 +400,7 @@ impl FnLower<'_> {
     /// have the consumer's write land where nothing reads it, and the equality
     /// assertion the source wrote would be gone. Materializing the alias first puts
     /// a real value in the cell, which is what turns the consumer's write back into
-    /// that assertion; marking the run `phys` covers the other order, where the
+    /// that assertion; marking the run written covers the other order, where the
     /// store comes after the consumer.
     ///
     /// Also how a run whose address escaped through `addr(sb)` is sealed: there
