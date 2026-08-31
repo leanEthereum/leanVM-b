@@ -180,6 +180,21 @@ theorem encodingInputNamesRoot_isLayerRoot
   have hposition : target = position := Coordinate.position.inj hcandidateCoordinate
   rwa [hposition]
 
+theorem not_encodingInputNamesRoot_tweakableHashInput_of_not_encoding
+    (parameter : PublicParameter) (target : Position) (domain : HashDomain)
+    (payload : HashInput) (hinRange : domain.InRange)
+    (hnotEncoding : ∀ lay tree leafIdx, domain ≠ .encoding lay tree leafIdx) :
+    ¬EncodingInputNamesRoot parameter target
+      (tweakableHashInput parameter domain payload) := by
+  intro hnames
+  obtain ⟨candidate, hdecode, _hcoordinate⟩ := hnames
+  obtain ⟨position, _index, hat, _htree, _hleaf, _hnotBottom, _hcandidate⟩ :=
+    (decodeEncodingLayerRootCandidate?_eq_some_iff parameter _ candidate).mp hdecode
+  obtain ⟨otherPayload, hinput⟩ := hat
+  have hdomain := (tweakableHashInput_injective parameter hinRange
+    (by trivial) hinput).1
+  exact hnotEncoding position.lay position.tree position.leafIdx hdomain
+
 theorem not_encodingInputNamesRoot_of_rootAwareCandidate_ne
     {parameter : PublicParameter} {target : Position} {input : HashInput}
     {plan : PlannedHashQuery} {candidate : Probe}
@@ -241,6 +256,16 @@ theorem RootEncodingCacheRel.hidden
     (coordinate : Coordinate) :
     left (.hidden coordinate) = right (.hidden coordinate) :=
   hrel.2.2 coordinate
+
+theorem RootEncodingCacheRel.lookup_nonroot
+    {parameter : PublicParameter} {target : Position} {leftRoot rightRoot : Digest}
+    {left right : SplitHashCache}
+    (hrel : RootEncodingCacheRel parameter target leftRoot rightRoot left right)
+    (key : SplitHashKey) (hkey : ¬RootEncodingKey parameter target key) :
+    left key = right key := by
+  cases key with
+  | ordinary input => exact hrel.1 input hkey
+  | hidden coordinate => exact hrel.2.2 coordinate
 
 theorem RootEncodingCacheRel.nonroot
     {parameter : PublicParameter} {target : Position} {leftRoot rightRoot : Digest}
@@ -332,6 +357,42 @@ theorem RootEncodingCacheRel.update_retry
         Function.update_of_ne, heq, hrightNe, hold]
   · intro coordinate
     simpa using hrel.hidden coordinate
+
+theorem RootEncodingCacheRel.update_same_nonroot
+    {parameter : PublicParameter} {target : Position} {leftRoot rightRoot : Digest}
+    {left right : SplitHashCache}
+    (hrel : RootEncodingCacheRel parameter target leftRoot rightRoot left right)
+    (key : SplitHashKey) (output : HashOutput)
+    (hkey : ¬RootEncodingKey parameter target key) :
+    RootEncodingCacheRel parameter target leftRoot rightRoot
+      (Function.update left key (some output))
+      (Function.update right key (some output)) := by
+  refine ⟨?_, ?_, ?_⟩
+  · intro input hinput
+    by_cases heq : SplitHashKey.ordinary input = key
+    · simp [heq]
+    · simp [Function.update_of_ne heq, hrel.nonroot input hinput]
+  · intro position counter hposition
+    have hleftRoot : RootEncodingKey parameter target
+        (.ordinary (encodingRetryInput parameter position leftRoot counter)) :=
+      encodingRetryInput_namesRoot (parameter := parameter) hposition leftRoot counter
+    have hrightRoot : RootEncodingKey parameter target
+        (.ordinary (encodingRetryInput parameter position rightRoot counter)) :=
+      encodingRetryInput_namesRoot (parameter := parameter) hposition rightRoot counter
+    have hleftNe : SplitHashKey.ordinary
+        (encodingRetryInput parameter position leftRoot counter) ≠ key := by
+      intro heq
+      exact hkey (heq ▸ hleftRoot)
+    have hrightNe : SplitHashKey.ordinary
+        (encodingRetryInput parameter position rightRoot counter) ≠ key := by
+      intro heq
+      exact hkey (heq ▸ hrightRoot)
+    simp [Function.update_of_ne hleftNe, Function.update_of_ne hrightNe,
+      hrel.retry position counter hposition]
+  · intro coordinate
+    by_cases heq : SplitHashKey.hidden coordinate = key
+    · simp [heq]
+    · simp [Function.update_of_ne heq, hrel.hidden coordinate]
 
 def RootEncodingCleanSameRel
     (parameter : PublicParameter) (target : Position)
@@ -502,17 +563,288 @@ theorem rootEncodingCacheCouples_ensureChainPrefix
         exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot ()).bind fun _ =>
           rootEncodingCacheCouples_pure parameter target leftRoot rightRoot ()
 
+theorem rootEncodingCacheCouples_ensureFullChain
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (ensureFullChain lay tree leafIdx chainIdx) := by
+  unfold ensureFullChain
+  exact (rootEncodingCacheCouples_sequenceFin parameter target leftRoot rightRoot _
+    fun step => rootEncodingCacheCouples_ensureCoordinate parameter target leftRoot rightRoot
+      (.position (.chain lay tree leafIdx chainIdx step))).bind fun _ =>
+        rootEncodingCacheCouples_pure parameter target leftRoot rightRoot ()
+
+theorem rootEncodingCacheCouples_ensureOtsLeaf
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (ensureOtsLeaf lay tree leafIdx) := by
+  unfold ensureOtsLeaf
+  exact (rootEncodingCacheCouples_sequenceFin parameter target leftRoot rightRoot _
+    fun chainIdx => rootEncodingCacheCouples_ensureFullChain parameter target leftRoot rightRoot
+      lay tree leafIdx chainIdx).bind fun _ =>
+        rootEncodingCacheCouples_ensureCoordinate parameter target leftRoot rightRoot
+          (.position (.leaf lay tree leafIdx))
+
+theorem rootEncodingCacheCouples_ensureTreeNode
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (lay : Layer) (tree : TreeIndex) :
+    ∀ level nodeIdx,
+      RootEncodingCacheCouples parameter target leftRoot rightRoot
+        (ensureTreeNode lay tree level nodeIdx)
+  | 0, nodeIdx => by
+      rw [ensureTreeNode]
+      exact rootEncodingCacheCouples_ensureOtsLeaf parameter target leftRoot rightRoot lay tree
+        (leafOfNat nodeIdx)
+  | level + 1, nodeIdx => by
+      rw [ensureTreeNode]
+      exact (rootEncodingCacheCouples_ensureTreeNode parameter target leftRoot rightRoot lay tree
+        level (2 * nodeIdx)).bind fun _ =>
+          (rootEncodingCacheCouples_ensureTreeNode parameter target leftRoot rightRoot lay tree
+            level (2 * nodeIdx + 1)).bind fun _ => by
+              by_cases hlevel : level < maxLayerHeight
+              · rw [dif_pos hlevel]
+                exact rootEncodingCacheCouples_ensureCoordinate parameter target leftRoot
+                  rightRoot (.position (.node lay tree ⟨level, hlevel⟩ (leafOfNat nodeIdx)))
+              · rw [dif_neg hlevel]
+                exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot ()
+
+theorem rootEncodingCacheCouples_ensureTreePath
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (ensureTreePath lay tree leafIdx) := by
+  unfold ensureTreePath
+  exact (rootEncodingCacheCouples_sequenceFin parameter target leftRoot rightRoot _
+    fun level => by
+      by_cases hlevel : level.val < layerHeight lay
+      · rw [if_pos hlevel]
+        exact rootEncodingCacheCouples_ensureTreeNode parameter target leftRoot rightRoot lay tree
+          level.val (Nat.xor (leafIdx.val / 2 ^ level.val) 1)
+      · rw [if_neg hlevel]
+        exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot ()).bind fun _ =>
+          rootEncodingCacheCouples_pure parameter target leftRoot rightRoot ()
+
 def RootEncodingCleanQueryRel
     (parameter : PublicParameter) (target : Position)
     (leftRoot rightRoot : Digest) :
     Option (CleanRunResult (HashOutput × SplitHashCache)) →
-      Option (CleanRunResult (HashOutput × SplitHashCache)) → Prop
-  | some left, some right =>
-      left.state = right.state ∧ left.remaining = right.remaining ∧
-        left.table = right.table ∧ left.value.1 = right.value.1 ∧
-        RootEncodingCacheRel parameter target leftRoot rightRoot left.value.2 right.value.2
-  | none, none => True
-  | _, _ => False
+      Option (CleanRunResult (HashOutput × SplitHashCache)) → Prop :=
+  RootEncodingCleanSameRel parameter target leftRoot rightRoot
+
+theorem relTriple_splitHashQuery_same_nonroot
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (key : SplitHashKey)
+    (hkey : ¬RootEncodingKey parameter target key)
+    (leftCache rightCache : SplitHashCache)
+    (hcache : RootEncodingCacheRel parameter target leftRoot rightRoot leftCache rightCache)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) :
+    RelTriple
+      (runCleanFromTable state fuel table ((splitHashQuery key).run leftCache))
+      (runCleanFromTable state fuel table ((splitHashQuery key).run rightCache))
+      (RootEncodingCleanSameRel parameter target leftRoot rightRoot) := by
+  have hlookup := hcache.lookup_nonroot key hkey
+  rw [splitHashQuery_run_eq, splitHashQuery_run_eq]
+  cases hleft : leftCache key with
+  | some output =>
+      have hright : rightCache key = some output := by
+        rw [← hlookup]
+        exact hleft
+      simp only [hright, runCleanFromTable, OracleComp.construct_pure]
+      exact relTriple_pure_pure ⟨rfl, rfl, rfl, rfl, hcache⟩
+  | none =>
+      have hright : rightCache key = none := by
+        rw [← hlookup]
+        exact hleft
+      simp only [hright]
+      unfold LazyRevealProbe.hashOutputQuery
+      rw [runCleanFromTable_hashOutput_query_bind,
+        runCleanFromTable_hashOutput_query_bind]
+      apply relTriple_bind (relTriple_refl LazyRevealProbe.sampleHashOutput)
+      intro leftOutput rightOutput houtput
+      subst rightOutput
+      simp only [runCleanFromTable, OracleComp.construct_pure]
+      exact relTriple_pure_pure ⟨rfl, rfl, rfl, rfl,
+        hcache.update_same_nonroot key leftOutput hkey⟩
+
+theorem rootEncodingCacheCouples_splitHashQuery_same_nonroot
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (key : SplitHashKey)
+    (hkey : ¬RootEncodingKey parameter target key) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (splitHashQuery key) := by
+  intro leftCache rightCache hcache state fuel table
+  exact relTriple_splitHashQuery_same_nonroot parameter target leftRoot rightRoot key hkey
+    leftCache rightCache hcache state fuel table
+
+theorem rootEncodingCacheCouples_tweakableHash_of_not_encoding
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (domain : HashDomain) (payload : HashInput)
+    (hinRange : domain.InRange)
+    (hnotEncoding : ∀ lay tree leafIdx, domain ≠ .encoding lay tree leafIdx) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (simulateQ ordinaryHashImpl (tweakableHash parameter domain payload)) := by
+  unfold tweakableHash oracleHash
+  simp only [simulateQ_bind, HasQuery.instOfMonadLift_query, simulateQ_spec_query,
+    simulateQ_pure]
+  exact (rootEncodingCacheCouples_splitHashQuery_same_nonroot parameter target leftRoot
+    rightRoot (.ordinary (tweakableHashInput parameter domain payload))
+    (not_encodingInputNamesRoot_tweakableHashInput_of_not_encoding parameter target domain
+      payload hinRange hnotEncoding)).bind fun _ =>
+        rootEncodingCacheCouples_pure parameter target leftRoot rightRoot _
+
+theorem rootEncodingCacheCouples_ftsLeafHash
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (index : Index) (tree : FtsTree)
+    (leafIdx : FtsLeaf) (secret : Digest) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (simulateQ ordinaryHashImpl
+        (ftsLeafHash parameter index tree leafIdx secret)) := by
+  unfold ftsLeafHash
+  exact rootEncodingCacheCouples_tweakableHash_of_not_encoding parameter target leftRoot
+    rightRoot (.ftsLeaf index tree leafIdx) (digestBytes secret) (by trivial) (by simp)
+
+theorem rootEncodingCacheCouples_ftsNode
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (index : Index) (tree : FtsTree)
+    (secret : FtsLeaf → Digest) : ∀ level nodeIdx,
+    level ≤ ftsTreeHeight →
+    2 ^ level * (nodeIdx + 1) ≤ 2 ^ ftsTreeHeight →
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (simulateQ ordinaryHashImpl
+        (ftsNode parameter index tree secret level nodeIdx))
+  | 0, nodeIdx, _hlevel, _hspan => by
+      rw [ftsNode_zero_eq]
+      exact rootEncodingCacheCouples_ftsLeafHash parameter target leftRoot rightRoot index tree
+        (ftsLeafOfNat nodeIdx) (secret (ftsLeafOfNat nodeIdx))
+  | level + 1, nodeIdx, hlevel, hspan => by
+      rw [ftsNode_succ_eq]
+      simp only [simulateQ_bind]
+      have hleftSpan : 2 ^ level * (2 * nodeIdx + 1) ≤ 2 ^ ftsTreeHeight := by
+        rw [pow_succ] at hspan
+        calc
+          2 ^ level * (2 * nodeIdx + 1) ≤ 2 ^ level * (2 * (nodeIdx + 1)) :=
+            Nat.mul_le_mul_left _ (by omega)
+          _ = 2 ^ level * 2 * (nodeIdx + 1) := by ring
+          _ ≤ 2 ^ ftsTreeHeight := hspan
+      have hrightSpan : 2 ^ level * (2 * nodeIdx + 1 + 1) ≤ 2 ^ ftsTreeHeight := by
+        rw [pow_succ] at hspan
+        calc
+          2 ^ level * (2 * nodeIdx + 1 + 1) = 2 ^ level * 2 * (nodeIdx + 1) := by ring
+          _ ≤ 2 ^ ftsTreeHeight := hspan
+      have hinRange : (HashDomain.ftsNode index tree (level + 1) nodeIdx).InRange := by
+        show level + 1 < 2 ^ 32 ∧ nodeIdx < 2 ^ 32
+        constructor
+        · have : ftsTreeHeight < 2 ^ 32 := by norm_num [ftsTreeHeight]
+          omega
+        · have hnode : nodeIdx < 2 ^ ftsTreeHeight := by
+            have hpow : 0 < 2 ^ (level + 1) := Nat.two_pow_pos _
+            nlinarith
+          have : 2 ^ ftsTreeHeight ≤ 2 ^ 32 := Nat.pow_le_pow_right (by omega) (by
+            norm_num [ftsTreeHeight])
+          omega
+      exact (rootEncodingCacheCouples_ftsNode parameter target leftRoot rightRoot index tree
+        secret level (2 * nodeIdx) (by omega) hleftSpan).bind fun left =>
+          (rootEncodingCacheCouples_ftsNode parameter target leftRoot rightRoot index tree
+            secret level (2 * nodeIdx + 1) (by omega) hrightSpan).bind fun right =>
+              rootEncodingCacheCouples_tweakableHash_of_not_encoding parameter target leftRoot
+                rightRoot (.ftsNode index tree (level + 1) nodeIdx) (nodePayload left right)
+                hinRange (by simp)
+
+theorem rootEncodingCacheCouples_ftsKey
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (index : Index)
+    (secret : FtsTree → FtsLeaf → Digest) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (simulateQ ordinaryHashImpl (ftsKey parameter index secret)) := by
+  unfold ftsKey
+  rw [simulateQ_bind, simulateQ_ordinaryHashImpl_sequenceFin]
+  exact (rootEncodingCacheCouples_sequenceFin parameter target leftRoot rightRoot _
+    fun tree => rootEncodingCacheCouples_ftsNode parameter target leftRoot rightRoot index tree
+      (secret tree) ftsTreeHeight 0 le_rfl (by simp)).bind fun roots =>
+        rootEncodingCacheCouples_tweakableHash_of_not_encoding parameter target leftRoot
+          rightRoot (.ftsRoots index) (ftsRootsPayload roots) (by trivial) (by simp)
+
+theorem rootEncodingCacheCouples_revealCoordinate
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (coordinate : Coordinate) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (revealCoordinate coordinate) := by
+  intro leftCache rightCache hcache state fuel table
+  rw [revealCoordinate_run, revealCoordinate_run, LazyRevealProbe.revealQuery,
+    runCleanFromTable_reveal_query_bind, runCleanFromTable_reveal_query_bind]
+  have hhidden : ¬RootEncodingKey parameter target (.hidden coordinate) :=
+    not_rootEncodingKey_hidden parameter target coordinate
+  cases hvalue : state.values coordinate with
+  | some output =>
+      simp only [runCleanFromTable, OracleComp.construct_pure]
+      exact relTriple_pure_pure ⟨rfl, rfl, rfl, rfl,
+        hcache.update_same_nonroot (.hidden coordinate) output hhidden⟩
+  | none =>
+      cases coordinate with
+      | chainStart lay tree leafIdx chainIdx =>
+          by_cases hhit : state.hitAt (.chainStart lay tree leafIdx chainIdx)
+              (table ⟨lay, tree, leafIdx, chainIdx⟩)
+          · simp [hhit, RootEncodingCleanSameRel]
+          · simp only [hhit, ↓reduceIte, runCleanFromTable, OracleComp.construct_pure]
+            exact relTriple_pure_pure ⟨rfl, rfl, rfl, rfl,
+              hcache.update_same_nonroot
+                (.hidden (.chainStart lay tree leafIdx chainIdx))
+                (table ⟨lay, tree, leafIdx, chainIdx⟩) hhidden⟩
+      | position position =>
+          apply relTriple_bind (relTriple_refl LazyRevealProbe.sampleHashOutput)
+          intro leftOutput rightOutput houtput
+          subst rightOutput
+          by_cases hhit : state.hitAt (.position position) leftOutput
+          · simp [hhit, RootEncodingCleanSameRel]
+          · simp only [hhit, ↓reduceIte, runCleanFromTable, OracleComp.construct_pure]
+            exact relTriple_pure_pure ⟨rfl, rfl, rfl, rfl,
+              hcache.update_same_nonroot (.hidden (.position position)) leftOutput hhidden⟩
+
+theorem rootEncodingCacheCouples_revealPosition
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (position : Position) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (revealPosition position) :=
+  rootEncodingCacheCouples_revealCoordinate parameter target leftRoot rightRoot
+    (.position position)
+
+theorem rootEncodingCacheCouples_maskedTreeNode
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (lay : Layer) (tree : TreeIndex) :
+    ∀ level nodeIdx,
+      RootEncodingCacheCouples parameter target leftRoot rightRoot
+        (maskedTreeNode lay tree level nodeIdx)
+  | level, nodeIdx => by
+      unfold maskedTreeNode
+      apply (rootEncodingCacheCouples_ensureTreeNode parameter target leftRoot rightRoot lay tree
+        level nodeIdx).bind
+      intro _
+      cases level with
+      | zero =>
+          exact rootEncodingCacheCouples_revealPosition parameter target leftRoot rightRoot
+            (.leaf lay tree (leafOfNat nodeIdx))
+      | succ current =>
+          rw [Nat.add_one]
+          simp only
+          by_cases hlevel : current < maxLayerHeight
+          · rw [dif_pos hlevel]
+            exact rootEncodingCacheCouples_revealPosition parameter target leftRoot rightRoot
+              (.node lay tree ⟨current, hlevel⟩ (leafOfNat nodeIdx))
+          · rw [dif_neg hlevel]
+            exact rootEncodingCacheCouples_pure parameter target leftRoot rightRoot 0
+
+theorem rootEncodingCacheCouples_maskedTreeRoot
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (lay : Layer) (tree : TreeIndex) :
+    RootEncodingCacheCouples parameter target leftRoot rightRoot
+      (maskedTreeRoot lay tree) :=
+  rootEncodingCacheCouples_maskedTreeNode parameter target leftRoot rightRoot lay tree
+    (layerHeight lay) 0
 
 theorem relTriple_splitHashQuery_encodingRetryInput
     (parameter : PublicParameter) (target : Position)
@@ -609,10 +941,11 @@ theorem relTriple_rootEncodingAttemptRun
   | none =>
       cases rightResult with
       | none => exact relTriple_pure_pure trivial
-      | some rightResult => simp [RootEncodingCleanQueryRel] at hresult
+      | some rightResult =>
+          simp [RootEncodingCleanQueryRel, RootEncodingCleanSameRel] at hresult
   | some leftResult =>
       cases rightResult with
-      | none => simp [RootEncodingCleanQueryRel] at hresult
+      | none => simp [RootEncodingCleanQueryRel, RootEncodingCleanSameRel] at hresult
       | some rightResult =>
           rcases hresult with ⟨hstate, hremaining, htable, houtput, hnextCache⟩
           simp only
@@ -699,5 +1032,30 @@ theorem rootEncodingCacheRelates_maskedOtsSign
       (maskedOtsSign parameter lay tree leafIdx rightRoot) :=
   rootEncodingCacheRelates_maskedOtsSignFrom parameter target leftRoot rightRoot lay tree leafIdx
     hposition encodingAttemptLimit 0
+
+theorem rootEncodingCacheRelates_maskedOtsLayerAfterMessage
+    (parameter : PublicParameter) (index : Index) (lay : Layer)
+    (hnotBottom : lay ≠ bottomLayer) (leftRoot rightRoot : Digest) :
+    RootEncodingCacheRelates parameter (layerMessagePosition index lay) leftRoot rightRoot
+      (maskedOtsLayerAfterMessage parameter index lay leftRoot)
+      (maskedOtsLayerAfterMessage parameter index lay rightRoot) := by
+  have hposition : EncodingPositionNamesRoot (layerMessagePosition index lay)
+      ⟨lay, treeIndexAt index lay, leafIndexAt index lay⟩ :=
+    ⟨index, rfl, rfl, hnotBottom, rfl⟩
+  unfold maskedOtsLayerAfterMessage
+  apply (rootEncodingCacheRelates_maskedOtsSign parameter (layerMessagePosition index lay)
+    leftRoot rightRoot lay (treeIndexAt index lay) (leafIndexAt index lay) hposition).bind
+  intro leftSelected rightSelected hselected
+  subst rightSelected
+  cases leftSelected with
+  | none =>
+      exact (rootEncodingCacheCouples_pure parameter (layerMessagePosition index lay)
+        leftRoot rightRoot none).relates
+  | some selected =>
+      exact ((rootEncodingCacheCouples_ensureTreePath parameter
+        (layerMessagePosition index lay) leftRoot rightRoot lay (treeIndexAt index lay)
+        (leafIndexAt index lay)).bind fun _ =>
+          rootEncodingCacheCouples_pure parameter (layerMessagePosition index lay)
+            leftRoot rightRoot (some selected)).relates
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
