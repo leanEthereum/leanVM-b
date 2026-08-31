@@ -16,12 +16,13 @@ open OracleComp OracleSpec
 structure PrivateOrdinalSelection where
   candidate : Probe
   context : DeferredContext
+  candidates : List Probe
 
 noncomputable def selectedPrivateOrdinal?
     (ordinal : Nat) (candidates : List Probe) (context : DeferredContext) :
     Option PrivateOrdinalSelection :=
   if hselected : ordinal < candidates.length then
-    some ⟨candidates.get ⟨ordinal, hselected⟩, context⟩
+    some ⟨candidates.get ⟨ordinal, hselected⟩, context, candidates⟩
   else none
 
 noncomputable def finishDirectPrivateOrdinalSelection
@@ -65,7 +66,7 @@ noncomputable def directDetailedBoundaryPrivateOrdinalSelection
       pure (selectedPrivateOrdinal? ordinal candidates context))
     (fun query _next recursivelyRun candidates context fuel table cache =>
       if hselected : ordinal < candidates.length then
-        pure (some ⟨candidates.get ⟨ordinal, hselected⟩, context⟩)
+        pure (some ⟨candidates.get ⟨ordinal, hselected⟩, context, candidates⟩)
       else
         match query with
         | .inl (.inl n) =>
@@ -80,7 +81,8 @@ noncomputable def directDetailedBoundaryPrivateOrdinalSelection
             let nextCandidates := appendPlannedCandidate candidates
               (rootAwarePlannedCandidate? parameter input context.state)
             if hnextSelected : ordinal < nextCandidates.length then
-              pure (some ⟨nextCandidates.get ⟨ordinal, hnextSelected⟩, context⟩)
+              pure (some ⟨nextCandidates.get ⟨ordinal, hnextSelected⟩, context,
+                nextCandidates⟩)
             else
               runDirectResolvedWitnessFromTable context fuel table
                   ((probingHashQueryAfterPlan parameter input plan).run cache) >>=
@@ -113,7 +115,7 @@ theorem directDetailedBoundaryPrivateOrdinalSelection_eq_selected
     (hselected : ordinal < candidates.length) :
     directDetailedBoundaryPrivateOrdinalSelection ordinal parameter root ftsSecret computation
         candidates context fuel table cache =
-      pure (some ⟨candidates.get ⟨ordinal, hselected⟩, context⟩) := by
+      pure (some ⟨candidates.get ⟨ordinal, hselected⟩, context, candidates⟩) := by
   induction computation using OracleComp.inductionOn generalizing candidates context fuel cache with
   | pure value =>
       rw [directDetailedBoundaryPrivateOrdinalSelection, OracleComp.construct_pure]
