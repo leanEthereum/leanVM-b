@@ -138,4 +138,175 @@ theorem RootHiddenStateRel.materialize_other
     · simp [LazyRevealProbe.State.materialize, Function.update_of_ne heq,
         hrel.other_values other hother]
 
+theorem firstMissingInputCoordinatePlan_eq_of_rootHiddenStateRel
+    {target : Position} {leftOutput rightOutput : HashOutput}
+    {left right : LazyRevealProbe.State Coordinate}
+    (hrel : RootHiddenStateRel target leftOutput rightOutput left right)
+    (input : HashInput) : ∀ slot coordinates,
+    firstMissingInputCoordinatePlan left input slot coordinates =
+      firstMissingInputCoordinatePlan right input slot coordinates := by
+  intro slot coordinates
+  induction coordinates generalizing slot with
+  | nil => rfl
+  | cons coordinate remaining ih =>
+      rw [firstMissingInputCoordinatePlan, firstMissingInputCoordinatePlan]
+      have hpresent := hrel.values_isSome_eq coordinate
+      cases hleft : left.values coordinate with
+      | none =>
+          cases hright : right.values coordinate with
+          | none => rfl
+          | some rightValue => simp [hleft, hright] at hpresent
+      | some leftValue =>
+          cases hright : right.values coordinate with
+          | none => simp [hleft, hright] at hpresent
+          | some rightValue =>
+              exact ih (slot + 1)
+
+theorem leafInputProbePlan_eq_of_rootHiddenStateRel
+    {target : Position} {leftOutput rightOutput : HashOutput}
+    {left right : LazyRevealProbe.State Coordinate}
+    (hrel : RootHiddenStateRel target leftOutput rightOutput left right)
+    (input : HashInput) (candidate : Probe)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) :
+    leafInputProbePlan left input candidate lay tree leafIdx =
+      leafInputProbePlan right input candidate lay tree leafIdx := by
+  unfold leafInputProbePlan
+  have hpresent := hrel.values_isSome_eq candidate.coordinate
+  cases hleft : left.values candidate.coordinate with
+  | none =>
+      cases hright : right.values candidate.coordinate with
+      | none => rfl
+      | some rightValue => simp [hleft, hright] at hpresent
+  | some leftValue =>
+      cases hright : right.values candidate.coordinate with
+      | none => simp [hleft, hright] at hpresent
+      | some rightValue =>
+          exact firstMissingInputCoordinatePlan_eq_of_rootHiddenStateRel hrel input 0
+            ((Position.leaf lay tree leafIdx).children.map Coordinate.position)
+
+theorem purePlanProbingHashQuery_eq_of_rootHiddenStateRel
+    {target : Position} {leftOutput rightOutput : HashOutput}
+    {left right : LazyRevealProbe.State Coordinate}
+    (hrel : RootHiddenStateRel target leftOutput rightOutput left right)
+    (parameter : PublicParameter) (input : HashInput) :
+    purePlanProbingHashQuery parameter input left =
+      purePlanProbingHashQuery parameter input right := by
+  unfold purePlanProbingHashQuery
+  cases hprobe : decodeProbe? parameter input with
+  | some candidate =>
+      cases hposition : decodePosition? parameter input with
+      | none => rfl
+      | some position =>
+          cases position with
+          | leaf lay tree leafIdx =>
+              simp only
+              rw [leafInputProbePlan_eq_of_rootHiddenStateRel hrel]
+          | chain | node | ftsLeaf | ftsNode | ftsRoots => rfl
+  | none =>
+      cases hposition : decodePosition? parameter input with
+      | none => rfl
+      | some position =>
+          cases position with
+          | node lay tree level nodeIdx =>
+              simp only
+              rw [firstMissingInputCoordinatePlan_eq_of_rootHiddenStateRel hrel]
+          | chain | leaf | ftsLeaf | ftsNode | ftsRoots => rfl
+
+theorem rootAwarePlannedCandidate?_eq_of_rootHiddenStateRel
+    {target : Position} {leftOutput rightOutput : HashOutput}
+    {left right : LazyRevealProbe.State Coordinate}
+    (hrel : RootHiddenStateRel target leftOutput rightOutput left right)
+    (parameter : PublicParameter) (input : HashInput) :
+    rootAwarePlannedCandidate? parameter input left =
+      rootAwarePlannedCandidate? parameter input right := by
+  unfold rootAwarePlannedCandidate?
+  rw [purePlanProbingHashQuery_eq_of_rootHiddenStateRel hrel parameter input]
+
+theorem runCleanFromTable_pure_oracle
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (value : α) :
+    runCleanFromTable state fuel table
+        (pure value : OracleComp (LazyRevealProbe.World Coordinate) α) =
+      pure (some ⟨state, fuel, value, table⟩) := by
+  simp [runCleanFromTable]
+
+theorem runCleanFromTable_planFirstMissingInputCoordinate
+    (state : LazyRevealProbe.State Coordinate) (input : HashInput) :
+    ∀ slot coordinates fuel table cache,
+    runCleanFromTable state fuel table
+        ((planFirstMissingInputCoordinate input slot coordinates).run cache) =
+      pure (some ⟨state, fuel,
+        (firstMissingInputCoordinatePlan state input slot coordinates, cache), table⟩) := by
+  intro slot coordinates
+  induction coordinates generalizing slot with
+  | nil =>
+      intro fuel table cache
+      simp [planFirstMissingInputCoordinate, firstMissingInputCoordinatePlan, runCleanFromTable]
+  | cons coordinate remaining ih =>
+      intro fuel table cache
+      rw [planFirstMissingInputCoordinate, StateT.run_bind, runCleanFromTable_bind,
+        peekCoordinate_run_eq, LazyRevealProbe.peekQuery, runCleanFromTable_peek_query_bind]
+      rw [runCleanFromTable_pure_oracle]
+      simp only [pure_bind]
+      cases hvalue : state.values coordinate with
+      | none => simp [hvalue, firstMissingInputCoordinatePlan, runCleanFromTable]
+      | some output =>
+          rw [show truncateHash <$> some output = some (truncateHash output) by rfl]
+          rw [ih (slot + 1) fuel table cache]
+          simp [hvalue, firstMissingInputCoordinatePlan]
+
+theorem runCleanFromTable_planLeafInputProbe
+    (state : LazyRevealProbe.State Coordinate)
+    (input : HashInput) (candidate : Probe)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    runCleanFromTable state fuel table
+        ((planLeafInputProbe input candidate lay tree leafIdx).run cache) =
+      pure (some ⟨state, fuel,
+        (leafInputProbePlan state input candidate lay tree leafIdx, cache), table⟩) := by
+  rw [planLeafInputProbe, StateT.run_bind, runCleanFromTable_bind,
+    peekCoordinate_run_eq, LazyRevealProbe.peekQuery, runCleanFromTable_peek_query_bind]
+  rw [runCleanFromTable_pure_oracle]
+  simp only [pure_bind]
+  cases hvalue : state.values candidate.coordinate with
+  | none => simp [hvalue, leafInputProbePlan, runCleanFromTable]
+  | some output =>
+      rw [show truncateHash <$> some output = some (truncateHash output) by rfl]
+      rw [runCleanFromTable_planFirstMissingInputCoordinate state input 0
+        ((Position.leaf lay tree leafIdx).children.map Coordinate.position) fuel table cache]
+      simp [hvalue, leafInputProbePlan]
+
+theorem runCleanFromTable_planProbingHashQuery
+    (parameter : PublicParameter) (input : HashInput)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    runCleanFromTable state fuel table
+        ((planProbingHashQuery parameter input).run cache) =
+      pure (some ⟨state, fuel,
+        (purePlanProbingHashQuery parameter input state, cache), table⟩) := by
+  unfold planProbingHashQuery purePlanProbingHashQuery
+  cases hprobe : decodeProbe? parameter input with
+  | some candidate =>
+      cases hposition : decodePosition? parameter input with
+      | none => simp [runCleanFromTable]
+      | some position =>
+          cases position with
+          | leaf lay tree leafIdx =>
+              simp only [StateT.run_bind, runCleanFromTable_bind]
+              rw [runCleanFromTable_planLeafInputProbe]
+              simp [runCleanFromTable]
+          | chain | node | ftsLeaf | ftsNode | ftsRoots =>
+              simp [runCleanFromTable]
+  | none =>
+      cases hposition : decodePosition? parameter input with
+      | none => simp [runCleanFromTable]
+      | some position =>
+          cases position with
+          | node lay tree level nodeIdx =>
+              simp only [StateT.run_bind, runCleanFromTable_bind]
+              rw [runCleanFromTable_planFirstMissingInputCoordinate]
+              simp [runCleanFromTable]
+          | chain | leaf | ftsLeaf | ftsNode | ftsRoots =>
+              simp [runCleanFromTable]
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
