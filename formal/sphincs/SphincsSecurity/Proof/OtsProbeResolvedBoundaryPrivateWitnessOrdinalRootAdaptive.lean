@@ -646,4 +646,143 @@ theorem rootEncodingCacheRelatesStored_simulateQ_rootAvoidingComputation
       · rw [if_neg hsafe, simulateQ_pure, simulateQ_pure]
         exact ((rootEncodingCacheCouples_pure parameter target leftRoot rightRoot none).relates).toStored
 
+theorem rootAwarePlannedCandidate_root_plan_or_encodingGuess
+    {parameter : PublicParameter} {input : HashInput}
+    {state : LazyRevealProbe.State Coordinate} {candidate : Probe}
+    {target : Position}
+    (hcandidate : rootAwarePlannedCandidate? parameter input state = some candidate)
+    (hcoordinate : candidate.coordinate = .position target) :
+    (purePlanProbingHashQuery parameter input state).candidate? = some candidate ∨
+      EncodingInputGuessesRoot parameter target candidate.candidate input := by
+  unfold rootAwarePlannedCandidate? at hcandidate
+  cases hplan : (purePlanProbingHashQuery parameter input state).candidate? with
+  | some planned =>
+      simp only [hplan] at hcandidate
+      have heq : planned = candidate := Option.some.inj hcandidate
+      subst candidate
+      exact Or.inl rfl
+  | none =>
+      simp only [hplan] at hcandidate
+      right
+      unfold EncodingInputGuessesRoot
+      cases candidate with
+      | mk coordinate candidateDigest =>
+          simp only at hcoordinate ⊢
+          subst coordinate
+          exact hcandidate
+
+theorem Probe.exists_atPosition_of_matchesInput
+    {parameter : PublicParameter} {input : HashInput} {probe : Probe}
+    (hmatch : probe.MatchesInput parameter input) :
+    ∃ position, AtPosition parameter input position := by
+  rcases probe with ⟨coordinate, candidate⟩
+  cases coordinate with
+  | chainStart lay tree leafIdx chainIdx =>
+      obtain ⟨step, _hstep, hinput⟩ := hmatch
+      exact ⟨.chain lay tree leafIdx chainIdx step, digestBytes candidate, hinput⟩
+  | position position =>
+      cases position with
+      | chain lay tree leafIdx chainIdx step =>
+          by_cases hnext : step.val + 1 < chainLength - 1
+          · simp only [Probe.MatchesInput, hnext, ↓reduceDIte] at hmatch
+            obtain ⟨nextStep, _hstep, hinput⟩ := hmatch
+            exact ⟨.chain lay tree leafIdx chainIdx nextStep, digestBytes candidate, hinput⟩
+          · simp only [Probe.MatchesInput, hnext, ↓reduceDIte] at hmatch
+            obtain ⟨_hchain, payload, hinput, _hslot⟩ := hmatch
+            exact ⟨.leaf lay tree leafIdx, payload, hinput⟩
+      | leaf | node | ftsLeaf | ftsNode | ftsRoots =>
+          simp [Probe.MatchesInput] at hmatch
+
+theorem decodeProbe?_eq_none_of_atEncodingPosition
+    {parameter : PublicParameter} {input : HashInput}
+    {position : EncodingPosition}
+    (hencoding : AtEncodingPosition parameter input position) :
+    decodeProbe? parameter input = none := by
+  rw [decodeProbe?_eq_none_iff]
+  intro probe hmatch
+  obtain ⟨structuralPosition, hposition⟩ := probe.exists_atPosition_of_matchesInput hmatch
+  exact hencoding.not_atPosition structuralPosition hposition
+
+theorem decodePosition?_eq_none_of_atEncodingPosition
+    {parameter : PublicParameter} {input : HashInput}
+    {position : EncodingPosition}
+    (hencoding : AtEncodingPosition parameter input position) :
+    decodePosition? parameter input = none := by
+  classical
+  unfold decodePosition?
+  rw [dif_neg]
+  rintro ⟨structuralPosition, hposition⟩
+  exact hencoding.not_atPosition structuralPosition hposition
+
+theorem rootAwarePlannedCandidate?_eq_some_of_encodingInputGuessesRoot
+    {parameter : PublicParameter} {target : Position} {root : Digest}
+    {input : HashInput} (state : LazyRevealProbe.State Coordinate)
+    (hguess : EncodingInputGuessesRoot parameter target root input) :
+    rootAwarePlannedCandidate? parameter input state =
+      some ⟨.position target, root⟩ := by
+  have hdecode : decodeEncodingLayerRootCandidate? parameter input =
+      some ⟨.position target, root⟩ := hguess
+  have hcandidate :=
+    (decodeEncodingLayerRootCandidate?_eq_some_iff parameter input
+      ⟨.position target, root⟩).mp hdecode
+  obtain ⟨position, index, hencoding, _htree, _hleaf, _hlayer, _hcandidate⟩ := hcandidate
+  have hprobe := decodeProbe?_eq_none_of_atEncodingPosition hencoding
+  have hposition := decodePosition?_eq_none_of_atEncodingPosition hencoding
+  unfold rootAwarePlannedCandidate? purePlanProbingHashQuery
+  rw [hprobe, hposition]
+  exact hdecode
+
+def RootAwareCandidateAvoidsRoots
+    (target : Position) (leftRoot rightRoot : Digest)
+    (candidate? : Option Probe) : Prop :=
+  candidate? ≠ some ⟨.position target, leftRoot⟩ ∧
+    candidate? ≠ some ⟨.position target, rightRoot⟩
+
+theorem rootInputAvoids_of_rootAwareCandidateAvoidsRoots
+    {parameter : PublicParameter} {target : Position}
+    {leftRoot rightRoot : Digest} {input : HashInput}
+    {state : LazyRevealProbe.State Coordinate}
+    (havoid : RootAwareCandidateAvoidsRoots target leftRoot rightRoot
+      (rootAwarePlannedCandidate? parameter input state)) :
+    RootInputAvoids parameter target leftRoot rightRoot input := by
+  constructor
+  · intro hguess
+    exact havoid.1
+      (rootAwarePlannedCandidate?_eq_some_of_encodingInputGuessesRoot state hguess)
+  · intro hguess
+    exact havoid.2
+      (rootAwarePlannedCandidate?_eq_some_of_encodingInputGuessesRoot state hguess)
+
+theorem privateWitnessAtOrdinal_of_firstPrivateWitnessOrdinal?_eq_some
+    {witness : PrivateHitWitness} {candidates : List Probe}
+    {ordinal : Fin candidates.length}
+    (hfirst : firstPrivateWitnessOrdinal? witness candidates = some ordinal) :
+    PrivateWitnessAtOrdinal witness candidates ordinal := by
+  classical
+  let matching := Finset.univ.filter fun selected : Fin candidates.length =>
+    PrivateWitnessAtOrdinal witness candidates selected
+  have hmatching : matching.Nonempty := by
+    by_contra hnone
+    unfold firstPrivateWitnessOrdinal? at hfirst
+    simp [matching, hnone] at hfirst
+  unfold firstPrivateWitnessOrdinal? at hfirst
+  simp only [matching, hmatching, dif_pos, Option.some.injEq] at hfirst
+  subst ordinal
+  exact (Finset.mem_filter.mp (matching.min'_mem hmatching)).2
+
+theorem earlier_candidate_ne_of_witnessFirstUsesOrdinal
+    {ordinal : Nat} {output : PrivateWitnessPlanOutput}
+    (hfirst : WitnessFirstUsesOrdinal ordinal output)
+    (witness : PrivateHitWitness) (hwitness : output.1 = some witness)
+    (earlier : Fin output.2.length) (hlt : earlier.val < ordinal)
+    (target : Position)
+    (hcoordinate : (output.2.get earlier).coordinate = .position target)
+    (hposition : witness.position = target) :
+    (output.2.get earlier).candidate ≠ truncateHash witness.output := by
+  intro heq
+  apply not_privateWitnessAtOrdinal_of_witnessFirstUsesOrdinal_of_lt hfirst earlier hlt
+    witness hwitness
+  unfold PrivateWitnessAtOrdinal
+  exact ⟨hcoordinate.trans (congrArg Coordinate.position hposition.symm), heq.symm⟩
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
