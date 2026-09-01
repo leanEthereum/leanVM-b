@@ -1127,6 +1127,64 @@ theorem runDirectResolvedWitnessFromTable_afterPlan_eq_publicPlan
                 rw [hpublic] at hbase
                 exact hbase
 
+theorem runDirectResolvedWitnessFromTable_publishOrdinaryInput
+    (table : OtsSecretIndex → HashOutput) (coordinate : Coordinate)
+    (input : HashInput) (output : HashOutput) (context : DeferredContext)
+    (fuel : Nat) (cache : SplitHashCache) :
+    runDirectResolvedWitnessFromTable context fuel table
+        ((publishOrdinaryInput coordinate input output).run cache) =
+      pure (.done ⟨
+        { context with state := context.state.publish coordinate },
+        fuel,
+        (output, Function.update cache (.ordinary input) (some output)),
+        table⟩) := by
+  unfold publishOrdinaryInput publishCoordinate
+  rw [StateT.run_bind, runDirectResolvedWitnessFromTable_bind]
+  simp only [StateT.run_liftM, LazyRevealProbe.publishQuery]
+  rw [runDirectResolvedWitnessFromTable_publish_query_bind]
+  simp [StateT.run_modify, runDirectResolvedWitnessFromTable]
+
+theorem relTriple_runDirectResolvedWitness_publishOrdinaryInput_stable
+    (table : OtsSecretIndex → HashOutput) (coordinate : Coordinate)
+    (input : HashInput) (output : HashOutput)
+    (left right : DeferredContext) (leftFuel rightFuel : Nat)
+    (leftCache rightCache : SplitHashCache)
+    (hcontext : FinalizationContextLE table left right)
+    (hfuel : leftFuel ≤ rightFuel)
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hvalues : LazyRevealProbe.ValuesLE left.state right.state)
+    (hpublished : PublishedValues left.state)
+    (hleftValue : left.state.values coordinate = some output)
+    (hrightMaterialized : right = directDeferredContext right.state) :
+    RelTriple
+      (runDirectResolvedWitnessFromTable left leftFuel table
+        ((publishOrdinaryInput coordinate input output).run leftCache))
+      (runDirectResolvedDetailedFromTable right rightFuel table
+        ((publishOrdinaryInput coordinate input output).run rightCache))
+      (DirectWitnessMaterializedStableRunEq table) := by
+  have hrightValue : right.state.values coordinate = some output :=
+    hvalues coordinate output hleftValue
+  rw [runDirectResolvedWitnessFromTable_publishOrdinaryInput,
+    runDirectResolvedDetailedFromTable_publishOrdinaryInput]
+  apply relTriple_pure_pure
+  left
+  exact
+    { value_eq := rfl
+      context_le := hcontext.publish coordinate
+      remaining_le := hfuel
+      left_table := rfl
+      right_table := rfl
+      cache_eq := by
+        rw [ordinaryQueryCache_update, ordinaryQueryCache_update, hcache]
+      revealed_eq := by
+        simpa [LazyRevealProbe.State.publish] using congrArg (insert coordinate) hrevealed
+      values_le := hvalues
+      left_published := hpublished.publish_of_value coordinate output hleftValue
+      right_materialized := by
+        rw [hrightMaterialized]
+        simp [directDeferredContext, directDeferredValues_publish] }
+
 theorem witnessMaterializedStableCouples_ensureCoordinate
     (table : OtsSecretIndex → HashOutput) (coordinate : Coordinate) :
     WitnessMaterializedStableCouples table (ensureCoordinate coordinate) := by
@@ -1580,6 +1638,246 @@ theorem witnessMaterializedStableCouples_revealCoordinateOutput
         ⟨lay, tree, leafIdx, chainIdx⟩
   | position position =>
       exact witnessMaterializedStableCouples_revealCoordinateOutput_position table position
+
+set_option maxRecDepth 100000 in
+theorem witnessMaterializedStableCouplesBetween_revealPublishOrdinaryInput
+    (table : OtsSecretIndex → HashOutput)
+    (coordinate : Coordinate) (input : HashInput) :
+    WitnessMaterializedStableCouplesBetween table
+      (revealPublishOrdinaryInput coordinate input)
+      (revealPublishOrdinaryInput coordinate input) := by
+  intro left right leftFuel rightFuel leftCache rightCache hcontext hfuel hcache hrevealed
+    hvalues hpublished hrightMaterialized
+  unfold revealPublishOrdinaryInput
+  rw [StateT.run_bind, StateT.run_bind]
+  apply relTriple_runDirectResolvedWitness_detailed_bind_with_support_stable table
+    ((revealCoordinateOutput coordinate).run leftCache)
+    ((revealCoordinateOutput coordinate).run rightCache)
+    (fun output cache => (publishOrdinaryInput coordinate input output).run cache)
+    (fun output cache => (publishOrdinaryInput coordinate input output).run cache)
+    left right leftFuel rightFuel
+  · exact witnessMaterializedStableCouples_revealCoordinateOutput table coordinate
+      left right leftFuel rightFuel leftCache rightCache hcontext hfuel hcache hrevealed hvalues
+      hpublished hrightMaterialized
+  · intro leftResult rightResult hleftSupport _hrightSupport hrelation
+    have hleftDetailed : DirectDetailedResult.done leftResult ∈ support
+        (runDirectResolvedDetailedFromTable left leftFuel table
+          ((revealCoordinateOutput coordinate).run leftCache)) := by
+      rw [← map_erase_runDirectResolvedWitnessFromTable
+        ((revealCoordinateOutput coordinate).run leftCache) left leftFuel table,
+        support_map]
+      exact ⟨DirectWitnessResult.done leftResult, hleftSupport, rfl⟩
+    have hleftValue :=
+      value_of_done_runDirectResolvedDetailedFromTable_revealCoordinateOutput table coordinate
+        left leftFuel leftCache leftResult hleftDetailed
+    rw [hrelation.left_table, hrelation.right_table, ← hrelation.value_eq]
+    exact relTriple_runDirectResolvedWitness_publishOrdinaryInput_stable table coordinate input
+      leftResult.value.1 leftResult.context rightResult.context leftResult.remaining
+      rightResult.remaining leftResult.value.2 rightResult.value.2 hrelation.context_le
+      hrelation.remaining_le hrelation.cache_eq hrelation.revealed_eq hrelation.values_le
+      hrelation.left_published hleftValue hrelation.right_materialized
+
+theorem witnessMaterializedStableCouplesBetween_resolvePublicKnownInput
+    (table : OtsSecretIndex → HashOutput)
+    (parameter : PublicParameter) (publicState : LazyRevealProbe.State Coordinate)
+    (coordinate : Coordinate) (input : HashInput) :
+    WitnessMaterializedStableCouplesBetween table
+      (resolvePublicKnownInput parameter publicState coordinate input)
+      (resolvePublicKnownInput parameter publicState coordinate input) := by
+  unfold resolvePublicKnownInput
+  cases hknown : purePeekTableInput parameter publicState coordinate with
+  | none =>
+      exact (witnessMaterializedStableCouples_splitHashQuery_ordinary table input).toBetween
+  | some knownInput =>
+      by_cases heq : knownInput = input
+      · simp only [heq, ↓reduceIte]
+        exact witnessMaterializedStableCouplesBetween_revealPublishOrdinaryInput table coordinate
+          input
+      · simp only [heq, ↓reduceIte]
+        exact (witnessMaterializedStableCouples_splitHashQuery_ordinary table input).toBetween
+
+theorem witnessMaterializedStableCouplesBetween_publicPlan_of_none
+    (table : OtsSecretIndex → HashOutput)
+    (parameter : PublicParameter) (input : HashInput)
+    (publicState : LazyRevealProbe.State Coordinate) (plan : PlannedHashQuery)
+    (hcandidate : plan.candidate? = none) :
+    WitnessMaterializedStableCouplesBetween table
+      (probingHashQueryAfterPublicPlan parameter input publicState plan)
+      (probingHashQueryAfterPublicPlan parameter input publicState plan) := by
+  unfold probingHashQueryAfterPublicPlan
+  rw [show executeCandidate? plan.candidate? = pure () by simp [hcandidate]]
+  simp only [pure_bind]
+  cases plan.action with
+  | ordinary =>
+      exact (witnessMaterializedStableCouples_splitHashQuery_ordinary table input).toBetween
+  | resolve coordinate =>
+      exact witnessMaterializedStableCouplesBetween_resolvePublicKnownInput table parameter
+        publicState coordinate input
+
+theorem witnessMaterializedStableCouplesBetweenPositive_publicPlan
+    (table : OtsSecretIndex → HashOutput)
+    (parameter : PublicParameter) (input : HashInput)
+    (publicState : LazyRevealProbe.State Coordinate) (plan : PlannedHashQuery) :
+    WitnessMaterializedStableCouplesBetweenPositive table
+      (probingHashQueryAfterPublicPlan parameter input publicState plan)
+      (probingHashQueryAfterPublicPlan parameter input publicState plan) := by
+  unfold probingHashQueryAfterPublicPlan executeCandidate?
+  cases planCandidate : plan.candidate? with
+  | none =>
+      simp only [pure_bind]
+      cases plan.action with
+      | ordinary =>
+          intro left right leftFuel rightFuel leftCache rightCache _hpositive
+          exact (witnessMaterializedStableCouples_splitHashQuery_ordinary table input).toBetween
+            left right leftFuel rightFuel leftCache rightCache
+      | resolve coordinate =>
+          intro left right leftFuel rightFuel leftCache rightCache _hpositive
+          exact witnessMaterializedStableCouplesBetween_resolvePublicKnownInput table parameter
+            publicState coordinate input left right leftFuel rightFuel leftCache rightCache
+  | some candidate =>
+      apply (witnessMaterializedStableCouplesBetween_probe table candidate).bind
+      intro _
+      cases plan.action with
+      | ordinary =>
+          exact (witnessMaterializedStableCouples_splitHashQuery_ordinary table input).toBetween
+      | resolve coordinate =>
+          exact witnessMaterializedStableCouplesBetween_resolvePublicKnownInput table parameter
+            publicState coordinate input
+
+noncomputable def probingHashQueryPublicAction
+    (parameter : PublicParameter) (input : HashInput)
+    (publicState : LazyRevealProbe.State Coordinate) (action : PlannedHashAction) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) HashOutput :=
+  match action with
+  | .ordinary => splitHashQuery (.ordinary input)
+  | .resolve coordinate => resolvePublicKnownInput parameter publicState coordinate input
+
+noncomputable def probingHashQueryAfterRootAwarePublicPlan
+    (parameter : PublicParameter) (input : HashInput)
+    (publicState : LazyRevealProbe.State Coordinate) (plan : PlannedHashQuery) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) HashOutput := do
+  executeCandidate? (rootAwareCandidateForPlan? parameter input plan)
+  probingHashQueryPublicAction parameter input publicState plan.action
+
+theorem probingHashQueryAfterRootAwarePublicPlan_eq_publicPlan_of_candidate
+    (parameter : PublicParameter) (input : HashInput)
+    (publicState : LazyRevealProbe.State Coordinate) (plan : PlannedHashQuery)
+    (candidate : Probe) (hcandidate : plan.candidate? = some candidate) :
+    probingHashQueryAfterRootAwarePublicPlan parameter input publicState plan =
+      probingHashQueryAfterPublicPlan parameter input publicState plan := by
+  unfold probingHashQueryAfterRootAwarePublicPlan probingHashQueryAfterPublicPlan
+    probingHashQueryPublicAction rootAwareCandidateForPlan?
+  rw [hcandidate]
+  cases plan.action <;> rfl
+
+theorem probingHashQueryAfterRootAwarePublicPlan_eq_probe_then_publicPlan
+    (parameter : PublicParameter) (input : HashInput)
+    (publicState : LazyRevealProbe.State Coordinate) (plan : PlannedHashQuery)
+    (candidate : Probe) (hplan : plan.candidate? = none)
+    (hdecode : decodeEncodingLayerRootCandidate? parameter input = some candidate) :
+    probingHashQueryAfterRootAwarePublicPlan parameter input publicState plan = (do
+      probe candidate
+      probingHashQueryAfterPublicPlan parameter input publicState plan) := by
+  unfold probingHashQueryAfterRootAwarePublicPlan probingHashQueryAfterPublicPlan
+    probingHashQueryPublicAction rootAwareCandidateForPlan?
+  rw [hplan, hdecode]
+  cases plan.action <;> rfl
+
+theorem probingHashQueryAfterRootAwarePublicPlan_eq_publicPlan_of_none
+    (parameter : PublicParameter) (input : HashInput)
+    (publicState : LazyRevealProbe.State Coordinate) (plan : PlannedHashQuery)
+    (hplan : plan.candidate? = none)
+    (hdecode : decodeEncodingLayerRootCandidate? parameter input = none) :
+    probingHashQueryAfterRootAwarePublicPlan parameter input publicState plan =
+      probingHashQueryAfterPublicPlan parameter input publicState plan := by
+  unfold probingHashQueryAfterRootAwarePublicPlan probingHashQueryAfterPublicPlan
+    probingHashQueryPublicAction rootAwareCandidateForPlan?
+  rw [hplan, hdecode]
+  cases plan.action <;> rfl
+
+theorem witnessMaterializedStableCouplesBetween_publicAction
+    (table : OtsSecretIndex → HashOutput)
+    (parameter : PublicParameter) (input : HashInput)
+    (publicState : LazyRevealProbe.State Coordinate) (action : PlannedHashAction) :
+    WitnessMaterializedStableCouplesBetween table
+      (probingHashQueryPublicAction parameter input publicState action)
+      (probingHashQueryPublicAction parameter input publicState action) := by
+  cases action with
+  | ordinary =>
+      exact (witnessMaterializedStableCouples_splitHashQuery_ordinary table input).toBetween
+  | resolve coordinate =>
+      exact witnessMaterializedStableCouplesBetween_resolvePublicKnownInput table parameter
+        publicState coordinate input
+
+set_option maxRecDepth 100000 in
+theorem relTriple_runDirectResolvedWitness_afterPlan_rootAwarePublic
+    (table : OtsSecretIndex → HashOutput)
+    (parameter : PublicParameter) (input : HashInput)
+    (publicState : LazyRevealProbe.State Coordinate) (plan : PlannedHashQuery)
+    (left right : DeferredContext) (leftFuel rightFuel : Nat)
+    (leftCache rightCache : SplitHashCache)
+    (hpublicState : publicState = left.state)
+    (hpositive : 0 < leftFuel) (hstrictFuel : leftFuel < rightFuel)
+    (hcontext : FinalizationContextLE table left right)
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hvalues : LazyRevealProbe.ValuesLE left.state right.state)
+    (hpublished : PublishedValues left.state)
+    (hrightMaterialized : right = directDeferredContext right.state) :
+    RelTriple
+      (runDirectResolvedWitnessFromTable left leftFuel table
+        ((probingHashQueryAfterPlan parameter input plan).run leftCache))
+      (runDirectResolvedDetailedFromTable right rightFuel table
+        ((probingHashQueryAfterRootAwarePublicPlan parameter input publicState plan).run
+          rightCache))
+      (DirectWitnessMaterializedStableRunEq table) := by
+  subst publicState
+  rw [runDirectResolvedWitnessFromTable_afterPlan_eq_publicPlan parameter input plan left
+    leftFuel table leftCache]
+  cases hplan : plan.candidate? with
+  | some candidate =>
+      rw [probingHashQueryAfterRootAwarePublicPlan_eq_publicPlan_of_candidate parameter input
+        left.state plan candidate hplan]
+      exact witnessMaterializedStableCouplesBetweenPositive_publicPlan table parameter input
+        left.state plan left right leftFuel rightFuel leftCache rightCache hpositive hcontext
+        (by omega) hcache hrevealed hvalues hpublished hrightMaterialized
+  | none =>
+      cases hdecode : decodeEncodingLayerRootCandidate? parameter input with
+      | none =>
+          rw [probingHashQueryAfterRootAwarePublicPlan_eq_publicPlan_of_none parameter input
+            left.state plan hplan hdecode]
+          exact witnessMaterializedStableCouplesBetween_publicPlan_of_none table parameter input
+            left.state plan hplan left right leftFuel rightFuel leftCache rightCache hcontext
+            (by omega) hcache hrevealed hvalues hpublished hrightMaterialized
+      | some candidate =>
+          rw [probingHashQueryAfterRootAwarePublicPlan_eq_probe_then_publicPlan parameter input
+            left.state plan candidate hplan hdecode]
+          unfold probingHashQueryAfterPublicPlan
+          rw [show executeCandidate? plan.candidate? = pure () by simp [hplan]]
+          simp only [pure_bind, StateT.run_bind]
+          have hcoupling (action : PlannedHashAction) :=
+            relTriple_runDirectResolvedWitness_detailed_bind_stable table
+            (pure ((), leftCache)) ((probe candidate).run rightCache)
+            (fun _ cache =>
+              (probingHashQueryPublicAction parameter input left.state action).run cache)
+            (fun _ cache =>
+              (probingHashQueryPublicAction parameter input left.state action).run cache)
+            left right leftFuel rightFuel
+            (relTriple_pure_probe_right_witness table candidate left right leftFuel rightFuel
+              leftCache rightCache hstrictFuel hcontext hcache hrevealed hvalues hpublished
+              hrightMaterialized)
+            (fun leftResult rightResult hrelation => by
+              rw [hrelation.left_table, hrelation.right_table]
+              exact witnessMaterializedStableCouplesBetween_publicAction table parameter input
+                left.state action leftResult.context rightResult.context
+                leftResult.remaining rightResult.remaining leftResult.value.2 rightResult.value.2
+                hrelation.context_le hrelation.remaining_le hrelation.cache_eq
+                hrelation.revealed_eq hrelation.values_le hrelation.left_published
+                hrelation.right_materialized)
+          cases haction : plan.action <;>
+            simpa [haction, probingHashQueryPublicAction] using hcoupling plan.action
 
 theorem witnessMaterializedStableCouples_ordinaryRomImpl
     (table : OtsSecretIndex → HashOutput) (query : OracleWorld.Domain) :
