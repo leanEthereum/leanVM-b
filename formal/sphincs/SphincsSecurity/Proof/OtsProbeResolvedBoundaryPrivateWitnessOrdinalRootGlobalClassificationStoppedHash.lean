@@ -160,6 +160,97 @@ theorem stopped_cause_of_mem_observedMaterializedHashContinuation
         hstepCause hrest
 
 set_option maxRecDepth 100000 in
+theorem candidatesAvoidRoot_of_aligned_tracked
+    (table : OtsSecretIndex → HashOutput)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (candidate : Probe) (left right : DeferredContext)
+    (hbefore : SnapshotsBefore snapshots left)
+    (hcontext : FinalizationContextLE table left right)
+    (hrightMaterialized : right = directDeferredContext right.state)
+    (hnoEarlier : ∀ observation ∈ observations,
+      ¬observation.ExistingHiddenHit)
+    (haligned : SnapshotsObservedAt table snapshots observations)
+    (htracked : CleanProbeObservationsTrackedBy observations right.state)
+    (position : Position) (output : HashOutput)
+    (hcandidate : candidate = ⟨.position position, truncateHash output⟩)
+    (hstate : left.state.values (.position position) = none)
+    (hprivate : left.values position = some output)
+    (hhidden : candidate.coordinate ∉ left.state.revealed) :
+    CandidatesAvoidRoot position (truncateHash output)
+      (snapshots.map PlannedProbeSnapshot.toProbe) := by
+  have hleftHidden : Coordinate.position position ∉ left.state.revealed := by
+    simpa [hcandidate] using hhidden
+  have hleftResolved : resolvedCompletionValue table left (.position position) = some output := by
+    simp [resolvedCompletionValue, DeferredContext.positionValue, hstate, hprivate]
+  have hrightResolved :
+      resolvedCompletionValue table right (.position position) = some output := by
+    rw [← hcontext.view.valueEq]
+    exact hleftResolved
+  have hrightValue : right.state.values (.position position) = some output := by
+    rw [hrightMaterialized] at hrightResolved
+    cases hvalue : right.state.values (.position position) with
+    | none =>
+        simp [resolvedCompletionValue, DeferredContext.positionValue, directDeferredContext,
+          directDeferredValues, hvalue] at hrightResolved
+    | some stored =>
+        have hstored : stored = output := by
+          simpa [resolvedCompletionValue, DeferredContext.positionValue, directDeferredContext,
+            directDeferredValues, hvalue] using hrightResolved
+        simpa [hvalue, hstored]
+  intro earlier hearlier heq
+  obtain ⟨mappedOrdinal, hmapped⟩ := List.mem_iff_get.mp hearlier
+  let snapshotOrdinal : Fin snapshots.length :=
+    ⟨mappedOrdinal.val, by simpa using mappedOrdinal.isLt⟩
+  have hsnapshotProbe : (snapshots.get snapshotOrdinal).probe = earlier := by
+    simpa [snapshotOrdinal] using hmapped
+  let observationOrdinal : Fin observations.length :=
+    ⟨snapshotOrdinal.val, by rw [← haligned.length_eq]; exact snapshotOrdinal.isLt⟩
+  have hpair := haligned.get snapshotOrdinal.isLt observationOrdinal.isLt
+  have hpair' : PlannedProbeSnapshot.ObservedAt table
+      (snapshots.get snapshotOrdinal) (observations.get observationOrdinal) := by
+    simpa [observationOrdinal] using hpair
+  have hobservationProbe :
+      (observations.get observationOrdinal).toProbe =
+        ⟨.position position, truncateHash output⟩ := by
+    rw [hpair'.1, hsnapshotProbe, heq]
+  have hobservationCoordinate :
+      (observations.get observationOrdinal).coordinate = .position position :=
+    congrArg Probe.coordinate hobservationProbe
+  have hobservationCandidate :
+      (observations.get observationOrdinal).candidate = truncateHash output :=
+    congrArg Probe.candidate hobservationProbe
+  have hsnapshotHidden : Coordinate.position position ∉
+      (snapshots.get snapshotOrdinal).context.state.revealed := by
+    intro hrevealed
+    exact hleftHidden
+      ((hbefore (snapshots.get snapshotOrdinal) (List.get_mem _ _)).1 hrevealed)
+  have hobservationHidden :
+      (observations.get observationOrdinal).revealedAtProbe = false := by
+    rw [hpair'.2.2.1, hobservationCoordinate]
+    exact decide_eq_false hsnapshotHidden
+  have hobservationTracked := htracked (observations.get observationOrdinal)
+    (List.get_mem _ _)
+  cases hobservationValue :
+      (observations.get observationOrdinal).valueAtProbe with
+  | some stored =>
+      have hstored := hobservationTracked.1 stored hobservationValue
+      rw [hobservationCoordinate, hrightValue] at hstored
+      have heqStored : stored = output := Option.some.inj hstored.symm
+      subst stored
+      exact (hnoEarlier (observations.get observationOrdinal) (List.get_mem _ _)
+        ⟨hobservationHidden, output, hobservationValue, hobservationCandidate.symm⟩).elim
+  | none =>
+      rcases hobservationTracked.2 hobservationValue hobservationHidden with
+        hpending | ⟨stored, hstored, hmismatch⟩
+      · rw [hobservationCoordinate, hrightValue] at hpending
+        simp at hpending
+      · rw [hobservationCoordinate, hrightValue] at hstored
+        have heqStored : stored = output := Option.some.inj hstored.symm
+        subst stored
+        exact (hmismatch hobservationCandidate.symm).elim
+
+set_option maxRecDepth 100000 in
 theorem relTriple_source_observedMaterializedHashContinuation_firstStopped_of_private
     (parameter : PublicParameter) (root : Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
@@ -178,6 +269,8 @@ theorem relTriple_source_observedMaterializedHashContinuation_firstStopped_of_pr
     (hnoEarlier : ∀ observation ∈ observations,
       ¬observation.ExistingHiddenHit)
     (haligned : SnapshotsObservedAt table snapshots observations)
+    (hbefore : SnapshotsBefore snapshots left)
+    (htracked : CleanProbeObservationsTrackedBy observations right.state)
     (hsource : ∀ output ∈ support source,
       PrivateWitnessSnapshotExtends
         (snapshots ++ [(⟨candidate, left⟩ : PlannedProbeSnapshot)]) output)
@@ -219,7 +312,12 @@ theorem relTriple_source_observedMaterializedHashContinuation_firstStopped_of_pr
       have hleftHidden : candidate.coordinate ∉ left.state.revealed := by
         rwa [hrevealed]
       exact selectedPrivateSnapshotHitAt_of_appended_privateStructuralHit snapshots candidate left
-        sourceOutput (hsource sourceOutput hrelation.1.2) hcontext.leftCompletable hleftHidden hhit
+        sourceOutput (hsource sourceOutput hrelation.1.2) hcontext.leftCompletable hleftHidden
+        (fun position output hcandidate' hstate hprivate =>
+          candidatesAvoidRoot_of_aligned_tracked table snapshots observations candidate left right
+            hbefore hcontext hrightMaterialized hnoEarlier haligned htracked position output
+            hcandidate' hstate hprivate hleftHidden)
+        hhit
 
 set_option maxRecDepth 100000 in
 theorem relTriple_source_observedMaterializedHashContinuation_firstStopped_of_cause
@@ -287,6 +385,8 @@ theorem relTriple_source_observedMaterializedHashContinuation_firstStopped_of_no
     (hnoEarlier : ∀ observation ∈ observations,
       ¬observation.ExistingHiddenHit)
     (haligned : SnapshotsObservedAt table snapshots observations)
+    (hbefore : SnapshotsBefore snapshots left)
+    (htracked : CleanProbeObservationsTrackedBy observations right.state)
     (hsource : ∀ output ∈ support source,
       PrivateWitnessSnapshotExtends
         (snapshots ++ [(⟨candidate, left⟩ : PlannedProbeSnapshot)]) output)
@@ -322,7 +422,7 @@ theorem relTriple_source_observedMaterializedHashContinuation_firstStopped_of_no
   · exact relTriple_source_observedMaterializedHashContinuation_firstStopped_of_private
       parameter root ftsSecret input plan candidate next source snapshots observations left right
       remaining table cache hcandidate hcontext hrevealed hrightMaterialized hhidden hnoEarlier
-      haligned hsource hprivate hdoomed
+      haligned hbefore htracked hsource hprivate hdoomed
   · apply relTriple_source_observedMaterializedHashContinuation_firstStopped_of_cause
       parameter root ftsSecret input plan candidate next source observations right.state remaining
       table cache hcandidate hhidden hdoomed

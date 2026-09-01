@@ -780,6 +780,7 @@ theorem relTriple_directSnapshotBoundary_observedMaterialized_firstStopped
     (hrightMaterialized : right = directDeferredContext right.state)
     (hcanonical : CanonicalMaterializedValues table left)
     (haligned : SnapshotsObservedAt table snapshots observations)
+    (hbefore : SnapshotsBefore snapshots left)
     (htracked : CleanProbeObservationsTrackedBy observations right.state)
     (hcovered : CleanProbeObservationsCoverPending observations right.state)
     (hnoHit : ∀ observation ∈ observations, ¬observation.ExistingHiddenHit)
@@ -902,6 +903,10 @@ theorem relTriple_directSnapshotBoundary_observedMaterialized_firstStopped
                   (observedResolvedResult observations nextRight)
                   hrightSupport
                 simpa [observedResolvedResult] using hremaining.trans_lt hbudget
+              have hnextBefore : SnapshotsBefore snapshots canonical :=
+                (hbefore.of_done_runDirectResolvedWitnessFromTable
+                  ((splitUniformImpl n).run leftCache) left leftFuel table nextLeft
+                  hleftSupport).canonicalize_right table
               unfold canonicalizeDirectWitnessSnapshotObserve
                 classifyDirectWitnessSnapshotObserve
               simp only [canonical, hnotPrivate, ↓reduceDIte, hclean.left_published,
@@ -915,7 +920,8 @@ theorem relTriple_directSnapshotBoundary_observedMaterialized_firstStopped
                   hcanonicalRun.right_materialized
                   (canonicalizeMaterializedValues_canonical table nextLeft.context
                     hclean.context_le.view.leftConsistent)
-                  haligned hnextTracked hnextCovered hnoHit (by omega) (by omega) (by omega)
+                  haligned hnextBefore hnextTracked hnextCovered hnoHit (by omega) (by omega)
+                  (by omega)
                   hnextBudget)
           | inr input =>
               simp only
@@ -1047,6 +1053,10 @@ theorem relTriple_directSnapshotBoundary_observedMaterialized_firstStopped
                     (observedResolvedResult nextObservations nextRight)
                     hrightSupport
                   simpa [observedResolvedResult] using hremaining.trans_lt hbudget
+                have hnextBefore : SnapshotsBefore nextSnapshots canonical :=
+                  ((hbefore.appendPlannedSnapshot candidate?).of_done_runDirectResolvedWitnessFromTable
+                    ((probingHashQueryAfterPlan parameter input plan).run leftCache) left leftFuel
+                    table nextLeft hleftSupport).canonicalize_right table
                 unfold canonicalizeDirectWitnessSnapshotObserve
                   classifyDirectWitnessSnapshotObserve
                 simp only [canonical, hnotPrivate, ↓reduceDIte, hclean.left_published,
@@ -1061,7 +1071,8 @@ theorem relTriple_directSnapshotBoundary_observedMaterialized_firstStopped
                     hcanonicalRun.right_materialized
                     (canonicalizeMaterializedValues_canonical table nextLeft.context
                       hclean.context_le.view.leftConsistent)
-                    hnextAligned hnextTracked hnextCovered hnextNoHit (by omega) (by omega)
+                    hnextAligned hnextBefore hnextTracked hnextCovered hnextNoHit (by omega)
+                    (by omega)
                     (by omega) hnextBudget)
               unfold runDirectWitnessSnapshotObserve
               cases hcandidate : candidate? with
@@ -1206,7 +1217,7 @@ theorem relTriple_directSnapshotBoundary_observedMaterialized_firstStopped
                             nextSnapshots)
                           snapshots observations left right (rightFuel - 1) table rightCache
                           hcandidate hcontext hrevealed hcanonical hrightMaterialized
-                          hcandidateRevealed hnoHit haligned hsource hpostCard (by
+                          hcandidateRevealed hnoHit haligned hbefore htracked hsource hpostCard (by
                             simpa [postRight] using hpostCompletable)
                       have hrightFuelEq : rightFuel - 1 + 1 = rightFuel := by omega
                       have hresult : RelTriple
@@ -1314,6 +1325,10 @@ theorem relTriple_directSnapshotBoundary_observedMaterialized_firstStopped
               right.state rightFuel table (observedResolvedResult observations nextRight)
               hrightSupport
             simpa [observedResolvedResult] using hremaining.trans_lt hbudget
+          have hnextBefore : SnapshotsBefore snapshots canonical :=
+            (hbefore.of_done_runDirectResolvedWitnessFromTable
+              ((maskedSign parameter root ftsSecret message).run leftCache) left leftFuel table
+              nextLeft hleftSupport).canonicalize_right table
           unfold canonicalizeDirectWitnessSnapshotObserve classifyDirectWitnessSnapshotObserve
           simp only [canonical, hnotPrivate, ↓reduceDIte, hclean.left_published,
             ↓reduceIte, hleftCompletable]
@@ -1327,5 +1342,6 @@ theorem relTriple_directSnapshotBoundary_observedMaterialized_firstStopped
               hcanonicalRun.right_materialized
               (canonicalizeMaterializedValues_canonical table nextLeft.context
                 hclean.context_le.view.leftConsistent)
-              haligned hnextTracked hnextCovered hnoHit (by omega) (by omega) (by omega)
+              haligned hnextBefore hnextTracked hnextCovered hnoHit (by omega) (by omega)
+              (by omega)
               hnextBudget)

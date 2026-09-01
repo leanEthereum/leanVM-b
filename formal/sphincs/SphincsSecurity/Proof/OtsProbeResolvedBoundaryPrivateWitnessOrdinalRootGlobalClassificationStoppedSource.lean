@@ -237,7 +237,9 @@ def SelectedPrivateSnapshotHitAt
       (source.2.get selected).probe = ⟨.position position, truncateHash output⟩ ∧
       (source.2.get selected).context.state.values (.position position) = none ∧
       Coordinate.position position ∉ (source.2.get selected).context.state.revealed ∧
-      (source.2.get selected).context.values position = some output
+      (source.2.get selected).context.values position = some output ∧
+      CandidatesAvoidRoot position (truncateHash output)
+        ((source.2.map PlannedProbeSnapshot.toProbe).take ordinal)
 
 theorem privateCandidate_eq_of_addPending_privateStructuralHit
     (candidate : Probe) (context : DeferredContext)
@@ -279,6 +281,12 @@ theorem selectedPrivateSnapshotHitAt_of_appended_privateStructuralHit
       (snapshots ++ [(⟨candidate, context⟩ : PlannedProbeSnapshot)]) source)
     (hcompletable : DeferredCompletable table context)
     (hhidden : candidate.coordinate ∉ context.state.revealed)
+    (havoid : ∀ position output,
+      candidate = ⟨.position position, truncateHash output⟩ →
+      context.state.values (.position position) = none →
+      context.values position = some output →
+      CandidatesAvoidRoot position (truncateHash output)
+        (snapshots.map PlannedProbeSnapshot.toProbe))
     (hhit : PrivateStructuralHit
       ({ context with
         state := context.state.addPending candidate.coordinate candidate.candidate } :
@@ -301,7 +309,7 @@ theorem selectedPrivateSnapshotHitAt_of_appended_privateStructuralHit
           source.2[snapshots.length] := hextends.getElem hltCurrent
     rw [← hpref]
     simp
-  refine ⟨selected, rfl, position, output, ?_, ?_, ?_, ?_⟩
+  refine ⟨selected, rfl, position, output, ?_, ?_, ?_, ?_, ?_⟩
   · rw [hselected]
     simpa using hcandidate
   · rw [hselected]
@@ -311,6 +319,11 @@ theorem selectedPrivateSnapshotHitAt_of_appended_privateStructuralHit
     exact hhidden
   · rw [hselected]
     exact hprivate
+  · rw [← List.map_take]
+    obtain ⟨tail, htail⟩ := hextends
+    rw [← htail]
+    simp only [List.append_assoc, List.take_left]
+    exact havoid position output hcandidate hvalue hprivate
 
 theorem FirstExistingHiddenHitAt.prefix
     {before : ObservedCleanRunResult α} {after : ObservedCleanRunResult β}
@@ -468,6 +481,12 @@ theorem relTriple_source_observedMaterializedBoundary_selectedStopped
         (snapshots ++ [(⟨candidate, context⟩ : PlannedProbeSnapshot)]) output)
     (hcompletable : DeferredCompletable table context)
     (hhidden : candidate.coordinate ∉ context.state.revealed)
+    (havoid : ∀ position output,
+      candidate = ⟨.position position, truncateHash output⟩ →
+      context.state.values (.position position) = none →
+      context.values position = some output →
+      CandidatesAvoidRoot position (truncateHash output)
+        (snapshots.map PlannedProbeSnapshot.toProbe))
     (hhit : PrivateStructuralHit
       ({ context with
         state := context.state.addPending candidate.coordinate candidate.candidate } :
@@ -500,7 +519,7 @@ theorem relTriple_source_observedMaterializedBoundary_selectedStopped
       refine ⟨result, rfl, hdoomedResult.1, hdoomedResult.2, ?_, ?_⟩
       exact hfirst.prefix hprefix
       exact selectedPrivateSnapshotHitAt_of_appended_privateStructuralHit snapshots candidate
-        context sourceOutput (hsource sourceOutput hrelation.1.2) hcompletable hhidden hhit
+        context sourceOutput (hsource sourceOutput hrelation.1.2) hcompletable hhidden havoid hhit
 
 set_option maxRecDepth 100000 in
 theorem relTriple_source_observedMaterializedBoundary_firstStopped_of_selected
@@ -518,6 +537,12 @@ theorem relTriple_source_observedMaterializedBoundary_firstStopped_of_selected
         (snapshots ++ [(⟨candidate, context⟩ : PlannedProbeSnapshot)]) output)
     (hcompletable : DeferredCompletable table context)
     (hhidden : candidate.coordinate ∉ context.state.revealed)
+    (havoid : ∀ position output,
+      candidate = ⟨.position position, truncateHash output⟩ →
+      context.state.values (.position position) = none →
+      context.values position = some output →
+      CandidatesAvoidRoot position (truncateHash output)
+        (snapshots.map PlannedProbeSnapshot.toProbe))
     (hhit : PrivateStructuralHit
       ({ context with
         state := context.state.addPending candidate.coordinate candidate.candidate } :
@@ -532,7 +557,7 @@ theorem relTriple_source_observedMaterializedBoundary_firstStopped_of_selected
   apply relTriple_post_mono
     (relTriple_source_observedMaterializedBoundary_selectedStopped parameter root ftsSecret
       computation source snapshots candidate context observations state fuel table cache hsource
-      hcompletable hhidden hhit hfirst hdoomed)
+      hcompletable hhidden havoid hhit hfirst hdoomed)
   intro sourceOutput observed hrelation
   exact hrelation.to_firstStopped
 

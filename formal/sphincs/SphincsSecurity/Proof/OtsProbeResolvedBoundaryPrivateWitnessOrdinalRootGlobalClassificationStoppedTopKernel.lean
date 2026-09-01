@@ -94,7 +94,8 @@ theorem relTriple_afterPublishedRoot_firstStopped
       hcanonicalRun.values_le hcanonicalRun.left_published hcanonicalRun.right_materialized
       (canonicalizeMaterializedValues_canonical table left.context
         hclean.context_le.view.leftConsistent)
-      (by simp [SnapshotsObservedAt]) hrightTracked hrightCovered (by simp)
+      (by simp [SnapshotsObservedAt]) (SnapshotsBefore.nil canonical)
+      hrightTracked hrightCovered (by simp)
       (by omega) (by omega) (by omega) hbudget)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
