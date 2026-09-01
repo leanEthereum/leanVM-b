@@ -302,6 +302,19 @@ def DirectWitnessPreservesPublished
       (runDirectResolvedWitnessFromTable context fuel table (computation.run cache)) →
     DirectWitnessPublishedResult result
 
+theorem DirectWitnessPreservesPublished.result
+    {computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α}
+    (hpreserves : DirectWitnessPreservesPublished computation)
+    (context : DeferredContext) (cache : SplitHashCache) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (result : DirectWitnessResult (α × SplitHashCache))
+    (hpublished : PublishedValues context.state)
+    (hresult : result ∈ support
+      (runDirectResolvedWitnessFromTable context fuel table (computation.run cache))) :
+    DirectWitnessPublishedResult result := by
+  exact hpreserves context cache fuel table result hpublished hresult
+
 theorem DirectWitnessPreservesPublished.pure (value : α) :
     DirectWitnessPreservesPublished
       (pure value : StateT SplitHashCache
@@ -1223,6 +1236,7 @@ theorem sourceSnapshotStopInvariant_of_mem_granularDetailedRetainedRest
   exact sourceSnapshotStopInvariant_of_mem_retainedResolvedFinalization table value.1 nextContext
     remaining nextValue nextSnapshots hnextBefore hnextPublished finalOutput hfinal
 
+attribute [local irreducible] maskedPublishedTreeRoot in
 set_option maxHeartbeats 2000000 in
 set_option maxRecDepth 100000 in
 theorem sourceSnapshotStopInvariant_of_mem_granularAll
@@ -1234,20 +1248,47 @@ theorem sourceSnapshotStopInvariant_of_mem_granularAll
       (granularAllDirectBoundaryNormalizedPrivateWitnessSnapshot adversary parameter table
         ftsSecret fuel)) :
     SourceSnapshotStopInvariant output := by
-  unfold granularAllDirectBoundaryNormalizedPrivateWitnessSnapshot at houtput
   let initialContext : DeferredContext :=
     { state := (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
       values := emptyDeferredStructuralValues }
-  refine sourceSnapshotStopInvariant_of_mem_runDirectWitnessSnapshotObserve _ [] initialContext
-    fuel table (maskedPublishedTreeRoot.run emptySplitHashCache)
-    (SnapshotsBefore.nil initialContext) ?_ ?_ output houtput
-  · intro result hresult
-    exact directWitnessPreservesPublished_maskedPublishedTreeRoot initialContext
-      emptySplitHashCache fuel table result publishedValues_empty hresult
-  · intro result nextOutput hresult hbefore hpublished hnext
+  change output ∈ support (runDirectWitnessSnapshotObserve
+    (granularDetailedRetainedRestNormalizedPrivateWitnessSnapshotObserve adversary parameter table
+      ftsSecret) [] initialContext fuel table
+    (maskedPublishedTreeRoot.run emptySplitHashCache)) at houtput
+  have hbefore : SnapshotsBefore ([] : List PlannedProbeSnapshot) initialContext :=
+    SnapshotsBefore.nil initialContext
+  have hpreserves : DirectWitnessPreservesPublished maskedPublishedTreeRoot :=
+    directWitnessPreservesPublished_maskedPublishedTreeRoot
+  have hinitialPublished : PublishedValues initialContext.state := by
+    exact publishedValues_empty
+  let hpreservesResult := fun result =>
+    hpreserves.result initialContext emptySplitHashCache fuel table result hinitialPublished
+  have hobserve : ∀ result nextOutput,
+      DirectWitnessResult.done result ∈ support
+        (runDirectResolvedWitnessFromTable initialContext fuel table
+          (maskedPublishedTreeRoot.run emptySplitHashCache)) →
+      SnapshotsBefore [] result.context →
+      PublishedValues result.context.state →
+      nextOutput ∈ support
+        (granularDetailedRetainedRestNormalizedPrivateWitnessSnapshotObserve adversary parameter
+          table ftsSecret result.context result.remaining result.value []) →
+      SourceSnapshotStopInvariant nextOutput := by
+    intro result nextOutput _ hnextBefore hpublished hnext
     exact sourceSnapshotStopInvariant_of_mem_granularDetailedRetainedRest adversary parameter table
-      ftsSecret result.context result.remaining result.value [] hbefore hpublished nextOutput hnext
+      ftsSecret result.context result.remaining result.value [] hnextBefore hpublished nextOutput
+      hnext
+  exact sourceSnapshotStopInvariant_of_mem_runDirectWitnessSnapshotObserve
+    (observe := granularDetailedRetainedRestNormalizedPrivateWitnessSnapshotObserve adversary
+      parameter table ftsSecret)
+    (snapshots := []) (context := initialContext) (fuel := fuel) (table := table)
+    (computation := maskedPublishedTreeRoot.run emptySplitHashCache)
+    hbefore hpreservesResult hobserve output houtput
 
+attribute [local irreducible]
+  granularAllDirectBoundaryNormalizedPrivateWitnessSnapshot maskedPublishedTreeRoot in
+set_option linter.constructorNameAsVariable false in
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
 theorem sourceSnapshotStopInvariant_of_mem_sampledGranularAll
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat)
@@ -1256,7 +1297,9 @@ theorem sourceSnapshotStopInvariant_of_mem_sampledGranularAll
       (sampledGranularAllDirectBoundaryNormalizedPrivateWitnessSnapshot adversary parameter
         ftsSecret fuel)) :
     SourceSnapshotStopInvariant output := by
-  unfold sampledGranularAllDirectBoundaryNormalizedPrivateWitnessSnapshot at houtput
+  change output ∈ support (sampleOtsHashTable >>= fun table =>
+    granularAllDirectBoundaryNormalizedPrivateWitnessSnapshot adversary parameter table ftsSecret
+      fuel) at houtput
   rw [mem_support_bind_iff] at houtput
   obtain ⟨table, _htable, hrest⟩ := houtput
   exact sourceSnapshotStopInvariant_of_mem_granularAll adversary parameter table ftsSecret fuel
@@ -1318,27 +1361,10 @@ theorem selectedObservationHidden_of_sourceSnapshotStopInvariant
       (source.2.get snapshotOrdinal).context.state.revealed := by
     intro hrevealed
     exact hsourceFacts.1
-      (hsourceFacts.2 (source.2.get snapshotOrdinal) (List.get_mem _ _)).1 hrevealed
+      ((hsourceFacts.2 (source.2.get snapshotOrdinal) (List.get_mem _ _)).1 hrevealed)
   rw [hpair'.2.2.1]
   simp only [decide_eq_false_iff_not]
   rwa [hcoordinate]
-
-set_option maxRecDepth 100000 in
-theorem witnessFirstUsesSomeDelayedLayerRootSnapshot_of_aligned_tracked_sourceInvariant
-    {table : OtsSecretIndex → HashOutput}
-    {source : PrivateWitnessSnapshotOutput}
-    {result : ObservedCleanRunResult α}
-    (hsource : SourceSnapshotStopInvariant source)
-    (haligned : SnapshotsObservedAt table source.2 result.observations)
-    (hfirst : WitnessFirstUsesSomeLayerRoot
-      (erasePrivateWitnessSnapshotOutput source))
-    (htracked : CleanProbeObservationsTrackedBy result.observations result.state)
-    (hstored : ∀ witness,
-      (erasePrivateWitnessSnapshotOutput source).1 = some witness →
-        result.state.values (Coordinate.position witness.position) = some witness.output) :
-    WitnessFirstUsesSomeDelayedLayerRootSnapshot source := by
-  exact witnessFirstUsesSomeDelayedLayerRootSnapshot_of_aligned_tracked haligned hfirst htracked
-    hstored (selectedObservationHidden_of_sourceSnapshotStopInvariant hsource haligned)
 
 theorem PlannedProbeSnapshot.observedAt_of_finalizationContextLE
     (table : OtsSecretIndex → HashOutput)
@@ -1493,6 +1519,23 @@ theorem witnessFirstUsesSomeDelayedLayerRootSnapshot_of_aligned_tracked
   change source.2.map PlannedProbeSnapshot.toProbe <+:
     result.observations.map CleanProbeObservation.toProbe
   rw [haligned.map_toProbe_eq]
+
+set_option maxRecDepth 100000 in
+theorem witnessFirstUsesSomeDelayedLayerRootSnapshot_of_aligned_tracked_sourceInvariant
+    {table : OtsSecretIndex → HashOutput}
+    {source : PrivateWitnessSnapshotOutput}
+    {result : ObservedCleanRunResult α}
+    (hsource : SourceSnapshotStopInvariant source)
+    (haligned : SnapshotsObservedAt table source.2 result.observations)
+    (hfirst : WitnessFirstUsesSomeLayerRoot
+      (erasePrivateWitnessSnapshotOutput source))
+    (htracked : CleanProbeObservationsTrackedBy result.observations result.state)
+    (hstored : ∀ witness,
+      (erasePrivateWitnessSnapshotOutput source).1 = some witness →
+        result.state.values (Coordinate.position witness.position) = some witness.output) :
+    WitnessFirstUsesSomeDelayedLayerRootSnapshot source := by
+  exact witnessFirstUsesSomeDelayedLayerRootSnapshot_of_aligned_tracked haligned hfirst htracked
+    hstored (selectedObservationHidden_of_sourceSnapshotStopInvariant hsource haligned)
 
 def attachCleanProbeObservations (observations : List CleanProbeObservation) :
     Option (CleanRunResult α) → Option (ObservedCleanRunResult α)
