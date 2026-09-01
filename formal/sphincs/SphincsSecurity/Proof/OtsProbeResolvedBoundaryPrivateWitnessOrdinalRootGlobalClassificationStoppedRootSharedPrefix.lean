@@ -36,6 +36,15 @@ private theorem map_bind_of_map_eq
   apply bind_congr
   exact hf
 
+private theorem evalDist_map_bind_congr
+    (p : ProbComp α) (f : α → ProbComp β) (project : β → γ)
+    (g : α → ProbComp γ)
+    (hf : ∀ value, evalDist (project <$> f value) = evalDist (g value)) :
+    evalDist (project <$> (p >>= f)) = evalDist (p >>= g) := by
+  rw [map_bind, evalDist_bind, evalDist_bind]
+  apply bind_congr
+  exact hf
+
 def observedResultOfDetailed
     (observations : List CleanProbeObservation) :
     DirectDetailedResult (α × SplitHashCache) →
@@ -238,6 +247,151 @@ theorem evalDist_map_snd_continueObservedRootSelectionSharedPrefix
         exact map_snd_finishObservedWithSelectionOutcome parameter publicRoot ftsSecret
           (next result.value.1) observations result.context.state result.remaining table
           result.value.2 .failed
+
+noncomputable def materializedActualRootAwareOrdinalSelectionOutcome
+    (ordinal : Nat) (parameter : PublicParameter) (publicRoot : Digest)
+    (target : Position) (leftRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (candidates : List Probe) (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    ProbComp MaterializedSelectionOutcome := by
+  classical
+  exact OracleComp.construct
+    (C := fun _ : OracleComp (OracleWorld + SigningSpec) α =>
+      List Probe → LazyRevealProbe.State Coordinate → Nat →
+        (OtsSecretIndex → HashOutput) → SplitHashCache →
+          ProbComp MaterializedSelectionOutcome)
+    (fun _value candidates _state _fuel _table _cache =>
+      if hselected : ordinal < candidates.length then
+        pure (.finished (some (candidates.get ⟨ordinal, hselected⟩)))
+      else pure (.finished none))
+    (fun query next recursivelyRun candidates state fuel table cache =>
+      if hselected : ordinal < candidates.length then
+        pure (.finished (some (candidates.get ⟨ordinal, hselected⟩)))
+      else
+        match query with
+        | .inl (.inl n) =>
+            runDirectResolvedDetailedFromTable (directDeferredContext state) fuel table
+                ((splitUniformImpl n).run cache) >>=
+              finishMaterializedSelectionOutcome target table
+                (fun nextState remaining value nextCache laterCandidates =>
+                  recursivelyRun value laterCandidates nextState remaining table nextCache)
+                candidates
+        | .inl (.inr input) =>
+            let publicContext := materializedCanonicalContext table state
+            let plan := purePlanProbingHashQuery parameter input publicContext.state
+            let candidate? := rootAwareCandidateForPlan? parameter input plan
+            let nextCandidates := appendPlannedCandidate candidates candidate?
+            if hnextSelected : ordinal < nextCandidates.length then
+              pure (.finished (some (nextCandidates.get ⟨ordinal, hnextSelected⟩)))
+            else if RootAwareCandidateAvoidsRoots target leftRoot rightRoot candidate? then
+              runDirectResolvedDetailedFromTable (directDeferredContext state) fuel table
+                  ((probingHashQueryAfterRootAwarePublicPlan parameter input publicContext.state
+                    plan).run cache) >>=
+                finishMaterializedSelectionOutcome target table
+                  (fun nextState remaining value nextCache laterCandidates =>
+                    recursivelyRun value laterCandidates nextState remaining table nextCache)
+                  nextCandidates
+            else pure (.finished none)
+        | .inr message =>
+            runDirectResolvedDetailedFromTable (directDeferredContext state) fuel table
+                ((maskedSign parameter publicRoot ftsSecret message).run cache) >>=
+              finishMaterializedSelectionOutcome target table
+                (fun nextState remaining value nextCache laterCandidates =>
+                  recursivelyRun value laterCandidates nextState remaining table nextCache)
+                candidates)
+    computation candidates state fuel table cache
+
+theorem materializedActualRootAwareOrdinalSelectionOutcome_uniform_query_bind
+    (ordinal : Nat) (parameter : PublicParameter) (publicRoot : Digest)
+    (target : Position) (leftRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (n : Nat)
+    (next : Fin (n + 1) → OracleComp (OracleWorld + SigningSpec) α)
+    (candidates : List Probe) (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    materializedActualRootAwareOrdinalSelectionOutcome ordinal parameter publicRoot target leftRoot
+        rightRoot ftsSecret
+        (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+          (Sum.inl (Sum.inl n))) >>= next) candidates state fuel table cache =
+      if hselected : ordinal < candidates.length then
+        pure (.finished (some (candidates.get ⟨ordinal, hselected⟩)))
+      else
+        runDirectResolvedDetailedFromTable (directDeferredContext state) fuel table
+            ((splitUniformImpl n).run cache) >>=
+          finishMaterializedSelectionOutcome target table
+            (fun nextState remaining value nextCache laterCandidates =>
+              materializedActualRootAwareOrdinalSelectionOutcome ordinal parameter publicRoot
+                target leftRoot rightRoot ftsSecret (next value) laterCandidates nextState
+                remaining table nextCache)
+            candidates := by
+  rw [materializedActualRootAwareOrdinalSelectionOutcome,
+    OracleComp.construct_query_bind]
+  unfold materializedActualRootAwareOrdinalSelectionOutcome
+  rfl
+
+theorem materializedActualRootAwareOrdinalSelectionOutcome_hash_query_bind
+    (ordinal : Nat) (parameter : PublicParameter) (publicRoot : Digest)
+    (target : Position) (leftRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (input : HashInput)
+    (next : HashOutput → OracleComp (OracleWorld + SigningSpec) α)
+    (candidates : List Probe) (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    materializedActualRootAwareOrdinalSelectionOutcome ordinal parameter publicRoot target leftRoot
+        rightRoot ftsSecret
+        (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+          (Sum.inl (Sum.inr input))) >>= next) candidates state fuel table cache =
+      if hselected : ordinal < candidates.length then
+        pure (.finished (some (candidates.get ⟨ordinal, hselected⟩)))
+      else
+        let publicContext := materializedCanonicalContext table state
+        let plan := purePlanProbingHashQuery parameter input publicContext.state
+        let candidate? := rootAwareCandidateForPlan? parameter input plan
+        let nextCandidates := appendPlannedCandidate candidates candidate?
+        if hnextSelected : ordinal < nextCandidates.length then
+          pure (.finished (some (nextCandidates.get ⟨ordinal, hnextSelected⟩)))
+        else if RootAwareCandidateAvoidsRoots target leftRoot rightRoot candidate? then
+          runDirectResolvedDetailedFromTable (directDeferredContext state) fuel table
+              ((probingHashQueryAfterRootAwarePublicPlan parameter input publicContext.state
+                plan).run cache) >>=
+            finishMaterializedSelectionOutcome target table
+              (fun nextState remaining value nextCache laterCandidates =>
+                materializedActualRootAwareOrdinalSelectionOutcome ordinal parameter publicRoot
+                  target leftRoot rightRoot ftsSecret (next value) laterCandidates nextState
+                  remaining table nextCache)
+              nextCandidates
+        else pure (.finished none) := by
+  rw [materializedActualRootAwareOrdinalSelectionOutcome,
+    OracleComp.construct_query_bind]
+  unfold materializedActualRootAwareOrdinalSelectionOutcome
+  rfl
+
+theorem materializedActualRootAwareOrdinalSelectionOutcome_sign_query_bind
+    (ordinal : Nat) (parameter : PublicParameter) (publicRoot : Digest)
+    (target : Position) (leftRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : SignRequest)
+    (next : Option Signature → OracleComp (OracleWorld + SigningSpec) α)
+    (candidates : List Probe) (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    materializedActualRootAwareOrdinalSelectionOutcome ordinal parameter publicRoot target leftRoot
+        rightRoot ftsSecret
+        (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec) (Sum.inr message)) >>= next)
+        candidates state fuel table cache =
+      if hselected : ordinal < candidates.length then
+        pure (.finished (some (candidates.get ⟨ordinal, hselected⟩)))
+      else
+        runDirectResolvedDetailedFromTable (directDeferredContext state) fuel table
+            ((maskedSign parameter publicRoot ftsSecret message).run cache) >>=
+          finishMaterializedSelectionOutcome target table
+            (fun nextState remaining value nextCache laterCandidates =>
+              materializedActualRootAwareOrdinalSelectionOutcome ordinal parameter publicRoot
+                target leftRoot rightRoot ftsSecret (next value) laterCandidates nextState
+                remaining table nextCache)
+            candidates := by
+  rw [materializedActualRootAwareOrdinalSelectionOutcome,
+    OracleComp.construct_query_bind]
+  unfold materializedActualRootAwareOrdinalSelectionOutcome
+  rfl
 
 noncomputable def observedRootSelectionSharedPrefix
     (ordinal : Nat) (parameter : PublicParameter) (publicRoot : Digest)
@@ -468,6 +622,43 @@ theorem map_fst_continueObservedRootSelectionSharedPrefix_recurse
     (fun value => observedRootSelectionSharedPrefix ordinal parameter publicRoot target leftRoot
       rightRoot ftsSecret (next value)) hrecursive detailed
 
+theorem evalDist_map_snd_continueObservedRootSelectionSharedPrefix_recurse
+    (ordinal : Nat) (parameter : PublicParameter) (publicRoot : Digest)
+    (target : Position) (leftRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (next : α → OracleComp (OracleWorld + SigningSpec) β)
+    (observations : List CleanProbeObservation) (candidates : List Probe)
+    (table : OtsSecretIndex → HashOutput)
+    (hrecursive : ∀ value state fuel cache,
+      evalDist (Prod.snd <$>
+          observedRootSelectionSharedPrefix ordinal parameter publicRoot target leftRoot rightRoot
+            ftsSecret (next value) observations candidates state fuel table cache) =
+        evalDist
+          (materializedActualRootAwareOrdinalSelectionOutcome ordinal parameter publicRoot target
+            leftRoot rightRoot ftsSecret (next value) candidates state fuel table cache))
+    (detailed : DirectDetailedResult (α × SplitHashCache)) :
+    evalDist (Prod.snd <$>
+        continueObservedRootSelectionSharedPrefix parameter publicRoot ftsSecret target next
+          observations candidates table
+          (fun value => observedRootSelectionSharedPrefix ordinal parameter publicRoot target
+            leftRoot rightRoot ftsSecret (next value)) detailed) =
+      evalDist
+        (finishMaterializedSelectionOutcome target table
+          (fun nextState remaining value nextCache laterCandidates =>
+            materializedActualRootAwareOrdinalSelectionOutcome ordinal parameter publicRoot target
+              leftRoot rightRoot ftsSecret (next value) laterCandidates nextState remaining table
+              nextCache)
+          candidates detailed) := by
+  exact evalDist_map_snd_continueObservedRootSelectionSharedPrefix parameter publicRoot ftsSecret
+    target next observations candidates table
+    (fun value => observedRootSelectionSharedPrefix ordinal parameter publicRoot target leftRoot
+      rightRoot ftsSecret (next value))
+    (fun nextState remaining value nextCache laterCandidates =>
+      materializedActualRootAwareOrdinalSelectionOutcome ordinal parameter publicRoot target
+        leftRoot rightRoot ftsSecret (next value) laterCandidates nextState remaining table
+        nextCache)
+    hrecursive detailed
+
 set_option maxRecDepth 100000 in
 set_option maxHeartbeats 4000000 in
 theorem map_fst_observedRootSelectionSharedPrefix
@@ -617,5 +808,157 @@ theorem map_fst_observedRootSelectionSharedPrefix
                     (fun value nextState remaining nextCache =>
                       ih value observations candidates nextState remaining nextCache)
                     (.done result)
+
+set_option maxRecDepth 100000 in
+set_option maxHeartbeats 4000000 in
+theorem evalDist_map_snd_observedRootSelectionSharedPrefix
+    (ordinal : Nat) (parameter : PublicParameter) (publicRoot : Digest)
+    (target : Position) (leftRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (observations : List CleanProbeObservation) (candidates : List Probe)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    evalDist (Prod.snd <$>
+        observedRootSelectionSharedPrefix ordinal parameter publicRoot target leftRoot rightRoot
+          ftsSecret computation observations candidates state fuel table cache) =
+      evalDist
+        (materializedActualRootAwareOrdinalSelectionOutcome ordinal parameter publicRoot target
+          leftRoot rightRoot ftsSecret computation candidates state fuel table cache) := by
+  induction computation using OracleComp.inductionOn generalizing
+      observations candidates state fuel cache with
+  | pure value =>
+      rw [observedRootSelectionSharedPrefix, OracleComp.construct_pure,
+        materializedActualRootAwareOrdinalSelectionOutcome, OracleComp.construct_pure]
+      by_cases hselected : ordinal < candidates.length <;> simp [hselected]
+  | query_bind query next ih =>
+      rw [observedRootSelectionSharedPrefix_query_bind]
+      cases query with
+      | inl worldQuery =>
+          cases worldQuery with
+          | inl n =>
+              rw [materializedActualRootAwareOrdinalSelectionOutcome_uniform_query_bind]
+              by_cases hselected : ordinal < candidates.length
+              · simp only [hselected, ↓reduceDIte]
+                exact map_snd_finishObservedWithSelectionOutcome parameter publicRoot ftsSecret
+                  (liftM (OracleSpec.query (Sum.inl (Sum.inl n))) >>= next) observations state fuel
+                  table cache (.finished (some (candidates.get ⟨ordinal, hselected⟩)))
+              · simp only [hselected, ↓reduceDIte]
+                apply evalDist_map_bind_congr
+                intro detailed
+                cases detailed with
+                | stopped reason =>
+                    exact
+                      evalDist_map_snd_continueObservedRootSelectionSharedPrefix_recurse ordinal
+                        parameter publicRoot target leftRoot rightRoot ftsSecret next observations
+                        candidates table
+                        (fun value nextState remaining nextCache =>
+                          ih value observations candidates nextState remaining nextCache)
+                        (.stopped reason)
+                | done result =>
+                    exact
+                      evalDist_map_snd_continueObservedRootSelectionSharedPrefix_recurse ordinal
+                        parameter publicRoot target leftRoot rightRoot ftsSecret next observations
+                        candidates table
+                        (fun value nextState remaining nextCache =>
+                          ih value observations candidates nextState remaining nextCache)
+                        (.done result)
+          | inr input =>
+              rw [materializedActualRootAwareOrdinalSelectionOutcome_hash_query_bind]
+              by_cases hselected : ordinal < candidates.length
+              · simp only [hselected, ↓reduceDIte]
+                exact map_snd_finishObservedWithSelectionOutcome parameter publicRoot ftsSecret
+                  (liftM (OracleSpec.query (Sum.inl (Sum.inr input))) >>= next) observations state
+                  fuel table cache (.finished (some (candidates.get ⟨ordinal, hselected⟩)))
+              · simp only [hselected, ↓reduceDIte]
+                let publicContext := materializedCanonicalContext table state
+                let plan := purePlanProbingHashQuery parameter input publicContext.state
+                let candidate? := rootAwareCandidateForPlan? parameter input plan
+                let nextCandidates := appendPlannedCandidate candidates candidate?
+                let nextObservations := observationsAfterCandidate observations state candidate?
+                by_cases hnextSelected : ordinal < nextCandidates.length
+                · have hactual : ordinal <
+                      (appendPlannedCandidate candidates
+                        (rootAwareCandidateForPlan? parameter input
+                          (purePlanProbingHashQuery parameter input
+                            (materializedCanonicalContext table state).state))).length := by
+                    simpa [nextCandidates, candidate?, plan, publicContext] using hnextSelected
+                  simp only [hactual, ↓reduceDIte]
+                  exact map_snd_finishObservedWithSelectionOutcome parameter publicRoot ftsSecret
+                    (liftM (OracleSpec.query (Sum.inl (Sum.inr input))) >>= next) observations state
+                    fuel table cache (.finished
+                      (some ((appendPlannedCandidate candidates
+                        (rootAwareCandidateForPlan? parameter input
+                          (purePlanProbingHashQuery parameter input
+                            (materializedCanonicalContext table state).state))).get
+                              ⟨ordinal, hactual⟩)))
+                · have hactual : ¬ordinal <
+                      (appendPlannedCandidate candidates
+                        (rootAwareCandidateForPlan? parameter input
+                          (purePlanProbingHashQuery parameter input
+                            (materializedCanonicalContext table state).state))).length := by
+                    simpa [nextCandidates, candidate?, plan, publicContext] using hnextSelected
+                  simp only [hactual, ↓reduceDIte]
+                  by_cases hsafe :
+                      RootAwareCandidateAvoidsRoots target leftRoot rightRoot candidate?
+                  · have hactualSafe : RootAwareCandidateAvoidsRoots target leftRoot rightRoot
+                        (rootAwareCandidateForPlan? parameter input
+                          (purePlanProbingHashQuery parameter input
+                            (materializedCanonicalContext table state).state)) := by
+                      simpa [candidate?, plan, publicContext] using hsafe
+                    simp only [hactualSafe, ↓reduceIte]
+                    apply evalDist_map_bind_congr
+                    intro detailed
+                    cases detailed with
+                    | stopped reason =>
+                        exact
+                          evalDist_map_snd_continueObservedRootSelectionSharedPrefix_recurse
+                            ordinal parameter publicRoot target leftRoot rightRoot ftsSecret next
+                            nextObservations nextCandidates table
+                            (fun value nextState remaining nextCache => ih value nextObservations
+                              nextCandidates nextState remaining nextCache)
+                            (.stopped reason)
+                    | done result =>
+                        exact
+                          evalDist_map_snd_continueObservedRootSelectionSharedPrefix_recurse
+                            ordinal parameter publicRoot target leftRoot rightRoot ftsSecret next
+                            nextObservations nextCandidates table
+                            (fun value nextState remaining nextCache => ih value nextObservations
+                              nextCandidates nextState remaining nextCache)
+                            (.done result)
+                  · have hactualSafe : ¬RootAwareCandidateAvoidsRoots target leftRoot rightRoot
+                        (rootAwareCandidateForPlan? parameter input
+                          (purePlanProbingHashQuery parameter input
+                            (materializedCanonicalContext table state).state)) := by
+                      simpa [candidate?, plan, publicContext] using hsafe
+                    simp only [hactualSafe, ↓reduceIte]
+                    exact map_snd_finishObservedWithSelectionOutcome parameter publicRoot ftsSecret
+                      (liftM (OracleSpec.query (Sum.inl (Sum.inr input))) >>= next) observations
+                      state fuel table cache (.finished none)
+      | inr message =>
+          rw [materializedActualRootAwareOrdinalSelectionOutcome_sign_query_bind]
+          by_cases hselected : ordinal < candidates.length
+          · simp only [hselected, ↓reduceDIte]
+            exact map_snd_finishObservedWithSelectionOutcome parameter publicRoot ftsSecret
+              (liftM (OracleSpec.query (Sum.inr message)) >>= next) observations state fuel table
+              cache (.finished (some (candidates.get ⟨ordinal, hselected⟩)))
+          · simp only [hselected, ↓reduceDIte]
+            apply evalDist_map_bind_congr
+            intro detailed
+            cases detailed with
+            | stopped reason =>
+                exact evalDist_map_snd_continueObservedRootSelectionSharedPrefix_recurse ordinal
+                  parameter publicRoot target leftRoot rightRoot ftsSecret next observations
+                  candidates table
+                  (fun value nextState remaining nextCache =>
+                    ih value observations candidates nextState remaining nextCache)
+                  (.stopped reason)
+            | done result =>
+                exact evalDist_map_snd_continueObservedRootSelectionSharedPrefix_recurse ordinal
+                  parameter publicRoot target leftRoot rightRoot ftsSecret next observations
+                  candidates table
+                  (fun value nextState remaining nextCache =>
+                    ih value observations candidates nextState remaining nextCache)
+                  (.done result)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
