@@ -177,6 +177,46 @@ noncomputable def granularAllCanonicalPrivateOrdinalSelection
             (retainedGameRestComputation adversary ⟨value.1, parameter⟩)
             candidates context remaining table value.2)) []
 
+attribute [local irreducible] maskedPublishedTreeRoot in
+set_option maxRecDepth 100000 in
+theorem privateOrdinalSelectionPendingCovered_of_mem_granularAllCanonical
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat)
+    (output : Option PrivateOrdinalSelection)
+    (houtput : output ∈ support
+      (granularAllCanonicalPrivateOrdinalSelection ordinal adversary parameter table ftsSecret
+        fuel)) :
+    PrivateOrdinalSelectionPendingCovered ordinal output := by
+  unfold granularAllCanonicalPrivateOrdinalSelection at houtput
+  rw [mem_support_bind_iff] at houtput
+  obtain ⟨result, hresult, hfinish⟩ := houtput
+  apply privateOrdinalSelectionPendingCovered_of_mem_finish ordinal _ [] result
+    (output := output) (houtput := hfinish)
+  intro resolved nextOutput heq hnextOutput
+  subst result
+  have hdetailed : DirectDetailedResult.done resolved ∈ support
+      (runDirectResolvedDetailedFromTable emptyWitnessDeferredContext fuel table
+        (maskedPublishedTreeRoot.run emptySplitHashCache)) := by
+    rw [← map_erase_runDirectResolvedWitnessFromTable
+      (maskedPublishedTreeRoot.run emptySplitHashCache) emptyWitnessDeferredContext fuel table,
+      support_map]
+    exact ⟨DirectWitnessResult.done resolved, hresult, rfl⟩
+  have hprobeBound : (maskedPublishedTreeRoot.run emptySplitHashCache).IsQueryBoundP
+      (IsUncoveredProbe []) 0 :=
+    OracleComp.IsQueryBoundP.of_imp (isUncoveredProbe_imp_isProbe [])
+      (maskedPublishedTreeRoot_probeFree emptySplitHashCache)
+  have hnextCovered := pendingCoveredBy_of_done_runDirectResolvedDetailedFromTable []
+    (maskedPublishedTreeRoot.run emptySplitHashCache) emptyWitnessDeferredContext fuel table
+      resolved pendingCoveredBy_empty hprobeBound hdetailed
+  apply privateOrdinalSelectionPendingCovered_of_mem_canonicalize ordinal table _
+    resolved.context resolved.remaining resolved.value [] _ hnextCovered nextOutput hnextOutput
+  intro nextContext finalOutput hfinalCovered hfinalOutput
+  exact privateOrdinalSelectionPendingCovered_of_mem_direct ordinal parameter resolved.value.1
+    ftsSecret (retainedGameRestComputation adversary ⟨resolved.value.1, parameter⟩) []
+    nextContext resolved.remaining table resolved.value.2 hfinalCovered (by simp) finalOutput
+    hfinalOutput
+
 noncomputable def granularAllCanonicalPrivateOrdinalNonRootRisk
     (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
     (table : OtsSecretIndex → HashOutput)

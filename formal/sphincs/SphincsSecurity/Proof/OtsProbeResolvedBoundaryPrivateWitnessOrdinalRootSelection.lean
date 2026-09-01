@@ -302,6 +302,225 @@ theorem privateOrdinalSelectionExtends_of_mem_direct
             exact ih resolved.value.1 candidates nextContext resolved.remaining
               resolved.value.2 finalOutput hfinalOutput
 
+def PrivateOrdinalSelectionPendingCovered
+    (ordinal : Nat) : Option PrivateOrdinalSelection → Prop
+  | none => True
+  | some selection =>
+      PendingCoveredBy (selection.candidates.take ordinal) selection.context
+
+theorem privateOrdinalSelectionPendingCovered_of_mem_finish
+    (ordinal : Nat)
+    (observe : DeferredContext → Nat → α → List Probe →
+      ProbComp (Option PrivateOrdinalSelection))
+    (candidates : List Probe) (result : DirectWitnessResult α)
+    (hobserve : ∀ resolved output,
+      result = .done resolved →
+      output ∈ support
+        (observe resolved.context resolved.remaining resolved.value candidates) →
+      PrivateOrdinalSelectionPendingCovered ordinal output)
+    (output : Option PrivateOrdinalSelection)
+    (houtput : output ∈ support
+      (finishDirectPrivateOrdinalSelection observe candidates result)) :
+    PrivateOrdinalSelectionPendingCovered ordinal output := by
+  cases result with
+  | stoppedFuel => simp [finishDirectPrivateOrdinalSelection] at houtput; subst output; trivial
+  | stoppedOrdinary => simp [finishDirectPrivateOrdinalSelection] at houtput; subst output; trivial
+  | stoppedPrivate witness =>
+      simp [finishDirectPrivateOrdinalSelection] at houtput
+      subst output
+      trivial
+  | done resolved => exact hobserve resolved output rfl houtput
+
+theorem privateOrdinalSelectionPendingCovered_of_mem_canonicalize
+    (ordinal : Nat) (table : OtsSecretIndex → HashOutput)
+    (observe : DeferredContext → Nat → α → List Probe →
+      ProbComp (Option PrivateOrdinalSelection))
+    (context : DeferredContext) (fuel : Nat) (value : α)
+    (candidates : List Probe)
+    (hobserve : ∀ nextContext output,
+      PendingCoveredBy candidates nextContext →
+      output ∈ support (observe nextContext fuel value candidates) →
+      PrivateOrdinalSelectionPendingCovered ordinal output)
+    (hcovered : PendingCoveredBy candidates context)
+    (output : Option PrivateOrdinalSelection)
+    (houtput : output ∈ support
+      (canonicalizeDirectPrivateOrdinalSelection table observe context fuel value candidates)) :
+    PrivateOrdinalSelectionPendingCovered ordinal output := by
+  classical
+  unfold canonicalizeDirectPrivateOrdinalSelection at houtput
+  let canonical := canonicalizeMaterializedValues table context
+  by_cases hhit : PrivateStructuralHit canonical
+  · simp [canonical, hhit] at houtput
+    subst output
+    trivial
+  · simp only [canonical, hhit, ↓reduceIte] at houtput
+    by_cases hpublished : PublishedValues context.state
+    · simp only [hpublished, ↓reduceIte] at houtput
+      by_cases hcompletable : DeferredCompletable table canonical
+      · rw [if_pos hcompletable] at houtput
+        apply hobserve canonical output
+        · exact (pendingCoveredBy_canonicalize_iff table candidates context).2 hcovered
+        · exact houtput
+      · rw [if_neg hcompletable] at houtput
+        simp only [support_pure, Set.mem_singleton_iff] at houtput
+        subst output
+        trivial
+    · simp [hpublished] at houtput
+      subst output
+      trivial
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem privateOrdinalSelectionPendingCovered_of_mem_direct
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (candidates : List Probe) (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (hcovered : PendingCoveredBy candidates context)
+    (hlength : candidates.length ≤ ordinal)
+    (output : Option PrivateOrdinalSelection)
+    (houtput : output ∈ support
+      (directDetailedBoundaryPrivateOrdinalSelection ordinal parameter root ftsSecret computation
+        candidates context fuel table cache)) :
+    PrivateOrdinalSelectionPendingCovered ordinal output := by
+  induction computation using OracleComp.inductionOn generalizing
+      candidates context fuel cache output with
+  | pure value =>
+      rw [directDetailedBoundaryPrivateOrdinalSelection, OracleComp.construct_pure] at houtput
+      have hnotSelected : ¬ordinal < candidates.length := by omega
+      simp [selectedPrivateOrdinal?, hnotSelected] at houtput
+      subst output
+      trivial
+  | query_bind query next ih =>
+      rw [directDetailedBoundaryPrivateOrdinalSelection,
+        OracleComp.construct_query_bind] at houtput
+      have hnotSelected : ¬ordinal < candidates.length := by omega
+      simp only [hnotSelected, ↓reduceDIte] at houtput
+      cases query with
+      | inl worldQuery =>
+          cases worldQuery with
+          | inl n =>
+              rw [mem_support_bind_iff] at houtput
+              obtain ⟨result, hresult, hfinish⟩ := houtput
+              apply privateOrdinalSelectionPendingCovered_of_mem_finish ordinal _ candidates result
+                (output := output) (houtput := hfinish)
+              intro resolved nextOutput heq hnextOutput
+              subst result
+              have hdetailed : DirectDetailedResult.done resolved ∈ support
+                  (runDirectResolvedDetailedFromTable context fuel table
+                    ((splitUniformImpl n).run cache)) := by
+                rw [← map_erase_runDirectResolvedWitnessFromTable
+                  ((splitUniformImpl n).run cache) context fuel table, support_map]
+                exact ⟨DirectWitnessResult.done resolved, hresult, rfl⟩
+              have hprobeBound : ((splitUniformImpl n).run cache).IsQueryBoundP
+                  (IsUncoveredProbe candidates) 0 :=
+                OracleComp.IsQueryBoundP.of_imp (isUncoveredProbe_imp_isProbe candidates)
+                  (splitUniformImpl_probeFree n cache)
+              have hnextCovered := pendingCoveredBy_of_done_runDirectResolvedDetailedFromTable
+                candidates ((splitUniformImpl n).run cache) context fuel table resolved hcovered
+                  hprobeBound hdetailed
+              apply privateOrdinalSelectionPendingCovered_of_mem_canonicalize ordinal table _
+                resolved.context resolved.remaining resolved.value candidates _ hnextCovered
+                nextOutput hnextOutput
+              intro nextContext finalOutput hfinalCovered hfinalOutput
+              exact ih resolved.value.1 candidates nextContext resolved.remaining resolved.value.2
+                hfinalCovered hlength finalOutput hfinalOutput
+          | inr input =>
+              let plan := purePlanProbingHashQuery parameter input context.state
+              let candidate? := rootAwarePlannedCandidate? parameter input context.state
+              let nextCandidates := appendPlannedCandidate candidates candidate?
+              by_cases hnextSelected : ordinal < nextCandidates.length
+              · have hactual : ordinal <
+                    (appendPlannedCandidate candidates
+                      (rootAwarePlannedCandidate? parameter input context.state)).length := by
+                  simpa [candidate?, nextCandidates] using hnextSelected
+                simp only [hactual, ↓reduceDIte, support_pure,
+                  Set.mem_singleton_iff] at houtput
+                subst output
+                change PendingCoveredBy (nextCandidates.take ordinal) context
+                cases hcandidate : candidate? with
+                | none =>
+                    have hnextEq : nextCandidates = candidates := by
+                      simp [nextCandidates, appendPlannedCandidate, hcandidate]
+                    exfalso
+                    rw [hnextEq] at hnextSelected
+                    omega
+                | some candidate =>
+                    have hlengthEq : candidates.length = ordinal := by
+                      have hnextLength : nextCandidates.length = candidates.length + 1 := by
+                        simp [nextCandidates, appendPlannedCandidate, hcandidate]
+                      omega
+                    have htake : nextCandidates.take ordinal = candidates := by
+                      simp [nextCandidates, appendPlannedCandidate, hcandidate, hlengthEq]
+                    rwa [htake]
+              · have hactual : ¬ordinal <
+                    (appendPlannedCandidate candidates
+                      (rootAwarePlannedCandidate? parameter input context.state)).length := by
+                  simpa [candidate?, nextCandidates] using hnextSelected
+                simp only [hactual, ↓reduceDIte] at houtput
+                rw [mem_support_bind_iff] at houtput
+                obtain ⟨result, hresult, hfinish⟩ := houtput
+                have hnextLength : nextCandidates.length ≤ ordinal := by omega
+                have hnextCoveredAtStart : PendingCoveredBy nextCandidates context := by
+                  apply hcovered.mono_candidates
+                  unfold nextCandidates candidate? appendPlannedCandidate
+                  cases rootAwarePlannedCandidate? parameter input context.state <;> simp
+                apply privateOrdinalSelectionPendingCovered_of_mem_finish ordinal _ nextCandidates
+                  result (output := output) (houtput := hfinish)
+                intro resolved nextOutput heq hnextOutput
+                subst result
+                have hplanMem : ∀ candidate, plan.candidate? = some candidate →
+                    candidate ∈ nextCandidates := by
+                  intro candidate hcandidate
+                  have hrecorded := rootAwarePlannedCandidate?_eq_of_plan_some hcandidate
+                  simp [nextCandidates, candidate?, appendPlannedCandidate, hrecorded]
+                have hprobeBound := probingHashQueryAfterPlan_probeBound parameter input plan
+                  nextCandidates hplanMem cache
+                have hdetailed : DirectDetailedResult.done resolved ∈ support
+                    (runDirectResolvedDetailedFromTable context fuel table
+                      ((probingHashQueryAfterPlan parameter input plan).run cache)) := by
+                  rw [← map_erase_runDirectResolvedWitnessFromTable
+                    ((probingHashQueryAfterPlan parameter input plan).run cache) context fuel table,
+                    support_map]
+                  exact ⟨DirectWitnessResult.done resolved, hresult, rfl⟩
+                have hnextCovered := pendingCoveredBy_of_done_runDirectResolvedDetailedFromTable
+                  nextCandidates ((probingHashQueryAfterPlan parameter input plan).run cache)
+                    context fuel table resolved hnextCoveredAtStart hprobeBound hdetailed
+                apply privateOrdinalSelectionPendingCovered_of_mem_canonicalize ordinal table _
+                  resolved.context resolved.remaining resolved.value nextCandidates _ hnextCovered
+                  nextOutput hnextOutput
+                intro nextContext finalOutput hfinalCovered hfinalOutput
+                exact ih resolved.value.1 nextCandidates nextContext resolved.remaining
+                  resolved.value.2 hfinalCovered hnextLength finalOutput hfinalOutput
+      | inr message =>
+          rw [mem_support_bind_iff] at houtput
+          obtain ⟨result, hresult, hfinish⟩ := houtput
+          apply privateOrdinalSelectionPendingCovered_of_mem_finish ordinal _ candidates result
+            (output := output) (houtput := hfinish)
+          intro resolved nextOutput heq hnextOutput
+          subst result
+          have hprobeBound : ((maskedSign parameter root ftsSecret message).run cache).IsQueryBoundP
+              (IsUncoveredProbe candidates) 0 :=
+            OracleComp.IsQueryBoundP.of_imp (isUncoveredProbe_imp_isProbe candidates)
+              (maskedSign_probeFree parameter root ftsSecret message cache)
+          have hdetailed : DirectDetailedResult.done resolved ∈ support
+              (runDirectResolvedDetailedFromTable context fuel table
+                ((maskedSign parameter root ftsSecret message).run cache)) := by
+            rw [← map_erase_runDirectResolvedWitnessFromTable
+              ((maskedSign parameter root ftsSecret message).run cache) context fuel table,
+              support_map]
+            exact ⟨DirectWitnessResult.done resolved, hresult, rfl⟩
+          have hnextCovered := pendingCoveredBy_of_done_runDirectResolvedDetailedFromTable
+            candidates ((maskedSign parameter root ftsSecret message).run cache) context fuel table
+              resolved hcovered hprobeBound hdetailed
+          apply privateOrdinalSelectionPendingCovered_of_mem_canonicalize ordinal table _
+            resolved.context resolved.remaining resolved.value candidates _ hnextCovered
+            nextOutput hnextOutput
+          intro nextContext finalOutput hfinalCovered hfinalOutput
+          exact ih resolved.value.1 candidates nextContext resolved.remaining resolved.value.2
+            hfinalCovered hlength finalOutput hfinalOutput
+
 theorem finishDirectPrivateOrdinalSelection_bind_fire
     (selectionObserve : DeferredContext → Nat → α → List Probe →
       ProbComp (Option PrivateOrdinalSelection))
