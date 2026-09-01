@@ -2510,6 +2510,63 @@ theorem relTriple_runDirectResolvedWitness_afterPlan_observedMaterialized
         observations right.state rightFuel table rightCache)
   exact relTriple_of_evalDist_eq_right (congrArg evalDist hmap) hpost
 
+theorem SnapshotsObservedAt.appendCandidate
+    {table : OtsSecretIndex → HashOutput}
+    {snapshots : List PlannedProbeSnapshot}
+    {observations : List CleanProbeObservation}
+    {left : DeferredContext} {rightState : LazyRevealProbe.State Coordinate}
+    (haligned : SnapshotsObservedAt table snapshots observations)
+    (candidate? : Option Probe)
+    (hcontext : FinalizationContextLE table left (directDeferredContext rightState))
+    (hrevealed : left.state.revealed = rightState.revealed)
+    (hpublished : PublishedValues left.state)
+    (hcanonical : CanonicalMaterializedValues table left) :
+    SnapshotsObservedAt table
+      (appendPlannedSnapshot snapshots candidate? left)
+      (observationsAfterCandidate observations rightState candidate?) := by
+  cases candidate? with
+  | none => exact haligned
+  | some candidate =>
+      apply haligned.append
+      exact PlannedProbeSnapshot.observedAt_of_finalizationContextLE table
+        ⟨candidate, left⟩ rightState hcontext hrevealed hpublished hcanonical
+
+theorem fuel_le_remaining_add_of_done_runDirectResolvedDetailedFromTable
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (result : ResolvedRunResult α)
+    (bound : Nat)
+    (hbound : computation.IsQueryBoundP
+      (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) bound)
+    (hresult : DirectDetailedResult.done result ∈ support
+      (runDirectResolvedDetailedFromTable context fuel table computation)) :
+    fuel ≤ result.remaining + bound := by
+  have hdirect := mem_support_runDirectResolvedFromTable_of_done_detailed
+    computation context fuel table result hresult
+  have hraw := raw_done_of_mem_runDirectResolvedFromTable computation context fuel table result
+    hdirect
+  exact LazyRevealProbe.fuel_le_remaining_add_of_mem_support_runRaw_done
+    context.state result.context.state fuel result.remaining bound computation result.value hbound
+    hraw
+
+theorem fuel_le_remaining_add_of_done_runDirectResolvedWitnessFromTable
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (result : ResolvedRunResult α)
+    (bound : Nat)
+    (hbound : computation.IsQueryBoundP
+      (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) bound)
+    (hresult : DirectWitnessResult.done result ∈ support
+      (runDirectResolvedWitnessFromTable context fuel table computation)) :
+    fuel ≤ result.remaining + bound := by
+  have hdetailed : DirectDetailedResult.done result ∈ support
+      (runDirectResolvedDetailedFromTable context fuel table computation) := by
+    rw [← map_erase_runDirectResolvedWitnessFromTable computation context fuel table,
+      support_map]
+    exact ⟨.done result, hresult, rfl⟩
+  exact fuel_le_remaining_add_of_done_runDirectResolvedDetailedFromTable computation context fuel
+    table result bound hbound hdetailed
+
 noncomputable def observedMaterializedBoundary
     (parameter : PublicParameter) (root : Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
