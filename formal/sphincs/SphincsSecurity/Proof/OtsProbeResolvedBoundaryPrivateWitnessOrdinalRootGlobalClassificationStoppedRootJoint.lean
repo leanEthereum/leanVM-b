@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedRootEager
+import SphincsSecurity.Proof.MarginalCoupling
 
 /-!
 # Joint stopped layer-root endpoint
@@ -331,6 +332,105 @@ theorem relTriple_snapshotComparison_observedSuccessfulRootComparison
   refine ⟨rfl, ?_⟩
   intro hgood
   exact hrelation.cleanRootGoodForComparisonAt_of_successful hgood
+
+def SuccessfulObservedPendingSelectorRel
+    (table : OtsSecretIndex → HashOutput) (ordinal : Nat) (target : Position) :
+    (Option (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest) →
+      (Option PrivateOrdinalSelection × Digest) → Prop :=
+  fun observed selection =>
+    ∃ source : PrivateWitnessSnapshotOutput × Digest,
+      SuccessfulObservedCleanRootRel table ordinal target source observed ∧
+        (SnapshotOrdinalSelectionRel ordinal source.1 selection.1 ∧
+          source.2 = selection.2) ∧
+        PrivateOrdinalSelectionPendingCovered ordinal selection.1
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem relTriple_snapshotComparison_privateOrdinalSelectionComparison_pendingCovered
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    RelTriple
+      (do
+        let source ← granularAllCanonicalPrivateWitnessSnapshot adversary parameter table
+          ftsSecret fuel
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        pure (source, rightRoot))
+      (do
+        let selection ← granularAllCanonicalPrivateOrdinalSelection ordinal adversary parameter
+          table ftsSecret fuel
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        pure (selection, rightRoot))
+      (fun left right =>
+        (SnapshotOrdinalSelectionRel ordinal left.1 right.1 ∧ left.2 = right.2) ∧
+          PrivateOrdinalSelectionPendingCovered ordinal right.1) := by
+  apply relTriple_bind
+    (relTriple_granularAllCanonicalSnapshot_privateOrdinalSelection_pendingCovered ordinal adversary
+      parameter table ftsSecret fuel)
+  intro source selection hselection
+  apply relTriple_bind (relTriple_refl ($ᵗ Digest : ProbComp Digest))
+  intro leftRoot rightRoot hroot
+  subst rightRoot
+  exact relTriple_pure_pure ⟨⟨hselection.1, rfl⟩, hselection.2⟩
+
+set_option maxHeartbeats 4000000 in
+set_option maxRecDepth 100000 in
+theorem relTriple_observedSuccessfulRootComparison_pendingSelector
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (q : Nat) (target : Position)
+    (hbound : ∀ root,
+      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
+        IsOuterHash q)
+    (hq : q ≤ 2 ^ securityBits) :
+    RelTriple
+      (do
+        let observed ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret
+          (2 * q) table
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        pure (observed, rightRoot))
+      (do
+      let selection ← granularAllCanonicalPrivateOrdinalSelection ordinal adversary parameter table
+        ftsSecret q
+      let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+      pure (selection, rightRoot))
+      (SuccessfulObservedPendingSelectorRel table ordinal target) := by
+  have hobserved := relTriple_snapshotComparison_observedSuccessfulRootComparison ordinal adversary
+    parameter table ftsSecret q target hbound hq
+  have hselection :=
+    relTriple_snapshotComparison_privateOrdinalSelectionComparison_pendingCovered ordinal adversary
+      parameter table ftsSecret q
+  have hglued := SphincsSecurity.relTriple_trans_exists (relTriple_symm hobserved)
+    hselection
+  apply relTriple_post_mono hglued
+  intro observed selection hrelation
+  obtain ⟨source, hsource, hselection⟩ := hrelation
+  exact ⟨source, hsource, hselection.1, hselection.2⟩
+
+theorem SuccessfulObservedPendingSelectorRel.goodForRoots_pendingCovered
+    {table : OtsSecretIndex → HashOutput} {ordinal : Nat} {target : Position}
+    {observed : Option
+      (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest}
+    {selection : Option PrivateOrdinalSelection × Digest}
+    (hrelation : SuccessfulObservedPendingSelectorRel table ordinal target observed selection)
+    (hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      table ordinal target observed.2 observed.1) :
+    ∃ selected output,
+      selection.1 = some selected ∧
+        selected.GoodForRoots target output selection.2 ordinal ∧
+        PrivateOrdinalSelectionPendingCovered ordinal selection.1 := by
+  obtain ⟨source, hsource, hselection, hpending⟩ := hrelation
+  have hsourceGood := hsource.2 hgood
+  obtain ⟨selectedIndex, output, _hordinal, hselected, hgoodRoots⟩ :=
+    hsourceGood.goodForRoots
+  have hselectionEq : selection.1 =
+      some (privateOrdinalSelectionOfSnapshot selectedIndex) :=
+    hselection.1.symm.trans hselected
+  refine ⟨privateOrdinalSelectionOfSnapshot selectedIndex, output, hselectionEq, ?_, ?_⟩
+  · rw [← hselection.2]
+    exact hgoodRoots
+  · exact hpending
 
 theorem probEvent_observedSuccessfulRootComparison_le_snapshotComparison
     (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)

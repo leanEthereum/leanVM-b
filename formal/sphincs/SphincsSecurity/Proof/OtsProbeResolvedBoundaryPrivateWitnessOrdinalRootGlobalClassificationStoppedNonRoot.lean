@@ -340,6 +340,47 @@ theorem relTriple_granularAllCanonicalSnapshot_privateOrdinalSelection
     table ftsSecret (canonicalizeMaterializedValues table result.context) result.remaining
     result.value [] (by simp)
 
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem relTriple_granularAllCanonicalSnapshot_privateOrdinalSelection_supported
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    RelTriple
+      (granularAllCanonicalPrivateWitnessSnapshot adversary parameter table ftsSecret fuel)
+      (granularAllCanonicalPrivateOrdinalSelection ordinal adversary parameter table ftsSecret
+        fuel)
+      (fun source selection =>
+        SnapshotOrdinalSelectionRel ordinal source selection ∧
+          selection ∈ support
+            (granularAllCanonicalPrivateOrdinalSelection ordinal adversary parameter table
+              ftsSecret fuel)) :=
+  SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support
+    (relTriple_granularAllCanonicalSnapshot_privateOrdinalSelection ordinal adversary parameter
+      table ftsSecret fuel)
+
+attribute [local irreducible] granularAllCanonicalPrivateOrdinalSelection in
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem relTriple_granularAllCanonicalSnapshot_privateOrdinalSelection_pendingCovered
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    RelTriple
+      (granularAllCanonicalPrivateWitnessSnapshot adversary parameter table ftsSecret fuel)
+      (granularAllCanonicalPrivateOrdinalSelection ordinal adversary parameter table ftsSecret
+        fuel)
+      (fun source selection =>
+        SnapshotOrdinalSelectionRel ordinal source selection ∧
+          PrivateOrdinalSelectionPendingCovered ordinal selection) := by
+  apply relTriple_post_mono
+    (relTriple_granularAllCanonicalSnapshot_privateOrdinalSelection_supported ordinal adversary
+      parameter table ftsSecret fuel)
+  intro source selection hrelation
+  exact ⟨hrelation.1,
+    privateOrdinalSelectionPendingCovered_of_mem_granularAllCanonical ordinal adversary parameter
+      table ftsSecret fuel selection hrelation.2⟩
+
 def SelectedPrivateSnapshotNonRootHitAt
     (source : PrivateWitnessSnapshotOutput) (ordinal : Nat) : Prop :=
   ∃ selected : Fin source.2.length, ∃ target output,
