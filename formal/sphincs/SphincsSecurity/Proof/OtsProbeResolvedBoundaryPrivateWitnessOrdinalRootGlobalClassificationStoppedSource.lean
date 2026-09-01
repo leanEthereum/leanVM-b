@@ -409,6 +409,49 @@ def SnapshotObservedSelectedStoppedRel
       FirstExistingHiddenHitAt result ordinal ∧
       SelectedPrivateSnapshotHitAt source ordinal
 
+theorem missingChainStartHit_of_doomed_direct_valid
+    (table : OtsSecretIndex → HashOutput)
+    (state : LazyRevealProbe.State Coordinate)
+    (hdoomed : DoomedResolvedContext table (directDeferredContext state))
+    (hvalid : (directDeferredContext state).Valid)
+    (hcard : state.pending.card < Fintype.card Digest) :
+    MissingChainStartHit table (directDeferredContext state) := by
+  have hcauses := privateStructuralHit_or_missingChainStartHit_of_not_completable table
+    (directDeferredContext state) hvalid hdoomed.2.1 hcard hdoomed.2.2
+  exact hcauses.resolve_left (not_privateStructuralHit_of_directDeferredContext _ rfl)
+
+def SnapshotObservedFirstStoppedRel
+    (table : OtsSecretIndex → HashOutput)
+    (source : PrivateWitnessSnapshotOutput)
+    (observed : Option (ObservedCleanRunResult (α × SplitHashCache))) : Prop :=
+  observed = none ∨
+    (∃ result aligned, observed = some result ∧
+      aligned <+: result.observations ∧
+      SnapshotsObservedAt table source.2 aligned ∧
+      (∀ observation ∈ result.observations, ¬observation.ExistingHiddenHit) ∧
+      ∀ witness, source.1 = some witness →
+        result.state.values (.position witness.position) = some witness.output) ∨
+    (∃ result ordinal, observed = some result ∧
+      result.table = table ∧
+      DoomedResolvedContext table (directDeferredContext result.state) ∧
+      FirstExistingHiddenHitAt result ordinal ∧
+      SelectedPrivateSnapshotHitAt source ordinal) ∨
+    ∃ result, observed = some result ∧
+      result.table = table ∧
+      DoomedResolvedContext table (directDeferredContext result.state) ∧
+      ObservedStoppedCause table result
+
+theorem SnapshotObservedSelectedStoppedRel.to_firstStopped
+    {table : OtsSecretIndex → HashOutput} {ordinal : Nat}
+    {source : PrivateWitnessSnapshotOutput}
+    {observed : Option (ObservedCleanRunResult (α × SplitHashCache))}
+    (hrelation : SnapshotObservedSelectedStoppedRel table ordinal source observed) :
+    SnapshotObservedFirstStoppedRel table source observed := by
+  rcases hrelation with hfailed | ⟨result, hresult, htable, hdoomed, hfirst, hselected⟩
+  · exact Or.inl hfailed
+  · exact Or.inr (Or.inr (Or.inl
+      ⟨result, ordinal, hresult, htable, hdoomed, hfirst, hselected⟩))
+
 set_option maxRecDepth 100000 in
 theorem relTriple_source_observedMaterializedBoundary_selectedStopped
     (parameter : PublicParameter) (root : Digest)
@@ -458,3 +501,169 @@ theorem relTriple_source_observedMaterializedBoundary_selectedStopped
       exact hfirst.prefix hprefix
       exact selectedPrivateSnapshotHitAt_of_appended_privateStructuralHit snapshots candidate
         context sourceOutput (hsource sourceOutput hrelation.1.2) hcompletable hhidden hhit
+
+set_option maxRecDepth 100000 in
+theorem relTriple_source_observedMaterializedBoundary_firstStopped_of_selected
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (source : ProbComp PrivateWitnessSnapshotOutput)
+    (snapshots : List PlannedProbeSnapshot)
+    (candidate : Probe) (context : DeferredContext)
+    (observations : List CleanProbeObservation)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (hsource : ∀ output ∈ support source,
+      PrivateWitnessSnapshotExtends
+        (snapshots ++ [(⟨candidate, context⟩ : PlannedProbeSnapshot)]) output)
+    (hcompletable : DeferredCompletable table context)
+    (hhidden : candidate.coordinate ∉ context.state.revealed)
+    (hhit : PrivateStructuralHit
+      ({ context with
+        state := context.state.addPending candidate.coordinate candidate.candidate } :
+        DeferredContext))
+    (hfirst : FirstExistingHiddenHitAt
+      (⟨state, fuel, (), table, observations⟩ : ObservedCleanRunResult Unit) snapshots.length)
+    (hdoomed : DoomedResolvedContext table (directDeferredContext state)) :
+    RelTriple source
+      (observedMaterializedBoundary parameter root ftsSecret computation observations state fuel
+        table cache)
+      (SnapshotObservedFirstStoppedRel table) := by
+  apply relTriple_post_mono
+    (relTriple_source_observedMaterializedBoundary_selectedStopped parameter root ftsSecret
+      computation source snapshots candidate context observations state fuel table cache hsource
+      hcompletable hhidden hhit hfirst hdoomed)
+  intro sourceOutput observed hrelation
+  exact hrelation.to_firstStopped
+
+set_option maxRecDepth 100000 in
+theorem relTriple_any_observedMaterializedBoundary_firstStopped_of_cause
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (source : ProbComp PrivateWitnessSnapshotOutput)
+    (observations : List CleanProbeObservation)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (hdoomed : DoomedResolvedContext table (directDeferredContext state))
+    (hcause : MissingChainStartHit table (directDeferredContext state) ∨
+      FirstExistingHiddenChainStartHit observations) :
+    RelTriple source
+      (observedMaterializedBoundary parameter root ftsSecret computation observations state fuel
+        table cache)
+      (SnapshotObservedFirstStoppedRel table) := by
+  have hbase := relTriple_true source
+    (observedMaterializedBoundary parameter root ftsSecret computation observations state fuel
+      table cache)
+  have hboth :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hbase
+  apply relTriple_post_mono hboth
+  intro sourceOutput observed hrelation
+  cases observed with
+  | none => exact Or.inl rfl
+  | some result =>
+      right
+      right
+      right
+      refine ⟨result, rfl, ?_, ?_, ?_⟩
+      · exact (materializedDoomed_of_mem_observedMaterializedBoundary parameter root ftsSecret
+          computation observations state fuel table cache result hdoomed hrelation.2).1
+      · exact (materializedDoomed_of_mem_observedMaterializedBoundary parameter root ftsSecret
+          computation observations state fuel table cache result hdoomed hrelation.2).2
+      · exact observedStoppedCause_of_mem_observedMaterializedBoundary parameter root ftsSecret
+          computation observations state fuel table cache result hcause hrelation.2
+
+theorem SnapshotObservedFirstStoppedRel.selected_of_successful_firstRoot
+    {table : OtsSecretIndex → HashOutput}
+    {source : PrivateWitnessSnapshotOutput}
+    {result : ObservedCleanRunResult (α × SplitHashCache)}
+    (hrelation : SnapshotObservedFirstStoppedRel table source (some result))
+    (finalResult : ObservedCleanRunResult (α × SplitHashCache))
+    (hfinish : some finalResult ∈ support
+      (finishObservedCleanRunFromTable (some result)))
+    (ordinal : Nat)
+    (hfirst : FirstExistingHiddenHitAt result ordinal)
+    (hroot : ∀ selected : Fin result.observations.length,
+      selected.val = ordinal →
+        (result.observations.get selected).toProbe.IsLayerRoot) :
+    SelectedPrivateSnapshotHitAt source ordinal := by
+  rcases hrelation with hnone | haligned | hselected | hstopped
+  · simp at hnone
+  · obtain ⟨other, aligned, hresult, _hprefix, _hsnapshots, hnoHit, _hstored⟩ := haligned
+    have heq : other = result := Option.some.inj hresult.symm
+    subst other
+    obtain ⟨selected, _hordinal, hhit, _hbefore⟩ := hfirst
+    exact (hnoHit (result.observations.get selected) (List.get_mem _ _) hhit).elim
+  · obtain ⟨other, selectedOrdinal, hresult, _htable, _hdoomed,
+      hselectedFirst, hselected⟩ := hselected
+    have heq : other = result := Option.some.inj hresult.symm
+    subst other
+    obtain ⟨left, hleftOrdinal, hleftHit, hleftBefore⟩ := hselectedFirst
+    obtain ⟨right, hrightOrdinal, hrightHit, hrightBefore⟩ := hfirst
+    have hsame : left = right := firstExistingHiddenHit_selected_unique
+      ⟨hleftHit, by
+        intro earlier hearlier
+        exact hleftBefore earlier (by omega)⟩
+      ⟨hrightHit, by
+        intro earlier hearlier
+        exact hrightBefore earlier (by omega)⟩
+    have hordinals : selectedOrdinal = ordinal := by
+      have hvals := congrArg Fin.val hsame
+      omega
+    simpa [hordinals] using hselected
+  · obtain ⟨other, hresult, htable, _hdoomed, hcause⟩ := hstopped
+    have heq : other = result := Option.some.inj hresult.symm
+    subst other
+    rcases hcause with hmissing | hchain
+    · rw [← htable] at hmissing
+      exact (not_missingChainStartHit_of_mem_finishObservedCleanRunFromTable result finalResult
+        hfinish hmissing).elim
+    · obtain ⟨selected, hselected, _hhit⟩ := hchain.selected_eq hfirst
+      exact (not_firstExistingHiddenRootHitAt_of_firstChainStart hchain hfirst selected hselected
+        (hroot selected hselected)).elim
+
+theorem SnapshotObservedFirstStoppedRel.selected_or_chain_of_successful_firstNonRoot
+    {table : OtsSecretIndex → HashOutput}
+    {source : PrivateWitnessSnapshotOutput}
+    {result : ObservedCleanRunResult (α × SplitHashCache)}
+    (hrelation : SnapshotObservedFirstStoppedRel table source (some result))
+    (finalResult : ObservedCleanRunResult (α × SplitHashCache))
+    (hfinish : some finalResult ∈ support
+      (finishObservedCleanRunFromTable (some result)))
+    (ordinal : Nat)
+    (hfirst : FirstExistingHiddenHitAt result ordinal) :
+    SelectedPrivateSnapshotHitAt source ordinal ∨
+      FirstExistingHiddenChainStartHit result.observations := by
+  rcases hrelation with hnone | haligned | hselected | hstopped
+  · simp at hnone
+  · obtain ⟨other, aligned, hresult, _hprefix, _hsnapshots, hnoHit, _hstored⟩ := haligned
+    have heq : other = result := Option.some.inj hresult.symm
+    subst other
+    obtain ⟨selected, _hordinal, hhit, _hbefore⟩ := hfirst
+    exact (hnoHit (result.observations.get selected) (List.get_mem _ _) hhit).elim
+  · left
+    obtain ⟨other, selectedOrdinal, hresult, _htable, _hdoomed,
+      hselectedFirst, hselected⟩ := hselected
+    have heq : other = result := Option.some.inj hresult.symm
+    subst other
+    obtain ⟨left, hleftOrdinal, hleftHit, hleftBefore⟩ := hselectedFirst
+    obtain ⟨right, hrightOrdinal, hrightHit, hrightBefore⟩ := hfirst
+    have hsame : left = right := firstExistingHiddenHit_selected_unique
+      ⟨hleftHit, by
+        intro earlier hearlier
+        exact hleftBefore earlier (by omega)⟩
+      ⟨hrightHit, by
+        intro earlier hearlier
+        exact hrightBefore earlier (by omega)⟩
+    have hordinals : selectedOrdinal = ordinal := by
+      have hvals := congrArg Fin.val hsame
+      omega
+    simpa [hordinals] using hselected
+  · obtain ⟨other, hresult, htable, _hdoomed, hcause⟩ := hstopped
+    have heq : other = result := Option.some.inj hresult.symm
+    subst other
+    rcases hcause with hmissing | hchain
+    · rw [← htable] at hmissing
+      exact (not_missingChainStartHit_of_mem_finishObservedCleanRunFromTable result finalResult
+        hfinish hmissing).elim
+    · exact Or.inr hchain
