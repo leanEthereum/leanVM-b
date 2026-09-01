@@ -269,4 +269,66 @@ theorem probEvent_cleanRootFiber_le_goodComparison_add_weighted_exception
     (add_le_add_right
       (probEvent_cleanRootFiber_comparisonException_le table run ordinal target) _)
 
+def privateOrdinalSelectionGoodForSomeOutput
+    (target : Position) (rightRoot : Digest) (ordinal : Nat) :
+    Option PrivateOrdinalSelection → Prop
+  | none => False
+  | some selection => ∃ output,
+      selection.GoodForRoots target output rightRoot ordinal
+
+theorem relTriple_snapshotComparison_privateOrdinalSelectionComparison
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    RelTriple
+      (do
+        let source ← granularAllCanonicalPrivateWitnessSnapshot adversary parameter table
+          ftsSecret fuel
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        pure (source, rightRoot))
+      (do
+        let selection ← granularAllCanonicalPrivateOrdinalSelection ordinal adversary parameter
+          table ftsSecret fuel
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        pure (selection, rightRoot))
+      (fun left right =>
+        SnapshotOrdinalSelectionRel ordinal left.1 right.1 ∧ left.2 = right.2) := by
+  apply relTriple_bind
+    (relTriple_granularAllCanonicalSnapshot_privateOrdinalSelection ordinal adversary parameter
+      table ftsSecret fuel)
+  intro source selection hselection
+  apply relTriple_bind (relTriple_refl ($ᵗ Digest : ProbComp Digest))
+  intro leftRoot rightRoot hroot
+  subst rightRoot
+  exact relTriple_pure_pure ⟨hselection, rfl⟩
+
+theorem probEvent_goodComparison_le_privateOrdinalSelection
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (fuel : Nat) (target : Position) :
+    Pr[fun result : PrivateWitnessSnapshotOutput × Digest =>
+        SelectedPrivateSnapshotCleanRootGoodForComparisonAt
+          table result.1 ordinal target result.2 | do
+      let source ← granularAllCanonicalPrivateWitnessSnapshot adversary parameter table
+        ftsSecret fuel
+      let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+      pure (source, rightRoot)] ≤
+      Pr[fun result : Option PrivateOrdinalSelection × Digest =>
+          privateOrdinalSelectionGoodForSomeOutput target result.2 ordinal result.1 | do
+        let selection ← granularAllCanonicalPrivateOrdinalSelection ordinal adversary parameter
+          table ftsSecret fuel
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        pure (selection, rightRoot)] := by
+  apply probEvent_le_of_relTriple
+    (relTriple_snapshotComparison_privateOrdinalSelectionComparison ordinal adversary parameter
+      table ftsSecret fuel)
+  intro source selection hrelation hgood
+  obtain ⟨selected, output, _hordinal, hselected, hactual⟩ := hgood.goodForRoots
+  have hselection : selection.1 =
+      some (privateOrdinalSelectionOfSnapshot selected) := by
+    exact hrelation.1.symm.trans hselected
+  rw [hselection]
+  exact ⟨output, by simpa [hrelation.2] using hactual⟩
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
