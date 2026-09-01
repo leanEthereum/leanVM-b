@@ -2417,6 +2417,99 @@ theorem map_projectDirectDetailedObserved_rootAwarePublic
     _ = _ := map_attach_runClean_rootAwarePublic_eq_observed parameter input publicState plan
       observations state fuel table cache
 
+def WitnessObservedStepRel
+    (table : OtsSecretIndex → HashOutput)
+    (observations : List CleanProbeObservation)
+    (left : DirectWitnessResult (α × SplitHashCache))
+    (right : Option (ObservedCleanRunResult (α × SplitHashCache))) : Prop :=
+  ∃ detailed,
+    projectDirectDetailedObserved observations detailed = right ∧
+      DirectWitnessMaterializedStableRunEq table left detailed
+
+set_option maxRecDepth 100000 in
+theorem relTriple_runDirectResolvedWitness_afterPlan_observedMaterialized
+    (table : OtsSecretIndex → HashOutput)
+    (parameter : PublicParameter) (input : HashInput)
+    (publicState : LazyRevealProbe.State Coordinate) (plan : PlannedHashQuery)
+    (observations : List CleanProbeObservation)
+    (left right : DeferredContext) (leftFuel rightFuel : Nat)
+    (leftCache rightCache : SplitHashCache)
+    (hpublicState : publicState = left.state)
+    (hpositive : 0 < leftFuel) (hstrictFuel : leftFuel < rightFuel)
+    (hcontext : FinalizationContextLE table left right)
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hvalues : LazyRevealProbe.ValuesLE left.state right.state)
+    (hpublished : PublishedValues left.state)
+    (hrightMaterialized : right = directDeferredContext right.state) :
+    RelTriple
+      (runDirectResolvedWitnessFromTable left leftFuel table
+        ((probingHashQueryAfterPlan parameter input plan).run leftCache))
+      (runObservedCleanFromTable observations right.state rightFuel table
+        ((probingHashQueryAfterRootAwarePublicPlan parameter input publicState plan).run
+          rightCache))
+      (WitnessObservedStepRel table
+        (observationsAfterCandidate observations right.state
+          (rootAwareCandidateForPlan? parameter input plan))) := by
+  have hbase := relTriple_runDirectResolvedWitness_afterPlan_rootAwarePublic table parameter input
+    publicState plan left right leftFuel rightFuel leftCache rightCache hpublicState hpositive
+    hstrictFuel hcontext hcache hrevealed hvalues hpublished hrightMaterialized
+  have hstrength : RelTriple
+      (runDirectResolvedWitnessFromTable left leftFuel table
+        ((probingHashQueryAfterPlan parameter input plan).run leftCache))
+      (runDirectResolvedDetailedFromTable right rightFuel table
+        ((probingHashQueryAfterRootAwarePublicPlan parameter input publicState plan).run
+          rightCache))
+      (fun leftResult rightResult =>
+        WitnessObservedStepRel table
+          (observationsAfterCandidate observations right.state
+            (rootAwareCandidateForPlan? parameter input plan))
+          leftResult
+          (projectDirectDetailedObserved
+            (observationsAfterCandidate observations right.state
+              (rootAwareCandidateForPlan? parameter input plan)) rightResult)) := by
+    apply relTriple_post_mono hbase
+    intro leftResult rightResult hrelation
+    exact ⟨rightResult, rfl, hrelation⟩
+  have hmapped := relTriple_map
+    (R := fun leftResult rightResult =>
+      WitnessObservedStepRel table
+        (observationsAfterCandidate observations right.state
+          (rootAwareCandidateForPlan? parameter input plan)) leftResult rightResult)
+    (f := id)
+    (g := projectDirectDetailedObserved
+      (observationsAfterCandidate observations right.state
+        (rootAwareCandidateForPlan? parameter input plan))) hstrength
+  have hpost : RelTriple
+      (id <$> runDirectResolvedWitnessFromTable left leftFuel table
+        ((probingHashQueryAfterPlan parameter input plan).run leftCache))
+      (projectDirectDetailedObserved
+          (observationsAfterCandidate observations right.state
+            (rootAwareCandidateForPlan? parameter input plan)) <$>
+        runDirectResolvedDetailedFromTable right rightFuel table
+          ((probingHashQueryAfterRootAwarePublicPlan parameter input publicState plan).run
+            rightCache))
+      (WitnessObservedStepRel table
+        (observationsAfterCandidate observations right.state
+          (rootAwareCandidateForPlan? parameter input plan))) := by
+    exact hmapped
+  rw [id_map] at hpost
+  have hmap :
+      projectDirectDetailedObserved
+          (observationsAfterCandidate observations right.state
+            (rootAwareCandidateForPlan? parameter input plan)) <$>
+        runDirectResolvedDetailedFromTable right rightFuel table
+          ((probingHashQueryAfterRootAwarePublicPlan parameter input publicState plan).run
+            rightCache) =
+        runObservedCleanFromTable observations right.state rightFuel table
+          ((probingHashQueryAfterRootAwarePublicPlan parameter input publicState plan).run
+            rightCache) := by
+    rw [hrightMaterialized]
+    simpa [directDeferredContext] using
+      (map_projectDirectDetailedObserved_rootAwarePublic parameter input publicState plan
+        observations right.state rightFuel table rightCache)
+  exact relTriple_of_evalDist_eq_right (congrArg evalDist hmap) hpost
+
 noncomputable def observedMaterializedBoundary
     (parameter : PublicParameter) (root : Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
