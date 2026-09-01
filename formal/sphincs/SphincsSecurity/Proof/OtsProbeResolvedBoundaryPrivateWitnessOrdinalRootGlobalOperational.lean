@@ -2287,4 +2287,213 @@ theorem witnessMaterializedStableCouples_maskedPublishedTreeRoot
     (.position (.node topLayer rootTree
       ⟨layerHeight topLayer - 1, by norm_num [layerHeight, topLayer, maxLayerHeight]⟩ 0))
 
+def observationsAfterCandidate
+    (observations : List CleanProbeObservation)
+    (state : LazyRevealProbe.State Coordinate) : Option Probe → List CleanProbeObservation
+  | none => observations
+  | some candidate =>
+      observations ++ [cleanProbeObservation state candidate.coordinate candidate.candidate]
+
+def projectDirectDetailedObserved
+    (observations : List CleanProbeObservation) :
+    DirectDetailedResult (α × SplitHashCache) →
+      Option (ObservedCleanRunResult (α × SplitHashCache))
+  | .stopped _ => none
+  | .done result => some
+      ⟨result.context.state, result.remaining, result.value, result.table, observations⟩
+
+theorem projectDirectDetailedObserved_eq_attach
+    (observations : List CleanProbeObservation)
+    (result : DirectDetailedResult (α × SplitHashCache)) :
+    projectDirectDetailedObserved observations result =
+      attachCleanProbeObservations observations (projectDirectDetailedClean result) := by
+  cases result with
+  | stopped reason => rfl
+  | done result => rfl
+
+theorem probingHashQueryPublicAction_probeFree
+    (parameter : PublicParameter) (input : HashInput)
+    (publicState : LazyRevealProbe.State Coordinate) (action : PlannedHashAction)
+    (cache : SplitHashCache) :
+    ((probingHashQueryPublicAction parameter input publicState action).run cache).IsQueryBoundP
+      (LazyRevealProbe.IsProbe (Coordinate := Coordinate)) 0 := by
+  cases action with
+  | ordinary => exact splitHashQuery_probeFree (.ordinary input) cache
+  | resolve coordinate =>
+      simp only [probingHashQueryPublicAction]
+      unfold resolvePublicKnownInput
+      cases hknown : purePeekTableInput parameter publicState coordinate with
+      | none => exact splitHashQuery_probeFree (.ordinary input) cache
+      | some knownInput =>
+          by_cases heq : knownInput = input
+          · simp only [heq, ↓reduceIte]
+            exact ((revealCoordinateOutput_probeFree coordinate).bind fun output =>
+              (publishCoordinate_probeFree coordinate).bind fun _ => by
+                exact (ProbeFree.modify fun workingCache : SplitHashCache =>
+                  Function.update workingCache (.ordinary input) (some output)).bind fun _ =>
+                    ProbeFree.pure output) cache
+          · simp only [heq, ↓reduceIte]
+            exact splitHashQuery_probeFree (.ordinary input) cache
+
+set_option maxRecDepth 100000 in
+theorem map_attach_runClean_rootAwarePublic_eq_observed
+    (parameter : PublicParameter) (input : HashInput)
+    (publicState : LazyRevealProbe.State Coordinate) (plan : PlannedHashQuery)
+    (observations : List CleanProbeObservation)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    attachCleanProbeObservations
+        (observationsAfterCandidate observations state
+          (rootAwareCandidateForPlan? parameter input plan)) <$>
+      runCleanFromTable state fuel table
+        ((probingHashQueryAfterRootAwarePublicPlan parameter input publicState plan).run cache) =
+      runObservedCleanFromTable observations state fuel table
+        ((probingHashQueryAfterRootAwarePublicPlan parameter input publicState plan).run cache) := by
+  unfold probingHashQueryAfterRootAwarePublicPlan
+  rw [StateT.run_bind, runCleanFromTable_bind, runObservedCleanFromTable_bind]
+  cases hcandidate : rootAwareCandidateForPlan? parameter input plan with
+  | none =>
+      simp only [executeCandidate?, StateT.run_pure, runCleanFromTable,
+        runObservedCleanFromTable, observationsAfterCandidate]
+      exact map_attachCleanProbeObservations_runCleanFromTable_of_probeFree
+        ((probingHashQueryPublicAction parameter input publicState plan.action).run cache)
+        observations state fuel table
+        (probingHashQueryPublicAction_probeFree parameter input publicState plan.action cache)
+  | some candidate =>
+      simp only [executeCandidate?, probe, StateT.run_liftM, LazyRevealProbe.probeQuery,
+        runCleanFromTable_probe_query_bind, runObservedCleanFromTable_probe_query_bind]
+      cases fuel with
+      | zero => simp [attachCleanProbeObservations]
+      | succ remaining =>
+          by_cases hrevealed : candidate.coordinate ∈ state.revealed
+          · simp only [hrevealed, ↓reduceIte, observationsAfterCandidate]
+            exact map_attachCleanProbeObservations_runCleanFromTable_of_probeFree
+              ((probingHashQueryPublicAction parameter input publicState plan.action).run cache)
+              (observations ++
+                [cleanProbeObservation state candidate.coordinate candidate.candidate])
+              state remaining table
+              (probingHashQueryPublicAction_probeFree parameter input publicState plan.action cache)
+          · simp only [hrevealed, ↓reduceIte, observationsAfterCandidate]
+            exact map_attachCleanProbeObservations_runCleanFromTable_of_probeFree
+              ((probingHashQueryPublicAction parameter input publicState plan.action).run cache)
+              (observations ++
+                [cleanProbeObservation state candidate.coordinate candidate.candidate])
+              (state.addPending candidate.coordinate candidate.candidate) remaining table
+              (probingHashQueryPublicAction_probeFree parameter input publicState plan.action cache)
+
+set_option maxRecDepth 100000 in
+theorem map_projectDirectDetailedObserved_rootAwarePublic
+    (parameter : PublicParameter) (input : HashInput)
+    (publicState : LazyRevealProbe.State Coordinate) (plan : PlannedHashQuery)
+    (observations : List CleanProbeObservation)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    projectDirectDetailedObserved
+        (observationsAfterCandidate observations state
+          (rootAwareCandidateForPlan? parameter input plan)) <$>
+      runDirectResolvedDetailedFromTable (directDeferredContext state) fuel table
+        ((probingHashQueryAfterRootAwarePublicPlan parameter input publicState plan).run cache) =
+      runObservedCleanFromTable observations state fuel table
+        ((probingHashQueryAfterRootAwarePublicPlan parameter input publicState plan).run cache) := by
+  calc
+    _ = attachCleanProbeObservations
+          (observationsAfterCandidate observations state
+            (rootAwareCandidateForPlan? parameter input plan)) <$>
+        (projectDirectDetailedClean <$>
+          runDirectResolvedDetailedFromTable (directDeferredContext state) fuel table
+            ((probingHashQueryAfterRootAwarePublicPlan parameter input publicState plan).run
+              cache)) := by
+      rw [Functor.map_map]
+      apply map_congr
+      intro result
+      exact projectDirectDetailedObserved_eq_attach _ result
+    _ = attachCleanProbeObservations
+          (observationsAfterCandidate observations state
+            (rootAwareCandidateForPlan? parameter input plan)) <$>
+        runCleanFromTable state fuel table
+          ((probingHashQueryAfterRootAwarePublicPlan parameter input publicState plan).run
+            cache) := by
+      rw [map_projectDirectDetailedClean_run_eq_clean]
+    _ = _ := map_attach_runClean_rootAwarePublic_eq_observed parameter input publicState plan
+      observations state fuel table cache
+
+noncomputable def observedMaterializedBoundary
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (observations : List CleanProbeObservation)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    ProbComp (Option (ObservedCleanRunResult (α × SplitHashCache))) := by
+  classical
+  exact OracleComp.construct
+    (C := fun _ : OracleComp (OracleWorld + SigningSpec) α =>
+      List CleanProbeObservation → LazyRevealProbe.State Coordinate → Nat →
+        (OtsSecretIndex → HashOutput) → SplitHashCache →
+          ProbComp (Option (ObservedCleanRunResult (α × SplitHashCache))))
+    (fun value observations state fuel table cache =>
+      pure (some ⟨state, fuel, (value, cache), table, observations⟩))
+    (fun query _next recursivelyRun observations state fuel table cache =>
+      match query with
+      | .inl (.inl n) => do
+          let result ← runObservedCleanFromTable observations state fuel table
+            ((splitUniformImpl n).run cache)
+          match result with
+          | none => pure none
+          | some result =>
+              recursivelyRun result.value.1 result.observations result.state result.remaining
+                result.table result.value.2
+      | .inl (.inr input) =>
+          let publicContext := materializedCanonicalContext table state
+          let plan := purePlanProbingHashQuery parameter input publicContext.state
+          do
+            let result ← runObservedCleanFromTable observations state fuel table
+              ((probingHashQueryAfterRootAwarePublicPlan parameter input publicContext.state plan).run
+                cache)
+            match result with
+            | none => pure none
+            | some result =>
+                recursivelyRun result.value.1 result.observations result.state result.remaining
+                  result.table result.value.2
+      | .inr message => do
+          let result ← runObservedCleanFromTable observations state fuel table
+            ((maskedSign parameter root ftsSecret message).run cache)
+          match result with
+          | none => pure none
+          | some result =>
+              recursivelyRun result.value.1 result.observations result.state result.remaining
+                result.table result.value.2)
+    computation observations state fuel table cache
+
+noncomputable def observedMaterializedRetainedRunFromTable
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
+    ProbComp (Option
+      (ObservedCleanRunResult (RetainedGameResult × SplitHashCache))) := do
+  let rootResult ← runObservedCleanFromTable [] LazyRevealProbe.State.empty fuel table
+    (maskedPublishedTreeRoot.run emptySplitHashCache)
+  match rootResult with
+  | none => pure none
+  | some rootResult => do
+      let restResult ← observedMaterializedBoundary parameter rootResult.value.1 ftsSecret
+        (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩)
+        rootResult.observations rootResult.state rootResult.remaining rootResult.table
+        rootResult.value.2
+      match restResult with
+      | none => pure none
+      | some restResult =>
+          pure (some
+            { restResult with
+              value := ((rootResult.value.1, restResult.value.1), restResult.value.2) })
+
+noncomputable def sampledObservedMaterializedClean
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp (Option
+      (ObservedCleanRunResult (RetainedGameResult × SplitHashCache))) := do
+  let table ← sampleOtsHashTable
+  let result ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret fuel table
+  finishObservedCleanRunFromTable result
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
