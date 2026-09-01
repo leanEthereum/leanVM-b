@@ -223,14 +223,14 @@ pub fn default_config(log_n: usize, log_batch_size: usize, log_inv_rate: usize) 
     })
 }
 
-/// Configs for a K-witness of `2^log_n` words: prefer the production
-/// Secure-profile derivation ([`crate::whir::configs_for`]), and fall back to
-/// the ad-hoc [`default_config`] shape at the test sizes below its feasibility
-/// floor. `VerifierConfig` is `ProverConfig`, so the fallback pair is one
-/// derivation cloned.
+/// Configs for a K-witness of `2^log_n` words at [`LOG_INV_RATE_0`]: prefer the
+/// production Secure-profile derivation ([`crate::whir::configs_for_rate`]), and
+/// fall back to the ad-hoc [`default_config`] shape at the test sizes below its
+/// feasibility floor. `VerifierConfig` is `ProverConfig`, so the fallback pair is
+/// one derivation cloned.
 #[cfg(test)]
 pub(crate) fn test_configs_for(log_n: usize) -> (ProverConfig, VerifierConfig) {
-    if let Ok(pv) = crate::whir::configs_for(log_n) {
+    if let Ok(pv) = crate::whir::configs_for_rate(log_n, LOG_INV_RATE_0) {
         return pv;
     }
     for log_batch_size in (1..=5).rev() {

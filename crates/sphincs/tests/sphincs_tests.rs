@@ -5,7 +5,7 @@ fn test_message() -> Message {
     std::array::from_fn(|i| (i * 5 + 3) as u8)
 }
 
-fn test_key(seed: u64) -> (SecretKey, PublicKey) {
+fn test_key(seed: u64) -> (SphincsSecretKey, SphincsPublicKey) {
     key_gen(&mut StdRng::seed_from_u64(seed))
 }
 
@@ -28,11 +28,11 @@ fn serialized_sizes_and_roundtrip() {
 
     let public_key_bytes = pk.flatten();
     assert_eq!(public_key_bytes.len(), 32);
-    assert_eq!(PublicKey::from_bytes(&public_key_bytes), pk);
+    assert_eq!(SphincsPublicKey::from_bytes(&public_key_bytes), pk);
 
     let signature_bytes = signature.to_bytes();
     assert_eq!(signature_bytes.len(), 4924);
-    let decoded = Signature::from_bytes(&signature_bytes);
+    let decoded = SphincsSignature::from_bytes(&signature_bytes);
     assert_eq!(decoded, signature);
     verify(&pk, &message, &decoded).unwrap();
 }
@@ -57,32 +57,38 @@ fn tampered_signatures_rejected() {
     // 2^a.
     let mut tampered = signature.clone();
     tampered.randomizer[0] ^= 1;
-    assert_eq!(verify(&pk, &message, &tampered), Err(VerifyError::InadmissibleDigest));
+    assert_eq!(
+        verify(&pk, &message, &tampered),
+        Err(SphincsVerifyError::InadmissibleDigest)
+    );
 
     // Everything the bottom layers carry feeds the message a layer above signs,
     // and a counter is admissible for one message in 2^13.6, so tampering
     // surfaces as an inadmissible encoding rather than as a wrong root.
     for tamper in [
-        (|s: &mut Signature| s.fts.secrets[5][0] ^= 1) as fn(&mut Signature),
-        |s: &mut Signature| s.fts.paths[9][4][0] ^= 1,
-        |s: &mut Signature| s.counters[2] ^= 1,
-        |s: &mut Signature| s.ots[1][17][0] ^= 1,
-        |s: &mut Signature| s.paths[H - 1][0] ^= 1,
+        (|s: &mut SphincsSignature| s.fts.secrets[5][0] ^= 1) as fn(&mut SphincsSignature),
+        |s: &mut SphincsSignature| s.fts.paths[9][4][0] ^= 1,
+        |s: &mut SphincsSignature| s.counters[2] ^= 1,
+        |s: &mut SphincsSignature| s.ots[1][17][0] ^= 1,
+        |s: &mut SphincsSignature| s.paths[H - 1][0] ^= 1,
     ] {
         let mut tampered = signature.clone();
         tamper(&mut tampered);
-        assert_eq!(verify(&pk, &message, &tampered), Err(VerifyError::InadmissibleEncoding));
+        assert_eq!(
+            verify(&pk, &message, &tampered),
+            Err(SphincsVerifyError::InadmissibleEncoding)
+        );
     }
 
     // Layer 0's path is the exception: nothing is signed above it, so it can
     // only fail the root comparison.
     let mut tampered = signature.clone();
     tampered.paths[0][0] ^= 1;
-    assert_eq!(verify(&pk, &message, &tampered), Err(VerifyError::RootMismatch));
+    assert_eq!(verify(&pk, &message, &tampered), Err(SphincsVerifyError::RootMismatch));
 
     let mut tampered = signature.clone();
     tampered.ots[0][17][0] ^= 1;
-    assert_eq!(verify(&pk, &message, &tampered), Err(VerifyError::RootMismatch));
+    assert_eq!(verify(&pk, &message, &tampered), Err(SphincsVerifyError::RootMismatch));
 }
 
 /// One key signs one codeword, on which the whole one-time argument rests: the
@@ -168,4 +174,18 @@ fn grinding_bits() {
         ((A as f64 - 1.0)..(A as f64 + 1.0)).contains(&digest_bits),
         "digest cost moved: {digest_bits:.2} bits"
     );
+}
+
+/// A reloaded secret key must sign exactly as the original does: `key_gen`
+/// samples the master secret itself, so these bytes are the only way back to a
+/// key it produced.
+#[test]
+fn secret_key_survives_a_round_trip() {
+    let (sk, pk) = test_key(7);
+    let reloaded = SphincsSecretKey::from_bytes(&sk.to_bytes());
+
+    assert_eq!(reloaded.public_key(), pk);
+    let message = test_message();
+    let sig = sign(&mut StdRng::seed_from_u64(1), &reloaded, &message).unwrap();
+    verify(&pk, &message, &sig).unwrap();
 }

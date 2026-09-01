@@ -13,14 +13,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::*;
 
-#[derive(Debug)]
+/// The encoding is SECRET KEY MATERIAL: it carries the seed.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct XmssSecretKey {
-    pub(crate) epoch_start: u32,
-    pub(crate) epoch_end: u32,
+    pub(crate) epoch_start: Epoch,
+    pub(crate) epoch_end: Epoch,
     pub(crate) public_param: PublicParam,
     pub(crate) seed: [u8; 32],
     pub(crate) split_level: usize,
     pub(crate) top: Vec<Vec<Digest>>,
+    #[serde(skip)]
     pub(crate) cache: Mutex<Option<BottomSubtree>>,
 }
 
@@ -45,8 +47,8 @@ pub struct XmssPublicKey {
 }
 
 impl XmssPublicKey {
-    pub fn flatten(&self) -> [u8; PUB_KEY_FLAT_SIZE] {
-        let mut out = [0u8; PUB_KEY_FLAT_SIZE];
+    pub fn flatten(&self) -> [u8; PUB_KEY_SIZE] {
+        let mut out = [0u8; PUB_KEY_SIZE];
         out[..DIGEST_LEN].copy_from_slice(&self.merkle_root);
         out[DIGEST_LEN..].copy_from_slice(&self.public_param);
         out
@@ -69,7 +71,7 @@ fn prf(seed: &[u8; 32], domain: u32, a: u64, b: u64) -> Digest {
         .unwrap()
 }
 
-fn gen_wots_secret_key(seed: &[u8; 32], epoch: u32) -> WotsSecretKey {
+fn gen_wots_secret_key(seed: &[u8; 32], epoch: Epoch) -> WotsSecretKey {
     let pre_images = std::array::from_fn(|i| prf(seed, PRF_DOMAINSEP_WOTS_SECRET_KEY, epoch as u64, i as u64));
     WotsSecretKey::new(pre_images)
 }
@@ -93,13 +95,13 @@ fn merkle_node(public_param: &PublicParam, level: usize, index: u64, left: &Dige
 /// Level-0 layer: WOTS public-key hashes for the in-range leaves `[lo, hi]`.
 ///
 /// Sequential: this runs once per bottom subtree, and the subtrees are what
-/// [`xmss_key_gen`] fans out over.
+/// [`key_gen`] fans out over.
 fn leaf_layer(seed: &[u8; 32], public_param: &PublicParam, first_epoch: u64, last_epoch: u64) -> Vec<Digest> {
     (first_epoch..=last_epoch)
         .map(|epoch| {
-            gen_wots_secret_key(seed, epoch as u32)
-                .public_key(public_param, epoch as u32)
-                .hash(public_param, epoch as u32)
+            gen_wots_secret_key(seed, epoch as Epoch)
+                .public_key(public_param, epoch as Epoch)
+                .hash(public_param, epoch as Epoch)
         })
         .collect()
 }
@@ -163,10 +165,20 @@ pub enum XmssKeyGenError {
     InvalidRange,
 }
 
-pub fn xmss_key_gen(
+impl std::fmt::Display for XmssKeyGenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidRange => write!(f, "epoch_start is past epoch_end"),
+        }
+    }
+}
+
+impl std::error::Error for XmssKeyGenError {}
+
+pub fn key_gen(
     seed: [u8; 32],
-    epoch_start: u32,
-    epoch_end: u32,
+    epoch_start: Epoch,
+    epoch_end: Epoch,
 ) -> Result<(XmssSecretKey, XmssPublicKey), XmssKeyGenError> {
     if epoch_start > epoch_end {
         return Err(XmssKeyGenError::InvalidRange);
@@ -216,21 +228,31 @@ pub fn xmss_key_gen(
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
-pub enum XmssSignatureError {
+pub enum XmssSignError {
     EpochOutOfRange,
 }
+
+impl std::fmt::Display for XmssSignError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EpochOutOfRange => write!(f, "the epoch is outside the key's range"),
+        }
+    }
+}
+
+impl std::error::Error for XmssSignError {}
 
 /// WARNING: XMSS is a stateful signature scheme, never sign twice with the same
 /// `epoch`. (Even signing the same message twice at the same epoch is insecure,
 /// because the signature randomness is drawn fresh.)
-pub fn xmss_sign(
+pub fn sign(
     rng: &mut impl CryptoRng,
     secret_key: &XmssSecretKey,
     message: &Message,
-    epoch: u32,
-) -> Result<XmssSignature, XmssSignatureError> {
+    epoch: Epoch,
+) -> Result<XmssSignature, XmssSignError> {
     if epoch < secret_key.epoch_start || epoch > secret_key.epoch_end {
-        return Err(XmssSignatureError::EpochOutOfRange);
+        return Err(XmssSignError::EpochOutOfRange);
     }
     let (randomness, encoding, _) = find_randomness_for_wots_encoding(message, epoch, &secret_key.public_param, rng);
     let wots_secret_key = gen_wots_secret_key(&secret_key.seed, epoch);
@@ -256,6 +278,12 @@ pub fn xmss_sign(
 }
 
 impl XmssSecretKey {
+    /// The epochs this key can sign at. XMSS forbids signing twice at one, so
+    /// the caller has to track which of these it has spent.
+    pub fn epoch_range(&self) -> std::ops::RangeInclusive<Epoch> {
+        self.epoch_start..=self.epoch_end
+    }
+
     pub fn public_key(&self) -> XmssPublicKey {
         XmssPublicKey {
             merkle_root: self.top.last().unwrap()[0],
@@ -308,11 +336,22 @@ pub enum XmssVerifyError {
     InvalidMerklePath,
 }
 
-pub fn xmss_verify(
+impl std::fmt::Display for XmssVerifyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidWots => write!(f, "the WOTS signature does not recover a public key"),
+            Self::InvalidMerklePath => write!(f, "the authentication path does not reach the key's root"),
+        }
+    }
+}
+
+impl std::error::Error for XmssVerifyError {}
+
+pub fn verify(
     pub_key: &XmssPublicKey,
     message: &Message,
     signature: &XmssSignature,
-    epoch: u32,
+    epoch: Epoch,
 ) -> Result<(), XmssVerifyError> {
     let wots_public_key = signature
         .wots_signature

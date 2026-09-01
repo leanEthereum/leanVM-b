@@ -31,7 +31,7 @@ def main():
 ";
     let program = compile(&parse(src).expect("parse"));
     let want = [F192::from(g_pow(3)) * F192::from(F64(7)), F192::from(F64(7))];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("returned duplicate constant is preserved");
 }
 
@@ -56,7 +56,7 @@ def main():
     let program = compile(&parse(src).expect("parse"));
     // (k + k) + (k + k) == 0 in characteristic two.
     let want = [F192::ZERO, F192::ZERO];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("duplicated call arguments are preserved");
 }
 
@@ -89,7 +89,7 @@ def main():
     let run = |pi: [F192; 2]| -> bool {
         let program = compile(&parse(src).expect("parse"));
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let (proof, _) = prove(&program, pi, lean_vm::pcs::LOG_INV_RATE);
+            let (proof, _) = prove(&program, pi, lean_vm::pcs::TEST_LOG_INV_RATE);
             verify(&program, &pi, &proof).is_ok()
         }))
         .unwrap_or(false)
@@ -140,7 +140,7 @@ def main():
 fn assert_survives_a_duplicated_comparison() {
     let program = compile(&parse(&duplicated_comparison(9)).expect("parse"));
     let want = [F192::ZERO, F192::from(g_pow(9))];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("passing assert still verifies");
 }
 
@@ -151,7 +151,7 @@ fn assert_survives_a_duplicated_comparison() {
 fn failing_assert_still_conflicts() {
     let program = compile(&parse(&duplicated_comparison(10)).expect("parse"));
     let want = [F192::ZERO, F192::from(g_pow(9))];
-    let _ = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let _ = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
 }
 
 /// A hint at the end of a runtime branch is attached to a no-op anchor by the
@@ -176,7 +176,7 @@ def main():
     let mut program = compile(&parse(src).expect("parse"));
     program.set_witness("flag", vec![vec![F192::ZERO]]);
     let want = [F192::ZERO, F192::ZERO];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("untaken branch must not consume its witness");
 }
 
@@ -228,6 +228,6 @@ def main():
 ";
     let program = compile(&parse(src).expect("parse"));
     let want = [F192::from(g_pow(11)), F192::from(g_pow(22))];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("each compression absorbs its own chaining value");
 }

@@ -185,7 +185,7 @@ def main():
     // the other, from the outer `w`.
     let program = compile(&parse(src).expect("parse"));
     let want = [F192::from(g_pow(1)), F192::from(g_pow(3))];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("the else arm reads the outer binding");
 }
 
@@ -213,7 +213,7 @@ def main():
     let program = compile(&parse(src).expect("parse"));
     // y·x, i.e. the tower coefficient shifted, NOT g^65.
     let want = [F192::new(0, 2, 0); 2];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("2^64 is the tower element y, not g^64");
 }
 
@@ -259,7 +259,7 @@ fn one_hinted_value_needs_no_buffer() {
         let mut program = compile(&parse(src).expect("parse"));
         program.set_witness("m", vec![vec![g_pow(5).into()]]);
         let want = [g_pow(5).into(), g_pow(0).into()];
-        let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+        let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
         verify(&program, &want, &proof).expect("verifies");
         program.execute(want).base_counts.iter().sum::<usize>()
     };
@@ -283,7 +283,7 @@ def main():
         vec![vec![g_pow(1).into()], vec![g_pow(2).into()], vec![g_pow(3).into()]],
     );
     let want = [g_pow(2).into(), g_pow(0).into()];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     // `mul_range(1, 8)` is g^0..g^3, so THREE iterations and all three entries
     // are popped. With `mul_range(1, 4)` the third would sit unread and mask an
     // off-by-one in that direction.
@@ -334,7 +334,7 @@ fn the_scalar_hint_binds_like_any_other_binder() {
     let mut program = compile(&parse(&inlined).expect("an @inline body may bind a hint"));
     program.set_witness("m", vec![vec![g_pow(5).into()]]);
     let want = [g_pow(5).into(), g_pow(0).into()];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("the inlined binding fires");
 
     // A `for` body that shadows an enclosing StackBuf's name from inside an arm
@@ -357,7 +357,7 @@ def main():
     let mut program = compile(&parse(shadowed).expect("shadowing is not capturing"));
     program.set_witness("w", vec![vec![g_pow(7).into()], vec![g_pow(8).into()]]);
     let want = [g_pow(1).into(), g_pow(0).into()];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("the outer StackBuf is untouched");
 
     // Return-shape inference, the third walker: rebinding a `StackBuf` name to a
@@ -370,7 +370,7 @@ def main():
     let mut program = compile(&parse(&rebound).expect("a hint may rebind a StackBuf name"));
     program.set_witness("m", vec![vec![g_pow(6).into()]]);
     let want = [g_pow(6).into(), g_pow(0).into()];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("the rebound name returns as a scalar");
 }
 
@@ -450,7 +450,7 @@ def main():
 ";
     let program = compile(&parse(captured).expect("a constant may be captured"));
     let want = [F192::new(5, 0, 0), g_pow(0).into()];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("the captured constant reaches the body");
 }
 
@@ -518,7 +518,7 @@ def main():
     let mut program = compile(&parse(ok).expect("parse"));
     program.set_witness("w", vec![vec![F192::new(1234, 0, 0), F192::new(5678, 0, 0)]]);
     let want = [F192::new(1234, 0, 0), g_pow(0).into()];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("an in-bounds runtime-start slice still works");
 }
 
@@ -579,7 +579,7 @@ fn a_match_target_binds_and_every_field_is_walked() {
     let want = [F192::ZERO, g_pow(0).into()];
     let verifies = |src: &str, why: &str| {
         let program = compile(&parse(src).unwrap_or_else(|e| panic!("{why}: {e}")));
-        let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+        let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
         verify(&program, &want, &proof).unwrap_or_else(|e| panic!("{why}: {e:?}"));
     };
 
@@ -732,7 +732,7 @@ fn an_ambiguous_compile_time_branch_must_be_declared() {
     let fold = |cond: &str| {
         let program = compile(&parse(&prog(cond)).unwrap_or_else(|e| panic!("{cond}: {e}")));
         let want = [F192::new(5, 0, 0), g_pow(0).into()];
-        let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+        let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
         verify(&program, &want, &proof).unwrap_or_else(|e| panic!("`{cond}` did not take the then arm: {e:?}"));
     };
     // Declared, so it folds with integer arithmetic and the arm runs.
@@ -782,7 +782,7 @@ fn an_ambiguous_compile_time_branch_must_be_declared() {
     let plain = "def main():\n    const = 4\n    hb = HeapBuf(4)\n    if const == 4:\n        hb[GEN ** 0] = 5\n    else:\n        hb[GEN ** 0] = 7\n    p = GEN ** 0\n    p[1] = hb[GEN ** 0]\n    p[GEN] = GEN ** 0\n    return\n";
     let program = compile(&parse(plain).expect("a name beginning with `const` is an ordinary name"));
     let want = [F192::new(5, 0, 0), g_pow(0).into()];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("`const == 4` is a comparison, not a wrapper");
 
     // Declared, but not actually decidable while compiling.
@@ -817,7 +817,7 @@ def main():
     let mut program = compile(&parse(src).expect("a `,`, `#` or `]` inside a string is part of the name"));
     program.set_witness("x,y#z]w", vec![vec![F192::new(7, 0, 0)]]);
     let want = [F192::new(7, 0, 0), g_pow(0).into()];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("the stream name survived parsing intact");
 }
 
@@ -855,7 +855,7 @@ def main():
     // `r` is 1, so the index is `K` itself: cell 1, holding 11. Reading the
     // integer view instead would name cell 2, holding 12.
     let want = [F192::new(11, 0, 0), g_pow(0).into()];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("the index means what the value means");
 }
 

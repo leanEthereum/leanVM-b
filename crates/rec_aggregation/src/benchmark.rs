@@ -14,7 +14,7 @@ use crate::signers_cache;
 /// Cached signers `[from, to)`, as the aggregation API takes them: each raw
 /// signature carries its epoch and message, the benchmarks using one pair for
 /// all.
-fn signers(from: usize, to: usize) -> Vec<(XmssPublicKey, u32, xmss::Message, XmssSignature)> {
+fn signers(from: usize, to: usize) -> Vec<(XmssPublicKey, xmss::Epoch, xmss::Message, XmssSignature)> {
     if to == 0 {
         return Vec::new();
     }
@@ -32,7 +32,10 @@ fn signers(from: usize, to: usize) -> Vec<(XmssPublicKey, u32, xmss::Message, Xm
 }
 
 /// Each SPHINCS signer comes with the message it signed, as the XMSS ones do.
-fn sphincs_signers(from: usize, to: usize) -> Vec<(sphincs::PublicKey, sphincs::Message, sphincs::Signature)> {
+fn sphincs_signers(
+    from: usize,
+    to: usize,
+) -> Vec<(sphincs::SphincsPublicKey, sphincs::Message, sphincs::SphincsSignature)> {
     if to == 0 {
         return Vec::new();
     }

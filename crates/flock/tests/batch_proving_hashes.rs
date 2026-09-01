@@ -14,7 +14,7 @@ use flock::hash::{
 use pcs::pack::LOG_PACKING;
 use pcs::stack_open::{open_batch_mixed_whir_stacked, verify_opening_batch_mixed_whir_stacked};
 use pcs::whir::{INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0};
-use pcs::whir::{commit, configs_for};
+use pcs::whir::{commit, configs_for_rate};
 use primitives::bench::{Plan, Timing};
 use primitives::{field::F64, pretty_integer, test_rng::Rng};
 
@@ -45,7 +45,7 @@ fn hash_batch_prove_verify() {
     let setup = Blake2sSetup::new(n);
     let setup_ms = t.elapsed().as_secs_f64() * 1e3;
 
-    let (prover_config, verifier_config) = configs_for(mu).expect("WHIR configuration");
+    let (prover_config, verifier_config) = configs_for_rate(mu, LOG_INV_RATE_0).expect("WHIR configuration");
 
     // One full prove pass: witness generation, commitment, zerocheck, lincheck,
     // and the stacked opening. Deterministic in `blocks`, so every pass is the

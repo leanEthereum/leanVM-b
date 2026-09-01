@@ -17,6 +17,17 @@
 
 Warning: highly experimental.
 
+# Usage
+
+[`src/lib.rs`](./src/lib.rs) is the public API; the crates under `crates/` are implementation. One `aggregate` call covers the signers of all its inputs: raw XMSS and SPHINCS signatures, plus aggregates from earlier calls, which it re-verifies inside the proof. An aggregation tree is one call per node. Runnable version: [`examples/aggregate.rs`](./examples/aggregate.rs).
+
+```rust,ignore
+setup_prover();
+let leaf = aggregate(&[], raw_xmss, raw_sphincs, DEFAULT_LOG_INV_RATE)?;
+let root = aggregate(&[leaf], vec![], vec![], DEFAULT_LOG_INV_RATE)?;
+root.verify_against(&[(epoch, message)])?;
+```
+
 # Benchmarks
 
 Machine: Mac M4 Max

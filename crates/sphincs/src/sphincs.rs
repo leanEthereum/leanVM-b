@@ -51,12 +51,12 @@ pub fn path_range(lay: usize) -> std::ops::Range<usize> {
 /// Ordered lexicographically on [`Self::flatten`], which is what an aggregate's
 /// signer list is sorted and deduplicated by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct PublicKey {
+pub struct SphincsPublicKey {
     pub root: Digest,
     pub public_param: PublicParam,
 }
 
-impl PublicKey {
+impl SphincsPublicKey {
     pub fn flatten(&self) -> [u8; PUB_KEY_SIZE] {
         let mut out = [0; PUB_KEY_SIZE];
         out[..N].copy_from_slice(&self.root);
@@ -77,15 +77,32 @@ impl PublicKey {
 /// deterministic function of the master secret, so losing them costs
 /// recomputation and nothing else.
 #[derive(Clone, Debug)]
-pub struct SecretKey {
+pub struct SphincsSecretKey {
     pub public_param: PublicParam,
     pub root: Digest,
     master: Digest,
     cache: [Digest; CACHE_LEN],
 }
 
+impl SphincsSecretKey {
+    /// SECRET KEY MATERIAL: the two secrets a key pair is generated from.
+    pub fn to_bytes(&self) -> [u8; SECRET_KEY_SIZE] {
+        let mut out = [0; SECRET_KEY_SIZE];
+        out[..PUBLIC_PARAM_LEN].copy_from_slice(&self.public_param);
+        out[PUBLIC_PARAM_LEN..].copy_from_slice(&self.master);
+        out
+    }
+
+    /// Inverse of [`Self::to_bytes`], costing what [`key_gen_from`] costs: the
+    /// layer-0 tree is rebuilt rather than stored.
+    pub fn from_bytes(bytes: &[u8; SECRET_KEY_SIZE]) -> Self {
+        let (public_param, master) = bytes.split_at(PUBLIC_PARAM_LEN);
+        key_gen_from(public_param.try_into().unwrap(), master.try_into().unwrap()).0
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Signature {
+pub struct SphincsSignature {
     pub randomizer: Randomizer,
     pub fts: FtsOpening,
     pub counters: [u32; D],
@@ -94,7 +111,7 @@ pub struct Signature {
     pub paths: [Digest; H],
 }
 
-impl Signature {
+impl SphincsSignature {
     /// The specification's serialization, exactly [`SIG_SIZE`] bytes.
     pub fn to_bytes(&self) -> [u8; SIG_SIZE] {
         let mut out = [0; SIG_SIZE];
@@ -164,7 +181,7 @@ impl Signature {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum SignError {
+pub enum SphincsSignError {
     /// `A_max` digests in a row had a nonzero last index.
     NoAdmissibleDigest,
     /// `C_max` counters in a row failed to encode.
@@ -172,13 +189,36 @@ pub enum SignError {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum VerifyError {
+pub enum SphincsVerifyError {
     /// The digest's last index is not zero.
     InadmissibleDigest,
     /// A layer's counter does not encode the message it signs.
     InadmissibleEncoding,
     RootMismatch,
 }
+
+impl std::fmt::Display for SphincsSignError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoAdmissibleDigest => write!(f, "no admissible message digest within A_max attempts"),
+            Self::NoAdmissibleEncoding => write!(f, "no admissible encoding within C_max attempts"),
+        }
+    }
+}
+
+impl std::error::Error for SphincsSignError {}
+
+impl std::fmt::Display for SphincsVerifyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InadmissibleDigest => write!(f, "the digest's last index is not zero"),
+            Self::InadmissibleEncoding => write!(f, "a layer's counter does not encode the message it signs"),
+            Self::RootMismatch => write!(f, "the hypertree walk does not reach the key's root"),
+        }
+    }
+}
+
+impl std::error::Error for SphincsVerifyError {}
 
 /// The message digest, read as the index and the `k` leaf indices. `h + ka` bits
 /// of a random oracle output, so the index and the last leaf index are disjoint
@@ -243,7 +283,7 @@ fn build_up(
 
 /// `Gen`, on given `P` and master secret. Only layer 0 is built; the trees below
 /// it are built when a signature needs them.
-pub fn key_gen_from(public_param: PublicParam, master: Digest) -> (SecretKey, PublicKey) {
+pub fn key_gen_from(public_param: PublicParam, master: Digest) -> (SphincsSecretKey, SphincsPublicKey) {
     let leaves = parallel::map_collect(1 << HEIGHTS[0], |e| {
         ots_public_leaf(&public_param, &master, Pos::new(0, 0, e as u32))
     });
@@ -251,24 +291,24 @@ pub fn key_gen_from(public_param: PublicParam, master: Digest) -> (SecretKey, Pu
     let root = layers[HEIGHTS[0]][0];
     let cache = std::array::from_fn(|i| layers[SPLIT_LEVEL][i]);
     (
-        SecretKey {
+        SphincsSecretKey {
             public_param,
             root,
             master,
             cache,
         },
-        PublicKey { root, public_param },
+        SphincsPublicKey { root, public_param },
     )
 }
 
 /// `Gen`: samples `P` and the master secret independently.
-pub fn key_gen(rng: &mut impl CryptoRng) -> (SecretKey, PublicKey) {
+pub fn key_gen(rng: &mut impl CryptoRng) -> (SphincsSecretKey, SphincsPublicKey) {
     key_gen_from(rng.random(), rng.random())
 }
 
-impl SecretKey {
-    pub fn public_key(&self) -> PublicKey {
-        PublicKey {
+impl SphincsSecretKey {
+    pub fn public_key(&self) -> SphincsPublicKey {
+        SphincsPublicKey {
             root: self.root,
             public_param: self.public_param,
         }
@@ -323,7 +363,11 @@ impl SecretKey {
 /// `Sig`. Stateless: it may be called on any message any number of times, but
 /// security degrades with that number, the specification's claim being stated at
 /// `2^24` signatures per key pair.
-pub fn sign(rng: &mut impl CryptoRng, sk: &SecretKey, message: &Message) -> Result<Signature, SignError> {
+pub fn sign(
+    rng: &mut impl CryptoRng,
+    sk: &SphincsSecretKey,
+    message: &Message,
+) -> Result<SphincsSignature, SphincsSignError> {
     // The digest is admissible when its last leaf index is zero, which is what
     // drops that tree from the forest; it takes 2^a attempts on average.
     let (randomizer, idx, u) = (0..MAX_DIGEST_ATTEMPTS)
@@ -332,7 +376,7 @@ pub fn sign(rng: &mut impl CryptoRng, sk: &SecretKey, message: &Message) -> Resu
             let (idx, u) = message_digest(&sk.public_param, &sk.root, &randomizer, message);
             (u[K - 1] == 0).then_some((randomizer, idx, u))
         })
-        .ok_or(SignError::NoAdmissibleDigest)?;
+        .ok_or(SphincsSignError::NoAdmissibleDigest)?;
 
     let (fts_key, fts) = fts_open(&sk.public_param, &sk.master, idx, &u);
 
@@ -343,8 +387,8 @@ pub fn sign(rng: &mut impl CryptoRng, sk: &SecretKey, message: &Message) -> Resu
     for lay in (0..D).rev() {
         let (tau, e) = (tree_of(idx, lay), leaf_of(idx, lay));
         let pos = Pos::new(lay, tau, e);
-        let (c, signature) =
-            ots_sign(&sk.public_param, &sk.master, pos, &message_of_layer).ok_or(SignError::NoAdmissibleEncoding)?;
+        let (c, signature) = ots_sign(&sk.public_param, &sk.master, pos, &message_of_layer)
+            .ok_or(SphincsSignError::NoAdmissibleEncoding)?;
         counters[lay] = c;
         ots[lay] = signature;
         let path = &mut paths[path_range(lay)];
@@ -358,7 +402,7 @@ pub fn sign(rng: &mut impl CryptoRng, sk: &SecretKey, message: &Message) -> Resu
     // honest, which is also the only check the cache gets.
     debug_assert_eq!(message_of_layer, sk.root);
 
-    Ok(Signature {
+    Ok(SphincsSignature {
         randomizer,
         fts,
         counters,
@@ -388,10 +432,14 @@ pub fn tree_fold(pp: &PublicParam, pos: Pos, leaf: Digest, path: &[Digest]) -> D
 }
 
 /// `Ver`.
-pub fn verify(pk: &PublicKey, message: &Message, signature: &Signature) -> Result<(), VerifyError> {
+pub fn verify(
+    pk: &SphincsPublicKey,
+    message: &Message,
+    signature: &SphincsSignature,
+) -> Result<(), SphincsVerifyError> {
     let (idx, u) = message_digest(&pk.public_param, &pk.root, &signature.randomizer, message);
     if u[K - 1] != 0 {
-        return Err(VerifyError::InadmissibleDigest);
+        return Err(SphincsVerifyError::InadmissibleDigest);
     }
     let mut message_of_layer = fts_recover(&pk.public_param, idx, &u, &signature.fts);
     for lay in (0..D).rev() {
@@ -403,12 +451,12 @@ pub fn verify(pk: &PublicKey, message: &Message, signature: &Signature) -> Resul
             signature.counters[lay],
             &signature.ots[lay],
         )
-        .ok_or(VerifyError::InadmissibleEncoding)?;
+        .ok_or(SphincsVerifyError::InadmissibleEncoding)?;
         message_of_layer = tree_fold(&pk.public_param, pos, leaf, &signature.paths[path_range(lay)]);
     }
     if message_of_layer == pk.root {
         Ok(())
     } else {
-        Err(VerifyError::RootMismatch)
+        Err(SphincsVerifyError::RootMismatch)
     }
 }

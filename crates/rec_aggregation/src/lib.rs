@@ -13,7 +13,10 @@ pub mod fibonacci;
 mod hash_chain;
 pub mod signers_cache;
 
-pub use aggregation::{AggregateError, AggregateSignature, VerifyError, aggregate};
+pub use aggregation::{
+    AggregateSignature, AggregateVerifyError, AggregationError, MAX_CHILDREN, MAX_EPOCHS, MAX_KEYS, SphincsSigner,
+    WireKeys, XmssGroup, aggregate, warm_up,
+};
 pub use benchmark::{run_aggregation, run_recursion};
 pub use fibonacci::run_fibonacci;
 

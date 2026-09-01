@@ -14,7 +14,10 @@ workspace = true
 primitives.workspace = true
 rec_aggregation.workspace = true
 lean_vm.workspace = true
+xmss.workspace = true
+sphincs.workspace = true
 zk_alloc.workspace = true
+rand.workspace = true
 clap = { version = "4", features = ["derive"] }
 
 [workspace.package]

@@ -39,6 +39,7 @@
 //! run, so there is no hand-mirrored copy of the protocol to drift.
 
 use bincode::Options as _;
+use pcs::whir::{MAX_LOG_INV_RATE, MIN_LOG_INV_RATE};
 use std::collections::BTreeMap;
 use std::ops::Range;
 
@@ -50,15 +51,15 @@ use primitives::field::{F64, F192, G, g_pow};
 use primitives::multilinear::mle_eval_par;
 use xmss::{XmssPublicKey, XmssSignature};
 
-use sphincs::{PublicKey as SphincsPublicKey, Signature as SphincsSignature};
+use sphincs::{SphincsPublicKey, SphincsSignature};
 
-/// A SPHINCS claim: a key and the message it signed. Each SPHINCS signer carries
-/// its own message, where the XMSS half shares one.
+/// One SPHINCS claim: a key, and the message it signed. Where an XMSS group
+/// shares one message, every SPHINCS signer carries its own.
 pub type SphincsSigner = (SphincsPublicKey, sphincs::Message);
 
-/// One epoch's XMSS signers: the epoch, the message every key of the group
-/// signed at it, and the strictly sorted keys.
-pub type XmssGroup = (u32, xmss::Message, Vec<XmssPublicKey>);
+/// The XMSS signers sharing one epoch: the epoch, the message they all signed
+/// at it, and their strictly sorted keys.
+pub type XmssGroup = (xmss::Epoch, xmss::Message, Vec<XmssPublicKey>);
 
 /// Why the guest reads every `q_flock` slot claim's instance point off `chi`: a
 /// virtual value column is referenced only by its own table's bus blocks, which
@@ -68,21 +69,23 @@ const RECURSION_AGG_LABEL: &[u8] = b"leanvm-b/recursion-aggregation/v1";
 const RECURSION_STATEMENT_LABEL: &[u8] = b"leanvm-b/recursive-statement/v3";
 const SIGNERS_LABEL: &[u8] = b"leanvm-b/aggregation-signers/v1";
 
-/// The recursion arity, and the cap on the coverage table's slots, declared and
-/// duplicate, of both schemes (exclusive: the guest proves
-/// `log(n_total) < MAX_KEYS`).
-///
-/// `MAX_KEYS` is what the coverage indices' runtime range check needs to stay
-/// below `2^MIN_LOG_MEM`, so that the bound means the same thing at every
-/// announced memory size. The guest discharges that by range-checking
-/// `n_total` against this constant with a COMPILE-TIME bound, so raising
-/// `MAX_KEYS` past `2^MIN_LOG_MEM` fails the build rather than quietly
-/// weakening the index bound. leanVM caps its signer sets at the same place.
+/// The most earlier aggregates one [`aggregate`] call can take, so the arity of
+/// an aggregation tree.
 pub const MAX_CHILDREN: usize = 16;
+
+/// The cap on [`AggregateSignature::n_claims`], both schemes together, counting
+/// the coverage table's duplicate slots. Exclusive: exactly this many is already
+/// too many.
+///
+/// It is where the coverage indices' range check has to sit to stay below
+/// `2^MIN_LOG_MEM`, so the bound means the same at every announced memory size.
+/// The guest checks it against a COMPILE-TIME bound, so raising it past
+/// `2^MIN_LOG_MEM` fails the build rather than weakening the index bound.
 pub const MAX_KEYS: usize = 1 << 16;
-/// The cap on a statement's XMSS epoch groups: generous headroom over the few
-/// expected in practice, and a hard bound on what a mid-tree statement can
-/// carry (nothing in-circuit forces its groups non-empty).
+
+/// The most [`XmssGroup`]s one aggregate can carry: headroom over the few epochs
+/// expected in practice, and a hard bound where nothing in-circuit forces a
+/// group non-empty.
 pub const MAX_EPOCHS: usize = 1024;
 
 // The guest bakes a bytecode claim's width from `N_TUPLE_BITS` while `bytecode_vars`
@@ -261,10 +264,10 @@ impl DeferredClaim {
     }
 
     /// Evaluate the three fixed polynomials at `bytecode_point` / `matrix_point`.
-    fn recompute(bytecode_point: Vec<F192>, matrix_point: Vec<F192>) -> Result<Self, VerifyError> {
+    fn recompute(bytecode_point: Vec<F192>, matrix_point: Vec<F192>) -> Result<Self, AggregateVerifyError> {
         let klog = flock::hash::K_LOG;
         if bytecode_point.len() != bytecode_vars() || matrix_point.len() != 2 * klog {
-            return Err(VerifyError::MalformedClaim);
+            return Err(AggregateVerifyError::MalformedClaim);
         }
         // Every leaf defers the all-zeros point, where the bytecode polynomial is
         // just its table's first entry. Still worth special-casing that half: the
@@ -370,34 +373,27 @@ struct DeferredSubproof {
     matrix_claim: F192,
 }
 
-/// An aggregate signature: a proof that every key in `xmss_signers` signed its
-/// group's message at its group's epoch under XMSS, and that every
-/// `(key, message)` pair in `sphincs_signers` is a valid SPHINCS signature.
+/// A proof that every key in [`Self::xmss_signers`] signed its group's message
+/// at its group's epoch under XMSS, and that every `(key, message)` in
+/// [`Self::sphincs_signers`] is a valid SPHINCS signature.
 ///
-/// Each list is strictly sorted and deduplicated, and their union is everything
-/// the aggregate covers, whether by a raw signature or through a child
-/// aggregate. The lists are separate because the statement says which scheme
-/// verified each key at which epoch: the guest holds a raw XMSS signature and a
-/// child's XMSS keys to their own epoch group of its coverage table, and the
-/// SPHINCS writers to the SPHINCS region.
+/// The two lists are everything the aggregate covers, signed directly into it or
+/// carried up from one below, and separate because the proof says which scheme
+/// verified which key (the module docs give the coverage argument). Until
+/// [`Self::verify_against`] returns `Ok` they are claims, not attestation.
 ///
-/// **Neither list's length is a count of signers, only of claims.** The
-/// SPHINCS ordering is on the whole `(key, message)` pair and the XMSS one on
-/// `(epoch, key)`, so one key may appear several times, with different messages
-/// or at different epochs, and nothing here forces a reader to deduplicate: a
-/// committee threshold has to count distinct keys itself. A caller reading the
-/// signer lists as attestation of a statement has to pin that statement with
-/// [`Self::verify_against`].
-/// [`Self::verify`] is the only acceptance path.
+/// **Neither length counts signers, only claims.** One key may appear in several
+/// XMSS groups or under several SPHINCS messages, so a committee threshold has
+/// to count distinct keys itself.
 #[derive(Clone, Debug)]
 pub struct AggregateSignature {
     /// The XMSS signers: strictly increasing epochs,
     /// each group non-empty and strictly sorted. May be empty, but not
     /// together with `sphincs_signers`; the claims of both together are
     /// strictly fewer than [`MAX_KEYS`].
-    pub xmss_signers: Vec<XmssGroup>,
+    xmss_signers: Vec<XmssGroup>,
     /// Strictly sorted and deduplicated on the whole `(key, message)` pair.
-    pub sphincs_signers: Vec<SphincsSigner>,
+    sphincs_signers: Vec<SphincsSigner>,
     /// What this aggregate defers to whoever discharges it: its parent, in
     /// circuit, or [`Self::verify`], natively.
     defer: DeferredClaim,
@@ -405,18 +401,21 @@ pub struct AggregateSignature {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum VerifyError {
+pub enum AggregateVerifyError {
     /// The signer set is empty, unsorted, holds a duplicate, or has [`MAX_KEYS`] keys or more.
     MalformedSignerSet,
     /// A deferred claim's point has the wrong number of coordinates.
     MalformedClaim,
+    /// The bytes are not a valid encoding of an aggregate.
+    MalformedEncoding,
     /// The aggregate claims an `(epoch, message)` pair the caller did not allow.
     UnexpectedStatement,
-    Proof(lean_vm::cpu::Error),
+    /// The snark itself did not verify.
+    Snark(lean_vm::cpu::CpuError),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AggregateError {
+pub enum AggregationError {
     /// Two claims at one epoch, raw or through children, carry different
     /// messages: within an aggregate the message is a function of the epoch.
     ConflictingMessages,
@@ -424,7 +423,7 @@ pub enum AggregateError {
     /// exceeds [`MAX_EPOCHS`].
     TooManyEpochs,
     /// A child aggregate does not verify.
-    InvalidChild(VerifyError),
+    InvalidChild(AggregateVerifyError),
     /// Nothing to aggregate: no raw signatures and no children.
     Empty,
     /// A raw signature's randomness does not decode to a target-sum encoding,
@@ -433,17 +432,76 @@ pub enum AggregateError {
     /// More than [`MAX_CHILDREN`] children, or [`MAX_KEYS`] signers or more
     /// once the duplicate slots are counted.
     TooLarge,
+    /// `log_inv_rate` is outside the range the WHIR configuration accepts.
+    InvalidRate { log_inv_rate: usize },
     /// A child's committed witness falls outside the opening arms the guest was
     /// compiled with. Small aggregates are padded up to the floor, so this means
     /// a child too big: more signatures than one node can hold.
     ChildOutOfRange { log_committed: usize },
 }
 
+impl std::fmt::Display for AggregateVerifyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MalformedSignerSet => write!(f, "malformed signer set"),
+            Self::MalformedClaim => write!(f, "malformed deferred claim"),
+            Self::MalformedEncoding => write!(f, "not a valid aggregate encoding"),
+            Self::UnexpectedStatement => {
+                write!(f, "the aggregate claims an (epoch, message) pair that was not allowed")
+            }
+            Self::Snark(e) => write!(f, "the snark did not verify: {e:?}"),
+        }
+    }
+}
+
+impl std::error::Error for AggregateVerifyError {}
+
+impl std::fmt::Display for AggregationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ConflictingMessages => write!(f, "two claims at one epoch carry different messages"),
+            Self::TooManyEpochs => write!(f, "more than MAX_EPOCHS ({MAX_EPOCHS}) epochs"),
+            Self::InvalidChild(_) => write!(f, "invalid child aggregate"),
+            Self::Empty => write!(f, "nothing to aggregate"),
+            Self::MalformedRawSignature => write!(f, "a raw signature does not decode to a target-sum encoding"),
+            Self::TooLarge => {
+                write!(
+                    f,
+                    "more than MAX_CHILDREN ({MAX_CHILDREN}) children, or MAX_KEYS ({MAX_KEYS}) claims or more"
+                )
+            }
+            Self::InvalidRate { log_inv_rate } => {
+                write!(
+                    f,
+                    "log_inv_rate {log_inv_rate} is outside {}..={}",
+                    MIN_LOG_INV_RATE, MAX_LOG_INV_RATE
+                )
+            }
+            Self::ChildOutOfRange { log_committed } => {
+                write!(
+                    f,
+                    "a child commits 2^{log_committed} words, outside the guest's opening arms"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for AggregationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidChild(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
 /// Everything but the signer set, which a receiver may already hold.
 type WireCore = (Vec<F192>, Vec<F192>, lean_vm::cpu::Proof);
 
-/// The signer set on the wire: the two lists, in statement order.
-type WireKeys = (Vec<XmssGroup>, Vec<SphincsSigner>);
+/// The signer lists as [`AggregateSignature::to_bytes`] writes them: the XMSS
+/// groups, then the SPHINCS claims.
+pub type WireKeys = (Vec<XmssGroup>, Vec<SphincsSigner>);
 
 /// The wire encoding: bincode's fixed-width integers, as the free functions use,
 /// but rejecting trailing bytes, which they do not. Without that an accepted
@@ -460,7 +518,7 @@ fn wire() -> impl bincode::Options {
 /// increasing, non-empty (an absent epoch is an absent group, the one
 /// encoding of each set) and at most [`MAX_EPOCHS`]. Either list may be empty;
 /// both may not. [`MAX_KEYS`] is exclusive here, as in the guest.
-fn check_signer_set(xmss_signers: &[XmssGroup], sphincs_signers: &[SphincsSigner]) -> Result<(), VerifyError> {
+fn check_signer_set(xmss_signers: &[XmssGroup], sphincs_signers: &[SphincsSigner]) -> Result<(), AggregateVerifyError> {
     let total = xmss_signers.iter().map(|(_, _, keys)| keys.len()).sum::<usize>() + sphincs_signers.len();
     if total == 0
         || total >= MAX_KEYS
@@ -471,7 +529,7 @@ fn check_signer_set(xmss_signers: &[XmssGroup], sphincs_signers: &[SphincsSigner
             .any(|(_, _, keys)| keys.is_empty() || !keys.windows(2).all(|w| w[0] < w[1]))
         || !sphincs_signers.windows(2).all(|w| w[0] < w[1])
     {
-        return Err(VerifyError::MalformedSignerSet);
+        return Err(AggregateVerifyError::MalformedSignerSet);
     }
     Ok(())
 }
@@ -480,6 +538,17 @@ impl AggregateSignature {
     /// This aggregate's own public statement, as the VM publishes it.
     fn public_input(&self) -> [F192; 2] {
         statement_digest(signers_hash(&self.xmss_signers, &self.sphincs_signers), &self.defer)
+    }
+
+    /// Strictly increasing epochs, each group non-empty and strictly sorted.
+    /// May be empty, but not together with [`Self::sphincs_signers`].
+    pub fn xmss_signers(&self) -> &[XmssGroup] {
+        &self.xmss_signers
+    }
+
+    /// Strictly sorted and deduplicated on the whole `(key, message)` pair.
+    pub fn sphincs_signers(&self) -> &[SphincsSigner] {
+        &self.sphincs_signers
     }
 
     /// The declared claims, as many as the coverage table's declared slots.
@@ -501,8 +570,12 @@ impl AggregateSignature {
             .expect("an aggregate serializes")
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        let (keys, core): (WireKeys, WireCore) = wire().deserialize(bytes).ok()?;
+    /// Parsing does NOT verify: the proof is untouched, only shapes are checked.
+    /// Call [`Self::verify_against`] before believing any of it.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, AggregateVerifyError> {
+        let (keys, core): (WireKeys, WireCore) = wire()
+            .deserialize(bytes)
+            .map_err(|_| AggregateVerifyError::MalformedEncoding)?;
         Self::from_parts(keys, core)
     }
 
@@ -516,8 +589,14 @@ impl AggregateSignature {
         &self.proof
     }
 
-    pub fn from_bytes_without_pubkeys(bytes: &[u8], keys: WireKeys) -> Option<Self> {
-        Self::from_parts(keys, wire().deserialize(bytes).ok()?)
+    /// Inverse of [`Self::to_bytes_without_pubkeys`], verifying nothing either.
+    pub fn from_bytes_without_pubkeys(bytes: &[u8], keys: WireKeys) -> Result<Self, AggregateVerifyError> {
+        Self::from_parts(
+            keys,
+            wire()
+                .deserialize(bytes)
+                .map_err(|_| AggregateVerifyError::MalformedEncoding)?,
+        )
     }
 
     fn core(&self) -> WireCore {
@@ -528,17 +607,18 @@ impl AggregateSignature {
         )
     }
 
-    fn from_parts(keys: WireKeys, core: WireCore) -> Option<Self> {
+    fn from_parts(keys: WireKeys, core: WireCore) -> Result<Self, AggregateVerifyError> {
         let (xmss_signers, sphincs_signers) = keys;
         let (bytecode_point, matrix_point, proof) = core;
         // Cheap rejections first. `recompute` below is a pass over the whole stacked
         // bytecode plus a walk of the BLAKE2s circuit, on points a peer chose, so
         // anything decidable without it has to be decided before it.
-        check_signer_set(&xmss_signers, &sphincs_signers).ok()?;
-        Some(Self {
+        check_signer_set(&xmss_signers, &sphincs_signers)?;
+        Ok(Self {
             xmss_signers,
             sphincs_signers,
-            defer: DeferredClaim::recompute(bytecode_point, matrix_point).ok()?,
+            // The wire carries no value, only the points to derive it from.
+            defer: DeferredClaim::recompute(bytecode_point, matrix_point)?,
             proof,
         })
     }
@@ -559,13 +639,13 @@ impl AggregateSignature {
     /// `(key, message)` pair against what it expected, and must not read
     /// [`Self::n_claims`] as a signer count (a key may also claim once per
     /// allowed XMSS pair).
-    pub fn verify_against(&self, allowed: &[(u32, xmss::Message)]) -> Result<(), VerifyError> {
+    pub fn verify_against(&self, allowed: &[(xmss::Epoch, xmss::Message)]) -> Result<(), AggregateVerifyError> {
         if self
             .xmss_signers
             .iter()
             .any(|(epoch, message, _)| !allowed.contains(&(*epoch, *message)))
         {
-            return Err(VerifyError::UnexpectedStatement);
+            return Err(AggregateVerifyError::UnexpectedStatement);
         }
         self.verify()
     }
@@ -580,20 +660,21 @@ impl AggregateSignature {
     /// SPHINCS signature", with the epochs and messages chosen by
     /// whoever produced the aggregate. Use [`Self::verify_against`] unless the caller has already
     /// pinned those some other way.
-    pub fn verify(&self) -> Result<(), VerifyError> {
+    pub fn verify(&self) -> Result<(), AggregateVerifyError> {
         check_signer_set(&self.xmss_signers, &self.sphincs_signers)?;
-        // Recomputing the values is what binds them: a claim carrying anything
-        // else yields a different statement, which the proof cannot satisfy.
+        // Discharging the deferred claims IS recomputing them: their values have
+        // to be the true evaluations, or the recursion below proves nothing about
+        // the fixed polynomials.
         let _s = tracing::info_span!("Recompute deferred claims").entered();
         let defer = DeferredClaim::recompute(self.defer.bytecode_point.clone(), self.defer.matrix_point.clone())?;
         drop(_s);
         if defer != self.defer {
-            return Err(VerifyError::MalformedClaim);
+            return Err(AggregateVerifyError::MalformedClaim);
         }
         let _s = tracing::info_span!("Statement digest").entered();
         let pi = self.public_input();
         drop(_s);
-        verify(unified_guest(), &pi, &self.proof).map_err(VerifyError::Proof)?;
+        verify(unified_guest(), &pi, &self.proof).map_err(AggregateVerifyError::Snark)?;
         Ok(())
     }
 }
@@ -1267,7 +1348,7 @@ fn gen_verify(
     program: &Program,
     public_input: [F192; 2],
     summary: &lean_vm::cpu::VerifySummary,
-) -> Result<(SubHints, DeferredSubproof), AggregateError> {
+) -> Result<(SubHints, DeferredSubproof), AggregationError> {
     let proof_stream = &summary.raw.stream;
     let layout = lean_vm::cpu::layout(
         &program.prog,
@@ -1285,7 +1366,7 @@ fn gen_verify(
     // outside that window has no arm to dispatch to. `min_log_committed` keeps
     // every aggregate above the low end, leaving only the ceiling reachable.
     if !(MU_MIN..=MU_MAX).contains(&layout.shape.mu) {
-        return Err(AggregateError::ChildOutOfRange {
+        return Err(AggregationError::ChildOutOfRange {
             log_committed: layout.shape.mu,
         });
     }
@@ -1611,26 +1692,26 @@ fn take_slot<K: Ord + Clone>(keys: &[K], claimed: &mut [bool], duplicates: &mut 
 /// Record one epoch's message, rejecting a second, different one: within an
 /// aggregate the message is a function of the epoch.
 fn bind_message(
-    messages: &mut BTreeMap<u32, xmss::Message>,
-    epoch: u32,
+    messages: &mut BTreeMap<xmss::Epoch, xmss::Message>,
+    epoch: xmss::Epoch,
     message: xmss::Message,
-) -> Result<(), AggregateError> {
+) -> Result<(), AggregationError> {
     match messages.insert(epoch, message) {
-        Some(previous) if previous != message => Err(AggregateError::ConflictingMessages),
+        Some(previous) if previous != message => Err(AggregationError::ConflictingMessages),
         _ => Ok(()),
     }
 }
 
 fn plan_coverage(
-    raw_xmss: &[(XmssPublicKey, u32, xmss::Message)],
+    raw_xmss: &[(XmssPublicKey, xmss::Epoch, xmss::Message)],
     raw_sphincs: &[SphincsSigner],
     children: &[AggregateSignature],
-) -> Result<Coverage, AggregateError> {
+) -> Result<Coverage, AggregationError> {
     // The union, as `(epoch, key)` claims plus the epoch-to-message function
     // every contributor must agree on, then grouped: consecutive equal epochs
     // of the sorted deduplicated list are one group.
-    let mut messages: BTreeMap<u32, xmss::Message> = BTreeMap::new();
-    let mut claims: Vec<(u32, XmssPublicKey)> = Vec::with_capacity(raw_xmss.len());
+    let mut messages: BTreeMap<xmss::Epoch, xmss::Message> = BTreeMap::new();
+    let mut claims: Vec<(xmss::Epoch, XmssPublicKey)> = Vec::with_capacity(raw_xmss.len());
     for (pk, epoch, message) in raw_xmss {
         bind_message(&mut messages, *epoch, *message)?;
         claims.push((*epoch, pk.clone()));
@@ -1649,7 +1730,7 @@ fn plan_coverage(
     sphincs_signers.sort();
     sphincs_signers.dedup();
     if claims.is_empty() && sphincs_signers.is_empty() {
-        return Err(AggregateError::Empty);
+        return Err(AggregationError::Empty);
     }
     let mut xmss_signers: Vec<XmssGroup> = Vec::new();
     for (epoch, pk) in claims {
@@ -1659,9 +1740,9 @@ fn plan_coverage(
         }
     }
     if xmss_signers.len() > MAX_EPOCHS {
-        return Err(AggregateError::TooManyEpochs);
+        return Err(AggregationError::TooManyEpochs);
     }
-    let group_of = |epoch: u32, groups: &[XmssGroup]| {
+    let group_of = |epoch: xmss::Epoch, groups: &[XmssGroup]| {
         groups
             .binary_search_by_key(&epoch, |(e, _, _)| *e)
             .expect("every covered epoch is a group")
@@ -1720,7 +1801,7 @@ fn plan_coverage(
         child_sphincs,
     };
     if cover.n_total() >= MAX_KEYS {
-        return Err(AggregateError::TooLarge);
+        return Err(AggregationError::TooLarge);
     }
     Ok(cover)
 }
@@ -1732,11 +1813,11 @@ fn push_signature_hints(
     pk: &XmssPublicKey,
     sig: &XmssSignature,
     message: &xmss::Message,
-    xmss_epoch: u32,
-) -> Result<(), AggregateError> {
+    xmss_epoch: xmss::Epoch,
+) -> Result<(), AggregationError> {
     let wots = &sig.wots_signature;
     let encoding = xmss::wots_encode(message, xmss_epoch, &pk.public_param, &wots.randomness)
-        .ok_or(AggregateError::MalformedRawSignature)?;
+        .ok_or(AggregationError::MalformedRawSignature)?;
     let mut randomness = [0u8; xmss::STATE_LEN];
     randomness[..xmss::RANDOMNESS_LEN].copy_from_slice(&wots.randomness);
     hints.push(
@@ -1767,7 +1848,7 @@ fn push_sphincs_hints(
     hints: &mut Hints,
     (pk, message): &SphincsSigner,
     sig: &SphincsSignature,
-) -> Result<(), AggregateError> {
+) -> Result<(), AggregationError> {
     let pp = &pk.public_param;
     hints.push("sp_rand", vec![pack_16_bytes(&sig.randomizer)]);
     let (idx, u) = sphincs::message_digest(pp, &pk.root, &sig.randomizer, message);
@@ -1781,7 +1862,7 @@ fn push_sphincs_hints(
     for lay in (0..sphincs::D).rev() {
         let pos = sphincs::Pos::new(lay, sphincs::tree_of(idx, lay), sphincs::leaf_of(idx, lay));
         let counter = sig.counters[lay];
-        let codeword = sphincs::encode(pp, pos, &signed, counter).ok_or(AggregateError::MalformedRawSignature)?;
+        let codeword = sphincs::encode(pp, pos, &signed, counter).ok_or(AggregationError::MalformedRawSignature)?;
         hints.push("sp_counter", vec![F192::new(u64::from(counter), 0, 0)]);
         for (&digit, opened) in codeword.iter().zip(&sig.ots[lay]) {
             hints.push("sp_digits", vec![count(digit as usize)]);
@@ -1791,41 +1872,42 @@ fn push_sphincs_hints(
         for sibling in path {
             hints.push("sp_siblings", vec![pack_16_bytes(sibling)]);
         }
-        let leaf =
-            sphincs::ots_leaf(pp, pos, &signed, counter, &sig.ots[lay]).ok_or(AggregateError::MalformedRawSignature)?;
+        let leaf = sphincs::ots_leaf(pp, pos, &signed, counter, &sig.ots[lay])
+            .ok_or(AggregationError::MalformedRawSignature)?;
         signed = sphincs::tree_fold(pp, pos, leaf, path);
     }
     debug_assert_eq!(signed, pk.root, "the hinted walk reaches the public key");
     Ok(())
 }
 
-/// Aggregate raw signatures of either scheme and previously aggregated
-/// signatures into one proof, over the union of their signer sets: each XMSS
-/// signer against the `(epoch, message)` its entry carries, each SPHINCS
-/// signer against its own message. One message per distinct epoch; children
-/// need not agree on their epoch lists.
+/// - `children`: previously aggregated signatures; at most [`MAX_CHILDREN`].
+/// - `raw_xmss`: list of `(public_key, epoch, message, signature)`, any order; one message per
+///   epoch across the whole result, at most [`MAX_EPOCHS`] epochs.
+/// - `raw_sphincs`: list of `(public_key, message, signature)`, any order.
+/// - `log_inv_rate`: PCS code rate `2^-log_inv_rate`, higher `log_inv_rate` means a smaller proof
+///   but slower proving; in [`MIN_LOG_INV_RATE`]..=[`MAX_LOG_INV_RATE`].
 ///
-/// Children and raw signatures mix freely: no children is a leaf, no raw
-/// signatures is a pure recursion step, and one child plus a few signatures
-/// tops up an existing aggregate. Raw signatures are expected to be valid: the
-/// host does not check what the guest checks anyway. One proving job at a time
-/// per process.
+/// The aggregated signature should contain at most [`MAX_KEYS`] many XMSS and SPHINCS combined.
+///
+/// IMPORTANT:
+/// - `aggregate` should not be called more than once at a time in parallel per process.
+/// - Raw signatures are assumed valid (otherwise `aggregate` will panic).
 pub fn aggregate(
     children: &[AggregateSignature],
-    raw_xmss: Vec<(XmssPublicKey, u32, xmss::Message, XmssSignature)>,
+    raw_xmss: Vec<(XmssPublicKey, xmss::Epoch, xmss::Message, XmssSignature)>,
     raw_sphincs: Vec<(SphincsPublicKey, sphincs::Message, SphincsSignature)>,
     log_inv_rate: usize,
-) -> Result<AggregateSignature, AggregateError> {
+) -> Result<AggregateSignature, AggregationError> {
     aggregate_with_stats(children, raw_xmss, raw_sphincs, log_inv_rate).map(|(sig, _)| sig)
 }
 
 /// [`aggregate`], keeping the prover statistics the benchmark reports.
 pub(crate) fn aggregate_with_stats(
     children: &[AggregateSignature],
-    raw_xmss: Vec<(XmssPublicKey, u32, xmss::Message, XmssSignature)>,
+    raw_xmss: Vec<(XmssPublicKey, xmss::Epoch, xmss::Message, XmssSignature)>,
     raw_sphincs: Vec<(SphincsPublicKey, sphincs::Message, SphincsSignature)>,
     log_inv_rate: usize,
-) -> Result<(AggregateSignature, lean_vm::cpu::Stats), AggregateError> {
+) -> Result<(AggregateSignature, lean_vm::cpu::Stats), AggregationError> {
     aggregate_tampered(children, raw_xmss, raw_sphincs, log_inv_rate, |_| {})
 }
 
@@ -1837,13 +1919,17 @@ pub(crate) fn aggregate_with_stats(
 /// (`aggregate_hints_bind`); with an empty hook this is the production path.
 pub(crate) fn aggregate_tampered(
     children: &[AggregateSignature],
-    raw_xmss: Vec<(XmssPublicKey, u32, xmss::Message, XmssSignature)>,
+    raw_xmss: Vec<(XmssPublicKey, xmss::Epoch, xmss::Message, XmssSignature)>,
     raw_sphincs: Vec<(SphincsPublicKey, sphincs::Message, SphincsSignature)>,
     log_inv_rate: usize,
     tamper: impl FnOnce(&mut Hints),
-) -> Result<(AggregateSignature, lean_vm::cpu::Stats), AggregateError> {
+) -> Result<(AggregateSignature, lean_vm::cpu::Stats), AggregationError> {
+    // Otherwise this reaches `cpu::prove`, which asserts rather than reporting.
+    if !(lean_vm::pcs::MIN_LOG_INV_RATE..=lean_vm::pcs::MAX_LOG_INV_RATE).contains(&log_inv_rate) {
+        return Err(AggregationError::InvalidRate { log_inv_rate });
+    }
     if children.len() > MAX_CHILDREN {
-        return Err(AggregateError::TooLarge);
+        return Err(AggregationError::TooLarge);
     }
     let guest = unified_guest();
     // Sorted by `(epoch, key)`, the guest's group-major walk order. Dedup is
@@ -1866,17 +1952,17 @@ pub(crate) fn aggregate_tampered(
     let mut verified = Vec::with_capacity(children.len());
     let _span = tracing::info_span!("Verify children").entered();
     for child in children {
-        check_signer_set(&child.xmss_signers, &child.sphincs_signers).map_err(AggregateError::InvalidChild)?;
+        check_signer_set(&child.xmss_signers, &child.sphincs_signers).map_err(AggregationError::InvalidChild)?;
         let pi = child.public_input();
-        let summary =
-            verify(guest, &pi, &child.proof).map_err(|e| AggregateError::InvalidChild(VerifyError::Proof(e)))?;
+        let summary = verify(guest, &pi, &child.proof)
+            .map_err(|e| AggregationError::InvalidChild(AggregateVerifyError::Snark(e)))?;
         verified.push((pi, summary));
     }
 
     drop(_span);
 
     let _span = tracing::info_span!("Build witness").entered();
-    let raw_xmss_claims: Vec<(XmssPublicKey, u32, xmss::Message)> = raw_xmss
+    let raw_xmss_claims: Vec<(XmssPublicKey, xmss::Epoch, xmss::Message)> = raw_xmss
         .iter()
         .map(|(pk, epoch, message, _)| (pk.clone(), *epoch, *message))
         .collect();
@@ -2594,7 +2680,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
         ps("LIG_VANISH_INVS", flds(&ivk2));
     }
     let n_log_sizes = maxm - minm + 1;
-    let n_rates = pcs::whir::MAX_LOG_INV_RATE - pcs::whir::MIN_LOG_INV_RATE + 1;
+    let n_rates = MAX_LOG_INV_RATE - MIN_LOG_INV_RATE + 1;
     ps("LIG_N_LOG_SIZES", n_log_sizes.to_string());
     ps("LIG_N_RATES", n_rates.to_string());
     ps("LIG_N_CANDIDATES", (n_log_sizes * n_rates).to_string());
@@ -2695,6 +2781,13 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     rep
 }
 
+/// Build the guest bytecode and the stacked table its claims are about. Both are
+/// cached, so this only moves the cost out of the first prove or verify.
+pub fn warm_up() {
+    unified_guest();
+    stacked_bytecode();
+}
+
 /// The aggregation bytecode, compiled to a fixed point on its own size.
 ///
 /// The recursion placeholders are a function of the inner bytecode's log size,
@@ -2758,14 +2851,14 @@ mod tests {
     };
 
     const SMALL_LEAF_SIZE: usize = 6;
-    const LOG_INV_RATE: usize = lean_vm::pcs::LOG_INV_RATE;
+    const LOG_INV_RATE: usize = lean_vm::pcs::TEST_LOG_INV_RATE;
 
     /// Cached `(key, signature)` pairs as the API takes them, every one at
     /// `epoch` over the cache's message for it.
     fn at_epoch(
         signers: &[(XmssPublicKey, XmssSignature)],
-        epoch: u32,
-    ) -> Vec<(XmssPublicKey, u32, xmss::Message, XmssSignature)> {
+        epoch: xmss::Epoch,
+    ) -> Vec<(XmssPublicKey, xmss::Epoch, xmss::Message, XmssSignature)> {
         signers
             .iter()
             .map(|(pk, sig)| (pk.clone(), epoch, message_for(epoch), sig.clone()))
@@ -2814,7 +2907,7 @@ mod tests {
     fn max_keys_bound_is_exclusive() {
         let full = signer_set(MAX_KEYS);
         let group = |keys: &[XmssPublicKey]| vec![(XMSS_EPOCH_A, message(), keys.to_vec())];
-        let claims = |keys: &[XmssPublicKey]| -> Vec<(XmssPublicKey, u32, xmss::Message)> {
+        let claims = |keys: &[XmssPublicKey]| -> Vec<(XmssPublicKey, xmss::Epoch, xmss::Message)> {
             keys.iter().map(|pk| (pk.clone(), XMSS_EPOCH_A, message())).collect()
         };
         let claim = [(
@@ -2824,11 +2917,11 @@ mod tests {
         check_signer_set(&group(&full[..MAX_KEYS - 1]), &[]).expect("one short of the cap");
         assert_eq!(
             check_signer_set(&group(&full), &[]),
-            Err(VerifyError::MalformedSignerSet)
+            Err(AggregateVerifyError::MalformedSignerSet)
         );
         assert_eq!(
             check_signer_set(&group(&full[..MAX_KEYS - 1]), &claim),
-            Err(VerifyError::MalformedSignerSet)
+            Err(AggregateVerifyError::MalformedSignerSet)
         );
         // One group per epoch: MAX_EPOCHS groups pass, one more is malformed.
         let spread =
@@ -2836,24 +2929,24 @@ mod tests {
         check_signer_set(&spread(MAX_EPOCHS), &[]).expect("at the epoch cap");
         assert_eq!(
             check_signer_set(&spread(MAX_EPOCHS + 1), &[]),
-            Err(VerifyError::MalformedSignerSet)
+            Err(AggregateVerifyError::MalformedSignerSet)
         );
         plan_coverage(&claims(&full[..MAX_KEYS - 1]), &[], &[]).expect("one short of the cap");
         assert_eq!(
             plan_coverage(&claims(&full), &[], &[]).err(),
-            Some(AggregateError::TooLarge)
+            Some(AggregationError::TooLarge)
         );
         assert_eq!(
             plan_coverage(&claims(&full[..MAX_KEYS - 1]), &claim, &[]).err(),
-            Some(AggregateError::TooLarge)
+            Some(AggregationError::TooLarge)
         );
-        let spread_claims = |n: usize| -> Vec<(XmssPublicKey, u32, xmss::Message)> {
+        let spread_claims = |n: usize| -> Vec<(XmssPublicKey, xmss::Epoch, xmss::Message)> {
             (0..n).map(|e| (full[e].clone(), e as u32, message())).collect()
         };
         plan_coverage(&spread_claims(MAX_EPOCHS), &[], &[]).expect("at the epoch cap");
         assert_eq!(
             plan_coverage(&spread_claims(MAX_EPOCHS + 1), &[], &[]).err(),
-            Some(AggregateError::TooManyEpochs)
+            Some(AggregationError::TooManyEpochs)
         );
     }
 
@@ -2886,11 +2979,11 @@ mod tests {
             .expect("verifies against its statement");
         assert_eq!(
             aggregate.verify_against(&[(XMSS_EPOCH_A + 1, message())]),
-            Err(VerifyError::UnexpectedStatement)
+            Err(AggregateVerifyError::UnexpectedStatement)
         );
         assert_eq!(
             aggregate.verify_against(&[(XMSS_EPOCH_A, message_for(XMSS_EPOCH_B))]),
-            Err(VerifyError::UnexpectedStatement)
+            Err(AggregateVerifyError::UnexpectedStatement)
         );
     }
 
@@ -3008,22 +3101,22 @@ mod tests {
                 LOG_INV_RATE,
             )
             .err(),
-            Some(AggregateError::ConflictingMessages)
+            Some(AggregationError::ConflictingMessages)
         );
         let node = aggregate(&[left, right], vec![], vec![], LOG_INV_RATE).expect("node");
         node.verify_against(&[(XMSS_EPOCH_A, message()), (XMSS_EPOCH_B, message_for(XMSS_EPOCH_B))])
             .expect("the two-epoch node verifies");
         assert_eq!(
             node.verify_against(&[(XMSS_EPOCH_A, message())]),
-            Err(VerifyError::UnexpectedStatement),
+            Err(AggregateVerifyError::UnexpectedStatement),
             "an epoch outside the allowed set is refused"
         );
         assert_eq!(
             node.verify_against(&[(XMSS_EPOCH_A, message()), (XMSS_EPOCH_B, message())]),
-            Err(VerifyError::UnexpectedStatement),
+            Err(AggregateVerifyError::UnexpectedStatement),
             "the right epoch under the wrong message is refused"
         );
-        let epochs: Vec<u32> = node.xmss_signers.iter().map(|(epoch, _, _)| *epoch).collect();
+        let epochs: Vec<xmss::Epoch> = node.xmss_signers.iter().map(|(epoch, _, _)| *epoch).collect();
         assert_eq!(epochs, vec![XMSS_EPOCH_A, XMSS_EPOCH_B]);
         assert_eq!(node.xmss_signers[0].2.len(), 4);
         let mut b_keys: Vec<XmssPublicKey> = at_b.iter().map(|(pk, _)| pk.clone()).collect();
@@ -3189,6 +3282,20 @@ mod tests {
             let message = s.xmss_signers[0].1;
             s.xmss_signers.push((epoch + 1, message, vec![moved]));
         });
+
+        // A claim off the wire carries only its points. Tampering with either
+        // half must be caught: a point by the recomputation, a value by the
+        // statement the proof is checked against.
+        let from_wire = |mutate: &dyn Fn(&mut AggregateSignature)| {
+            let mut bad = AggregateSignature::from_bytes(&node.to_bytes()).expect("round trip");
+            mutate(&mut bad);
+            assert!(bad.verify().is_err(), "a tampered wire aggregate must not verify");
+        };
+        from_wire(&|s| s.defer.bytecode_point[0] += F192::ONE);
+        from_wire(&|s| s.defer.matrix_point[0] += F192::ONE);
+        from_wire(&|s| s.defer.bytecode_value += F192::ONE);
+        from_wire(&|s| s.defer.matrix_a_value += F192::ONE);
+        from_wire(&|s| s.defer.matrix_b_value += F192::ONE);
     }
 
     /// The all-zeros fast path in `DeferredClaim::recompute` must agree with the
@@ -3218,7 +3325,7 @@ mod tests {
         let signers = get_signers(2 * SMALL_LEAF_SIZE);
 
         let rejects = |children: &[AggregateSignature],
-                       raw_signatures: Vec<(XmssPublicKey, u32, xmss::Message, XmssSignature)>,
+                       raw_signatures: Vec<(XmssPublicKey, xmss::Epoch, xmss::Message, XmssSignature)>,
                        raw_sphincs: Vec<RawSphincs>,
                        description: &str,
                        tamper: &dyn Fn(&mut Hints)| {
@@ -3542,12 +3649,12 @@ mod tests {
         let mut hints = Hints::default();
         assert_eq!(
             push_signature_hints(&mut hints, &pk, &sig, &message, XMSS_EPOCH_A),
-            Err(AggregateError::MalformedRawSignature)
+            Err(AggregationError::MalformedRawSignature)
         );
         assert!(hints.0.is_empty());
         assert_eq!(
             aggregate(&[], vec![(pk, XMSS_EPOCH_A, message, sig)], vec![], LOG_INV_RATE).err(),
-            Some(AggregateError::MalformedRawSignature)
+            Some(AggregationError::MalformedRawSignature)
         );
     }
 
@@ -3562,7 +3669,7 @@ mod tests {
         let raw = vec![(public_key, signed, signature)];
         assert_eq!(
             aggregate(&[], vec![], raw, LOG_INV_RATE).err(),
-            Some(AggregateError::MalformedRawSignature)
+            Some(AggregationError::MalformedRawSignature)
         );
     }
 }

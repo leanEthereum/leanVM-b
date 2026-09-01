@@ -34,7 +34,7 @@ def main():
 ";
     let program = compile(&parse(src).expect("parse"));
     let want = [F192::from(g_pow(12)), F192::from(g_pow(5))];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     // 2 DEREFs per range check (4 checks) + 2 publishing stores.
     assert_eq!(mix(src, want)[3], 10, "DEREF count");
     verify(&program, &want, &proof).expect("range-checked program verifies");
@@ -62,7 +62,7 @@ def main():
 ";
     let program = compile(&parse(src).expect("parse"));
     let want = [F192::from(g_pow(300)), F192::from(g_pow(300))];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("deferred-fill program verifies");
 }
 
@@ -82,7 +82,7 @@ def main():
 ";
     let program = compile(&parse(src).expect("parse"));
     let want = [F192::from(g_pow(5)); 2];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("max-bound range check verifies");
 }
 
@@ -103,7 +103,7 @@ def main():
 ";
     let program = compile(&parse(src).expect("parse"));
     let want = [F192::from(F64(5)), F192::from(F64(7))];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     // 6 iterations × 2 range-check DEREFs, plus call/publish plumbing.
     assert!(mix(src, want)[3] >= 12, "at least the 12 range-check DEREFs");
     verify(&program, &want, &proof).expect("loop range checks verify");
@@ -179,7 +179,7 @@ def main():
     let mut program = compile(&parse(src).expect("parse"));
     program.set_witness("n", vec![vec![F192::from(g_pow(6))]]);
     let want = [F192::from(g_pow(5)), F192::from(g_pow(6))];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("runtime-bound range check verifies");
 }
 

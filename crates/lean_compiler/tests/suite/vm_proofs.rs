@@ -7,7 +7,7 @@
 //! duplicating their knowledge of what a dummy row looks like.
 
 use lean_compiler::{compile, parse};
-use lean_vm::cpu::{Error, Proof, prove, verify};
+use lean_vm::cpu::{CpuError, Proof, prove, verify};
 use lean_vm::hash_flock::warm_setup;
 use lean_vm::vmhash::compress;
 use primitives::field::{F64, F192};
@@ -38,7 +38,7 @@ fn hashing_proof() -> (lean_vm::cpu::Program, [F192; 2], Proof) {
     let program = compile(&parse(HASHING).expect("parse"));
     warm_setup(1);
     let pi = hashing_pi();
-    let (proof, _) = prove(&program, pi, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, pi, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &pi, &proof).expect("honest proof verifies");
     (program, pi, proof)
 }
@@ -94,7 +94,7 @@ fn a_proof_does_not_verify_against_another_program() {
     let other = compile(&parse(&src(6)).expect("parse"));
     warm_setup(1);
     let pi = [F192::ZERO, F192::ZERO];
-    let (proof, _) = prove(&program, pi, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, pi, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &pi, &proof).expect("honest proof verifies");
     assert!(
         verify(&other, &pi, &proof).is_err(),
@@ -117,7 +117,7 @@ fn a_proof_roundtrips_through_bytes() {
     let mut bad_rate = decoded.clone();
     bad_rate.stream[1 + lean_vm::cpu::Stats::TABLES.len()] = F192::new(5, 0, 0);
     assert!(
-        matches!(verify(&program, &pi, &bad_rate), Err(Error::PublicInput)),
+        matches!(verify(&program, &pi, &bad_rate), Err(CpuError::PublicInput)),
         "the announced PCS rate must be in 1..=4"
     );
 
@@ -130,7 +130,7 @@ fn a_proof_roundtrips_through_bytes() {
     let mut sub_floor = decoded;
     sub_floor.stream[1 + blake2s] = F192::new(2, 0, 0);
     assert!(
-        matches!(verify(&program, &pi, &sub_floor), Err(Error::PublicInput)),
+        matches!(verify(&program, &pi, &sub_floor), Err(CpuError::PublicInput)),
         "the announced BLAKE2s height must reach flock's instance floor"
     );
 }

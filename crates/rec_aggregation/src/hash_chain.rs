@@ -87,7 +87,7 @@ fn blake2s_hash_chain() {
     warm_setup(steps);
 
     let started = Instant::now();
-    let (proof, stats) = prove(&program, public_input, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, stats) = prove(&program, public_input, lean_vm::pcs::TEST_LOG_INV_RATE);
     let prove_time = started.elapsed();
     let started = Instant::now();
     verify(&program, &public_input, &proof).expect("hash-chain proof verifies");

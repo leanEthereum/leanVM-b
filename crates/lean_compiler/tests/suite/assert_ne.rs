@@ -25,7 +25,7 @@ def main():
 ";
     let program = compile(&parse(src).expect("parse"));
     let want = [F192::from(g_pow(12)), F192::from(g_pow(5))];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("inequality program verifies");
 
     let bad = [F192::from(g_pow(11)), F192::from(g_pow(5))];
@@ -56,7 +56,7 @@ def main():
         program.set_witness("vals", vec![vec![F192::from(a), F192::from(b)]]);
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let pi = [F192::from(a), F192::from(b)];
-            let (proof, _) = prove(&program, pi, lean_vm::pcs::LOG_INV_RATE);
+            let (proof, _) = prove(&program, pi, lean_vm::pcs::TEST_LOG_INV_RATE);
             verify(&program, &pi, &proof).is_ok()
         }))
         .unwrap_or(false)
@@ -82,7 +82,7 @@ def main():
 ";
     let program = compile(&parse(src).expect("parse"));
     let want = [F192::from(F64(5)), F192::from(F64(7))];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("loop inequality verifies");
 }
 
@@ -163,7 +163,7 @@ def main():
         program.set_witness("vals", vec![vec![F192::from(a), F192::from(b)]]);
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let pi = [F192::from(a) + F192::from(b), F192::ONE];
-            let (proof, _) = prove(&program, pi, lean_vm::pcs::LOG_INV_RATE);
+            let (proof, _) = prove(&program, pi, lean_vm::pcs::TEST_LOG_INV_RATE);
             verify(&program, &pi, &proof).is_ok()
         }))
         .unwrap_or(false)
@@ -196,7 +196,7 @@ def main():
         let mut program = compile(&parse(src).expect("parse"));
         program.set_witness("vals", vec![vec![a, b, inv]]);
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let (proof, _) = prove(&program, [a, b], lean_vm::pcs::LOG_INV_RATE);
+            let (proof, _) = prove(&program, [a, b], lean_vm::pcs::TEST_LOG_INV_RATE);
             verify(&program, &[a, b], &proof).is_ok()
         }))
         .unwrap_or(false)

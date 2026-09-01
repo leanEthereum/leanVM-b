@@ -127,19 +127,19 @@ fn announce_public(ps: &mut ProverState, log_mem: usize, taus: [usize; tables::N
 /// rate from the stream, validate them, and reconstruct the public [`Layout`]
 /// from the program + sizes + public input. (The public input was already bound
 /// by seeding the transcript.)
-fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2]) -> Result<(Layout, usize), Error> {
-    let read_size = |vs: &mut VerifierState| -> Result<usize, Error> {
-        let word = vs.next_scalar().map_err(Error::Transcript)?;
+fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2]) -> Result<(Layout, usize), CpuError> {
+    let read_size = |vs: &mut VerifierState| -> Result<usize, CpuError> {
+        let word = vs.next_scalar().map_err(CpuError::Transcript)?;
         if word.c1 != 0 || word.c2 != 0 {
-            return Err(Error::PublicInput);
+            return Err(CpuError::PublicInput);
         }
-        usize::try_from(word.c0).map_err(|_| Error::PublicInput)
+        usize::try_from(word.c0).map_err(|_| CpuError::PublicInput)
     };
 
     // The transcript binds a public input as two 128-bit halves, so a third limb
     // would be dropped and two statements would share a transcript.
     if public_input.iter().any(|half| half.c2 != 0) {
-        return Err(Error::PublicInput);
+        return Err(CpuError::PublicInput);
     }
     let log_mem = read_size(vs)?;
     let mut taus = [0usize; tables::N_TABLES];
@@ -166,13 +166,13 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2])
         || taus[tables::BLAKE2S_TABLE] < crate::hash_flock::n_blocks_log(1)
         || ::pcs::whir::validate_log_inv_rate(log_inv_rate).is_err()
     {
-        return Err(Error::PublicInput);
+        return Err(CpuError::PublicInput);
     }
     let l = layout(&prog.prog, log_mem, taus, *public_input);
     // The caps bound each announced log on its own; what the PCS is configured for
     // is the stacked size they imply, which they do not bound.
     if !(pcs::MIN_MU..=pcs::MAX_MU).contains(&l.shape.mu) {
-        return Err(Error::PublicInput);
+        return Err(CpuError::PublicInput);
     }
     Ok((l, log_inv_rate))
 }
@@ -300,14 +300,14 @@ impl Program {
 pub use crate::transcript::Proof;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Error {
+pub enum CpuError {
     Bus(leaf::Error),
     Constraint(constraints::Error),
     Open(pcs::Error),
     PublicInput,
     Transcript(crate::transcript::Error),
     /// flock's BLAKE2s R1CS validity sub-proof failed to verify. (A missing or
-    /// malformed sub-proof surfaces as [`Error::Transcript`] when the shared
+    /// malformed sub-proof surfaces as [`CpuError::Transcript`] when the shared
     /// `stream`/`openings` fail to reconstruct or fully consume.)
     Blake2s(flock::verifier::VerifyError),
 }
@@ -406,7 +406,7 @@ fn sigmas(bus: &[Vec<F192>; 3], form_pows: [F192; 3]) -> Vec<F192> {
 /// per table. That sharing is what keeps the batch tied to the bus: with a common
 /// `η^{base+s}` per side, the batch's target is `Σ_s η^{FORM_POWS+s}·R_s` for
 /// the sides' table shares `R_s`, which the verifier DERIVES from the leaf claims
-/// (`xi_form_pows`; a mismatch surfaces as [`Error::Constraint`]). Were the
+/// (`xi_form_pows`; a mismatch surfaces as [`CpuError::Constraint`]). Were the
 /// powers per table, the target
 /// would not factor through the `R_s` and nothing would pin the tables' share of
 /// the bus.
@@ -708,10 +708,10 @@ pub struct VerifySummary {
 /// every scalar the prover wrote and pull the PCS hints, then assert the stream
 /// was fully consumed. Takes only public inputs, never the prover's witness.
 #[tracing::instrument(name = "Verify", skip_all)]
-pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Result<VerifySummary, Error> {
+pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Result<VerifySummary, CpuError> {
     let mut vs = VerifierState::new(digest_words(&fs_seed(program)), proof, digest_words(public_input));
     let (l, log_inv_rate) = read_public(&mut vs, program, public_input)?;
-    let root = pcs::read_commitment(&mut vs).map_err(Error::Transcript)?;
+    let root = pcs::read_commitment(&mut vs).map_err(CpuError::Transcript)?;
 
     // BLAKE2s to flock (single PCS): flock's R1CS validity and every leanVM point
     // claim are verified together by ONE WHIR opening at the end. The padded
@@ -721,7 +721,7 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     let n_blake2s = 1usize << l.taus[tables::BLAKE2S_TABLE];
 
     let (owners, spans) = bus_wiring(program, &l);
-    let bus = leaf::verify_balance(&l.push, &l.pull, &l.count, &owners, &spans, &mut vs).map_err(Error::Bus)?;
+    let bus = leaf::verify_balance(&l.push, &l.pull, &l.count, &owners, &spans, &mut vs).map_err(CpuError::Bus)?;
 
     let zc_xi = vs.sample();
     let form_pows = xi_form_pows(zc_xi);
@@ -740,18 +740,18 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
         target,
         &mut vs,
     )
-    .map_err(Error::Constraint)?;
+    .map_err(CpuError::Constraint)?;
 
     let r_pi = vs.sample();
     let mut pi_limbs = [F192::ZERO; 3];
     for v in &mut pi_limbs[..2] {
-        *v = vs.next_scalar().map_err(Error::Transcript)?;
+        *v = vs.next_scalar().map_err(CpuError::Transcript)?;
     }
     // The two claimed evaluations must sit on the public-input line, the top
     // limb's being zero (§sec:e2e-pi).
     let want = primitives::multilinear::interp(l.pi[0], l.pi[1], r_pi);
     if pi_limbs[0] + F192::Y * pi_limbs[1] != want {
-        return Err(Error::PublicInput);
+        return Err(CpuError::PublicInput);
     }
     let slots = finish_claims(&l, bus.claims, &table_claims, r_pi, pi_limbs);
 
@@ -762,11 +762,11 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     // instance, including programs that execute no BLAKE2s instruction.
     let n_blocks = n_blake2s.max(1);
     let offset = l.placements[QFLOCK].offset;
-    let replay = crate::hash_flock::verify_reduction(n_blocks, &mut vs).map_err(Error::Blake2s)?;
+    let replay = crate::hash_flock::verify_reduction(n_blocks, &mut vs).map_err(CpuError::Blake2s)?;
     let flock_stream_end = vs.stream_offset();
     let ring = crate::hash_flock::ring_switch_verify(n_blocks, offset, &replay.claim);
-    pcs::verify(&mut vs, &slots, &ring, l.shape, log_inv_rate, &root).map_err(Error::Open)?;
-    vs.finish().map_err(Error::Transcript)?;
+    pcs::verify(&mut vs, &slots, &ring, l.shape, log_inv_rate, &root).map_err(CpuError::Open)?;
+    vs.finish().map_err(CpuError::Transcript)?;
     Ok(VerifySummary {
         bytecode_claims: bus.bytecode_claims,
         count_root: bus.count_root,

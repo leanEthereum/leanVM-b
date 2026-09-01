@@ -270,13 +270,8 @@ pub fn inner_product_base_ext(witness: &[F64], b: &[F192]) -> F192 {
 // ===================================================================
 
 /// Derive `(ProverConfig, VerifierConfig)` for a K-witness of `2^log_n` F64
-/// elements, using the production 128-bit Johnson/OOD profile at
-/// `m = log_n + LOG_PACKING`.
-pub fn configs_for(log_n: usize) -> Result<(ProverConfig, VerifierConfig), String> {
-    configs_for_rate(log_n, crate::whir::LOG_INV_RATE_0)
-}
-
-/// As [`configs_for`], with an explicit L0 inverse-rate logarithm.
+/// elements at L0 inverse-rate logarithm `log_inv_rate`, using the production
+/// 128-bit Johnson/OOD profile at `m = log_n + LOG_PACKING`.
 pub fn configs_for_rate(log_n: usize, log_inv_rate: usize) -> Result<(ProverConfig, VerifierConfig), String> {
     let sec = WhirSecurityConfig::derive_config_with_log_inv_rate(log_n + crate::LOG_PACKING, log_inv_rate)?;
     sec.to_prover_verifier_configs()
@@ -2481,7 +2476,7 @@ mod tests {
     /// size test fallback.
     #[test]
     fn configs_johnson_profile_shape() {
-        let (pc, vc) = configs_for(16).expect("Johnson profile feasible at log_n = 16");
+        let (pc, vc) = configs_for_rate(16, LOG_INV_RATE_0).expect("Johnson profile feasible at log_n = 16");
         assert_eq!(pc.initial_k, 6);
         assert!(pc.level_steps >= 1);
         assert_eq!(vc.initial_k, pc.initial_k);
@@ -2490,7 +2485,7 @@ mod tests {
         assert!(pc.grinding_bits.iter().all(|&b| b == QUERY_GRINDING_BITS));
         // And log_n = 12 is below the production ladder's feasibility floor, so
         // the tests there use the default_config fallback.
-        assert!(configs_for(12).is_err());
+        assert!(configs_for_rate(12, LOG_INV_RATE_0).is_err());
     }
 
     /// The parallel eq builder must be byte-identical to the serial one, and
@@ -2521,13 +2516,13 @@ mod tests {
     /// prover and the dense verifier; pin the heuristic, then roundtrip.
     #[test]
     fn roundtrip_log_n_18_sparse_induce() {
-        let (pc, _) = configs_for(18).expect("Johnson profile feasible at log_n = 18");
+        let (pc, _) = configs_for_rate(18, LOG_INV_RATE_0).expect("Johnson profile feasible at log_n = 18");
         assert!(
             induce_use_ntt_heuristic(18 - pc.initial_k, pc.log_inv_rates[0], pc.queries[0]),
             "shape must select the sparse transposed-NTT induce at L0"
         );
         // And the smaller roundtrips stay on the dense path (cols < 12).
-        let (pc16, _) = configs_for(16).unwrap();
+        let (pc16, _) = configs_for_rate(16, LOG_INV_RATE_0).unwrap();
         assert!(!induce_use_ntt_heuristic(
             16 - pc16.initial_k,
             pc16.log_inv_rates[0],

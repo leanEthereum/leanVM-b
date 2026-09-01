@@ -81,6 +81,8 @@ pub const DIGEST_BITS: usize = H + K * A;
 pub const DIGEST_BYTES: usize = DIGEST_BITS / 8;
 
 pub const PUB_KEY_SIZE: usize = N + PUBLIC_PARAM_LEN;
+/// A secret key is its public parameter and its master secret; the rest is derived.
+pub const SECRET_KEY_SIZE: usize = PUBLIC_PARAM_LEN + N;
 pub const SIG_SIZE: usize = RANDOMIZER_LEN + NUM_FTS_TREES * (1 + A) * N + D * (COUNTER_LEN + V * N) + H * N;
 
 /// Calls to the hash function one verification makes: the digest, `Fts.recover`,

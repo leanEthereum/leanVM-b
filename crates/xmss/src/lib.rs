@@ -47,10 +47,13 @@ pub const PUBLIC_PARAM_LEN: usize = 16;
 /// Merkle tree height: a key is valid for up to `2^32` epochs.
 pub const LOG_LIFETIME: usize = 32;
 
+/// When a signature was made. A key may sign at each epoch of its range once.
+pub type Epoch = u32;
+
 /// Serialized sizes (exact under bincode: fixed arrays, no length prefixes).
 pub const WOTS_SIG_SIZE: usize = RANDOMNESS_LEN + V * DIGEST_LEN; // 696
-pub const XMSS_SIG_SIZE: usize = WOTS_SIG_SIZE + LOG_LIFETIME * DIGEST_LEN; // 1208
-pub const PUB_KEY_FLAT_SIZE: usize = DIGEST_LEN + PUBLIC_PARAM_LEN; // 32
+pub const SIG_SIZE: usize = WOTS_SIG_SIZE + LOG_LIFETIME * DIGEST_LEN; // 1208
+pub const PUB_KEY_SIZE: usize = DIGEST_LEN + PUBLIC_PARAM_LEN; // 32
 
 // The encoding uses v*w = 126 of the digest's 128 bits; the 2 leftover top
 // bits are ground to zero, so the digest decomposes exactly into the chunks.

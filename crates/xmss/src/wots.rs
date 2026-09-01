@@ -27,7 +27,7 @@ impl WotsSecretKey {
 
     /// Walk every chain to its tip. Only key generation needs this; signing
     /// stops each chain at its encoding digit.
-    pub fn public_key(&self, public_param: &PublicParam, epoch: u32) -> WotsPublicKey {
+    pub fn public_key(&self, public_param: &PublicParam, epoch: Epoch) -> WotsPublicKey {
         WotsPublicKey(std::array::from_fn(|i| {
             iterate_hash(&self.pre_images[i], CHAIN_LENGTH - 1, public_param, epoch, i, 0)
         }))
@@ -40,7 +40,7 @@ impl WotsSecretKey {
         &self,
         encoding: &[u8; V],
         randomness: Randomness,
-        epoch: u32,
+        epoch: Epoch,
         public_param: &PublicParam,
     ) -> WotsSignature {
         WotsSignature {
@@ -56,7 +56,7 @@ impl WotsSignature {
     pub fn recover_public_key(
         &self,
         message: &Message,
-        epoch: u32,
+        epoch: Epoch,
         public_param: &PublicParam,
     ) -> Option<WotsPublicKey> {
         let encoding = wots_encode(message, epoch, public_param, &self.randomness)?;
@@ -76,7 +76,7 @@ impl WotsSignature {
 impl WotsPublicKey {
     /// The Merkle leaf: standard BLAKE2s over the tweak, public parameter, and
     /// 42 concatenated chain tips (704 bytes, 11 compressions in one chunk).
-    pub fn hash(&self, public_param: &PublicParam, epoch: u32) -> Digest {
+    pub fn hash(&self, public_param: &PublicParam, epoch: Epoch) -> Digest {
         let mut data = [0u8; V * DIGEST_LEN];
         for (chunk, tip) in data.as_chunks_mut::<DIGEST_LEN>().0.iter_mut().zip(&self.0) {
             *chunk = *tip;
@@ -87,7 +87,7 @@ impl WotsPublicKey {
 
 /// One chain step (1 compression). The position `chain_index * CHAIN_LENGTH +
 /// step` identifies the edge from chain value `step` to `step + 1`.
-fn chain_step(public_param: &PublicParam, epoch: u32, chain_index: usize, step: usize, value: &Digest) -> Digest {
+fn chain_step(public_param: &PublicParam, epoch: Epoch, chain_index: usize, step: usize, value: &Digest) -> Digest {
     let position = (chain_index * CHAIN_LENGTH + step) as u32;
     tweak_hash(public_param, TWEAK_TYPE_CHAIN, position, epoch, value)
 }
@@ -97,7 +97,7 @@ fn iterate_hash(
     start: &Digest,
     steps: usize,
     public_param: &PublicParam,
-    epoch: u32,
+    epoch: Epoch,
     chain_index: usize,
     start_step: usize,
 ) -> Digest {
@@ -108,7 +108,7 @@ fn iterate_hash(
 
 pub fn find_randomness_for_wots_encoding(
     message: &Message,
-    epoch: u32,
+    epoch: Epoch,
     public_param: &PublicParam,
     rng: &mut impl CryptoRng,
 ) -> (Randomness, [u8; V], usize) {
@@ -136,7 +136,7 @@ pub fn find_randomness_for_wots_encoding(
 /// `8^i` monomial weights (see `verify_sig` in `rec_aggregation`'s `guests/aggregate.py`).
 pub fn wots_encode(
     message: &Message,
-    epoch: u32,
+    epoch: Epoch,
     public_param: &PublicParam,
     randomness: &Randomness,
 ) -> Option<[u8; V]> {

@@ -38,8 +38,11 @@ use ::pcs::whir::{ProverConfig, VerifierConfig};
 /// reused, so the two are one knob ([`::pcs::whir::INITIAL_FOLDING_FACTOR`]).
 /// Larger ⇒ far fewer Merkle nodes to hash at the cost of fatter query openings.
 pub(crate) const LOG_BATCH: usize = ::pcs::whir::INITIAL_FOLDING_FACTOR;
-/// Default L0 rate index.
-pub const LOG_INV_RATE: usize = ::pcs::whir::LOG_INV_RATE_0;
+/// The rate the test suite and the benchmarks prove at. Not a default: every
+/// entry point takes `log_inv_rate` explicitly, and a caller has to choose.
+pub const TEST_LOG_INV_RATE: usize = ::pcs::whir::LOG_INV_RATE_0;
+/// The `log_inv_rate` values a WHIR configuration can be derived for.
+pub use ::pcs::whir::{MAX_LOG_INV_RATE, MIN_LOG_INV_RATE};
 // The PCS and the unground F192 bus argument both target `SECURITY_BITS`.
 const _: () = assert!(::pcs::whir::SECURITY_BITS == crate::SECURITY_BITS as usize);
 /// Minimum committed-witness log-size accepted by the WHIR level ladder, with one level of margin.

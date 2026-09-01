@@ -32,7 +32,7 @@ fn every_table_lands_on_a_power_of_two() {
     for src in PROGRAMS {
         let program = compile(&parse(src).expect("parse"));
         let pi = [F192::ZERO, F192::ZERO];
-        let (proof, stats) = prove(&program, pi, lean_vm::pcs::LOG_INV_RATE);
+        let (proof, stats) = prove(&program, pi, lean_vm::pcs::TEST_LOG_INV_RATE);
         assert!(filler::is_filled(stats.counts), "{:?} for {src:?}", stats.counts);
         verify(&program, &pi, &proof).expect("a filled program verifies");
     }
@@ -45,7 +45,7 @@ fn every_table_lands_on_a_power_of_two() {
 fn the_cost_model_is_exact() {
     for src in PROGRAMS {
         let program = compile(&parse(src).expect("parse"));
-        let stats = prove(&program, [F192::ZERO, F192::ZERO], lean_vm::pcs::LOG_INV_RATE).1;
+        let stats = prove(&program, [F192::ZERO, F192::ZERO], lean_vm::pcs::TEST_LOG_INV_RATE).1;
         let plan = filler::solve(stats.base_counts, filler::NO_FLOORS).expect("solvable");
         assert_eq!(
             filler::filled(stats.base_counts, &plan),

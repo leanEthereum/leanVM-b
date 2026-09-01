@@ -49,7 +49,7 @@ def main():
     let h = [F64(5), F64(0), F64(7), F64(0)];
     let want = digest_cells(h, h);
 
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     assert_eq!(mix(src, want)[5], 1, "one BLAKE2s instruction");
     verify(&program, &want, &proof).expect("StackBuf self-hash verifies");
 
@@ -85,7 +85,7 @@ def main():
     let d = primitives::hash::hash(&input);
     let word = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
     let want = [F192::new(word(0), word(8), 0), F192::new(word(16), word(24), 0)];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     assert_eq!(mix(src, want)[5], 2);
     verify(&program, &want, &proof).expect("standard two-block BLAKE2s verifies");
 }
@@ -150,7 +150,7 @@ def main():
     for flag in [0, 1] {
         let mut program = compile(&parse(src).expect("parse"));
         program.set_witness("flag", vec![vec![F192::new(flag, 0, 0)]]);
-        let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+        let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
         verify(&program, &want, &proof).expect("post-join default IV is initialized on both paths");
     }
 }
@@ -179,7 +179,7 @@ def main():
     for flag in [0, 1] {
         let mut program = compile(&parse(src).expect("parse"));
         program.set_witness("flag", vec![vec![F192::new(flag, 0, 0)]]);
-        let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+        let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
         verify(&program, &want, &proof).expect("each branch initializes its default IV");
     }
 }
@@ -211,7 +211,7 @@ def main():
     let d = digest(&block);
     let want = [F192::new(d[0].0, d[1].0, 0), F192::new(d[2].0, d[3].0, 0)];
     warm_setup(1);
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("materialized custom CV verifies");
 }
 
@@ -250,7 +250,7 @@ def main():
     let program = compile(&parse(src).expect("parse"));
     // `+` is XOR: 3 ^ 4 = 7. Published: (sa[2], sa[1]) = (7, 4).
     let want = [F192::from(F64(7)), F192::from(F64(4))];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     assert_eq!(mix(src, want)[5], 0, "no BLAKE2s here");
     verify(&program, &want, &proof).expect("StackBuf indexing verifies");
 }
@@ -344,7 +344,7 @@ fn stack_buf_rebind_to_scalar() {
     let src = "def main():\n    x = StackBuf(2)\n    x = 5\n    p = 1\n    p[1] = x\n    p[GEN] = x\n    return\n";
     let program = compile(&parse(src).expect("parse"));
     let want = [F192::from(F64(5)), F192::from(F64(5))];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("rebound-scalar program verifies");
 }
 
@@ -396,7 +396,7 @@ def step(state, v):
     let s2 = compress(s1, tag); // the returned StackBuf (holding s1's words) fed back in
     let want = [F192::new(s2[0].0, s2[1].0, 0), F192::new(s2[2].0, s2[3].0, 0)];
 
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     assert_eq!(mix(src, want)[5], 2, "two BLAKE2s instructions (one per inlined step)");
     verify(&program, &want, &proof).expect("inline StackBuf+scalar tuple return verifies");
 
@@ -487,7 +487,7 @@ def step(state, cursor):
     // a = hb[0] = 10, b = hb[1] = 20, v = hb[2] = 30 read through the cursor
     // returned twice-advanced. a + b is XOR: 10 ^ 20 = 30.
     let want = [F192::from(F64(30)), F192::from(F64(30))];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("inline advanced-cursor return verifies");
 }
 
@@ -514,7 +514,7 @@ def main():
     let program = compile(&parse(src).expect("parse"));
     // s = [7, 5] after the swap → words [7,0,5,0]; t = [7 ^ 5, 3] = [2, 3] → [2,0,3,0].
     let want = digest_cells([F64(7), F64(0), F64(5), F64(0)], [F64(2), F64(0), F64(3), F64(0)]);
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     assert_eq!(mix(src, want)[5], 1, "one BLAKE2s instruction");
     verify(&program, &want, &proof).expect("list-literal StackBuf verifies");
 }
@@ -592,7 +592,7 @@ fn heap_index_boundary_ok() {
     let src = "def main():\n    hb = HeapBuf(8)\n    hb[GEN ** 7] = 5\n    row = hb * GEN ** 4\n    y = row[GEN ** 3]\n    assert y == 5\n    return\n";
     let program = compile(&parse(src).expect("parse"));
     let pi = [F192::from(F64(3)), F192::from(F64(4))];
-    let (proof, _) = prove(&program, pi, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, pi, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &pi, &proof).expect("boundary access verifies");
 }
 
@@ -625,7 +625,7 @@ def main():
     let mut program = compile(&ast);
     program.set_witness("adv", vec![vec![g_pow(5).into(), g_pow(6).into()]]);
     let want = [g_pow(5).into(), g_pow(6).into()];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("the honest hint matches the pin");
 
     // A prover hinting anything else must be rejected: that is what the pin is.
@@ -689,7 +689,7 @@ def main():
 ";
     let program = compile(&parse(src).expect("parse"));
     let want = [g_pow(2).into(), g_pow(1).into()];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("the run went in and the swapped run came back");
 
     // The shape is checked at the call, in both directions of mismatch.
@@ -730,6 +730,6 @@ def main():
 ";
     let program = compile(&parse(src).expect("parse"));
     let want = [F192::from(g_pow(5)); 2];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("three spellings of cell 2 agree");
 }

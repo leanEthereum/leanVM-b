@@ -2,6 +2,7 @@
 name = "lean_vm"
 version.workspace = true
 edition.workspace = true
+publish = false
 
 [lints]
 workspace = true

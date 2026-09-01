@@ -22,7 +22,7 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use pcs::whir::{
-    build_eq_table_ext, commit, configs_for, configs_for_rate, inner_product_base_ext, recursive_prover_with_basis,
+    LOG_INV_RATE_0, build_eq_table_ext, commit, configs_for_rate, inner_product_base_ext, recursive_prover_with_basis,
 };
 use primitives::{
     field::{F64, F192},
@@ -50,13 +50,9 @@ fn pcs_throughput() {
     let log_n = env_usize("PCS_LOG_N").unwrap_or(22);
     let samples = env_usize("PCS_SAMPLES").unwrap_or(5).max(1);
 
-    // Honour PCS_LOG_INV_RATE if set, else the production profile's L0 rate.
-    let (pc, _vc) = match env_usize("PCS_LOG_INV_RATE") {
-        Some(r) => configs_for_rate(log_n, r),
-        None => configs_for(log_n),
-    }
-    .expect("WHIR config feasible (try a larger PCS_LOG_N, e.g. >= 16)");
-    let log_inv_rate = pc.log_inv_rates[0];
+    let log_inv_rate = env_usize("PCS_LOG_INV_RATE").unwrap_or(LOG_INV_RATE_0);
+    let (pc, _vc) =
+        configs_for_rate(log_n, log_inv_rate).expect("WHIR config feasible (try a larger PCS_LOG_N, e.g. >= 16)");
     let trace_span = tracing::info_span!("PCS throughput", log_n, log_inv_rate, samples).entered();
 
     // Random F64 witness (the committed polynomial) and a random E evaluation point.

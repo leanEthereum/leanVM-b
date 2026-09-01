@@ -213,7 +213,10 @@ dependencies = [
  "clap",
  "lean_vm",
  "primitives",
+ "rand",
  "rec_aggregation",
+ "sphincs",
+ "xmss",
  "zk_alloc",
 ]
 
