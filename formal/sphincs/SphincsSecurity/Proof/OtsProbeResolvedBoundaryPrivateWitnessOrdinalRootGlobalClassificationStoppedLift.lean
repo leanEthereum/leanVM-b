@@ -708,3 +708,624 @@ theorem relTriple_finishWitnessObservedFirstStoppedStep
         (canonicalizeDirectWitnessSnapshotObserve table leftObserve) snapshots leftResult)
       observations right.context.state right.remaining table right.value.2
       (by rw [← hdoomed.2]; exact hdoomed.1.2) (Or.inl (by rwa [← hdoomed.2]))
+
+set_option maxRecDepth 100000 in
+theorem relTriple_bind_finishWitnessObservedFirstStoppedStep
+    (parameter : PublicParameter) (rootOf : α → Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (next : α → OracleComp (OracleWorld + SigningSpec) β)
+    (leftObserve : DeferredContext → Nat → (α × SplitHashCache) →
+      List PlannedProbeSnapshot → ProbComp PrivateWitnessSnapshotOutput)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (table : OtsSecretIndex → HashOutput)
+    (leftStep : ProbComp (DirectWitnessResult (α × SplitHashCache)))
+    (rightStep : ProbComp (Option (ObservedCleanRunResult (α × SplitHashCache))))
+    (hstep : RelTriple leftStep rightStep
+      (WitnessObservedFirstStoppedStepRel table observations))
+    (hrecursive : ∀ left right,
+      DirectWitnessResult.done left ∈ support leftStep →
+      some (observedResolvedResult observations right) ∈ support rightStep →
+      OrdinaryMaterializedRunEq table left right →
+      RelTriple
+        (canonicalizeDirectWitnessSnapshotObserve table leftObserve left.context left.remaining
+          (left.value.1, left.value.2) snapshots)
+        (observedMaterializedBoundary parameter (rootOf right.value.1) ftsSecret
+          (next right.value.1) observations right.context.state right.remaining table
+          right.value.2)
+        (SnapshotObservedFirstStoppedRel table)) :
+    RelTriple
+      (leftStep >>= finishDirectWitnessSnapshotObserve
+        (canonicalizeDirectWitnessSnapshotObserve table leftObserve) snapshots)
+      (rightStep >>= fun result =>
+        match result with
+        | none => pure none
+        | some result =>
+            observedMaterializedBoundary parameter (rootOf result.value.1) ftsSecret
+              (next result.value.1) result.observations result.state result.remaining table
+              result.value.2)
+      (SnapshotObservedFirstStoppedRel table) := by
+  have hleftSupported :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hstep
+      (fun result => result ∈ support leftStep) (fun result hresult => hresult)
+  have hbothSupported :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hleftSupported
+  apply relTriple_bind hbothSupported
+  intro leftResult rightResult hrelation
+  rcases hrelation with ⟨⟨hrelation, hleftSupport⟩, hrightSupport⟩
+  exact relTriple_finishWitnessObservedFirstStoppedStep parameter rootOf ftsSecret next leftObserve
+    snapshots observations table leftResult rightResult hrelation (by
+      intro left right hleft hright hclean
+      subst leftResult
+      subst rightResult
+      exact hrecursive left right hleftSupport hrightSupport hclean)
+
+set_option maxHeartbeats 4000000 in
+set_option maxRecDepth 1000000 in
+theorem relTriple_directSnapshotBoundary_observedMaterialized_firstStopped
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) RetainedRestResult)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (left right : DeferredContext) (leftFuel rightFuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (leftCache rightCache : SplitHashCache) (q bound : Nat)
+    (hbound : computation.IsQueryBoundP IsOuterHash bound)
+    (hcontext : FinalizationContextLE table left right)
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hvalues : LazyRevealProbe.ValuesLE left.state right.state)
+    (hpublished : PublishedValues left.state)
+    (hrightMaterialized : right = directDeferredContext right.state)
+    (hcanonical : CanonicalMaterializedValues table left)
+    (haligned : SnapshotsObservedAt table snapshots observations)
+    (htracked : CleanProbeObservationsTrackedBy observations right.state)
+    (hcovered : CleanProbeObservationsCoverPending observations right.state)
+    (hnoHit : ∀ observation ∈ observations, ¬observation.ExistingHiddenHit)
+    (hleftLower : bound ≤ leftFuel) (hleftUpper : leftFuel ≤ q)
+    (hrightLower : q + bound ≤ rightFuel)
+    (hbudget : rightFuel + right.state.pending.card < Fintype.card Digest) :
+    RelTriple
+      (directDetailedBoundaryNormalizedPrivateWitnessSnapshotObserve parameter root ftsSecret
+        computation (retainedResolvedFinalizationPrivateWitnessSnapshotObserve table root)
+        snapshots left leftFuel table leftCache)
+      (observedMaterializedBoundary parameter root ftsSecret computation observations right.state
+        rightFuel table rightCache)
+      (SnapshotObservedFirstStoppedRel table) := by
+  induction computation using OracleComp.inductionOn generalizing
+      snapshots observations left right leftFuel rightFuel leftCache rightCache bound with
+  | pure value =>
+      rw [directDetailedBoundaryNormalizedPrivateWitnessSnapshotObserve,
+        OracleComp.construct_pure, observedMaterializedBoundary, OracleComp.construct_pure]
+      have hnotPrivate : ¬PrivateStructuralHit left :=
+        not_privateStructuralHit_of_deferredCompletable hcontext.leftCompletable
+      simp [retainedResolvedFinalizationPrivateWitnessSnapshotObserve, hnotPrivate]
+      right
+      left
+      exact ⟨_, observations, rfl, List.prefix_rfl, haligned, hnoHit, by simp⟩
+  | query_bind query next ih =>
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
+      rw [directDetailedBoundaryNormalizedPrivateWitnessSnapshotObserve,
+        OracleComp.construct_query_bind, observedMaterializedBoundary,
+        OracleComp.construct_query_bind]
+      cases query with
+      | inl worldQuery =>
+          cases worldQuery with
+          | inl n =>
+              simp only
+              let leftObserve : DeferredContext → Nat →
+                  (Fin (n + 1) × SplitHashCache) → List PlannedProbeSnapshot →
+                    ProbComp PrivateWitnessSnapshotOutput :=
+                fun nextContext remaining value laterSnapshots =>
+                  directDetailedBoundaryNormalizedPrivateWitnessSnapshotObserve parameter root
+                    ftsSecret (next value.1)
+                    (retainedResolvedFinalizationPrivateWitnessSnapshotObserve table root)
+                    laterSnapshots nextContext remaining table value.2
+              let leftStep : ProbComp
+                  (DirectWitnessResult (Fin (n + 1) × SplitHashCache)) :=
+                runDirectResolvedWitnessFromTable left leftFuel table
+                  ((splitUniformImpl n).run leftCache)
+              let rightStep : ProbComp
+                  (Option (ObservedCleanRunResult (Fin (n + 1) × SplitHashCache))) :=
+                runObservedCleanFromTable observations right.state rightFuel table
+                  ((splitUniformImpl n).run rightCache)
+              have hbase := (witnessMaterializedStableCouples_splitUniformImpl table n)
+                left right leftFuel rightFuel leftCache rightCache hcontext (by omega) hcache
+                hrevealed hvalues hpublished hrightMaterialized
+              have hlocal := relTriple_runDirectResolvedWitness_observed_firstStopped_of_probeFree
+                table ((splitUniformImpl n).run leftCache) ((splitUniformImpl n).run rightCache)
+                observations left right leftFuel rightFuel hbase
+                (splitUniformImpl_probeFree n leftCache) (splitUniformImpl_probeFree n rightCache)
+                hcontext.leftValid hcontext.leftCompletable hrightMaterialized htracked hcovered
+                hnoHit hbudget
+              unfold runDirectWitnessSnapshotObserve
+              change RelTriple
+                (leftStep >>= finishDirectWitnessSnapshotObserve
+                  (canonicalizeDirectWitnessSnapshotObserve table leftObserve) snapshots)
+                (rightStep >>= fun result =>
+                  match result with
+                  | none => pure none
+                  | some result =>
+                      observedMaterializedBoundary parameter root ftsSecret
+                        (next result.value.1) result.observations result.state result.remaining
+                        table result.value.2)
+                (SnapshotObservedFirstStoppedRel table)
+              apply relTriple_bind_finishWitnessObservedFirstStoppedStep
+                (α := Fin (n + 1)) (β := RetainedRestResult) parameter (fun _ => root)
+                ftsSecret next leftObserve snapshots observations table leftStep rightStep
+                (by simpa [leftStep, rightStep] using hlocal)
+              intro nextLeft nextRight hleftSupport hrightSupport hclean
+              have hcanonicalRun := hclean.canonicalize_left
+              let canonical := canonicalizeMaterializedValues table nextLeft.context
+              have hleftCompletable : DeferredCompletable table canonical :=
+                hcanonicalRun.context_le.leftCompletable
+              have hnotPrivate : ¬PrivateStructuralHit canonical :=
+                not_privateStructuralHit_of_deferredCompletable hleftCompletable
+              have hleftFuelPreserved : leftFuel ≤ nextLeft.remaining := by
+                have := fuel_le_remaining_add_of_done_runDirectResolvedWitnessFromTable
+                  ((splitUniformImpl n).run leftCache) left leftFuel table nextLeft 0
+                  (splitUniformImpl_probeFree n leftCache)
+                  (by exact hleftSupport)
+                omega
+              have hrightFuelPreserved : rightFuel ≤ nextRight.remaining := by
+                have := fuel_le_remaining_add_of_mem_runObservedCleanFromTable
+                  ((splitUniformImpl n).run rightCache) observations right.state rightFuel table
+                  (observedResolvedResult observations nextRight) 0
+                  (splitUniformImpl_probeFree n rightCache)
+                  (by exact hrightSupport)
+                simpa [observedResolvedResult] using this
+              have hleftRemainingUpper : nextLeft.remaining ≤ leftFuel :=
+                remaining_le_fuel_of_done_runDirectResolvedDetailedFromTable
+                  ((splitUniformImpl n).run leftCache) left leftFuel table nextLeft (by
+                    rw [← map_erase_runDirectResolvedWitnessFromTable
+                      ((splitUniformImpl n).run leftCache) left leftFuel table, support_map]
+                    exact ⟨.done nextLeft, hleftSupport, rfl⟩)
+              have hnextTracked : CleanProbeObservationsTrackedBy observations
+                  nextRight.context.state := by
+                simpa [rightStep, observedResolvedResult] using
+                  (cleanProbeObservationsTrackedBy_of_mem_runObservedCleanFromTable
+                    ((splitUniformImpl n).run rightCache) observations right.state rightFuel table
+                    htracked (observedResolvedResult observations nextRight)
+                    hrightSupport)
+              have hnextCovered : CleanProbeObservationsCoverPending observations
+                  nextRight.context.state := by
+                simpa [rightStep, observedResolvedResult] using
+                  (cleanProbeObservationsCoverPending_of_mem_runObservedCleanFromTable
+                    ((splitUniformImpl n).run rightCache) observations right.state rightFuel table
+                    hcovered (observedResolvedResult observations nextRight)
+                    hrightSupport)
+              have hnextBudget : nextRight.remaining + nextRight.context.state.pending.card <
+                  Fintype.card Digest := by
+                have hremaining := remaining_add_pending_card_le_of_mem_runObservedCleanFromTable
+                  ((splitUniformImpl n).run rightCache) observations right.state rightFuel table
+                  (observedResolvedResult observations nextRight)
+                  hrightSupport
+                simpa [observedResolvedResult] using hremaining.trans_lt hbudget
+              unfold canonicalizeDirectWitnessSnapshotObserve
+                classifyDirectWitnessSnapshotObserve
+              simp only [canonical, hnotPrivate, ↓reduceDIte, hclean.left_published,
+                ↓reduceIte, hleftCompletable]
+              rw [← hclean.value_eq]
+              simpa [leftObserve] using
+                (ih nextLeft.value.1 snapshots observations canonical nextRight.context
+                  nextLeft.remaining nextRight.remaining nextLeft.value.2 nextRight.value.2 bound
+                  (hbound.2 nextLeft.value.1) hcanonicalRun.context_le hcanonicalRun.cache_eq
+                  hcanonicalRun.revealed_eq hcanonicalRun.values_le hcanonicalRun.left_published
+                  hcanonicalRun.right_materialized
+                  (canonicalizeMaterializedValues_canonical table nextLeft.context
+                    hclean.context_le.view.leftConsistent)
+                  haligned hnextTracked hnextCovered hnoHit (by omega) (by omega) (by omega)
+                  hnextBudget)
+          | inr input =>
+              simp only
+              have hrightValues :
+                  (materializedCanonicalContext table right.state).state.values =
+                    left.state.values := by
+                unfold materializedCanonicalContext
+                rw [← hrightMaterialized]
+                exact canonicalized_right_values_eq_of_finalizationContextLE hcontext hrevealed
+                  hcanonical
+              have hplanEq :
+                  purePlanProbingHashQuery parameter input
+                      (materializedCanonicalContext table right.state).state =
+                    purePlanProbingHashQuery parameter input left.state :=
+                purePlanProbingHashQuery_eq_of_values_eq hrightValues parameter input
+              rw [hplanEq]
+              rw [← rootAwareCandidateForPlan?_purePlan parameter input left.state]
+              let plan := purePlanProbingHashQuery parameter input left.state
+              have hpublicExecutor :
+                  probingHashQueryAfterRootAwarePublicPlan parameter input
+                      (materializedCanonicalContext table right.state).state plan =
+                    probingHashQueryAfterRootAwarePublicPlan parameter input left.state plan :=
+                probingHashQueryAfterRootAwarePublicPlan_eq_of_values_eq parameter input
+                  hrightValues plan
+              rw [hpublicExecutor]
+              let candidate? := rootAwareCandidateForPlan? parameter input plan
+              let nextSnapshots := appendPlannedSnapshot snapshots candidate? left
+              let leftObserve : DeferredContext → Nat →
+                  ((OracleWorld + SigningSpec).Range (.inl (.inr input)) × SplitHashCache) →
+                    List PlannedProbeSnapshot →
+                    ProbComp PrivateWitnessSnapshotOutput :=
+                fun nextContext remaining value laterSnapshots =>
+                  directDetailedBoundaryNormalizedPrivateWitnessSnapshotObserve parameter root
+                    ftsSecret (next value.1)
+                    (retainedResolvedFinalizationPrivateWitnessSnapshotObserve table root)
+                    laterSnapshots nextContext remaining table value.2
+              let leftStep : ProbComp (DirectWitnessResult
+                  ((OracleWorld + SigningSpec).Range (.inl (.inr input)) × SplitHashCache)) :=
+                runDirectResolvedWitnessFromTable left leftFuel table
+                  ((probingHashQueryAfterPlan parameter input plan).run leftCache)
+              let rightStep : ProbComp (Option (ObservedCleanRunResult
+                  ((OracleWorld + SigningSpec).Range (.inl (.inr input)) × SplitHashCache))) :=
+                runObservedCleanFromTable observations right.state rightFuel table
+                  ((probingHashQueryAfterRootAwarePublicPlan parameter input left.state plan).run
+                    rightCache)
+              have hcontextDirect :
+                  FinalizationContextLE table left (directDeferredContext right.state) := by
+                rwa [← hrightMaterialized]
+              have houter : IsOuterHash (.inl (.inr input)) := by simp [IsOuterHash]
+              have hboundPositive : 0 < bound := by
+                rcases hbound.1 with hnot | hpositive
+                · exact (hnot houter).elim
+                · exact hpositive
+              have hleftPositive : 0 < leftFuel := by omega
+              have hstrictFuel : leftFuel < rightFuel := by omega
+              have hcontinue : ∀ nextObservations,
+                  SnapshotsObservedAt table nextSnapshots nextObservations →
+                  (∀ observation ∈ nextObservations, ¬observation.ExistingHiddenHit) →
+                  RelTriple leftStep rightStep
+                    (WitnessObservedFirstStoppedStepRel table nextObservations) →
+                  RelTriple
+                    (leftStep >>= finishDirectWitnessSnapshotObserve
+                      (canonicalizeDirectWitnessSnapshotObserve table leftObserve) nextSnapshots)
+                    (rightStep >>= fun result =>
+                      match result with
+                      | none => pure none
+                      | some result =>
+                          observedMaterializedBoundary parameter root ftsSecret
+                            (next result.value.1) result.observations result.state
+                            result.remaining table result.value.2)
+                    (SnapshotObservedFirstStoppedRel table) := by
+                intro nextObservations hnextAligned hnextNoHit hlocal
+                convert relTriple_bind_finishWitnessObservedFirstStoppedStep
+                  (α := (OracleWorld + SigningSpec).Range (.inl (.inr input)))
+                  (β := RetainedRestResult) parameter (fun _ => root) ftsSecret
+                  next leftObserve nextSnapshots nextObservations table leftStep rightStep hlocal ?_
+                  using 1 <;>
+                    try (apply bind_congr; intro result; cases result <;> rfl)
+                intro nextLeft nextRight hleftSupport hrightSupport hclean
+                have hcanonicalRun := hclean.canonicalize_left
+                let canonical := canonicalizeMaterializedValues table nextLeft.context
+                have hleftCompletable : DeferredCompletable table canonical :=
+                  hcanonicalRun.context_le.leftCompletable
+                have hnotPrivate : ¬PrivateStructuralHit canonical :=
+                  not_privateStructuralHit_of_deferredCompletable hleftCompletable
+                have hleftFuelSpent : leftFuel ≤ nextLeft.remaining + 1 :=
+                  fuel_le_remaining_add_of_done_runDirectResolvedWitnessFromTable
+                    ((probingHashQueryAfterPlan parameter input plan).run leftCache) left leftFuel
+                    table nextLeft 1
+                    (probingHashQueryAfterPlan_isProbeBound_one parameter input plan leftCache)
+                    (by exact hleftSupport)
+                have hrightFuelSpent : rightFuel ≤ nextRight.remaining + 1 := by
+                  have := fuel_le_remaining_add_of_mem_runObservedCleanFromTable
+                    ((probingHashQueryAfterRootAwarePublicPlan parameter input left.state plan).run
+                      rightCache) observations right.state rightFuel table
+                    (observedResolvedResult nextObservations nextRight) 1
+                    (probingHashQueryAfterRootAwarePublicPlan_isProbeBound_one parameter input
+                      left.state plan rightCache) (by exact hrightSupport)
+                  simpa [observedResolvedResult] using this
+                have hleftRemainingUpper : nextLeft.remaining ≤ leftFuel :=
+                  remaining_le_fuel_of_done_runDirectResolvedDetailedFromTable
+                    ((probingHashQueryAfterPlan parameter input plan).run leftCache) left leftFuel
+                    table nextLeft (by
+                      rw [← map_erase_runDirectResolvedWitnessFromTable
+                        ((probingHashQueryAfterPlan parameter input plan).run leftCache) left
+                        leftFuel table, support_map]
+                      exact ⟨.done nextLeft, hleftSupport, rfl⟩)
+                have hnextTracked : CleanProbeObservationsTrackedBy nextObservations
+                    nextRight.context.state := by
+                  simpa [rightStep, observedResolvedResult] using
+                    (cleanProbeObservationsTrackedBy_of_mem_runObservedCleanFromTable
+                      ((probingHashQueryAfterRootAwarePublicPlan parameter input left.state
+                        plan).run rightCache) observations right.state rightFuel table htracked
+                      (observedResolvedResult nextObservations nextRight)
+                      hrightSupport)
+                have hnextCovered : CleanProbeObservationsCoverPending nextObservations
+                    nextRight.context.state := by
+                  simpa [rightStep, observedResolvedResult] using
+                    (cleanProbeObservationsCoverPending_of_mem_runObservedCleanFromTable
+                      ((probingHashQueryAfterRootAwarePublicPlan parameter input left.state
+                        plan).run rightCache) observations right.state rightFuel table hcovered
+                      (observedResolvedResult nextObservations nextRight)
+                      hrightSupport)
+                have hnextBudget : nextRight.remaining + nextRight.context.state.pending.card <
+                    Fintype.card Digest := by
+                  have hremaining := remaining_add_pending_card_le_of_mem_runObservedCleanFromTable
+                    ((probingHashQueryAfterRootAwarePublicPlan parameter input left.state plan).run
+                      rightCache) observations right.state rightFuel table
+                    (observedResolvedResult nextObservations nextRight)
+                    hrightSupport
+                  simpa [observedResolvedResult] using hremaining.trans_lt hbudget
+                unfold canonicalizeDirectWitnessSnapshotObserve
+                  classifyDirectWitnessSnapshotObserve
+                simp only [canonical, hnotPrivate, ↓reduceDIte, hclean.left_published,
+                  ↓reduceIte, hleftCompletable]
+                rw [← hclean.value_eq]
+                simpa [leftObserve, IsOuterHash] using
+                  (ih nextLeft.value.1 nextSnapshots nextObservations canonical nextRight.context
+                    nextLeft.remaining nextRight.remaining nextLeft.value.2 nextRight.value.2
+                    (bound - 1) (by simpa [IsOuterHash] using hbound.2 nextLeft.value.1)
+                    hcanonicalRun.context_le hcanonicalRun.cache_eq hcanonicalRun.revealed_eq
+                    hcanonicalRun.values_le hcanonicalRun.left_published
+                    hcanonicalRun.right_materialized
+                    (canonicalizeMaterializedValues_canonical table nextLeft.context
+                      hclean.context_le.view.leftConsistent)
+                    hnextAligned hnextTracked hnextCovered hnextNoHit (by omega) (by omega)
+                    (by omega) hnextBudget)
+              unfold runDirectWitnessSnapshotObserve
+              cases hcandidate : candidate? with
+              | none =>
+                  have hnextSnapshots : nextSnapshots = snapshots := by
+                    simp [nextSnapshots, candidate?, hcandidate, appendPlannedSnapshot]
+                  have hlocal :=
+                    relTriple_runDirectResolvedWitness_afterPlan_observedMaterialized_firstStopped_of_none
+                      table parameter input plan observations left right leftFuel rightFuel
+                      leftCache rightCache hcandidate (by omega) hcontext hcache hrevealed hvalues
+                      hpublished hrightMaterialized htracked hcovered hnoHit hbudget
+                  have hresult := hcontinue observations
+                    (by simpa [hnextSnapshots] using haligned) hnoHit
+                    (by simpa [leftStep, rightStep] using hlocal)
+                  convert hresult using 1 <;>
+                    try (apply bind_congr; intro result; cases result <;> rfl)
+              | some candidate =>
+                  have hnextSnapshots : nextSnapshots =
+                      snapshots ++ [(⟨candidate, left⟩ : PlannedProbeSnapshot)] := by
+                    simp [nextSnapshots, candidate?, hcandidate, appendPlannedSnapshot]
+                  let nextObservations := observations ++ [cleanProbeObservation right.state
+                    candidate.coordinate candidate.candidate]
+                  have hnextAligned : SnapshotsObservedAt table nextSnapshots nextObservations := by
+                    have hnext := haligned.appendCandidate (some candidate) hcontextDirect hrevealed
+                      hpublished hcanonical
+                    rw [hnextSnapshots]
+                    simpa [nextObservations, observationsAfterCandidate, hcandidate,
+                      appendPlannedSnapshot] using hnext
+                  by_cases hcandidateRevealed : candidate.coordinate ∈ right.state.revealed
+                  · have hnewNoHit : ¬(cleanProbeObservation right.state candidate.coordinate
+                        candidate.candidate).ExistingHiddenHit := by
+                      rintro ⟨hhidden, _output, _hvalue, _hcandidate⟩
+                      simp [cleanProbeObservation, hcandidateRevealed] at hhidden
+                    have hnextNoHit : ∀ observation ∈ nextObservations,
+                        ¬observation.ExistingHiddenHit := by
+                      intro observation hobservation
+                      simp only [nextObservations, List.mem_append, List.mem_singleton]
+                        at hobservation
+                      rcases hobservation with hold | rfl
+                      · exact hnoHit observation hold
+                      · exact hnewNoHit
+                    have hlocal :=
+                      relTriple_runDirectResolvedWitness_afterPlan_observedMaterialized_firstStopped_of_revealed
+                        table parameter input plan candidate observations left right leftFuel
+                        (rightFuel - 1) leftCache rightCache hcandidate hleftPositive (by omega)
+                        hcontext hcache hrevealed hvalues hpublished hrightMaterialized
+                        hcandidateRevealed htracked hcovered hnoHit (by omega)
+                    have hrightFuelEq : rightFuel - 1 + 1 = rightFuel := by omega
+                    have hresult := hcontinue nextObservations hnextAligned hnextNoHit
+                      (by simpa [leftStep, rightStep, nextObservations, hrightFuelEq] using hlocal)
+                    convert hresult using 1 <;>
+                      try (apply bind_congr; intro result; cases result <;> rfl)
+                  · let postRight : DeferredContext :=
+                      { right with state :=
+                          (right.state.addPending candidate.coordinate candidate.candidate) }
+                    by_cases hpostCompletable : DeferredCompletable table postRight
+                    · have hnewNoHit : ¬(cleanProbeObservation right.state candidate.coordinate
+                          candidate.candidate).ExistingHiddenHit :=
+                        not_existingHiddenHit_cleanProbeObservation_of_addPending_completable table
+                          right candidate hpostCompletable
+                      have hnextNoHit : ∀ observation ∈ nextObservations,
+                          ¬observation.ExistingHiddenHit := by
+                        intro observation hobservation
+                        simp only [nextObservations, List.mem_append, List.mem_singleton]
+                          at hobservation
+                        rcases hobservation with hold | rfl
+                        · exact hnoHit observation hold
+                        · exact hnewNoHit
+                      have hpostBudget : (rightFuel - 1) +
+                          (right.state.addPending candidate.coordinate
+                            candidate.candidate).pending.card < Fintype.card Digest := by
+                        have hcard := LazyRevealProbe.State.pending_card_addPending_le
+                          right.state candidate.coordinate candidate.candidate
+                        omega
+                      have hlocal :=
+                        relTriple_runDirectResolvedWitness_afterPlan_observedMaterialized_firstStopped_of_hidden_completable
+                          table parameter input plan candidate observations left right leftFuel
+                          (rightFuel - 1) leftCache rightCache hcandidate hleftPositive (by omega)
+                          hcontext hcache hrevealed hvalues hpublished hrightMaterialized
+                          hcandidateRevealed hpostCompletable htracked hcovered hnoHit hpostBudget
+                      have hrightFuelEq : rightFuel - 1 + 1 = rightFuel := by omega
+                      have hresult := hcontinue nextObservations hnextAligned hnextNoHit
+                        (by simpa [leftStep, rightStep, nextObservations, hrightFuelEq] using hlocal)
+                      convert hresult using 1 <;>
+                        try (apply bind_congr; intro result; cases result <;> rfl)
+                    · have hpostCard :
+                          (right.state.addPending candidate.coordinate
+                            candidate.candidate).pending.card < Fintype.card Digest := by
+                        have hcard := LazyRevealProbe.State.pending_card_addPending_le
+                          right.state candidate.coordinate candidate.candidate
+                        omega
+                      have hsource : ∀ output ∈ support
+                          (leftStep >>= finishDirectWitnessSnapshotObserve
+                            (canonicalizeDirectWitnessSnapshotObserve table leftObserve)
+                            nextSnapshots),
+                          PrivateWitnessSnapshotExtends
+                            (snapshots ++ [(⟨candidate, left⟩ : PlannedProbeSnapshot)]) output := by
+                        intro output houtput
+                        change output ∈ support
+                          (runDirectWitnessSnapshotObserve
+                            (canonicalizeDirectWitnessSnapshotObserve table leftObserve)
+                            nextSnapshots left leftFuel table
+                            ((probingHashQueryAfterPlan parameter input plan).run leftCache))
+                          at houtput
+                        have hextends :=
+                          privateWitnessSnapshotExtends_of_mem_runDirectWitnessSnapshotObserve
+                            (canonicalizeDirectWitnessSnapshotObserve table leftObserve)
+                            nextSnapshots left leftFuel table
+                            ((probingHashQueryAfterPlan parameter input plan).run leftCache)
+                            (by
+                              intro result _hresult nextOutput hnextOutput
+                              apply privateWitnessSnapshotExtends_of_mem_canonicalizeDirectWitnessSnapshotObserve
+                                table leftObserve result.context result.remaining result.value
+                                nextSnapshots (output := nextOutput) (houtput := hnextOutput)
+                              intro finalOutput hfinalOutput
+                              change finalOutput ∈ support
+                                (directDetailedBoundaryNormalizedPrivateWitnessSnapshotObserve
+                                  parameter root ftsSecret (next result.value.1)
+                                  (retainedResolvedFinalizationPrivateWitnessSnapshotObserve table
+                                    root) nextSnapshots
+                                  (canonicalizeMaterializedValues table result.context)
+                                  result.remaining table result.value.2) at hfinalOutput
+                              exact privateWitnessSnapshotExtends_of_mem_directDetailedBoundaryNormalizedPrivateWitnessSnapshotObserve
+                                parameter root ftsSecret (next result.value.1)
+                                (retainedResolvedFinalizationPrivateWitnessSnapshotObserve table
+                                  root) nextSnapshots
+                                (canonicalizeMaterializedValues table result.context)
+                                result.remaining table result.value.2 (by
+                                  intro finalContext finalRemaining finalValue finalSnapshots
+                                    retainedOutput hretained
+                                  exact privateWitnessSnapshotExtends_of_mem_retainedResolvedFinalizationPrivateWitnessSnapshotObserve
+                                    table root finalContext finalRemaining finalValue finalSnapshots
+                                    retainedOutput hretained)
+                                finalOutput hfinalOutput)
+                            output houtput
+                        simpa [hnextSnapshots] using hextends
+                      have hstopped :=
+                        relTriple_source_observedMaterializedHashContinuation_firstStopped_of_notCompletable
+                          parameter root ftsSecret input plan candidate next
+                          (leftStep >>= finishDirectWitnessSnapshotObserve
+                            (canonicalizeDirectWitnessSnapshotObserve table leftObserve)
+                            nextSnapshots)
+                          snapshots observations left right (rightFuel - 1) table rightCache
+                          hcandidate hcontext hrevealed hcanonical hrightMaterialized
+                          hcandidateRevealed hnoHit haligned hsource hpostCard (by
+                            simpa [postRight] using hpostCompletable)
+                      have hrightFuelEq : rightFuel - 1 + 1 = rightFuel := by omega
+                      have hresult : RelTriple
+                          (leftStep >>= finishDirectWitnessSnapshotObserve
+                            (canonicalizeDirectWitnessSnapshotObserve table leftObserve)
+                            nextSnapshots)
+                          (rightStep >>= fun result =>
+                            match result with
+                            | none => pure none
+                            | some result =>
+                                observedMaterializedBoundary parameter root ftsSecret
+                                  (next result.value.1) result.observations result.state
+                                  result.remaining table result.value.2)
+                          (SnapshotObservedFirstStoppedRel table) := by
+                        convert hstopped using 1
+                        all_goals try simp [rightStep, observedMaterializedHashContinuation,
+                          hpublicExecutor, hrightFuelEq]
+                        all_goals try (apply bind_congr; intro result; cases result <;> rfl)
+                      convert hresult using 1 <;>
+                        try (apply bind_congr; intro result; cases result <;> rfl)
+      | inr message =>
+          simp only
+          let leftObserve : DeferredContext → Nat →
+              ((OracleWorld + SigningSpec).Range (.inr message) × SplitHashCache) →
+                List PlannedProbeSnapshot →
+                ProbComp PrivateWitnessSnapshotOutput :=
+            fun nextContext remaining value laterSnapshots =>
+              directDetailedBoundaryNormalizedPrivateWitnessSnapshotObserve parameter root
+                ftsSecret (next value.1)
+                (retainedResolvedFinalizationPrivateWitnessSnapshotObserve table root)
+                laterSnapshots nextContext remaining table value.2
+          let leftStep : ProbComp (DirectWitnessResult
+              ((OracleWorld + SigningSpec).Range (.inr message) × SplitHashCache)) :=
+            runDirectResolvedWitnessFromTable left leftFuel table
+              ((maskedSign parameter root ftsSecret message).run leftCache)
+          let rightStep : ProbComp (Option (ObservedCleanRunResult
+              ((OracleWorld + SigningSpec).Range (.inr message) × SplitHashCache))) :=
+            runObservedCleanFromTable observations right.state rightFuel table
+              ((maskedSign parameter root ftsSecret message).run rightCache)
+          have hbase := (witnessMaterializedStableCouples_maskedSign table parameter root
+            ftsSecret message) left right leftFuel rightFuel leftCache rightCache hcontext
+              (by omega) hcache hrevealed hvalues hpublished hrightMaterialized
+          have hlocal := relTriple_runDirectResolvedWitness_observed_firstStopped_of_probeFree
+            table ((maskedSign parameter root ftsSecret message).run leftCache)
+            ((maskedSign parameter root ftsSecret message).run rightCache) observations left right
+            leftFuel rightFuel hbase
+            (maskedSign_probeFree parameter root ftsSecret message leftCache)
+            (maskedSign_probeFree parameter root ftsSecret message rightCache) hcontext.leftValid
+            hcontext.leftCompletable hrightMaterialized htracked hcovered hnoHit hbudget
+          unfold runDirectWitnessSnapshotObserve
+          convert relTriple_bind_finishWitnessObservedFirstStoppedStep
+            (α := (OracleWorld + SigningSpec).Range (.inr message))
+            (β := RetainedRestResult) parameter (fun _ => root)
+            ftsSecret next leftObserve snapshots observations table leftStep rightStep
+            (by simpa [leftStep, rightStep] using hlocal) ?_ using 1 <;>
+              try (apply bind_congr; intro result; cases result <;> rfl)
+          intro nextLeft nextRight hleftSupport hrightSupport hclean
+          have hcanonicalRun := hclean.canonicalize_left
+          let canonical := canonicalizeMaterializedValues table nextLeft.context
+          have hleftCompletable : DeferredCompletable table canonical :=
+            hcanonicalRun.context_le.leftCompletable
+          have hnotPrivate : ¬PrivateStructuralHit canonical :=
+            not_privateStructuralHit_of_deferredCompletable hleftCompletable
+          have hleftFuelPreserved : leftFuel ≤ nextLeft.remaining := by
+            have := fuel_le_remaining_add_of_done_runDirectResolvedWitnessFromTable
+              ((maskedSign parameter root ftsSecret message).run leftCache) left leftFuel table
+              nextLeft 0 (maskedSign_probeFree parameter root ftsSecret message leftCache)
+              (by exact hleftSupport)
+            omega
+          have hrightFuelPreserved : rightFuel ≤ nextRight.remaining := by
+            have := fuel_le_remaining_add_of_mem_runObservedCleanFromTable
+              ((maskedSign parameter root ftsSecret message).run rightCache) observations
+              right.state rightFuel table (observedResolvedResult observations nextRight) 0
+              (maskedSign_probeFree parameter root ftsSecret message rightCache)
+              (by exact hrightSupport)
+            simpa [observedResolvedResult] using this
+          have hleftRemainingUpper : nextLeft.remaining ≤ leftFuel :=
+            remaining_le_fuel_of_done_runDirectResolvedDetailedFromTable
+              ((maskedSign parameter root ftsSecret message).run leftCache) left leftFuel table
+              nextLeft (by
+                rw [← map_erase_runDirectResolvedWitnessFromTable
+                  ((maskedSign parameter root ftsSecret message).run leftCache) left leftFuel
+                  table, support_map]
+                exact ⟨.done nextLeft, hleftSupport, rfl⟩)
+          have hnextTracked : CleanProbeObservationsTrackedBy observations
+              nextRight.context.state := by
+            simpa [rightStep, observedResolvedResult] using
+              (cleanProbeObservationsTrackedBy_of_mem_runObservedCleanFromTable
+                ((maskedSign parameter root ftsSecret message).run rightCache) observations
+                right.state rightFuel table htracked
+                (observedResolvedResult observations nextRight)
+                hrightSupport)
+          have hnextCovered : CleanProbeObservationsCoverPending observations
+              nextRight.context.state := by
+            simpa [rightStep, observedResolvedResult] using
+              (cleanProbeObservationsCoverPending_of_mem_runObservedCleanFromTable
+                ((maskedSign parameter root ftsSecret message).run rightCache) observations
+                right.state rightFuel table hcovered
+                (observedResolvedResult observations nextRight)
+                hrightSupport)
+          have hnextBudget : nextRight.remaining + nextRight.context.state.pending.card <
+              Fintype.card Digest := by
+            have hremaining := remaining_add_pending_card_le_of_mem_runObservedCleanFromTable
+              ((maskedSign parameter root ftsSecret message).run rightCache) observations
+              right.state rightFuel table (observedResolvedResult observations nextRight)
+              hrightSupport
+            simpa [observedResolvedResult] using hremaining.trans_lt hbudget
+          unfold canonicalizeDirectWitnessSnapshotObserve classifyDirectWitnessSnapshotObserve
+          simp only [canonical, hnotPrivate, ↓reduceDIte, hclean.left_published,
+            ↓reduceIte, hleftCompletable]
+          rw [← hclean.value_eq]
+          simpa [leftObserve, IsOuterHash] using
+            (ih nextLeft.value.1 snapshots observations canonical nextRight.context
+              nextLeft.remaining nextRight.remaining nextLeft.value.2 nextRight.value.2 bound
+              (by simpa [IsOuterHash] using hbound.2 nextLeft.value.1)
+              hcanonicalRun.context_le hcanonicalRun.cache_eq hcanonicalRun.revealed_eq
+              hcanonicalRun.values_le hcanonicalRun.left_published
+              hcanonicalRun.right_materialized
+              (canonicalizeMaterializedValues_canonical table nextLeft.context
+                hclean.context_le.view.leftConsistent)
+              haligned hnextTracked hnextCovered hnoHit (by omega) (by omega) (by omega)
+              hnextBudget)
