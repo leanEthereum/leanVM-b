@@ -13,6 +13,158 @@ namespace SphincsSecurity.Concrete.OtsProbeSimulation
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
 
+set_option maxRecDepth 100000 in
+theorem experiment_fuel_eq_of_isQueryBoundP
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (state : LazyRevealProbe.State Coordinate) (leftFuel rightFuel bound : Nat)
+    (hbound : computation.IsQueryBoundP LazyRevealProbe.IsProbe bound)
+    (hleftFuel : bound ≤ leftFuel) (hrightFuel : bound ≤ rightFuel) :
+    LazyRevealProbe.experiment state leftFuel computation =
+      LazyRevealProbe.experiment state rightFuel computation := by
+  induction computation using OracleComp.inductionOn generalizing
+      state leftFuel rightFuel bound with
+  | pure value =>
+      rfl
+  | query_bind query next ih =>
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
+      cases query with
+      | uniform n =>
+          rw [LazyRevealProbe.experiment_uniform_query_bind,
+            LazyRevealProbe.experiment_uniform_query_bind]
+          apply bind_congr
+          intro output
+          exact ih output state leftFuel rightFuel bound
+            (by simpa [LazyRevealProbe.IsProbe] using hbound.2 output)
+            hleftFuel hrightFuel
+      | hashOutput =>
+          rw [LazyRevealProbe.experiment_hashOutput_query_bind,
+            LazyRevealProbe.experiment_hashOutput_query_bind]
+          apply bind_congr
+          intro output
+          exact ih output state leftFuel rightFuel bound
+            (by simpa [LazyRevealProbe.IsProbe] using hbound.2 output)
+            hleftFuel hrightFuel
+      | ensure coordinate =>
+          rw [LazyRevealProbe.experiment_ensure_query_bind,
+            LazyRevealProbe.experiment_ensure_query_bind]
+          exact ih () (state.ensure coordinate) leftFuel rightFuel bound
+            (by simpa [LazyRevealProbe.IsProbe] using hbound.2 ()) hleftFuel hrightFuel
+      | probe coordinate candidate =>
+          have hpositive : 0 < bound := by
+            simpa [LazyRevealProbe.IsProbe] using hbound.1
+          cases leftFuel with
+          | zero => omega
+          | succ leftRemaining =>
+              cases rightFuel with
+              | zero => omega
+              | succ rightRemaining =>
+                  rw [LazyRevealProbe.experiment_probe_query_bind,
+                    LazyRevealProbe.experiment_probe_query_bind]
+                  by_cases hrevealed : coordinate ∈ state.revealed
+                  · simp only [hrevealed, ↓reduceIte]
+                    exact ih () state leftRemaining rightRemaining (bound - 1)
+                      (by simpa [LazyRevealProbe.IsProbe] using hbound.2 ()) (by omega) (by omega)
+                  · simp only [hrevealed, ↓reduceIte]
+                    exact ih () (state.addPending coordinate candidate)
+                      leftRemaining rightRemaining (bound - 1)
+                      (by simpa [LazyRevealProbe.IsProbe] using hbound.2 ()) (by omega) (by omega)
+      | peek coordinate =>
+          rw [LazyRevealProbe.experiment_peek_query_bind,
+            LazyRevealProbe.experiment_peek_query_bind]
+          exact ih (state.values coordinate) state leftFuel rightFuel bound
+            (by simpa [LazyRevealProbe.IsProbe] using
+              hbound.2 (state.values coordinate)) hleftFuel hrightFuel
+      | publish coordinate =>
+          rw [LazyRevealProbe.experiment_publish_query_bind,
+            LazyRevealProbe.experiment_publish_query_bind]
+          exact ih () (state.publish coordinate) leftFuel rightFuel bound
+            (by simpa [LazyRevealProbe.IsProbe] using hbound.2 ()) hleftFuel hrightFuel
+      | reveal coordinate =>
+          rw [LazyRevealProbe.experiment_reveal_query_bind,
+            LazyRevealProbe.experiment_reveal_query_bind]
+          cases hvalue : state.values coordinate with
+          | some output =>
+              exact ih output state leftFuel rightFuel bound
+                (by simpa [LazyRevealProbe.IsProbe] using hbound.2 output)
+                hleftFuel hrightFuel
+          | none =>
+              apply bind_congr
+              intro output
+              by_cases hhit : state.hitAt coordinate output
+              · simp [hhit]
+              · simp only [hhit, ↓reduceIte]
+                exact ih output (state.materialize coordinate output)
+                  leftFuel rightFuel bound
+                  (by simpa [LazyRevealProbe.IsProbe] using hbound.2 output)
+                  hleftFuel hrightFuel
+
+set_option maxRecDepth 100000 in
+theorem probEvent_sampledRunThenFinalizeClean_empty_none_le_of_queryBound
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (fuel bound : Nat)
+    (hbound : computation.IsQueryBoundP LazyRevealProbe.IsProbe bound)
+    (hfuel : bound ≤ fuel) :
+    Pr[= none | sampledRunThenFinalizeClean
+      (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel computation] ≤
+      (bound : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  have hboundFuel := hbound.mono hfuel
+  calc
+    _ = Pr[= none | detailedExperimentCleanWithCompletionTable
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+          fuel computation] :=
+      OracleComp.probOutput_congr rfl
+        (by
+          unfold sampledRunThenFinalizeClean
+          exact evalDist_runThenFinalizeCleanFromTable_eq_detailed computation
+            (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel)
+    _ = Pr[= true | LazyRevealProbe.experiment
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+          fuel computation] :=
+      probEvent_detailedExperimentClean_none_eq_hit computation
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel hboundFuel
+    _ = Pr[= true | LazyRevealProbe.experiment
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+          bound computation] := by
+      apply OracleComp.probOutput_congr rfl
+      exact congrArg evalDist
+        (experiment_fuel_eq_of_isQueryBoundP computation LazyRevealProbe.State.empty
+          fuel bound bound hbound hfuel (by omega))
+    _ ≤ _ := by
+      rw [← probEvent_eq_eq_probOutput]
+      exact LazyRevealProbe.experiment_empty_probability_le bound computation
+
+set_option linter.constructorNameAsVariable false in
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem probEvent_sampledObservedRootAwareClean_none_le_of_fuel
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel q : Nat)
+    (hbound : ∀ root,
+      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
+        IsOuterHash q)
+    (hfuel : q ≤ fuel) :
+    Pr[= none |
+        sampledObservedRootAwareClean adversary parameter ftsSecret fuel] ≤
+      (q : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  calc
+    _ = Pr[= none | projectObservedCleanRun <$>
+        sampledObservedRootAwareClean adversary parameter ftsSecret fuel] := by
+      rw [← probEvent_eq_eq_probOutput, ← probEvent_eq_eq_probOutput, probEvent_map]
+      apply OracleComp.probEvent_congr'
+      · intro result _hresult
+        cases result <;> simp [projectObservedCleanRun]
+      · rfl
+    _ = Pr[= none | sampledRunThenFinalizeClean
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel
+        (rootAwareCleanRetainedRun adversary parameter ftsSecret)] :=
+      OracleComp.probOutput_congr rfl
+        (congrArg evalDist
+          (map_projectObservedCleanRun_sampledObservedRootAwareClean adversary parameter
+            ftsSecret fuel))
+    _ ≤ _ := probEvent_sampledRunThenFinalizeClean_empty_none_le_of_queryBound
+      (rootAwareCleanRetainedRun adversary parameter ftsSecret) fuel q
+      (rootAwareCleanRetainedRun_isProbeBound adversary parameter ftsSecret q hbound) hfuel
+
 def SnapshotObservedValueRel
     (table : OtsSecretIndex → HashOutput)
     (source : PrivateWitnessSnapshotOutput)
@@ -21,6 +173,18 @@ def SnapshotObservedValueRel
   observed = none ∨
     ∃ result, observed = some result ∧
       SnapshotsObservedAt table source.2 result.observations ∧
+      ∀ witness, source.1 = some witness →
+        result.state.values (.position witness.position) = some witness.output
+
+def SnapshotObservedPrefixValueRel
+    (table : OtsSecretIndex → HashOutput)
+    (source : PrivateWitnessSnapshotOutput)
+    (observed : Option
+      (ObservedCleanRunResult (RetainedGameResult × SplitHashCache))) : Prop :=
+  observed = none ∨
+    ∃ result aligned, observed = some result ∧
+      aligned <+: result.observations ∧
+      SnapshotsObservedAt table source.2 aligned ∧
       ∀ witness, source.1 = some witness →
         result.state.values (.position witness.position) = some witness.output
 
@@ -50,6 +214,52 @@ theorem relTriple_snapshotObservedRoot_of_valueRel
     {observed : ProbComp (Option
       (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)))}
     (hrelation : RelTriple source observed (SnapshotObservedValueRel table))
+    (hsource : ∀ output ∈ support source, SourceSnapshotStopInvariant output)
+    (htracked : ∀ output ∈ support observed, ∀ result, output = some result →
+      CleanProbeObservationsTrackedBy result.observations result.state) :
+    RelTriple source observed SnapshotObservedRootRel := by
+  have hleft :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hrelation
+      SourceSnapshotStopInvariant hsource
+  have hboth :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hleft
+  apply relTriple_post_mono hboth
+  intro left right hfacts
+  exact hfacts.1.1.to_rootRel hfacts.1.2 fun result hresult =>
+    htracked right hfacts.2 result hresult
+
+theorem SnapshotObservedPrefixValueRel.to_rootRel
+    {table : OtsSecretIndex → HashOutput}
+    {source : PrivateWitnessSnapshotOutput}
+    {observed : Option
+      (ObservedCleanRunResult (RetainedGameResult × SplitHashCache))}
+    (hrelation : SnapshotObservedPrefixValueRel table source observed)
+    (hsource : SourceSnapshotStopInvariant source)
+    (htracked : ∀ result, observed = some result →
+      CleanProbeObservationsTrackedBy result.observations result.state) :
+    SnapshotObservedRootRel source observed := by
+  rcases hrelation with hfailed | ⟨result, aligned, hresult, hprefix, haligned, hstored⟩
+  · exact Or.inl hfailed
+  · right
+    intro hfirst
+    subst observed
+    let trimmed : ObservedCleanRunResult (RetainedGameResult × SplitHashCache) :=
+      { result with observations := aligned }
+    have htrimmedTracked :
+        CleanProbeObservationsTrackedBy trimmed.observations trimmed.state := by
+      intro observation hobservation
+      exact htracked result rfl observation (hprefix.subset hobservation)
+    exact witnessFirstUsesSomeDelayedLayerRootSnapshot_of_aligned_tracked_sourceInvariant
+      hsource haligned hfirst htrimmedTracked (by
+        intro witness hwitness
+        exact hstored witness (by simpa [erasePrivateWitnessSnapshotOutput] using hwitness))
+
+theorem relTriple_snapshotObservedRoot_of_prefixValueRel
+    {table : OtsSecretIndex → HashOutput}
+    {source : ProbComp PrivateWitnessSnapshotOutput}
+    {observed : ProbComp (Option
+      (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)))}
+    (hrelation : RelTriple source observed (SnapshotObservedPrefixValueRel table))
     (hsource : ∀ output ∈ support source, SourceSnapshotStopInvariant output)
     (htracked : ∀ output ∈ support observed, ∀ result, output = some result →
       CleanProbeObservationsTrackedBy result.observations result.state) :
@@ -376,7 +586,7 @@ theorem relTriple_any_pure_nonprivateStop_witness
   | fuelExhausted => cases leftResult <;> trivial
 
 set_option maxRecDepth 100000 in
-theorem relTriple_runDirectResolvedWitness_detailed_bind_stable
+theorem relTriple_runDirectResolvedWitness_detailed_bind_with_support_stable
     (table : OtsSecretIndex → HashOutput)
     (left right : OracleComp (LazyRevealProbe.World Coordinate) (α × SplitHashCache))
     (leftNext rightNext : α → SplitHashCache →
@@ -388,6 +598,10 @@ theorem relTriple_runDirectResolvedWitness_detailed_bind_stable
       (DirectWitnessMaterializedStableRunEq table))
     (hclean : ∀ (leftResult rightResult :
       ResolvedRunResult (α × SplitHashCache)),
+      DirectWitnessResult.done leftResult ∈ support
+        (runDirectResolvedWitnessFromTable leftContext leftFuel table left) →
+      DirectDetailedResult.done rightResult ∈ support
+        (runDirectResolvedDetailedFromTable rightContext rightFuel table right) →
       OrdinaryMaterializedRunEq table leftResult rightResult →
       RelTriple
         (runDirectResolvedWitnessFromTable leftResult.context leftResult.remaining
@@ -403,8 +617,16 @@ theorem relTriple_runDirectResolvedWitness_detailed_bind_stable
       (DirectWitnessMaterializedStableRunEq table) := by
   rw [runDirectResolvedWitnessFromTable_bind,
     runDirectResolvedDetailedFromTable_bind]
-  apply relTriple_bind hleft
+  have hleftWithSupport :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hleft
+      (fun result => result ∈ support
+        (runDirectResolvedWitnessFromTable leftContext leftFuel table left))
+      (fun result hresult => hresult)
+  have hbothWithSupport :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hleftWithSupport
+  apply relTriple_bind hbothWithSupport
   intro leftResult rightResult hrelation
+  rcases hrelation with ⟨⟨hrelation, hleftSupport⟩, hrightSupport⟩
   cases leftResult with
   | stoppedFuel =>
       cases rightResult with
@@ -461,7 +683,7 @@ theorem relTriple_runDirectResolvedWitness_detailed_bind_stable
               exact relTriple_any_pure_nonprivateStop_witness table _ .fuelExhausted (by decide)
       | done rightResult =>
           rcases hrelation with hcleanRelation | hdoomedRelation
-          · exact hclean leftResult rightResult hcleanRelation
+          · exact hclean leftResult rightResult hleftSupport hrightSupport hcleanRelation
           · simp only
             rw [hdoomedRelation.1.1]
             exact relTriple_any_run_of_materializedDoomed_witness table
@@ -469,6 +691,37 @@ theorem relTriple_runDirectResolvedWitness_detailed_bind_stable
                 leftResult.table (leftNext leftResult.value.1 leftResult.value.2))
               (rightNext rightResult.value.1 rightResult.value.2)
               rightResult.context rightResult.remaining hdoomedRelation.1.2 hdoomedRelation.2
+
+set_option maxRecDepth 100000 in
+theorem relTriple_runDirectResolvedWitness_detailed_bind_stable
+    (table : OtsSecretIndex → HashOutput)
+    (left right : OracleComp (LazyRevealProbe.World Coordinate) (α × SplitHashCache))
+    (leftNext rightNext : α → SplitHashCache →
+      OracleComp (LazyRevealProbe.World Coordinate) (β × SplitHashCache))
+    (leftContext rightContext : DeferredContext) (leftFuel rightFuel : Nat)
+    (hleft : RelTriple
+      (runDirectResolvedWitnessFromTable leftContext leftFuel table left)
+      (runDirectResolvedDetailedFromTable rightContext rightFuel table right)
+      (DirectWitnessMaterializedStableRunEq table))
+    (hclean : ∀ (leftResult rightResult :
+      ResolvedRunResult (α × SplitHashCache)),
+      OrdinaryMaterializedRunEq table leftResult rightResult →
+      RelTriple
+        (runDirectResolvedWitnessFromTable leftResult.context leftResult.remaining
+          leftResult.table (leftNext leftResult.value.1 leftResult.value.2))
+        (runDirectResolvedDetailedFromTable rightResult.context rightResult.remaining
+          rightResult.table (rightNext rightResult.value.1 rightResult.value.2))
+        (DirectWitnessMaterializedStableRunEq table)) :
+    RelTriple
+      (runDirectResolvedWitnessFromTable leftContext leftFuel table
+        (left >>= fun value => leftNext value.1 value.2))
+      (runDirectResolvedDetailedFromTable rightContext rightFuel table
+        (right >>= fun value => rightNext value.1 value.2))
+      (DirectWitnessMaterializedStableRunEq table) := by
+  apply relTriple_runDirectResolvedWitness_detailed_bind_with_support_stable table left right
+    leftNext rightNext leftContext rightContext leftFuel rightFuel hleft
+  intro leftResult rightResult _hleftSupport _hrightSupport hrelation
+  exact hclean leftResult rightResult hrelation
 
 theorem WitnessMaterializedStableCouples.bind
     {table : OtsSecretIndex → HashOutput}
@@ -956,5 +1209,406 @@ theorem witnessMaterializedStableCouples_ordinaryRomImpl
   cases query with
   | inl n => exact witnessMaterializedStableCouples_splitUniformImpl table n
   | inr input => exact witnessMaterializedStableCouples_ordinaryHashImpl table input
+
+set_option maxRecDepth 100000 in
+theorem relTriple_runDirectResolvedWitness_publishCoordinate_then_pure_stable
+    (table : OtsSecretIndex → HashOutput) (coordinate : Coordinate)
+    (value : α) (left right : DeferredContext) (leftFuel rightFuel : Nat)
+    (leftCache rightCache : SplitHashCache)
+    (hcontext : FinalizationContextLE table left right)
+    (hfuel : leftFuel ≤ rightFuel)
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hvalues : LazyRevealProbe.ValuesLE left.state right.state)
+    (hpublished : PublishedValues left.state)
+    (hleftValue : ∃ output, left.state.values coordinate = some output)
+    (hrightMaterialized : right = directDeferredContext right.state) :
+    RelTriple
+      (runDirectResolvedWitnessFromTable left leftFuel table
+        ((publishCoordinate coordinate >>= fun _ => pure value).run leftCache))
+      (runDirectResolvedDetailedFromTable right rightFuel table
+        ((publishCoordinate coordinate >>= fun _ => pure value).run rightCache))
+      (DirectWitnessMaterializedStableRunEq table) := by
+  obtain ⟨output, hleftValue⟩ := hleftValue
+  have hrightValue : right.state.values coordinate = some output :=
+    hvalues coordinate output hleftValue
+  unfold publishCoordinate
+  rw [StateT.run_bind, StateT.run_bind]
+  simp only [StateT.run_liftM]
+  simp only [StateT.run_pure, bind_assoc, pure_bind]
+  unfold LazyRevealProbe.publishQuery
+  rw [runDirectResolvedWitnessFromTable_publish_query_bind,
+    runDirectResolvedDetailedFromTable_publish_query_bind,
+    runDirectResolvedDetailedFromTable_pure]
+  simp only [runDirectResolvedWitnessFromTable]
+  apply relTriple_pure_pure
+  left
+  exact
+    { value_eq := rfl
+      context_le := hcontext.publish coordinate
+      remaining_le := hfuel
+      left_table := rfl
+      right_table := rfl
+      cache_eq := hcache
+      revealed_eq := by
+        simpa [LazyRevealProbe.State.publish] using congrArg (insert coordinate) hrevealed
+      values_le := by
+        intro other otherOutput hvalue
+        exact hvalues other otherOutput hvalue
+      left_published := hpublished.publish_of_value coordinate output hleftValue
+      right_materialized := by
+        rw [hrightMaterialized]
+        simp [directDeferredContext, directDeferredValues_publish] }
+
+set_option maxRecDepth 100000 in
+theorem witnessMaterializedStableCouples_revealPublishedCoordinate
+    (table : OtsSecretIndex → HashOutput) (coordinate : Coordinate) :
+    WitnessMaterializedStableCouples table (revealPublishedCoordinate coordinate) := by
+  intro left right leftFuel rightFuel leftCache rightCache hcontext hfuel hcache hrevealed
+    hvalues hpublished hrightMaterialized
+  unfold revealPublishedCoordinate revealCoordinate
+  simp only [bind_assoc, pure_bind]
+  rw [StateT.run_bind, StateT.run_bind]
+  apply relTriple_runDirectResolvedWitness_detailed_bind_with_support_stable table
+    ((revealCoordinateOutput coordinate).run leftCache)
+    ((revealCoordinateOutput coordinate).run rightCache)
+    (fun output cache =>
+      ((publishCoordinate coordinate >>= fun _ => pure (truncateHash output)).run cache))
+    (fun output cache =>
+      ((publishCoordinate coordinate >>= fun _ => pure (truncateHash output)).run cache))
+    left right leftFuel rightFuel
+  · exact witnessMaterializedStableCouples_revealCoordinateOutput table coordinate
+      left right leftFuel rightFuel leftCache rightCache hcontext hfuel hcache hrevealed hvalues
+        hpublished hrightMaterialized
+  · intro leftResult rightResult hleftSupport _hrightSupport hrelation
+    have hleftDetailed : DirectDetailedResult.done leftResult ∈ support
+        (runDirectResolvedDetailedFromTable left leftFuel table
+          ((revealCoordinateOutput coordinate).run leftCache)) := by
+      rw [← map_erase_runDirectResolvedWitnessFromTable
+        ((revealCoordinateOutput coordinate).run leftCache) left leftFuel table,
+        support_map]
+      exact ⟨DirectWitnessResult.done leftResult, hleftSupport, rfl⟩
+    have hleftValue :=
+      value_of_done_runDirectResolvedDetailedFromTable_revealCoordinateOutput table coordinate
+        left leftFuel leftCache leftResult hleftDetailed
+    rw [hrelation.left_table, hrelation.right_table, ← hrelation.value_eq]
+    exact relTriple_runDirectResolvedWitness_publishCoordinate_then_pure_stable table
+      coordinate (truncateHash leftResult.value.1) leftResult.context rightResult.context
+      leftResult.remaining rightResult.remaining leftResult.value.2 rightResult.value.2
+      hrelation.context_le hrelation.remaining_le hrelation.cache_eq hrelation.revealed_eq
+      hrelation.values_le hrelation.left_published ⟨leftResult.value.1, hleftValue⟩
+      hrelation.right_materialized
+
+theorem witnessMaterializedStableCouples_ensureFullChain
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) :
+    WitnessMaterializedStableCouples table
+      (ensureFullChain lay tree leafIdx chainIdx) := by
+  unfold ensureFullChain
+  apply (witnessMaterializedStableCouples_sequenceFin
+    (fun step : ChainStep =>
+      ensureCoordinate (.position (.chain lay tree leafIdx chainIdx step)))
+    (fun step => witnessMaterializedStableCouples_ensureCoordinate table
+      (.position (.chain lay tree leafIdx chainIdx step)))).bind
+  intro _
+  exact witnessMaterializedStableCouples_pure table ()
+
+theorem witnessMaterializedStableCouples_ensureOtsLeaf
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) :
+    WitnessMaterializedStableCouples table (ensureOtsLeaf lay tree leafIdx) := by
+  unfold ensureOtsLeaf
+  apply (witnessMaterializedStableCouples_sequenceFin
+    (fun chainIdx : ChainIndex => ensureFullChain lay tree leafIdx chainIdx)
+    (fun chainIdx => witnessMaterializedStableCouples_ensureFullChain table lay tree leafIdx
+      chainIdx)).bind
+  intro _
+  exact witnessMaterializedStableCouples_ensureCoordinate table
+    (.position (.leaf lay tree leafIdx))
+
+theorem witnessMaterializedStableCouples_ensureTreeNode
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex) :
+    ∀ level nodeIdx,
+      WitnessMaterializedStableCouples table (ensureTreeNode lay tree level nodeIdx)
+  | 0, nodeIdx =>
+      witnessMaterializedStableCouples_ensureOtsLeaf table lay tree (leafOfNat nodeIdx)
+  | level + 1, nodeIdx => by
+      rw [ensureTreeNode]
+      apply (witnessMaterializedStableCouples_ensureTreeNode table lay tree level
+        (2 * nodeIdx)).bind
+      intro _
+      apply (witnessMaterializedStableCouples_ensureTreeNode table lay tree level
+        (2 * nodeIdx + 1)).bind
+      intro _
+      by_cases hlevel : level < maxLayerHeight
+      · rw [dif_pos hlevel]
+        exact witnessMaterializedStableCouples_ensureCoordinate table
+          (.position (.node lay tree ⟨level, hlevel⟩ (leafOfNat nodeIdx)))
+      · rw [dif_neg hlevel]
+        exact witnessMaterializedStableCouples_pure table ()
+
+theorem witnessMaterializedStableCouples_maskedTreeNode
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (level nodeIdx : Nat) :
+    WitnessMaterializedStableCouples table (maskedTreeNode lay tree level nodeIdx) := by
+  unfold maskedTreeNode
+  apply (witnessMaterializedStableCouples_ensureTreeNode table lay tree level nodeIdx).bind
+  intro _
+  cases level with
+  | zero =>
+      exact witnessMaterializedStableCouples_revealPosition table
+        (.leaf lay tree (leafOfNat nodeIdx))
+  | succ current =>
+      by_cases hlevel : current < maxLayerHeight
+      · simp only [hlevel, ↓reduceDIte]
+        exact witnessMaterializedStableCouples_revealPosition table
+          (.node lay tree ⟨current, hlevel⟩ (leafOfNat nodeIdx))
+      · simp only [hlevel, ↓reduceDIte]
+        exact witnessMaterializedStableCouples_pure table 0
+
+theorem witnessMaterializedStableCouples_maskedTreeRoot
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex) :
+    WitnessMaterializedStableCouples table (maskedTreeRoot lay tree) := by
+  unfold maskedTreeRoot
+  exact witnessMaterializedStableCouples_maskedTreeNode table lay tree (layerHeight lay) 0
+
+theorem witnessMaterializedStableCouples_ensureChainPrefix
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) (digit : Digit) :
+    WitnessMaterializedStableCouples table
+      (ensureChainPrefix lay tree leafIdx chainIdx digit) := by
+  unfold ensureChainPrefix
+  apply (witnessMaterializedStableCouples_sequenceFin
+    (fun step : ChainStep =>
+      if step.val < digit.val then
+        ensureCoordinate (.position (.chain lay tree leafIdx chainIdx step))
+      else pure ())
+    (fun step => by
+      by_cases hstep : step.val < digit.val
+      · rw [if_pos hstep]
+        exact witnessMaterializedStableCouples_ensureCoordinate table
+          (.position (.chain lay tree leafIdx chainIdx step))
+      · rw [if_neg hstep]
+        exact witnessMaterializedStableCouples_pure table ())).bind
+  intro _
+  exact witnessMaterializedStableCouples_pure table ()
+
+theorem witnessMaterializedStableCouples_ensureTreePath
+    (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) :
+    WitnessMaterializedStableCouples table (ensureTreePath lay tree leafIdx) := by
+  unfold ensureTreePath
+  apply (witnessMaterializedStableCouples_sequenceFin
+    (fun level : Fin maxLayerHeight =>
+      if level.val < layerHeight lay then
+        ensureTreeNode lay tree level.val
+          (Nat.xor (leafIdx.val / 2 ^ level.val) 1)
+      else pure ())
+    (fun level => by
+      by_cases hlevel : level.val < layerHeight lay
+      · rw [if_pos hlevel]
+        exact witnessMaterializedStableCouples_ensureTreeNode table lay tree level.val
+          (Nat.xor (leafIdx.val / 2 ^ level.val) 1)
+      · rw [if_neg hlevel]
+        exact witnessMaterializedStableCouples_pure table ())).bind
+  intro _
+  exact witnessMaterializedStableCouples_pure table ()
+
+theorem witnessMaterializedStableCouples_maskedOtsSignFrom
+    (table : OtsSecretIndex → HashOutput) (parameter : PublicParameter)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (message : Digest) :
+    ∀ attempts counter,
+      WitnessMaterializedStableCouples table
+        (maskedOtsSignFrom parameter lay tree leafIdx message attempts counter)
+  | 0, counter => by
+      rw [maskedOtsSignFrom]
+      exact witnessMaterializedStableCouples_pure table none
+  | attempts + 1, counter => by
+      rw [maskedOtsSignFrom]
+      have hencoded := witnessMaterializedStableCouples_simulateQ ordinaryHashImpl
+        (witnessMaterializedStableCouples_ordinaryHashImpl table)
+        (encode parameter lay tree leafIdx message
+          (BitVec.ofNat counterBits counter))
+      apply hencoded.bind
+      intro encoded
+      cases encoded with
+      | none =>
+          exact witnessMaterializedStableCouples_maskedOtsSignFrom table parameter lay tree
+            leafIdx message attempts (counter + 1)
+      | some encoding =>
+          apply (witnessMaterializedStableCouples_sequenceFin
+            (fun chainIdx => ensureChainPrefix lay tree leafIdx chainIdx
+              (encoding chainIdx))
+            (fun chainIdx => witnessMaterializedStableCouples_ensureChainPrefix table lay tree
+              leafIdx chainIdx (encoding chainIdx))).bind
+          intro _
+          exact witnessMaterializedStableCouples_pure table
+            (some (BitVec.ofNat counterBits counter, encoding))
+
+theorem witnessMaterializedStableCouples_maskedOtsSign
+    (table : OtsSecretIndex → HashOutput) (parameter : PublicParameter)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (message : Digest) :
+    WitnessMaterializedStableCouples table
+      (maskedOtsSign parameter lay tree leafIdx message) :=
+  witnessMaterializedStableCouples_maskedOtsSignFrom table parameter lay tree leafIdx message
+    encodingAttemptLimit 0
+
+theorem witnessMaterializedStableCouples_maskedLayerMessage
+    (table : OtsSecretIndex → HashOutput) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) :
+    WitnessMaterializedStableCouples table
+      (maskedLayerMessage parameter ftsSecret index lay) := by
+  unfold maskedLayerMessage
+  by_cases hbelow : lay.val + 1 < numLayers
+  · rw [dif_pos hbelow]
+    exact witnessMaterializedStableCouples_maskedTreeRoot table ⟨lay.val + 1, hbelow⟩
+      (treeIndexAt index ⟨lay.val + 1, hbelow⟩)
+  · rw [dif_neg hbelow]
+    exact witnessMaterializedStableCouples_simulateQ ordinaryHashImpl
+      (witnessMaterializedStableCouples_ordinaryHashImpl table)
+      (ftsKey parameter index (ftsSecret index))
+
+theorem witnessMaterializedStableCouples_maskedSignLayer
+    (table : OtsSecretIndex → HashOutput) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index)
+    (lay : Layer) :
+    WitnessMaterializedStableCouples table
+      (maskedSignLayer parameter ftsSecret index lay) := by
+  unfold maskedSignLayer
+  apply (witnessMaterializedStableCouples_maskedLayerMessage table parameter ftsSecret index
+    lay).bind
+  intro message
+  apply (witnessMaterializedStableCouples_maskedOtsSign table parameter lay
+    (treeIndexAt index lay) (leafIndexAt index lay) message).bind
+  intro selected
+  cases selected with
+  | none => exact witnessMaterializedStableCouples_pure table none
+  | some selected =>
+      apply (witnessMaterializedStableCouples_ensureTreePath table lay
+        (treeIndexAt index lay) (leafIndexAt index lay)).bind
+      intro _
+      exact witnessMaterializedStableCouples_pure table (some selected)
+
+set_option maxRecDepth 100000 in
+theorem witnessMaterializedStableCouples_revealLayerValues
+    (table : OtsSecretIndex → HashOutput) (index : Index) (lay : Layer)
+    (encoding : ChainIndex → Digit) :
+    WitnessMaterializedStableCouples table (revealLayerValues index lay encoding) := by
+  unfold revealLayerValues
+  apply (witnessMaterializedStableCouples_sequenceFin
+    (fun chainIdx : ChainIndex =>
+      revealPublishedCoordinate
+        (chainValueCoordinate lay (treeIndexAt index lay) (leafIndexAt index lay)
+          chainIdx (encoding chainIdx)))
+    (fun chainIdx => witnessMaterializedStableCouples_revealPublishedCoordinate table
+      (chainValueCoordinate lay (treeIndexAt index lay) (leafIndexAt index lay)
+        chainIdx (encoding chainIdx)))).bind
+  intro values
+  apply (witnessMaterializedStableCouples_sequenceFin
+    (fun level : Fin maxLayerHeight =>
+      if level.val < layerHeight lay then
+        match level.val with
+        | 0 => revealPublishedCoordinate (.position (.leaf lay (treeIndexAt index lay)
+            (leafOfNat (Nat.xor (leafIndexAt index lay).val 1))))
+        | current + 1 =>
+            if hcurrent : current < maxLayerHeight then
+              revealPublishedCoordinate (.position (.node lay (treeIndexAt index lay)
+                ⟨current, hcurrent⟩ (leafOfNat
+                  (Nat.xor ((leafIndexAt index lay).val / 2 ^ (current + 1)) 1))))
+            else pure 0
+      else pure 0)
+    (fun level => by
+      by_cases hinLayer : level.val < layerHeight lay
+      · rw [if_pos hinLayer]
+        cases hvalue : level.val with
+        | zero =>
+            exact witnessMaterializedStableCouples_revealPublishedCoordinate table
+              (.position (.leaf lay (treeIndexAt index lay)
+                (leafOfNat (Nat.xor (leafIndexAt index lay).val 1))))
+        | succ current =>
+            have hcurrent : current < maxLayerHeight := by
+              have := level.isLt
+              omega
+            simp only
+            rw [dif_pos hcurrent]
+            exact witnessMaterializedStableCouples_revealPublishedCoordinate table
+              (.position (.node lay (treeIndexAt index lay) ⟨current, hcurrent⟩
+                (leafOfNat
+                  (Nat.xor ((leafIndexAt index lay).val / 2 ^ (current + 1)) 1))))
+      · rw [if_neg hinLayer]
+        exact witnessMaterializedStableCouples_pure table 0)).bind
+  intro path
+  exact witnessMaterializedStableCouples_pure table (values, path)
+
+set_option maxRecDepth 100000 in
+theorem witnessMaterializedStableCouples_maskedSignAfterDigest
+    (table : OtsSecretIndex → HashOutput) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    WitnessMaterializedStableCouples table
+      (maskedSignAfterDigest parameter ftsSecret randomness index leaves) := by
+  unfold maskedSignAfterDigest
+  apply (witnessMaterializedStableCouples_simulateQ ordinaryHashImpl
+    (witnessMaterializedStableCouples_ordinaryHashImpl table)
+    (ftsOpen parameter index leaves (ftsSecret index))).bind
+  intro ftsPath
+  apply (witnessMaterializedStableCouples_sequenceFin
+    (fun lay : Layer => maskedSignLayer parameter ftsSecret index lay)
+    (fun lay => witnessMaterializedStableCouples_maskedSignLayer table parameter ftsSecret
+      index lay)).bind
+  intro layers
+  cases hparts : traverseOption layers with
+  | none => exact witnessMaterializedStableCouples_pure table none
+  | some parts =>
+      apply (witnessMaterializedStableCouples_sequenceFin
+        (fun lay : Layer => revealLayerValues index lay (parts lay).2)
+        (fun lay => witnessMaterializedStableCouples_revealLayerValues table index lay
+          (parts lay).2)).bind
+      intro revealed
+      let signature : Signature :=
+        { randomness := randomness
+          ftsSecret := fun tree => ftsSecret index tree (leaves (ftsIndexOf tree))
+          ftsPath := ftsPath
+          counter := fun lay => (parts lay).1
+          chainValue := fun lay => (revealed lay).1
+          authPath := flattenPaths fun lay => (revealed lay).2 }
+      exact witnessMaterializedStableCouples_pure table (some signature)
+
+set_option maxRecDepth 100000 in
+theorem witnessMaterializedStableCouples_maskedSign
+    (table : OtsSecretIndex → HashOutput) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message) :
+    WitnessMaterializedStableCouples table
+      (maskedSign parameter root ftsSecret message) := by
+  unfold maskedSign
+  apply (witnessMaterializedStableCouples_simulateQ ordinaryRomImpl
+    (witnessMaterializedStableCouples_ordinaryRomImpl table)
+    (signDigestLoop digestAttemptLimit
+      ⟨parameter, root, fun _ _ _ _ => 0, ftsSecret⟩ message)).bind
+  intro selected
+  cases selected with
+  | none => exact witnessMaterializedStableCouples_pure table none
+  | some data =>
+      exact witnessMaterializedStableCouples_maskedSignAfterDigest table parameter ftsSecret
+        data.1 data.2.1 data.2.2
+
+theorem witnessMaterializedStableCouples_maskedSigningImpl
+    (table : OtsSecretIndex → HashOutput) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message) :
+    WitnessMaterializedStableCouples table
+      (maskedSigningImpl parameter root ftsSecret message) :=
+  witnessMaterializedStableCouples_maskedSign table parameter root ftsSecret message
+
+theorem witnessMaterializedStableCouples_maskedPublishedTreeRoot
+    (table : OtsSecretIndex → HashOutput) :
+    WitnessMaterializedStableCouples table maskedPublishedTreeRoot := by
+  unfold maskedPublishedTreeRoot
+  apply (witnessMaterializedStableCouples_ensureTreeNode table topLayer rootTree
+    (layerHeight topLayer) 0).bind
+  intro _
+  exact witnessMaterializedStableCouples_revealPublishedCoordinate table
+    (.position (.node topLayer rootTree
+      ⟨layerHeight topLayer - 1, by norm_num [layerHeight, topLayer, maxLayerHeight]⟩ 0))
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
