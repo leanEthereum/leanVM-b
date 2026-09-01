@@ -4,15 +4,222 @@ import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGl
 # Joint stopped layer-root endpoint
 
 The successful stopped diagnostic must remain correlated with the materialized root-selection
-outcome. This file packages the exact relation required by the terminal probability argument. Its
-postcondition sends a clean selected source root directly to a materialized match, without admitting
-the conservative failure arm of the unconditioned root-selection bridge.
+outcome. The fixed-target definitions below keep that success gate on the observed run and split the
+independent comparison-root exception before the stopped coupling is applied. The older source-only
+interface is retained as a conditional endpoint, but it is not used to duplicate a comparison failure
+across position fibers.
 -/
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
 open OracleComp OracleSpec ENNReal
 open OracleComp.ProgramLogic.Relational
+
+noncomputable def observedFirstLayerRootPosition?
+    (ordinal : Nat) : Option (ObservedCleanRunResult α) → Option Position
+  | none => none
+  | some result =>
+      if hselected : ordinal < result.observations.length then
+        candidateLayerRootPosition?
+          (result.observations.get ⟨ordinal, hselected⟩).toProbe
+      else none
+
+def ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget
+    (table : OtsSecretIndex → HashOutput) (ordinal : Nat) (target : Position)
+    (observed : Option (ObservedCleanRunResult α)) : Prop :=
+  ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt
+      table ordinal observed ∧
+    observedFirstLayerRootPosition? ordinal observed = some target
+
+theorem successfulDoomedFirstRootHitAtTarget_root
+    {table : OtsSecretIndex → HashOutput} {ordinal : Nat} {target : Position}
+    {observed : Option (ObservedCleanRunResult α)}
+    (hhit : ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget
+      table ordinal target observed) :
+    ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt
+      table ordinal observed :=
+  hhit.1
+
+theorem observedFirstLayerRootPosition?_eq_some_of_successfulDoomedFirstRoot
+    {table : OtsSecretIndex → HashOutput} {ordinal : Nat}
+    {observed : Option (ObservedCleanRunResult α)}
+    (hhit : ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt
+      table ordinal observed) :
+    ∃ target, observedFirstLayerRootPosition? ordinal observed = some target := by
+  cases observed with
+  | none => simp [ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hhit
+  | some result =>
+      obtain ⟨_hfinish, _hdoomed, selected, hselected, _hfirst, hroot⟩ := hhit
+      obtain ⟨target, hcoordinate, htargetRoot⟩ := hroot
+      have hlt : ordinal < result.observations.length := by
+        rw [← hselected]
+        exact selected.isLt
+      have hindex : (⟨ordinal, hlt⟩ : Fin result.observations.length) = selected :=
+        Fin.ext hselected.symm
+      refine ⟨target, ?_⟩
+      simp only [observedFirstLayerRootPosition?, hlt, ↓reduceDIte]
+      rw [candidateLayerRootPosition?_eq_some_iff, hindex]
+      exact ⟨hcoordinate, htargetRoot⟩
+
+theorem not_successfulDoomedFirstRoot_of_position_eq_none
+    {table : OtsSecretIndex → HashOutput} {ordinal : Nat}
+    {observed : Option (ObservedCleanRunResult α)}
+    (hposition : observedFirstLayerRootPosition? ordinal observed = none) :
+    ¬ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt
+      table ordinal observed := by
+  intro hhit
+  obtain ⟨target, htarget⟩ :=
+    observedFirstLayerRootPosition?_eq_some_of_successfulDoomedFirstRoot hhit
+  rw [hposition] at htarget
+  simp at htarget
+
+theorem probEvent_successfulDoomedFirstRoot_le_of_position_fibers
+    (table : OtsSecretIndex → HashOutput)
+    (run : ProbComp (Option (ObservedCleanRunResult α))) (ordinal : Nat)
+    (hfiber : ∀ target,
+      Pr[fun observed =>
+          ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget
+            table ordinal target observed | run] ≤
+        Pr[fun observed => observedFirstLayerRootPosition? ordinal observed = some target | run] *
+          ((2 ^ digestBits : Nat) : ENNReal)⁻¹) :
+    Pr[fun observed =>
+        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt
+          table ordinal observed | run] ≤
+      ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  apply probEvent_le_of_uniform_weighted_fibers run
+    (ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt table ordinal)
+    (observedFirstLayerRootPosition? ordinal)
+    (((2 ^ digestBits : Nat) : ENNReal)⁻¹)
+  intro position?
+  cases position? with
+  | none =>
+      have hzero : Pr[fun observed =>
+          ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt
+              table ordinal observed ∧
+            observedFirstLayerRootPosition? ordinal observed = none | run] = 0 := by
+        apply probEvent_eq_zero
+        intro observed _hobserved hevent
+        exact not_successfulDoomedFirstRoot_of_position_eq_none hevent.2 hevent.1
+      rw [hzero]
+      exact zero_le
+  | some target => exact hfiber target
+
+def observedPrefixProbes
+    (ordinal : Nat) : Option (ObservedCleanRunResult α) → List Probe
+  | none => []
+  | some result =>
+      (result.observations.take ordinal).map CleanProbeObservation.toProbe
+
+def ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    (table : OtsSecretIndex → HashOutput) (ordinal : Nat)
+    (target : Position) (rightRoot : Digest)
+    (observed : Option (ObservedCleanRunResult α)) : Prop :=
+  ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget
+      table ordinal target observed ∧
+    CandidatesAvoidRoot target rightRoot (observedPrefixProbes ordinal observed)
+
+def ObservedCleanRunOption.SuccessfulDoomedFirstRootComparisonExceptionAt
+    (table : OtsSecretIndex → HashOutput) (ordinal : Nat)
+    (target : Position) (rightRoot : Digest)
+    (observed : Option (ObservedCleanRunResult α)) : Prop :=
+  ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget
+      table ordinal target observed ∧
+    ¬CandidatesAvoidRoot target rightRoot (observedPrefixProbes ordinal observed)
+
+theorem successfulDoomedFirstRootFiber_split_comparison
+    {table : OtsSecretIndex → HashOutput} {ordinal : Nat} {target : Position}
+    {rightRoot : Digest} {observed : Option (ObservedCleanRunResult α)}
+    (hhit : ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget
+      table ordinal target observed) :
+    ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        table ordinal target rightRoot observed ∨
+      ObservedCleanRunOption.SuccessfulDoomedFirstRootComparisonExceptionAt
+        table ordinal target rightRoot observed := by
+  by_cases havoid : CandidatesAvoidRoot target rightRoot
+      (observedPrefixProbes ordinal observed)
+  · exact Or.inl ⟨hhit, havoid⟩
+  · exact Or.inr ⟨hhit, havoid⟩
+
+theorem observedPrefixProbes_length_le
+    (ordinal : Nat) (observed : Option (ObservedCleanRunResult α)) :
+    (observedPrefixProbes ordinal observed).length ≤ ordinal := by
+  cases observed with
+  | none => simp [observedPrefixProbes]
+  | some result => simp [observedPrefixProbes]
+
+theorem probEvent_successfulDoomedFirstRootComparisonExceptionAt_le
+    (table : OtsSecretIndex → HashOutput)
+    (run : ProbComp (Option (ObservedCleanRunResult α)))
+    (ordinal : Nat) (target : Position) :
+    Pr[fun result : Option (ObservedCleanRunResult α) × Digest =>
+        ObservedCleanRunOption.SuccessfulDoomedFirstRootComparisonExceptionAt
+          table ordinal target result.2 result.1 | do
+      let observed ← run
+      let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+      pure (observed, rightRoot)] ≤
+      Pr[fun observed => ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget
+          table ordinal target observed | run] *
+        ((ordinal : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) := by
+  let gate := fun observed : Option (ObservedCleanRunResult α) =>
+    ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget
+      table ordinal target observed
+  let values := fun observed : Option (ObservedCleanRunResult α) =>
+    (observedPrefixProbes ordinal observed).map Probe.candidate
+  calc
+    _ ≤ Pr[fun result : Option (ObservedCleanRunResult α) × Digest =>
+          gate result.1 ∧ result.2 ∈ values result.1 | do
+        let observed ← run
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        pure (observed, rightRoot)] := by
+      apply probEvent_mono
+      intro result _hresult hexception
+      exact ⟨hexception.1,
+        not_candidatesAvoidRoot_mem_candidate_map hexception.2⟩
+    _ ≤ Pr[gate | run] *
+          ((ordinal : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) := by
+      apply probEvent_gate_and_uniformDigest_mem_list_le run gate values ordinal
+      intro observed _hobserved _hgate
+      simpa [values] using observedPrefixProbes_length_le ordinal observed
+    _ = _ := rfl
+
+theorem probEvent_successfulDoomedFirstRootFiber_le_goodComparison_add_weightedException
+    (table : OtsSecretIndex → HashOutput)
+    (run : ProbComp (Option (ObservedCleanRunResult α)))
+    (ordinal : Nat) (target : Position) :
+    Pr[fun observed => ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget
+        table ordinal target observed | run] ≤
+      Pr[fun result : Option (ObservedCleanRunResult α) × Digest =>
+          ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+            table ordinal target result.2 result.1 | do
+        let observed ← run
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        pure (observed, rightRoot)] +
+      Pr[fun observed => ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget
+          table ordinal target observed | run] *
+        ((ordinal : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) := by
+  let paired : ProbComp (Option (ObservedCleanRunResult α) × Digest) := do
+    let observed ← run
+    let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+    pure (observed, rightRoot)
+  calc
+    _ ≤ Pr[fun result =>
+          ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+              table ordinal target result.2 result.1 ∨
+            ObservedCleanRunOption.SuccessfulDoomedFirstRootComparisonExceptionAt
+              table ordinal target result.2 result.1 | paired] := by
+      apply probEvent_le_of_relTriple (relTriple_pair_uniform_right run)
+      intro observed result hrelation hhit
+      rw [← hrelation]
+      exact successfulDoomedFirstRootFiber_split_comparison hhit
+    _ ≤ Pr[fun result =>
+          ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+            table ordinal target result.2 result.1 | paired] +
+        Pr[fun result =>
+          ObservedCleanRunOption.SuccessfulDoomedFirstRootComparisonExceptionAt
+            table ordinal target result.2 result.1 | paired] := probEvent_or_le _ _ _
+    _ ≤ _ := add_le_add_right
+      (probEvent_successfulDoomedFirstRootComparisonExceptionAt_le
+        table run ordinal target) _
 
 def CleanRootMaterializedMatchRel
     (table : OtsSecretIndex → HashOutput) (ordinal : Nat) (target : Position) :
