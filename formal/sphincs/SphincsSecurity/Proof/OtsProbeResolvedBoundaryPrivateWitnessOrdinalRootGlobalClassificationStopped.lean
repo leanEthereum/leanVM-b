@@ -466,4 +466,121 @@ theorem SnapshotObservedPrefixStoppedRel.aligned_of_successful_firstRoot
       exact (not_firstExistingHiddenRootHitAt_of_firstChainStart hchain hfirst selected hselected
         (hroot selected hselected)).elim
 
+theorem candidateStopCause_of_not_completable
+    (table : OtsSecretIndex → HashOutput)
+    (candidate : Probe)
+    (observations : List CleanProbeObservation)
+    (left right : DeferredContext)
+    (hcontext : FinalizationContextLE table left right)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hcanonical : CanonicalMaterializedValues table left)
+    (hrightMaterialized : right = directDeferredContext right.state)
+    (hhidden : candidate.coordinate ∉ right.state.revealed)
+    (hnoEarlier : ∀ observation ∈ observations,
+      ¬observation.ExistingHiddenHit)
+    (hcard : (right.state.addPending candidate.coordinate candidate.candidate).pending.card <
+      Fintype.card Digest)
+    (hnotCompletable : ¬DeferredCompletable table
+      ({ right with state := right.state.addPending candidate.coordinate candidate.candidate } :
+        DeferredContext)) :
+    PrivateStructuralHit
+        ({ left with state := left.state.addPending candidate.coordinate candidate.candidate } :
+          DeferredContext) ∨
+      MissingChainStartHit table
+        ({ right with state := right.state.addPending candidate.coordinate candidate.candidate } :
+          DeferredContext) ∨
+      FirstExistingHiddenChainStartHit
+        (observations ++ [cleanProbeObservation right.state
+          candidate.coordinate candidate.candidate]) := by
+  let nextRight : DeferredContext :=
+    { right with state := right.state.addPending candidate.coordinate candidate.candidate }
+  cases hvalue : right.state.values candidate.coordinate with
+  | some output =>
+      have hhit : truncateHash output = candidate.candidate := by
+        by_contra hmiss
+        obtain ⟨completion, hcompletion⟩ := hcontext.rightCompletable
+        have hresolved : resolvedCompletionValue table right candidate.coordinate = some output := by
+          cases hcoordinate : candidate.coordinate with
+          | chainStart lay tree leafIdx chainIdx =>
+              have hvalue' : right.state.values
+                  (.chainStart lay tree leafIdx chainIdx) = some output := by
+                simpa [hcoordinate] using hvalue
+              have htable := hcontext.view.rightStarts ⟨lay, tree, leafIdx, chainIdx⟩ output
+                hvalue'
+              simp [resolvedCompletionValue, htable]
+          | position position =>
+              rw [hrightMaterialized]
+              have hvalue' : right.state.values (.position position) = some output := by
+                simpa [hcoordinate] using hvalue
+              simp [resolvedCompletionValue, directDeferredContext,
+                DeferredContext.positionValue, hvalue']
+        have hcompletionOutput : completion candidate.coordinate = output :=
+          hcompletion.eq_resolvedCompletionValue candidate.coordinate output hresolved
+        apply hnotCompletable
+        refine ⟨completion, hcompletion.addPending_of_avoids
+          candidate.coordinate candidate.candidate ?_⟩
+        rw [hcompletionOutput]
+        exact hmiss
+      cases hcoordinate : candidate.coordinate with
+      | chainStart lay tree leafIdx chainIdx =>
+          right
+          right
+          let observation := cleanProbeObservation right.state
+            (.chainStart lay tree leafIdx chainIdx) candidate.candidate
+          change FirstExistingHiddenChainStartHit (observations ++ [observation])
+          have hobservationHit : observation.ExistingHiddenChainStartHit := by
+            refine ⟨?_, ⟨⟨lay, tree, leafIdx, chainIdx⟩, ?_⟩⟩
+            · refine ⟨?_, output, ?_, hhit⟩
+              · have hhidden' : Coordinate.chainStart lay tree leafIdx chainIdx ∉
+                    right.state.revealed := by simpa [hcoordinate] using hhidden
+                simp [observation, cleanProbeObservation, hhidden']
+              · have hvalue' : right.state.values
+                    (.chainStart lay tree leafIdx chainIdx) = some output := by
+                  simpa [hcoordinate] using hvalue
+                simp [observation, cleanProbeObservation, hvalue']
+            · rfl
+          have hlength : observations.length < (observations ++ [observation]).length := by simp
+          let selected : Fin (observations ++ [observation]).length :=
+            ⟨observations.length, hlength⟩
+          refine ⟨selected, ?_, ?_⟩
+          · simpa [selected, observation]
+          · intro earlier hearlier
+            have hearlierLength : earlier.val < observations.length := by
+              simpa [selected] using hearlier
+            let before : Fin observations.length := ⟨earlier.val, hearlierLength⟩
+            have hbefore := hnoEarlier (observations.get before) (List.get_mem _ _)
+            simpa [selected, before, List.getElem_append, hearlierLength] using hbefore
+      | position position =>
+          left
+          have hleftHidden : left.state.values (.position position) = none := by
+            apply canonical_value_none_of_not_revealed hcanonical
+            intro hleftRevealed
+            apply hhidden
+            rw [← hrevealed]
+            simpa [hcoordinate] using hleftRevealed
+          have hrightValue : right.state.values (.position position) = some output := by
+            simpa [hcoordinate] using hvalue
+          have hprivate : left.values position = some output :=
+            hcontext.view.privateValue_of_left_hidden_of_right_materialized position output
+              hleftHidden hrightValue
+          refine ⟨position, output, ?_, hprivate, ?_⟩
+          · simpa [LazyRevealProbe.State.addPending, hcoordinate] using hleftHidden
+          · unfold LazyRevealProbe.State.hitAt
+            rw [LazyRevealProbe.State.mem_pendingAt_iff]
+            simp [LazyRevealProbe.State.addPending, hhit]
+  | none =>
+      right
+      left
+      have hvalid : nextRight.Valid := by
+        apply hcontext.rightValid.addPending_of_value_none
+        exact hvalue
+      have hstarts : StartTableAgrees nextRight.state table := by
+        exact hcontext.view.rightStarts.addPending candidate.coordinate candidate.candidate
+      have hcause := privateStructuralHit_or_missingChainStartHit_of_not_completable table nextRight
+        hvalid hstarts hcard hnotCompletable
+      exact hcause.resolve_left (not_privateStructuralHit_of_directDeferredContext nextRight (by
+        dsimp [nextRight]
+        rw [hrightMaterialized]
+        simp [directDeferredContext, directDeferredValues_addPending]))
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
