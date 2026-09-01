@@ -15,9 +15,116 @@ namespace SphincsSecurity.Concrete.OtsProbeSimulation
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
 
+def CleanProbeObservation.ExistingHiddenHit
+    (observation : CleanProbeObservation) : Prop :=
+  observation.revealedAtProbe = false ∧
+    ∃ output, observation.valueAtProbe = some output ∧
+      truncateHash output = observation.candidate
+
+def ObservedCleanRunResult.HasExistingHiddenHit
+    (result : ObservedCleanRunResult α) : Prop :=
+  ∃ observation ∈ result.observations, observation.ExistingHiddenHit
+
+theorem directDeferredContext_valid_of_no_existingHiddenHit
+    (result : ObservedCleanRunResult α)
+    (htracked : CleanProbeObservationsTrackedBy result.observations result.state)
+    (hcovered : CleanProbeObservationsCoverPending result.observations result.state)
+    (hnohit : ¬result.HasExistingHiddenHit) :
+    (directDeferredContext result.state).Valid := by
+  constructor
+  · intro position output hvalue
+    simpa [directDeferredContext, directDeferredValues] using hvalue
+  · intro coordinate output hvalue hhit
+    change result.state.values coordinate = some output at hvalue
+    change truncateHash output ∈ result.state.pendingAt coordinate at hhit
+    have hpending : (coordinate, truncateHash output) ∈ result.state.pending :=
+      (LazyRevealProbe.State.mem_pendingAt_iff result.state coordinate
+        (truncateHash output)).1 hhit
+    obtain ⟨observation, hobservation, hcoordinate, hcandidate, hhidden⟩ :=
+      hcovered (coordinate, truncateHash output) hpending
+    have hobservationTracked := htracked observation hobservation
+    cases hatProbe : observation.valueAtProbe with
+    | none =>
+        rcases hobservationTracked.2 hatProbe hhidden with hpending | hmaterialized
+        · rw [hcoordinate, hvalue] at hpending
+          simp at hpending
+        · obtain ⟨stored, hstored, hmismatch⟩ := hmaterialized
+          rw [hcoordinate] at hstored
+          have hsame : stored = output := Option.some.inj (hstored.symm.trans hvalue)
+          subst stored
+          exact hmismatch hcandidate.symm
+    | some stored =>
+        have hstored := hobservationTracked.1 stored hatProbe
+        rw [hcoordinate] at hstored
+        have hsame : stored = output := Option.some.inj (hstored.symm.trans hvalue)
+        subst stored
+        apply hnohit
+        exact ⟨observation, hobservation, hhidden, output, hatProbe, hcandidate.symm⟩
+
+theorem not_missingChainStartHit_of_mem_finishObservedCleanRunFromTable
+    (result finalResult : ObservedCleanRunResult α)
+    (hfinal : some finalResult ∈ support
+      (finishObservedCleanRunFromTable (some result))) :
+    ¬MissingChainStartHit result.table (directDeferredContext result.state) := by
+  rintro ⟨index, hvalue, hhit⟩
+  have hstateValue : result.state.values index.coordinate = none := by
+    simpa only [directDeferredContext] using hvalue
+  have hmem : index.coordinate ∈ result.state.coordinates := by
+    by_contra hnotMem
+    exact (not_hitAt_of_not_mem_coordinates result.state index.coordinate
+      (result.table index) hnotMem) hhit
+  unfold finishObservedCleanRunFromTable at hfinal
+  rw [mem_support_bind_iff] at hfinal
+  obtain ⟨finalized, hfinalized, hreturn⟩ := hfinal
+  cases finalized with
+  | none => simp at hreturn
+  | some value =>
+      rcases value with ⟨finalState, finalTable⟩
+      have hexpose := evalDist_finalizeCleanFromTable_finset_expose_missing
+        index.coordinate result.state.coordinates result.state result.table hmem hstateValue
+      rcases index with ⟨lay, tree, leafIdx, chainIdx⟩
+      have hhit' : result.state.hitAt (.chainStart lay tree leafIdx chainIdx)
+          (result.table ⟨lay, tree, leafIdx, chainIdx⟩) := by
+        simpa only [directDeferredContext, OtsSecretIndex.coordinate] using hhit
+      rw [mem_support_iff_evalDist_apply_ne_zero] at hfinalized
+      change evalDist
+        (finalizeCleanFromTable result.state.coordinates.toList result.state result.table)
+        (some (finalState, finalTable)) ≠ 0 at hfinalized
+      rw [hexpose] at hfinalized
+      simpa [OtsSecretIndex.coordinate, completionOutputFromTable, hhit'] using hfinalized
+
+theorem hasExistingHiddenHit_of_doomed_finished
+    (table : OtsSecretIndex → HashOutput)
+    (result finalResult : ObservedCleanRunResult α)
+    (htable : result.table = table)
+    (hdoomed : DoomedResolvedContext table (directDeferredContext result.state))
+    (htracked : CleanProbeObservationsTrackedBy result.observations result.state)
+    (hcovered : CleanProbeObservationsCoverPending result.observations result.state)
+    (hcard : result.state.pending.card < Fintype.card Digest)
+    (hfinal : some finalResult ∈ support
+      (finishObservedCleanRunFromTable (some result))) :
+    result.HasExistingHiddenHit := by
+  by_contra hnohit
+  have hvalid := directDeferredContext_valid_of_no_existingHiddenHit result htracked hcovered
+    hnohit
+  have hcause := privateStructuralHit_or_missingChainStartHit_of_not_completable
+    table (directDeferredContext result.state) hvalid hdoomed.2.1 hcard hdoomed.2.2
+  have hnotPrivate := not_privateStructuralHit_of_directDeferredContext
+    (directDeferredContext result.state) rfl
+  have hmissing : MissingChainStartHit table (directDeferredContext result.state) :=
+    hcause.resolve_left hnotPrivate
+  rw [← htable] at hmissing
+  exact not_missingChainStartHit_of_mem_finishObservedCleanRunFromTable result finalResult hfinal
+    hmissing
+
 structure ObservedMaterializedDiagnostic (alpha : Type) where
+  before : Option (ObservedCleanRunResult alpha)
   final : Option (ObservedCleanRunResult alpha)
   wasDoomed : Bool
+
+def ObservedMaterializedDiagnostic.HasExistingHiddenHit
+    (outcome : ObservedMaterializedDiagnostic α) : Prop :=
+  ∃ result, outcome.before = some result ∧ result.HasExistingHiddenHit
 
 def ObservedMaterializedDiagnostic.Bad
     (outcome : ObservedMaterializedDiagnostic alpha) : Prop :=
@@ -50,11 +157,11 @@ noncomputable def finishObservedMaterializedDiagnostic
     ProbComp (ObservedMaterializedDiagnostic alpha) := by
   classical
   match result with
-  | none => exact pure ⟨none, false⟩
+  | none => exact pure ⟨none, none, false⟩
   | some result =>
       exact do
         let final ← finishObservedCleanRunFromTable (some result)
-        pure ⟨final,
+        pure ⟨some result, final,
           decide (¬DeferredCompletable table (directDeferredContext result.state))⟩
 
 noncomputable def sampledObservedMaterializedDiagnostic
@@ -133,7 +240,7 @@ theorem probEvent_sampledObservedMaterializedDiagnostic_final_none_eq
         sampledObservedMaterializedDiagnostic adversary parameter ftsSecret fuel] := by
       rw [← probEvent_eq_eq_probOutput, probEvent_map]
       exact OracleComp.probEvent_congr' (fun outcome _ => by
-        rcases outcome with ⟨final, doomed⟩
+        rcases outcome with ⟨before, final, doomed⟩
         cases final <;>
           simp [ObservedMaterializedDiagnostic.project, projectObservedCleanRun]) rfl
     _ = _ := OracleComp.probOutput_congr rfl
@@ -200,7 +307,7 @@ theorem relTriple_pure_finishObservedDiagnostic_of_rootOrDoomed
     | some finalResult =>
         right
         exact himplication
-  · obtain ⟨result, hresult, hnotCompletable⟩ := hdoomed
+  · obtain ⟨result, hresult, hdoomedContext⟩ := hdoomed
     subst observed
     have hbase := relTriple_true
       (pure source : ProbComp PrivateWitnessSnapshotOutput)
@@ -210,7 +317,7 @@ theorem relTriple_pure_finishObservedDiagnostic_of_rootOrDoomed
     apply relTriple_pure_pure
     left
     right
-    simp [hnotCompletable]
+    simp [hdoomedContext.2.2]
 
 set_option maxRecDepth 100000 in
 theorem relTriple_finishObservedDiagnostic_of_rootOrDoomed

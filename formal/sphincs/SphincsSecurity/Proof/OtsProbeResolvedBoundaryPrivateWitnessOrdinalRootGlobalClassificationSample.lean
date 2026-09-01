@@ -13,6 +13,46 @@ namespace SphincsSecurity.Concrete.OtsProbeSimulation
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
 
+attribute [local irreducible]
+  observedMaterializedRetainedRunFromTable finishObservedMaterializedDiagnostic in
+set_option linter.constructorNameAsVariable false in
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem hasExistingHiddenHit_of_mem_sampledDiagnostic_successfulDoomed
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (hq : q ≤ 2 ^ securityBits)
+    (outcome : ObservedMaterializedDiagnostic
+      (RetainedGameResult × SplitHashCache))
+    (houtcome : outcome ∈ support
+      (sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)))
+    (hsuccess : outcome.SuccessfulDoomed) :
+    outcome.HasExistingHiddenHit := by
+  change outcome ∈ support (sampleOtsHashTable >>= fun table =>
+    observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table >>=
+      finishObservedMaterializedDiagnostic table) at houtcome
+  rw [mem_support_bind_iff] at houtcome
+  obtain ⟨table, _htable, hfixed⟩ := houtcome
+  exact hasExistingHiddenHit_of_mem_diagnosticFromTable_successfulDoomed adversary parameter
+    ftsSecret q table hq outcome hfixed hsuccess
+
+attribute [local irreducible] sampledObservedMaterializedDiagnostic in
+set_option linter.constructorNameAsVariable false in
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem probEvent_sampledDiagnostic_successfulDoomed_le_existingHiddenHit
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (hq : q ≤ 2 ^ securityBits) :
+    Pr[ObservedMaterializedDiagnostic.SuccessfulDoomed |
+        sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)] ≤
+      Pr[ObservedMaterializedDiagnostic.HasExistingHiddenHit |
+        sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)] := by
+  apply probEvent_mono
+  intro outcome houtcome hsuccess
+  exact hasExistingHiddenHit_of_mem_sampledDiagnostic_successfulDoomed adversary parameter
+    ftsSecret q hq outcome houtcome hsuccess
+
 set_option maxHeartbeats 2000000 in
 set_option maxRecDepth 100000 in
 theorem relTriple_sampledGranularAllCanonical_diagnosticRootRel

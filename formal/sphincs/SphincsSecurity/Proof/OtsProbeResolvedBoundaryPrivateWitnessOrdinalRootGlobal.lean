@@ -47,6 +47,90 @@ def CleanProbeObservationsTrackedBy
     (state : LazyRevealProbe.State Coordinate) : Prop :=
   ∀ observation ∈ observations, observation.TrackedBy state
 
+def CleanProbeObservationsCoverPending
+    (observations : List CleanProbeObservation)
+    (state : LazyRevealProbe.State Coordinate) : Prop :=
+  ∀ entry ∈ state.pending,
+    ∃ observation ∈ observations,
+      observation.coordinate = entry.1 ∧
+        observation.candidate = entry.2 ∧ observation.revealedAtProbe = false
+
+theorem CleanProbeObservationsCoverPending.mono
+    {prior later : List CleanProbeObservation}
+    {state : LazyRevealProbe.State Coordinate}
+    (hcovered : CleanProbeObservationsCoverPending prior state)
+    (hsublist : prior.Sublist later) :
+    CleanProbeObservationsCoverPending later state := by
+  intro entry hentry
+  obtain ⟨observation, hobservation, hcoordinate, hcandidate, hhidden⟩ :=
+    hcovered entry hentry
+  exact ⟨observation, hsublist.subset hobservation, hcoordinate, hcandidate, hhidden⟩
+
+theorem CleanProbeObservationsCoverPending.state_subset
+    {observations : List CleanProbeObservation}
+    {left right : LazyRevealProbe.State Coordinate}
+    (hcovered : CleanProbeObservationsCoverPending observations right)
+    (hsubset : left.pending ⊆ right.pending) :
+    CleanProbeObservationsCoverPending observations left := by
+  intro entry hentry
+  exact hcovered entry (hsubset hentry)
+
+theorem CleanProbeObservationsCoverPending.ensure
+    {observations : List CleanProbeObservation}
+    {state : LazyRevealProbe.State Coordinate}
+    (hcovered : CleanProbeObservationsCoverPending observations state)
+    (coordinate : Coordinate) :
+    CleanProbeObservationsCoverPending observations (state.ensure coordinate) := by
+  exact hcovered
+
+theorem CleanProbeObservationsCoverPending.publish
+    {observations : List CleanProbeObservation}
+    {state : LazyRevealProbe.State Coordinate}
+    (hcovered : CleanProbeObservationsCoverPending observations state)
+    (coordinate : Coordinate) :
+    CleanProbeObservationsCoverPending observations (state.publish coordinate) := by
+  exact hcovered
+
+theorem CleanProbeObservationsCoverPending.materialize
+    {observations : List CleanProbeObservation}
+    {state : LazyRevealProbe.State Coordinate}
+    (hcovered : CleanProbeObservationsCoverPending observations state)
+    (coordinate : Coordinate) (output : HashOutput) :
+    CleanProbeObservationsCoverPending observations
+      (state.materialize coordinate output) := by
+  apply hcovered.state_subset
+  intro entry hentry
+  exact (Finset.mem_filter.1 hentry).1
+
+theorem cleanProbeObservationsCoverPending_append_revealed
+    {observations : List CleanProbeObservation}
+    {state : LazyRevealProbe.State Coordinate}
+    (hcovered : CleanProbeObservationsCoverPending observations state)
+    (coordinate : Coordinate) (candidate : Digest) :
+    CleanProbeObservationsCoverPending
+      (observations ++ [cleanProbeObservation state coordinate candidate]) state := by
+  apply hcovered.mono
+  exact List.sublist_append_left _ _
+
+theorem cleanProbeObservationsCoverPending_append_hidden
+    {observations : List CleanProbeObservation}
+    {state : LazyRevealProbe.State Coordinate}
+    (hcovered : CleanProbeObservationsCoverPending observations state)
+    (coordinate : Coordinate) (candidate : Digest)
+    (hhidden : coordinate ∉ state.revealed) :
+    CleanProbeObservationsCoverPending
+      (observations ++ [cleanProbeObservation state coordinate candidate])
+      (state.addPending coordinate candidate) := by
+  intro entry hentry
+  simp only [LazyRevealProbe.State.addPending, Finset.mem_insert] at hentry
+  rcases hentry with rfl | hold
+  · exact ⟨cleanProbeObservation state coordinate candidate, by simp,
+      by simp [cleanProbeObservation], by simp [cleanProbeObservation], by
+        simp [cleanProbeObservation, hhidden]⟩
+  · obtain ⟨observation, hobservation, hcoordinate, hcandidate, hhidden⟩ :=
+      hcovered entry hold
+    exact ⟨observation, by simp [hobservation], hcoordinate, hcandidate, hhidden⟩
+
 def CleanProbeObservation.ResolvedSafe
     (observation : CleanProbeObservation)
     (state : LazyRevealProbe.State Coordinate) : Prop :=
@@ -581,6 +665,189 @@ theorem cleanProbeObservationsTrackedBy_of_mem_runObservedCleanFromTable
                       hrest
 
 set_option maxRecDepth 100000 in
+theorem cleanProbeObservationsCoverPending_of_mem_runObservedCleanFromTable
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (observations : List CleanProbeObservation)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (hcovered : CleanProbeObservationsCoverPending observations state)
+    (result : ObservedCleanRunResult α)
+    (hresult : some result ∈ support
+      (runObservedCleanFromTable observations state fuel table computation)) :
+    CleanProbeObservationsCoverPending result.observations result.state := by
+  induction computation using OracleComp.inductionOn generalizing
+      observations state fuel table with
+  | pure value =>
+      simp [runObservedCleanFromTable] at hresult
+      subst result
+      exact hcovered
+  | query_bind input next ih =>
+      cases input with
+      | uniform n =>
+          rw [runObservedCleanFromTable, OracleComp.construct_query_bind,
+            mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, hrest⟩ := hresult
+          exact ih output observations state fuel table hcovered hrest
+      | hashOutput =>
+          rw [runObservedCleanFromTable, OracleComp.construct_query_bind,
+            mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, hrest⟩ := hresult
+          exact ih output observations state fuel table hcovered hrest
+      | ensure coordinate =>
+          rw [runObservedCleanFromTable, OracleComp.construct_query_bind] at hresult
+          exact ih () observations (state.ensure coordinate) fuel table
+            (hcovered.ensure coordinate) hresult
+      | probe coordinate candidate =>
+          rw [runObservedCleanFromTable_probe_query_bind] at hresult
+          cases fuel with
+          | zero => simp at hresult
+          | succ remaining =>
+              by_cases hrevealed : coordinate ∈ state.revealed
+              · exact ih ()
+                  (observations ++ [cleanProbeObservation state coordinate candidate])
+                  state remaining table
+                  (cleanProbeObservationsCoverPending_append_revealed hcovered coordinate
+                    candidate)
+                  (by simpa [hrevealed] using hresult)
+              · exact ih ()
+                  (observations ++ [cleanProbeObservation state coordinate candidate])
+                  (state.addPending coordinate candidate) remaining table
+                  (cleanProbeObservationsCoverPending_append_hidden hcovered coordinate candidate
+                    hrevealed)
+                  (by simpa [hrevealed] using hresult)
+      | peek coordinate =>
+          rw [runObservedCleanFromTable, OracleComp.construct_query_bind] at hresult
+          exact ih (state.values coordinate) observations state fuel table hcovered hresult
+      | publish coordinate =>
+          rw [runObservedCleanFromTable, OracleComp.construct_query_bind] at hresult
+          exact ih () observations (state.publish coordinate) fuel table
+            (hcovered.publish coordinate) hresult
+      | reveal coordinate =>
+          rw [runObservedCleanFromTable, OracleComp.construct_query_bind] at hresult
+          cases hvalue : state.values coordinate with
+          | some output =>
+              simp only [hvalue] at hresult
+              exact ih output observations state fuel table hcovered hresult
+          | none =>
+              simp only [hvalue] at hresult
+              cases coordinate with
+              | chainStart lay tree leafIdx chainIdx =>
+                  let output := table ⟨lay, tree, leafIdx, chainIdx⟩
+                  by_cases hhit : state.hitAt
+                      (.chainStart lay tree leafIdx chainIdx) output
+                  · simp [output, hhit] at hresult
+                  · simp only [output, hhit, ↓reduceIte] at hresult
+                    change some result ∈ support
+                      (runObservedCleanFromTable observations
+                        (state.materialize (.chainStart lay tree leafIdx chainIdx) output)
+                        fuel table (next output)) at hresult
+                    exact ih output observations
+                      (state.materialize (.chainStart lay tree leafIdx chainIdx) output)
+                      fuel table (hcovered.materialize _ output) hresult
+              | position position =>
+                  rw [mem_support_bind_iff] at hresult
+                  obtain ⟨output, _houtput, hrest⟩ := hresult
+                  by_cases hhit : state.hitAt (.position position) output
+                  · simp [hhit] at hrest
+                  · simp only [hhit, ↓reduceIte] at hrest
+                    change some result ∈ support
+                      (runObservedCleanFromTable observations
+                        (state.materialize (.position position) output)
+                        fuel table (next output)) at hrest
+                    exact ih output observations (state.materialize (.position position) output)
+                      fuel table (hcovered.materialize _ output) hrest
+
+set_option maxRecDepth 100000 in
+theorem remaining_add_pending_card_le_of_mem_runObservedCleanFromTable
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (observations : List CleanProbeObservation)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (result : ObservedCleanRunResult α)
+    (hresult : some result ∈ support
+      (runObservedCleanFromTable observations state fuel table computation)) :
+    result.remaining + result.state.pending.card ≤ fuel + state.pending.card := by
+  induction computation using OracleComp.inductionOn generalizing
+      observations state fuel table with
+  | pure value =>
+      simp [runObservedCleanFromTable] at hresult
+      subst result
+      simp
+  | query_bind input next ih =>
+      cases input with
+      | uniform n =>
+          rw [runObservedCleanFromTable, OracleComp.construct_query_bind,
+            mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, hrest⟩ := hresult
+          exact ih output observations state fuel table hrest
+      | hashOutput =>
+          rw [runObservedCleanFromTable, OracleComp.construct_query_bind,
+            mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, hrest⟩ := hresult
+          exact ih output observations state fuel table hrest
+      | ensure coordinate =>
+          rw [runObservedCleanFromTable, OracleComp.construct_query_bind] at hresult
+          simpa only [LazyRevealProbe.State.pending_card_ensure] using
+            ih () observations (state.ensure coordinate) fuel table hresult
+      | probe coordinate candidate =>
+          rw [runObservedCleanFromTable_probe_query_bind] at hresult
+          cases fuel with
+          | zero => simp at hresult
+          | succ remaining =>
+              by_cases hrevealed : coordinate ∈ state.revealed
+              · have htail := ih ()
+                  (observations ++ [cleanProbeObservation state coordinate candidate])
+                  state remaining table (by simpa [hrevealed] using hresult)
+                omega
+              · have htail := ih ()
+                  (observations ++ [cleanProbeObservation state coordinate candidate])
+                  (state.addPending coordinate candidate) remaining table
+                  (by simpa [hrevealed] using hresult)
+                have hadd := state.pending_card_addPending_le coordinate candidate
+                omega
+      | peek coordinate =>
+          rw [runObservedCleanFromTable, OracleComp.construct_query_bind] at hresult
+          exact ih (state.values coordinate) observations state fuel table hresult
+      | publish coordinate =>
+          rw [runObservedCleanFromTable, OracleComp.construct_query_bind] at hresult
+          exact ih () observations (state.publish coordinate) fuel table hresult
+      | reveal coordinate =>
+          rw [runObservedCleanFromTable, OracleComp.construct_query_bind] at hresult
+          cases hvalue : state.values coordinate with
+          | some output =>
+              simp only [hvalue] at hresult
+              exact ih output observations state fuel table hresult
+          | none =>
+              simp only [hvalue] at hresult
+              cases coordinate with
+              | chainStart lay tree leafIdx chainIdx =>
+                  let output := table ⟨lay, tree, leafIdx, chainIdx⟩
+                  by_cases hhit : state.hitAt
+                      (.chainStart lay tree leafIdx chainIdx) output
+                  · simp [output, hhit] at hresult
+                  · simp only [output, hhit, ↓reduceIte] at hresult
+                    have htail := ih output observations
+                      (state.materialize (.chainStart lay tree leafIdx chainIdx) output)
+                      fuel table hresult
+                    have haway := state.pendingAway_card_add_pendingAt_card_le
+                      (.chainStart lay tree leafIdx chainIdx)
+                    simp only [LazyRevealProbe.State.pending_card_materialize] at htail
+                    omega
+
+              | position position =>
+                  rw [mem_support_bind_iff] at hresult
+                  obtain ⟨output, _houtput, hrest⟩ := hresult
+                  by_cases hhit : state.hitAt (.position position) output
+                  · simp [hhit] at hrest
+                  · simp only [hhit, ↓reduceIte] at hrest
+                    have htail := ih output observations
+                      (state.materialize (.position position) output) fuel table hrest
+                    have haway := state.pendingAway_card_add_pendingAt_card_le
+                      (.position position)
+                    simp only [LazyRevealProbe.State.pending_card_materialize] at htail
+                    omega
+
+set_option maxRecDepth 100000 in
 theorem map_projectObservedCleanRun_runObservedCleanFromTable
     (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
     (observations : List CleanProbeObservation)
@@ -661,6 +928,25 @@ theorem map_projectObservedCleanRun_runObservedCleanFromTable
                   · simp only [hhit, ↓reduceIte]
                     exact ih output observations
                       (state.materialize (.position position) output) fuel
+
+theorem startTableAgrees_of_mem_runObservedCleanFromTable
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (observations : List CleanProbeObservation)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (hagrees : StartTableAgrees state table)
+    (result : ObservedCleanRunResult α)
+    (hresult : some result ∈ support
+      (runObservedCleanFromTable observations state fuel table computation)) :
+    result.table = table ∧ StartTableAgrees result.state table := by
+  have hmapped : some result.toClean ∈ support
+      (projectObservedCleanRun <$>
+        runObservedCleanFromTable observations state fuel table computation) := by
+    rw [support_map, Set.mem_image]
+    exact ⟨some result, hresult, rfl⟩
+  rw [map_projectObservedCleanRun_runObservedCleanFromTable] at hmapped
+  exact startTableAgrees_of_mem_runCleanFromTable computation state fuel table hagrees
+    result.toClean hmapped
 
 noncomputable def finishObservedCleanRunFromTable :
     Option (ObservedCleanRunResult α) →

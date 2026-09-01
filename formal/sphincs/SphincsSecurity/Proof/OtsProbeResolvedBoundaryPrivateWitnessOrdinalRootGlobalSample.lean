@@ -19,10 +19,10 @@ def SnapshotObservedRootOrDoomedRel
       (ObservedCleanRunResult (RetainedGameResult × SplitHashCache))) : Prop :=
   observed = none ∨
     (∃ result, observed = some result ∧
-      (WitnessFirstUsesSomeLayerRoot (erasePrivateWitnessSnapshotOutput source) →
+    (WitnessFirstUsesSomeLayerRoot (erasePrivateWitnessSnapshotOutput source) →
         WitnessFirstUsesSomeDelayedLayerRootSnapshot source)) ∨
     ∃ result, observed = some result ∧
-      ¬DeferredCompletable table (directDeferredContext result.state)
+      DoomedResolvedContext table (directDeferredContext result.state)
 
 attribute [local irreducible] observedMaterializedRetainedRunFromTable in
 set_option linter.constructorNameAsVariable false in
@@ -78,7 +78,7 @@ theorem relTriple_granularAllCanonical_observedMaterialized_rootOrDoomed
     · exact Or.inl hfailed
     · exact Or.inr (Or.inl ⟨result, hresult, himplication⟩)
   · obtain ⟨result, hresult, hdoomed⟩ := hdoomed
-    exact Or.inr (Or.inr ⟨result, hresult, hdoomed.2.2⟩)
+    exact Or.inr (Or.inr ⟨result, hresult, hdoomed⟩)
 
 theorem relTriple_pure_finishObservedMaterialized_of_rootOrDoomed
     (table : OtsSecretIndex → HashOutput)
@@ -111,9 +111,9 @@ theorem relTriple_pure_finishObservedMaterialized_of_rootOrDoomed
       | some _ => exact Or.inr himplication
     · simp [finishObservedMaterializedCleanRunFromTable, hcompletable,
         SnapshotObservedRootRel]
-  · obtain ⟨result, hresult, hnotCompletable⟩ := hdoomed
+  · obtain ⟨result, hresult, hdoomedContext⟩ := hdoomed
     subst observed
-    simp [finishObservedMaterializedCleanRunFromTable, hnotCompletable,
+    simp [finishObservedMaterializedCleanRunFromTable, hdoomedContext.2.2,
       SnapshotObservedRootRel]
 
 set_option maxRecDepth 100000 in
