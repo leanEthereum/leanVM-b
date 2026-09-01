@@ -21,9 +21,64 @@ def CleanProbeObservation.ExistingHiddenHit
     ∃ output, observation.valueAtProbe = some output ∧
       truncateHash output = observation.candidate
 
+def CleanProbeObservation.ExistingHiddenRootHit
+    (observation : CleanProbeObservation) : Prop :=
+  observation.ExistingHiddenHit ∧ observation.toProbe.IsLayerRoot
+
+def CleanProbeObservation.ExistingHiddenNonRootHit
+    (observation : CleanProbeObservation) : Prop :=
+  observation.ExistingHiddenHit ∧ ¬observation.toProbe.IsLayerRoot
+
 def ObservedCleanRunResult.HasExistingHiddenHit
     (result : ObservedCleanRunResult α) : Prop :=
   ∃ observation ∈ result.observations, observation.ExistingHiddenHit
+
+def ObservedCleanRunResult.HasExistingHiddenRootHit
+    (result : ObservedCleanRunResult α) : Prop :=
+  ∃ observation ∈ result.observations, observation.ExistingHiddenRootHit
+
+def ObservedCleanRunResult.HasExistingHiddenNonRootHit
+    (result : ObservedCleanRunResult α) : Prop :=
+  ∃ observation ∈ result.observations, observation.ExistingHiddenNonRootHit
+
+theorem ObservedCleanRunResult.existingHidden_root_or_nonRoot
+    {result : ObservedCleanRunResult α}
+    (hhit : result.HasExistingHiddenHit) :
+    result.HasExistingHiddenRootHit ∨ result.HasExistingHiddenNonRootHit := by
+  classical
+  obtain ⟨observation, hobservation, hhit⟩ := hhit
+  by_cases hroot : observation.toProbe.IsLayerRoot
+  · exact Or.inl ⟨observation, hobservation, hhit, hroot⟩
+  · exact Or.inr ⟨observation, hobservation, hhit, hroot⟩
+
+def ExistingHiddenHitAtOrdinal
+    (result : ObservedCleanRunResult α) (ordinal : Fin result.observations.length) : Prop :=
+  (result.observations.get ordinal).ExistingHiddenHit
+
+noncomputable def firstExistingHiddenHitOrdinal?
+    (result : ObservedCleanRunResult α) : Option (Fin result.observations.length) := by
+  classical
+  let matching := Finset.univ.filter fun ordinal : Fin result.observations.length =>
+    ExistingHiddenHitAtOrdinal result ordinal
+  exact if h : matching.Nonempty then some (matching.min' h) else none
+
+theorem firstExistingHiddenHitOrdinal?_eq_some_of_hasExistingHiddenHit
+    (result : ObservedCleanRunResult α) (hhit : result.HasExistingHiddenHit) :
+    ∃ ordinal, firstExistingHiddenHitOrdinal? result = some ordinal ∧
+      ExistingHiddenHitAtOrdinal result ordinal := by
+  classical
+  obtain ⟨observation, hobservation, hhit⟩ := hhit
+  obtain ⟨ordinal, hordinal⟩ := List.mem_iff_get.mp hobservation
+  let matching := Finset.univ.filter fun selected : Fin result.observations.length =>
+    ExistingHiddenHitAtOrdinal result selected
+  have hmatching : matching.Nonempty := by
+    refine ⟨ordinal, Finset.mem_filter.mpr ⟨Finset.mem_univ _, ?_⟩⟩
+    rw [ExistingHiddenHitAtOrdinal, hordinal]
+    exact hhit
+  unfold firstExistingHiddenHitOrdinal?
+  simp only [matching, hmatching, dif_pos]
+  refine ⟨matching.min' hmatching, rfl, ?_⟩
+  exact (Finset.mem_filter.mp (matching.min'_mem hmatching)).2
 
 theorem directDeferredContext_valid_of_no_existingHiddenHit
     (result : ObservedCleanRunResult α)
@@ -125,6 +180,63 @@ structure ObservedMaterializedDiagnostic (alpha : Type) where
 def ObservedMaterializedDiagnostic.HasExistingHiddenHit
     (outcome : ObservedMaterializedDiagnostic α) : Prop :=
   ∃ result, outcome.before = some result ∧ result.HasExistingHiddenHit
+
+def ObservedMaterializedDiagnostic.HasExistingHiddenRootHit
+    (outcome : ObservedMaterializedDiagnostic α) : Prop :=
+  ∃ result, outcome.before = some result ∧ result.HasExistingHiddenRootHit
+
+def ObservedMaterializedDiagnostic.HasExistingHiddenNonRootHit
+    (outcome : ObservedMaterializedDiagnostic α) : Prop :=
+  ∃ result, outcome.before = some result ∧ result.HasExistingHiddenNonRootHit
+
+def ObservedMaterializedDiagnostic.FirstExistingHiddenRootHitOrdinal
+    (ordinal : Nat) (outcome : ObservedMaterializedDiagnostic α) : Prop :=
+  ∃ result sourceOrdinal,
+    outcome.before = some result ∧ sourceOrdinal.val = ordinal ∧
+      firstExistingHiddenHitOrdinal? result = some sourceOrdinal ∧
+      (result.observations.get sourceOrdinal).toProbe.IsLayerRoot
+
+def ObservedMaterializedDiagnostic.FirstExistingHiddenNonRootHitOrdinal
+    (ordinal : Nat) (outcome : ObservedMaterializedDiagnostic α) : Prop :=
+  ∃ result sourceOrdinal,
+    outcome.before = some result ∧ sourceOrdinal.val = ordinal ∧
+      firstExistingHiddenHitOrdinal? result = some sourceOrdinal ∧
+      ¬(result.observations.get sourceOrdinal).toProbe.IsLayerRoot
+
+theorem ObservedMaterializedDiagnostic.firstExistingHidden_root_or_nonRoot
+    {outcome : ObservedMaterializedDiagnostic α}
+    (hhit : outcome.HasExistingHiddenHit) :
+    (∃ ordinal, outcome.FirstExistingHiddenRootHitOrdinal ordinal) ∨
+      ∃ ordinal, outcome.FirstExistingHiddenNonRootHitOrdinal ordinal := by
+  classical
+  obtain ⟨result, hbefore, hhit⟩ := hhit
+  obtain ⟨sourceOrdinal, hfirst, _hhitAt⟩ :=
+    firstExistingHiddenHitOrdinal?_eq_some_of_hasExistingHiddenHit result hhit
+  by_cases hroot : (result.observations.get sourceOrdinal).toProbe.IsLayerRoot
+  · exact Or.inl ⟨sourceOrdinal.val, result, sourceOrdinal, hbefore, rfl, hfirst, hroot⟩
+  · exact Or.inr ⟨sourceOrdinal.val, result, sourceOrdinal, hbefore, rfl, hfirst, hroot⟩
+
+theorem ObservedMaterializedDiagnostic.existingHidden_root_or_nonRoot
+    {outcome : ObservedMaterializedDiagnostic α}
+    (hhit : outcome.HasExistingHiddenHit) :
+    outcome.HasExistingHiddenRootHit ∨ outcome.HasExistingHiddenNonRootHit := by
+  obtain ⟨result, hbefore, hhit⟩ := hhit
+  exact (result.existingHidden_root_or_nonRoot hhit).imp
+    (fun hroot => ⟨result, hbefore, hroot⟩)
+    (fun hnonRoot => ⟨result, hbefore, hnonRoot⟩)
+
+theorem probEvent_diagnostic_existingHidden_le_root_add_nonRoot
+    (run : ProbComp (ObservedMaterializedDiagnostic α)) :
+    Pr[ObservedMaterializedDiagnostic.HasExistingHiddenHit | run] ≤
+      Pr[ObservedMaterializedDiagnostic.HasExistingHiddenRootHit | run] +
+        Pr[ObservedMaterializedDiagnostic.HasExistingHiddenNonRootHit | run] := by
+  calc
+    _ ≤ Pr[fun outcome => outcome.HasExistingHiddenRootHit ∨
+          outcome.HasExistingHiddenNonRootHit | run] := by
+      apply probEvent_mono
+      intro outcome _ hhit
+      exact outcome.existingHidden_root_or_nonRoot hhit
+    _ ≤ _ := probEvent_or_le _ _ _
 
 def ObservedMaterializedDiagnostic.Bad
     (outcome : ObservedMaterializedDiagnostic alpha) : Prop :=

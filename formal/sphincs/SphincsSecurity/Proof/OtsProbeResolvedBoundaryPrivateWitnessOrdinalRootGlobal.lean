@@ -848,6 +848,87 @@ theorem remaining_add_pending_card_le_of_mem_runObservedCleanFromTable
                     omega
 
 set_option maxRecDepth 100000 in
+theorem observations_length_add_remaining_eq_of_mem_runObservedCleanFromTable
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (observations : List CleanProbeObservation)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (result : ObservedCleanRunResult α)
+    (hresult : some result ∈ support
+      (runObservedCleanFromTable observations state fuel table computation)) :
+    result.observations.length + result.remaining = observations.length + fuel := by
+  induction computation using OracleComp.inductionOn generalizing
+      observations state fuel table with
+  | pure value =>
+      simp [runObservedCleanFromTable] at hresult
+      subst result
+      rfl
+  | query_bind input next ih =>
+      cases input with
+      | uniform n =>
+          rw [runObservedCleanFromTable, OracleComp.construct_query_bind,
+            mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, hrest⟩ := hresult
+          exact ih output observations state fuel table hrest
+      | hashOutput =>
+          rw [runObservedCleanFromTable, OracleComp.construct_query_bind,
+            mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, hrest⟩ := hresult
+          exact ih output observations state fuel table hrest
+      | ensure coordinate =>
+          rw [runObservedCleanFromTable, OracleComp.construct_query_bind] at hresult
+          exact ih () observations (state.ensure coordinate) fuel table hresult
+      | probe coordinate candidate =>
+          rw [runObservedCleanFromTable_probe_query_bind] at hresult
+          cases fuel with
+          | zero => simp at hresult
+          | succ remaining =>
+              by_cases hrevealed : coordinate ∈ state.revealed
+              · have htail := ih ()
+                  (observations ++ [cleanProbeObservation state coordinate candidate])
+                  state remaining table (by simpa [hrevealed] using hresult)
+                simp only [List.length_append, List.length_singleton] at htail
+                omega
+              · have htail := ih ()
+                  (observations ++ [cleanProbeObservation state coordinate candidate])
+                  (state.addPending coordinate candidate) remaining table
+                  (by simpa [hrevealed] using hresult)
+                simp only [List.length_append, List.length_singleton] at htail
+                omega
+      | peek coordinate =>
+          rw [runObservedCleanFromTable, OracleComp.construct_query_bind] at hresult
+          exact ih (state.values coordinate) observations state fuel table hresult
+      | publish coordinate =>
+          rw [runObservedCleanFromTable, OracleComp.construct_query_bind] at hresult
+          exact ih () observations (state.publish coordinate) fuel table hresult
+      | reveal coordinate =>
+          rw [runObservedCleanFromTable, OracleComp.construct_query_bind] at hresult
+          cases hvalue : state.values coordinate with
+          | some output =>
+              simp only [hvalue] at hresult
+              exact ih output observations state fuel table hresult
+          | none =>
+              simp only [hvalue] at hresult
+              cases coordinate with
+              | chainStart lay tree leafIdx chainIdx =>
+                  let output := table ⟨lay, tree, leafIdx, chainIdx⟩
+                  by_cases hhit : state.hitAt
+                      (.chainStart lay tree leafIdx chainIdx) output
+                  · simp [output, hhit] at hresult
+                  · simp only [output, hhit, ↓reduceIte] at hresult
+                    exact ih output observations
+                      (state.materialize (.chainStart lay tree leafIdx chainIdx) output)
+                      fuel table hresult
+              | position position =>
+                  rw [mem_support_bind_iff] at hresult
+                  obtain ⟨output, _houtput, hrest⟩ := hresult
+                  by_cases hhit : state.hitAt (.position position) output
+                  · simp [hhit] at hrest
+                  · simp only [hhit, ↓reduceIte] at hrest
+                    exact ih output observations
+                      (state.materialize (.position position) output) fuel table hrest
+
+set_option maxRecDepth 100000 in
 theorem map_projectObservedCleanRun_runObservedCleanFromTable
     (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
     (observations : List CleanProbeObservation)

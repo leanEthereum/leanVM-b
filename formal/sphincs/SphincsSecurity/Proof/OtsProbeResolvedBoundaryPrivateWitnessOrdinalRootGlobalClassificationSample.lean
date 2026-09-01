@@ -53,6 +53,99 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_le_existingHiddenHit
   exact hasExistingHiddenHit_of_mem_sampledDiagnostic_successfulDoomed adversary parameter
     ftsSecret q hq outcome houtcome hsuccess
 
+attribute [local irreducible] sampledObservedMaterializedDiagnostic in
+theorem probEvent_sampledDiagnostic_successfulDoomed_le_root_add_nonRoot
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (hq : q ≤ 2 ^ securityBits) :
+    Pr[ObservedMaterializedDiagnostic.SuccessfulDoomed |
+        sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)] ≤
+      Pr[ObservedMaterializedDiagnostic.HasExistingHiddenRootHit |
+          sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)] +
+        Pr[ObservedMaterializedDiagnostic.HasExistingHiddenNonRootHit |
+          sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)] := by
+  exact (probEvent_sampledDiagnostic_successfulDoomed_le_existingHiddenHit adversary parameter
+    ftsSecret q hq).trans
+      (probEvent_diagnostic_existingHidden_le_root_add_nonRoot
+        (sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)))
+
+attribute [local irreducible]
+  observedMaterializedRetainedRunFromTable finishObservedMaterializedDiagnostic in
+set_option linter.constructorNameAsVariable false in
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem observations_length_le_of_mem_sampledDiagnostic_before
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat)
+    (outcome : ObservedMaterializedDiagnostic
+      (RetainedGameResult × SplitHashCache))
+    (result : ObservedCleanRunResult (RetainedGameResult × SplitHashCache))
+    (houtcome : outcome ∈ support
+      (sampledObservedMaterializedDiagnostic adversary parameter ftsSecret fuel))
+    (hbefore : outcome.before = some result) :
+    result.observations.length ≤ fuel := by
+  change outcome ∈ support (sampleOtsHashTable >>= fun table =>
+    observedMaterializedRetainedRunFromTable adversary parameter ftsSecret fuel table >>=
+      finishObservedMaterializedDiagnostic table) at houtcome
+  rw [mem_support_bind_iff] at houtcome
+  obtain ⟨table, _htable, hfixed⟩ := houtcome
+  exact observations_length_le_of_mem_diagnosticFromTable_before adversary parameter ftsSecret
+    fuel table outcome result hfixed hbefore
+
+attribute [local irreducible] sampledObservedMaterializedDiagnostic in
+set_option linter.constructorNameAsVariable false in
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem probEvent_sampledDiagnostic_existingHidden_le_sum_firstOrdinals
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    Pr[ObservedMaterializedDiagnostic.HasExistingHiddenHit |
+        sampledObservedMaterializedDiagnostic adversary parameter ftsSecret fuel] ≤
+      ∑ ordinal : Fin fuel,
+        (Pr[ObservedMaterializedDiagnostic.FirstExistingHiddenRootHitOrdinal ordinal.val |
+            sampledObservedMaterializedDiagnostic adversary parameter ftsSecret fuel] +
+          Pr[ObservedMaterializedDiagnostic.FirstExistingHiddenNonRootHitOrdinal ordinal.val |
+            sampledObservedMaterializedDiagnostic adversary parameter ftsSecret fuel]) := by
+  classical
+  let run := sampledObservedMaterializedDiagnostic adversary parameter ftsSecret fuel
+  calc
+    _ ≤ Pr[fun outcome => ∃ ordinal ∈ (Finset.univ : Finset (Fin fuel)),
+          outcome.FirstExistingHiddenRootHitOrdinal ordinal.val ∨
+            outcome.FirstExistingHiddenNonRootHitOrdinal ordinal.val | run] := by
+      apply probEvent_mono
+      intro outcome houtcome hhit
+      rcases outcome.firstExistingHidden_root_or_nonRoot hhit with hroot | hnonRoot
+      · obtain ⟨ordinal, result, sourceOrdinal, hbefore, hordinal, hfirst, hroot⟩ := hroot
+        have hlength := observations_length_le_of_mem_sampledDiagnostic_before adversary parameter
+          ftsSecret fuel outcome result houtcome hbefore
+        have hlt : ordinal < fuel := by omega
+        let bounded : Fin fuel := ⟨ordinal, hlt⟩
+        exact ⟨bounded, Finset.mem_univ bounded, Or.inl
+          ⟨result, sourceOrdinal, hbefore, hordinal, hfirst, hroot⟩⟩
+      · obtain ⟨ordinal, result, sourceOrdinal, hbefore, hordinal, hfirst, hnonRoot⟩ :=
+          hnonRoot
+        have hlength := observations_length_le_of_mem_sampledDiagnostic_before adversary parameter
+          ftsSecret fuel outcome result houtcome hbefore
+        have hlt : ordinal < fuel := by omega
+        let bounded : Fin fuel := ⟨ordinal, hlt⟩
+        exact ⟨bounded, Finset.mem_univ bounded, Or.inr
+          ⟨result, sourceOrdinal, hbefore, hordinal, hfirst, hnonRoot⟩⟩
+    _ ≤ ∑ ordinal : Fin fuel,
+          Pr[fun outcome =>
+            outcome.FirstExistingHiddenRootHitOrdinal ordinal.val ∨
+              outcome.FirstExistingHiddenNonRootHitOrdinal ordinal.val | run] :=
+      probEvent_exists_finset_le_sum Finset.univ run fun (ordinal : Fin fuel) outcome =>
+        outcome.FirstExistingHiddenRootHitOrdinal ordinal.val ∨
+          outcome.FirstExistingHiddenNonRootHitOrdinal ordinal.val
+    _ ≤ ∑ ordinal : Fin fuel,
+          (Pr[ObservedMaterializedDiagnostic.FirstExistingHiddenRootHitOrdinal ordinal.val | run] +
+            Pr[ObservedMaterializedDiagnostic.FirstExistingHiddenNonRootHitOrdinal ordinal.val |
+              run]) := by
+      apply Finset.sum_le_sum
+      intro ordinal _hordinal
+      exact probEvent_or_le _ _ _
+    _ = _ := by simp only [run]
+
 set_option maxHeartbeats 2000000 in
 set_option maxRecDepth 100000 in
 theorem relTriple_sampledGranularAllCanonical_diagnosticRootRel

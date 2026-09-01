@@ -201,6 +201,71 @@ theorem remaining_add_pending_card_le_of_mem_observedMaterializedBoundary
               omega
 
 set_option maxRecDepth 100000 in
+theorem observations_length_add_remaining_eq_of_mem_observedMaterializedBoundary
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (observations : List CleanProbeObservation)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (result : ObservedCleanRunResult (α × SplitHashCache))
+    (hresult : some result ∈ support
+      (observedMaterializedBoundary parameter root ftsSecret computation observations state fuel
+        table cache)) :
+    result.observations.length + result.remaining = observations.length + fuel := by
+  induction computation using OracleComp.inductionOn generalizing
+      observations state fuel table cache with
+  | pure value =>
+      simp [observedMaterializedBoundary] at hresult
+      obtain rfl := hresult
+      rfl
+  | query_bind query next ih =>
+      rw [observedMaterializedBoundary, OracleComp.construct_query_bind] at hresult
+      cases query with
+      | inl worldQuery =>
+          cases worldQuery with
+          | inl n =>
+              rw [mem_support_bind_iff] at hresult
+              obtain ⟨step?, hstep, hrest⟩ := hresult
+              cases step? with
+              | none => simp at hrest
+              | some step =>
+                  have hfirst :=
+                    observations_length_add_remaining_eq_of_mem_runObservedCleanFromTable
+                      ((splitUniformImpl n).run cache) observations state fuel table step hstep
+                  have htail := ih step.value.1 step.observations step.state step.remaining table
+                    step.value.2 (by simpa only [observedMaterializedBoundary] using hrest)
+                  omega
+          | inr input =>
+              rw [mem_support_bind_iff] at hresult
+              obtain ⟨step?, hstep, hrest⟩ := hresult
+              cases step? with
+              | none => simp at hrest
+              | some step =>
+                  let publicContext := materializedCanonicalContext table state
+                  let plan := purePlanProbingHashQuery parameter input publicContext.state
+                  have hfirst :=
+                    observations_length_add_remaining_eq_of_mem_runObservedCleanFromTable
+                      ((probingHashQueryAfterRootAwarePublicPlan parameter input publicContext.state
+                        plan).run cache) observations state fuel table step hstep
+                  have htail := ih step.value.1 step.observations step.state step.remaining table
+                    step.value.2 (by simpa only [observedMaterializedBoundary] using hrest)
+                  omega
+      | inr message =>
+          rw [mem_support_bind_iff] at hresult
+          obtain ⟨step?, hstep, hrest⟩ := hresult
+          cases step? with
+          | none => simp at hrest
+          | some step =>
+              have hfirst :=
+                observations_length_add_remaining_eq_of_mem_runObservedCleanFromTable
+                  ((maskedSign parameter root ftsSecret message).run cache) observations state fuel
+                  table step hstep
+              have htail := ih step.value.1 step.observations step.state step.remaining table
+                step.value.2 (by simpa only [observedMaterializedBoundary] using hrest)
+              omega
+
+set_option maxRecDepth 100000 in
 theorem startTableAgrees_of_mem_observedMaterializedBoundary
     (parameter : PublicParameter) (root : Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
@@ -397,6 +462,43 @@ theorem pending_card_le_fuel_of_mem_observedMaterializedRetainedRunFromTable
               rootResult.observations rootResult.state rootResult.remaining table rootResult.value.2
               restResult hrestResult
           change restResult.state.pending.card ≤ fuel
+          omega
+
+attribute [local irreducible] maskedPublishedTreeRoot in
+set_option maxRecDepth 100000 in
+theorem observations_length_le_fuel_of_mem_observedMaterializedRetainedRunFromTable
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (result : ObservedCleanRunResult (RetainedGameResult × SplitHashCache))
+    (hresult : some result ∈ support
+      (observedMaterializedRetainedRunFromTable adversary parameter ftsSecret fuel table)) :
+    result.observations.length ≤ fuel := by
+  unfold observedMaterializedRetainedRunFromTable at hresult
+  rw [mem_support_bind_iff] at hresult
+  obtain ⟨rootResult?, hroot, hrest⟩ := hresult
+  cases rootResult? with
+  | none => simp at hrest
+  | some rootResult =>
+      rw [mem_support_bind_iff] at hrest
+      obtain ⟨restResult?, hrestResult, hreturn⟩ := hrest
+      cases restResult? with
+      | none => simp at hreturn
+      | some restResult =>
+          simp only [support_pure, Set.mem_singleton_iff] at hreturn
+          obtain rfl := Option.some.inj hreturn
+          have hrootLength :=
+            observations_length_add_remaining_eq_of_mem_runObservedCleanFromTable
+              (maskedPublishedTreeRoot.run emptySplitHashCache) [] LazyRevealProbe.State.empty fuel
+              table rootResult hroot
+          have hrestLength :=
+            observations_length_add_remaining_eq_of_mem_observedMaterializedBoundary parameter
+              rootResult.value.1 ftsSecret
+              (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩)
+              rootResult.observations rootResult.state rootResult.remaining table rootResult.value.2
+              restResult hrestResult
+          simp only [List.length_nil, Nat.zero_add] at hrootLength
+          change restResult.observations.length ≤ fuel
           omega
 
 attribute [local irreducible] maskedPublishedTreeRoot in

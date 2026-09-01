@@ -110,4 +110,39 @@ theorem hasExistingHiddenHit_of_mem_diagnosticFromTable_successfulDoomed
           exact ⟨before, hbeforeEq, hasExistingHiddenHit_of_doomed_finished table before finalResult
             htableAndStarts.1 hdoomed htracked hcovered hcard hfinal⟩
 
+attribute [local irreducible] observedMaterializedRetainedRunFromTable in
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem observations_length_le_of_mem_diagnosticFromTable_before
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (outcome : ObservedMaterializedDiagnostic
+      (RetainedGameResult × SplitHashCache))
+    (result : ObservedCleanRunResult (RetainedGameResult × SplitHashCache))
+    (houtcome : outcome ∈ support
+      (observedMaterializedRetainedRunFromTable adversary parameter ftsSecret fuel table >>=
+        finishObservedMaterializedDiagnostic table))
+    (hbefore : outcome.before = some result) :
+    result.observations.length ≤ fuel := by
+  rw [mem_support_bind_iff] at houtcome
+  obtain ⟨before?, hbeforeSupport, hfinish⟩ := houtcome
+  cases before? with
+  | none =>
+      have houtcomeEq : outcome = ⟨none, none, false⟩ := by
+        simpa [finishObservedMaterializedDiagnostic] using hfinish
+      rw [houtcomeEq] at hbefore
+      simp at hbefore
+  | some before =>
+      unfold finishObservedMaterializedDiagnostic at hfinish
+      rw [mem_support_bind_iff] at hfinish
+      obtain ⟨final?, _hfinal, hreturn⟩ := hfinish
+      simp only [support_pure, Set.mem_singleton_iff] at hreturn
+      have hbeforeEq : outcome.before = some before := by
+        simpa using congrArg ObservedMaterializedDiagnostic.before hreturn
+      have heq : before = result := Option.some.inj (hbeforeEq.symm.trans hbefore)
+      subst result
+      exact observations_length_le_fuel_of_mem_observedMaterializedRetainedRunFromTable
+        adversary parameter ftsSecret fuel table before hbeforeSupport
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
