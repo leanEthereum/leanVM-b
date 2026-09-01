@@ -11,6 +11,7 @@ successful finalization rules it out.
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
 open OracleComp OracleSpec
+open OracleComp.ProgramLogic.Relational
 
 theorem MissingChainStartHit.ensure
     {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
@@ -265,5 +266,204 @@ theorem not_missingChainStartHit_of_successful_observedMaterializedBoundary
   rw [← hpersist.1] at hfinalMissing
   exact not_missingChainStartHit_of_mem_finishObservedCleanRunFromTable result finalResult hfinish
     hfinalMissing
+
+def CleanProbeObservation.ExistingHiddenChainStartHit
+    (observation : CleanProbeObservation) : Prop :=
+  observation.ExistingHiddenHit ∧
+    ∃ index : OtsSecretIndex, observation.coordinate = index.coordinate
+
+def FirstExistingHiddenChainStartHit
+    (observations : List CleanProbeObservation) : Prop :=
+  ∃ selected : Fin observations.length,
+    (observations.get selected).ExistingHiddenChainStartHit ∧
+      ∀ earlier : Fin observations.length,
+        earlier.val < selected.val →
+          ¬(observations.get earlier).ExistingHiddenHit
+
+theorem FirstExistingHiddenChainStartHit.prefix
+    {before after : List CleanProbeObservation}
+    (hhit : FirstExistingHiddenChainStartHit before)
+    (hprefix : before <+: after) :
+    FirstExistingHiddenChainStartHit after := by
+  obtain ⟨selected, hselected, hfirst⟩ := hhit
+  have hselectedLt : selected.val < after.length :=
+    selected.isLt.trans_le hprefix.length_le
+  let selected' : Fin after.length := ⟨selected.val, hselectedLt⟩
+  refine ⟨selected', ?_, ?_⟩
+  · have hget : after[selected.val] = before[selected.val] :=
+      (hprefix.getElem selected.isLt).symm
+    simpa [selected', hget] using hselected
+  · intro earlier hearlier
+    have hearlierBefore : earlier.val < before.length := hearlier.trans selected.isLt
+    let earlier' : Fin before.length := ⟨earlier.val, hearlierBefore⟩
+    have hget : after[earlier.val] = before[earlier.val] :=
+      (hprefix.getElem hearlierBefore).symm
+    simpa [earlier', hget] using hfirst earlier' (by simpa [selected', earlier'] using hearlier)
+
+theorem firstExistingHiddenHit_selected_unique
+    {observations : List CleanProbeObservation}
+    {left right : Fin observations.length}
+    (hleft : (observations.get left).ExistingHiddenHit ∧
+      ∀ earlier : Fin observations.length,
+        earlier.val < left.val → ¬(observations.get earlier).ExistingHiddenHit)
+    (hright : (observations.get right).ExistingHiddenHit ∧
+      ∀ earlier : Fin observations.length,
+        earlier.val < right.val → ¬(observations.get earlier).ExistingHiddenHit) :
+    left = right := by
+  apply Fin.ext
+  by_contra hne
+  rcases Nat.lt_or_gt_of_ne hne with hlt | hgt
+  · exact hright.2 left hlt hleft.1
+  · exact hleft.2 right hgt hright.1
+
+theorem FirstExistingHiddenChainStartHit.selected_eq
+    {result : ObservedCleanRunResult α} {ordinal : Nat}
+    (hchain : FirstExistingHiddenChainStartHit result.observations)
+    (hfirst : FirstExistingHiddenHitAt result ordinal) :
+    ∃ selected : Fin result.observations.length,
+      selected.val = ordinal ∧
+      (result.observations.get selected).ExistingHiddenChainStartHit := by
+  obtain ⟨chainSelected, hchainHit, hchainFirst⟩ := hchain
+  obtain ⟨selected, hordinal, hselectedHit, hselectedFirst⟩ := hfirst
+  have heq : chainSelected = selected := firstExistingHiddenHit_selected_unique
+    ⟨hchainHit.1, hchainFirst⟩ ⟨hselectedHit, by
+      intro earlier hearlier
+      exact hselectedFirst earlier (by omega)⟩
+  subst chainSelected
+  exact ⟨selected, hordinal, hchainHit⟩
+
+theorem not_firstExistingHiddenRootHitAt_of_firstChainStart
+    {result : ObservedCleanRunResult α} {ordinal : Nat}
+    (hchain : FirstExistingHiddenChainStartHit result.observations)
+    (hfirst : FirstExistingHiddenHitAt result ordinal) :
+    ∀ selected : Fin result.observations.length,
+      selected.val = ordinal →
+      ¬(result.observations.get selected).toProbe.IsLayerRoot := by
+  intro selected hselected
+  obtain ⟨chainSelected, hchainOrdinal, hchainHit⟩ := hchain.selected_eq hfirst
+  have heq : chainSelected = selected := by
+    apply Fin.ext
+    omega
+  subst chainSelected
+  rintro ⟨position, hposition, _hroot⟩
+  obtain ⟨index, hindex⟩ := hchainHit.2
+  change (result.observations.get selected).coordinate = .position position at hposition
+  rw [hposition] at hindex
+  cases index
+  simp [OtsSecretIndex.coordinate] at hindex
+
+def ObservedStoppedCause
+    (table : OtsSecretIndex → HashOutput)
+    (result : ObservedCleanRunResult α) : Prop :=
+  MissingChainStartHit table (directDeferredContext result.state) ∨
+    FirstExistingHiddenChainStartHit result.observations
+
+def SnapshotObservedPrefixStoppedRel
+    (table : OtsSecretIndex → HashOutput)
+    (source : PrivateWitnessSnapshotOutput)
+    (observed : Option (ObservedCleanRunResult (α × SplitHashCache))) : Prop :=
+  observed = none ∨
+    (∃ result aligned, observed = some result ∧
+      aligned <+: result.observations ∧
+      SnapshotsObservedAt table source.2 aligned ∧
+      ∀ witness, source.1 = some witness →
+        result.state.values (.position witness.position) = some witness.output) ∨
+    ∃ result, observed = some result ∧
+      result.table = table ∧
+      DoomedResolvedContext table (directDeferredContext result.state) ∧
+      ObservedStoppedCause table result
+
+theorem observedStoppedCause_of_mem_observedMaterializedBoundary
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (observations : List CleanProbeObservation)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (result : ObservedCleanRunResult (α × SplitHashCache))
+    (hcause : MissingChainStartHit table (directDeferredContext state) ∨
+      FirstExistingHiddenChainStartHit observations)
+    (hresult : some result ∈ support
+      (observedMaterializedBoundary parameter root ftsSecret computation observations state fuel
+        table cache)) :
+    ObservedStoppedCause table result := by
+  rcases hcause with hmissing | hchain
+  · exact Or.inl
+      (missingChainStartHit_of_mem_observedMaterializedBoundary parameter root ftsSecret
+        computation observations state fuel table cache result hmissing hresult).2
+  · right
+    have hprefix := observations_prefix_of_mem_observedMaterializedBoundary parameter root
+      ftsSecret computation observations state fuel table cache result hresult
+    exact hchain.prefix hprefix
+
+theorem relTriple_any_observedMaterializedBoundary_of_stoppedCause
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (source : ProbComp PrivateWitnessSnapshotOutput)
+    (observations : List CleanProbeObservation)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (hdoomed : DoomedResolvedContext table (directDeferredContext state))
+    (hcause : MissingChainStartHit table (directDeferredContext state) ∨
+      FirstExistingHiddenChainStartHit observations) :
+    RelTriple source
+      (observedMaterializedBoundary parameter root ftsSecret computation observations state fuel
+        table cache)
+      (SnapshotObservedPrefixStoppedRel table) := by
+  have hbase := relTriple_true source
+    (observedMaterializedBoundary parameter root ftsSecret computation observations state fuel
+      table cache)
+  have hboth :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hbase
+  apply relTriple_post_mono hboth
+  intro sourceOutput observed hrelation
+  cases observed with
+  | none => exact Or.inl rfl
+  | some result =>
+      right
+      right
+      refine ⟨result, rfl, ?_, ?_, ?_⟩
+      · exact (materializedDoomed_of_mem_observedMaterializedBoundary parameter root ftsSecret
+          computation observations state fuel table cache result hdoomed hrelation.2).1
+      · exact (materializedDoomed_of_mem_observedMaterializedBoundary parameter root ftsSecret
+          computation observations state fuel table cache result hdoomed hrelation.2).2
+      · exact observedStoppedCause_of_mem_observedMaterializedBoundary parameter root ftsSecret
+          computation observations state fuel table cache result hcause hrelation.2
+
+theorem SnapshotObservedPrefixStoppedRel.aligned_of_successful_firstRoot
+    {table : OtsSecretIndex → HashOutput}
+    {source : PrivateWitnessSnapshotOutput}
+    {result : ObservedCleanRunResult (α × SplitHashCache)}
+    (hrelation : SnapshotObservedPrefixStoppedRel table source (some result))
+    (finalResult : ObservedCleanRunResult (α × SplitHashCache))
+    (hfinish : some finalResult ∈ support
+      (finishObservedCleanRunFromTable (some result)))
+    (ordinal : Nat)
+    (hfirst : FirstExistingHiddenHitAt result ordinal)
+    (hroot : ∀ selected : Fin result.observations.length,
+      selected.val = ordinal →
+        (result.observations.get selected).toProbe.IsLayerRoot) :
+    ∃ aligned,
+      aligned <+: result.observations ∧
+      SnapshotsObservedAt table source.2 aligned ∧
+      ∀ witness, source.1 = some witness →
+        result.state.values (.position witness.position) = some witness.output := by
+  rcases hrelation with hnone | haligned | hstopped
+  · simp at hnone
+  · obtain ⟨other, aligned, hresult, hprefix, hsnapshots, hstored⟩ := haligned
+    have heq : other = result := Option.some.inj hresult.symm
+    subst other
+    exact ⟨aligned, hprefix, hsnapshots, hstored⟩
+  · obtain ⟨other, hresult, htable, _hdoomed, hcause⟩ := hstopped
+    have heq : other = result := Option.some.inj hresult.symm
+    subst other
+    rcases hcause with hmissing | hchain
+    · rw [← htable] at hmissing
+      exact (not_missingChainStartHit_of_mem_finishObservedCleanRunFromTable result finalResult
+        hfinish hmissing).elim
+    · obtain ⟨selected, hselected, _hhit⟩ := hchain.selected_eq hfirst
+      exact (not_firstExistingHiddenRootHitAt_of_firstChainStart hchain hfirst selected hselected
+        (hroot selected hselected)).elim
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
