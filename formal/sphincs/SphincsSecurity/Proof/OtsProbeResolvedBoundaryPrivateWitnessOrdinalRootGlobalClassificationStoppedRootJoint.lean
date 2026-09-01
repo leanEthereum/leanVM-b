@@ -628,6 +628,121 @@ theorem relTriple_goodSelection_resolveDeferredPositionValue
     intro left _right _hrelation hleft
     exact (hgood (_hrelation.2 ▸ hleft)).elim
 
+noncomputable def resolvePrivateOrdinalSelection
+    (target : Position) : Option PrivateOrdinalSelection →
+      ProbComp (Option PrivateOrdinalSelection)
+  | none => pure none
+  | some selection =>
+      resolveDeferredPositionValue target selection.context >>= fun resolved =>
+        match resolved with
+        | none => pure none
+        | some resolved => pure (some
+            { selection with context := resolved.toDeferredContext })
+
+theorem relTriple_privateOrdinalSelection_resolve
+    (target : Position) (rightRoot : Digest) (ordinal : Nat)
+    (selection : Option PrivateOrdinalSelection)
+    (hcovered : PrivateOrdinalSelectionPendingCovered ordinal selection) :
+    RelTriple
+      (pure selection : ProbComp (Option PrivateOrdinalSelection))
+      (resolvePrivateOrdinalSelection target selection)
+      (fun left right =>
+        PrivateOrdinalGoodRel target rightRoot ordinal left right ∧ left = selection) := by
+  apply SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support
+  · cases selection with
+    | none =>
+        exact relTriple_pure_pure (fun hgood => False.elim hgood)
+    | some selection =>
+        exact relTriple_goodSelection_resolveDeferredPositionValue target rightRoot ordinal
+          selection hcovered
+  · intro left hleft
+    simpa using hleft
+
+def SuccessfulObservedResolvedSelectorRel
+    (table : OtsSecretIndex → HashOutput) (ordinal : Nat) (target : Position) :
+    (Option (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest) →
+      (Option PrivateOrdinalSelection × Digest) → Prop :=
+  fun observed resolved =>
+    ∃ selection : Option PrivateOrdinalSelection × Digest,
+      SuccessfulObservedPendingSelectorRel table ordinal target observed selection ∧
+        PrivateOrdinalGoodRel target selection.2 ordinal selection.1 resolved.1 ∧
+        selection.2 = resolved.2
+
+set_option maxHeartbeats 4000000 in
+set_option maxRecDepth 100000 in
+theorem relTriple_observedSuccessfulRootComparison_resolvedSelector
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (q : Nat) (target : Position)
+    (hbound : ∀ root,
+      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
+        IsOuterHash q)
+    (hq : q ≤ 2 ^ securityBits) :
+    RelTriple
+      (do
+        let observed ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret
+          (2 * q) table
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        pure (observed, rightRoot))
+      (do
+        let selection ← granularAllCanonicalPrivateOrdinalSelection ordinal adversary parameter
+          table ftsSecret q
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        let resolved ← resolvePrivateOrdinalSelection target selection
+        pure (resolved, rightRoot))
+      (SuccessfulObservedResolvedSelectorRel table ordinal target) := by
+  have hbase := relTriple_observedSuccessfulRootComparison_pendingSelector ordinal adversary
+    parameter table ftsSecret q target hbound hq
+  have hboundPair : RelTriple
+      ((do
+        let observed ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret
+          (2 * q) table
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        pure (observed, rightRoot)) >>= fun observed => pure observed)
+      ((do
+        let selection ← granularAllCanonicalPrivateOrdinalSelection ordinal adversary parameter
+          table ftsSecret q
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        pure (selection, rightRoot)) >>= fun selection => do
+          let resolved ← resolvePrivateOrdinalSelection target selection.1
+          pure (resolved, selection.2))
+      (SuccessfulObservedResolvedSelectorRel table ordinal target) := by
+    apply relTriple_bind hbase
+    intro observed selection hrelation
+    obtain ⟨source, hsource, hselection, hpending⟩ := hrelation
+    have hinner : RelTriple
+        ((pure selection.1 : ProbComp (Option PrivateOrdinalSelection)) >>= fun _ => pure observed)
+        (resolvePrivateOrdinalSelection target selection.1 >>= fun resolved =>
+          pure (resolved, selection.2))
+        (SuccessfulObservedResolvedSelectorRel table ordinal target) := by
+      apply relTriple_bind
+        (relTriple_privateOrdinalSelection_resolve target selection.2 ordinal selection.1
+          hpending)
+      intro original resolved hresolved
+      have hgoodRel : PrivateOrdinalGoodRel target selection.2 ordinal selection.1 resolved := by
+        rw [← hresolved.2]
+        exact hresolved.1
+      exact relTriple_pure_pure
+        ⟨selection, ⟨source, hsource, hselection, hpending⟩, hgoodRel, rfl⟩
+    simpa using hinner
+  simpa [bind_assoc] using hboundPair
+
+theorem SuccessfulObservedResolvedSelectorRel.goodForRoots
+    {table : OtsSecretIndex → HashOutput} {ordinal : Nat} {target : Position}
+    {observed : Option
+      (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest}
+    {resolved : Option PrivateOrdinalSelection × Digest}
+    (hrelation : SuccessfulObservedResolvedSelectorRel table ordinal target observed resolved)
+    (hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      table ordinal target observed.2 observed.1) :
+    privateOrdinalSelectionGoodForSomeOutput target resolved.2 ordinal resolved.1 := by
+  obtain ⟨selection, hselection, hresolved, hroot⟩ := hrelation
+  obtain ⟨selected, output, hselected, hgoodRoots, _hcovered⟩ :=
+    hselection.goodForRoots_pendingCovered hgood
+  rw [← hroot]
+  exact hresolved (by rw [hselected]; exact ⟨output, hgoodRoots⟩)
+
 theorem probEvent_cleanRootGoodForComparison_le_materializedMatch
     (table : OtsSecretIndex → HashOutput)
     (source : ProbComp PrivateWitnessSnapshotOutput)
