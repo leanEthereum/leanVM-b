@@ -10,6 +10,7 @@ stops therefore remains an exact prefix entry after an arbitrary source continua
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
 open OracleComp OracleSpec
+open OracleComp.ProgramLogic.Relational
 
 def PrivateWitnessSnapshotExtends
     (snapshots : List PlannedProbeSnapshot) (output : PrivateWitnessSnapshotOutput) : Prop :=
@@ -229,3 +230,231 @@ theorem privateWitnessSnapshotExtends_of_mem_granularDetailedRetainedRestNormali
   exact privateWitnessSnapshotExtends_of_mem_retainedResolvedFinalizationPrivateWitnessSnapshotObserve
     table value.1 nextContext remaining nextValue nextSnapshots nextOutput hnextOutput
 
+def SelectedPrivateSnapshotHitAt
+    (source : PrivateWitnessSnapshotOutput) (ordinal : Nat) : Prop :=
+  ∃ selected : Fin source.2.length, selected.val = ordinal ∧
+    ∃ position output,
+      (source.2.get selected).probe = ⟨.position position, truncateHash output⟩ ∧
+      (source.2.get selected).context.state.values (.position position) = none ∧
+      Coordinate.position position ∉ (source.2.get selected).context.state.revealed ∧
+      (source.2.get selected).context.values position = some output
+
+theorem privateCandidate_eq_of_addPending_privateStructuralHit
+    (candidate : Probe) (context : DeferredContext)
+    (hclean : ¬PrivateStructuralHit context)
+    (hhit : PrivateStructuralHit
+      ({ context with
+        state := context.state.addPending candidate.coordinate candidate.candidate } :
+        DeferredContext)) :
+    ∃ position output,
+      candidate = ⟨.position position, truncateHash output⟩ ∧
+      context.state.values (.position position) = none ∧
+      context.values position = some output := by
+  obtain ⟨position, output, hvalue, hprivate, hpending⟩ := hhit
+  have hvalue' : context.state.values (.position position) = none := by
+    simpa [LazyRevealProbe.State.addPending] using hvalue
+  have hprivate' : context.values position = some output := by simpa using hprivate
+  have hmember :
+      (Coordinate.position position, truncateHash output) ∈
+        (context.state.addPending candidate.coordinate candidate.candidate).pending := by
+    rw [← LazyRevealProbe.State.mem_pendingAt_iff]
+    exact hpending
+  rw [LazyRevealProbe.State.addPending] at hmember
+  simp only [Finset.mem_insert] at hmember
+  rcases hmember with hnew | hold
+  · refine ⟨position, output, ?_, hvalue', hprivate'⟩
+    cases candidate with
+    | mk coordinate digest =>
+        cases hnew
+        rfl
+  · exact (hclean ⟨position, output, hvalue', hprivate', by
+      unfold LazyRevealProbe.State.hitAt
+      rw [LazyRevealProbe.State.mem_pendingAt_iff]
+      exact hold⟩).elim
+
+theorem selectedPrivateSnapshotHitAt_of_appended_privateStructuralHit
+    (snapshots : List PlannedProbeSnapshot) (candidate : Probe)
+    (context : DeferredContext) (source : PrivateWitnessSnapshotOutput)
+    (hextends : PrivateWitnessSnapshotExtends
+      (snapshots ++ [(⟨candidate, context⟩ : PlannedProbeSnapshot)]) source)
+    (hcompletable : DeferredCompletable table context)
+    (hhidden : candidate.coordinate ∉ context.state.revealed)
+    (hhit : PrivateStructuralHit
+      ({ context with
+        state := context.state.addPending candidate.coordinate candidate.candidate } :
+        DeferredContext)) :
+    SelectedPrivateSnapshotHitAt source snapshots.length := by
+  have hclean : ¬PrivateStructuralHit context :=
+    not_privateStructuralHit_of_deferredCompletable hcompletable
+  obtain ⟨position, output, hcandidate, hvalue, hprivate⟩ :=
+    privateCandidate_eq_of_addPending_privateStructuralHit candidate context hclean hhit
+  have hltCurrent : snapshots.length <
+      (snapshots ++ [(⟨candidate, context⟩ : PlannedProbeSnapshot)]).length := by
+    simp
+  have hltSource : snapshots.length < source.2.length :=
+    hltCurrent.trans_le hextends.length_le
+  let selected : Fin source.2.length := ⟨snapshots.length, hltSource⟩
+  have hselected : source.2.get selected = ⟨candidate, context⟩ := by
+    change source.2[snapshots.length] = ⟨candidate, context⟩
+    have hpref :
+        (snapshots ++ [(⟨candidate, context⟩ : PlannedProbeSnapshot)])[snapshots.length] =
+          source.2[snapshots.length] := hextends.getElem hltCurrent
+    rw [← hpref]
+    simp
+  refine ⟨selected, rfl, position, output, ?_, ?_, ?_, ?_⟩
+  · rw [hselected]
+    simpa using hcandidate
+  · rw [hselected]
+    exact hvalue
+  · rw [hselected]
+    rw [hcandidate] at hhidden
+    exact hhidden
+  · rw [hselected]
+    exact hprivate
+
+theorem FirstExistingHiddenHitAt.prefix
+    {before : ObservedCleanRunResult α} {after : ObservedCleanRunResult β}
+    {ordinal : Nat}
+    (hfirst : FirstExistingHiddenHitAt before ordinal)
+    (hprefix : before.observations <+: after.observations) :
+    FirstExistingHiddenHitAt after ordinal := by
+  obtain ⟨selected, hordinal, hhit, hbefore⟩ := hfirst
+  have hselectedLt : selected.val < after.observations.length :=
+    selected.isLt.trans_le hprefix.length_le
+  let selected' : Fin after.observations.length := ⟨selected.val, hselectedLt⟩
+  refine ⟨selected', hordinal, ?_, ?_⟩
+  · have hget : after.observations[selected.val] = before.observations[selected.val] :=
+      (hprefix.getElem selected.isLt).symm
+    simpa [ExistingHiddenHitAtOrdinal, selected', hget] using hhit
+  · intro earlier hearlier
+    have hearlierBefore : earlier.val < before.observations.length := by
+      have : earlier.val < selected.val := by omega
+      exact this.trans selected.isLt
+    let earlier' : Fin before.observations.length := ⟨earlier.val, hearlierBefore⟩
+    have hget : after.observations[earlier.val] = before.observations[earlier.val] :=
+      (hprefix.getElem hearlierBefore).symm
+    simpa [ExistingHiddenHitAtOrdinal, earlier', hget] using
+      hbefore earlier' (by omega)
+
+theorem firstExistingHiddenHitAt_append_of_privateStructuralHit
+    (table : OtsSecretIndex → HashOutput)
+    (candidate : Probe) (observations : List CleanProbeObservation)
+    (left right : DeferredContext)
+    (hcontext : FinalizationContextLE table left right)
+    (hrightMaterialized : right = directDeferredContext right.state)
+    (hhidden : candidate.coordinate ∉ right.state.revealed)
+    (hnoEarlier : ∀ observation ∈ observations,
+      ¬observation.ExistingHiddenHit)
+    (hhit : PrivateStructuralHit
+      ({ left with
+        state := left.state.addPending candidate.coordinate candidate.candidate } :
+        DeferredContext)) :
+    FirstExistingHiddenHitAt
+      (⟨right.state, 0, (), table,
+        observations ++ [cleanProbeObservation right.state
+          candidate.coordinate candidate.candidate]⟩ : ObservedCleanRunResult Unit)
+      observations.length := by
+  have hclean : ¬PrivateStructuralHit left :=
+    not_privateStructuralHit_of_deferredCompletable hcontext.leftCompletable
+  obtain ⟨position, output, hcandidate, hleftValue, hprivate⟩ :=
+    privateCandidate_eq_of_addPending_privateStructuralHit candidate left hclean hhit
+  subst candidate
+  have hrightValue : right.state.values (.position position) = some output := by
+    have hleftPosition : left.positionValue position = some output := by
+      simp [DeferredContext.positionValue, hleftValue, hprivate]
+    have hresolved : resolvedCompletionValue table right (.position position) = some output := by
+      rw [← hcontext.view.valueEq]
+      simpa [resolvedCompletionValue] using hleftPosition
+    rw [hrightMaterialized] at hresolved
+    cases hright : right.state.values (.position position) with
+    | none =>
+        simp [resolvedCompletionValue, directDeferredContext, directDeferredValues,
+          DeferredContext.positionValue, hright] at hresolved
+    | some existing =>
+        have heq : existing = output := by
+          simpa [resolvedCompletionValue, directDeferredContext, directDeferredValues,
+            DeferredContext.positionValue, hright] using hresolved
+        simpa [hright, heq]
+  let observation := cleanProbeObservation right.state
+    (.position position) (truncateHash output)
+  have hobservation : observation.ExistingHiddenHit := by
+    refine ⟨?_, output, ?_, ?_⟩
+    · simp [observation, cleanProbeObservation, hhidden]
+    · simpa [observation, cleanProbeObservation, hrightValue]
+    · simp [observation, cleanProbeObservation]
+  have hlength : observations.length < (observations ++ [observation]).length := by simp
+  let selected : Fin (observations ++ [observation]).length :=
+    ⟨observations.length, hlength⟩
+  change FirstExistingHiddenHitAt
+    (⟨right.state, 0, (), table, observations ++ [observation]⟩ :
+      ObservedCleanRunResult Unit) observations.length
+  refine ⟨selected, rfl, ?_, ?_⟩
+  · simpa [ExistingHiddenHitAtOrdinal, selected, observation] using hobservation
+  · intro earlier hearlier
+    have hearlierLength : earlier.val < observations.length := by
+      simpa [selected] using hearlier
+    let before : Fin observations.length := ⟨earlier.val, hearlierLength⟩
+    have hbefore := hnoEarlier (observations.get before) (List.get_mem _ _)
+    simpa [ExistingHiddenHitAtOrdinal, selected, before, observation,
+      List.getElem_append, hearlierLength] using hbefore
+
+def SnapshotObservedSelectedStoppedRel
+    (table : OtsSecretIndex → HashOutput) (ordinal : Nat)
+    (source : PrivateWitnessSnapshotOutput)
+    (observed : Option (ObservedCleanRunResult (α × SplitHashCache))) : Prop :=
+  observed = none ∨
+    ∃ result, observed = some result ∧
+      result.table = table ∧
+      DoomedResolvedContext table (directDeferredContext result.state) ∧
+      FirstExistingHiddenHitAt result ordinal ∧
+      SelectedPrivateSnapshotHitAt source ordinal
+
+set_option maxRecDepth 100000 in
+theorem relTriple_source_observedMaterializedBoundary_selectedStopped
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (source : ProbComp PrivateWitnessSnapshotOutput)
+    (snapshots : List PlannedProbeSnapshot)
+    (candidate : Probe) (context : DeferredContext)
+    (observations : List CleanProbeObservation)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (hsource : ∀ output ∈ support source,
+      PrivateWitnessSnapshotExtends
+        (snapshots ++ [(⟨candidate, context⟩ : PlannedProbeSnapshot)]) output)
+    (hcompletable : DeferredCompletable table context)
+    (hhidden : candidate.coordinate ∉ context.state.revealed)
+    (hhit : PrivateStructuralHit
+      ({ context with
+        state := context.state.addPending candidate.coordinate candidate.candidate } :
+        DeferredContext))
+    (hfirst : FirstExistingHiddenHitAt
+      (⟨state, fuel, (), table, observations⟩ : ObservedCleanRunResult Unit) snapshots.length)
+    (hdoomed : DoomedResolvedContext table (directDeferredContext state)) :
+    RelTriple source
+      (observedMaterializedBoundary parameter root ftsSecret computation observations state fuel
+        table cache)
+      (SnapshotObservedSelectedStoppedRel table snapshots.length) := by
+  have hbase := relTriple_true source
+    (observedMaterializedBoundary parameter root ftsSecret computation observations state fuel
+      table cache)
+  have hleft :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+      (fun output => output ∈ support source) (fun output houtput => houtput)
+  have hboth :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hleft
+  apply relTriple_post_mono hboth
+  intro sourceOutput observed hrelation
+  cases observed with
+  | none => exact Or.inl rfl
+  | some result =>
+      right
+      have hprefix := observations_prefix_of_mem_observedMaterializedBoundary parameter root
+        ftsSecret computation observations state fuel table cache result hrelation.2
+      have hdoomedResult := materializedDoomed_of_mem_observedMaterializedBoundary parameter root
+        ftsSecret computation observations state fuel table cache result hdoomed hrelation.2
+      refine ⟨result, rfl, hdoomedResult.1, hdoomedResult.2, ?_, ?_⟩
+      exact hfirst.prefix hprefix
+      exact selectedPrivateSnapshotHitAt_of_appended_privateStructuralHit snapshots candidate
+        context sourceOutput (hsource sourceOutput hrelation.1.2) hcompletable hhidden hhit
