@@ -342,7 +342,11 @@ theorem relTriple_source_observedMaterializedHashContinuation_firstStopped_of_pr
       have hselectedAligned :
           SelectedSnapshotObservationAlignedAt sourceOutput result snapshots.length :=
         ⟨sourceOrdinal, observedOrdinal, rfl, hlength.symm,
-          hsourceProbe.trans hobservedProbe.symm⟩
+          hsourceProbe.trans hobservedProbe.symm, by
+            obtain ⟨sourceTail, hsourceTail⟩ := hextends
+            obtain ⟨observedTail, hobservedTail⟩ := hdata.2.2
+            rw [← hsourceTail, ← hobservedTail]
+            simpa [List.map_append, hlength] using haligned.map_toProbe_eq⟩
       exact ⟨result, snapshots.length, rfl, hdata.1, hdata.2.1, hfirstResult, hselected,
         hselectedAligned⟩
 

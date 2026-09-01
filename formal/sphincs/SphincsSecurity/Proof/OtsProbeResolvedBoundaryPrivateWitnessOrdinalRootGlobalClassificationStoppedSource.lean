@@ -248,7 +248,9 @@ def SelectedSnapshotObservationAlignedAt
     ∃ observedOrdinal : Fin result.observations.length,
       sourceOrdinal.val = ordinal ∧ observedOrdinal.val = ordinal ∧
         (source.2.get sourceOrdinal).probe =
-          (result.observations.get observedOrdinal).toProbe
+          (result.observations.get observedOrdinal).toProbe ∧
+        (source.2.map PlannedProbeSnapshot.toProbe).take ordinal =
+          (result.observations.map CleanProbeObservation.toProbe).take ordinal
 
 theorem SelectedSnapshotObservationAlignedAt.prefix
     {source : PrivateWitnessSnapshotOutput}
@@ -257,14 +259,19 @@ theorem SelectedSnapshotObservationAlignedAt.prefix
     (haligned : SelectedSnapshotObservationAlignedAt source before ordinal)
     (hprefix : before.observations <+: after.observations) :
     SelectedSnapshotObservationAlignedAt source after ordinal := by
-  obtain ⟨sourceOrdinal, observedOrdinal, hsource, hobserved, heq⟩ := haligned
+  obtain ⟨sourceOrdinal, observedOrdinal, hsource, hobserved, heq, hprefixEq⟩ := haligned
   have hlt : observedOrdinal.val < after.observations.length :=
     observedOrdinal.isLt.trans_le hprefix.length_le
   let observedOrdinal' : Fin after.observations.length := ⟨observedOrdinal.val, hlt⟩
-  refine ⟨sourceOrdinal, observedOrdinal', hsource, hobserved, ?_⟩
+  refine ⟨sourceOrdinal, observedOrdinal', hsource, hobserved, ?_, ?_⟩
   have hget : after.observations[observedOrdinal.val] =
       before.observations[observedOrdinal.val] := (hprefix.getElem observedOrdinal.isLt).symm
   simpa [observedOrdinal', hget] using heq
+  obtain ⟨tail, htail⟩ := hprefix
+  rw [← htail]
+  rw [List.map_append, List.take_append_of_le_length]
+  · exact hprefixEq
+  · simpa using Nat.le_of_lt (hobserved ▸ observedOrdinal.isLt)
 
 theorem privateCandidate_eq_of_addPending_privateStructuralHit
     (candidate : Probe) (context : DeferredContext)
@@ -721,6 +728,54 @@ theorem SnapshotObservedFirstStoppedRel.selected_or_chain_of_successful_firstNon
       have hvals := congrArg Fin.val hsame
       omega
     simpa [hordinals] using hselected
+  · obtain ⟨other, hresult, htable, _hdoomed, hcause⟩ := hstopped
+    have heq : other = result := Option.some.inj hresult.symm
+    subst other
+    rcases hcause with hmissing | hchain
+    · rw [← htable] at hmissing
+      exact (not_missingChainStartHit_of_mem_finishObservedCleanRunFromTable result finalResult
+        hfinish hmissing).elim
+    · exact Or.inr hchain
+
+theorem SnapshotObservedFirstStoppedRel.selectedAligned_or_chain_of_successful_firstHit
+    {table : OtsSecretIndex → HashOutput}
+    {source : PrivateWitnessSnapshotOutput}
+    {result : ObservedCleanRunResult (α × SplitHashCache)}
+    (hrelation : SnapshotObservedFirstStoppedRel table source (some result))
+    (finalResult : ObservedCleanRunResult (α × SplitHashCache))
+    (hfinish : some finalResult ∈ support
+      (finishObservedCleanRunFromTable (some result)))
+    (ordinal : Nat)
+    (hfirst : FirstExistingHiddenHitAt result ordinal) :
+    (SelectedPrivateSnapshotHitAt source ordinal ∧
+      SelectedSnapshotObservationAlignedAt source result ordinal) ∨
+      FirstExistingHiddenChainStartHit result.observations := by
+  rcases hrelation with hnone | haligned | hselected | hstopped
+  · simp at hnone
+  · obtain ⟨other, _aligned, hresult, _hprefix, _hsnapshots, hnoHit, _hstored⟩ :=
+      haligned
+    have heq : other = result := Option.some.inj hresult.symm
+    subst other
+    obtain ⟨selected, _hordinal, hhit, _hbefore⟩ := hfirst
+    exact (hnoHit (result.observations.get selected) (List.get_mem _ _) hhit).elim
+  · left
+    obtain ⟨other, selectedOrdinal, hresult, _htable, _hdoomed,
+      hselectedFirst, hselectedHit, hselectedAligned⟩ := hselected
+    have heq : other = result := Option.some.inj hresult.symm
+    subst other
+    obtain ⟨left, _hleftOrdinal, hleftHit, hleftBefore⟩ := hselectedFirst
+    obtain ⟨right, _hrightOrdinal, hrightHit, hrightBefore⟩ := hfirst
+    have hsame : left = right := firstExistingHiddenHit_selected_unique
+      ⟨hleftHit, by
+        intro earlier hearlier
+        exact hleftBefore earlier (by omega)⟩
+      ⟨hrightHit, by
+        intro earlier hearlier
+        exact hrightBefore earlier (by omega)⟩
+    have hordinals : selectedOrdinal = ordinal := by
+      have hvals := congrArg Fin.val hsame
+      omega
+    simpa [hordinals] using And.intro hselectedHit hselectedAligned
   · obtain ⟨other, hresult, htable, _hdoomed, hcause⟩ := hstopped
     have heq : other = result := Option.some.inj hresult.symm
     subst other
