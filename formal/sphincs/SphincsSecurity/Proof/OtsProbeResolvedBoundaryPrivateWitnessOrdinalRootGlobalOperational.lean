@@ -749,6 +749,384 @@ theorem WitnessMaterializedStableCouples.bind
       hrelation.context_le hrelation.remaining_le hrelation.cache_eq hrelation.revealed_eq
       hrelation.values_le hrelation.left_published hrelation.right_materialized
 
+theorem WitnessMaterializedStableCouples.toBetween
+    {table : OtsSecretIndex → HashOutput}
+    {computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α}
+    (hcomputation : WitnessMaterializedStableCouples table computation) :
+    WitnessMaterializedStableCouplesBetween table computation computation :=
+  hcomputation
+
+theorem witnessMaterializedStableCouplesBetween_pure
+    (table : OtsSecretIndex → HashOutput) (leftValue rightValue : α)
+    (hvalue : leftValue = rightValue) :
+    WitnessMaterializedStableCouplesBetween table
+      (pure leftValue) (pure rightValue) := by
+  subst rightValue
+  exact (witnessMaterializedStableCouples_pure table leftValue).toBetween
+
+theorem WitnessMaterializedStableCouplesBetween.bind
+    {table : OtsSecretIndex → HashOutput}
+    {left right : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α}
+    {leftNext rightNext : α → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) β}
+    (hfirst : WitnessMaterializedStableCouplesBetween table left right)
+    (hnext : ∀ value, WitnessMaterializedStableCouplesBetween table
+      (leftNext value) (rightNext value)) :
+    WitnessMaterializedStableCouplesBetween table
+      (left >>= leftNext) (right >>= rightNext) := by
+  intro leftContext rightContext leftFuel rightFuel leftCache rightCache hcontext hfuel hcache
+    hrevealed hvalues hpublished hrightMaterialized
+  rw [StateT.run_bind, StateT.run_bind]
+  apply relTriple_runDirectResolvedWitness_detailed_bind_stable table
+    (left.run leftCache) (right.run rightCache)
+    (fun value cache => (leftNext value).run cache)
+    (fun value cache => (rightNext value).run cache)
+    leftContext rightContext leftFuel rightFuel
+  · exact hfirst leftContext rightContext leftFuel rightFuel leftCache rightCache hcontext hfuel
+      hcache hrevealed hvalues hpublished hrightMaterialized
+  · intro leftResult rightResult hrelation
+    rw [hrelation.left_table, hrelation.right_table, ← hrelation.value_eq]
+    exact hnext leftResult.value.1 leftResult.context rightResult.context
+      leftResult.remaining rightResult.remaining leftResult.value.2 rightResult.value.2
+      hrelation.context_le hrelation.remaining_le hrelation.cache_eq hrelation.revealed_eq
+      hrelation.values_le hrelation.left_published hrelation.right_materialized
+
+def WitnessMaterializedStableCouplesBetweenPositive
+    (table : OtsSecretIndex → HashOutput)
+    (left right : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α) : Prop :=
+  ∀ leftContext rightContext leftFuel rightFuel leftCache rightCache,
+    0 < leftFuel →
+    FinalizationContextLE table leftContext rightContext →
+    leftFuel ≤ rightFuel →
+    ordinaryQueryCache leftCache = ordinaryQueryCache rightCache →
+    leftContext.state.revealed = rightContext.state.revealed →
+    LazyRevealProbe.ValuesLE leftContext.state rightContext.state →
+    PublishedValues leftContext.state →
+    rightContext = directDeferredContext rightContext.state →
+    RelTriple
+      (runDirectResolvedWitnessFromTable leftContext leftFuel table (left.run leftCache))
+      (runDirectResolvedDetailedFromTable rightContext rightFuel table (right.run rightCache))
+      (DirectWitnessMaterializedStableRunEq table)
+
+theorem WitnessMaterializedStableCouplesBetweenPositive.bind
+    {table : OtsSecretIndex → HashOutput}
+    {left right : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α}
+    {leftNext rightNext : α → StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) β}
+    (hfirst : WitnessMaterializedStableCouplesBetweenPositive table left right)
+    (hnext : ∀ value, WitnessMaterializedStableCouplesBetween table
+      (leftNext value) (rightNext value)) :
+    WitnessMaterializedStableCouplesBetweenPositive table
+      (left >>= leftNext) (right >>= rightNext) := by
+  intro leftContext rightContext leftFuel rightFuel leftCache rightCache hpositive hcontext hfuel
+    hcache hrevealed hvalues hpublished hrightMaterialized
+  rw [StateT.run_bind, StateT.run_bind]
+  apply relTriple_runDirectResolvedWitness_detailed_bind_stable table
+    (left.run leftCache) (right.run rightCache)
+    (fun value cache => (leftNext value).run cache)
+    (fun value cache => (rightNext value).run cache)
+    leftContext rightContext leftFuel rightFuel
+  · exact hfirst leftContext rightContext leftFuel rightFuel leftCache rightCache hpositive
+      hcontext hfuel hcache hrevealed hvalues hpublished hrightMaterialized
+  · intro leftResult rightResult hrelation
+    rw [hrelation.left_table, hrelation.right_table, ← hrelation.value_eq]
+    exact hnext leftResult.value.1 leftResult.context rightResult.context
+      leftResult.remaining rightResult.remaining leftResult.value.2 rightResult.value.2
+      hrelation.context_le hrelation.remaining_le hrelation.cache_eq hrelation.revealed_eq
+      hrelation.values_le hrelation.left_published hrelation.right_materialized
+
+set_option maxRecDepth 100000 in
+theorem witnessMaterializedStableCouplesBetween_probe
+    (table : OtsSecretIndex → HashOutput) (candidate : Probe) :
+    WitnessMaterializedStableCouplesBetweenPositive table
+      (probe candidate) (probe candidate) := by
+  intro left right leftFuel rightFuel leftCache rightCache hpositive hcontext hfuel hcache hrevealed
+    hvalues hpublished hrightMaterialized
+  cases leftFuel with
+  | zero => omega
+  | succ leftRemaining =>
+      obtain ⟨rightRemaining, hrightFuel⟩ : ∃ rightRemaining,
+          rightFuel = rightRemaining + 1 := by
+        refine ⟨rightFuel - 1, ?_⟩
+        omega
+      subst rightFuel
+      unfold probe
+      simp only [StateT.run_liftM]
+      unfold LazyRevealProbe.probeQuery
+      rw [runDirectResolvedWitnessFromTable_probe_query_bind,
+        runDirectResolvedDetailedFromTable_probe_query_bind]
+      by_cases hleftRevealed : candidate.coordinate ∈ left.state.revealed
+      · have hrightRevealed : candidate.coordinate ∈ right.state.revealed := by
+          rw [← hrevealed]
+          exact hleftRevealed
+        simp only [hleftRevealed, hrightRevealed, ↓reduceIte]
+        exact (witnessMaterializedStableCouples_pure table ())
+          left right leftRemaining rightRemaining leftCache rightCache hcontext (by omega)
+          hcache hrevealed hvalues hpublished hrightMaterialized
+      · have hrightRevealed : candidate.coordinate ∉ right.state.revealed := by
+          rwa [← hrevealed]
+        simp only [hleftRevealed, hrightRevealed, ↓reduceIte]
+        let nextLeft : DeferredContext :=
+          { left with state := left.state.addPending candidate.coordinate candidate.candidate }
+        let nextRight : DeferredContext :=
+          { right with state := right.state.addPending candidate.coordinate candidate.candidate }
+        by_cases hcompletable : DeferredCompletable table nextRight
+        · have hnext := hcontext.addPending_both_of_right_completable
+            candidate.coordinate candidate.candidate hcompletable
+          have hnextPublished : PublishedValues nextLeft.state := by
+            simpa [nextLeft, PublishedValues, LazyRevealProbe.State.addPending] using hpublished
+          exact (witnessMaterializedStableCouples_pure table ())
+            nextLeft nextRight leftRemaining rightRemaining leftCache rightCache hnext (by omega)
+            hcache hrevealed hvalues hnextPublished (by
+              show nextRight = directDeferredContext nextRight.state
+              dsimp [nextRight]
+              rw [hrightMaterialized]
+              simp [directDeferredContext, directDeferredValues_addPending])
+        · simp only [runDirectResolvedWitnessFromTable]
+          rw [runDirectResolvedDetailedFromTable_pure]
+          apply relTriple_pure_pure
+          right
+          exact ⟨⟨rfl, hcontext.view.rightConsistent.addPending
+                candidate.coordinate candidate.candidate,
+                hcontext.view.rightStarts.addPending
+                  candidate.coordinate candidate.candidate, hcompletable⟩, by
+                show nextRight = directDeferredContext nextRight.state
+                dsimp [nextRight]
+                rw [hrightMaterialized]
+                simp [directDeferredContext, directDeferredValues_addPending]⟩
+
+set_option maxRecDepth 100000 in
+theorem relTriple_pure_probe_right_witness
+    (table : OtsSecretIndex → HashOutput) (candidate : Probe)
+    (left right : DeferredContext) (leftFuel rightFuel : Nat)
+    (leftCache rightCache : SplitHashCache)
+    (hstrictFuel : leftFuel < rightFuel)
+    (hcontext : FinalizationContextLE table left right)
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hvalues : LazyRevealProbe.ValuesLE left.state right.state)
+    (hpublished : PublishedValues left.state)
+    (hrightMaterialized : right = directDeferredContext right.state) :
+    RelTriple
+      (runDirectResolvedWitnessFromTable left leftFuel table (pure ((), leftCache)))
+      (runDirectResolvedDetailedFromTable right rightFuel table
+        ((probe candidate).run rightCache))
+      (DirectWitnessMaterializedStableRunEq table) := by
+  cases rightFuel with
+  | zero => omega
+  | succ rightRemaining =>
+      unfold probe
+      simp only [StateT.run_liftM]
+      unfold LazyRevealProbe.probeQuery
+      rw [runDirectResolvedDetailedFromTable_probe_query_bind]
+      simp only [runDirectResolvedWitnessFromTable]
+      by_cases hrightRevealed : candidate.coordinate ∈ right.state.revealed
+      · simp only [hrightRevealed, ↓reduceIte]
+        exact witnessMaterializedStableCouples_pure table () left right leftFuel rightRemaining
+          leftCache rightCache hcontext (by omega) hcache hrevealed hvalues hpublished
+          hrightMaterialized
+      · simp only [hrightRevealed, ↓reduceIte]
+        let nextRight : DeferredContext :=
+          { right with state := right.state.addPending candidate.coordinate candidate.candidate }
+        by_cases hcompletable : DeferredCompletable table nextRight
+        · have hnext := hcontext.addPending_right_of_completable
+            candidate.coordinate candidate.candidate hcompletable
+          exact witnessMaterializedStableCouples_pure table () left nextRight leftFuel
+            rightRemaining leftCache rightCache hnext (by omega) hcache hrevealed hvalues
+            hpublished (by
+              show nextRight = directDeferredContext nextRight.state
+              dsimp [nextRight]
+              rw [hrightMaterialized]
+              simp [directDeferredContext, directDeferredValues_addPending])
+        · rw [runDirectResolvedDetailedFromTable_pure]
+          apply relTriple_pure_pure
+          right
+          exact ⟨⟨rfl, hcontext.view.rightConsistent.addPending
+                candidate.coordinate candidate.candidate,
+                hcontext.view.rightStarts.addPending
+                  candidate.coordinate candidate.candidate, hcompletable⟩, by
+                show nextRight = directDeferredContext nextRight.state
+                dsimp [nextRight]
+                rw [hrightMaterialized]
+                simp [directDeferredContext, directDeferredValues_addPending]⟩
+
+theorem runDirectResolvedWitnessFromTable_peekCoordinate
+    (coordinate : Coordinate) (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    runDirectResolvedWitnessFromTable context fuel table
+        ((peekCoordinate coordinate).run cache) =
+      pure (.done ⟨context, fuel,
+        (truncateHash <$> context.state.values coordinate, cache), table⟩) := by
+  unfold peekCoordinate LazyRevealProbe.peekQuery
+  rw [StateT.run_bind, runDirectResolvedWitnessFromTable_bind]
+  simp only [StateT.run_liftM]
+  rw [runDirectResolvedWitnessFromTable_peek_query_bind]
+  simp [runDirectResolvedWitnessFromTable]
+
+theorem runDirectResolvedWitnessFromTable_peekPositionValues_eq_pure
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    ∀ positions,
+    runDirectResolvedWitnessFromTable context fuel table
+        ((peekPositionValues positions).run cache) =
+      pure (.done ⟨context, fuel,
+        (purePeekPositionValues context.state positions, cache), table⟩)
+  | [] => by
+      simp [peekPositionValues, purePeekPositionValues,
+        runDirectResolvedWitnessFromTable]
+  | position :: remaining => by
+      rw [peekPositionValues, StateT.run_bind, runDirectResolvedWitnessFromTable_bind,
+        runDirectResolvedWitnessFromTable_peekCoordinate]
+      cases hvalue : truncateHash <$> context.state.values (.position position) with
+      | none =>
+          simp [purePeekPositionValues, hvalue, runDirectResolvedWitnessFromTable]
+      | some value =>
+          simp only [pure_bind]
+          rw [StateT.run_bind, runDirectResolvedWitnessFromTable_bind,
+            runDirectResolvedWitnessFromTable_peekPositionValues_eq_pure context fuel table cache
+              remaining]
+          cases htail : purePeekPositionValues context.state remaining <;>
+            simp [purePeekPositionValues, hvalue, htail, runDirectResolvedWitnessFromTable]
+
+set_option maxRecDepth 100000 in
+theorem runDirectResolvedWitnessFromTable_peekTableInput_eq_pure
+    (parameter : PublicParameter) (coordinate : Coordinate)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    runDirectResolvedWitnessFromTable context fuel table
+        ((peekTableInput parameter coordinate).run cache) =
+      pure (.done ⟨context, fuel,
+        (purePeekTableInput parameter context.state coordinate, cache), table⟩) := by
+  cases coordinate with
+  | chainStart lay tree leafIdx chainIdx =>
+      simp [peekTableInput, purePeekTableInput, runDirectResolvedWitnessFromTable]
+  | position position =>
+      cases position with
+      | chain lay tree leafIdx chainIdx step =>
+          rw [peekTableInput.eq_2]
+          by_cases hzero : step.val = 0
+          · rw [if_pos hzero]
+            rw [StateT.run_bind, runDirectResolvedWitnessFromTable_bind,
+              runDirectResolvedWitnessFromTable_peekCoordinate]
+            cases hvalue : truncateHash <$>
+                context.state.values (.chainStart lay tree leafIdx chainIdx) <;>
+              simp [purePeekTableInput, hzero, hvalue,
+                runDirectResolvedWitnessFromTable]
+          · rw [if_neg hzero]
+            rw [StateT.run_bind, runDirectResolvedWitnessFromTable_bind,
+              runDirectResolvedWitnessFromTable_peekPositionValues_eq_pure]
+            cases hvalues : purePeekPositionValues context.state
+                (Position.chain lay tree leafIdx chainIdx step).children <;>
+              simp [purePeekTableInput, hzero, hvalues,
+                runDirectResolvedWitnessFromTable]
+      | leaf lay tree leafIdx =>
+          simp only [peekTableInput]
+          rw [StateT.run_bind, runDirectResolvedWitnessFromTable_bind,
+            runDirectResolvedWitnessFromTable_peekPositionValues_eq_pure]
+          cases hvalues : purePeekPositionValues context.state _ <;>
+            simp [purePeekTableInput, hvalues, runDirectResolvedWitnessFromTable]
+      | node lay tree level nodeIdx =>
+          simp only [peekTableInput]
+          rw [StateT.run_bind, runDirectResolvedWitnessFromTable_bind,
+            runDirectResolvedWitnessFromTable_peekPositionValues_eq_pure]
+          cases hvalues : purePeekPositionValues context.state _ <;>
+            simp [purePeekTableInput, hvalues, runDirectResolvedWitnessFromTable]
+      | ftsLeaf index tree leafIdx =>
+          simp only [peekTableInput]
+          rw [StateT.run_bind, runDirectResolvedWitnessFromTable_bind,
+            runDirectResolvedWitnessFromTable_peekPositionValues_eq_pure]
+          cases hvalues : purePeekPositionValues context.state _ <;>
+            simp [purePeekTableInput, hvalues, runDirectResolvedWitnessFromTable]
+      | ftsNode index tree level nodeIdx =>
+          simp only [peekTableInput]
+          rw [StateT.run_bind, runDirectResolvedWitnessFromTable_bind,
+            runDirectResolvedWitnessFromTable_peekPositionValues_eq_pure]
+          cases hvalues : purePeekPositionValues context.state _ <;>
+            simp [purePeekTableInput, hvalues, runDirectResolvedWitnessFromTable]
+      | ftsRoots index =>
+          simp only [peekTableInput]
+          rw [StateT.run_bind, runDirectResolvedWitnessFromTable_bind,
+            runDirectResolvedWitnessFromTable_peekPositionValues_eq_pure]
+          cases hvalues : purePeekPositionValues context.state _ <;>
+            simp [purePeekTableInput, hvalues, runDirectResolvedWitnessFromTable]
+
+set_option maxRecDepth 100000 in
+theorem runDirectResolvedWitnessFromTable_resolveKnownInput_eq_public
+    (parameter : PublicParameter) (coordinate : Coordinate) (input : HashInput)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    runDirectResolvedWitnessFromTable context fuel table
+        ((resolveKnownInput parameter coordinate input).run cache) =
+      runDirectResolvedWitnessFromTable context fuel table
+        ((resolvePublicKnownInput parameter context.state coordinate input).run cache) := by
+  unfold resolveKnownInput resolvePublicKnownInput
+  rw [StateT.run_bind, runDirectResolvedWitnessFromTable_bind,
+    runDirectResolvedWitnessFromTable_peekTableInput_eq_pure]
+  simp only [pure_bind]
+  cases hknown : purePeekTableInput parameter context.state coordinate with
+  | none => rfl
+  | some knownInput =>
+      by_cases heq : knownInput = input <;> simp [heq]
+
+set_option maxRecDepth 100000 in
+theorem runDirectResolvedWitnessFromTable_afterPlan_eq_publicPlan
+    (parameter : PublicParameter) (input : HashInput) (plan : PlannedHashQuery)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    runDirectResolvedWitnessFromTable context fuel table
+        ((probingHashQueryAfterPlan parameter input plan).run cache) =
+      runDirectResolvedWitnessFromTable context fuel table
+        ((probingHashQueryAfterPublicPlan parameter input context.state plan).run cache) := by
+  unfold probingHashQueryAfterPlan probingHashQueryAfterPublicPlan executePlannedHashQuery
+  cases hcandidate : plan.candidate? with
+  | none =>
+      simp only [executeCandidate?, pure_bind]
+      cases haction : plan.action with
+      | ordinary => rfl
+      | resolve coordinate =>
+          exact runDirectResolvedWitnessFromTable_resolveKnownInput_eq_public parameter
+            coordinate input context fuel table cache
+  | some candidate =>
+      simp only [executeCandidate?]
+      rw [StateT.run_bind, StateT.run_bind, runDirectResolvedWitnessFromTable_bind,
+        runDirectResolvedWitnessFromTable_bind]
+      simp only [probe, StateT.run_liftM, LazyRevealProbe.probeQuery,
+        runDirectResolvedWitnessFromTable_probe_query_bind]
+      cases fuel with
+      | zero => rfl
+      | succ remaining =>
+          by_cases hrevealed : candidate.coordinate ∈ context.state.revealed
+          · simp only [hrevealed, ↓reduceIte]
+            simp only [runDirectResolvedWitnessFromTable]
+            cases haction : plan.action with
+            | ordinary => rfl
+            | resolve coordinate =>
+                exact runDirectResolvedWitnessFromTable_resolveKnownInput_eq_public parameter
+                  coordinate input context remaining table cache
+          · simp only [hrevealed, ↓reduceIte]
+            let nextContext : DeferredContext :=
+              { context with state :=
+                  context.state.addPending candidate.coordinate candidate.candidate }
+            rw [show
+              runDirectResolvedWitnessFromTable nextContext remaining table (pure ((), cache)) =
+                pure (.done ⟨nextContext, remaining, ((), cache), table⟩) by
+              simp [runDirectResolvedWitnessFromTable]]
+            simp only [pure_bind]
+            cases haction : plan.action with
+            | ordinary => rfl
+            | resolve coordinate =>
+                have hbase := runDirectResolvedWitnessFromTable_resolveKnownInput_eq_public
+                  parameter coordinate input nextContext remaining table cache
+                have hpublic := resolvePublicKnownInput_eq_of_values_eq parameter
+                  (left := nextContext.state) (right := context.state) (by
+                    rfl) coordinate input
+                rw [hpublic] at hbase
+                exact hbase
+
 theorem witnessMaterializedStableCouples_ensureCoordinate
     (table : OtsSecretIndex → HashOutput) (coordinate : Coordinate) :
     WitnessMaterializedStableCouples table (ensureCoordinate coordinate) := by
