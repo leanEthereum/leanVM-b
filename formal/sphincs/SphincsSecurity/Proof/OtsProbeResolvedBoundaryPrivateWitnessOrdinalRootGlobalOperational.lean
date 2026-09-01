@@ -2592,7 +2592,7 @@ noncomputable def observedMaterializedBoundary
           | none => pure none
           | some result =>
               recursivelyRun result.value.1 result.observations result.state result.remaining
-                result.table result.value.2
+                table result.value.2
       | .inl (.inr input) =>
           let publicContext := materializedCanonicalContext table state
           let plan := purePlanProbingHashQuery parameter input publicContext.state
@@ -2604,7 +2604,7 @@ noncomputable def observedMaterializedBoundary
             | none => pure none
             | some result =>
                 recursivelyRun result.value.1 result.observations result.state result.remaining
-                  result.table result.value.2
+                  table result.value.2
       | .inr message => do
           let result ← runObservedCleanFromTable observations state fuel table
             ((maskedSign parameter root ftsSecret message).run cache)
@@ -2612,7 +2612,7 @@ noncomputable def observedMaterializedBoundary
           | none => pure none
           | some result =>
               recursivelyRun result.value.1 result.observations result.state result.remaining
-                result.table result.value.2)
+                table result.value.2)
     computation observations state fuel table cache
 
 noncomputable def observedMaterializedRetainedRunFromTable
