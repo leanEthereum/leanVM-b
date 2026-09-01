@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedChain
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedChainProbability
 
 /-!
 # Sampled stopped diagnostic projection
@@ -153,6 +153,42 @@ theorem probEvent_sampledSuccessfulFirstHit_le_selectedSnapshot_add_chainStartAt
         with hselected | hchain
       · exact hselected
       · exact (hnotChain hchain).elim
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem probEvent_sampledSuccessfulFirstHit_le_selectedSnapshot
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q ordinal : Nat)
+    (hbound : ∀ root,
+      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
+        IsOuterHash q)
+    (hq : q ≤ 2 ^ securityBits) :
+    Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenHitAt ordinal | do
+        let table ← sampleOtsHashTable
+        observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] ≤
+      Pr[fun source => SelectedPrivateSnapshotHitAt source ordinal |
+          sampledGranularAllCanonicalPrivateWitnessSnapshot adversary parameter ftsSecret q] := by
+  calc
+    _ ≤ Pr[fun source => SelectedPrivateSnapshotHitAt source ordinal |
+          sampledGranularAllCanonicalPrivateWitnessSnapshot adversary parameter ftsSecret q] +
+        Pr[fun observed => (match observed with
+          | none => False
+          | some result => FirstExistingHiddenChainStartHitAt result.observations ordinal) | do
+          let table ← sampleOtsHashTable
+          observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] := by
+      exact probEvent_sampledSuccessfulFirstHit_le_selectedSnapshot_add_chainStartAt adversary
+        parameter ftsSecret q ordinal hbound hq
+    _ = _ := by
+      have hzero := probEvent_sampled_firstExistingHiddenChainStartHitAt_eq_zero adversary
+        parameter ftsSecret (2 * q) ordinal
+      change Pr[fun observed => (match observed with
+        | none => False
+        | some result => FirstExistingHiddenChainStartHitAt result.observations ordinal) | do
+        let table ← sampleOtsHashTable
+        observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] = 0
+        at hzero
+      rw [hzero]
+      simp
 
 attribute [local irreducible] sampledObservedMaterializedDiagnostic in
 set_option maxHeartbeats 2000000 in
