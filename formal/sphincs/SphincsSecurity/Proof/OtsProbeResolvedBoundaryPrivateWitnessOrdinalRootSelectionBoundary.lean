@@ -489,4 +489,46 @@ theorem probEvent_materializedRootOrdinalOutcome_match_le
     _ ≤ _ := probEvent_materializedRootOrdinalMatchExperimentAfterTable_le_mul ordinal
       adversary parameter ftsSecret target hroot hparent fuel table
 
+theorem probEvent_directRootOrdinalSelection_good_le_failure_add_production_mul
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (hroot : IsLayerRoot target)
+    (hparent : ∃ parent, Position.parentOf target = some parent)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
+    Pr[fun result =>
+        privateOrdinalSelectionGoodForRoots target result.1 result.2.1 ordinal result.2.2 |
+        directRootOrdinalSelectionExperimentAfterTable ordinal adversary parameter ftsSecret
+          target fuel table] ≤
+      Pr[fun result => result.2.2.isFailure |
+          materializedRootOrdinalOutcomeExperimentAfterTable ordinal adversary parameter ftsSecret
+            target fuel table] +
+        Pr[fun result => materializedOrdinalSelectionAt target result.2 |
+            materializedRootOrdinalProductionExperimentAfterTable ordinal adversary parameter
+              ftsSecret target fuel table] *
+          ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  calc
+    _ ≤ Pr[fun result => result.2.2.isFailure ∨ result.2.2.Matches target result.1 |
+          materializedRootOrdinalOutcomeExperimentAfterTable ordinal adversary parameter ftsSecret
+            target fuel table] := by
+      apply probEvent_le_of_relTriple
+        (relTriple_directRootOrdinalSelectionExperimentAfterTable ordinal adversary parameter
+          ftsSecret target hroot hparent fuel table)
+      intro left right hrel hgood
+      have hbridge := hrel.2.2 hgood
+      rcases hbridge with hfailure | hmatch
+      · exact Or.inl hfailure
+      · rw [← hrel.1]
+        exact Or.inr hmatch
+    _ ≤ Pr[fun result => result.2.2.isFailure |
+          materializedRootOrdinalOutcomeExperimentAfterTable ordinal adversary parameter ftsSecret
+            target fuel table] +
+        Pr[fun result => result.2.2.Matches target result.1 |
+          materializedRootOrdinalOutcomeExperimentAfterTable ordinal adversary parameter ftsSecret
+            target fuel table] :=
+      probEvent_or_le _ _ _
+    _ ≤ _ := by
+      gcongr
+      exact probEvent_materializedRootOrdinalOutcome_match_le ordinal adversary parameter ftsSecret
+        target hroot hparent fuel table
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
