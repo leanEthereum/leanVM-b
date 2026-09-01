@@ -146,6 +146,76 @@ theorem probEvent_sampledDiagnostic_existingHidden_le_sum_firstOrdinals
       exact probEvent_or_le _ _ _
     _ = _ := by simp only [run]
 
+attribute [local irreducible] sampledObservedMaterializedDiagnostic in
+set_option linter.constructorNameAsVariable false in
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem probEvent_sampledDiagnostic_successfulDoomed_le_sum_successfulFirstOrdinals
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (hq : q ≤ 2 ^ securityBits) :
+    Pr[ObservedMaterializedDiagnostic.SuccessfulDoomed |
+        sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)] ≤
+      ∑ ordinal : Fin (2 * q),
+        (Pr[fun outcome => outcome.SuccessfulDoomed ∧
+              outcome.FirstExistingHiddenRootHitAt ordinal.val |
+            sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)] +
+          Pr[fun outcome => outcome.SuccessfulDoomed ∧
+              outcome.FirstExistingHiddenNonRootHitAt ordinal.val |
+            sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)]) := by
+  classical
+  let run := sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)
+  calc
+    _ ≤ Pr[fun outcome => ∃ ordinal ∈ (Finset.univ : Finset (Fin (2 * q))),
+          (outcome.SuccessfulDoomed ∧
+              outcome.FirstExistingHiddenRootHitAt ordinal.val) ∨
+            (outcome.SuccessfulDoomed ∧
+              outcome.FirstExistingHiddenNonRootHitAt ordinal.val) | run] := by
+      apply probEvent_mono
+      intro outcome houtcome hsuccess
+      have hhit := hasExistingHiddenHit_of_mem_sampledDiagnostic_successfulDoomed adversary
+        parameter ftsSecret q hq outcome houtcome hsuccess
+      rcases outcome.firstExistingHidden_root_or_nonRoot hhit with hroot | hnonRoot
+      · obtain ⟨ordinal, result, sourceOrdinal, hbefore, hordinal, hfirst, hroot⟩ := hroot
+        have hlength := observations_length_le_of_mem_sampledDiagnostic_before adversary parameter
+          ftsSecret (2 * q) outcome result houtcome hbefore
+        have hlt : ordinal < 2 * q := by omega
+        let bounded : Fin (2 * q) := ⟨ordinal, hlt⟩
+        have hrootAt : outcome.FirstExistingHiddenRootHitAt ordinal :=
+          outcome.firstExistingHiddenRootHitAt_of_ordinal
+            ⟨result, sourceOrdinal, hbefore, hordinal, hfirst, hroot⟩
+        exact ⟨bounded, Finset.mem_univ bounded, Or.inl ⟨hsuccess, hrootAt⟩⟩
+      · obtain ⟨ordinal, result, sourceOrdinal, hbefore, hordinal, hfirst, hnonRoot⟩ :=
+          hnonRoot
+        have hlength := observations_length_le_of_mem_sampledDiagnostic_before adversary parameter
+          ftsSecret (2 * q) outcome result houtcome hbefore
+        have hlt : ordinal < 2 * q := by omega
+        let bounded : Fin (2 * q) := ⟨ordinal, hlt⟩
+        have hnonRootAt : outcome.FirstExistingHiddenNonRootHitAt ordinal :=
+          outcome.firstExistingHiddenNonRootHitAt_of_ordinal
+            ⟨result, sourceOrdinal, hbefore, hordinal, hfirst, hnonRoot⟩
+        exact ⟨bounded, Finset.mem_univ bounded, Or.inr ⟨hsuccess, hnonRootAt⟩⟩
+    _ ≤ ∑ ordinal : Fin (2 * q),
+          Pr[fun outcome =>
+            (outcome.SuccessfulDoomed ∧
+                outcome.FirstExistingHiddenRootHitAt ordinal.val) ∨
+              (outcome.SuccessfulDoomed ∧
+                outcome.FirstExistingHiddenNonRootHitAt ordinal.val) | run] :=
+      probEvent_exists_finset_le_sum Finset.univ run fun (ordinal : Fin (2 * q)) outcome =>
+        (outcome.SuccessfulDoomed ∧
+            outcome.FirstExistingHiddenRootHitAt ordinal.val) ∨
+          (outcome.SuccessfulDoomed ∧
+            outcome.FirstExistingHiddenNonRootHitAt ordinal.val)
+    _ ≤ ∑ ordinal : Fin (2 * q),
+          (Pr[fun outcome => outcome.SuccessfulDoomed ∧
+                outcome.FirstExistingHiddenRootHitAt ordinal.val | run] +
+            Pr[fun outcome => outcome.SuccessfulDoomed ∧
+                outcome.FirstExistingHiddenNonRootHitAt ordinal.val | run]) := by
+      apply Finset.sum_le_sum
+      intro ordinal _hordinal
+      exact probEvent_or_le _ _ _
+    _ = _ := by simp only [run]
+
 set_option maxHeartbeats 2000000 in
 set_option maxRecDepth 100000 in
 theorem relTriple_sampledGranularAllCanonical_diagnosticRootRel

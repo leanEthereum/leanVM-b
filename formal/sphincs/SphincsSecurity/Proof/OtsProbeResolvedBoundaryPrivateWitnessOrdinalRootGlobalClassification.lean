@@ -55,6 +55,13 @@ def ExistingHiddenHitAtOrdinal
     (result : ObservedCleanRunResult α) (ordinal : Fin result.observations.length) : Prop :=
   (result.observations.get ordinal).ExistingHiddenHit
 
+def FirstExistingHiddenHitAt
+    (result : ObservedCleanRunResult α) (ordinal : Nat) : Prop :=
+  ∃ selected : Fin result.observations.length,
+    selected.val = ordinal ∧ ExistingHiddenHitAtOrdinal result selected ∧
+      ∀ earlier : Fin result.observations.length,
+        earlier.val < ordinal → ¬ExistingHiddenHitAtOrdinal result earlier
+
 noncomputable def firstExistingHiddenHitOrdinal?
     (result : ObservedCleanRunResult α) : Option (Fin result.observations.length) := by
   classical
@@ -79,6 +86,56 @@ theorem firstExistingHiddenHitOrdinal?_eq_some_of_hasExistingHiddenHit
   simp only [matching, hmatching, dif_pos]
   refine ⟨matching.min' hmatching, rfl, ?_⟩
   exact (Finset.mem_filter.mp (matching.min'_mem hmatching)).2
+
+theorem existingHiddenHitAtOrdinal_of_firstExistingHiddenHitOrdinal?_eq_some
+    {result : ObservedCleanRunResult α}
+    {ordinal : Fin result.observations.length}
+    (hfirst : firstExistingHiddenHitOrdinal? result = some ordinal) :
+    ExistingHiddenHitAtOrdinal result ordinal := by
+  classical
+  let matching := Finset.univ.filter fun selected : Fin result.observations.length =>
+    ExistingHiddenHitAtOrdinal result selected
+  unfold firstExistingHiddenHitOrdinal? at hfirst
+  change (if h : matching.Nonempty then some (matching.min' h) else none) = some ordinal at hfirst
+  split at hfirst
+  next hmatching =>
+    have heq : matching.min' hmatching = ordinal := Option.some.inj hfirst
+    rw [← heq]
+    exact (Finset.mem_filter.mp (matching.min'_mem hmatching)).2
+  next hmatching => simp at hfirst
+
+theorem not_existingHiddenHitAtOrdinal_before_first
+    {result : ObservedCleanRunResult α}
+    {ordinal : Fin result.observations.length}
+    (hfirst : firstExistingHiddenHitOrdinal? result = some ordinal)
+    (earlier : Fin result.observations.length)
+    (hlt : earlier.val < ordinal.val) :
+    ¬ExistingHiddenHitAtOrdinal result earlier := by
+  classical
+  let matching := Finset.univ.filter fun selected : Fin result.observations.length =>
+    ExistingHiddenHitAtOrdinal result selected
+  unfold firstExistingHiddenHitOrdinal? at hfirst
+  change (if h : matching.Nonempty then some (matching.min' h) else none) = some ordinal at hfirst
+  split at hfirst
+  next hmatching =>
+    have heq : matching.min' hmatching = ordinal := Option.some.inj hfirst
+    intro hearlier
+    have hearlierMem : earlier ∈ matching :=
+      Finset.mem_filter.mpr ⟨Finset.mem_univ _, hearlier⟩
+    have hle := matching.min'_le earlier hearlierMem
+    rw [heq] at hle
+    exact (Nat.not_le_of_lt hlt) hle
+  next hmatching => simp at hfirst
+
+theorem firstExistingHiddenHitAt_of_firstExistingHiddenHitOrdinal?_eq_some
+    {result : ObservedCleanRunResult α}
+    {ordinal : Fin result.observations.length}
+    (hfirst : firstExistingHiddenHitOrdinal? result = some ordinal) :
+    FirstExistingHiddenHitAt result ordinal.val := by
+  refine ⟨ordinal, rfl,
+    existingHiddenHitAtOrdinal_of_firstExistingHiddenHitOrdinal?_eq_some hfirst, ?_⟩
+  intro earlier hlt
+  exact not_existingHiddenHitAtOrdinal_before_first hfirst earlier hlt
 
 theorem directDeferredContext_valid_of_no_existingHiddenHit
     (result : ObservedCleanRunResult α)
@@ -202,6 +259,59 @@ def ObservedMaterializedDiagnostic.FirstExistingHiddenNonRootHitOrdinal
     outcome.before = some result ∧ sourceOrdinal.val = ordinal ∧
       firstExistingHiddenHitOrdinal? result = some sourceOrdinal ∧
       ¬(result.observations.get sourceOrdinal).toProbe.IsLayerRoot
+
+def ObservedMaterializedDiagnostic.FirstExistingHiddenRootHitAt
+    (ordinal : Nat) (outcome : ObservedMaterializedDiagnostic α) : Prop :=
+  ∃ result selected,
+    outcome.before = some result ∧ selected.val = ordinal ∧
+      FirstExistingHiddenHitAt result ordinal ∧
+      (result.observations.get selected).toProbe.IsLayerRoot
+
+def ObservedMaterializedDiagnostic.FirstExistingHiddenNonRootHitAt
+    (ordinal : Nat) (outcome : ObservedMaterializedDiagnostic α) : Prop :=
+  ∃ result selected,
+    outcome.before = some result ∧ selected.val = ordinal ∧
+      FirstExistingHiddenHitAt result ordinal ∧
+      ¬(result.observations.get selected).toProbe.IsLayerRoot
+
+theorem ObservedMaterializedDiagnostic.firstExistingHiddenRootHitAt_of_ordinal
+    {outcome : ObservedMaterializedDiagnostic α} {ordinal : Nat}
+    (hroot : outcome.FirstExistingHiddenRootHitOrdinal ordinal) :
+    outcome.FirstExistingHiddenRootHitAt ordinal := by
+  obtain ⟨result, selected, hbefore, hordinal, hfirst, hroot⟩ := hroot
+  exact ⟨result, selected, hbefore, hordinal,
+    hordinal ▸ firstExistingHiddenHitAt_of_firstExistingHiddenHitOrdinal?_eq_some hfirst, hroot⟩
+
+theorem ObservedMaterializedDiagnostic.firstExistingHiddenNonRootHitAt_of_ordinal
+    {outcome : ObservedMaterializedDiagnostic α} {ordinal : Nat}
+    (hnonRoot : outcome.FirstExistingHiddenNonRootHitOrdinal ordinal) :
+    outcome.FirstExistingHiddenNonRootHitAt ordinal := by
+  obtain ⟨result, selected, hbefore, hordinal, hfirst, hnonRoot⟩ := hnonRoot
+  exact ⟨result, selected, hbefore, hordinal,
+    hordinal ▸ firstExistingHiddenHitAt_of_firstExistingHiddenHitOrdinal?_eq_some hfirst,
+    hnonRoot⟩
+
+theorem ObservedMaterializedDiagnostic.firstExistingHiddenRootHitOrdinal_hit
+    {outcome : ObservedMaterializedDiagnostic α} {ordinal : Nat}
+    (hroot : outcome.FirstExistingHiddenRootHitOrdinal ordinal) :
+    ∃ result sourceOrdinal,
+      outcome.before = some result ∧ sourceOrdinal.val = ordinal ∧
+        ExistingHiddenHitAtOrdinal result sourceOrdinal ∧
+        (result.observations.get sourceOrdinal).toProbe.IsLayerRoot := by
+  obtain ⟨result, sourceOrdinal, hbefore, hordinal, hfirst, hroot⟩ := hroot
+  exact ⟨result, sourceOrdinal, hbefore, hordinal,
+    existingHiddenHitAtOrdinal_of_firstExistingHiddenHitOrdinal?_eq_some hfirst, hroot⟩
+
+theorem ObservedMaterializedDiagnostic.firstExistingHiddenNonRootHitOrdinal_hit
+    {outcome : ObservedMaterializedDiagnostic α} {ordinal : Nat}
+    (hnonRoot : outcome.FirstExistingHiddenNonRootHitOrdinal ordinal) :
+    ∃ result sourceOrdinal,
+      outcome.before = some result ∧ sourceOrdinal.val = ordinal ∧
+        ExistingHiddenHitAtOrdinal result sourceOrdinal ∧
+        ¬(result.observations.get sourceOrdinal).toProbe.IsLayerRoot := by
+  obtain ⟨result, sourceOrdinal, hbefore, hordinal, hfirst, hnonRoot⟩ := hnonRoot
+  exact ⟨result, sourceOrdinal, hbefore, hordinal,
+    existingHiddenHitAtOrdinal_of_firstExistingHiddenHitOrdinal?_eq_some hfirst, hnonRoot⟩
 
 theorem ObservedMaterializedDiagnostic.firstExistingHidden_root_or_nonRoot
     {outcome : ObservedMaterializedDiagnostic α}
