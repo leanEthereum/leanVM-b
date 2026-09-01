@@ -338,7 +338,8 @@ theorem witnessFirstUsesDelayedLayerRoot_of_aligned_tracked
     {output : PrivateWitnessPlanOutput}
     {result : ObservedCleanRunResult α}
     (hfirst : WitnessFirstUsesSomeLayerRoot output)
-    (halign : output.2 = result.observations.map CleanProbeObservation.toProbe)
+    (halign : output.2.IsPrefix
+      (result.observations.map CleanProbeObservation.toProbe))
     (htracked : CleanProbeObservationsTrackedBy result.observations result.state)
     (hstored : ∀ witness, output.1 = some witness →
       result.state.values (Coordinate.position witness.position) = some witness.output)
@@ -350,17 +351,17 @@ theorem witnessFirstUsesDelayedLayerRoot_of_aligned_tracked
       (result.observations.get observationOrdinal).revealedAtProbe = false) :
     WitnessFirstUsesDelayedLayerRoot output result.observations := by
   obtain ⟨ordinal, witness, sourceOrdinal, hwitness, hordinal, hsourceFirst, hroot⟩ := hfirst
-  have hlength : output.2.length = result.observations.length := by
-    rw [halign, List.length_map]
+  have hlength : output.2.length ≤ result.observations.length := by
+    simpa using halign.length_le
   let observationOrdinal : Fin result.observations.length :=
-    ⟨sourceOrdinal.val, by rw [← hlength]; exact sourceOrdinal.isLt⟩
+    ⟨sourceOrdinal.val, sourceOrdinal.isLt.trans_le hlength⟩
   have hordinalValue : sourceOrdinal.val = observationOrdinal.val := rfl
   have hprobe : (result.observations.get observationOrdinal).toProbe =
       output.2.get sourceOrdinal := by
     rw [List.get_eq_getElem, List.get_eq_getElem]
     change (result.observations[sourceOrdinal.val]).toProbe =
       output.2[sourceOrdinal.val]
-    simpa only [halign, List.getElem_map]
+    rw [halign.getElem sourceOrdinal.isLt, List.getElem_map]
   have hmatch := privateWitnessAtOrdinal_of_firstPrivateWitnessOrdinal?_eq_some hsourceFirst
   unfold PrivateWitnessAtOrdinal at hmatch
   have hobservationCoordinate :
