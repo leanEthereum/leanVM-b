@@ -5,6 +5,7 @@
 //! parameters, hash construction, and encoding predicate. Loaded signatures are
 //! also verified, so stale entries are regenerated from the first invalid one.
 
+use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -22,8 +23,10 @@ type CachedSignature = (XmssPublicKey, XmssSignature);
 
 const SCHEMA_VERSION: u32 = 2;
 
-/// The epoch every cached XMSS signature was made at. SPHINCS has none.
-pub const XMSS_EPOCH: u32 = 3_000_000_007;
+/// The epoch `get_signers` signs at. SPHINCS has none.
+pub const XMSS_EPOCH_A: u32 = 3_000_000_007;
+/// A second epoch for multi-epoch tests; signer `i` holds the same key at both.
+pub const XMSS_EPOCH_B: u32 = 3_000_000_009;
 const KEY_START: u32 = 3_000_000_000;
 const KEY_END: u32 = 3_000_000_015;
 
@@ -31,14 +34,30 @@ pub fn message() -> Message {
     std::array::from_fn(|i| (i * 5 + 1) as u8)
 }
 
-fn compute_signer(index: usize) -> CachedSignature {
+/// The message signed at `epoch`: distinct per epoch, and exactly [`message`]
+/// at [`XMSS_EPOCH_A`], so pre-existing cache files stay valid.
+pub fn message_for(epoch: u32) -> Message {
+    let mut msg = message();
+    for (byte, delta) in msg.iter_mut().zip((epoch ^ XMSS_EPOCH_A).to_le_bytes()) {
+        *byte ^= delta;
+    }
+    msg
+}
+
+fn compute_signer(index: usize, epoch: u32) -> CachedSignature {
     // The index over its full width: a one-byte seed repeats every 256 signers,
     // and a repeated signer is invisible until something deduplicates the set,
     // at which point a batch of 900 quietly becomes one of 256.
     let mut seed = [10u8; 32];
     seed[..8].copy_from_slice(&(index as u64).to_le_bytes());
     let (sk, pk) = xmss_key_gen(seed, KEY_START, KEY_END).expect("keygen");
-    let sig = xmss_sign(&mut StdRng::seed_from_u64(index as u64), &sk, &message(), XMSS_EPOCH).expect("sign");
+    let sig = xmss_sign(
+        &mut StdRng::seed_from_u64(index as u64),
+        &sk,
+        &message_for(epoch),
+        epoch,
+    )
+    .expect("sign");
     (pk, sig)
 }
 
@@ -50,29 +69,29 @@ fn hash_fingerprint() -> [Digest; 2] {
     ]
 }
 
-fn encoding_fingerprint() -> (u64, [u8; V]) {
+fn encoding_fingerprint(epoch: u32) -> (u64, [u8; V]) {
     let pp = [0xA5u8; PUBLIC_PARAM_LEN];
-    let msg = message();
+    let msg = message_for(epoch);
     for counter in 0u64.. {
         let mut randomness = [0u8; RANDOMNESS_LEN];
         randomness[..8].copy_from_slice(&counter.to_le_bytes());
-        if let Some(digits) = wots_encode(&msg, XMSS_EPOCH, &pp, &randomness) {
+        if let Some(digits) = wots_encode(&msg, epoch, &pp, &randomness) {
             return (counter, digits);
         }
     }
     unreachable!("some counter randomness encodes")
 }
 
-fn footprint() -> u64 {
+fn footprint(epoch: u32) -> u64 {
     let mut hasher = DefaultHasher::new();
     SCHEMA_VERSION.hash(&mut hasher);
-    XMSS_EPOCH.hash(&mut hasher);
+    epoch.hash(&mut hasher);
     KEY_START.hash(&mut hasher);
     KEY_END.hash(&mut hasher);
-    message().hash(&mut hasher);
+    message_for(epoch).hash(&mut hasher);
     (V, W, CHAIN_LENGTH, LOG_LIFETIME, TARGET_SUM, RANDOMNESS_LEN).hash(&mut hasher);
     hash_fingerprint().hash(&mut hasher);
-    encoding_fingerprint().hash(&mut hasher);
+    encoding_fingerprint(epoch).hash(&mut hasher);
     hasher.finish()
 }
 
@@ -80,25 +99,25 @@ fn cache_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/signers-cache")
 }
 
-fn cache_path() -> PathBuf {
-    cache_dir().join(format!("xmss_signers_{:016x}.bin", footprint()))
+fn cache_path(epoch: u32) -> PathBuf {
+    cache_dir().join(format!("xmss_signers_{:016x}.bin", footprint(epoch)))
 }
 
-fn try_load_cache() -> Option<Vec<CachedSignature>> {
-    let bytes = fs::read(cache_path()).ok()?;
+fn try_load_cache(epoch: u32) -> Option<Vec<CachedSignature>> {
+    let bytes = fs::read(cache_path(epoch)).ok()?;
     let (version, mut signers): (u32, Vec<CachedSignature>) = bincode::deserialize(&bytes).ok()?;
     if version != SCHEMA_VERSION {
         return None;
     }
-    let msg = message();
+    let msg = message_for(epoch);
     let valid = signers
         .iter()
-        .take_while(|(pk, sig)| xmss_verify(pk, &msg, sig, XMSS_EPOCH).is_ok())
+        .take_while(|(pk, sig)| xmss_verify(pk, &msg, sig, epoch).is_ok())
         .count();
     if valid < signers.len() {
         eprintln!(
             "warning: signers cache {} is stale (signer {valid} of {} no longer verifies); regenerating from there",
-            cache_path().display(),
+            cache_path(epoch).display(),
             signers.len()
         );
         signers.truncate(valid);
@@ -106,8 +125,8 @@ fn try_load_cache() -> Option<Vec<CachedSignature>> {
     Some(signers)
 }
 
-fn save_cache(signers: &[CachedSignature]) {
-    let path = cache_path();
+fn save_cache(signers: &[CachedSignature], epoch: u32) {
+    let path = cache_path(epoch);
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
@@ -117,12 +136,12 @@ fn save_cache(signers: &[CachedSignature]) {
     }
 }
 
-fn generate_range(start: usize, end: usize) -> Vec<CachedSignature> {
+fn generate_range(start: usize, end: usize, epoch: u32) -> Vec<CachedSignature> {
     let total = end - start;
     let started = Instant::now();
     let mut signers = Vec::with_capacity(total);
     for (done, index) in (start..end).enumerate() {
-        signers.push(compute_signer(index));
+        signers.push(compute_signer(index, epoch));
         print!(
             "\r  generating XMSS signers (one-time, then cached): {}/{}",
             pretty_integer(done + 1),
@@ -138,33 +157,39 @@ fn generate_range(start: usize, end: usize) -> Vec<CachedSignature> {
     signers
 }
 
-static POOL: Mutex<Vec<CachedSignature>> = Mutex::new(Vec::new());
+static POOLS: Mutex<BTreeMap<u32, Vec<CachedSignature>>> = Mutex::new(BTreeMap::new());
 
 pub fn get_signers(n: usize) -> Vec<CachedSignature> {
-    let mut pool = POOL.lock().unwrap();
+    get_signers_at(n, XMSS_EPOCH_A)
+}
+
+/// The first `n` cached signers, signing [`message_for`]`(epoch)` at `epoch`:
+/// one cache file per epoch, the keys shared across them.
+pub fn get_signers_at(n: usize, epoch: u32) -> Vec<CachedSignature> {
+    let mut pools = POOLS.lock().unwrap();
+    let pool = pools.entry(epoch).or_default();
     if pool.len() < n {
-        if let Some(disk) = try_load_cache()
+        if let Some(disk) = try_load_cache(epoch)
             && disk.len() > pool.len()
         {
             *pool = disk;
         }
         if pool.len() < n {
-            let mut fresh = generate_range(pool.len(), n);
+            let mut fresh = generate_range(pool.len(), n, epoch);
             pool.append(&mut fresh);
-            save_cache(&pool);
+            save_cache(pool, epoch);
         }
     }
     pool[..n].to_vec()
 }
 
-/// A SPHINCS signer, generated the same way, with the message it signed: each
-/// SPHINCS signer carries its own, where the XMSS ones share one. Signing is
-/// stateless, so unlike XMSS there is no epoch and no key range: one key
-/// answers for every index.
+/// A SPHINCS signer, generated the same way, with the message it signed.
+/// Signing is stateless, so unlike XMSS there is no epoch and no key range:
+/// one key answers for every index.
 type CachedSphincsSignature = (sphincs::PublicKey, sphincs::Message, sphincs::Signature);
 
-/// Signer `index`'s own message, distinct from every other's and from the shared
-/// XMSS [`message`], so a test that mixed them up would fail rather than pass.
+/// Signer `index`'s own message, distinct from every other's and from the
+/// XMSS ones, so a test that mixed them up would fail rather than pass.
 pub fn sphincs_message(index: usize) -> sphincs::Message {
     let mut msg = [0u8; sphincs::MESSAGE_LEN];
     msg[..8].copy_from_slice(&(index as u64).to_le_bytes());
@@ -295,6 +320,6 @@ mod tests {
 
     #[test]
     fn signer_seed_uses_more_than_one_byte() {
-        assert_ne!(compute_signer(0).0, compute_signer(256).0);
+        assert_ne!(compute_signer(0, XMSS_EPOCH_A).0, compute_signer(256, XMSS_EPOCH_A).0);
     }
 }

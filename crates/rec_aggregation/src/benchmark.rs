@@ -11,16 +11,27 @@ use xmss::{XmssPublicKey, XmssSignature};
 use crate::aggregation::{AggregateSignature, aggregate, aggregate_with_stats};
 use crate::signers_cache;
 
-/// Cached signers `[from, to)`, as the aggregation API takes them.
-fn signers(from: usize, to: usize) -> Vec<(XmssPublicKey, XmssSignature)> {
+/// Cached signers `[from, to)`, as the aggregation API takes them: each raw
+/// signature carries its epoch and message, the benchmarks using one pair for
+/// all.
+fn signers(from: usize, to: usize) -> Vec<(XmssPublicKey, u32, xmss::Message, XmssSignature)> {
     if to == 0 {
         return Vec::new();
     }
-    signers_cache::get_signers(to)[from..to].to_vec()
+    signers_cache::get_signers(to)[from..to]
+        .iter()
+        .map(|(pk, sig)| {
+            (
+                pk.clone(),
+                signers_cache::XMSS_EPOCH_A,
+                signers_cache::message(),
+                sig.clone(),
+            )
+        })
+        .collect()
 }
 
-/// Each SPHINCS signer comes with the message it signed, unlike the XMSS ones,
-/// which share the statement's.
+/// Each SPHINCS signer comes with the message it signed, as the XMSS ones do.
 fn sphincs_signers(from: usize, to: usize) -> Vec<(sphincs::PublicKey, sphincs::Message, sphincs::Signature)> {
     if to == 0 {
         return Vec::new();
@@ -78,21 +89,11 @@ pub fn run_aggregation(n_xmss: usize, n_sphincs: usize, log_inv_rate: usize, pla
     lean_vm::init_prover_pool();
     let raw_xmss = signers(0, n_xmss);
     let raw_sphincs = sphincs_signers(0, n_sphincs);
-    let (xmss_message, xmss_epoch) = (signers_cache::message(), signers_cache::XMSS_EPOCH);
-
     // Only the final measured pass of each stage is traced: the tree describes the
     // proof the reported timings are about, instead of repeating itself per pass.
     let ((sig, stats), prove_time) = plan.warm_then_measure(|last| {
         let _quiet = (!last).then(primitives::suppress_tracing);
-        aggregate_with_stats(
-            &[],
-            xmss_message,
-            xmss_epoch,
-            raw_xmss.clone(),
-            raw_sphincs.clone(),
-            log_inv_rate,
-        )
-        .expect("leaf aggregates")
+        aggregate_with_stats(&[], raw_xmss.clone(), raw_sphincs.clone(), log_inv_rate).expect("leaf aggregates")
     });
     let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|last| {
         let _quiet = (!last).then(primitives::suppress_tracing);
@@ -127,7 +128,6 @@ pub fn run_recursion(
     assert!(n >= 1, "a recursion step needs at least one child");
     assert!(per_leaf + sphincs_per_leaf >= 1, "a leaf needs at least one signer");
     lean_vm::init_prover_pool();
-    let (xmss_message, xmss_epoch) = (signers_cache::message(), signers_cache::XMSS_EPOCH);
     let all = signers(0, n * per_leaf);
     let all_sphincs = sphincs_signers(0, n * sphincs_per_leaf);
     let started = std::time::Instant::now();
@@ -142,8 +142,6 @@ pub fn run_recursion(
         .map(|k| {
             aggregate(
                 &[],
-                xmss_message,
-                xmss_epoch,
                 all[k * per_leaf..(k + 1) * per_leaf].to_vec(),
                 all_sphincs[k * sphincs_per_leaf..(k + 1) * sphincs_per_leaf].to_vec(),
                 log_inv_rate,
@@ -157,8 +155,7 @@ pub fn run_recursion(
     }
     let ((sig, stats), prove_time) = plan.warm_then_measure(|last| {
         let _quiet = (!last).then(primitives::suppress_tracing);
-        aggregate_with_stats(&children, xmss_message, xmss_epoch, vec![], vec![], log_inv_rate)
-            .expect("node aggregates")
+        aggregate_with_stats(&children, vec![], vec![], log_inv_rate).expect("node aggregates")
     });
     let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|last| {
         let _quiet = (!last).then(primitives::suppress_tracing);
