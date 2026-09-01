@@ -1177,4 +1177,92 @@ theorem probEvent_privateOrdinalSelectionGoodForSomeOutput_le_finalizationRisk
       exact hrelation hgood
     _ = _ := probEvent_eq_eq_probOutput _ true
 
+noncomputable def eagerGranularAllCanonicalPrivateOrdinalFinalizationRisk
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (fuel : Nat) (target : Position) (rightRoot : Digest) : ProbComp Bool := do
+  let resolved ← resolveDeferredPositionValue target emptyWitnessDeferredContext
+  match resolved with
+  | none => pure true
+  | some resolved =>
+      runResolvedObserve
+        (canonicalizeObserve table
+          (granularPrivateOrdinalFinalizationObserve ordinal adversary parameter table ftsSecret
+            target rightRoot))
+        resolved.toDeferredContext fuel table
+        (maskedPublishedTreeRoot.run emptySplitHashCache)
+
+theorem evalDist_eagerGranularAllCanonicalPrivateOrdinalFinalizationRisk_eq
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (fuel : Nat) (target : Position) (rightRoot : Digest) :
+    evalDist (eagerGranularAllCanonicalPrivateOrdinalFinalizationRisk ordinal adversary parameter
+        table ftsSecret fuel target rightRoot) =
+      evalDist (granularAllCanonicalPrivateOrdinalFinalizationRisk ordinal adversary parameter
+        table ftsSecret fuel target rightRoot) := by
+  unfold eagerGranularAllCanonicalPrivateOrdinalFinalizationRisk
+    granularAllCanonicalPrivateOrdinalFinalizationRisk
+  exact evalDist_resolveDeferredPositionValue_then_runResolvedObserve_any target
+    (maskedPublishedTreeRoot.run emptySplitHashCache) emptyWitnessDeferredContext fuel table
+    DeferredContext.valid_empty (deferredCompletable_empty table)
+
+noncomputable def eagerGranularPrivateOrdinalFinalizationRiskAfterOutput
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (fuel : Nat) (target : Position) (rightRoot : Digest)
+    (output : HashOutput) : ProbComp Bool :=
+  runResolvedObserve
+    (canonicalizeObserve table
+      (granularPrivateOrdinalFinalizationObserve ordinal adversary parameter table ftsSecret
+        target rightRoot))
+    { emptyWitnessDeferredContext with
+      values := emptyWitnessDeferredContext.values.install target output }
+    fuel table (maskedPublishedTreeRoot.run emptySplitHashCache)
+
+theorem evalDist_eagerGranularAllCanonicalPrivateOrdinalFinalizationRisk_eq_sample
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (fuel : Nat) (target : Position) (rightRoot : Digest) :
+    evalDist (eagerGranularAllCanonicalPrivateOrdinalFinalizationRisk ordinal adversary parameter
+        table ftsSecret fuel target rightRoot) =
+      evalDist (LazyRevealProbe.sampleHashOutput >>= fun output =>
+        eagerGranularPrivateOrdinalFinalizationRiskAfterOutput ordinal adversary parameter table
+          ftsSecret fuel target rightRoot output) := by
+  unfold eagerGranularAllCanonicalPrivateOrdinalFinalizationRisk
+    eagerGranularPrivateOrdinalFinalizationRiskAfterOutput
+    resolveDeferredPositionValue emptyWitnessDeferredContext
+  simp [LazyRevealProbe.State.empty, LazyRevealProbe.State.hitAt,
+    LazyRevealProbe.State.pendingAt, LazyRevealProbe.State.clearPending,
+    LazyRevealProbe.State.pendingAway,
+    emptyDeferredStructuralValues]
+
+theorem evalDist_eagerGranularAllCanonicalPrivateOrdinalFinalizationRisk_eq_rootParts
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (fuel : Nat) (target : Position) (rightRoot : Digest) :
+    evalDist (eagerGranularAllCanonicalPrivateOrdinalFinalizationRisk ordinal adversary parameter
+        table ftsSecret fuel target rightRoot) =
+      evalDist (do
+        let leftRoot ← ($ᵗ Digest : ProbComp Digest)
+        let high ← ($ᵗ RootOutputHigh : ProbComp RootOutputHigh)
+        eagerGranularPrivateOrdinalFinalizationRiskAfterOutput ordinal adversary parameter table
+          ftsSecret fuel target rightRoot (rootOutputOfParts leftRoot high)) := by
+  rw [evalDist_eagerGranularAllCanonicalPrivateOrdinalFinalizationRisk_eq_sample]
+  let parts : ProbComp HashOutput := do
+    let leftRoot ← ($ᵗ Digest : ProbComp Digest)
+    let high ← ($ᵗ RootOutputHigh : ProbComp RootOutputHigh)
+    pure (rootOutputOfParts leftRoot high)
+  calc
+    _ = evalDist (parts >>= fun output =>
+          eagerGranularPrivateOrdinalFinalizationRiskAfterOutput ordinal adversary parameter table
+            ftsSecret fuel target rightRoot output) := by
+      rw [evalDist_bind, evalDist_bind, show evalDist parts =
+        evalDist LazyRevealProbe.sampleHashOutput from evalDist_sample_rootOutputOfParts]
+    _ = _ := by simp [parts, bind_assoc]
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
