@@ -422,4 +422,208 @@ theorem map_erase_sampledGranularAllDirectBoundaryNormalizedPrivateWitnessSnapsh
   exact map_erase_granularAllDirectBoundaryNormalizedPrivateWitnessSnapshot adversary parameter
     table ftsSecret fuel
 
+def snapshotProbeOrdinal
+    {snapshots : List PlannedProbeSnapshot} (ordinal : Fin snapshots.length) :
+    Fin (snapshots.map PlannedProbeSnapshot.toProbe).length :=
+  ⟨ordinal.val, by
+    rw [List.length_map]
+    exact ordinal.isLt⟩
+
+@[simp] theorem snapshotProbeOrdinal_val
+    {snapshots : List PlannedProbeSnapshot} (ordinal : Fin snapshots.length) :
+    (snapshotProbeOrdinal ordinal).val = ordinal.val := rfl
+
+def privateOrdinalSelectionOfSnapshot
+    {snapshots : List PlannedProbeSnapshot} (ordinal : Fin snapshots.length) :
+    PrivateOrdinalSelection :=
+  { candidate := (snapshots.get ordinal).probe
+    context := (snapshots.get ordinal).context
+    candidates :=
+      (snapshots.take (ordinal.val + 1)).map PlannedProbeSnapshot.toProbe }
+
+noncomputable def selectedPrivateSnapshotOrdinal?
+    (ordinal : Nat) (snapshots : List PlannedProbeSnapshot) :
+    Option PrivateOrdinalSelection :=
+  if hselected : ordinal < snapshots.length then
+    some (privateOrdinalSelectionOfSnapshot ⟨ordinal, hselected⟩)
+  else none
+
+@[simp] theorem privateOrdinalSelectionOfSnapshot_candidate
+    {snapshots : List PlannedProbeSnapshot} (ordinal : Fin snapshots.length) :
+    (privateOrdinalSelectionOfSnapshot ordinal).candidate =
+      (snapshots.map PlannedProbeSnapshot.toProbe).get (snapshotProbeOrdinal ordinal) := by
+  simp [privateOrdinalSelectionOfSnapshot, snapshotProbeOrdinal]
+
+@[simp] theorem privateOrdinalSelectionOfSnapshot_context
+    {snapshots : List PlannedProbeSnapshot} (ordinal : Fin snapshots.length) :
+    (privateOrdinalSelectionOfSnapshot ordinal).context =
+      (snapshots.get ordinal).context := rfl
+
+theorem privateOrdinalSelectionOfSnapshot_candidates
+    {snapshots : List PlannedProbeSnapshot} (ordinal : Fin snapshots.length) :
+    (privateOrdinalSelectionOfSnapshot ordinal).candidates =
+      (snapshots.map PlannedProbeSnapshot.toProbe).take (ordinal.val + 1) := by
+  simp [privateOrdinalSelectionOfSnapshot, List.map_take]
+
+theorem privateOrdinalSelectionOfSnapshot_candidates_take
+    {snapshots : List PlannedProbeSnapshot} (ordinal : Fin snapshots.length) :
+    (privateOrdinalSelectionOfSnapshot ordinal).candidates.take ordinal.val =
+      (snapshots.map PlannedProbeSnapshot.toProbe).take ordinal.val := by
+  rw [privateOrdinalSelectionOfSnapshot_candidates, List.take_take]
+  simp
+
+theorem selectedPrivateSnapshotOrdinal?_eq_some
+    {ordinal : Nat} {snapshots : List PlannedProbeSnapshot}
+    (hselected : ordinal < snapshots.length) :
+    selectedPrivateSnapshotOrdinal? ordinal snapshots =
+      some (privateOrdinalSelectionOfSnapshot ⟨ordinal, hselected⟩) := by
+  simp [selectedPrivateSnapshotOrdinal?, hselected]
+
+def WitnessFirstUsesDelayedLayerRootSnapshotOrdinal
+    (ordinal : Nat) (output : PrivateWitnessSnapshotOutput) : Prop :=
+  ∃ witness, ∃ sourceOrdinal : Fin output.2.length,
+    output.1 = some witness ∧ sourceOrdinal.val = ordinal ∧
+      firstPrivateWitnessOrdinal? witness
+          (output.2.map PlannedProbeSnapshot.toProbe) =
+        some (snapshotProbeOrdinal sourceOrdinal) ∧
+      (output.2.get sourceOrdinal).probe.IsLayerRoot ∧
+      (output.2.get sourceOrdinal).context.state.values
+          (.position witness.position) = none ∧
+      Coordinate.position witness.position ∉
+        (output.2.get sourceOrdinal).context.state.revealed ∧
+      (output.2.get sourceOrdinal).context.values witness.position =
+        some witness.output
+
+def WitnessFirstUsesSomeDelayedLayerRootSnapshot
+    (output : PrivateWitnessSnapshotOutput) : Prop :=
+  ∃ ordinal, WitnessFirstUsesDelayedLayerRootSnapshotOrdinal ordinal output
+
+def CandidatesAvoidRoot
+    (target : Position) (root : Digest) (candidates : List Probe) : Prop :=
+  ∀ candidate ∈ candidates, candidate ≠ ⟨.position target, root⟩
+
+theorem candidatesTake_avoid_witnessRoot_of_first
+    {ordinal : Nat} {output : PrivateWitnessPlanOutput}
+    {witness : PrivateHitWitness}
+    (hfirst : WitnessFirstUsesOrdinal ordinal output)
+    (hwitness : output.1 = some witness) :
+    CandidatesAvoidRoot witness.position (truncateHash witness.output)
+      (output.2.take ordinal) := by
+  intro candidate hcandidate heq
+  obtain ⟨prefixOrdinal, hget⟩ := List.mem_iff_get.mp hcandidate
+  have htakeLength : (output.2.take ordinal).length =
+      min ordinal output.2.length := List.length_take
+  have hltLength : prefixOrdinal.val < output.2.length := by
+    omega
+  let earlier : Fin output.2.length := ⟨prefixOrdinal.val, hltLength⟩
+  have hgetFull : output.2.get earlier = candidate := by
+    rw [← hget]
+    simp [earlier]
+  have hltOrdinal : earlier.val < ordinal := by
+    dsimp only [earlier]
+    omega
+  have hcoordinate : (output.2.get earlier).coordinate =
+      Coordinate.position witness.position := by
+    rw [hgetFull, heq]
+  have hne := earlier_candidate_ne_of_witnessFirstUsesOrdinal hfirst witness hwitness earlier
+    hltOrdinal witness.position hcoordinate rfl
+  rw [hgetFull, heq] at hne
+  exact hne rfl
+
+theorem candidatesAvoidRoots_of_first_of_avoid_right
+    {ordinal : Nat} {output : PrivateWitnessPlanOutput}
+    {witness : PrivateHitWitness} {rightRoot : Digest}
+    (hfirst : WitnessFirstUsesOrdinal ordinal output)
+    (hwitness : output.1 = some witness)
+    (hright : CandidatesAvoidRoot witness.position rightRoot
+      (output.2.take ordinal)) :
+    CandidatesAvoidRoots witness.position (truncateHash witness.output) rightRoot
+      (output.2.take ordinal) := by
+  intro candidate hcandidate
+  exact ⟨candidatesTake_avoid_witnessRoot_of_first hfirst hwitness candidate hcandidate,
+    hright candidate hcandidate⟩
+
+theorem witnessFirstUsesLayerRootOrdinal_erase_of_delayedSnapshot
+    {ordinal : Nat} {output : PrivateWitnessSnapshotOutput}
+    (hdelayed : WitnessFirstUsesDelayedLayerRootSnapshotOrdinal ordinal output) :
+    WitnessFirstUsesLayerRootOrdinal ordinal
+      (erasePrivateWitnessSnapshotOutput output) := by
+  obtain ⟨witness, sourceOrdinal, hwitness, hordinal, hfirst, hroot,
+    _hstate, _hrevealed, _hvalue⟩ := hdelayed
+  unfold erasePrivateWitnessSnapshotOutput
+  change (privateOrdinalSelectionOfSnapshot sourceOrdinal).candidate.IsLayerRoot at hroot
+  rw [privateOrdinalSelectionOfSnapshot_candidate] at hroot
+  exact ⟨witness, snapshotProbeOrdinal sourceOrdinal, hwitness, hordinal,
+    hfirst, hroot⟩
+
+theorem privateOrdinalSelectionOfSnapshot_goodForRoots_of_delayed
+    {ordinal : Nat} {output : PrivateWitnessSnapshotOutput}
+    {witness : PrivateHitWitness} {sourceOrdinal : Fin output.2.length}
+    {rightRoot : Digest}
+    (_hwitness : output.1 = some witness)
+    (hordinal : sourceOrdinal.val = ordinal)
+    (hfirst : firstPrivateWitnessOrdinal? witness
+        (output.2.map PlannedProbeSnapshot.toProbe) =
+      some (snapshotProbeOrdinal sourceOrdinal))
+    (hstate : (output.2.get sourceOrdinal).context.state.values
+        (.position witness.position) = none)
+    (hrevealed : Coordinate.position witness.position ∉
+      (output.2.get sourceOrdinal).context.state.revealed)
+    (hvalue : (output.2.get sourceOrdinal).context.values witness.position =
+      some witness.output)
+    (havoid : CandidatesAvoidRoots witness.position (truncateHash witness.output)
+      rightRoot
+      ((output.2.map PlannedProbeSnapshot.toProbe).take ordinal)) :
+    (privateOrdinalSelectionOfSnapshot sourceOrdinal).GoodForRoots
+      witness.position witness.output rightRoot ordinal := by
+  subst ordinal
+  have hmatch := privateWitnessAtOrdinal_of_firstPrivateWitnessOrdinal?_eq_some hfirst
+  unfold PrivateWitnessAtOrdinal at hmatch
+  constructor
+  · rw [privateOrdinalSelectionOfSnapshot_candidate]
+    exact congrArg₂ Probe.mk hmatch.1 hmatch.2.symm
+  · refine ⟨hstate, hrevealed, hvalue, ?_⟩
+    rw [privateOrdinalSelectionOfSnapshot_candidates_take]
+    exact havoid
+
+theorem selectedPrivateSnapshotOrdinal?_goodForRoots_of_delayed
+    {ordinal : Nat} {output : PrivateWitnessSnapshotOutput}
+    {rightRoot : Digest}
+    (hdelayed : WitnessFirstUsesDelayedLayerRootSnapshotOrdinal ordinal output)
+    (hright : ∀ witness sourceOrdinal,
+      output.1 = some witness → sourceOrdinal.val = ordinal →
+      firstPrivateWitnessOrdinal? witness
+          (output.2.map PlannedProbeSnapshot.toProbe) =
+        some (snapshotProbeOrdinal sourceOrdinal) →
+      CandidatesAvoidRoot witness.position rightRoot
+        ((output.2.map PlannedProbeSnapshot.toProbe).take ordinal)) :
+    ∃ witness sourceOrdinal,
+      output.1 = some witness ∧ sourceOrdinal.val = ordinal ∧
+      firstPrivateWitnessOrdinal? witness
+          (output.2.map PlannedProbeSnapshot.toProbe) =
+        some (snapshotProbeOrdinal sourceOrdinal) ∧
+      selectedPrivateSnapshotOrdinal? ordinal output.2 =
+        some (privateOrdinalSelectionOfSnapshot sourceOrdinal) ∧
+      (privateOrdinalSelectionOfSnapshot sourceOrdinal).GoodForRoots
+        witness.position witness.output rightRoot ordinal := by
+  obtain ⟨witness, sourceOrdinal, hwitness, hordinal, hfirst, _hroot,
+    hstate, hrevealed, hvalue⟩ := hdelayed
+  have huses : WitnessFirstUsesOrdinal ordinal
+      (erasePrivateWitnessSnapshotOutput output) := by
+    unfold erasePrivateWitnessSnapshotOutput
+    exact ⟨witness, snapshotProbeOrdinal sourceOrdinal, hwitness, hordinal, hfirst⟩
+  have havoid := candidatesAvoidRoots_of_first_of_avoid_right huses hwitness
+    (hright witness sourceOrdinal hwitness hordinal hfirst)
+  have hselected : ordinal < output.2.length := by
+    rw [← hordinal]
+    exact sourceOrdinal.isLt
+  have hselection : selectedPrivateSnapshotOrdinal? ordinal output.2 =
+      some (privateOrdinalSelectionOfSnapshot sourceOrdinal) := by
+    rw [selectedPrivateSnapshotOrdinal?_eq_some hselected]
+    congr
+    exact hordinal.symm
+  exact ⟨witness, sourceOrdinal, hwitness, hordinal, hfirst, hselection,
+    privateOrdinalSelectionOfSnapshot_goodForRoots_of_delayed hwitness hordinal hfirst hstate
+      hrevealed hvalue havoid⟩
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
