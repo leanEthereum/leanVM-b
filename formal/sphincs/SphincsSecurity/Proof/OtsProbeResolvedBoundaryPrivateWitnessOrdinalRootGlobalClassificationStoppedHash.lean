@@ -307,17 +307,44 @@ theorem relTriple_source_observedMaterializedHashContinuation_firstStopped_of_pr
       right
       left
       have hlength : snapshots.length = observations.length := haligned.length_eq
-      refine ⟨result, snapshots.length, rfl, hdata.1, hdata.2.1, ?_, ?_⟩
-      · simpa [hlength] using hfirst.prefix hdata.2.2
       have hleftHidden : candidate.coordinate ∉ left.state.revealed := by
         rwa [hrevealed]
-      exact selectedPrivateSnapshotHitAt_of_appended_privateStructuralHit snapshots candidate left
-        sourceOutput (hsource sourceOutput hrelation.1.2) hcontext.leftCompletable hleftHidden
-        (fun position output hcandidate' hstate hprivate =>
-          candidatesAvoidRoot_of_aligned_tracked table snapshots observations candidate left right
-            hbefore hcontext hrightMaterialized hnoEarlier haligned htracked position output
-            hcandidate' hstate hprivate hleftHidden)
-        hhit
+      have hextends := hsource sourceOutput hrelation.1.2
+      have hfirstResult : FirstExistingHiddenHitAt result snapshots.length := by
+        simpa [hlength] using hfirst.prefix hdata.2.2
+      have hselected : SelectedPrivateSnapshotHitAt sourceOutput snapshots.length :=
+        selectedPrivateSnapshotHitAt_of_appended_privateStructuralHit snapshots candidate left
+          sourceOutput hextends hcontext.leftCompletable hleftHidden
+          (fun position output hcandidate' hstate hprivate =>
+            candidatesAvoidRoot_of_aligned_tracked table snapshots observations candidate left right
+              hbefore hcontext hrightMaterialized hnoEarlier haligned htracked position output
+              hcandidate' hstate hprivate hleftHidden)
+          hhit
+      have hsourceLt : snapshots.length < sourceOutput.2.length := by
+        have hprefixLength := hextends.length_le
+        simpa using (Nat.lt_of_lt_of_le (by simp : snapshots.length <
+          (snapshots ++ [(⟨candidate, left⟩ : PlannedProbeSnapshot)]).length) hprefixLength)
+      let sourceOrdinal : Fin sourceOutput.2.length := ⟨snapshots.length, hsourceLt⟩
+      have hsourceProbe : (sourceOutput.2.get sourceOrdinal).probe = candidate := by
+        obtain ⟨tail, htail⟩ := hextends
+        simp [← htail, sourceOrdinal]
+      have hobservedLt : observations.length < result.observations.length :=
+        (by simp : observations.length <
+          (observations ++ [cleanProbeObservation right.state candidate.coordinate
+            candidate.candidate]).length) |>.trans_le hdata.2.2.length_le
+      let observedOrdinal : Fin result.observations.length :=
+        ⟨observations.length, hobservedLt⟩
+      have hobservedProbe :
+          (result.observations.get observedOrdinal).toProbe = candidate := by
+        obtain ⟨tail, htail⟩ := hdata.2.2
+        simp [← htail, observedOrdinal, cleanProbeObservation,
+          CleanProbeObservation.toProbe]
+      have hselectedAligned :
+          SelectedSnapshotObservationAlignedAt sourceOutput result snapshots.length :=
+        ⟨sourceOrdinal, observedOrdinal, rfl, hlength.symm,
+          hsourceProbe.trans hobservedProbe.symm⟩
+      exact ⟨result, snapshots.length, rfl, hdata.1, hdata.2.1, hfirstResult, hselected,
+        hselectedAligned⟩
 
 set_option maxRecDepth 100000 in
 theorem relTriple_source_observedMaterializedHashContinuation_firstStopped_of_cause
