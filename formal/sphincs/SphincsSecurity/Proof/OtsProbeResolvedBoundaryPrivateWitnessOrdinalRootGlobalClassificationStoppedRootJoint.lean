@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedRootEager
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedRootSharedPrefix
 import SphincsSecurity.Proof.MarginalCoupling
 
 /-!
