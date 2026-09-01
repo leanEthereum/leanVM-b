@@ -44,6 +44,87 @@ theorem valuesLE_of_mem_runObservedCleanFromTable
       exact valuesLE_of_done_runDirectResolvedDetailedFromTable computation
         (directDeferredContext state) fuel table detailed hdetailed
 
+theorem LazyRevealProbe.valuesLE_clearPending
+    (state : LazyRevealProbe.State Coordinate) (coordinate : Coordinate) :
+    LazyRevealProbe.ValuesLE state (state.clearPending coordinate) := by
+  intro other output hvalue
+  exact hvalue
+
+theorem LazyRevealProbe.valuesLE_complete_of_none
+    (state : LazyRevealProbe.State Coordinate) (coordinate : Coordinate)
+    (output : HashOutput) (hnone : state.values coordinate = none) :
+    LazyRevealProbe.ValuesLE state (state.complete coordinate output) := by
+  intro other stored hvalue
+  by_cases heq : other = coordinate
+  · subst other
+    rw [hnone] at hvalue
+    simp at hvalue
+  · simpa [LazyRevealProbe.State.complete, Function.update_of_ne heq] using hvalue
+
+set_option maxRecDepth 100000 in
+theorem valuesLE_of_mem_finalizeCleanFromTable :
+    ∀ (coordinates : List Coordinate)
+      (state : LazyRevealProbe.State Coordinate)
+      (table : OtsSecretIndex → HashOutput)
+      (finalState : LazyRevealProbe.State Coordinate)
+      (finalTable : OtsSecretIndex → HashOutput),
+      some (finalState, finalTable) ∈ support
+          (finalizeCleanFromTable coordinates state table) →
+        LazyRevealProbe.ValuesLE state finalState
+  | [], state, table, finalState, finalTable, hresult => by
+      simp [finalizeCleanFromTable] at hresult
+      obtain ⟨rfl, rfl⟩ := hresult
+      exact fun _ _ hvalue => hvalue
+  | coordinate :: remaining, state, table, finalState, finalTable, hresult => by
+      rw [finalizeCleanFromTable.eq_def] at hresult
+      cases hvalue : state.values coordinate with
+      | some output =>
+          simp only [hvalue] at hresult
+          exact (LazyRevealProbe.valuesLE_clearPending state coordinate).trans
+            (valuesLE_of_mem_finalizeCleanFromTable remaining
+              (state.clearPending coordinate) table finalState finalTable hresult)
+      | none =>
+          simp only [hvalue] at hresult
+          cases coordinate with
+          | chainStart lay tree leafIdx chainIdx =>
+              let output := table ⟨lay, tree, leafIdx, chainIdx⟩
+              by_cases hhit : state.hitAt (.chainStart lay tree leafIdx chainIdx) output
+              · simp [output, hhit] at hresult
+              · simp only [output, hhit, ↓reduceIte] at hresult
+                exact (LazyRevealProbe.valuesLE_complete_of_none state
+                  (.chainStart lay tree leafIdx chainIdx) output hvalue).trans
+                    (valuesLE_of_mem_finalizeCleanFromTable remaining
+                      (state.complete (.chainStart lay tree leafIdx chainIdx) output) table
+                      finalState finalTable hresult)
+          | position position =>
+              rw [mem_support_bind_iff] at hresult
+              obtain ⟨output, _houtput, hrest⟩ := hresult
+              by_cases hhit : state.hitAt (.position position) output
+              · simp [hhit] at hrest
+              · simp only [hhit, ↓reduceIte] at hrest
+                exact (LazyRevealProbe.valuesLE_complete_of_none state (.position position)
+                  output hvalue).trans
+                    (valuesLE_of_mem_finalizeCleanFromTable remaining
+                      (state.complete (.position position) output) table finalState finalTable
+                      hrest)
+
+theorem valuesLE_of_mem_finishObservedCleanRunFromTable
+    (result finalResult : ObservedCleanRunResult α)
+    (hresult : some finalResult ∈ support
+      (finishObservedCleanRunFromTable (some result))) :
+    LazyRevealProbe.ValuesLE result.state finalResult.state := by
+  unfold finishObservedCleanRunFromTable at hresult
+  rw [mem_support_bind_iff] at hresult
+  obtain ⟨finalized, hfinalized, hreturn⟩ := hresult
+  cases finalized with
+  | none => simp at hreturn
+  | some value =>
+      rcases value with ⟨finalState, finalTable⟩
+      simp only [support_pure, Set.mem_singleton_iff, Option.some.injEq] at hreturn
+      obtain ⟨rfl, rfl, rfl, rfl, rfl⟩ := hreturn
+      exact valuesLE_of_mem_finalizeCleanFromTable result.state.coordinates.toList result.state
+        result.table finalState finalTable hfinalized
+
 set_option maxRecDepth 100000 in
 theorem observations_prefix_of_mem_runObservedCleanFromTable
     (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
@@ -518,7 +599,7 @@ theorem relTriple_any_observedMaterializedBoundary_of_doomed
 set_option maxHeartbeats 2000000 in
 set_option maxRecDepth 100000 in
 theorem relTriple_finishWitnessObservedStep
-    (parameter : PublicParameter) (root : Digest)
+    (parameter : PublicParameter) (rootOf : α → Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
     (next : α → OracleComp (OracleWorld + SigningSpec) β)
     (leftObserve : DeferredContext → Nat → (α × SplitHashCache) →
@@ -537,7 +618,8 @@ theorem relTriple_finishWitnessObservedStep
       RelTriple
         (canonicalizeDirectWitnessSnapshotObserve table leftObserve left.context left.remaining
           ((left.value.1, left.value.2)) snapshots)
-        (observedMaterializedBoundary parameter root ftsSecret (next right.value.1)
+        (observedMaterializedBoundary parameter (rootOf right.value.1) ftsSecret
+          (next right.value.1)
           observations right.context.state right.remaining table right.value.2)
         (SnapshotObservedPrefixStableRel table)) :
     RelTriple
@@ -546,7 +628,8 @@ theorem relTriple_finishWitnessObservedStep
       (match rightResult with
         | none => pure none
         | some result =>
-            observedMaterializedBoundary parameter root ftsSecret (next result.value.1)
+            observedMaterializedBoundary parameter (rootOf result.value.1) ftsSecret
+              (next result.value.1)
               result.observations result.state result.remaining table result.value.2)
       (SnapshotObservedPrefixStableRel table) := by
   obtain ⟨detailed, hproject, hstable⟩ := hrelation
@@ -576,31 +659,37 @@ theorem relTriple_finishWitnessObservedStep
       cases leftResult with
       | stoppedFuel =>
           change RelTriple (pure (none, snapshots))
-            (observedMaterializedBoundary parameter root ftsSecret (next right.value.1)
+            (observedMaterializedBoundary parameter (rootOf right.value.1) ftsSecret
+              (next right.value.1)
               observations right.context.state right.remaining table right.value.2)
             (SnapshotObservedPrefixStableRel table)
-          exact relTriple_pure_snapshot_observedMaterializedBoundary parameter root ftsSecret
+          exact relTriple_pure_snapshot_observedMaterializedBoundary parameter
+            (rootOf right.value.1) ftsSecret
             (next right.value.1) (none, snapshots) observations right.context.state
             right.remaining table right.value.2
             haligned
             (Or.inr (by rw [← hstable.2]; exact hstable.1.2))
       | stoppedOrdinary =>
           change RelTriple (pure (none, snapshots))
-            (observedMaterializedBoundary parameter root ftsSecret (next right.value.1)
+            (observedMaterializedBoundary parameter (rootOf right.value.1) ftsSecret
+              (next right.value.1)
               observations right.context.state right.remaining table right.value.2)
             (SnapshotObservedPrefixStableRel table)
-          exact relTriple_pure_snapshot_observedMaterializedBoundary parameter root ftsSecret
+          exact relTriple_pure_snapshot_observedMaterializedBoundary parameter
+            (rootOf right.value.1) ftsSecret
             (next right.value.1) (none, snapshots) observations right.context.state
             right.remaining table right.value.2
             haligned
             (Or.inr (by rw [← hstable.2]; exact hstable.1.2))
       | stoppedPrivate witness =>
           change RelTriple (pure (some witness, snapshots))
-            (observedMaterializedBoundary parameter root ftsSecret (next right.value.1)
+            (observedMaterializedBoundary parameter (rootOf right.value.1) ftsSecret
+              (next right.value.1)
               observations right.context.state right.remaining table right.value.2)
             (SnapshotObservedPrefixStableRel table)
           rcases hstable with hstored | hdoomed
-          · exact relTriple_pure_snapshot_observedMaterializedBoundary parameter root ftsSecret
+          · exact relTriple_pure_snapshot_observedMaterializedBoundary parameter
+              (rootOf right.value.1) ftsSecret
               (next right.value.1) (some witness, snapshots) observations right.context.state
               right.remaining table right.value.2
               haligned
@@ -609,7 +698,8 @@ theorem relTriple_finishWitnessObservedStep
                 have : other = witness := Option.some.inj hother.symm
                 subst other
                 exact hstored.1))
-          · exact relTriple_pure_snapshot_observedMaterializedBoundary parameter root ftsSecret
+          · exact relTriple_pure_snapshot_observedMaterializedBoundary parameter
+              (rootOf right.value.1) ftsSecret
               (next right.value.1) (some witness, snapshots) observations right.context.state
               right.remaining table right.value.2
               haligned
@@ -618,12 +708,14 @@ theorem relTriple_finishWitnessObservedStep
           change RelTriple
             (canonicalizeDirectWitnessSnapshotObserve table leftObserve left.context
               left.remaining left.value snapshots)
-            (observedMaterializedBoundary parameter root ftsSecret (next right.value.1)
+            (observedMaterializedBoundary parameter (rootOf right.value.1) ftsSecret
+              (next right.value.1)
               observations right.context.state right.remaining table right.value.2)
             (SnapshotObservedPrefixStableRel table)
           rcases hstable with hclean | hdoomed
           · exact hrecursive left right rfl hright hclean
-          · exact relTriple_any_observedMaterializedBoundary_of_doomed parameter root ftsSecret
+          · exact relTriple_any_observedMaterializedBoundary_of_doomed parameter
+              (rootOf right.value.1) ftsSecret
               (next right.value.1)
               (canonicalizeDirectWitnessSnapshotObserve table leftObserve left.context
                 left.remaining left.value snapshots)
@@ -812,8 +904,8 @@ theorem relTriple_directSnapshotBoundary_observedMaterialized
                         table result.value.2)
                 (SnapshotObservedPrefixStableRel table)
               have hfinish := relTriple_finishWitnessObservedStep (α := Fin (n + 1))
-                (β := RetainedRestResult) parameter root ftsSecret next leftObserve snapshots
-                observations table leftResult rightResult hstep haligned (by
+                (β := RetainedRestResult) parameter (fun _ => root) ftsSecret next leftObserve
+                snapshots observations table leftResult rightResult hstep haligned (by
                 intro nextLeft nextRight hleftEq hrightEq hclean
                 rw [hleftEq] at hleftSupport
                 rw [hrightEq] at hrightSupport
@@ -924,7 +1016,7 @@ theorem relTriple_directSnapshotBoundary_observedMaterialized
               intro leftResult rightResult hstep
               rcases hstep with ⟨⟨hstep, hleftSupport⟩, hrightSupport⟩
               have hfinish := relTriple_finishWitnessObservedStep (α := HashOutput)
-                (β := RetainedRestResult) parameter root ftsSecret next leftObserve
+                (β := RetainedRestResult) parameter (fun _ => root) ftsSecret next leftObserve
                 nextSnapshots nextObservations table leftResult rightResult hstep hnextAligned (by
                 intro nextLeft nextRight hleftEq hrightEq hclean
                 rw [hleftEq] at hleftSupport
@@ -1008,8 +1100,8 @@ theorem relTriple_directSnapshotBoundary_observedMaterialized
           intro leftResult rightResult hstep
           rcases hstep with ⟨⟨hstep, hleftSupport⟩, hrightSupport⟩
           have hfinish := relTriple_finishWitnessObservedStep (α := Option Signature)
-            (β := RetainedRestResult) parameter root ftsSecret next leftObserve snapshots
-            observations table leftResult rightResult hstep haligned (by
+            (β := RetainedRestResult) parameter (fun _ => root) ftsSecret next leftObserve
+            snapshots observations table leftResult rightResult hstep haligned (by
             intro nextLeft nextRight hleftEq hrightEq hclean
             rw [hleftEq] at hleftSupport
             rw [hrightEq] at hrightSupport

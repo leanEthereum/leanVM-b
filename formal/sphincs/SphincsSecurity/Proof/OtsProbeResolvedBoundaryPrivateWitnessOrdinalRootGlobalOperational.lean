@@ -2628,7 +2628,7 @@ noncomputable def observedMaterializedRetainedRunFromTable
   | some rootResult => do
       let restResult ← observedMaterializedBoundary parameter rootResult.value.1 ftsSecret
         (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩)
-        rootResult.observations rootResult.state rootResult.remaining rootResult.table
+        rootResult.observations rootResult.state rootResult.remaining table
         rootResult.value.2
       match restResult with
       | none => pure none
@@ -2637,6 +2637,19 @@ noncomputable def observedMaterializedRetainedRunFromTable
             { restResult with
               value := ((rootResult.value.1, restResult.value.1), restResult.value.2) })
 
+noncomputable def finishObservedMaterializedCleanRunFromTable
+    (table : OtsSecretIndex → HashOutput)
+    (result : Option (ObservedCleanRunResult α)) :
+    ProbComp (Option (ObservedCleanRunResult α)) := by
+  classical
+  exact match result with
+  | none => pure none
+  | some result =>
+      if DeferredCompletable table (directDeferredContext result.state) then
+        finishObservedCleanRunFromTable (some result)
+      else
+        pure none
+
 noncomputable def sampledObservedMaterializedClean
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
@@ -2644,6 +2657,6 @@ noncomputable def sampledObservedMaterializedClean
       (ObservedCleanRunResult (RetainedGameResult × SplitHashCache))) := do
   let table ← sampleOtsHashTable
   let result ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret fuel table
-  finishObservedCleanRunFromTable result
+  finishObservedMaterializedCleanRunFromTable table result
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
