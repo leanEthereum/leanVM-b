@@ -296,4 +296,128 @@ theorem probEvent_uniformActualRoot_materializedSelectionAfterRootResult_le_mul
     target leftRoot rightRoot (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
     fuel table rootResult hresult
 
+theorem probEvent_bind_le_bind_mul_of_forall
+    (first : ProbComp ι) (left : ι → ProbComp α) (right : ι → ProbComp β)
+    (event : α → Prop) (gate : β → Prop) (epsilon : ENNReal)
+    (hbound : ∀ index ∈ support first,
+      Pr[event | left index] ≤ Pr[gate | right index] * epsilon) :
+    Pr[event | first >>= left] ≤ Pr[gate | first >>= right] * epsilon := by
+  rw [probEvent_bind_eq_tsum, probEvent_bind_eq_tsum]
+  calc
+    _ ≤ ∑' index, Pr[= index | first] *
+          (Pr[gate | right index] * epsilon) := by
+      apply ENNReal.tsum_le_tsum
+      intro index
+      by_cases hindex : index ∈ support first
+      · gcongr
+        exact hbound index hindex
+      · rw [probOutput_eq_zero_of_not_mem_support hindex]
+        simp
+    _ = (∑' index, Pr[= index | first] * Pr[gate | right index]) * epsilon := by
+      simp_rw [← mul_assoc]
+      rw [ENNReal.tsum_mul_right]
+
+noncomputable def sampledHighMaterializedRootSelectionAfterRootResult
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (rootResult : CleanRunResult (Digest × SplitHashCache)) :
+    ProbComp (Digest × Digest × Option Probe) := do
+  let high ← ($ᵗ RootOutputHigh : ProbComp RootOutputHigh)
+  let leftRoot ← ($ᵗ Digest : ProbComp Digest)
+  let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+  let selection ← materializedRootSelectionAfterRootResult ordinal adversary parameter
+    ftsSecret target high rootResult leftRoot rightRoot
+  pure (leftRoot, rightRoot, selection)
+
+noncomputable def sampledHighMaterializedRootSelectionProductionAfterRootResult
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (rootResult : CleanRunResult (Digest × SplitHashCache)) :
+    ProbComp (Digest × Option Probe) := do
+  let high ← ($ᵗ RootOutputHigh : ProbComp RootOutputHigh)
+  let leftRoot ← ($ᵗ Digest : ProbComp Digest)
+  let selection ← materializedRootSelectionAfterRootResult ordinal adversary parameter
+    ftsSecret target high rootResult leftRoot leftRoot
+  pure (leftRoot, selection)
+
+set_option maxRecDepth 100000 in
+theorem probEvent_sampledHigh_materializedSelectionAfterRootResult_le_mul
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (hroot : IsLayerRoot target)
+    (hparent : ∃ parent, Position.parentOf target = some parent)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (rootResult : CleanRunResult (Digest × SplitHashCache))
+    (hresult : some rootResult ∈ support
+      (runCleanFromTable (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+        fuel table (maskedPublishedTreeRoot.run emptySplitHashCache))) :
+    Pr[fun result => materializedOrdinalSelectionMatches target result.1 result.2.2 |
+        sampledHighMaterializedRootSelectionAfterRootResult ordinal adversary parameter ftsSecret
+          target rootResult] ≤
+      Pr[fun result => materializedOrdinalSelectionAt target result.2 |
+          sampledHighMaterializedRootSelectionProductionAfterRootResult ordinal adversary parameter
+            ftsSecret target rootResult] *
+        ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  unfold sampledHighMaterializedRootSelectionAfterRootResult
+    sampledHighMaterializedRootSelectionProductionAfterRootResult
+  apply probEvent_bind_le_bind_mul_of_forall
+  intro high _hhigh
+  exact probEvent_uniformActualRoot_materializedSelectionAfterRootResult_le_mul ordinal adversary
+    parameter ftsSecret target hroot hparent high fuel table rootResult hresult
+
+noncomputable def materializedRootOrdinalMatchExperimentAfterTable
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
+    ProbComp (Digest × Digest × Option Probe) := do
+  let rootResult ← runCleanFromTable
+    (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel table
+    (maskedPublishedTreeRoot.run emptySplitHashCache)
+  match rootResult with
+  | none => pure (0, 0, none)
+  | some result =>
+      sampledHighMaterializedRootSelectionAfterRootResult ordinal adversary parameter ftsSecret
+        target result
+
+noncomputable def materializedRootOrdinalProductionExperimentAfterTable
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
+    ProbComp (Digest × Option Probe) := do
+  let rootResult ← runCleanFromTable
+    (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel table
+    (maskedPublishedTreeRoot.run emptySplitHashCache)
+  match rootResult with
+  | none => pure (0, none)
+  | some result =>
+      sampledHighMaterializedRootSelectionProductionAfterRootResult ordinal adversary parameter
+        ftsSecret target result
+
+set_option maxRecDepth 100000 in
+theorem probEvent_materializedRootOrdinalMatchExperimentAfterTable_le_mul
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (hroot : IsLayerRoot target)
+    (hparent : ∃ parent, Position.parentOf target = some parent)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
+    Pr[fun result => materializedOrdinalSelectionMatches target result.1 result.2.2 |
+        materializedRootOrdinalMatchExperimentAfterTable ordinal adversary parameter ftsSecret
+          target fuel table] ≤
+      Pr[fun result => materializedOrdinalSelectionAt target result.2 |
+          materializedRootOrdinalProductionExperimentAfterTable ordinal adversary parameter
+            ftsSecret target fuel table] *
+        ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  classical
+  unfold materializedRootOrdinalMatchExperimentAfterTable
+    materializedRootOrdinalProductionExperimentAfterTable
+  apply probEvent_bind_le_bind_mul_of_forall
+  intro rootResult hrootResult
+  cases rootResult with
+  | none =>
+      rw [probEvent_pure, probEvent_pure]
+      simp [materializedOrdinalSelectionMatches, materializedOrdinalSelectionAt]
+  | some result =>
+      exact probEvent_sampledHigh_materializedSelectionAfterRootResult_le_mul ordinal adversary
+        parameter ftsSecret target hroot hparent fuel table result hrootResult
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
