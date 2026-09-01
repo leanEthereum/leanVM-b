@@ -13,6 +13,105 @@ namespace SphincsSecurity.Concrete.OtsProbeSimulation
 open OracleComp OracleSpec ENNReal
 open OracleComp.ProgramLogic.Relational
 
+def PlannedProbeSnapshot.ExistingHiddenPositionHit
+    (table : OtsSecretIndex → HashOutput) (snapshot : PlannedProbeSnapshot) : Prop :=
+  ∃ observation position,
+    snapshot.ObservedAt table observation ∧
+      observation.coordinate = .position position ∧ observation.ExistingHiddenHit
+
+def SnapshotsAvoidExistingHiddenPositionHits
+    (table : OtsSecretIndex → HashOutput)
+    (snapshots : List PlannedProbeSnapshot) : Prop :=
+  ∀ snapshot ∈ snapshots, ¬snapshot.ExistingHiddenPositionHit table
+
+theorem PlannedProbeSnapshot.ObservedAt.existingHiddenPositionHit_iff
+    {table : OtsSecretIndex → HashOutput}
+    {snapshot : PlannedProbeSnapshot} {observation : CleanProbeObservation}
+    (haligned : snapshot.ObservedAt table observation) :
+    snapshot.ExistingHiddenPositionHit table ↔
+      ∃ position, observation.coordinate = .position position ∧
+        observation.ExistingHiddenHit := by
+  constructor
+  · rintro ⟨other, position, hother, hposition, hhit⟩
+    have hprobe : other.toProbe = observation.toProbe := hother.1.trans haligned.1.symm
+    have hcoordinate : other.coordinate = observation.coordinate :=
+      congrArg Probe.coordinate hprobe
+    have hcandidate : other.candidate = observation.candidate :=
+      congrArg Probe.candidate hprobe
+    refine ⟨position, hcoordinate.symm.trans hposition, ?_⟩
+    obtain ⟨hhidden, output, hvalue, hcandidateHit⟩ := hhit
+    refine ⟨?_, output, ?_, ?_⟩
+    · calc
+        observation.revealedAtProbe =
+            decide (observation.coordinate ∈ snapshot.context.state.revealed) :=
+          haligned.2.2.1
+        _ = decide (other.coordinate ∈ snapshot.context.state.revealed) := by
+          rw [hcoordinate]
+        _ = other.revealedAtProbe := hother.2.2.1.symm
+        _ = false := hhidden
+    · have hotherValue := hother.2.1 position hposition
+      have halignedValue := haligned.2.1 position (hcoordinate.symm.trans hposition)
+      rw [hotherValue] at hvalue
+      rw [halignedValue]
+      exact hvalue
+    · exact hcandidateHit.trans hcandidate
+  · rintro ⟨position, hposition, hhit⟩
+    exact ⟨observation, position, haligned, hposition, hhit⟩
+
+theorem SnapshotsObservedAt.avoidExistingHiddenPositionHits
+    {table : OtsSecretIndex → HashOutput}
+    {snapshots : List PlannedProbeSnapshot}
+    {observations : List CleanProbeObservation}
+    (haligned : SnapshotsObservedAt table snapshots observations)
+    (hnoHit : ∀ observation ∈ observations, ¬observation.ExistingHiddenHit) :
+    SnapshotsAvoidExistingHiddenPositionHits table snapshots := by
+  induction haligned with
+  | nil => simp [SnapshotsAvoidExistingHiddenPositionHits]
+  | cons hhead htail ih =>
+      intro snapshot hsnapshot
+      simp only [List.mem_cons] at hsnapshot
+      rcases hsnapshot with rfl | hrest
+      · intro hhit
+        obtain ⟨_position, _hposition, hobservation⟩ :=
+          hhead.existingHiddenPositionHit_iff.mp hhit
+        exact hnoHit _ (by simp) hobservation
+      · apply ih
+        · intro observation hobservation
+          exact hnoHit observation (by simp [hobservation])
+        · exact hrest
+
+theorem SelectedSnapshotObservationAlignedAt.avoidExistingHiddenPositionHits
+    {table : OtsSecretIndex → HashOutput}
+    {source : PrivateWitnessSnapshotOutput}
+    {result : ObservedCleanRunResult α} {ordinal : Nat}
+    (haligned : SelectedSnapshotObservationAlignedAt table source result ordinal)
+    (hfirst : FirstExistingHiddenHitAt result ordinal) :
+    SnapshotsAvoidExistingHiddenPositionHits table (source.2.take ordinal) := by
+  obtain ⟨_selectedSource, selectedObserved, _hsource, hobserved, _hcandidate,
+    _hprefix, hsnapshots⟩ := haligned
+  apply hsnapshots.avoidExistingHiddenPositionHits
+  intro observation hobservation
+  obtain ⟨index, hget⟩ := List.mem_iff_get.mp hobservation
+  obtain ⟨_first, _hfirstOrdinal, _hfirstHit, hbefore⟩ := hfirst
+  have hindexLt : index.val < ordinal := by
+    have hlt := index.isLt
+    simp only [List.length_take] at hlt
+    omega
+  have hresultLt : index.val < result.observations.length := by
+    have hordinalLt : ordinal < result.observations.length := by
+      rw [← hobserved]
+      exact selectedObserved.isLt
+    exact hindexLt.trans hordinalLt
+  let resultIndex : Fin result.observations.length := ⟨index.val, hresultLt⟩
+  have hgetResult : result.observations.get resultIndex = observation := by
+    obtain ⟨tail, htail⟩ := List.take_prefix ordinal result.observations
+    have htakeGet : (result.observations.take ordinal).get index =
+        result.observations.get resultIndex := by
+      simp [resultIndex]
+    exact htakeGet.symm.trans hget
+  rw [← hgetResult]
+  exact hbefore resultIndex hindexLt
+
 theorem SnapshotObservedFirstStoppedRel.selectedNonRoot_of_successful_firstNonRoot
     {table : OtsSecretIndex → HashOutput}
     {source : PrivateWitnessSnapshotOutput}
@@ -34,7 +133,7 @@ theorem SnapshotObservedFirstStoppedRel.selectedNonRoot_of_successful_firstNonRo
     · obtain ⟨sourceSelected, target, output, hsourceSelected, _hselection, hgood,
         htargetRoot⟩ := hroot
       obtain ⟨alignedSource, alignedObserved, halignedSource, halignedObserved,
-        hcandidates, _hprefix⟩ := haligned
+        hcandidates, _hprefix, _hsnapshots⟩ := haligned
       have hsourceEq : sourceSelected = alignedSource :=
         Fin.ext (hsourceSelected.trans halignedSource.symm)
       have hobservedEq : alignedObserved = selected :=

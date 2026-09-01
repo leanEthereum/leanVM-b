@@ -242,7 +242,7 @@ def SelectedPrivateSnapshotHitAt
         ((source.2.map PlannedProbeSnapshot.toProbe).take ordinal)
 
 def SelectedSnapshotObservationAlignedAt
-    (source : PrivateWitnessSnapshotOutput)
+    (table : OtsSecretIndex → HashOutput) (source : PrivateWitnessSnapshotOutput)
     (result : ObservedCleanRunResult α) (ordinal : Nat) : Prop :=
   ∃ sourceOrdinal : Fin source.2.length,
     ∃ observedOrdinal : Fin result.observations.length,
@@ -250,20 +250,23 @@ def SelectedSnapshotObservationAlignedAt
         (source.2.get sourceOrdinal).probe =
           (result.observations.get observedOrdinal).toProbe ∧
         (source.2.map PlannedProbeSnapshot.toProbe).take ordinal =
-          (result.observations.map CleanProbeObservation.toProbe).take ordinal
+          (result.observations.map CleanProbeObservation.toProbe).take ordinal ∧
+        SnapshotsObservedAt table (source.2.take ordinal)
+          (result.observations.take ordinal)
 
 theorem SelectedSnapshotObservationAlignedAt.prefix
     {source : PrivateWitnessSnapshotOutput}
     {before : ObservedCleanRunResult α} {after : ObservedCleanRunResult β}
     {ordinal : Nat}
-    (haligned : SelectedSnapshotObservationAlignedAt source before ordinal)
+    (haligned : SelectedSnapshotObservationAlignedAt table source before ordinal)
     (hprefix : before.observations <+: after.observations) :
-    SelectedSnapshotObservationAlignedAt source after ordinal := by
-  obtain ⟨sourceOrdinal, observedOrdinal, hsource, hobserved, heq, hprefixEq⟩ := haligned
+    SelectedSnapshotObservationAlignedAt table source after ordinal := by
+  obtain ⟨sourceOrdinal, observedOrdinal, hsource, hobserved, heq, hprefixEq,
+    hsnapshots⟩ := haligned
   have hlt : observedOrdinal.val < after.observations.length :=
     observedOrdinal.isLt.trans_le hprefix.length_le
   let observedOrdinal' : Fin after.observations.length := ⟨observedOrdinal.val, hlt⟩
-  refine ⟨sourceOrdinal, observedOrdinal', hsource, hobserved, ?_, ?_⟩
+  refine ⟨sourceOrdinal, observedOrdinal', hsource, hobserved, ?_, ?_, ?_⟩
   have hget : after.observations[observedOrdinal.val] =
       before.observations[observedOrdinal.val] := (hprefix.getElem observedOrdinal.isLt).symm
   simpa [observedOrdinal', hget] using heq
@@ -272,6 +275,10 @@ theorem SelectedSnapshotObservationAlignedAt.prefix
   rw [List.map_append, List.take_append_of_le_length]
   · exact hprefixEq
   · simpa using Nat.le_of_lt (hobserved ▸ observedOrdinal.isLt)
+  obtain ⟨tail, htail⟩ := hprefix
+  rw [← htail]
+  simpa [List.take_append_of_le_length (Nat.le_of_lt (hobserved ▸
+    observedOrdinal.isLt))] using hsnapshots
 
 theorem privateCandidate_eq_of_addPending_privateStructuralHit
     (candidate : Probe) (context : DeferredContext)
@@ -453,7 +460,7 @@ def SnapshotObservedSelectedStoppedRel
       DoomedResolvedContext table (directDeferredContext result.state) ∧
       FirstExistingHiddenHitAt result ordinal ∧
       SelectedPrivateSnapshotHitAt source ordinal ∧
-      SelectedSnapshotObservationAlignedAt source result ordinal
+      SelectedSnapshotObservationAlignedAt table source result ordinal
 
 theorem missingChainStartHit_of_doomed_direct_valid
     (table : OtsSecretIndex → HashOutput)
@@ -482,7 +489,7 @@ def SnapshotObservedFirstStoppedRel
       DoomedResolvedContext table (directDeferredContext result.state) ∧
       FirstExistingHiddenHitAt result ordinal ∧
       SelectedPrivateSnapshotHitAt source ordinal ∧
-      SelectedSnapshotObservationAlignedAt source result ordinal) ∨
+      SelectedSnapshotObservationAlignedAt table source result ordinal) ∨
     ∃ result, observed = some result ∧
       result.table = table ∧
       DoomedResolvedContext table (directDeferredContext result.state) ∧
@@ -529,7 +536,7 @@ theorem relTriple_source_observedMaterializedBoundary_selectedStopped
     (hfirst : FirstExistingHiddenHitAt
       (⟨state, fuel, (), table, observations⟩ : ObservedCleanRunResult Unit) snapshots.length)
     (hselectedAligned : ∀ output ∈ support source,
-      SelectedSnapshotObservationAlignedAt output
+      SelectedSnapshotObservationAlignedAt table output
         (⟨state, fuel, (), table, observations⟩ : ObservedCleanRunResult Unit)
         snapshots.length)
     (hdoomed : DoomedResolvedContext table (directDeferredContext state)) :
@@ -590,7 +597,7 @@ theorem relTriple_source_observedMaterializedBoundary_firstStopped_of_selected
     (hfirst : FirstExistingHiddenHitAt
       (⟨state, fuel, (), table, observations⟩ : ObservedCleanRunResult Unit) snapshots.length)
     (hselectedAligned : ∀ output ∈ support source,
-      SelectedSnapshotObservationAlignedAt output
+      SelectedSnapshotObservationAlignedAt table output
         (⟨state, fuel, (), table, observations⟩ : ObservedCleanRunResult Unit)
         snapshots.length)
     (hdoomed : DoomedResolvedContext table (directDeferredContext state)) :
@@ -748,7 +755,7 @@ theorem SnapshotObservedFirstStoppedRel.selectedAligned_or_chain_of_successful_f
     (ordinal : Nat)
     (hfirst : FirstExistingHiddenHitAt result ordinal) :
     (SelectedPrivateSnapshotHitAt source ordinal ∧
-      SelectedSnapshotObservationAlignedAt source result ordinal) ∨
+      SelectedSnapshotObservationAlignedAt table source result ordinal) ∨
       FirstExistingHiddenChainStartHit result.observations := by
   rcases hrelation with hnone | haligned | hselected | hstopped
   · simp at hnone

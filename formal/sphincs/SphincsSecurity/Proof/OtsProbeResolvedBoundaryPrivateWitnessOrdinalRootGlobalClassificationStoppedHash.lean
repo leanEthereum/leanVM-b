@@ -340,13 +340,17 @@ theorem relTriple_source_observedMaterializedHashContinuation_firstStopped_of_pr
         simp [← htail, observedOrdinal, cleanProbeObservation,
           CleanProbeObservation.toProbe]
       have hselectedAligned :
-          SelectedSnapshotObservationAlignedAt sourceOutput result snapshots.length :=
+          SelectedSnapshotObservationAlignedAt table sourceOutput result snapshots.length :=
         ⟨sourceOrdinal, observedOrdinal, rfl, hlength.symm,
           hsourceProbe.trans hobservedProbe.symm, by
             obtain ⟨sourceTail, hsourceTail⟩ := hextends
             obtain ⟨observedTail, hobservedTail⟩ := hdata.2.2
             rw [← hsourceTail, ← hobservedTail]
-            simpa [List.map_append, hlength] using haligned.map_toProbe_eq⟩
+            simpa [List.map_append, hlength] using haligned.map_toProbe_eq, by
+            obtain ⟨sourceTail, hsourceTail⟩ := hextends
+            obtain ⟨observedTail, hobservedTail⟩ := hdata.2.2
+            rw [← hsourceTail, ← hobservedTail]
+            simpa [hlength] using haligned⟩
       exact ⟨result, snapshots.length, rfl, hdata.1, hdata.2.1, hfirstResult, hselected,
         hselectedAligned⟩
 
