@@ -13,227 +13,6 @@ namespace SphincsSecurity.Concrete.OtsProbeSimulation
 open OracleComp OracleSpec ENNReal
 open OracleComp.ProgramLogic.Relational
 
-def privateOrdinalSelectionGoodForSomeRoot
-    (target : Position) (rightRoot : Digest) (ordinal : Nat) :
-    Option PrivateOrdinalSelection → Prop
-  | none => False
-  | some selection => ∃ output,
-      selection.GoodForRoots target output rightRoot ordinal
-
-def RootSelectionSomeOutputBridgeRel
-    (target : Position) (leftOutput : HashOutput) (rightRoot : Digest) (ordinal : Nat) :
-    Option PrivateOrdinalSelection → MaterializedSelectionOutcome → Prop :=
-  fun left right =>
-    privateOrdinalSelectionGoodForSomeRoot target rightRoot ordinal left →
-      right.isFailure ∨ right.Matches target (truncateHash leftOutput)
-
-theorem PrivateOrdinalSelection.goodForStoredRoot
-    {table : OtsSecretIndex → HashOutput}
-    {selection : PrivateOrdinalSelection} {right : DeferredContext}
-    {target : Position} {output leftOutput : HashOutput} {rightRoot : Digest} {ordinal : Nat}
-    (hgood : selection.GoodForRoots target output rightRoot ordinal)
-    (hcontext : FinalizationContextLE table selection.context right)
-    (hrightMaterialized : right = directDeferredContext right.state)
-    (hstored : right.state.values (.position target) = some leftOutput) :
-    selection.GoodForRoots target leftOutput rightRoot ordinal := by
-  have hleftResolved :
-      resolvedCompletionValue table selection.context (.position target) = some output := by
-    simp [resolvedCompletionValue, DeferredContext.positionValue, hgood.2.1, hgood.2.2.2.1]
-  have hrightResolved : resolvedCompletionValue table right (.position target) = some output := by
-    rw [← hcontext.view.valueEq]
-    exact hleftResolved
-  have hrightValue : right.state.values (.position target) = some output := by
-    rw [hrightMaterialized] at hrightResolved
-    change (match right.state.values (.position target) with
-      | some value => some value
-      | none => right.state.values (.position target)) = some output at hrightResolved
-    cases hvalue : right.state.values (.position target) with
-    | none => simp [hvalue] at hrightResolved
-    | some value => simpa [hvalue] using hrightResolved
-  have houtput : output = leftOutput := by
-    rw [hstored] at hrightValue
-    exact (Option.some.inj hrightValue).symm
-  simpa [houtput] using hgood
-
-theorem relTriple_pure_none_rootSelectionSomeOutputBridge
-    (target : Position) (leftOutput : HashOutput) (rightRoot : Digest) (ordinal : Nat)
-    (right : ProbComp MaterializedSelectionOutcome) :
-    RelTriple (pure none : ProbComp (Option PrivateOrdinalSelection)) right
-      (RootSelectionSomeOutputBridgeRel target leftOutput rightRoot ordinal) := by
-  have hbase := relTriple_true
-    (pure none : ProbComp (Option PrivateOrdinalSelection)) right
-  have hsupported :=
-    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
-      (fun value => value = none) (by intro value hvalue; simpa using hvalue)
-  apply relTriple_post_mono hsupported
-  intro left _right hrelation hgood
-  rw [hrelation.2] at hgood
-  exact False.elim hgood
-
-theorem relTriple_any_failed_rootSelectionSomeOutputBridge
-    (target : Position) (leftOutput : HashOutput) (rightRoot : Digest) (ordinal : Nat)
-    (left : ProbComp (Option PrivateOrdinalSelection)) :
-    RelTriple left (pure .failed : ProbComp MaterializedSelectionOutcome)
-      (RootSelectionSomeOutputBridgeRel target leftOutput rightRoot ordinal) := by
-  have hbase := relTriple_true left
-    (pure .failed : ProbComp MaterializedSelectionOutcome)
-  have hsupported :=
-    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hbase
-  apply relTriple_post_mono hsupported
-  intro _left right hrelation _hgood
-  have hright : right = .failed := by simpa using hrelation.2
-  subst right
-  exact Or.inl trivial
-
-theorem stateValue_of_done_runDirectResolvedDetailedFromTable
-    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
-    (context : DeferredContext) (fuel : Nat)
-    (table : OtsSecretIndex → HashOutput) (result : ResolvedRunResult α)
-    (target : Position) (output : HashOutput)
-    (hvalue : context.state.values (.position target) = some output)
-    (hresult : DirectDetailedResult.done result ∈ support
-      (runDirectResolvedDetailedFromTable context fuel table computation)) :
-    result.context.state.values (.position target) = some output := by
-  exact valuesLE_of_done_runDirectResolvedDetailedFromTable computation context fuel table result
-    hresult (.position target) output hvalue
-
-set_option maxRecDepth 100000 in
-theorem relTriple_finishRootSelectionSomeOutputBridge
-    (target : Position) (leftOutput : HashOutput) (rightRoot : Digest)
-    (ordinal : Nat) (table : OtsSecretIndex → HashOutput)
-    (leftObserve : DeferredContext → Nat → (α × SplitHashCache) → List Probe →
-      ProbComp (Option PrivateOrdinalSelection))
-    (rightObserve : LazyRevealProbe.State Coordinate → Nat → α → SplitHashCache →
-      List Probe → ProbComp MaterializedSelectionOutcome)
-    (candidates : List Probe)
-    (leftResult rightResult : DirectDetailedResult (α × SplitHashCache))
-    (hrelation : DirectDetailedOrdinaryStableRunEq table leftResult rightResult)
-    (hrightSupport : rightResult ∈ support rightRun)
-    (initialRight : DeferredContext) (rightFuel : Nat)
-    (rightComputation : OracleComp (LazyRevealProbe.World Coordinate) (α × SplitHashCache))
-    (hstored : initialRight.state.values (.position target) = some leftOutput)
-    (hrightRun : rightRun =
-      runDirectResolvedDetailedFromTable initialRight rightFuel table rightComputation)
-    (hrecursive : ∀ originalLeft originalRight left right,
-      leftResult = .done originalLeft → rightResult = .done originalRight →
-      OrdinaryMaterializedRunEq table left right →
-      CanonicalMaterializedValues table left.context →
-      right.context.state.values (.position target) = some leftOutput →
-      RelTriple
-        (leftObserve left.context left.remaining left.value candidates)
-        (rightObserve right.context.state right.remaining right.value.1 right.value.2 candidates)
-        (RootSelectionSomeOutputBridgeRel target leftOutput rightRoot ordinal)) :
-    RelTriple
-      (finishDirectDetailedPrivateOrdinalSelection
-        (canonicalizeDirectPrivateOrdinalSelection table leftObserve) candidates leftResult)
-      (finishMaterializedSelectionOutcome target table rightObserve candidates rightResult)
-      (RootSelectionSomeOutputBridgeRel target leftOutput rightRoot ordinal) := by
-  cases leftResult with
-  | stopped leftReason =>
-      exact relTriple_pure_none_rootSelectionSomeOutputBridge target leftOutput rightRoot ordinal _
-  | done left =>
-      cases rightResult with
-      | stopped rightReason =>
-          exact relTriple_any_failed_rootSelectionSomeOutputBridge target leftOutput rightRoot
-            ordinal _
-      | done right =>
-          have hrightValue : right.context.state.values (.position target) = some leftOutput := by
-            rw [hrightRun] at hrightSupport
-            exact stateValue_of_done_runDirectResolvedDetailedFromTable rightComputation
-              initialRight rightFuel table right target leftOutput hstored hrightSupport
-          rcases hrelation with hclean | hdoomed
-          · have hcanonical := hclean.canonicalize_left
-            let canonical := canonicalizeMaterializedValues table left.context
-            have hleftCompletable : DeferredCompletable table canonical :=
-              hcanonical.context_le.leftCompletable
-            have hnotPrivate : ¬PrivateStructuralHit canonical :=
-              not_privateStructuralHit_of_deferredCompletable hleftCompletable
-            have hrightCompletable :
-                DeferredCompletable table (directDeferredContext right.context.state) := by
-              rw [← hclean.right_materialized]
-              exact hclean.context_le.rightCompletable
-            unfold finishDirectDetailedPrivateOrdinalSelection
-              finishMaterializedSelectionOutcome
-            unfold canonicalizeDirectPrivateOrdinalSelection
-            simp only [canonical, hnotPrivate, ↓reduceIte, hclean.left_published, ↓reduceIte,
-              hleftCompletable, hrightCompletable]
-            have hrevealed : canonical.state.revealed = right.context.state.revealed :=
-              hcanonical.revealed_eq
-            by_cases htargetRevealed : Coordinate.position target ∈ canonical.state.revealed
-            · have hrightRevealed :
-                  Coordinate.position target ∈ right.context.state.revealed := by
-                rw [← hrevealed]
-                exact htargetRevealed
-              simp only [hrightRevealed, ↓reduceIte]
-              exact relTriple_any_failed_rootSelectionSomeOutputBridge target leftOutput rightRoot
-                ordinal _
-            · have hrightRevealed :
-                  Coordinate.position target ∉ right.context.state.revealed := by
-                intro hmem
-                exact htargetRevealed (by rwa [hrevealed])
-              simp only [hrightRevealed, ↓reduceIte]
-              have hcanonicalValues : CanonicalMaterializedValues table canonical :=
-                canonicalizeMaterializedValues_canonical table left.context
-                  hclean.context_le.view.leftConsistent
-              exact hrecursive left right { left with context := canonical } right rfl rfl
-                hcanonical hcanonicalValues hrightValue
-          · unfold finishMaterializedSelectionOutcome
-            have hnotCompletable :
-                ¬DeferredCompletable table (directDeferredContext right.context.state) := by
-              rw [← hdoomed.2]
-              exact hdoomed.1.2.2.2
-            simp only [hnotCompletable, ↓reduceIte]
-            exact relTriple_any_failed_rootSelectionSomeOutputBridge target leftOutput rightRoot
-              ordinal _
-
-set_option maxRecDepth 100000 in
-theorem relTriple_rootSelectionSomeOutput_step
-    (target : Position) (leftOutput : HashOutput) (rightRoot : Digest)
-    (ordinal : Nat) (table : OtsSecretIndex → HashOutput)
-    (leftObserve : DeferredContext → Nat → (α × SplitHashCache) → List Probe →
-      ProbComp (Option PrivateOrdinalSelection))
-    (rightObserve : LazyRevealProbe.State Coordinate → Nat → α → SplitHashCache →
-      List Probe → ProbComp MaterializedSelectionOutcome)
-    (candidates : List Probe)
-    (leftWitnessRun : ProbComp (DirectWitnessResult (α × SplitHashCache)))
-    (leftDetailedRun rightRun : ProbComp (DirectDetailedResult (α × SplitHashCache)))
-    (hleft : evalDist
-        (leftWitnessRun >>= finishDirectPrivateOrdinalSelection
-          (canonicalizeDirectPrivateOrdinalSelection table leftObserve) candidates) =
-      evalDist
-        (leftDetailedRun >>= finishDirectDetailedPrivateOrdinalSelection
-          (canonicalizeDirectPrivateOrdinalSelection table leftObserve) candidates))
-    (hstep : RelTriple leftDetailedRun rightRun (DirectDetailedOrdinaryStableRunEq table))
-    (initialRight : DeferredContext) (rightFuel : Nat)
-    (rightComputation : OracleComp (LazyRevealProbe.World Coordinate) (α × SplitHashCache))
-    (hrightRun : rightRun =
-      runDirectResolvedDetailedFromTable initialRight rightFuel table rightComputation)
-    (hstored : initialRight.state.values (.position target) = some leftOutput)
-    (hrecursive : ∀ left right,
-      OrdinaryMaterializedRunEq table left right →
-      CanonicalMaterializedValues table left.context →
-      right.context.state.values (.position target) = some leftOutput →
-      RelTriple
-        (leftObserve left.context left.remaining left.value candidates)
-        (rightObserve right.context.state right.remaining right.value.1 right.value.2 candidates)
-        (RootSelectionSomeOutputBridgeRel target leftOutput rightRoot ordinal)) :
-    RelTriple
-      (leftWitnessRun >>= finishDirectPrivateOrdinalSelection
-        (canonicalizeDirectPrivateOrdinalSelection table leftObserve) candidates)
-      (rightRun >>= finishMaterializedSelectionOutcome target table rightObserve candidates)
-      (RootSelectionSomeOutputBridgeRel target leftOutput rightRoot ordinal) := by
-  apply relTriple_of_evalDist_eq_left hleft
-  have hsupported :=
-    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hstep
-  apply relTriple_bind hsupported
-  intro leftResult rightResult hrelation
-  exact relTriple_finishRootSelectionSomeOutputBridge target leftOutput rightRoot ordinal table
-    leftObserve rightObserve candidates leftResult rightResult hrelation.1 hrelation.2 initialRight
-    rightFuel rightComputation hstored hrightRun
-    (by
-      intro _originalLeft _originalRight left right _hleft _hright hnext hcanonical hvalue
-      exact hrecursive left right hnext hcanonical hvalue)
-
 noncomputable def candidateFinalizationObserve
     (table : OtsSecretIndex → HashOutput)
     (context : DeferredContext) (fuel : Nat) (candidate : Probe) : ProbComp Bool :=
@@ -335,6 +114,32 @@ instance ordinalRootFinalizationObserve_observerDooms
       exact ObserverDooms.eq_true
         (table := table) (observe := resolvedFinalizationObserve table)
         context fuel () hconsistent hstarts hdoomed
+
+instance ordinalRootFinalizationObserve_observerSynchronized
+    (table : OtsSecretIndex → HashOutput) (target : Position)
+    (rightRoot : Digest) (ordinal : Nat) (candidates : List Probe) :
+    ObserverSynchronized table
+      (fun context fuel (_value : Unit) =>
+        ordinalRootFinalizationObserve table target rightRoot ordinal context fuel candidates) where
+  eq_of_synchronized left right fuel _value hcontext hvalues hrevealed := by
+    unfold ordinalRootFinalizationObserve
+    by_cases hselected : ordinal < candidates.length
+    · simp only [hselected, ↓reduceDIte]
+      by_cases hgate :
+          (candidates.get ⟨ordinal, hselected⟩).coordinate = .position target ∧
+            CandidatesAvoidRoot target rightRoot (candidates.take ordinal)
+      · simp only [hgate]
+        exact ObserverSynchronized.eq_of_synchronized
+          (table := table) (observe := candidateFinalizationObserve table)
+          left right fuel _ hcontext hvalues hrevealed
+      · simp only [hgate]
+        exact ObserverSynchronized.eq_of_synchronized
+          (table := table) (observe := resolvedFinalizationObserve table)
+          left right fuel () hcontext hvalues hrevealed
+    · simp only [hselected, ↓reduceDIte]
+      exact ObserverSynchronized.eq_of_synchronized
+        (table := table) (observe := resolvedFinalizationObserve table)
+        left right fuel () hcontext hvalues hrevealed
 
 instance ordinalRootFinalizationObserve_observerPositionNeutral
     (table : OtsSecretIndex → HashOutput) (target : Position)
@@ -509,6 +314,135 @@ theorem directBoundaryPrivateOrdinalFinalizationRisk_dooms
 
 set_option maxRecDepth 100000 in
 set_option maxHeartbeats 4000000 in
+theorem directBoundaryPrivateOrdinalFinalizationRisk_synchronized
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (rightRoot : Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (candidates : List Probe) (left right : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (hcontext : FinalizationContextEq table (some left) (some right))
+    (hvalues : left.state.values = right.state.values)
+    (hrevealed : left.state.revealed = right.state.revealed) :
+    evalDist (directBoundaryPrivateOrdinalFinalizationRisk ordinal parameter root ftsSecret
+        target rightRoot computation candidates left fuel table cache) =
+      evalDist (directBoundaryPrivateOrdinalFinalizationRisk ordinal parameter root ftsSecret
+        target rightRoot computation candidates right fuel table cache) := by
+  induction computation using OracleComp.inductionOn generalizing
+      candidates left right fuel cache with
+  | pure value =>
+      rw [directBoundaryPrivateOrdinalFinalizationRisk, OracleComp.construct_pure,
+        directBoundaryPrivateOrdinalFinalizationRisk, OracleComp.construct_pure]
+      exact ObserverSynchronized.eq_of_synchronized
+        (table := table)
+        (observe := fun context fuel (_value : Unit) =>
+          ordinalRootFinalizationObserve table target rightRoot ordinal context fuel candidates)
+        left right fuel () hcontext hvalues hrevealed
+  | query_bind query next ih =>
+      by_cases hselected : ordinal < candidates.length
+      · simp only [directBoundaryPrivateOrdinalFinalizationRisk,
+          OracleComp.construct_query_bind, hselected, ↓reduceDIte]
+        exact ObserverSynchronized.eq_of_synchronized
+          (table := table)
+          (observe := fun context fuel (_value : Unit) =>
+            ordinalRootFinalizationObserve table target rightRoot ordinal context fuel candidates)
+          left right fuel () hcontext hvalues hrevealed
+      · cases query with
+        | inl worldQuery =>
+            cases worldQuery with
+            | inl n =>
+                simp only [directBoundaryPrivateOrdinalFinalizationRisk,
+                  OracleComp.construct_query_bind, hselected, ↓reduceDIte]
+                let nextObserve : DeferredContext → Nat →
+                    (Fin (n + 1) × SplitHashCache) → ProbComp Bool :=
+                  fun nextContext remaining value =>
+                    directBoundaryPrivateOrdinalFinalizationRisk ordinal parameter root ftsSecret
+                      target rightRoot (next value.1) candidates nextContext remaining table value.2
+                letI : ObserverDooms table nextObserve := ⟨by
+                  intro nextContext remaining value hnextConsistent hnextStarts hnextDoomed
+                  exact directBoundaryPrivateOrdinalFinalizationRisk_dooms ordinal parameter root
+                    ftsSecret target rightRoot (next value.1) candidates nextContext remaining table
+                    value.2 hnextConsistent hnextStarts hnextDoomed⟩
+                letI : ObserverSynchronized table nextObserve := ⟨by
+                  intro nextLeft nextRight remaining value hnextContext hnextValues hnextRevealed
+                  exact ih value.1 candidates nextLeft nextRight remaining value.2 hnextContext
+                    hnextValues hnextRevealed⟩
+                exact evalDist_runResolvedObserve_eq_of_finalizationSynchronized
+                  (observe := canonicalizeObserve table nextObserve)
+                  ((splitUniformImpl n).run cache) left right fuel table hcontext hvalues hrevealed
+            | inr input =>
+                have hplan : purePlanProbingHashQuery parameter input left.state =
+                    purePlanProbingHashQuery parameter input right.state :=
+                  purePlanProbingHashQuery_eq_of_values_eq hvalues parameter input
+                have hcandidate : rootAwarePlannedCandidate? parameter input left.state =
+                    rootAwarePlannedCandidate? parameter input right.state := by
+                  unfold rootAwarePlannedCandidate?
+                  rw [hplan]
+                let nextCandidates := appendPlannedCandidate candidates
+                  (rootAwarePlannedCandidate? parameter input left.state)
+                simp only [directBoundaryPrivateOrdinalFinalizationRisk,
+                  OracleComp.construct_query_bind, hselected, ↓reduceDIte, ← hplan, ← hcandidate]
+                by_cases hnextSelected : ordinal < nextCandidates.length
+                · have hactual : ordinal <
+                      (appendPlannedCandidate candidates
+                        (rootAwarePlannedCandidate? parameter input left.state)).length := by
+                    simpa [nextCandidates] using hnextSelected
+                  simp only [hactual, ↓reduceDIte]
+                  exact ObserverSynchronized.eq_of_synchronized
+                    (table := table)
+                    (observe := fun context fuel (_value : Unit) =>
+                      ordinalRootFinalizationObserve table target rightRoot ordinal context fuel
+                        nextCandidates)
+                    left right fuel () hcontext hvalues hrevealed
+                · have hactual : ¬ordinal <
+                      (appendPlannedCandidate candidates
+                        (rootAwarePlannedCandidate? parameter input left.state)).length := by
+                    simpa [nextCandidates] using hnextSelected
+                  simp only [hactual, ↓reduceDIte]
+                  let nextObserve : DeferredContext → Nat →
+                      (HashOutput × SplitHashCache) → ProbComp Bool :=
+                    fun nextContext remaining value =>
+                      directBoundaryPrivateOrdinalFinalizationRisk ordinal parameter root
+                        ftsSecret target rightRoot (next value.1) nextCandidates nextContext
+                        remaining table value.2
+                  letI : ObserverDooms table nextObserve := ⟨by
+                    intro nextContext remaining value hnextConsistent hnextStarts hnextDoomed
+                    exact directBoundaryPrivateOrdinalFinalizationRisk_dooms ordinal parameter root
+                      ftsSecret target rightRoot (next value.1) nextCandidates nextContext remaining
+                      table value.2 hnextConsistent hnextStarts hnextDoomed⟩
+                  letI : ObserverSynchronized table nextObserve := ⟨by
+                    intro nextLeft nextRight remaining value hnextContext hnextValues hnextRevealed
+                    exact ih value.1 nextCandidates nextLeft nextRight remaining value.2
+                      hnextContext hnextValues hnextRevealed⟩
+                  exact evalDist_runResolvedObserve_eq_of_finalizationSynchronized
+                    (observe := canonicalizeObserve table nextObserve)
+                    ((probingHashQueryAfterPlan parameter input
+                      (purePlanProbingHashQuery parameter input left.state)).run cache)
+                    left right fuel table hcontext hvalues hrevealed
+        | inr message =>
+            simp only [directBoundaryPrivateOrdinalFinalizationRisk,
+              OracleComp.construct_query_bind, hselected, ↓reduceDIte]
+            let nextObserve : DeferredContext → Nat →
+                (Option Signature × SplitHashCache) → ProbComp Bool :=
+              fun nextContext remaining value =>
+                directBoundaryPrivateOrdinalFinalizationRisk ordinal parameter root ftsSecret
+                  target rightRoot (next value.1) candidates nextContext remaining table value.2
+            letI : ObserverDooms table nextObserve := ⟨by
+              intro nextContext remaining value hnextConsistent hnextStarts hnextDoomed
+              exact directBoundaryPrivateOrdinalFinalizationRisk_dooms ordinal parameter root
+                ftsSecret target rightRoot (next value.1) candidates nextContext remaining table
+                value.2 hnextConsistent hnextStarts hnextDoomed⟩
+            letI : ObserverSynchronized table nextObserve := ⟨by
+              intro nextLeft nextRight remaining value hnextContext hnextValues hnextRevealed
+              exact ih value.1 candidates nextLeft nextRight remaining value.2 hnextContext
+                hnextValues hnextRevealed⟩
+            exact evalDist_runResolvedObserve_eq_of_finalizationSynchronized
+              (observe := canonicalizeObserve table nextObserve)
+              ((maskedSign parameter root ftsSecret message).run cache)
+              left right fuel table hcontext hvalues hrevealed
+
+set_option maxRecDepth 100000 in
+set_option maxHeartbeats 4000000 in
 theorem evalDist_resolveDeferredPositionValue_then_directBoundaryPrivateOrdinalFinalizationRisk
     (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
@@ -678,5 +612,569 @@ theorem evalDist_resolveDeferredPositionValue_then_directBoundaryPrivateOrdinalF
                 ((maskedSign parameter root ftsSecret message).run cache) context fuel table hvalid
                 hcompletable hensured
             exact hmove
+
+def PrivateOrdinalRootRiskRel
+    (target : Position) (rightRoot : Digest) (ordinal : Nat)
+    (selection : Option PrivateOrdinalSelection) (hit : Bool) : Prop :=
+  privateOrdinalSelectionGoodForSomeOutput target rightRoot ordinal selection → hit = true
+
+theorem relTriple_pureSelection_rootRisk
+    (target : Position) (rightRoot : Digest) (ordinal : Nat)
+    (selection : Option PrivateOrdinalSelection) (risk : ProbComp Bool)
+    (hfire : privateOrdinalSelectionGoodForSomeOutput target rightRoot ordinal selection →
+      evalDist risk = evalDist (pure true : ProbComp Bool)) :
+    RelTriple (pure selection : ProbComp (Option PrivateOrdinalSelection)) risk
+      (PrivateOrdinalRootRiskRel target rightRoot ordinal) := by
+  by_cases hgood :
+      privateOrdinalSelectionGoodForSomeOutput target rightRoot ordinal selection
+  · have hbase := relTriple_true
+      (pure selection : ProbComp (Option PrivateOrdinalSelection))
+      (pure true : ProbComp Bool)
+    have hsupport :=
+      SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hbase
+    have hrel : RelTriple
+        (pure selection : ProbComp (Option PrivateOrdinalSelection))
+        (pure true : ProbComp Bool)
+        (PrivateOrdinalRootRiskRel target rightRoot ordinal) := by
+      apply relTriple_post_mono hsupport
+      intro _left right hrelation _hleft
+      simpa using hrelation.2
+    exact relTriple_of_evalDist_eq_right (hfire hgood).symm hrel
+  · apply relTriple_post_mono
+      (SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support
+        (relTriple_true (pure selection : ProbComp (Option PrivateOrdinalSelection)) risk)
+        (fun left => left = selection) (by intro left hleft; simpa using hleft))
+    intro left _right hrelation hleft
+    exact False.elim (hgood (hrelation.2 ▸ hleft))
+
+theorem relTriple_selected_ordinalRootFinalizationObserve
+    (table : OtsSecretIndex → HashOutput)
+    (target : Position) (rightRoot : Digest) (ordinal : Nat)
+    (context : DeferredContext) (fuel : Nat) (candidates : List Probe)
+    (hselected : ordinal < candidates.length)
+    (hvalid : context.Valid) (hcompletable : DeferredCompletable table context) :
+    RelTriple
+      (pure (some ⟨candidates.get ⟨ordinal, hselected⟩, context, candidates⟩) :
+        ProbComp (Option PrivateOrdinalSelection))
+      (ordinalRootFinalizationObserve table target rightRoot ordinal context fuel candidates)
+      (PrivateOrdinalRootRiskRel target rightRoot ordinal) := by
+  apply relTriple_pureSelection_rootRisk
+  rintro ⟨output, hgood⟩
+  have hright : CandidatesAvoidRoot target rightRoot (candidates.take ordinal) := by
+    intro candidate hcandidate
+    exact (hgood.2.2.2.2 candidate hcandidate).2
+  have hcoordinate :
+      (candidates.get ⟨ordinal, hselected⟩).coordinate = .position target := by
+    simpa using congrArg Probe.coordinate hgood.1
+  unfold ordinalRootFinalizationObserve
+  simp only [hselected, ↓reduceDIte, hcoordinate, hright, and_self, if_true]
+  exact evalDist_candidateFinalizationObserve_eq_true_of_goodForRoots table
+    ⟨candidates.get ⟨ordinal, hselected⟩, context, candidates⟩ fuel target output
+    rightRoot ordinal hvalid hcompletable hgood
+
+set_option maxRecDepth 100000 in
+theorem relTriple_runWitnessSelection_runResolvedObserve
+    (table : OtsSecretIndex → HashOutput)
+    (target : Position) (rightRoot : Digest) (ordinal : Nat)
+    (selectionObserve : DeferredContext → Nat → α → List Probe →
+      ProbComp (Option PrivateOrdinalSelection))
+    (riskObserve : DeferredContext → Nat → α → ProbComp Bool)
+    [ObserverDooms table riskObserve] [ObserverSynchronized table riskObserve]
+    [ObserverPositionNeutral table riskObserve]
+    (candidates : List Probe) (context : DeferredContext) (fuel : Nat)
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (hvalid : context.Valid) (hcompletable : DeferredCompletable table context)
+    (hobserve : ∀ result,
+      DirectDetailedResult.done result ∈ support
+          (runDirectResolvedDetailedFromTable context fuel table computation) →
+        RelTriple
+          (selectionObserve result.context result.remaining result.value candidates)
+          (riskObserve result.context result.remaining result.value)
+          (PrivateOrdinalRootRiskRel target rightRoot ordinal)) :
+    RelTriple
+      (runDirectResolvedWitnessFromTable context fuel table computation >>=
+        finishDirectPrivateOrdinalSelection selectionObserve candidates)
+      (runResolvedObserve riskObserve context fuel table computation)
+      (PrivateOrdinalRootRiskRel target rightRoot ordinal) := by
+  apply relTriple_of_evalDist_eq_left
+    (evalDist_runWitnessSelection_eq_detailed selectionObserve candidates context fuel table
+      computation)
+  apply relTriple_of_evalDist_eq_right
+    (evalDist_runResolvedObserve_eq_runDirectResolvedObserve riskObserve context fuel table
+      computation hvalid hcompletable).symm
+  unfold runDirectResolvedObserve
+  rw [← map_toOption_runDirectResolvedDetailedFromTable computation context fuel table,
+    map_eq_bind_pure_comp, bind_assoc]
+  let run := runDirectResolvedDetailedFromTable context fuel table computation
+  have hrun :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support
+      (relTriple_refl run) (fun result => result ∈ support run)
+      (fun result hresult => hresult)
+  apply relTriple_bind hrun
+  intro leftResult rightResult hrelation
+  rcases hrelation with ⟨heq, hleftMem⟩
+  subst rightResult
+  cases leftResult with
+  | stopped reason =>
+      simp only [finishDirectDetailedPrivateOrdinalSelection, Function.comp_apply, pure_bind,
+        DirectDetailedResult.toOption, finishObserve]
+      apply relTriple_pureSelection_rootRisk
+      simp [privateOrdinalSelectionGoodForSomeOutput]
+  | done result =>
+      simpa [finishDirectDetailedPrivateOrdinalSelection, Function.comp_apply,
+        DirectDetailedResult.toOption, finishObserve] using hobserve result hleftMem
+
+theorem relTriple_canonicalSelection_canonicalObserve
+    (table : OtsSecretIndex → HashOutput)
+    (target : Position) (rightRoot : Digest) (ordinal : Nat)
+    (selectionObserve : DeferredContext → Nat → α → List Probe →
+      ProbComp (Option PrivateOrdinalSelection))
+    (riskObserve : DeferredContext → Nat → α → ProbComp Bool)
+    (context : DeferredContext) (fuel : Nat) (value : α) (candidates : List Probe)
+    (hrecursive : PublishedValues context.state →
+      DeferredCompletable table (canonicalizeMaterializedValues table context) →
+      RelTriple
+        (selectionObserve (canonicalizeMaterializedValues table context) fuel value candidates)
+        (riskObserve (canonicalizeMaterializedValues table context) fuel value)
+        (PrivateOrdinalRootRiskRel target rightRoot ordinal)) :
+    RelTriple
+      (canonicalizeDirectPrivateOrdinalSelection table selectionObserve context fuel value
+        candidates)
+      (canonicalizeObserve table riskObserve context fuel value)
+      (PrivateOrdinalRootRiskRel target rightRoot ordinal) := by
+  classical
+  unfold canonicalizeDirectPrivateOrdinalSelection canonicalizeObserve
+  let canonical := canonicalizeMaterializedValues table context
+  by_cases hhit : PrivateStructuralHit canonical
+  · simp only [canonical, hhit]
+    by_cases hpublished : PublishedValues context.state
+    · simp only [hpublished, ↓reduceIte]
+      apply relTriple_pureSelection_rootRisk
+      simp [privateOrdinalSelectionGoodForSomeOutput]
+    · simp only [hpublished, ↓reduceIte]
+      apply relTriple_pureSelection_rootRisk
+      simp [privateOrdinalSelectionGoodForSomeOutput]
+  · simp only [canonical, hhit]
+    by_cases hpublished : PublishedValues context.state
+    · simp only [hpublished, ↓reduceIte]
+      by_cases hcompletable : DeferredCompletable table canonical
+      · simpa [canonical, hcompletable] using hrecursive hpublished hcompletable
+      · simp only [canonical, hcompletable, ↓reduceIte]
+        apply relTriple_pureSelection_rootRisk
+        simp [privateOrdinalSelectionGoodForSomeOutput]
+    · simp only [hpublished, ↓reduceIte]
+      apply relTriple_pureSelection_rootRisk
+      simp [privateOrdinalSelectionGoodForSomeOutput]
+
+theorem resolvedCore_of_done_runDirectResolvedDetailedFromTable
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (result : ResolvedRunResult α)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table)
+    (hresult : DirectDetailedResult.done result ∈ support
+      (runDirectResolvedDetailedFromTable context fuel table computation)) :
+    result.table = table ∧ result.context.ValuesConsistent ∧
+      StartTableAgrees result.context.state table := by
+  apply resolvedCore_of_mem_runDirectResolvedFromTable computation context fuel table result
+    hconsistent hstarts
+  rw [← map_toOption_runDirectResolvedDetailedFromTable computation context fuel table,
+    support_map]
+  exact ⟨.done result, hresult, rfl⟩
+
+set_option maxRecDepth 100000 in
+set_option maxHeartbeats 4000000 in
+theorem relTriple_directBoundaryPrivateOrdinalSelection_finalizationRisk
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (rightRoot : Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (candidates : List Probe) (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (hvalid : context.Valid) (hcompletable : DeferredCompletable table context) :
+    RelTriple
+      (directDetailedBoundaryPrivateOrdinalSelection ordinal parameter root ftsSecret computation
+        candidates context fuel table cache)
+      (directBoundaryPrivateOrdinalFinalizationRisk ordinal parameter root ftsSecret target
+        rightRoot computation candidates context fuel table cache)
+      (PrivateOrdinalRootRiskRel target rightRoot ordinal) := by
+  induction computation using OracleComp.inductionOn generalizing
+      candidates context fuel cache with
+  | pure value =>
+      rw [directDetailedBoundaryPrivateOrdinalSelection, OracleComp.construct_pure,
+        directBoundaryPrivateOrdinalFinalizationRisk, OracleComp.construct_pure]
+      by_cases hselected : ordinal < candidates.length
+      · simp only [selectedPrivateOrdinal?, hselected, ↓reduceDIte]
+        exact relTriple_selected_ordinalRootFinalizationObserve table target rightRoot ordinal
+          context fuel candidates hselected hvalid hcompletable
+      · simp only [selectedPrivateOrdinal?, hselected, ↓reduceDIte]
+        apply relTriple_pureSelection_rootRisk
+        simp [privateOrdinalSelectionGoodForSomeOutput]
+  | query_bind query next ih =>
+      rw [directDetailedBoundaryPrivateOrdinalSelection, OracleComp.construct_query_bind,
+        directBoundaryPrivateOrdinalFinalizationRisk, OracleComp.construct_query_bind]
+      by_cases hselected : ordinal < candidates.length
+      · simp only [hselected, ↓reduceDIte]
+        exact relTriple_selected_ordinalRootFinalizationObserve table target rightRoot ordinal
+          context fuel candidates hselected hvalid hcompletable
+      · simp only [hselected, ↓reduceDIte]
+        cases query with
+        | inl worldQuery =>
+            cases worldQuery with
+            | inl n =>
+                let nextSelection : DeferredContext → Nat →
+                    (Fin (n + 1) × SplitHashCache) → List Probe →
+                      ProbComp (Option PrivateOrdinalSelection) :=
+                  fun nextContext remaining value laterCandidates =>
+                    directDetailedBoundaryPrivateOrdinalSelection ordinal parameter root ftsSecret
+                      (next value.1) laterCandidates nextContext remaining table value.2
+                let nextRisk : DeferredContext → Nat →
+                    (Fin (n + 1) × SplitHashCache) → ProbComp Bool :=
+                  fun nextContext remaining value =>
+                    directBoundaryPrivateOrdinalFinalizationRisk ordinal parameter root ftsSecret
+                      target rightRoot (next value.1) candidates nextContext remaining table value.2
+                letI : ObserverDooms table nextRisk := ⟨by
+                  intro nextContext remaining value hconsistent hstarts hdoomed
+                  exact directBoundaryPrivateOrdinalFinalizationRisk_dooms ordinal parameter root
+                    ftsSecret target rightRoot (next value.1) candidates nextContext remaining table
+                    value.2 hconsistent hstarts hdoomed⟩
+                letI : ObserverSynchronized table nextRisk := ⟨by
+                  intro left right remaining value hcontext hvalues hrevealed
+                  exact directBoundaryPrivateOrdinalFinalizationRisk_synchronized ordinal
+                    parameter root ftsSecret target rightRoot (next value.1) candidates left right
+                    remaining table value.2 hcontext hvalues hrevealed⟩
+                letI : ObserverPositionNeutral table nextRisk := ⟨by
+                  intro position nextContext remaining value hnextValid hnextCompletable hensured
+                  exact evalDist_resolveDeferredPositionValue_then_directBoundaryPrivateOrdinalFinalizationRisk
+                    ordinal parameter root ftsSecret target rightRoot position (next value.1)
+                    candidates nextContext remaining table value.2 hnextValid hnextCompletable
+                    hensured⟩
+                apply relTriple_runWitnessSelection_runResolvedObserve table target rightRoot ordinal
+                  (canonicalizeDirectPrivateOrdinalSelection table nextSelection)
+                  (canonicalizeObserve table nextRisk) candidates context fuel
+                  ((splitUniformImpl n).run cache) hvalid hcompletable
+                intro result hresult
+                have hcore := resolvedCore_of_done_runDirectResolvedDetailedFromTable
+                  ((splitUniformImpl n).run cache) context fuel table result
+                  hvalid.valuesConsistent (startTableAgrees_of_deferredCompletable hcompletable)
+                  hresult
+                apply relTriple_canonicalSelection_canonicalObserve table target rightRoot ordinal
+                  nextSelection nextRisk result.context result.remaining result.value candidates
+                intro _hpublished hcanonicalCompletable
+                have hcanonicalConsistent := canonicalizeMaterializedValues_valuesConsistent table
+                  result.context hcore.2.1
+                have hcanonicalStarts := canonicalizeMaterializedValues_startTableAgrees table
+                  result.context
+                have hcanonicalValid := valid_of_resolvedCore_completable table
+                  (canonicalizeMaterializedValues table result.context) hcanonicalConsistent
+                  hcanonicalStarts hcanonicalCompletable
+                simpa [nextSelection, nextRisk] using
+                  (ih result.value.1 candidates
+                    (canonicalizeMaterializedValues table result.context) result.remaining
+                    result.value.2 hcanonicalValid hcanonicalCompletable)
+            | inr input =>
+                let plan := purePlanProbingHashQuery parameter input context.state
+                let nextCandidates := appendPlannedCandidate candidates
+                  (rootAwarePlannedCandidate? parameter input context.state)
+                by_cases hnextSelected : ordinal < nextCandidates.length
+                · have hactual : ordinal <
+                      (appendPlannedCandidate candidates
+                        (rootAwarePlannedCandidate? parameter input context.state)).length := by
+                    simpa [nextCandidates] using hnextSelected
+                  simp only [hactual, ↓reduceDIte]
+                  exact relTriple_selected_ordinalRootFinalizationObserve table target rightRoot
+                    ordinal context fuel nextCandidates hnextSelected hvalid hcompletable
+                · have hactual : ¬ordinal <
+                      (appendPlannedCandidate candidates
+                        (rootAwarePlannedCandidate? parameter input context.state)).length := by
+                    simpa [nextCandidates] using hnextSelected
+                  simp only [hactual, ↓reduceDIte]
+                  let nextSelection : DeferredContext → Nat →
+                      (HashOutput × SplitHashCache) → List Probe →
+                        ProbComp (Option PrivateOrdinalSelection) :=
+                    fun nextContext remaining value laterCandidates =>
+                      directDetailedBoundaryPrivateOrdinalSelection ordinal parameter root
+                        ftsSecret (next value.1) laterCandidates nextContext remaining table value.2
+                  let nextRisk : DeferredContext → Nat →
+                      (HashOutput × SplitHashCache) → ProbComp Bool :=
+                    fun nextContext remaining value =>
+                      directBoundaryPrivateOrdinalFinalizationRisk ordinal parameter root ftsSecret
+                        target rightRoot (next value.1) nextCandidates nextContext remaining table
+                        value.2
+                  letI : ObserverDooms table nextRisk := ⟨by
+                    intro nextContext remaining value hconsistent hstarts hdoomed
+                    exact directBoundaryPrivateOrdinalFinalizationRisk_dooms ordinal parameter root
+                      ftsSecret target rightRoot (next value.1) nextCandidates nextContext remaining
+                      table value.2 hconsistent hstarts hdoomed⟩
+                  letI : ObserverSynchronized table nextRisk := ⟨by
+                    intro left right remaining value hcontext hvalues hrevealed
+                    exact directBoundaryPrivateOrdinalFinalizationRisk_synchronized ordinal
+                      parameter root ftsSecret target rightRoot (next value.1) nextCandidates left
+                      right remaining table value.2 hcontext hvalues hrevealed⟩
+                  letI : ObserverPositionNeutral table nextRisk := ⟨by
+                    intro position nextContext remaining value hnextValid hnextCompletable hensured
+                    exact evalDist_resolveDeferredPositionValue_then_directBoundaryPrivateOrdinalFinalizationRisk
+                      ordinal parameter root ftsSecret target rightRoot position (next value.1)
+                      nextCandidates nextContext remaining table value.2 hnextValid
+                      hnextCompletable hensured⟩
+                  apply relTriple_runWitnessSelection_runResolvedObserve table target rightRoot
+                    ordinal (canonicalizeDirectPrivateOrdinalSelection table nextSelection)
+                    (canonicalizeObserve table nextRisk) nextCandidates context fuel
+                    ((probingHashQueryAfterPlan parameter input plan).run cache) hvalid hcompletable
+                  intro result hresult
+                  have hcore := resolvedCore_of_done_runDirectResolvedDetailedFromTable
+                    ((probingHashQueryAfterPlan parameter input plan).run cache) context fuel table
+                    result hvalid.valuesConsistent
+                    (startTableAgrees_of_deferredCompletable hcompletable) hresult
+                  apply relTriple_canonicalSelection_canonicalObserve table target rightRoot ordinal
+                    nextSelection nextRisk result.context result.remaining result.value
+                    nextCandidates
+                  intro _hpublished hcanonicalCompletable
+                  have hcanonicalConsistent :=
+                    canonicalizeMaterializedValues_valuesConsistent table result.context hcore.2.1
+                  have hcanonicalStarts := canonicalizeMaterializedValues_startTableAgrees table
+                    result.context
+                  have hcanonicalValid := valid_of_resolvedCore_completable table
+                    (canonicalizeMaterializedValues table result.context) hcanonicalConsistent
+                    hcanonicalStarts hcanonicalCompletable
+                  simpa [nextSelection, nextRisk] using
+                    (ih result.value.1 nextCandidates
+                      (canonicalizeMaterializedValues table result.context) result.remaining
+                      result.value.2 hcanonicalValid hcanonicalCompletable)
+        | inr message =>
+            let nextSelection : DeferredContext → Nat →
+                (Option Signature × SplitHashCache) → List Probe →
+                  ProbComp (Option PrivateOrdinalSelection) :=
+              fun nextContext remaining value laterCandidates =>
+                directDetailedBoundaryPrivateOrdinalSelection ordinal parameter root ftsSecret
+                  (next value.1) laterCandidates nextContext remaining table value.2
+            let nextRisk : DeferredContext → Nat →
+                (Option Signature × SplitHashCache) → ProbComp Bool :=
+              fun nextContext remaining value =>
+                directBoundaryPrivateOrdinalFinalizationRisk ordinal parameter root ftsSecret
+                  target rightRoot (next value.1) candidates nextContext remaining table value.2
+            letI : ObserverDooms table nextRisk := ⟨by
+              intro nextContext remaining value hconsistent hstarts hdoomed
+              exact directBoundaryPrivateOrdinalFinalizationRisk_dooms ordinal parameter root
+                ftsSecret target rightRoot (next value.1) candidates nextContext remaining table
+                value.2 hconsistent hstarts hdoomed⟩
+            letI : ObserverSynchronized table nextRisk := ⟨by
+              intro left right remaining value hcontext hvalues hrevealed
+              exact directBoundaryPrivateOrdinalFinalizationRisk_synchronized ordinal parameter
+                root ftsSecret target rightRoot (next value.1) candidates left right remaining table
+                value.2 hcontext hvalues hrevealed⟩
+            letI : ObserverPositionNeutral table nextRisk := ⟨by
+              intro position nextContext remaining value hnextValid hnextCompletable hensured
+              exact evalDist_resolveDeferredPositionValue_then_directBoundaryPrivateOrdinalFinalizationRisk
+                ordinal parameter root ftsSecret target rightRoot position (next value.1) candidates
+                nextContext remaining table value.2 hnextValid hnextCompletable hensured⟩
+            apply relTriple_runWitnessSelection_runResolvedObserve table target rightRoot ordinal
+              (canonicalizeDirectPrivateOrdinalSelection table nextSelection)
+              (canonicalizeObserve table nextRisk) candidates context fuel
+              ((maskedSign parameter root ftsSecret message).run cache) hvalid hcompletable
+            intro result hresult
+            have hcore := resolvedCore_of_done_runDirectResolvedDetailedFromTable
+              ((maskedSign parameter root ftsSecret message).run cache) context fuel table result
+              hvalid.valuesConsistent (startTableAgrees_of_deferredCompletable hcompletable)
+              hresult
+            apply relTriple_canonicalSelection_canonicalObserve table target rightRoot ordinal
+              nextSelection nextRisk result.context result.remaining result.value candidates
+            intro _hpublished hcanonicalCompletable
+            have hcanonicalConsistent := canonicalizeMaterializedValues_valuesConsistent table
+              result.context hcore.2.1
+            have hcanonicalStarts := canonicalizeMaterializedValues_startTableAgrees table
+              result.context
+            have hcanonicalValid := valid_of_resolvedCore_completable table
+              (canonicalizeMaterializedValues table result.context) hcanonicalConsistent
+              hcanonicalStarts hcanonicalCompletable
+            simpa [nextSelection, nextRisk] using
+              (ih result.value.1 candidates
+                (canonicalizeMaterializedValues table result.context) result.remaining
+                result.value.2 hcanonicalValid hcanonicalCompletable)
+
+noncomputable def granularPrivateOrdinalFinalizationObserve
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (rightRoot : Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : Digest × SplitHashCache) : ProbComp Bool :=
+  directBoundaryPrivateOrdinalFinalizationRisk ordinal parameter value.1 ftsSecret target
+    rightRoot (retainedGameRestComputation adversary ⟨value.1, parameter⟩) [] context fuel
+    table value.2
+
+noncomputable def granularPrivateOrdinalSelectionObserve
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : Digest × SplitHashCache) (candidates : List Probe) :
+    ProbComp (Option PrivateOrdinalSelection) :=
+  directDetailedBoundaryPrivateOrdinalSelection ordinal parameter value.1 ftsSecret
+    (retainedGameRestComputation adversary ⟨value.1, parameter⟩) candidates context fuel table
+    value.2
+
+instance granularPrivateOrdinalFinalizationObserve_observerDooms
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (rightRoot : Digest) :
+    ObserverDooms table
+      (granularPrivateOrdinalFinalizationObserve ordinal adversary parameter table ftsSecret
+        target rightRoot) where
+  eq_true context fuel value hconsistent hstarts hdoomed := by
+    exact directBoundaryPrivateOrdinalFinalizationRisk_dooms ordinal parameter value.1 ftsSecret
+      target rightRoot (retainedGameRestComputation adversary ⟨value.1, parameter⟩) [] context
+      fuel table value.2 hconsistent hstarts hdoomed
+
+instance granularPrivateOrdinalFinalizationObserve_observerSynchronized
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (rightRoot : Digest) :
+    ObserverSynchronized table
+      (granularPrivateOrdinalFinalizationObserve ordinal adversary parameter table ftsSecret
+        target rightRoot) where
+  eq_of_synchronized left right fuel value hcontext hvalues hrevealed := by
+    exact directBoundaryPrivateOrdinalFinalizationRisk_synchronized ordinal parameter value.1
+      ftsSecret target rightRoot (retainedGameRestComputation adversary ⟨value.1, parameter⟩)
+      [] left right fuel table value.2 hcontext hvalues hrevealed
+
+instance granularPrivateOrdinalFinalizationObserve_observerPositionNeutral
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (rightRoot : Digest) :
+    ObserverPositionNeutral table
+      (granularPrivateOrdinalFinalizationObserve ordinal adversary parameter table ftsSecret
+        target rightRoot) where
+  eq_resolve position context fuel value hvalid hcompletable hensured := by
+    exact evalDist_resolveDeferredPositionValue_then_directBoundaryPrivateOrdinalFinalizationRisk
+      ordinal parameter value.1 ftsSecret target rightRoot position
+      (retainedGameRestComputation adversary ⟨value.1, parameter⟩) [] context fuel table value.2
+      hvalid hcompletable hensured
+
+noncomputable def granularAllCanonicalPrivateOrdinalFinalizationRisk
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (fuel : Nat) (target : Position) (rightRoot : Digest) : ProbComp Bool :=
+  runResolvedObserve
+    (canonicalizeObserve table
+      (granularPrivateOrdinalFinalizationObserve ordinal adversary parameter table ftsSecret
+        target rightRoot))
+    emptyWitnessDeferredContext fuel table (maskedPublishedTreeRoot.run emptySplitHashCache)
+
+theorem relTriple_granularPrivateOrdinalSelectionObserve_finalizationObserve
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (rightRoot : Digest)
+    (context : DeferredContext) (fuel : Nat) (value : Digest × SplitHashCache)
+    (hvalid : context.Valid) (hcompletable : DeferredCompletable table context) :
+    RelTriple
+      (granularPrivateOrdinalSelectionObserve ordinal adversary parameter table ftsSecret
+        context fuel value [])
+      (granularPrivateOrdinalFinalizationObserve ordinal adversary parameter table ftsSecret
+        target rightRoot context fuel value)
+      (PrivateOrdinalRootRiskRel target rightRoot ordinal) := by
+  exact relTriple_directBoundaryPrivateOrdinalSelection_finalizationRisk ordinal parameter
+    value.1 ftsSecret target rightRoot
+    (retainedGameRestComputation adversary ⟨value.1, parameter⟩) [] context fuel table value.2
+    hvalid hcompletable
+
+theorem relTriple_canonicalGranularPrivateOrdinalSelection_finalizationObserve
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (rightRoot : Digest)
+    (context : DeferredContext) (fuel : Nat) (value : Digest × SplitHashCache)
+    (hconsistent : context.ValuesConsistent) :
+    RelTriple
+      (canonicalizeDirectPrivateOrdinalSelection table
+        (granularPrivateOrdinalSelectionObserve ordinal adversary parameter table ftsSecret)
+        context fuel value [])
+      (canonicalizeObserve table
+        (granularPrivateOrdinalFinalizationObserve ordinal adversary parameter table ftsSecret
+          target rightRoot) context fuel value)
+      (PrivateOrdinalRootRiskRel target rightRoot ordinal) := by
+  apply relTriple_canonicalSelection_canonicalObserve table target rightRoot ordinal
+    (granularPrivateOrdinalSelectionObserve ordinal adversary parameter table ftsSecret)
+    (granularPrivateOrdinalFinalizationObserve ordinal adversary parameter table ftsSecret target
+      rightRoot) context fuel value []
+  intro _hpublished hcanonicalCompletable
+  have hcanonicalConsistent := canonicalizeMaterializedValues_valuesConsistent table context
+    hconsistent
+  have hcanonicalStarts := canonicalizeMaterializedValues_startTableAgrees table context
+  have hcanonicalValid := valid_of_resolvedCore_completable table
+    (canonicalizeMaterializedValues table context) hcanonicalConsistent hcanonicalStarts
+    hcanonicalCompletable
+  exact relTriple_granularPrivateOrdinalSelectionObserve_finalizationObserve ordinal adversary
+    parameter table ftsSecret target rightRoot (canonicalizeMaterializedValues table context) fuel
+    value hcanonicalValid hcanonicalCompletable
+
+attribute [local irreducible] maskedPublishedTreeRoot in
+set_option maxRecDepth 100000 in
+set_option maxHeartbeats 4000000 in
+theorem relTriple_granularAllCanonicalPrivateOrdinalSelection_finalizationRisk
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (fuel : Nat) (target : Position) (rightRoot : Digest) :
+    RelTriple
+      (granularAllCanonicalPrivateOrdinalSelection ordinal adversary parameter table ftsSecret fuel)
+      (granularAllCanonicalPrivateOrdinalFinalizationRisk ordinal adversary parameter table
+        ftsSecret fuel target rightRoot)
+      (PrivateOrdinalRootRiskRel target rightRoot ordinal) := by
+  unfold granularAllCanonicalPrivateOrdinalSelection
+    granularAllCanonicalPrivateOrdinalFinalizationRisk
+  change RelTriple
+    (runDirectResolvedWitnessFromTable emptyWitnessDeferredContext fuel table
+        (maskedPublishedTreeRoot.run emptySplitHashCache) >>=
+      finishDirectPrivateOrdinalSelection
+        (canonicalizeDirectPrivateOrdinalSelection table
+          (granularPrivateOrdinalSelectionObserve ordinal adversary parameter table ftsSecret)) [])
+    (runResolvedObserve
+      (canonicalizeObserve table
+        (granularPrivateOrdinalFinalizationObserve ordinal adversary parameter table ftsSecret
+          target rightRoot))
+      emptyWitnessDeferredContext fuel table (maskedPublishedTreeRoot.run emptySplitHashCache))
+    (PrivateOrdinalRootRiskRel target rightRoot ordinal)
+  apply relTriple_runWitnessSelection_runResolvedObserve table target rightRoot ordinal
+    (canonicalizeDirectPrivateOrdinalSelection table
+      (granularPrivateOrdinalSelectionObserve ordinal adversary parameter table ftsSecret))
+    (canonicalizeObserve table
+      (granularPrivateOrdinalFinalizationObserve ordinal adversary parameter table ftsSecret target
+        rightRoot)) [] emptyWitnessDeferredContext fuel
+    (maskedPublishedTreeRoot.run emptySplitHashCache) DeferredContext.valid_empty
+    (deferredCompletable_empty table)
+  intro result hresult
+  have hcore := resolvedCore_of_done_runDirectResolvedDetailedFromTable
+    (maskedPublishedTreeRoot.run emptySplitHashCache) emptyWitnessDeferredContext fuel table result
+    DeferredContext.valid_empty.valuesConsistent (startTableAgrees_empty table) hresult
+  exact relTriple_canonicalGranularPrivateOrdinalSelection_finalizationObserve ordinal adversary
+    parameter table ftsSecret target rightRoot result.context result.remaining result.value
+    hcore.2.1
+
+theorem probEvent_privateOrdinalSelectionGoodForSomeOutput_le_finalizationRisk
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (fuel : Nat) (target : Position) (rightRoot : Digest) :
+    Pr[privateOrdinalSelectionGoodForSomeOutput target rightRoot ordinal |
+        granularAllCanonicalPrivateOrdinalSelection ordinal adversary parameter table ftsSecret
+          fuel] ≤
+      Pr[= true | granularAllCanonicalPrivateOrdinalFinalizationRisk ordinal adversary parameter
+        table ftsSecret fuel target rightRoot] := by
+  calc
+    _ ≤ Pr[fun hit : Bool => hit = true |
+          granularAllCanonicalPrivateOrdinalFinalizationRisk ordinal adversary parameter table
+            ftsSecret fuel target rightRoot] := by
+      apply probEvent_le_of_relTriple
+        (relTriple_granularAllCanonicalPrivateOrdinalSelection_finalizationRisk ordinal adversary
+          parameter table ftsSecret fuel target rightRoot)
+      intro selection hit hrelation hgood
+      exact hrelation hgood
+    _ = _ := probEvent_eq_eq_probOutput _ true
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
