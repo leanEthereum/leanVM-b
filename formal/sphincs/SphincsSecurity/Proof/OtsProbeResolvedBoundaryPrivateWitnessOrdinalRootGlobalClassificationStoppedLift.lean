@@ -247,6 +247,44 @@ theorem runObservedCleanFromTable_rootAwarePublic_of_none
   rw [StateT.run_bind]
   simp [executeCandidate?, hcandidate]
 
+theorem runDirectResolvedWitnessFromTable_afterPlan_of_none
+    (parameter : PublicParameter) (input : HashInput) (plan : PlannedHashQuery)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (hcandidate : plan.candidate? = none) :
+    runDirectResolvedWitnessFromTable context fuel table
+        ((probingHashQueryAfterPlan parameter input plan).run cache) =
+      runDirectResolvedWitnessFromTable context fuel table
+        ((probingHashQueryPublicAction parameter input context.state plan.action).run cache) := by
+  rw [runDirectResolvedWitnessFromTable_afterPlan_eq_publicPlan parameter input plan context fuel
+    table cache]
+  unfold probingHashQueryAfterPublicPlan
+  rw [hcandidate]
+  simp only [executeCandidate?, pure_bind]
+  unfold probingHashQueryPublicAction
+  cases plan.action <;> rfl
+
+theorem runDirectResolvedWitnessFromTable_afterPlan_of_revealed
+    (parameter : PublicParameter) (input : HashInput) (plan : PlannedHashQuery)
+    (candidate : Probe) (context : DeferredContext) (remaining : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (hcandidate : plan.candidate? = some candidate)
+    (hrevealed : candidate.coordinate ∈ context.state.revealed) :
+    runDirectResolvedWitnessFromTable context (remaining + 1) table
+        ((probingHashQueryAfterPlan parameter input plan).run cache) =
+      runDirectResolvedWitnessFromTable context remaining table
+        ((probingHashQueryPublicAction parameter input context.state plan.action).run cache) := by
+  rw [runDirectResolvedWitnessFromTable_afterPlan_eq_publicPlan parameter input plan context
+    (remaining + 1) table cache]
+  unfold probingHashQueryAfterPublicPlan
+  rw [hcandidate]
+  simp only [executeCandidate?, StateT.run_bind, probe, StateT.run_liftM,
+    LazyRevealProbe.probeQuery, bind_assoc, pure_bind]
+  rw [runDirectResolvedWitnessFromTable_probe_query_bind]
+  simp only [hrevealed, ↓reduceIte]
+  unfold probingHashQueryPublicAction
+  cases plan.action <;> rfl
+
 set_option maxHeartbeats 2000000 in
 set_option maxRecDepth 100000 in
 theorem relTriple_runDirectResolvedWitness_afterPlan_observedMaterialized_firstStopped_of_hidden_completable
@@ -464,6 +502,152 @@ theorem relTriple_runDirectResolvedWitness_observed_firstStopped_of_probeFree
       (observedResolvedResult observations resolved) hsupport
     simp only [observedResolvedResult] at hremaining
     exact (Nat.le_add_left _ _).trans (hremaining.trans_lt hbudget)
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem relTriple_runDirectResolvedWitness_afterPlan_observedMaterialized_firstStopped_of_revealed
+    (table : OtsSecretIndex → HashOutput)
+    (parameter : PublicParameter) (input : HashInput)
+    (plan : PlannedHashQuery) (candidate : Probe)
+    (observations : List CleanProbeObservation)
+    (left right : DeferredContext) (leftFuel remaining : Nat)
+    (leftCache rightCache : SplitHashCache)
+    (hcandidate : rootAwareCandidateForPlan? parameter input plan = some candidate)
+    (hpositive : 0 < leftFuel) (hstrictFuel : leftFuel < remaining + 1)
+    (hcontext : FinalizationContextLE table left right)
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hvalues : LazyRevealProbe.ValuesLE left.state right.state)
+    (hpublished : PublishedValues left.state)
+    (hrightMaterialized : right = directDeferredContext right.state)
+    (hcandidateRevealed : candidate.coordinate ∈ right.state.revealed)
+    (htracked : CleanProbeObservationsTrackedBy observations right.state)
+    (hcovered : CleanProbeObservationsCoverPending observations right.state)
+    (hnoEarlier : ∀ observation ∈ observations, ¬observation.ExistingHiddenHit)
+    (hbudget : remaining + right.state.pending.card < Fintype.card Digest) :
+    RelTriple
+      (runDirectResolvedWitnessFromTable left leftFuel table
+        ((probingHashQueryAfterPlan parameter input plan).run leftCache))
+      (runObservedCleanFromTable observations right.state (remaining + 1) table
+        ((probingHashQueryAfterRootAwarePublicPlan parameter input left.state plan).run
+          rightCache))
+      (WitnessObservedFirstStoppedStepRel table
+        (observations ++ [cleanProbeObservation right.state
+          candidate.coordinate candidate.candidate])) := by
+  let nextObservations := observations ++ [cleanProbeObservation right.state
+    candidate.coordinate candidate.candidate]
+  have hleftRevealed : candidate.coordinate ∈ left.state.revealed := by
+    rwa [hrevealed]
+  have hnextTracked : CleanProbeObservationsTrackedBy nextObservations right.state := by
+    exact cleanProbeObservationsTrackedBy_append_revealed htracked candidate.coordinate
+      candidate.candidate hcandidateRevealed
+  have hnextCovered : CleanProbeObservationsCoverPending nextObservations right.state := by
+    exact cleanProbeObservationsCoverPending_append_revealed hcovered candidate.coordinate
+      candidate.candidate
+  have hnewNoHit : ¬(cleanProbeObservation right.state candidate.coordinate
+      candidate.candidate).ExistingHiddenHit := by
+    rintro ⟨hhidden, _output, _hvalue, _hcandidate⟩
+    simp [cleanProbeObservation, hcandidateRevealed] at hhidden
+  have hnextNoHit : ∀ observation ∈ nextObservations,
+      ¬observation.ExistingHiddenHit := by
+    intro observation hobservation
+    simp only [nextObservations, List.mem_append, List.mem_singleton] at hobservation
+    rcases hobservation with hold | rfl
+    · exact hnoEarlier observation hold
+    · exact hnewNoHit
+  cases hplanCandidate : plan.candidate? with
+  | none =>
+      have hleftEq := runDirectResolvedWitnessFromTable_afterPlan_of_none parameter input plan
+        left leftFuel table leftCache hplanCandidate
+      have hrightEq := runObservedCleanFromTable_rootAwarePublic_of_revealed parameter input
+        left.state plan candidate observations right.state remaining table rightCache hcandidate
+        hcandidateRevealed
+      rw [hleftEq, hrightEq]
+      have hbase := witnessMaterializedStableCouplesBetween_publicAction table parameter input
+        left.state plan.action left right leftFuel remaining leftCache rightCache hcontext
+        (by omega) hcache hrevealed hvalues hpublished hrightMaterialized
+      exact relTriple_runDirectResolvedWitness_observed_firstStopped_of_probeFree table
+        ((probingHashQueryPublicAction parameter input left.state plan.action).run leftCache)
+        ((probingHashQueryPublicAction parameter input left.state plan.action).run rightCache)
+        nextObservations left right leftFuel remaining hbase
+        (probingHashQueryPublicAction_probeFree parameter input left.state plan.action leftCache)
+        (probingHashQueryPublicAction_probeFree parameter input left.state plan.action rightCache)
+        hcontext.leftValid hcontext.leftCompletable hrightMaterialized hnextTracked hnextCovered
+        hnextNoHit hbudget
+  | some planned =>
+      have hsame : planned = candidate := by
+        unfold rootAwareCandidateForPlan? at hcandidate
+        rw [hplanCandidate] at hcandidate
+        exact Option.some.inj hcandidate
+      subst planned
+      cases leftFuel with
+      | zero => omega
+      | succ leftRemaining =>
+          have hleftEq := runDirectResolvedWitnessFromTable_afterPlan_of_revealed parameter input
+            plan candidate left leftRemaining table leftCache hplanCandidate hleftRevealed
+          have hrightEq := runObservedCleanFromTable_rootAwarePublic_of_revealed parameter input
+            left.state plan candidate observations right.state remaining table rightCache
+            hcandidate hcandidateRevealed
+          rw [hleftEq, hrightEq]
+          have hbase := witnessMaterializedStableCouplesBetween_publicAction table parameter input
+            left.state plan.action left right leftRemaining remaining leftCache rightCache hcontext
+            (by omega) hcache hrevealed hvalues hpublished hrightMaterialized
+          exact relTriple_runDirectResolvedWitness_observed_firstStopped_of_probeFree table
+            ((probingHashQueryPublicAction parameter input left.state plan.action).run leftCache)
+            ((probingHashQueryPublicAction parameter input left.state plan.action).run rightCache)
+            nextObservations left right leftRemaining remaining hbase
+            (probingHashQueryPublicAction_probeFree parameter input left.state plan.action leftCache)
+            (probingHashQueryPublicAction_probeFree parameter input left.state plan.action rightCache)
+            hcontext.leftValid hcontext.leftCompletable hrightMaterialized hnextTracked hnextCovered
+            hnextNoHit hbudget
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem relTriple_runDirectResolvedWitness_afterPlan_observedMaterialized_firstStopped_of_none
+    (table : OtsSecretIndex → HashOutput)
+    (parameter : PublicParameter) (input : HashInput) (plan : PlannedHashQuery)
+    (observations : List CleanProbeObservation)
+    (left right : DeferredContext) (leftFuel rightFuel : Nat)
+    (leftCache rightCache : SplitHashCache)
+    (hcandidate : rootAwareCandidateForPlan? parameter input plan = none)
+    (hfuel : leftFuel ≤ rightFuel)
+    (hcontext : FinalizationContextLE table left right)
+    (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hvalues : LazyRevealProbe.ValuesLE left.state right.state)
+    (hpublished : PublishedValues left.state)
+    (hrightMaterialized : right = directDeferredContext right.state)
+    (htracked : CleanProbeObservationsTrackedBy observations right.state)
+    (hcovered : CleanProbeObservationsCoverPending observations right.state)
+    (hnoHit : ∀ observation ∈ observations, ¬observation.ExistingHiddenHit)
+    (hbudget : rightFuel + right.state.pending.card < Fintype.card Digest) :
+    RelTriple
+      (runDirectResolvedWitnessFromTable left leftFuel table
+        ((probingHashQueryAfterPlan parameter input plan).run leftCache))
+      (runObservedCleanFromTable observations right.state rightFuel table
+        ((probingHashQueryAfterRootAwarePublicPlan parameter input left.state plan).run
+          rightCache))
+      (WitnessObservedFirstStoppedStepRel table observations) := by
+  have hplanCandidate : plan.candidate? = none := by
+    unfold rootAwareCandidateForPlan? at hcandidate
+    cases hplan : plan.candidate? with
+    | none => exact rfl
+    | some candidate => simp [hplan] at hcandidate
+  have hleftEq := runDirectResolvedWitnessFromTable_afterPlan_of_none parameter input plan left
+    leftFuel table leftCache hplanCandidate
+  have hrightEq := runObservedCleanFromTable_rootAwarePublic_of_none parameter input left.state
+    plan observations right.state rightFuel table rightCache hcandidate
+  rw [hleftEq, hrightEq]
+  have hbase := witnessMaterializedStableCouplesBetween_publicAction table parameter input
+    left.state plan.action left right leftFuel rightFuel leftCache rightCache hcontext hfuel hcache
+    hrevealed hvalues hpublished hrightMaterialized
+  exact relTriple_runDirectResolvedWitness_observed_firstStopped_of_probeFree table
+    ((probingHashQueryPublicAction parameter input left.state plan.action).run leftCache)
+    ((probingHashQueryPublicAction parameter input left.state plan.action).run rightCache)
+    observations left right leftFuel rightFuel hbase
+    (probingHashQueryPublicAction_probeFree parameter input left.state plan.action leftCache)
+    (probingHashQueryPublicAction_probeFree parameter input left.state plan.action rightCache)
+    hcontext.leftValid hcontext.leftCompletable hrightMaterialized htracked hcovered hnoHit hbudget
 
 set_option maxRecDepth 100000 in
 theorem relTriple_finishWitnessObservedFirstStoppedStep
