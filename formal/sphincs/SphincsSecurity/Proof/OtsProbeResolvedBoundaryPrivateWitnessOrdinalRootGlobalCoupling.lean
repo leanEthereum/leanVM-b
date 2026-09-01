@@ -1262,6 +1262,84 @@ theorem sourceSnapshotStopInvariant_of_mem_sampledGranularAll
   exact sourceSnapshotStopInvariant_of_mem_granularAll adversary parameter table ftsSecret fuel
     output hrest
 
+set_option maxRecDepth 100000 in
+theorem selectedObservationHidden_of_sourceSnapshotStopInvariant
+    {table : OtsSecretIndex → HashOutput}
+    {source : PrivateWitnessSnapshotOutput}
+    {observations : List CleanProbeObservation}
+    (hsource : SourceSnapshotStopInvariant source)
+    (haligned : SnapshotsObservedAt table source.2 observations) :
+    ∀ witness
+      (sourceOrdinal : Fin
+        (erasePrivateWitnessSnapshotOutput source).2.length)
+      (observationOrdinal : Fin observations.length),
+      (erasePrivateWitnessSnapshotOutput source).1 = some witness →
+      sourceOrdinal.val = observationOrdinal.val →
+      firstPrivateWitnessOrdinal? witness
+          (erasePrivateWitnessSnapshotOutput source).2 = some sourceOrdinal →
+      (observations.get observationOrdinal).revealedAtProbe = false := by
+  intro witness sourceOrdinal observationOrdinal hwitness hordinal hfirst
+  have hwitnessSource : source.1 = some witness := by
+    simpa [erasePrivateWitnessSnapshotOutput] using hwitness
+  have hsourceFacts := hsource witness hwitnessSource
+  have hsourceLength :
+      (erasePrivateWitnessSnapshotOutput source).2.length = source.2.length := by
+    simp [erasePrivateWitnessSnapshotOutput]
+  let snapshotOrdinal : Fin source.2.length :=
+    ⟨sourceOrdinal.val, by
+      rw [← hsourceLength]
+      exact sourceOrdinal.isLt⟩
+  have hobservationLt : snapshotOrdinal.val < observations.length := by
+    rw [← haligned.length_eq]
+    exact snapshotOrdinal.isLt
+  let alignedObservationOrdinal : Fin observations.length :=
+    ⟨snapshotOrdinal.val, hobservationLt⟩
+  have halignedOrdinal : alignedObservationOrdinal = observationOrdinal := by
+    apply Fin.ext
+    exact hordinal
+  have hpair := haligned.get snapshotOrdinal.isLt hobservationLt
+  have hpair' : PlannedProbeSnapshot.ObservedAt table
+      (source.2.get snapshotOrdinal) (observations.get observationOrdinal) := by
+    simpa [alignedObservationOrdinal, halignedOrdinal] using hpair
+  have hsourceProbe :
+      (erasePrivateWitnessSnapshotOutput source).2.get sourceOrdinal =
+        (source.2.get snapshotOrdinal).probe := by
+    simp [erasePrivateWitnessSnapshotOutput, snapshotOrdinal]
+  have hmatch := privateWitnessAtOrdinal_of_firstPrivateWitnessOrdinal?_eq_some hfirst
+  unfold PrivateWitnessAtOrdinal at hmatch
+  rw [hsourceProbe] at hmatch
+  have hcoordinate : (observations.get observationOrdinal).coordinate =
+      Coordinate.position witness.position := by
+    have hprobe : (observations.get observationOrdinal).toProbe =
+        (source.2.get snapshotOrdinal).probe := by
+      exact hpair'.1
+    exact congrArg Probe.coordinate hprobe |>.trans hmatch.1
+  have hsnapshotHidden : Coordinate.position witness.position ∉
+      (source.2.get snapshotOrdinal).context.state.revealed := by
+    intro hrevealed
+    exact hsourceFacts.1
+      (hsourceFacts.2 (source.2.get snapshotOrdinal) (List.get_mem _ _)).1 hrevealed
+  rw [hpair'.2.2.1]
+  simp only [decide_eq_false_iff_not]
+  rwa [hcoordinate]
+
+set_option maxRecDepth 100000 in
+theorem witnessFirstUsesSomeDelayedLayerRootSnapshot_of_aligned_tracked_sourceInvariant
+    {table : OtsSecretIndex → HashOutput}
+    {source : PrivateWitnessSnapshotOutput}
+    {result : ObservedCleanRunResult α}
+    (hsource : SourceSnapshotStopInvariant source)
+    (haligned : SnapshotsObservedAt table source.2 result.observations)
+    (hfirst : WitnessFirstUsesSomeLayerRoot
+      (erasePrivateWitnessSnapshotOutput source))
+    (htracked : CleanProbeObservationsTrackedBy result.observations result.state)
+    (hstored : ∀ witness,
+      (erasePrivateWitnessSnapshotOutput source).1 = some witness →
+        result.state.values (Coordinate.position witness.position) = some witness.output) :
+    WitnessFirstUsesSomeDelayedLayerRootSnapshot source := by
+  exact witnessFirstUsesSomeDelayedLayerRootSnapshot_of_aligned_tracked haligned hfirst htracked
+    hstored (selectedObservationHidden_of_sourceSnapshotStopInvariant hsource haligned)
+
 theorem PlannedProbeSnapshot.observedAt_of_finalizationContextLE
     (table : OtsSecretIndex → HashOutput)
     (snapshot : PlannedProbeSnapshot)
