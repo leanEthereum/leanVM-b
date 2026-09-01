@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedProjection
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedChain
 
 /-!
 # Sampled stopped diagnostic projection
@@ -15,7 +15,8 @@ open OracleComp.ProgramLogic.Relational
 
 def ObservedMaterializedDiagnostic.FirstExistingHiddenHitAt
     (ordinal : Nat) (outcome : ObservedMaterializedDiagnostic α) : Prop :=
-  ∃ result, outcome.before = some result ∧ FirstExistingHiddenHitAt result ordinal
+  ∃ result, outcome.before = some result ∧
+    SphincsSecurity.Concrete.OtsProbeSimulation.FirstExistingHiddenHitAt result ordinal
 
 def ObservedCleanRunOption.SuccessfulFirstExistingHiddenHitAt
     (ordinal : Nat) : Option (ObservedCleanRunResult α) → Prop
@@ -23,7 +24,7 @@ def ObservedCleanRunOption.SuccessfulFirstExistingHiddenHitAt
   | some result =>
       (∃ finalResult, some finalResult ∈ support
         (finishObservedCleanRunFromTable (some result))) ∧
-      FirstExistingHiddenHitAt result ordinal
+      SphincsSecurity.Concrete.OtsProbeSimulation.FirstExistingHiddenHitAt result ordinal
 
 theorem SnapshotObservedFirstStoppedRel.selected_or_chain_of_successful_firstHit
     {table : OtsSecretIndex → HashOutput}
@@ -34,10 +35,12 @@ theorem SnapshotObservedFirstStoppedRel.selected_or_chain_of_successful_firstHit
     (hfinish : some finalResult ∈ support
       (finishObservedCleanRunFromTable (some result)))
     (ordinal : Nat)
-    (hfirst : FirstExistingHiddenHitAt result ordinal) :
+    (hfirst : SphincsSecurity.Concrete.OtsProbeSimulation.FirstExistingHiddenHitAt
+      result ordinal) :
     SelectedPrivateSnapshotHitAt source ordinal ∨
       FirstExistingHiddenChainStartHitAt result.observations ordinal := by
-  obtain ⟨selected, hselected, _hhit, _hbefore⟩ := hfirst
+  have hfirstData := hfirst
+  obtain ⟨selected, hselected, _hhit, _hbefore⟩ := hfirstData
   by_cases hroot : (result.observations.get selected).toProbe.IsLayerRoot
   · left
     apply hrelation.selected_of_successful_firstRoot finalResult hfinish ordinal hfirst
@@ -54,18 +57,13 @@ attribute [local irreducible]
   observedMaterializedRetainedRunFromTable finishObservedMaterializedDiagnostic in
 set_option maxHeartbeats 2000000 in
 set_option maxRecDepth 100000 in
-theorem probEvent_sampledDiagnostic_successfulDoomed_firstExistingHiddenHitAt_le_raw
-    (adversary : Adversary) (parameter : PublicParameter)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel ordinal : Nat) :
+theorem probEvent_finishDiagnostic_successfulDoomed_firstExistingHiddenHitAt_le
+    (table : OtsSecretIndex → HashOutput)
+    (run : ProbComp (Option (ObservedCleanRunResult α))) (ordinal : Nat) :
     Pr[fun outcome => outcome.SuccessfulDoomed ∧
           outcome.FirstExistingHiddenHitAt ordinal |
-        sampledObservedMaterializedDiagnostic adversary parameter ftsSecret fuel] ≤
-      Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenHitAt ordinal | do
-        let table ← sampleOtsHashTable
-        observedMaterializedRetainedRunFromTable adversary parameter ftsSecret fuel table] := by
-  unfold sampledObservedMaterializedDiagnostic
-  apply probEvent_bind_le_of_forall_le
-  intro table _htable
+        run >>= finishObservedMaterializedDiagnostic table] ≤
+      Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenHitAt ordinal | run] := by
   apply probEvent_bind_le_probEvent
   intro result _hresult hnot
   apply probEvent_eq_zero
@@ -78,6 +76,39 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_firstExistingHiddenHitAt_le
   subst firstResult
   subst result
   exact hnot ⟨⟨finalResult, hfinish⟩, hfirst⟩
+
+attribute [local irreducible]
+  observedMaterializedRetainedRunFromTable finishObservedMaterializedDiagnostic in
+set_option linter.constructorNameAsVariable false in
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem probEvent_sampledDiagnostic_successfulDoomed_firstExistingHiddenHitAt_le_raw
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel ordinal : Nat) :
+    Pr[fun outcome => outcome.SuccessfulDoomed ∧
+          outcome.FirstExistingHiddenHitAt ordinal |
+        sampledObservedMaterializedDiagnostic adversary parameter ftsSecret fuel] ≤
+      Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenHitAt ordinal | do
+        let table ← sampleOtsHashTable
+        observedMaterializedRetainedRunFromTable adversary parameter ftsSecret fuel table] := by
+  change Pr[fun outcome => outcome.SuccessfulDoomed ∧
+        outcome.FirstExistingHiddenHitAt ordinal |
+      sampleOtsHashTable >>= fun table =>
+        observedMaterializedRetainedRunFromTable adversary parameter ftsSecret fuel table >>=
+          finishObservedMaterializedDiagnostic table] ≤
+    Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenHitAt ordinal |
+      sampleOtsHashTable >>= fun table =>
+        observedMaterializedRetainedRunFromTable adversary parameter ftsSecret fuel table]
+  rw [probEvent_bind_eq_tsum (mx := sampleOtsHashTable)]
+  rw [probEvent_bind_eq_tsum (mx := sampleOtsHashTable)]
+  apply ENNReal.tsum_le_tsum
+  intro table
+  by_cases htable : table ∈ support sampleOtsHashTable
+  · exact mul_le_mul' le_rfl
+      (probEvent_finishDiagnostic_successfulDoomed_firstExistingHiddenHitAt_le
+        (α := RetainedGameResult × SplitHashCache) table
+        (observedMaterializedRetainedRunFromTable adversary parameter ftsSecret fuel table) ordinal)
+  · simp [probOutput_eq_zero_of_not_mem_support htable]
 
 set_option maxHeartbeats 2000000 in
 set_option maxRecDepth 100000 in
@@ -123,8 +154,10 @@ theorem probEvent_sampledSuccessfulFirstHit_le_selectedSnapshot_add_chainStartAt
       · exact hselected
       · exact (hnotChain hchain).elim
 
+attribute [local irreducible] sampledObservedMaterializedDiagnostic in
 set_option maxHeartbeats 2000000 in
 set_option maxRecDepth 100000 in
+set_option linter.constructorNameAsVariable false in
 theorem probEvent_sampledDiagnostic_successfulDoomed_le_sum_firstHits
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
@@ -144,26 +177,31 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_le_sum_firstHits
       intro outcome houtcome hsuccess
       have hhit := hasExistingHiddenHit_of_mem_sampledDiagnostic_successfulDoomed adversary
         parameter ftsSecret q hq outcome houtcome hsuccess
-      rcases outcome.firstExistingHidden_root_or_nonRoot hhit with hroot | hnonRoot
+      rcases ObservedMaterializedDiagnostic.firstExistingHidden_root_or_nonRoot hhit with
+        hroot | hnonRoot
       · obtain ⟨ordinal, result, sourceOrdinal, hbefore, hordinal, hfirst, _hroot⟩ := hroot
         have hlength := observations_length_le_of_mem_sampledDiagnostic_before adversary parameter
           ftsSecret (2 * q) outcome result houtcome hbefore
         have hlt : ordinal < 2 * q := by omega
         let bounded : Fin (2 * q) := ⟨ordinal, hlt⟩
-        exact ⟨bounded, Finset.mem_univ bounded, hsuccess, result, hbefore,
-          hordinal ▸ firstExistingHiddenHitAt_of_firstExistingHiddenHitOrdinal?_eq_some hfirst⟩
+        have hfirstAt : FirstExistingHiddenHitAt result ordinal :=
+          hordinal ▸ firstExistingHiddenHitAt_of_firstExistingHiddenHitOrdinal?_eq_some hfirst
+        exact ⟨bounded, Finset.mem_univ bounded, hsuccess, result, hbefore, by
+          simpa [bounded] using hfirstAt⟩
       · obtain ⟨ordinal, result, sourceOrdinal, hbefore, hordinal, hfirst, _hnonRoot⟩ :=
           hnonRoot
         have hlength := observations_length_le_of_mem_sampledDiagnostic_before adversary parameter
           ftsSecret (2 * q) outcome result houtcome hbefore
         have hlt : ordinal < 2 * q := by omega
         let bounded : Fin (2 * q) := ⟨ordinal, hlt⟩
-        exact ⟨bounded, Finset.mem_univ bounded, hsuccess, result, hbefore,
-          hordinal ▸ firstExistingHiddenHitAt_of_firstExistingHiddenHitOrdinal?_eq_some hfirst⟩
+        have hfirstAt : FirstExistingHiddenHitAt result ordinal :=
+          hordinal ▸ firstExistingHiddenHitAt_of_firstExistingHiddenHitOrdinal?_eq_some hfirst
+        exact ⟨bounded, Finset.mem_univ bounded, hsuccess, result, hbefore, by
+          simpa [bounded] using hfirstAt⟩
     _ ≤ ∑ ordinal : Fin (2 * q),
           Pr[fun outcome => outcome.SuccessfulDoomed ∧
               outcome.FirstExistingHiddenHitAt ordinal.val | run] :=
-      probEvent_exists_finset_le_sum Finset.univ run fun ordinal outcome =>
+      probEvent_exists_finset_le_sum Finset.univ run fun (ordinal : Fin (2 * q)) outcome =>
         outcome.SuccessfulDoomed ∧ outcome.FirstExistingHiddenHitAt ordinal.val
     _ = _ := by simp only [run]
 

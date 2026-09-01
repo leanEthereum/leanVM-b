@@ -19,10 +19,14 @@ structure ProbeStateLE (left right : LazyRevealProbe.State Coordinate) : Prop wh
   values : left.values = right.values
   revealed : left.revealed = right.revealed
   ensured : left.ensured = right.ensured
+  extraRoot : ∀ coordinate candidate,
+    (coordinate, candidate) ∈ right.pending →
+      (coordinate, candidate) ∈ left.pending ∨
+        (⟨coordinate, candidate⟩ : Probe).IsLayerRoot
 
 theorem ProbeStateLE.refl (state : LazyRevealProbe.State Coordinate) :
     ProbeStateLE state state :=
-  ⟨fun _ h => h, rfl, rfl, rfl⟩
+  ⟨fun _ h => h, rfl, rfl, rfl, fun _ _ h => Or.inl h⟩
 
 theorem ProbeStateLE.trans {left middle right : LazyRevealProbe.State Coordinate}
     (hleft : ProbeStateLE left middle) (hright : ProbeStateLE middle right) :
@@ -30,7 +34,11 @@ theorem ProbeStateLE.trans {left middle right : LazyRevealProbe.State Coordinate
   ⟨fun _ hentry => hright.pending (hleft.pending hentry),
     hleft.values.trans hright.values,
     hleft.revealed.trans hright.revealed,
-    hleft.ensured.trans hright.ensured⟩
+    hleft.ensured.trans hright.ensured,
+    fun coordinate candidate hentry => by
+      rcases hright.extraRoot coordinate candidate hentry with hmiddle | hroot
+      · exact hleft.extraRoot coordinate candidate hmiddle
+      · exact Or.inr hroot⟩
 
 theorem ProbeStateLE.hitAt
     {left right : LazyRevealProbe.State Coordinate}
@@ -48,36 +56,63 @@ theorem ProbeStateLE.not_hitAt_left
     ¬left.hitAt coordinate output :=
   fun hhit => hmiss (hle.hitAt coordinate output hhit)
 
+theorem ProbeStateLE.chainStart_pending_of_right
+    {left right : LazyRevealProbe.State Coordinate}
+    (hle : ProbeStateLE left right) (lay : Layer) (tree : TreeIndex)
+    (leafIdx : LeafIndex) (chainIdx : ChainIndex) (candidate : Digest)
+    (hentry : (Coordinate.chainStart lay tree leafIdx chainIdx, candidate) ∈ right.pending) :
+    (Coordinate.chainStart lay tree leafIdx chainIdx, candidate) ∈ left.pending := by
+  rcases hle.extraRoot _ _ hentry with hleft | ⟨position, hcoordinate, _hroot⟩
+  · exact hleft
+  · cases hcoordinate
+
 theorem ProbeStateLE.addPendingRight
     {left right : LazyRevealProbe.State Coordinate}
-    (hle : ProbeStateLE left right) (coordinate : Coordinate) (candidate : Digest) :
+    (hle : ProbeStateLE left right) (coordinate : Coordinate) (candidate : Digest)
+    (hroot : (⟨coordinate, candidate⟩ : Probe).IsLayerRoot) :
     ProbeStateLE left (right.addPending coordinate candidate) := by
-  refine ⟨?_, hle.values, hle.revealed, hle.ensured⟩
+  refine ⟨?_, hle.values, hle.revealed, hle.ensured, ?_⟩
   intro entry hentry
   exact Finset.mem_insert_of_mem (hle.pending hentry)
+  intro other otherCandidate hentry
+  simp only [LazyRevealProbe.State.addPending, Finset.mem_insert] at hentry
+  rcases hentry with hnew | hold
+  · have hcoordinate : other = coordinate := congrArg Prod.fst hnew
+    have hcandidate : otherCandidate = candidate := congrArg Prod.snd hnew
+    subst other
+    subst otherCandidate
+    exact Or.inr hroot
+  · exact hle.extraRoot other otherCandidate hold
 
 theorem ProbeStateLE.addPending
     {left right : LazyRevealProbe.State Coordinate}
     (hle : ProbeStateLE left right) (coordinate : Coordinate) (candidate : Digest) :
     ProbeStateLE (left.addPending coordinate candidate)
       (right.addPending coordinate candidate) := by
-  refine ⟨?_, hle.values, hle.revealed, hle.ensured⟩
+  refine ⟨?_, hle.values, hle.revealed, hle.ensured, ?_⟩
   intro entry hentry
   simp only [LazyRevealProbe.State.addPending, Finset.mem_insert] at hentry ⊢
   exact hentry.elim Or.inl (fun hold => Or.inr (hle.pending hold))
+  intro other otherCandidate hentry
+  simp only [LazyRevealProbe.State.addPending, Finset.mem_insert] at hentry ⊢
+  rcases hentry with hnew | hold
+  · exact Or.inl (Or.inl hnew)
+  · rcases hle.extraRoot other otherCandidate hold with hleft | hroot
+    · exact Or.inl (Or.inr hleft)
+    · exact Or.inr hroot
 
 theorem ProbeStateLE.ensure
     {left right : LazyRevealProbe.State Coordinate}
     (hle : ProbeStateLE left right) (coordinate : Coordinate) :
     ProbeStateLE (left.ensure coordinate) (right.ensure coordinate) := by
-  refine ⟨hle.pending, hle.values, hle.revealed, ?_⟩
+  refine ⟨hle.pending, hle.values, hle.revealed, ?_, hle.extraRoot⟩
   simp [LazyRevealProbe.State.ensure, hle.ensured]
 
 theorem ProbeStateLE.publish
     {left right : LazyRevealProbe.State Coordinate}
     (hle : ProbeStateLE left right) (coordinate : Coordinate) :
     ProbeStateLE (left.publish coordinate) (right.publish coordinate) := by
-  refine ⟨hle.pending, hle.values, ?_, hle.ensured⟩
+  refine ⟨hle.pending, hle.values, ?_, hle.ensured, hle.extraRoot⟩
   simp [LazyRevealProbe.State.publish, hle.revealed]
 
 theorem ProbeStateLE.materialize
@@ -85,34 +120,52 @@ theorem ProbeStateLE.materialize
     (hle : ProbeStateLE left right) (coordinate : Coordinate) (output : HashOutput) :
     ProbeStateLE (left.materialize coordinate output)
       (right.materialize coordinate output) := by
-  refine ⟨?_, ?_, hle.revealed, ?_⟩
+  refine ⟨?_, ?_, hle.revealed, ?_, ?_⟩
   · intro entry hentry
     simp only [LazyRevealProbe.State.materialize, LazyRevealProbe.State.pendingAway,
       Finset.mem_filter] at hentry ⊢
     exact ⟨hle.pending hentry.1, hentry.2⟩
   · simp [LazyRevealProbe.State.materialize, hle.values]
   · simp [LazyRevealProbe.State.materialize, hle.ensured]
+  · intro other candidate hentry
+    simp only [LazyRevealProbe.State.materialize, LazyRevealProbe.State.pendingAway,
+      Finset.mem_filter] at hentry ⊢
+    rcases hle.extraRoot other candidate hentry.1 with hleft | hroot
+    · exact Or.inl ⟨hleft, hentry.2⟩
+    · exact Or.inr hroot
 
 theorem ProbeStateLE.clearPending
     {left right : LazyRevealProbe.State Coordinate}
     (hle : ProbeStateLE left right) (coordinate : Coordinate) :
     ProbeStateLE (left.clearPending coordinate) (right.clearPending coordinate) := by
-  refine ⟨?_, hle.values, hle.revealed, hle.ensured⟩
+  refine ⟨?_, hle.values, hle.revealed, hle.ensured, ?_⟩
   intro entry hentry
   simp only [LazyRevealProbe.State.clearPending, LazyRevealProbe.State.pendingAway,
     Finset.mem_filter] at hentry ⊢
   exact ⟨hle.pending hentry.1, hentry.2⟩
+  intro other candidate hentry
+  simp only [LazyRevealProbe.State.clearPending, LazyRevealProbe.State.pendingAway,
+    Finset.mem_filter] at hentry ⊢
+  rcases hle.extraRoot other candidate hentry.1 with hleft | hroot
+  · exact Or.inl ⟨hleft, hentry.2⟩
+  · exact Or.inr hroot
 
 theorem ProbeStateLE.complete
     {left right : LazyRevealProbe.State Coordinate}
     (hle : ProbeStateLE left right) (coordinate : Coordinate) (output : HashOutput) :
     ProbeStateLE (left.complete coordinate output) (right.complete coordinate output) := by
-  refine ⟨?_, ?_, hle.revealed, hle.ensured⟩
+  refine ⟨?_, ?_, hle.revealed, hle.ensured, ?_⟩
   · intro entry hentry
     simp only [LazyRevealProbe.State.complete, LazyRevealProbe.State.pendingAway,
       Finset.mem_filter] at hentry ⊢
     exact ⟨hle.pending hentry.1, hentry.2⟩
   · simp [LazyRevealProbe.State.complete, hle.values]
+  · intro other candidate hentry
+    simp only [LazyRevealProbe.State.complete, LazyRevealProbe.State.pendingAway,
+      Finset.mem_filter] at hentry ⊢
+    rcases hle.extraRoot other candidate hentry.1 with hleft | hroot
+    · exact Or.inl ⟨hleft, hentry.2⟩
+    · exact Or.inr hroot
 
 theorem ProbeStateLE.coordinates
     {left right : LazyRevealProbe.State Coordinate}
@@ -473,6 +526,7 @@ theorem relTriple_runCleanFromTable_addProbeRight
     (leftFuel rightFuel : Nat) (table : OtsSecretIndex → HashOutput)
     (coordinate : Coordinate) (candidate : Digest)
     (hstate : ProbeStateLE leftState rightState)
+    (hroot : (⟨coordinate, candidate⟩ : Probe).IsLayerRoot)
     (hfuel : rightFuel ≤ leftFuel) :
     RelTriple
       (runCleanFromTable leftState leftFuel table computation)
@@ -495,7 +549,7 @@ theorem relTriple_runCleanFromTable_addProbeRight
         simp only [hrightRevealed, ↓reduceIte]
         exact relTriple_runCleanFromTable_probeStateLE computation leftState
           (rightState.addPending coordinate candidate) leftFuel rightRemaining table
-          (hstate.addPendingRight coordinate candidate) hremaining
+          (hstate.addPendingRight coordinate candidate hroot) hremaining
 
 set_option maxRecDepth 100000 in
 theorem relTriple_runCleanFromTable_afterPlan_rootAware
@@ -537,7 +591,8 @@ theorem relTriple_runCleanFromTable_afterPlan_rootAware
             (relTriple_runCleanFromTable_addProbeRight
               ((probingHashQueryAfterPlan parameter input plan).run leftCache)
               leftState rightState leftFuel rightFuel table candidate.coordinate
-              candidate.candidate hstate hfuel)
+              candidate.candidate hstate
+              (decodeEncodingLayerRootCandidate?_some_isLayerRoot hdecode) hfuel)
 
 theorem relTriple_runCleanFromTable_bind_probeLE
     (left : OracleComp (LazyRevealProbe.World Coordinate) α)
