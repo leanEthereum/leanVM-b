@@ -15,6 +15,7 @@ open OracleComp OracleSpec
 structure PrivateHitWitness where
   position : Position
   output : HashOutput
+  revealed : Finset Coordinate
 deriving DecidableEq
 
 inductive DirectWitnessResult (alpha : Type) where
@@ -85,7 +86,8 @@ noncomputable def runDirectResolvedWitnessFromTable
                   match context.values position with
                   | some output =>
                       if context.state.hitAt coordinate output then
-                        pure (.stoppedPrivate ⟨position, output⟩)
+                        pure (.stoppedPrivate ⟨position, output,
+                          context.state.revealed⟩)
                       else
                         recursivelyRun output
                           { state := context.state.materialize coordinate output
@@ -212,7 +214,8 @@ theorem runDirectResolvedWitnessFromTable_reveal_query_bind
               match context.values position with
               | some output =>
                   if context.state.hitAt coordinate output then
-                    pure (.stoppedPrivate ⟨position, output⟩)
+                    pure (.stoppedPrivate ⟨position, output,
+                      context.state.revealed⟩)
                   else
                     runDirectResolvedWitnessFromTable
                       { state := context.state.materialize coordinate output

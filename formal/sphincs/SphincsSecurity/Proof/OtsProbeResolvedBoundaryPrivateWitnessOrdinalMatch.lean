@@ -31,7 +31,8 @@ theorem probEvent_privateWitnessMatch_le_privateCandidateFire_of_privateValue
     (position : Position) (output : HashOutput)
     (hstate : context.state.values (.position position) = none)
     (hprivate : context.values position = some output) :
-    Pr[= true | (pure (decide ((⟨position, output⟩ : PrivateHitWitness).MatchesCandidate
+    Pr[= true | (pure (decide ((PrivateHitWitness.mk position output
+        context.state.revealed).MatchesCandidate
         candidate)) : ProbComp Bool)] ≤
       Pr[= true | privateCandidateFire candidate context] := by
   cases hcoordinate : candidate.coordinate with

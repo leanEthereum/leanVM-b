@@ -23,7 +23,7 @@ def PrivateWitnessCovered (output : PrivateWitnessPlanOutput) : Prop :=
 
 noncomputable def privateHitWitnessOf
     (context : DeferredContext) (hhit : PrivateStructuralHit context) : PrivateHitWitness :=
-  ⟨hhit.choose, hhit.choose_spec.choose⟩
+  ⟨hhit.choose, hhit.choose_spec.choose, context.state.revealed⟩
 
 theorem privateHitWitnessOf_spec
     (context : DeferredContext) (hhit : PrivateStructuralHit context) :

@@ -103,7 +103,7 @@ theorem probEvent_classifyDirectWitnessPlanMatchesCandidate_le
     have hmatch := probEvent_privateWitnessMatch_le_privateCandidateFire_of_privateValue
       candidate context (privateHitWitnessOf context hhit).position
       (privateHitWitnessOf context hhit).output hspec.1 hspec.2.1
-    simpa [PrivateWitnessPlanMatchesCandidate] using hmatch
+    simpa [PrivateWitnessPlanMatchesCandidate, privateHitWitnessOf] using hmatch
   · simp only [hhit, ↓reduceDIte]
     by_cases hcompletable : DeferredCompletable table context
     · simp only [hcompletable, ↓reduceIte]
@@ -152,7 +152,7 @@ theorem probEvent_canonicalizeDirectWitnessPlanMatchesCandidate_le
           Pr[fun hit : Bool => hit = true |
             privateCandidateFire candidate canonical] := by
       rw [probEvent_eq_eq_probOutput]
-      simpa [PrivateWitnessPlanMatchesCandidate] using hmatch
+      simpa [PrivateWitnessPlanMatchesCandidate, privateHitWitnessOf] using hmatch
     exact hmatchEvent.trans (le_of_eq hfireProb)
   · simp only [canonical, hhit, ↓reduceDIte]
     by_cases hpublished : PublishedValues context.state
@@ -286,7 +286,7 @@ theorem probEvent_retainedResolvedFinalizationPrivateWitnessPlanMatchesCandidate
               ProbComp PrivateWitnessPlanOutput)] ≤
           Pr[fun hit : Bool => hit = true | privateCandidateFire candidate context] := by
       rw [probEvent_eq_eq_probOutput]
-      simpa [PrivateWitnessPlanMatchesCandidate] using hmatch
+      simpa [PrivateWitnessPlanMatchesCandidate, privateHitWitnessOf] using hmatch
     exact hmatchEvent
   · simp [hhit, PrivateWitnessPlanMatchesCandidate]
 
