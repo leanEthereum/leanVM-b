@@ -1199,35 +1199,36 @@ noncomputable def guardedMaterializedRootContinuation
 attribute [local irreducible] maskedPublishedTreeRoot in
 set_option maxHeartbeats 2000000 in
 set_option maxRecDepth 100000 in
-theorem evalDist_sampledMaterializedCleanUnguarded_isNone_eq_safeRoot
+theorem evalDist_sampledMaterializedCleanUnguarded_isNone_eq_safeRoot_of_fuel
     (adversary : Adversary) (parameter : PublicParameter)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat) :
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel bound : Nat)
+    (hbudget : bound ≤ fuel) :
     𝒟[Option.isNone <$>
-        sampledMaterializedCleanUnguarded adversary parameter ftsSecret q] =
+        sampledMaterializedCleanUnguarded adversary parameter ftsSecret fuel] =
       𝒟[runDirectDetailedSafeOrdinaryWithCompletionTable
         (fun table context remaining value =>
-          guardedMaterializedRootContinuation adversary parameter ftsSecret q table
+          guardedMaterializedRootContinuation adversary parameter ftsSecret bound table
             context.state remaining value)
         (directDeferredContext
-          (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)) q
+          (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)) fuel
         (maskedPublishedTreeRoot.run emptySplitHashCache)] := by
   have hsafe := evalDist_runDirectDetailedSafeOrdinary_eq_sampledCleanFailureObserve
     (maskedPublishedTreeRoot.run emptySplitHashCache)
     (fun table state remaining value =>
-      guardedMaterializedRootContinuation adversary parameter ftsSecret q table
+      guardedMaterializedRootContinuation adversary parameter ftsSecret bound table
         state remaining value)
-    (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) q
+    (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel
     (maskedPublishedTreeRoot_probeFree emptySplitHashCache |>.mono (by omega))
   calc
     _ = 𝒟[do
         let base ← sampleOtsHashTable
         let table := completedStartTable
           (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) base
-        let result ← runCleanFromTable LazyRevealProbe.State.empty q table
+        let result ← runCleanFromTable LazyRevealProbe.State.empty fuel table
           (maskedPublishedTreeRoot.run emptySplitHashCache)
         finishCleanFailureObserve
           (fun nextTable state remaining value =>
-            guardedMaterializedRootContinuation adversary parameter ftsSecret q nextTable
+            guardedMaterializedRootContinuation adversary parameter ftsSecret bound nextTable
               state remaining value)
           result] := by
       unfold sampledMaterializedCleanUnguarded materializedCleanRetainedRunFromTable
@@ -1242,19 +1243,19 @@ theorem evalDist_sampledMaterializedCleanUnguarded_isNone_eq_safeRoot
       | none => rfl
       | some result =>
           have hpublished := publishedValues_of_mem_runCleanFromTable maskedPublishedTreeRoot
-            (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) emptySplitHashCache q
+            (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) emptySplitHashCache fuel
             table result (by simp [PublishedValues, LazyRevealProbe.State.empty])
             preservesPublishedValues_maskedPublishedTreeRoot hresult
           have hfuel := fuel_le_remaining_add_of_mem_runCleanFromTable
             (maskedPublishedTreeRoot.run emptySplitHashCache)
-            (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) q table result 0
+            (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel table result 0
             (maskedPublishedTreeRoot_probeFree emptySplitHashCache) hresult
-          have hremaining : q ≤ result.remaining := by omega
-          have hguard : PublishedValues result.state ∧ q ≤ result.remaining :=
+          have hremaining : bound ≤ result.remaining := by omega
+          have hguard : PublishedValues result.state ∧ bound ≤ result.remaining :=
             ⟨hpublished, hremaining⟩
           have htable := (startTableAgrees_of_mem_runCleanFromTable
             (maskedPublishedTreeRoot.run emptySplitHashCache)
-            (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) q table
+            (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel table
             (startTableAgrees_empty table) result hresult).1
           simp only [finishCleanFailureObserve, guardedMaterializedRootContinuation,
             if_pos hguard]
@@ -1274,20 +1275,36 @@ theorem evalDist_sampledMaterializedCleanUnguarded_isNone_eq_safeRoot
               cases finalized <;> rfl
     _ = _ := hsafe.symm
 
+theorem evalDist_sampledMaterializedCleanUnguarded_isNone_eq_safeRoot
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat) :
+    𝒟[Option.isNone <$>
+        sampledMaterializedCleanUnguarded adversary parameter ftsSecret q] =
+      𝒟[runDirectDetailedSafeOrdinaryWithCompletionTable
+        (fun table context remaining value =>
+          guardedMaterializedRootContinuation adversary parameter ftsSecret q table
+            context.state remaining value)
+        (directDeferredContext
+          (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)) q
+        (maskedPublishedTreeRoot.run emptySplitHashCache)] :=
+  evalDist_sampledMaterializedCleanUnguarded_isNone_eq_safeRoot_of_fuel adversary parameter
+    ftsSecret q q le_rfl
+
 attribute [local irreducible] maskedPublishedTreeRoot in
 set_option maxHeartbeats 2000000 in
 set_option maxRecDepth 100000 in
-theorem probEvent_sampledMaterializedCleanUnguarded_none_le
+theorem probEvent_sampledMaterializedCleanUnguarded_none_le_of_fuel
     (adversary : Adversary) (parameter : PublicParameter)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel q : Nat)
     (hbound : ∀ root,
       (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q) :
-    Pr[= none | sampledMaterializedCleanUnguarded adversary parameter ftsSecret q] ≤
-      (q : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+        IsOuterHash q)
+    (hbudget : q ≤ fuel) :
+    Pr[= none | sampledMaterializedCleanUnguarded adversary parameter ftsSecret fuel] ≤
+      (fuel : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
   calc
     _ = Pr[= true | Option.isNone <$>
-        sampledMaterializedCleanUnguarded adversary parameter ftsSecret q] := by
+        sampledMaterializedCleanUnguarded adversary parameter ftsSecret fuel] := by
       rw [← probEvent_eq_eq_probOutput, ← probEvent_eq_eq_probOutput, probEvent_map]
       apply OracleComp.probEvent_congr'
       · intro result _hresult
@@ -1298,11 +1315,11 @@ theorem probEvent_sampledMaterializedCleanUnguarded_none_le
           guardedMaterializedRootContinuation adversary parameter ftsSecret q table
             context.state remaining value)
         (directDeferredContext
-          (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)) q
+          (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)) fuel
         (maskedPublishedTreeRoot.run emptySplitHashCache)] :=
       OracleComp.probOutput_congr rfl
-        (evalDist_sampledMaterializedCleanUnguarded_isNone_eq_safeRoot adversary parameter
-          ftsSecret q)
+        (evalDist_sampledMaterializedCleanUnguarded_isNone_eq_safeRoot_of_fuel adversary parameter
+          ftsSecret fuel q hbudget)
     _ ≤ _ := by
       rw [← probEvent_eq_eq_probOutput]
       have hsafe := probEvent_runDirectDetailedSafeOrdinaryWithCompletionTable_le
@@ -1322,8 +1339,19 @@ theorem probEvent_sampledMaterializedCleanUnguarded_none_le
               context.state remaining q value.2 (hbound value.1) hguard.2 hguard.1)
           · simp [guardedMaterializedRootContinuation, hguard])
         (directDeferredContext
-          (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)) q
+          (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)) fuel
       simpa [emptyWitnessDeferredContext, LazyRevealProbe.State.empty] using hsafe
+
+theorem probEvent_sampledMaterializedCleanUnguarded_none_le
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (hbound : ∀ root,
+      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
+        IsOuterHash q) :
+    Pr[= none | sampledMaterializedCleanUnguarded adversary parameter ftsSecret q] ≤
+      (q : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ :=
+  probEvent_sampledMaterializedCleanUnguarded_none_le_of_fuel adversary parameter ftsSecret q q
+    hbound le_rfl
 
 noncomputable def materializedSafeBoundary
     (parameter : PublicParameter) (root : Digest)
