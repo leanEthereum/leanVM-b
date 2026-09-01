@@ -174,4 +174,20 @@ theorem relTriple_sampledGranularAllCanonical_finishedMaterialized_rootRel
   exact relTriple_granularAllCanonical_finishedMaterialized_rootRel adversary parameter ftsSecret q
     leftTable hbound
 
+theorem probEvent_sampledGranularAllCanonical_root_le_materializedFailure_add_delayed
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (hbound : ∀ root,
+      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
+        IsOuterHash q) :
+    Pr[fun output =>
+        WitnessFirstUsesSomeLayerRoot (erasePrivateWitnessSnapshotOutput output) |
+      sampledGranularAllCanonicalPrivateWitnessSnapshot adversary parameter ftsSecret q] ≤
+      Pr[= none | sampledObservedMaterializedClean adversary parameter ftsSecret (2 * q)] +
+        Pr[WitnessFirstUsesSomeDelayedLayerRootSnapshot |
+          sampledGranularAllCanonicalPrivateWitnessSnapshot adversary parameter ftsSecret q] := by
+  exact probEvent_root_le_observedFailure_add_delayed_of_relTriple _ _
+    (relTriple_sampledGranularAllCanonical_finishedMaterialized_rootRel adversary parameter
+      ftsSecret q hbound)
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
