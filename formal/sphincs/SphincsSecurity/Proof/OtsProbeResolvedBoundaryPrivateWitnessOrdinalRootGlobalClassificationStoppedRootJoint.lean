@@ -221,6 +221,219 @@ theorem probEvent_successfulDoomedFirstRootFiber_le_goodComparison_add_weightedE
       (probEvent_successfulDoomedFirstRootComparisonExceptionAt_le
         table run ordinal target) _
 
+theorem SnapshotObservedFirstStoppedRel.cleanRootGoodForComparisonAt_of_successful
+    {table : OtsSecretIndex → HashOutput} {ordinal : Nat} {target : Position}
+    {source : PrivateWitnessSnapshotOutput}
+    {observed : Option (ObservedCleanRunResult (α × SplitHashCache))}
+    {rightRoot : Digest}
+    (hrelation : SnapshotObservedFirstStoppedRel table source observed)
+    (hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      table ordinal target rightRoot observed) :
+    SelectedPrivateSnapshotCleanRootGoodForComparisonAt
+      table source ordinal target rightRoot := by
+  cases observed with
+  | none =>
+      simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
+        ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
+        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hgood
+  | some result =>
+      obtain ⟨⟨⟨⟨finalResult, hfinish⟩, _hdoomed,
+        selected, hselected, hfirst, hroot⟩, hposition⟩, hcomparison⟩ := hgood
+      rcases hrelation.selectedAligned_or_chain_of_successful_firstHit
+          finalResult hfinish ordinal hfirst with ⟨hhit, haligned⟩ | hchain
+      · have hclean := hrelation.selectedCleanRoot_of_successful_firstRoot
+          finalResult hfinish ordinal selected hselected hfirst hroot
+        obtain ⟨sourceSelected, sourceTarget, output, hsourceSelected, hselection,
+          hactual, hsourceRoot, hsourceClean⟩ := hclean
+        obtain ⟨alignedSource, alignedObserved, halignedSource, halignedObserved,
+          hcandidates, hprefix, _hsnapshots⟩ := haligned
+        have hsourceEq : sourceSelected = alignedSource :=
+          Fin.ext (hsourceSelected.trans halignedSource.symm)
+        have hobservedEq : alignedObserved = selected :=
+          Fin.ext (halignedObserved.trans hselected.symm)
+        have hselectedLt : ordinal < result.observations.length := by
+          rw [← hselected]
+          exact selected.isLt
+        have hselectedIndex :
+            (⟨ordinal, hselectedLt⟩ : Fin result.observations.length) = selected :=
+          Fin.ext hselected.symm
+        have htargetData :
+            (result.observations.get selected).coordinate = .position target ∧
+              IsLayerRoot target := by
+          simp only [observedFirstLayerRootPosition?, hselectedLt, ↓reduceDIte] at hposition
+          rw [candidateLayerRootPosition?_eq_some_iff, hselectedIndex] at hposition
+          exact hposition
+        have htarget : sourceTarget = target := by
+          have hsourceCoordinate :
+              (source.2.get sourceSelected).probe.coordinate = .position sourceTarget := by
+            have hcandidate := congrArg Probe.coordinate hactual.1
+            simpa using hcandidate
+          have halignedCoordinate :
+              (source.2.get alignedSource).probe.coordinate =
+                (result.observations.get alignedObserved).coordinate := by
+            exact congrArg Probe.coordinate hcandidates
+          rw [hsourceEq, halignedCoordinate, hobservedEq, htargetData.1] at hsourceCoordinate
+          exact (Coordinate.position.inj hsourceCoordinate).symm
+        subst sourceTarget
+        have hsourceComparison : CandidatesAvoidRoot target rightRoot
+            ((privateOrdinalSelectionOfSnapshot sourceSelected).candidates.take ordinal) := by
+          rw [← hsourceSelected,
+            privateOrdinalSelectionOfSnapshot_candidates_take, hsourceSelected]
+          rw [hprefix]
+          simpa [observedPrefixProbes, List.map_take] using hcomparison
+        exact ⟨sourceSelected, output, hsourceSelected, hselection, hactual,
+          hsourceRoot, hsourceClean, hsourceComparison⟩
+      · exact (not_firstExistingHiddenRootHitAt_of_firstChainStart hchain hfirst selected
+          hselected hroot).elim
+
+def SuccessfulObservedCleanRootRel
+    (table : OtsSecretIndex → HashOutput) (ordinal : Nat) (target : Position) :
+    (PrivateWitnessSnapshotOutput × Digest) →
+      (Option (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest) → Prop :=
+  fun source observed =>
+    source.2 = observed.2 ∧
+      (ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          table ordinal target observed.2 observed.1 →
+        SelectedPrivateSnapshotCleanRootGoodForComparisonAt
+          table source.1 ordinal target source.2)
+
+set_option maxHeartbeats 4000000 in
+set_option maxRecDepth 100000 in
+theorem relTriple_snapshotComparison_observedSuccessfulRootComparison
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (q : Nat) (target : Position)
+    (hbound : ∀ root,
+      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
+        IsOuterHash q)
+    (hq : q ≤ 2 ^ securityBits) :
+    RelTriple
+      (do
+        let source ← granularAllCanonicalPrivateWitnessSnapshot adversary parameter table
+          ftsSecret q
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        pure (source, rightRoot))
+      (do
+        let observed ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret
+          (2 * q) table
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        pure (observed, rightRoot))
+      (SuccessfulObservedCleanRootRel table ordinal target) := by
+  apply relTriple_bind
+    (relTriple_granularAllSnapshot_observedMaterializedRetained_firstStopped adversary parameter
+      ftsSecret q table hbound hq)
+  intro source observed hrelation
+  apply relTriple_bind (relTriple_refl ($ᵗ Digest : ProbComp Digest))
+  intro leftRoot rightRoot hroot
+  subst rightRoot
+  apply relTriple_pure_pure
+  refine ⟨rfl, ?_⟩
+  intro hgood
+  exact hrelation.cleanRootGoodForComparisonAt_of_successful hgood
+
+theorem probEvent_observedSuccessfulRootComparison_le_snapshotComparison
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (q : Nat) (target : Position)
+    (hbound : ∀ root,
+      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
+        IsOuterHash q)
+    (hq : q ≤ 2 ^ securityBits) :
+    Pr[fun result : Option
+          (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest =>
+        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          table ordinal target result.2 result.1 | do
+      let observed ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret
+        (2 * q) table
+      let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+      pure (observed, rightRoot)] ≤
+      Pr[fun result : PrivateWitnessSnapshotOutput × Digest =>
+        SelectedPrivateSnapshotCleanRootGoodForComparisonAt
+          table result.1 ordinal target result.2 | do
+      let source ← granularAllCanonicalPrivateWitnessSnapshot adversary parameter table
+        ftsSecret q
+      let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+      pure (source, rightRoot)] := by
+  apply probEvent_le_of_relTriple
+    (relTriple_symm
+      (relTriple_snapshotComparison_observedSuccessfulRootComparison ordinal adversary parameter
+        table ftsSecret q target hbound hq))
+  intro observed source hrelation hgood
+  exact hrelation.2 hgood
+
+def SuccessfulObservedRootMaterializedMatchRel
+    (table : OtsSecretIndex → HashOutput) (ordinal : Nat) (target : Position) :
+    (Option (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest) →
+      (Digest × Digest × MaterializedSelectionOutcome) → Prop :=
+  fun observed outcome =>
+    ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        table ordinal target observed.2 observed.1 →
+      outcome.2.2.Matches target outcome.1
+
+theorem probEvent_observedSuccessfulRootComparison_le_materializedMatch
+    (table : OtsSecretIndex → HashOutput)
+    (observed : ProbComp
+      (Option (ObservedCleanRunResult (RetainedGameResult × SplitHashCache))))
+    (outcome : ProbComp (Digest × Digest × MaterializedSelectionOutcome))
+    (ordinal : Nat) (target : Position)
+    (hrel : RelTriple
+      (do
+        let result ← observed
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        pure (result, rightRoot))
+      outcome (SuccessfulObservedRootMaterializedMatchRel table ordinal target)) :
+    Pr[fun result : Option
+          (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest =>
+        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          table ordinal target result.2 result.1 | do
+      let result ← observed
+      let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+      pure (result, rightRoot)] ≤
+      Pr[fun result => result.2.2.Matches target result.1 | outcome] := by
+  apply probEvent_le_of_relTriple hrel
+  intro left right hrelation hgood
+  exact hrelation hgood
+
+theorem probEvent_observedSuccessfulRootComparison_le_production_mul
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (q : Nat) (target : Position) (hroot : IsLayerRoot target)
+    (hparent : ∃ parent, Position.parentOf target = some parent)
+    (hrel : RelTriple
+      (do
+        let observed ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret
+          (2 * q) table
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        pure (observed, rightRoot))
+      (materializedRootOrdinalOutcomeExperimentAfterTable ordinal adversary parameter ftsSecret
+        target q table)
+      (SuccessfulObservedRootMaterializedMatchRel table ordinal target)) :
+    Pr[fun result : Option
+          (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest =>
+        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          table ordinal target result.2 result.1 | do
+      let observed ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret
+        (2 * q) table
+      let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+      pure (observed, rightRoot)] ≤
+      Pr[fun result => materializedOrdinalSelectionAt target result.2 |
+          materializedRootOrdinalProductionExperimentAfterTable ordinal adversary parameter
+            ftsSecret target q table] *
+        ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  calc
+    _ ≤ Pr[fun result => result.2.2.Matches target result.1 |
+          materializedRootOrdinalOutcomeExperimentAfterTable ordinal adversary parameter
+            ftsSecret target q table] :=
+      probEvent_observedSuccessfulRootComparison_le_materializedMatch table
+        (observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table)
+        (materializedRootOrdinalOutcomeExperimentAfterTable ordinal adversary parameter ftsSecret
+          target q table) ordinal target hrel
+    _ ≤ _ := probEvent_materializedRootOrdinalOutcome_match_le ordinal adversary parameter
+      ftsSecret target hroot hparent q table
+
 def CleanRootMaterializedMatchRel
     (table : OtsSecretIndex → HashOutput) (ordinal : Nat) (target : Position) :
     (PrivateWitnessSnapshotOutput × Digest) →
