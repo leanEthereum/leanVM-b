@@ -510,6 +510,8 @@ The selected hash boundary now extracts those chronological obligations from sup
 
 The probe-free cases of that induction are now sealed behind typed wrappers. Uniform sampling and masked signing both preserve the materialized run relation, consume no probe budget and pass the exact supported continuation to the recursive Boolean coupling. The dependent signing-query range is handled without changing the game. The remaining local work is confined to hash queries: recurse after a nonselected candidate, or derive the selected root handoff premises at the first chosen candidate.
 
+The terminal pure branch of the adaptive Boolean lift is now closed as well. A successful first hidden hit cannot arise from a computation that returns immediately when every carried observation is hit-free, so the real indicator couples to constant false without inspecting the deferred sampler. The selected hash boundary remains the only unsealed constructor of the local induction.
+
 Two places a proof can go wrong, both found by attacking the claim rather than by reading it:
 
 - **A strong forgery needs no chain inversion.** `Ver` does not check that the counter is the least admissible one, so a second `c'` with `Enc(P,lay,tau,e,M,c') = x` reuses the chain values verbatim and verifies. Since the codeword fixes the digest, that is one `2^-128` hit per query and it is harmless, but it is a branch of its own: the one-time signature is unforgeable on a *new* message by incomparability, and unforgeable on the *signed* message only by collision resistance at `tw_enc`.

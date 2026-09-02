@@ -13,6 +13,33 @@ namespace SphincsSecurity.Concrete.OtsProbeSimulation
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
 
+theorem relTriple_indicator_observedMaterializedBoundary_pure_false
+    (ordinal : Nat) (parameter : PublicParameter) (publicRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (table : OtsSecretIndex → HashOutput) (target : Position)
+    (value : α) (observations : List CleanProbeObservation)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat) (cache : SplitHashCache)
+    (hnoHit : ∀ observation ∈ observations, ¬observation.ExistingHiddenHit) :
+    RelTriple
+      ((successfulObservedRootComparisonIndicator table ordinal target ∘
+          fun observed ↦ (observed, rightRoot)) <$>
+        observedMaterializedBoundary parameter publicRoot ftsSecret
+          (pure value : OracleComp (OracleWorld + SigningSpec) α) observations state fuel table
+          cache)
+      (pure false : ProbComp Bool)
+      SuccessfulObservedIndicatorRel := by
+  rw [observedMaterializedBoundary, OracleComp.construct_pure]
+  simp only [map_pure]
+  apply relTriple_pure_pure
+  intro hgood
+  change successfulObservedRootComparisonIndicator table ordinal target
+    (some ⟨state, fuel, (value, cache), table, observations⟩, rightRoot) = true at hgood
+  rw [successfulObservedRootComparisonIndicator_eq_true_iff] at hgood
+  obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩, _hdoomed,
+    selected, _hselected, hfirst, _hroot⟩, _hposition⟩, _hcomparison⟩ := hgood
+  obtain ⟨first, _hfirstOrdinal, hfirstHit, _hbefore⟩ := hfirst
+  exact (hnoHit (observations.get first) (List.get_mem observations first) hfirstHit).elim
+
 set_option maxRecDepth 100000 in
 theorem relTriple_observed_finishDirectDelayed_of_firstStopped
     (ordinal : Nat) (parameter : PublicParameter) (publicRoot rightRoot : Digest)
