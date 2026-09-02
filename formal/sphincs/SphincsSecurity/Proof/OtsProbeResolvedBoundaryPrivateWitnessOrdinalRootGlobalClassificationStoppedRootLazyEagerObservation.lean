@@ -145,4 +145,51 @@ theorem map_installPositionValueAtProbe_append_cleanProbeObservation
   rw [List.map_append]
   simp [installPositionValueAtProbe_cleanProbeObservation_eq_self target output state htarget]
 
+theorem firstExistingHiddenHitAt_map_installPositionValueAtProbe
+    (target : Position) (output : HashOutput)
+    (result : ObservedCleanRunResult α) (ordinal : Nat)
+    (hfirst : FirstExistingHiddenHitAt result ordinal)
+    (hselected : ∀ selected : Fin result.observations.length,
+      selected.val = ordinal →
+        (result.observations.get selected).coordinate = .position target →
+        (result.observations.get selected).valueAtProbe = some output)
+    (havoid : ∀ earlier : Fin result.observations.length,
+      earlier.val < ordinal →
+        (result.observations.get earlier).toProbe ≠
+          ⟨.position target, truncateHash output⟩) :
+    FirstExistingHiddenHitAt
+      { result with observations :=
+          result.observations.map (installPositionValueAtProbe target output) }
+      ordinal := by
+  obtain ⟨selected, hordinal, hhit, hbefore⟩ := hfirst
+  let mappedSelected : Fin
+      (result.observations.map (installPositionValueAtProbe target output)).length :=
+    ⟨selected.val, by simpa only [List.length_map] using selected.isLt⟩
+  refine ⟨mappedSelected, hordinal, ?_, ?_⟩
+  · have hselectedObservation :
+        installPositionValueAtProbe target output (result.observations.get selected) =
+          result.observations.get selected := by
+      apply installPositionValueAtProbe_eq_self
+      intro hcoordinate
+      exact hselected selected hordinal hcoordinate
+    have hget :
+        (result.observations.map (installPositionValueAtProbe target output)).get mappedSelected =
+          installPositionValueAtProbe target output (result.observations.get selected) := by
+      simp [mappedSelected]
+    rw [ExistingHiddenHitAtOrdinal, hget, hselectedObservation]
+    exact hhit
+  · intro mappedEarlier hearlier
+    let earlier : Fin result.observations.length :=
+      ⟨mappedEarlier.val, by simpa using mappedEarlier.isLt⟩
+    have hclean : ¬(result.observations.get earlier).ExistingHiddenHit :=
+      hbefore earlier hearlier
+    have hsafe := not_existingHiddenHit_installPositionValueAtProbe_of_avoids
+      target output (result.observations.get earlier) hclean (havoid earlier hearlier)
+    have hget :
+        (result.observations.map (installPositionValueAtProbe target output)).get mappedEarlier =
+          installPositionValueAtProbe target output (result.observations.get earlier) := by
+      simp [earlier]
+    rw [ExistingHiddenHitAtOrdinal, hget]
+    exact hsafe
+
 end SphincsSecurity.Concrete.OtsProbeSimulation

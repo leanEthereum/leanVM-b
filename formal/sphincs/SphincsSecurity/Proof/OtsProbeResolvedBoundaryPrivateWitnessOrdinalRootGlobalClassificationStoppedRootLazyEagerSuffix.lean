@@ -26,6 +26,118 @@ def ObservedSafeTargetPendingRel
         SafeTargetPendingLE target output left.state right.state
   | _, _ => False
 
+def FinalizedSafeTargetPendingRel
+    (target : Position) (output : HashOutput) :
+    Option (LazyRevealProbe.State Coordinate × (OtsSecretIndex → HashOutput)) →
+      Option (LazyRevealProbe.State Coordinate × (OtsSecretIndex → HashOutput)) → Prop
+  | none, none => True
+  | some left, some right =>
+      left.2 = right.2 ∧ SafeTargetPendingLE target output left.1 right.1
+  | _, _ => False
+
+set_option maxRecDepth 100000 in
+theorem relTriple_finalizeCleanFromTable_safeTargetPending
+    (target : Position) (output : HashOutput)
+    (coordinates : List Coordinate)
+    (left right : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput)
+    (hstate : SafeTargetPendingLE target output left right) :
+    RelTriple
+      (finalizeCleanFromTable coordinates left table)
+      (finalizeCleanFromTable coordinates right table)
+      (FinalizedSafeTargetPendingRel target output) := by
+  induction coordinates generalizing left right with
+  | nil =>
+      exact relTriple_pure_pure ⟨rfl, hstate⟩
+  | cons coordinate remaining ih =>
+      rw [finalizeCleanFromTable.eq_def, finalizeCleanFromTable.eq_def]
+      have hvalue : left.values coordinate = right.values coordinate := by
+        rw [hstate.values]
+      cases hrightValue : right.values coordinate with
+      | some value =>
+          have hleftValue : left.values coordinate = some value := by
+            rw [hvalue, hrightValue]
+          simp only [hleftValue, hrightValue]
+          exact ih (left.clearPending coordinate) (right.clearPending coordinate)
+            (hstate.clearPending coordinate)
+      | none =>
+          have hleftValue : left.values coordinate = none := by
+            rw [hvalue, hrightValue]
+          simp only [hleftValue, hrightValue]
+          have hne : coordinate ≠ .position target := by
+            intro heq
+            subst coordinate
+            rw [hstate.right_target_value] at hrightValue
+            simp at hrightValue
+          cases coordinate with
+          | chainStart lay tree leafIdx chainIdx =>
+              let value := table ⟨lay, tree, leafIdx, chainIdx⟩
+              have hhit := hstate.hitAt_iff_of_ne
+                (.chainStart lay tree leafIdx chainIdx) value (by simp)
+              by_cases hleftHit : left.hitAt
+                  (.chainStart lay tree leafIdx chainIdx) value
+              · have hrightHit := hhit.mp hleftHit
+                simp only [value, hleftHit, hrightHit, ↓reduceIte]
+                exact relTriple_pure_pure (by trivial)
+              · have hrightHit : ¬right.hitAt
+                    (.chainStart lay tree leafIdx chainIdx) value := by
+                  simpa [hhit] using hleftHit
+                simp only [value, hleftHit, hrightHit, ↓reduceIte]
+                exact ih
+                  (left.complete (.chainStart lay tree leafIdx chainIdx) value)
+                  (right.complete (.chainStart lay tree leafIdx chainIdx) value)
+                  (hstate.complete_of_ne (.chainStart lay tree leafIdx chainIdx) value (by simp))
+          | position position =>
+              have hposition : Coordinate.position position ≠ .position target := hne
+              apply relTriple_bind (relTriple_refl LazyRevealProbe.sampleHashOutput)
+              intro leftOutput rightOutput houtput
+              subst rightOutput
+              have hhit := hstate.hitAt_iff_of_ne (.position position) leftOutput hposition
+              by_cases hleftHit : left.hitAt (.position position) leftOutput
+              · have hrightHit := hhit.mp hleftHit
+                simp only [hleftHit, hrightHit, ↓reduceIte]
+                exact relTriple_pure_pure (by trivial)
+              · have hrightHit : ¬right.hitAt (.position position) leftOutput := by
+                  simpa [hhit] using hleftHit
+                simp only [hleftHit, hrightHit, ↓reduceIte]
+                exact ih
+                  (left.complete (.position position) leftOutput)
+                  (right.complete (.position position) leftOutput)
+                  (hstate.complete_of_ne (.position position) leftOutput hposition)
+
+theorem relTriple_finishObservedCleanRunFromTable_safeTargetPending
+    (target : Position) (output : HashOutput)
+    (left right : ObservedCleanRunResult α)
+    (hrel : ObservedSafeTargetPendingRel target output (some left) (some right))
+    (htarget : Coordinate.position target ∈ left.state.coordinates) :
+    RelTriple
+      (finishObservedCleanRunFromTable (some left))
+      (finishObservedCleanRunFromTable (some right))
+      (ObservedSafeTargetPendingRel target output) := by
+  rcases hrel with ⟨hvalue, htable, hremaining, hobservations, hstate⟩
+  unfold finishObservedCleanRunFromTable
+  simp only
+  have hcoordinates := hstate.coordinates_eq_of_target_mem htarget
+  rw [← hcoordinates, ← htable]
+  apply relTriple_bind
+    (relTriple_finalizeCleanFromTable_safeTargetPending target output
+      left.state.coordinates.toList left.state right.state left.table hstate)
+  intro leftFinal rightFinal hfinal
+  cases leftFinal with
+  | none =>
+      cases rightFinal with
+      | none => exact relTriple_pure_pure (by trivial)
+      | some rightFinal => simp [FinalizedSafeTargetPendingRel] at hfinal
+  | some leftFinal =>
+      cases rightFinal with
+      | none => simp [FinalizedSafeTargetPendingRel] at hfinal
+      | some rightFinal =>
+          rcases leftFinal with ⟨leftState, leftTable⟩
+          rcases rightFinal with ⟨rightState, rightTable⟩
+          rcases hfinal with ⟨hfinalTable, hfinalState⟩
+          exact relTriple_pure_pure
+            ⟨hvalue, hfinalTable, hremaining, hobservations, hfinalState⟩
+
 theorem ObservedSafeTargetPendingRel.pure
     (target : Position) (output : HashOutput)
     (leftObservations rightObservations : List CleanProbeObservation)

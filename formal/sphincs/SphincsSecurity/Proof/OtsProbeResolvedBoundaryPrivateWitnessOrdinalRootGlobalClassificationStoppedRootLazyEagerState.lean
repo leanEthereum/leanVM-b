@@ -155,6 +155,61 @@ theorem SafeTargetPendingLE.materialize_of_ne
     · exact Or.inl ⟨hleft, hentry.2⟩
     · exact Or.inr hextra
 
+theorem SafeTargetPendingLE.complete_of_ne
+    {target : Position} {output : HashOutput}
+    {left right : LazyRevealProbe.State Coordinate}
+    (hrel : SafeTargetPendingLE target output left right)
+    (coordinate : Coordinate) (value : HashOutput)
+    (hne : coordinate ≠ .position target) :
+    SafeTargetPendingLE target output
+      (left.complete coordinate value)
+      (right.complete coordinate value) := by
+  refine ⟨?_, ?_, hrel.revealed, hrel.ensured, ?_, ?_⟩
+  · intro entry hentry
+    simp only [LazyRevealProbe.State.complete, LazyRevealProbe.State.pendingAway,
+      Finset.mem_filter] at hentry ⊢
+    exact ⟨hrel.pending hentry.1, hentry.2⟩
+  · simp [LazyRevealProbe.State.complete, hrel.values]
+  · simp [LazyRevealProbe.State.complete, Function.update_of_ne (Ne.symm hne),
+      hrel.target_value]
+  · intro other candidate hentry
+    simp only [LazyRevealProbe.State.complete, LazyRevealProbe.State.pendingAway,
+      Finset.mem_filter] at hentry ⊢
+    rcases hrel.extra other candidate hentry.1 with hleft | hextra
+    · exact Or.inl ⟨hleft, hentry.2⟩
+    · exact Or.inr hextra
+
+theorem SafeTargetPendingLE.coordinates_eq_of_target_mem
+    {target : Position} {output : HashOutput}
+    {left right : LazyRevealProbe.State Coordinate}
+    (hrel : SafeTargetPendingLE target output left right)
+    (htarget : Coordinate.position target ∈ left.coordinates) :
+    left.coordinates = right.coordinates := by
+  apply Finset.Subset.antisymm
+  · intro coordinate hcoordinate
+    unfold LazyRevealProbe.State.coordinates at hcoordinate ⊢
+    simp only [Finset.mem_union, Finset.mem_image] at hcoordinate ⊢
+    rcases hcoordinate with hensured | ⟨entry, hentry, rfl⟩
+    · left
+      rw [← hrel.ensured]
+      exact hensured
+    · right
+      exact ⟨entry, hrel.pending hentry, rfl⟩
+  · intro coordinate hcoordinate
+    unfold LazyRevealProbe.State.coordinates at hcoordinate ⊢
+    simp only [Finset.mem_union, Finset.mem_image] at hcoordinate ⊢
+    rcases hcoordinate with hensured | ⟨entry, hentry, rfl⟩
+    · left
+      rw [hrel.ensured]
+      exact hensured
+    · rcases hrel.extra entry.1 entry.2 hentry with hleft | ⟨hcoordinate, _hsafe⟩
+      · right
+        exact ⟨entry, hleft, rfl⟩
+      · have htarget' : Coordinate.position target ∈ left.ensured ∨
+            ∃ candidate, (Coordinate.position target, candidate) ∈ left.pending := by
+          simpa [LazyRevealProbe.State.coordinates] using htarget
+        simpa [hcoordinate] using htarget'
+
 theorem SafeTargetPendingLE.clean_extra
     {target : Position} {output : HashOutput}
     {left right : LazyRevealProbe.State Coordinate}
