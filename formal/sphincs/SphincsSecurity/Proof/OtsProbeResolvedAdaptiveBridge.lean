@@ -188,7 +188,7 @@ set_option maxRecDepth 100000 in
 theorem evalDist_resolveDeferredPositionValue_then_canonicalizeObserve
     (position : Position) (table : OtsSecretIndex → HashOutput)
     (observe : DeferredContext → Nat → α → ProbComp Bool)
-    [ObserverPositionNeutral table observe]
+    (hneutral : ObserverPositionNeutralAt table position observe)
     (context : DeferredContext) (fuel : Nat) (value : α)
     (hvalid : context.Valid) (hcompletable : DeferredCompletable table context)
     (hensured : Coordinate.position position ∈ context.state.ensured) :
@@ -241,10 +241,8 @@ theorem evalDist_resolveDeferredPositionValue_then_canonicalizeObserve
               hvalid.valuesConsistent hpublished)
             finish
       _ = evalDist (observe (canonicalizeMaterializedValues table context) fuel value) := by
-          exact ObserverPositionNeutral.eq_resolve
-            (table := table) (observe := observe) position
-            (canonicalizeMaterializedValues table context) fuel value hcanonicalValid
-              hcanonicalCompletable hcanonicalEnsured
+          exact hneutral (canonicalizeMaterializedValues table context) fuel value
+            hcanonicalValid hcanonicalCompletable hcanonicalEnsured
       _ = _ := by simp [canonicalizeObserve, hpublished]
   · calc
       _ = evalDist (resolveDeferredPositionValue position context >>= fun _ =>
@@ -273,8 +271,18 @@ instance canonicalizeObserve_observerPositionNeutral
     [ObserverPositionNeutral table observe] :
     ObserverPositionNeutral table (canonicalizeObserve table observe) where
   eq_resolve position context fuel value hvalid hcompletable hensured :=
-    evalDist_resolveDeferredPositionValue_then_canonicalizeObserve position table observe context fuel value
-      hvalid hcompletable hensured
+    evalDist_resolveDeferredPositionValue_then_canonicalizeObserve position table observe
+      (ObserverPositionNeutral.at table position observe) context fuel value hvalid hcompletable
+      hensured
+
+theorem canonicalizeObserve_observerPositionNeutralAt
+    (table : OtsSecretIndex → HashOutput) (position : Position)
+    (observe : DeferredContext → Nat → α → ProbComp Bool)
+    (hneutral : ObserverPositionNeutralAt table position observe) :
+    ObserverPositionNeutralAt table position (canonicalizeObserve table observe) := by
+  intro context fuel value hvalid hcompletable hensured
+  exact evalDist_resolveDeferredPositionValue_then_canonicalizeObserve position table observe
+    hneutral context fuel value hvalid hcompletable hensured
 
 noncomputable def boundaryObserve
     (impl : QueryImpl spec

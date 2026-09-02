@@ -393,6 +393,43 @@ instance negatedCanonicalizeDirectDelayedObserve_observerPositionNeutral
           (evalDist_negatedCanonicalizeDirectDelayedObserve_eq_canonicalizeObserve table observe
             snapshots observations context fuel value hvalid hcompletable).symm
 
+theorem negatedCanonicalizeDirectDelayedObserve_observerPositionNeutralAt
+    (table : OtsSecretIndex → HashOutput) (position : Position)
+    (observe : DeferredContext → Nat → α → List PlannedProbeSnapshot →
+      List CleanProbeObservation → ProbComp Bool)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (hneutral : ObserverPositionNeutralAt table position
+      (negatedDirectDelayedObserve observe snapshots observations)) :
+    ObserverPositionNeutralAt table position
+      (negatedDirectDelayedObserve
+        (canonicalizeDirectDelayedSelectedRootIndicator table observe)
+        snapshots observations) := by
+  intro context fuel value hvalid hcompletable hensured
+  let standard := canonicalizeObserve table
+    (negatedDirectDelayedObserve observe snapshots observations)
+  calc
+    _ = evalDist (resolveDeferredPositionValue position context >>= fun resolved ↦
+          match resolved with
+          | none => pure true
+          | some resolved => standard resolved.toDeferredContext fuel value) := by
+        apply evalDist_bind_congr
+        intro resolved hresolved
+        cases resolved with
+        | none => rfl
+        | some resolved =>
+            exact evalDist_negatedCanonicalizeDirectDelayedObserve_eq_canonicalizeObserve
+              table observe snapshots observations resolved.toDeferredContext fuel value
+              (hvalid.of_resolveDeferredPositionValue position resolved hresolved)
+              (hcompletable.of_resolveDeferredPositionValue hvalid position resolved hresolved)
+    _ = evalDist (standard context fuel value) :=
+        canonicalizeObserve_observerPositionNeutralAt table position
+          (negatedDirectDelayedObserve observe snapshots observations) hneutral
+          context fuel value hvalid hcompletable hensured
+    _ = _ :=
+        (evalDist_negatedCanonicalizeDirectDelayedObserve_eq_canonicalizeObserve table observe
+          snapshots observations context fuel value hvalid hcompletable).symm
+
 set_option maxRecDepth 100000 in
 theorem evalDist_complement_runDirectWitness_finish_false_eq_of_synchronized
     (table : OtsSecretIndex → HashOutput)

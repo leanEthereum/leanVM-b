@@ -247,6 +247,53 @@ theorem evalDist_resolveDeferredPositionValue_then_runResolvedObserve_any
         fuel table hcontextSymm rfl rfl
 
 set_option maxRecDepth 100000 in
+theorem evalDist_resolveDeferredPositionValue_then_runResolvedObserve_any_at
+    (position : Position) (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    {observe : DeferredContext → Nat → α → ProbComp Bool}
+    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (hvalid : context.Valid) (hcompletable : DeferredCompletable table context)
+    [ObserverDooms table observe] [ObserverSynchronized table observe]
+    (hneutral : ObserverPositionNeutralAt table position observe) :
+    evalDist (do
+      let resolved ← resolveDeferredPositionValue position context
+      match resolved with
+      | none => pure true
+      | some resolved =>
+          runResolvedObserve observe resolved.toDeferredContext fuel table computation) =
+      evalDist (runResolvedObserve observe context fuel table computation) := by
+  let ensured : DeferredContext :=
+    { context with state := context.state.ensure (.position position) }
+  have hensuredValid : ensured.Valid := hvalid.ensure (.position position)
+  have hensuredCompletable : DeferredCompletable table ensured :=
+    hcompletable.ensure (.position position)
+  have hstarts := startTableAgrees_of_deferredCompletable hcompletable
+  have hensuredStarts : StartTableAgrees ensured.state table :=
+    hstarts.ensure (.position position)
+  have hview : FinalizationViewEq table context ensured :=
+    finalizationViewEq_of_deferredCompletion_iff hvalid hensuredValid hstarts hensuredStarts rfl
+      hcompletable (fun _ => Iff.rfl)
+  have hcontext : FinalizationContextEq table (some context) (some ensured) :=
+    ⟨hview, hvalid, hensuredValid, hcompletable⟩
+  have hcontextSymm : FinalizationContextEq table (some ensured) (some context) :=
+    ⟨hview.symm, hensuredValid, hvalid, hensuredCompletable⟩
+  calc
+    _ = evalDist (do
+        let resolved ← resolveDeferredPositionValue position ensured
+        match resolved with
+        | none => pure true
+        | some resolved =>
+            runResolvedObserve observe resolved.toDeferredContext fuel table computation) :=
+      evalDist_resolveDeferredPositionValue_then_runResolvedObserve_eq_of_synchronized
+        table position computation context ensured fuel hcontext rfl rfl
+    _ = evalDist (runResolvedObserve observe ensured fuel table computation) :=
+      evalDist_resolveDeferredPositionValue_then_runResolvedObserve_auto_at
+        (observe := observe) position computation ensured fuel table hensuredValid
+          hensuredCompletable (by simp [ensured, LazyRevealProbe.State.ensure]) hneutral
+    _ = _ :=
+      evalDist_runResolvedObserve_eq_of_finalizationSynchronized computation ensured context
+        fuel table hcontextSymm rfl rfl
+
+set_option maxRecDepth 100000 in
 theorem evalDist_resolveDeferredChainPrefix_then_runResolvedObserve_any
     (table : OtsSecretIndex → HashOutput) (lay : Layer) (tree : TreeIndex)
     (leafIdx : LeafIndex) (chainIdx : ChainIndex) :

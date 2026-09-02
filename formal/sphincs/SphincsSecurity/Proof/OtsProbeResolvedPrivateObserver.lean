@@ -176,6 +176,25 @@ class ObserverPositionNeutral (table : OtsSecretIndex → HashOutput)
       | some resolved => observe resolved.toDeferredContext fuel value) =
       evalDist (observe context fuel value)
 
+def ObserverPositionNeutralAt (table : OtsSecretIndex → HashOutput)
+    (position : Position) (observe : DeferredContext → Nat → α → ProbComp Bool) : Prop :=
+  ∀ context fuel value,
+    context.Valid → DeferredCompletable table context →
+    Coordinate.position position ∈ context.state.ensured →
+    evalDist (resolveDeferredPositionValue position context >>= fun resolved =>
+      match resolved with
+      | none => pure true
+      | some resolved => observe resolved.toDeferredContext fuel value) =
+      evalDist (observe context fuel value)
+
+theorem ObserverPositionNeutral.at
+    (table : OtsSecretIndex → HashOutput) (position : Position)
+    (observe : DeferredContext → Nat → α → ProbComp Bool)
+    [ObserverPositionNeutral table observe] :
+    ObserverPositionNeutralAt table position observe := by
+  intro context fuel value hvalid hcompletable hensured
+  exact ObserverPositionNeutral.eq_resolve position context fuel value hvalid hcompletable hensured
+
 theorem evalDist_runResolvedObserve_eq_true_of_not_completable
     (observe : DeferredContext → Nat → α → ProbComp Bool)
     (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput)
@@ -1198,6 +1217,26 @@ theorem evalDist_resolveDeferredPositionValue_then_runResolvedObserve_auto
   intro nextContext remaining value hnextValid hnextCompletable hnextEnsured
   exact ObserverPositionNeutral.eq_resolve (table := table) (observe := observe) position
     nextContext remaining value hnextValid hnextCompletable hnextEnsured
+
+set_option maxRecDepth 100000 in
+theorem evalDist_resolveDeferredPositionValue_then_runResolvedObserve_auto_at
+    (position : Position) (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    {observe : DeferredContext → Nat → α → ProbComp Bool}
+    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (hvalid : context.Valid) (hcompletable : DeferredCompletable table context)
+    (hensured : Coordinate.position position ∈ context.state.ensured)
+    [ObserverDooms table observe]
+    (hneutral : ObserverPositionNeutralAt table position observe) :
+    evalDist (do
+      let resolved ← resolveDeferredPositionValue position context
+      match resolved with
+      | none => pure true
+      | some resolved =>
+          runResolvedObserve observe resolved.toDeferredContext fuel table computation) =
+      evalDist (runResolvedObserve observe context fuel table computation) := by
+  apply evalDist_resolveDeferredPositionValue_then_runResolvedObserve position computation
+    context fuel table hvalid hcompletable hensured
+  exact hneutral
 
 theorem evalDist_runResolvedObserve_eq_of_finalizationSynchronized
     (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
