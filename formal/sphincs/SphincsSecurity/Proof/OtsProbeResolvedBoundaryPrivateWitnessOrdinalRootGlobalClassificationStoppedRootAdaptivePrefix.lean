@@ -482,4 +482,73 @@ theorem directDelayedSelectedRootIndicator_hash_eq_not_selected
   simp only [hbefore, ↓reduceDIte]
   exact dif_neg hselected
 
+theorem directDelayedSelectedRootIndicator_uniform_eq
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (table : OtsSecretIndex → HashOutput) (target : Position) (rightRoot : Digest)
+    (n : Nat) (next : Fin (n + 1) → OracleComp (OracleWorld + SigningSpec) α)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (hselected : ¬ordinal < snapshots.length) :
+    directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target rightRoot
+        (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+          (Sum.inl (Sum.inl n))) >>= next)
+        snapshots observations context fuel cache =
+      runDirectResolvedWitnessFromTable context fuel table ((splitUniformImpl n).run cache) >>=
+        finishDirectDelayedSelectedRootIndicator
+          (canonicalizeDirectDelayedSelectedRootIndicator table
+            (fun nextContext remaining value laterSnapshots laterObservations ↦
+              directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+                rightRoot (next value.1) laterSnapshots laterObservations nextContext remaining
+                value.2))
+          snapshots observations := by
+  conv_lhs =>
+    rw [directDelayedSelectedRootIndicator, OracleComp.construct_query_bind]
+  simp only [hselected, ↓reduceDIte]
+  change (runDirectResolvedWitnessFromTable context fuel table
+      ((splitUniformImpl n).run cache) >>=
+    finishDirectDelayedSelectedRootIndicator
+      (canonicalizeDirectDelayedSelectedRootIndicator table
+        (fun nextContext remaining value laterSnapshots laterObservations ↦
+          directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+            rightRoot (next value.1) laterSnapshots laterObservations nextContext remaining
+            value.2)) snapshots observations) = _
+  rfl
+
+theorem directDelayedSelectedRootIndicator_signing_eq
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (table : OtsSecretIndex → HashOutput) (target : Position) (rightRoot : Digest)
+    (message : Message)
+    (next : Option Signature → OracleComp (OracleWorld + SigningSpec) α)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (hselected : ¬ordinal < snapshots.length) :
+    directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target rightRoot
+        (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec) (Sum.inr message)) >>= next)
+        snapshots observations context fuel cache =
+      runDirectResolvedWitnessFromTable context fuel table
+          ((maskedSign parameter root ftsSecret message).run cache) >>=
+        finishDirectDelayedSelectedRootIndicator
+          (canonicalizeDirectDelayedSelectedRootIndicator table
+            (fun nextContext remaining value laterSnapshots laterObservations ↦
+              directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+                rightRoot (next value.1) laterSnapshots laterObservations nextContext remaining
+                value.2))
+          snapshots observations := by
+  conv_lhs =>
+    rw [directDelayedSelectedRootIndicator, OracleComp.construct_query_bind]
+  simp only [hselected, ↓reduceDIte]
+  change (runDirectResolvedWitnessFromTable context fuel table
+      ((maskedSign parameter root ftsSecret message).run cache) >>=
+    finishDirectDelayedSelectedRootIndicator
+      (canonicalizeDirectDelayedSelectedRootIndicator table
+        (fun nextContext remaining value laterSnapshots laterObservations ↦
+          directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+            rightRoot (next value.1) laterSnapshots laterObservations nextContext remaining
+            value.2)) snapshots observations) = _
+  rfl
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
