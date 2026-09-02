@@ -89,6 +89,100 @@ theorem relTriple_resolveDeferredPositionValue_canonical_afterRootResult
   · exact hinvariants.1
   · exact hcanonical.2
 
+theorem canonicalized_resolutions_afterRootResult
+    (table : OtsSecretIndex → HashOutput) (target : Position)
+    (rootState : LazyRevealProbe.State Coordinate)
+    (left right : DeferredResolution)
+    (hleft : some left ∈ support
+      (resolveDeferredPositionValue target
+        (canonicalizeMaterializedValues table (directDeferredContext rootState))))
+    (hright : some right ∈ support
+      (resolveDeferredPositionValue target (directDeferredContext rootState)))
+    (hresolution : FinalizationResolutionEq table (some left) (some right)) :
+    let leftContext := canonicalizeMaterializedValues table left.toDeferredContext
+    let rightContext := canonicalizeMaterializedValues table right.toDeferredContext
+    FinalizationContextEq table (some leftContext) (some rightContext) ∧
+      leftContext.state.values = rightContext.state.values ∧
+      leftContext.state.revealed = rightContext.state.revealed ∧
+      CompletionSafeStateEq table
+        (materializedDeferredState leftContext)
+        (materializedDeferredState rightContext) := by
+  dsimp only
+  have hrevealed : left.state.revealed = right.state.revealed := by
+    rw [resolveDeferredPositionValue_state_eq_clearPending target
+          (canonicalizeMaterializedValues table (directDeferredContext rootState)) left hleft,
+      resolveDeferredPositionValue_state_eq_clearPending target
+        (directDeferredContext rootState) right hright]
+    simp [canonicalizeMaterializedValues_revealed, LazyRevealProbe.State.clearPending]
+  have hcontext : FinalizationContextEq table
+      (some left.toDeferredContext) (some right.toDeferredContext) :=
+    ⟨hresolution.2.1, hresolution.2.2.1, hresolution.2.2.2.1,
+      hresolution.2.2.2.2⟩
+  have hcanonical := canonicalizedFinalizationContextEq hcontext hrevealed
+  have hcanonicalRevealed :
+      (canonicalizeMaterializedValues table left.toDeferredContext).state.revealed =
+        (canonicalizeMaterializedValues table right.toDeferredContext).state.revealed := by
+    simpa [canonicalizeMaterializedValues_revealed] using hrevealed
+  refine ⟨hcanonical.1, hcanonical.2, hcanonicalRevealed, ?_⟩
+  exact completionSafeStateEq_materialized_of_finalizationContextEq table
+    (canonicalizeMaterializedValues table left.toDeferredContext)
+    (canonicalizeMaterializedValues table right.toDeferredContext)
+    hcanonical.1 hcanonical.2 hcanonicalRevealed
+
+theorem canonicalMaterializedValues_of_resolveDeferredPositionValue
+    (table : OtsSecretIndex → HashOutput) (position : Position)
+    (context : DeferredContext) (resolved : DeferredResolution)
+    (hpublished : PublishedValues context.state)
+    (hcanonical : CanonicalMaterializedValues table context)
+    (hresolved : some resolved ∈ support
+      (resolveDeferredPositionValue position context)) :
+    CanonicalMaterializedValues table resolved.toDeferredContext := by
+  cases resolved with
+  | mk resolvedContext output =>
+      cases resolvedContext with
+      | mk resolvedState resolvedValues =>
+          have hstate := resolveDeferredPositionValue_state_eq_clearPending position context
+            ⟨⟨resolvedState, resolvedValues⟩, output⟩ hresolved
+          change resolvedState = context.state.clearPending (.position position) at hstate
+          subst resolvedState
+          unfold CanonicalMaterializedValues
+          change context.state.values = publicMaterializedValues table
+            { state := context.state.clearPending (.position position),
+              values := resolvedValues }
+          rw [hcanonical]
+          exact (publicMaterializedValues_clearPending_values table context (.position position)
+            resolvedValues hpublished).symm
+
+theorem left_resolution_canonical_afterRootResult
+    (table : OtsSecretIndex → HashOutput) (fuel : Nat) (target : Position)
+    (rootResult : CleanRunResult (Digest × SplitHashCache))
+    (hresult : some rootResult ∈ support
+      (runCleanFromTable
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel table
+        (maskedPublishedTreeRoot.run emptySplitHashCache)))
+    (left : DeferredResolution)
+    (hleft : some left ∈ support
+      (resolveDeferredPositionValue target
+        (canonicalizeMaterializedValues table (directDeferredContext rootResult.state)))) :
+    CanonicalMaterializedValues table left.toDeferredContext := by
+  have hinvariants := directDeferredContext_invariants_afterRootResult table fuel rootResult hresult
+  have hraw := mem_support_runRaw_done_of_mem_runCleanFromTable_some
+    (maskedPublishedTreeRoot.run emptySplitHashCache)
+    (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel table rootResult hresult
+  have hpublished : PublishedValues rootResult.state :=
+    preservesPublishedValues_maskedPublishedTreeRoot
+      (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) emptySplitHashCache fuel
+      rootResult.state rootResult.remaining rootResult.value.1 rootResult.value.2
+      publishedValues_empty hraw
+  let context := canonicalizeMaterializedValues table (directDeferredContext rootResult.state)
+  have hcontextCanonical : CanonicalMaterializedValues table context :=
+    canonicalizeMaterializedValues_canonical table (directDeferredContext rootResult.state)
+      hinvariants.1.valuesConsistent
+  have hcontextPublished : PublishedValues context.state := by
+    exact hpublished.to_canonicalizedMaterializedValues
+  exact canonicalMaterializedValues_of_resolveDeferredPositionValue table target context left
+    hcontextPublished hcontextCanonical hleft
+
 set_option maxRecDepth 100000 in
 theorem relTriple_eagerProxy_resolvedObservedAtRoot_of_resolved
     (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
