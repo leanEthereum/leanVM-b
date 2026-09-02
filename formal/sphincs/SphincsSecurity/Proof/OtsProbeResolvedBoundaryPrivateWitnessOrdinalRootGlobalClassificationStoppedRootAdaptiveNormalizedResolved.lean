@@ -28,6 +28,67 @@ theorem relTriple_boolImp_of_not_reverse
   simpa only [show (fun value : Bool => value) = id from rfl, id_map] using
     relTriple_symm hmapped
 
+theorem runObservedCleanFromTable_splitUniformImpl
+    (n fuel : Nat) (observations : List CleanProbeObservation)
+    (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
+    runObservedCleanFromTable observations state fuel table ((splitUniformImpl n).run cache) = (do
+      let output ← liftM (unifSpec.query n)
+      pure (some ⟨state, fuel, (output, cache), table, observations⟩)) := by
+  rfl
+
+set_option maxRecDepth 100000 in
+theorem relTriple_directDelayed_uniform_observed
+    (ordinal : Nat) (parameter : PublicParameter) (publicRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (table : OtsSecretIndex → HashOutput) (target : Position)
+    (n : Nat)
+    (next : Fin (n + 1) → OracleComp (OracleWorld + SigningSpec) RetainedRestResult)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (hselected : ¬ordinal < snapshots.length)
+    (hcompletable : DeferredCompletable table context)
+    (hpublished : PublishedValues context.state)
+    (hcanonical : CanonicalMaterializedValues table context)
+    (hrecursive : ∀ output,
+      RelTriple
+        (directDelayedSelectedRootIndicator ordinal parameter publicRoot ftsSecret table target
+          rightRoot (next output) snapshots observations context fuel cache)
+        ((successfulObservedRootComparisonIndicator table ordinal target ∘
+            fun observed ↦ (observed, rightRoot)) <$>
+          observedMaterializedBoundary parameter publicRoot ftsSecret (next output) observations
+            (materializedDeferredState context) fuel table cache)
+        SuccessfulObservedIndicatorRel) :
+    RelTriple
+      (directDelayedSelectedRootIndicator ordinal parameter publicRoot ftsSecret table target
+        rightRoot
+        (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+          (Sum.inl (Sum.inl n))) >>= next)
+        snapshots observations context fuel cache)
+      ((successfulObservedRootComparisonIndicator table ordinal target ∘
+          fun observed ↦ (observed, rightRoot)) <$>
+        observedMaterializedBoundary parameter publicRoot ftsSecret
+          (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+            (Sum.inl (Sum.inl n))) >>= next)
+          observations (materializedDeferredState context) fuel table cache)
+      SuccessfulObservedIndicatorRel := by
+  rw [directDelayedSelectedRootIndicator_uniform_eq ordinal parameter publicRoot ftsSecret table
+    target rightRoot n next snapshots observations context fuel cache hselected]
+  rw [observedMaterializedBoundary_uniform_query_bind]
+  rw [runDirectResolvedWitnessFromTable_splitUniformImpl,
+    runObservedCleanFromTable_splitUniformImpl]
+  simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind]
+  apply relTriple_bind (relTriple_refl (liftM (unifSpec.query n)))
+  intro output _ houtput
+  subst output
+  simp only [finishDirectDelayedSelectedRootIndicator]
+  unfold canonicalizeDirectDelayedSelectedRootIndicator
+  rw [canonicalizeMaterializedValues_eq_of_canonical table context hcanonical]
+  simp only [not_privateStructuralHit_of_deferredCompletable hcompletable,
+    hpublished, hcompletable, ↓reduceIte]
+  exact hrecursive _
+
 set_option maxHeartbeats 4000000 in
 set_option maxRecDepth 1000000 in
 theorem relTriple_directDelayed_selected_hash_observed_of_good
