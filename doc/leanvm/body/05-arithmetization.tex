@@ -132,14 +132,14 @@ There is one such equation per side. Nothing is sent for these blocks. Each cons
 \end{equation}
 Both \eqref{eq:cons} and \eqref{eq:bus} are built from $\eq(\zeta_{<\tau_j},\cdot)$-weighted sums over one table's rows of a polynomial of degree at most $d$ in its columns: we batch them in a single sumcheck.
 
-\paragraph{Back-loaded batched sumcheck.} The verifier samples $\xi\in\E$ and gives each claim its own power of it: $\xi^{\,s-1}$ for side $s$, and $\xi^{\,\nside+o_j+i-1}$ for $C_{j,i}$, with $o_j=\ncons{1}+\dots+\ncons{j-1}$ numbering the constraints table by table. A sumcheck runs over one cube, so write $\taumax=\max_j\tau_j$, let $X_{<\tau_j}=(X_0,\dots,X_{\tau_j-1})$ be the variables $T_j$ uses, and multiply in the ones it does not:
+\paragraph{Back-loaded batched sumcheck.} The verifier samples $\xi\in\E$ and gives each claim its own power of it: $\xi^{\,o_j+i-1}$ for $C_{j,i}$, with $o_j=\ncons{1}+\dots+\ncons{j-1}$ numbering the constraints table by table, and then $\xi^{\,B+s-1}$ for side $s$, with $B=\sum_j\ncons{j}$ the constraint count. A sumcheck runs over one cube, so write $\taumax=\max_j\tau_j$, let $X_{<\tau_j}=(X_0,\dots,X_{\tau_j-1})$ be the variables $T_j$ uses, and multiply in the ones it does not:
 \[
   F(X_0,\dots,X_{\taumax-1})\;=\;\sum_{j=1}^{\ntab}\eq(\zeta_{<\tau_j},X_{<\tau_j})
-  \Bigl(\sum_{s=1}^{\nside}\xi^{\,s-1}B^{s}_j+\sum_{i=1}^{\ncons{j}}\xi^{\,\nside+o_j+i-1}C_{j,i}\Bigr)(X_{<\tau_j})
+  \Bigl(\sum_{i=1}^{\ncons{j}}\xi^{\,o_j+i-1}C_{j,i}+\sum_{s=1}^{\nside}\xi^{\,B+s-1}B^{s}_j\Bigr)(X_{<\tau_j})
   \prod_{k=\tau_j}^{\taumax-1}X_k .
 \]
 Since $\sum_{x\in\cube{m}}x_0\cdots x_{m-1}=1$, the padded variables contribute a factor $1$, so summing $F$ over $\cube{\taumax}$ gives back what each table owes. We thus run a single sumcheck:
 \[
-  \sum_{x\in\cube{\taumax}}F(x)\;\qeq\;\sum_{s=1}^{\nside}\xi^{\,s-1}\mathsf{rem}_{s},
+  \sum_{x\in\cube{\taumax}}F(x)\;\qeq\;\sum_{s=1}^{\nside}\xi^{\,B+s-1}\mathsf{rem}_{s},
 \]
-the verifier computing the right side itself. Each summand of $F$ has individual degree $d+1=3$, the constraint contributing $d$ and the $\eq$ factor one, so the soundness error is $\bigl(3\taumax+\nside+\sum_j\ncons{j}\bigr)/|\E|$: $3\taumax$ for the rounds (Fact~\ref{fact:sumcheck}) and $\nside+\sum_j\ncons{j}$ for the $\xi$-batching (Corollary~\ref{cor:idtest}). Rounds bind $X_{\taumax-1}$ first, so $T_j$ joins only at round $\taumax-\tau_j$: hence \emph{back-loaded}. The end yields one claim per column, $T_j$'s at $\fc_{<\tau_j}$, settled by the PCS opening (\S\ref{sec:stacking}).
+the verifier computing the right side itself. Each summand of $F$ has individual degree $d+1=3$, the constraint contributing $d$ and the $\eq$ factor one, so the soundness error is $(3\taumax+\nside+B)/|\E|$: $3\taumax$ for the rounds (Fact~\ref{fact:sumcheck}) and $\nside+B$ for the $\xi$-batching (Corollary~\ref{cor:idtest}). Rounds bind $X_{\taumax-1}$ first, so $T_j$ joins only at round $\taumax-\tau_j$: hence \emph{back-loaded}. The end yields one claim per column, $T_j$'s at $\fc_{<\tau_j}$, settled by the PCS opening (\S\ref{sec:stacking}).
