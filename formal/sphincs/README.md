@@ -496,6 +496,8 @@ The probe-free public-root prefix is now factored out of the Boolean bridge. Its
 
 The fixed-root Boolean contract now feeds the production-weighted endpoint in one theorem. Once the local adaptive prefix supplies its success-preserving indicator coupling for every supported public-root result, the public-root lift, eager resolver equality and root-aware one-guess bound are applied without exposing another probability interface. The remaining semantic seam is exactly that local coupling; no later layer can discard or duplicate the selected-position production mass.
 
+The selected-query handoff is now sealed as a single compiled interface. `GoodForRoots` and strict-prefix pending coverage make resolution of the selected root definitionally equal to the unique hidden output, and the result is passed directly to the synchronized suffix indicator coupling. The adaptive prefix therefore no longer handles sampler support, resolution failure or post-selection execution. It only has to preserve the joint deferred, observed and early-installed states until the chosen candidate boundary.
+
 Two places a proof can go wrong, both found by attacking the claim rather than by reading it:
 
 - **A strong forgery needs no chain inversion.** `Ver` does not check that the counter is the least admissible one, so a second `c'` with `Enc(P,lay,tau,e,M,c') = x` reuses the chain values verbatim and verifies. Since the codeword fixes the digest, that is one `2^-128` hit per query and it is harmless, but it is a branch of its own: the one-time signature is unforgeable on a *new* message by incomparability, and unforgeable on the *signed* message only by collision resistance at `tw_enc`.
