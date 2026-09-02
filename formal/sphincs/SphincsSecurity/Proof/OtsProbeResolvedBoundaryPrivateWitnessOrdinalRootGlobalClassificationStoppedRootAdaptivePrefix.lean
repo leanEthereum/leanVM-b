@@ -11,6 +11,7 @@ compiled selected-root bridge.
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
 open OracleComp OracleSpec
+open OracleComp.ProgramLogic.Relational
 
 noncomputable def delayedSelectedRootIndicator
     (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
@@ -28,6 +29,120 @@ noncomputable def delayedSelectedRootIndicator
           fun observed => (observed, rightRoot)) <$>
         observedMaterializedBoundary parameter root ftsSecret computation observations
           (materializedDeferredState resolved.toDeferredContext) fuel table cache
+
+theorem successfulDoomedFirstRootGoodForComparisonAt_retainObservedRoot
+    (table : OtsSecretIndex → HashOutput) (ordinal : Nat) (target : Position)
+    (root rightRoot : Digest)
+    (observed : Option
+      (ObservedCleanRunResult (RetainedRestResult × SplitHashCache)))
+    (hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      table ordinal target rightRoot observed) :
+    ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      table ordinal target rightRoot (retainObservedRoot root observed) := by
+  cases observed with
+  | none =>
+      simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
+        ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
+        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hgood
+  | some result =>
+      simp only [retainObservedRoot]
+      rcases hgood with ⟨⟨⟨hfinish, hdoomed, hfirst⟩, hposition⟩, havoid⟩
+      refine ⟨⟨⟨?_, hdoomed, ?_⟩, ?_⟩, ?_⟩
+      · obtain ⟨finalResult, hfinalResult⟩ := hfinish
+        unfold finishObservedCleanRunFromTable at hfinalResult
+        rw [mem_support_bind_iff] at hfinalResult
+        obtain ⟨finalized, hfinalized, hreturn⟩ := hfinalResult
+        cases finalized with
+        | none => simp at hreturn
+        | some finalized =>
+            obtain ⟨finalState, finalTable⟩ := finalized
+            refine ⟨⟨finalState, result.remaining,
+              ((root, result.value.1), result.value.2), finalTable,
+              result.observations⟩, ?_⟩
+            unfold finishObservedCleanRunFromTable
+            rw [mem_support_bind_iff]
+            exact ⟨some (finalState, finalTable), hfinalized, by simp⟩
+      · simpa [ObservedCleanRunOption.FirstExistingHiddenRootHitAt,
+          FirstExistingHiddenHitAt, ExistingHiddenHitAtOrdinal] using hfirst
+      · simpa [observedFirstLayerRootPosition?] using hposition
+      · simpa [observedPrefixProbes] using havoid
+
+set_option maxRecDepth 100000 in
+theorem relTriple_delayedSelectedRootIndicator
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (table : OtsSecretIndex → HashOutput) (target : Position) (output : HashOutput)
+    (rightRoot : Digest) (hroot : IsLayerRoot target)
+    (computation : OracleComp (OracleWorld + SigningSpec) RetainedRestResult)
+    (observations : List CleanProbeObservation)
+    (selection : PrivateOrdinalSelection)
+    (hgood : selection.GoodForRoots target output rightRoot ordinal)
+    (hcovered : PendingCoveredBy (selection.candidates.take ordinal) selection.context)
+    (fuel : Nat) (cache : SplitHashCache)
+    (hselectedHit : ∀ result : ObservedCleanRunResult (RetainedRestResult × SplitHashCache),
+      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          table ordinal target rightRoot (some result) →
+        ∀ selected : Fin result.observations.length, selected.val = ordinal →
+          (result.observations.get selected).coordinate = .position target ∧
+            (result.observations.get selected).revealedAtProbe = false ∧
+            truncateHash output = (result.observations.get selected).candidate)
+    (hactualAvoid : ∀ result : ObservedCleanRunResult (RetainedRestResult × SplitHashCache),
+      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          table ordinal target rightRoot (some result) →
+        ∀ earlier : Fin result.observations.length, earlier.val < ordinal →
+          (result.observations.get earlier).toProbe ≠
+            ⟨.position target, truncateHash output⟩) :
+    RelTriple
+      (delayedSelectedRootIndicator ordinal parameter root ftsSecret table target rightRoot
+        computation observations selection fuel cache)
+      (fixedComparisonRootIndicator table ordinal target root rightRoot <$>
+        observedMaterializedBoundary parameter root ftsSecret computation
+          (observations.map (installPositionValueAtProbe target output))
+          (materializedDeferredState
+            { selection.context with
+              values := selection.context.values.install target output })
+          fuel table cache)
+      SuccessfulObservedIndicatorRel := by
+  let eager := observedMaterializedBoundary parameter root ftsSecret computation
+    (observations.map (installPositionValueAtProbe target output))
+    (materializedDeferredState
+      { selection.context with
+        values := selection.context.values.install target output })
+    fuel table cache
+  have hselected :=
+    relTriple_indicator_resolveSelectedRoot_then_observedMaterializedBoundary parameter root
+      ftsSecret target output rightRoot ordinal hroot selection hgood hcovered computation
+      observations fuel table cache hselectedHit hactualAvoid
+  have hretain : RelTriple
+      ((successfulObservedRootComparisonIndicator table ordinal target ∘
+          fun observed => (observed, rightRoot)) <$> eager)
+      (fixedComparisonRootIndicator table ordinal target root rightRoot <$> eager)
+      SuccessfulObservedIndicatorRel := by
+    have hbase : RelTriple eager eager (fun left right =>
+        SuccessfulObservedIndicatorRel
+          ((successfulObservedRootComparisonIndicator table ordinal target ∘
+            fun observed => (observed, rightRoot)) left)
+          (fixedComparisonRootIndicator table ordinal target root rightRoot right)) := by
+      apply relTriple_post_mono (relTriple_refl eager)
+      intro left right hright hlazy
+      subst right
+      change successfulObservedRootComparisonIndicator table ordinal target
+        (left, rightRoot) = true at hlazy
+      change successfulObservedRootComparisonIndicator table ordinal target
+        (retainObservedRoot root left, rightRoot) = true
+      rw [successfulObservedRootComparisonIndicator_eq_true_iff] at hlazy ⊢
+      exact successfulDoomedFirstRootGoodForComparisonAt_retainObservedRoot table ordinal target
+        root rightRoot left hlazy
+    exact relTriple_map
+      (f := successfulObservedRootComparisonIndicator table ordinal target ∘
+        fun observed => (observed, rightRoot))
+      (g := fixedComparisonRootIndicator table ordinal target root rightRoot)
+      hbase
+  have hglued := SphincsSecurity.relTriple_trans_exists hselected hretain
+  apply relTriple_post_mono hglued
+  intro lazy retained hrelation
+  obtain ⟨eagerResult, hlazy, hretained⟩ := hrelation
+  exact fun htrue => hretained (hlazy htrue)
 
 noncomputable def finishDirectDelayedSelectedRootIndicator
     (observe : DeferredContext → Nat → α → List PlannedProbeSnapshot →
