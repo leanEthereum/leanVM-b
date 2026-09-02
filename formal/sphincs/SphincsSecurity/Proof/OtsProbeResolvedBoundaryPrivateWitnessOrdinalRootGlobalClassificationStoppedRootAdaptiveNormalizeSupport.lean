@@ -326,7 +326,7 @@ theorem relTriple_runDirectWitness_finishDirectDelayed_of_safe_trace
               directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
                 rightRoot (next value.1) laterSnapshots laterObservations nextContext remaining
                 value.2)) leftSnapshots leftObservations)
-      SuccessfulObservedIndicatorRel := by
+      (EqRel Bool) := by
   let leftRun := runDirectResolvedWitnessFromTable context fuel table runComputation >>=
     finishDirectDelayedSelectedRootIndicator
       (canonicalizeDirectDelayedSelectedRootIndicator table
@@ -366,20 +366,37 @@ theorem relTriple_runDirectWitness_finishDirectDelayed_of_safe_trace
                   result.value.2 (by omega) (by omega) hsnapshots.symm htrace.symm
               · rfl
             · rfl
-    apply relTriple_post_mono (relTriple_eqRel_of_evalDist_eq heval)
-    intro leftValue rightValue heq htrue
-    exact heq ▸ htrue
+    exact relTriple_eqRel_of_evalDist_eq heval
   · have hbase := relTriple_true leftRun rightRun
-    have hsupported :=
+    have hleftSupported :=
       SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
         (fun value ↦ value ∈ support leftRun) (fun _ hvalue ↦ hvalue)
-    apply relTriple_post_mono hsupported
-    intro leftValue _rightValue hrelation htrue
-    subst leftValue
-    have havoid := candidatesAvoidRoots_of_true_mem_runDirectWitness_finishDirectDelayed
-      ordinal parameter root ftsSecret table target output rightRoot β next runComputation
-      rightSnapshots rightObservations context fuel hprivate hrightLength hrelation.2
-    exact (hsafe havoid).elim
+    have hbothSupported :=
+      SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hleftSupported
+    apply relTriple_post_mono hbothSupported
+    intro leftValue rightValue hrelation
+    have hleftFalse : leftValue = false := by
+      cases hleft : leftValue with
+      | false => rfl
+      | true =>
+          have havoid := candidatesAvoidRoots_of_true_mem_runDirectWitness_finishDirectDelayed
+            ordinal parameter root ftsSecret table target output rightRoot β next runComputation
+            rightSnapshots rightObservations context fuel hprivate hrightLength (by
+              simpa [leftRun, hleft] using hrelation.1.2)
+          exact (hsafe havoid).elim
+    have hrightFalse : rightValue = false := by
+      cases hright : rightValue with
+      | false => rfl
+      | true =>
+          have havoid := candidatesAvoidRoots_of_true_mem_runDirectWitness_finishDirectDelayed
+            ordinal parameter root ftsSecret table target output rightRoot β next runComputation
+            leftSnapshots leftObservations context fuel hprivate hleftLength (by
+              simpa [rightRun, hright] using hrelation.2)
+          have havoidRight : CandidatesAvoidRoots target (truncateHash output) rightRoot
+              (rightSnapshots.map PlannedProbeSnapshot.toProbe) := by
+            rwa [hsnapshots] at havoid
+          exact (hsafe havoidRight).elim
+    exact hleftFalse.trans hrightFalse.symm
 
 set_option maxHeartbeats 4000000 in
 set_option maxRecDepth 1000000 in
@@ -448,7 +465,7 @@ theorem relTriple_directDelayed_eagerDirectDelayed_hash_not_selected
         (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
           (Sum.inl (Sum.inr input))) >>= next)
         snapshots observations context fuel cache)
-      SuccessfulObservedIndicatorRel := by
+      (EqRel Bool) := by
   let candidate? := rootAwareCandidateForPlan? parameter input
     (purePlanProbingHashQuery parameter input context.state)
   let rightSnapshots := appendPlannedSnapshot snapshots candidate? context
@@ -536,9 +553,7 @@ theorem relTriple_directDelayed_eagerDirectDelayed_hash_not_selected
   obtain ⟨rfl, hresolved⟩ := hrelation
   cases leftResolved with
   | none =>
-      apply relTriple_post_mono (relTriple_pure_pure rfl)
-      intro leftValue rightValue heq htrue
-      exact heq ▸ htrue
+      exact relTriple_pure_pure rfl
   | some resolved =>
       have hresolvedPrivate : resolved.values target = some resolved.output :=
         resolveDeferredPositionValue_installs target context resolved hresolved
