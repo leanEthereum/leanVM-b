@@ -492,6 +492,8 @@ The contract has been sharpened to the smallest sufficient marginal: the adaptiv
 
 The Boolean contract now feeds the production-weighted root endpoint directly. Once the adaptive prefix supplies that one indicator coupling, the eager resolver equality and root-aware one-guess theorem are applied internally, so no later proof can accidentally replace the produced-list weight by an unconditional position bound.
 
+The probe-free public-root prefix is now factored out of the Boolean bridge. Its observed execution is proved equal in distribution to the ordinary clean result with an empty observation list, and the global lazy/eager indicator coupling is reduced to one supported public-root result at a time. The failure result is discharged as the constant false indicator, while a successful root result retains the actual observed continuation and the independent comparison-root draw. The remaining theorem is therefore the local adaptive prefix coupling after a fixed supported root result; it no longer contains the sealed public-root computation or its sampler.
+
 Two places a proof can go wrong, both found by attacking the claim rather than by reading it:
 
 - **A strong forgery needs no chain inversion.** `Ver` does not check that the counter is the least admissible one, so a second `c'` with `Enc(P,lay,tau,e,M,c') = x` reuses the chain values verbatim and verifies. Since the codeword fixes the digest, that is one `2^-128` hit per query and it is harmless, but it is a branch of its own: the one-time signature is unforgeable on a *new* message by incomparability, and unforgeable on the *signed* message only by collision resistance at `tw_enc`.
