@@ -86,5 +86,45 @@ theorem evalDist_resolvedEagerObservedRootComparisonAfterRootResult
   · simpa [directDeferredContext] using habsent
   · simpa [directDeferredContext, directDeferredValues] using habsent
 
-end SphincsSecurity.Concrete.OtsProbeSimulation
+noncomputable def resolvedEagerObservedRootComparisonExperimentAfterTable
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
+    ProbComp
+      (Option (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest) := do
+  let rootResult ← runCleanFromTable
+    (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel table
+    (maskedPublishedTreeRoot.run emptySplitHashCache)
+  match rootResult with
+  | none => pure (none, 0)
+  | some result =>
+      resolvedEagerObservedRootComparisonAfterRootResult adversary parameter ftsSecret target result
 
+set_option maxRecDepth 100000 in
+theorem evalDist_resolvedEagerObservedRootComparisonExperimentAfterTable
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (hroot : IsLayerRoot target)
+    (hparent : ∃ parent, Position.parentOf target = some parent)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
+    evalDist
+      (resolvedEagerObservedRootComparisonExperimentAfterTable adversary parameter ftsSecret
+        target fuel table) =
+      evalDist
+        (eagerObservedRootComparisonExperimentAfterTable ordinal adversary parameter ftsSecret
+          target fuel table) := by
+  unfold resolvedEagerObservedRootComparisonExperimentAfterTable
+    eagerObservedRootComparisonExperimentAfterTable
+  apply evalDist_bind_congr
+  intro rootResult hresult
+  cases rootResult with
+  | none => rfl
+  | some result =>
+      have habsent := target_absent_of_mem_runCleanFromTable_maskedPublishedTreeRoot target hroot
+        hparent fuel table result hresult
+      have hpending := pending_eq_empty_of_mem_runCleanFromTable_maskedPublishedTreeRoot fuel table
+        result hresult
+      exact evalDist_resolvedEagerObservedRootComparisonAfterRootResult ordinal adversary parameter
+        ftsSecret target result habsent.1 hpending
+
+end SphincsSecurity.Concrete.OtsProbeSimulation
