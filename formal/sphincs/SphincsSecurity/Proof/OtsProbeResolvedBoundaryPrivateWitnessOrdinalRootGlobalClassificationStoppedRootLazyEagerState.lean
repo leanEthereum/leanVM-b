@@ -1,4 +1,6 @@
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootProbeCoupling
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootSelectionDeferred
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootSelectionMaterialize
 
 /-!
 # Safe pending differences after root synchronization
@@ -164,5 +166,66 @@ theorem SafeTargetPendingLE.clean_extra
   rcases hrel.extra coordinate candidate hentry with hleft | hextra
   · exact (hnotLeft hleft).elim
   · exact hextra
+
+theorem safeTargetPendingLE_materialized_completePrivatePosition
+    (target : Position) (output : HashOutput) (context : DeferredContext)
+    (hhidden : context.state.values (.position target) = none)
+    (hsafe : ∀ candidate,
+      (Coordinate.position target, candidate) ∈ context.state.pending →
+        candidate ≠ truncateHash output) :
+    SafeTargetPendingLE target output
+      (materializedDeferredState
+        (completePrivatePosition target context output).toDeferredContext)
+      (materializedDeferredState
+        { context with values := context.values.install target output }) := by
+  refine ⟨?_, ?_, rfl, rfl, ?_, ?_⟩
+  · intro entry hentry
+    simp only [materializedDeferredState_pending, completePrivatePosition,
+      LazyRevealProbe.State.clearPending,
+      LazyRevealProbe.State.pendingAway, Finset.mem_filter] at hentry ⊢
+    exact hentry.1
+  · funext coordinate
+    cases coordinate with
+    | chainStart lay tree leafIdx chainIdx => rfl
+    | position position =>
+        by_cases heq : position = target
+        · subst position
+          simp [materializedDeferredState, DeferredContext.positionValue,
+            completePrivatePosition, DeferredStructuralValues.install]
+        · simp [materializedDeferredState, DeferredContext.positionValue,
+            completePrivatePosition, DeferredStructuralValues.install,
+            Function.update_of_ne heq]
+  · simp [materializedDeferredState, DeferredContext.positionValue,
+      completePrivatePosition, DeferredStructuralValues.install, hhidden]
+  · intro coordinate candidate hentry
+    simp only [materializedDeferredState_pending] at hentry ⊢
+    by_cases heq : coordinate = .position target
+    · exact Or.inr ⟨heq, hsafe candidate (heq ▸ hentry)⟩
+    · exact Or.inl (by
+        simp only [completePrivatePosition, LazyRevealProbe.State.clearPending,
+          LazyRevealProbe.State.pendingAway,
+          Finset.mem_filter]
+        exact ⟨hentry, heq⟩)
+
+theorem safeTargetPendingLE_of_goodForRoots_pendingCovered
+    {target : Position} {output : HashOutput} {rightRoot : Digest}
+    {ordinal : Nat} {selection : PrivateOrdinalSelection}
+    (hgood : selection.GoodForRoots target output rightRoot ordinal)
+    (hcovered : PendingCoveredBy (selection.candidates.take ordinal) selection.context) :
+    SafeTargetPendingLE target output
+      (materializedDeferredState
+        (completePrivatePosition target selection.context output).toDeferredContext)
+      (materializedDeferredState
+        { selection.context with
+          values := selection.context.values.install target output }) := by
+  apply safeTargetPendingLE_materialized_completePrivatePosition target output selection.context
+    hgood.2.1
+  intro candidate hentry heq
+  obtain ⟨probe, hprobe, hcoordinate, hdigest⟩ := hcovered _ hentry
+  have havoid := (hgood.2.2.2.2 probe hprobe).1
+  apply havoid
+  cases probe
+  simp only [Probe.mk.injEq] at hcoordinate hdigest ⊢
+  exact ⟨hcoordinate, hdigest.trans heq⟩
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

@@ -478,6 +478,8 @@ The post-materialization suffix is now isolated completely. `SafeTargetPendingLE
 
 That suffix theorem is now lifted through `observedMaterializedBoundary` itself. Equal stored values force identical canonical public plans and root-aware public actions, while uniform and signing branches use the generic lazy-oracle coupling directly. Thus the synchronized relation composes through an arbitrary remaining adversarial computation with equal returned values and split caches. The only unfinished part of the lazy/eager bridge is the prefix ending at the selected target's first materialization.
 
+The exact synchronization transition is now compiled too. `GoodForRoots` and strict-prefix pending coverage imply that delayed target resolution removes precisely the target pending fiber, eager installation retains only target candidates whose digests differ from the installed output, and the two materialized shadows therefore satisfy `SafeTargetPendingLE`. The remaining prefix proof only has to transport the already-established coverage and avoidance facts to the first target materialization; the state algebra at that boundary and the complete suffix are discharged.
+
 Two places a proof can go wrong, both found by attacking the claim rather than by reading it:
 
 - **A strong forgery needs no chain inversion.** `Ver` does not check that the counter is the least admissible one, so a second `c'` with `Enc(P,lay,tau,e,M,c') = x` reuses the chain values verbatim and verifies. Since the codeword fixes the digest, that is one `2^-128` hit per query and it is harmless, but it is a branch of its own: the one-time signature is unforgeable on a *new* message by incomparability, and unforgeable on the *signed* message only by collision resistance at `tw_enc`.
