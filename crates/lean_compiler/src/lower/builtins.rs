@@ -94,7 +94,10 @@ impl FnLower<'_> {
         } else {
             0
         };
-        let metadata = lean_vm::hash_flock::metadata(counter, f0, f1);
+        // The metadata is a memory operand like the rest, so a compile-time one
+        // is a pooled `SET`: one per distinct value per frame, however many
+        // compressions read it.
+        let md = self.const_cell(lean_vm::hash_flock::metadata(counter, f0, f1));
         // Each operand is two 128-bit chunk cells; the flexible opcode addresses
         // the four input cells independently (`blake2s_input` forwards the real
         // chunk sources where it can). The digest occupies the two consecutive
@@ -103,7 +106,7 @@ impl FnLower<'_> {
             ins: [a[0], a[1], b[0], b[1]],
             cv,
             c,
-            metadata,
+            md,
         });
         if let Some((ptr, lo)) = heap_out {
             for k in 0..2 {

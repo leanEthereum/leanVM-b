@@ -460,14 +460,14 @@ blake2s(tail[0:2], tail[2:4], out, cv=cv, counter=80, final=1)
 
 The three positional arguments form a **statement**: one standard BLAKE2s compression consumes the two 256-bit message operands `a`, `b` (64 bytes) and writes its 32-byte result into the 2-cell run `out`. With no keywords it computes the standard hash of exactly 64 bytes: the parameterized BLAKE2s-256 initial chaining value (digest length 32, unkeyed, fanout and depth 1), byte counter 64, final-block flag `f0` set. That is `blake2s(a || b)`, the form every Fiat-Shamir step and Merkle node uses.
 
-Every compression also has a 256-bit chaining value and a compile-time 128-bit metadata immediate. BLAKE2s takes the byte counter and the two flags as ordinary compression inputs, which is why one instruction is a complete hash of any length and there is no chunk tree to drive (see `primitives::hash`). The optional keywords are:
+Every compression also has a 256-bit chaining value and a 128-bit metadata word. BLAKE2s takes the byte counter and the two flags as ordinary compression inputs, which is why one instruction is a complete hash of any length and there is no chunk tree to drive (see `primitives::hash`). The optional keywords are:
 
 - `cv=<pair>`: a consecutive 2-cell chaining value, the previous block's output; omitting it selects the parameterized IV above. On each runtime path, a function emits two `SET`s at its first such hash only and reuses those cells thereafter. Supplying `cv=` also requires one of the three below, since a chained block is never the default one-block hash;
 - `counter=<u64>`: BLAKE2s's byte counter `t`, **cumulative** through this block, so `64 * whole_blocks_before + bytes_in_this_block`. Defaults to 64;
 - `final=<0|1>`: BLAKE2s's final-block flag `f0`. It defaults to 1 for the bare three-argument call, but to **0** as soon as `counter=` or `last_node=` appears, so a chained hash must set `final=1` on its last block and a single short block needs `counter=<len>, final=1`. Any compile-time expression works, nonzero meaning set, which is what lets the guests write a predicate like `final=(q + 1) // BLOCKS_PER_HASH`;
 - `last_node=<0|1>`: BLAKE2s's tree-mode flag `f1`. Defaults to 0, and nothing here uses tree mode.
 
-The metadata is packed as `counter:u64 | f0:u32 | f1:u32`, little-endian, and is part of the public bytecode. There is no block-length field: the counter is what states how many of the 64 bytes are message, so only the last block may be partial and the program must zero-fill the bytes past its real length, which the compression circuit does not enforce. A multi-block hash therefore feeds each result back with `cv=`, advances `counter=` by the bytes actually absorbed, and sets `final=1` on the last block.
+The metadata is packed as `counter:u64 | f0:u32 | f1:u32`, little-endian, into one memory cell the instruction reads, like every other operand. With compile-time keywords that cell is one pooled `SET`: a frame emits it once per distinct metadata value, however many compressions read it, and the immediate that wrote it is public bytecode. There is no block-length field: the counter is what states how many of the 64 bytes are message, so only the last block may be partial and the program must zero-fill the bytes past its real length, which the compression circuit does not enforce. A multi-block hash therefore feeds each result back with `cv=`, advances `counter=` by the bytes actually absorbed, and sets `final=1` on the last block.
 
 Operands are size-2 `StackBuf`s or 2-cell slices:
 
@@ -536,7 +536,7 @@ Three builtins have the prover compute the values at witness generation instead 
 | function call | ≈ `n_args + n_returns + 4` (0 when the callee is `@inline`) |
 | `mul_range` iteration | body + ≈ 1 `MUL` + 1 `XOR` + call overhead |
 | `unroll` iteration | body only (compile-time replication) |
-| `blake2s(a, b, out, ...)` | 1; plus two `SET`s once per frame when `cv` is omitted; message/CV words are read in place, +1 `DEREF` per heap input or CV word, +1 `MUL` per runtime slice start |
+| `blake2s(a, b, out, ...)` | 1; plus one `SET` once per frame per distinct metadata value, and two more when `cv` is omitted; message/CV words are read in place, +1 `DEREF` per heap input or CV word, +1 `MUL` per runtime slice start |
 | `hint_witness(dest, "name")` | 0 (+1 `MUL` for a runtime slice start) |
 
 Every cost above is the FIRST occurrence. Two identical pure operations in one function share one cell and the second is free, so `hb[i]` twice, or `row[i]` where `row = hb * GEN ** 2`, costs one pointer `MUL` between them. The sharing stops at a branch: a cell whose instruction sits inside an `if` is not reused after the join, because the other path leaves it unwritten and therefore prover-chosen.

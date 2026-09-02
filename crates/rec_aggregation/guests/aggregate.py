@@ -306,8 +306,9 @@ STMT_ODD = STMT_ODD_PLACEHOLDER
 STMT_PAIRS = STMT_PAIRS_PLACEHOLDER
 STMT_PAD_CELLS = STMT_PAD_CELLS_PLACEHOLDER
 STMT_BLOCKS = STMT_BLOCKS_PLACEHOLDER
-# The signer set cannot stream: its length is runtime and the counter is a bytecode
-# immediate, so it stays a chain of complete hashes under its own IV.
+# The signer set does not stream: its length is runtime, so its per-block byte
+# counters would have to be computed in-circuit, and nothing does that yet. It
+# stays a chain of complete hashes under its own IV.
 SIGNERS_IV_0 = SIGNERS_IV_0_PLACEHOLDER
 SIGNERS_IV_1 = SIGNERS_IV_1_PLACEHOLDER
 
@@ -2858,13 +2859,13 @@ def main():
     # followed by its own duplicate slots. The coverage indices below run over one
     # space: the group regions in order, then the SPHINCS one.
     #
-    # The digest is a chain of compressions (the length is runtime, so the streaming
-    # form's baked counter cannot carry it): its two lengths, then per group (epoch,
-    # count), the message, and that group's keys, then the SPHINCS claims. Leading
-    # with every count makes the encoding prefix-free, so no digest extends another
-    # and it binds its own lengths. `half` and `odd` are hinted per group and pinned
-    # by half*half*odd == n with odd in {0, 1}, which leaves half = n // 2 and odd =
-    # n % 2 as the only solution.
+    # The digest is a chain of compressions (a runtime length would need its byte
+    # counters computed in-circuit, which nothing does yet): its two lengths, then
+    # per group (epoch, count), the message, and that group's keys, then the SPHINCS
+    # claims. Leading with every count makes the encoding prefix-free, so no digest
+    # extends another and it binds its own lengths. `half` and `odd` are hinted per
+    # group and pinned by half*half*odd == n with odd in {0, 1}, which leaves
+    # half = n // 2 and odd = n % 2 as the only solution.
     xmss_table = HeapBuf(xmss_slots_g * xmss_slots_g)
     sphincs_table = HeapBuf(sphincs_slots_g ** 4)
     signers_chain = HeapBuf((n_epochs_g * GEN) ** 2)

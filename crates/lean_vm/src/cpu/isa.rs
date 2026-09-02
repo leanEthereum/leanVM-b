@@ -37,18 +37,21 @@ pub enum Op {
     /// top limb zero) form the 64-byte block; the digest lands in the TWO
     /// consecutive cells `out, out+1`. Each message chunk is addressed
     /// independently, with no forced contiguity, so the caller need not assemble
-    /// its operands into adjacent cells. The compression relation is proven by
-    /// flock.
+    /// its operands into adjacent cells. Every operand is a memory operand, the
+    /// metadata included. The compression relation is proven by flock.
     Blake2s {
         ins: [u32; 4],
         /// Base of two consecutive cells holding the 256-bit chaining value
         /// (canonical 128-bit chunks, top limbs zero).
         cv: u32,
         out: u32,
-        /// `counter:u64 | f0:u32 | f1:u32`, little-endian, in the two low
-        /// K-lanes of a 192-bit immediate (top lane always zero). `f0` is the
-        /// final-block flag and `f1` is the last-node flag.
-        metadata: F192,
+        /// The cell holding the metadata `counter:u64 | f0:u32 | f1:u32`,
+        /// little-endian in its two low K-lanes (top lane zero, as for every
+        /// other cell this opcode reads). `f0` is the final-block flag and `f1`
+        /// the last-node flag. A memory operand like the rest, so a program can
+        /// hash any length: a compile-time counter is one pooled `SET` per
+        /// frame, a runtime one any cell the program computes.
+        md: u32,
     },
 }
 

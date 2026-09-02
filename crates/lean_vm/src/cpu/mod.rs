@@ -839,11 +839,11 @@ mod tests {
 
     /// A hand-built straight-line program with one BLAKE2s row: set up the two
     /// 256-bit inputs (`a` at cells 2,3, `b` at cells 4,5, one 128-bit word per
-    /// cell), hash them into the output `c` (cells 6,7), pad with filler SETs so
-    /// the last executed instruction lands one before the sentinel, and halt
-    /// there. The flock validity sub-proof plus the memory / state / bytecode bus
-    /// interactions are verified end-to-end (the proof carries the WHIR
-    /// opening they assert on).
+    /// cell) and the metadata (cell 8), hash them into the output `c` (cells 6,7),
+    /// pad with filler SETs so the last executed instruction lands one before the
+    /// sentinel, and halt there. The flock validity sub-proof plus the memory /
+    /// state / bytecode bus interactions are verified end-to-end (the proof
+    /// carries the WHIR opening they assert on).
     fn blake2s_program(a: [F64; 4], b: [F64; 4]) -> Program {
         // a → cells 2,3 and b → cells 4,5 (two flock lanes per BLAKE2s cell).
         let mut prog = vec![
@@ -863,18 +863,19 @@ mod tests {
                 o: 5,
                 k: cell(b[2], b[3]),
             },
+            Op::Set { o: 8, k: md() },
             // The chaining value reads cells 0,1 (the public input); any
             // canonical cv is legal.
             Op::Blake2s {
                 ins: [2, 3, 4, 5],
                 cv: 0,
                 out: 6,
-                metadata: crate::hash_flock::metadata(crate::hash_flock::PINNED_T, crate::hash_flock::FINAL_FLAG, 0),
+                md: 8,
             },
         ]; // c → cells 6,7
-        // 16 slots: 5 executed, then 10 filler SETs step the pc to 15, whose slot is
+        // 16 slots: 6 executed, then 9 filler SETs step the pc to 15, whose slot is
         // the never-executed sentinel.
-        for k in 0..10u32 {
+        for k in 0..9u32 {
             prog.push(Op::Set {
                 o: 16 + k,
                 k: F192::ONE,
@@ -952,15 +953,16 @@ mod tests {
                 o: 3,
                 k: cell(h[2], h[3]),
             },
+            Op::Set { o: 6, k: md() },
             Op::Blake2s {
                 ins: [2, 3, 2, 3],
                 cv: 0,
                 out: 4,
-                metadata: crate::hash_flock::metadata(crate::hash_flock::PINNED_T, crate::hash_flock::FINAL_FLAG, 0),
+                md: 6,
             },
         ];
-        // 8 slots: 3 executed, 4 filler SETs stepping the pc, then the sentinel.
-        for k in 0..4u32 {
+        // 8 slots: 4 executed, 3 filler SETs stepping the pc, then the sentinel.
+        for k in 0..3u32 {
             prog.push(Op::Set {
                 o: 12 + k,
                 k: F192::ONE,

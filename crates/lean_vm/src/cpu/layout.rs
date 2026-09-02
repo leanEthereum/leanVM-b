@@ -222,11 +222,11 @@ pub(crate) fn committed_log(log_mem: usize, log_bytecode: usize, taus: [usize; t
 /// A table's height is its row count: the fill blocks bring every count up to a power of
 /// two (`cpu::filler`), so `2^taus[t]` rows were all executed and no flush has padding
 /// tuples to divide back out of the bus.
-/// The nine PUBLIC bytecode columns over the program cube, in bytecode-slot
-/// order: the opcode, then eight operand/immediate slots. The program is not
+/// The eight PUBLIC bytecode columns over the program cube, in bytecode-slot
+/// order: the opcode, then seven operand/immediate slots. The program is not
 /// committed, so these ride the seed/finalize blocks as `Coord::Public` and
 /// stack into the polynomial [`bytecode_table`] returns.
-pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 9] {
+pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 8] {
     let max_op = prog
         .iter()
         .map(|op| match *op {
@@ -234,7 +234,7 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 9] {
             Op::Set { o, .. } => o,
             Op::Deref { o1, o2, o3, .. } => o1.max(o2).max(o3),
             Op::Jump { oc, od, of } => oc.max(od).max(of),
-            Op::Blake2s { ins, cv, out, .. } => ins[0].max(ins[1]).max(ins[2]).max(ins[3]).max(cv).max(out),
+            Op::Blake2s { ins, cv, out, md } => ins[0].max(ins[1]).max(ins[2]).max(ins[3]).max(cv).max(out).max(md),
         })
         .max()
         .unwrap_or(0) as usize;
@@ -275,21 +275,17 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 9] {
         Op::Blake2s { cv, .. } => g_at(*cv),
         _ => F64::ZERO,
     };
-    // The 6th/7th/8th bytecode operand slots: BLAKE2s's output base and the two
-    // K-lanes of its metadata immediate (0 elsewhere).
+    // The 6th/7th bytecode operand slots: BLAKE2s's output base and its metadata
+    // cell (0 elsewhere).
     let extra0 = |op: &Op| match op {
         Op::Blake2s { out, .. } => g_at(*out),
         _ => F64::ZERO,
     };
     let extra1 = |op: &Op| match op {
-        Op::Blake2s { metadata, .. } => F64(metadata.c0),
+        Op::Blake2s { md, .. } => g_at(*md),
         _ => F64::ZERO,
     };
-    let extra2 = |op: &Op| match op {
-        Op::Blake2s { metadata, .. } => F64(metadata.c1),
-        _ => F64::ZERO,
-    };
-    // The program is PUBLIC (not committed): nine public columns over the
+    // The program is PUBLIC (not committed): eight public columns over the
     // program cube, embedded in the bytecode seed/finalize blocks below.
     let column = |f: &(dyn Fn(&Op) -> F64 + Sync)| parallel::map_collect(prog.len(), |i| f(&prog[i]));
     let prog_op: Vec<F64> = column(&opcode);
@@ -300,7 +296,6 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 9] {
     let prog_ffp: Vec<F64> = column(&ffp);
     let prog_extra0: Vec<F64> = column(&extra0);
     let prog_extra1: Vec<F64> = column(&extra1);
-    let prog_extra2: Vec<F64> = column(&extra2);
     [
         prog_op,
         prog_o1,
@@ -310,7 +305,6 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 9] {
         prog_ffp,
         prog_extra0,
         prog_extra1,
-        prog_extra2,
     ]
 }
 
@@ -346,7 +340,7 @@ pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: 
     // operand, an O(1) lookup each, rather than over the whole 2^log_mem memory.
     // Shared between the seed and finalize blocks: at kbc = 19 a copy is tens of
     // megabytes per column.
-    let prog_cols: [std::sync::Arc<Vec<F64>>; 9] = bytecode_columns(prog).map(std::sync::Arc::new);
+    let prog_cols: [std::sync::Arc<Vec<F64>>; 8] = bytecode_columns(prog).map(std::sync::Arc::new);
 
     // ---- bus blocks ----
     use Coord::{Col, Const, Index, Public};
@@ -532,7 +526,7 @@ impl Program {
         // program with no BLAKE2s still carries a single padding instance.
         let flock_reduction = crate::stage!("Build q_flock", || {
             // The rows carry only their access counts; the compression's input
-            // words are the eight cells they read, in the finished (write-once)
+            // words are the nine cells they read, in the finished (write-once)
             // memory image.
             let blocks: Vec<_> = parallel::map_collect(tr.blake2s.len(), |i| {
                 let r = &tr.blake2s[i];
@@ -545,7 +539,7 @@ impl Program {
                     chunk(a[0], a[1]),
                     chunk(a[2], a[3]),
                     chunk(a[4], a[4] + 1),
-                    tables::blake2s_metadata(&self.prog, r.pc),
+                    exec.mem[a[6] as usize],
                 )
             });
             crate::hash_flock::build_qflock_prepared(&blocks, windows[QFLOCK])

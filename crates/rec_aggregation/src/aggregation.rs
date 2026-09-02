@@ -3613,4 +3613,43 @@ mod tests {
             Some(AggregationError::MalformedRawSignature)
         );
     }
+
+    /// Every `BLAKE2s` the guest itself runs reads a metadata cell its own
+    /// function wrote first. An unwritten cell is prover-chosen (write-once
+    /// memory constrains only what something writes), so a compression whose
+    /// metadata cell no `SET` precedes would hand the prover that hash's byte
+    /// counter and both flags, and every guest digest rests on those being the
+    /// ones the scheme specifies. The fill blocks are the deliberate exception:
+    /// their dummy reads a cell nothing writes, and nothing reads what they
+    /// compress (`lean_vm::cpu::filler`).
+    #[test]
+    fn every_guest_blake2s_metadata_cell_is_set_first() {
+        use lean_vm::cpu::Op;
+
+        let program = unified_guest();
+        let fill: Vec<std::ops::Range<usize>> = program
+            .filler
+            .iter()
+            .map(|b| b.pc as usize..(b.pc + b.size) as usize)
+            .collect();
+        let mut unwritten = Vec::new();
+        for (name, entry, len) in &program.fn_ranges {
+            let range = *entry as usize..(*entry + *len) as usize;
+            for pc in range.clone() {
+                let Op::Blake2s { md, .. } = program.prog[pc] else {
+                    continue;
+                };
+                if fill.iter().any(|f| f.contains(&pc)) {
+                    continue;
+                }
+                let written = program.prog[range.start..pc]
+                    .iter()
+                    .any(|op| matches!(op, Op::Set { o, .. } if *o == md));
+                if !written {
+                    unwritten.push(format!("{name} pc {pc} md fp[{md}]"));
+                }
+            }
+        }
+        assert!(unwritten.is_empty(), "metadata cell never written: {unwritten:?}");
+    }
 }

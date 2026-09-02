@@ -113,25 +113,26 @@ The store asserts that $v_2$ equals the source chosen by the mode $\dmode$ (\S\r
 
 \subsection{\texttt{BLAKE2S}}\label{sec:tab-blake2s}
 
-\texttt{BLAKE2S}\ $[o_{m_0},o_{m_1},o_{m_2},o_{m_3},o_{\mathit{cv}},o_{\mathit{out}},\md_0,\md_1]$ compresses a $64$-byte message block under a $32$-byte chaining value into a $32$-byte result, with BLAKE2s flags and byte counter hardcoded in the metadata $(\md_0,\md_1)$. Each $128$-bit half occupies one cell, top limb zero: the four message chunks at $\fp\cdot o_{m_0},\dots,\fp\cdot o_{m_3}$, addressed independently, the chaining value at the consecutive pair $\fp\cdot o_{\mathit{cv}},\gen\cdot\fp\cdot o_{\mathit{cv}}$, and the result at $\fp\cdot o_{\mathit{out}},\gen\cdot\fp\cdot o_{\mathit{out}}$.
+\texttt{BLAKE2S}\ $[o_{m_0},o_{m_1},o_{m_2},o_{m_3},o_{\mathit{cv}},o_{\mathit{out}},o_{\md}]$ compresses a $64$-byte message block under a $32$-byte chaining value into a $32$-byte result, with the BLAKE2s flags and byte counter in the metadata cell $\fp\cdot o_{\md}$. Each $128$-bit half occupies one cell, top limb zero: the four message chunks at $\fp\cdot o_{m_0},\dots,\fp\cdot o_{m_3}$, addressed independently, the chaining value at the consecutive pair $\fp\cdot o_{\mathit{cv}},\gen\cdot\fp\cdot o_{\mathit{cv}}$, and the result at $\fp\cdot o_{\mathit{out}},\gen\cdot\fp\cdot o_{\mathit{out}}$.
 
 Flock~\cite{Flock26} proves the compression relation with a batched R1CS over a Boolean witness (Annex~\ref{annex:flock}). The witness is packed into $\qflock$ via Ring-Switching (Annex~\ref{annex:rs}), with $64$ bits per $\K$-element.
 
-The message, result, chaining value and metadata are all committed in $\qflock$: the two low limbs $z_0,z_1$ of each of the eight cells $z\in\{m_0,\dots,m_3,\mathit{cv}_0,\mathit{cv}_1,\mathit{out}_0,\mathit{out}_1\}$, plus $\md_0,\md_1$, eighteen in all. Linking these values to the memory interaction implicitly forces the top limb of every memory cell accessed by BLAKE2s to be zero. The generalized R1CS matrices take the chaining value, byte counter, and the two finalization flags as free input: the bytecode interactions via the bus bind them.
+The message, result, chaining value and metadata are all committed in $\qflock$: the two low limbs $z_0,z_1$ of each of the nine cells $z\in\{m_0,\dots,m_3,\mathit{cv}_0,\mathit{cv}_1,\mathit{out}_0,\mathit{out}_1,\md\}$, eighteen in all. Linking these values to the memory interaction implicitly forces the top limb of every memory cell accessed by BLAKE2s to be zero. The generalized R1CS matrices take the chaining value, byte counter, and the two finalization flags as free input: the memory interactions via the bus bind all four.
 \begin{itemize}
-\item \textbf{Columns:} $\pc,\fp$; operands $o_{m_0},o_{m_1},o_{m_2},o_{m_3},o_{\mathit{cv}},o_{\mathit{out}}$; one memory count $r_z$ per cell $z$; bytecode count $r_{\mathrm{bc}}$. The eighteen limbs are committed in $\qflock$, no duplicate columns needed. The eight addresses are the products $\gen^{k}\fp\cdot o$, $k\in\{0,1\}$.
+\item \textbf{Columns:} $\pc,\fp$; operands $o_{m_0},o_{m_1},o_{m_2},o_{m_3},o_{\mathit{cv}},o_{\mathit{out}},o_{\md}$; one memory count $r_z$ per cell $z$; bytecode count $r_{\mathrm{bc}}$. The eighteen limbs are committed in $\qflock$, no duplicate columns needed. The nine addresses are the products $\gen^{k}\fp\cdot o$, $k\in\{0,1\}$.
 \item \textbf{Constraints:} none. The compression relation is handled by Flock.
 \item \textbf{Flushes:}
   \begin{itemize}
   \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp}$.
-  \item \textbf{Bytecode:} $\rdf{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{B2S},o_{m_0},o_{m_1},o_{m_2},o_{m_3},o_{\mathit{cv}},o_{\mathit{out}},\md_0,\md_1}$.
+  \item \textbf{Bytecode:} $\rdf{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{B2S},o_{m_0},o_{m_1},o_{m_2},o_{m_3},o_{\mathit{cv}},o_{\mathit{out}},o_{\md}}$.
   \item \textbf{Memory:}
     \begin{align*}
       &\rdf{\dsep{MEM},\fp\cdot o_{m_i},r_{m_i},m_{i,0},m_{i,1},0}\quad(i=0,\dots,3),\\
       &\rdf{\dsep{MEM},\fp\cdot o_{\mathit{cv}},r_{\mathit{cv}_0},\mathit{cv}_{0,0},\mathit{cv}_{0,1},0},\\
       &\rdf{\dsep{MEM},\gen\cdot\fp\cdot o_{\mathit{cv}},r_{\mathit{cv}_1},\mathit{cv}_{1,0},\mathit{cv}_{1,1},0},\\
       &\rdf{\dsep{MEM},\fp\cdot o_{\mathit{out}},r_{\mathit{out}_0},\mathit{out}_{0,0},\mathit{out}_{0,1},0},\\
-      &\rdf{\dsep{MEM},\gen\cdot\fp\cdot o_{\mathit{out}},r_{\mathit{out}_1},\mathit{out}_{1,0},\mathit{out}_{1,1},0}.
+      &\rdf{\dsep{MEM},\gen\cdot\fp\cdot o_{\mathit{out}},r_{\mathit{out}_1},\mathit{out}_{1,0},\mathit{out}_{1,1},0},\\
+      &\rdf{\dsep{MEM},\fp\cdot o_{\md},r_{\md},\md_0,\md_1,0}.
     \end{align*}
   \end{itemize}
 \end{itemize}

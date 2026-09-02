@@ -13,8 +13,9 @@
 //!
 //! The VM's `BLAKE2s(a, b, cv, metadata) -> c` is one standard BLAKE2s
 //! compression. `metadata` packs `counter:u64 | f0:u32 | f1:u32` in
-//! little-endian order. All inputs are witness values in `q_flock`; memory binds
-//! `a`, `b`, and `cv`, while the bytecode interaction binds `metadata`.
+//! little-endian order. All inputs are witness values in `q_flock`, and the
+//! memory interaction binds every one of them: `a`, `b`, `cv` and `metadata`
+//! are cells the instruction reads.
 //!
 //! ## The layout (aligned re-layout, `MSG_BASE = 640`, 64-bit words)
 //!

@@ -366,28 +366,22 @@ pub fn tables() -> [&'static dyn Table; N_TABLES] {
 /// Index of the BLAKE2s table in [`tables`].
 pub(crate) const BLAKE2S_TABLE: usize = 5;
 
-/// The six base addresses a `BLAKE2s` row reads: the four message cells, the
-/// chaining-value base and the output base (each of the last two spans that cell
-/// and its successor). Recovered from the instruction, not stored per row.
-pub(crate) fn blake2s_addresses(prog: &[Op], r: &Brow) -> [u32; 6] {
+/// The seven base addresses a `BLAKE2s` row reads: the four message cells, the
+/// chaining-value base, the output base (each of those two spans that cell and
+/// its successor) and the metadata cell. Recovered from the instruction, not
+/// stored per row.
+pub(crate) fn blake2s_addresses(prog: &[Op], r: &Brow) -> [u32; 7] {
     match prog[r.pc as usize] {
-        Op::Blake2s { ins, cv, out, .. } => [
+        Op::Blake2s { ins, cv, out, md } => [
             r.fp + ins[0],
             r.fp + ins[1],
             r.fp + ins[2],
             r.fp + ins[3],
             r.fp + cv,
             r.fp + out,
+            r.fp + md,
         ],
         op => unreachable!("a BLAKE2s row's pc {} holds {op:?}", r.pc),
-    }
-}
-
-/// A `BLAKE2s` row's metadata immediate (`counter | f0‖f1`).
-pub(crate) fn blake2s_metadata(prog: &[Op], pc: u32) -> F192 {
-    match prog[pc as usize] {
-        Op::Blake2s { metadata, .. } => metadata,
-        op => unreachable!("a BLAKE2s row's pc {pc} holds {op:?}"),
     }
 }
 
@@ -822,18 +816,18 @@ impl Table for JumpTable {
 /// single cell, with no forced contiguity between chunks, so a caller hashing e.g.
 /// `(tweak, pp)` need not copy them into adjacent cells. The chaining value and the
 /// 32-byte output each occupy two consecutive cells, based at `fp·o_cv` and
-/// `fp·o_c`, so the row reads eight cells in all. No address is committed: each rides the bus as the product `fp·o_X`
+/// `fp·o_c`, and the metadata is one more cell at `fp·o_md`, so the row reads nine
+/// cells in all. No address is committed: each rides the bus as the product `fp·o_X`
 /// (§sec:m3). The compression relating output words to input words carries no
 /// table constraint either: it is proven by flock's R1CS validity via `q_flock`
 /// (§hash_flock), which leaves this table with no identity of its own.
 ///
-/// A 128-bit chunk is two flock 64-bit words (lo, hi lanes), so the sixteen
-/// memory-borne flock words are sixteen value LANE columns over eight cells,
-/// plus the metadata immediate's two lanes. They are listed in
-/// `n_committed_columns` (they need a local index for the flushes and are filled
-/// from the trace for the bus), but `cpu` treats them as VIRTUAL (not committed)
-/// and routes their bus claims to `q_flock`, which already holds those words (see
-/// [`BLAKE2S_VALUE_COLS`]).
+/// A 128-bit chunk is two flock 64-bit words (lo, hi lanes), so the eighteen
+/// memory-borne flock words are eighteen value LANE columns over the nine cells.
+/// They are listed in `n_committed_columns` (they need a local index for the
+/// flushes and are filled from the trace for the bus), but `cpu` treats them as
+/// VIRTUAL (not committed) and routes their bus claims to `q_flock`, which already
+/// holds those words (see [`BLAKE2S_VALUE_COLS`]).
 struct Blake2sTable;
 
 pub(crate) mod blake2st {
@@ -844,26 +838,28 @@ pub(crate) mod blake2st {
     pub const O_M2: usize = 4;
     pub const O_M3: usize = 5;
     pub const O_CV: usize = 6; // … the chaining-value base …
-    pub const O_OUT: usize = 7; // … and the output base
-    // The eighteen flock lanes: a (lo, hi) pair for each of the eight cells,
-    // the four message cells first, then the output pair, then the chaining-value
-    // pair, and last the bytecode metadata immediate's two lanes.
-    pub const V_M0: usize = 8; // m0.lo, m0.hi, m1.lo, m1.hi
-    pub const V_M2: usize = 12; // m2.lo, m2.hi, m3.lo, m3.hi
-    pub const V_OUT0: usize = 16; // out0.lo, out0.hi, out1.lo, out1.hi
-    pub const V_CV0: usize = 20; // cv0.lo, cv0.hi, cv1.lo, cv1.hi
-    pub const MD0: usize = 24; // metadata: the counter lane …
-    pub const MD1: usize = 25; // … and the final ‖ last_node lane
-    pub const R_M0: usize = 26; // one read count per cell: the four message cells …
-    pub const R_M1: usize = 27;
-    pub const R_M2: usize = 28;
-    pub const R_M3: usize = 29;
-    pub const R_CV0: usize = 30; // … the two chaining-value cells …
-    pub const R_CV1: usize = 31;
-    pub const R_OUT0: usize = 32; // … and the two output cells.
-    pub const R_OUT1: usize = 33;
-    pub const RBC: usize = 34;
-    pub const N: usize = 35;
+    pub const O_OUT: usize = 7; // … the output base …
+    pub const O_MD: usize = 8; // … and the metadata cell
+    // The eighteen flock lanes: a (lo, hi) pair for each of the nine cells,
+    // the four message cells first, then the output pair, the chaining-value
+    // pair, and last the metadata cell's counter and flag lanes.
+    pub const V_M0: usize = 9; // m0.lo, m0.hi, m1.lo, m1.hi
+    pub const V_M2: usize = 13; // m2.lo, m2.hi, m3.lo, m3.hi
+    pub const V_OUT0: usize = 17; // out0.lo, out0.hi, out1.lo, out1.hi
+    pub const V_CV0: usize = 21; // cv0.lo, cv0.hi, cv1.lo, cv1.hi
+    pub const MD0: usize = 25; // metadata: the counter lane …
+    pub const MD1: usize = 26; // … and the final ‖ last_node lane
+    pub const R_M0: usize = 27; // one read count per cell: the four message cells …
+    pub const R_M1: usize = 28;
+    pub const R_M2: usize = 29;
+    pub const R_M3: usize = 30;
+    pub const R_CV0: usize = 31; // … the two chaining-value cells …
+    pub const R_CV1: usize = 32;
+    pub const R_OUT0: usize = 33; // … the two output cells …
+    pub const R_OUT1: usize = 34;
+    pub const R_MD: usize = 35; // … and the metadata cell.
+    pub const RBC: usize = 36;
+    pub const N: usize = 37;
 }
 
 impl Table for Blake2sTable {
@@ -872,7 +868,7 @@ impl Table for Blake2sTable {
     }
     fn count_columns(&self) -> &'static [usize] {
         use blake2st::*;
-        &[R_M0, R_M1, R_M2, R_M3, R_CV0, R_CV1, R_OUT0, R_OUT1, RBC]
+        &[R_M0, R_M1, R_M2, R_M3, R_CV0, R_CV1, R_OUT0, R_OUT1, R_MD, RBC]
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use blake2st::*;
@@ -888,16 +884,15 @@ impl Table for Blake2sTable {
                 Col(O_M3),
                 Col(O_CV),
                 Col(O_OUT),
-                Col(MD0),
-                Col(MD1),
+                Col(O_MD),
             ],
         );
-        // Eight cell reads: four independent 128-bit message cells, the chaining
-        // value's two consecutive cells (ACV, g·ACV), then the output's two
-        // consecutive cells (AC, g·AC). Each carries its chunk's two lanes with a
-        // literal-zero top limb (`memory_128`), so the canonical embedding is
-        // proof-enforced and the zero limbs are never committed.
-        // A consecutive cell is a free ×g on the product's g-power.
+        // Nine cell reads: four independent 128-bit message cells, the chaining
+        // value's two consecutive cells (ACV, g·ACV), the output's two
+        // consecutive cells (AC, g·AC), and the metadata cell. Each carries its
+        // chunk's two lanes with a literal-zero top limb (`memory_128`), so the
+        // canonical embedding is proof-enforced and the zero limbs are never
+        // committed. A consecutive cell is a free ×g on the product's g-power.
         f.memory_128(Prod(FP, O_M0, 0), R_M0, V_M0, V_M0 + 1);
         f.memory_128(Prod(FP, O_M1, 0), R_M1, V_M0 + 2, V_M0 + 3);
         f.memory_128(Prod(FP, O_M2, 0), R_M2, V_M2, V_M2 + 1);
@@ -906,6 +901,10 @@ impl Table for Blake2sTable {
         f.memory_128(Prod(FP, O_CV, 1), R_CV1, V_CV0 + 2, V_CV0 + 3);
         f.memory_128(Prod(FP, O_OUT, 0), R_OUT0, V_OUT0, V_OUT0 + 1);
         f.memory_128(Prod(FP, O_OUT, 1), R_OUT1, V_OUT0 + 2, V_OUT0 + 3);
+        // The metadata rides the memory bus like every other operand: the read
+        // is what binds flock's counter and flag inputs, so a compile-time
+        // counter is pinned by the `SET` immediate that wrote the cell.
+        f.memory_128(Prod(FP, O_MD, 0), R_MD, MD0, MD1);
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
         use blake2st::*;
@@ -913,11 +912,11 @@ impl Table for Blake2sTable {
         let ad = |r: &Brow| blake2s_addresses(ctx.prog, r);
         ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
         ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
-        // O_M0..O_OUT are the six base addresses' offsets, from the instruction decode.
+        // O_M0..O_MD are the seven base addresses' offsets, from the instruction decode.
         ctx.cols(out, rows, O_M0, |r| ad(r).map(|a| ctx.g_at(a - r.fp)));
-        // The sixteen memory-borne flock words are the eight cells' lo/hi lanes:
-        // the four message cells, then the cv pair and the output pair. A cell's
-        // two lanes are one read, so each group of four takes two.
+        // The eighteen memory-borne flock words are the nine cells' lo/hi lanes:
+        // the four message cells, then the cv pair, the output pair and the
+        // metadata. A cell's two lanes are one read, so each group of four takes two.
         let word_pair = |c0: u32, c1: u32| {
             let (w0, w1) = (ctx.mem[c0 as usize], ctx.mem[c1 as usize]);
             [F64(w0.c0), F64(w0.c1), F64(w1.c0), F64(w1.c1)]
@@ -939,11 +938,13 @@ impl Table for Blake2sTable {
             word_pair(a[4], a[4] + 1)
         });
         ctx.cols(out, rows, MD0, |r| {
-            let md = blake2s_metadata(ctx.prog, r.pc);
+            let md = ctx.mem[ad(r)[6] as usize];
             [F64(md.c0), F64(md.c1)]
         });
         ctx.cols(out, rows, R_M0, |r| {
-            [r.ra[0], r.ra[1], r.rb[0], r.rb[1], r.rcv[0], r.rcv[1], r.rc[0], r.rc[1]]
+            [
+                r.ra[0], r.ra[1], r.rb[0], r.rb[1], r.rcv[0], r.rcv[1], r.rc[0], r.rc[1], r.rmd,
+            ]
         });
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
     }

@@ -507,11 +507,13 @@ impl FnLower<'_> {
                             od: fr::ZERO,
                             of: fr::ZERO,
                         },
+                        // Its metadata cell is one nothing writes, like its message
+                        // cells, so every traversal compresses the same input.
                         FillerOp::Blake2s => LOp::Blake2s {
                             ins: [fr::DIGEST + 2, fr::DIGEST + 3, fr::DIGEST + 4, fr::DIGEST + 5],
                             cv: fr::SCRATCH,
                             c: fr::DIGEST,
-                            metadata: F192::ZERO,
+                            md: fr::ZERO,
                         },
                     });
                 }

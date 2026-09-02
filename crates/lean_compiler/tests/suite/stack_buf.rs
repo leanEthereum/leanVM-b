@@ -101,14 +101,24 @@ def main():
     return
 ";
     let program = compile(&parse(src).expect("parse"));
+    // The metadata is a memory operand, so what carries the counter is the `SET`
+    // immediate that wrote the cell the instruction reads.
+    let md = program
+        .prog
+        .iter()
+        .find_map(|op| match op {
+            Op::Blake2s { md, .. } => Some(*md),
+            _ => None,
+        })
+        .expect("BLAKE2s instruction");
     let metadata = program
         .prog
         .iter()
         .find_map(|op| match op {
-            Op::Blake2s { metadata, .. } => Some(*metadata),
+            Op::Set { o, k } if *o == md => Some(*k),
             _ => None,
         })
-        .expect("BLAKE2s instruction");
+        .expect("the metadata cell's SET");
     assert_eq!(unpack_metadata(metadata), (u64::MAX, u32::MAX, 0));
 }
 

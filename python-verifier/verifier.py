@@ -802,14 +802,16 @@ def _jump_constraints(columns: Sequence[E]) -> tuple[E, ...]:
 
 def _flushes_blake2s() -> Flushes:
     pc, fp, cnt_bc = _cols(BLAKE2S_COLUMNS, "pc", "fp", "cnt_bc")
-    operands = _cols(BLAKE2S_COLUMNS, "o_0", "o_1", "o_2", "o_3", "o_v", "o_out", "md_0", "md_1")
+    operands = _cols(BLAKE2S_COLUMNS, "o_0", "o_1", "o_2", "o_3", "o_v", "o_out", "o_md")
     flushes = Flushes()
     flushes.state_step(pc, fp)
     flushes.bytecode(pc, cnt_bc, OP_BLAKE2S, tuple(_col(i) for i in operands))
-    # The eight cells read, as (cell, operand, offset from it): four addressed message chunks, then
-    # the consecutive chaining-value and output pairs. Each holds two q_flock limbs and a zero top.
+    # The nine cells read, as (cell, operand, offset from it): four addressed message chunks, then
+    # the consecutive chaining-value and output pairs, then the metadata cell (the byte counter and
+    # the two flags). Each holds two q_flock limbs and a zero top.
     cells = (("m0", "o_0", 0), ("m1", "o_1", 0), ("m2", "o_2", 0), ("m3", "o_3", 0),
-             ("cv0", "o_v", 0), ("cv1", "o_v", 1), ("out0", "o_out", 0), ("out1", "o_out", 1))  # fmt: skip
+             ("cv0", "o_v", 0), ("cv1", "o_v", 1), ("out0", "o_out", 0), ("out1", "o_out", 1),
+             ("md", "o_md", 0))  # fmt: skip
     for cell, operand, exponent in cells:
         address, count, lo, hi = _cols(BLAKE2S_COLUMNS, operand, f"cnt_{cell}", f"{cell}_lo", f"{cell}_hi")
         flushes.memory_cols(_prod(fp, address, exponent), count, lo, hi)
@@ -823,12 +825,12 @@ SET_COLUMNS = ("pc", "fp", "o", "k_0", "k_1", "k_2", "cnt", "cnt_bc")
 DEREF_COLUMNS = ("pc", "fp", "o1", "o2", "o3", "f_pc", "f_fp", "ptr", "v3_0", "v3_1", "v3_2",  "cnt_ptr", "cnt_target", "cnt_local", "cnt_bc",)  # fmt: skip
 JUMP_COLUMNS = ("pc", "fp", "o_c", "o_d", "o_f", "v_cond", "v_pc", "v_fp", "cnt_c", "cnt_d", "cnt_f", "cnt_bc", "w", "b",)  # fmt: skip
 BLAKE2S_COLUMNS = (
-    "pc", "fp", "o_0", "o_1", "o_2", "o_3", "o_v", "o_out",
+    "pc", "fp", "o_0", "o_1", "o_2", "o_3", "o_v", "o_out", "o_md",
     # These eighteen value limbs live in q_flock, not here: each is already a flock witness slot.
     "m0_lo", "m0_hi", "m1_lo", "m1_hi", "m2_lo", "m2_hi", "m3_lo", "m3_hi",
-    "out0_lo", "out0_hi", "out1_lo", "out1_hi", "cv0_lo", "cv0_hi", "cv1_lo", "cv1_hi", "md_0", "md_1",
+    "out0_lo", "out0_hi", "out1_lo", "out1_hi", "cv0_lo", "cv0_hi", "cv1_lo", "cv1_hi", "md_lo", "md_hi",
     # ...and the read counts, committed here like every other column.
-    "cnt_m0", "cnt_m1", "cnt_m2", "cnt_m3", "cnt_cv0", "cnt_cv1", "cnt_out0", "cnt_out1", "cnt_bc",
+    "cnt_m0", "cnt_m1", "cnt_m2", "cnt_m3", "cnt_cv0", "cnt_cv1", "cnt_out0", "cnt_out1", "cnt_md", "cnt_bc",
 )  # fmt: skip
 
 TABLES = (
@@ -844,7 +846,7 @@ TABLES = (
 # digest, the message block and the metadata. Slots 8 and 9 hold the compression's high output words, which no memory cell carries.
 BLAKE2S_SLOTS = (
     "cv0_lo", "cv0_hi", "cv1_lo", "cv1_hi", "out0_lo", "out0_hi", "out1_lo", "out1_hi", None, None,
-    "m0_lo", "m0_hi", "m1_lo", "m1_hi", "m2_lo", "m2_hi", "m3_lo", "m3_hi", "md_0", "md_1",
+    "m0_lo", "m0_hi", "m1_lo", "m1_hi", "m2_lo", "m2_hi", "m3_lo", "m3_hi", "md_lo", "md_hi",
 )  # fmt: skip
 
 TABLE_WIDTHS = tuple(t.width for t in TABLES)

@@ -776,14 +776,15 @@ impl Program {
                         pc += 1;
                     }
                 }
-                Op::Blake2s { ins, cv, out, metadata } => {
+                Op::Blake2s { ins, cv, out, md } => {
                     // Four independently-addressed 128-bit message chunks, each a
                     // single cell; the chaining value and the output each span two
-                    // consecutive cells.
+                    // consecutive cells; the metadata is one more cell.
                     let (aa0, aa1, ab0, ab1) = (fp + ins[0], fp + ins[1], fp + ins[2], fp + ins[3]);
                     let acv = fp + cv;
                     let ac = fp + out;
-                    let words = [aa0, aa1, ab0, ab1, acv, acv + 1].map(|a| m.get(a));
+                    let amd = fp + md;
+                    let words = [aa0, aa1, ab0, ab1, acv, acv + 1, amd].map(|a| m.get(a));
                     assert!(
                         words.iter().all(|w| w.c2 == 0),
                         "BLAKE2s input cell must be a canonical 128-bit embedding"
@@ -791,6 +792,7 @@ impl Program {
                     let va = [F64(words[0].c0), F64(words[0].c1), F64(words[1].c0), F64(words[1].c1)];
                     let vb = [F64(words[2].c0), F64(words[2].c1), F64(words[3].c0), F64(words[3].c1)];
                     let vcv = [F64(words[4].c0), F64(words[4].c1), F64(words[5].c0), F64(words[5].c1)];
+                    let metadata = words[6];
                     // Compress the 64 message bytes to the 32-byte result, then
                     // write it to c's two cells. No table constraint covers the
                     // digest (the relation is proven by flock, §hash_flock); the
@@ -804,6 +806,9 @@ impl Program {
                     let rb = [m.bump_access_count(ab0), m.bump_access_count(ab1)];
                     let rcv = [m.bump_access_count(acv), m.bump_access_count(acv + 1)];
                     let rc = [m.bump_access_count(ac), m.bump_access_count(ac + 1)];
+                    // Last, matching the flush order, so an md cell aliasing another
+                    // operand still pairs each read with its own count.
+                    let rmd = m.bump_access_count(amd);
                     blake2s.push(Brow {
                         pc,
                         fp,
@@ -811,6 +816,7 @@ impl Program {
                         rb,
                         rcv,
                         rc,
+                        rmd,
                         bytecode_read,
                     });
                     pc += 1;

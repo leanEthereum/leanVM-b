@@ -62,12 +62,13 @@ pub(crate) enum LOp {
     },
     /// `BLAKE2s`: the four 128-bit input chunks `ins` are addressed independently,
     /// one frame cell each. The 32-byte output occupies the two consecutive
-    /// 128-bit cells `c, c+1`.
+    /// 128-bit cells `c, c+1`; `md` is the cell holding the byte counter and the
+    /// two flags.
     Blake2s {
         ins: [Off; 4],
         cv: Off,
         c: Off,
-        metadata: F192,
+        md: Off,
     },
 }
 

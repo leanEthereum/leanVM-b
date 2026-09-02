@@ -43,11 +43,11 @@ pub(crate) struct Jrow {
     pub(crate) bytecode_read: F64,
 }
 
-/// `BLAKE2s` row: the eight per-cell memory access counts of the four
-/// message-chunk cells, the chaining value's two cells and the output's two. The
-/// addresses are `fp·g^{ins[i]}`, `fp·g^{cv}`, `fp·g^{out}` and the successors of
-/// the last two; the eighteen flock words are those cells' lanes plus the
-/// bytecode metadata immediate.
+/// `BLAKE2s` row: the nine per-cell memory access counts of the four
+/// message-chunk cells, the chaining value's two cells, the output's two and the
+/// metadata cell. The addresses are `fp·g^{ins[i]}`, `fp·g^{cv}`, `fp·g^{out}`,
+/// `fp·g^{md}` and the successors of the middle two; the eighteen flock words are
+/// those cells' lanes.
 pub(crate) struct Brow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,
@@ -55,6 +55,7 @@ pub(crate) struct Brow {
     pub(crate) rb: [F64; 2],  // … the two b input cells
     pub(crate) rcv: [F64; 2], // … the two cv input cells
     pub(crate) rc: [F64; 2],  // … the two c output cells
+    pub(crate) rmd: F64,      // … and the metadata cell
     pub(crate) bytecode_read: F64,
 }
 
