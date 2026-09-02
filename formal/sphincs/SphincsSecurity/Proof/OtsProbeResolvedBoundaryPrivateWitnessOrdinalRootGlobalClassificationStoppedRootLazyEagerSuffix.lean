@@ -13,6 +13,24 @@ namespace SphincsSecurity.Concrete.OtsProbeSimulation
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
 
+noncomputable def successfulObservedRootComparisonIndicator
+    (table : OtsSecretIndex → HashOutput) (ordinal : Nat) (target : Position) :
+    Option (ObservedCleanRunResult α) × Digest → Bool :=
+  by
+    classical
+    exact fun result ↦ decide
+      (ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        table ordinal target result.2 result.1)
+
+@[simp] theorem successfulObservedRootComparisonIndicator_eq_true_iff
+    (table : OtsSecretIndex → HashOutput) (ordinal : Nat) (target : Position)
+    (result : Option (ObservedCleanRunResult α) × Digest) :
+    successfulObservedRootComparisonIndicator table ordinal target result = true ↔
+      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        table ordinal target result.2 result.1 := by
+  classical
+  simp [successfulObservedRootComparisonIndicator]
+
 def ObservedSafeTargetPendingRel
     (target : Position) (output : HashOutput) :
     Option (ObservedCleanRunResult α) → Option (ObservedCleanRunResult α) → Prop
@@ -627,5 +645,120 @@ theorem relTriple_observedMaterializedBoundary_after_target_resolution
         values := selection.context.values.install target output })
     fuel table cache rfl
   exact safeTargetPendingLE_of_resolveDeferredPositionValue hgood hcovered resolved hresolved
+
+theorem relTriple_observedMaterializedBoundary_after_target_resolution_successful
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (output : HashOutput) (rightRoot : Digest)
+    (ordinal : Nat) (hroot : IsLayerRoot target)
+    (selection : PrivateOrdinalSelection)
+    (hgood : selection.GoodForRoots target output rightRoot ordinal)
+    (hcovered : PendingCoveredBy (selection.candidates.take ordinal) selection.context)
+    (resolved : DeferredResolution)
+    (hresolved : some resolved ∈ support
+      (resolveDeferredPositionValue target selection.context))
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (observations : List CleanProbeObservation)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (cache : SplitHashCache)
+    (hselectedHit : ∀ result : ObservedCleanRunResult (α × SplitHashCache),
+      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          table ordinal target rightRoot (some result) →
+        ∀ selected : Fin result.observations.length, selected.val = ordinal →
+          (result.observations.get selected).coordinate = .position target ∧
+            (result.observations.get selected).revealedAtProbe = false ∧
+            truncateHash output = (result.observations.get selected).candidate)
+    (hactualAvoid : ∀ result : ObservedCleanRunResult (α × SplitHashCache),
+      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          table ordinal target rightRoot (some result) →
+        ∀ earlier : Fin result.observations.length, earlier.val < ordinal →
+          (result.observations.get earlier).toProbe ≠
+            ⟨.position target, truncateHash output⟩) :
+    RelTriple
+      (observedMaterializedBoundary parameter root ftsSecret computation observations
+        (materializedDeferredState resolved.toDeferredContext) fuel table cache)
+      (observedMaterializedBoundary parameter root ftsSecret computation
+        (observations.map (installPositionValueAtProbe target output))
+        (materializedDeferredState
+          { selection.context with
+            values := selection.context.values.install target output })
+        fuel table cache)
+      (fun lazy eager ↦
+        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+            table ordinal target rightRoot lazy →
+          ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+            table ordinal target rightRoot eager) := by
+  have hbase := relTriple_observedMaterializedBoundary_after_target_resolution parameter root
+    ftsSecret target output rightRoot ordinal hroot selection hgood hcovered resolved hresolved
+    computation observations fuel table cache
+  apply relTriple_post_mono hbase
+  intro lazy eager hrelation hlazy
+  cases lazy with
+  | none =>
+      simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
+        ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
+        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hlazy
+  | some result =>
+      cases eager with
+      | none => simp [ObservedSafeTargetPendingRel] at hrelation
+      | some eagerResult =>
+          exact ObservedSafeTargetPendingRel.successfulDoomedFirstRootGoodForComparisonAt table
+            ordinal target output rightRoot result eagerResult hrelation hroot
+            (hselectedHit result hlazy) (hactualAvoid result hlazy) hlazy
+
+theorem relTriple_indicator_observedMaterializedBoundary_after_target_resolution
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (output : HashOutput) (rightRoot : Digest)
+    (ordinal : Nat) (hroot : IsLayerRoot target)
+    (selection : PrivateOrdinalSelection)
+    (hgood : selection.GoodForRoots target output rightRoot ordinal)
+    (hcovered : PendingCoveredBy (selection.candidates.take ordinal) selection.context)
+    (resolved : DeferredResolution)
+    (hresolved : some resolved ∈ support
+      (resolveDeferredPositionValue target selection.context))
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (observations : List CleanProbeObservation)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (cache : SplitHashCache)
+    (hselectedHit : ∀ result : ObservedCleanRunResult (α × SplitHashCache),
+      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          table ordinal target rightRoot (some result) →
+        ∀ selected : Fin result.observations.length, selected.val = ordinal →
+          (result.observations.get selected).coordinate = .position target ∧
+            (result.observations.get selected).revealedAtProbe = false ∧
+            truncateHash output = (result.observations.get selected).candidate)
+    (hactualAvoid : ∀ result : ObservedCleanRunResult (α × SplitHashCache),
+      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          table ordinal target rightRoot (some result) →
+        ∀ earlier : Fin result.observations.length, earlier.val < ordinal →
+          (result.observations.get earlier).toProbe ≠
+            ⟨.position target, truncateHash output⟩) :
+    RelTriple
+      ((successfulObservedRootComparisonIndicator table ordinal target ∘
+          fun observed => (observed, rightRoot)) <$>
+        observedMaterializedBoundary parameter root ftsSecret computation observations
+          (materializedDeferredState resolved.toDeferredContext) fuel table cache)
+      ((successfulObservedRootComparisonIndicator table ordinal target ∘
+          fun observed => (observed, rightRoot)) <$>
+        observedMaterializedBoundary parameter root ftsSecret computation
+          (observations.map (installPositionValueAtProbe target output))
+          (materializedDeferredState
+            { selection.context with
+              values := selection.context.values.install target output })
+          fuel table cache)
+      (fun lazy eager => lazy = true → eager = true) := by
+  have hbase := relTriple_observedMaterializedBoundary_after_target_resolution_successful
+    parameter root ftsSecret target output rightRoot ordinal hroot selection hgood hcovered
+    resolved hresolved computation observations fuel table cache hselectedHit hactualAvoid
+  apply relTriple_map
+  apply relTriple_post_mono hbase
+  intro lazy eager hrelation hlazy
+  have hlazyGood :
+      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        table ordinal target rightRoot lazy := by
+    simpa using hlazy
+  have heagerGood := hrelation hlazyGood
+  simpa using heagerGood
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

@@ -391,6 +391,58 @@ def SuccessfulObservedLazyEagerRel
       ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
         table ordinal target eager.2 eager.1
 
+theorem probEvent_successfulObservedRootComparison_eq_indicator
+    (table : OtsSecretIndex → HashOutput) (ordinal : Nat) (target : Position)
+    (run : ProbComp
+      (Option (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest)) :
+    Pr[fun result ↦
+        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          table ordinal target result.2 result.1 | run] =
+      Pr[= true |
+        successfulObservedRootComparisonIndicator table ordinal target <$> run] := by
+  calc
+    _ = Pr[fun result ↦
+          successfulObservedRootComparisonIndicator table ordinal target result = true | run] := by
+      apply OracleComp.probEvent_congr' (fun result _ ↦ by simp) rfl
+    _ = _ := by
+      rw [← probEvent_eq_eq_probOutput, probEvent_map]
+      rfl
+
+theorem probEvent_observedRootComparison_le_resolvedEager_of_indicator
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (q : Nat) (target : Position)
+    (hrel : RelTriple
+      (successfulObservedRootComparisonIndicator table ordinal target <$> (do
+        let observed ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret
+          (2 * q) table
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        pure (observed, rightRoot)))
+      (successfulObservedRootComparisonIndicator table ordinal target <$>
+        resolvedEagerObservedRootComparisonExperimentAfterTable adversary parameter ftsSecret
+          target (2 * q) table)
+      (fun lazy eager ↦ lazy = true → eager = true)) :
+    Pr[fun result : Option
+          (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest ↦
+        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          table ordinal target result.2 result.1 | do
+      let observed ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret
+        (2 * q) table
+      let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+      pure (observed, rightRoot)] ≤
+      Pr[fun result ↦
+        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          table ordinal target result.2 result.1 |
+        resolvedEagerObservedRootComparisonExperimentAfterTable adversary parameter ftsSecret
+          target (2 * q) table] := by
+  rw [probEvent_successfulObservedRootComparison_eq_indicator,
+    probEvent_successfulObservedRootComparison_eq_indicator]
+  rw [← probEvent_eq_eq_probOutput, ← probEvent_eq_eq_probOutput]
+  apply probEvent_le_of_relTriple hrel
+  intro lazy eager hrelation hlazy
+  exact hrelation hlazy
+
 theorem probEvent_observedRootComparison_le_resolvedEager
     (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
     (table : OtsSecretIndex → HashOutput)
