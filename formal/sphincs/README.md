@@ -512,6 +512,8 @@ The probe-free cases of that induction are now sealed behind typed wrappers. Uni
 
 The terminal pure branch of the adaptive Boolean lift is now closed as well. A successful first hidden hit cannot arise from a computation that returns immediately when every carried observation is hit-free, so the real indicator couples to constant false without inspecting the deferred sampler. The selected hash boundary remains the only unsealed constructor of the local induction.
 
+The chronological cutoff is now explicit in the Boolean lift. If the chosen ordinal is already in the carried hit-free observation prefix, the real successful indicator is impossible for every remaining computation. The direct delayed interpreter also has checked equations for both hash cases: the first selected candidate hands the untouched hash query and suffix to the target resolver, while a nonselected candidate executes the retained step and recurses. These equations leave no hidden reduction of the current query at the selection boundary.
+
 Two places a proof can go wrong, both found by attacking the claim rather than by reading it:
 
 - **A strong forgery needs no chain inversion.** `Ver` does not check that the counter is the least admissible one, so a second `c'` with `Enc(P,lay,tau,e,M,c') = x` reuses the chain values verbatim and verifies. Since the codeword fixes the digest, that is one `2^-128` hit per query and it is harmless, but it is a branch of its own: the one-time signature is unforgeable on a *new* message by incomparability, and unforgeable on the *signed* message only by collision resistance at `tw_enc`.

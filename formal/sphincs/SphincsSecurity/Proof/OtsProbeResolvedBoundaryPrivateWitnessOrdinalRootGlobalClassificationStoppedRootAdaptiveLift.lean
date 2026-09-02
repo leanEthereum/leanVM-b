@@ -41,6 +41,68 @@ theorem relTriple_indicator_observedMaterializedBoundary_pure_false
   exact (hnoHit (observations.get first) (List.get_mem observations first) hfirstHit).elim
 
 set_option maxRecDepth 100000 in
+theorem relTriple_indicator_observedMaterializedBoundary_false_of_ordinal_lt
+    (ordinal : Nat) (parameter : PublicParameter) (publicRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (table : OtsSecretIndex → HashOutput) (target : Position)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (observations : List CleanProbeObservation)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat) (cache : SplitHashCache)
+    (other : ProbComp Bool)
+    (hordinal : ordinal < observations.length)
+    (hnoHit : ∀ observation ∈ observations, ¬observation.ExistingHiddenHit) :
+    RelTriple
+      ((successfulObservedRootComparisonIndicator table ordinal target ∘
+          fun observed ↦ (observed, rightRoot)) <$>
+        observedMaterializedBoundary parameter publicRoot ftsSecret computation observations
+          state fuel table cache)
+      other SuccessfulObservedIndicatorRel := by
+  let real :=
+    (successfulObservedRootComparisonIndicator table ordinal target ∘
+        fun observed ↦ (observed, rightRoot)) <$>
+      observedMaterializedBoundary parameter publicRoot ftsSecret computation observations
+        state fuel table cache
+  have hbase := relTriple_true real other
+  have hsupported :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+      (fun result ↦ result ∈ support real) (fun _ hresult ↦ hresult)
+  apply relTriple_post_mono hsupported
+  intro realResult _otherResult hsupport htrue
+  have hrealSupport : true ∈ support real := by simpa [htrue] using hsupport.2
+  unfold real at hrealSupport
+  rw [support_map] at hrealSupport
+  obtain ⟨observed, hobserved, hindicator⟩ := hrealSupport
+  have hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      table ordinal target rightRoot observed := by
+    change successfulObservedRootComparisonIndicator table ordinal target
+      (observed, rightRoot) = true at hindicator
+    rw [successfulObservedRootComparisonIndicator_eq_true_iff] at hindicator
+    exact hindicator
+  cases observed with
+  | none =>
+      simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
+        ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
+        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hgood
+  | some result =>
+      obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩, _hdoomed,
+        _selected, _hselected, hfirst, _hroot⟩, _hposition⟩, _hcomparison⟩ := hgood
+      obtain ⟨first, hfirstOrdinal, hfirstHit, _hbefore⟩ := hfirst
+      have hprefix := observations_prefix_of_mem_observedMaterializedBoundary parameter
+        publicRoot ftsSecret computation observations state fuel table cache result hobserved
+      let initial : Fin observations.length := ⟨ordinal, hordinal⟩
+      have hresultOrdinal : ordinal < result.observations.length :=
+        hordinal.trans_le hprefix.length_le
+      let resultIndex : Fin result.observations.length := ⟨ordinal, hresultOrdinal⟩
+      have hfirstEq : first = resultIndex := Fin.ext hfirstOrdinal
+      subst first
+      have hget : observations[initial.val] = result.observations[resultIndex.val] :=
+        hprefix.getElem hordinal
+      have hinitialHit : (observations.get initial).ExistingHiddenHit := by
+        simpa [ExistingHiddenHitAtOrdinal, initial, resultIndex, ← hget] using hfirstHit
+      exact (hnoHit (observations.get initial) (List.get_mem observations initial)
+        hinitialHit).elim
+
+set_option maxRecDepth 100000 in
 theorem relTriple_observed_finishDirectDelayed_of_firstStopped
     (ordinal : Nat) (parameter : PublicParameter) (publicRoot rightRoot : Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)

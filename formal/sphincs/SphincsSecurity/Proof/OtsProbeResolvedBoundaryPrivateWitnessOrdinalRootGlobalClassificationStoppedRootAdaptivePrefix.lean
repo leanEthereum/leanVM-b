@@ -354,4 +354,80 @@ theorem directDelayedSelectedRootIndicator_eq_selected
       rw [directDelayedSelectedRootIndicator, OracleComp.construct_query_bind]
       simp only [hselected, ↓reduceDIte]
 
+theorem directDelayedSelectedRootIndicator_hash_eq_selected
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (table : OtsSecretIndex → HashOutput) (target : Position) (rightRoot : Digest)
+    (input : HashInput)
+    (next : HashOutput → OracleComp (OracleWorld + SigningSpec) α)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (hbefore : ¬ordinal < snapshots.length)
+    (hselected : ordinal <
+      (appendPlannedSnapshot snapshots
+        (rootAwareCandidateForPlan? parameter input
+          (purePlanProbingHashQuery parameter input context.state)) context).length) :
+    directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target rightRoot
+        (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+          (Sum.inl (Sum.inr input))) >>= next)
+        snapshots observations context fuel cache =
+      delayedSelectedRootIndicator ordinal parameter root ftsSecret table target rightRoot
+        (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+          (Sum.inl (Sum.inr input))) >>= next)
+        observations
+        ⟨((appendPlannedSnapshot snapshots
+            (rootAwareCandidateForPlan? parameter input
+              (purePlanProbingHashQuery parameter input context.state)) context).get
+              ⟨ordinal, hselected⟩).probe,
+          ((appendPlannedSnapshot snapshots
+            (rootAwareCandidateForPlan? parameter input
+              (purePlanProbingHashQuery parameter input context.state)) context).get
+              ⟨ordinal, hselected⟩).context,
+          (appendPlannedSnapshot snapshots
+            (rootAwareCandidateForPlan? parameter input
+              (purePlanProbingHashQuery parameter input context.state)) context).map
+                PlannedProbeSnapshot.toProbe⟩ fuel cache := by
+  rw [directDelayedSelectedRootIndicator, OracleComp.construct_query_bind]
+  simp only [hbefore, ↓reduceDIte]
+  exact dif_pos hselected
+
+theorem directDelayedSelectedRootIndicator_hash_eq_not_selected
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (table : OtsSecretIndex → HashOutput) (target : Position) (rightRoot : Digest)
+    (input : HashInput)
+    (next : HashOutput → OracleComp (OracleWorld + SigningSpec) α)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (hbefore : ¬ordinal < snapshots.length)
+    (hselected : ¬ordinal <
+      (appendPlannedSnapshot snapshots
+        (rootAwareCandidateForPlan? parameter input
+          (purePlanProbingHashQuery parameter input context.state)) context).length) :
+    directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target rightRoot
+        (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+          (Sum.inl (Sum.inr input))) >>= next)
+        snapshots observations context fuel cache =
+      runDirectResolvedWitnessFromTable context fuel table
+          ((probingHashQueryAfterPlan parameter input
+            (purePlanProbingHashQuery parameter input context.state)).run cache) >>=
+        finishDirectDelayedSelectedRootIndicator
+          (canonicalizeDirectDelayedSelectedRootIndicator table
+            (fun nextContext remaining value laterSnapshots laterObservations =>
+              directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+                rightRoot (next value.1) laterSnapshots laterObservations nextContext remaining
+                value.2))
+          (appendPlannedSnapshot snapshots
+            (rootAwareCandidateForPlan? parameter input
+              (purePlanProbingHashQuery parameter input context.state)) context)
+          (observationsAfterCandidate observations
+            (materializedDeferredState context)
+            (rootAwareCandidateForPlan? parameter input
+              (purePlanProbingHashQuery parameter input context.state))) := by
+  rw [directDelayedSelectedRootIndicator, OracleComp.construct_query_bind]
+  simp only [hbefore, ↓reduceDIte]
+  exact dif_neg hselected
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
