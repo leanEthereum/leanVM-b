@@ -295,14 +295,13 @@ DEFER_STMT_A_VALUE = BYTECODE_VARS + 1 + 2 * K_LOG
 DEFER_STMT_B_VALUE = BYTECODE_VARS + 2 + 2 * K_LOG
 AGG_SEED_0 = AGG_SEED_0_PLACEHOLDER
 AGG_SEED_1 = AGG_SEED_1_PLACEHOLDER
-# The statement digest's preimage: a 32-byte domain tag, the STMT_HEADER header
-# values as the 16-byte cells they already are (the seed and the signer-set digest,
-# which itself binds the epoch groups and every count), then the deferred cells'
-# tower limbs, two to a cell and four cells to a 64-byte block.
-STMT_TAG_0 = STMT_TAG_0_PLACEHOLDER
-STMT_TAG_1 = STMT_TAG_1_PLACEHOLDER
+# The statement digest's preimage: the STMT_HEADER header values as the 16-byte
+# cells they already are (the seed and the signer-set digest, which itself binds
+# the epoch groups and every count), then the deferred cells' tower limbs, two to
+# a cell and four cells to a 64-byte block. No domain tag: the seed leads, and it
+# binds this bytecode and flock's R1CS.
 STMT_HEADER = STMT_HEADER_PLACEHOLDER
-STMT_DEFER_OFF = 2 + STMT_HEADER
+STMT_DEFER_OFF = STMT_HEADER
 STMT_ODD = STMT_ODD_PLACEHOLDER
 STMT_PAIRS = STMT_PAIRS_PLACEHOLDER
 STMT_PAD_CELLS = STMT_PAD_CELLS_PLACEHOLDER
@@ -2576,12 +2575,10 @@ def statement_digest(seed_0, seed_1, signers_hash, defer):
     # element, so two fill three cells as (s0,s1) (s2,t0) (t1,t2), each top limb
     # derived from the two hinted below it and each pack proving its lanes in K.
     cells = StackBuf(4 * STMT_BLOCKS)
-    cells[0] = STMT_TAG_0
-    cells[1] = STMT_TAG_1
-    cells[2] = seed_0  # the STMT_HEADER header cells
-    cells[3] = seed_1
-    cells[4] = signers_hash[1]
-    cells[5] = signers_hash[GEN]
+    cells[0] = seed_0  # the STMT_HEADER header cells
+    cells[1] = seed_1
+    cells[2] = signers_hash[1]
+    cells[3] = signers_hash[GEN]
     for p in unroll(0, STMT_PAIRS):
         s = defer[GEN ** (2 * p)]
         if const(2 * p + 1 == DEFER_STMT_CELLS):

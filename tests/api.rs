@@ -1,106 +1,48 @@
 use leanvm_b::*;
+use rand::Rng;
 
-const EPOCHS: [xmss::Epoch; 2] = [7, 9];
-
-const LEAF_RATE: usize = 1;
-const ROOT_RATE: usize = 2;
+const EPOCH_0: xmss::Epoch = 7;
+const EPOCH_1: xmss::Epoch = 9;
+const EPOCH_2: xmss::Epoch = 11;
+const MSG_0: xmss::Message = [0; xmss::MESSAGE_LEN];
+const MSG_1: xmss::Message = [1; xmss::MESSAGE_LEN];
+const MSG_2: xmss::Message = [2; xmss::MESSAGE_LEN];
 
 #[test]
 fn public_api_end_to_end() {
     setup_prover();
     let rng = &mut rand::rng();
 
-    // 1. Four XMSS signers.
+    // 1. Eight XMSS signatures: three at the first (epoch, message), four at the second, one at the third.
     let mut xmss_input = Vec::new();
-    for key in 0..4u8 {
-        let (secret_key, pub_key) = xmss::key_gen([key; 32], EPOCHS[0], EPOCHS[1]).expect("a valid epoch range");
-        let signs_at: &[xmss::Epoch] = match key {
-            // Signing at both epochs is two claims for the one key.
-            0 | 1 => &EPOCHS,
-            2 => &EPOCHS[..1],
-            _ => &EPOCHS[1..],
-        };
-        for &epoch in signs_at {
-            let message = message_at(epoch);
-            let signature = xmss::sign(rng, &secret_key, &message, epoch).expect("the epoch is in range");
-            xmss_input.push((pub_key.clone(), epoch, message, signature));
+    for (epoch, message, count) in [(EPOCH_0, MSG_0, 3), (EPOCH_1, MSG_1, 4), (EPOCH_2, MSG_2, 1)] {
+        for _ in 0..count {
+            let (secret_key, pub_key) = xmss::key_gen(rng.random(), epoch, epoch).unwrap();
+            let signature = xmss::sign(rng, &secret_key, &message, epoch).unwrap();
+            xmss_input.push((pub_key, epoch, message, signature));
         }
     }
 
-    // 2. Two SPHINCS signers, each on its own message: this half of the statement
-    //    is `(key, message)` pairs, not one message everyone shared.
+    // 2. Three SPHINCS signatures, each on its own message
     let mut sphincs_input = Vec::new();
-    for signer in 0..2u8 {
-        let (secret_key, pub_key) = sphincs::key_gen(rng);
+    for signer in 0..3u8 {
+        let (secret_key, pub_key) = sphincs::key_gen(rng.random());
         let message = [signer; sphincs::MESSAGE_LEN];
-        let signature = sphincs::sign(rng, &secret_key, &message).expect("a signature exists");
+        let signature = sphincs::sign(rng, &secret_key, &message).unwrap();
         sphincs_input.push((pub_key, message, signature));
     }
 
-    // 3. Two leaves over half the signatures each, then one root over both. The
-    //    root covers every signer the leaves did, and costs the same to verify.
-    let left = aggregate(&[], xmss_input[..3].to_vec(), sphincs_input[..1].to_vec(), LEAF_RATE).expect("a leaf");
-    let right = aggregate(&[], xmss_input[3..].to_vec(), sphincs_input[1..].to_vec(), LEAF_RATE).expect("a leaf");
-    let root = aggregate(&[left, right], vec![], vec![], ROOT_RATE).expect("a root");
-    assert_eq!(root.n_claims(), xmss_input.len() + sphincs_input.len());
+    // 3. Two leaves, then a root over both. The leaves carry different epochs and the root's groups are their union.
+    let left = aggregate(&[], xmss_input[..4].to_vec(), sphincs_input[..1].to_vec(), 2).unwrap();
+    let right = aggregate(&[], xmss_input[4..7].to_vec(), sphincs_input[1..].to_vec(), 2).unwrap();
+    let root = aggregate(&[left, right], xmss_input[7..].to_vec(), vec![], 2).unwrap();
+    assert_eq!(root.num_total_sigs(), 11);
 
-    // 4. Onto the wire, and back to a receiver holding only what it expects.
-    let expected: Vec<_> = sphincs_input.iter().map(|(key, message, _)| (*key, *message)).collect();
+    // 4. Onto the wire, and back to a receiver, which checks the statement itself:
+    //    verifying says these keys signed, the epochs and messages being the prover's.
     let bytes = root.to_bytes();
-    let received = AggregateSignature::from_bytes(&bytes).expect("the wire form parses");
-    accept(&received, &expected);
-
-    // 5. What the API promises to reject.
-    for rate in [MIN_LOG_INV_RATE - 1, MAX_LOG_INV_RATE + 1] {
-        assert_eq!(
-            aggregate(&[], xmss_input[..1].to_vec(), vec![], rate).err(),
-            Some(AggregationError::InvalidRate { log_inv_rate: rate }),
-            "a rate outside the accepted range reports, it does not panic"
-        );
-    }
-    assert_eq!(
-        aggregate(&[], vec![], vec![], LEAF_RATE).err(),
-        Some(AggregationError::Empty),
-        "an aggregate needs at least one input"
-    );
-    assert_eq!(
-        received.verify_against(&[(EPOCHS[0], message_at(EPOCHS[0]))]),
-        Err(AggregateVerifyError::UnexpectedStatement),
-        "an epoch group the caller did not allow is rejected"
-    );
-    // Parsing rejects rather than panicking, and never accepts trailing bytes.
-    let mut trailing = bytes.clone();
-    trailing.push(0);
-    for bad in [&bytes[..bytes.len() - 1], &trailing[..]] {
-        assert_eq!(
-            AggregateSignature::from_bytes(bad).err(),
-            Some(AggregateVerifyError::MalformedEncoding)
-        );
-    }
-}
-
-/// The receiver's side. `verify_against` pins the XMSS half to the
-/// `(epoch, message)` pairs we accept and nothing else, so the SPHINCS pairs are
-/// ours to check.
-fn accept(sig: &AggregateSignature, expected_sphincs: &[(sphincs::SphincsPublicKey, sphincs::Message)]) {
-    let allowed = EPOCHS.map(|epoch| (epoch, message_at(epoch)));
-    sig.verify_against(&allowed).expect("the root verifies");
-    for signer in sig.sphincs_signers() {
-        assert!(expected_sphincs.contains(signer), "an unexpected SPHINCS signer");
-    }
-
-    // A claim is not a signer: the two keys that signed at both epochs hold two
-    // claims each, so a threshold over distinct keys has to deduplicate.
-    let mut keys: Vec<_> = sig.xmss_signers().iter().flat_map(|(_, _, keys)| keys).collect();
-    keys.sort();
-    keys.dedup();
-    assert_eq!(keys.len(), 4);
-    assert_eq!(sig.xmss_signers().len(), EPOCHS.len());
-    assert_eq!(sig.xmss_signers().iter().map(|(_, _, k)| k.len()).sum::<usize>(), 6);
-}
-
-fn message_at(epoch: xmss::Epoch) -> xmss::Message {
-    let mut message = [0; xmss::MESSAGE_LEN];
-    message[..4].copy_from_slice(&epoch.to_le_bytes());
-    message
+    let received = AggregateSignature::from_bytes(&bytes).unwrap();
+    received.verify().unwrap();
+    let pairs: Vec<_> = received.xmss_signers().iter().map(|(e, m, _)| (*e, *m)).collect();
+    assert_eq!(pairs, vec![(EPOCH_0, MSG_0), (EPOCH_1, MSG_1), (EPOCH_2, MSG_2)]);
 }

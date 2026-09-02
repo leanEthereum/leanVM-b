@@ -66,14 +66,13 @@ pub type XmssGroup = (xmss::Epoch, xmss::Message, Vec<XmssPublicKey>);
 /// the table sumcheck settles, so no framework block can raise one at `zeta`.
 const VALCOL_FRAMEWORK: &str = "a framework block must not reference a virtual value column";
 const RECURSION_AGG_LABEL: &[u8] = b"leanvm-b/recursion-aggregation/v1";
-const RECURSION_STATEMENT_LABEL: &[u8] = b"leanvm-b/recursive-statement/v3";
 const SIGNERS_LABEL: &[u8] = b"leanvm-b/aggregation-signers/v1";
 
 /// The most earlier aggregates one [`aggregate`] call can take, so the arity of
 /// an aggregation tree.
 pub const MAX_CHILDREN: usize = 16;
 
-/// The cap on [`AggregateSignature::n_claims`], both schemes together, counting
+/// The cap on [`AggregateSignature::num_total_sigs`], both schemes together, counting
 /// the coverage table's duplicate slots. Exclusive: exactly this many is already
 /// too many.
 ///
@@ -313,19 +312,10 @@ impl DeferredClaim {
 /// count. Fed to the guest as `STMT_HEADER`, so the two cannot drift.
 const STATEMENT_HEADER: usize = 4;
 
-/// A 32-byte domain tag: the label, zero-padded. A plain BLAKE2s separates in
-/// the message, not in a custom IV, so any BLAKE2s reproduces the digest.
-fn label_tag(label: &[u8]) -> [u8; 32] {
-    let mut tag = [0u8; 32];
-    tag[..label.len()].copy_from_slice(label);
-    tag
-}
-
-/// A plain BLAKE2s over that tag then a lane stream, zero-filled to a whole
-/// 64-byte block: what the guest gets by streaming four 128-bit cells a block.
-fn tagged_hash(label: &[u8], lanes: impl Iterator<Item = u64>) -> [F192; 2] {
-    let mut bytes = label_tag(label).to_vec();
-    bytes.extend(lanes.flat_map(u64::to_le_bytes));
+/// A plain BLAKE2s over a lane stream, zero-filled to a whole 64-byte block:
+/// what the guest gets by streaming four 128-bit cells a block.
+fn lane_hash(lanes: impl Iterator<Item = u64>) -> [F192; 2] {
+    let mut bytes: Vec<u8> = lanes.flat_map(u64::to_le_bytes).collect();
     bytes.resize(bytes.len().next_multiple_of(64), 0);
     pack_hash_state(&primitives::hash::hash(&bytes))
 }
@@ -336,9 +326,12 @@ fn tagged_hash(label: &[u8], lanes: impl Iterator<Item = u64>) -> [F192; 2] {
 /// each child's `(epoch, message)` groups, bound by the signer-set digest,
 /// onto its parent's list.
 ///
-/// Fixed-length preimage, so a plain BLAKE2s: the tag, the header as the
-/// canonical cells it already is (two lanes each, whence the assert, the guest
-/// being unable to hash a third), then all three lanes of each deferred cell.
+/// Fixed-length preimage, so a plain BLAKE2s, with no domain tag of its own: the
+/// header leads with the environment digest, which binds this bytecode and
+/// flock's R1CS and so already separates the preimage from every other use of
+/// BLAKE2s here. The header is hashed as the canonical cells it already is (two
+/// lanes each, whence the assert, the guest being unable to hash a third), then
+/// all three lanes of each deferred cell.
 fn statement_digest(signers_hash: [F192; 2], defer: &DeferredClaim) -> [F192; 2] {
     let seed = lean_vm::cpu::fs_seed(unified_guest());
     let header = [seed[0], seed[1], signers_hash[0], signers_hash[1]];
@@ -351,10 +344,7 @@ fn statement_digest(signers_hash: [F192; 2], defer: &DeferredClaim) -> [F192; 2]
         assert_eq!(x.c2, 0, "a header value is a canonical cell");
         [x.c0, x.c1]
     });
-    tagged_hash(
-        RECURSION_STATEMENT_LABEL,
-        head.chain(cells.iter().flat_map(|x| [x.c0, x.c1, x.c2])),
-    )
+    lane_hash(head.chain(cells.iter().flat_map(|x| [x.c0, x.c1, x.c2])))
 }
 
 /// The deferred-claim data the guest binds to the outer public input: the outer
@@ -380,7 +370,9 @@ struct DeferredSubproof {
 /// The two lists are everything the aggregate covers, signed directly into it or
 /// carried up from one below, and separate because the proof says which scheme
 /// verified which key (the module docs give the coverage argument). Until
-/// [`Self::verify_against`] returns `Ok` they are claims, not attestation.
+/// [`Self::verify`] returns `Ok` they are claims, not attestation, and even then
+/// the epochs and messages are the prover's, so a caller that reads either list
+/// as attestation of something must compare it against what it expected.
 ///
 /// **Neither length counts signers, only claims.** One key may appear in several
 /// XMSS groups or under several SPHINCS messages, so a committee threshold has
@@ -408,8 +400,6 @@ pub enum AggregateVerifyError {
     MalformedClaim,
     /// The bytes are not a valid encoding of an aggregate.
     MalformedEncoding,
-    /// The aggregate claims an `(epoch, message)` pair the caller did not allow.
-    UnexpectedStatement,
     /// The snark itself did not verify.
     Snark(lean_vm::cpu::CpuError),
 }
@@ -446,9 +436,6 @@ impl std::fmt::Display for AggregateVerifyError {
             Self::MalformedSignerSet => write!(f, "malformed signer set"),
             Self::MalformedClaim => write!(f, "malformed deferred claim"),
             Self::MalformedEncoding => write!(f, "not a valid aggregate encoding"),
-            Self::UnexpectedStatement => {
-                write!(f, "the aggregate claims an (epoch, message) pair that was not allowed")
-            }
             Self::Snark(e) => write!(f, "the snark did not verify: {e:?}"),
         }
     }
@@ -557,7 +544,7 @@ impl AggregateSignature {
     /// one per message it signed, and an XMSS key one per epoch it signed at
     /// (see the notes on the two lists). A caller that wants signers has to
     /// deduplicate by key itself.
-    pub fn n_claims(&self) -> usize {
+    pub fn num_total_sigs(&self) -> usize {
         self.xmss_signers.iter().map(|(_, _, keys)| keys.len()).sum::<usize>() + self.sphincs_signers.len()
     }
 
@@ -571,7 +558,7 @@ impl AggregateSignature {
     }
 
     /// Parsing does NOT verify: the proof is untouched, only shapes are checked.
-    /// Call [`Self::verify_against`] before believing any of it.
+    /// Call [`Self::verify`] before believing any of it.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, AggregateVerifyError> {
         let (keys, core): (WireKeys, WireCore) = wire()
             .deserialize(bytes)
@@ -623,33 +610,6 @@ impl AggregateSignature {
         })
     }
 
-    /// Verify the aggregate, pinning the XMSS half's statement to what the
-    /// caller expects: every group's `(epoch, message)` pair must be one of
-    /// `allowed`.
-    ///
-    /// Prefer this to [`Self::verify`]. The prover supplies the epochs and
-    /// messages along with everything else, so a bare `verify` establishes
-    /// only that these signers signed *this object's* statement: an aggregate
-    /// over the same keys from different epochs, or over different messages,
-    /// verifies just as well.
-    ///
-    /// **This pins the XMSS half only.** Each SPHINCS claim carries its own
-    /// message, and no argument here constrains those: a caller reading
-    /// `sphincs_signers` as attestation of anything must compare each
-    /// `(key, message)` pair against what it expected, and must not read
-    /// [`Self::n_claims`] as a signer count (a key may also claim once per
-    /// allowed XMSS pair).
-    pub fn verify_against(&self, allowed: &[(xmss::Epoch, xmss::Message)]) -> Result<(), AggregateVerifyError> {
-        if self
-            .xmss_signers
-            .iter()
-            .any(|(epoch, message, _)| !allowed.contains(&(*epoch, *message)))
-        {
-            return Err(AggregateVerifyError::UnexpectedStatement);
-        }
-        self.verify()
-    }
-
     /// Verify the aggregate's internal consistency: the signer set is well
     /// formed, the three deferred fixed-polynomial claims hold at their
     /// transmitted points, and the VM proof satisfies the statement built from
@@ -657,9 +617,10 @@ impl AggregateSignature {
     ///
     /// This says "every key in `xmss_signers` signed its group's message at its
     /// group's epoch, and every `(key, message)` in `sphincs_signers` is a valid
-    /// SPHINCS signature", with the epochs and messages chosen by
-    /// whoever produced the aggregate. Use [`Self::verify_against`] unless the caller has already
-    /// pinned those some other way.
+    /// SPHINCS signature", with the epochs and messages chosen by whoever
+    /// produced the aggregate: an aggregate over the same keys at different
+    /// epochs, or under different messages, verifies just as well. A caller that
+    /// expects particular pairs has to check the two lists against them.
     pub fn verify(&self) -> Result<(), AggregateVerifyError> {
         check_signer_set(&self.xmss_signers, &self.sphincs_signers)?;
         // Discharging the deferred claims IS recomputing them: their values have
@@ -1892,6 +1853,9 @@ fn push_sphincs_hints(
 /// IMPORTANT:
 /// - `aggregate` should not be called more than once at a time in parallel per process.
 /// - Raw signatures are assumed valid (otherwise `aggregate` will panic).
+///
+/// XMSS Performance: it is optimized for a small set of different (epoch, message), and many XMSS
+/// sharing each such pair.
 pub fn aggregate(
     children: &[AggregateSignature],
     raw_xmss: Vec<(XmssPublicKey, xmss::Epoch, xmss::Message, XmssSignature)>,
@@ -2712,12 +2676,9 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     let agg_state = pack_state(FiatShamirState::from_label(RECURSION_AGG_LABEL).state());
     ps("AGG_SEED_0", dsl_u128(agg_state[0]).to_string());
     ps("AGG_SEED_1", dsl_u128(agg_state[1]).to_string());
-    let tag = label_tag(RECURSION_STATEMENT_LABEL);
-    ps("STMT_TAG_0", dsl_u128(pack_16_bytes(&tag[..16])).to_string());
-    ps("STMT_TAG_1", dsl_u128(pack_16_bytes(&tag[16..])).to_string());
     let defer_cells = kbc + log2_bc_cols + 1 + 2 * flock::hash::K_LOG + 2;
     ps("STMT_HEADER", STATEMENT_HEADER.to_string());
-    let (off, pairs) = (2 + STATEMENT_HEADER, defer_cells.div_ceil(2));
+    let (off, pairs) = (STATEMENT_HEADER, defer_cells.div_ceil(2));
     let blocks = (off + 3 * pairs).div_ceil(4);
     ps("STMT_ODD", (defer_cells % 2).to_string());
     ps("STMT_PAIRS", pairs.to_string());
@@ -2843,8 +2804,8 @@ fn compile_guest(kbc: usize) -> Program {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::SeedableRng;
     use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
 
     use crate::signers_cache::{
         XMSS_EPOCH_A, XMSS_EPOCH_B, get_signers, get_signers_at, get_sphincs_signers, message, message_for,
@@ -2974,17 +2935,8 @@ mod tests {
         lean_vm::init_prover_pool();
         let aggregate = prove_leaf(&get_signers(1));
         aggregate.verify().expect("verifies");
-        aggregate
-            .verify_against(&[(XMSS_EPOCH_A, message())])
-            .expect("verifies against its statement");
-        assert_eq!(
-            aggregate.verify_against(&[(XMSS_EPOCH_A + 1, message())]),
-            Err(AggregateVerifyError::UnexpectedStatement)
-        );
-        assert_eq!(
-            aggregate.verify_against(&[(XMSS_EPOCH_A, message_for(XMSS_EPOCH_B))]),
-            Err(AggregateVerifyError::UnexpectedStatement)
-        );
+        assert_eq!(aggregate.xmss_signers[0].0, XMSS_EPOCH_A);
+        assert_eq!(aggregate.xmss_signers[0].1, message());
     }
 
     /// An odd XMSS count, so its digest chain takes its odd-key-out branch and
@@ -3045,7 +2997,7 @@ mod tests {
     fn aggregate_one_key_two_messages() {
         lean_vm::init_prover_pool();
         let mut rng = StdRng::seed_from_u64(77);
-        let (secret_key, public_key) = sphincs::key_gen(&mut rng);
+        let (secret_key, public_key) = sphincs::key_gen(rng.random());
         let raw: Vec<RawSphincs> = [3u8, 9]
             .into_iter()
             .map(|tag| {
@@ -3087,9 +3039,7 @@ mod tests {
         let mut right_raw = at_epoch(&at_a[2..], XMSS_EPOCH_A);
         right_raw.extend(at_epoch(&at_b, XMSS_EPOCH_B));
         let right = aggregate(&[], right_raw, vec![], LOG_INV_RATE).expect("right");
-        right
-            .verify_against(&[(XMSS_EPOCH_A, message()), (XMSS_EPOCH_B, message_for(XMSS_EPOCH_B))])
-            .expect("the two-epoch leaf verifies");
+        right.verify().expect("the two-epoch leaf verifies");
         // A claim at epoch A under B's message conflicts with `left`'s group:
         // within an aggregate the message is a function of the epoch.
         let (pk, _, _, sig) = at_epoch(&at_a[3..], XMSS_EPOCH_A).remove(0);
@@ -3104,18 +3054,9 @@ mod tests {
             Some(AggregationError::ConflictingMessages)
         );
         let node = aggregate(&[left, right], vec![], vec![], LOG_INV_RATE).expect("node");
-        node.verify_against(&[(XMSS_EPOCH_A, message()), (XMSS_EPOCH_B, message_for(XMSS_EPOCH_B))])
-            .expect("the two-epoch node verifies");
-        assert_eq!(
-            node.verify_against(&[(XMSS_EPOCH_A, message())]),
-            Err(AggregateVerifyError::UnexpectedStatement),
-            "an epoch outside the allowed set is refused"
-        );
-        assert_eq!(
-            node.verify_against(&[(XMSS_EPOCH_A, message()), (XMSS_EPOCH_B, message())]),
-            Err(AggregateVerifyError::UnexpectedStatement),
-            "the right epoch under the wrong message is refused"
-        );
+        node.verify().expect("the two-epoch node verifies");
+        let messages: Vec<xmss::Message> = node.xmss_signers.iter().map(|(_, message, _)| *message).collect();
+        assert_eq!(messages, vec![message(), message_for(XMSS_EPOCH_B)]);
         let epochs: Vec<xmss::Epoch> = node.xmss_signers.iter().map(|(epoch, _, _)| *epoch).collect();
         assert_eq!(epochs, vec![XMSS_EPOCH_A, XMSS_EPOCH_B]);
         assert_eq!(node.xmss_signers[0].2.len(), 4);

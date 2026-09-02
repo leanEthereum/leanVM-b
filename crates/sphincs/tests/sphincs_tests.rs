@@ -6,7 +6,7 @@ fn test_message() -> Message {
 }
 
 fn test_key(seed: u64) -> (SphincsSecretKey, SphincsPublicKey) {
-    key_gen(&mut StdRng::seed_from_u64(seed))
+    key_gen(StdRng::seed_from_u64(seed).random())
 }
 
 #[test]

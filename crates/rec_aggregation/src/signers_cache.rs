@@ -15,8 +15,8 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use primitives::{pretty_f64, pretty_integer};
-use rand::SeedableRng;
 use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use xmss::*;
 
 type CachedSignature = (XmssPublicKey, XmssSignature);
@@ -203,7 +203,7 @@ const SPHINCS_RECORD: usize = sphincs::PUB_KEY_SIZE + sphincs::MESSAGE_LEN + sph
 
 fn compute_sphincs_signer(index: usize) -> CachedSphincsSignature {
     let mut rng = StdRng::seed_from_u64(0x5F1A_C500 ^ index as u64);
-    let (secret_key, public_key) = sphincs::key_gen(&mut rng);
+    let (secret_key, public_key) = sphincs::key_gen(rng.random());
     let message = sphincs_message(index);
     let signature = sphincs::sign(&mut rng, &secret_key, &message).expect("sign");
     (public_key, message, signature)
