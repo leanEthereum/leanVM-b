@@ -13,6 +13,159 @@ namespace SphincsSecurity.Concrete.OtsProbeSimulation
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
 
+theorem cleanProbeObservation_materializedDeferredState_eq_of_position
+    (table : OtsSecretIndex → HashOutput) (left right : DeferredContext)
+    (position : Position) (candidate : Digest)
+    (hcontext : FinalizationContextLE table left right)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hrightMaterialized : right = directDeferredContext right.state) :
+    cleanProbeObservation (materializedDeferredState left) (.position position) candidate =
+      cleanProbeObservation right.state (.position position) candidate := by
+  unfold cleanProbeObservation
+  have hvalue := congrFun hcontext.view.valueEq (.position position)
+  simp only [resolvedCompletionValue] at hvalue
+  rw [hrightMaterialized] at hvalue
+  simp only [directDeferredContext, directDeferredValues, DeferredContext.positionValue] at hvalue
+  have hvalue' : left.positionValue position =
+      right.state.values (.position position) := by
+    cases hrightValue : right.state.values (.position position) <;>
+      simpa [DeferredContext.positionValue, hrightValue] using hvalue
+  simp only [materializedDeferredState_position, hvalue', materializedDeferredState_revealed,
+    hrevealed]
+
+set_option maxRecDepth 100000 in
+theorem selectedHash_goodForRoots
+    (ordinal : Nat) (parameter : PublicParameter) (publicRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (table : OtsSecretIndex → HashOutput) (target : Position)
+    (input : HashInput)
+    (next : HashOutput → OracleComp (OracleWorld + SigningSpec) α)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (left right : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (candidate : Probe)
+    (hcandidate : rootAwareCandidateForPlan? parameter input
+      (purePlanProbingHashQuery parameter input left.state) = some candidate)
+    (hordinal : snapshots.length = ordinal)
+    (hcontext : FinalizationContextLE table left right)
+    (hrevealed : left.state.revealed = right.state.revealed)
+    (hrightMaterialized : right = directDeferredContext right.state)
+    (hcanonical : CanonicalMaterializedValues table left)
+    (haligned : SnapshotsObservedAt table snapshots observations)
+    (hbefore : SnapshotsBefore snapshots left)
+    (htracked : CleanProbeObservationsTrackedBy observations right.state)
+    (hnoHit : ∀ observation ∈ observations, ¬observation.ExistingHiddenHit)
+    (hleftCovered : PendingCoveredBy
+      (snapshots.map PlannedProbeSnapshot.toProbe) left)
+    (result : ObservedCleanRunResult (α × SplitHashCache))
+    (hresult : some result ∈ support
+      (observedMaterializedBoundary parameter publicRoot ftsSecret
+        (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+          (Sum.inl (Sum.inr input))) >>= next)
+        observations right.state fuel table cache))
+    (hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      table ordinal target rightRoot (some result)) :
+    ∃ output,
+      let selection : PrivateOrdinalSelection :=
+        ⟨candidate, left,
+          (snapshots ++ [(⟨candidate, left⟩ : PlannedProbeSnapshot)]).map
+            PlannedProbeSnapshot.toProbe⟩
+      selection.GoodForRoots target output rightRoot ordinal ∧
+        PendingCoveredBy (selection.candidates.take ordinal) selection.context := by
+  have hobservationLength : observations.length = ordinal :=
+    haligned.length_eq.symm.trans hordinal
+  have hrightValues :
+      (materializedCanonicalContext table right.state).state.values = left.state.values := by
+    unfold materializedCanonicalContext
+    rw [← hrightMaterialized]
+    exact canonicalized_right_values_eq_of_finalizationContextLE hcontext hrevealed hcanonical
+  have hplanEq :
+      purePlanProbingHashQuery parameter input
+          (materializedCanonicalContext table right.state).state =
+        purePlanProbingHashQuery parameter input left.state :=
+    purePlanProbingHashQuery_eq_of_values_eq hrightValues parameter input
+  have hqueryCandidate : rootAwareCandidateForPlan? parameter input
+      (purePlanProbingHashQuery parameter input
+        (materializedCanonicalContext table right.state).state) = some candidate := by
+    rw [hplanEq]
+    exact hcandidate
+  obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩, _hdoomed,
+    selected, hselected, hfirst, _hroot⟩, hposition⟩, hcomparison⟩ := hgood
+  have hobservation :=
+    selected_observation_eq_of_mem_observedMaterializedBoundary_hash_query ordinal parameter
+      publicRoot ftsSecret input next observations right.state fuel table cache candidate
+      hobservationLength hqueryCandidate result hresult selected hselected
+  obtain ⟨first, hfirstOrdinal, hfirstHit, _hbeforeFirst⟩ := hfirst
+  have hfirstSelected : first = selected :=
+    Fin.ext (hfirstOrdinal.trans hselected.symm)
+  subst first
+  rw [ExistingHiddenHitAtOrdinal, hobservation] at hfirstHit
+  obtain ⟨hselectedHidden, output, hselectedValue, hselectedCandidate⟩ := hfirstHit
+  have hrightValue : right.state.values candidate.coordinate = some output := by
+    simpa [cleanProbeObservation] using hselectedValue
+  have hcandidateDigest : truncateHash output = candidate.candidate := by
+    simpa [cleanProbeObservation] using hselectedCandidate
+  have hselectedLt : ordinal < result.observations.length := by
+    rw [← hselected]
+    exact selected.isLt
+  have hselectedIndex :
+      (⟨ordinal, hselectedLt⟩ : Fin result.observations.length) = selected :=
+    Fin.ext hselected.symm
+  have htargetData :
+      (result.observations.get selected).coordinate = .position target ∧ IsLayerRoot target := by
+    simp only [observedFirstLayerRootPosition?, hselectedLt, ↓reduceDIte] at hposition
+    rw [candidateLayerRootPosition?_eq_some_iff, hselectedIndex] at hposition
+    exact hposition
+  have hcandidateCoordinate : candidate.coordinate = .position target := by
+    rw [hobservation] at htargetData
+    simpa [cleanProbeObservation] using htargetData.1
+  have hcandidateEq : candidate = ⟨.position target, truncateHash output⟩ := by
+    cases candidate
+    simp only [Probe.mk.injEq]
+    exact ⟨hcandidateCoordinate, hcandidateDigest.symm⟩
+  have hrightHidden : candidate.coordinate ∉ right.state.revealed := by
+    simpa [cleanProbeObservation, decide_eq_false_iff_not] using hselectedHidden
+  have hleftHidden : Coordinate.position target ∉ left.state.revealed := by
+    rw [← hcandidateCoordinate, hrevealed]
+    exact hrightHidden
+  have hleftState : left.state.values (.position target) = none :=
+    canonical_value_none_of_not_revealed hcanonical hleftHidden
+  have hrightPositionValue : right.state.values (.position target) = some output := by
+    rw [← hcandidateCoordinate]
+    exact hrightValue
+  have hleftPrivate : left.values target = some output :=
+    hcontext.view.privateValue_of_left_hidden_of_right_materialized target output hleftState
+      hrightPositionValue
+  have hleftCandidateHidden : candidate.coordinate ∉ left.state.revealed := by
+    simpa [hcandidateCoordinate] using hleftHidden
+  have hactualAvoid := candidatesAvoidRoot_of_aligned_tracked table snapshots observations
+    candidate left right hbefore hcontext hrightMaterialized hnoHit haligned htracked target output
+    hcandidateEq hleftState hleftPrivate hleftCandidateHidden
+  have hprefix := observations_prefix_of_mem_observedMaterializedBoundary parameter publicRoot
+    ftsSecret
+    (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+      (Sum.inl (Sum.inr input))) >>= next)
+    observations right.state fuel table cache result hresult
+  have htake : result.observations.take ordinal = observations := by
+    obtain ⟨tail, htail⟩ := hprefix
+    rw [← htail, List.take_append_of_le_length]
+    · simpa [hobservationLength]
+    · omega
+  have hcomparison' : CandidatesAvoidRoot target rightRoot
+      (snapshots.map PlannedProbeSnapshot.toProbe) := by
+    simpa [observedPrefixProbes, htake, haligned.map_toProbe_eq] using hcomparison
+  let selection : PrivateOrdinalSelection :=
+    ⟨candidate, left,
+      (snapshots ++ [(⟨candidate, left⟩ : PlannedProbeSnapshot)]).map
+        PlannedProbeSnapshot.toProbe⟩
+  refine ⟨output, ?_, ?_⟩
+  · refine ⟨hcandidateEq, hleftState, hleftHidden, hleftPrivate, ?_⟩
+    intro earlier hearlier
+    have hearlier' : earlier ∈ snapshots.map PlannedProbeSnapshot.toProbe := by
+      simpa [selection, hordinal] using hearlier
+    exact ⟨hactualAvoid earlier hearlier', hcomparison' earlier hearlier'⟩
+  · simpa [selection, hordinal] using hleftCovered
+
 theorem relTriple_indicator_observedMaterializedBoundary_pure_false
     (ordinal : Nat) (parameter : PublicParameter) (publicRoot rightRoot : Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
