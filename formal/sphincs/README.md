@@ -490,6 +490,8 @@ The complete post-prefix contract is now compiled. Any exact-marginal coupling t
 
 The contract has been sharpened to the smallest sufficient marginal: the adaptive bridge only needs to couple the Boolean indicators of the real and eager successful fixed-root events, not their complete final records. The post-materialization suffix now exports this indicator coupling directly. It preserves `false` on unrelated failures instead of accepting them as the older failure observer did, so position fibers cannot duplicate failure mass. The unfinished prefix may therefore discard all branches on which the real indicator is false and must retain exact correlation only until the selected target is first materialized.
 
+The Boolean contract now feeds the production-weighted root endpoint directly. Once the adaptive prefix supplies that one indicator coupling, the eager resolver equality and root-aware one-guess theorem are applied internally, so no later proof can accidentally replace the produced-list weight by an unconditional position bound.
+
 Two places a proof can go wrong, both found by attacking the claim rather than by reading it:
 
 - **A strong forgery needs no chain inversion.** `Ver` does not check that the counter is the least admissible one, so a second `c'` with `Enc(P,lay,tau,e,M,c') = x` reuses the chain values verbatim and verifies. Since the codeword fixes the digest, that is one `2^-128` hit per query and it is harmless, but it is a branch of its own: the one-time signature is unforgeable on a *new* message by incomparability, and unforgeable on the *signed* message only by collision resistance at `tw_enc`.
