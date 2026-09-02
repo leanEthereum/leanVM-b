@@ -53,6 +53,41 @@ theorem CleanProbeObservationsEventEq.append_same
     CleanProbeObservationsEventEq (left ++ suffix) (right ++ suffix) := by
   exact List.rel_append htrace (CleanProbeObservationsEventEq.refl suffix)
 
+theorem CleanProbeObservation.eventEq_installPositionValueAtProbe_of_clean_of_avoids
+    (target : Position) (output : HashOutput) (observation : CleanProbeObservation)
+    (hclean : ¬observation.ExistingHiddenHit)
+    (havoid : observation.toProbe ≠
+      ⟨.position target, truncateHash output⟩) :
+    (installPositionValueAtProbe target output observation).EventEq observation := by
+  refine ⟨installPositionValueAtProbe_toProbe target output observation, ?_⟩
+  have hinstalled := not_existingHiddenHit_installPositionValueAtProbe_of_avoids target output
+    observation hclean havoid
+  constructor
+  · exact fun hhit => (hinstalled hhit).elim
+  · exact fun hhit => (hclean hhit).elim
+
+theorem CleanProbeObservationsEventEq.map_installPositionValueAtProbe_of_clean_of_avoids
+    (target : Position) (output : HashOutput)
+    (observations : List CleanProbeObservation)
+    (hclean : ∀ observation ∈ observations, ¬observation.ExistingHiddenHit)
+    (havoid : CandidatesAvoidRoot target (truncateHash output)
+      (observations.map CleanProbeObservation.toProbe)) :
+    CleanProbeObservationsEventEq
+      (observations.map (installPositionValueAtProbe target output)) observations := by
+  induction observations with
+  | nil => exact .nil
+  | cons observation observations ih =>
+      apply List.Forall₂.cons
+      · apply CleanProbeObservation.eventEq_installPositionValueAtProbe_of_clean_of_avoids
+        · exact hclean observation (by simp)
+        · intro heq
+          exact havoid observation.toProbe (by simp) heq
+      · apply ih
+        · intro other hother
+          exact hclean other (by simp [hother])
+        · intro candidate hcandidate
+          exact havoid candidate (by simp [hcandidate])
+
 theorem CleanProbeObservationsEventEq.toProbe_eq
     {left right : List CleanProbeObservation}
     (htrace : CleanProbeObservationsEventEq left right) :

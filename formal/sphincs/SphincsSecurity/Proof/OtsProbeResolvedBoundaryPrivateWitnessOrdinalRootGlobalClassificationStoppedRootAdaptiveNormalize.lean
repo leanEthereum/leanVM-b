@@ -566,6 +566,56 @@ theorem observationsAfterCandidate_materializedDeferredState_resolved
       simp [observationsAfterCandidate,
         cleanProbeObservation_materializedDeferredState_resolved target context resolved hresolved]
 
+theorem observationsAfterCandidate_eventEq_resolved_of_clean_of_avoids
+    (target : Position) (context : DeferredContext) (resolved : DeferredResolution)
+    (hresolved : some resolved ∈ support
+      (resolveDeferredPositionValue target context))
+    (observations : List CleanProbeObservation) (candidate? : Option Probe)
+    (hclean : ∀ observation ∈
+      observationsAfterCandidate observations (materializedDeferredState context) candidate?,
+        ¬observation.ExistingHiddenHit)
+    (havoid : CandidatesAvoidRoot target (truncateHash resolved.output)
+      ((observationsAfterCandidate observations (materializedDeferredState context)
+        candidate?).map CleanProbeObservation.toProbe)) :
+    CleanProbeObservationsEventEq
+      (observationsAfterCandidate
+        (observations.map (installPositionValueAtProbe target resolved.output))
+        (materializedDeferredState resolved.toDeferredContext) candidate?)
+      (observationsAfterCandidate observations (materializedDeferredState context) candidate?) := by
+  rw [observationsAfterCandidate_materializedDeferredState_resolved target context resolved
+    hresolved]
+  exact
+    CleanProbeObservationsEventEq.map_installPositionValueAtProbe_of_clean_of_avoids target
+      resolved.output _ hclean havoid
+
+theorem observationsAfterCandidate_eventEq_resolved_current_of_clean_of_avoids
+    (target : Position) (context : DeferredContext) (resolved : DeferredResolution)
+    (hresolved : some resolved ∈ support
+      (resolveDeferredPositionValue target context))
+    (observations : List CleanProbeObservation) (candidate? : Option Probe)
+    (hclean : ∀ observation ∈
+      observationsAfterCandidate observations (materializedDeferredState context) candidate?,
+        ¬observation.ExistingHiddenHit)
+    (havoid : CandidatesAvoidRoot target (truncateHash resolved.output)
+      ((observationsAfterCandidate observations (materializedDeferredState context)
+        candidate?).map CleanProbeObservation.toProbe)) :
+    CleanProbeObservationsEventEq
+      (observationsAfterCandidate observations
+        (materializedDeferredState resolved.toDeferredContext) candidate?)
+      (observationsAfterCandidate observations (materializedDeferredState context) candidate?) := by
+  cases candidate? with
+  | none => exact CleanProbeObservationsEventEq.refl observations
+  | some candidate =>
+      apply List.rel_append (CleanProbeObservationsEventEq.refl observations)
+      apply List.Forall₂.cons
+      · rw [cleanProbeObservation_materializedDeferredState_resolved target context resolved
+          hresolved]
+        apply CleanProbeObservation.eventEq_installPositionValueAtProbe_of_clean_of_avoids
+        · exact hclean _ (by simp [observationsAfterCandidate])
+        · intro heq
+          exact havoid _ (by simp [observationsAfterCandidate]) heq
+      · exact .nil
+
 def installPositionValueAtSnapshot
     (target : Position) (output : HashOutput)
     (snapshot : PlannedProbeSnapshot) : PlannedProbeSnapshot :=
@@ -1210,5 +1260,125 @@ theorem evalDist_eagerDirectDelayedSelectedRootIndicator_hash_eq_not_selected_of
       ((probingHashQueryAfterPlan parameter input
         (purePlanProbingHashQuery parameter input context.state)).run cache)
       context fuel hvalid hcompletable
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 1000000 in
+theorem evalDist_eagerDirectDelayedSelectedRootIndicator_hash_eq_not_selected_of_clean_avoids
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (table : OtsSecretIndex → HashOutput) (target : Position) (rightRoot : Digest)
+    (input : HashInput)
+    (next : HashOutput → OracleComp (OracleWorld + SigningSpec) α)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (hbefore : ¬ordinal < snapshots.length)
+    (hnotSelected : ¬ordinal <
+      (appendPlannedSnapshot snapshots
+        (rootAwareCandidateForPlan? parameter input
+          (purePlanProbingHashQuery parameter input context.state)) context).length)
+    (hvalid : context.Valid) (hcompletable : DeferredCompletable table context)
+    [ObserverSynchronized table
+      (negatedDirectDelayedObserve
+        (fun nextContext remaining (value : HashOutput × SplitHashCache)
+            laterSnapshots laterObservations ↦
+          directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+            rightRoot (next value.1) laterSnapshots laterObservations nextContext remaining
+            value.2)
+        (appendPlannedSnapshot snapshots
+          (rootAwareCandidateForPlan? parameter input
+            (purePlanProbingHashQuery parameter input context.state)) context)
+        (observationsAfterCandidate observations (materializedDeferredState context)
+          (rootAwareCandidateForPlan? parameter input
+            (purePlanProbingHashQuery parameter input context.state))))]
+    [ObserverPositionNeutral table
+      (negatedDirectDelayedObserve
+        (fun nextContext remaining (value : HashOutput × SplitHashCache)
+            laterSnapshots laterObservations ↦
+          directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+            rightRoot (next value.1) laterSnapshots laterObservations nextContext remaining
+            value.2)
+        (appendPlannedSnapshot snapshots
+          (rootAwareCandidateForPlan? parameter input
+            (purePlanProbingHashQuery parameter input context.state)) context)
+        (observationsAfterCandidate observations (materializedDeferredState context)
+          (rootAwareCandidateForPlan? parameter input
+            (purePlanProbingHashQuery parameter input context.state))))]
+    (hclean : ∀ observation ∈
+      observationsAfterCandidate observations (materializedDeferredState context)
+        (rootAwareCandidateForPlan? parameter input
+          (purePlanProbingHashQuery parameter input context.state)),
+        ¬observation.ExistingHiddenHit)
+    (havoid : ∀ resolved : DeferredResolution,
+      some resolved ∈ support (resolveDeferredPositionValue target context) →
+        CandidatesAvoidRoot target (truncateHash resolved.output)
+          ((observationsAfterCandidate observations (materializedDeferredState context)
+            (rootAwareCandidateForPlan? parameter input
+              (purePlanProbingHashQuery parameter input context.state))).map
+                CleanProbeObservation.toProbe)) :
+    evalDist
+        (eagerDirectDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+          rightRoot
+          (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+            (Sum.inl (Sum.inr input))) >>= next)
+          snapshots observations context fuel cache) =
+      evalDist
+        (directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+          rightRoot
+          (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+            (Sum.inl (Sum.inr input))) >>= next)
+          snapshots observations context fuel cache) := by
+  apply evalDist_eagerDirectDelayedSelectedRootIndicator_hash_eq_not_selected_of_trace ordinal
+    parameter root ftsSecret table target rightRoot input next snapshots observations context fuel
+    cache hbefore hnotSelected hvalid hcompletable
+  intro resolved hresolved
+  have hvalues := resolveDeferredPositionValue_preserves_state_values target context resolved
+    hresolved
+  have hplan : purePlanProbingHashQuery parameter input resolved.state =
+      purePlanProbingHashQuery parameter input context.state :=
+    purePlanProbingHashQuery_eq_of_values_eq hvalues parameter input
+  let candidate? := rootAwareCandidateForPlan? parameter input
+    (purePlanProbingHashQuery parameter input context.state)
+  let leftSnapshots := appendPlannedSnapshot snapshots candidate? resolved.toDeferredContext
+  let rightSnapshots := appendPlannedSnapshot snapshots candidate? context
+  let leftObservations := observationsAfterCandidate observations
+    (materializedDeferredState resolved.toDeferredContext) candidate?
+  let rightObservations := observationsAfterCandidate observations
+    (materializedDeferredState context) candidate?
+  have hsnapshots : leftSnapshots.map PlannedProbeSnapshot.toProbe =
+      rightSnapshots.map PlannedProbeSnapshot.toProbe := by
+    cases hcandidate : candidate? <;>
+      simp [leftSnapshots, rightSnapshots, appendPlannedSnapshot, hcandidate]
+  have hlength : leftSnapshots.length = rightSnapshots.length :=
+    plannedProbeSnapshots_length_eq_of_toProbe_eq hsnapshots
+  have hrightBefore : ¬ordinal < rightSnapshots.length := by
+    simpa [rightSnapshots, candidate?] using hnotSelected
+  have hleftBefore : ¬ordinal < leftSnapshots.length := by
+    rwa [hlength]
+  have htrace : CleanProbeObservationsEventEq leftObservations rightObservations := by
+    apply observationsAfterCandidate_eventEq_resolved_current_of_clean_of_avoids target context
+      resolved hresolved observations candidate?
+    · simpa [rightObservations, candidate?] using hclean
+    · simpa [rightObservations, candidate?] using havoid resolved hresolved
+  apply evalDist_bind_congr
+  intro result _hresult
+  cases result with
+  | stoppedFuel => rfl
+  | stoppedOrdinary => rfl
+  | stoppedPrivate witness => rfl
+  | done result =>
+      simp only [finishDirectDelayedSelectedRootIndicator,
+        canonicalizeDirectDelayedSelectedRootIndicator]
+      split
+      · rfl
+      · split
+        · split
+          · exact evalDist_directDelayedSelectedRootIndicator_eq_of_eventEq ordinal parameter root
+              ftsSecret table target rightRoot (next result.value.1) leftSnapshots rightSnapshots
+              leftObservations rightObservations
+              (canonicalizeMaterializedValues table result.context) result.remaining result.value.2
+              hleftBefore hrightBefore hsnapshots htrace
+          · rfl
+        · rfl
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
