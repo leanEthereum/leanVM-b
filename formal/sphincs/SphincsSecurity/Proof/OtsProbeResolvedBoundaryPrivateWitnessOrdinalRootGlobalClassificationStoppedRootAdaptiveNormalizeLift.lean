@@ -732,10 +732,6 @@ theorem negatedDirectDelayedComputationObserve_uniform_observerSynchronized
     (hsynchronized : ∀ output,
       ObserverSynchronized table
         (negatedDirectDelayedComputationObserve ordinal parameter root ftsSecret table target
-          rightRoot (next output) snapshots observations))
-    (hneutral : ∀ output,
-      ObserverPositionNeutral table
-        (negatedDirectDelayedComputationObserve ordinal parameter root ftsSecret table target
           rightRoot (next output) snapshots observations)) :
     ObserverSynchronized table
       (negatedDirectDelayedComputationObserve ordinal parameter root ftsSecret table target
@@ -757,15 +753,6 @@ theorem negatedDirectDelayedComputationObserve_uniform_observerSynchronized
           (observe := negatedDirectDelayedComputationObserve ordinal parameter root ftsSecret
             table target rightRoot (next value.1) snapshots observations)
           nextLeft nextRight remaining value.2 hnextContext hnextValues hnextRevealed⟩
-    letI : ObserverPositionNeutral table
-        (negatedDirectDelayedObserve observe snapshots observations) := ⟨by
-      intro position nextContext remaining value hvalid hcompletable hensured
-      simpa [negatedDirectDelayedObserve, negatedDirectDelayedComputationObserve, observe] using
-        ObserverPositionNeutral.eq_resolve
-          (table := table)
-          (observe := negatedDirectDelayedComputationObserve ordinal parameter root ftsSecret
-            table target rightRoot (next value.1) snapshots observations)
-          position nextContext remaining value.2 hvalid hcompletable hensured⟩
     have hnotSelected : ¬ordinal < snapshots.length := by omega
     unfold negatedDirectDelayedComputationObserve
     rw [directDelayedSelectedRootIndicator_uniform_eq ordinal parameter root ftsSecret table
@@ -879,10 +866,6 @@ theorem negatedDirectDelayedComputationObserve_signing_observerSynchronized
     (hsynchronized : ∀ output,
       ObserverSynchronized table
         (negatedDirectDelayedComputationObserve ordinal parameter root ftsSecret table target
-          rightRoot (next output) snapshots observations))
-    (hneutral : ∀ output,
-      ObserverPositionNeutral table
-        (negatedDirectDelayedComputationObserve ordinal parameter root ftsSecret table target
           rightRoot (next output) snapshots observations)) :
     ObserverSynchronized table
       (negatedDirectDelayedComputationObserve ordinal parameter root ftsSecret table target
@@ -903,15 +886,6 @@ theorem negatedDirectDelayedComputationObserve_signing_observerSynchronized
           (observe := negatedDirectDelayedComputationObserve ordinal parameter root ftsSecret
             table target rightRoot (next value.1) snapshots observations)
           nextLeft nextRight remaining value.2 hnextContext hnextValues hnextRevealed⟩
-    letI : ObserverPositionNeutral table
-        (negatedDirectDelayedObserve observe snapshots observations) := ⟨by
-      intro position nextContext remaining value hvalid hcompletable hensured
-      simpa [negatedDirectDelayedObserve, negatedDirectDelayedComputationObserve, observe] using
-        ObserverPositionNeutral.eq_resolve
-          (table := table)
-          (observe := negatedDirectDelayedComputationObserve ordinal parameter root ftsSecret
-            table target rightRoot (next value.1) snapshots observations)
-          position nextContext remaining value.2 hvalid hcompletable hensured⟩
     have hnotSelected : ¬ordinal < snapshots.length := by omega
     unfold negatedDirectDelayedComputationObserve
     rw [directDelayedSelectedRootIndicator_signing_eq ordinal parameter root ftsSecret table
@@ -2450,21 +2424,13 @@ theorem negatedDirectDelayedComputationObserve_hash_observerSynchronized
     (hbefore : snapshots.length ≤ ordinal)
     (haligned : observations.map CleanProbeObservation.toProbe =
       snapshots.map PlannedProbeSnapshot.toProbe)
-    (hclean : ∀ observation ∈ observations, ¬observation.ExistingHiddenHit)
+    (_hclean : ∀ observation ∈ observations, ¬observation.ExistingHiddenHit)
     (hsynchronized : ∀ output laterSnapshots laterObservations,
       laterSnapshots.length ≤ ordinal →
       laterObservations.map CleanProbeObservation.toProbe =
         laterSnapshots.map PlannedProbeSnapshot.toProbe →
       (∀ observation ∈ laterObservations, ¬observation.ExistingHiddenHit) →
       ObserverSynchronized table
-        (negatedDirectDelayedComputationObserve ordinal parameter root ftsSecret table target
-          rightRoot (next output) laterSnapshots laterObservations))
-    (hneutral : ∀ output laterSnapshots laterObservations,
-      laterSnapshots.length ≤ ordinal →
-      laterObservations.map CleanProbeObservation.toProbe =
-        laterSnapshots.map PlannedProbeSnapshot.toProbe →
-      (∀ observation ∈ laterObservations, ¬observation.ExistingHiddenHit) →
-      ObserverPositionNeutral table
         (negatedDirectDelayedComputationObserve ordinal parameter root ftsSecret table target
           rightRoot (next output) laterSnapshots laterObservations)) :
     ObserverSynchronized table
@@ -2556,12 +2522,6 @@ theorem negatedDirectDelayedComputationObserve_hash_observerSynchronized
           exact (hsynchronized value.1 nextLeftSnapshots nextLeftObservations hnextBefore
             hnextAligned hnextClean).eq_of_synchronized nextLeft nextRight remaining value.2
               hnextContext hnextValues hnextRevealed⟩
-        letI : ObserverPositionNeutral table
-            (negatedDirectDelayedObserve observe nextLeftSnapshots nextLeftObservations) := ⟨by
-          intro position nextContext remaining value hvalid hcompletable hensured
-          exact (hneutral value.1 nextLeftSnapshots nextLeftObservations hnextBefore hnextAligned
-            hnextClean).eq_resolve position nextContext remaining value.2 hvalid hcompletable
-              hensured⟩
         unfold negatedDirectDelayedComputationObserve
         rw [directDelayedSelectedRootIndicator_hash_eq_not_selected ordinal parameter root
           ftsSecret table target rightRoot input next snapshots observations left fuel cache

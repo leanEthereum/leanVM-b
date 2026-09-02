@@ -1,6 +1,6 @@
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedRootAdaptiveTrace
 import SphincsSecurity.Proof.OtsProbeResolvedPrivateRetainedCommutation
-import SphincsSecurity.Proof.OtsProbeResolvedDirectPositionNeutral
+import SphincsSecurity.Proof.OtsProbeResolvedDirectSynchronized
 
 /-!
 # Adaptive selected-root normalization
@@ -444,8 +444,6 @@ theorem evalDist_complement_runDirectWitness_finish_false_eq_of_synchronized
     (hvalues : left.state.values = right.state.values)
     (hrevealed : left.state.revealed = right.state.revealed)
     [ObserverSynchronized table
-      (negatedDirectDelayedObserve observe snapshots observations)]
-    [ObserverPositionNeutral table
       (negatedDirectDelayedObserve observe snapshots observations)] :
     evalDist (Bool.not <$>
         (runDirectResolvedWitnessFromTable left fuel table computation >>=
@@ -457,10 +455,6 @@ theorem evalDist_complement_runDirectWitness_finish_false_eq_of_synchronized
           finishDirectDelayedSelectedRootIndicator
             (canonicalizeDirectDelayedSelectedRootIndicator table observe)
             snapshots observations)) := by
-  rcases hcontext with ⟨hview, hleftValid, hrightValid, hleftCompletable⟩
-  have hrightCompletable : DeferredCompletable table right := by
-    rcases hleftCompletable with ⟨completion, hcompletion⟩
-    exact ⟨completion, (hview.deferredCompletion_iff completion).mp hcompletion⟩
   let nextObserve := negatedDirectDelayedObserve
     (canonicalizeDirectDelayedSelectedRootIndicator table observe) snapshots observations
   calc
@@ -468,15 +462,9 @@ theorem evalDist_complement_runDirectWitness_finish_false_eq_of_synchronized
       evalDist_complement_runDirectWitness_finish_false_eq_runDirectObserve
         (canonicalizeDirectDelayedSelectedRootIndicator table observe) snapshots observations
         left fuel table computation
-    _ = evalDist (runResolvedObserve nextObserve left fuel table computation) :=
-      (evalDist_runResolvedObserve_eq_runDirectResolvedObserve
-        (observe := nextObserve) left fuel table computation hleftValid hleftCompletable).symm
-    _ = evalDist (runResolvedObserve nextObserve right fuel table computation) :=
-      evalDist_runResolvedObserve_eq_of_finalizationSynchronized computation left right fuel table
-        ⟨hview, hleftValid, hrightValid, hleftCompletable⟩ hvalues hrevealed
     _ = evalDist (runDirectResolvedObserve nextObserve right fuel table computation) :=
-      evalDist_runResolvedObserve_eq_runDirectResolvedObserve
-        (observe := nextObserve) right fuel table computation hrightValid hrightCompletable
+      evalDist_runDirectResolvedObserve_eq_of_finalizationSynchronized computation left right
+        fuel table hcontext hvalues hrevealed
     _ = _ :=
       (evalDist_complement_runDirectWitness_finish_false_eq_runDirectObserve
         (canonicalizeDirectDelayedSelectedRootIndicator table observe) snapshots observations
