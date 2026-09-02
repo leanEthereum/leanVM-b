@@ -157,4 +157,28 @@ theorem relTriple_resolverThenPosition_resolvePositionThenResolver_retained
       _ = evalDist (resolvePositionThenResolver target resolver context) := hcommutes.symm
   · exact relTriple_retainedPositionResolution target resolver context
 
+theorem relTriple_resolveDeferredPosition_targetFirst_retained
+    (target position : Position) (table : OtsSecretIndex → HashOutput)
+    (context : DeferredContext) (hvalid : context.Valid)
+    (hcompletable : DeferredCompletable table context) :
+    RelTriple
+      (resolveDeferredPosition table position context)
+      (resolvePositionThenResolver target
+        (fun nextContext => resolveDeferredPosition table position nextContext) context)
+      (RetainedPositionResolutionRel target) := by
+  apply relTriple_resolverThenPosition_resolvePositionThenResolver_retained
+  exact positionResolutionCommutes_position target table position context hvalid hcompletable
+
+theorem relTriple_resolveDeferredReveal_targetFirst_retained
+    (target position : Position) (table : OtsSecretIndex → HashOutput)
+    (context : DeferredContext) (hvalid : context.Valid)
+    (hcompletable : DeferredCompletable table context) :
+    RelTriple
+      (resolveDeferredReveal table position context)
+      (resolvePositionThenResolver target
+        (fun nextContext => resolveDeferredReveal table position nextContext) context)
+      (RetainedPositionResolutionRel target) := by
+  apply relTriple_resolverThenPosition_resolvePositionThenResolver_retained
+  exact positionResolutionCommutes_reveal target table position context hvalid hcompletable
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
