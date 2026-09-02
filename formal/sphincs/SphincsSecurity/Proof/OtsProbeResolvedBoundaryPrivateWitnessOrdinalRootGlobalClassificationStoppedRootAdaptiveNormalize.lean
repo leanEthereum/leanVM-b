@@ -1,5 +1,6 @@
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedRootAdaptiveTrace
 import SphincsSecurity.Proof.OtsProbeResolvedPrivateRetainedCommutation
+import SphincsSecurity.Proof.OtsProbeResolvedDirectPositionNeutral
 
 /-!
 # Adaptive selected-root normalization
@@ -548,6 +549,62 @@ theorem evalDist_resolve_then_runDirectWitness_finish_false
     _ = evalDist (runDirectResolvedObserve nextObserve context fuel table computation) :=
       evalDist_runResolvedObserve_eq_runDirectResolvedObserve
         (observe := nextObserve) context fuel table computation hvalid hcompletable
+    _ = _ :=
+      (evalDist_complement_runDirectWitness_finish_false_eq_runDirectObserve
+        (canonicalizeDirectDelayedSelectedRootIndicator table observe) snapshots observations
+        context fuel table computation).symm
+
+set_option maxRecDepth 100000 in
+theorem evalDist_resolve_then_runDirectWitness_finish_false_at
+    (table : OtsSecretIndex → HashOutput) (target : Position)
+    (observe : DeferredContext → Nat → α → List PlannedProbeSnapshot →
+      List CleanProbeObservation → ProbComp Bool)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (context : DeferredContext) (fuel : Nat)
+    (hvalid : context.Valid) (hcompletable : DeferredCompletable table context)
+    (hensured : Coordinate.position target ∈ context.state.ensured)
+    (hneutral : ObserverPositionNeutralAt table target
+      (negatedDirectDelayedObserve observe snapshots observations)) :
+    evalDist (resolveDeferredPositionValue target context >>= fun resolved ↦
+        match resolved with
+        | none => pure false
+        | some resolved =>
+            runDirectResolvedWitnessFromTable resolved.toDeferredContext fuel table computation >>=
+              finishDirectDelayedSelectedRootIndicator
+                (canonicalizeDirectDelayedSelectedRootIndicator table observe)
+                snapshots observations) =
+      evalDist (runDirectResolvedWitnessFromTable context fuel table computation >>=
+        finishDirectDelayedSelectedRootIndicator
+          (canonicalizeDirectDelayedSelectedRootIndicator table observe)
+          snapshots observations) := by
+  let nextObserve := negatedDirectDelayedObserve
+    (canonicalizeDirectDelayedSelectedRootIndicator table observe) snapshots observations
+  have hnextNeutral : ObserverPositionNeutralAt table target nextObserve :=
+    negatedCanonicalizeDirectDelayedObserve_observerPositionNeutralAt table target observe
+      snapshots observations hneutral
+  apply evalDist_eq_of_complement_eq
+  calc
+    _ = evalDist (resolveDeferredPositionValue target context >>= fun resolved ↦
+          match resolved with
+          | none => pure true
+          | some resolved =>
+              runDirectResolvedObserve nextObserve resolved.toDeferredContext fuel table
+                computation) := by
+        rw [map_bind]
+        apply evalDist_bind_congr
+        intro resolved _hresolved
+        cases resolved with
+        | none => rfl
+        | some resolved =>
+            exact evalDist_complement_runDirectWitness_finish_false_eq_runDirectObserve
+              (canonicalizeDirectDelayedSelectedRootIndicator table observe) snapshots
+              observations resolved.toDeferredContext fuel table computation
+    _ = evalDist (runDirectResolvedObserve nextObserve context fuel table computation) :=
+      evalDist_resolveDeferredPositionValue_then_runDirectResolvedObserve target computation
+        context fuel table hvalid hcompletable hensured
+        hnextNeutral
     _ = _ :=
       (evalDist_complement_runDirectWitness_finish_false_eq_runDirectObserve
         (canonicalizeDirectDelayedSelectedRootIndicator table observe) snapshots observations

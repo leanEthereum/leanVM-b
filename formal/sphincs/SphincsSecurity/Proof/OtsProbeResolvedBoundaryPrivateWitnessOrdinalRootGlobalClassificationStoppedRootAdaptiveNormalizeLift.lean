@@ -615,6 +615,20 @@ theorem negatedDirectDelayedComputationObserve_pure_observerPositionNeutral
         (by simp [resolveDeferredPositionValue, LazyRevealProbe.sampleHashOutput])
         (pure true)
 
+theorem negatedDirectDelayedComputationObserve_pure_observerPositionNeutralAt
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (table : OtsSecretIndex → HashOutput) (target position : Position)
+    (rightRoot : Digest) (value : α) (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (hbefore : snapshots.length ≤ ordinal) :
+    ObserverPositionNeutralAt table position
+      (negatedDirectDelayedComputationObserve ordinal parameter root ftsSecret table target
+        rightRoot (pure value) snapshots observations) := by
+  letI := negatedDirectDelayedComputationObserve_pure_observerPositionNeutral ordinal parameter
+    root ftsSecret table target rightRoot value snapshots observations hbefore
+  exact ObserverPositionNeutral.at table position _
+
 set_option maxRecDepth 100000 in
 theorem evalDist_resolve_then_complement_runDirectWitness_finish_false
     (table : OtsSecretIndex → HashOutput) (position : Position)
@@ -644,6 +658,51 @@ theorem evalDist_resolve_then_complement_runDirectWitness_finish_false
             snapshots observations)) := by
   have hmove := evalDist_resolve_then_runDirectWitness_finish_false table position observe
     snapshots observations computation context fuel hvalid hcompletable
+  calc
+    _ = evalDist (Bool.not <$> (resolveDeferredPositionValue position context >>= fun resolved ↦
+          match resolved with
+          | none => pure false
+          | some resolved =>
+              runDirectResolvedWitnessFromTable resolved.toDeferredContext fuel table computation >>=
+                finishDirectDelayedSelectedRootIndicator
+                  (canonicalizeDirectDelayedSelectedRootIndicator table observe)
+                  snapshots observations)) := by
+        rw [map_bind]
+        apply evalDist_bind_congr
+        intro resolved _hresolved
+        cases resolved <;> rfl
+    _ = _ := by
+      rw [evalDist_map, evalDist_map]
+      exact congrArg (fun distribution => Bool.not <$> distribution) hmove
+
+set_option maxRecDepth 100000 in
+theorem evalDist_resolve_then_complement_runDirectWitness_finish_false_at
+    (table : OtsSecretIndex → HashOutput) (position : Position)
+    (observe : DeferredContext → Nat → α → List PlannedProbeSnapshot →
+      List CleanProbeObservation → ProbComp Bool)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (context : DeferredContext) (fuel : Nat)
+    (hvalid : context.Valid) (hcompletable : DeferredCompletable table context)
+    (hensured : Coordinate.position position ∈ context.state.ensured)
+    (hneutral : ObserverPositionNeutralAt table position
+      (negatedDirectDelayedObserve observe snapshots observations)) :
+    evalDist (resolveDeferredPositionValue position context >>= fun resolved ↦
+        match resolved with
+        | none => pure true
+        | some resolved => Bool.not <$>
+            (runDirectResolvedWitnessFromTable resolved.toDeferredContext fuel table computation >>=
+              finishDirectDelayedSelectedRootIndicator
+                (canonicalizeDirectDelayedSelectedRootIndicator table observe)
+                snapshots observations)) =
+      evalDist (Bool.not <$>
+        (runDirectResolvedWitnessFromTable context fuel table computation >>=
+          finishDirectDelayedSelectedRootIndicator
+            (canonicalizeDirectDelayedSelectedRootIndicator table observe)
+            snapshots observations)) := by
+  have hmove := evalDist_resolve_then_runDirectWitness_finish_false_at table position observe
+    snapshots observations computation context fuel hvalid hcompletable hensured hneutral
   calc
     _ = evalDist (Bool.not <$> (resolveDeferredPositionValue position context >>= fun resolved ↦
           match resolved with
@@ -771,6 +830,43 @@ theorem negatedDirectDelayedComputationObserve_uniform_observerPositionNeutral
       snapshots observations ((splitUniformImpl n).run cache) context fuel hvalid hcompletable
 
 set_option maxRecDepth 100000 in
+theorem negatedDirectDelayedComputationObserve_uniform_observerPositionNeutralAt
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (table : OtsSecretIndex → HashOutput) (target : Position) (rightRoot : Digest)
+    (position : Position) (n : Nat)
+    (next : Fin (n + 1) → OracleComp (OracleWorld + SigningSpec) α)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (hbefore : snapshots.length ≤ ordinal)
+    (hneutral : ∀ output, ObserverPositionNeutralAt table position
+      (negatedDirectDelayedComputationObserve ordinal parameter root ftsSecret table target
+        rightRoot (next output) snapshots observations)) :
+    ObserverPositionNeutralAt table position
+      (negatedDirectDelayedComputationObserve ordinal parameter root ftsSecret table target
+        rightRoot
+        (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+          (Sum.inl (Sum.inl n))) >>= next)
+        snapshots observations) := by
+  intro context fuel cache hvalid hcompletable hensured
+  let observe := fun nextContext remaining (value : Fin (n + 1) × SplitHashCache)
+      laterSnapshots laterObservations ↦
+    directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target rightRoot
+      (next value.1) laterSnapshots laterObservations nextContext remaining value.2
+  have hnextNeutral : ObserverPositionNeutralAt table position
+      (negatedDirectDelayedObserve observe snapshots observations) := by
+    intro nextContext remaining value hnextValid hnextCompletable hnextEnsured
+    simpa [negatedDirectDelayedObserve, negatedDirectDelayedComputationObserve, observe] using
+      hneutral value.1 nextContext remaining value.2 hnextValid hnextCompletable hnextEnsured
+  have hnotSelected : ¬ordinal < snapshots.length := by omega
+  unfold negatedDirectDelayedComputationObserve
+  simp_rw [directDelayedSelectedRootIndicator_uniform_eq ordinal parameter root ftsSecret table
+    target rightRoot n next snapshots observations _ fuel cache hnotSelected]
+  exact evalDist_resolve_then_complement_runDirectWitness_finish_false_at table position observe
+    snapshots observations ((splitUniformImpl n).run cache) context fuel hvalid hcompletable
+    hensured hnextNeutral
+
+set_option maxRecDepth 100000 in
 theorem negatedDirectDelayedComputationObserve_signing_observerSynchronized
     (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
@@ -879,6 +975,42 @@ theorem negatedDirectDelayedComputationObserve_signing_observerPositionNeutral
     exact evalDist_resolve_then_complement_runDirectWitness_finish_false table position observe
       snapshots observations ((maskedSign parameter root ftsSecret message).run cache)
       context fuel hvalid hcompletable
+
+set_option maxRecDepth 100000 in
+theorem negatedDirectDelayedComputationObserve_signing_observerPositionNeutralAt
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (table : OtsSecretIndex → HashOutput) (target : Position) (rightRoot : Digest)
+    (position : Position) (message : Message)
+    (next : Option Signature → OracleComp (OracleWorld + SigningSpec) α)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (hbefore : snapshots.length ≤ ordinal)
+    (hneutral : ∀ output, ObserverPositionNeutralAt table position
+      (negatedDirectDelayedComputationObserve ordinal parameter root ftsSecret table target
+        rightRoot (next output) snapshots observations)) :
+    ObserverPositionNeutralAt table position
+      (negatedDirectDelayedComputationObserve ordinal parameter root ftsSecret table target
+        rightRoot
+        (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec) (Sum.inr message)) >>= next)
+        snapshots observations) := by
+  intro context fuel cache hvalid hcompletable hensured
+  let observe := fun nextContext remaining (value : Option Signature × SplitHashCache)
+      laterSnapshots laterObservations ↦
+    directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target rightRoot
+      (next value.1) laterSnapshots laterObservations nextContext remaining value.2
+  have hnextNeutral : ObserverPositionNeutralAt table position
+      (negatedDirectDelayedObserve observe snapshots observations) := by
+    intro nextContext remaining value hnextValid hnextCompletable hnextEnsured
+    simpa [negatedDirectDelayedObserve, negatedDirectDelayedComputationObserve, observe] using
+      hneutral value.1 nextContext remaining value.2 hnextValid hnextCompletable hnextEnsured
+  have hnotSelected : ¬ordinal < snapshots.length := by omega
+  unfold negatedDirectDelayedComputationObserve
+  simp_rw [directDelayedSelectedRootIndicator_signing_eq ordinal parameter root ftsSecret table
+    target rightRoot message next snapshots observations _ fuel cache hnotSelected]
+  exact evalDist_resolve_then_complement_runDirectWitness_finish_false_at table position observe
+    snapshots observations ((maskedSign parameter root ftsSecret message).run cache)
+    context fuel hvalid hcompletable hensured hnextNeutral
 
 theorem cleanProbeObservation_materializedDeferredState_eq_of_finalizationContextEq
     (table : OtsSecretIndex → HashOutput) (left right : DeferredContext)
