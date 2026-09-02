@@ -146,20 +146,20 @@ theorem probEvent_selectedPrivateSnapshotHitAt_eq_zero_of_q_le_ordinal
 
 set_option maxHeartbeats 2000000 in
 set_option maxRecDepth 100000 in
-theorem probEvent_sampledDiagnostic_successfulDoomed_le_of_selected_ordinals
+theorem probEvent_sampledDiagnostic_successfulDoomed_le_of_selected_ordinals_bound
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
     (hbound : ∀ root,
       (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
         IsOuterHash q)
     (hq : q ≤ 2 ^ securityBits)
+    (bound : ENNReal)
     (hordinal : ∀ ordinal : Fin q,
       Pr[fun source => SelectedPrivateSnapshotHitAt source ordinal.val |
-          sampledGranularAllCanonicalPrivateWitnessSnapshot adversary parameter ftsSecret q] ≤
-        ((2 ^ digestBits : Nat) : ENNReal)⁻¹) :
+          sampledGranularAllCanonicalPrivateWitnessSnapshot adversary parameter ftsSecret q] ≤ bound) :
     Pr[ObservedMaterializedDiagnostic.SuccessfulDoomed |
         sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)] ≤
-      (q : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+      (q : ENNReal) * bound := by
   classical
   let diagnostic :=
     sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)
@@ -211,11 +211,60 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_le_of_selected_ordinals
         exact probEvent_selectedPrivateSnapshotHitAt_eq_zero_of_q_le_ordinal adversary parameter
           ftsSecret q (q + ordinal) hbound (by omega)
       rw [hfirst, hzero, add_zero]
-    _ ≤ ∑ _ordinal : Fin q, ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+    _ ≤ ∑ _ordinal : Fin q, bound := by
       apply Finset.sum_le_sum
       intro ordinal _hordinal
       exact hordinal ordinal
     _ = _ := by simp
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem probEvent_sampledDiagnostic_successfulDoomed_le_of_selected_ordinals
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (hbound : ∀ root,
+      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
+        IsOuterHash q)
+    (hq : q ≤ 2 ^ securityBits)
+    (hordinal : ∀ ordinal : Fin q,
+      Pr[fun source => SelectedPrivateSnapshotHitAt source ordinal.val |
+          sampledGranularAllCanonicalPrivateWitnessSnapshot adversary parameter ftsSecret q] ≤
+        ((2 ^ digestBits : Nat) : ENNReal)⁻¹) :
+    Pr[ObservedMaterializedDiagnostic.SuccessfulDoomed |
+        sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)] ≤
+      (q : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  exact probEvent_sampledDiagnostic_successfulDoomed_le_of_selected_ordinals_bound adversary parameter
+    ftsSecret q hbound hq (((2 ^ digestBits : Nat) : ENNReal)⁻¹) hordinal
+
+set_option maxHeartbeats 2000000 in
+theorem probEvent_sampledDiagnostic_bad_le_of_selected_ordinals_bound
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (hbound : ∀ root,
+      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
+        IsOuterHash q)
+    (hq : q ≤ 2 ^ securityBits)
+    (bound : ENNReal)
+    (hordinal : ∀ ordinal : Fin q,
+      Pr[fun source => SelectedPrivateSnapshotHitAt source ordinal.val |
+          sampledGranularAllCanonicalPrivateWitnessSnapshot adversary parameter ftsSecret q] ≤ bound) :
+    Pr[ObservedMaterializedDiagnostic.Bad |
+        sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)] ≤
+      ((2 * q : Nat) : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
+        (q : ENNReal) * bound := by
+  let diagnostic :=
+    sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)
+  calc
+    _ ≤ Pr[fun outcome => outcome.final = none | diagnostic] +
+          Pr[ObservedMaterializedDiagnostic.SuccessfulDoomed | diagnostic] :=
+      probEvent_diagnosticBad_le_finalNone_add_successfulDoomed diagnostic
+    _ ≤ ((2 * q : Nat) : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
+          (q : ENNReal) * bound := by
+      apply add_le_add
+      · exact probEvent_sampledObservedMaterializedDiagnostic_final_none_le adversary parameter
+          ftsSecret (2 * q) q hbound (by omega)
+      · exact probEvent_sampledDiagnostic_successfulDoomed_le_of_selected_ordinals_bound
+          adversary parameter ftsSecret q hbound hq bound hordinal
 
 set_option maxHeartbeats 2000000 in
 theorem probEvent_sampledDiagnostic_bad_le_of_selected_ordinals
@@ -232,19 +281,38 @@ theorem probEvent_sampledDiagnostic_bad_le_of_selected_ordinals
     Pr[ObservedMaterializedDiagnostic.Bad |
         sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)] ≤
       ((3 * q : Nat) : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
-  let diagnostic :=
-    sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)
   calc
-    _ ≤ Pr[fun outcome => outcome.final = none | diagnostic] +
-          Pr[ObservedMaterializedDiagnostic.SuccessfulDoomed | diagnostic] :=
-      probEvent_diagnosticBad_le_finalNone_add_successfulDoomed diagnostic
     _ ≤ ((2 * q : Nat) : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
-          (q : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
-      apply add_le_add
-      · exact probEvent_sampledObservedMaterializedDiagnostic_final_none_le adversary parameter
-          ftsSecret (2 * q) q hbound (by omega)
-      · exact probEvent_sampledDiagnostic_successfulDoomed_le_of_selected_ordinals adversary
-          parameter ftsSecret q hbound hq hordinal
+          (q : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ :=
+      probEvent_sampledDiagnostic_bad_le_of_selected_ordinals_bound adversary parameter
+        ftsSecret q hbound hq (((2 ^ digestBits : Nat) : ENNReal)⁻¹) hordinal
+    _ = _ := by
+      push_cast
+      ring
+
+set_option maxHeartbeats 2000000 in
+theorem probEvent_sampledDiagnostic_bad_le_of_selected_ordinals_mul
+    (c : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (hbound : ∀ root,
+      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
+        IsOuterHash q)
+    (hq : q ≤ 2 ^ securityBits)
+    (hordinal : ∀ ordinal : Fin q,
+      Pr[fun source => SelectedPrivateSnapshotHitAt source ordinal.val |
+          sampledGranularAllCanonicalPrivateWitnessSnapshot adversary parameter ftsSecret q] ≤
+        (c : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) :
+    Pr[ObservedMaterializedDiagnostic.Bad |
+        sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)] ≤
+      (((c + 2) * q : Nat) : ENNReal) *
+        ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  calc
+    _ ≤ ((2 * q : Nat) : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
+          (q : ENNReal) * ((c : ENNReal) *
+            ((2 ^ digestBits : Nat) : ENNReal)⁻¹) :=
+      probEvent_sampledDiagnostic_bad_le_of_selected_ordinals_bound adversary parameter
+        ftsSecret q hbound hq
+        ((c : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) hordinal
     _ = _ := by
       push_cast
       ring
