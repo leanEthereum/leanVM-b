@@ -19,7 +19,9 @@ impl FnLower<'_> {
     /// asserts the digest equals it). A heap `out` slice takes the digest via a
     /// fresh stack pair and two `DEREF`s after the hash, the store direction
     /// being the same instruction as the load (write-once fills the unset side).
-    /// Keyword arguments set the compile-time metadata.
+    /// Keyword arguments set the metadata: `counter=` / `final=` / `last_node=`
+    /// build it at compile time, `md=` takes the whole word from a value the
+    /// program computed.
     fn lower_blake2s(&mut self, args: &[Expr]) {
         let first_kw = args
             .iter()
@@ -42,7 +44,7 @@ impl FnLower<'_> {
                 self.fail(format!("duplicate blake2s keyword `{key}`"))
             };
         }
-        let allowed = ["cv", "counter", "final", "last_node"];
+        let allowed = ["cv", "counter", "final", "last_node", "md"];
         if !(kwargs.keys().all(|k| allowed.contains(k))) {
             // Sorted: a `HashMap`'s order would make the same mistake report
             // differently between builds.
@@ -51,8 +53,17 @@ impl FnLower<'_> {
             self.fail(format!("unknown blake2s keyword {bad:?}; the keywords are {allowed:?}"))
         };
         let customized = kwargs.keys().any(|k| matches!(*k, "counter" | "final" | "last_node"));
-        if kwargs.contains_key("cv") && !customized {
-            self.fail("blake2s with cv= requires counter=, since a chained block is not the default one-block hash")
+        // `md=` hands over the whole metadata word as a runtime value, so it
+        // replaces the three keywords that would otherwise build it.
+        let runtime_md = kwargs.get("md").copied();
+        if runtime_md.is_some() && customized {
+            self.fail("blake2s md= is the whole metadata word, so counter=, final= and last_node= cannot come with it")
+        };
+        if kwargs.contains_key("cv") && !customized && runtime_md.is_none() {
+            self.fail(
+                "blake2s with cv= requires one of counter=, final=, last_node= or md=, since a chained \
+                 block is not the default one-block hash",
+            )
         };
 
         let a = self.blake2s_input(&args[0]);
@@ -66,38 +77,61 @@ impl FnLower<'_> {
         } else {
             self.default_blake2s_cv()
         };
-        let const_kw = |this: &Self, name: &str, default: u128| -> u128 {
-            kwargs
-                .get(name)
-                .map(|e| {
-                    this.try_const_int(e).unwrap_or_else(|| {
-                        self.fail(format!("BLAKE2s `{name}` must be a compile-time integer, got `{e:?}`"))
-                    })
-                })
-                .unwrap_or(default)
+        let md = match runtime_md {
+            // A metadata word the program computes, which is what lets a hash whose
+            // block count is only known at run time carry the byte counter the
+            // standard asks for (doc §sec:prog-byte-counter). It owes the same
+            // canonical embedding as every other operand: the memory interaction
+            // carries a literal zero above its two low limbs.
+            //
+            // Aliasing the digest destination is the one case write-once does not
+            // catch: the runner reads the metadata before storing the digest, while
+            // the witness reads the finished memory image, so the two disagree and
+            // the proof fails its opening rather than saying why.
+            Some(expr) => {
+                let md = self.expr(expr);
+                if md == c || md == c + 1 {
+                    self.fail("blake2s md= must not name a cell of the digest destination")
+                };
+                md
+            }
+            None => {
+                let const_kw = |this: &Self, name: &str, default: u128| -> u128 {
+                    kwargs
+                        .get(name)
+                        .map(|e| {
+                            this.try_const_int(e).unwrap_or_else(|| {
+                                self.fail(format!(
+                                    "BLAKE2s `{name}` must be a compile-time integer, got `{e:?}`; \
+                                     a metadata word computed at run time goes through md="
+                                ))
+                            })
+                        })
+                        .unwrap_or(default)
+                };
+                // BLAKE2s metadata is just the cumulative byte counter and two flags, so
+                // a multi-block hash is `counter = 64 * blocks_before + bytes_in_this_block`
+                // and `final = 1` on the last block. The default is the one-block hash of
+                // a full 64-byte input, which is what `vmhash::compress` and every Merkle
+                // node use.
+                let counter = const_kw(self, "counter", 64);
+                let counter = u64::try_from(counter)
+                    .unwrap_or_else(|_| self.fail(format!("blake2s counter= {counter} does not fit in u64")));
+                let f0 = if const_kw(self, "final", if customized { 0 } else { 1 }) != 0 {
+                    lean_vm::hash_flock::FINAL_FLAG
+                } else {
+                    0
+                };
+                let f1 = if const_kw(self, "last_node", 0) != 0 {
+                    u32::MAX
+                } else {
+                    0
+                };
+                // A compile-time metadata is a pooled `SET`: one per distinct value
+                // per frame, however many compressions read it.
+                self.const_cell(lean_vm::hash_flock::metadata(counter, f0, f1))
+            }
         };
-        // BLAKE2s metadata is just the cumulative byte counter and two flags, so
-        // a multi-block hash is `counter = 64 * blocks_before + bytes_in_this_block`
-        // and `final = 1` on the last block. The default is the one-block hash of
-        // a full 64-byte input, which is what `vmhash::compress` and every Merkle
-        // node use.
-        let counter = const_kw(self, "counter", 64);
-        let counter = u64::try_from(counter)
-            .unwrap_or_else(|_| self.fail(format!("blake2s counter= {counter} does not fit in u64")));
-        let f0 = if const_kw(self, "final", if customized { 0 } else { 1 }) != 0 {
-            lean_vm::hash_flock::FINAL_FLAG
-        } else {
-            0
-        };
-        let f1 = if const_kw(self, "last_node", 0) != 0 {
-            u32::MAX
-        } else {
-            0
-        };
-        // The metadata is a memory operand like the rest, so a compile-time one
-        // is a pooled `SET`: one per distinct value per frame, however many
-        // compressions read it.
-        let md = self.const_cell(lean_vm::hash_flock::metadata(counter, f0, f1));
         // Each operand is two 128-bit chunk cells; the flexible opcode addresses
         // the four input cells independently (`blake2s_input` forwards the real
         // chunk sources where it can). The digest occupies the two consecutive

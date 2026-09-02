@@ -920,7 +920,7 @@ mod tests {
     /// constraint: the full three-limb memory bus makes a request carrying a
     /// literal zero in limb 2 match only such a stored word.
     #[test]
-    #[should_panic(expected = "BLAKE2s input cell must be a canonical 128-bit embedding")]
+    #[should_panic(expected = "BLAKE2s m0 cell is not a canonical 128-bit embedding")]
     fn blake2s_requires_zero_third_limb() {
         let mut program = blake2s_program([F64::ZERO; 4], [F64::ZERO; 4]);
         program.prog[0] = Op::Set {

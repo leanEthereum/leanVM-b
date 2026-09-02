@@ -27,7 +27,9 @@ const SCHEMA_VERSION: u32 = 2;
 pub const XMSS_EPOCH_A: Epoch = 3_000_000_007;
 /// A second epoch for multi-epoch tests; signer `i` holds the same key at both.
 pub const XMSS_EPOCH_B: Epoch = 3_000_000_009;
-const KEY_START: Epoch = 3_000_000_000;
+/// First epoch the cached keys are activated at, so a test that wants many epoch
+/// groups can walk the whole window (`key_gen`'s range is inclusive).
+pub const KEY_START: Epoch = 3_000_000_000;
 const KEY_END: Epoch = 3_000_000_015;
 
 pub fn message() -> Message {

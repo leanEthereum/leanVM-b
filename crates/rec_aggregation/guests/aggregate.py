@@ -306,11 +306,26 @@ STMT_ODD = STMT_ODD_PLACEHOLDER
 STMT_PAIRS = STMT_PAIRS_PLACEHOLDER
 STMT_PAD_CELLS = STMT_PAD_CELLS_PLACEHOLDER
 STMT_BLOCKS = STMT_BLOCKS_PLACEHOLDER
-# The signer set does not stream: its length is runtime, so its per-block byte
-# counters would have to be computed in-circuit, and nothing does that yet. It
-# stays a chain of complete hashes under its own IV.
-SIGNERS_IV_0 = SIGNERS_IV_0_PLACEHOLDER
-SIGNERS_IV_1 = SIGNERS_IV_1_PLACEHOLDER
+# The declared lists are hashed with plain BLAKE2s over a flat run of cells, 64
+# bytes a compression. A block's byte counter is a runtime value and the ISA has no
+# integer addition, so it splits as in doc §sec:prog-byte-counter: a window of
+# SIGNERS_WINDOW blocks shares one base 64·SIGNERS_WINDOW·q, whose set bits all sit
+# above the window's own offsets 64(j+1), so a block's metadata cell is one XOR. The
+# base comes from the window loop's own counter, and the one block whose offset
+# overlaps it takes the next window's base instead.
+SIGNERS_WINDOW = SIGNERS_WINDOW_PLACEHOLDER
+SIGNERS_WINDOW_LOG = SIGNERS_WINDOW_LOG_PLACEHOLDER
+SIGNERS_MAX_WINDOWS = SIGNERS_MAX_WINDOWS_PLACEHOLDER
+SIGNERS_COUNT_BITS = SIGNERS_COUNT_BITS_PLACEHOLDER
+# BLAKE2s's parameterized initial chaining value, which every hash here starts from,
+# and the metadata of a final block with a zero counter, to add a length into.
+BLAKE2S_IV_0 = BLAKE2S_IV_0_PLACEHOLDER
+BLAKE2S_IV_1 = BLAKE2S_IV_1_PLACEHOLDER
+MD_FINAL = MD_FINAL_PLACEHOLDER
+# The two cells that tag the set's own string, so its hash cannot be confused with
+# either list's or with a Fiat-Shamir state.
+SIGNERS_TAG_0 = SIGNERS_TAG_0_PLACEHOLDER
+SIGNERS_TAG_1 = SIGNERS_TAG_1_PLACEHOLDER
 
 # ---------------------------------------------------------- XMSS (host-supplied)
 # Every 16-byte native value (tweak, digest, chain tip, sibling, public parameter)
@@ -2604,130 +2619,431 @@ def statement_digest(seed_0, seed_1, signers_hash, defer):
     return st[0], st[1]
 
 
-def hash_key_range(state_0, state_1, keys_ptr, half_g, odd_g):
-    # Absorb one epoch group's declared key list from the coverage table into the
-    # signer-set digest, continuing the chain from (state_0, state_1); keys_ptr is
-    # the group's first declared slot. Two keys a frame, so the chain and its one
-    # compression a key are unchanged and only the loop-frame count halves. `half`
-    # and `odd` are pinned by the caller to n//2 and n%2.
-    chain = HeapBuf(half_g ** 4 * GEN ** WORDS_PER_BLOCK)
-    chain[1] = state_0
-    chain[GEN] = state_1
-    for xp in mul_range(1, half_g):
-        pair = xp ** 4
-        keys = keys_ptr * pair
-        hint_witness(keys[0:4], "pubkeys")
-        state = chain * pair
-        blake2s(state[0:2], keys[0:2], state[2:4])
-        blake2s(state[2:4], keys[2:4], state[4:6])
-    # The odd key out, absorbed the same way. Only one branch runs, so both write
-    # the digest cells and the join reads them.
-    paired_end = chain * (half_g ** 4)
-    out = StackBuf(WORDS_PER_BLOCK)
+def keys_window(state_0, state_1, base, keys_ptr, x_q, g_squares):
+    # One window of an epoch group's key hash: SIGNERS_WINDOW blocks, two declared
+    # keys each (a key is two cells, a block four). Counters as in `sphincs_window`.
+    nxt = scaled_log(x_q * GEN, g_squares, const(6 + SIGNERS_WINDOW_LOG))
+    st = StackBuf(2)
+    st[0] = state_0
+    st[1] = state_1
+    for j in unroll(0, SIGNERS_WINDOW):
+        pair = keys_ptr * (GEN ** (4 * j))
+        hint_witness(pair[0:4], "pubkeys")
+        out = StackBuf(2)
+        if const(j + 1 == SIGNERS_WINDOW):
+            blake2s(pair[0:2], pair[2:4], out, cv=st, md=nxt)
+        else:
+            blake2s(pair[0:2], pair[2:4], out, cv=st, md=base + const(64 * (j + 1)))
+        st = out
+    return st[0], st[1], nxt
+
+
+def keys_tail(state_0, state_1, base, keys_ptr, k: Const):
+    # The key pairs past the last whole window, all non-final, so every offset stays
+    # below the base's lowest set bit.
+    st = StackBuf(2)
+    st[0] = state_0
+    st[1] = state_1
+    for j in unroll(0, k):
+        pair = keys_ptr * (GEN ** (4 * j))
+        hint_witness(pair[0:4], "pubkeys")
+        out = StackBuf(2)
+        blake2s(pair[0:2], pair[2:4], out, cv=st, md=base + const(64 * (j + 1)))
+        st = out
+    return st[0], st[1], keys_ptr * (GEN ** (4 * k))
+
+
+def key_list_digest(keys_ptr, half_g, odd_g, n_keys_g, g_squares):
+    # BLAKE2s of one epoch group's declared key list: 32 bytes a key, so the hashed
+    # string is 32·n bytes and its last block is the only partial one. The n // 2
+    # pairs and the odd key out make half + odd blocks; all but the last run in
+    # windows plus a tail (doc §sec:prog-byte-counter), and the last carries the
+    # total length as its counter and the final-block flag.
+    split = StackBuf(2)
+    hint_witness(split, "signers_split")  # g^windows, g^tail_blocks
+    windows = split[0]
+    tail = split[1]
+    assert log(tail) < SIGNERS_WINDOW
+    assert log(windows) < SIGNERS_MAX_WINDOWS
+    assert windows ** SIGNERS_WINDOW * tail == half_g * odd_g * INV_GEN
+    chain = HeapBuf((windows * GEN) ** 4)  # state pair, base, first key of the window
+    chain[1] = BLAKE2S_IV_0
+    chain[GEN] = BLAKE2S_IV_1
+    chain[GEN ** 2] = 0
+    chain[GEN ** 3] = keys_ptr
+    for xq in mul_range(1, windows):
+        slot = chain * (xq ** 4)
+        s0, s1, nb = keys_window(slot[1], slot[GEN], slot[GEN ** 2], slot[GEN ** 3], xq, g_squares)
+        step = chain * ((xq * GEN) ** 4)
+        step[1] = s0
+        step[GEN] = s1
+        step[GEN ** 2] = nb
+        step[GEN ** 3] = slot[GEN ** 3] * (GEN ** (4 * SIGNERS_WINDOW))
+    end = chain * (windows ** 4)
+    t0, t1, last = match(log(tail), range(0, SIGNERS_WINDOW), lambda k: keys_tail(end[1], end[GEN], end[GEN ** 2], end[GEN ** 3], k))
+    final = scaled_log(n_keys_g, g_squares, 5) + MD_FINAL
+    digest = StackBuf(2)
     if odd_g == 1:
-        out[0] = paired_end[1]
-        out[1] = paired_end[GEN]
+        hint_witness(last[0:4], "pubkeys")
+        blake2s(last[0:2], last[2:4], digest, cv=[t0, t1], md=final)
     else:
-        last = keys_ptr * (half_g ** 4)
+        # The odd key out fills half its block, the rest being the zero bytes the
+        # counter already accounts for.
         hint_witness(last[0:2], "pubkeys")
-        blake2s(paired_end[0:2], last[0:2], out)
-    return out[0], out[1]
+        blake2s(last[0:2], [0, 0], digest, cv=[t0, t1], md=final)
+    return digest[0], digest[1]
 
 
-def hash_sphincs_range(state_0, state_1, entries_ptr, n_g):
-    # Absorb the declared SPHINCS claims into the signer-set digest: two
-    # compressions an entry, its key then the message that key signed, so no pairing
-    # of the two can be swapped without changing the digest. One entry a frame where
-    # the XMSS list takes two keys, an entry being twice as wide and a SPHINCS leaf
-    # holding far fewer signers: there is no parity case to carry.
-    chain = HeapBuf(n_g ** 4 * GEN ** WORDS_PER_BLOCK)
-    chain[1] = state_0
-    chain[GEN] = state_1
-    for xe in mul_range(1, n_g):
-        quad = xe ** 4
-        entry = entries_ptr * quad
-        hint_witness(entry[0:4], "sphincs_signers")
-        state = chain * quad
-        blake2s(state[0:2], entry[0:2], state[2:4])
-        blake2s(state[2:4], entry[2:4], state[4:6])
-    end = chain * (n_g ** 4)
-    return end[1], end[GEN]
-
-
-def hash_child_sphincs(state_0, state_1, entries_ptr, cover, base, origin_g, limit_g, n_g):
-    # A child's SPHINCS claims, rebuilt from indices into THIS node's table, as
-    # hash_child_keys does for its XMSS keys. The index is an offset into the
-    # SPHINCS region and bounded by that region's size, so a child's SPHINCS claim
-    # can only ever land on a SPHINCS slot.
-    chain = HeapBuf(n_g ** 4 * GEN ** WORDS_PER_BLOCK)
-    chain[1] = state_0
-    chain[GEN] = state_1
-    for xe in mul_range(1, n_g):
-        off_hint = hint_witness("child_sphincs_index")
-        assert log(off_hint) < log(limit_g)  # precondition as in the raw loops
-        cover[origin_g * off_hint] = base * xe
-        entry = entries_ptr * (off_hint ** 4)
-        state = chain * xe ** 4
-        blake2s(state[0:2], entry[0:2], state[2:4])
-        blake2s(state[2:4], entry[2:4], state[4:6])
-    end = chain * (n_g ** 4)
-    return end[1], end[GEN]
-
-
-def hash_child_keys(state_0, state_1, keys_ptr, cover, base, origin_g, limit_g, half_g, odd_g):
-    # One epoch group of a child's XMSS keys, rebuilt from indices into THIS node's
-    # coverage table: each key is absorbed exactly as the child absorbed it, and the
-    # index is what ties the child's set into this node's coverage. The index is an
-    # offset into the parent group the caller mapped this child group to (origin_g
-    # its first slot, limit_g its size) and bounded by that group's size, so a
-    # child's key can only ever land on an XMSS slot of the right epoch; keys_ptr
-    # already carries the origin, a key slot being two cells where a coverage slot
-    # is one.
-    chain = HeapBuf(half_g ** 4 * GEN ** WORDS_PER_BLOCK)
-    chain[1] = state_0
-    chain[GEN] = state_1
-    for xp in mul_range(1, half_g):
+def child_keys_window(state_0, state_1, base, keys_ptr, cover, marks, origin_g, limit_g, x_q, g_squares):
+    # One window of a child's key hash, absorbed exactly as the child absorbed it,
+    # but with both keys of a block read at hinted indices into THIS node's table and
+    # marked in the coverage table. Each index is an offset into the parent group the
+    # caller mapped this child group to, bounded by that group's size, so a child's
+    # key can only ever land on an XMSS slot of the right epoch.
+    nxt = scaled_log(x_q * GEN, g_squares, const(6 + SIGNERS_WINDOW_LOG))
+    st = StackBuf(2)
+    st[0] = state_0
+    st[1] = state_1
+    for j in unroll(0, SIGNERS_WINDOW):
         two = StackBuf(2)
         hint_witness(two, "child_index")
         assert log(two[0]) < log(limit_g)  # precondition as in the raw loops
         assert log(two[1]) < log(limit_g)
-        first = two[0]
-        second = two[1]
-        even = xp * xp
-        cover[origin_g * first] = base * even
-        cover[origin_g * second] = base * even * GEN
-        state = chain * (even * even)
-        key_a = keys_ptr * (first * first)
-        key_b = keys_ptr * (second * second)
-        blake2s(state[0:2], key_a[0:2], state[2:4])
-        blake2s(state[2:4], key_b[0:2], state[4:6])
-    paired_end = chain * (half_g ** 4)
-    out = StackBuf(WORDS_PER_BLOCK)
+        cover[origin_g * two[0]] = marks * (GEN ** (2 * j))
+        cover[origin_g * two[1]] = marks * (GEN ** (2 * j + 1))
+        key_a = keys_ptr * (two[0] * two[0])
+        key_b = keys_ptr * (two[1] * two[1])
+        out = StackBuf(2)
+        if const(j + 1 == SIGNERS_WINDOW):
+            blake2s(key_a[0:2], key_b[0:2], out, cv=st, md=nxt)
+        else:
+            blake2s(key_a[0:2], key_b[0:2], out, cv=st, md=base + const(64 * (j + 1)))
+        st = out
+    return st[0], st[1], nxt
+
+
+def child_keys_tail(state_0, state_1, base, keys_ptr, cover, marks, origin_g, limit_g, k: Const):
+    # The child's key pairs past its last whole window, all non-final.
+    st = StackBuf(2)
+    st[0] = state_0
+    st[1] = state_1
+    for j in unroll(0, k):
+        two = StackBuf(2)
+        hint_witness(two, "child_index")
+        assert log(two[0]) < log(limit_g)
+        assert log(two[1]) < log(limit_g)
+        cover[origin_g * two[0]] = marks * (GEN ** (2 * j))
+        cover[origin_g * two[1]] = marks * (GEN ** (2 * j + 1))
+        key_a = keys_ptr * (two[0] * two[0])
+        key_b = keys_ptr * (two[1] * two[1])
+        out = StackBuf(2)
+        blake2s(key_a[0:2], key_b[0:2], out, cv=st, md=base + const(64 * (j + 1)))
+        st = out
+    return st[0], st[1], marks * (GEN ** (2 * k))
+
+
+def child_key_list_digest(keys_ptr, cover, base, origin_g, limit_g, half_g, odd_g, n_keys_g, g_squares):
+    # BLAKE2s of one epoch group of a child's keys, over the same 32·n bytes the
+    # child hashed (`key_list_digest`), so the digest it rebuilds is the one the
+    # child's statement carries. `base` prefixes the coverage write values, which
+    # count the keys off as they are marked.
+    split = StackBuf(2)
+    hint_witness(split, "signers_split")
+    windows = split[0]
+    tail = split[1]
+    assert log(tail) < SIGNERS_WINDOW
+    assert log(windows) < SIGNERS_MAX_WINDOWS
+    assert windows ** SIGNERS_WINDOW * tail == half_g * odd_g * INV_GEN
+    chain = HeapBuf((windows * GEN) ** 4)
+    chain[1] = BLAKE2S_IV_0
+    chain[GEN] = BLAKE2S_IV_1
+    chain[GEN ** 2] = 0
+    chain[GEN ** 3] = base
+    for xq in mul_range(1, windows):
+        slot = chain * (xq ** 4)
+        s0, s1, nb = child_keys_window(slot[1], slot[GEN], slot[GEN ** 2], keys_ptr, cover, slot[GEN ** 3], origin_g, limit_g, xq, g_squares)
+        step = chain * ((xq * GEN) ** 4)
+        step[1] = s0
+        step[GEN] = s1
+        step[GEN ** 2] = nb
+        step[GEN ** 3] = slot[GEN ** 3] * (GEN ** (2 * SIGNERS_WINDOW))
+    end = chain * (windows ** 4)
+    t0, t1, marks = match(log(tail), range(0, SIGNERS_WINDOW), lambda k: child_keys_tail(end[1], end[GEN], end[GEN ** 2], keys_ptr, cover, end[GEN ** 3], origin_g, limit_g, k))
+    final = scaled_log(n_keys_g, g_squares, 5) + MD_FINAL
+    digest = StackBuf(2)
     if odd_g == 1:
-        out[0] = paired_end[1]
-        out[1] = paired_end[GEN]
+        two = StackBuf(2)
+        hint_witness(two, "child_index")
+        assert log(two[0]) < log(limit_g)
+        assert log(two[1]) < log(limit_g)
+        cover[origin_g * two[0]] = marks
+        cover[origin_g * two[1]] = marks * GEN
+        key_a = keys_ptr * (two[0] * two[0])
+        key_b = keys_ptr * (two[1] * two[1])
+        blake2s(key_a[0:2], key_b[0:2], digest, cv=[t0, t1], md=final)
     else:
         tail_idx = hint_witness("child_index")
         assert log(tail_idx) < log(limit_g)
-        cover[origin_g * tail_idx] = base * (half_g * half_g)
+        cover[origin_g * tail_idx] = marks
         key_last = keys_ptr * (tail_idx * tail_idx)
-        blake2s(paired_end[0:2], key_last[0:2], out)
-    return out[0], out[1]
+        blake2s(key_last[0:2], [0, 0], digest, cv=[t0, t1], md=final)
+    return digest[0], digest[1]
 
 
-def rebuild_child_groups(nsub_e_g, st0, st1, base, epochs, msgs, group_base, group_slots, n_epochs_g, xmss_table, cover):
-    # The child's epoch groups, re-absorbed into its signer-set chain exactly as the
-    # child absorbed them: per group (epoch, count) then the message, then the keys,
-    # read from THIS node's table through hinted indices. A hinted map ties each
-    # group to the parent group holding the same epoch AND message, whose region its
-    # keys land in. Everything hinted here is pinned by the chain, which the child's
-    # statement digest carries. Loop-carried state rides a stride-4 chain: the two
-    # hash cells and the running product of the group counts, which prefixes each
-    # group's write values and ends as the child's XMSS claim count.
-    chain = HeapBuf((nsub_e_g * GEN) ** 4)
-    chain[1] = st0
-    chain[GEN] = st1
-    chain[GEN ** 2] = 1
+def scaled_log(x, g_squares, shift: Const):
+    # 2^shift times the exponent of `x`, as a bit pattern (doc §sec:prog-byte-counter).
+    # The exponent's bits are advice, tied back by the g-power product; weighing them
+    # at COORD_BASIS[j] assembles the exponent itself and the final multiply is the
+    # shift, exact because nothing reduces below degree 64. Both sides of the product
+    # stay under the order of g, so the bits ARE that exponent, hence below
+    # 2^SIGNERS_COUNT_BITS, which every count and window index here is.
+    bits = StackBuf(SIGNERS_COUNT_BITS)
+    hint_decompose_bits_exponent(bits, x, SIGNERS_COUNT_BITS)
+    value = 0
+    rebuilt = GEN ** 0
+    for j in unroll(0, SIGNERS_COUNT_BITS):
+        b = bits[j]
+        bits[j] = b * b  # booleanity, as a write-once pin
+        value += b * COORD_BASIS[j]
+        rebuilt *= (1 + b * (g_squares[GEN ** j] + 1))
+    assert rebuilt == x
+    return value * COORD_BASIS[shift]
+
+
+def sphincs_window(state_0, state_1, base, entries_ptr, x_q, g_squares):
+    # One window of the SPHINCS list's hash: SIGNERS_WINDOW claims, one 64-byte block
+    # each (the claimed key, then the message it signed). Block j's counter is
+    # base + 64(j+1), one XOR, except the last, whose offset is the base's own lowest
+    # bit and which therefore takes the NEXT window's base as its whole counter. That
+    # base is derived here and carried out for the following window.
+    nxt = scaled_log(x_q * GEN, g_squares, const(6 + SIGNERS_WINDOW_LOG))
+    st = StackBuf(2)
+    st[0] = state_0
+    st[1] = state_1
+    for j in unroll(0, SIGNERS_WINDOW):
+        entry = entries_ptr * (GEN ** (4 * j))
+        hint_witness(entry[0:4], "sphincs_signers")
+        out = StackBuf(2)
+        if const(j + 1 == SIGNERS_WINDOW):
+            blake2s(entry[0:2], entry[2:4], out, cv=st, md=nxt)
+        else:
+            blake2s(entry[0:2], entry[2:4], out, cv=st, md=base + const(64 * (j + 1)))
+        st = out
+    return st[0], st[1], nxt
+
+
+def sphincs_tail(state_0, state_1, base, entries_ptr, k: Const):
+    # The blocks the window loop leaves over, fewer than a window, so every offset
+    # 64(j+1) stays below the base's lowest set bit and needs no next base.
+    st = StackBuf(2)
+    st[0] = state_0
+    st[1] = state_1
+    for j in unroll(0, k):
+        entry = entries_ptr * (GEN ** (4 * j))
+        hint_witness(entry[0:4], "sphincs_signers")
+        out = StackBuf(2)
+        blake2s(entry[0:2], entry[2:4], out, cv=st, md=base + const(64 * (j + 1)))
+        st = out
+    return st[0], st[1], entries_ptr * (GEN ** (4 * k))
+
+
+def sphincs_list_digest(entries_ptr, n_g, g_squares):
+    # BLAKE2s of the declared SPHINCS claims: n blocks of 64 bytes, so the hash is
+    # over exactly 64n bytes and no block is partial. The last block is absorbed
+    # apart, carrying the total length as its counter and the final-block flag; the
+    # n - 1 before it run in windows plus a tail (doc §sec:prog-byte-counter).
+    digest = StackBuf(2)
+    if n_g == 1:
+        # No claims: the hash of the empty string, one compression of a zero block.
+        blake2s([0, 0], [0, 0], digest, md=MD_FINAL)
+    else:
+        split = StackBuf(2)
+        hint_witness(split, "signers_split")  # g^windows, g^tail_blocks
+        windows = split[0]
+        tail = split[1]
+        assert log(tail) < SIGNERS_WINDOW
+        assert log(windows) < SIGNERS_MAX_WINDOWS
+        assert windows ** SIGNERS_WINDOW * tail == n_g * INV_GEN
+        # Four cells a window: the state pair, the window's base, its first entry.
+        chain = HeapBuf((windows * GEN) ** 4)
+        chain[1] = BLAKE2S_IV_0
+        chain[GEN] = BLAKE2S_IV_1
+        chain[GEN ** 2] = 0
+        chain[GEN ** 3] = entries_ptr
+        for xq in mul_range(1, windows):
+            slot = chain * (xq ** 4)
+            s0, s1, nb = sphincs_window(slot[1], slot[GEN], slot[GEN ** 2], slot[GEN ** 3], xq, g_squares)
+            step = chain * ((xq * GEN) ** 4)
+            step[1] = s0
+            step[GEN] = s1
+            step[GEN ** 2] = nb
+            step[GEN ** 3] = slot[GEN ** 3] * (GEN ** (4 * SIGNERS_WINDOW))
+        end = chain * (windows ** 4)
+        t0, t1, last = match(log(tail), range(0, SIGNERS_WINDOW), lambda k: sphincs_tail(end[1], end[GEN], end[GEN ** 2], end[GEN ** 3], k))
+        hint_witness(last[0:4], "sphincs_signers")
+        final = scaled_log(n_g, g_squares, 6) + MD_FINAL
+        blake2s(last[0:2], last[2:4], digest, cv=[t0, t1], md=final)
+    return digest[0], digest[1]
+
+
+def child_sphincs_window(state_0, state_1, base, entries_ptr, cover, marks, origin_g, limit_g, x_q, g_squares):
+    # One window of a child's SPHINCS list, absorbed exactly as the child absorbed
+    # it, but with each block's claim read at a hinted index into THIS node's table
+    # and marked in the coverage table. The index is an offset into the SPHINCS
+    # region and bounded by that region's size, so a child's claim can only ever
+    # land on a SPHINCS slot. Counters as in `sphincs_window`.
+    nxt = scaled_log(x_q * GEN, g_squares, const(6 + SIGNERS_WINDOW_LOG))
+    st = StackBuf(2)
+    st[0] = state_0
+    st[1] = state_1
+    for j in unroll(0, SIGNERS_WINDOW):
+        off_hint = hint_witness("child_sphincs_index")
+        assert log(off_hint) < log(limit_g)  # precondition as in the raw loops
+        cover[origin_g * off_hint] = marks * (GEN ** j)
+        entry = entries_ptr * (off_hint ** 4)
+        out = StackBuf(2)
+        if const(j + 1 == SIGNERS_WINDOW):
+            blake2s(entry[0:2], entry[2:4], out, cv=st, md=nxt)
+        else:
+            blake2s(entry[0:2], entry[2:4], out, cv=st, md=base + const(64 * (j + 1)))
+        st = out
+    return st[0], st[1], nxt
+
+
+def child_sphincs_tail(state_0, state_1, base, entries_ptr, cover, marks, origin_g, limit_g, k: Const):
+    # The blocks past the child's last whole window, all of them non-final, so every
+    # offset stays below this base's lowest set bit.
+    st = StackBuf(2)
+    st[0] = state_0
+    st[1] = state_1
+    for j in unroll(0, k):
+        off_hint = hint_witness("child_sphincs_index")
+        assert log(off_hint) < log(limit_g)
+        cover[origin_g * off_hint] = marks * (GEN ** j)
+        entry = entries_ptr * (off_hint ** 4)
+        out = StackBuf(2)
+        blake2s(entry[0:2], entry[2:4], out, cv=st, md=base + const(64 * (j + 1)))
+        st = out
+    return st[0], st[1]
+
+
+def child_sphincs_list_digest(entries_ptr, cover, base, origin_g, limit_g, n_g, g_squares):
+    # BLAKE2s of a child's declared SPHINCS claims, over the same 64n bytes the
+    # child hashed (`sphincs_list_digest`), so the digest it rebuilds is the one the
+    # child's statement carries. `base` prefixes the coverage write values, which
+    # count the claims off as they are marked.
+    digest = StackBuf(2)
+    if n_g == 1:
+        blake2s([0, 0], [0, 0], digest, md=MD_FINAL)
+    else:
+        split = StackBuf(2)
+        hint_witness(split, "signers_split")
+        windows = split[0]
+        tail = split[1]
+        assert log(tail) < SIGNERS_WINDOW
+        assert log(windows) < SIGNERS_MAX_WINDOWS
+        assert windows ** SIGNERS_WINDOW * tail == n_g * INV_GEN
+        chain = HeapBuf((windows * GEN) ** 4)
+        chain[1] = BLAKE2S_IV_0
+        chain[GEN] = BLAKE2S_IV_1
+        chain[GEN ** 2] = 0
+        for xq in mul_range(1, windows):
+            slot = chain * (xq ** 4)
+            marks = base * (xq ** SIGNERS_WINDOW)
+            s0, s1, nb = child_sphincs_window(slot[1], slot[GEN], slot[GEN ** 2], entries_ptr, cover, marks, origin_g, limit_g, xq, g_squares)
+            step = chain * ((xq * GEN) ** 4)
+            step[1] = s0
+            step[GEN] = s1
+            step[GEN ** 2] = nb
+        end = chain * (windows ** 4)
+        marks = base * (windows ** SIGNERS_WINDOW)
+        t0, t1 = match(log(tail), range(0, SIGNERS_WINDOW), lambda k: child_sphincs_tail(end[1], end[GEN], end[GEN ** 2], entries_ptr, cover, marks, origin_g, limit_g, k))
+        off_hint = hint_witness("child_sphincs_index")
+        assert log(off_hint) < log(limit_g)
+        cover[origin_g * off_hint] = base * (n_g * INV_GEN)
+        entry = entries_ptr * (off_hint ** 4)
+        final = scaled_log(n_g, g_squares, 6) + MD_FINAL
+        blake2s(entry[0:2], entry[2:4], digest, cv=[t0, t1], md=final)
+    return digest[0], digest[1]
+
+
+def plain_window(state_0, state_1, base, run_ptr, x_q, g_squares):
+    # One window over a run of cells already in memory, four to a block, hinting
+    # nothing. Counters as in `sphincs_window`.
+    nxt = scaled_log(x_q * GEN, g_squares, const(6 + SIGNERS_WINDOW_LOG))
+    st = StackBuf(2)
+    st[0] = state_0
+    st[1] = state_1
+    for j in unroll(0, SIGNERS_WINDOW):
+        block = run_ptr * (GEN ** (4 * j))
+        out = StackBuf(2)
+        if const(j + 1 == SIGNERS_WINDOW):
+            blake2s(block[0:2], block[2:4], out, cv=st, md=nxt)
+        else:
+            blake2s(block[0:2], block[2:4], out, cv=st, md=base + const(64 * (j + 1)))
+        st = out
+    return st[0], st[1], nxt
+
+
+def plain_tail(state_0, state_1, base, run_ptr, k: Const):
+    # The blocks of the run past its last whole window, all non-final.
+    st = StackBuf(2)
+    st[0] = state_0
+    st[1] = state_1
+    for j in unroll(0, k):
+        block = run_ptr * (GEN ** (4 * j))
+        out = StackBuf(2)
+        blake2s(block[0:2], block[2:4], out, cv=st, md=base + const(64 * (j + 1)))
+        st = out
+    return st[0], st[1], run_ptr * (GEN ** (4 * k))
+
+
+def signer_set_digest(run_ptr, n_epochs_g, g_squares):
+    # BLAKE2s of the signer set: the tag block carrying both list lengths, the
+    # SPHINCS list's digest, then two blocks a group, its (epoch, count, message)
+    # and its key list's digest. Every block is full, so the hash is over exactly
+    # 64·(2 + 2·epochs) bytes, and leading with both lengths makes the encoding
+    # prefix-free: no set's string is a prefix of another's.
+    blocks = n_epochs_g * n_epochs_g * (GEN ** 2)  # g^(2 + 2·epochs)
+    split = StackBuf(2)
+    hint_witness(split, "signers_split")
+    windows = split[0]
+    tail = split[1]
+    assert log(tail) < SIGNERS_WINDOW
+    assert log(windows) < SIGNERS_MAX_WINDOWS
+    assert windows ** SIGNERS_WINDOW * tail == blocks * INV_GEN
+    chain = HeapBuf((windows * GEN) ** 4)
+    chain[1] = BLAKE2S_IV_0
+    chain[GEN] = BLAKE2S_IV_1
+    chain[GEN ** 2] = 0
+    chain[GEN ** 3] = run_ptr
+    for xq in mul_range(1, windows):
+        slot = chain * (xq ** 4)
+        s0, s1, nb = plain_window(slot[1], slot[GEN], slot[GEN ** 2], slot[GEN ** 3], xq, g_squares)
+        step = chain * ((xq * GEN) ** 4)
+        step[1] = s0
+        step[GEN] = s1
+        step[GEN ** 2] = nb
+        step[GEN ** 3] = slot[GEN ** 3] * (GEN ** (4 * SIGNERS_WINDOW))
+    end = chain * (windows ** 4)
+    t0, t1, last = match(log(tail), range(0, SIGNERS_WINDOW), lambda k: plain_tail(end[1], end[GEN], end[GEN ** 2], end[GEN ** 3], k))
+    final = scaled_log(blocks, g_squares, 6) + MD_FINAL
+    digest = StackBuf(2)
+    blake2s(last[0:2], last[2:4], digest, cv=[t0, t1], md=final)
+    return digest[0], digest[1]
+
+
+def rebuild_child_groups(nsub_e_g, run_ptr, base, epochs, msgs, group_base, group_slots, n_epochs_g, xmss_table, cover, g_squares):
+    # The child's epoch groups, written into the run its own signer-set hash covers,
+    # two blocks a group exactly as the child laid them out: its (epoch, count,
+    # message), then the digest of its keys, read from THIS node's table through
+    # hinted indices. A hinted map ties each group to the parent group holding the
+    # same epoch AND message, whose region its keys land in. Everything hinted here
+    # is pinned by the digest, which the child's statement carries. The running
+    # product of the group counts prefixes each group's coverage writes and ends as
+    # the child's XMSS claim count.
+    counts = HeapBuf(nsub_e_g * GEN)
+    counts[GEN ** 0] = 1
     for xj in mul_range(1, nsub_e_g):
         grp = StackBuf(4)
         hint_witness(grp, "child_group")  # epoch, msg_lo, msg_hi, count
@@ -2739,24 +3055,25 @@ def rebuild_child_groups(nsub_e_g, st0, st1, base, epochs, msgs, group_base, gro
         parent_msg = msgs * (parent * parent)
         assert parent_msg[1] == grp[1]
         assert parent_msg[GEN] == grp[2]
-        state = chain * (xj ** 4)
-        after_count = StackBuf(2)
-        blake2s(state[0:2], [grp[0], n_keys], after_count)
-        after_msg = StackBuf(2)
-        blake2s(after_count, [grp[1], grp[2]], after_msg)
         halves = StackBuf(2)
         hint_witness(halves, "child_halves")
         assert log(halves[1]) < 2
         assert log(halves[0]) < MAX_KEYS
         assert halves[0] * halves[0] * halves[1] == n_keys
         gb = group_base[parent]
-        h0, h1 = hash_child_keys(after_msg[0], after_msg[1], xmss_table * (gb * gb), cover, base * state[GEN ** 2], gb, group_slots[parent], halves[0], halves[1])
-        nxt = chain * ((xj * GEN) ** 4)
-        nxt[1] = h0
-        nxt[GEN] = h1
-        nxt[GEN ** 2] = state[GEN ** 2] * n_keys
-    end = chain * (nsub_e_g ** 4)
-    return end[1], end[GEN], end[GEN ** 2]
+        prefix = counts[xj]
+        kd_0, kd_1 = child_key_list_digest(xmss_table * (gb * gb), cover, base * prefix, gb, group_slots[parent], halves[0], halves[1], n_keys, g_squares)
+        slot = run_ptr * (xj ** 8) * (GEN ** 8)
+        slot[1] = grp[0]
+        slot[GEN] = n_keys
+        slot[GEN ** 2] = grp[1]
+        slot[GEN ** 3] = grp[2]
+        slot[GEN ** 4] = kd_0
+        slot[GEN ** 5] = kd_1
+        slot[GEN ** 6] = 0
+        slot[GEN ** 7] = 0
+        counts[xj * GEN] = prefix * n_keys
+    return counts[nsub_e_g]
 
 
 # ================================ the aggregation node ==============================
@@ -2854,53 +3171,63 @@ def main():
     seed_1 = fs_seed[1]
 
     # ---- the signer set ----
+    g_logs_pow2, g_squares = exponent_tables()
     # One table per scheme, the XMSS one an epoch group at a time: each group its
     # declared list (strictly sorted, checked by the outer verifier, which holds it)
     # followed by its own duplicate slots. The coverage indices below run over one
     # space: the group regions in order, then the SPHINCS one.
     #
-    # The digest is a chain of compressions (a runtime length would need its byte
-    # counters computed in-circuit, which nothing does yet): its two lengths, then
-    # per group (epoch, count), the message, and that group's keys, then the SPHINCS
-    # claims. Leading with every count makes the encoding prefix-free, so no digest
-    # extends another and it binds its own lengths. `half` and `odd` are hinted per
-    # group and pinned by half*half*odd == n with odd in {0, 1}, which leaves
-    # half = n // 2 and odd = n % 2 as the only solution.
+    # The digest is a plain BLAKE2s of one string, in whole blocks: a tag block with
+    # both lengths, the SPHINCS list's digest, then per group its (epoch, count,
+    # message) and its key list's digest, each list hashed plainly in turn. Leading
+    # with both lengths makes the encoding prefix-free, so no set's string is a
+    # prefix of another's and the digest binds its own lengths. `half` and `odd` are
+    # hinted per group and pinned by half*half*odd == n with odd in {0, 1}, which
+    # leaves half = n // 2 and odd = n % 2 as the only solution.
     xmss_table = HeapBuf(xmss_slots_g * xmss_slots_g)
     sphincs_table = HeapBuf(sphincs_slots_g ** 4)
-    signers_chain = HeapBuf((n_epochs_g * GEN) ** 2)
-    seeded = StackBuf(2)
-    blake2s([SIGNERS_IV_0, SIGNERS_IV_1], [n_epochs_g, n_sphincs_g], seeded)
-    signers_chain[1] = seeded[0]
-    signers_chain[GEN] = seeded[1]
+    # The run the set's hash covers: the tag block with both lengths, a block for the
+    # SPHINCS list's digest, then two a group. Eight cells a group, so a group's
+    # header and its key digest are one block each.
+    signers_run = HeapBuf(n_epochs_g ** 8 * GEN ** 8)
+    signers_run[1] = SIGNERS_TAG_0
+    signers_run[GEN] = SIGNERS_TAG_1
+    signers_run[GEN ** 2] = n_epochs_g
+    signers_run[GEN ** 3] = n_sphincs_g
     for xe in mul_range(1, n_epochs_g):
         n_keys = group_n_keys[xe]
         base = group_base[xe]
-        state = signers_chain * (xe * xe)
-        after_count = StackBuf(2)
-        blake2s(state[0:2], [epochs[xe], n_keys], after_count)
-        after_msg = StackBuf(2)
-        blake2s(after_count, (msgs * (xe * xe))[0:2], after_msg)
         halves = StackBuf(2)
         hint_witness(halves, "pk_halves")
         assert log(halves[1]) < 2
         assert log(halves[0]) < MAX_KEYS
         assert halves[0] * halves[0] * halves[1] == n_keys
-        h0, h1 = hash_key_range(after_msg[0], after_msg[1], xmss_table * (base * base), halves[0], halves[1])
-        nxt = signers_chain * ((xe * GEN) * (xe * GEN))
-        nxt[1] = h0
-        nxt[GEN] = h1
+        kd_0, kd_1 = key_list_digest(xmss_table * (base * base), halves[0], halves[1], n_keys, g_squares)
+        group_msg = msgs * (xe * xe)
+        slot = signers_run * (xe ** 8) * (GEN ** 8)
+        slot[1] = epochs[xe]
+        slot[GEN] = n_keys
+        slot[GEN ** 2] = group_msg[1]
+        slot[GEN ** 3] = group_msg[GEN]
+        slot[GEN ** 4] = kd_0
+        slot[GEN ** 5] = kd_1
+        slot[GEN ** 6] = 0
+        slot[GEN ** 7] = 0
         # The duplicate slots ride the same table but outside the hashed prefix,
         # past the group's declared keys.
         dup_ptr = xmss_table * (base * base * n_keys * n_keys)
         for xd in mul_range(1, group_n_dups[xe]):
             dup = dup_ptr * (xd * xd)
             hint_witness(dup[0:2], "dup_pubkeys")
-    chain_end = signers_chain * (n_epochs_g * n_epochs_g)
-    hash_0, hash_1 = hash_sphincs_range(chain_end[1], chain_end[GEN], sphincs_table, n_sphincs_g)
+    sp_0, sp_1 = sphincs_list_digest(sphincs_table, n_sphincs_g, g_squares)
+    signers_run[GEN ** 4] = sp_0
+    signers_run[GEN ** 5] = sp_1
+    signers_run[GEN ** 6] = 0
+    signers_run[GEN ** 7] = 0
+    set_0, set_1 = signer_set_digest(signers_run, n_epochs_g, g_squares)
     signers_hash = HeapBuf(WORDS_PER_BLOCK)
-    signers_hash[1] = hash_0
-    signers_hash[GEN] = hash_1
+    signers_hash[1] = set_0
+    signers_hash[GEN] = set_1
     for xd in mul_range(1, n_sdup_g):
         dup = sphincs_table * ((n_sphincs_g * xd) ** 4)
         hint_witness(dup[0:4], "dup_sphincs")
@@ -2951,7 +3278,6 @@ def main():
         verify_sig_sphincs(sphincs_table * (off_hint ** 4))
 
     # ---- children ----
-    g_logs_pow2, g_squares = exponent_tables()
     child_pi = HeapBuf(n_children_g * n_children_g)
     child_fresh = HeapBuf(n_children_g ** DEFER_SIZE)
     child_carried = HeapBuf(n_children_g ** DEFER_STMT_CELLS)
@@ -2971,18 +3297,26 @@ def main():
         nsub_s_g = child_meta[1]
         assert log(nsub_e_g) < MAX_EPOCHS + 1
         assert log(nsub_s_g) < MAX_KEYS
-        sub_seeded = StackBuf(2)
-        blake2s([SIGNERS_IV_0, SIGNERS_IV_1], child_meta, sub_seeded)
-        sub_state_0, sub_state_1, nsub_x_g = rebuild_child_groups(nsub_e_g, sub_seeded[0], sub_seeded[1], base, epochs, msgs, group_base, group_slots, n_epochs_g, xmss_table, cover)
+        sub_run = HeapBuf(nsub_e_g ** 8 * GEN ** 8)
+        sub_run[1] = SIGNERS_TAG_0
+        sub_run[GEN] = SIGNERS_TAG_1
+        sub_run[GEN ** 2] = nsub_e_g
+        sub_run[GEN ** 3] = nsub_s_g
+        nsub_x_g = rebuild_child_groups(nsub_e_g, sub_run, base, epochs, msgs, group_base, group_slots, n_epochs_g, xmss_table, cover, g_squares)
         # Implied by the per-group bounds and the child's own n_total assert; stands
         # as documentation.
         assert log(nsub_x_g) < MAX_KEYS
         nsub_g = nsub_x_g * nsub_s_g
         assert nsub_g != 1
-        sub_hash_0, sub_hash_1 = hash_child_sphincs(sub_state_0, sub_state_1, sphincs_table, cover, base * nsub_x_g, xmss_slots_g, sphincs_slots_g, nsub_s_g)
+        csp_0, csp_1 = child_sphincs_list_digest(sphincs_table, cover, base * nsub_x_g, xmss_slots_g, sphincs_slots_g, nsub_s_g, g_squares)
+        sub_run[GEN ** 4] = csp_0
+        sub_run[GEN ** 5] = csp_1
+        sub_run[GEN ** 6] = 0
+        sub_run[GEN ** 7] = 0
+        sub_set_0, sub_set_1 = signer_set_digest(sub_run, nsub_e_g, g_squares)
         sub_hash = HeapBuf(WORDS_PER_BLOCK)
-        sub_hash[1] = sub_hash_0
-        sub_hash[GEN] = sub_hash_1
+        sub_hash[1] = sub_set_0
+        sub_hash[GEN] = sub_set_1
         carried = child_carried * xc ** DEFER_STMT_CELLS
         hint_witness(carried[0:DEFER_STMT_CELLS], "child_defer")
         pi_0, pi_1 = statement_digest(seed_0, seed_1, sub_hash, carried)

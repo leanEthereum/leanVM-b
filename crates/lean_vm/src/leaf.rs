@@ -97,7 +97,7 @@ pub fn fingerprint_weights(alphas: &[F192]) -> Vec<F192> {
     w
 }
 
-/// Bits indexing a bus tuple's coordinates: `m = 12` coordinates live in the
+/// Bits indexing a bus tuple's coordinates: `m = 11` coordinates live in the
 /// `2^4` slots of the bytecode encoding (§sec:m3, §sec:e2e-bc).
 pub const N_TUPLE_BITS: usize = 4;
 

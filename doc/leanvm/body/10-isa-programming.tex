@@ -50,6 +50,12 @@ The range check \emph{in the exponent} proves $x\in\{\gen^{0},\dots,\gen^{k-1}\}
 \end{enumerate}
 Then $e+f\equiv k-1\pmod{2^{64}-1}$ with $e,f<2^{\kmem}\le2^{32}$, so $e+f<2^{33}<2^{64}-1$ and the congruence is an equality over the integers; a ``negative'' $k-1-e$ would wrap to $\approx2^{64}\gg2^{\kmem}$, so $e\le k-1$, for every memory size the prover may announce, provided $k\le2^{16}$ (the minimum, \S\ref{sec:vm}). The two \texttt{DEREF} targets are deferred touches; the constant cell is one amortized \texttt{SET} per distinct bound per frame.
 
+\subsection{Counter in BLAKE2s}\label{sec:prog-byte-counter}
+
+Hashing a slice of constant size with BLAKE2s is straightforward, by hardcoding the counter inside each $\md$ (using the $\texttt{SET\_CONSTANT}$ instruction).
+
+Hashing slice of dynamic-size requires to reconstruct the counter at runtime. One efficient way to handle this is the following: absorb a window of $B=2^{b}$ blocks per loop iteration, unrolled, so that block $j$ of window $q$ has counter $64Bq+64(j+1)$. The two terms have disjoint bits, the base $64Bq=2^{6+b}q$ having none below $6+b$, and $\K$ is a polynomial basis, so a plain \texttt{XOR} adds them as integers: each $\md$ is one instruction against a compile-time constant, $\mathit{base}+(64(j+1)\,\Vert\,f_0\,\Vert\,f_1)$. Only a window's last block overlaps, and it takes the next window's base instead. That base is the loop counter $\gen^{q}$ decomposed into hinted bits, tied back by $\prod_j(\gen^{2^{j}})^{b_j}=\gen^{q}$ and summed weighted by $2^{6+b+j}$: one decomposition per window, so under three instructions a block at $B=32$.
+
 \subsection{Match statements}\label{sec:prog-match}
 
 leanVM dispatches a switch with a single jump to $\pc=a+b\cdot x$: the case blocks, padded to a common length $b$, sit consecutively from base $a$, and its integer arithmetic forms the affine address in one instruction. That computation does not transport to this VM. Addresses here are $\gen$-powers: the additive offset $a+j$ is the cheap product $\gen^{a}\cdot x$, but the \emph{scaling} $b\cdot j$ is the power $x^{b}$ ($O(\log b)$ multiplications per dispatch), with every block still padded to the longest. Instead, the aligned region collapses to fixed two-instruction \emph{trampoline slots} and the real blocks move out of line: matching on $x=\gen^{j}$, $j\in[0,n)$, the dispatch jumps to

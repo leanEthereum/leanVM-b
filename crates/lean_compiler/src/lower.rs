@@ -507,8 +507,10 @@ impl FnLower<'_> {
                             od: fr::ZERO,
                             of: fr::ZERO,
                         },
-                        // Its metadata cell is one nothing writes, like its message
-                        // cells, so every traversal compresses the same input.
+                        // Its metadata cell is one no instruction writes, like its
+                        // message cells: the interpreter leaves those zero, and a
+                        // prover choosing otherwise only picks which compression the
+                        // dummy proves, which nothing reads (`lean_vm::cpu::filler`).
                         FillerOp::Blake2s => LOp::Blake2s {
                             ins: [fr::DIGEST + 2, fr::DIGEST + 3, fr::DIGEST + 4, fr::DIGEST + 5],
                             cv: fr::SCRATCH,

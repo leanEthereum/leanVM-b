@@ -90,6 +90,44 @@ def main():
     verify(&program, &want, &proof).expect("standard two-block BLAKE2s verifies");
 }
 
+/// The same 80-byte hash with its second block's metadata computed at run time,
+/// the shape a hash of runtime length needs: the counter's high part is a word
+/// the program produced and its low part a compile-time constant, and their set
+/// bits are disjoint, so one `XOR` is their integer sum (doc
+/// §sec:prog-byte-counter). The hint stands in for the high part a real absorb
+/// loop derives from its own counter.
+#[test]
+fn blake2s_runtime_metadata_matches_the_standard_hash() {
+    let src = "\
+def main():
+    block0 = [1, 2, 3, 4]
+    tail = [5, 0, 0, 0]
+    cv = StackBuf(2)
+    blake2s(block0[0:2], block0[2:4], cv, counter=64, final=0)
+    high = hint_witness(\"high\")
+    assert high == 64
+    out = StackBuf(2)
+    blake2s(tail[0:2], tail[2:4], out, cv=cv, md=high + f192(16, 4294967295, 0))
+    p = 1
+    p[1] = out[0]
+    p[GEN] = out[1]
+    return
+";
+    let mut program = compile(&parse(src).expect("parse"));
+    program.set_witness("high", vec![vec![F192::new(64, 0, 0)]]);
+    warm_setup(2);
+    let mut input = Vec::new();
+    for value in 1u64..=5 {
+        input.extend_from_slice(&value.to_le_bytes());
+        input.extend_from_slice(&0u64.to_le_bytes());
+    }
+    let d = primitives::hash::hash(&input);
+    let word = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
+    let want = [F192::new(word(0), word(8), 0), F192::new(word(16), word(24), 0)];
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
+    verify(&program, &want, &proof).expect("a runtime metadata word hashes to the standard digest");
+}
+
 #[test]
 fn blake2s_counter_accepts_full_u64_range() {
     let src = "\
@@ -226,6 +264,24 @@ def main():
 }
 
 /// A custom CV with the default one-block metadata is not a chained block.
+/// A metadata cell inside the digest destination would be read before the digest
+/// is stored and re-read from the finished image by the witness, so the two would
+/// disagree and the proof would fail its opening with nothing to point at. Every
+/// other overlap is a write-once conflict, which does say where it happened.
+#[test]
+#[should_panic(expected = "md= must not name a cell of the digest destination")]
+fn blake2s_metadata_inside_the_destination_is_rejected() {
+    let src = "\
+def main():
+    msg = [1, 2, 3, 4]
+    out = StackBuf(2)
+    out[0] = 7
+    blake2s(msg[0:2], msg[2:4], out, md=out[0])
+    return
+";
+    let _ = compile(&parse(src).expect("parse"));
+}
+
 /// Require the caller to state the byte counter explicitly.
 #[test]
 #[should_panic(expected = "blake2s with cv= requires")]

@@ -308,7 +308,7 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 8] {
     ]
 }
 
-/// The stacked bytecode polynomial: the nine columns at their bus tuple
+/// The stacked bytecode polynomial: the eight columns at their bus tuple
 /// coordinates, which is what makes the program's whole share of a bus leaf one
 /// evaluation at `(ζ, α⃗)` (see [`crate::leaf::stacked_bytecode_table`]).
 ///

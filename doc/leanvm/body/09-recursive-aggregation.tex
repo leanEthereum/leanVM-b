@@ -25,7 +25,7 @@ The matrix sumcheck runs over the $28$-variable polynomial
   \qquad
   W_M(x) \;=\; \textstyle\sum_t \lambda_{M,t}\,\eq(r_t,x),
 \]
-and ends in the reduced claims $\widetilde A_0(r^\ast)$ and $\widetilde B_0(r^\ast)$, at a common point. The in-circuit cost is that of the sumcheck verifier: $28$ cheap rounds. A carried claim enters with the plain weight above. A fresh one enters with the weight of \eqref{flock:eq:matrix-form}, $\erow\otimes \wcol$ on the row and column halves, at relative weight $\lcalpha$ of $B_0$ against $A_0$; its four tensor factors are evaluated at $r^\ast$ from the child's $\zskip$, $\fc_{\mathrm{in}}$, $s$ and $\fc'_{\mathrm{in}}$, all of which ride the aggregation statement. The prover never forms the $2^{28}$-sized boolean hypercube, and never reads a matrix entry either: both contractions it needs are circuit walks (\S\ref{flock:matrices}). The first $14$ rounds (the row variables) enter through the column contraction $m_t[i]=\sum_{j\in\mathrm{row}_i}\eq(r_t^{\mathrm{col}},j)$, which is the forward walk at the claim's column weights, keeping each row's value rather than contracting it; the last $14$ contract each matrix along its rows at the row point just fixed, which is the backward walk. Each is $O(\text{circuit})$, so the whole batch costs one forward walk per claim and two backward walks, plus $O(t\cdot2^{14})$ multiplications on dense tables of size $2^{14}$, against the $O(2^{28})$ field operations and memory of a dense sumcheck and the $\approx 89\mathrm{M}$ nonzeros a sparse one would iterate. The bytecode sumcheck is the same, only smaller, dense, and skipping the seven of sixteen stacking slots that are structurally zero.
+and ends in the reduced claims $\widetilde A_0(r^\ast)$ and $\widetilde B_0(r^\ast)$, at a common point. The in-circuit cost is that of the sumcheck verifier: $28$ cheap rounds. A carried claim enters with the plain weight above. A fresh one enters with the weight of \eqref{flock:eq:matrix-form}, $\erow\otimes \wcol$ on the row and column halves, at relative weight $\lcalpha$ of $B_0$ against $A_0$; its four tensor factors are evaluated at $r^\ast$ from the child's $\zskip$, $\fc_{\mathrm{in}}$, $s$ and $\fc'_{\mathrm{in}}$, all of which ride the aggregation statement. The prover never forms the $2^{28}$-sized boolean hypercube, and never reads a matrix entry either: both contractions it needs are circuit walks (\S\ref{flock:matrices}). The first $14$ rounds (the row variables) enter through the column contraction $m_t[i]=\sum_{j\in\mathrm{row}_i}\eq(r_t^{\mathrm{col}},j)$, which is the forward walk at the claim's column weights, keeping each row's value rather than contracting it; the last $14$ contract each matrix along its rows at the row point just fixed, which is the backward walk. Each is $O(\text{circuit})$, so the whole batch costs one forward walk per claim and two backward walks, plus $O(t\cdot2^{14})$ multiplications on dense tables of size $2^{14}$, against the $O(2^{28})$ field operations and memory of a dense sumcheck and the $\approx 89\mathrm{M}$ nonzeros a sparse one would iterate. The bytecode sumcheck is the same, only smaller, dense, and skipping the eight of sixteen stacking slots that are structurally zero.
 
 \subsection{The public input}\label{sec:rec-stmt}
 
@@ -41,14 +41,14 @@ $30\times24$ bytes & the deferred matrix point, then $\widetilde A_0$ and $\wide
 \end{tabular}
 \end{center}
 
-The \emph{signer-set digest} is computed by Merkle-Damgard hashing the following:
+The \emph{signer-set digest} is BLAKE2s of the following string, whole $64$-byte blocks by construction, where each list's digest is itself BLAKE2s of that list alone (the keys of one group, $32$ bytes each; the SPHINCS claims, $64$ bytes each):
 \begin{center}
 \begin{tabular}{@{}ll@{}}
 \hline
-first & $\gen^{\#\mathrm{XMSS\ groups}}$, $\gen^{\#\mathrm{SPHINCS\ signers}}$\\
+block $0$ & a domain tag, then $\gen^{\#\mathrm{XMSS\ groups}}$, $\gen^{\#\mathrm{SPHINCS\ claims}}$\\
+block $1$ & the SPHINCS claim list's digest, then two zero cells\\
 per XMSS group & $\mathrm{epoch}$, $\gen^{\#\mathrm{keys}}$, then the group's message\\
-per XMSS in a group & its public key\\
-per SPHINCS signer & its public key, then its own message\\
+& then that group's key list's digest, and two zero cells\\
 \hline
 \end{tabular}
 \end{center}

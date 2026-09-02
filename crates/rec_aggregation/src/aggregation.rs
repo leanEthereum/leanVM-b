@@ -83,9 +83,35 @@ pub const MAX_CHILDREN: usize = 16;
 pub const MAX_KEYS: usize = 1 << 16;
 
 /// The most [`XmssGroup`]s one aggregate can carry: headroom over the few epochs
-/// expected in practice, and a hard bound where nothing in-circuit forces a
-/// group non-empty.
+/// expected in practice. An empty group is in-circuit unprovable, its list hash
+/// having no valid window split, so this is a bound on cost, not on soundness.
 pub const MAX_EPOCHS: usize = 1024;
+
+/// Blocks the guest absorbs per loop frame when it hashes a declared list, and so
+/// how many share one byte-counter base (`doc/leanvm` §Byte counters for a hash of
+/// runtime length). Larger amortizes the base's bit decomposition over more blocks
+/// and costs bytecode in the tail's dispatch arms; the split it induces is what
+/// [`signers_split`] hands the guest.
+const SIGNERS_WINDOW: usize = 32;
+// The counter split is a bit split: a window's base is `64·SIGNERS_WINDOW·q`, which
+// has to be a power of two for its bits to sit clear of the window's own offsets.
+const _: () = assert!(SIGNERS_WINDOW.is_power_of_two());
+
+/// The window bound the guest range-checks its hinted window count against. A
+/// range check takes a COUNT (`assert log(x) < k` bounds the exponent by `k`), so
+/// this has to cover the most windows a list can hold, which a bit width would not:
+/// under the bound every list still hashes, so the mistake shows up only past it.
+const SIGNERS_MAX_WINDOWS: usize = MAX_KEYS / SIGNERS_WINDOW;
+// The widest list is one block a claim, so at most MAX_KEYS blocks, of which the
+// last is absorbed apart. The set's own string is 2 + 2·MAX_EPOCHS blocks, hashed
+// the same way, so it needs the bound too.
+const _: () = assert!((MAX_KEYS - 1) / SIGNERS_WINDOW < SIGNERS_MAX_WINDOWS);
+const _: () = assert!((2 * MAX_EPOCHS + 1) / SIGNERS_WINDOW < SIGNERS_MAX_WINDOWS);
+// The guest decomposes a count into SIGNERS_COUNT_BITS bits and shifts the result
+// left to make a byte counter, so a count has to fit and the shift must not reduce.
+const SIGNERS_COUNT_BITS: u32 = MAX_KEYS.ilog2();
+const _: () = assert!(MAX_KEYS.is_power_of_two() && 2 * MAX_EPOCHS + 2 < 1 << SIGNERS_COUNT_BITS);
+const _: () = assert!(SIGNERS_COUNT_BITS + 6 + SIGNERS_WINDOW.ilog2() <= 64);
 
 // The guest bakes a bytecode claim's width from `N_TUPLE_BITS` while `bytecode_vars`
 // reads it off the stacked table, which is `N_BYTECODE_SELECTORS` wide. Two constants
@@ -148,21 +174,9 @@ fn pack_hash_state(hash: &[u8; 32]) -> [F192; 2] {
     ]
 }
 
-/// Native mirror of the guest's default `blake2s(state, block, out)` over two
-/// 128-bit cells each: the four `F64` lanes of a two-cell buffer are
-/// `[w0.c0, w0.c1, w1.c0, w1.c1]`, and the output packs back the same way.
-fn compress2(state: [F192; 2], block: [F192; 2]) -> [F192; 2] {
-    let lanes = |c: [F192; 2]| [F64(c[0].c0), F64(c[0].c1), F64(c[1].c0), F64(c[1].c1)];
-    let output = lean_vm::vmhash::compress(lanes(state), lanes(block));
-    [
-        F192::new(output[0].0, output[1].0, 0),
-        F192::new(output[2].0, output[3].0, 0),
-    ]
-}
-
-/// A domain-separated two-cell IV, so the guest's two plain BLAKE2s chains
-/// cannot be confused with each other or with a Fiat-Shamir state.
-fn chain_iv(label: &[u8]) -> [F192; 2] {
+/// A domain-separating two-cell tag: it leads the hashed string of a signer set,
+/// so that string cannot be read as either list's or as a Fiat-Shamir state.
+fn domain_tag(label: &[u8]) -> [F192; 2] {
     pack_state(FiatShamirState::from_label(label).state())
 }
 
@@ -178,6 +192,46 @@ fn pack_16_bytes(bytes: &[u8]) -> F192 {
 /// their bytes.
 fn key_cells(pk: &XmssPublicKey) -> [F192; 2] {
     [pack_16_bytes(&pk.merkle_root), pack_16_bytes(&pk.public_param)]
+}
+
+/// A run of canonical 128-bit cells as the byte string BLAKE2s hashes: each cell
+/// is its two low limbs, little-endian, which is the order the VM's compression
+/// reads a memory cell in.
+fn cell_bytes(cells: impl IntoIterator<Item = F192>) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for cell in cells {
+        bytes.extend_from_slice(&cell.c0.to_le_bytes());
+        bytes.extend_from_slice(&cell.c1.to_le_bytes());
+    }
+    bytes
+}
+
+/// How the guest splits a list's `n - 1` non-final blocks: whole windows, then the
+/// tail. Its own product identity and range check pin both, so this only has to
+/// agree with them (`sphincs_list_digest` in the guest). A list is never empty
+/// here: a group holds at least one key, and both claim lists are guarded at the
+/// call, since the guest hashes an empty one without a split at all.
+fn signers_split(blocks: usize) -> Vec<F192> {
+    assert!(blocks > 0, "an empty list has no window split");
+    let leading = blocks - 1;
+    vec![count(leading / SIGNERS_WINDOW), count(leading % SIGNERS_WINDOW)]
+}
+
+/// One epoch group's declared keys under plain BLAKE2s: 32 bytes a key, so the
+/// hashed string is `32n` bytes and only its last block is partial. The guest
+/// computes this same digest a window of blocks at a time (`key_list_digest`).
+fn key_list_digest(keys: &[XmssPublicKey]) -> [F192; 2] {
+    let cells = keys.iter().flat_map(key_cells);
+    pack_hash_state(&primitives::hash::hash(&cell_bytes(cells)))
+}
+
+/// The declared SPHINCS claims under plain BLAKE2s: one 64-byte block per claim,
+/// its key then the message it signed, so the hashed string is exactly `64n` bytes
+/// and an empty list hashes the empty string. The guest computes this same digest a
+/// window of blocks at a time (`sphincs_list_digest`).
+fn sphincs_list_digest(signers: &[SphincsSigner]) -> [F192; 2] {
+    let cells = signers.iter().flat_map(sphincs_signer_cells);
+    pack_hash_state(&primitives::hash::hash(&cell_bytes(cells)))
 }
 
 /// A SPHINCS signer as the four cells the guest hashes and `verify_sig_sphincs`
@@ -207,31 +261,31 @@ fn tweak_index_weight(b: usize) -> F192 {
     pack_16_bytes(&xmss::make_tweak(0, 0, 1 << b))
 }
 
-/// The signer-set digest: a chain of compressions over both list lengths,
-/// then per XMSS group its `(epoch, count)`, its message and its keys, then
-/// the SPHINCS list. Every count is absorbed before the run it delimits, so
-/// the encoding is prefix-free and the digest binds its own lengths, the
-/// groups' epochs and messages, and every split.
-/// A SPHINCS signer takes two compressions, its key then its message, the
-/// running state occupying the other half of each block.
+/// The signer-set digest: plain BLAKE2s of one byte string, laid out in whole
+/// 64-byte blocks so the guest can absorb it four cells at a time
+/// (`signer_set_digest` there). A tag block carries both list lengths, the next
+/// block the SPHINCS list's own digest, and then two blocks a group: its `(epoch,
+/// count, message)`, then its key list's digest. Leading with both lengths makes
+/// the encoding prefix-free, so no set's string is a prefix of another's, and the
+/// digest binds its own lengths, the groups' epochs and messages, and every split.
+/// The two list digests carry the bulk, each a stock hash of its own
+/// ([`key_list_digest`], [`sphincs_list_digest`]).
 fn signers_hash(xmss_signers: &[XmssGroup], sphincs_signers: &[SphincsSigner]) -> [F192; 2] {
-    let mut state = compress2(
-        chain_iv(SIGNERS_LABEL),
-        [count(xmss_signers.len()), count(sphincs_signers.len())],
-    );
+    let tag = domain_tag(SIGNERS_LABEL);
+    let mut cells = vec![tag[0], tag[1], count(xmss_signers.len()), count(sphincs_signers.len())];
+    let sphincs = sphincs_list_digest(sphincs_signers);
+    cells.extend([sphincs[0], sphincs[1], F192::ZERO, F192::ZERO]);
     for (epoch, message, keys) in xmss_signers {
-        state = compress2(state, [F192::new(*epoch as u64, 0, 0), count(keys.len())]);
-        state = compress2(state, [pack_16_bytes(&message[..16]), pack_16_bytes(&message[16..])]);
-        for pk in keys {
-            state = compress2(state, key_cells(pk));
-        }
+        cells.extend([
+            F192::new(*epoch as u64, 0, 0),
+            count(keys.len()),
+            pack_16_bytes(&message[..16]),
+            pack_16_bytes(&message[16..]),
+        ]);
+        let keys = key_list_digest(keys);
+        cells.extend([keys[0], keys[1], F192::ZERO, F192::ZERO]);
     }
-    for signer in sphincs_signers {
-        let cells = sphincs_signer_cells(signer);
-        state = compress2(state, [cells[0], cells[1]]);
-        state = compress2(state, [cells[2], cells[3]]);
-    }
-    state
+    pack_hash_state(&primitives::hash::hash(&cell_bytes(cells)))
 }
 
 /// The claims on the three fixed polynomials that a node defers rather than
@@ -650,7 +704,7 @@ fn stacked_bytecode() -> &'static [F64] {
 
 /// The slots of the stacked bytecode that are not structurally zero.
 ///
-/// Nine encoding columns sit inside sixteen stacking slots, so nearly half the
+/// Eight encoding columns sit inside sixteen stacking slots, so half the
 /// table is zero and contributes nothing to any round of the batching sumcheck.
 /// Read off the table rather than from the column count, so an all-zero column
 /// at the edge only ever shrinks the window.
@@ -1971,6 +2025,7 @@ pub(crate) fn aggregate_tampered(
     }
     for (j, (_, _, keys)) in cover.xmss_signers.iter().enumerate() {
         hints.push("pk_halves", vec![count(keys.len() / 2), count(keys.len() % 2)]);
+        hints.push("signers_split", signers_split(keys.len().div_ceil(2)));
         for pair in keys.chunks(2) {
             let mut entry = key_cells(&pair[0]).to_vec();
             if let Some(second) = pair.get(1) {
@@ -1982,6 +2037,10 @@ pub(crate) fn aggregate_tampered(
             hints.push("dup_pubkeys", key_cells(pk).to_vec());
         }
     }
+    if !cover.sphincs_signers.is_empty() {
+        hints.push("signers_split", signers_split(cover.sphincs_signers.len()));
+    }
+    hints.push("signers_split", signers_split(2 + 2 * cover.xmss_signers.len()));
     for signer in &cover.sphincs_signers {
         hints.push("sphincs_signers", sphincs_signer_cells(signer).to_vec());
     }
@@ -2014,13 +2073,18 @@ pub(crate) fn aggregate_tampered(
             hints.push("child_group", entry);
             hints.push("child_group_map", vec![count(*parent_group)]);
             hints.push("child_halves", vec![count(offsets.len() / 2), count(offsets.len() % 2)]);
+            hints.push("signers_split", signers_split(offsets.len().div_ceil(2)));
             for pair in offsets.chunks(2) {
                 hints.push("child_index", pair.iter().map(|&idx| count(idx)).collect());
             }
         }
+        if !cover.child_sphincs[i].is_empty() {
+            hints.push("signers_split", signers_split(cover.child_sphincs[i].len()));
+        }
         for &offset in &cover.child_sphincs[i] {
             hints.push("child_sphincs_index", vec![count(offset)]);
         }
+        hints.push("signers_split", signers_split(2 + 2 * child.xmss_signers.len()));
         hints.push("child_defer", child.defer.cells());
         let (pi, summary) = &verified[i];
         let (sub_hints, defer) = gen_verify(guest, *pi, summary)?;
@@ -2684,9 +2748,23 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("STMT_PAIRS", pairs.to_string());
     ps("STMT_PAD_CELLS", (4 * blocks - off - 3 * pairs).to_string());
     ps("STMT_BLOCKS", blocks.to_string());
-    let signers_iv = chain_iv(SIGNERS_LABEL);
-    ps("SIGNERS_IV_0", dsl_u128(signers_iv[0]).to_string());
-    ps("SIGNERS_IV_1", dsl_u128(signers_iv[1]).to_string());
+    let signers_tag = domain_tag(SIGNERS_LABEL);
+    ps("SIGNERS_TAG_0", dsl_u128(signers_tag[0]).to_string());
+    ps("SIGNERS_TAG_1", dsl_u128(signers_tag[1]).to_string());
+    // A list is at most MAX_KEYS blocks (one a claim is the widest it gets), so it
+    // holds fewer than that many windows; a declared count is below MAX_KEYS, hence
+    // decomposes into that many bits. The first two bound a range check, which takes
+    // a COUNT, the third a bit decomposition.
+    ps("SIGNERS_WINDOW", SIGNERS_WINDOW.to_string());
+    ps("SIGNERS_WINDOW_LOG", SIGNERS_WINDOW.ilog2().to_string());
+    ps("SIGNERS_MAX_WINDOWS", SIGNERS_MAX_WINDOWS.to_string());
+    ps("SIGNERS_COUNT_BITS", SIGNERS_COUNT_BITS.to_string());
+    ps("BLAKE2S_IV_0", dsl_u128(lean_vm::hash_flock::IV_CELLS[0]).to_string());
+    ps("BLAKE2S_IV_1", dsl_u128(lean_vm::hash_flock::IV_CELLS[1]).to_string());
+    ps(
+        "MD_FINAL",
+        dsl_u128(lean_vm::hash_flock::metadata(0, lean_vm::hash_flock::FINAL_FLAG, 0)).to_string(),
+    );
 
     // The XMSS instance, from which the guest derives every table width by
     // compile-time integer arithmetic.
@@ -2808,7 +2886,7 @@ mod tests {
     use rand::{Rng, SeedableRng};
 
     use crate::signers_cache::{
-        XMSS_EPOCH_A, XMSS_EPOCH_B, get_signers, get_signers_at, get_sphincs_signers, message, message_for,
+        KEY_START, XMSS_EPOCH_A, XMSS_EPOCH_B, get_signers, get_signers_at, get_sphincs_signers, message, message_for,
     };
 
     const SMALL_LEAF_SIZE: usize = 6;
@@ -3014,21 +3092,52 @@ mod tests {
         assert!(first.1 < second.1, "ordered by the message");
     }
 
+    /// The right leaf holds more keys than one absorb window of its list hash
+    /// (`SIGNERS_WINDOW` blocks of two keys), so both that leaf and the parent
+    /// rebuilding it run the window loop and then a non-empty tail, while the left
+    /// leaf's list is a tail alone. Under a window everywhere, the loop would never
+    /// execute and neither would the byte counter's base.
     #[test]
     fn aggregate_two_to_one() {
         lean_vm::init_prover_pool();
-        let signers = get_signers(SMALL_LEAF_SIZE + 60);
+        let big = 2 * SIGNERS_WINDOW + 6;
+        let signers = get_signers(SMALL_LEAF_SIZE + big);
         let left = prove_leaf(&signers[..SMALL_LEAF_SIZE]);
         let right = prove_leaf(&signers[SMALL_LEAF_SIZE..]);
         let node = aggregate(&[left, right], vec![], vec![], LOG_INV_RATE).expect("node aggregates");
         node.verify().expect("node verifies");
-        assert_eq!(xmss_claims(&node), SMALL_LEAF_SIZE + 60);
+        assert_eq!(xmss_claims(&node), SMALL_LEAF_SIZE + big);
     }
 
     /// Two epochs in one tree. Signer `i` holds the same key at both epochs, so
     /// group B repeats keys of group A as distinct claims; the left leaf holds
     /// one epoch, the right both, and the node maps each child group onto its
     /// own region, with a duplicate slot for the key both leaves cover at A.
+    /// Enough epoch groups that the set's own hash runs its window loop: its string
+    /// is two blocks a group plus a leading two, so it takes sixteen groups to fill
+    /// one window of SIGNERS_WINDOW blocks. Every other test stays inside the tail,
+    /// where `plain_window` never executes and neither does the byte counter's base.
+    #[test]
+    fn aggregate_many_epoch_groups() {
+        lean_vm::init_prover_pool();
+        // Two blocks a group plus a leading two, so SIGNERS_WINDOW / 2 groups make
+        // SIGNERS_WINDOW + 2 blocks: one whole window and a tail of one. The cached
+        // keys are activated over exactly that many epochs, and one key may claim
+        // once per epoch, so a single signer covers them all.
+        let groups = SIGNERS_WINDOW / 2;
+        let raw: Vec<_> = (0..groups)
+            .map(|i| {
+                let epoch = KEY_START + i as xmss::Epoch;
+                let (public_key, signature) = get_signers_at(1, epoch).remove(0);
+                (public_key, epoch, message_for(epoch), signature)
+            })
+            .collect();
+        let leaf = aggregate(&[], raw, vec![], LOG_INV_RATE).expect("many-group leaf aggregates");
+        leaf.verify().expect("it verifies");
+        assert_eq!(leaf.xmss_signers.len(), groups);
+        assert!(leaf.xmss_signers.iter().all(|(_, _, keys)| keys.len() == 1));
+    }
+
     #[test]
     fn aggregate_two_epochs() {
         lean_vm::init_prover_pool();
@@ -3308,6 +3417,18 @@ mod tests {
             }),
             ("pubkeys (a key nobody signed for)", &|h: &mut Hints| {
                 h.entries("pubkeys")[0][0] += F192::ONE;
+            }),
+            // The window split of a list hash is advice, so both halves are pinned:
+            // the product identity ties them to the block count, and the tail's own
+            // range check keeps its `match` dispatch on a real arm.
+            (
+                "signers_split (a window count the list does not have)",
+                &|h: &mut Hints| {
+                    h.entries("signers_split")[0][0] = count(1);
+                },
+            ),
+            ("signers_split (a tail past a whole window)", &|h: &mut Hints| {
+                h.entries("signers_split")[0][1] = count(SIGNERS_WINDOW);
             }),
             ("fs_seed", &|h: &mut Hints| {
                 h.entries("fs_seed")[0][0] += F192::ONE;
@@ -3614,18 +3735,39 @@ mod tests {
         );
     }
 
-    /// Every `BLAKE2s` the guest itself runs reads a metadata cell its own
-    /// function wrote first. An unwritten cell is prover-chosen (write-once
-    /// memory constrains only what something writes), so a compression whose
-    /// metadata cell no `SET` precedes would hand the prover that hash's byte
-    /// counter and both flags, and every guest digest rests on those being the
-    /// ones the scheme specifies. The fill blocks are the deliberate exception:
-    /// their dummy reads a cell nothing writes, and nothing reads what they
-    /// compress (`lean_vm::cpu::filler`).
+    /// Every `BLAKE2s` the guest itself runs reads a metadata cell an earlier
+    /// instruction of its own function wrote: a `SET` for a compile-time counter,
+    /// an `XOR` for a window's base plus its offset. An unwritten cell is
+    /// prover-chosen (write-once memory constrains only what something writes), so
+    /// a compression whose metadata nothing writes would hand the prover that
+    /// hash's byte counter and both flags, and every guest digest rests on those
+    /// being the ones the scheme specifies. The fill blocks are the deliberate
+    /// exception: their dummy reads a cell nothing writes, and nothing reads what
+    /// they compress (`lean_vm::cpu::filler`).
+    ///
+    /// This is a scan by pc, not a dominance check: a writer sitting in a branch
+    /// nobody took would satisfy it. What makes naming such a cell impossible is
+    /// `FnLower::scoped` reverting the constant pool at every join, and the
+    /// `blake2s_default_iv_*` tests are what guard that, by proving both paths.
     #[test]
-    fn every_guest_blake2s_metadata_cell_is_set_first() {
-        use lean_vm::cpu::Op;
+    fn every_guest_blake2s_metadata_cell_is_written_first() {
+        use lean_vm::cpu::{DerefMode, Op};
 
+        // Which frame cell an instruction writes, if any. A `DEREF` in cell mode is
+        // bidirectional under write-once, so its local operand counts as a write.
+        let written = |op: &Op| match *op {
+            Op::Set { o, .. } => vec![o],
+            Op::Xor { c, .. } | Op::Mul { c, .. } => vec![c],
+            Op::Deref { o3, mode, .. } => {
+                if mode == DerefMode::Cell {
+                    vec![o3]
+                } else {
+                    vec![]
+                }
+            }
+            Op::Blake2s { out, .. } => vec![out, out + 1],
+            Op::Jump { .. } => vec![],
+        };
         let program = unified_guest();
         let fill: Vec<std::ops::Range<usize>> = program
             .filler
@@ -3642,10 +3784,7 @@ mod tests {
                 if fill.iter().any(|f| f.contains(&pc)) {
                     continue;
                 }
-                let written = program.prog[range.start..pc]
-                    .iter()
-                    .any(|op| matches!(op, Op::Set { o, .. } if *o == md));
-                if !written {
+                if !program.prog[range.start..pc].iter().any(|op| written(op).contains(&md)) {
                     unwritten.push(format!("{name} pc {pc} md fp[{md}]"));
                 }
             }

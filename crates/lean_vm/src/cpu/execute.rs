@@ -785,10 +785,18 @@ impl Program {
                     let ac = fp + out;
                     let amd = fp + md;
                     let words = [aa0, aa1, ab0, ab1, acv, acv + 1, amd].map(|a| m.get(a));
-                    assert!(
-                        words.iter().all(|w| w.c2 == 0),
-                        "BLAKE2s input cell must be a canonical 128-bit embedding"
-                    );
+                    // Naming the operand and the line matters most for the metadata,
+                    // the one a guest builds with field arithmetic rather than reads.
+                    if let Some((i, w)) = words.iter().enumerate().find(|(_, w)| w.c2 != 0) {
+                        const CELLS: [&str; 7] = ["m0", "m1", "m2", "m3", "cv0", "cv1", "md"];
+                        panic!(
+                            "BLAKE2s {} cell is not a canonical 128-bit embedding at pc {pc} (in {}): \
+                             top limb 0x{:016x}",
+                            CELLS[i],
+                            self.site_at(pc),
+                            w.c2
+                        );
+                    }
                     let va = [F64(words[0].c0), F64(words[0].c1), F64(words[1].c0), F64(words[1].c1)];
                     let vb = [F64(words[2].c0), F64(words[2].c1), F64(words[3].c0), F64(words[3].c1)];
                     let vcv = [F64(words[4].c0), F64(words[4].c1), F64(words[5].c0), F64(words[5].c1)];
