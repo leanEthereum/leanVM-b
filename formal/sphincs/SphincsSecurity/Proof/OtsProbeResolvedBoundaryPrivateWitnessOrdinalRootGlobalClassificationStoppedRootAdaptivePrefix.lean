@@ -67,6 +67,58 @@ theorem successfulDoomedFirstRootGoodForComparisonAt_retainObservedRoot
       · simpa [observedFirstLayerRootPosition?] using hposition
       · simpa [observedPrefixProbes] using havoid
 
+theorem successfulDoomedFirstRootGoodForComparisonAt_of_retainObservedRoot
+    (table : OtsSecretIndex → HashOutput) (ordinal : Nat) (target : Position)
+    (root rightRoot : Digest)
+    (observed : Option
+      (ObservedCleanRunResult (RetainedRestResult × SplitHashCache)))
+    (hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      table ordinal target rightRoot (retainObservedRoot root observed)) :
+    ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      table ordinal target rightRoot observed := by
+  cases observed with
+  | none =>
+      simp [retainObservedRoot,
+        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
+        ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
+        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hgood
+  | some result =>
+      simp only [retainObservedRoot] at hgood
+      rcases hgood with ⟨⟨⟨hfinish, hdoomed, hfirst⟩, hposition⟩, havoid⟩
+      refine ⟨⟨⟨?_, hdoomed, ?_⟩, ?_⟩, ?_⟩
+      · obtain ⟨finalResult, hfinalResult⟩ := hfinish
+        unfold finishObservedCleanRunFromTable at hfinalResult
+        rw [mem_support_bind_iff] at hfinalResult
+        obtain ⟨finalized, hfinalized, hreturn⟩ := hfinalResult
+        cases finalized with
+        | none => simp at hreturn
+        | some finalized =>
+            obtain ⟨finalState, finalTable⟩ := finalized
+            refine ⟨⟨finalState, result.remaining, result.value, finalTable,
+              result.observations⟩, ?_⟩
+            unfold finishObservedCleanRunFromTable
+            rw [mem_support_bind_iff]
+            exact ⟨some (finalState, finalTable), hfinalized, by simp⟩
+      · simpa [ObservedCleanRunOption.FirstExistingHiddenRootHitAt,
+          FirstExistingHiddenHitAt, ExistingHiddenHitAtOrdinal] using hfirst
+      · simpa [observedFirstLayerRootPosition?] using hposition
+      · simpa [observedPrefixProbes] using havoid
+
+theorem successfulDoomedFirstRootGoodForComparisonAt_retainObservedRoot_iff
+    (table : OtsSecretIndex → HashOutput) (ordinal : Nat) (target : Position)
+    (root rightRoot : Digest)
+    (observed : Option
+      (ObservedCleanRunResult (RetainedRestResult × SplitHashCache))) :
+    ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        table ordinal target rightRoot (retainObservedRoot root observed) ↔
+      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        table ordinal target rightRoot observed := by
+  constructor
+  · exact successfulDoomedFirstRootGoodForComparisonAt_of_retainObservedRoot
+      table ordinal target root rightRoot observed
+  · exact successfulDoomedFirstRootGoodForComparisonAt_retainObservedRoot
+      table ordinal target root rightRoot observed
+
 set_option maxRecDepth 100000 in
 theorem relTriple_delayedSelectedRootIndicator
     (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
