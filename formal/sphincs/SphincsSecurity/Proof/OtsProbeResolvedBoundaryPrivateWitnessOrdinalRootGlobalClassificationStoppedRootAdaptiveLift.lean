@@ -264,7 +264,7 @@ theorem relTriple_observed_finishDirectDelayed_of_firstStopped
     (observe : DeferredContext → Nat → (α × SplitHashCache) →
       List PlannedProbeSnapshot → List CleanProbeObservation → ProbComp Bool)
     (snapshots : List PlannedProbeSnapshot)
-    (observations : List CleanProbeObservation)
+    (observations delayedObservations : List CleanProbeObservation)
     (leftResult : DirectWitnessResult (α × SplitHashCache))
     (rightResult : Option (ObservedCleanRunResult (α × SplitHashCache)))
     (hrelation : WitnessObservedFirstStoppedStepRel table observations leftResult rightResult)
@@ -278,7 +278,7 @@ theorem relTriple_observed_finishDirectDelayed_of_firstStopped
           observedMaterializedBoundary parameter publicRoot ftsSecret (next right.value.1)
             observations right.context.state right.remaining table right.value.2)
         (canonicalizeDirectDelayedSelectedRootIndicator table observe left.context left.remaining
-          (left.value.1, left.value.2) snapshots observations)
+          (left.value.1, left.value.2) snapshots delayedObservations)
         SuccessfulObservedIndicatorRel) :
     RelTriple
       (match rightResult with
@@ -290,14 +290,14 @@ theorem relTriple_observed_finishDirectDelayed_of_firstStopped
               result.observations result.state result.remaining table result.value.2)
       (finishDirectDelayedSelectedRootIndicator
         (canonicalizeDirectDelayedSelectedRootIndicator table observe)
-        snapshots observations leftResult)
+        snapshots delayedObservations leftResult)
       SuccessfulObservedIndicatorRel := by
   rcases hrelation with hfailed | haligned | hmissing
   · subst rightResult
     have hbase := relTriple_true (pure false : ProbComp Bool)
       (finishDirectDelayedSelectedRootIndicator
         (canonicalizeDirectDelayedSelectedRootIndicator table observe)
-        snapshots observations leftResult)
+        snapshots delayedObservations leftResult)
     have hsupported :=
       SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
         (fun result ↦ result = false) (by intro result hresult; simpa using hresult)
@@ -318,7 +318,7 @@ theorem relTriple_observed_finishDirectDelayed_of_firstStopped
           observations right.context.state right.remaining table right.value.2
     let delayedRun := finishDirectDelayedSelectedRootIndicator
       (canonicalizeDirectDelayedSelectedRootIndicator table observe)
-      snapshots observations leftResult
+      snapshots delayedObservations leftResult
     have hbase := relTriple_true realRun delayedRun
     have hsupported :=
       SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
@@ -357,7 +357,7 @@ theorem relTriple_bind_observed_finishDirectDelayed_of_firstStopped
     (observe : DeferredContext → Nat → (α × SplitHashCache) →
       List PlannedProbeSnapshot → List CleanProbeObservation → ProbComp Bool)
     (snapshots : List PlannedProbeSnapshot)
-    (observations : List CleanProbeObservation)
+    (observations delayedObservations : List CleanProbeObservation)
     (leftStep : ProbComp (DirectWitnessResult (α × SplitHashCache)))
     (rightStep : ProbComp (Option (ObservedCleanRunResult (α × SplitHashCache))))
     (hstep : RelTriple leftStep rightStep
@@ -372,7 +372,7 @@ theorem relTriple_bind_observed_finishDirectDelayed_of_firstStopped
           observedMaterializedBoundary parameter publicRoot ftsSecret (next right.value.1)
             observations right.context.state right.remaining table right.value.2)
         (canonicalizeDirectDelayedSelectedRootIndicator table observe left.context left.remaining
-          (left.value.1, left.value.2) snapshots observations)
+          (left.value.1, left.value.2) snapshots delayedObservations)
         SuccessfulObservedIndicatorRel) :
     RelTriple
       (rightStep >>= fun result =>
@@ -385,7 +385,7 @@ theorem relTriple_bind_observed_finishDirectDelayed_of_firstStopped
                 result.observations result.state result.remaining table result.value.2)
       (leftStep >>= finishDirectDelayedSelectedRootIndicator
         (canonicalizeDirectDelayedSelectedRootIndicator table observe)
-        snapshots observations)
+        snapshots delayedObservations)
       SuccessfulObservedIndicatorRel := by
   have hleftSupported :=
     SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hstep
@@ -396,8 +396,8 @@ theorem relTriple_bind_observed_finishDirectDelayed_of_firstStopped
   intro rightResult leftResult hrelation
   rcases hrelation with ⟨⟨hrelation, hrightSupport⟩, hleftSupport⟩
   exact relTriple_observed_finishDirectDelayed_of_firstStopped ordinal parameter publicRoot
-    rightRoot ftsSecret table target next observe snapshots observations leftResult rightResult
-    hrelation (by
+    rightRoot ftsSecret table target next observe snapshots observations delayedObservations
+    leftResult rightResult hrelation (by
       intro left right hleft hright hclean
       subst leftResult
       subst rightResult
@@ -412,7 +412,7 @@ theorem relTriple_bind_observed_finishDirectDelayed_of_probeFree
     (observe : DeferredContext → Nat → (α × SplitHashCache) →
       List PlannedProbeSnapshot → List CleanProbeObservation → ProbComp Bool)
     (snapshots : List PlannedProbeSnapshot)
-    (observations : List CleanProbeObservation)
+    (observations delayedObservations : List CleanProbeObservation)
     (left right : DeferredContext) (leftFuel rightFuel : Nat)
     (leftComputation rightComputation :
       OracleComp (LazyRevealProbe.World Coordinate) (α × SplitHashCache))
@@ -443,7 +443,8 @@ theorem relTriple_bind_observed_finishDirectDelayed_of_probeFree
             (next rightResult.value.1) observations rightResult.context.state
             rightResult.remaining table rightResult.value.2)
         (canonicalizeDirectDelayedSelectedRootIndicator table observe leftResult.context
-          leftResult.remaining (leftResult.value.1, leftResult.value.2) snapshots observations)
+          leftResult.remaining (leftResult.value.1, leftResult.value.2) snapshots
+            delayedObservations)
         SuccessfulObservedIndicatorRel) :
     RelTriple
       (runObservedCleanFromTable observations right.state rightFuel table rightComputation >>=
@@ -459,7 +460,7 @@ theorem relTriple_bind_observed_finishDirectDelayed_of_probeFree
       (runDirectResolvedWitnessFromTable left leftFuel table leftComputation >>=
         finishDirectDelayedSelectedRootIndicator
           (canonicalizeDirectDelayedSelectedRootIndicator table observe)
-          snapshots observations)
+          snapshots delayedObservations)
       SuccessfulObservedIndicatorRel := by
   have hstep := relTriple_runDirectResolvedWitness_observed_firstStopped_of_probeFree table
     leftComputation rightComputation observations left right leftFuel rightFuel hbase
@@ -467,6 +468,7 @@ theorem relTriple_bind_observed_finishDirectDelayed_of_probeFree
     hnoHit hbudget
   exact relTriple_bind_observed_finishDirectDelayed_of_firstStopped ordinal parameter publicRoot
     rightRoot ftsSecret table target next observe snapshots observations
+    delayedObservations
     (runDirectResolvedWitnessFromTable left leftFuel table leftComputation)
     (runObservedCleanFromTable observations right.state rightFuel table rightComputation)
     hstep hrecursive
@@ -481,7 +483,7 @@ theorem relTriple_uniform_finishDirectDelayed
     (observe : DeferredContext → Nat → (Fin (n + 1) × SplitHashCache) →
       List PlannedProbeSnapshot → List CleanProbeObservation → ProbComp Bool)
     (snapshots : List PlannedProbeSnapshot)
-    (observations : List CleanProbeObservation)
+    (observations delayedObservations : List CleanProbeObservation)
     (left right : DeferredContext) (leftFuel rightFuel : Nat)
     (leftCache rightCache : SplitHashCache)
     (hcontext : FinalizationContextLE table left right)
@@ -510,7 +512,8 @@ theorem relTriple_uniform_finishDirectDelayed
             (next rightResult.value.1) observations rightResult.context.state
             rightResult.remaining table rightResult.value.2)
         (canonicalizeDirectDelayedSelectedRootIndicator table observe leftResult.context
-          leftResult.remaining (leftResult.value.1, leftResult.value.2) snapshots observations)
+          leftResult.remaining (leftResult.value.1, leftResult.value.2) snapshots
+            delayedObservations)
         SuccessfulObservedIndicatorRel) :
     RelTriple
       (runObservedCleanFromTable observations right.state rightFuel table
@@ -527,10 +530,11 @@ theorem relTriple_uniform_finishDirectDelayed
           ((splitUniformImpl n).run leftCache) >>=
         finishDirectDelayedSelectedRootIndicator
           (canonicalizeDirectDelayedSelectedRootIndicator table observe)
-          snapshots observations)
+          snapshots delayedObservations)
       SuccessfulObservedIndicatorRel := by
   apply relTriple_bind_observed_finishDirectDelayed_of_probeFree ordinal parameter publicRoot
-    rightRoot ftsSecret table target next observe snapshots observations left right leftFuel
+    rightRoot ftsSecret table target next observe snapshots observations delayedObservations
+    left right leftFuel
     rightFuel ((splitUniformImpl n).run leftCache) ((splitUniformImpl n).run rightCache)
   · exact (witnessMaterializedStableCouples_splitUniformImpl table n) left right leftFuel
       rightFuel leftCache rightCache hcontext hfuel hcache hrevealed hvalues hpublished
@@ -558,7 +562,7 @@ theorem relTriple_sign_finishDirectDelayed
       (Option Signature × SplitHashCache) →
       List PlannedProbeSnapshot → List CleanProbeObservation → ProbComp Bool)
     (snapshots : List PlannedProbeSnapshot)
-    (observations : List CleanProbeObservation)
+    (observations delayedObservations : List CleanProbeObservation)
     (left right : DeferredContext) (leftFuel rightFuel : Nat)
     (leftCache rightCache : SplitHashCache)
     (hcontext : FinalizationContextLE table left right)
@@ -587,7 +591,8 @@ theorem relTriple_sign_finishDirectDelayed
             (next rightResult.value.1) observations rightResult.context.state
             rightResult.remaining table rightResult.value.2)
         (canonicalizeDirectDelayedSelectedRootIndicator table observe leftResult.context
-          leftResult.remaining (leftResult.value.1, leftResult.value.2) snapshots observations)
+          leftResult.remaining (leftResult.value.1, leftResult.value.2) snapshots
+            delayedObservations)
         SuccessfulObservedIndicatorRel) :
     RelTriple
       (runObservedCleanFromTable observations right.state rightFuel table
@@ -604,11 +609,12 @@ theorem relTriple_sign_finishDirectDelayed
           ((maskedSign parameter publicRoot ftsSecret message).run leftCache) >>=
         finishDirectDelayedSelectedRootIndicator
           (canonicalizeDirectDelayedSelectedRootIndicator table observe)
-          snapshots observations)
+          snapshots delayedObservations)
       SuccessfulObservedIndicatorRel := by
   have hresult := relTriple_bind_observed_finishDirectDelayed_of_probeFree ordinal parameter
-    publicRoot rightRoot ftsSecret table target next observe snapshots observations left right
-    leftFuel rightFuel ((maskedSign parameter publicRoot ftsSecret message).run leftCache)
+    publicRoot rightRoot ftsSecret table target next observe snapshots observations
+    delayedObservations left right leftFuel rightFuel
+    ((maskedSign parameter publicRoot ftsSecret message).run leftCache)
     ((maskedSign parameter publicRoot ftsSecret message).run rightCache)
     ((witnessMaterializedStableCouples_maskedSign table parameter publicRoot ftsSecret message)
       left right leftFuel rightFuel leftCache rightCache hcontext hfuel hcache hrevealed hvalues
