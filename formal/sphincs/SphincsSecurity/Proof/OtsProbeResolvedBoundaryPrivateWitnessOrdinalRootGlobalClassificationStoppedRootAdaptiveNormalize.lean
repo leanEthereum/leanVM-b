@@ -198,6 +198,136 @@ theorem runDirectResolvedWitnessFromTable_splitUniformImpl
       pure (DirectWitnessResult.done ⟨context, fuel, (output, cache), table⟩)) := by
   rfl
 
+noncomputable def negatedDirectDelayedObserve
+    (observe : DeferredContext → Nat → α → List PlannedProbeSnapshot →
+      List CleanProbeObservation → ProbComp Bool)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (context : DeferredContext) (fuel : Nat) (value : α) : ProbComp Bool :=
+  Bool.not <$> observe context fuel value snapshots observations
+
+set_option maxRecDepth 100000 in
+theorem evalDist_runDirectWitness_finish_false_eq_complement_runDirectObserve
+    (observe : DeferredContext → Nat → α → List PlannedProbeSnapshot →
+      List CleanProbeObservation → ProbComp Bool)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α) :
+    evalDist (runDirectResolvedWitnessFromTable context fuel table computation >>=
+        finishDirectDelayedSelectedRootIndicator observe snapshots observations) =
+      evalDist (Bool.not <$> runDirectResolvedObserve
+        (negatedDirectDelayedObserve observe snapshots observations)
+        context fuel table computation) := by
+  unfold runDirectResolvedObserve
+  rw [← map_toOption_runDirectResolvedDetailedFromTable computation context fuel table]
+  rw [← map_erase_runDirectResolvedWitnessFromTable computation context fuel table]
+  simp only [map_eq_bind_pure_comp, bind_assoc]
+  apply evalDist_bind_congr
+  intro result _hresult
+  cases result <;>
+    simp [finishDirectDelayedSelectedRootIndicator, finishObserve,
+      DirectWitnessResult.erase, DirectDetailedResult.toOption, negatedDirectDelayedObserve]
+
+set_option maxRecDepth 100000 in
+theorem evalDist_complement_runDirectWitness_finish_false_eq_runDirectObserve
+    (observe : DeferredContext → Nat → α → List PlannedProbeSnapshot →
+      List CleanProbeObservation → ProbComp Bool)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α) :
+    evalDist (Bool.not <$> (runDirectResolvedWitnessFromTable context fuel table computation >>=
+        finishDirectDelayedSelectedRootIndicator observe snapshots observations)) =
+      evalDist (runDirectResolvedObserve
+        (negatedDirectDelayedObserve observe snapshots observations)
+        context fuel table computation) := by
+  have hbridge := evalDist_runDirectWitness_finish_false_eq_complement_runDirectObserve observe
+    snapshots observations context fuel table computation
+  calc
+    _ = evalDist (Bool.not <$> (Bool.not <$> runDirectResolvedObserve
+          (negatedDirectDelayedObserve observe snapshots observations)
+          context fuel table computation)) := by
+            rw [evalDist_map, evalDist_map, hbridge]
+    _ = _ := by simp
+
+instance negatedCanonicalizeDirectDelayedObserve_observerDooms
+    (table : OtsSecretIndex → HashOutput)
+    (observe : DeferredContext → Nat → α → List PlannedProbeSnapshot →
+      List CleanProbeObservation → ProbComp Bool)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation) :
+    ObserverDooms table
+      (negatedDirectDelayedObserve
+        (canonicalizeDirectDelayedSelectedRootIndicator table observe)
+        snapshots observations) where
+  eq_true context fuel value hconsistent hstarts hdoomed := by
+    have hcanonicalDoomed := doomedResolvedContext_canonicalizeMaterializedValues
+      (table := table) (context := context) ⟨hconsistent, hstarts, hdoomed⟩
+    unfold negatedDirectDelayedObserve canonicalizeDirectDelayedSelectedRootIndicator
+    let canonical := canonicalizeMaterializedValues table context
+    by_cases hhit : PrivateStructuralHit canonical
+    · simp [canonical, hhit]
+    · by_cases hpublished : PublishedValues context.state
+      · simp [canonical, hhit, hpublished, hcanonicalDoomed.2.2]
+      · simp [canonical, hhit, hpublished]
+
+instance negatedCanonicalizeDirectDelayedObserve_observerSynchronized
+    (table : OtsSecretIndex → HashOutput)
+    (observe : DeferredContext → Nat → α → List PlannedProbeSnapshot →
+      List CleanProbeObservation → ProbComp Bool)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    [ObserverSynchronized table
+      (negatedDirectDelayedObserve observe snapshots observations)] :
+    ObserverSynchronized table
+      (negatedDirectDelayedObserve
+        (canonicalizeDirectDelayedSelectedRootIndicator table observe)
+        snapshots observations) where
+  eq_of_synchronized left right fuel value hcontext hvalues hrevealed := by
+    rcases hcontext with ⟨hview, hleftValid, hrightValid, hleftCompletable⟩
+    have hrightCompletable : DeferredCompletable table right := by
+      rcases hleftCompletable with ⟨completion, hcompletion⟩
+      exact ⟨completion, (hview.deferredCompletion_iff completion).mp hcompletion⟩
+    have hleftCanonical := valid_completable_canonicalizeMaterializedValues table left
+      hleftValid hleftCompletable
+    have hrightCanonical := valid_completable_canonicalizeMaterializedValues table right
+      hrightValid hrightCompletable
+    have hleftNoHit :
+        ¬PrivateStructuralHit (canonicalizeMaterializedValues table left) :=
+      not_privateStructuralHit_of_deferredCompletable hleftCanonical.2
+    have hrightNoHit :
+        ¬PrivateStructuralHit (canonicalizeMaterializedValues table right) :=
+      not_privateStructuralHit_of_deferredCompletable hrightCanonical.2
+    have hpublishedIff : PublishedValues left.state ↔ PublishedValues right.state := by
+      simp only [PublishedValues]
+      constructor
+      · intro hpublished coordinate hrightRevealed
+        rw [← hvalues]
+        exact hpublished coordinate (by simpa [hrevealed] using hrightRevealed)
+      · intro hpublished coordinate hleftRevealed
+        rw [hvalues]
+        exact hpublished coordinate (by simpa [hrevealed] using hleftRevealed)
+    unfold negatedDirectDelayedObserve canonicalizeDirectDelayedSelectedRootIndicator
+    by_cases hleftPublished : PublishedValues left.state
+    · have hrightPublished := hpublishedIff.mp hleftPublished
+      simp only [hleftNoHit, hrightNoHit, hleftPublished, hrightPublished,
+        hleftCanonical.2, hrightCanonical.2, ↓reduceIte]
+      have hcanonical := canonicalizedFinalizationContextEq
+        (⟨hview, hleftValid, hrightValid, hleftCompletable⟩ :
+          FinalizationContextEq table (some left) (some right)) hrevealed
+      exact ObserverSynchronized.eq_of_synchronized
+        (table := table)
+        (observe := negatedDirectDelayedObserve observe snapshots observations)
+        (canonicalizeMaterializedValues table left)
+        (canonicalizeMaterializedValues table right) fuel value hcanonical.1 hcanonical.2
+        hrevealed
+    · have hrightNotPublished : ¬PublishedValues right.state := by
+        rwa [← hpublishedIff]
+      simp [hleftNoHit, hrightNoHit, hleftPublished, hrightNotPublished]
+
 set_option maxRecDepth 100000 in
 theorem evalDist_eagerDirectDelayedSelectedRootIndicator_uniform_eq
     (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
