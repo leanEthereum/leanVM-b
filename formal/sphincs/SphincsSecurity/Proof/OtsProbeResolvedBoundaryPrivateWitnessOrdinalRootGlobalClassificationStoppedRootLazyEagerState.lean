@@ -228,4 +228,44 @@ theorem safeTargetPendingLE_of_goodForRoots_pendingCovered
   simp only [Probe.mk.injEq] at hcoordinate hdigest ⊢
   exact ⟨hcoordinate, hdigest.trans heq⟩
 
+theorem safeTargetPendingLE_of_resolveDeferredPositionValue
+    {target : Position} {output : HashOutput} {rightRoot : Digest}
+    {ordinal : Nat} {selection : PrivateOrdinalSelection}
+    (hgood : selection.GoodForRoots target output rightRoot ordinal)
+    (hcovered : PendingCoveredBy (selection.candidates.take ordinal) selection.context)
+    (resolved : DeferredResolution)
+    (hresolved : some resolved ∈ support
+      (resolveDeferredPositionValue target selection.context)) :
+    SafeTargetPendingLE target output
+      (materializedDeferredState resolved.toDeferredContext)
+      (materializedDeferredState
+        { selection.context with
+          values := selection.context.values.install target output }) := by
+  have hnotHit : ¬selection.context.state.hitAt (.position target) output := by
+    intro hhit
+    have hentry : (Coordinate.position target, truncateHash output) ∈
+        selection.context.state.pending := by
+      rw [← LazyRevealProbe.State.mem_pendingAt_iff]
+      exact hhit
+    obtain ⟨probe, hprobe, hcoordinate, hdigest⟩ := hcovered _ hentry
+    have havoid := (hgood.2.2.2.2 probe hprobe).1
+    apply havoid
+    cases probe
+    simp only [Probe.mk.injEq] at hcoordinate hdigest ⊢
+    exact ⟨hcoordinate, hdigest⟩
+  have hinstall : selection.context.values.install target output =
+      selection.context.values := by
+    unfold DeferredStructuralValues.install
+    conv_lhs => rw [← hgood.2.2.2.1]
+    exact Function.update_eq_self _ _
+  have hrun : resolveDeferredPositionValue target selection.context =
+      pure (some (completePrivatePosition target selection.context output)) := by
+    rw [resolveDeferredPositionValue_of_deferred_value target selection.context output
+      hgood.2.1 hgood.2.2.2.1]
+    simp [hnotHit, completePrivatePosition, hinstall]
+  rw [hrun] at hresolved
+  simp only [support_pure, Set.mem_singleton_iff, Option.some.injEq] at hresolved
+  subst resolved
+  exact safeTargetPendingLE_of_goodForRoots_pendingCovered hgood hcovered
+
 end SphincsSecurity.Concrete.OtsProbeSimulation

@@ -309,6 +309,43 @@ theorem relTriple_observedMaterializedBoundary_safeTargetPending
             leftObservations rightObservations leftState rightState fuel table hobservations hstate
           convert continueAfter _ _ hstep using 1 <;>
             simp only [observedMaterializedBoundary] <;>
-            apply bind_congr <;> intro result <;> cases result <;> rfl
+                apply bind_congr <;> intro result <;> cases result <;> rfl
+
+set_option maxHeartbeats 4000000 in
+set_option maxRecDepth 100000 in
+theorem relTriple_observedMaterializedBoundary_after_target_resolution
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (output : HashOutput) (rightRoot : Digest)
+    (ordinal : Nat) (hroot : IsLayerRoot target)
+    (selection : PrivateOrdinalSelection)
+    (hgood : selection.GoodForRoots target output rightRoot ordinal)
+    (hcovered : PendingCoveredBy (selection.candidates.take ordinal) selection.context)
+    (resolved : DeferredResolution)
+    (hresolved : some resolved ∈ support
+      (resolveDeferredPositionValue target selection.context))
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (observations : List CleanProbeObservation)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (cache : SplitHashCache) :
+    RelTriple
+      (observedMaterializedBoundary parameter root ftsSecret computation observations
+        (materializedDeferredState resolved.toDeferredContext) fuel table cache)
+      (observedMaterializedBoundary parameter root ftsSecret computation
+        (observations.map (installPositionValueAtProbe target output))
+        (materializedDeferredState
+          { selection.context with
+            values := selection.context.values.install target output })
+        fuel table cache)
+      (ObservedSafeTargetPendingRel target output) := by
+  apply relTriple_observedMaterializedBoundary_safeTargetPending parameter root ftsSecret target
+    output hroot computation observations
+    (observations.map (installPositionValueAtProbe target output))
+    (materializedDeferredState resolved.toDeferredContext)
+    (materializedDeferredState
+      { selection.context with
+        values := selection.context.values.install target output })
+    fuel table cache rfl
+  exact safeTargetPendingLE_of_resolveDeferredPositionValue hgood hcovered resolved hresolved
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
