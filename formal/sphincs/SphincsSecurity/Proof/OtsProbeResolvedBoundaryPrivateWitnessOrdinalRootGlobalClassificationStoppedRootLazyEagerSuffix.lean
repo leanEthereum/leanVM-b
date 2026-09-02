@@ -1,5 +1,6 @@
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedRootLazyEagerObservation
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedRootLazyEagerState
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalProbability
 
 /-!
 # Synchronized lazy and eager suffixes
@@ -187,5 +188,127 @@ theorem relTriple_runObservedCleanFromTable_safeTargetPending
                       (rightState.materialize (.position position) leftOutput) fuel
                       hobservations
                       (hstate.materialize_of_ne (.position position) leftOutput hposition)
+
+set_option maxHeartbeats 4000000 in
+set_option maxRecDepth 100000 in
+theorem relTriple_observedMaterializedBoundary_safeTargetPending
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (output : HashOutput) (hroot : IsLayerRoot target)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (leftObservations rightObservations : List CleanProbeObservation)
+    (leftState rightState : LazyRevealProbe.State Coordinate)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (cache : SplitHashCache)
+    (hobservations : rightObservations =
+      leftObservations.map (installPositionValueAtProbe target output))
+    (hstate : SafeTargetPendingLE target output leftState rightState) :
+    RelTriple
+      (observedMaterializedBoundary parameter root ftsSecret computation leftObservations
+        leftState fuel table cache)
+      (observedMaterializedBoundary parameter root ftsSecret computation rightObservations
+        rightState fuel table cache)
+      (ObservedSafeTargetPendingRel target output) := by
+  induction computation using OracleComp.inductionOn generalizing
+      leftObservations rightObservations leftState rightState fuel cache with
+  | pure value =>
+      rw [observedMaterializedBoundary, OracleComp.construct_pure,
+        observedMaterializedBoundary, OracleComp.construct_pure]
+      exact relTriple_pure_pure
+        (ObservedSafeTargetPendingRel.pure target output leftObservations rightObservations
+          leftState rightState fuel (value, cache) table hobservations hstate)
+  | query_bind query next ih =>
+      rw [observedMaterializedBoundary, OracleComp.construct_query_bind,
+        observedMaterializedBoundary, OracleComp.construct_query_bind]
+      have continueAfter
+          (leftRun rightRun : ProbComp (Option (ObservedCleanRunResult
+            ((OracleWorld + SigningSpec).Range query × SplitHashCache))))
+          (hrun : RelTriple leftRun rightRun
+            (ObservedSafeTargetPendingRel target output)) :
+          RelTriple
+            (leftRun >>= fun result =>
+              match result with
+              | none => pure none
+              | some result =>
+                  observedMaterializedBoundary parameter root ftsSecret
+                    (next result.value.1) result.observations result.state result.remaining table
+                    result.value.2)
+            (rightRun >>= fun result =>
+              match result with
+              | none => pure none
+              | some result =>
+                  observedMaterializedBoundary parameter root ftsSecret
+                    (next result.value.1) result.observations result.state result.remaining table
+                    result.value.2)
+            (ObservedSafeTargetPendingRel target output) := by
+        apply relTriple_bind hrun
+        intro leftResult rightResult hresult
+        cases leftResult with
+        | none =>
+            cases rightResult with
+            | none => exact relTriple_pure_pure (by trivial)
+            | some rightResult => simp [ObservedSafeTargetPendingRel] at hresult
+        | some leftResult =>
+            cases rightResult with
+            | none => simp [ObservedSafeTargetPendingRel] at hresult
+            | some rightResult =>
+                simp only
+                rcases hresult with
+                  ⟨hvalue, _htable, hremaining, hnextObservations, hnextState⟩
+                have houtput : leftResult.value.1 = rightResult.value.1 :=
+                  congrArg Prod.fst hvalue
+                have hnextCache : leftResult.value.2 = rightResult.value.2 :=
+                  congrArg Prod.snd hvalue
+                rw [← houtput, ← hnextCache, ← hremaining]
+                exact ih leftResult.value.1 leftResult.observations rightResult.observations
+                  leftResult.state rightResult.state leftResult.remaining leftResult.value.2
+                  hnextObservations hnextState
+      cases query with
+      | inl worldQuery =>
+          cases worldQuery with
+          | inl n =>
+              change Fin (n + 1) → OracleComp (OracleWorld + SigningSpec) α at next
+              simp only
+              have hstep := relTriple_runObservedCleanFromTable_safeTargetPending target output
+                ((splitUniformImpl n).run cache) leftObservations rightObservations leftState
+                rightState fuel table hobservations hstate
+              convert continueAfter _ _ hstep using 1 <;>
+                apply bind_congr <;> intro result <;> cases result <;> rfl
+          | inr input =>
+              change HashOutput → OracleComp (OracleWorld + SigningSpec) α at next
+              simp only
+              let leftPublic := materializedCanonicalContext table leftState
+              let rightPublic := materializedCanonicalContext table rightState
+              have hpublicValues : leftPublic.state.values = rightPublic.state.values :=
+                materializedCanonicalContext_values_eq_of_probeStateLE table
+                  (hstate.toProbeStateLE hroot)
+              have hplan : purePlanProbingHashQuery parameter input leftPublic.state =
+                  purePlanProbingHashQuery parameter input rightPublic.state :=
+                purePlanProbingHashQuery_eq_of_values_eq hpublicValues parameter input
+              let plan := purePlanProbingHashQuery parameter input leftPublic.state
+              have hexecutor :
+                  probingHashQueryAfterRootAwarePublicPlan parameter input leftPublic.state plan =
+                    probingHashQueryAfterRootAwarePublicPlan parameter input rightPublic.state
+                      plan :=
+                probingHashQueryAfterRootAwarePublicPlan_eq_of_values_eq parameter input
+                  hpublicValues plan
+              rw [← hplan, ← hexecutor]
+              have hstep := relTriple_runObservedCleanFromTable_safeTargetPending target output
+                ((probingHashQueryAfterRootAwarePublicPlan parameter input leftPublic.state
+                  plan).run cache)
+                leftObservations rightObservations leftState rightState fuel table hobservations
+                hstate
+              convert continueAfter _ _ hstep using 1 <;>
+                simp only [leftPublic, plan, observedMaterializedBoundary] <;>
+                apply bind_congr <;> intro result <;> cases result <;> rfl
+      | inr message =>
+          change Option Signature → OracleComp (OracleWorld + SigningSpec) α at next
+          simp only
+          have hstep := relTriple_runObservedCleanFromTable_safeTargetPending target output
+            ((maskedSign parameter root ftsSecret message).run cache)
+            leftObservations rightObservations leftState rightState fuel table hobservations hstate
+          convert continueAfter _ _ hstep using 1 <;>
+            simp only [observedMaterializedBoundary] <;>
+            apply bind_congr <;> intro result <;> cases result <;> rfl
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
