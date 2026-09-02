@@ -104,4 +104,45 @@ theorem no_existingHiddenHit_map_installPositionValueAtProbe_of_avoids
   rw [List.mem_map]
   exact ⟨before, hbefore, rfl⟩
 
+theorem installPositionValueAtProbe_eq_self
+    (target : Position) (output : HashOutput) (observation : CleanProbeObservation)
+    (hvalue : observation.coordinate = .position target →
+      observation.valueAtProbe = some output) :
+    installPositionValueAtProbe target output observation = observation := by
+  unfold installPositionValueAtProbe
+  split
+  · rename_i hcoordinate
+    cases observation
+    simp only [CleanProbeObservation.mk.injEq]
+    simpa using (hvalue hcoordinate).symm
+  · rfl
+
+theorem installPositionValueAtProbe_cleanProbeObservation_eq_self
+    (target : Position) (output : HashOutput)
+    (state : LazyRevealProbe.State Coordinate)
+    (htarget : state.values (.position target) = some output)
+    (coordinate : Coordinate) (candidate : Digest) :
+    installPositionValueAtProbe target output
+        (cleanProbeObservation state coordinate candidate) =
+      cleanProbeObservation state coordinate candidate := by
+  apply installPositionValueAtProbe_eq_self
+  intro hcoordinate
+  have : coordinate = .position target := by
+    simpa [cleanProbeObservation] using hcoordinate
+  subst coordinate
+  simp [cleanProbeObservation, htarget]
+
+theorem map_installPositionValueAtProbe_append_cleanProbeObservation
+    (target : Position) (output : HashOutput)
+    (observations : List CleanProbeObservation)
+    (state : LazyRevealProbe.State Coordinate)
+    (htarget : state.values (.position target) = some output)
+    (coordinate : Coordinate) (candidate : Digest) :
+    (observations ++ [cleanProbeObservation state coordinate candidate]).map
+        (installPositionValueAtProbe target output) =
+      observations.map (installPositionValueAtProbe target output) ++
+        [cleanProbeObservation state coordinate candidate] := by
+  rw [List.map_append]
+  simp [installPositionValueAtProbe_cleanProbeObservation_eq_self target output state htarget]
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
