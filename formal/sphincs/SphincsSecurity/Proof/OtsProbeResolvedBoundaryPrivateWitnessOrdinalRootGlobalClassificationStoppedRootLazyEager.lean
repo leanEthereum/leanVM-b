@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedRootAwareSharedSemantic
+import SphincsSecurity.Proof.OtsProbeResolvedPrivateRetainedCommutation
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
