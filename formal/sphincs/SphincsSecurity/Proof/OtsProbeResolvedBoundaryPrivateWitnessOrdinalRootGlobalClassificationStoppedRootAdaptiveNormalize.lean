@@ -329,6 +329,83 @@ instance negatedCanonicalizeDirectDelayedObserve_observerSynchronized
       simp [hleftNoHit, hrightNoHit, hleftPublished, hrightNotPublished]
 
 set_option maxRecDepth 100000 in
+theorem evalDist_directDelayedSelectedRootIndicator_eq_of_selected_context
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (table : OtsSecretIndex → HashOutput) (target : Position) (rightRoot : Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (left right : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (hselected : ordinal < snapshots.length) :
+    evalDist
+        (directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+          rightRoot computation snapshots observations left fuel cache) =
+      evalDist
+        (directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+          rightRoot computation snapshots observations right fuel cache) := by
+  rw [directDelayedSelectedRootIndicator_eq_selected ordinal parameter root ftsSecret table target
+    rightRoot computation snapshots observations left fuel cache hselected]
+  rw [directDelayedSelectedRootIndicator_eq_selected ordinal parameter root ftsSecret table target
+    rightRoot computation snapshots observations right fuel cache hselected]
+
+theorem evalDist_directDelayedSelectedRootIndicator_pure_eq_of_unselected_context
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (table : OtsSecretIndex → HashOutput) (target : Position) (rightRoot : Digest)
+    (value : α) (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (left right : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (hselected : ¬ordinal < snapshots.length) :
+    evalDist
+        (directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+          rightRoot (pure value) snapshots observations left fuel cache) =
+      evalDist
+        (directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+          rightRoot (pure value) snapshots observations right fuel cache) := by
+  simp [directDelayedSelectedRootIndicator, hselected]
+
+set_option maxRecDepth 100000 in
+theorem evalDist_negatedDirectDelayedSelectedRootIndicator_eq_of_selected_context
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (table : OtsSecretIndex → HashOutput) (target : Position) (rightRoot : Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (left right : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (hselected : ordinal < snapshots.length) :
+    evalDist (Bool.not <$>
+        directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+          rightRoot computation snapshots observations left fuel cache) =
+      evalDist (Bool.not <$>
+        directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+          rightRoot computation snapshots observations right fuel cache) := by
+  rw [evalDist_map, evalDist_map,
+    evalDist_directDelayedSelectedRootIndicator_eq_of_selected_context ordinal parameter root
+      ftsSecret table target rightRoot computation snapshots observations left right fuel cache
+      hselected]
+
+theorem evalDist_negatedDirectDelayedSelectedRootIndicator_pure_eq_of_unselected_context
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (table : OtsSecretIndex → HashOutput) (target : Position) (rightRoot : Digest)
+    (value : α) (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (left right : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (hselected : ¬ordinal < snapshots.length) :
+    evalDist (Bool.not <$>
+        directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+          rightRoot (pure value) snapshots observations left fuel cache) =
+      evalDist (Bool.not <$>
+        directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+          rightRoot (pure value) snapshots observations right fuel cache) := by
+  rw [evalDist_map, evalDist_map,
+    evalDist_directDelayedSelectedRootIndicator_pure_eq_of_unselected_context ordinal parameter
+      root ftsSecret table target rightRoot value snapshots observations left right fuel cache
+      hselected]
+
+set_option maxRecDepth 100000 in
 theorem evalDist_eagerDirectDelayedSelectedRootIndicator_uniform_eq
     (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
