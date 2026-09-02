@@ -46,7 +46,7 @@ theorem relTriple_directDelayed_uniform_observed
     (next : Fin (n + 1) → OracleComp (OracleWorld + SigningSpec) RetainedRestResult)
     (snapshots : List PlannedProbeSnapshot)
     (observations : List CleanProbeObservation)
-    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (context : DeferredContext) (leftFuel rightFuel : Nat) (cache : SplitHashCache)
     (hselected : ¬ordinal < snapshots.length)
     (hcompletable : DeferredCompletable table context)
     (hpublished : PublishedValues context.state)
@@ -54,27 +54,27 @@ theorem relTriple_directDelayed_uniform_observed
     (hrecursive : ∀ output,
       RelTriple
         (directDelayedSelectedRootIndicator ordinal parameter publicRoot ftsSecret table target
-          rightRoot (next output) snapshots observations context fuel cache)
+          rightRoot (next output) snapshots observations context leftFuel cache)
         ((successfulObservedRootComparisonIndicator table ordinal target ∘
             fun observed ↦ (observed, rightRoot)) <$>
           observedMaterializedBoundary parameter publicRoot ftsSecret (next output) observations
-            (materializedDeferredState context) fuel table cache)
+            (materializedDeferredState context) rightFuel table cache)
         SuccessfulObservedIndicatorRel) :
     RelTriple
       (directDelayedSelectedRootIndicator ordinal parameter publicRoot ftsSecret table target
         rightRoot
         (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
           (Sum.inl (Sum.inl n))) >>= next)
-        snapshots observations context fuel cache)
+        snapshots observations context leftFuel cache)
       ((successfulObservedRootComparisonIndicator table ordinal target ∘
           fun observed ↦ (observed, rightRoot)) <$>
         observedMaterializedBoundary parameter publicRoot ftsSecret
           (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
             (Sum.inl (Sum.inl n))) >>= next)
-          observations (materializedDeferredState context) fuel table cache)
+          observations (materializedDeferredState context) rightFuel table cache)
       SuccessfulObservedIndicatorRel := by
   rw [directDelayedSelectedRootIndicator_uniform_eq ordinal parameter publicRoot ftsSecret table
-    target rightRoot n next snapshots observations context fuel cache hselected]
+    target rightRoot n next snapshots observations context leftFuel cache hselected]
   rw [observedMaterializedBoundary_uniform_query_bind]
   rw [runDirectResolvedWitnessFromTable_splitUniformImpl,
     runObservedCleanFromTable_splitUniformImpl]
