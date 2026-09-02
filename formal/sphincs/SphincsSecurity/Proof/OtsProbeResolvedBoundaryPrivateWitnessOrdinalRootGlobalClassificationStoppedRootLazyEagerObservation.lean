@@ -240,8 +240,9 @@ theorem firstExistingHiddenHitAt_map_installPositionValueAtProbe
     (hfirst : FirstExistingHiddenHitAt result ordinal)
     (hselected : ∀ selected : Fin result.observations.length,
       selected.val = ordinal →
-        (result.observations.get selected).coordinate = .position target →
-        (result.observations.get selected).valueAtProbe = some output)
+        (result.observations.get selected).coordinate = .position target ∧
+          (result.observations.get selected).revealedAtProbe = false ∧
+          truncateHash output = (result.observations.get selected).candidate)
     (havoid : ∀ earlier : Fin result.observations.length,
       earlier.val < ordinal →
         (result.observations.get earlier).toProbe ≠
@@ -250,23 +251,20 @@ theorem firstExistingHiddenHitAt_map_installPositionValueAtProbe
       { result with observations :=
           result.observations.map (installPositionValueAtProbe target output) }
       ordinal := by
-  obtain ⟨selected, hordinal, hhit, hbefore⟩ := hfirst
+  obtain ⟨selected, hordinal, _hhit, hbefore⟩ := hfirst
   let mappedSelected : Fin
       (result.observations.map (installPositionValueAtProbe target output)).length :=
     ⟨selected.val, by simpa only [List.length_map] using selected.isLt⟩
   refine ⟨mappedSelected, hordinal, ?_, ?_⟩
-  · have hselectedObservation :
-        installPositionValueAtProbe target output (result.observations.get selected) =
-          result.observations.get selected := by
-      apply installPositionValueAtProbe_eq_self
-      intro hcoordinate
-      exact hselected selected hordinal hcoordinate
+  · have hselectedData := hselected selected hordinal
     have hget :
         (result.observations.map (installPositionValueAtProbe target output)).get mappedSelected =
           installPositionValueAtProbe target output (result.observations.get selected) := by
       simp [mappedSelected]
-    rw [ExistingHiddenHitAtOrdinal, hget, hselectedObservation]
-    exact hhit
+    rw [ExistingHiddenHitAtOrdinal, hget,
+      installPositionValueAtProbe_existingHiddenHit_iff_of_target target output
+        (result.observations.get selected) hselectedData.1]
+    exact hselectedData.2
   · intro mappedEarlier hearlier
     let earlier : Fin result.observations.length :=
       ⟨mappedEarlier.val, by simpa using mappedEarlier.isLt⟩

@@ -7,8 +7,256 @@ import SphincsSecurity.Proof.OtsProbeResolvedPrivateRetainedCommutation
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
 open OracleComp OracleSpec
+open OracleComp.ProgramLogic.Relational
 
 attribute [local irreducible] maskedPublishedTreeRoot
+
+def RawObservedPendingSelectorRel
+    (table : OtsSecretIndex → HashOutput) (ordinal : Nat) :
+    (Option (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest) →
+      (Option PrivateOrdinalSelection × Digest) → Prop :=
+  fun observed selection ↦
+    ∃ source : PrivateWitnessSnapshotOutput × Digest,
+      source.2 = observed.2 ∧
+        SnapshotObservedFirstStoppedRel table source.1 observed.1 ∧
+        SnapshotOrdinalSelectionRel ordinal source.1 selection.1 ∧
+        source.2 = selection.2 ∧
+        PrivateOrdinalSelectionPendingCovered ordinal selection.1
+
+set_option maxHeartbeats 4000000 in
+set_option maxRecDepth 100000 in
+theorem relTriple_observedRootComparison_privateOrdinalSelection_raw
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (q : Nat)
+    (hbound : ∀ root,
+      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
+        IsOuterHash q)
+    (hq : q ≤ 2 ^ securityBits) :
+    RelTriple
+      (do
+        let observed ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret
+          (2 * q) table
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        pure (observed, rightRoot))
+      (do
+        let selection ← granularAllCanonicalPrivateOrdinalSelection ordinal adversary parameter
+          table ftsSecret q
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        pure (selection, rightRoot))
+      (RawObservedPendingSelectorRel table ordinal) := by
+  have hsourceObserved : RelTriple
+      (do
+        let source ← granularAllCanonicalPrivateWitnessSnapshot adversary parameter table
+          ftsSecret q
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        pure (source, rightRoot))
+      (do
+        let observed ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret
+          (2 * q) table
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        pure (observed, rightRoot))
+      (fun source observed ↦ source.2 = observed.2 ∧
+        SnapshotObservedFirstStoppedRel table source.1 observed.1) := by
+    apply relTriple_bind
+      (relTriple_granularAllSnapshot_observedMaterializedRetained_firstStopped adversary
+        parameter ftsSecret q table hbound hq)
+    intro source observed hrelation
+    apply relTriple_bind (relTriple_refl ($ᵗ Digest : ProbComp Digest))
+    intro leftRoot rightRoot hroot
+    subst rightRoot
+    exact relTriple_pure_pure ⟨rfl, hrelation⟩
+  have hsourceSelection :=
+    relTriple_snapshotComparison_privateOrdinalSelectionComparison_pendingCovered ordinal
+      adversary parameter table ftsSecret q
+  have hglued := SphincsSecurity.relTriple_trans_exists (relTriple_symm hsourceObserved)
+    hsourceSelection
+  apply relTriple_post_mono hglued
+  intro observed selection hrelation
+  obtain ⟨source, hsource, hselection⟩ := hrelation
+  exact ⟨source, hsource.1, hsource.2, hselection.1.1, hselection.1.2,
+    hselection.2⟩
+
+def RawObservedResolvedSelectorRel
+    (table : OtsSecretIndex → HashOutput) (ordinal : Nat) (target : Position) :
+    (Option (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest) →
+      (Option PrivateOrdinalSelection × Digest) → Prop :=
+  fun observed resolved ↦
+    ∃ selection : Option PrivateOrdinalSelection × Digest,
+      RawObservedPendingSelectorRel table ordinal observed selection ∧
+        PrivateOrdinalGoodRel target selection.2 ordinal selection.1 resolved.1 ∧
+        selection.2 = resolved.2
+
+set_option maxHeartbeats 4000000 in
+set_option maxRecDepth 100000 in
+theorem relTriple_observedRootComparison_resolvedSelector_raw
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (q : Nat) (target : Position)
+    (hbound : ∀ root,
+      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
+        IsOuterHash q)
+    (hq : q ≤ 2 ^ securityBits) :
+    RelTriple
+      (do
+        let observed ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret
+          (2 * q) table
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        pure (observed, rightRoot))
+      (do
+        let selection ← granularAllCanonicalPrivateOrdinalSelection ordinal adversary parameter
+          table ftsSecret q
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        let resolved ← resolvePrivateOrdinalSelection target selection
+        pure (resolved, rightRoot))
+      (RawObservedResolvedSelectorRel table ordinal target) := by
+  have hbase := relTriple_observedRootComparison_privateOrdinalSelection_raw ordinal adversary
+    parameter table ftsSecret q hbound hq
+  have hboundPair : RelTriple
+      ((do
+        let observed ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret
+          (2 * q) table
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        pure (observed, rightRoot)) >>= pure)
+      ((do
+        let selection ← granularAllCanonicalPrivateOrdinalSelection ordinal adversary parameter
+          table ftsSecret q
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        pure (selection, rightRoot)) >>= fun selection ↦ do
+          let resolved ← resolvePrivateOrdinalSelection target selection.1
+          pure (resolved, selection.2))
+      (RawObservedResolvedSelectorRel table ordinal target) := by
+    apply relTriple_bind hbase
+    intro observed selection hrelation
+    obtain ⟨source, hsourceRoot, hsourceObserved, hsourceSelection, hselectionRoot,
+      hpending⟩ := hrelation
+    have hinner : RelTriple
+        ((pure selection.1 : ProbComp (Option PrivateOrdinalSelection)) >>= fun _ ↦
+          pure observed)
+        (resolvePrivateOrdinalSelection target selection.1 >>= fun resolved ↦
+          pure (resolved, selection.2))
+        (RawObservedResolvedSelectorRel table ordinal target) := by
+      apply relTriple_bind
+        (relTriple_privateOrdinalSelection_resolve target selection.2 ordinal selection.1 hpending)
+      intro original resolved hresolved
+      have hgoodRel : PrivateOrdinalGoodRel target selection.2 ordinal selection.1 resolved := by
+        rw [← hresolved.2]
+        exact hresolved.1
+      exact relTriple_pure_pure
+        ⟨selection,
+          ⟨source, hsourceRoot, hsourceObserved, hsourceSelection, hselectionRoot, hpending⟩,
+          hgoodRel, rfl⟩
+    simpa using hinner
+  simpa [bind_assoc] using hboundPair
+
+theorem RawObservedPendingSelectorRel.data_of_good
+    {table : OtsSecretIndex → HashOutput} {ordinal : Nat} {target : Position}
+    {result : ObservedCleanRunResult (RetainedGameResult × SplitHashCache)}
+    {rightRoot : Digest} {selection : Option PrivateOrdinalSelection × Digest}
+    (hrelation : RawObservedPendingSelectorRel table ordinal (some result, rightRoot) selection)
+    (hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      table ordinal target rightRoot (some result)) :
+    ∃ selected output,
+      selection.1 = some selected ∧
+        selected.GoodForRoots target output selection.2 ordinal ∧
+        PendingCoveredBy (selected.candidates.take ordinal) selected.context ∧
+        (∀ observed : Fin result.observations.length,
+          observed.val = ordinal →
+            (result.observations.get observed).coordinate = .position target ∧
+              (result.observations.get observed).revealedAtProbe = false ∧
+              truncateHash output = (result.observations.get observed).candidate) ∧
+        (∀ earlier : Fin result.observations.length,
+          earlier.val < ordinal →
+            (result.observations.get earlier).toProbe ≠
+              ⟨.position target, truncateHash output⟩) ∧
+        IsLayerRoot target := by
+  obtain ⟨source, hsourceRoot, hsourceObserved, hsourceSelection, hselectionRoot,
+    hpending⟩ := hrelation
+  have hsourceGood := hsourceObserved.cleanRootGoodForComparisonAt_of_successful hgood
+  obtain ⟨sourceSelected, output, hsourceOrdinal, hselectedSource, hgoodRoots⟩ :=
+    hsourceGood.goodForRoots
+  have hselection : selection.1 =
+      some (privateOrdinalSelectionOfSnapshot sourceSelected) := by
+    rw [← hsourceSelection, hselectedSource]
+  let selected := privateOrdinalSelectionOfSnapshot sourceSelected
+  have hselectedGood : selected.GoodForRoots target output selection.2 ordinal := by
+    rw [← hselectionRoot, hsourceRoot]
+    exact hgoodRoots
+  have hcovered : PendingCoveredBy (selected.candidates.take ordinal) selected.context := by
+    rw [hselection] at hpending
+    exact hpending
+  have hgoodData := hgood
+  obtain ⟨⟨⟨⟨finalResult, hfinish⟩, _hdoomed,
+    observedSelected, hobservedOrdinal, hfirst, hobservedRoot⟩, hposition⟩,
+    _hcomparison⟩ := hgoodData
+  rcases hsourceObserved.selectedAligned_or_chain_of_successful_firstHit
+      finalResult hfinish ordinal hfirst with halignedData | hchain
+  · obtain ⟨_hsourceHit, haligned⟩ := halignedData
+    obtain ⟨alignedSource, alignedObserved, halignedSource, halignedObserved,
+      hcandidates, hprefix, _hsnapshots⟩ := haligned
+    have hsourceEq : alignedSource = sourceSelected :=
+      Fin.ext (halignedSource.trans hsourceOrdinal.symm)
+    have hobservedEq : alignedObserved = observedSelected :=
+      Fin.ext (halignedObserved.trans hobservedOrdinal.symm)
+    have hselectedLt : ordinal < result.observations.length := by
+      rw [← hobservedOrdinal]
+      exact observedSelected.isLt
+    have hselectedIndex :
+        (⟨ordinal, hselectedLt⟩ : Fin result.observations.length) = observedSelected :=
+      Fin.ext hobservedOrdinal.symm
+    have htargetData :
+        (result.observations.get observedSelected).coordinate = .position target ∧
+          IsLayerRoot target := by
+      simp only [observedFirstLayerRootPosition?, hselectedLt, ↓reduceDIte] at hposition
+      rw [candidateLayerRootPosition?_eq_some_iff, hselectedIndex] at hposition
+      exact hposition
+    have hselectedDigest : truncateHash output =
+        (result.observations.get observedSelected).candidate := by
+      have hcandidate := hselectedGood.1
+      rw [privateOrdinalSelectionOfSnapshot_candidate] at hcandidate
+      have hsourceCandidate : (source.1.2.get sourceSelected).probe =
+          ⟨.position target, truncateHash output⟩ := by
+        simpa [snapshotProbeOrdinal] using hcandidate
+      have halignedCandidate : (source.1.2.get alignedSource).probe =
+          (result.observations.get alignedObserved).toProbe := hcandidates
+      rw [hsourceEq, hsourceCandidate, hobservedEq] at halignedCandidate
+      simpa [CleanProbeObservation.toProbe] using congrArg Probe.candidate halignedCandidate
+    have hselectedHidden :
+        (result.observations.get observedSelected).revealedAtProbe = false := by
+      obtain ⟨_firstSelected, _hfirstOrdinal, hhit, _hbefore⟩ := hfirst
+      have hsame : _firstSelected = observedSelected :=
+        Fin.ext (_hfirstOrdinal.trans hobservedOrdinal.symm)
+      subst _firstSelected
+      exact hhit.1
+    refine ⟨selected, output, hselection, hselectedGood, hcovered, ?_, ?_,
+      htargetData.2⟩
+    · intro observed hobserved
+      have heq : observed = observedSelected :=
+        Fin.ext (hobserved.trans hobservedOrdinal.symm)
+      subst observed
+      exact ⟨htargetData.1, hselectedHidden, hselectedDigest⟩
+    · intro earlier hearlier heq
+      have hprefixAvoid := hselectedGood.2.2.2.2
+      have hobservationMem : (result.observations.get earlier).toProbe ∈
+          (result.observations.map CleanProbeObservation.toProbe).take ordinal := by
+        rw [List.mem_iff_get]
+        let index : Fin
+            ((result.observations.map CleanProbeObservation.toProbe).take ordinal).length :=
+          ⟨earlier.val, by simp [hearlier]⟩
+        refine ⟨index, ?_⟩
+        simp [index]
+      have hselectedMem : (result.observations.get earlier).toProbe ∈
+          selected.candidates.take ordinal := by
+        change (result.observations.get earlier).toProbe ∈
+          (privateOrdinalSelectionOfSnapshot sourceSelected).candidates.take ordinal
+        rw [← hsourceOrdinal,
+          privateOrdinalSelectionOfSnapshot_candidates_take, hsourceOrdinal, hprefix]
+        exact hobservationMem
+      exact (hprefixAvoid _ hselectedMem).1 heq
+  · exact (not_firstExistingHiddenRootHitAt_of_firstChainStart hchain hfirst observedSelected
+      hobservedOrdinal hobservedRoot).elim
 
 noncomputable def resolvedEagerObservedRootComparisonAfterRootResult
     (adversary : Adversary) (parameter : PublicParameter)

@@ -245,10 +245,11 @@ theorem ObservedSafeTargetPendingRel.successfulDoomedFirstRootGoodForComparisonA
     (left right : ObservedCleanRunResult α)
     (hrel : ObservedSafeTargetPendingRel target output (some left) (some right))
     (hroot : IsLayerRoot target)
-    (hselectedValue : ∀ selected : Fin left.observations.length,
+    (hselectedHit : ∀ selected : Fin left.observations.length,
       selected.val = ordinal →
-        (left.observations.get selected).coordinate = .position target →
-        (left.observations.get selected).valueAtProbe = some output)
+        (left.observations.get selected).coordinate = .position target ∧
+          (left.observations.get selected).revealedAtProbe = false ∧
+          truncateHash output = (left.observations.get selected).candidate)
     (hactualAvoid : ∀ earlier : Fin left.observations.length,
       earlier.val < ordinal →
         (left.observations.get earlier).toProbe ≠
@@ -278,7 +279,7 @@ theorem ObservedSafeTargetPendingRel.successfulDoomedFirstRootGoodForComparisonA
       (hstate.toProbeStateLE hroot) hrightCompletable)
   rcases hfirstRoot with ⟨selected, hselected, hfirst, _hselectedRoot⟩
   have hfirstInstalled := firstExistingHiddenHitAt_map_installPositionValueAtProbe
-    target output left ordinal hfirst hselectedValue hactualAvoid
+    target output left ordinal hfirst hselectedHit hactualAvoid
   let installed : ObservedCleanRunResult α :=
     { left with observations :=
         left.observations.map (installPositionValueAtProbe target output) }
