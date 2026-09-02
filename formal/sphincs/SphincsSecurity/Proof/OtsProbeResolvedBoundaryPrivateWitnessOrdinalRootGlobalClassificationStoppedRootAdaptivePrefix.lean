@@ -13,6 +13,8 @@ namespace SphincsSecurity.Concrete.OtsProbeSimulation
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
 
+attribute [local instance] Classical.propDecidable
+
 noncomputable def delayedSelectedRootIndicator
     (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
@@ -25,10 +27,13 @@ noncomputable def delayedSelectedRootIndicator
   match resolved with
   | none => pure false
   | some resolved =>
-      (successfulObservedRootComparisonIndicator table ordinal target ∘
-          fun observed => (observed, rightRoot)) <$>
-        observedMaterializedBoundary parameter root ftsSecret computation observations
-          (materializedDeferredState resolved.toDeferredContext) fuel table cache
+      if CandidatesAvoidRoots target (truncateHash resolved.output) rightRoot
+          (selection.candidates.take ordinal) then
+        (successfulObservedRootComparisonIndicator table ordinal target ∘
+            fun observed => (observed, rightRoot)) <$>
+          observedMaterializedBoundary parameter root ftsSecret computation observations
+            (materializedDeferredState resolved.toDeferredContext) fuel table cache
+      else pure false
 
 theorem successfulDoomedFirstRootGoodForComparisonAt_retainObservedRoot
     (table : OtsSecretIndex → HashOutput) (ordinal : Nat) (target : Position)
@@ -155,6 +160,9 @@ theorem relTriple_delayedSelectedRootIndicator
               values := selection.context.values.install target output })
           fuel table cache)
       SuccessfulObservedIndicatorRel := by
+  rw [delayedSelectedRootIndicator,
+    resolveDeferredPositionValue_eq_good_output hgood hcovered]
+  simp only [pure_bind, hgood.2.2.2.2, ↓reduceIte]
   let eager := observedMaterializedBoundary parameter root ftsSecret computation
     (observations.map (installPositionValueAtProbe target output))
     (materializedDeferredState
@@ -165,6 +173,8 @@ theorem relTriple_delayedSelectedRootIndicator
     relTriple_indicator_resolveSelectedRoot_then_observedMaterializedBoundary parameter root
       ftsSecret target output rightRoot ordinal hroot selection hgood hcovered computation
       observations fuel table cache hselectedHit hactualAvoid
+  rw [resolveDeferredPositionValue_eq_good_output hgood hcovered] at hselected
+  simp only [pure_bind] at hselected
   have hretain : RelTriple
       ((successfulObservedRootComparisonIndicator table ordinal target ∘
           fun observed => (observed, rightRoot)) <$> eager)
@@ -244,6 +254,9 @@ theorem relTriple_delayedSelectedRootIndicator_supported
               values := selection.context.values.install target output })
           fuel table cache)
       SuccessfulObservedIndicatorRel := by
+  rw [delayedSelectedRootIndicator,
+    resolveDeferredPositionValue_eq_good_output hgood hcovered]
+  simp only [pure_bind, hgood.2.2.2.2, ↓reduceIte]
   let eager := observedMaterializedBoundary parameter root ftsSecret computation
     (observations.map (installPositionValueAtProbe target output))
     (materializedDeferredState
@@ -254,6 +267,8 @@ theorem relTriple_delayedSelectedRootIndicator_supported
     relTriple_indicator_resolveSelectedRoot_then_observedMaterializedBoundary_supported
       parameter root ftsSecret target output rightRoot ordinal hroot selection hgood hcovered
       computation observations fuel table cache hselectedHit hactualAvoid
+  rw [resolveDeferredPositionValue_eq_good_output hgood hcovered] at hselected
+  simp only [pure_bind] at hselected
   have hretain : RelTriple
       ((successfulObservedRootComparisonIndicator table ordinal target ∘
           fun observed => (observed, rightRoot)) <$> eager)

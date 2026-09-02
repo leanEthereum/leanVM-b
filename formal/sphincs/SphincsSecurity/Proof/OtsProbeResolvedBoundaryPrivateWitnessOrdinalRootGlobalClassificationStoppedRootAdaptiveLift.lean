@@ -2249,10 +2249,16 @@ theorem relTriple_indicator_observed_directDelayed
                       obtain ⟨middle, hfirst, hsecond⟩ := hrelation
                       exact hsecond (hfirst hactual)
                     have hfinal := SphincsSecurity.relTriple_trans_exists hstateCache' hfuelBridge
+                    have hresolvedAvoid : CandidatesAvoidRoots target
+                        (truncateHash resolved.output) rightRoot
+                        (selection.candidates.take snapshots.length) := by
+                      simpa [resolved] using hselectionGood.2.2.2.2
+                    rw [if_pos hresolvedAvoid]
                     apply relTriple_post_mono hfinal
                     intro actual delayed hrelation hactual
                     obtain ⟨middle, hfirst, hsecond⟩ := hrelation
-                    simpa [selectedComputation, resolvedState] using hsecond (hfirst hactual)
+                    simpa [selectedComputation, resolvedState] using
+                      hsecond (hfirst hactual)
                   · let real :=
                       (successfulObservedRootComparisonIndicator table snapshots.length target ∘
                           fun observed ↦ (observed, rightRoot)) <$>

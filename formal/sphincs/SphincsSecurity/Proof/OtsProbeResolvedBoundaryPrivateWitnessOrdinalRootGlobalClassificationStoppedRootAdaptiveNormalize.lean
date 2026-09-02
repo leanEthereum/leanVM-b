@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedRootAdaptiveAfterRoot
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedRootAdaptiveTrace
 import SphincsSecurity.Proof.OtsProbeResolvedPrivateRetainedCommutation
 
 /-!
@@ -516,6 +516,105 @@ theorem evalDist_resolve_then_runDirectWitness_finish_false
         (canonicalizeDirectDelayedSelectedRootIndicator table observe) snapshots observations
         context fuel table computation).symm
 
+theorem cleanProbeObservation_materializedDeferredState_resolved
+    (target : Position) (context : DeferredContext) (resolved : DeferredResolution)
+    (hresolved : some resolved ∈ support
+      (resolveDeferredPositionValue target context))
+    (coordinate : Coordinate) (candidate : Digest) :
+    cleanProbeObservation (materializedDeferredState resolved.toDeferredContext)
+        coordinate candidate =
+      installPositionValueAtProbe target resolved.output
+        (cleanProbeObservation (materializedDeferredState context) coordinate candidate) := by
+  have hstate := resolveDeferredPositionValue_state_eq_clearPending target context resolved
+    hresolved
+  have hstateValues := resolveDeferredPositionValue_preserves_state_values target context resolved
+    hresolved
+  cases coordinate with
+  | chainStart lay tree leafIdx chainIdx =>
+      simp [cleanProbeObservation, installPositionValueAtProbe, hstate,
+        LazyRevealProbe.State.clearPending]
+  | position position =>
+      by_cases hposition : position = target
+      · subst position
+        have hvalue := resolveDeferredPositionValue_resolves target context resolved hresolved
+        simp [cleanProbeObservation, installPositionValueAtProbe, hstate, hvalue,
+          LazyRevealProbe.State.clearPending]
+      · have hvalue : resolved.toDeferredContext.positionValue position =
+            context.positionValue position := by
+          unfold DeferredContext.positionValue
+          rw [hstateValues]
+          split
+          · rfl
+          · exact resolveDeferredPositionValue_preserves_other target position context resolved
+              hposition hresolved
+        simp [cleanProbeObservation, installPositionValueAtProbe, hstate, hvalue, hposition,
+          LazyRevealProbe.State.clearPending]
+
+theorem observationsAfterCandidate_materializedDeferredState_resolved
+    (target : Position) (context : DeferredContext) (resolved : DeferredResolution)
+    (hresolved : some resolved ∈ support
+      (resolveDeferredPositionValue target context))
+    (observations : List CleanProbeObservation) (candidate? : Option Probe) :
+    observationsAfterCandidate
+        (observations.map (installPositionValueAtProbe target resolved.output))
+        (materializedDeferredState resolved.toDeferredContext) candidate? =
+      (observationsAfterCandidate observations (materializedDeferredState context) candidate?).map
+        (installPositionValueAtProbe target resolved.output) := by
+  cases candidate? with
+  | none => rfl
+  | some candidate =>
+      simp [observationsAfterCandidate,
+        cleanProbeObservation_materializedDeferredState_resolved target context resolved hresolved]
+
+def installPositionValueAtSnapshot
+    (target : Position) (output : HashOutput)
+    (snapshot : PlannedProbeSnapshot) : PlannedProbeSnapshot :=
+  ⟨snapshot.probe,
+    (completePrivatePosition target snapshot.context output).toDeferredContext⟩
+
+@[simp] theorem installPositionValueAtSnapshot_toProbe
+    (target : Position) (output : HashOutput) (snapshot : PlannedProbeSnapshot) :
+    (installPositionValueAtSnapshot target output snapshot).toProbe = snapshot.toProbe := by
+  rfl
+
+theorem completePrivatePosition_eq_of_resolveDeferredPositionValue
+    (target : Position) (context : DeferredContext) (resolved : DeferredResolution)
+    (hresolved : some resolved ∈ support
+      (resolveDeferredPositionValue target context)) :
+    completePrivatePosition target context resolved.output = resolved := by
+  have hstate := resolveDeferredPositionValue_state_eq_clearPending target context resolved
+    hresolved
+  have htarget := resolveDeferredPositionValue_installs target context resolved hresolved
+  rcases resolved with ⟨⟨state, values⟩, output⟩
+  simp only at hstate htarget ⊢
+  subst state
+  have hvalues : context.values.install target output = values := by
+    funext position
+    by_cases hposition : position = target
+    · subst position
+      simpa [DeferredStructuralValues.install] using htarget.symm
+    · rw [DeferredStructuralValues.install, Function.update_of_ne hposition]
+      exact (resolveDeferredPositionValue_preserves_other target position context
+        ⟨⟨context.state.clearPending (.position target), values⟩, output⟩ hposition hresolved).symm
+  simp [completePrivatePosition, hvalues]
+
+theorem appendPlannedSnapshot_resolved
+    (target : Position) (context : DeferredContext) (resolved : DeferredResolution)
+    (hresolved : some resolved ∈ support
+      (resolveDeferredPositionValue target context))
+    (snapshots : List PlannedProbeSnapshot) (candidate? : Option Probe) :
+    appendPlannedSnapshot
+        (snapshots.map (installPositionValueAtSnapshot target resolved.output))
+        candidate? resolved.toDeferredContext =
+      (appendPlannedSnapshot snapshots candidate? context).map
+        (installPositionValueAtSnapshot target resolved.output) := by
+  have hcontext := congrArg DeferredResolution.toDeferredContext
+    (completePrivatePosition_eq_of_resolveDeferredPositionValue target context resolved hresolved)
+  cases candidate? with
+  | none => rfl
+  | some candidate =>
+      simp [appendPlannedSnapshot, installPositionValueAtSnapshot, hcontext]
+
 set_option maxRecDepth 100000 in
 theorem evalDist_directDelayedSelectedRootIndicator_eq_of_selected_context
     (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
@@ -766,7 +865,7 @@ theorem evalDist_eagerDirectDelayedSelectedRootIndicator_signing_eq
       hcompletable
 
 set_option maxRecDepth 100000 in
-theorem evalDist_eagerDirectDelayedSelectedRootIndicator_hash_eq_selected
+theorem relTriple_directDelayed_eagerDirectDelayed_hash_selected
     (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
     (table : OtsSecretIndex → HashOutput) (target : Position) (rightRoot : Digest)
@@ -780,18 +879,18 @@ theorem evalDist_eagerDirectDelayedSelectedRootIndicator_hash_eq_selected
       (appendPlannedSnapshot snapshots
         (rootAwareCandidateForPlan? parameter input
           (purePlanProbingHashQuery parameter input context.state)) context).length) :
-    evalDist
-        (eagerDirectDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+    RelTriple
+      (directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
           rightRoot
           (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
             (Sum.inl (Sum.inr input))) >>= next)
-          snapshots observations context fuel cache) =
-      evalDist
-        (directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+          snapshots observations context fuel cache)
+      (eagerDirectDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
           rightRoot
           (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
             (Sum.inl (Sum.inr input))) >>= next)
-          snapshots observations context fuel cache) := by
+          snapshots observations context fuel cache)
+      (EqRel Bool) := by
   classical
   let candidate? := rootAwareCandidateForPlan? parameter input
     (purePlanProbingHashQuery parameter input context.state)
@@ -827,10 +926,15 @@ theorem evalDist_eagerDirectDelayedSelectedRootIndicator_hash_eq_selected
   unfold eagerDirectDelayedSelectedRootIndicator
   simp only [hbefore, ↓reduceIte]
   unfold delayedSelectedRootIndicator
-  apply evalDist_bind_congr
-  intro resolved hresolved
-  cases resolved with
-  | none => rfl
+  have hresolve := SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support
+    (relTriple_refl (resolveDeferredPositionValue target context))
+    (fun resolved => resolved ∈ support (resolveDeferredPositionValue target context))
+    (fun resolved hresolved => hresolved)
+  apply relTriple_bind hresolve
+  intro leftResolved rightResolved hrelation
+  obtain ⟨rfl, hresolved⟩ := hrelation
+  cases leftResolved with
+  | none => exact relTriple_pure_pure rfl
   | some resolved =>
       have hvalues := resolveDeferredPositionValue_preserves_state_values target context resolved
         hresolved
@@ -862,6 +966,249 @@ theorem evalDist_eagerDirectDelayedSelectedRootIndicator_hash_eq_selected
       rw [hgetResolved]
       unfold delayedSelectedRootIndicator
       rw [resolveDeferredPositionValue_of_resolved target context resolved hresolved]
-      rfl
+      simp only [pure_bind]
+      have hcandidates :
+          (appendPlannedSnapshot snapshots
+              (rootAwareCandidateForPlan? parameter input
+                (purePlanProbingHashQuery parameter input resolved.state))
+              resolved.toDeferredContext).map PlannedProbeSnapshot.toProbe =
+            (appendPlannedSnapshot snapshots
+              (rootAwareCandidateForPlan? parameter input
+                (purePlanProbingHashQuery parameter input context.state))
+              context).map PlannedProbeSnapshot.toProbe := by
+        have hcandidateBase : rootAwareCandidateForPlan? parameter input
+            (purePlanProbingHashQuery parameter input context.state) = some candidate := by
+          simpa [candidate?] using hcandidate
+        simp [appendPlannedSnapshot, hcandidateResolved, hcandidateBase]
+      rw [hcandidates]
+      let selection : PrivateOrdinalSelection :=
+        ⟨candidate, context,
+          (appendPlannedSnapshot snapshots
+            (rootAwareCandidateForPlan? parameter input
+              (purePlanProbingHashQuery parameter input context.state)) context).map
+                PlannedProbeSnapshot.toProbe⟩
+      change RelTriple
+        (if CandidatesAvoidRoots target (truncateHash resolved.output) rightRoot
+            (selection.candidates.take ordinal) then
+          (successfulObservedRootComparisonIndicator table ordinal target ∘
+              fun observed => (observed, rightRoot)) <$>
+            observedMaterializedBoundary parameter root ftsSecret
+              (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+                (Sum.inl (Sum.inr input))) >>= next)
+              observations (materializedDeferredState resolved.toDeferredContext) fuel table cache
+        else pure false)
+        (if CandidatesAvoidRoots target (truncateHash resolved.output) rightRoot
+            (selection.candidates.take ordinal) then
+          (successfulObservedRootComparisonIndicator table ordinal target ∘
+              fun observed => (observed, rightRoot)) <$>
+            observedMaterializedBoundary parameter root ftsSecret
+              (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+                (Sum.inl (Sum.inr input))) >>= next)
+              observations (materializedDeferredState resolved.toDeferredContext) fuel table cache
+        else pure false)
+        (EqRel Bool)
+      by_cases hsafe : CandidatesAvoidRoots target (truncateHash resolved.output) rightRoot
+          (selection.candidates.take ordinal)
+      · simp only [hsafe, ↓reduceIte]
+        exact relTriple_refl _
+      · simp only [hsafe, ↓reduceIte]
+        exact relTriple_pure_pure rfl
+
+theorem evalDist_eagerDirectDelayedSelectedRootIndicator_hash_eq_selected
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (table : OtsSecretIndex → HashOutput) (target : Position) (rightRoot : Digest)
+    (input : HashInput)
+    (next : HashOutput → OracleComp (OracleWorld + SigningSpec) α)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (hbefore : ¬ordinal < snapshots.length)
+    (hselected : ordinal <
+      (appendPlannedSnapshot snapshots
+        (rootAwareCandidateForPlan? parameter input
+          (purePlanProbingHashQuery parameter input context.state)) context).length) :
+    evalDist
+        (eagerDirectDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+          rightRoot
+          (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+            (Sum.inl (Sum.inr input))) >>= next)
+          snapshots observations context fuel cache) =
+      evalDist
+        (directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+          rightRoot
+          (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+            (Sum.inl (Sum.inr input))) >>= next)
+          snapshots observations context fuel cache) := by
+  exact (evalDist_eq_of_relTriple_eqRel
+    (relTriple_directDelayed_eagerDirectDelayed_hash_selected ordinal parameter root ftsSecret
+      table target rightRoot input next snapshots observations context fuel cache hbefore
+      hselected)).symm
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 1000000 in
+theorem evalDist_eagerDirectDelayedSelectedRootIndicator_hash_eq_not_selected_of_trace
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (table : OtsSecretIndex → HashOutput) (target : Position) (rightRoot : Digest)
+    (input : HashInput)
+    (next : HashOutput → OracleComp (OracleWorld + SigningSpec) α)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (hbefore : ¬ordinal < snapshots.length)
+    (hnotSelected : ¬ordinal <
+      (appendPlannedSnapshot snapshots
+        (rootAwareCandidateForPlan? parameter input
+          (purePlanProbingHashQuery parameter input context.state)) context).length)
+    (hvalid : context.Valid) (hcompletable : DeferredCompletable table context)
+    [ObserverSynchronized table
+      (negatedDirectDelayedObserve
+        (fun nextContext remaining (value : HashOutput × SplitHashCache)
+            laterSnapshots laterObservations ↦
+          directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+            rightRoot (next value.1) laterSnapshots laterObservations nextContext remaining
+            value.2)
+        (appendPlannedSnapshot snapshots
+          (rootAwareCandidateForPlan? parameter input
+            (purePlanProbingHashQuery parameter input context.state)) context)
+        (observationsAfterCandidate observations (materializedDeferredState context)
+          (rootAwareCandidateForPlan? parameter input
+            (purePlanProbingHashQuery parameter input context.state))))]
+    [ObserverPositionNeutral table
+      (negatedDirectDelayedObserve
+        (fun nextContext remaining (value : HashOutput × SplitHashCache)
+            laterSnapshots laterObservations ↦
+          directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+            rightRoot (next value.1) laterSnapshots laterObservations nextContext remaining
+            value.2)
+        (appendPlannedSnapshot snapshots
+          (rootAwareCandidateForPlan? parameter input
+            (purePlanProbingHashQuery parameter input context.state)) context)
+        (observationsAfterCandidate observations (materializedDeferredState context)
+          (rootAwareCandidateForPlan? parameter input
+            (purePlanProbingHashQuery parameter input context.state))))]
+    (htrace : ∀ (resolved : DeferredResolution)
+        (_hresolved : some resolved ∈ support
+          (resolveDeferredPositionValue target context)),
+      evalDist
+          (runDirectResolvedWitnessFromTable resolved.toDeferredContext fuel table
+              ((probingHashQueryAfterPlan parameter input
+                (purePlanProbingHashQuery parameter input context.state)).run cache) >>=
+            finishDirectDelayedSelectedRootIndicator
+              (canonicalizeDirectDelayedSelectedRootIndicator table
+                (fun nextContext remaining value laterSnapshots laterObservations ↦
+                  directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+                    rightRoot (next value.1) laterSnapshots laterObservations nextContext remaining
+                    value.2))
+              (appendPlannedSnapshot snapshots
+                (rootAwareCandidateForPlan? parameter input
+                  (purePlanProbingHashQuery parameter input context.state))
+                resolved.toDeferredContext)
+              (observationsAfterCandidate observations
+                (materializedDeferredState resolved.toDeferredContext)
+                (rootAwareCandidateForPlan? parameter input
+                  (purePlanProbingHashQuery parameter input context.state)))) =
+        evalDist
+          (runDirectResolvedWitnessFromTable resolved.toDeferredContext fuel table
+              ((probingHashQueryAfterPlan parameter input
+                (purePlanProbingHashQuery parameter input context.state)).run cache) >>=
+            finishDirectDelayedSelectedRootIndicator
+              (canonicalizeDirectDelayedSelectedRootIndicator table
+                (fun nextContext remaining value laterSnapshots laterObservations ↦
+                  directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+                    rightRoot (next value.1) laterSnapshots laterObservations nextContext remaining
+                    value.2))
+              (appendPlannedSnapshot snapshots
+                (rootAwareCandidateForPlan? parameter input
+                  (purePlanProbingHashQuery parameter input context.state)) context)
+              (observationsAfterCandidate observations (materializedDeferredState context)
+                (rootAwareCandidateForPlan? parameter input
+                  (purePlanProbingHashQuery parameter input context.state))))) :
+    evalDist
+        (eagerDirectDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+          rightRoot
+          (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+            (Sum.inl (Sum.inr input))) >>= next)
+          snapshots observations context fuel cache) =
+      evalDist
+        (directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+          rightRoot
+          (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+            (Sum.inl (Sum.inr input))) >>= next)
+          snapshots observations context fuel cache) := by
+  rw [directDelayedSelectedRootIndicator_hash_eq_not_selected ordinal parameter root ftsSecret table
+    target rightRoot input next snapshots observations context fuel cache hbefore hnotSelected]
+  unfold eagerDirectDelayedSelectedRootIndicator
+  simp only [hbefore, ↓reduceIte]
+  calc
+    _ = evalDist (resolveDeferredPositionValue target context >>= fun resolved ↦
+          match resolved with
+          | none => pure false
+          | some resolved =>
+              runDirectResolvedWitnessFromTable resolved.toDeferredContext fuel table
+                  ((probingHashQueryAfterPlan parameter input
+                    (purePlanProbingHashQuery parameter input context.state)).run cache) >>=
+                finishDirectDelayedSelectedRootIndicator
+                  (canonicalizeDirectDelayedSelectedRootIndicator table
+                    (fun nextContext remaining value laterSnapshots laterObservations ↦
+                      directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table
+                        target rightRoot (next value.1) laterSnapshots laterObservations nextContext
+                        remaining value.2))
+                  (appendPlannedSnapshot snapshots
+                    (rootAwareCandidateForPlan? parameter input
+                      (purePlanProbingHashQuery parameter input context.state)) context)
+                  (observationsAfterCandidate observations (materializedDeferredState context)
+                    (rootAwareCandidateForPlan? parameter input
+                      (purePlanProbingHashQuery parameter input context.state)))) := by
+        apply evalDist_bind_congr
+        intro resolved hresolved
+        cases resolved with
+        | none => rfl
+        | some resolved =>
+            have hvalues := resolveDeferredPositionValue_preserves_state_values target context
+              resolved hresolved
+            have hplan : purePlanProbingHashQuery parameter input resolved.state =
+                purePlanProbingHashQuery parameter input context.state :=
+              purePlanProbingHashQuery_eq_of_values_eq hvalues parameter input
+            have hnotSelectedResolved : ¬ordinal <
+                (appendPlannedSnapshot snapshots
+                  (rootAwareCandidateForPlan? parameter input
+                    (purePlanProbingHashQuery parameter input resolved.state))
+                  resolved.toDeferredContext).length := by
+              rw [hplan]
+              have hlength :
+                  (appendPlannedSnapshot snapshots
+                      (rootAwareCandidateForPlan? parameter input
+                        (purePlanProbingHashQuery parameter input context.state))
+                      resolved.toDeferredContext).length =
+                    (appendPlannedSnapshot snapshots
+                      (rootAwareCandidateForPlan? parameter input
+                        (purePlanProbingHashQuery parameter input context.state)) context).length := by
+                cases rootAwareCandidateForPlan? parameter input
+                    (purePlanProbingHashQuery parameter input context.state) <;>
+                  simp [appendPlannedSnapshot]
+              rw [hlength]
+              exact hnotSelected
+            simp only
+            rw [directDelayedSelectedRootIndicator_hash_eq_not_selected ordinal parameter root
+              ftsSecret table target rightRoot input next snapshots observations
+              resolved.toDeferredContext fuel cache hbefore hnotSelectedResolved]
+            rw [hplan]
+            exact htrace resolved hresolved
+    _ = _ := evalDist_resolve_then_runDirectWitness_finish_false table target
+      (fun nextContext remaining (value : HashOutput × SplitHashCache)
+          laterSnapshots laterObservations ↦
+        directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target rightRoot
+          (next value.1) laterSnapshots laterObservations nextContext remaining value.2)
+      (appendPlannedSnapshot snapshots
+        (rootAwareCandidateForPlan? parameter input
+          (purePlanProbingHashQuery parameter input context.state)) context)
+      (observationsAfterCandidate observations (materializedDeferredState context)
+        (rootAwareCandidateForPlan? parameter input
+          (purePlanProbingHashQuery parameter input context.state)))
+      ((probingHashQueryAfterPlan parameter input
+        (purePlanProbingHashQuery parameter input context.state)).run cache)
+      context fuel hvalid hcompletable
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
