@@ -334,6 +334,112 @@ theorem evalDist_runDirectResolvedObserve_eq_of_finalizationSynchronized
                               LazyRevealProbe.State.materialize] using hrevealed)
                         apply relTriple_eqRel_of_evalDist_eq
                         simpa only [runDirectResolvedObserve, hleftState, hrightState,
-                          materializeResolvedPosition, hrelation.1] using hnext
+                        materializeResolvedPosition, hrelation.1] using hnext
+
+set_option maxRecDepth 100000 in
+theorem evalDist_resolveDeferredPositionValue_then_runDirectResolvedObserve_eq_of_synchronized
+    (table : OtsSecretIndex → HashOutput) (position : Position)
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    {observe : DeferredContext → Nat → α → ProbComp Bool}
+    [ObserverDooms table observe] [ObserverSynchronized table observe]
+    (left right : DeferredContext) (fuel : Nat)
+    (hcontext : FinalizationContextEq table (some left) (some right))
+    (hvalues : left.state.values = right.state.values)
+    (hrevealed : left.state.revealed = right.state.revealed) :
+    evalDist (do
+      let resolved ← resolveDeferredPositionValue position left
+      match resolved with
+      | none => pure true
+      | some resolved =>
+          runDirectResolvedObserve observe resolved.toDeferredContext fuel table computation) =
+      evalDist (do
+        let resolved ← resolveDeferredPositionValue position right
+        match resolved with
+        | none => pure true
+        | some resolved =>
+            runDirectResolvedObserve observe resolved.toDeferredContext fuel table computation) := by
+  rcases hcontext with ⟨hview, hleftValid, hrightValid, hleftCompletable⟩
+  have hresolved := relTriple_resolveDeferredPositionValue_of_finalizationViewEq table position
+    left right hview hleftValid hrightValid hleftCompletable
+  have hresolvedLeft :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hresolved
+      (fun result => result ∈ support (resolveDeferredPositionValue position left))
+      (fun result hresult => hresult)
+  have hresolvedBoth :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hresolvedLeft
+  apply evalDist_eq_of_relTriple_eqRel
+  apply relTriple_bind hresolvedBoth
+  intro leftResolved rightResolved hrelation
+  rcases hrelation with ⟨⟨hrelation, hleftSupport⟩, hrightSupport⟩
+  cases leftResolved with
+  | none =>
+      cases rightResolved with
+      | none => exact relTriple_pure_pure rfl
+      | some rightResolved => simp [FinalizationResolutionEq] at hrelation
+  | some leftResolved =>
+      cases rightResolved with
+      | none => simp [FinalizationResolutionEq] at hrelation
+      | some rightResolved =>
+          apply relTriple_eqRel_of_evalDist_eq
+          apply evalDist_runDirectResolvedObserve_eq_of_finalizationSynchronized computation
+          · exact ⟨hrelation.2.1, hrelation.2.2.1, hrelation.2.2.2.1,
+              hrelation.2.2.2.2⟩
+          · rw [resolveDeferredPositionValue_preserves_state_values position left leftResolved
+                hleftSupport,
+              resolveDeferredPositionValue_preserves_state_values position right rightResolved
+                hrightSupport]
+            exact hvalues
+          · rw [resolveDeferredPositionValue_state_eq_clearPending position left leftResolved
+                hleftSupport,
+              resolveDeferredPositionValue_state_eq_clearPending position right rightResolved
+                hrightSupport]
+            simpa [LazyRevealProbe.State.clearPending] using hrevealed
+
+set_option maxRecDepth 100000 in
+theorem evalDist_resolveDeferredPositionValue_then_runDirectResolvedObserve_any_at
+    (position : Position) (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    {observe : DeferredContext → Nat → α → ProbComp Bool}
+    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (hvalid : context.Valid) (hcompletable : DeferredCompletable table context)
+    [ObserverDooms table observe] [ObserverSynchronized table observe]
+    (hneutral : ObserverPositionNeutralAt table position observe) :
+    evalDist (do
+      let resolved ← resolveDeferredPositionValue position context
+      match resolved with
+      | none => pure true
+      | some resolved =>
+          runDirectResolvedObserve observe resolved.toDeferredContext fuel table computation) =
+      evalDist (runDirectResolvedObserve observe context fuel table computation) := by
+  let ensured : DeferredContext :=
+    { context with state := context.state.ensure (.position position) }
+  have hensuredValid : ensured.Valid := hvalid.ensure (.position position)
+  have hensuredCompletable : DeferredCompletable table ensured :=
+    hcompletable.ensure (.position position)
+  have hstarts := startTableAgrees_of_deferredCompletable hcompletable
+  have hensuredStarts : StartTableAgrees ensured.state table :=
+    hstarts.ensure (.position position)
+  have hview : FinalizationViewEq table context ensured :=
+    finalizationViewEq_of_deferredCompletion_iff hvalid hensuredValid hstarts hensuredStarts rfl
+      hcompletable (fun _ => Iff.rfl)
+  have hcontext : FinalizationContextEq table (some context) (some ensured) :=
+    ⟨hview, hvalid, hensuredValid, hcompletable⟩
+  have hcontextSymm : FinalizationContextEq table (some ensured) (some context) :=
+    ⟨hview.symm, hensuredValid, hvalid, hensuredCompletable⟩
+  calc
+    _ = evalDist (do
+        let resolved ← resolveDeferredPositionValue position ensured
+        match resolved with
+        | none => pure true
+        | some resolved =>
+            runDirectResolvedObserve observe resolved.toDeferredContext fuel table computation) :=
+      evalDist_resolveDeferredPositionValue_then_runDirectResolvedObserve_eq_of_synchronized
+        table position computation context ensured fuel hcontext rfl rfl
+    _ = evalDist (runDirectResolvedObserve observe ensured fuel table computation) :=
+      evalDist_resolveDeferredPositionValue_then_runDirectResolvedObserve
+        (observe := observe) position computation ensured fuel table hensuredValid
+          hensuredCompletable (by simp [ensured, LazyRevealProbe.State.ensure]) hneutral
+    _ = _ :=
+      evalDist_runDirectResolvedObserve_eq_of_finalizationSynchronized computation ensured context
+        fuel table hcontextSymm rfl rfl
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
