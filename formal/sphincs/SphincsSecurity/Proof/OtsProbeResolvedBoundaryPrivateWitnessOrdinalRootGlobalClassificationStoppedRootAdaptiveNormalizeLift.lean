@@ -922,11 +922,80 @@ theorem observationsAfterCandidate_materializedDeferredState_eq_of_finalizationC
       rw [cleanProbeObservation_materializedDeferredState_eq_of_finalizationContextEq table
         left right candidate.coordinate candidate.candidate hcontext hvalues hrevealed]
 
+theorem materializedDeferredState_values_eq_of_finalizationContextEq
+    (table : OtsSecretIndex → HashOutput) (left right : DeferredContext)
+    (hcontext : FinalizationContextEq table (some left) (some right))
+    (hvalues : left.state.values = right.state.values) :
+    (materializedDeferredState left).values =
+      (materializedDeferredState right).values := by
+  rcases hcontext with ⟨hview, _hleftValid, _hrightValid, _hleftCompletable⟩
+  funext coordinate
+  cases coordinate with
+  | chainStart lay tree leafIdx chainIdx =>
+      simpa only [materializedDeferredState_chainStart] using
+        congrFun hvalues (.chainStart lay tree leafIdx chainIdx)
+  | position position =>
+      have hvalueEq := congrFun hview.valueEq (.position position)
+      simpa only [resolvedCompletionValue, materializedDeferredState_position] using hvalueEq
+
 structure CompletionSafeStateEq
     (table : OtsSecretIndex → HashOutput)
     (left right : LazyRevealProbe.State Coordinate) : Prop where
   forward : CompletionSafeStateLE table left right
   backward : CompletionSafeStateLE table right left
+
+theorem completionSafeStateEq_materialized_of_finalizationContextEq
+    (table : OtsSecretIndex → HashOutput) (left right : DeferredContext)
+    (hcontext : FinalizationContextEq table (some left) (some right))
+    (hvalues : left.state.values = right.state.values)
+    (hrevealed : left.state.revealed = right.state.revealed) :
+    CompletionSafeStateEq table
+      (materializedDeferredState left) (materializedDeferredState right) := by
+  rcases hcontext with ⟨hview, hleftValid, hrightValid, hleftCompletable⟩
+  have hrightCompletable : DeferredCompletable table right := by
+    obtain ⟨completion, hcompletion⟩ := hleftCompletable
+    exact ⟨completion, (hview.deferredCompletion_iff completion).mp hcompletion⟩
+  have hmaterializedValues :=
+    materializedDeferredState_values_eq_of_finalizationContextEq table left right
+      ⟨hview, hleftValid, hrightValid, hleftCompletable⟩ hvalues
+  have forwardContext : FinalizationContextLE table left (materializedDeferredContext right) := by
+    have hrightMaterialized :=
+      finalizationContextLE_materializedDeferredContext hrightValid hrightCompletable
+    exact
+      { view := (FinalizationContextLE.of_eq
+          (⟨hview, hleftValid, hrightValid, hleftCompletable⟩ :
+            FinalizationContextEq table (some left) (some right))).view.trans
+          hrightMaterialized.view
+        leftValid := hleftValid
+        rightValid := hrightMaterialized.rightValid
+        rightCompletable := hrightMaterialized.rightCompletable }
+  have backwardContext : FinalizationContextLE table right (materializedDeferredContext left) := by
+    have hleftMaterialized :=
+      finalizationContextLE_materializedDeferredContext hleftValid hleftCompletable
+    have hreverse : FinalizationContextEq table (some right) (some left) :=
+      ⟨hview.symm, hrightValid, hleftValid, hrightCompletable⟩
+    exact
+      { view := (FinalizationContextLE.of_eq hreverse).view.trans hleftMaterialized.view
+        leftValid := hrightValid
+        rightValid := hleftMaterialized.rightValid
+        rightCompletable := hleftMaterialized.rightCompletable }
+  refine ⟨?_, ?_⟩
+  · exact completionSafeStateLE_materialized_of_finalizationContextLE table left
+      (materializedDeferredContext right) forwardContext (by
+        change left.state.revealed = (materializedDeferredState right).revealed
+        simpa using hrevealed)
+      (by
+        change (materializedDeferredState left).values =
+          (materializedDeferredState right).values
+        exact hmaterializedValues)
+  · exact completionSafeStateLE_materialized_of_finalizationContextLE table right
+      (materializedDeferredContext left) backwardContext (by
+        change right.state.revealed = (materializedDeferredState left).revealed
+        simpa using hrevealed.symm)
+      (by
+        change (materializedDeferredState right).values =
+          (materializedDeferredState left).values
+        exact hmaterializedValues.symm)
 
 theorem CompletionSafeStateEq.ensure
     {table : OtsSecretIndex → HashOutput}
@@ -984,6 +1053,37 @@ theorem CompletionSafeStateEq.hitAt_iff_of_value_none
     exact hstate.backward.not_hitAt_left_of_right coordinate output hrightValue hcompletion
       hleft hright
 
+theorem CompletionSafeStateEq.pendingAt_eq_of_position_value_none
+    {table : OtsSecretIndex → HashOutput}
+    {left right : LazyRevealProbe.State Coordinate}
+    (hstate : CompletionSafeStateEq table left right)
+    (position : Position) (hleftValue : left.values (.position position) = none) :
+    left.pendingAt (.position position) = right.pendingAt (.position position) := by
+  have hrightValue : right.values (.position position) = none := by
+    rw [← hstate.forward.values]
+    exact hleftValue
+  apply Finset.Subset.antisymm
+  · intro candidate hcandidate
+    have hentry : (Coordinate.position position, candidate) ∈ left.pending :=
+      (LazyRevealProbe.State.mem_pendingAt_iff left (.position position) candidate).1 hcandidate
+    rcases hstate.forward.pending (.position position) candidate hentry with
+      hright | ⟨output, hvalue, _hmiss⟩ | ⟨index, hcoordinate, _hmiss⟩
+    · exact (LazyRevealProbe.State.mem_pendingAt_iff right
+        (.position position) candidate).2 hright
+    · rw [hleftValue] at hvalue
+      simp at hvalue
+    · cases hcoordinate
+  · intro candidate hcandidate
+    have hentry : (Coordinate.position position, candidate) ∈ right.pending :=
+      (LazyRevealProbe.State.mem_pendingAt_iff right (.position position) candidate).1 hcandidate
+    rcases hstate.backward.pending (.position position) candidate hentry with
+      hleft | ⟨output, hvalue, _hmiss⟩ | ⟨index, hcoordinate, _hmiss⟩
+    · exact (LazyRevealProbe.State.mem_pendingAt_iff left
+        (.position position) candidate).2 hleft
+    · rw [hrightValue] at hvalue
+      simp at hvalue
+    · cases hcoordinate
+
 theorem CompletionSafeStateLE.directDeferredCompletable_of_right
     {table : OtsSecretIndex → HashOutput}
     {left right : LazyRevealProbe.State Coordinate}
@@ -1025,6 +1125,153 @@ theorem CompletionSafeStateEq.directDeferredCompletable_iff
       DeferredCompletable table (directDeferredContext right) := by
   exact ⟨hstate.backward.directDeferredCompletable_of_right,
     hstate.forward.directDeferredCompletable_of_right⟩
+
+set_option maxRecDepth 100000 in
+theorem pendingAt_position_card_lt_of_mem_finalizeCleanFromTable
+    (state : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput)
+    (position : Position)
+    (hvalue : state.values (.position position) = none)
+    (finalState : LazyRevealProbe.State Coordinate)
+    (finalTable : OtsSecretIndex → HashOutput)
+    (hfinal : some (finalState, finalTable) ∈ support
+      (finalizeCleanFromTable state.coordinates.toList state table)) :
+    (state.pendingAt (.position position)).card < Fintype.card Digest := by
+  by_cases hempty : state.pendingAt (.position position) = ∅
+  · rw [hempty, Finset.card_empty]
+    exact Fintype.card_pos
+  · obtain ⟨candidate, hcandidate⟩ := Finset.nonempty_iff_ne_empty.mpr hempty
+    have hentry : (Coordinate.position position, candidate) ∈ state.pending :=
+      (LazyRevealProbe.State.mem_pendingAt_iff state (.position position) candidate).1 hcandidate
+    have hcoordinate : Coordinate.position position ∈ state.coordinates := by
+      simp only [LazyRevealProbe.State.coordinates, Finset.mem_union, Finset.mem_image]
+      exact Or.inr ⟨(.position position, candidate), hentry, rfl⟩
+    have hexpose := evalDist_finalizeCleanFromTable_finset_expose_missing
+      (.position position) state.coordinates state table hcoordinate hvalue
+    have hfinalEval : some (finalState, finalTable) ∈
+        support  (do
+          let output ← completionOutputFromTable (.position position) table
+          if state.hitAt (.position position) output then
+            pure none
+          else
+            finalizeCleanFromTable (state.coordinates.toList.erase (.position position))
+              (state.complete (.position position) output) table) := by
+      rw [mem_support_iff_evalDist_apply_ne_zero] at hfinal ⊢
+      rw [← hexpose]
+      exact hfinal
+    rw [mem_support_bind_iff] at hfinalEval
+    obtain ⟨output, _houtput, hrest⟩ := hfinalEval
+    have hmiss : ¬state.hitAt (.position position) output := by
+      intro hhit
+      simp [hhit] at hrest
+    have hnotMem : truncateHash output ∉ state.pendingAt (.position position) := by
+      simpa [LazyRevealProbe.State.hitAt] using hmiss
+    exact (Finset.card_lt_iff_ne_univ _).2 (by
+      intro huniv
+      apply hnotMem
+      rw [huniv]
+      simp)
+
+set_option maxRecDepth 100000 in
+theorem exists_successful_finishObservedCleanRunFromTable_of_completionSafeEq
+    {table : OtsSecretIndex → HashOutput}
+    {left right : ObservedCleanRunResult α}
+    (hstate : CompletionSafeStateEq table left.state right.state)
+    (hleftTable : left.table = table) (hrightTable : right.table = table)
+    (hfinish : ∃ finalResult, some finalResult ∈ support
+      (finishObservedCleanRunFromTable (some left))) :
+    ∃ finalResult, some finalResult ∈ support
+      (finishObservedCleanRunFromTable (some right)) := by
+  obtain ⟨leftFinal, hleftFinal⟩ := hfinish
+  unfold finishObservedCleanRunFromTable at hleftFinal
+  rw [mem_support_bind_iff] at hleftFinal
+  obtain ⟨finalized, hfinalized, hreturn⟩ := hleftFinal
+  cases finalized with
+  | none => simp at hreturn
+  | some finalized =>
+      rcases finalized with ⟨finalState, finalTable⟩
+      have hfinalizedTable : some (finalState, finalTable) ∈ support
+          (finalizeCleanFromTable left.state.coordinates.toList left.state table) := by
+        simpa [hleftTable] using hfinalized
+      have hleftStart : ¬MissingChainStartHit table
+          (directDeferredContext left.state) := by
+        rw [← hleftTable]
+        exact not_missingChainStartHit_of_mem_finishObservedCleanRunFromTable left leftFinal
+          (by
+            unfold finishObservedCleanRunFromTable
+            rw [mem_support_bind_iff]
+            exact ⟨some (finalState, finalTable), hfinalized, hreturn⟩)
+      have hrightStart : ¬MissingChainStartHit table
+          (directDeferredContext right.state) :=
+        hstate.backward.not_missingChainStartHit_left_of_right hleftStart
+      obtain ⟨rightFinal, hrightFinal⟩ := exists_successful_finalizeCleanFromTable table
+        right.state.coordinates.toList right.state right.state.coordinates.nodup_toList (by
+          intro entry hentry
+          simp only [Finset.mem_toList, LazyRevealProbe.State.coordinates,
+            Finset.mem_union, Finset.mem_image]
+          exact Or.inr ⟨entry, hentry, rfl⟩) hrightStart (by
+          intro position hrightValue
+          have hleftValue : left.state.values (.position position) = none := by
+            rw [hstate.forward.values, hrightValue]
+          have hcard := pendingAt_position_card_lt_of_mem_finalizeCleanFromTable left.state table
+            position hleftValue finalState finalTable hfinalizedTable
+          rw [← hstate.pendingAt_eq_of_position_value_none position hleftValue]
+          exact hcard)
+      rcases rightFinal with ⟨rightFinalState, rightFinalTable⟩
+      let result : ObservedCleanRunResult α :=
+        ⟨rightFinalState, right.remaining, right.value, rightFinalTable, right.observations⟩
+      refine ⟨result, ?_⟩
+      unfold finishObservedCleanRunFromTable
+      rw [mem_support_bind_iff]
+      refine ⟨some (rightFinalState, rightFinalTable), ?_, by simp [result]⟩
+      simpa [hrightTable] using hrightFinal
+
+theorem successful_finishObservedCleanRunFromTable_iff_of_completionSafeEq
+    {table : OtsSecretIndex → HashOutput}
+    {left right : ObservedCleanRunResult α}
+    (hstate : CompletionSafeStateEq table left.state right.state)
+    (hleftTable : left.table = table) (hrightTable : right.table = table) :
+    (∃ finalResult, some finalResult ∈ support
+        (finishObservedCleanRunFromTable (some left))) ↔
+      ∃ finalResult, some finalResult ∈ support
+        (finishObservedCleanRunFromTable (some right)) := by
+  constructor
+  · exact exists_successful_finishObservedCleanRunFromTable_of_completionSafeEq hstate
+      hleftTable hrightTable
+  · exact exists_successful_finishObservedCleanRunFromTable_of_completionSafeEq
+      ⟨hstate.backward, hstate.forward⟩ hrightTable hleftTable
+
+theorem successfulDoomedFirstRootGoodForComparisonAt_iff_of_completionSafeEq
+    {table : OtsSecretIndex → HashOutput} (ordinal : Nat) (target : Position)
+    (rightRoot : Digest) (left right : ObservedCleanRunResult α)
+    (hstate : CompletionSafeStateEq table left.state right.state)
+    (hleftTable : left.table = table) (hrightTable : right.table = table)
+    (hobservations : left.observations = right.observations) :
+    ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        table ordinal target rightRoot (some left) ↔
+      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        table ordinal target rightRoot (some right) := by
+  have hfinish := successful_finishObservedCleanRunFromTable_iff_of_completionSafeEq hstate
+    hleftTable hrightTable
+  have hdoomed :
+      (¬DeferredCompletable table (directDeferredContext left.state)) ↔
+        ¬DeferredCompletable table (directDeferredContext right.state) :=
+    not_congr hstate.directDeferredCompletable_iff
+  have hfirst :
+      ObservedCleanRunOption.FirstExistingHiddenRootHitAt ordinal (some left) ↔
+        ObservedCleanRunOption.FirstExistingHiddenRootHitAt ordinal (some right) := by
+    rcases left with ⟨leftState, leftRemaining, leftValue, leftTable, leftObservations⟩
+    rcases right with ⟨rightState, rightRemaining, rightValue, rightTable, rightObservations⟩
+    simp only at hobservations ⊢
+    subst rightObservations
+    rfl
+  have hposition := observedFirstLayerRootPosition?_eq_of_observations_eq ordinal left right
+    hobservations
+  have hprefix := observedPrefixProbes_eq_of_observations_eq ordinal left right hobservations
+  simp only [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
+    ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
+    ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt]
+  rw [hfinish, hdoomed, hfirst, hposition, hprefix]
 
 def ObservedCompletionSafeEqRel
     (table : OtsSecretIndex → HashOutput)
@@ -1347,6 +1594,151 @@ theorem relTriple_observedMaterializedBoundary_completionSafeEq
             apply bind_congr <;> intro result <;> cases result <;> rfl
 
 set_option maxRecDepth 100000 in
+theorem relTriple_indicator_observedMaterializedBoundary_completionSafeEq
+    (ordinal : Nat) (parameter : PublicParameter) (publicRoot rightRoot : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (table : OtsSecretIndex → HashOutput) (target : Position)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (observations : List CleanProbeObservation)
+    (leftState rightState : LazyRevealProbe.State Coordinate)
+    (fuel : Nat) (cache : SplitHashCache)
+    (hstate : CompletionSafeStateEq table leftState rightState)
+    (hleftStarts : StartTableAgrees leftState table) :
+    RelTriple
+      ((successfulObservedRootComparisonIndicator table ordinal target ∘
+          fun observed ↦ (observed, rightRoot)) <$>
+        observedMaterializedBoundary parameter publicRoot ftsSecret computation observations
+          leftState fuel table cache)
+      ((successfulObservedRootComparisonIndicator table ordinal target ∘
+          fun observed ↦ (observed, rightRoot)) <$>
+        observedMaterializedBoundary parameter publicRoot ftsSecret computation observations
+          rightState fuel table cache)
+      (EqRel Bool) := by
+  let leftRun := observedMaterializedBoundary parameter publicRoot ftsSecret computation
+    observations leftState fuel table cache
+  let rightRun := observedMaterializedBoundary parameter publicRoot ftsSecret computation
+    observations rightState fuel table cache
+  have hbase := relTriple_observedMaterializedBoundary_completionSafeEq parameter publicRoot
+    ftsSecret computation observations observations leftState rightState fuel table cache hstate
+  have hleftSupported :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+      (fun result ↦ result ∈ support leftRun) (by
+        intro result hresult
+        simpa [leftRun] using hresult)
+  have hbothSupported :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hleftSupported
+  apply relTriple_map
+  apply relTriple_post_mono hbothSupported
+  intro leftResult rightResult hrelation
+  rcases hrelation with ⟨⟨hcompletion, hleftSupport⟩, hrightSupport⟩
+  cases leftResult with
+  | none =>
+      cases rightResult with
+      | none => rfl
+      | some rightResult => simp [ObservedCompletionSafeEqRel] at hcompletion
+  | some leftResult =>
+      cases rightResult with
+      | none => simp [ObservedCompletionSafeEqRel] at hcompletion
+      | some rightResult =>
+          rcases hcompletion with ⟨_hvalue, htable, _hremaining,
+            ⟨suffix, hleftObservations, hrightObservations⟩, hfinalState⟩
+          have hobservations : leftResult.observations = rightResult.observations := by
+            rw [hleftObservations, hrightObservations]
+          have hleftTable : leftResult.table = table :=
+            (startTableAgrees_of_mem_observedMaterializedBoundary parameter publicRoot ftsSecret
+              computation observations leftState fuel table cache hleftStarts leftResult
+              (by simpa [leftRun] using hleftSupport)).1
+          have hrightTable : rightResult.table = table := htable.symm.trans hleftTable
+          apply Bool.eq_iff_iff.mpr
+          simp only [Function.comp_apply, successfulObservedRootComparisonIndicator_eq_true_iff]
+          exact successfulDoomedFirstRootGoodForComparisonAt_iff_of_completionSafeEq ordinal
+            target rightRoot leftResult rightResult hfinalState hleftTable hrightTable
+            hobservations
+
+set_option maxRecDepth 100000 in
+theorem evalDist_delayedSelectedRootIndicator_eq_of_finalizationContextEq
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (table : OtsSecretIndex → HashOutput) (target : Position) (rightRoot : Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (observations : List CleanProbeObservation)
+    (probe : Probe) (candidates : List Probe)
+    (left right : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (hcontext : FinalizationContextEq table (some left) (some right))
+    (hvalues : left.state.values = right.state.values)
+    (hrevealed : left.state.revealed = right.state.revealed) :
+    evalDist
+        (delayedSelectedRootIndicator ordinal parameter root ftsSecret table target rightRoot
+          computation observations ⟨probe, left, candidates⟩ fuel cache) =
+      evalDist
+        (delayedSelectedRootIndicator ordinal parameter root ftsSecret table target rightRoot
+          computation observations ⟨probe, right, candidates⟩ fuel cache) := by
+  rcases hcontext with ⟨hview, hleftValid, hrightValid, hleftCompletable⟩
+  have hbase := relTriple_resolveDeferredPositionValue_of_finalizationViewEq table target
+    left right hview hleftValid hrightValid hleftCompletable
+  have hleftSupported :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+      (fun result ↦ result ∈ support (resolveDeferredPositionValue target left))
+      (fun _ hresult ↦ hresult)
+  have hbothSupported :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hleftSupported
+  unfold delayedSelectedRootIndicator
+  apply evalDist_eq_of_relTriple_eqRel
+  apply relTriple_bind hbothSupported
+  intro leftResolved rightResolved hrelation
+  rcases hrelation with ⟨⟨hresolution, hleftSupport⟩, hrightSupport⟩
+  cases leftResolved with
+  | none =>
+      cases rightResolved with
+      | none => exact relTriple_pure_pure rfl
+      | some rightResolved => simp [FinalizationResolutionEq] at hresolution
+  | some leftResolved =>
+      cases rightResolved with
+      | none => simp [FinalizationResolutionEq] at hresolution
+      | some rightResolved =>
+          rcases hresolution with
+            ⟨houtput, hresolvedView, hleftResolvedValid, hrightResolvedValid,
+              hleftResolvedCompletable⟩
+          simp only
+          rw [← houtput]
+          by_cases hsafe : CandidatesAvoidRoots target (truncateHash leftResolved.output)
+              rightRoot (candidates.take ordinal)
+          · simp only [hsafe, ↓reduceIte]
+            have hresolvedValues : leftResolved.state.values = rightResolved.state.values := by
+              rw [resolveDeferredPositionValue_preserves_state_values target left leftResolved
+                hleftSupport,
+                resolveDeferredPositionValue_preserves_state_values target right rightResolved
+                  hrightSupport]
+              exact hvalues
+            have hleftState := resolveDeferredPositionValue_state_eq_clearPending target left
+              leftResolved hleftSupport
+            have hrightState := resolveDeferredPositionValue_state_eq_clearPending target right
+              rightResolved hrightSupport
+            have hresolvedRevealed :
+                leftResolved.state.revealed = rightResolved.state.revealed := by
+              rw [hleftState, hrightState]
+              simpa [LazyRevealProbe.State.clearPending] using hrevealed
+            have hresolvedContext : FinalizationContextEq table
+                (some leftResolved.toDeferredContext) (some rightResolved.toDeferredContext) :=
+              ⟨hresolvedView, hleftResolvedValid, hrightResolvedValid,
+                hleftResolvedCompletable⟩
+            have hstate := completionSafeStateEq_materialized_of_finalizationContextEq table
+              leftResolved.toDeferredContext rightResolved.toDeferredContext hresolvedContext
+              hresolvedValues hresolvedRevealed
+            have hstarts : StartTableAgrees
+                (materializedDeferredState leftResolved.toDeferredContext) table := by
+              intro index output hvalue
+              rcases index with ⟨lay, tree, leafIdx, chainIdx⟩
+              apply hresolvedView.leftStarts ⟨lay, tree, leafIdx, chainIdx⟩ output
+              simpa [materializedDeferredState, OtsSecretIndex.coordinate] using hvalue
+            exact relTriple_indicator_observedMaterializedBoundary_completionSafeEq ordinal
+              parameter root rightRoot ftsSecret table target computation observations
+              (materializedDeferredState leftResolved.toDeferredContext)
+              (materializedDeferredState rightResolved.toDeferredContext) fuel cache hstate hstarts
+          · simp only [hsafe, ↓reduceIte]
+            exact relTriple_pure_pure rfl
+
+set_option maxRecDepth 100000 in
 theorem evalDist_negatedDirectDelayedComputationObserve_eq_of_eventEq
     (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
@@ -1429,6 +1821,197 @@ theorem evalDist_complement_runDirectWitness_finish_false_eq_of_eventEq
               hleftBefore hrightBefore hsnapshots htrace
           · simp [canonical, hhit, hpublished, hcompletable]
         · simp [canonical, hhit, hpublished]
+
+theorem evalDist_negated_eq_pure_true_of_true_not_mem
+    (run : ProbComp Bool) (hfalse : true ∉ support run) :
+    evalDist (Bool.not <$> run) = evalDist (pure true : ProbComp Bool) := by
+  have heq := evalDist_eq_of_relTriple_eqRel (relTriple_eq_false_of_true_not_mem run hfalse)
+  rw [evalDist_map]
+  simpa using congrArg (fun distribution => Bool.not <$> distribution) heq
+
+set_option maxHeartbeats 4000000 in
+set_option maxRecDepth 1000000 in
+theorem negatedDirectDelayedComputationObserve_hash_observerSynchronized
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (table : OtsSecretIndex → HashOutput) (target : Position) (rightRoot : Digest)
+    (input : HashInput)
+    (next : HashOutput → OracleComp (OracleWorld + SigningSpec) α)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (hbefore : snapshots.length ≤ ordinal)
+    (haligned : observations.map CleanProbeObservation.toProbe =
+      snapshots.map PlannedProbeSnapshot.toProbe)
+    (hclean : ∀ observation ∈ observations, ¬observation.ExistingHiddenHit)
+    (hsynchronized : ∀ output laterSnapshots laterObservations,
+      laterSnapshots.length ≤ ordinal →
+      laterObservations.map CleanProbeObservation.toProbe =
+        laterSnapshots.map PlannedProbeSnapshot.toProbe →
+      (∀ observation ∈ laterObservations, ¬observation.ExistingHiddenHit) →
+      ObserverSynchronized table
+        (negatedDirectDelayedComputationObserve ordinal parameter root ftsSecret table target
+          rightRoot (next output) laterSnapshots laterObservations))
+    (hneutral : ∀ output laterSnapshots laterObservations,
+      laterSnapshots.length ≤ ordinal →
+      laterObservations.map CleanProbeObservation.toProbe =
+        laterSnapshots.map PlannedProbeSnapshot.toProbe →
+      (∀ observation ∈ laterObservations, ¬observation.ExistingHiddenHit) →
+      ObserverPositionNeutral table
+        (negatedDirectDelayedComputationObserve ordinal parameter root ftsSecret table target
+          rightRoot (next output) laterSnapshots laterObservations)) :
+    ObserverSynchronized table
+      (negatedDirectDelayedComputationObserve ordinal parameter root ftsSecret table target
+        rightRoot
+        (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+          (Sum.inl (Sum.inr input))) >>= next)
+        snapshots observations) where
+  eq_of_synchronized left right fuel cache hcontext hvalues hrevealed := by
+    have hnotSelected : ¬ordinal < snapshots.length := by omega
+    let plan := purePlanProbingHashQuery parameter input left.state
+    have hplan : purePlanProbingHashQuery parameter input right.state = plan := by
+      rw [purePlanProbingHashQuery_eq_of_values_eq hvalues.symm parameter input]
+    let candidate? := rootAwareCandidateForPlan? parameter input plan
+    have hrightCandidate : rootAwareCandidateForPlan? parameter input
+        (purePlanProbingHashQuery parameter input right.state) = candidate? := by
+      rw [hplan]
+    let nextLeftSnapshots := appendPlannedSnapshot snapshots candidate? left
+    let nextRightSnapshots := appendPlannedSnapshot snapshots candidate? right
+    let nextLeftObservations := observationsAfterCandidate observations
+      (materializedDeferredState left) candidate?
+    let nextRightObservations := observationsAfterCandidate observations
+      (materializedDeferredState right) candidate?
+    have hnextSnapshots : nextLeftSnapshots.map PlannedProbeSnapshot.toProbe =
+        nextRightSnapshots.map PlannedProbeSnapshot.toProbe := by
+      cases hcandidate : candidate? <;>
+        simp [nextLeftSnapshots, nextRightSnapshots, appendPlannedSnapshot, hcandidate]
+    have hnextLength : nextLeftSnapshots.length = nextRightSnapshots.length :=
+      plannedProbeSnapshots_length_eq_of_toProbe_eq hnextSnapshots
+    have hnextObservations : nextLeftObservations = nextRightObservations :=
+      observationsAfterCandidate_materializedDeferredState_eq_of_finalizationContextEq table
+        left right observations candidate? hcontext hvalues hrevealed
+    have hnextAligned : nextLeftObservations.map CleanProbeObservation.toProbe =
+        nextLeftSnapshots.map PlannedProbeSnapshot.toProbe := by
+      cases hcandidate : candidate? <;>
+        simp [nextLeftObservations, nextLeftSnapshots, observationsAfterCandidate,
+          appendPlannedSnapshot, hcandidate, CleanProbeObservation.toProbe,
+          cleanProbeObservation, haligned]
+    by_cases hselected : ordinal < nextLeftSnapshots.length
+    · have hselectedRight : ordinal < nextRightSnapshots.length := by
+        rwa [← hnextLength]
+      obtain ⟨candidate, hcandidate⟩ : ∃ candidate, candidate? = some candidate := by
+        cases hcandidate : candidate? with
+        | none =>
+            simp [nextLeftSnapshots, appendPlannedSnapshot, hcandidate] at hselected
+            omega
+        | some candidate => exact ⟨candidate, rfl⟩
+      have hlength : snapshots.length = ordinal := by
+        simp [nextLeftSnapshots, appendPlannedSnapshot, hcandidate] at hselected
+        omega
+      have hcandidateLeft : rootAwareCandidateForPlan? parameter input
+          (purePlanProbingHashQuery parameter input left.state) = some candidate := by
+        simpa [candidate?, plan] using hcandidate
+      have hcandidateRight : rootAwareCandidateForPlan? parameter input
+          (purePlanProbingHashQuery parameter input right.state) = some candidate :=
+        hrightCandidate.trans hcandidate
+      unfold negatedDirectDelayedComputationObserve
+      rw [evalDist_map, evalDist_map]
+      apply congrArg (fun distribution => Bool.not <$> distribution)
+      rw [directDelayedSelectedRootIndicator_hash_eq_selected ordinal parameter root ftsSecret
+        table target rightRoot input next snapshots observations left fuel cache hnotSelected (by
+          simpa [nextLeftSnapshots, candidate?, plan] using hselected)]
+      rw [directDelayedSelectedRootIndicator_hash_eq_selected ordinal parameter root ftsSecret
+        table target rightRoot input next snapshots observations right fuel cache hnotSelected (by
+          simpa [nextRightSnapshots, candidate?, hrightCandidate] using hselectedRight)]
+      simpa [hcandidateLeft, hcandidateRight, appendPlannedSnapshot, hlength,
+        List.get_eq_getElem] using
+        (evalDist_delayedSelectedRootIndicator_eq_of_finalizationContextEq ordinal parameter root
+          ftsSecret table target rightRoot
+          (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+            (Sum.inl (Sum.inr input))) >>= next)
+          observations candidate
+          ((snapshots ++ [(⟨candidate, left⟩ : PlannedProbeSnapshot)]).map
+            PlannedProbeSnapshot.toProbe)
+          left right fuel cache hcontext hvalues hrevealed)
+    · have hnotSelectedRight : ¬ordinal < nextRightSnapshots.length := by
+        rwa [← hnextLength]
+      have hnextBefore : nextLeftSnapshots.length ≤ ordinal := by omega
+      by_cases hnextClean : ∀ observation ∈ nextLeftObservations,
+          ¬observation.ExistingHiddenHit
+      · let observe := fun nextContext remaining
+            (value : HashOutput × SplitHashCache) laterSnapshots laterObservations ↦
+          directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+            rightRoot (next value.1) laterSnapshots laterObservations nextContext remaining
+            value.2
+        letI : ObserverSynchronized table
+            (negatedDirectDelayedObserve observe nextLeftSnapshots nextLeftObservations) := ⟨by
+          intro nextLeft nextRight remaining value hnextContext hnextValues hnextRevealed
+          exact (hsynchronized value.1 nextLeftSnapshots nextLeftObservations hnextBefore
+            hnextAligned hnextClean).eq_of_synchronized nextLeft nextRight remaining value.2
+              hnextContext hnextValues hnextRevealed⟩
+        letI : ObserverPositionNeutral table
+            (negatedDirectDelayedObserve observe nextLeftSnapshots nextLeftObservations) := ⟨by
+          intro position nextContext remaining value hvalid hcompletable hensured
+          exact (hneutral value.1 nextLeftSnapshots nextLeftObservations hnextBefore hnextAligned
+            hnextClean).eq_resolve position nextContext remaining value.2 hvalid hcompletable
+              hensured⟩
+        unfold negatedDirectDelayedComputationObserve
+        rw [directDelayedSelectedRootIndicator_hash_eq_not_selected ordinal parameter root
+          ftsSecret table target rightRoot input next snapshots observations left fuel cache
+          hnotSelected (by simpa [nextLeftSnapshots, candidate?, plan] using hselected)]
+        rw [directDelayedSelectedRootIndicator_hash_eq_not_selected ordinal parameter root
+          ftsSecret table target rightRoot input next snapshots observations right fuel cache
+          hnotSelected (by
+            simpa [nextRightSnapshots, candidate?, hrightCandidate] using hnotSelectedRight)]
+        calc
+          _ = evalDist (Bool.not <$>
+              (runDirectResolvedWitnessFromTable right fuel table
+                  ((probingHashQueryAfterPlan parameter input plan).run cache) >>=
+                finishDirectDelayedSelectedRootIndicator
+                  (canonicalizeDirectDelayedSelectedRootIndicator table observe)
+                  nextLeftSnapshots nextLeftObservations)) :=
+                    evalDist_complement_runDirectWitness_finish_false_eq_of_synchronized table
+                      observe nextLeftSnapshots nextLeftObservations
+                      ((probingHashQueryAfterPlan parameter input plan).run cache) left right fuel
+                      hcontext hvalues hrevealed
+          _ = _ := evalDist_complement_runDirectWitness_finish_false_eq_of_eventEq ordinal
+                    parameter root ftsSecret table target rightRoot next nextLeftSnapshots
+                    nextRightSnapshots nextLeftObservations nextRightObservations right fuel
+                    ((probingHashQueryAfterPlan parameter input plan).run cache) hselected
+                    hnotSelectedRight hnextSnapshots (by
+                      rw [hnextObservations]
+                      exact CleanProbeObservationsEventEq.refl nextRightObservations)
+      · have hleftFalse : true ∉ support
+            (directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+              rightRoot
+              (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+                (Sum.inl (Sum.inr input))) >>= next)
+              snapshots observations left fuel cache) := by
+          intro htrue
+          apply hnextClean
+          exact no_existingHiddenHit_afterCandidate_of_true_mem_hash_not_selected ordinal
+            parameter root ftsSecret table target rightRoot input next snapshots observations left
+            fuel cache hnotSelected (by
+              simpa [nextLeftSnapshots, candidate?, plan] using hselected)
+            (by simpa only [List.length_map] using congrArg List.length haligned) htrue
+        have hrightDirty : ¬∀ observation ∈ nextRightObservations,
+            ¬observation.ExistingHiddenHit := by
+          rwa [← hnextObservations]
+        have hrightFalse : true ∉ support
+            (directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+              rightRoot
+              (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+                (Sum.inl (Sum.inr input))) >>= next)
+              snapshots observations right fuel cache) := by
+          intro htrue
+          apply hrightDirty
+          exact no_existingHiddenHit_afterCandidate_of_true_mem_hash_not_selected ordinal
+            parameter root ftsSecret table target rightRoot input next snapshots observations right
+            fuel cache hnotSelected (by
+              simpa [nextRightSnapshots, candidate?, hrightCandidate] using hnotSelectedRight)
+            (by simpa only [List.length_map] using congrArg List.length haligned) htrue
+        unfold negatedDirectDelayedComputationObserve
+        exact (evalDist_negated_eq_pure_true_of_true_not_mem _ hleftFalse).trans
+          (evalDist_negated_eq_pure_true_of_true_not_mem _ hrightFalse).symm
 
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
