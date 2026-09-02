@@ -33,7 +33,7 @@ Dependency order, leaves first:
 | `sphincs`         | the stateless SPHINCS+ instance of `doc/sphincs`; an independent leaf, consumed only by `rec_aggregation` |
 | `rec_aggregation` | recursive XMSS and SPHINCS aggregation: the one guest, the entry points `src/lib.rs` re-exports, the benchmarks |
 
-`src/lib.rs` is the public API and the only thing a user imports: every crate above is `publish = false`, so a new user-facing item is a re-export there. `src/main.rs` is the benchmark CLI, `examples/aggregate.rs` the end-to-end use of the API; guests are zkDSL under `crates/rec_aggregation/guests/`.
+`src/lib.rs` is the public API and the only thing a user imports: every crate above is `publish = false`, so a new user-facing item is a re-export there. `src/main.rs` is the benchmark CLI, `tests/api.rs` the end-to-end use of the API; guests are zkDSL under `crates/rec_aggregation/guests/`.
 
 ## Building / Testing / Formatting
 
