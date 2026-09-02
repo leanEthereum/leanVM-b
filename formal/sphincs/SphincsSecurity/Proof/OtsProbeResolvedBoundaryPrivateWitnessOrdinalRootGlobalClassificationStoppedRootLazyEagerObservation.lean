@@ -87,6 +87,95 @@ theorem map_toProbe_map_installPositionValueAtProbe
   intro observation _hobservation
   exact installPositionValueAtProbe_toProbe target output observation
 
+@[simp] theorem observedPrefixProbes_map_installPositionValueAtProbe
+    (target : Position) (output : HashOutput)
+    (result : ObservedCleanRunResult α) (ordinal : Nat) :
+    observedPrefixProbes ordinal
+        (some { result with observations :=
+          result.observations.map (installPositionValueAtProbe target output) }) =
+      observedPrefixProbes ordinal (some result) := by
+  simp only [observedPrefixProbes]
+  rw [List.map_take, map_toProbe_map_installPositionValueAtProbe]
+  rw [List.map_take]
+
+@[simp] theorem observedFirstLayerRootPosition?_map_installPositionValueAtProbe
+    (target : Position) (output : HashOutput)
+    (result : ObservedCleanRunResult α) (ordinal : Nat) :
+    observedFirstLayerRootPosition? ordinal
+        (some { result with observations :=
+          result.observations.map (installPositionValueAtProbe target output) }) =
+      observedFirstLayerRootPosition? ordinal (some result) := by
+  simp only [observedFirstLayerRootPosition?]
+  by_cases horiginal : ordinal < result.observations.length
+  · have hmapped : ordinal <
+        (result.observations.map (installPositionValueAtProbe target output)).length := by
+      simpa only [List.length_map] using horiginal
+    rw [dif_pos hmapped, dif_pos horiginal]
+    simp only [List.get_eq_getElem, List.getElem_map,
+      installPositionValueAtProbe_toProbe]
+  · have hmapped : ¬ordinal <
+        (result.observations.map (installPositionValueAtProbe target output)).length := by
+      simpa only [List.length_map] using horiginal
+    rw [dif_neg hmapped, dif_neg horiginal]
+
+theorem observedPrefixProbes_eq_of_observations_eq
+    (ordinal : Nat) (left right : ObservedCleanRunResult α)
+    (hobservations : left.observations = right.observations) :
+    observedPrefixProbes ordinal (some left) =
+      observedPrefixProbes ordinal (some right) := by
+  simp only [observedPrefixProbes]
+  rw [hobservations]
+
+theorem observedFirstLayerRootPosition?_eq_of_observations_eq
+    (ordinal : Nat) (left right : ObservedCleanRunResult α)
+    (hobservations : left.observations = right.observations) :
+    observedFirstLayerRootPosition? ordinal (some left) =
+      observedFirstLayerRootPosition? ordinal (some right) := by
+  simp only [observedFirstLayerRootPosition?]
+  rw [hobservations]
+
+theorem firstExistingHiddenHitAt_of_observations_eq
+    (left right : ObservedCleanRunResult α) (ordinal : Nat)
+    (hobservations : left.observations = right.observations)
+    (hfirst : FirstExistingHiddenHitAt left ordinal) :
+    FirstExistingHiddenHitAt right ordinal := by
+  obtain ⟨selected, hordinal, hhit, hbefore⟩ := hfirst
+  let rightSelected : Fin right.observations.length :=
+    ⟨selected.val, by rw [← hobservations]; exact selected.isLt⟩
+  refine ⟨rightSelected, hordinal, ?_, ?_⟩
+  · have hget : right.observations.get rightSelected =
+        left.observations.get selected := by
+      subst rightSelected
+      simp [hobservations]
+    rw [ExistingHiddenHitAtOrdinal, hget]
+    exact hhit
+  · intro rightEarlier hearlier
+    let leftEarlier : Fin left.observations.length :=
+      ⟨rightEarlier.val, by rw [hobservations]; exact rightEarlier.isLt⟩
+    have hget : right.observations.get rightEarlier =
+        left.observations.get leftEarlier := by
+      subst leftEarlier
+      simp [hobservations]
+    rw [ExistingHiddenHitAtOrdinal, hget]
+    exact hbefore leftEarlier hearlier
+
+theorem firstExistingHiddenRootHitAt_of_first_of_position
+    (result : ObservedCleanRunResult α) (ordinal : Nat) (target : Position)
+    (hfirst : FirstExistingHiddenHitAt result ordinal)
+    (hposition : observedFirstLayerRootPosition? ordinal (some result) = some target) :
+    ObservedCleanRunOption.FirstExistingHiddenRootHitAt ordinal (some result) := by
+  have hfirstData := hfirst
+  obtain ⟨selected, hordinal, _hhit, _hbefore⟩ := hfirstData
+  refine ⟨selected, hordinal, hfirst, ?_⟩
+  have hlt : ordinal < result.observations.length := by
+    rw [← hordinal]
+    exact selected.isLt
+  simp only [observedFirstLayerRootPosition?, hlt, ↓reduceDIte] at hposition
+  have hindex : (⟨ordinal, hlt⟩ : Fin result.observations.length) = selected :=
+    Fin.ext hordinal.symm
+  rw [hindex, candidateLayerRootPosition?_eq_some_iff] at hposition
+  exact ⟨target, hposition.1, hposition.2⟩
+
 theorem no_existingHiddenHit_map_installPositionValueAtProbe_of_avoids
     (target : Position) (output : HashOutput)
     (observations : List CleanProbeObservation)

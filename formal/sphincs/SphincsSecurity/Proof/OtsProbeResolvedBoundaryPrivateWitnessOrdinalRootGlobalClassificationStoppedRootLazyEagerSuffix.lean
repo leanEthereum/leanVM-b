@@ -105,6 +105,76 @@ theorem relTriple_finalizeCleanFromTable_safeTargetPending
                   (right.complete (.position position) leftOutput)
                   (hstate.complete_of_ne (.position position) leftOutput hposition)
 
+set_option maxRecDepth 100000 in
+theorem relTriple_finalizeCleanFromTable_safeTargetPending_coordinates
+    (target : Position) (output : HashOutput)
+    (left right : LazyRevealProbe.State Coordinate)
+    (table : OtsSecretIndex → HashOutput)
+    (hstate : SafeTargetPendingLE target output left right) :
+    RelTriple
+      (finalizeCleanFromTable left.coordinates.toList left table)
+      (finalizeCleanFromTable right.coordinates.toList right table)
+      (FinalizedSafeTargetPendingRel target output) := by
+  by_cases hleftTarget : Coordinate.position target ∈ left.coordinates
+  · have hcoordinates := hstate.coordinates_eq_of_target_mem hleftTarget
+    rw [← hcoordinates]
+    exact relTriple_finalizeCleanFromTable_safeTargetPending target output
+      left.coordinates.toList left right table hstate
+  · have heval :
+        evalDist (finalizeCleanFromTable right.coordinates.toList right table) =
+          evalDist (finalizeCleanFromTable left.coordinates.toList left table) := by
+      by_cases hrightTarget : Coordinate.position target ∈ right.coordinates
+      · have herase := hstate.erase_target_coordinates_eq_of_not_mem_left hleftTarget
+        have hperm : List.Perm
+            (right.coordinates.toList.erase (.position target)) left.coordinates.toList := by
+          apply List.perm_of_nodup_nodup_toFinset_eq
+          · exact right.coordinates.nodup_toList.erase _
+          · exact left.coordinates.nodup_toList
+          · apply Finset.ext
+            intro coordinate
+            simp only [List.mem_toFinset, right.coordinates.nodup_toList.mem_erase_iff,
+              Finset.mem_toList]
+            rw [← Finset.mem_erase, herase]
+        calc
+          _ = evalDist (finalizeCleanFromTable
+                (.position target :: right.coordinates.toList.erase (.position target))
+                right table) :=
+            evalDist_finalizeCleanFromTable_move_to_front (.position target)
+              right.coordinates.toList right table (by simpa using hrightTarget)
+          _ = evalDist (finalizeCleanFromTable
+                (right.coordinates.toList.erase (.position target))
+                (right.clearPending (.position target)) table) :=
+            congrArg evalDist
+              (finalizeCleanFromTable_cons_of_some (.position target)
+                (right.coordinates.toList.erase (.position target)) right table output
+                hstate.right_target_value)
+          _ = evalDist (finalizeCleanFromTable
+                (right.coordinates.toList.erase (.position target)) left table) := by
+            rw [← hstate.clearPending_target_eq,
+              clearPending_eq_self_of_not_mem_coordinates left (.position target) hleftTarget]
+          _ = _ := evalDist_finalizeCleanFromTable_perm hperm left table
+      · have heq := hstate.eq_of_target_not_mem_right_coordinates hrightTarget
+        subst right
+        rfl
+    let run := finalizeCleanFromTable left.coordinates.toList left table
+    have hbase :=
+      SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support
+        (relTriple_refl run) (fun result => result ∈ support run)
+        (fun result hresult => hresult)
+    have hpost : RelTriple run run (FinalizedSafeTargetPendingRel target output) := by
+      apply relTriple_post_mono hbase
+      intro leftFinal rightFinal hrelation
+      obtain ⟨rfl, hleftFinal⟩ := hrelation
+      cases leftFinal with
+      | none => trivial
+      | some final =>
+          rcases final with ⟨finalState, finalTable⟩
+          refine ⟨rfl, SafeTargetPendingLE.refl target output finalState ?_⟩
+          exact values_eq_of_mem_finalizeCleanFromTable_of_not_mem
+            (.position target) left.coordinates.toList left table output
+            (by simpa using hleftTarget) hstate.target_value finalState finalTable hleftFinal
+    exact relTriple_of_evalDist_eq_right heval.symm hpost
+
 theorem relTriple_finishObservedCleanRunFromTable_safeTargetPending
     (target : Position) (output : HashOutput)
     (left right : ObservedCleanRunResult α)
@@ -137,6 +207,103 @@ theorem relTriple_finishObservedCleanRunFromTable_safeTargetPending
           rcases hfinal with ⟨hfinalTable, hfinalState⟩
           exact relTriple_pure_pure
             ⟨hvalue, hfinalTable, hremaining, hobservations, hfinalState⟩
+
+theorem relTriple_finishObservedCleanRunFromTable_safeTargetPending_coordinates
+    (target : Position) (output : HashOutput)
+    (left right : ObservedCleanRunResult α)
+    (hrel : ObservedSafeTargetPendingRel target output (some left) (some right)) :
+    RelTriple
+      (finishObservedCleanRunFromTable (some left))
+      (finishObservedCleanRunFromTable (some right))
+      (ObservedSafeTargetPendingRel target output) := by
+  rcases hrel with ⟨hvalue, htable, hremaining, hobservations, hstate⟩
+  unfold finishObservedCleanRunFromTable
+  simp only
+  rw [← htable]
+  apply relTriple_bind
+    (relTriple_finalizeCleanFromTable_safeTargetPending_coordinates target output
+      left.state right.state left.table hstate)
+  intro leftFinal rightFinal hfinal
+  cases leftFinal with
+  | none =>
+      cases rightFinal with
+      | none => exact relTriple_pure_pure (by trivial)
+      | some rightFinal => simp [FinalizedSafeTargetPendingRel] at hfinal
+  | some leftFinal =>
+      cases rightFinal with
+      | none => simp [FinalizedSafeTargetPendingRel] at hfinal
+      | some rightFinal =>
+          rcases leftFinal with ⟨leftState, leftTable⟩
+          rcases rightFinal with ⟨rightState, rightTable⟩
+          rcases hfinal with ⟨hfinalTable, hfinalState⟩
+          exact relTriple_pure_pure
+            ⟨hvalue, hfinalTable, hremaining, hobservations, hfinalState⟩
+
+theorem ObservedSafeTargetPendingRel.successfulDoomedFirstRootGoodForComparisonAt
+    (table : OtsSecretIndex → HashOutput) (ordinal : Nat)
+    (target : Position) (output : HashOutput) (rightRoot : Digest)
+    (left right : ObservedCleanRunResult α)
+    (hrel : ObservedSafeTargetPendingRel target output (some left) (some right))
+    (hroot : IsLayerRoot target)
+    (hselectedValue : ∀ selected : Fin left.observations.length,
+      selected.val = ordinal →
+        (left.observations.get selected).coordinate = .position target →
+        (left.observations.get selected).valueAtProbe = some output)
+    (hactualAvoid : ∀ earlier : Fin left.observations.length,
+      earlier.val < ordinal →
+        (left.observations.get earlier).toProbe ≠
+          ⟨.position target, truncateHash output⟩)
+    (hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      table ordinal target rightRoot (some left)) :
+    ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      table ordinal target rightRoot (some right) := by
+  rcases hrel with ⟨_hvalue, _htable, _hremaining, hobservations, hstate⟩
+  rcases hgood with ⟨⟨⟨hfinish, hdoomed, hfirstRoot⟩, hposition⟩, hcomparison⟩
+  rcases hfinish with ⟨leftFinal, hleftFinal⟩
+  have hfinishRel :=
+    relTriple_finishObservedCleanRunFromTable_safeTargetPending_coordinates
+      target output left right
+      ⟨_hvalue, _htable, _hremaining, hobservations, hstate⟩
+  obtain ⟨rightFinal?, hrightFinal, hfinalRel⟩ :=
+    exists_right_mem_support_of_relTriple hfinishRel hleftFinal
+  have hrightFinish : ∃ rightFinal, some rightFinal ∈ support
+      (finishObservedCleanRunFromTable (some right)) := by
+    cases rightFinal? with
+    | none => simp [ObservedSafeTargetPendingRel] at hfinalRel
+    | some rightFinal => exact ⟨rightFinal, hrightFinal⟩
+  have hrightDoomed :
+      ¬DeferredCompletable table (directDeferredContext right.state) := by
+    intro hrightCompletable
+    exact hdoomed (deferredCompletable_direct_of_probeStateLE table
+      (hstate.toProbeStateLE hroot) hrightCompletable)
+  rcases hfirstRoot with ⟨selected, hselected, hfirst, _hselectedRoot⟩
+  have hfirstInstalled := firstExistingHiddenHitAt_map_installPositionValueAtProbe
+    target output left ordinal hfirst hselectedValue hactualAvoid
+  let installed : ObservedCleanRunResult α :=
+    { left with observations :=
+        left.observations.map (installPositionValueAtProbe target output) }
+  have hfirstRight : FirstExistingHiddenHitAt right ordinal := by
+    apply firstExistingHiddenHitAt_of_observations_eq installed right ordinal
+    · exact hobservations.symm
+    · exact hfirstInstalled
+  have hpositionInstalled :
+      observedFirstLayerRootPosition? ordinal (some installed) = some target := by
+    exact (observedFirstLayerRootPosition?_map_installPositionValueAtProbe
+      target output left ordinal).trans hposition
+  have hpositionRight :
+      observedFirstLayerRootPosition? ordinal (some right) = some target := by
+    rw [← hpositionInstalled]
+    exact (observedFirstLayerRootPosition?_eq_of_observations_eq ordinal installed right
+      hobservations.symm).symm
+  have hfirstRootRight := firstExistingHiddenRootHitAt_of_first_of_position
+    right ordinal target hfirstRight hpositionRight
+  have hcomparisonRight : CandidatesAvoidRoot target rightRoot
+      (observedPrefixProbes ordinal (some right)) := by
+    rw [← observedPrefixProbes_eq_of_observations_eq ordinal installed right
+      hobservations.symm]
+    simpa [installed] using hcomparison
+  exact ⟨⟨⟨hrightFinish, hrightDoomed, hfirstRootRight⟩,
+    hpositionRight⟩, hcomparisonRight⟩
 
 theorem ObservedSafeTargetPendingRel.pure
     (target : Position) (output : HashOutput)
