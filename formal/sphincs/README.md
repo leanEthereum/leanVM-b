@@ -534,6 +534,8 @@ The false-on-failure witness interpreter is now connected exactly to the existin
 
 The continuation synchronization proof now has both terminal cases sealed. Once the chosen ordinal is already present, the direct delayed computation is independent of its current context because it uses the stored chronological snapshot; before selection, a pure tail is constant false. Both facts are also exported under Boolean complementation for the resolver recursion. Recursive uniform, nonselected hash and signing steps remain.
 
+The complemented canonical wrapper is now definitionally connected to the standard `canonicalizeObserve` on every valid, completable context. It inherits position-neutrality from its underlying continuation, while the previously proved canonical guards provide the doomed and synchronized instances. A generic theorem consequently transports any false-on-stop witness run across finalization-equivalent contexts without inspecting the inner computation. The remaining synchronization induction only has to supply these continuation instances; the full masked signer and planned-hash implementations no longer need separate commutation proofs.
+
 Two places a proof can go wrong, both found by attacking the claim rather than by reading it:
 
 - **A strong forgery needs no chain inversion.** `Ver` does not check that the counter is the least admissible one, so a second `c'` with `Enc(P,lay,tau,e,M,c') = x` reuses the chain values verbatim and verifies. Since the codeword fixes the digest, that is one `2^-128` hit per query and it is harmless, but it is a branch of its own: the one-time signature is unforgeable on a *new* message by incomparability, and unforgeable on the *signed* message only by collision resistance at `tw_enc`.
