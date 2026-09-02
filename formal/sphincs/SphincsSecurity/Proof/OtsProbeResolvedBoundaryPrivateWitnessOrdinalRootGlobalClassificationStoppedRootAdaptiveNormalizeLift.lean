@@ -1829,6 +1829,134 @@ theorem evalDist_negated_eq_pure_true_of_true_not_mem
   rw [evalDist_map]
   simpa using congrArg (fun distribution => Bool.not <$> distribution) heq
 
+set_option maxRecDepth 100000 in
+theorem evalDist_resolve_self_then_negated_delayedSelectedRootIndicator
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (table : OtsSecretIndex → HashOutput) (target : Position) (rightRoot : Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (observations : List CleanProbeObservation)
+    (probe : Probe) (candidates : List Probe)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache) :
+    evalDist (resolveDeferredPositionValue target context >>= fun resolved ↦
+        match resolved with
+        | none => pure true
+        | some resolved => Bool.not <$>
+            delayedSelectedRootIndicator ordinal parameter root ftsSecret table target rightRoot
+              computation observations ⟨probe, resolved.toDeferredContext, candidates⟩ fuel cache) =
+      evalDist (Bool.not <$>
+        delayedSelectedRootIndicator ordinal parameter root ftsSecret table target rightRoot
+          computation observations ⟨probe, context, candidates⟩ fuel cache) := by
+  unfold delayedSelectedRootIndicator
+  rw [map_bind]
+  apply evalDist_bind_congr
+  intro resolved hresolved
+  cases resolved with
+  | none => rfl
+  | some resolved =>
+      simp only
+      rw [resolveDeferredPositionValue_of_resolved target context resolved hresolved]
+      rfl
+
+set_option maxRecDepth 1000000 in
+theorem evalDist_hash_selected_self_positionNeutral
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (table : OtsSecretIndex → HashOutput) (target : Position) (rightRoot : Digest)
+    (input : HashInput)
+    (next : HashOutput → OracleComp (OracleWorld + SigningSpec) α)
+    (snapshots : List PlannedProbeSnapshot)
+    (observations : List CleanProbeObservation)
+    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
+    (hbefore : ¬ordinal < snapshots.length)
+    (hselected : ordinal <
+      (appendPlannedSnapshot snapshots
+        (rootAwareCandidateForPlan? parameter input
+          (purePlanProbingHashQuery parameter input context.state)) context).length) :
+    evalDist (resolveDeferredPositionValue target context >>= fun resolved ↦
+        match resolved with
+        | none => pure true
+        | some resolved =>
+            negatedDirectDelayedComputationObserve ordinal parameter root ftsSecret table target
+              rightRoot
+              (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+                (Sum.inl (Sum.inr input))) >>= next)
+              snapshots observations resolved.toDeferredContext fuel cache) =
+      evalDist
+        (negatedDirectDelayedComputationObserve ordinal parameter root ftsSecret table target
+          rightRoot
+          (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+            (Sum.inl (Sum.inr input))) >>= next)
+          snapshots observations context fuel cache) := by
+  let candidate? := rootAwareCandidateForPlan? parameter input
+    (purePlanProbingHashQuery parameter input context.state)
+  obtain ⟨candidate, hcandidate⟩ : ∃ candidate, candidate? = some candidate := by
+    cases hcandidate : candidate? with
+    | none =>
+        simp [candidate?, hcandidate, appendPlannedSnapshot] at hselected
+        omega
+    | some candidate => exact ⟨candidate, rfl⟩
+  have hlength : snapshots.length = ordinal := by
+    simp [candidate?, hcandidate, appendPlannedSnapshot] at hselected
+    omega
+  let candidates :=
+    (snapshots ++ [(⟨candidate, context⟩ : PlannedProbeSnapshot)]).map
+      PlannedProbeSnapshot.toProbe
+  unfold negatedDirectDelayedComputationObserve
+  have hleft : evalDist (resolveDeferredPositionValue target context >>= fun resolved ↦
+      match resolved with
+      | none => pure true
+      | some resolved => Bool.not <$>
+          delayedSelectedRootIndicator ordinal parameter root ftsSecret table target rightRoot
+            (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+              (Sum.inl (Sum.inr input))) >>= next)
+            observations ⟨candidate, resolved.toDeferredContext, candidates⟩ fuel cache) =
+      evalDist (resolveDeferredPositionValue target context >>= fun resolved ↦
+        match resolved with
+        | none => pure true
+        | some resolved => Bool.not <$>
+            directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
+              rightRoot
+              (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+                (Sum.inl (Sum.inr input))) >>= next)
+              snapshots observations resolved.toDeferredContext fuel cache) := by
+    apply evalDist_bind_congr
+    intro resolved hresolved
+    cases resolved with
+    | none => rfl
+    | some resolved =>
+        simp only
+        have hvalues := resolveDeferredPositionValue_preserves_state_values target context resolved
+          hresolved
+        have hplan : purePlanProbingHashQuery parameter input resolved.state =
+            purePlanProbingHashQuery parameter input context.state :=
+          purePlanProbingHashQuery_eq_of_values_eq hvalues parameter input
+        have hcandidateResolved : rootAwareCandidateForPlan? parameter input
+            (purePlanProbingHashQuery parameter input resolved.state) = some candidate := by
+          rw [hplan]
+          simpa [candidate?] using hcandidate
+        have hselectedResolved : ordinal <
+            (appendPlannedSnapshot snapshots
+              (rootAwareCandidateForPlan? parameter input
+                (purePlanProbingHashQuery parameter input resolved.state))
+              resolved.toDeferredContext).length := by
+          simp [appendPlannedSnapshot, hcandidateResolved, hlength]
+        rw [directDelayedSelectedRootIndicator_hash_eq_selected ordinal parameter root ftsSecret
+          table target rightRoot input next snapshots observations resolved.toDeferredContext fuel
+          cache hbefore hselectedResolved]
+        simp [appendPlannedSnapshot, hcandidateResolved, hlength, candidates,
+          List.get_eq_getElem]
+  rw [← hleft]
+  rw [directDelayedSelectedRootIndicator_hash_eq_selected ordinal parameter root ftsSecret table
+    target rightRoot input next snapshots observations context fuel cache hbefore hselected]
+  have hbase := evalDist_resolve_self_then_negated_delayedSelectedRootIndicator ordinal
+    parameter root ftsSecret table target rightRoot
+    (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
+      (Sum.inl (Sum.inr input))) >>= next)
+    observations candidate candidates context fuel cache
+  simpa [candidate?, hcandidate, appendPlannedSnapshot, hlength, candidates,
+    List.get_eq_getElem] using hbase
+
 set_option maxHeartbeats 4000000 in
 set_option maxRecDepth 1000000 in
 theorem negatedDirectDelayedComputationObserve_hash_observerSynchronized
@@ -1962,24 +2090,23 @@ theorem negatedDirectDelayedComputationObserve_hash_observerSynchronized
           ftsSecret table target rightRoot input next snapshots observations right fuel cache
           hnotSelected (by
             simpa [nextRightSnapshots, candidate?, hrightCandidate] using hnotSelectedRight)]
-        calc
-          _ = evalDist (Bool.not <$>
-              (runDirectResolvedWitnessFromTable right fuel table
-                  ((probingHashQueryAfterPlan parameter input plan).run cache) >>=
-                finishDirectDelayedSelectedRootIndicator
-                  (canonicalizeDirectDelayedSelectedRootIndicator table observe)
-                  nextLeftSnapshots nextLeftObservations)) :=
-                    evalDist_complement_runDirectWitness_finish_false_eq_of_synchronized table
-                      observe nextLeftSnapshots nextLeftObservations
-                      ((probingHashQueryAfterPlan parameter input plan).run cache) left right fuel
-                      hcontext hvalues hrevealed
-          _ = _ := evalDist_complement_runDirectWitness_finish_false_eq_of_eventEq ordinal
-                    parameter root ftsSecret table target rightRoot next nextLeftSnapshots
-                    nextRightSnapshots nextLeftObservations nextRightObservations right fuel
-                    ((probingHashQueryAfterPlan parameter input plan).run cache) hselected
-                    hnotSelectedRight hnextSnapshots (by
-                      rw [hnextObservations]
-                      exact CleanProbeObservationsEventEq.refl nextRightObservations)
+        have hsync :=
+          evalDist_complement_runDirectWitness_finish_false_eq_of_synchronized table
+            observe nextLeftSnapshots nextLeftObservations
+            ((probingHashQueryAfterPlan parameter input plan).run cache) left right fuel
+            hcontext hvalues hrevealed
+        have htrace : CleanProbeObservationsEventEq nextLeftObservations
+            nextRightObservations := by
+          rw [hnextObservations]
+          exact CleanProbeObservationsEventEq.refl nextRightObservations
+        have hevent :=
+          evalDist_complement_runDirectWitness_finish_false_eq_of_eventEq ordinal
+            parameter root ftsSecret table target rightRoot next nextLeftSnapshots
+            nextRightSnapshots nextLeftObservations nextRightObservations right fuel
+            ((probingHashQueryAfterPlan parameter input plan).run cache) hselected
+            hnotSelectedRight hnextSnapshots htrace
+        rw [hsync]
+        rw [hevent, hplan]
       · have hleftFalse : true ∉ support
             (directDelayedSelectedRootIndicator ordinal parameter root ftsSecret table target
               rightRoot
@@ -1988,11 +2115,20 @@ theorem negatedDirectDelayedComputationObserve_hash_observerSynchronized
               snapshots observations left fuel cache) := by
           intro htrue
           apply hnextClean
-          exact no_existingHiddenHit_afterCandidate_of_true_mem_hash_not_selected ordinal
-            parameter root ftsSecret table target rightRoot input next snapshots observations left
-            fuel cache hnotSelected (by
-              simpa [nextLeftSnapshots, candidate?, plan] using hselected)
-            (by simpa only [List.length_map] using congrArg List.length haligned) htrue
+          have hleftStep : ¬ordinal <
+              (appendPlannedSnapshot snapshots
+                (rootAwareCandidateForPlan? parameter input
+                  (purePlanProbingHashQuery parameter input left.state)) left).length := by
+            simpa [nextLeftSnapshots, candidate?, plan] using hselected
+          have hlength : observations.length = snapshots.length := by
+            simpa only [List.length_map] using congrArg List.length haligned
+          have hleftClean :=
+            no_existingHiddenHit_afterCandidate_of_true_mem_hash_not_selected ordinal
+              parameter root ftsSecret table target rightRoot input next snapshots observations
+              left fuel cache hnotSelected hleftStep hlength htrue
+          change ∀ observation ∈ observationsAfterCandidate observations
+            (materializedDeferredState left) candidate?, ¬observation.ExistingHiddenHit
+          exact hleftClean
         have hrightDirty : ¬∀ observation ∈ nextRightObservations,
             ¬observation.ExistingHiddenHit := by
           rwa [← hnextObservations]
@@ -2004,11 +2140,21 @@ theorem negatedDirectDelayedComputationObserve_hash_observerSynchronized
               snapshots observations right fuel cache) := by
           intro htrue
           apply hrightDirty
-          exact no_existingHiddenHit_afterCandidate_of_true_mem_hash_not_selected ordinal
-            parameter root ftsSecret table target rightRoot input next snapshots observations right
-            fuel cache hnotSelected (by
-              simpa [nextRightSnapshots, candidate?, hrightCandidate] using hnotSelectedRight)
-            (by simpa only [List.length_map] using congrArg List.length haligned) htrue
+          have hrightStep : ¬ordinal <
+              (appendPlannedSnapshot snapshots
+                (rootAwareCandidateForPlan? parameter input
+                  (purePlanProbingHashQuery parameter input right.state)) right).length := by
+            simpa [nextRightSnapshots, candidate?, hrightCandidate] using hnotSelectedRight
+          have hlength : observations.length = snapshots.length := by
+            simpa only [List.length_map] using congrArg List.length haligned
+          have hrightClean :=
+            no_existingHiddenHit_afterCandidate_of_true_mem_hash_not_selected ordinal
+              parameter root ftsSecret table target rightRoot input next snapshots observations
+              right fuel cache hnotSelected hrightStep hlength htrue
+          change ∀ observation ∈ observationsAfterCandidate observations
+            (materializedDeferredState right) candidate?, ¬observation.ExistingHiddenHit
+          rw [← hrightCandidate]
+          exact hrightClean
         unfold negatedDirectDelayedComputationObserve
         exact (evalDist_negated_eq_pure_true_of_true_not_mem _ hleftFalse).trans
           (evalDist_negated_eq_pure_true_of_true_not_mem _ hrightFalse).symm
