@@ -13,6 +13,7 @@ open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
 
 set_option linter.constructorNameAsVariable false
+attribute [local irreducible] maskedPublishedTreeRoot
 
 set_option maxRecDepth 100000 in
 theorem revealed_subset_of_done_runDirectResolvedDetailedFromTable
@@ -1590,5 +1591,297 @@ theorem successful_root_forces_match_after_installed_root
     (rootInstalledCache target (fun root => rootOutputOfParts root high) rootResult.value.2 leftRoot)
     rfl hstored hhidden htracked hcovered hstartsInitial hbudgetInitial pair (by
       simpa [initialState, rootContext, context] using hpair) hgoodPair
+
+theorem map_observed_sampledHighObservedRootAwareSharedAfterRootResult
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (rootResult : CleanRunResult (Digest × SplitHashCache)) :
+    (fun result => (result.1, result.2.1, result.2.2.1)) <$>
+        sampledHighObservedRootAwareSharedAfterRootResult ordinal adversary parameter
+          ftsSecret target rootResult =
+      sampledHighEagerObservedRootAwareAfterRootResult ordinal adversary parameter
+        ftsSecret target rootResult := by
+  unfold sampledHighObservedRootAwareSharedAfterRootResult
+    sampledHighEagerObservedRootAwareAfterRootResult
+  simp only [map_eq_bind_pure_comp, bind_assoc]
+  apply bind_congr
+  intro high
+  apply bind_congr
+  intro leftRoot
+  apply bind_congr
+  intro rightRoot
+  let state := materializedDeferredState
+    { directDeferredContext rootResult.state with
+      values := (directDeferredContext rootResult.state).values.install target
+        (rootOutputOfParts leftRoot high) }
+  let cache := rootInstalledCache target (fun root => rootOutputOfParts root high)
+    rootResult.value.2 leftRoot
+  simp only [pure_bind, Function.comp_apply]
+  calc
+    _ = (fun observed => (leftRoot, rightRoot,
+          retainObservedRoot rootResult.value.1 observed)) <$>
+        (Prod.fst <$> observedRootSelectionSharedPrefix ordinal parameter rootResult.value.1
+          target leftRoot rightRoot ftsSecret
+          (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) [] []
+          state rootResult.remaining rootResult.table cache) := by
+      rw [map_eq_bind_pure_comp, map_eq_bind_pure_comp, bind_assoc]
+      rfl
+    _ = _ := by
+      rw [map_fst_observedRootSelectionSharedPrefix]
+      rfl
+
+theorem evalDist_map_outcome_sampledHighObservedRootAwareSharedAfterRootResult
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (rootResult : CleanRunResult (Digest × SplitHashCache)) :
+    evalDist ((fun result => (result.1, result.2.1, result.2.2.2)) <$>
+        sampledHighObservedRootAwareSharedAfterRootResult ordinal adversary parameter
+          ftsSecret target rootResult) =
+      evalDist
+        (sampledHighMaterializedRootAwareOutcomeAfterRootResult ordinal adversary parameter
+          ftsSecret target rootResult) := by
+  unfold sampledHighObservedRootAwareSharedAfterRootResult
+    sampledHighMaterializedRootAwareOutcomeAfterRootResult
+  simp only [map_eq_bind_pure_comp, bind_assoc]
+  apply evalDist_bind_congr
+  intro high _hhigh
+  apply evalDist_bind_congr
+  intro leftRoot _hleftRoot
+  apply evalDist_bind_congr
+  intro rightRoot _hrightRoot
+  let state := materializedDeferredState
+    { directDeferredContext rootResult.state with
+      values := (directDeferredContext rootResult.state).values.install target
+        (rootOutputOfParts leftRoot high) }
+  let cache := rootInstalledCache target (fun root => rootOutputOfParts root high)
+    rootResult.value.2 leftRoot
+  calc
+    _ = evalDist ((fun outcome => (leftRoot, rightRoot, outcome)) <$>
+          (Prod.snd <$> observedRootSelectionSharedPrefix ordinal parameter rootResult.value.1
+            target leftRoot rightRoot ftsSecret
+            (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) [] []
+            state rootResult.remaining rootResult.table cache)) := by
+      rw [map_eq_bind_pure_comp, map_eq_bind_pure_comp, bind_assoc]
+      rfl
+    _ = evalDist ((fun outcome => (leftRoot, rightRoot, outcome)) <$>
+          materializedActualRootAwareOrdinalSelectionOutcome ordinal parameter rootResult.value.1
+            target leftRoot rightRoot ftsSecret
+            (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) [] state
+            rootResult.remaining rootResult.table cache) := by
+      have hmarginal := evalDist_map_snd_observedRootSelectionSharedPrefix ordinal parameter
+        rootResult.value.1 target leftRoot rightRoot ftsSecret
+        (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) [] [] state
+        rootResult.remaining rootResult.table cache
+      simpa only [evalDist_map, Functor.map_map] using
+        congrArg (Functor.map fun outcome => (leftRoot, rightRoot, outcome)) hmarginal
+    _ = _ := rfl
+
+theorem relTriple_sampledHighEagerObservedRootComparison_materializedRootAwareOutcome
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (rootResult : CleanRunResult (Digest × SplitHashCache))
+    (habsent : rootResult.state.values (.position target) = none ∧
+      Coordinate.position target ∉ rootResult.state.revealed)
+    (hpending : rootResult.state.pending = ∅)
+    (hstarts : StartTableAgrees rootResult.state rootResult.table)
+    (hbudget : rootResult.remaining < Fintype.card Digest) :
+    RelTriple
+      ((fun result => (result.2.2, result.2.1)) <$>
+        sampledHighEagerObservedRootAwareAfterRootResult ordinal adversary parameter
+          ftsSecret target rootResult)
+      (sampledHighMaterializedRootAwareOutcomeAfterRootResult ordinal adversary parameter
+        ftsSecret target rootResult)
+      (SuccessfulObservedRootMaterializedMatchRel rootResult.table ordinal target) := by
+  let shared := sampledHighObservedRootAwareSharedAfterRootResult ordinal adversary parameter
+    ftsSecret target rootResult
+  have hbase :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support
+      (relTriple_refl shared) (fun result => result ∈ support shared)
+      (fun result hresult => hresult)
+  have hsemantic : RelTriple shared shared
+      (fun left right =>
+        SuccessfulObservedRootMaterializedMatchRel rootResult.table ordinal target
+          (left.2.2.1, left.2.1) (right.1, right.2.1, right.2.2.2)) := by
+    apply relTriple_post_mono hbase
+    intro left right hrelation
+    obtain ⟨heq, hleft⟩ := hrelation
+    subst right
+    intro hgood
+    unfold shared sampledHighObservedRootAwareSharedAfterRootResult at hleft
+    rw [mem_support_bind_iff] at hleft
+    obtain ⟨high, _hhigh, hleft⟩ := hleft
+    rw [mem_support_bind_iff] at hleft
+    obtain ⟨leftRoot, _hleftRoot, hleft⟩ := hleft
+    rw [mem_support_bind_iff] at hleft
+    obtain ⟨rightRoot, _hrightRoot, hleft⟩ := hleft
+    rw [mem_support_bind_iff] at hleft
+    obtain ⟨pair, hpair, hreturn⟩ := hleft
+    simp only [support_pure, Set.mem_singleton_iff] at hreturn
+    subst left
+    exact successful_root_forces_match_after_installed_root ordinal adversary parameter ftsSecret
+      target rootResult high leftRoot rightRoot habsent hpending hstarts hbudget pair hpair hgood
+  have hmapped := relTriple_map
+    (f := fun result : Digest × Digest ×
+        Option (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) ×
+          MaterializedSelectionOutcome => (result.2.2.1, result.2.1))
+    (g := fun result : Digest × Digest ×
+        Option (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) ×
+          MaterializedSelectionOutcome => (result.1, result.2.1, result.2.2.2)) hsemantic
+  have hleft : evalDist
+      ((fun result => (result.2.2.1, result.2.1)) <$> shared) =
+      evalDist ((fun result => (result.2.2, result.2.1)) <$>
+        sampledHighEagerObservedRootAwareAfterRootResult ordinal adversary parameter
+          ftsSecret target rootResult) := by
+    rw [← map_observed_sampledHighObservedRootAwareSharedAfterRootResult ordinal adversary
+      parameter ftsSecret target rootResult]
+    simp only [Functor.map_map]
+    rfl
+  apply relTriple_of_evalDist_eq_left hleft.symm
+  apply relTriple_of_evalDist_eq_right
+    (evalDist_map_outcome_sampledHighObservedRootAwareSharedAfterRootResult ordinal adversary
+      parameter ftsSecret target rootResult)
+  exact hmapped
+
+noncomputable def eagerObservedRootComparisonExperimentAfterTable
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
+    ProbComp
+      (Option (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest) := do
+  let rootResult ← runCleanFromTable
+    (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel table
+    (maskedPublishedTreeRoot.run emptySplitHashCache)
+  match rootResult with
+  | none => pure (none, 0)
+  | some result =>
+      (fun sampled => (sampled.2.2, sampled.2.1)) <$>
+        sampledHighEagerObservedRootAwareAfterRootResult ordinal adversary parameter
+          ftsSecret target result
+
+def RootResultReadyForSharedSemantic
+    (target : Position) (table : OtsSecretIndex → HashOutput) :
+    Option (CleanRunResult (Digest × SplitHashCache)) → Prop
+  | none => True
+  | some result =>
+      result.state.values (.position target) = none ∧
+        Coordinate.position target ∉ result.state.revealed ∧
+        result.state.pending = ∅ ∧ result.table = table ∧
+        StartTableAgrees result.state table ∧
+        result.remaining < Fintype.card Digest
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem rootResultReadyForSharedSemantic_of_mem
+    (target : Position) (hroot : IsLayerRoot target)
+    (hparent : ∃ parent, Position.parentOf target = some parent)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (hfuel : fuel < Fintype.card Digest)
+    (output : Option (CleanRunResult (Digest × SplitHashCache)))
+    (houtput : output ∈ support
+      (runCleanFromTable (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+        fuel table (maskedPublishedTreeRoot.run emptySplitHashCache))) :
+    RootResultReadyForSharedSemantic target table output := by
+  cases output with
+  | none => trivial
+  | some result =>
+      have habsent : result.state.values (.position target) = none ∧
+          Coordinate.position target ∉ result.state.revealed :=
+        target_absent_of_mem_runCleanFromTable_maskedPublishedTreeRoot target hroot hparent fuel
+          table result houtput
+      have hpending : result.state.pending = ∅ :=
+        pending_eq_empty_of_mem_runCleanFromTable_maskedPublishedTreeRoot fuel table result houtput
+      have htable : result.table = table ∧ StartTableAgrees result.state table :=
+        startTableAgrees_of_mem_runCleanFromTable
+        (maskedPublishedTreeRoot.run emptySplitHashCache)
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel table
+        (startTableAgrees_empty table) result houtput
+      have hobserved : some
+          (⟨result.state, result.remaining, result.value, result.table, []⟩ :
+            ObservedCleanRunResult (Digest × SplitHashCache)) ∈ support
+          (runObservedCleanFromTable [] LazyRevealProbe.State.empty fuel table
+            (maskedPublishedTreeRoot.run emptySplitHashCache)) := by
+        rw [← map_attachCleanProbeObservations_runCleanFromTable_of_probeFree
+          (maskedPublishedTreeRoot.run emptySplitHashCache) [] LazyRevealProbe.State.empty fuel
+          table (maskedPublishedTreeRoot_probeFree emptySplitHashCache), support_map]
+        exact ⟨some result, houtput, rfl⟩
+      have hremaining : result.remaining ≤ fuel :=
+        remaining_le_of_mem_runObservedCleanFromTable
+          (maskedPublishedTreeRoot.run emptySplitHashCache) [] LazyRevealProbe.State.empty fuel
+          table ⟨result.state, result.remaining, result.value, result.table, []⟩ hobserved
+      exact ⟨habsent.1, habsent.2, hpending, htable.1, htable.2,
+        hremaining.trans_lt hfuel⟩
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem relTriple_eagerObservedRootComparison_materializedRootAwareOutcomeAfterTable
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (hroot : IsLayerRoot target)
+    (hparent : ∃ parent, Position.parentOf target = some parent)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (hfuel : fuel < Fintype.card Digest) :
+    RelTriple
+      (eagerObservedRootComparisonExperimentAfterTable ordinal adversary parameter ftsSecret
+        target fuel table)
+      (materializedRootAwareOrdinalOutcomeExperimentAfterTable ordinal adversary parameter
+        ftsSecret target fuel table)
+      (SuccessfulObservedRootMaterializedMatchRel table ordinal target) := by
+  let rootRun := runCleanFromTable
+    (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel table
+    (maskedPublishedTreeRoot.run emptySplitHashCache)
+  have hbase :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support
+      (relTriple_refl rootRun) (RootResultReadyForSharedSemantic target table)
+      (rootResultReadyForSharedSemantic_of_mem target hroot hparent fuel table hfuel)
+  unfold eagerObservedRootComparisonExperimentAfterTable
+    materializedRootAwareOrdinalOutcomeExperimentAfterTable
+  apply relTriple_bind hbase
+  intro leftResult rightResult hrelation
+  obtain ⟨heq, hready⟩ := hrelation
+  subst rightResult
+  cases leftResult with
+  | none =>
+      apply relTriple_pure_pure
+      intro hgood
+      simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
+        ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
+        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hgood
+  | some result =>
+      obtain ⟨hvalue, hrevealed, hpending, htable, hstarts, hbudget⟩ := hready
+      have hstartsResult : StartTableAgrees result.state result.table := by
+        rw [htable]
+        exact hstarts
+      rw [← htable]
+      exact relTriple_sampledHighEagerObservedRootComparison_materializedRootAwareOutcome ordinal
+        adversary parameter ftsSecret target result ⟨hvalue, hrevealed⟩ hpending hstartsResult
+        hbudget
+
+theorem probEvent_eagerObservedRootComparison_le_production_mul
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (hroot : IsLayerRoot target)
+    (hparent : ∃ parent, Position.parentOf target = some parent)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (hfuel : fuel < Fintype.card Digest) :
+    Pr[fun result =>
+        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          table ordinal target result.2 result.1 |
+      eagerObservedRootComparisonExperimentAfterTable ordinal adversary parameter ftsSecret
+        target fuel table] ≤
+      Pr[fun result => materializedOrdinalSelectionAt target result.2 |
+          materializedRootAwareOrdinalProductionExperimentAfterTable ordinal adversary parameter
+            ftsSecret target fuel table] *
+        ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  calc
+    _ ≤ Pr[fun result => result.2.2.Matches target result.1 |
+          materializedRootAwareOrdinalOutcomeExperimentAfterTable ordinal adversary parameter
+            ftsSecret target fuel table] := by
+      apply probEvent_le_of_relTriple
+        (relTriple_eagerObservedRootComparison_materializedRootAwareOutcomeAfterTable ordinal
+          adversary parameter ftsSecret target hroot hparent fuel table hfuel)
+      intro observed outcome hrelation hgood
+      exact hrelation hgood
+    _ ≤ _ := probEvent_materializedRootAwareOrdinalOutcome_match_le ordinal adversary parameter
+      ftsSecret target hroot hparent fuel table
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
