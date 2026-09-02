@@ -190,4 +190,45 @@ theorem relTriple_indicator_observedRootComparison_resolvedEager_of_afterRootRes
   exact relTriple_indicator_lazyObserved_resolvedEager_of_afterRootResult ordinal adversary
     parameter table ftsSecret fuel target hbridge
 
+set_option maxRecDepth 100000 in
+theorem probEvent_observedRootComparison_le_production_mul_of_afterRootResult
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (q : Nat) (target : Position) (hroot : IsLayerRoot target)
+    (hparent : ∃ parent, Position.parentOf target = some parent)
+    (hfuel : 2 * q < Fintype.card Digest)
+    (hbridge : ∀ rootResult : CleanRunResult (Digest × SplitHashCache),
+      some rootResult ∈ support
+        (runCleanFromTable
+          (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) (2 * q) table
+          (maskedPublishedTreeRoot.run emptySplitHashCache)) →
+      RelTriple
+        (successfulObservedRootComparisonIndicator table ordinal target <$> (do
+          let observed ← observedMaterializedBoundary parameter rootResult.value.1 ftsSecret
+            (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) []
+            rootResult.state rootResult.remaining table rootResult.value.2
+          let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+          pure (retainObservedRoot rootResult.value.1 observed, rightRoot)))
+        (successfulObservedRootComparisonIndicator table ordinal target <$>
+          resolvedEagerObservedRootComparisonAfterRootResult adversary parameter ftsSecret target
+            rootResult)
+        SuccessfulObservedIndicatorRel) :
+    Pr[fun result : Option
+          (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest ↦
+        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          table ordinal target result.2 result.1 | do
+      let observed ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret
+        (2 * q) table
+      let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+      pure (observed, rightRoot)] ≤
+      Pr[fun result ↦ materializedOrdinalSelectionAt target result.2 |
+          materializedRootAwareOrdinalProductionExperimentAfterTable ordinal adversary parameter
+            ftsSecret target (2 * q) table] *
+        ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  apply probEvent_observedRootComparison_le_production_mul_of_indicator ordinal adversary parameter
+    table ftsSecret q target hroot hparent hfuel
+  exact relTriple_indicator_observedRootComparison_resolvedEager_of_afterRootResult ordinal
+    adversary parameter table ftsSecret (2 * q) target hbridge
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
