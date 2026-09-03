@@ -13,14 +13,19 @@ open OracleComp OracleSpec ENNReal
 set_option linter.constructorNameAsVariable false
 attribute [local irreducible] maskedPublishedTreeRoot
 
+noncomputable def rootAwareProductionInitialRun
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
+    ProbComp (Option (CleanRunResult (Digest × SplitHashCache))) :=
+  runCleanFromTable
+    (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel table
+    (maskedPublishedTreeRoot.run emptySplitHashCache)
+
 noncomputable def materializedRootAwareOrdinalMatchExperimentAfterTable
     (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
     (target : Position) (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
     ProbComp (Digest × Digest × Option Probe) := do
-  let rootResult ← runCleanFromTable
-    (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel table
-    (maskedPublishedTreeRoot.run emptySplitHashCache)
+  let rootResult ← rootAwareProductionInitialRun fuel table
   match rootResult with
   | none => pure (0, 0, none)
   | some result =>
@@ -32,9 +37,7 @@ noncomputable def materializedRootAwareOrdinalProductionExperimentAfterTable
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
     (target : Position) (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
     ProbComp (Digest × Option Probe) := do
-  let rootResult ← runCleanFromTable
-    (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel table
-    (maskedPublishedTreeRoot.run emptySplitHashCache)
+  let rootResult ← rootAwareProductionInitialRun fuel table
   match rootResult with
   | none => pure (0, none)
   | some result =>

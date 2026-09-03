@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedRootAdaptiveProductionCommonSelectionSampling
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedRootAdaptiveProductionCommonInitial
 
 /-!
 # Commonizing resolved production fibers
@@ -12,6 +12,17 @@ namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
 open OracleComp OracleSpec ENNReal
 open OracleComp.ProgramLogic.Relational
+
+theorem probEvent_bind_le_bind_of_forall_le_of_invariant
+    {mx : ProbComp α} {left : α → ProbComp β} {right : α → ProbComp γ}
+    {leftEvent : β → Prop} {rightEvent : γ → Prop} (invariant : α → Prop)
+    (hinvariant : ∀ value ∈ support mx, invariant value)
+    (hstep : ∀ value, invariant value →
+      Pr[leftEvent | left value] ≤ Pr[rightEvent | right value]) :
+    Pr[leftEvent | mx >>= left] ≤ Pr[rightEvent | mx >>= right] := by
+  apply probEvent_bind_le_bind_of_forall_le
+  intro value hvalue
+  exact hstep value (hinvariant value hvalue)
 
 theorem materializedDeferredState_freshResolution_rel_preload
     (state : LazyRevealProbe.State Coordinate) (target : Position) (output : HashOutput)
@@ -160,26 +171,6 @@ theorem relTriple_resolvedInstalledPermissiveDetailedSelection_common_afterRootR
   · simpa [directDeferredContext] using hvalue
   · simpa [directDeferredContext, directDeferredValues] using hvalue
 
-theorem probEvent_resolvedInstalledPermissiveDetailedSelection_fiber_le_common_afterRootResult
-    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (target : Position) (rootResult : CleanRunResult (Digest × SplitHashCache))
-    (hvalue : rootResult.state.values (.position target) = none)
-    (hpending : rootResult.state.pending = ∅) :
-    Pr[fun result =>
-        permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? result.2 = some target |
-      resolvedInstalledPermissiveDetailedSelectionAfterRootResult ordinal adversary parameter
-        ftsSecret target rootResult] ≤
-      Pr[fun selection =>
-          permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? selection = some target |
-        permissiveDetailedSelectionAfterRootResult ordinal adversary parameter ftsSecret
-          rootResult] := by
-  apply probEvent_le_of_relTriple
-    (relTriple_resolvedInstalledPermissiveDetailedSelection_common_afterRootResult ordinal
-      adversary parameter ftsSecret target rootResult hvalue hpending)
-  intro left right hrelation hleft
-  exact hrelation hleft
-
 set_option maxHeartbeats 4000000 in
 set_option maxRecDepth 100000 in
 theorem probEvent_resolvedInstalledPermissiveDetailedSelectionExperiment_fiber_le_common
@@ -198,18 +189,32 @@ theorem probEvent_resolvedInstalledPermissiveDetailedSelectionExperiment_fiber_l
           table] := by
   unfold resolvedInstalledPermissiveDetailedSelectionExperimentAfterTable
     permissiveDetailedSelectionExperimentAfterTable
-  apply probEvent_bind_le_bind_of_forall_le
-  intro rootResult hresult
-  cases rootResult with
-  | none => simp [permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition?]
-  | some rootResult =>
-      have habsent := target_absent_of_mem_runCleanFromTable_maskedPublishedTreeRoot target hroot
-        hparent fuel table rootResult hresult
-      have hpending := pending_eq_empty_of_mem_runCleanFromTable_maskedPublishedTreeRoot fuel table
-        rootResult hresult
-      exact
-        probEvent_resolvedInstalledPermissiveDetailedSelection_fiber_le_common_afterRootResult
-          ordinal adversary parameter ftsSecret target rootResult habsent.1 hpending
+  apply probEvent_bind_le_bind_of_forall_le_of_invariant
+    (invariant := InitialRootOptionFacts target)
+  · exact initialRootOptionFacts_of_mem target hroot hparent fuel table
+  · intro rootResult hinitial
+    cases rootResult with
+    | none =>
+        simp [permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition?]
+    | some rootResult =>
+        have hrel : RelTriple
+            (resolvedInstalledPermissiveDetailedSelectionAfterRootResult ordinal adversary parameter
+              ftsSecret target rootResult)
+            (permissiveDetailedSelectionAfterRootResult ordinal adversary parameter ftsSecret
+              rootResult)
+            (fun left right =>
+              permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? left.2 = some target →
+                permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? right = some target) :=
+          relTriple_resolvedInstalledPermissiveDetailedSelection_common_afterRootResult ordinal
+            adversary parameter ftsSecret target rootResult hinitial.1 hinitial.2.2
+        apply probEvent_le_of_relTriple
+          (p := fun result =>
+            permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? result.2 = some target)
+          (q := fun selection =>
+            permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? selection = some target)
+          hrel
+        intro left right hrelation hleft
+        exact hrelation hleft
 
 set_option maxRecDepth 100000 in
 theorem probEvent_materializedRootAwareProduction_le_commonDetailedFiber

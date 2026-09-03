@@ -207,9 +207,7 @@ noncomputable def resolvedInstalledPermissiveDetailedSelectionExperimentAfterTab
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
     (target : Position) (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
     ProbComp (Digest × Option PermissivePrivateOrdinalSelection) := do
-  let rootResult ← runCleanFromTable
-    (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel table
-    (maskedPublishedTreeRoot.run emptySplitHashCache)
+  let rootResult ← rootAwareProductionInitialRun fuel table
   match rootResult with
   | none => pure (0, none)
   | some result =>
