@@ -5,7 +5,8 @@
 //! End to end in [`tests/api.rs`](https://github.com/leanEthereum/leanVM-b/blob/main/tests/api.rs).
 
 pub use rec_aggregation::{
-    AggregateSignature, AggregateVerifyError, AggregationError, MAX_CHILDREN, MAX_EPOCHS, MAX_KEYS, aggregate,
+    AggregateSignature, AggregateVerifyError, AggregationError, MAX_CHILDREN, MAX_EPOCHS, MAX_KEYS, SphincsSigner,
+    WireKeys, XmssGroup, aggregate,
 };
 
 pub use lean_vm::{
