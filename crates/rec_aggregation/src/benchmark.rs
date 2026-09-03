@@ -96,7 +96,7 @@ pub fn run_aggregation(n_xmss: usize, n_sphincs: usize, log_inv_rate: usize, pla
     // proof the reported timings are about, instead of repeating itself per pass.
     let ((sig, stats), prove_time) = plan.warm_then_measure(|last| {
         let _quiet = (!last).then(primitives::suppress_tracing);
-        aggregate_with_stats(&[], raw_xmss.clone(), raw_sphincs.clone(), log_inv_rate).expect("leaf aggregates")
+        aggregate_with_stats(&[], raw_xmss.clone(), raw_sphincs.clone(), None, log_inv_rate).expect("leaf aggregates")
     });
     let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|last| {
         let _quiet = (!last).then(primitives::suppress_tracing);
@@ -147,6 +147,7 @@ pub fn run_recursion(
                 &[],
                 all[k * per_leaf..(k + 1) * per_leaf].to_vec(),
                 all_sphincs[k * sphincs_per_leaf..(k + 1) * sphincs_per_leaf].to_vec(),
+                None,
                 log_inv_rate,
             )
             .expect("leaf aggregates")
@@ -158,7 +159,7 @@ pub fn run_recursion(
     }
     let ((sig, stats), prove_time) = plan.warm_then_measure(|last| {
         let _quiet = (!last).then(primitives::suppress_tracing);
-        aggregate_with_stats(&children, vec![], vec![], log_inv_rate).expect("node aggregates")
+        aggregate_with_stats(&children, vec![], vec![], None, log_inv_rate).expect("node aggregates")
     });
     let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|last| {
         let _quiet = (!last).then(primitives::suppress_tracing);

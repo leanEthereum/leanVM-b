@@ -3087,23 +3087,31 @@ def main():
     # in its own coverage slot.
     #
     # The declared lists are the signer set; the duplicate slots absorb keys a child
-    # covers that the set already holds. The coverage table is one region per epoch
-    # group, each its declared keys then its own duplicates, then the SPHINCS region
-    # shaped the same way:
+    # covers that the set does not declare. The coverage table is one region per
+    # epoch group, each its declared keys then its own duplicates, then the SPHINCS
+    # region shaped the same way:
     #
     #   [group 0: declared | dup]...[group n_epochs-1: declared | dup][SPHINCS: declared | dup]
+    #
+    # The first n_decl groups are the signer set's; the n_drop after them declare
+    # nothing, holding a child group's (epoch, message) without publishing it.
     #
     # so one range check per write keeps each writer inside its own region: that is
     # what makes the statement's split mean which scheme verified which key against
     # which (epoch, message). An XMSS slot is two cells, a SPHINCS slot four: a key
     # and the message that key signed.
-    meta = StackBuf(5)
+    meta = StackBuf(6)
     hint_witness(meta, "meta")  # every count in the exponent
-    n_epochs_g = meta[0]
-    n_sphincs_g = meta[1]
-    n_sdup_g = meta[2]
-    n_raw_s_g = meta[3]
-    n_children_g = meta[4]
+    n_decl_g = meta[0]
+    n_drop_g = meta[1]
+    n_sphincs_g = meta[2]
+    n_sdup_g = meta[3]
+    n_raw_s_g = meta[4]
+    n_children_g = meta[5]
+    # Declared plus dropped, so bounding each side pins n_decl <= n_epochs.
+    assert log(n_decl_g) < MAX_EPOCHS + 1
+    assert log(n_drop_g) < MAX_EPOCHS + 1
+    n_epochs_g = n_decl_g * n_drop_g
     assert log(n_epochs_g) < MAX_EPOCHS + 1
     assert log(n_sphincs_g) < MAX_KEYS
     assert log(n_sdup_g) < MAX_KEYS
@@ -3152,9 +3160,7 @@ def main():
         nxt[GEN ** 2] = state[GEN ** 2] * grp[5]
     geo_end = geo * (n_epochs_g ** 4)
     xmss_slots_g = geo_end[1]
-    n_xmss_g = geo_end[GEN]
     n_raw_x_g = geo_end[GEN ** 2]
-    assert n_xmss_g * n_sphincs_g != 1  # a signer set is never empty
     sphincs_slots_g = n_sphincs_g * n_sdup_g
     # The sum of every region bounds the coverage indices, so it is what has to sit
     # below the minimum memory size.
@@ -3189,14 +3195,17 @@ def main():
     # The run the set's hash covers: the tag block with both lengths, a block for the
     # SPHINCS list's digest, then two a group. Eight cells a group, so a group's
     # header and its key digest are one block each.
-    signers_run = HeapBuf(n_epochs_g ** 8 * GEN ** 8)
+    signers_run = HeapBuf(n_decl_g ** 8 * GEN ** 8)
     signers_run[1] = SIGNERS_TAG_0
     signers_run[GEN] = SIGNERS_TAG_1
-    signers_run[GEN ** 2] = n_epochs_g
+    signers_run[GEN ** 2] = n_decl_g
     signers_run[GEN ** 3] = n_sphincs_g
-    for xe in mul_range(1, n_epochs_g):
+    decl_keys = HeapBuf(n_decl_g * GEN)
+    decl_keys[GEN ** 0] = 1
+    for xe in mul_range(1, n_decl_g):
         n_keys = group_n_keys[xe]
         base = group_base[xe]
+        decl_keys[xe * GEN] = decl_keys[xe] * n_keys
         halves = StackBuf(2)
         hint_witness(halves, "pk_halves")
         assert log(halves[1]) < 2
@@ -3213,8 +3222,11 @@ def main():
         slot[GEN ** 5] = kd_1
         slot[GEN ** 6] = 0
         slot[GEN ** 7] = 0
-        # The duplicate slots ride the same table but outside the hashed prefix,
-        # past the group's declared keys.
+    # The duplicate slots ride the same table but outside the hashed prefix, past
+    # each group's declared keys. Over the whole table: a dropped group has only these.
+    for xe in mul_range(1, n_epochs_g):
+        n_keys = group_n_keys[xe]
+        base = group_base[xe]
         dup_ptr = xmss_table * (base * base * n_keys * n_keys)
         for xd in mul_range(1, group_n_dups[xe]):
             dup = dup_ptr * (xd * xd)
@@ -3224,7 +3236,10 @@ def main():
     signers_run[GEN ** 5] = sp_1
     signers_run[GEN ** 6] = 0
     signers_run[GEN ** 7] = 0
-    set_0, set_1 = signer_set_digest(signers_run, n_epochs_g, g_squares)
+    # Over the declared prefix, since a dropped group's count is advice. Ahead of
+    # `cover` below, so it also rules out a zero-slot table.
+    assert decl_keys[n_decl_g] * n_sphincs_g != 1  # a signer set is never empty
+    set_0, set_1 = signer_set_digest(signers_run, n_decl_g, g_squares)
     signers_hash = HeapBuf(WORDS_PER_BLOCK)
     signers_hash[1] = set_0
     signers_hash[GEN] = set_1

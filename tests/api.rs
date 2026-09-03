@@ -32,9 +32,9 @@ fn public_api_end_to_end() {
     }
 
     // 3. Two leaves, then a root over both. The leaves carry different epochs and the root's groups are their union.
-    let left = aggregate(&[], xmss_input[..4].to_vec(), sphincs_input[..1].to_vec(), 2).unwrap();
-    let right = aggregate(&[], xmss_input[4..7].to_vec(), sphincs_input[1..].to_vec(), 2).unwrap();
-    let root = aggregate(&[left, right], xmss_input[7..].to_vec(), vec![], 2).unwrap();
+    let left = aggregate(&[], xmss_input[..4].to_vec(), sphincs_input[..1].to_vec(), None, 2).unwrap();
+    let right = aggregate(&[], xmss_input[4..7].to_vec(), sphincs_input[1..].to_vec(), None, 2).unwrap();
+    let root = aggregate(&[left, right], xmss_input[7..].to_vec(), vec![], None, 2).unwrap();
     assert_eq!(root.num_total_sigs(), 11);
 
     // 4. Onto the wire, and back to a receiver, which checks the statement itself:
@@ -44,4 +44,18 @@ fn public_api_end_to_end() {
     received.verify().unwrap();
     let pairs: Vec<_> = received.xmss_signers().iter().map(|(e, m, _)| (*e, *m)).collect();
     assert_eq!(pairs, vec![(EPOCH_0, MSG_0), (EPOCH_1, MSG_1), (EPOCH_2, MSG_2)]);
+
+    // 5. Removing some signatures from the aggregate: `declare` is what we keep. Here the first epoch group goes whole.
+    let mut groups = received.xmss_signers().to_vec();
+    let mut sphincs_signers = received.sphincs_signers().to_vec();
+    let dropped_group = groups.remove(0);
+    let dropped_signer = sphincs_signers.remove(0);
+    let narrowed = aggregate(&[received], vec![], vec![], Some(&(groups, sphincs_signers)), 2).unwrap();
+    narrowed.verify().unwrap();
+    assert_eq!(narrowed.num_total_sigs(), 11 - dropped_group.2.len() - 1);
+    assert!(
+        !narrowed.xmss_signers().contains(&dropped_group),
+        "unpublished, epoch and message included"
+    );
+    assert!(!narrowed.sphincs_signers().contains(&dropped_signer));
 }

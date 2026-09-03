@@ -16,7 +16,12 @@
 //! SPHINCS, so the one range check a write already needs also keeps a
 //! signature off another group's declared keys, of either scheme: that is what
 //! makes the published split mean which scheme verified which key against
-//! which `(epoch, message)`, at every level of the tree. A child's groups need
+//! which `(epoch, message)`, at every level of the tree.
+//!
+//! A duplicate slot sits outside the prefix the digest hashes, so a key in one is
+//! covered and not claimed. `aggregate`'s `declare` rests on that, the table also
+//! holding undeclared groups so a whole `(epoch, message)` can go unpublished.
+//! A child's groups need
 //! not equal its parent's: a hinted map, checked by the guest, ties each
 //! non-empty child group to a parent group with the same epoch and message,
 //! so a parent's list is the union of what sits below it. An XMSS slot holds the
@@ -40,7 +45,7 @@
 
 use bincode::Options as _;
 use pcs::whir::{MAX_LOG_INV_RATE, MIN_LOG_INV_RATE};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use lean_compiler::{compile, parse_with_replacements};
@@ -468,8 +473,11 @@ pub enum AggregationError {
     TooManyEpochs,
     /// A child aggregate does not verify.
     InvalidChild(AggregateVerifyError),
-    /// Nothing to aggregate: no raw signatures and no children.
+    /// No signer set to publish: no contributions, or an empty declaration.
     Empty,
+    /// A declared claim is not one the contributions cover. A claim is a key, an
+    /// epoch and a message, so another epoch or another message is another claim.
+    NotCovered,
     /// A raw signature's randomness does not decode to a target-sum encoding,
     /// so there is no witness to build for it.
     MalformedRawSignature,
@@ -503,7 +511,8 @@ impl std::fmt::Display for AggregationError {
             Self::ConflictingMessages => write!(f, "two claims at one epoch carry different messages"),
             Self::TooManyEpochs => write!(f, "more than MAX_EPOCHS ({MAX_EPOCHS}) epochs"),
             Self::InvalidChild(_) => write!(f, "invalid child aggregate"),
-            Self::Empty => write!(f, "nothing to aggregate"),
+            Self::Empty => write!(f, "no signer set to publish"),
+            Self::NotCovered => write!(f, "a declared claim is not covered by the children and raw signatures"),
             Self::MalformedRawSignature => write!(f, "a raw signature does not decode to a target-sum encoding"),
             Self::TooLarge => {
                 write!(
@@ -1649,13 +1658,14 @@ impl Hints {
 /// | slots | holds |
 /// | --- | --- |
 /// | `[0, n_0 + d_0)` | epoch group 0: declared keys, then duplicates |
-/// | ... | one such region per group, in epoch order |
+/// | ... | one such region per declared group, in epoch order |
+/// | ... | then one per covered-but-undeclared group, all duplicates |
 /// | `[X, X + n_sphincs)` | the declared SPHINCS keys |
 /// | `[X + n_sphincs, n_total)` | SPHINCS duplicate slots |
 ///
-/// with `X` the sum of every group's slots. A key first seen takes its slot in
-/// its group's declared set; one seen again takes a fresh duplicate slot in the
-/// same region, so the walk hits every one of the `n_total` slots exactly once.
+/// with `X` the sum of every group's slots. A key the declared set holds takes its
+/// slot there, one it does not takes a fresh duplicate slot in the same region, so
+/// the walk hits every one of the `n_total` slots exactly once.
 /// That bijection, enforced in-circuit by write-once memory plus the final
 /// count, is what makes every declared key covered by a real signature or a
 /// verified child.
@@ -1665,14 +1675,19 @@ impl Hints {
 /// region's size, one range check per write, so no signature can reach a key
 /// declared under another epoch or the other scheme.
 struct Coverage {
-    /// The declared XMSS groups, in statement order.
-    xmss_signers: Vec<XmssGroup>,
-    /// One duplicate list per group, aligned with `xmss_signers`.
+    /// Declared groups in statement order, then undeclared ones, all duplicates.
+    xmss_groups: Vec<XmssGroup>,
+    /// How many of `xmss_groups` the signer set declares.
+    n_declared: usize,
+    /// One duplicate list per group, aligned with `xmss_groups`.
     xmss_dups: Vec<Vec<XmssPublicKey>>,
     sphincs_signers: Vec<SphincsSigner>,
     sphincs_dups: Vec<SphincsSigner>,
-    /// Offsets within each raw signature's own group region, in raw walk order.
+    /// Offsets within each raw signature's own group region, indexed as `raw_xmss`.
     raw_xmss: Vec<usize>,
+    /// `raw_xmss` indices in the guest's walk order: it walks the table, whose
+    /// groups are declared-first rather than epoch-sorted.
+    raw_walk: Vec<usize>,
     /// Offsets past `X`, in the SPHINCS region.
     raw_sphincs: Vec<usize>,
     /// Per child, per child group: the parent group it maps to, and the offset
@@ -1682,8 +1697,12 @@ struct Coverage {
 }
 
 impl Coverage {
+    fn declared(&self) -> &[XmssGroup] {
+        &self.xmss_groups[..self.n_declared]
+    }
+
     fn n_keys(&self) -> usize {
-        self.xmss_signers.iter().map(|(_, _, keys)| keys.len()).sum::<usize>() + self.sphincs_signers.len()
+        self.xmss_groups.iter().map(|(_, _, keys)| keys.len()).sum::<usize>() + self.sphincs_signers.len()
     }
 
     fn n_total(&self) -> usize {
@@ -1692,15 +1711,18 @@ impl Coverage {
 }
 
 /// The slot a key takes within its own scheme's region: its position in the
-/// declared list the first time, a fresh duplicate slot past that list after.
+/// declared list, or a fresh duplicate slot past it if the list does not declare
+/// the key. A duplicate slot is outside the hashed prefix: covered, not claimed.
 fn take_slot<K: Ord + Clone>(keys: &[K], claimed: &mut [bool], duplicates: &mut Vec<K>, pk: &K) -> usize {
-    let pos = keys.binary_search(pk).expect("every covered key is in the union");
-    if claimed[pos] {
-        duplicates.push(pk.clone());
-        keys.len() + duplicates.len() - 1
-    } else {
-        claimed[pos] = true;
-        pos
+    match keys.binary_search(pk) {
+        Ok(pos) if !claimed[pos] => {
+            claimed[pos] = true;
+            pos
+        }
+        _ => {
+            duplicates.push(pk.clone());
+            keys.len() + duplicates.len() - 1
+        }
     }
 }
 
@@ -1721,6 +1743,7 @@ fn plan_coverage(
     raw_xmss: &[(XmssPublicKey, xmss::Epoch, xmss::Message)],
     raw_sphincs: &[SphincsSigner],
     children: &[AggregateSignature],
+    declare: Option<&WireKeys>,
 ) -> Result<Coverage, AggregationError> {
     // The union, as `(epoch, key)` claims plus the epoch-to-message function
     // every contributor must agree on, then grouped: consecutive equal epochs
@@ -1747,33 +1770,69 @@ fn plan_coverage(
     if claims.is_empty() && sphincs_signers.is_empty() {
         return Err(AggregationError::Empty);
     }
-    let mut xmss_signers: Vec<XmssGroup> = Vec::new();
+    let mut union_groups: Vec<XmssGroup> = Vec::new();
     for (epoch, pk) in claims {
-        match xmss_signers.last_mut() {
+        match union_groups.last_mut() {
             Some((last, _, keys)) if *last == epoch => keys.push(pk),
-            _ => xmss_signers.push((epoch, messages[&epoch], vec![pk])),
+            _ => union_groups.push((epoch, messages[&epoch], vec![pk])),
         }
     }
-    if xmss_signers.len() > MAX_EPOCHS {
+    // Groups the declaration holds nothing of go last, so the declared ones are the
+    // prefix the digest hashes. Claims are struck off, so leftovers are uncovered.
+    let mut wanted: BTreeSet<(xmss::Epoch, XmssPublicKey)> = BTreeSet::new();
+    let mut wanted_sphincs: BTreeSet<SphincsSigner> = BTreeSet::new();
+    if let Some((groups, signers)) = declare {
+        for (epoch, message, keys) in groups {
+            if messages.get(epoch) != Some(message) {
+                return Err(AggregationError::NotCovered);
+            }
+            wanted.extend(keys.iter().map(|key| (*epoch, key.clone())));
+        }
+        wanted_sphincs.extend(signers.iter().copied());
+    }
+    let mut xmss_groups: Vec<XmssGroup> = Vec::new();
+    let mut covered_only: Vec<XmssGroup> = Vec::new();
+    for (epoch, message, keys) in union_groups {
+        let declared: Vec<XmssPublicKey> = keys
+            .into_iter()
+            .filter(|key| declare.is_none() || wanted.remove(&(epoch, key.clone())))
+            .collect();
+        if declared.is_empty() {
+            covered_only.push((epoch, message, Vec::new()));
+        } else {
+            xmss_groups.push((epoch, message, declared));
+        }
+    }
+    let n_declared = xmss_groups.len();
+    xmss_groups.append(&mut covered_only);
+    if xmss_groups.len() > MAX_EPOCHS {
         return Err(AggregationError::TooManyEpochs);
     }
-    let group_of = |epoch: xmss::Epoch, groups: &[XmssGroup]| {
-        groups
-            .binary_search_by_key(&epoch, |(e, _, _)| *e)
-            .expect("every covered epoch is a group")
-    };
-    let mut xmss_claimed: Vec<Vec<bool>> = xmss_signers
+    if declare.is_some() {
+        sphincs_signers.retain(|signer| wanted_sphincs.remove(signer));
+        if !wanted.is_empty() || !wanted_sphincs.is_empty() {
+            return Err(AggregationError::NotCovered);
+        }
+    }
+    if n_declared == 0 && sphincs_signers.is_empty() {
+        return Err(AggregationError::Empty);
+    }
+    // The table is no longer sorted by epoch.
+    let region_of: BTreeMap<xmss::Epoch, usize> = xmss_groups
         .iter()
-        .map(|(_, _, keys)| vec![false; keys.len()])
+        .enumerate()
+        .map(|(j, (epoch, _, _))| (*epoch, j))
         .collect();
-    let mut xmss_dups: Vec<Vec<XmssPublicKey>> = vec![Vec::new(); xmss_signers.len()];
+    let group_of = |epoch: xmss::Epoch, _: &[XmssGroup]| region_of[&epoch];
+    let mut xmss_claimed: Vec<Vec<bool>> = xmss_groups.iter().map(|(_, _, keys)| vec![false; keys.len()]).collect();
+    let mut xmss_dups: Vec<Vec<XmssPublicKey>> = vec![Vec::new(); xmss_groups.len()];
     let mut sphincs_claimed = vec![false; sphincs_signers.len()];
     let mut sphincs_dups = Vec::new();
     let raw_xmss_slots: Vec<usize> = raw_xmss
         .iter()
         .map(|(pk, epoch, _)| {
-            let g = group_of(*epoch, &xmss_signers);
-            take_slot(&xmss_signers[g].2, &mut xmss_claimed[g], &mut xmss_dups[g], pk)
+            let g = group_of(*epoch, &xmss_groups);
+            take_slot(&xmss_groups[g].2, &mut xmss_claimed[g], &mut xmss_dups[g], pk)
         })
         .collect();
     let raw_sphincs_slots: Vec<usize> = raw_sphincs
@@ -1788,10 +1847,10 @@ fn plan_coverage(
                 .xmss_signers
                 .iter()
                 .map(|(epoch, _, keys)| {
-                    let g = group_of(*epoch, &xmss_signers);
+                    let g = group_of(*epoch, &xmss_groups);
                     let offsets = keys
                         .iter()
-                        .map(|pk| take_slot(&xmss_signers[g].2, &mut xmss_claimed[g], &mut xmss_dups[g], pk))
+                        .map(|pk| take_slot(&xmss_groups[g].2, &mut xmss_claimed[g], &mut xmss_dups[g], pk))
                         .collect();
                     (g, offsets)
                 })
@@ -1805,12 +1864,17 @@ fn plan_coverage(
                 .collect(),
         );
     }
+    // Stable, so signatures within a group keep the order their slots were taken in.
+    let mut raw_walk: Vec<usize> = (0..raw_xmss.len()).collect();
+    raw_walk.sort_by_key(|&i| region_of[&raw_xmss[i].1]);
     let cover = Coverage {
-        xmss_signers,
+        xmss_groups,
+        n_declared,
         xmss_dups,
         sphincs_signers,
         sphincs_dups,
         raw_xmss: raw_xmss_slots,
+        raw_walk,
         raw_sphincs: raw_sphincs_slots,
         child_xmss,
         child_sphincs,
@@ -1899,6 +1963,8 @@ fn push_sphincs_hints(
 /// - `raw_xmss`: list of `(public_key, epoch, message, signature)`, any order; one message per
 ///   epoch across the whole result, at most [`MAX_EPOCHS`] epochs.
 /// - `raw_sphincs`: list of `(public_key, message, signature)`, any order.
+/// - `declare`: only useful to remove signatures the children carry, in which case pass `Some` of
+///   the signatures to keep, a subset of the ones being aggregated. `None` keeps them all.
 /// - `log_inv_rate`: PCS code rate `2^-log_inv_rate`, higher `log_inv_rate` means a smaller proof
 ///   but slower proving; in [`MIN_LOG_INV_RATE`]..=[`MAX_LOG_INV_RATE`].
 ///
@@ -1914,9 +1980,10 @@ pub fn aggregate(
     children: &[AggregateSignature],
     raw_xmss: Vec<(XmssPublicKey, xmss::Epoch, xmss::Message, XmssSignature)>,
     raw_sphincs: Vec<(SphincsPublicKey, sphincs::Message, SphincsSignature)>,
+    declare: Option<&WireKeys>,
     log_inv_rate: usize,
 ) -> Result<AggregateSignature, AggregationError> {
-    aggregate_with_stats(children, raw_xmss, raw_sphincs, log_inv_rate).map(|(sig, _)| sig)
+    aggregate_with_stats(children, raw_xmss, raw_sphincs, declare, log_inv_rate).map(|(sig, _)| sig)
 }
 
 /// [`aggregate`], keeping the prover statistics the benchmark reports.
@@ -1924,9 +1991,10 @@ pub(crate) fn aggregate_with_stats(
     children: &[AggregateSignature],
     raw_xmss: Vec<(XmssPublicKey, xmss::Epoch, xmss::Message, XmssSignature)>,
     raw_sphincs: Vec<(SphincsPublicKey, sphincs::Message, SphincsSignature)>,
+    declare: Option<&WireKeys>,
     log_inv_rate: usize,
 ) -> Result<(AggregateSignature, lean_vm::cpu::Stats), AggregationError> {
-    aggregate_tampered(children, raw_xmss, raw_sphincs, log_inv_rate, |_| {})
+    aggregate_tampered(children, raw_xmss, raw_sphincs, declare, log_inv_rate, |_| {})
 }
 
 /// [`aggregate`], with a hook to corrupt the witness before proving.
@@ -1939,6 +2007,7 @@ pub(crate) fn aggregate_tampered(
     children: &[AggregateSignature],
     raw_xmss: Vec<(XmssPublicKey, xmss::Epoch, xmss::Message, XmssSignature)>,
     raw_sphincs: Vec<(SphincsPublicKey, sphincs::Message, SphincsSignature)>,
+    declare: Option<&WireKeys>,
     log_inv_rate: usize,
     tamper: impl FnOnce(&mut Hints),
 ) -> Result<(AggregateSignature, lean_vm::cpu::Stats), AggregationError> {
@@ -1950,9 +2019,10 @@ pub(crate) fn aggregate_tampered(
         return Err(AggregationError::TooLarge);
     }
     let guest = unified_guest();
-    // Sorted by `(epoch, key)`, the guest's group-major walk order. Dedup is
-    // on the whole triple, so one `(epoch, key)` under two messages reaches
-    // `plan_coverage`, whose message binding rejects it.
+    // Sorted by `(epoch, key)` to group them; `Coverage::raw_walk` then puts the
+    // groups in the guest's order. Dedup is on the whole triple, so one
+    // `(epoch, key)` under two messages reaches `plan_coverage`, whose message
+    // binding rejects it.
     let mut raw_xmss = raw_xmss;
     raw_xmss.sort_by(|(a, ae, _, _), (b, be, _, _)| (ae, a).cmp(&(be, b)));
     raw_xmss.dedup_by(|(a, ae, am, _), (b, be, bm, _)| ae == be && a == b && am == bm);
@@ -1985,7 +2055,7 @@ pub(crate) fn aggregate_tampered(
         .map(|(pk, epoch, message, _)| (pk.clone(), *epoch, *message))
         .collect();
     let raw_sphincs_keys: Vec<SphincsSigner> = raw_sphincs.iter().map(|(pk, message, _)| (*pk, *message)).collect();
-    let cover = plan_coverage(&raw_xmss_claims, &raw_sphincs_keys, children)?;
+    let cover = plan_coverage(&raw_xmss_claims, &raw_sphincs_keys, children, declare)?;
     let n_sphincs = cover.sphincs_signers.len();
     let group_cells = |(epoch, message, _): &XmssGroup| {
         [
@@ -1999,7 +2069,8 @@ pub(crate) fn aggregate_tampered(
     hints.push(
         "meta",
         vec![
-            count(cover.xmss_signers.len()),
+            count(cover.n_declared),
+            count(cover.xmss_groups.len() - cover.n_declared),
             count(n_sphincs),
             count(cover.sphincs_dups.len()),
             count(raw_sphincs.len()),
@@ -2013,7 +2084,7 @@ pub(crate) fn aggregate_tampered(
     // then ride two per `pubkeys` entry, so the guest can halve its loop
     // frames, the odd key out on a final one-key entry; each group's
     // duplicates follow its keys.
-    for (j, group) in cover.xmss_signers.iter().enumerate() {
+    for (j, group) in cover.xmss_groups.iter().enumerate() {
         let (epoch, _, keys) = group;
         let mut entry = group_cells(group).to_vec();
         entry.extend([
@@ -2023,7 +2094,7 @@ pub(crate) fn aggregate_tampered(
         ]);
         hints.push("group", entry);
     }
-    for (j, (_, _, keys)) in cover.xmss_signers.iter().enumerate() {
+    for (_, _, keys) in cover.declared() {
         hints.push("pk_halves", vec![count(keys.len() / 2), count(keys.len() % 2)]);
         hints.push("signers_split", signers_split(keys.len().div_ceil(2)));
         for pair in keys.chunks(2) {
@@ -2033,24 +2104,28 @@ pub(crate) fn aggregate_tampered(
             }
             hints.push("pubkeys", entry);
         }
-        for pk in &cover.xmss_dups[j] {
+    }
+    for dups in &cover.xmss_dups {
+        for pk in dups {
             hints.push("dup_pubkeys", key_cells(pk).to_vec());
         }
     }
     if !cover.sphincs_signers.is_empty() {
         hints.push("signers_split", signers_split(cover.sphincs_signers.len()));
     }
-    hints.push("signers_split", signers_split(2 + 2 * cover.xmss_signers.len()));
+    hints.push("signers_split", signers_split(2 + 2 * cover.n_declared));
     for signer in &cover.sphincs_signers {
         hints.push("sphincs_signers", sphincs_signer_cells(signer).to_vec());
     }
     for signer in &cover.sphincs_dups {
         hints.push("dup_sphincs", sphincs_signer_cells(signer).to_vec());
     }
-    // Group-major, as the raw list is sorted: each index is an offset within
+    // Group-major over the table, not over the epochs `raw_xmss` is sorted by: a
+    // declaration puts the undeclared groups last. Each index is an offset within
     // the signature's own group region.
-    for (&idx, (pk, epoch, message, sig)) in cover.raw_xmss.iter().zip(&raw_xmss) {
-        hints.push("raw_index", vec![count(idx)]);
+    for &i in &cover.raw_walk {
+        let (pk, epoch, message, sig) = &raw_xmss[i];
+        hints.push("raw_index", vec![count(cover.raw_xmss[i])]);
         push_signature_hints(&mut hints, pk, sig, message, *epoch)?;
     }
     // A SPHINCS slot is hinted as an offset into the SPHINCS region, which is
@@ -2113,7 +2188,7 @@ pub(crate) fn aggregate_tampered(
         reduced
     };
 
-    let public_input = statement_digest(signers_hash(&cover.xmss_signers, &cover.sphincs_signers), &defer);
+    let public_input = statement_digest(signers_hash(cover.declared(), &cover.sphincs_signers), &defer);
     let mut program = guest.clone();
     // Every aggregate is a potential child, and the guest has no opening arm below
     // `2^MU_MIN`. A run smaller than that (a leaf of a few dozen signatures) grows
@@ -2124,7 +2199,7 @@ pub(crate) fn aggregate_tampered(
     let (proof, stats) = prove(&program, public_input, log_inv_rate);
     Ok((
         AggregateSignature {
-            xmss_signers: cover.xmss_signers,
+            xmss_signers: cover.declared().to_vec(),
             sphincs_signers: cover.sphincs_signers,
             defer,
             proof,
@@ -2970,33 +3045,33 @@ mod tests {
             check_signer_set(&spread(MAX_EPOCHS + 1), &[]),
             Err(AggregateVerifyError::MalformedSignerSet)
         );
-        plan_coverage(&claims(&full[..MAX_KEYS - 1]), &[], &[]).expect("one short of the cap");
+        plan_coverage(&claims(&full[..MAX_KEYS - 1]), &[], &[], None).expect("one short of the cap");
         assert_eq!(
-            plan_coverage(&claims(&full), &[], &[]).err(),
+            plan_coverage(&claims(&full), &[], &[], None).err(),
             Some(AggregationError::TooLarge)
         );
         assert_eq!(
-            plan_coverage(&claims(&full[..MAX_KEYS - 1]), &claim, &[]).err(),
+            plan_coverage(&claims(&full[..MAX_KEYS - 1]), &claim, &[], None).err(),
             Some(AggregationError::TooLarge)
         );
         let spread_claims = |n: usize| -> Vec<(XmssPublicKey, xmss::Epoch, xmss::Message)> {
             (0..n).map(|e| (full[e].clone(), e as u32, message())).collect()
         };
-        plan_coverage(&spread_claims(MAX_EPOCHS), &[], &[]).expect("at the epoch cap");
+        plan_coverage(&spread_claims(MAX_EPOCHS), &[], &[], None).expect("at the epoch cap");
         assert_eq!(
-            plan_coverage(&spread_claims(MAX_EPOCHS + 1), &[], &[]).err(),
+            plan_coverage(&spread_claims(MAX_EPOCHS + 1), &[], &[], None).err(),
             Some(AggregationError::TooManyEpochs)
         );
     }
 
     fn prove_leaf(signers: &[(XmssPublicKey, XmssSignature)]) -> AggregateSignature {
-        aggregate(&[], at_epoch(signers, XMSS_EPOCH_A), vec![], LOG_INV_RATE).expect("leaf aggregates")
+        aggregate(&[], at_epoch(signers, XMSS_EPOCH_A), vec![], None, LOG_INV_RATE).expect("leaf aggregates")
     }
 
     type RawSphincs = (SphincsPublicKey, sphincs::Message, SphincsSignature);
 
     fn prove_sphincs_leaf(signers: &[RawSphincs]) -> AggregateSignature {
-        aggregate(&[], vec![], signers.to_vec(), LOG_INV_RATE).expect("leaf aggregates")
+        aggregate(&[], vec![], signers.to_vec(), None, LOG_INV_RATE).expect("leaf aggregates")
     }
 
     #[test]
@@ -3027,6 +3102,7 @@ mod tests {
             &[],
             at_epoch(&get_signers(3), XMSS_EPOCH_A),
             get_sphincs_signers(3),
+            None,
             LOG_INV_RATE,
         )
         .expect("leaf aggregates");
@@ -3043,11 +3119,11 @@ mod tests {
         let xmss = get_signers(6);
         let sphincs = get_sphincs_signers(4);
         let leaf = |x: &[(XmssPublicKey, XmssSignature)], s: &[RawSphincs]| {
-            aggregate(&[], at_epoch(x, XMSS_EPOCH_A), s.to_vec(), LOG_INV_RATE).expect("leaf aggregates")
+            aggregate(&[], at_epoch(x, XMSS_EPOCH_A), s.to_vec(), None, LOG_INV_RATE).expect("leaf aggregates")
         };
         let left = leaf(&xmss[..4], &sphincs[..3]);
         let right = leaf(&xmss[3..], &sphincs[2..]);
-        let node = aggregate(&[left, right], vec![], vec![], LOG_INV_RATE).expect("node aggregates");
+        let node = aggregate(&[left, right], vec![], vec![], None, LOG_INV_RATE).expect("node aggregates");
         node.verify().expect("node verifies");
         assert_eq!((xmss_claims(&node), node.sphincs_signers.len()), (6, 4));
         assert!(node.xmss_signers[0].2.windows(2).all(|w| w[0] < w[1]));
@@ -3063,7 +3139,8 @@ mod tests {
         lean_vm::init_prover_pool();
         let xmss_child = prove_leaf(&get_signers(3));
         let sphincs_child = prove_sphincs_leaf(&get_sphincs_signers(2));
-        let node = aggregate(&[xmss_child, sphincs_child], vec![], vec![], LOG_INV_RATE).expect("node aggregates");
+        let node =
+            aggregate(&[xmss_child, sphincs_child], vec![], vec![], None, LOG_INV_RATE).expect("node aggregates");
         node.verify().expect("node verifies");
         assert_eq!((xmss_claims(&node), node.sphincs_signers.len()), (3, 2));
     }
@@ -3104,7 +3181,7 @@ mod tests {
         let signers = get_signers(SMALL_LEAF_SIZE + big);
         let left = prove_leaf(&signers[..SMALL_LEAF_SIZE]);
         let right = prove_leaf(&signers[SMALL_LEAF_SIZE..]);
-        let node = aggregate(&[left, right], vec![], vec![], LOG_INV_RATE).expect("node aggregates");
+        let node = aggregate(&[left, right], vec![], vec![], None, LOG_INV_RATE).expect("node aggregates");
         node.verify().expect("node verifies");
         assert_eq!(xmss_claims(&node), SMALL_LEAF_SIZE + big);
     }
@@ -3132,10 +3209,103 @@ mod tests {
                 (public_key, epoch, message_for(epoch), signature)
             })
             .collect();
-        let leaf = aggregate(&[], raw, vec![], LOG_INV_RATE).expect("many-group leaf aggregates");
+        let leaf = aggregate(&[], raw, vec![], None, LOG_INV_RATE).expect("many-group leaf aggregates");
         leaf.verify().expect("it verifies");
         assert_eq!(leaf.xmss_signers.len(), groups);
         assert!(leaf.xmss_signers.iter().all(|(_, _, keys)| keys.len() == 1));
+    }
+
+    /// A whole `(epoch, message)` needs the table's undeclared groups; keys of a group
+    /// that stays need only its duplicate slots. The first narrowing does one, the
+    /// second both.
+    #[test]
+    fn a_node_may_publish_less_than_it_covers() {
+        lean_vm::init_prover_pool();
+        let at_a = get_signers(3);
+        let at_b = get_signers_at(2, XMSS_EPOCH_B);
+        let mut raw = at_epoch(&at_a, XMSS_EPOCH_A);
+        raw.extend(at_epoch(&at_b, XMSS_EPOCH_B));
+        let wide = aggregate(&[], raw, vec![], None, LOG_INV_RATE).expect("the wide leaf aggregates");
+        wide.verify().expect("the wide leaf verifies");
+        assert_eq!(wide.xmss_signers.len(), 2);
+        assert_eq!(xmss_claims(&wide), 5);
+
+        let narrowed = |wide: &AggregateSignature, declare: &WireKeys| {
+            aggregate(std::slice::from_ref(wide), vec![], vec![], Some(declare), LOG_INV_RATE)
+        };
+        let (group_a, group_b) = (wide.xmss_signers[0].clone(), wide.xmss_signers[1].clone());
+
+        // One group declared: the other's epoch and message go with it.
+        let narrow = narrowed(&wide, &(vec![group_b.clone()], vec![])).expect("narrows to one group");
+        narrow.verify().expect("the one-group narrowing verifies");
+        assert_eq!(narrow.xmss_signers, vec![group_b.clone()]);
+
+        // One key of one group: B goes whole, A keeps one of three.
+        let one_of_a = (XMSS_EPOCH_A, message(), vec![group_a.2[0].clone()]);
+        let part = narrowed(&wide, &(vec![one_of_a.clone()], vec![])).expect("narrows to one key");
+        part.verify().expect("the one-key narrowing verifies");
+        assert_eq!(part.xmss_signers, vec![one_of_a]);
+
+        assert_eq!(
+            narrowed(&wide, &(vec![], vec![])).err(),
+            Some(AggregationError::Empty),
+            "a declaration has to publish something"
+        );
+        // A key A holds and B does not, declared at B: the cache reuses keys.
+        let only_at_a = group_a
+            .2
+            .iter()
+            .find(|key| !group_b.2.contains(key))
+            .expect("A holds a key B does not")
+            .clone();
+        assert_eq!(
+            narrowed(
+                &wide,
+                &(vec![(XMSS_EPOCH_B, message_for(XMSS_EPOCH_B), vec![only_at_a])], vec![])
+            )
+            .err(),
+            Some(AggregationError::NotCovered)
+        );
+        // A covered key, against another message.
+        assert_eq!(
+            narrowed(
+                &wide,
+                &(
+                    vec![(XMSS_EPOCH_A, message_for(XMSS_EPOCH_B), group_a.2.clone())],
+                    vec![]
+                )
+            )
+            .err(),
+            Some(AggregationError::NotCovered)
+        );
+
+        // Putting the group back is a different signer set, whatever it covered.
+        let mut rewidened = narrow.clone();
+        rewidened.xmss_signers.insert(0, wide.xmss_signers[0].clone());
+        assert!(
+            rewidened.verify().is_err(),
+            "a split may not be re-widened after the fact"
+        );
+    }
+
+    /// The guest walks raw signatures group by group over the table, and a
+    /// declaration puts the undeclared groups last, so the table stops agreeing with
+    /// the epoch order `raw_xmss` is sorted by. Declaring only the HIGHER epoch is
+    /// what separates the two: the table becomes [B, A] while the raw stream starts
+    /// with A, and a signature verified against the wrong group's tweaks fails.
+    #[test]
+    fn raw_signatures_follow_the_table_not_the_epochs() {
+        lean_vm::init_prover_pool();
+        const _: () = assert!(XMSS_EPOCH_A < XMSS_EPOCH_B, "A must sort first for this to bite");
+        let a = get_signers(1);
+        let b = get_signers_at(1, XMSS_EPOCH_B);
+        let mut raw = at_epoch(&a, XMSS_EPOCH_A);
+        raw.extend(at_epoch(&b, XMSS_EPOCH_B));
+        let group_b = (XMSS_EPOCH_B, message_for(XMSS_EPOCH_B), vec![b[0].0.clone()]);
+        let sig = aggregate(&[], raw, vec![], Some(&(vec![group_b.clone()], vec![])), LOG_INV_RATE)
+            .expect("the narrowing leaf aggregates");
+        sig.verify().expect("it verifies");
+        assert_eq!(sig.xmss_signers, vec![group_b]);
     }
 
     #[test]
@@ -3144,10 +3314,10 @@ mod tests {
         let at_a = get_signers(4);
         let at_b = get_signers_at(2, XMSS_EPOCH_B);
         assert_eq!(at_a[0].0, at_b[0].0, "the cache reuses keys across epochs");
-        let left = aggregate(&[], at_epoch(&at_a[..3], XMSS_EPOCH_A), vec![], LOG_INV_RATE).expect("left");
+        let left = aggregate(&[], at_epoch(&at_a[..3], XMSS_EPOCH_A), vec![], None, LOG_INV_RATE).expect("left");
         let mut right_raw = at_epoch(&at_a[2..], XMSS_EPOCH_A);
         right_raw.extend(at_epoch(&at_b, XMSS_EPOCH_B));
-        let right = aggregate(&[], right_raw, vec![], LOG_INV_RATE).expect("right");
+        let right = aggregate(&[], right_raw, vec![], None, LOG_INV_RATE).expect("right");
         right.verify().expect("the two-epoch leaf verifies");
         // A claim at epoch A under B's message conflicts with `left`'s group:
         // within an aggregate the message is a function of the epoch.
@@ -3157,12 +3327,13 @@ mod tests {
                 std::slice::from_ref(&left),
                 vec![(pk, XMSS_EPOCH_A, message_for(XMSS_EPOCH_B), sig)],
                 vec![],
+                None,
                 LOG_INV_RATE,
             )
             .err(),
             Some(AggregationError::ConflictingMessages)
         );
-        let node = aggregate(&[left, right], vec![], vec![], LOG_INV_RATE).expect("node");
+        let node = aggregate(&[left, right], vec![], vec![], None, LOG_INV_RATE).expect("node");
         node.verify().expect("the two-epoch node verifies");
         let messages: Vec<xmss::Message> = node.xmss_signers.iter().map(|(_, message, _)| *message).collect();
         assert_eq!(messages, vec![message(), message_for(XMSS_EPOCH_B)]);
@@ -3205,7 +3376,7 @@ mod tests {
         let signers = get_signers(40);
         let left = prove_leaf(&signers[..25]);
         let right = prove_leaf(&signers[15..]);
-        let node = aggregate(&[left, right], vec![], vec![], LOG_INV_RATE).expect("node aggregates");
+        let node = aggregate(&[left, right], vec![], vec![], None, LOG_INV_RATE).expect("node aggregates");
         node.verify().expect("node verifies");
         assert_eq!(xmss_claims(&node), 40);
         assert!(node.xmss_signers[0].2.windows(2).all(|w| w[0] < w[1]));
@@ -3230,12 +3401,13 @@ mod tests {
                     XMSS_EPOCH_A,
                 ),
                 sphincs.to_vec(),
+                None,
                 LOG_INV_RATE,
             )
             .expect("leaf aggregates")
         };
         let node = |children: &[AggregateSignature]| {
-            aggregate(children, vec![], vec![], LOG_INV_RATE).expect("node aggregates")
+            aggregate(children, vec![], vec![], None, LOG_INV_RATE).expect("node aggregates")
         };
         // Claim 1 is under both nodes; claim 4 arrives raw at the root, and so
         // do two XMSS signatures at a second epoch, so the root holds a group
@@ -3246,6 +3418,7 @@ mod tests {
             &[left, right],
             at_epoch(&get_signers_at(2, XMSS_EPOCH_B), XMSS_EPOCH_B),
             claims[4..].to_vec(),
+            None,
             LOG_INV_RATE,
         )
         .expect("root aggregates");
@@ -3270,7 +3443,7 @@ mod tests {
         let right = prove_leaf(&signers[SMALL_LEAF_SIZE..]);
         // Mixed, so both published lists are non-empty and every tampering
         // below has a SPHINCS counterpart.
-        let node = aggregate(&[left, right], vec![], get_sphincs_signers(3), LOG_INV_RATE).expect("node");
+        let node = aggregate(&[left, right], vec![], get_sphincs_signers(3), None, LOG_INV_RATE).expect("node");
         node.verify().expect("the honest node verifies");
 
         assert_eq!(
@@ -3380,7 +3553,7 @@ mod tests {
                        description: &str,
                        tamper: &dyn Fn(&mut Hints)| {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                aggregate_tampered(children, raw_signatures, raw_sphincs, LOG_INV_RATE, |hints| {
+                aggregate_tampered(children, raw_signatures, raw_sphincs, None, LOG_INV_RATE, |hints| {
                     tamper(hints)
                 })
                 .map(|(signature, _)| signature.verify().is_ok())
@@ -3459,7 +3632,8 @@ mod tests {
         // groups' tweak tables cannot be swapped.
         let mut two_epoch_raw = at_epoch(&signers[..2], XMSS_EPOCH_A);
         two_epoch_raw.extend(at_epoch(&get_signers_at(1, XMSS_EPOCH_B), XMSS_EPOCH_B));
-        aggregate(&[], two_epoch_raw.clone(), vec![], LOG_INV_RATE).expect("the honest two-epoch leaf aggregates");
+        aggregate(&[], two_epoch_raw.clone(), vec![], None, LOG_INV_RATE)
+            .expect("the honest two-epoch leaf aggregates");
         let two_epoch_cases: &[Tamper] = &[
             (
                 "raw_index (an XMSS signature crossing into another epoch's region)",
@@ -3477,6 +3651,12 @@ mod tests {
                 h.entries("group")[0][3] = count(1);
                 h.entries("group")[1][3] = count(2);
             }),
+            // The declared count is advice: keep both table groups but hash only the
+            // first, while the statement still publishes both.
+            ("meta (a published group left out of the digest)", &|h: &mut Hints| {
+                h.entries("meta")[0][0] = count(1);
+                h.entries("meta")[0][1] = count(1);
+            }),
         ];
         for (description, tamper) in two_epoch_cases {
             rejects(&[], two_epoch_raw.clone(), vec![], description, *tamper);
@@ -3488,7 +3668,7 @@ mod tests {
         // other's declared key, which is what the statement's split claims.
         let mixed_xmss = at_epoch(&signers[..3], XMSS_EPOCH_A);
         let mixed_sphincs = get_sphincs_signers(2);
-        aggregate(&[], mixed_xmss.clone(), mixed_sphincs.clone(), LOG_INV_RATE)
+        aggregate(&[], mixed_xmss.clone(), mixed_sphincs.clone(), None, LOG_INV_RATE)
             .expect("the honest mixed leaf aggregates");
         let mixed_cases: &[Tamper] = &[
             (
@@ -3546,7 +3726,7 @@ mod tests {
         let left = prove_leaf(&signers[..SMALL_LEAF_SIZE]);
         let right = prove_leaf(&signers[SMALL_LEAF_SIZE..]);
         let children = vec![left, right];
-        aggregate(&children, vec![], vec![], LOG_INV_RATE).expect("the honest node aggregates");
+        aggregate(&children, vec![], vec![], None, LOG_INV_RATE).expect("the honest node aggregates");
         let node_cases: &[Tamper] = &[
             ("child_index (duplicate slot)", &|h: &mut Hints| {
                 let entries = h.entries("child_index");
@@ -3608,11 +3788,12 @@ mod tests {
                 &[],
                 at_epoch(&get_signers_at(2, XMSS_EPOCH_B), XMSS_EPOCH_B),
                 vec![],
+                None,
                 LOG_INV_RATE,
             )
             .expect("the honest epoch-B leaf aggregates"),
         ];
-        aggregate(&epoch_children, vec![], vec![], LOG_INV_RATE).expect("the honest two-epoch node aggregates");
+        aggregate(&epoch_children, vec![], vec![], None, LOG_INV_RATE).expect("the honest two-epoch node aggregates");
         let epoch_node_cases: &[Tamper] = &[
             // Pointing the second child's group at the parent's epoch-A region:
             // the epochs disagree, so the map equality fails.
@@ -3632,7 +3813,7 @@ mod tests {
         // the cases above do not reach them: these children carry claims.
         let sphincs = get_sphincs_signers(4);
         let mixed_child = |x: &[(XmssPublicKey, XmssSignature)], s: &[RawSphincs]| {
-            aggregate(&[], at_epoch(x, XMSS_EPOCH_A), s.to_vec(), LOG_INV_RATE)
+            aggregate(&[], at_epoch(x, XMSS_EPOCH_A), s.to_vec(), None, LOG_INV_RATE)
                 .expect("the honest mixed child aggregates")
         };
         let mixed_children = vec![
@@ -3663,7 +3844,7 @@ mod tests {
         let mut raw_signatures = at_epoch(&get_signers(3), XMSS_EPOCH_A);
         raw_signatures[1].3.wots_signature.chain_tips[0][0] ^= 1;
         let built = std::panic::catch_unwind(|| {
-            aggregate(&[], raw_signatures, vec![], LOG_INV_RATE).map(|signature| signature.verify().is_ok())
+            aggregate(&[], raw_signatures, vec![], None, LOG_INV_RATE).map(|signature| signature.verify().is_ok())
         });
         assert!(
             !matches!(built, Ok(Ok(true))),
@@ -3673,7 +3854,7 @@ mod tests {
         let mut raw_sphincs = get_sphincs_signers(2);
         raw_sphincs[1].2.ots[2][0][0] ^= 1;
         let built = std::panic::catch_unwind(|| {
-            aggregate(&[], vec![], raw_sphincs, LOG_INV_RATE).map(|signature| signature.verify().is_ok())
+            aggregate(&[], vec![], raw_sphincs, None, LOG_INV_RATE).map(|signature| signature.verify().is_ok())
         });
         assert!(
             !matches!(built, Ok(Ok(true))),
@@ -3715,7 +3896,7 @@ mod tests {
         );
         assert!(hints.0.is_empty());
         assert_eq!(
-            aggregate(&[], vec![(pk, XMSS_EPOCH_A, message, sig)], vec![], LOG_INV_RATE).err(),
+            aggregate(&[], vec![(pk, XMSS_EPOCH_A, message, sig)], vec![], None, LOG_INV_RATE).err(),
             Some(AggregationError::MalformedRawSignature)
         );
     }
@@ -3730,7 +3911,7 @@ mod tests {
         assert!(sphincs::verify(&public_key, &signed, &signature).is_err());
         let raw = vec![(public_key, signed, signature)];
         assert_eq!(
-            aggregate(&[], vec![], raw, LOG_INV_RATE).err(),
+            aggregate(&[], vec![], raw, None, LOG_INV_RATE).err(),
             Some(AggregationError::MalformedRawSignature)
         );
     }
