@@ -612,6 +612,8 @@ The final boundary arithmetic is now compiled independently of the remaining sem
 
 The two source residuals now have their finite ordinal aggregation compiled. Supported canonical sources contain at most `q` candidate snapshots, so both the delayed layer-root event and the non-root first-use event reduce to `Fin q` fixed-ordinal estimates and sum to `q * 2^-128` without enumerating `Position`. The remaining local probability work is exactly those two fixed-ordinal estimates; after they are connected to the existing five-unit diagnostic, only the granular-to-boundary semantic projection and terminal invocation remain.
 
+The non-root source residual is now closed at one unit per query. Erasing the canonical snapshot source recovers its witness-plan semantics, whose fixed first-use ordinal is dominated by the existing candidate-time non-root monitor. The root construction preserves the consistency needed by that monitor, and its established freshness theorem supplies the final one-query bound. The only unfinished source probability is now the fixed delayed layer-root ordinal.
+
 Two places a proof can go wrong, both found by attacking the claim rather than by reading it:
 
 - **A strong forgery needs no chain inversion.** `Ver` does not check that the counter is the least admissible one, so a second `c'` with `Enc(P,lay,tau,e,M,c') = x` reuses the chain values verbatim and verifies. Since the codeword fixes the digest, that is one `2^-128` hit per query and it is harmless, but it is a branch of its own: the one-time signature is unforgeable on a *new* message by incomparability, and unforgeable on the *signed* message only by collision resistance at `tw_enc`.
