@@ -677,7 +677,7 @@ theorem evalDist_directDelayedSelectedRootIndicator_eq_of_eventEq
                 rw [dif_neg hactualLeft, dif_neg hactualRight]
                 convert continueAfter
                   (runDirectResolvedWitnessFromTable context fuel table
-                    ((probingHashQueryAfterPlan parameter input plan).run cache))
+                    ((probingHashQueryAfterRootAwarePlan parameter input plan).run cache))
                   nextLeftSnapshots nextRightSnapshots nextLeftObservations nextRightObservations
                   hnextSelected hnextSelectedRight hnextSnapshots hnextTrace using 1 <;> rfl
       | inr message =>

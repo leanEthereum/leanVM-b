@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedRootAdministrative
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedRootAdaptiveRootAwarePrivate
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedChain
 
 /-!
@@ -2324,7 +2325,7 @@ theorem relTriple_indicator_observed_directDelayed
                   let leftStep : ProbComp (DirectWitnessResult
                       (HashOutput × SplitHashCache)) :=
                     runDirectResolvedWitnessFromTable left leftFuel table
-                      ((probingHashQueryAfterPlan parameter input plan).run leftCache)
+                      ((probingHashQueryAfterRootAwarePlan parameter input plan).run leftCache)
                   let rightStep : ProbComp (Option (ObservedCleanRunResult
                       (HashOutput × SplitHashCache))) :=
                     runObservedCleanFromTable observations right.state rightFuel table
@@ -2452,9 +2453,9 @@ theorem relTriple_indicator_observed_directDelayed
                             hcanonicalRun.context_le.leftCompletable
                           have hleftFuelSpent : leftFuel ≤ nextLeft.remaining + 1 :=
                             fuel_le_remaining_add_of_done_runDirectResolvedWitnessFromTable
-                              ((probingHashQueryAfterPlan parameter input plan).run leftCache) left
+                              ((probingHashQueryAfterRootAwarePlan parameter input plan).run leftCache) left
                               leftFuel table nextLeft 1
-                              (probingHashQueryAfterPlan_isProbeBound_one parameter input plan
+                              (probingHashQueryAfterRootAwarePlan_isProbeBound parameter input plan
                                 leftCache)
                               hleftSupport
                           have hrightFuelSpent : rightFuel ≤ nextRight.remaining + 1 := by
@@ -2467,10 +2468,10 @@ theorem relTriple_indicator_observed_directDelayed
                             simpa [observedResolvedResult] using hfuel
                           have hleftRemainingUpper : nextLeft.remaining ≤ leftFuel :=
                             remaining_le_fuel_of_done_runDirectResolvedDetailedFromTable
-                              ((probingHashQueryAfterPlan parameter input plan).run leftCache) left
+                              ((probingHashQueryAfterRootAwarePlan parameter input plan).run leftCache) left
                               leftFuel table nextLeft (by
                                 rw [← map_erase_runDirectResolvedWitnessFromTable
-                                  ((probingHashQueryAfterPlan parameter input plan).run leftCache)
+                                  ((probingHashQueryAfterRootAwarePlan parameter input plan).run leftCache)
                                   left leftFuel table, support_map]
                                 exact ⟨.done nextLeft, hleftSupport, rfl⟩)
                           have hnextTracked : CleanProbeObservationsTrackedBy actualNextObservations
@@ -2500,7 +2501,7 @@ theorem relTriple_indicator_observed_directDelayed
                             simpa [observedResolvedResult] using hremaining.trans_lt hbudget
                           have hnextBefore : SnapshotsBefore nextSnapshots canonical :=
                             ((hbefore.appendPlannedSnapshot candidate?).of_done_runDirectResolvedWitnessFromTable
-                              ((probingHashQueryAfterPlan parameter input plan).run leftCache) left
+                              ((probingHashQueryAfterRootAwarePlan parameter input plan).run leftCache) left
                               leftFuel table nextLeft hleftSupport).canonicalize_right table
                           have hnextCandidates : nextSnapshots.map PlannedProbeSnapshot.toProbe =
                               appendPlannedCandidate
@@ -2513,17 +2514,13 @@ theorem relTriple_indicator_observed_directDelayed
                             apply hleftCovered.mono_candidates
                             cases hcandidate' : candidate? <;>
                               simp [nextSnapshots, hcandidate', appendPlannedSnapshot]
-                          have hplanMem : ∀ candidate, plan.candidate? = some candidate →
+                          have hplanMem : ∀ candidate, candidate? = some candidate →
                               candidate ∈ nextSnapshots.map PlannedProbeSnapshot.toProbe := by
                             intro candidate hcandidate
                             rw [hnextCandidates]
-                            have hrecorded :=
-                              rootAwarePlannedCandidate?_eq_of_plan_some hcandidate
-                            have hcandidateRoot : candidate? = some candidate := by
-                              simpa [candidate?, plan, rootAwareCandidateForPlan?_purePlan] using
-                                hrecorded
-                            simp [appendPlannedCandidate, hcandidateRoot]
-                          have hprobeBound := probingHashQueryAfterPlan_probeBound parameter input
+                            simp [appendPlannedCandidate, hcandidate]
+                          have hprobeBound :=
+                            probingHashQueryAfterRootAwarePlan_uncoveredProbeBound parameter input
                             plan (nextSnapshots.map PlannedProbeSnapshot.toProbe) hplanMem leftCache
                           have hnextLeftCovered : PendingCoveredBy
                               (nextSnapshots.map PlannedProbeSnapshot.toProbe) canonical := by
@@ -2531,10 +2528,10 @@ theorem relTriple_indicator_observed_directDelayed
                               (nextSnapshots.map PlannedProbeSnapshot.toProbe) nextLeft.context).2
                             apply pendingCoveredBy_of_done_runDirectResolvedDetailedFromTable
                               (nextSnapshots.map PlannedProbeSnapshot.toProbe)
-                              ((probingHashQueryAfterPlan parameter input plan).run leftCache) left
+                              ((probingHashQueryAfterRootAwarePlan parameter input plan).run leftCache) left
                               leftFuel table nextLeft hcoveredAtStart hprobeBound
                             rw [← map_erase_runDirectResolvedWitnessFromTable
-                              ((probingHashQueryAfterPlan parameter input plan).run leftCache) left
+                              ((probingHashQueryAfterRootAwarePlan parameter input plan).run leftCache) left
                               leftFuel table, support_map]
                             exact ⟨.done nextLeft, hleftSupport, rfl⟩
                           have hnotPrivate : ¬PrivateStructuralHit canonical :=
@@ -2607,10 +2604,19 @@ theorem relTriple_indicator_observed_directDelayed
                           delayedObservations := by
                         simp [delayedNextObservations, hcandidate, observationsAfterCandidate]
                       have hlocal :=
-                        relTriple_runDirectResolvedWitness_afterPlan_observedMaterialized_firstStopped_of_none
-                          table parameter input plan observations left right leftFuel rightFuel
-                          leftCache rightCache hcandidate (by omega) hcontext hcache hrevealed
-                          hvalues hpublished hrightMaterialized htracked hcovered hnoHit hbudget
+                        relTriple_runDirectResolvedWitness_rootAwarePrivate_observed_firstStopped
+                          table parameter input left.state plan observations left right leftFuel
+                          rightFuel leftCache rightCache rfl hleftPositive hcontext (by omega)
+                          hcache hrevealed hvalues hpublished hrightMaterialized (by
+                            intro candidate hcandidateRoot _hhidden
+                            simp [candidate?, hcandidate] at hcandidateRoot)
+                          htracked hcovered (by
+                            simpa [candidate?, hcandidate, observationsAfterCandidate] using hnoHit)
+                          hbudget
+                      have hlocalObservations : observationsAfterCandidate observations right.state
+                          (rootAwareCandidateForPlan? parameter input plan) = observations := by
+                        simpa [candidate?, hcandidate, observationsAfterCandidate]
+                      rw [hlocalObservations] at hlocal
                       have hresult := hcontinue observations
                         (by simpa [hnextSnapshots] using haligned) hnoHit
                         (by simpa [hnextSnapshots, hnextDelayedObservations] using hdelayedProbes)
@@ -2650,12 +2656,26 @@ theorem relTriple_indicator_observed_directDelayed
                           · exact hnoHit observation hold
                           · exact hnewNoHit
                         have hlocal :=
-                          relTriple_runDirectResolvedWitness_afterPlan_observedMaterialized_firstStopped_of_revealed
-                            table parameter input plan candidate observations left right leftFuel
-                            (rightFuel - 1) leftCache rightCache hcandidate hleftPositive
-                            (by omega) hcontext hcache hrevealed hvalues hpublished
-                            hrightMaterialized hcandidateRevealed htracked hcovered hnoHit (by omega)
-                        have hrightFuelEq : rightFuel - 1 + 1 = rightFuel := by omega
+                          relTriple_runDirectResolvedWitness_rootAwarePrivate_observed_firstStopped
+                            table parameter input left.state plan observations left right leftFuel
+                            rightFuel leftCache rightCache rfl hleftPositive hcontext (by omega)
+                            hcache hrevealed hvalues hpublished hrightMaterialized (by
+                              intro other hother hhidden
+                              have heq : other = candidate := by
+                                apply Option.some.inj
+                                exact hother.symm.trans (by simpa [candidate?] using hcandidate)
+                              subst other
+                              exact (hhidden (by rwa [hrevealed])).elim)
+                            htracked hcovered (by
+                              simpa [candidate?, hcandidate, actualNextObservations,
+                                observationsAfterCandidate] using hnextNoHit)
+                            hbudget
+                        have hlocalObservations : observationsAfterCandidate observations right.state
+                            (rootAwareCandidateForPlan? parameter input plan) =
+                              actualNextObservations := by
+                          simpa [candidate?, hcandidate, actualNextObservations,
+                            observationsAfterCandidate]
+                        rw [hlocalObservations] at hlocal
                         have hresult := hcontinue actualNextObservations
                           (by simpa [actualNextObservations, nextSnapshots, candidate?, hcandidate,
                               observationsAfterCandidate, appendPlannedSnapshot] using
@@ -2671,7 +2691,7 @@ theorem relTriple_indicator_observed_directDelayed
                             · exact not_existingHiddenHit_cleanProbeObservation_materializedDeferredState
                                 table left right candidate.coordinate candidate.candidate hcontext
                                 hrevealed hvalues hrightMaterialized hnewNoHit)
-                          (by simpa [leftStep, rightStep, hrightFuelEq] using hlocal)
+                          (by simpa [leftStep, rightStep] using hlocal)
                         simp only [leftStep, rightStep, observe, plan, candidate?, nextSnapshots,
                           delayedNextObservations] at hresult ⊢
                         convert hresult using 1
@@ -2702,13 +2722,28 @@ theorem relTriple_indicator_observed_directDelayed
                               right.state candidate.coordinate candidate.candidate
                             omega
                           have hlocal :=
-                            relTriple_runDirectResolvedWitness_afterPlan_observedMaterialized_firstStopped_of_hidden_completable
-                              table parameter input plan candidate observations left right leftFuel
-                              (rightFuel - 1) leftCache rightCache hcandidate hleftPositive
-                              (by omega) hcontext hcache hrevealed hvalues hpublished
-                              hrightMaterialized hcandidateRevealed hpostCompletable htracked
-                              hcovered hnoHit hpostBudget
-                          have hrightFuelEq : rightFuel - 1 + 1 = rightFuel := by omega
+                            relTriple_runDirectResolvedWitness_rootAwarePrivate_observed_firstStopped
+                              table parameter input left.state plan observations left right leftFuel
+                              rightFuel leftCache rightCache rfl hleftPositive hcontext (by omega)
+                              hcache hrevealed hvalues hpublished hrightMaterialized (by
+                                intro other hother _hhidden
+                                have heq : other = candidate := by
+                                  apply Option.some.inj
+                                  exact hother.symm.trans (by simpa [candidate?] using hcandidate)
+                                subst other
+                                exact (hcontext.addPending_both_of_right_completable
+                                  candidate.coordinate candidate.candidate (by
+                                    simpa [postRight] using hpostCompletable)).leftCompletable)
+                              htracked hcovered (by
+                                simpa [candidate?, hcandidate, actualNextObservations,
+                                  observationsAfterCandidate] using hnextNoHit)
+                              hbudget
+                          have hlocalObservations : observationsAfterCandidate observations right.state
+                              (rootAwareCandidateForPlan? parameter input plan) =
+                                actualNextObservations := by
+                            simpa [candidate?, hcandidate, actualNextObservations,
+                              observationsAfterCandidate]
+                          rw [hlocalObservations] at hlocal
                           have hresult := hcontinue actualNextObservations
                             (by simpa [actualNextObservations, nextSnapshots, candidate?, hcandidate,
                                 observationsAfterCandidate, appendPlannedSnapshot] using
@@ -2724,7 +2759,7 @@ theorem relTriple_indicator_observed_directDelayed
                               · exact not_existingHiddenHit_cleanProbeObservation_materializedDeferredState
                                   table left right candidate.coordinate candidate.candidate hcontext
                                   hrevealed hvalues hrightMaterialized hnewNoHit)
-                            (by simpa [leftStep, rightStep, hrightFuelEq] using hlocal)
+                            (by simpa [leftStep, rightStep] using hlocal)
                           simp only [leftStep, rightStep, observe, plan, candidate?, nextSnapshots,
                             delayedNextObservations] at hresult ⊢
                           convert hresult using 1

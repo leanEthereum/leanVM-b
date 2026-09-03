@@ -380,7 +380,7 @@ noncomputable def directDelayedSelectedRootIndicator
                   nextSnapshots.map PlannedProbeSnapshot.toProbe⟩ fuel cache
             else
               runDirectResolvedWitnessFromTable context fuel table
-                  ((probingHashQueryAfterPlan parameter input plan).run cache) >>=
+                  ((probingHashQueryAfterRootAwarePlan parameter input plan).run cache) >>=
                 finishDirectDelayedSelectedRootIndicator
                   (canonicalizeDirectDelayedSelectedRootIndicator table
                     (fun nextContext remaining value laterSnapshots laterObservations =>
@@ -478,7 +478,7 @@ theorem directDelayedSelectedRootIndicator_hash_eq_not_selected
           (Sum.inl (Sum.inr input))) >>= next)
         snapshots observations context fuel cache =
       runDirectResolvedWitnessFromTable context fuel table
-          ((probingHashQueryAfterPlan parameter input
+          ((probingHashQueryAfterRootAwarePlan parameter input
             (purePlanProbingHashQuery parameter input context.state)).run cache) >>=
         finishDirectDelayedSelectedRootIndicator
           (canonicalizeDirectDelayedSelectedRootIndicator table

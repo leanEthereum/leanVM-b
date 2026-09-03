@@ -1225,7 +1225,7 @@ theorem evalDist_eagerDirectDelayedSelectedRootIndicator_hash_eq_not_selected_of
           (resolveDeferredPositionValue target context)),
       evalDist
           (runDirectResolvedWitnessFromTable resolved.toDeferredContext fuel table
-              ((probingHashQueryAfterPlan parameter input
+              ((probingHashQueryAfterRootAwarePlan parameter input
                 (purePlanProbingHashQuery parameter input context.state)).run cache) >>=
             finishDirectDelayedSelectedRootIndicator
               (canonicalizeDirectDelayedSelectedRootIndicator table
@@ -1243,7 +1243,7 @@ theorem evalDist_eagerDirectDelayedSelectedRootIndicator_hash_eq_not_selected_of
                   (purePlanProbingHashQuery parameter input context.state)))) =
         evalDist
           (runDirectResolvedWitnessFromTable resolved.toDeferredContext fuel table
-              ((probingHashQueryAfterPlan parameter input
+              ((probingHashQueryAfterRootAwarePlan parameter input
                 (purePlanProbingHashQuery parameter input context.state)).run cache) >>=
             finishDirectDelayedSelectedRootIndicator
               (canonicalizeDirectDelayedSelectedRootIndicator table
@@ -1279,7 +1279,7 @@ theorem evalDist_eagerDirectDelayedSelectedRootIndicator_hash_eq_not_selected_of
           | none => pure false
           | some resolved =>
               runDirectResolvedWitnessFromTable resolved.toDeferredContext fuel table
-                  ((probingHashQueryAfterPlan parameter input
+                  ((probingHashQueryAfterRootAwarePlan parameter input
                     (purePlanProbingHashQuery parameter input context.state)).run cache) >>=
                 finishDirectDelayedSelectedRootIndicator
                   (canonicalizeDirectDelayedSelectedRootIndicator table
@@ -1339,7 +1339,7 @@ theorem evalDist_eagerDirectDelayedSelectedRootIndicator_hash_eq_not_selected_of
       (observationsAfterCandidate observations (materializedDeferredState context)
         (rootAwareCandidateForPlan? parameter input
           (purePlanProbingHashQuery parameter input context.state)))
-      ((probingHashQueryAfterPlan parameter input
+      ((probingHashQueryAfterRootAwarePlan parameter input
         (purePlanProbingHashQuery parameter input context.state)).run cache)
       context fuel hvalid hcompletable
 

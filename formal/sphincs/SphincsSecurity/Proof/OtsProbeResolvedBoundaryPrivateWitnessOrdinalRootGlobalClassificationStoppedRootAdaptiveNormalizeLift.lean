@@ -164,7 +164,7 @@ theorem no_existingHiddenHit_of_true_mem_directDelayedSelectedRootIndicator
                   ftsSecret table target rightRoot input next snapshots observations context fuel
                   cache hbefore (by simpa [nextSnapshots, candidate?, plan] using hselected)] at htrue
                 have hnextClean := continueAfter
-                  ((probingHashQueryAfterPlan parameter input plan).run cache)
+                  ((probingHashQueryAfterRootAwarePlan parameter input plan).run cache)
                   nextSnapshots nextObservations hnextAligned hnextLength htrue
                 intro observation hobservation
                 apply hnextClean observation
@@ -1048,7 +1048,7 @@ theorem evalDist_directDelayed_eagerDirectDelayed_hash_not_selected_at
   let rightObservations := observationsAfterCandidate observations
     (materializedDeferredState context) candidate?
   let runComputation :=
-    (probingHashQueryAfterPlan parameter input
+    (probingHashQueryAfterRootAwarePlan parameter input
       (purePlanProbingHashQuery parameter input context.state)).run cache
   let observe := fun nextContext remaining (value : HashOutput × SplitHashCache)
       laterSnapshots laterObservations ↦
@@ -2533,7 +2533,7 @@ theorem negatedDirectDelayedComputationObserve_hash_observerSynchronized
         have hsync :=
           evalDist_complement_runDirectWitness_finish_false_eq_of_synchronized table
             observe nextLeftSnapshots nextLeftObservations
-            ((probingHashQueryAfterPlan parameter input plan).run cache) left right fuel
+            ((probingHashQueryAfterRootAwarePlan parameter input plan).run cache) left right fuel
             hcontext hvalues hrevealed
         have htrace : CleanProbeObservationsEventEq nextLeftObservations
             nextRightObservations := by
@@ -2543,7 +2543,7 @@ theorem negatedDirectDelayedComputationObserve_hash_observerSynchronized
           evalDist_complement_runDirectWitness_finish_false_eq_of_eventEq ordinal
             parameter root ftsSecret table target rightRoot next nextLeftSnapshots
             nextRightSnapshots nextLeftObservations nextRightObservations right fuel
-            ((probingHashQueryAfterPlan parameter input plan).run cache) hselected
+            ((probingHashQueryAfterRootAwarePlan parameter input plan).run cache) hselected
             hnotSelectedRight hnextSnapshots htrace
         rw [hsync]
         rw [hevent, hplan]

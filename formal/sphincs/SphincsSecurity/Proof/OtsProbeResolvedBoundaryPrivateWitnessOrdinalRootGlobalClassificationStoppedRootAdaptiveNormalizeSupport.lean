@@ -216,7 +216,7 @@ theorem candidatesAvoidRoots_of_true_mem_directDelayedSelectedRootIndicator
                   ftsSecret table target rightRoot input next snapshots observations context fuel
                   cache hbefore (by simpa [nextSnapshots, candidate?, plan] using hselected)] at htrue
                 have hnextAvoid := continueAfter
-                  ((probingHashQueryAfterPlan parameter input plan).run cache)
+                  ((probingHashQueryAfterRootAwarePlan parameter input plan).run cache)
                   nextSnapshots nextObservations hnextLength htrue
                 intro probe hprobe
                 apply hnextAvoid probe
@@ -472,7 +472,7 @@ theorem relTriple_directDelayed_eagerDirectDelayed_hash_not_selected
   let rightObservations := observationsAfterCandidate observations
     (materializedDeferredState context) candidate?
   let runComputation :=
-    (probingHashQueryAfterPlan parameter input
+    (probingHashQueryAfterRootAwarePlan parameter input
       (purePlanProbingHashQuery parameter input context.state)).run cache
   let observe := fun nextContext remaining (value : HashOutput × SplitHashCache)
       laterSnapshots laterObservations ↦
