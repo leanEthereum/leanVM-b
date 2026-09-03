@@ -300,6 +300,20 @@ def PermissiveTargetProbeRel (target : Position) :
     permissivePrivateOrdinalSelectionTargetProbe? target left =
       permissivePrivateOrdinalSelectionTargetProbe? target right
 
+theorem DelayedPermissiveSelectionRel.targetProbe_eq
+    {target : Position} {leftOutput : HashOutput} {rightRoot : Digest} {ordinal : Nat}
+    {left : PrivateOrdinalSelection}
+    {right : Option PermissivePrivateOrdinalSelection}
+    (hrel : DelayedPermissiveSelectionRel target leftOutput rightRoot ordinal (some left) right)
+    (hgood : left.GoodForRoots target leftOutput rightRoot ordinal) :
+    permissivePrivateOrdinalSelectionTargetProbe? target right = some left.candidate := by
+  obtain ⟨leftSelection, rightSelection, hleft, hright, hcandidate, hposition⟩ :=
+    hrel hgood
+  cases Option.some.inj hleft
+  rw [hright]
+  simp only [permissivePrivateOrdinalSelectionTargetProbe?]
+  rw [if_pos hposition, hcandidate]
+
 theorem PermissiveDetailedSelectionRel.targetProbe_eq
     {target : Position} {left right : Option PermissivePrivateOrdinalSelection}
     (hrel : PermissiveDetailedSelectionRel left right) :
@@ -861,6 +875,46 @@ theorem relTriple_preloadedDelayedSelection_common_afterRootResult
     (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) [] rootResult.state
     rootResult.remaining rootResult.table rootResult.value.2 target hvalue
 
+theorem relTriple_preloadedDelayedSelection_common_targetProbe_afterRootResult
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (rootResult : CleanRunResult (Digest × SplitHashCache))
+    (hvalue : rootResult.state.values (.position target) = none) :
+    RelTriple
+      (preloadedDelayedPermissiveDetailedSelectionAfterRootResult ordinal adversary parameter
+        ftsSecret target rootResult)
+      (delayedPermissiveDetailedSelectionAfterRootResult ordinal adversary parameter ftsSecret
+        rootResult)
+      (PermissiveTargetProbeRel target) := by
+  unfold preloadedDelayedPermissiveDetailedSelectionAfterRootResult
+    delayedPermissiveDetailedSelectionAfterRootResult
+  exact relTriple_sample_preload_delayedPermissiveDetailedOrdinalSelection_targetProbe ordinal
+    parameter rootResult.value.1 ftsSecret
+    (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) [] rootResult.state
+    rootResult.remaining rootResult.table rootResult.value.2 target hvalue
+
+theorem relTriple_installedDelayedSelection_common_targetProbe_afterRootResult
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (rootResult : CleanRunResult (Digest × SplitHashCache))
+    (hvalue : rootResult.state.values (.position target) = none) :
+    RelTriple
+      (installedDelayedPermissiveDetailedSelectionAfterRootResult ordinal adversary parameter
+        ftsSecret target rootResult)
+      (delayedPermissiveDetailedSelectionAfterRootResult ordinal adversary parameter ftsSecret
+        rootResult)
+      (PermissiveTargetProbeRel target) := by
+  have hglued := SphincsSecurity.relTriple_trans_exists
+    (relTriple_installedDelayedSelection_preloaded_afterRootResult ordinal adversary parameter
+      ftsSecret target rootResult)
+    (relTriple_preloadedDelayedSelection_common_targetProbe_afterRootResult ordinal adversary
+      parameter ftsSecret target rootResult hvalue)
+  apply relTriple_post_mono hglued
+  intro left right hrelation
+  obtain ⟨middle, hleft, hright⟩ := hrelation
+  subst middle
+  exact hright
+
 noncomputable def preloadedDelayedPermissiveDetailedSelectionExperimentAfterTable
     (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
@@ -884,6 +938,65 @@ noncomputable def installedDelayedPermissiveDetailedSelectionExperimentAfterTabl
   | some result =>
       installedDelayedPermissiveDetailedSelectionAfterRootResult ordinal adversary parameter
         ftsSecret target result
+
+set_option maxRecDepth 100000 in
+theorem relTriple_installedDelayedSelection_common_targetProbe_afterTable
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (hroot : IsLayerRoot target)
+    (hparent : ∃ parent, Position.parentOf target = some parent)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
+    RelTriple
+      (installedDelayedPermissiveDetailedSelectionExperimentAfterTable ordinal adversary
+        parameter ftsSecret target fuel table)
+      (delayedPermissiveDetailedSelectionExperimentAfterTable ordinal adversary parameter
+        ftsSecret fuel table)
+      (PermissiveTargetProbeRel target) := by
+  unfold installedDelayedPermissiveDetailedSelectionExperimentAfterTable
+    delayedPermissiveDetailedSelectionExperimentAfterTable
+  let initial := rootAwareProductionInitialRun fuel table
+  have hbase := relTriple_refl initial
+  have hsupported :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+      (InitialRootOptionFacts target)
+      (initialRootOptionFacts_of_mem target hroot hparent fuel table)
+  apply relTriple_bind hsupported
+  intro leftResult rightResult hrelation
+  rcases hrelation with ⟨heq, hinitial⟩
+  subst rightResult
+  cases leftResult with
+  | none => exact relTriple_pure_pure rfl
+  | some rootResult =>
+      exact relTriple_installedDelayedSelection_common_targetProbe_afterRootResult ordinal
+        adversary parameter ftsSecret target rootResult hinitial.1
+
+set_option maxRecDepth 100000 in
+theorem evalDist_installedDelayedSelection_common_targetProbe_afterTable
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (hroot : IsLayerRoot target)
+    (hparent : ∃ parent, Position.parentOf target = some parent)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
+    evalDist
+        (permissivePrivateOrdinalSelectionTargetProbe? target <$>
+          installedDelayedPermissiveDetailedSelectionExperimentAfterTable ordinal adversary
+            parameter ftsSecret target fuel table) =
+      evalDist
+        (permissivePrivateOrdinalSelectionTargetProbe? target <$>
+          delayedPermissiveDetailedSelectionExperimentAfterTable ordinal adversary parameter
+            ftsSecret fuel table) := by
+  have hrel := relTriple_installedDelayedSelection_common_targetProbe_afterTable ordinal adversary
+    parameter ftsSecret target hroot hparent fuel table
+  have hmapped : RelTriple
+      (permissivePrivateOrdinalSelectionTargetProbe? target <$>
+        installedDelayedPermissiveDetailedSelectionExperimentAfterTable ordinal adversary
+          parameter ftsSecret target fuel table)
+      (permissivePrivateOrdinalSelectionTargetProbe? target <$>
+        delayedPermissiveDetailedSelectionExperimentAfterTable ordinal adversary parameter
+          ftsSecret fuel table)
+      (fun left right => left = right) :=
+    relTriple_map hrel
+  exact evalDist_eq_of_relTriple_eqRel hmapped
 
 set_option maxRecDepth 100000 in
 theorem probEvent_preloadedDelayedSelection_fiber_le_common

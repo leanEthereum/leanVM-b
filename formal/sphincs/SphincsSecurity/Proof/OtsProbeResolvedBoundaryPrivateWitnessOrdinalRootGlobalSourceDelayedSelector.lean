@@ -18,10 +18,14 @@ open OracleComp.ProgramLogic.Relational
 
 def DelayedPermissiveSelectionRel
     (target : Position) (leftOutput : HashOutput) (rightRoot : Digest) (ordinal : Nat) :
-    Option PrivateOrdinalSelection → Option PermissivePrivateOrdinalSelection → Prop :=
+  Option PrivateOrdinalSelection → Option PermissivePrivateOrdinalSelection → Prop :=
   fun left right =>
     privateOrdinalSelectionGoodForRoots target leftOutput rightRoot ordinal left →
-      permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? right = some target
+      ∃ leftSelection rightSelection,
+        left = some leftSelection ∧ right = some rightSelection ∧
+          leftSelection.candidate = rightSelection.candidate ∧
+          permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? (some rightSelection) =
+            some target
 
 theorem delayedPermissiveSelectionRel_selected
     (target : Position) (leftOutput : HashOutput) (rightRoot : Digest) (ordinal : Nat)
@@ -34,9 +38,11 @@ theorem delayedPermissiveSelectionRel_selected
   intro hgood
   change PrivateOrdinalSelection.GoodForRoots target leftOutput rightRoot ordinal
     ⟨candidate, left, candidates⟩ at hgood
+  refine ⟨⟨candidate, left, candidates⟩, ⟨candidate, right, candidates⟩, rfl, rfl,
+    rfl, ?_⟩
   exact permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition?_eq_some_of_candidate
-    (by simpa using congrArg Probe.coordinate hgood.1)
-    hroot (by simpa [← hrevealed] using hgood.2.2.1)
+    (by simpa using congrArg Probe.coordinate hgood.1) hroot
+    (by simpa [← hrevealed] using hgood.2.2.1)
 
 theorem relTriple_none_any_delayedPermissiveSelection
     (target : Position) (leftOutput : HashOutput) (rightRoot : Digest) (ordinal : Nat)
@@ -423,8 +429,18 @@ theorem relTriple_delayedPermissiveSelection_trans
   intro leftSelection rightSelection hrelation hgood
   obtain ⟨middleSelection, hfirst, hsecond⟩ := hrelation
   have hmiddle := hfirst hgood
-  rw [hsecond.positionFiber_eq] at hmiddle
-  exact hmiddle
+  obtain ⟨leftSelected, middleSelected, hleftSelected, hmiddleSelected, hcandidate,
+    hposition⟩ := hmiddle
+  cases hmiddleSelected
+  cases rightSelection with
+  | none => exact False.elim hsecond
+  | some rightSelected =>
+      have hpositionEq := hsecond.positionFiber_eq
+      rcases hsecond with ⟨hmiddleCandidate, _hcandidates, _hstate⟩
+      refine ⟨leftSelected, rightSelected, hleftSelected, rfl,
+        hcandidate.trans hmiddleCandidate, ?_⟩
+      rw [← hpositionEq]
+      exact hposition
 
 def DelayedHashActionCouples
     (table : OtsSecretIndex → HashOutput) (parameter : PublicParameter) : Prop :=
@@ -694,6 +710,15 @@ theorem relTriple_directBoundary_delayedPermissiveDetailedOrdinalSelection
                   change PrivateOrdinalSelection.GoodForRoots target leftOutput rightRoot ordinal
                     ⟨nextCandidates.get ⟨ordinal, hnextSelected⟩, context,
                       nextCandidates⟩ at hgood
+                  refine ⟨⟨nextCandidates.get ⟨ordinal, hnextSelected⟩, context,
+                      nextCandidates⟩,
+                    ⟨(permissiveRootAwareCandidates parameter input table
+                        (materializedDeferredState context) candidates).get
+                          ⟨ordinal, hrightSelected⟩,
+                      materializedDeferredState context,
+                      permissiveRootAwareCandidates parameter input table
+                        (materializedDeferredState context) candidates⟩,
+                    rfl, rfl, hcandidate, ?_⟩
                   apply permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition?_eq_some_of_candidate
                   · have hsource := congrArg Probe.coordinate hgood.1
                     change (nextCandidates.get ⟨ordinal, hnextSelected⟩).coordinate =
