@@ -103,7 +103,6 @@ structure PermissiveStateRel
     (left right : LazyRevealProbe.State Coordinate) : Prop where
   values : left.values = right.values
   revealed : left.revealed = right.revealed
-  ensured : left.ensured = right.ensured
 
 def PermissiveCleanRel :
     Option (CleanRunResult α) → Option (CleanRunResult α) → Prop
@@ -117,30 +116,28 @@ theorem PermissiveStateRel.ensure
     {left right : LazyRevealProbe.State Coordinate}
     (hrel : PermissiveStateRel left right) (coordinate : Coordinate) :
     PermissiveStateRel (left.ensure coordinate) (right.ensure coordinate) := by
-  exact ⟨hrel.values, hrel.revealed,
-    by simp [LazyRevealProbe.State.ensure, hrel.ensured]⟩
+  exact ⟨hrel.values, hrel.revealed⟩
 
 theorem PermissiveStateRel.addPending
     {left right : LazyRevealProbe.State Coordinate}
     (hrel : PermissiveStateRel left right) (coordinate : Coordinate) (candidate : Digest) :
     PermissiveStateRel (left.addPending coordinate candidate)
       (right.addPending coordinate candidate) := by
-  exact ⟨hrel.values, hrel.revealed, hrel.ensured⟩
+  exact ⟨hrel.values, hrel.revealed⟩
 
 theorem PermissiveStateRel.publish
     {left right : LazyRevealProbe.State Coordinate}
     (hrel : PermissiveStateRel left right) (coordinate : Coordinate) :
     PermissiveStateRel (left.publish coordinate) (right.publish coordinate) := by
   exact ⟨hrel.values,
-    by simp [LazyRevealProbe.State.publish, hrel.revealed], hrel.ensured⟩
+    by simp [LazyRevealProbe.State.publish, hrel.revealed]⟩
 
 theorem PermissiveStateRel.materialize
     {left right : LazyRevealProbe.State Coordinate}
     (hrel : PermissiveStateRel left right) (coordinate : Coordinate) (output : HashOutput) :
     PermissiveStateRel (left.materialize coordinate output)
       (right.materialize coordinate output) := by
-  exact ⟨by simp [LazyRevealProbe.State.materialize, hrel.values], hrel.revealed,
-    by simp [LazyRevealProbe.State.materialize, hrel.ensured]⟩
+  exact ⟨by simp [LazyRevealProbe.State.materialize, hrel.values], hrel.revealed⟩
 
 theorem materializedCanonicalContext_values_eq_of_permissiveStateRel
     (table : OtsSecretIndex → HashOutput)

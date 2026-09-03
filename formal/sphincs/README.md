@@ -584,6 +584,8 @@ The target-specific production endpoint is now dominated by a permissive root-aw
 
 The explicit high/root sampler in the target-specific production weight is now normalized to one ordinary deferred position resolution for every supported public-root result. The equality is lifted through public-root sampling, the old production weight is bounded by the resolved experiment, and the complete fixed-target root endpoint now refers only to that experiment. The remaining commonization seam is therefore exactly one resolution followed by the target-independent selector.
 
+The common permissive observer now installs the hidden split-cache entry exactly when its deferred context contains the distinguished output. Its synchronization law is compiled: finalization-equivalent contexts give equal materialized values, equal revealed coordinates and the same installed cache, hence exactly the same selector distribution. The permissive state relation was correspondingly reduced to the fields its interpreter actually reads; `ensured` never affects its control flow. The remaining half is fixed-position neutrality of this observer, which is the deferred-resolution commute itself.
+
 Two places a proof can go wrong, both found by attacking the claim rather than by reading it:
 
 - **A strong forgery needs no chain inversion.** `Ver` does not check that the counter is the least admissible one, so a second `c'` with `Enc(P,lay,tau,e,M,c') = x` reuses the chain values verbatim and verifies. Since the codeword fixes the digest, that is one `2^-128` hit per query and it is harmless, but it is a branch of its own: the one-time signature is unforgeable on a *new* message by incomparability, and unforgeable on the *signed* message only by collision resistance at `tw_enc`.
