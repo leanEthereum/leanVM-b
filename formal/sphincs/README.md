@@ -614,6 +614,8 @@ The two source residuals now have their finite ordinal aggregation compiled. Sup
 
 The non-root source residual is now closed at one unit per query. Erasing the canonical snapshot source recovers its witness-plan semantics, whose fixed first-use ordinal is dominated by the existing candidate-time non-root monitor. The root construction preserves the consistency needed by that monitor, and its established freshness theorem supplies the final one-query bound. The only unfinished source probability is now the fixed delayed layer-root ordinal.
 
+The delayed layer-root residual is now reduced to target-independent position fibers. A delayed fixed ordinal determines one layer-root position and one ordinal selection that is good for the actual hidden root, including the all-miss prefix. Its probability is reduced to proving that each target fiber is at most the matching fiber of the existing permissive production experiment times `2^-128`; those permissive fibers sum to one. This is the remaining probabilistic bridge, with no `Position` cardinality factor and no duplicated failure event.
+
 Two places a proof can go wrong, both found by attacking the claim rather than by reading it:
 
 - **A strong forgery needs no chain inversion.** `Ver` does not check that the counter is the least admissible one, so a second `c'` with `Enc(P,lay,tau,e,M,c') = x` reuses the chain values verbatim and verifies. Since the codeword fixes the digest, that is one `2^-128` hit per query and it is harmless, but it is a branch of its own: the one-time signature is unforgeable on a *new* message by incomparability, and unforgeable on the *signed* message only by collision resistance at `tw_enc`.
