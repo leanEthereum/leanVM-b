@@ -283,6 +283,209 @@ theorem relTriple_delayedPermissiveDetailedOrdinalSelection_targetFiber_of_state
   rw [hselection.positionFiber_eq] at hleft
   exact hleft
 
+noncomputable def permissivePrivateOrdinalSelectionTargetProbe?
+    (target : Position) : Option PermissivePrivateOrdinalSelection → Option Probe
+  | none => none
+  | some selection =>
+      if permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? (some selection) =
+          some target then
+        some selection.candidate
+      else
+        none
+
+def PermissiveTargetProbeRel (target : Position) :
+    Option PermissivePrivateOrdinalSelection →
+      Option PermissivePrivateOrdinalSelection → Prop :=
+  fun left right =>
+    permissivePrivateOrdinalSelectionTargetProbe? target left =
+      permissivePrivateOrdinalSelectionTargetProbe? target right
+
+theorem PermissiveDetailedSelectionRel.targetProbe_eq
+    {target : Position} {left right : Option PermissivePrivateOrdinalSelection}
+    (hrel : PermissiveDetailedSelectionRel left right) :
+    PermissiveTargetProbeRel target left right := by
+  cases left with
+  | none =>
+      cases right with
+      | none => rfl
+      | some right => exact False.elim hrel
+  | some left =>
+      cases right with
+      | none => exact False.elim hrel
+      | some right =>
+          have hposition := hrel.positionFiber_eq
+          rcases hrel with ⟨hcandidate, _hcandidates, hstate⟩
+          unfold PermissiveTargetProbeRel
+          simp only [permissivePrivateOrdinalSelectionTargetProbe?]
+          rw [hposition, hcandidate]
+
+theorem relTriple_delayedPermissiveDetailedOrdinalSelection_targetProbe_of_stateRel
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (candidates : List Probe) (left right : LazyRevealProbe.State Coordinate)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (target : Position) (hstate : PermissiveStateRel left right) :
+    RelTriple
+      (delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret computation
+        candidates left fuel table cache)
+      (delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret computation
+        candidates right fuel table cache)
+      (PermissiveTargetProbeRel target) := by
+  apply relTriple_post_mono
+    (relTriple_delayedPermissiveDetailedOrdinalSelection_of_stateRel ordinal parameter root
+      ftsSecret computation candidates candidates left right fuel table cache rfl hstate)
+  intro leftSelection rightSelection hselection
+  exact hselection.targetProbe_eq
+
+theorem permissivePrivateOrdinalSelectionTargetProbe?_eq_none_of_position_ne
+    (target : Position) (selection : Option PermissivePrivateOrdinalSelection)
+    (hne : permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? selection ≠
+      some target) :
+    permissivePrivateOrdinalSelectionTargetProbe? target selection = none := by
+  cases selection with
+  | none => rfl
+  | some selection =>
+      simp [permissivePrivateOrdinalSelectionTargetProbe?, hne]
+
+theorem permissiveTargetProbeRel_preload_sameSelection
+    (target : Position) (candidate : Probe) (candidates : List Probe)
+    (state : LazyRevealProbe.State Coordinate) (output : HashOutput) :
+    PermissiveTargetProbeRel target
+      (some ⟨candidate, preloadPositionValue target output state, candidates⟩)
+      (some ⟨candidate, state, candidates⟩) := by
+  unfold PermissiveTargetProbeRel permissivePrivateOrdinalSelectionTargetProbe?
+  have hposition :
+      permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition?
+          (some ⟨candidate, preloadPositionValue target output state, candidates⟩) =
+        permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition?
+          (some ⟨candidate, state, candidates⟩) := by
+    simp only [permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition?]
+    rw [preloadPositionValue_revealed]
+  simp only
+  rw [hposition]
+
+theorem relTriple_sample_preload_pureSelection_targetProbe
+    (target : Position) (candidate : Probe) (candidates : List Probe)
+    (state : LazyRevealProbe.State Coordinate) :
+    RelTriple
+      (LazyRevealProbe.sampleHashOutput >>= fun output =>
+        pure (some ⟨candidate, preloadPositionValue target output state, candidates⟩))
+      (pure (some ⟨candidate, state, candidates⟩) :
+        ProbComp (Option PermissivePrivateOrdinalSelection))
+      (PermissiveTargetProbeRel target) := by
+  rw [show (pure (some ⟨candidate, state, candidates⟩) :
+      ProbComp (Option PermissivePrivateOrdinalSelection)) =
+        (pure () >>= fun _ => pure (some ⟨candidate, state, candidates⟩)) by simp]
+  apply relTriple_bind
+    (relTriple_true LazyRevealProbe.sampleHashOutput (pure () : ProbComp Unit))
+  intro output _ _
+  exact relTriple_pure_pure
+    (permissiveTargetProbeRel_preload_sameSelection target candidate candidates state output)
+
+theorem relTriple_sample_preload_runPermissive_finishDetailed_targetProbe
+    (target : Position)
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) (α × SplitHashCache))
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (leftObserve rightObserve : LazyRevealProbe.State Coordinate → Nat → α →
+      SplitHashCache → List Probe →
+        ProbComp (Option PermissivePrivateOrdinalSelection))
+    (candidates : List Probe)
+    (hvalue : state.values (.position target) = none)
+    (hnoPeek : computation.IsQueryBoundP (IsTargetPeek target) 0)
+    (hpreloaded : ∀ nextState remaining value nextCache,
+      nextState.values (.position target) = none →
+      RelTriple
+        (LazyRevealProbe.sampleHashOutput >>= fun output =>
+          leftObserve (preloadPositionValue target output nextState) remaining value nextCache
+            candidates)
+        (rightObserve nextState remaining value nextCache candidates)
+        (PermissiveTargetProbeRel target))
+    (hsynchronized : ∀ left right remaining value cache,
+      PermissiveStateRel left right →
+      RelTriple
+        (leftObserve left remaining value cache candidates)
+        (rightObserve right remaining value cache candidates)
+        (PermissiveTargetProbeRel target)) :
+    RelTriple
+      (LazyRevealProbe.sampleHashOutput >>= fun output =>
+        runPermissiveFromTable (preloadPositionValue target output state) fuel table computation >>=
+          finishPermissiveDetailedPrivateOrdinalSelection leftObserve candidates)
+      (runPermissiveFromTable state fuel table computation >>=
+        finishPermissiveDetailedPrivateOrdinalSelection rightObserve candidates)
+      (PermissiveTargetProbeRel target) := by
+  apply relTriple_sample_preload_runPermissiveFromTable_then target computation state fuel table
+    (finishPermissiveDetailedPrivateOrdinalSelection leftObserve candidates)
+    (finishPermissiveDetailedPrivateOrdinalSelection rightObserve candidates)
+    (PermissiveTargetProbeRel target) hvalue hnoPeek
+  · intro nextState remaining result nextTable hnextValue
+    rcases result with ⟨value, nextCache⟩
+    simp only [finishPermissiveDetailedPrivateOrdinalSelection]
+    exact hpreloaded nextState remaining value nextCache hnextValue
+  · intro left right hresult
+    cases left with
+    | none =>
+        cases right with
+        | none => simp [finishPermissiveDetailedPrivateOrdinalSelection,
+            PermissiveTargetProbeRel]
+        | some right => exact False.elim hresult
+    | some left =>
+        cases right with
+        | none => exact False.elim hresult
+        | some right =>
+            rcases hresult with ⟨hstate, hremaining, hvalue, htable⟩
+            have hvalueEq := congrArg Prod.fst hvalue
+            have hcacheEq := congrArg Prod.snd hvalue
+            simp only [finishPermissiveDetailedPrivateOrdinalSelection]
+            rw [← hremaining, ← hvalueEq, ← hcacheEq]
+            exact hsynchronized left.state right.state left.remaining left.value.1
+              left.value.2 hstate
+
+theorem relTriple_sample_preload_delayedSelector_targetProbe_of_initial_revealed
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (candidates : List Probe) (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (target : Position) (hrevealed : Coordinate.position target ∈ state.revealed) :
+    RelTriple
+      (LazyRevealProbe.sampleHashOutput >>= fun output =>
+        delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret computation
+          candidates (preloadPositionValue target output state) fuel table cache)
+      (delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret computation
+        candidates state fuel table cache)
+      (PermissiveTargetProbeRel target) := by
+  have hbase := relTriple_true
+    (LazyRevealProbe.sampleHashOutput >>= fun output =>
+      delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret computation
+        candidates (preloadPositionValue target output state) fuel table cache)
+    (delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret computation
+      candidates state fuel table cache)
+  have hleft :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+      (fun selection =>
+        permissivePrivateOrdinalSelectionTargetProbe? target selection = none)
+      (by
+        intro selection hselection
+        rw [mem_support_bind_iff] at hselection
+        obtain ⟨output, _houtput, htail⟩ := hselection
+        apply permissivePrivateOrdinalSelectionTargetProbe?_eq_none_of_position_ne
+        exact delayedUnrevealedLayerRootPosition_ne_of_initial_revealed ordinal parameter root
+          ftsSecret computation candidates (preloadPositionValue target output state) fuel table
+          cache target (by simpa using hrevealed) selection htail)
+  have hboth :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hleft
+  apply relTriple_post_mono hboth
+  intro left right hrelation
+  rcases hrelation with ⟨⟨_relation, hleftNone⟩, hrightSupport⟩
+  have hrightNone : permissivePrivateOrdinalSelectionTargetProbe? target right = none := by
+    apply permissivePrivateOrdinalSelectionTargetProbe?_eq_none_of_position_ne
+    exact delayedUnrevealedLayerRootPosition_ne_of_initial_revealed ordinal parameter root
+      ftsSecret computation candidates state fuel table cache target hrevealed right hrightSupport
+  unfold PermissiveTargetProbeRel
+  rw [hleftNone, hrightNone]
+
 theorem relTriple_sample_preload_delayedSelector_targetFiber_of_initial_revealed
     (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
@@ -454,6 +657,145 @@ theorem relTriple_sample_preload_delayedPermissiveDetailedOrdinalSelection
               · intro left right remaining output nextCache hstate
                 exact
                   relTriple_delayedPermissiveDetailedOrdinalSelection_targetFiber_of_stateRel
+                    ordinal parameter root ftsSecret (next output) candidates left right remaining
+                    table nextCache target hstate
+
+set_option maxHeartbeats 4000000 in
+set_option maxRecDepth 100000 in
+theorem relTriple_sample_preload_delayedPermissiveDetailedOrdinalSelection_targetProbe
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (candidates : List Probe) (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (target : Position) (hvalue : state.values (.position target) = none) :
+    RelTriple
+      (LazyRevealProbe.sampleHashOutput >>= fun output =>
+        delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret computation
+          candidates (preloadPositionValue target output state) fuel table cache)
+      (delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret computation
+        candidates state fuel table cache)
+      (PermissiveTargetProbeRel target) := by
+  induction computation using OracleComp.inductionOn generalizing candidates state fuel cache with
+  | pure value =>
+      by_cases hrevealed : Coordinate.position target ∈ state.revealed
+      · exact relTriple_sample_preload_delayedSelector_targetProbe_of_initial_revealed ordinal
+          parameter root ftsSecret (pure value) candidates state fuel table cache target hrevealed
+      · simp only [delayedPermissiveDetailedOrdinalSelection, OracleComp.construct_pure]
+        by_cases hselected : ordinal < candidates.length
+        · simp only [hselected, ↓reduceDIte]
+          exact relTriple_sample_preload_pureSelection_targetProbe target
+            (candidates.get ⟨ordinal, hselected⟩) candidates state
+        · simp only [hselected, ↓reduceDIte]
+          apply relTriple_of_evalDist_eq_left
+            (OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+              LazyRevealProbe.sampleHashOutput (by
+                simp [LazyRevealProbe.sampleHashOutput]) (pure none))
+          exact relTriple_pure_pure (by simp [PermissiveTargetProbeRel])
+  | query_bind query next ih =>
+      by_cases hrevealed : Coordinate.position target ∈ state.revealed
+      · exact relTriple_sample_preload_delayedSelector_targetProbe_of_initial_revealed ordinal
+          parameter root ftsSecret (liftM (OracleSpec.query query) >>= next) candidates state fuel
+          table cache target hrevealed
+      · simp_rw [delayedPermissiveDetailedOrdinalSelection, OracleComp.construct_query_bind]
+        by_cases hselected : ordinal < candidates.length
+        · simp only [hselected, ↓reduceDIte]
+          exact relTriple_sample_preload_pureSelection_targetProbe target
+            (candidates.get ⟨ordinal, hselected⟩) candidates state
+        · simp only [hselected, ↓reduceDIte]
+          cases query with
+          | inl worldQuery =>
+              cases worldQuery with
+              | inl n =>
+                  let observe : LazyRevealProbe.State Coordinate → Nat → Fin (n + 1) →
+                      SplitHashCache → List Probe →
+                        ProbComp (Option PermissivePrivateOrdinalSelection) :=
+                    fun nextState remaining output nextCache laterCandidates =>
+                      delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret
+                        (next output) laterCandidates nextState remaining table nextCache
+                  apply relTriple_sample_preload_runPermissive_finishDetailed_targetProbe target
+                    ((splitUniformImpl n).run cache) state fuel table observe observe candidates
+                    hvalue (splitUniformImpl_targetPeekFree target n cache)
+                  · intro nextState remaining output nextCache hnextValue
+                    simpa only [observe] using
+                      ih output candidates nextState remaining nextCache hnextValue
+                  · intro left right remaining output nextCache hstate
+                    exact
+                      relTriple_delayedPermissiveDetailedOrdinalSelection_targetProbe_of_stateRel
+                        ordinal parameter root ftsSecret (next output) candidates left right
+                        remaining table nextCache target hstate
+              | inr input =>
+                  let nextCandidates :=
+                    permissiveRootAwareCandidates parameter input table state candidates
+                  by_cases hnextSelected : ordinal < nextCandidates.length
+                  · simp only [nextCandidates, hnextSelected, ↓reduceDIte]
+                    rw [show (pure (some
+                        ⟨(permissiveRootAwareCandidates parameter input table state candidates).get
+                            ⟨ordinal, hnextSelected⟩,
+                          state,
+                          permissiveRootAwareCandidates parameter input table state candidates⟩) :
+                        ProbComp (Option PermissivePrivateOrdinalSelection)) =
+                      (pure () >>= fun _ => pure (some
+                        ⟨(permissiveRootAwareCandidates parameter input table state candidates).get
+                            ⟨ordinal, hnextSelected⟩,
+                          state,
+                          permissiveRootAwareCandidates parameter input table state candidates⟩)) by simp]
+                    apply relTriple_bind
+                      (relTriple_true LazyRevealProbe.sampleHashOutput (pure () : ProbComp Unit))
+                    intro output _ _
+                    rw [permissiveRootAwareCandidates_preload_hidden target output state hrevealed
+                      parameter input table candidates]
+                    have hnextSelected' : ordinal <
+                        (permissiveRootAwareCandidates parameter input table state candidates).length :=
+                      hnextSelected
+                    rw [dif_pos hnextSelected']
+                    exact relTriple_pure_pure
+                      (permissiveTargetProbeRel_preload_sameSelection target
+                        ((permissiveRootAwareCandidates parameter input table state candidates).get
+                          ⟨ordinal, hnextSelected⟩)
+                        (permissiveRootAwareCandidates parameter input table state candidates)
+                        state output)
+                  · simp_rw [permissiveRootAwareCandidates_preload_hidden target _ state hrevealed
+                      parameter input table candidates]
+                    simp only [nextCandidates, hnextSelected, ↓reduceDIte]
+                    simp_rw [delayedPermissivePublicAction_preload_hidden target _ state hrevealed
+                      parameter input table cache]
+                    let observe : LazyRevealProbe.State Coordinate → Nat → HashOutput →
+                        SplitHashCache → List Probe →
+                          ProbComp (Option PermissivePrivateOrdinalSelection) :=
+                      fun nextState remaining output nextCache laterCandidates =>
+                        delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret
+                          (next output) laterCandidates nextState remaining table nextCache
+                    apply relTriple_sample_preload_runPermissive_finishDetailed_targetProbe target
+                      (delayedPermissivePublicAction parameter input table state cache)
+                      state fuel table observe observe nextCandidates hvalue
+                      (delayedPermissivePublicAction_targetPeekFree target parameter input table
+                        state cache)
+                    · intro nextState remaining output nextCache hnextValue
+                      simpa only [observe] using
+                        ih output nextCandidates nextState remaining nextCache hnextValue
+                    · intro left right remaining output nextCache hstate
+                      exact
+                        relTriple_delayedPermissiveDetailedOrdinalSelection_targetProbe_of_stateRel
+                          ordinal parameter root ftsSecret (next output) nextCandidates left right
+                          remaining table nextCache target hstate
+          | inr message =>
+              let observe : LazyRevealProbe.State Coordinate → Nat → Option Signature →
+                  SplitHashCache → List Probe →
+                    ProbComp (Option PermissivePrivateOrdinalSelection) :=
+                fun nextState remaining output nextCache laterCandidates =>
+                  delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret
+                    (next output) laterCandidates nextState remaining table nextCache
+              apply relTriple_sample_preload_runPermissive_finishDetailed_targetProbe target
+                ((maskedSign parameter root ftsSecret message).run cache) state fuel table
+                observe observe candidates hvalue
+                (maskedSign_targetPeekFree target parameter root ftsSecret message cache)
+              · intro nextState remaining output nextCache hnextValue
+                simpa only [observe] using
+                  ih output candidates nextState remaining nextCache hnextValue
+              · intro left right remaining output nextCache hstate
+                exact
+                  relTriple_delayedPermissiveDetailedOrdinalSelection_targetProbe_of_stateRel
                     ordinal parameter root ftsSecret (next output) candidates left right remaining
                     table nextCache target hstate
 
