@@ -2,7 +2,7 @@
 //!
 //! Three surfaces, in increasing order of how much of the machine they touch:
 //!
-//! - [`compress`], the 10-round compression. Every other hash in leanVM-b is a
+//! - [`compress`], the 10-round compression. Every other hash in leanVM is a
 //!   chain of these, and it is the one the VM's `Blake2s` opcode computes and
 //!   `flock::hash` proves.
 //! - [`hash`] / [`keyed_hash`] / [`Hasher`], ordinary BLAKE2s-256 over bytes.
@@ -83,7 +83,7 @@ pub const PARAM_IV: [u32; 8] = init_state(0);
 /// The BLAKE2s compression: absorb one 64-byte block `m` at byte counter `t`
 /// into the chaining value `h`. `last` sets the final-block flag `f0`.
 ///
-/// This is the whole nonlinear core of every hash in leanVM-b. The `f1`
+/// This is the whole nonlinear core of every hash in leanVM. The `f1`
 /// last-node flag is always zero: nothing here uses BLAKE2s's tree mode.
 #[inline]
 pub fn compress(h: &mut [u32; 8], m: &[u32; 16], t: u64, last: bool) {

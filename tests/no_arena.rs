@@ -2,7 +2,7 @@
 //! one-way opt-in, so a test that must not have it cannot share a process with
 //! `tests/api.rs`.
 
-use leanvm_b::*;
+use leanvm::*;
 
 const EPOCH: xmss::Epoch = 5;
 

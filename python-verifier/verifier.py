@@ -1364,7 +1364,7 @@ def verify_stacked_opening(transcript: Transcript, root: Digest, stack_log: int,
 
 def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) -> None:
     bytecode_hash = blake2s_hash(b"".join(word.to_bytes() for word in bytecode))
-    iv_preimage = b"leanvm-b" + pack("<Q", len(R1CS_DIGEST)) + R1CS_DIGEST + bytecode_hash.value
+    iv_preimage = b"leanvm" + pack("<Q", len(R1CS_DIGEST)) + R1CS_DIGEST + bytecode_hash.value
     fiat_shamir_IV = blake2s_hash(iv_preimage)
     transcript = Transcript(proof, fiat_shamir_IV, public_input)
 
@@ -1417,7 +1417,7 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
 def main(argv: Sequence[str] | None = None) -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(description="Verify a leanVM-b execution proof")
+    parser = argparse.ArgumentParser(description="Verify a leanVM execution proof")
     parser.add_argument("bytecode", type=Path, help="stacked bytecode multilinear, little-endian 64-bit words")
     parser.add_argument("public_input", type=Path, help="256-bit public input")
     parser.add_argument("stream", type=Path, help="the proof's scalar stream, 24-byte little-endian field elements")

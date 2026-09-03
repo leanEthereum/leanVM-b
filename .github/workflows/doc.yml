@@ -69,22 +69,22 @@ jobs:
           root_file: main.tex
       - name: Name the artifacts
         run: |
-          cp doc/leanvm/.build/main.pdf leanVM-b.pdf
+          cp doc/leanvm/.build/main.pdf leanVM.pdf
           cp doc/xmss/.build/main.pdf XMSS.pdf
           cp doc/sphincs/.build/main.pdf SPHINCS.pdf
       - name: Publish PDFs as release assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: doc-latest
-          name: leanVM-b documentation
+          name: leanVM documentation
           body: |
             Auto-built on every push to `main`.
 
-            `leanVM-b.pdf` contains the leanVM-b specification.
+            `leanVM.pdf` contains the leanVM specification.
             `XMSS.pdf` contains the XMSS specification.
             `SPHINCS.pdf` contains the SPHINCS specification.
           make_latest: false
           files: |
-            leanVM-b.pdf
+            leanVM.pdf
             XMSS.pdf
             SPHINCS.pdf

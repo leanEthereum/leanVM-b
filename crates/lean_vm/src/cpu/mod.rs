@@ -81,7 +81,7 @@ const MAX_LOG_BYTECODE: usize = 32;
 /// input, pinning both with one word pair.
 pub fn fs_seed(program: &Program) -> [F192; 2] {
     let mut h = primitives::hash::Hasher::new();
-    h.update(b"leanvm-b");
+    h.update(b"leanvm");
     // Length-framed so the preimage parses one way: the domain and the bytecode
     // hash are fixed-width, so framing the digest between them is all it takes.
     h.update(&(flock::hash::R1CS_DIGEST.len() as u64).to_le_bytes());

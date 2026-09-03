@@ -13,7 +13,7 @@ And fix a generator $\gen$ of the multiplicative group $\K^{\times}$, of order $
 
 \vspace{5mm}
 
-LeanVM-b ISA, also known as leanISA, is inspired by \cite{cairo}. The Virtual Machine takes as input a bytecode (padded to a power of two, $\nprog = 2^{\kbc}$) and some public input $\textsf{input} \in \cube{256} \simeq (\textsf{input}_0, \dots, \textsf{input}_3) \in (\cube{64})^4$. The Virtual Machine then initializes its two $\K$-valued registers:
+LeanVM ISA, also known as leanISA, is inspired by \cite{cairo}. The Virtual Machine takes as input a bytecode (padded to a power of two, $\nprog = 2^{\kbc}$) and some public input $\textsf{input} \in \cube{256} \simeq (\textsf{input}_0, \dots, \textsf{input}_3) \in (\cube{64})^4$. The Virtual Machine then initializes its two $\K$-valued registers:
 \begin{itemize}
   \item the program counter $\pc \xleftarrow{} 1_\K$
   \item the frame pointer $\fp \xleftarrow{} 1_\K$

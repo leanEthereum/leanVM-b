@@ -1,15 +1,15 @@
-<h1 align="center">leanVM-b</h1>
+<h1 align="center">leanVM</h1>
 
 
 
 <p align="center">
-  <img src="./doc/images/banner-b.svg" alt="leanVM-b">
+  <img src="./doc/images/banner.svg" alt="leanVM">
 </p>
 
 Minimal hash-based zkVM, for a Post-Quantum Ethereum.
 
 <p align="center">
-  <a href="https://github.com/leanEthereum/leanVM-b/releases/download/doc-latest/leanVM-b.pdf"><img src="https://img.shields.io/badge/Documentation-PDF-blue?style=for-the-badge&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxwYXRoIGQ9Ik0xNCAySDZjLTEuMSAwLTIgLjktMiAydjE2YzAgMS4xLjg5IDIgMS45OSAySDE4YzEuMSAwIDItLjkgMi0yVjhsLTYtNnpNOC41IDE0LjVoMS4yNWMuOTcgMCAxLjc1LS43OCAxLjc1LTEuNzVTMTAuNzIgMTEgOS43NSAxMUg3LjV2Nmgxdi0yLjV6bTAtMVYxMmgxLjI1Yy40MSAwIC43NS4zNC43NS43NXMtLjM0Ljc1LS43NS43NUg4LjV6bTUuNSAzLjVoMnYtMWgtMnYtMWgydi0xaC0ydi0xLjVjMC0uMjguMjItLjUuNS0uNUgxN3YtMWgtMmMtLjgzIDAtMS41LjY3LTEuNSAxLjVWMTd6TTEzIDlWMy41TDE4LjUgOUgxM3oiLz48L3N2Zz4=" alt="Documentation"></a>
+  <a href="https://github.com/leanEthereum/leanVM/releases/download/doc-latest/leanVM.pdf"><img src="https://img.shields.io/badge/Documentation-PDF-blue?style=for-the-badge&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxwYXRoIGQ9Ik0xNCAySDZjLTEuMSAwLTIgLjktMiAydjE2YzAgMS4xLjg5IDIgMS45OSAySDE4YzEuMSAwIDItLjkgMi0yVjhsLTYtNnpNOC41IDE0LjVoMS4yNWMuOTcgMCAxLjc1LS43OCAxLjc1LTEuNzVTMTAuNzIgMTEgOS43NSAxMUg3LjV2Nmgxdi0yLjV6bTAtMVYxMmgxLjI1Yy40MSAwIC43NS4zNC43NS43NXMtLjM0Ljc1LS43NS43NUg4LjV6bTUuNSAzLjVoMnYtMWgtMnYtMWgydi0xaC0ydi0xLjVjMC0uMjguMjItLjUuNS0uNUgxN3YtMWgtMmMtLjgzIDAtMS41LjY3LTEuNSAxLjVWMTd6TTEzIDlWMy41TDE4LjUgOUgxM3oiLz48L3N2Zz4=" alt="Documentation"></a>
   <a href="./python-verifier/verifier.py"><img src="https://img.shields.io/badge/verifier-python-yellow?style=for-the-badge&logo=python&logoColor=white" alt="Python verifier"></a>
 </p>
 
@@ -21,7 +21,7 @@ Minimal hash-based zkVM, for a Post-Quantum Ethereum.
 
 Warning: highly experimental.
 
-leanVM was originally designed over the KoalaBear prime (p = 2^31 - 2^24 + 1) and [Poseidon](https://eprint.iacr.org/2019/458), still available in the branch [koalabear]([koalabear](https://github.com/leanEthereum/leanVM/tree/koalabear)); it is being rewritten over binary fields and BLAKE2s.
+leanVM was originally designed over the [KoalaBear prime](https://crates.io/crates/p3-koala-bear) and [Poseidon](https://eprint.iacr.org/2019/458), still available in the branch [koalabear]([koalabear](https://github.com/leanEthereum/leanVM/tree/koalabear)); it is being rewritten over binary fields and BLAKE2s.
 
 # Benchmarks
 
@@ -29,7 +29,7 @@ Machine: Mac M4 Max
 
 ### XMSS aggregation
 
-Our XMSS is specified in [XMSS.pdf](https://github.com/leanEthereum/leanVM-b/releases/download/doc-latest/XMSS.pdf).
+The XMSS parameters are specified in [XMSS.pdf](https://github.com/leanEthereum/leanVM/releases/download/doc-latest/XMSS.pdf).
 
 ```bash
 cargo run --release -- aggregate --xmss 900 --log-inv-rate 1 --repeat 3
@@ -47,7 +47,7 @@ aggregation, 900 XMSS signatures
 
 ### SPHINCS aggregation
 
-Our SPHINCS is specified in [SPHINCS.pdf](https://github.com/leanEthereum/leanVM-b/releases/download/doc-latest/SPHINCS.pdf).
+The SPHINCS parameters are specified in [SPHINCS.pdf](https://github.com/leanEthereum/leanVM/releases/download/doc-latest/SPHINCS.pdf).
 
 ```bash
 cargo run --release -- aggregate --sphincs 245 --log-inv-rate 1 --repeat 3
@@ -123,7 +123,7 @@ Flock BLAKE2s batch proving, 262,144 compressions (2^18 slots)
 
 ## Snark machinery
 
-- Binary field of 192 bits
+- Binary field of 192 bits (tower of degree 3 over the 64 bit field)
 - PCS: [WHIR](https://eprint.iacr.org/2024/1586) (aka [Ligerito](https://eprint.iacr.org/2025/1187))
 - Proving BLAKE2s by [Flock](https://github.com/succinctlabs/flock/tree/main)
 - RingSwitching, M3 arithmetisation, (and more) by [Binius](https://github.com/IrreducibleOSS/binius) / [Binius64](https://github.com/binius-zk/binius64) (see [DP23](https://eprint.iacr.org/2023/1784) and [DP24](https://eprint.iacr.org/2024/504))

@@ -42,7 +42,7 @@ To check that $\loc{o_1}$ and $\loc{o_2}$ are both in $\K$, it suffices to emit 
 
 \subsection{Range checks}\label{sec:prog-range-checks}
 
-The range check \emph{in the exponent} proves $x\in\{\gen^{0},\dots,\gen^{k-1}\}$, i.e.\ $\log_{\gen}x<k$, in 3 cycles (leanVM's \texttt{DEREF} trick, transported to $\gen$-powers):
+The range check \emph{in the exponent} proves $x\in\{\gen^{0},\dots,\gen^{k-1}\}$, i.e.\ $\log_{\gen}x<k$, in 3 cycles:
 \begin{enumerate}
 \item \texttt{DEREF} through $x$: the dereferenced address $x\cdot\gen^{0}$ rides the memory interaction, which balances only for the $2^{\kmem}$ addresses $\gen^{0},\dots,\gen^{2^{\kmem}-1}$ (\S\ref{sec:memchan}): the bus itself proves $x=\gen^{e}$ with $e<2^{\kmem}$;
 \item \texttt{MUL} $x\cdot y$ into a write-once cell holding the constant $\gen^{k-1}$: the runner back-solves the complement $y=\gen^{k-1-e}$ (\S\ref{sec:prog-hints}), and the double write asserts $x\cdot y=\gen^{k-1}$;
@@ -58,12 +58,12 @@ Hashing slice of dynamic-size requires to reconstruct the counter at runtime. On
 
 \subsection{Match statements}\label{sec:prog-match}
 
-leanVM dispatches a switch with a single jump to $\pc=a+b\cdot x$: the case blocks, padded to a common length $b$, sit consecutively from base $a$, and its integer arithmetic forms the affine address in one instruction. That computation does not transport to this VM. Addresses here are $\gen$-powers: the additive offset $a+j$ is the cheap product $\gen^{a}\cdot x$, but the \emph{scaling} $b\cdot j$ is the power $x^{b}$ ($O(\log b)$ multiplications per dispatch), with every block still padded to the longest. Instead, the aligned region collapses to fixed two-instruction \emph{trampoline slots} and the real blocks move out of line: matching on $x=\gen^{j}$, $j\in[0,n)$, the dispatch jumps to
+Matching on $x=\gen^{j}$, $j\in[0,n)$, the dispatch jumps to
 \[
   d \;=\; \gen^{T}\cdot x^{2} \;=\; \gen^{T+2j},
 \]
-slot $j$ of a table at bytecode base $T$, where a slot is $\texttt{SET}\ c=\gen^{\mathrm{block}_j}$ then $\texttt{JUMP}\ c$. The case blocks sit anywhere, unaligned and of any length; the scaling cost is the single squaring $x^{2}$. Two jumps per dispatch, $\approx7$ cycles independent of $n$.
+slot $j$ of a \emph{trampoline} table at bytecode base $T$, where a slot is $\texttt{SET}\ c=\gen^{\mathrm{block}_j}$ then $\texttt{JUMP}\ c$. The case blocks sit anywhere, unaligned and of any length, the only arithmetic being the squaring $x^{2}$. Two jumps per dispatch, $\approx7$ cycles independent of $n$.
 
 The slots are two instructions rather than one because a \texttt{JUMP} reads its destination from a \emph{cell}: a one-instruction slot would need its target cell pre-written, i.e.\ $n$ \texttt{SET}s executed before every dispatch. (Other layouts exist and trade exactly this, e.g.\ a memory-resident table of the $n$ block addresses, read with one \texttt{DEREF} and taken with a \emph{single} jump, paying the \texttt{SET}s as setup; worthwhile for many repeated small matches. The compiler currently emits only the trampoline.)
 
-As in leanVM, the matched value must be known to lie in $[0,n)$: a hinted $x$ must be range-checked first (\S\ref{sec:prog-range-checks}); otherwise the dispatch lands at an attacker-chosen program counter.
+The matched value must be known to lie in $[0,n)$: a hinted $x$ must be range-checked first (\S\ref{sec:prog-range-checks}); otherwise the dispatch lands at an attacker-chosen program counter.

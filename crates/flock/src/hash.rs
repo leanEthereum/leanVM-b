@@ -923,7 +923,7 @@ impl Blake2sSetup {
         assert_eq!(a_packed_words.len(), packed_len, "wrong packed A·z length");
         assert_eq!(b_packed_words.len(), packed_len, "wrong packed B·z length");
 
-        // No bind_statement here: the embedding protocol (leanVM-b) seeds its
+        // No bind_statement here: the embedding protocol (leanVM) seeds its
         // transcript with the R1CS digest and binds the instance
         // count and commitment root before any challenge, so the statement is
         // already fully transcript-bound.

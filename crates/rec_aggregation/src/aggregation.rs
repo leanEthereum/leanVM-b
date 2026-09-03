@@ -70,8 +70,8 @@ pub type XmssGroup = (xmss::Epoch, xmss::Message, Vec<XmssPublicKey>);
 /// virtual value column is referenced only by its own table's bus blocks, which
 /// the table sumcheck settles, so no framework block can raise one at `zeta`.
 const VALCOL_FRAMEWORK: &str = "a framework block must not reference a virtual value column";
-const RECURSION_AGG_LABEL: &[u8] = b"leanvm-b/recursion-aggregation/v1";
-const SIGNERS_LABEL: &[u8] = b"leanvm-b/aggregation-signers/v1";
+const RECURSION_AGG_LABEL: &[u8] = b"leanvm/recursion-aggregation/v1";
+const SIGNERS_LABEL: &[u8] = b"leanvm/aggregation-signers/v1";
 
 /// The most earlier aggregates one [`aggregate`] call can take, so the arity of
 /// an aggregation tree.

@@ -1,7 +1,7 @@
 //! Bridge to the flock BLAKE2s prover ([`flock::hash`]), single-PCS.
 //!
 //! `q_flock` (flock's packed BLAKE2s witness, 64 bits per `F64` word) is committed
-//! as a column in leanVM-b's ONE stacked `F64` witness (§sec:stacking), with no separate flock
+//! as a column in leanVM's ONE stacked `F64` witness (§sec:stacking), with no separate flock
 //! commitment. The VM's `BLAKE2s` table binds to it by point-eval equality (its
 //! value columns and `q_flock`'s slots are point-evals of the same committed
 //! stack), and flock's R1CS validity is discharged by the same stacked WHIR:

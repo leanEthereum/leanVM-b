@@ -1430,7 +1430,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "leanvm-b"
+name = "leanvm"
 version = "0.1.0"
 dependencies = [
  "clap",

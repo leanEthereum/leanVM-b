@@ -2,7 +2,7 @@
 //!
 //! Release only: the zkDSL compiler [`setup_verifier`] runs overflows the debug stack.
 //!
-//! End to end in [`tests/api.rs`](https://github.com/leanEthereum/leanVM-b/blob/main/tests/api.rs).
+//! End to end in [`tests/api.rs`](https://github.com/leanEthereum/leanVM/blob/main/tests/api.rs).
 
 pub use rec_aggregation::{
     AggregateSignature, AggregateVerifyError, AggregationError, MAX_EPOCHS, MAX_KEYS, MAX_RECURSIONS, SphincsSigner,

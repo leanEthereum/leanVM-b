@@ -1,10 +1,10 @@
 [package]
-name = "leanvm-b"
+name = "leanvm"
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "leanvm-b"
+name = "leanvm"
 path = "src/main.rs"
 
 [lints]

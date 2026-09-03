@@ -1,4 +1,4 @@
-use leanvm_b::*;
+use leanvm::*;
 
 const EPOCH_0: xmss::Epoch = 7;
 const EPOCH_1: xmss::Epoch = 9;
