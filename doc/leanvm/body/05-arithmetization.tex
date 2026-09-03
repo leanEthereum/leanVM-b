@@ -17,36 +17,46 @@ The arithmetization is inspired by the M3 model (multi-multiset matching)~\cite{
 
 \subsection{Balancing the bus: grand product}\label{sec:gp}
 
-\emph{Fingerprint.} The verifier samples $\alpha=(\alpha_0,\dots,\alpha_3)\in\E^{4}$ and maps each tuple $\btup$ to a single $\E$-element:
+Both multisets (\emph{pulls} and \emph{pushes}) carry the same number of tuples, and padding each with factors of $1$, which change no product, makes that number a power of two, $2^{\mu}$.
+
+\emph{Fingerprint.} The verifier samples $\alpha=(\alpha_0,\dots,\alpha_3)\in\E^{4}$ and maps each tuple $\btup \in \K^{16}$ to a single $\E$-element:
 \[
 \pi_\alpha(\btup)\;=\;\sum_{i=0}^{15}\eq(\alpha,i)\,\btup_i ,
 \]
 (smaller tuples are padded to $16$ entries with $0$).
 
-\emph{Product check.} Both sides (\emph{pulls} and \emph{pushes}) carry the same number of tuples, and padding each with factors of $1$, which change no product, makes that number a power of two, $2^{\mu}$. The verifier samples $\beta\in\E$, and balance becomes
+\emph{Product check.} The verifier samples $\beta\in\E$, and checks:
 \begin{equation}
 \prod_{\btup\ \text{pushed}}\bigl(\beta-\pi_\alpha(\btup)\bigr)
 \;\qeq\;
 \prod_{\btup\ \text{pulled}}\bigl(\beta-\pi_\alpha(\btup)\bigr).
 \label{eq:gp}
 \end{equation}
-\emph{Motivation.} For a multiset $P$ of tuples write
+
+\begin{theorem}\label{th:product_check}
+  The protocol above has perfect completeness (equal pulled and pushed multisets always make \eqref{eq:gp} valid) and soundness error $4\cdot 2^{\mu}/|\E|$ (if the pulled and pushed multisets differ, the probability that \eqref{eq:gp} passes over uniform $\alpha \in \E^{4}$ and $\beta \in \E$).
+\end{theorem}
+
+\begin{lemma}[A product identity is a multiset identity]\label{lem:gp}
+For a multiset $P$ of tuples write
 \[
   \Pi_P(A,X)\;=\;\prod_{\btup\in P}\bigl(X-\pi_A(\btup)\bigr),
 \]
 a polynomial in the five formal variables $A=(A_0,\dots,A_3)$ and $X$, with coefficients in $\K$. The two sides of \eqref{eq:gp} are $\Pi_P(\alpha,\beta)$ for $P$ the pushed multiset and the pulled one.
 
-\begin{lemma}[A product identity is a multiset identity]\label{lem:gp}
 For finite multisets $P,Q$ of width-$m$ tuples over $\K$, $\Pi_P=\Pi_Q$ if and only if $P=Q$.
 \end{lemma}
 
-\begin{proof}
-Easy
+\begin{proof}[Proof of Lemma~\ref{lem:gp}]
+TODO
 \end{proof}
 
-\emph{Completeness.} A balanced bus makes \eqref{eq:gp} hold for every $\alpha$ and $\beta$, so completeness is immediate.
 
-\emph{Soundness.} An unbalanced one makes $\Pi_P\neq\Pi_Q$, by the lemma, and \eqref{eq:gp} tests them at the one point $(\alpha,\beta)$, so Corollary~\ref{cor:idtest} gives a soundness error of $5\cdot 2^{\mu}/|\E|$: each of the $2^{\mu}$ factors is of total degree four in $\alpha$ and one in $\beta$, whatever the tuple's width. 
+\begin{proof}[Proof of Theorem~\ref{th:product_check}]
+\emph{Completeness.} Equal pulled and pushed multisets make \eqref{eq:gp} hold for every $\alpha$ and $\beta$, so completeness is immediate.
+
+\emph{Soundness.} Different pulled and pushed multisets make $\Pi_P\neq\Pi_Q$, by Lemma~\ref{lem:gp}, and \eqref{eq:gp} tests them at the one point $(\alpha_0, \dots, \alpha_3, \beta)$. Both sides have degree at most $4\cdot 2^{\mu}$ in $(\alpha_0, \dots, \alpha_3, \beta)$, since there are at most $2^{\mu}$ factors, of the form $\beta-\pi_\alpha(\btup)$, each of total degree at most $4$. Applying Corollary~\ref{cor:idtest} gives a soundness error of $4\cdot 2^{\mu}/|\E|$.
+\end{proof}
 
 \subsection{Proving the grand product}\label{sec:gkr}
 
