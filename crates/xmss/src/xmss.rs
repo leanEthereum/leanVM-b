@@ -6,7 +6,7 @@
 //! bottom subtree, cut at `split_level = ceil(log2(R)) / 2`. Out-of-range nodes
 //! are deterministic `gen_random_node` fillers.
 
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use rand::CryptoRng;
 use serde::{Deserialize, Serialize};
@@ -258,13 +258,7 @@ pub fn sign(
     let wots_secret_key = gen_wots_secret_key(&secret_key.seed, epoch);
     let wots_signature = wots_secret_key.sign(&encoding, randomness, epoch, &secret_key.public_param);
 
-    // Cache the bottom subtree covering `epoch` (reused across its 2^split_level
-    // epochs), then read the authentication path.
-    let subtree_index = (epoch as u64) >> secret_key.split_level;
-    let mut cache = secret_key.cache.lock().unwrap();
-    if cache.as_ref().is_none_or(|s| s.subtree_index != subtree_index) {
-        *cache = Some(secret_key.build_bottom_subtree(subtree_index));
-    }
+    let cache = secret_key.cached_bottom_subtree(epoch);
     let subtree = cache.as_ref().unwrap();
     let merkle_proof = std::array::from_fn(|level| {
         let neighbour_index = ((epoch as u64) >> level) ^ 1;
@@ -289,6 +283,27 @@ impl XmssSecretKey {
             merkle_root: self.top.last().unwrap()[0],
             public_param: self.public_param,
         }
+    }
+
+    /// Warms the signing cache for `epoch`: when the next epoch to sign at is
+    /// known in advance, calling this ahead of time makes the [`sign`] faster.
+    pub fn prepare(&self, epoch: Epoch) -> Result<(), XmssSignError> {
+        if epoch < self.epoch_start || epoch > self.epoch_end {
+            return Err(XmssSignError::EpochOutOfRange);
+        }
+        drop(self.cached_bottom_subtree(epoch));
+        Ok(())
+    }
+
+    /// The bottom subtree covering `epoch`, rebuilt only on a miss: one subtree
+    /// serves all `2^split_level` epochs under it.
+    fn cached_bottom_subtree(&self, epoch: Epoch) -> MutexGuard<'_, Option<BottomSubtree>> {
+        let subtree_index = (epoch as u64) >> self.split_level;
+        let mut cache = self.cache.lock().unwrap();
+        if cache.as_ref().is_none_or(|s| s.subtree_index != subtree_index) {
+            *cache = Some(self.build_bottom_subtree(subtree_index));
+        }
+        cache
     }
 
     fn build_bottom_subtree(&self, subtree_index: u64) -> BottomSubtree {

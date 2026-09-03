@@ -240,3 +240,27 @@ fn ssz_rejects_wrong_lengths() {
     XmssPublicKey::from_ssz_bytes(&[0xab; PUB_KEY_SSZ_LEN]).unwrap();
     XmssSignature::from_ssz_bytes(&[0xcd; SIGNATURE_SSZ_LEN]).unwrap();
 }
+
+/// `prepare` only warms a cache, so it must change no signature, and a later
+/// epoch in a different bottom subtree must still evict what it left behind.
+#[test]
+fn prepare_warms_without_changing_signatures() {
+    let seed = [21u8; 32];
+    let message = test_message();
+    let (sk, pk) = key_gen(seed, 0, 255).unwrap();
+
+    // 0 and 200 are far enough apart to land in different bottom subtrees.
+    sk.prepare(200).unwrap();
+    let after_prepare = sign(&mut StdRng::seed_from_u64(6), &sk, &message, 200).unwrap();
+    verify(&pk, &message, &after_prepare, 200).unwrap();
+
+    let fresh = sign(&mut StdRng::seed_from_u64(6), &sk, &message, 200).unwrap();
+    assert_eq!(after_prepare, fresh);
+
+    // A miss on the warmed subtree rebuilds rather than reusing it.
+    sk.prepare(0).unwrap();
+    let other = sign(&mut StdRng::seed_from_u64(7), &sk, &message, 0).unwrap();
+    verify(&pk, &message, &other, 0).unwrap();
+
+    assert_eq!(sk.prepare(256), Err(XmssSignError::EpochOutOfRange));
+}
