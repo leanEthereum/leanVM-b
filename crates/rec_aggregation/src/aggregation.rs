@@ -70,7 +70,7 @@ const SIGNERS_LABEL: &[u8] = b"leanvm-b/aggregation-signers/v1";
 
 /// The most earlier aggregates one [`aggregate`] call can take, so the arity of
 /// an aggregation tree.
-pub const MAX_CHILDREN: usize = 16;
+pub const MAX_RECURSIONS: usize = 16;
 
 /// The cap on [`AggregateSignature::num_total_sigs`], both schemes together, counting
 /// the coverage table's duplicate slots. Exclusive: exactly this many is already
@@ -473,7 +473,7 @@ pub enum AggregationError {
     /// A raw signature's randomness does not decode to a target-sum encoding,
     /// so there is no witness to build for it.
     MalformedRawSignature,
-    /// More than [`MAX_CHILDREN`] children, or [`MAX_KEYS`] signers or more
+    /// More than [`MAX_RECURSIONS`] children, or [`MAX_KEYS`] signers or more
     /// once the duplicate slots are counted.
     TooLarge,
     /// `log_inv_rate` is outside the range the WHIR configuration accepts.
@@ -508,7 +508,7 @@ impl std::fmt::Display for AggregationError {
             Self::TooLarge => {
                 write!(
                     f,
-                    "more than MAX_CHILDREN ({MAX_CHILDREN}) children, or MAX_KEYS ({MAX_KEYS}) claims or more"
+                    "more than MAX_RECURSIONS ({MAX_RECURSIONS}) children, or MAX_KEYS ({MAX_KEYS}) claims or more"
                 )
             }
             Self::InvalidRate { log_inv_rate } => {
@@ -1895,7 +1895,7 @@ fn push_sphincs_hints(
     Ok(())
 }
 
-/// - `children`: previously aggregated signatures; at most [`MAX_CHILDREN`].
+/// - `children`: previously aggregated signatures; at most [`MAX_RECURSIONS`].
 /// - `raw_xmss`: list of `(public_key, epoch, message, signature)`, any order; one message per
 ///   epoch across the whole result, at most [`MAX_EPOCHS`] epochs.
 /// - `raw_sphincs`: list of `(public_key, message, signature)`, any order.
@@ -1946,7 +1946,7 @@ pub(crate) fn aggregate_tampered(
     if !(lean_vm::pcs::MIN_LOG_INV_RATE..=lean_vm::pcs::MAX_LOG_INV_RATE).contains(&log_inv_rate) {
         return Err(AggregationError::InvalidRate { log_inv_rate });
     }
-    if children.len() > MAX_CHILDREN {
+    if children.len() > MAX_RECURSIONS {
         return Err(AggregationError::TooLarge);
     }
     let guest = unified_guest();
@@ -2798,7 +2798,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     let index_weights: Vec<F192> = (0..xmss::LOG_LIFETIME).map(tweak_index_weight).collect();
     ps("XM_INDEX_WEIGHT", flds(&index_weights));
     ps("MAX_KEYS", MAX_KEYS.to_string());
-    ps("MAX_CHILDREN", MAX_CHILDREN.to_string());
+    ps("MAX_RECURSIONS", MAX_RECURSIONS.to_string());
     ps("MAX_EPOCHS", MAX_EPOCHS.to_string());
 
     // The SPHINCS instance. Its tweaks are derived per signature from the index

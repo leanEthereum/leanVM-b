@@ -415,10 +415,10 @@ SP_COUNTER_BITS = 32
 # --------------------------------------------------------------- node capacities
 # MAX_KEYS caps the coverage table's slots, both schemes' declared keys and their
 # duplicates, which is what the coverage range check needs below 2^MIN_LOG_MEM;
-# MAX_CHILDREN is the recursion arity; MAX_EPOCHS caps the runtime number of XMSS
-# epoch groups.
+# MAX_RECURSIONS is the arity of an aggregation tree; MAX_EPOCHS caps the runtime
+# number of XMSS epoch groups.
 MAX_KEYS = MAX_KEYS_PLACEHOLDER
-MAX_CHILDREN = MAX_CHILDREN_PLACEHOLDER
+MAX_RECURSIONS = MAX_RECURSIONS_PLACEHOLDER
 MAX_EPOCHS = MAX_EPOCHS_PLACEHOLDER
 
 
@@ -3108,7 +3108,7 @@ def main():
     assert log(n_sphincs_g) < MAX_KEYS
     assert log(n_sdup_g) < MAX_KEYS
     assert log(n_raw_s_g) < MAX_KEYS
-    assert log(n_children_g) < MAX_CHILDREN + 1
+    assert log(n_children_g) < MAX_RECURSIONS + 1
 
     # ---- the epoch groups: geometry pass ----
     # Per group: its epoch, its two message cells, and its declared, duplicate and
