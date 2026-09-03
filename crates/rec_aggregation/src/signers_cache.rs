@@ -15,8 +15,8 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use primitives::{pretty_f64, pretty_integer};
+use rand::SeedableRng;
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
 use xmss::*;
 
 type CachedSignature = (XmssPublicKey, XmssSignature);
@@ -52,7 +52,7 @@ fn compute_signer(index: usize, epoch: Epoch) -> CachedSignature {
     // at which point a batch of 900 quietly becomes one of 256.
     let mut seed = [10u8; 32];
     seed[..8].copy_from_slice(&(index as u64).to_le_bytes());
-    let (sk, pk) = xmss::key_gen(seed, KEY_START, KEY_END).expect("keygen");
+    let (sk, pk) = xmss::key_gen_from_seed(seed, KEY_START, KEY_END).expect("keygen");
     let sig = xmss::sign(
         &mut StdRng::seed_from_u64(index as u64),
         &sk,
@@ -205,7 +205,7 @@ const SPHINCS_RECORD: usize = sphincs::PUB_KEY_SIZE + sphincs::MESSAGE_LEN + sph
 
 fn compute_sphincs_signer(index: usize) -> CachedSphincsSignature {
     let mut rng = StdRng::seed_from_u64(0x5F1A_C500 ^ index as u64);
-    let (secret_key, public_key) = sphincs::key_gen(rng.random());
+    let (secret_key, public_key) = sphincs::key_gen(&mut rng);
     let message = sphincs_message(index);
     let signature = sphincs::sign(&mut rng, &secret_key, &message).expect("sign");
     (public_key, message, signature)

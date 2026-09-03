@@ -21,7 +21,7 @@ pub mod xmss {
     pub use ::xmss::{
         Digest, Epoch, LOG_LIFETIME, MESSAGE_LEN, Message, PUB_KEY_SIZE, PUB_KEY_SSZ_LEN, PublicParam, SIG_SIZE,
         SIGNATURE_SSZ_LEN, WotsSignature, XmssKeyGenError, XmssPublicKey, XmssSecretKey, XmssSignError, XmssSignature,
-        XmssVerifyError, key_gen, sign, verify,
+        XmssVerifyError, key_gen, key_gen_from_seed, sign, verify,
     };
 }
 
@@ -29,7 +29,7 @@ pub mod sphincs {
     pub use ::sphincs::{
         Digest, FtsOpening, MESSAGE_LEN, Message, PUB_KEY_SIZE, PublicParam, SECRET_KEY_SIZE, SIG_SIZE,
         SphincsPublicKey, SphincsSecretKey, SphincsSignError, SphincsSignature, SphincsVerifyError, key_gen,
-        key_gen_from, sign, verify,
+        key_gen_from, key_gen_from_seed, sign, verify,
     };
 }
 

@@ -6,7 +6,7 @@ fn test_message() -> Message {
 }
 
 fn test_key(seed: u64) -> (SphincsSecretKey, SphincsPublicKey) {
-    key_gen(StdRng::seed_from_u64(seed).random())
+    key_gen(&mut StdRng::seed_from_u64(seed))
 }
 
 #[test]
@@ -188,4 +188,22 @@ fn secret_key_survives_a_round_trip() {
     let message = test_message();
     let sig = sign(&mut StdRng::seed_from_u64(1), &reloaded, &message).unwrap();
     verify(&pk, &message, &sig).unwrap();
+}
+
+/// The split between the two entry points: the seed alone determines the key,
+/// and the rng one draws a fresh seed per call rather than a fixed one.
+#[test]
+fn key_gen_entry_points() {
+    let seed = [17u8; 32];
+    let (_, from_seed) = key_gen_from_seed(seed);
+    assert_eq!(key_gen_from_seed(seed).1, from_seed);
+
+    let mut rng = StdRng::seed_from_u64(31);
+    let (_, first) = key_gen(&mut rng);
+    let (_, second) = key_gen(&mut rng);
+    assert_ne!(first, second);
+
+    // The rng path is exactly a drawn seed, so it reproduces under a fixed rng.
+    let drawn: [u8; 32] = StdRng::seed_from_u64(31).random();
+    assert_eq!(key_gen_from_seed(drawn).1, first);
 }

@@ -8,7 +8,7 @@
 
 use std::sync::{Mutex, MutexGuard};
 
-use rand::CryptoRng;
+use rand::{CryptoRng, Rng};
 use serde::{Deserialize, Serialize};
 
 use crate::*;
@@ -175,7 +175,19 @@ impl std::fmt::Display for XmssKeyGenError {
 
 impl std::error::Error for XmssKeyGenError {}
 
+/// A fresh key pair, able to sign at each epoch of `epoch_start..=epoch_end`
+/// once. The seed comes from `rng`, so nothing can regenerate the key.
 pub fn key_gen(
+    rng: &mut impl CryptoRng,
+    epoch_start: Epoch,
+    epoch_end: Epoch,
+) -> Result<(XmssSecretKey, XmssPublicKey), XmssKeyGenError> {
+    key_gen_from_seed(rng.random(), epoch_start, epoch_end)
+}
+
+/// Deterministic [`key_gen`]: one `(seed, epoch range)` always regenerates the
+/// same key pair, the seed being the key's entire secret material.
+pub fn key_gen_from_seed(
     seed: [u8; 32],
     epoch_start: Epoch,
     epoch_end: Epoch,

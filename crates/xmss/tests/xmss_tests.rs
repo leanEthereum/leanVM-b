@@ -11,7 +11,7 @@ fn keygen_sign_verify() {
     let message = test_message();
 
     for epoch in [0u32, 1234, u32::MAX] {
-        let (sk, pk) = key_gen(seed, epoch.saturating_sub(1), epoch.saturating_add(2)).unwrap();
+        let (sk, pk) = key_gen_from_seed(seed, epoch.saturating_sub(1), epoch.saturating_add(2)).unwrap();
         let sig = sign(&mut StdRng::seed_from_u64(epoch as u64), &sk, &message, epoch).unwrap();
         verify(&pk, &message, &sig, epoch).unwrap();
     }
@@ -23,7 +23,7 @@ fn serialize_deserialize_and_size() {
     let message = test_message();
     let epoch = 110;
 
-    let (sk, pk) = key_gen(seed, 100, 115).unwrap();
+    let (sk, pk) = key_gen_from_seed(seed, 100, 115).unwrap();
     let sig = sign(&mut StdRng::seed_from_u64(0), &sk, &message, epoch).unwrap();
 
     let public_key_bytes = bincode::serialize(&pk).unwrap();
@@ -42,11 +42,11 @@ fn serialize_deserialize_and_size() {
 #[test]
 fn deterministic_keygen_and_range_separation() {
     let seed = [3u8; 32];
-    let (_, pk) = key_gen(seed, 50, 60).unwrap();
-    let (_, same_seed_and_range) = key_gen(seed, 50, 60).unwrap();
+    let (_, pk) = key_gen_from_seed(seed, 50, 60).unwrap();
+    let (_, same_seed_and_range) = key_gen_from_seed(seed, 50, 60).unwrap();
     assert_eq!(pk, same_seed_and_range);
     // A different range changes the filler/real split, hence the root.
-    let (_, longer_range) = key_gen(seed, 50, 61).unwrap();
+    let (_, longer_range) = key_gen_from_seed(seed, 50, 61).unwrap();
     assert_ne!(pk.merkle_root, longer_range.merkle_root);
 }
 
@@ -114,7 +114,7 @@ fn tampered_signatures_rejected() {
     let seed = [9u8; 32];
     let message = test_message();
     let epoch = 7;
-    let (sk, pk) = key_gen(seed, 0, 15).unwrap();
+    let (sk, pk) = key_gen_from_seed(seed, 0, 15).unwrap();
     let sig = sign(&mut StdRng::seed_from_u64(1), &sk, &message, epoch).unwrap();
     verify(&pk, &message, &sig, epoch).unwrap();
 
@@ -168,7 +168,7 @@ fn encoding_grinding_bits() {
 #[test]
 fn secret_key_survives_a_round_trip() {
     let seed: [u8; 32] = std::array::from_fn(|i| (i * 11) as u8);
-    let (sk, pk) = key_gen(seed, 40, 45).unwrap();
+    let (sk, pk) = key_gen_from_seed(seed, 40, 45).unwrap();
     let reloaded: XmssSecretKey = bincode::deserialize(&bincode::serialize(&sk).unwrap()).unwrap();
 
     assert_eq!(reloaded.public_key(), pk);
@@ -192,7 +192,7 @@ fn ssz_layout_is_exact() {
     let seed: [u8; 32] = std::array::from_fn(|i| (i * 5 + 1) as u8);
     let message = test_message();
     let epoch = 300;
-    let (sk, pk) = key_gen(seed, 290, 310).unwrap();
+    let (sk, pk) = key_gen_from_seed(seed, 290, 310).unwrap();
     let sig = sign(&mut StdRng::seed_from_u64(4), &sk, &message, epoch).unwrap();
 
     let mut expected_pk = Vec::new();
@@ -247,7 +247,7 @@ fn ssz_rejects_wrong_lengths() {
 fn prepare_warms_without_changing_signatures() {
     let seed = [21u8; 32];
     let message = test_message();
-    let (sk, pk) = key_gen(seed, 0, 255).unwrap();
+    let (sk, pk) = key_gen_from_seed(seed, 0, 255).unwrap();
 
     // 0 and 200 are far enough apart to land in different bottom subtrees.
     sk.prepare(200).unwrap();
@@ -263,4 +263,22 @@ fn prepare_warms_without_changing_signatures() {
     verify(&pk, &message, &other, 0).unwrap();
 
     assert_eq!(sk.prepare(256), Err(XmssSignError::EpochOutOfRange));
+}
+
+/// The rng entry point must forward `(seed, epoch_start, epoch_end)` in that
+/// order, and draw a fresh seed on every call.
+#[test]
+fn key_gen_draws_a_usable_seed() {
+    let mut rng = StdRng::seed_from_u64(99);
+    let message = test_message();
+    let (sk, pk) = key_gen(&mut rng, 70, 80).unwrap();
+    assert_eq!(sk.epoch_range(), 70..=80);
+    let sig = sign(&mut rng, &sk, &message, 75).unwrap();
+    verify(&pk, &message, &sig, 75).unwrap();
+
+    // A fresh draw is a different key.
+    let (_, other) = key_gen(&mut rng, 70, 80).unwrap();
+    assert_ne!(pk, other);
+
+    assert_eq!(key_gen(&mut rng, 80, 70).unwrap_err(), XmssKeyGenError::InvalidRange);
 }

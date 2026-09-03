@@ -2882,8 +2882,8 @@ fn compile_guest(kbc: usize) -> Program {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::SeedableRng;
     use rand::rngs::StdRng;
-    use rand::{Rng, SeedableRng};
 
     use crate::signers_cache::{
         KEY_START, XMSS_EPOCH_A, XMSS_EPOCH_B, get_signers, get_signers_at, get_sphincs_signers, message, message_for,
@@ -3075,7 +3075,7 @@ mod tests {
     fn aggregate_one_key_two_messages() {
         lean_vm::init_prover_pool();
         let mut rng = StdRng::seed_from_u64(77);
-        let (secret_key, public_key) = sphincs::key_gen(rng.random());
+        let (secret_key, public_key) = sphincs::key_gen(&mut rng);
         let raw: Vec<RawSphincs> = [3u8, 9]
             .into_iter()
             .map(|tag| {

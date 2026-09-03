@@ -1,5 +1,4 @@
 use leanvm_b::*;
-use rand::Rng;
 
 const EPOCH_0: xmss::Epoch = 7;
 const EPOCH_1: xmss::Epoch = 9;
@@ -17,7 +16,7 @@ fn public_api_end_to_end() {
     let mut xmss_input = Vec::new();
     for (epoch, message, count) in [(EPOCH_0, MSG_0, 3), (EPOCH_1, MSG_1, 4), (EPOCH_2, MSG_2, 1)] {
         for _ in 0..count {
-            let (secret_key, pub_key) = xmss::key_gen(rng.random(), epoch, epoch).unwrap();
+            let (secret_key, pub_key) = xmss::key_gen(rng, epoch, epoch).unwrap();
             let signature = xmss::sign(rng, &secret_key, &message, epoch).unwrap();
             xmss_input.push((pub_key, epoch, message, signature));
         }
@@ -26,7 +25,7 @@ fn public_api_end_to_end() {
     // 2. Three SPHINCS signatures, each on its own message
     let mut sphincs_input = Vec::new();
     for signer in 0..3u8 {
-        let (secret_key, pub_key) = sphincs::key_gen(rng.random());
+        let (secret_key, pub_key) = sphincs::key_gen(rng);
         let message = [signer; sphincs::MESSAGE_LEN];
         let signature = sphincs::sign(rng, &secret_key, &message).unwrap();
         sphincs_input.push((pub_key, message, signature));

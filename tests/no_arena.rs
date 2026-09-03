@@ -3,7 +3,6 @@
 //! `tests/api.rs`.
 
 use leanvm_b::*;
-use rand::Rng;
 
 const EPOCH: xmss::Epoch = 5;
 
@@ -16,7 +15,7 @@ fn aggregate_without_the_arena() {
     let message = [3; xmss::MESSAGE_LEN];
     let signers = (0..2)
         .map(|_| {
-            let (secret_key, pub_key) = xmss::key_gen(rng.random(), EPOCH, EPOCH).unwrap();
+            let (secret_key, pub_key) = xmss::key_gen(rng, EPOCH, EPOCH).unwrap();
             let signature = xmss::sign(rng, &secret_key, &message, EPOCH).unwrap();
             (pub_key, EPOCH, message, signature)
         })
