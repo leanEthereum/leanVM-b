@@ -42,10 +42,13 @@ pub fn setup_verifier() {
 ///
 /// There is one arena per process, so only one [`aggregate`] call may run at a
 /// time in a process: to aggregate in parallel, use separate processes.
-///
-/// For machine with small RAM, where arena allocation does not fit, set the environment
-/// variable `LEANVM_NO_ARENA` to 1, at the cost of slower proving.
 pub fn setup_prover() {
+    zk_alloc::enable_arena();
+    setup_prover_without_arena();
+}
+
+/// [`setup_prover`] for a machine whose RAM the arena does not fit: every prover
+/// buffer goes to the system allocator, at the cost of slower proving.
+pub fn setup_prover_without_arena() {
     setup_verifier();
-    lean_vm::init_prover();
 }

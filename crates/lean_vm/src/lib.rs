@@ -38,10 +38,10 @@ pub mod witness;
 ///
 /// Call once at program or test start.
 ///
-/// Set `LEANVM_NO_ARENA` (or call only [`init_prover_pool`]) on a host where even
-/// the arena's recycled peak does not fit: every [`ArenaVec`](zk_alloc::ArenaVec)
-/// then falls back to the system allocator, which is slower where the arena fits,
-/// since the arena's pages stay faulted in across proofs.
+/// Call [`init_prover_pool`] alone on a host where even the arena's recycled peak
+/// does not fit: every [`ArenaVec`](zk_alloc::ArenaVec) then falls back to the
+/// system allocator, which is slower where the arena fits, since the arena's
+/// pages stay faulted in across proofs.
 ///
 /// # Contract
 /// The arena has one region per process, so two proofs must never run
@@ -49,9 +49,7 @@ pub mod witness;
 /// separate processes to parallelize across proofs.
 pub fn init_prover() {
     init_prover_pool();
-    if std::env::var_os("LEANVM_NO_ARENA").is_none() {
-        zk_alloc::enable_arena();
-    }
+    zk_alloc::enable_arena();
 }
 
 /// Spawn the worker pool up front, so no kernel pays the spawn cost inside a
