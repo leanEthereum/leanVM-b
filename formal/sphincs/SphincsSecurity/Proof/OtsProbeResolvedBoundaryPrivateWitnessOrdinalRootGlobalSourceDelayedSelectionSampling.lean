@@ -300,19 +300,83 @@ def PermissiveTargetProbeRel (target : Position) :
     permissivePrivateOrdinalSelectionTargetProbe? target left =
       permissivePrivateOrdinalSelectionTargetProbe? target right
 
+def PermissiveTargetGuess (target : Position) :
+    Option PermissivePrivateOrdinalSelection → Prop
+  | none => False
+  | some selection => ∃ output,
+      permissivePrivateOrdinalSelectionTargetProbe? target (some selection) =
+        some selection.candidate ∧
+      selection.state.values (.position target) = some output ∧
+      selection.candidate.candidate = truncateHash output
+
+theorem DelayedPermissiveSelectionRel.targetGuess
+    {target : Position} {rightRoot : Digest} {ordinal : Nat}
+    {left : Option PrivateOrdinalSelection}
+    {right : Option PermissivePrivateOrdinalSelection}
+    (hrel : DelayedPermissiveSelectionRel target rightRoot ordinal left right)
+    (hgood : privateOrdinalSelectionGoodForSomeOutput target rightRoot ordinal left) :
+    PermissiveTargetGuess target right := by
+  obtain ⟨leftOutput, leftSelection, rightSelection, hleft, hright, hleftGood, hcandidate,
+    hposition, hvalue⟩ := hrel hgood
+  rw [hright]
+  refine ⟨leftOutput, ?_, hvalue, ?_⟩
+  · simp only [permissivePrivateOrdinalSelectionTargetProbe?]
+    rw [if_pos hposition]
+  · rw [← hcandidate]
+    exact congrArg Probe.candidate hleftGood.1
+
+theorem PermissiveDetailedSelectionRel.targetGuess_iff
+    {target : Position} {left right : Option PermissivePrivateOrdinalSelection}
+    (hrel : PermissiveDetailedSelectionRel left right) :
+    PermissiveTargetGuess target left ↔ PermissiveTargetGuess target right := by
+  cases left with
+  | none =>
+      cases right with
+      | none => simp [PermissiveTargetGuess]
+      | some right => exact False.elim hrel
+  | some left =>
+      cases right with
+      | none => exact False.elim hrel
+      | some right =>
+          rcases hrel with ⟨hcandidate, _hcandidates, hstate⟩
+          have hprobe : permissivePrivateOrdinalSelectionTargetProbe? target (some left) =
+              permissivePrivateOrdinalSelectionTargetProbe? target (some right) := by
+            have hposition :=
+              (show PermissiveDetailedSelectionRel (some left) (some right) from
+                ⟨hcandidate, _hcandidates, hstate⟩).positionFiber_eq
+            simp only [permissivePrivateOrdinalSelectionTargetProbe?]
+            rw [hposition, hcandidate]
+          constructor
+          · rintro ⟨output, htarget, hvalue, hdigest⟩
+            refine ⟨output, ?_, ?_, ?_⟩
+            · rw [← hprobe]
+              simpa [hcandidate] using htarget
+            · rw [← hstate.values]
+              exact hvalue
+            · rw [← hcandidate]
+              exact hdigest
+          · rintro ⟨output, htarget, hvalue, hdigest⟩
+            refine ⟨output, ?_, ?_, ?_⟩
+            · rw [hprobe]
+              simpa [hcandidate] using htarget
+            · rw [hstate.values]
+              exact hvalue
+            · rw [hcandidate]
+              exact hdigest
+
 theorem DelayedPermissiveSelectionRel.targetProbe_eq
     {target : Position} {leftOutput : HashOutput} {rightRoot : Digest} {ordinal : Nat}
     {left : PrivateOrdinalSelection}
     {right : Option PermissivePrivateOrdinalSelection}
-    (hrel : DelayedPermissiveSelectionRel target leftOutput rightRoot ordinal (some left) right)
+    (hrel : DelayedPermissiveSelectionRel target rightRoot ordinal (some left) right)
     (hgood : left.GoodForRoots target leftOutput rightRoot ordinal) :
     permissivePrivateOrdinalSelectionTargetProbe? target right = some left.candidate := by
-  obtain ⟨leftSelection, rightSelection, hleft, hright, hcandidate, hposition⟩ :=
-    hrel hgood
+  obtain ⟨_output, leftSelection, rightSelection, hleft, hright, _hgood, hcandidate, hposition⟩ :=
+    hrel ⟨leftOutput, hgood⟩
   cases Option.some.inj hleft
   rw [hright]
   simp only [permissivePrivateOrdinalSelectionTargetProbe?]
-  rw [if_pos hposition, hcandidate]
+  rw [if_pos hposition.1, hcandidate]
 
 theorem PermissiveDetailedSelectionRel.targetProbe_eq
     {target : Position} {left right : Option PermissivePrivateOrdinalSelection}
@@ -376,7 +440,11 @@ theorem permissiveTargetProbeRel_preload_sameSelection
           (some ⟨candidate, state, candidates⟩) := by
     simp only [permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition?]
     rw [preloadPositionValue_revealed]
-  simp only
+  change (if permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition?
+        (some ⟨candidate, preloadPositionValue target output state, candidates⟩) = some target then
+      some candidate else none) =
+    (if permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition?
+        (some ⟨candidate, state, candidates⟩) = some target then some candidate else none)
   rw [hposition]
 
 theorem relTriple_sample_preload_pureSelection_targetProbe
@@ -1063,5 +1131,24 @@ theorem probEvent_installedDelayedSelection_fiber_le_common
           rwa [← heq]
     _ ≤ _ := probEvent_preloadedDelayedSelection_fiber_le_common ordinal adversary parameter
       ftsSecret target hroot hparent fuel table
+
+set_option maxRecDepth 100000 in
+theorem probEvent_privateOrdinalSelectionGoodForSomeOutput_le_targetGuess
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (fuel : Nat) (target : Position) (rightRoot : Digest)
+    (hroot : IsLayerRoot target) :
+    Pr[privateOrdinalSelectionGoodForSomeOutput target rightRoot ordinal |
+        granularAllCanonicalPrivateOrdinalSelection ordinal adversary parameter table ftsSecret
+          fuel] ≤
+      Pr[PermissiveTargetGuess target |
+        delayedPermissiveDetailedSelectionExperimentAfterTable ordinal adversary parameter
+          ftsSecret fuel table] := by
+  apply probEvent_le_of_relTriple
+    (relTriple_granularAllCanonicalPrivateOrdinalSelection_permissiveDelayed ordinal adversary
+      parameter table ftsSecret fuel target rightRoot hroot)
+  intro left right hrelation hgood
+  exact hrelation.targetGuess hgood
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

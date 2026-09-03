@@ -16,39 +16,49 @@ namespace SphincsSecurity.Concrete.OtsProbeSimulation
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
 
+attribute [local irreducible] maskedPublishedTreeRoot
+
 def DelayedPermissiveSelectionRel
-    (target : Position) (leftOutput : HashOutput) (rightRoot : Digest) (ordinal : Nat) :
+    (target : Position) (rightRoot : Digest) (ordinal : Nat) :
   Option PrivateOrdinalSelection → Option PermissivePrivateOrdinalSelection → Prop :=
   fun left right =>
-    privateOrdinalSelectionGoodForRoots target leftOutput rightRoot ordinal left →
-      ∃ leftSelection rightSelection,
+    privateOrdinalSelectionGoodForSomeOutput target rightRoot ordinal left →
+      ∃ leftOutput leftSelection rightSelection,
         left = some leftSelection ∧ right = some rightSelection ∧
+          leftSelection.GoodForRoots target leftOutput rightRoot ordinal ∧
           leftSelection.candidate = rightSelection.candidate ∧
           permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? (some rightSelection) =
-            some target
+            some target ∧
+          rightSelection.state.values (.position target) = some leftOutput
 
 theorem delayedPermissiveSelectionRel_selected
-    (target : Position) (leftOutput : HashOutput) (rightRoot : Digest) (ordinal : Nat)
+    (target : Position) (rightRoot : Digest) (ordinal : Nat)
     (hroot : IsLayerRoot target) (candidate : Probe)
     (candidates : List Probe) (left : DeferredContext)
     (right : LazyRevealProbe.State Coordinate)
+    (hvalues : (materializedDeferredState left).values = right.values)
     (hrevealed : left.state.revealed = right.revealed) :
-    DelayedPermissiveSelectionRel target leftOutput rightRoot ordinal
+    DelayedPermissiveSelectionRel target rightRoot ordinal
       (some ⟨candidate, left, candidates⟩) (some ⟨candidate, right, candidates⟩) := by
   intro hgood
+  obtain ⟨leftOutput, hgood⟩ := hgood
   change PrivateOrdinalSelection.GoodForRoots target leftOutput rightRoot ordinal
     ⟨candidate, left, candidates⟩ at hgood
-  refine ⟨⟨candidate, left, candidates⟩, ⟨candidate, right, candidates⟩, rfl, rfl,
-    rfl, ?_⟩
-  exact permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition?_eq_some_of_candidate
-    (by simpa using congrArg Probe.coordinate hgood.1) hroot
-    (by simpa [← hrevealed] using hgood.2.2.1)
+  refine ⟨leftOutput, ⟨candidate, left, candidates⟩, ⟨candidate, right, candidates⟩, rfl, rfl,
+    hgood, rfl, ?_, ?_⟩
+  · exact permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition?_eq_some_of_candidate
+      (by simpa using congrArg Probe.coordinate hgood.1) hroot
+      (by simpa [← hrevealed] using hgood.2.2.1)
+  · rw [← hvalues]
+    simp only [materializedDeferredState, DeferredContext.positionValue]
+    rw [hgood.2.1]
+    exact hgood.2.2.2.1
 
 theorem relTriple_none_any_delayedPermissiveSelection
-    (target : Position) (leftOutput : HashOutput) (rightRoot : Digest) (ordinal : Nat)
+    (target : Position) (rightRoot : Digest) (ordinal : Nat)
     (right : ProbComp (Option PermissivePrivateOrdinalSelection)) :
     RelTriple (pure none : ProbComp (Option PrivateOrdinalSelection)) right
-      (DelayedPermissiveSelectionRel target leftOutput rightRoot ordinal) := by
+      (DelayedPermissiveSelectionRel target rightRoot ordinal) := by
   have hbase := relTriple_true (pure none : ProbComp (Option PrivateOrdinalSelection)) right
   have hsupported :=
     SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
@@ -58,11 +68,11 @@ theorem relTriple_none_any_delayedPermissiveSelection
   apply relTriple_post_mono hsupported
   intro left right hrelation
   rw [hrelation.2]
-  simp [DelayedPermissiveSelectionRel, privateOrdinalSelectionGoodForRoots]
+  simp [DelayedPermissiveSelectionRel, privateOrdinalSelectionGoodForSomeOutput]
 
 set_option maxRecDepth 100000 in
 theorem relTriple_finishDirect_delayedPermissiveSelection
-    (target : Position) (leftOutput : HashOutput) (rightRoot : Digest) (ordinal : Nat)
+    (target : Position) (rightRoot : Digest) (ordinal : Nat)
     (table : OtsSecretIndex → HashOutput)
     (leftObserve : DeferredContext → Nat → (α × SplitHashCache) → List Probe →
       ProbComp (Option PrivateOrdinalSelection))
@@ -94,19 +104,19 @@ theorem relTriple_finishDirect_delayedPermissiveSelection
           leftResult.remaining leftResult.value leftCandidates)
         (rightObserve rightResult.state rightResult.remaining rightResult.value.1
           rightResult.value.2 rightCandidates)
-        (DelayedPermissiveSelectionRel target leftOutput rightRoot ordinal)) :
+        (DelayedPermissiveSelectionRel target rightRoot ordinal)) :
     RelTriple
       (finishDirectPrivateOrdinalSelection
         (canonicalizeDirectPrivateOrdinalSelection table leftObserve) leftCandidates left)
       (finishPermissiveDetailedPrivateOrdinalSelection rightObserve rightCandidates right)
-      (DelayedPermissiveSelectionRel target leftOutput rightRoot ordinal) := by
+      (DelayedPermissiveSelectionRel target rightRoot ordinal) := by
   cases left with
   | stoppedFuel =>
-      exact relTriple_none_any_delayedPermissiveSelection target leftOutput rightRoot ordinal _
+      exact relTriple_none_any_delayedPermissiveSelection target rightRoot ordinal _
   | stoppedOrdinary =>
-      exact relTriple_none_any_delayedPermissiveSelection target leftOutput rightRoot ordinal _
+      exact relTriple_none_any_delayedPermissiveSelection target rightRoot ordinal _
   | stoppedPrivate witness =>
-      exact relTriple_none_any_delayedPermissiveSelection target leftOutput rightRoot ordinal _
+      exact relTriple_none_any_delayedPermissiveSelection target rightRoot ordinal _
   | done leftResult =>
       rcases hrelation with hreject | ⟨rightResult, hright, hvalue, hremaining,
           _hleftTable, _hrightTable, hrevealed, hmaterialized, hchainValid, hcontext⟩
@@ -116,19 +126,19 @@ theorem relTriple_finishDirect_delayedPermissiveSelection
               (.done leftResult) = pure none by
             simp [finishDirectPrivateOrdinalSelection,
               canonicalizeDirectPrivateOrdinalSelection, hprivate]]
-          exact relTriple_none_any_delayedPermissiveSelection target leftOutput rightRoot ordinal _
+          exact relTriple_none_any_delayedPermissiveSelection target rightRoot ordinal _
         · rw [show finishDirectPrivateOrdinalSelection
               (canonicalizeDirectPrivateOrdinalSelection table leftObserve) leftCandidates
               (.done leftResult) = pure none by
             simp [finishDirectPrivateOrdinalSelection,
               canonicalizeDirectPrivateOrdinalSelection, hpublished]]
-          exact relTriple_none_any_delayedPermissiveSelection target leftOutput rightRoot ordinal _
+          exact relTriple_none_any_delayedPermissiveSelection target rightRoot ordinal _
         · rw [show finishDirectPrivateOrdinalSelection
               (canonicalizeDirectPrivateOrdinalSelection table leftObserve) leftCandidates
               (.done leftResult) = pure none by
             simp [finishDirectPrivateOrdinalSelection,
               canonicalizeDirectPrivateOrdinalSelection, hcompletable]]
-          exact relTriple_none_any_delayedPermissiveSelection target leftOutput rightRoot ordinal _
+          exact relTriple_none_any_delayedPermissiveSelection target rightRoot ordinal _
       · subst right
         let canonical := canonicalizeMaterializedValues table leftResult.context
         unfold finishDirectPrivateOrdinalSelection
@@ -136,7 +146,7 @@ theorem relTriple_finishDirect_delayedPermissiveSelection
           canonicalizeDirectPrivateOrdinalSelection
         by_cases hprivate : PrivateStructuralHit canonical
         · simp only [canonical, hprivate, ↓reduceIte]
-          exact relTriple_none_any_delayedPermissiveSelection target leftOutput rightRoot ordinal _
+          exact relTriple_none_any_delayedPermissiveSelection target rightRoot ordinal _
         · simp only [canonical, hprivate, ↓reduceIte]
           by_cases hpublished : PublishedValues leftResult.context.state
           · simp only [hpublished, ↓reduceIte]
@@ -166,10 +176,10 @@ theorem relTriple_finishDirect_delayedPermissiveSelection
                   hcanonicalMaterialized hcanonicalRevealed hcanonicalValid hcompletable
                   hcanonicalChainValid hcanonicalCanonical hcanonicalPublished
             · simp only [hcompletable, ↓reduceIte]
-              exact relTriple_none_any_delayedPermissiveSelection target leftOutput rightRoot
+              exact relTriple_none_any_delayedPermissiveSelection target rightRoot
                 ordinal _
           · simp only [hpublished, ↓reduceIte]
-            exact relTriple_none_any_delayedPermissiveSelection target leftOutput rightRoot
+            exact relTriple_none_any_delayedPermissiveSelection target rightRoot
               ordinal _
 
 noncomputable def delayedPermissivePublicAction
@@ -416,31 +426,33 @@ theorem relTriple_delayedPermissiveDetailedOrdinalSelection_of_stateRel
                 nextLeft.remaining nextLeft.value.2 rfl hnextState
 
 theorem relTriple_delayedPermissiveSelection_trans
-    (target : Position) (leftOutput : HashOutput) (rightRoot : Digest) (ordinal : Nat)
+    (target : Position) (rightRoot : Digest) (ordinal : Nat)
     {left : ProbComp (Option PrivateOrdinalSelection)}
     {middle right : ProbComp (Option PermissivePrivateOrdinalSelection)}
     (hleft : RelTriple left middle
-      (DelayedPermissiveSelectionRel target leftOutput rightRoot ordinal))
+      (DelayedPermissiveSelectionRel target rightRoot ordinal))
     (hright : RelTriple middle right PermissiveDetailedSelectionRel) :
     RelTriple left right
-      (DelayedPermissiveSelectionRel target leftOutput rightRoot ordinal) := by
+      (DelayedPermissiveSelectionRel target rightRoot ordinal) := by
   have hglued := SphincsSecurity.relTriple_trans_exists hleft hright
   apply relTriple_post_mono hglued
   intro leftSelection rightSelection hrelation hgood
   obtain ⟨middleSelection, hfirst, hsecond⟩ := hrelation
   have hmiddle := hfirst hgood
-  obtain ⟨leftSelected, middleSelected, hleftSelected, hmiddleSelected, hcandidate,
-    hposition⟩ := hmiddle
+  obtain ⟨leftOutput, leftSelected, middleSelected, hleftSelected, hmiddleSelected, hleftGood,
+    hcandidate, hposition, hvalue⟩ := hmiddle
   cases hmiddleSelected
   cases rightSelection with
   | none => exact False.elim hsecond
   | some rightSelected =>
       have hpositionEq := hsecond.positionFiber_eq
-      rcases hsecond with ⟨hmiddleCandidate, _hcandidates, _hstate⟩
-      refine ⟨leftSelected, rightSelected, hleftSelected, rfl,
-        hcandidate.trans hmiddleCandidate, ?_⟩
-      rw [← hpositionEq]
-      exact hposition
+      rcases hsecond with ⟨hmiddleCandidate, _hcandidates, hstate⟩
+      refine ⟨leftOutput, leftSelected, rightSelected, hleftSelected, rfl,
+        hleftGood, hcandidate.trans hmiddleCandidate, ?_, ?_⟩
+      · rw [← hpositionEq]
+        exact hposition
+      · rw [← hstate.values]
+        exact hvalue
 
 def DelayedHashActionCouples
     (table : OtsSecretIndex → HashOutput) (parameter : PublicParameter) : Prop :=
@@ -592,7 +604,7 @@ set_option maxHeartbeats 2000000 in
 set_option maxRecDepth 100000 in
 theorem relTriple_directBoundary_delayedPermissiveDetailedOrdinalSelection
     (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
-    (target : Position) (leftOutput : HashOutput) (rightRoot : Digest)
+    (target : Position) (rightRoot : Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
     (computation : OracleComp (OracleWorld + SigningSpec) α)
     (candidates : List Probe) (context : DeferredContext) (fuel : Nat)
@@ -608,7 +620,7 @@ theorem relTriple_directBoundary_delayedPermissiveDetailedOrdinalSelection
         candidates context fuel table cache)
       (delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret computation
         candidates (materializedDeferredState context) fuel table cache)
-      (DelayedPermissiveSelectionRel target leftOutput rightRoot ordinal) := by
+      (DelayedPermissiveSelectionRel target rightRoot ordinal) := by
   induction computation using OracleComp.inductionOn generalizing
       candidates context fuel cache with
   | pure value =>
@@ -617,20 +629,20 @@ theorem relTriple_directBoundary_delayedPermissiveDetailedOrdinalSelection
       by_cases hselected : ordinal < candidates.length
       · simp only [selectedPrivateOrdinal?, hselected, ↓reduceDIte]
         exact relTriple_pure_pure
-          (delayedPermissiveSelectionRel_selected target leftOutput rightRoot ordinal hroot
-            _ candidates context (materializedDeferredState context) (by
+          (delayedPermissiveSelectionRel_selected target rightRoot ordinal hroot
+            _ candidates context (materializedDeferredState context) rfl (by
               simp [materializedDeferredState]))
       · simp only [selectedPrivateOrdinal?, hselected, ↓reduceDIte]
         exact relTriple_pure_pure (by
-          simp [DelayedPermissiveSelectionRel, privateOrdinalSelectionGoodForRoots])
+          simp [DelayedPermissiveSelectionRel, privateOrdinalSelectionGoodForSomeOutput])
   | query_bind query next ih =>
       rw [directDetailedBoundaryPrivateOrdinalSelection, OracleComp.construct_query_bind,
         delayedPermissiveDetailedOrdinalSelection, OracleComp.construct_query_bind]
       by_cases hselected : ordinal < candidates.length
       · simp only [hselected, ↓reduceDIte]
         exact relTriple_pure_pure
-          (delayedPermissiveSelectionRel_selected target leftOutput rightRoot ordinal hroot
-            _ candidates context (materializedDeferredState context) (by
+          (delayedPermissiveSelectionRel_selected target rightRoot ordinal hroot
+            _ candidates context (materializedDeferredState context) rfl (by
               simp [materializedDeferredState]))
       · simp only [hselected, ↓reduceDIte]
         cases query with
@@ -655,7 +667,7 @@ theorem relTriple_directBoundary_delayedPermissiveDetailedOrdinalSelection
                     (preservesChainValid_splitUniformImpl (fun _ ↦ True) n)
                     (directWitnessFinalizationMaterializedCouples_splitUniformImpl table n))
                 intro leftResult rightResult hresult
-                apply relTriple_finishDirect_delayedPermissiveSelection target leftOutput rightRoot
+                apply relTriple_finishDirect_delayedPermissiveSelection target rightRoot
                   ordinal table leftObserve rightObserve candidates candidates leftResult
                     rightResult hresult
                 intro nextLeft nextRight _hleft _hright hvalue hremaining hvalues hrevealed
@@ -672,7 +684,7 @@ theorem relTriple_directBoundary_delayedPermissiveDetailedOrdinalSelection
                     (materializedDeferredState canonical) nextRight.state nextLeft.remaining table
                     nextLeft.value.2 rfl hstate
                 simpa only [leftObserve, rightObserve, canonical, ← hvalue, ← hremaining] using
-                  relTriple_delayedPermissiveSelection_trans target leftOutput rightRoot ordinal
+                  relTriple_delayedPermissiveSelection_trans target rightRoot ordinal
                     hbase htransport
             | inr input =>
                 let plan := purePlanProbingHashQuery parameter input context.state
@@ -697,7 +709,7 @@ theorem relTriple_directBoundary_delayedPermissiveDetailedOrdinalSelection
                     rw [List.get_eq_getElem, List.get_eq_getElem]
                     simpa only [hrightCandidates]
                   apply relTriple_pure_pure
-                  change DelayedPermissiveSelectionRel target leftOutput rightRoot ordinal
+                  change DelayedPermissiveSelectionRel target rightRoot ordinal
                     (some ⟨nextCandidates.get ⟨ordinal, hnextSelected⟩, context,
                       nextCandidates⟩)
                     (some ⟨(permissiveRootAwareCandidates parameter input table
@@ -707,10 +719,11 @@ theorem relTriple_directBoundary_delayedPermissiveDetailedOrdinalSelection
                       permissiveRootAwareCandidates parameter input table
                         (materializedDeferredState context) candidates⟩)
                   intro hgood
+                  obtain ⟨leftOutput, hgood⟩ := hgood
                   change PrivateOrdinalSelection.GoodForRoots target leftOutput rightRoot ordinal
                     ⟨nextCandidates.get ⟨ordinal, hnextSelected⟩, context,
                       nextCandidates⟩ at hgood
-                  refine ⟨⟨nextCandidates.get ⟨ordinal, hnextSelected⟩, context,
+                  refine ⟨leftOutput, ⟨nextCandidates.get ⟨ordinal, hnextSelected⟩, context,
                       nextCandidates⟩,
                     ⟨(permissiveRootAwareCandidates parameter input table
                         (materializedDeferredState context) candidates).get
@@ -718,15 +731,18 @@ theorem relTriple_directBoundary_delayedPermissiveDetailedOrdinalSelection
                       materializedDeferredState context,
                       permissiveRootAwareCandidates parameter input table
                         (materializedDeferredState context) candidates⟩,
-                    rfl, rfl, hcandidate, ?_⟩
-                  apply permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition?_eq_some_of_candidate
-                  · have hsource := congrArg Probe.coordinate hgood.1
-                    change (nextCandidates.get ⟨ordinal, hnextSelected⟩).coordinate =
-                      .position target at hsource
-                    have hsame := congrArg Probe.coordinate hcandidate.symm
-                    exact hsame.trans hsource
-                  · exact hroot
-                  · simpa [materializedDeferredState] using hgood.2.2.1
+                    rfl, rfl, hgood, hcandidate, ?_, ?_⟩
+                  · apply permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition?_eq_some_of_candidate
+                    · have hsource := congrArg Probe.coordinate hgood.1
+                      change (nextCandidates.get ⟨ordinal, hnextSelected⟩).coordinate =
+                        .position target at hsource
+                      have hsame := congrArg Probe.coordinate hcandidate.symm
+                      exact hsame.trans hsource
+                    · exact hroot
+                    · simpa [materializedDeferredState] using hgood.2.2.1
+                  · simp only [materializedDeferredState, DeferredContext.positionValue]
+                    rw [hgood.2.1]
+                    exact hgood.2.2.2.1
                 · have hrightSelected : ¬ordinal <
                       (permissiveRootAwareCandidates parameter input table
                         (materializedDeferredState context) candidates).length := by
@@ -747,8 +763,8 @@ theorem relTriple_directBoundary_delayedPermissiveDetailedOrdinalSelection
                   apply relTriple_bind (hhash input context fuel cache hvalid hcompletable
                     hchainValid hcanonical hpublished)
                   intro leftResult rightResult hresult
-                  apply relTriple_finishDirect_delayedPermissiveSelection target leftOutput
-                    rightRoot ordinal table leftObserve rightObserve nextCandidates
+                  apply relTriple_finishDirect_delayedPermissiveSelection target rightRoot ordinal
+                    table leftObserve rightObserve nextCandidates
                     (permissiveRootAwareCandidates parameter input table
                       (materializedDeferredState context) candidates)
                     leftResult rightResult hresult
@@ -768,7 +784,7 @@ theorem relTriple_directBoundary_delayedPermissiveDetailedOrdinalSelection
                       (materializedDeferredState canonical) nextRight.state nextLeft.remaining
                       table nextLeft.value.2 hrightCandidates.symm hstate
                   simpa only [leftObserve, rightObserve, canonical, ← hvalue, ← hremaining] using
-                    relTriple_delayedPermissiveSelection_trans target leftOutput rightRoot ordinal
+                    relTriple_delayedPermissiveSelection_trans target rightRoot ordinal
                       hbase htransport
         | inr message =>
             let leftObserve : DeferredContext → Nat →
@@ -791,7 +807,7 @@ theorem relTriple_directBoundary_delayedPermissiveDetailedOrdinalSelection
                 (directWitnessFinalizationMaterializedCouples_maskedSign table parameter root
                   ftsSecret message))
             intro leftResult rightResult hresult
-            apply relTriple_finishDirect_delayedPermissiveSelection target leftOutput rightRoot
+            apply relTriple_finishDirect_delayedPermissiveSelection target rightRoot
               ordinal table leftObserve rightObserve candidates candidates leftResult
                 rightResult hresult
             intro nextLeft nextRight _hleft _hright hvalue hremaining hvalues hrevealed
@@ -808,7 +824,7 @@ theorem relTriple_directBoundary_delayedPermissiveDetailedOrdinalSelection
                 (materializedDeferredState canonical) nextRight.state nextLeft.remaining table
                 nextLeft.value.2 rfl hstate
             simpa only [leftObserve, rightObserve, canonical, ← hvalue, ← hremaining] using
-              relTriple_delayedPermissiveSelection_trans target leftOutput rightRoot ordinal
+              relTriple_delayedPermissiveSelection_trans target rightRoot ordinal
                 hbase htransport
 
 noncomputable def delayedPermissiveDetailedSelectionAfterRootResult
@@ -820,6 +836,36 @@ noncomputable def delayedPermissiveDetailedSelectionAfterRootResult
     (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) [] rootResult.state
     rootResult.remaining rootResult.table rootResult.value.2
 
+theorem directWitnessFinalizationMaterializedCouples_maskedPublishedTreeRoot
+    (table : OtsSecretIndex → HashOutput) :
+    DirectWitnessFinalizationMaterializedCouples table maskedPublishedTreeRoot := by
+  unfold maskedPublishedTreeRoot
+  apply (directWitnessFinalizationMaterializedCouples_ensureTreeNode table topLayer rootTree
+    (layerHeight topLayer) 0).bind
+  intro _
+  exact directWitnessFinalizationMaterializedCouples_revealPublishedCoordinate table
+    (.position (.node topLayer rootTree
+      ⟨layerHeight topLayer - 1, by norm_num [layerHeight, topLayer, maxLayerHeight]⟩ 0))
+
+noncomputable def delayedPermissiveDetailedSelectionObserve
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (state : LazyRevealProbe.State Coordinate) (remaining : Nat)
+    (root : Digest) (cache : SplitHashCache) (candidates : List Probe) :
+    ProbComp (Option PermissivePrivateOrdinalSelection) :=
+  delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret
+    (retainedGameRestComputation adversary ⟨root, parameter⟩) candidates state remaining table cache
+
+noncomputable def finishDelayedPermissiveDetailedSelection
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (result : Option (CleanRunResult (Digest × SplitHashCache))) :
+    ProbComp (Option PermissivePrivateOrdinalSelection) :=
+  finishPermissiveDetailedPrivateOrdinalSelection
+    (delayedPermissiveDetailedSelectionObserve ordinal adversary parameter table ftsSecret) [] result
+
 noncomputable def delayedPermissiveDetailedSelectionExperimentAfterTable
     (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
@@ -830,5 +876,154 @@ noncomputable def delayedPermissiveDetailedSelectionExperimentAfterTable
   | none => pure none
   | some result =>
       delayedPermissiveDetailedSelectionAfterRootResult ordinal adversary parameter ftsSecret result
+
+set_option maxHeartbeats 4000000 in
+set_option maxRecDepth 100000 in
+theorem relTriple_finishGranularPrivateOrdinalSelection_delayed
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (rightRoot : Digest) (hroot : IsLayerRoot target)
+    (leftResult : DirectWitnessResult (Digest × SplitHashCache))
+    (rightResult : Option (CleanRunResult (Digest × SplitHashCache)))
+    (hresult : DirectWitnessPermissiveRunRel table leftResult rightResult) :
+    RelTriple
+      (finishDirectPrivateOrdinalSelection
+        (canonicalizeDirectPrivateOrdinalSelection table
+          (granularPrivateOrdinalSelectionObserve ordinal adversary parameter table ftsSecret)) []
+        leftResult)
+      (finishDelayedPermissiveDetailedSelection ordinal adversary parameter table ftsSecret
+        rightResult)
+      (DelayedPermissiveSelectionRel target rightRoot ordinal) := by
+  unfold finishDelayedPermissiveDetailedSelection
+  apply relTriple_finishDirect_delayedPermissiveSelection target rightRoot ordinal table
+    (granularPrivateOrdinalSelectionObserve ordinal adversary parameter table ftsSecret)
+    (delayedPermissiveDetailedSelectionObserve ordinal adversary parameter table ftsSecret)
+    [] [] leftResult rightResult hresult
+  intro left right _hleft _hright hvalue hremaining hvalues hrevealed hvalid hcompletable
+    hchainValid hcanonical hpublished
+  have hbase := relTriple_directBoundary_delayedPermissiveDetailedOrdinalSelection ordinal
+    parameter left.value.1 target rightRoot ftsSecret
+    (retainedGameRestComputation adversary ⟨left.value.1, parameter⟩) []
+    (canonicalizeMaterializedValues table left.context) left.remaining table left.value.2 hroot
+    hvalid hcompletable hchainValid hcanonical hpublished (delayedHashActionCouples table parameter)
+  have hstate : PermissiveStateRel
+      (materializedDeferredState (canonicalizeMaterializedValues table left.context)) right.state :=
+    ⟨hvalues, hrevealed⟩
+  have htransport :=
+    relTriple_delayedPermissiveDetailedOrdinalSelection_of_stateRel ordinal parameter left.value.1
+      ftsSecret (retainedGameRestComputation adversary ⟨left.value.1, parameter⟩) [] []
+      (materializedDeferredState (canonicalizeMaterializedValues table left.context)) right.state
+      left.remaining table left.value.2 rfl hstate
+  simpa only [granularPrivateOrdinalSelectionObserve, delayedPermissiveDetailedSelectionObserve,
+    ← hvalue, ← hremaining] using
+    relTriple_delayedPermissiveSelection_trans target rightRoot ordinal hbase htransport
+
+theorem granularAllCanonicalPrivateOrdinalSelection_eq_bind_finish
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    granularAllCanonicalPrivateOrdinalSelection ordinal adversary parameter table ftsSecret fuel =
+      (runDirectResolvedWitnessFromTable emptyWitnessDeferredContext fuel table
+          (maskedPublishedTreeRoot.run emptySplitHashCache) >>=
+        finishDirectPrivateOrdinalSelection
+          (canonicalizeDirectPrivateOrdinalSelection table
+            (granularPrivateOrdinalSelectionObserve ordinal adversary parameter table ftsSecret))
+          []) := by
+  rfl
+
+set_option maxHeartbeats 4000000 in
+set_option maxRecDepth 100000 in
+theorem relTriple_granularAllCanonicalPrivateOrdinalSelection_permissiveDelayed
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (fuel : Nat) (target : Position) (rightRoot : Digest)
+    (hroot : IsLayerRoot target) :
+    RelTriple
+      (granularAllCanonicalPrivateOrdinalSelection ordinal adversary parameter table ftsSecret fuel)
+      (delayedPermissiveDetailedSelectionExperimentAfterTable ordinal adversary parameter
+        ftsSecret fuel table)
+      (DelayedPermissiveSelectionRel target rightRoot ordinal) := by
+  rw [granularAllCanonicalPrivateOrdinalSelection_eq_bind_finish]
+  unfold delayedPermissiveDetailedSelectionExperimentAfterTable rootAwareProductionInitialRun
+  have hempty : materializedDeferredState emptyWitnessDeferredContext =
+      (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) := by
+    unfold materializedDeferredState emptyWitnessDeferredContext LazyRevealProbe.State.empty
+    rw [LazyRevealProbe.State.mk.injEq]
+    refine ⟨rfl, ?_, rfl, rfl⟩
+    funext coordinate
+    cases coordinate <;> rfl
+  have hinitial : RelTriple
+      (runDirectResolvedWitnessFromTable emptyWitnessDeferredContext fuel table
+        (maskedPublishedTreeRoot.run emptySplitHashCache))
+      (runCleanFromTable (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)
+        fuel table (maskedPublishedTreeRoot.run emptySplitHashCache))
+      (DirectWitnessPermissiveRunRel table) := by
+    rw [← hempty]
+    exact relTriple_runDirectResolvedWitness_runCleanFromTable maskedPublishedTreeRoot
+      emptyWitnessDeferredContext fuel table emptySplitHashCache DeferredContext.valid_empty
+      (deferredCompletable_empty table)
+      (by simp [ChainState.ValidFor, emptyWitnessDeferredContext,
+        LazyRevealProbe.State.empty])
+      preservesChainValid_maskedPublishedTreeRoot_true
+      (directWitnessFinalizationMaterializedCouples_maskedPublishedTreeRoot table)
+  refine relTriple_bind
+    (R := DirectWitnessPermissiveRunRel table)
+    hinitial ?_
+  intro leftResult rightResult hresult
+  have hfixed := relTriple_finishGranularPrivateOrdinalSelection_delayed ordinal adversary
+    parameter table ftsSecret target rightRoot hroot leftResult rightResult hresult
+  cases leftResult with
+  | stoppedFuel =>
+      exact relTriple_none_any_delayedPermissiveSelection target rightRoot ordinal _
+  | stoppedOrdinary =>
+      exact relTriple_none_any_delayedPermissiveSelection target rightRoot ordinal _
+  | stoppedPrivate witness =>
+      exact relTriple_none_any_delayedPermissiveSelection target rightRoot ordinal _
+  | done leftResult =>
+      rcases hresult with hreject | ⟨cleanResult, hright, hvalue, hremaining,
+        hleftTable, hrightTable, hrevealed, hmaterialized, hchainValid, hcontext⟩
+      · rcases hreject with hprivate | hpublished | hcompletable
+        · rw [show finishDirectPrivateOrdinalSelection
+              (canonicalizeDirectPrivateOrdinalSelection table
+                (granularPrivateOrdinalSelectionObserve ordinal adversary parameter table
+                  ftsSecret)) [] (.done leftResult) = pure none by
+            simp [finishDirectPrivateOrdinalSelection,
+              canonicalizeDirectPrivateOrdinalSelection, hprivate]]
+          exact relTriple_none_any_delayedPermissiveSelection target rightRoot ordinal _
+        · rw [show finishDirectPrivateOrdinalSelection
+              (canonicalizeDirectPrivateOrdinalSelection table
+                (granularPrivateOrdinalSelectionObserve ordinal adversary parameter table
+                  ftsSecret)) [] (.done leftResult) = pure none by
+            simp [finishDirectPrivateOrdinalSelection,
+              canonicalizeDirectPrivateOrdinalSelection, hpublished]]
+          exact relTriple_none_any_delayedPermissiveSelection target rightRoot ordinal _
+        · rw [show finishDirectPrivateOrdinalSelection
+              (canonicalizeDirectPrivateOrdinalSelection table
+                (granularPrivateOrdinalSelectionObserve ordinal adversary parameter table
+                  ftsSecret)) [] (.done leftResult) = pure none by
+            simp [finishDirectPrivateOrdinalSelection,
+              canonicalizeDirectPrivateOrdinalSelection, hcompletable]]
+          exact relTriple_none_any_delayedPermissiveSelection target rightRoot ordinal _
+      · subst rightResult
+        change RelTriple
+          (finishDirectPrivateOrdinalSelection
+            (canonicalizeDirectPrivateOrdinalSelection table
+              (granularPrivateOrdinalSelectionObserve ordinal adversary parameter table
+                ftsSecret)) [] (.done leftResult))
+          (delayedPermissiveDetailedSelectionAfterRootResult ordinal adversary parameter
+            ftsSecret cleanResult)
+          (DelayedPermissiveSelectionRel target rightRoot ordinal)
+        rw [show delayedPermissiveDetailedSelectionAfterRootResult ordinal adversary parameter
+              ftsSecret cleanResult =
+            finishDelayedPermissiveDetailedSelection ordinal adversary parameter table ftsSecret
+              (some cleanResult) by
+          simp only [delayedPermissiveDetailedSelectionAfterRootResult,
+            finishDelayedPermissiveDetailedSelection,
+            finishPermissiveDetailedPrivateOrdinalSelection,
+            delayedPermissiveDetailedSelectionObserve]
+          rw [hrightTable]]
+        exact hfixed
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

@@ -39,7 +39,7 @@ def DirectWitnessPermissiveRunRel
   | _, _ => True
 
 set_option maxRecDepth 100000 in
-theorem relTriple_runDirectResolvedWitness_runPermissiveFromTable
+theorem relTriple_runDirectResolvedWitness_runCleanFromTable
     (computation : StateT SplitHashCache
       (OracleComp (LazyRevealProbe.World Coordinate)) α)
     (context : DeferredContext) (fuel : Nat)
@@ -50,7 +50,7 @@ theorem relTriple_runDirectResolvedWitness_runPermissiveFromTable
     (hcouples : DirectWitnessFinalizationMaterializedCouples table computation) :
     RelTriple
       (runDirectResolvedWitnessFromTable context fuel table (computation.run cache))
-      (runPermissiveFromTable (materializedDeferredState context) fuel table
+      (runCleanFromTable (materializedDeferredState context) fuel table
         (computation.run cache))
       (DirectWitnessPermissiveRunRel table) := by
   let materialized := materializedDeferredContext context
@@ -125,12 +125,25 @@ theorem relTriple_runDirectResolvedWitness_runPermissiveFromTable
     simpa [materialized, materializedDeferredContext] using
       (map_projectDirectDetailedClean_run_eq_clean (computation.run cache)
         (materializedDeferredState context) fuel table)
-  have hclean : RelTriple
+  exact relTriple_of_evalDist_eq_right (congrArg evalDist hprojectEq) hproject
+
+set_option maxRecDepth 100000 in
+theorem relTriple_runDirectResolvedWitness_runPermissiveFromTable
+    (computation : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) α)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (hvalid : context.Valid) (hcompletable : DeferredCompletable table context)
+    (hchainValid : ChainState.ValidFor (fun _ ↦ True) context.state)
+    (hpreserves : PreservesChainValid (fun _ ↦ True) computation)
+    (hcouples : DirectWitnessFinalizationMaterializedCouples table computation) :
+    RelTriple
       (runDirectResolvedWitnessFromTable context fuel table (computation.run cache))
-      (runCleanFromTable (materializedDeferredState context) fuel table
+      (runPermissiveFromTable (materializedDeferredState context) fuel table
         (computation.run cache))
-      (DirectWitnessPermissiveRunRel table) :=
-    relTriple_of_evalDist_eq_right (congrArg evalDist hprojectEq) hproject
+      (DirectWitnessPermissiveRunRel table) := by
+  have hclean := relTriple_runDirectResolvedWitness_runCleanFromTable computation context fuel table
+    cache hvalid hcompletable hchainValid hpreserves hcouples
   have hpermissive := relTriple_runCleanFromTable_runPermissiveFromTable
     (computation.run cache) (materializedDeferredState context) fuel table
   have hglued := SphincsSecurity.relTriple_trans_exists hclean hpermissive
