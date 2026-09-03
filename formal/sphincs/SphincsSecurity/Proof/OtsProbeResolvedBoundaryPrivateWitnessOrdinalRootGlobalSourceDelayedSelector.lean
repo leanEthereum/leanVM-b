@@ -27,6 +27,7 @@ def DelayedPermissiveSelectionRel
         left = some leftSelection ∧ right = some rightSelection ∧
           leftSelection.GoodForRoots target leftOutput rightRoot ordinal ∧
           leftSelection.candidate = rightSelection.candidate ∧
+          leftSelection.candidates = rightSelection.candidates ∧
           permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? (some rightSelection) =
             some target ∧
           rightSelection.state.values (.position target) = some leftOutput
@@ -45,7 +46,7 @@ theorem delayedPermissiveSelectionRel_selected
   change PrivateOrdinalSelection.GoodForRoots target leftOutput rightRoot ordinal
     ⟨candidate, left, candidates⟩ at hgood
   refine ⟨leftOutput, ⟨candidate, left, candidates⟩, ⟨candidate, right, candidates⟩, rfl, rfl,
-    hgood, rfl, ?_, ?_⟩
+    hgood, rfl, rfl, ?_, ?_⟩
   · exact permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition?_eq_some_of_candidate
       (by simpa using congrArg Probe.coordinate hgood.1) hroot
       (by simpa [← hrevealed] using hgood.2.2.1)
@@ -440,15 +441,16 @@ theorem relTriple_delayedPermissiveSelection_trans
   obtain ⟨middleSelection, hfirst, hsecond⟩ := hrelation
   have hmiddle := hfirst hgood
   obtain ⟨leftOutput, leftSelected, middleSelected, hleftSelected, hmiddleSelected, hleftGood,
-    hcandidate, hposition, hvalue⟩ := hmiddle
+    hcandidate, hcandidates, hposition, hvalue⟩ := hmiddle
   cases hmiddleSelected
   cases rightSelection with
   | none => exact False.elim hsecond
   | some rightSelected =>
       have hpositionEq := hsecond.positionFiber_eq
-      rcases hsecond with ⟨hmiddleCandidate, _hcandidates, hstate⟩
+      rcases hsecond with ⟨hmiddleCandidate, hmiddleCandidates, hstate⟩
       refine ⟨leftOutput, leftSelected, rightSelected, hleftSelected, rfl,
-        hleftGood, hcandidate.trans hmiddleCandidate, ?_, ?_⟩
+        hleftGood, hcandidate.trans hmiddleCandidate,
+        hcandidates.trans hmiddleCandidates, ?_, ?_⟩
       · rw [← hpositionEq]
         exact hposition
       · rw [← hstate.values]
@@ -731,7 +733,8 @@ theorem relTriple_directBoundary_delayedPermissiveDetailedOrdinalSelection
                       materializedDeferredState context,
                       permissiveRootAwareCandidates parameter input table
                         (materializedDeferredState context) candidates⟩,
-                    rfl, rfl, hgood, hcandidate, ?_, ?_⟩
+                    rfl, rfl, hgood, hcandidate, ?_, ?_, ?_⟩
+                  · exact hrightCandidates.symm
                   · apply permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition?_eq_some_of_candidate
                     · have hsource := congrArg Probe.coordinate hgood.1
                       change (nextCandidates.get ⟨ordinal, hnextSelected⟩).coordinate =

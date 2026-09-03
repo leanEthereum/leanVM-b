@@ -316,8 +316,12 @@ theorem DelayedPermissiveSelectionRel.targetGuess
     (hrel : DelayedPermissiveSelectionRel target rightRoot ordinal left right)
     (hgood : privateOrdinalSelectionGoodForSomeOutput target rightRoot ordinal left) :
     PermissiveTargetGuess target right := by
-  obtain ⟨leftOutput, leftSelection, rightSelection, hleft, hright, hleftGood, hcandidate,
-    hposition, hvalue⟩ := hrel hgood
+  obtain ⟨leftOutput, leftSelection, rightSelection, hdata⟩ := hrel hgood
+  have hright := hdata.2.1
+  have hleftGood := hdata.2.2.1
+  have hcandidate := hdata.2.2.2.1
+  have hposition := hdata.2.2.2.2.2.1
+  have hvalue := hdata.2.2.2.2.2.2
   rw [hright]
   refine ⟨leftOutput, ?_, hvalue, ?_⟩
   · simp only [permissivePrivateOrdinalSelectionTargetProbe?]
@@ -371,12 +375,16 @@ theorem DelayedPermissiveSelectionRel.targetProbe_eq
     (hrel : DelayedPermissiveSelectionRel target rightRoot ordinal (some left) right)
     (hgood : left.GoodForRoots target leftOutput rightRoot ordinal) :
     permissivePrivateOrdinalSelectionTargetProbe? target right = some left.candidate := by
-  obtain ⟨_output, leftSelection, rightSelection, hleft, hright, _hgood, hcandidate, hposition⟩ :=
+  obtain ⟨_output, leftSelection, rightSelection, hdata⟩ :=
     hrel ⟨leftOutput, hgood⟩
+  have hleft := hdata.1
+  have hright := hdata.2.1
+  have hcandidate := hdata.2.2.2.1
+  have hposition := hdata.2.2.2.2.2.1
   cases Option.some.inj hleft
   rw [hright]
   simp only [permissivePrivateOrdinalSelectionTargetProbe?]
-  rw [if_pos hposition.1, hcandidate]
+  rw [if_pos hposition, hcandidate]
 
 theorem PermissiveDetailedSelectionRel.targetProbe_eq
     {target : Position} {left right : Option PermissivePrivateOrdinalSelection}
