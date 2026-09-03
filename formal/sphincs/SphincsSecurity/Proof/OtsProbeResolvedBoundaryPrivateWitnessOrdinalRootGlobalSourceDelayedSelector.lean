@@ -1,5 +1,6 @@
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalSourceDelayedCoupling
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedRootAdaptiveProductionCommonExperiment
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedRootAdaptiveProductionCommonCache
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedRootAdaptiveReverse
 
 /-!
@@ -80,6 +81,8 @@ theorem relTriple_finishDirect_delayedPermissiveSelection
           (canonicalizeMaterializedValues table leftResult.context).state →
       CanonicalMaterializedValues table
         (canonicalizeMaterializedValues table leftResult.context) →
+      PublishedValues
+        (canonicalizeMaterializedValues table leftResult.context).state →
       RelTriple
         (leftObserve (canonicalizeMaterializedValues table leftResult.context)
           leftResult.remaining leftResult.value leftCandidates)
@@ -99,51 +102,69 @@ theorem relTriple_finishDirect_delayedPermissiveSelection
   | stoppedPrivate witness =>
       exact relTriple_none_any_delayedPermissiveSelection target leftOutput rightRoot ordinal _
   | done leftResult =>
-      cases right with
-      | none => exact False.elim hrelation
-      | some rightResult =>
-          rcases hrelation with
-            ⟨hvalue, hremaining, _hleftTable, _hrightTable, hrevealed, hmaterialized,
-              hchainValid, hcontext⟩
-          let canonical := canonicalizeMaterializedValues table leftResult.context
-          unfold finishDirectPrivateOrdinalSelection
-            finishPermissiveDetailedPrivateOrdinalSelection
-            canonicalizeDirectPrivateOrdinalSelection
-          by_cases hprivate : PrivateStructuralHit canonical
-          · simp only [canonical, hprivate, ↓reduceIte]
-            exact relTriple_none_any_delayedPermissiveSelection target leftOutput rightRoot ordinal _
-          · simp only [canonical, hprivate, ↓reduceIte]
-            by_cases hpublished : PublishedValues leftResult.context.state
-            · simp only [hpublished, ↓reduceIte]
-              by_cases hcompletable : DeferredCompletable table
-                  (canonicalizeMaterializedValues table leftResult.context)
-              · simp only [hcompletable, ↓reduceIte]
-                have hcanonicalMaterialized :
-                    (materializedDeferredState canonical).values = rightResult.state.values := by
-                  rw [ScratchLocal.materializedDeferredState_canonicalize_eq table leftResult.context
-                    hcontext.1.leftStarts hchainValid hcontext.2.1.valuesConsistent]
-                  exact hmaterialized
-                have hcanonicalRevealed :
-                    canonical.state.revealed = rightResult.state.revealed := by
-                  simpa [canonical, canonicalizeMaterializedValues_revealed] using hrevealed
-                have hcanonicalValid : canonical.Valid :=
-                  canonicalizeMaterializedValues_valid table leftResult.context hcontext.2.1
-                    hcontext.1.leftClean
-                have hcanonicalChainValid : ChainState.ValidFor (fun _ ↦ True) canonical.state :=
-                  hchainValid.canonicalizeMaterializedValues table hcontext.1.leftStarts
-                have hcanonicalCanonical : CanonicalMaterializedValues table canonical :=
-                  canonicalizeMaterializedValues_canonical table leftResult.context
-                    hcontext.2.1.valuesConsistent
-                simpa [hvalue, hremaining] using
-                  hrecursive leftResult rightResult rfl rfl hvalue hremaining
-                    hcanonicalMaterialized hcanonicalRevealed hcanonicalValid hcompletable
-                    hcanonicalChainValid hcanonicalCanonical
-              · simp only [hcompletable, ↓reduceIte]
-                exact relTriple_none_any_delayedPermissiveSelection target leftOutput rightRoot
-                  ordinal _
-            · simp only [hpublished, ↓reduceIte]
+      rcases hrelation with hreject | ⟨rightResult, hright, hvalue, hremaining,
+          _hleftTable, _hrightTable, hrevealed, hmaterialized, hchainValid, hcontext⟩
+      · rcases hreject with hprivate | hpublished | hcompletable
+        · rw [show finishDirectPrivateOrdinalSelection
+              (canonicalizeDirectPrivateOrdinalSelection table leftObserve) leftCandidates
+              (.done leftResult) = pure none by
+            simp [finishDirectPrivateOrdinalSelection,
+              canonicalizeDirectPrivateOrdinalSelection, hprivate]]
+          exact relTriple_none_any_delayedPermissiveSelection target leftOutput rightRoot ordinal _
+        · rw [show finishDirectPrivateOrdinalSelection
+              (canonicalizeDirectPrivateOrdinalSelection table leftObserve) leftCandidates
+              (.done leftResult) = pure none by
+            simp [finishDirectPrivateOrdinalSelection,
+              canonicalizeDirectPrivateOrdinalSelection, hpublished]]
+          exact relTriple_none_any_delayedPermissiveSelection target leftOutput rightRoot ordinal _
+        · rw [show finishDirectPrivateOrdinalSelection
+              (canonicalizeDirectPrivateOrdinalSelection table leftObserve) leftCandidates
+              (.done leftResult) = pure none by
+            simp [finishDirectPrivateOrdinalSelection,
+              canonicalizeDirectPrivateOrdinalSelection, hcompletable]]
+          exact relTriple_none_any_delayedPermissiveSelection target leftOutput rightRoot ordinal _
+      · subst right
+        let canonical := canonicalizeMaterializedValues table leftResult.context
+        unfold finishDirectPrivateOrdinalSelection
+          finishPermissiveDetailedPrivateOrdinalSelection
+          canonicalizeDirectPrivateOrdinalSelection
+        by_cases hprivate : PrivateStructuralHit canonical
+        · simp only [canonical, hprivate, ↓reduceIte]
+          exact relTriple_none_any_delayedPermissiveSelection target leftOutput rightRoot ordinal _
+        · simp only [canonical, hprivate, ↓reduceIte]
+          by_cases hpublished : PublishedValues leftResult.context.state
+          · simp only [hpublished, ↓reduceIte]
+            by_cases hcompletable : DeferredCompletable table
+                (canonicalizeMaterializedValues table leftResult.context)
+            · simp only [hcompletable, ↓reduceIte]
+              have hcanonicalMaterialized :
+                  (materializedDeferredState canonical).values = rightResult.state.values := by
+                rw [ScratchLocal.materializedDeferredState_canonicalize_eq table leftResult.context
+                  hcontext.1.leftStarts hchainValid hcontext.2.1.valuesConsistent]
+                exact hmaterialized
+              have hcanonicalRevealed :
+                  canonical.state.revealed = rightResult.state.revealed := by
+                simpa [canonical, canonicalizeMaterializedValues_revealed] using hrevealed
+              have hcanonicalValid : canonical.Valid :=
+                canonicalizeMaterializedValues_valid table leftResult.context hcontext.2.1
+                  hcontext.1.leftClean
+              have hcanonicalChainValid : ChainState.ValidFor (fun _ ↦ True) canonical.state :=
+                hchainValid.canonicalizeMaterializedValues table hcontext.1.leftStarts
+              have hcanonicalCanonical : CanonicalMaterializedValues table canonical :=
+                canonicalizeMaterializedValues_canonical table leftResult.context
+                  hcontext.2.1.valuesConsistent
+              have hcanonicalPublished : PublishedValues canonical.state :=
+                hpublished.to_canonicalizedMaterializedValues
+              simpa [hvalue, hremaining] using
+                hrecursive leftResult rightResult rfl rfl hvalue hremaining
+                  hcanonicalMaterialized hcanonicalRevealed hcanonicalValid hcompletable
+                  hcanonicalChainValid hcanonicalCanonical hcanonicalPublished
+            · simp only [hcompletable, ↓reduceIte]
               exact relTriple_none_any_delayedPermissiveSelection target leftOutput rightRoot
                 ordinal _
+          · simp only [hpublished, ↓reduceIte]
+            exact relTriple_none_any_delayedPermissiveSelection target leftOutput rightRoot
+              ordinal _
 
 noncomputable def delayedPermissivePublicAction
     (parameter : PublicParameter) (input : HashInput)
@@ -411,6 +432,7 @@ def DelayedHashActionCouples
     context.Valid → DeferredCompletable table context →
     ChainState.ValidFor (fun _ ↦ True) context.state →
     CanonicalMaterializedValues table context →
+    PublishedValues context.state →
     RelTriple
       (runDirectResolvedWitnessFromTable context fuel table
         ((probingHashQueryAfterPlan parameter input
@@ -419,6 +441,136 @@ def DelayedHashActionCouples
         (delayedPermissivePublicAction parameter input table
           (materializedDeferredState context) cache))
       (DirectWitnessPermissiveRunRel table)
+
+set_option maxRecDepth 100000 in
+theorem delayedHashActionCouples
+    (table : OtsSecretIndex → HashOutput) (parameter : PublicParameter) :
+    DelayedHashActionCouples table parameter := by
+  intro input context fuel cache hvalid hcompletable hchainValid hcanonical _hpublished
+  let plan := purePlanProbingHashQuery parameter input context.state
+  rw [runDirectResolvedWitnessFromTable_afterPlan_eq_publicPlan parameter input plan context fuel
+    table cache]
+  rw [delayedPermissivePublicAction_materializedDeferredState_eq parameter input table context
+    cache hvalid hcompletable hcanonical]
+  change RelTriple
+    (runDirectResolvedWitnessFromTable context fuel table
+      ((probingHashQueryAfterPublicPlan parameter input context.state plan).run cache))
+    (runPermissiveFromTable (materializedDeferredState context) fuel table
+      ((probingHashQueryAfterPublicPlan parameter input context.state plan).run cache))
+    (DirectWitnessPermissiveRunRel table)
+  unfold probingHashQueryAfterPublicPlan
+  cases hcandidate : plan.candidate? with
+  | none =>
+      simp only [executeCandidate?, pure_bind]
+      exact relTriple_runDirectResolvedWitness_runPermissiveFromTable
+        (probingHashQueryPublicAction parameter input context.state plan.action)
+        context fuel table cache hvalid hcompletable hchainValid
+        (preservesChainValid_probingHashQueryPublicAction_true parameter input context.state
+          plan.action)
+        (directWitnessFinalizationMaterializedCouples_publicAction table parameter input
+          context.state plan.action)
+  | some candidate =>
+      cases fuel with
+      | zero =>
+          simp [executeCandidate?, probe, LazyRevealProbe.probeQuery,
+            runDirectResolvedWitnessFromTable, runPermissiveFromTable,
+            DirectWitnessPermissiveRunRel]
+      | succ remaining =>
+          simp only [executeCandidate?, StateT.run_bind, probe, StateT.run_liftM,
+            LazyRevealProbe.probeQuery, bind_assoc, pure_bind]
+          rw [runDirectResolvedWitnessFromTable_probe_query_bind,
+            runPermissiveFromTable_probe_query_bind]
+          have hmaterializedRevealed :
+              candidate.coordinate ∈ (materializedDeferredState context).revealed ↔
+                candidate.coordinate ∈ context.state.revealed := by
+            rfl
+          by_cases hrevealed : candidate.coordinate ∈ context.state.revealed
+          · have hrightRevealed :
+                candidate.coordinate ∈ (materializedDeferredState context).revealed :=
+              hmaterializedRevealed.mpr hrevealed
+            simp only [hrevealed, hrightRevealed, ↓reduceIte]
+            exact relTriple_runDirectResolvedWitness_runPermissiveFromTable
+              (probingHashQueryPublicAction parameter input context.state plan.action)
+              context remaining table cache hvalid hcompletable hchainValid
+              (preservesChainValid_probingHashQueryPublicAction_true parameter input context.state
+                plan.action)
+              (directWitnessFinalizationMaterializedCouples_publicAction table parameter input
+                context.state plan.action)
+          · have hrightRevealed :
+                candidate.coordinate ∉ (materializedDeferredState context).revealed := by
+              rwa [hmaterializedRevealed]
+            simp only [hrevealed, hrightRevealed, ↓reduceIte]
+            let nextContext : DeferredContext :=
+              { context with state :=
+                  context.state.addPending candidate.coordinate candidate.candidate }
+            have hmaterialized : materializedDeferredState nextContext =
+                (materializedDeferredState context).addPending candidate.coordinate
+              candidate.candidate := by
+              rcases context with ⟨state, values⟩
+              rcases state with ⟨pending, stateValues, revealed, ensured⟩
+              simp [nextContext, materializedDeferredState, DeferredContext.positionValue,
+                LazyRevealProbe.State.addPending]
+            rw [← hmaterialized]
+            by_cases hnextCompletable : DeferredCompletable table nextContext
+            · have hnextValid : nextContext.Valid :=
+                hvalid.addPending_of_completable candidate.coordinate candidate.candidate
+                  hnextCompletable
+              have hnextChainValid : ChainState.ValidFor (fun _ ↦ True) nextContext.state := by
+                exact hchainValid.addPending candidate.coordinate candidate.candidate
+              exact relTriple_runDirectResolvedWitness_runPermissiveFromTable
+                (probingHashQueryPublicAction parameter input context.state plan.action)
+                nextContext remaining table cache hnextValid hnextCompletable hnextChainValid
+                (preservesChainValid_probingHashQueryPublicAction_true parameter input context.state
+                  plan.action)
+                (directWitnessFinalizationMaterializedCouples_publicAction table parameter input
+                  context.state plan.action)
+            · let computation :=
+                (probingHashQueryPublicAction parameter input context.state plan.action).run cache
+              have hbase := relTriple_true
+                (runDirectResolvedWitnessFromTable nextContext remaining table computation)
+                (runPermissiveFromTable (materializedDeferredState nextContext) remaining table
+                  computation)
+              have hsupported :=
+                SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+                  (fun result => result ∈ support
+                    (runDirectResolvedWitnessFromTable nextContext remaining table computation))
+                  (fun result hresult => hresult)
+              apply relTriple_post_mono hsupported
+              intro leftResult _rightResult hrelation
+              cases leftResult with
+              | stoppedFuel => trivial
+              | stoppedOrdinary => trivial
+              | stoppedPrivate witness => trivial
+              | done result =>
+                  apply Or.inl
+                  apply Or.inr
+                  apply Or.inr
+                  have hdetailed : DirectDetailedResult.done result ∈ support
+                      (runDirectResolvedDetailedFromTable nextContext remaining table
+                        computation) := by
+                    rw [← map_erase_runDirectResolvedWitnessFromTable computation nextContext
+                      remaining table, support_map]
+                    exact ⟨.done result, hrelation.2, rfl⟩
+                  have hdirect : some result ∈ support
+                      (runDirectResolvedFromTable nextContext remaining table computation) :=
+                    mem_support_runDirectResolvedFromTable_of_done_detailed computation nextContext
+                      remaining table result hdetailed
+                  have hconsistent : nextContext.ValuesConsistent :=
+                    hvalid.valuesConsistent.addPending candidate.coordinate candidate.candidate
+                  have hstarts : StartTableAgrees nextContext.state table := by
+                    have hcontextStarts : StartTableAgrees context.state table := by
+                      rw [← canonicalizeMaterializedValues_eq_of_canonical table context hcanonical]
+                      exact canonicalizeMaterializedValues_startTableAgrees table context
+                    exact hcontextStarts.addPending candidate.coordinate candidate.candidate
+                  have hfinalCore := resolvedCore_of_mem_runDirectResolvedFromTable computation
+                    nextContext remaining table result hconsistent hstarts hdirect
+                  have hfinalNotCompletable :=
+                    not_deferredCompletable_of_mem_runDirectResolvedFromTable computation
+                      nextContext remaining table result hconsistent hstarts hdirect
+                        hnextCompletable
+                  exact (doomedResolvedContext_canonicalizeMaterializedValues
+                    (table := table) (context := result.context)
+                    ⟨hfinalCore.2.1, hfinalCore.2.2, hfinalNotCompletable⟩).2.2
 
 set_option maxHeartbeats 2000000 in
 set_option maxRecDepth 100000 in
@@ -433,6 +585,7 @@ theorem relTriple_directBoundary_delayedPermissiveDetailedOrdinalSelection
     (hcompletable : DeferredCompletable table context)
     (hchainValid : ChainState.ValidFor (fun _ ↦ True) context.state)
     (hcanonical : CanonicalMaterializedValues table context)
+    (hpublished : PublishedValues context.state)
     (hhash : DelayedHashActionCouples table parameter) :
     RelTriple
       (directDetailedBoundaryPrivateOrdinalSelection ordinal parameter root ftsSecret computation
@@ -490,11 +643,11 @@ theorem relTriple_directBoundary_delayedPermissiveDetailedOrdinalSelection
                   ordinal table leftObserve rightObserve candidates candidates leftResult
                     rightResult hresult
                 intro nextLeft nextRight _hleft _hright hvalue hremaining hvalues hrevealed
-                  hnextValid hnextCompletable hnextChainValid hnextCanonical
+                  hnextValid hnextCompletable hnextChainValid hnextCanonical hnextPublished
                 let canonical := canonicalizeMaterializedValues table nextLeft.context
                 have hbase := ih nextLeft.value.1 candidates canonical nextLeft.remaining
                   nextLeft.value.2 hnextValid hnextCompletable hnextChainValid
-                    hnextCanonical
+                    hnextCanonical hnextPublished
                 have hstate : PermissiveStateRel (materializedDeferredState canonical)
                     nextRight.state := ⟨hvalues, hrevealed⟩
                 have htransport :=
@@ -567,7 +720,7 @@ theorem relTriple_directBoundary_delayedPermissiveDetailedOrdinalSelection
                       delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret
                         (next output) laterCandidates nextState remaining table nextCache
                   apply relTriple_bind (hhash input context fuel cache hvalid hcompletable
-                    hchainValid hcanonical)
+                    hchainValid hcanonical hpublished)
                   intro leftResult rightResult hresult
                   apply relTriple_finishDirect_delayedPermissiveSelection target leftOutput
                     rightRoot ordinal table leftObserve rightObserve nextCandidates
@@ -575,11 +728,11 @@ theorem relTriple_directBoundary_delayedPermissiveDetailedOrdinalSelection
                       (materializedDeferredState context) candidates)
                     leftResult rightResult hresult
                   intro nextLeft nextRight _hleft _hright hvalue hremaining hvalues hrevealed
-                    hnextValid hnextCompletable hnextChainValid hnextCanonical
+                    hnextValid hnextCompletable hnextChainValid hnextCanonical hnextPublished
                   let canonical := canonicalizeMaterializedValues table nextLeft.context
                   have hbase := ih nextLeft.value.1 nextCandidates canonical nextLeft.remaining
                     nextLeft.value.2 hnextValid hnextCompletable hnextChainValid
-                      hnextCanonical
+                      hnextCanonical hnextPublished
                   have hstate : PermissiveStateRel (materializedDeferredState canonical)
                       nextRight.state := ⟨hvalues, hrevealed⟩
                   have htransport :=
@@ -617,11 +770,11 @@ theorem relTriple_directBoundary_delayedPermissiveDetailedOrdinalSelection
               ordinal table leftObserve rightObserve candidates candidates leftResult
                 rightResult hresult
             intro nextLeft nextRight _hleft _hright hvalue hremaining hvalues hrevealed
-              hnextValid hnextCompletable hnextChainValid hnextCanonical
+              hnextValid hnextCompletable hnextChainValid hnextCanonical hnextPublished
             let canonical := canonicalizeMaterializedValues table nextLeft.context
             have hbase := ih nextLeft.value.1 candidates canonical nextLeft.remaining
               nextLeft.value.2 hnextValid hnextCompletable hnextChainValid
-                hnextCanonical
+                hnextCanonical hnextPublished
             have hstate : PermissiveStateRel (materializedDeferredState canonical)
                 nextRight.state := ⟨hvalues, hrevealed⟩
             have htransport :=

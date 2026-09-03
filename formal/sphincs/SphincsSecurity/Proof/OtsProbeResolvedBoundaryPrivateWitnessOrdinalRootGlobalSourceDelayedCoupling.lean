@@ -14,20 +14,28 @@ namespace SphincsSecurity.Concrete.OtsProbeSimulation
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
 
+def DirectWitnessRejected
+    (table : OtsSecretIndex → HashOutput) (result : ResolvedRunResult α) : Prop :=
+  let canonical := canonicalizeMaterializedValues table result.context
+  PrivateStructuralHit canonical ∨
+    ¬PublishedValues result.context.state ∨
+    ¬DeferredCompletable table canonical
+
 def DirectWitnessPermissiveRunRel
     (table : OtsSecretIndex → HashOutput) :
     DirectWitnessResult α → Option (CleanRunResult α) → Prop
-  | .done left, some right =>
-      left.value = right.value ∧
-        left.remaining = right.remaining ∧
-        left.table = table ∧
-        right.table = table ∧
-        left.context.state.revealed = right.state.revealed ∧
-        (materializedDeferredState left.context).values = right.state.values ∧
-        ChainState.ValidFor (fun _ ↦ True) left.context.state ∧
-        FinalizationContextEq table (some left.context)
-          (some (directDeferredContext right.state))
-  | .done _, none => False
+  | .done left, right =>
+      DirectWitnessRejected table left ∨
+        ∃ clean, right = some clean ∧
+          left.value = clean.value ∧
+          left.remaining = clean.remaining ∧
+          left.table = table ∧
+          clean.table = table ∧
+          left.context.state.revealed = clean.state.revealed ∧
+          (materializedDeferredState left.context).values = clean.state.values ∧
+          ChainState.ValidFor (fun _ ↦ True) left.context.state ∧
+          FinalizationContextEq table (some left.context)
+            (some (directDeferredContext clean.state))
   | _, _ => True
 
 set_option maxRecDepth 100000 in
@@ -93,7 +101,10 @@ theorem relTriple_runDirectResolvedWitness_runPermissiveFromTable
             rcases hrelation with
               ⟨hvalue, _hcontext, hremaining, _hrightRemaining, htable, _hrightTable,
                 hcache, hrevealed, hmaterialized, _hle, _hright⟩
-            refine ⟨Prod.ext hvalue hcache, hremaining.trans _hrightRemaining.symm,
+            let clean : CleanRunResult (α × SplitHashCache) :=
+              ⟨right.context.state, right.remaining, right.value, right.table⟩
+            refine Or.inr ⟨clean, rfl, Prod.ext hvalue hcache,
+              hremaining.trans _hrightRemaining.symm,
               htable, _hrightTable, hrevealed, hmaterialized, hleftChainValid, ?_⟩
             rw [_hright] at _hcontext
             exact _hcontext
@@ -132,7 +143,11 @@ theorem relTriple_runDirectResolvedWitness_runPermissiveFromTable
   | stoppedPrivate witness => trivial
   | done left =>
       cases middle with
-      | none => exact False.elim hleft
+      | none =>
+          exact Or.inl (by
+            rcases hleft with hreject | ⟨clean, hnone, _⟩
+            · exact hreject
+            · cases hnone)
       | some middle =>
           cases right with
           | none =>
@@ -142,6 +157,8 @@ theorem relTriple_runDirectResolvedWitness_runPermissiveFromTable
               have heq : right = middle := by
                 exact Option.some.inj (by simpa [CleanPermissiveRel] using hright)
               subst right
-              exact hleft
+              rcases hleft with hreject | ⟨clean, hclean, hfields⟩
+              · exact Or.inl hreject
+              · exact Or.inr ⟨clean, hclean, hfields⟩
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
