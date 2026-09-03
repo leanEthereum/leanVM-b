@@ -206,6 +206,7 @@ def blake2s(
     counter: Optional[int] = None,
     final: Optional[int] = None,
     last_node: int = 0,
+    md=None,
 ) -> None:
     """One standard BLAKE2s compression of the two 256-bit message operands
     `a`, `b`, written into the 2-cell run `out` (write-once: if `out` was
@@ -224,7 +225,12 @@ def blake2s(
     block's real length must be zero-filled by the program. `last_node` is
     BLAKE2s's tree-mode `f1` and is 0 everywhere here.
 
+    `md` is the whole 128-bit metadata word as a value the program computed, for
+    a hash whose block count is only known at run time. It replaces `counter`,
+    `final` and `last_node` (giving both is an error), and it must not name a
+    cell of `out`.
+
     Message, chaining-value, and output operands are size-2 StackBufs or
     2-cell slices `buf[lo:hi]` of larger StackBufs or HeapBufs (heap inputs are
     bridged through the stack, one DEREF per cell)."""
-    _ = a, b, out, cv, counter, final, last_node
+    _ = a, b, out, cv, counter, final, last_node, md
