@@ -14,14 +14,19 @@ namespace SphincsSecurity.Concrete.OtsProbeSimulation
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
 
-def DirectWitnessPermissiveRunRel :
+def DirectWitnessPermissiveRunRel
+    (table : OtsSecretIndex → HashOutput) :
     DirectWitnessResult α → Option (CleanRunResult α) → Prop
   | .done left, some right =>
       left.value = right.value ∧
         left.remaining = right.remaining ∧
-        left.table = right.table ∧
+        left.table = table ∧
+        right.table = table ∧
         left.context.state.revealed = right.state.revealed ∧
-        (materializedDeferredState left.context).values = right.state.values
+        (materializedDeferredState left.context).values = right.state.values ∧
+        ChainState.ValidFor (fun _ ↦ True) left.context.state ∧
+        FinalizationContextEq table (some left.context)
+          (some (directDeferredContext right.state))
   | .done _, none => False
   | _, _ => True
 
@@ -32,24 +37,50 @@ theorem relTriple_runDirectResolvedWitness_runPermissiveFromTable
     (context : DeferredContext) (fuel : Nat)
     (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
     (hvalid : context.Valid) (hcompletable : DeferredCompletable table context)
+    (hchainValid : ChainState.ValidFor (fun _ ↦ True) context.state)
+    (hpreserves : PreservesChainValid (fun _ ↦ True) computation)
     (hcouples : DirectWitnessFinalizationMaterializedCouples table computation) :
     RelTriple
       (runDirectResolvedWitnessFromTable context fuel table (computation.run cache))
       (runPermissiveFromTable (materializedDeferredState context) fuel table
         (computation.run cache))
-      DirectWitnessPermissiveRunRel := by
+      (DirectWitnessPermissiveRunRel table) := by
   let materialized := materializedDeferredContext context
   have hcontext : FinalizationContextEq table (some context) (some materialized) :=
     finalizationContextEq_materializedDeferredContext hvalid hcompletable
   have hstrong := hcouples context materialized fuel fuel cache cache hcontext rfl rfl rfl (by
     simp [materialized, materializedDeferredContext, directDeferredContext])
+  have hstrongSupported :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hstrong
+      (fun result => match result with
+        | .done resolved => ChainState.ValidFor (fun _ ↦ True) resolved.context.state
+        | _ => True) (by
+        intro result hresult
+        cases result with
+        | stoppedFuel => trivial
+        | stoppedOrdinary => trivial
+        | stoppedPrivate witness => trivial
+        | done resolved =>
+            have hdetailed : DirectDetailedResult.done resolved ∈ support
+                (runDirectResolvedDetailedFromTable context fuel table
+                  (computation.run cache)) := by
+              rw [← map_erase_runDirectResolvedWitnessFromTable
+                (computation.run cache) context fuel table, support_map]
+              exact ⟨.done resolved, hresult, rfl⟩
+            have hdirect : some resolved ∈ support
+                (runDirectResolvedFromTable context fuel table (computation.run cache)) :=
+              mem_support_runDirectResolvedFromTable_of_done_detailed
+                (computation.run cache) context fuel table resolved hdetailed
+            exact chainValid_of_mem_runDirectResolvedFromTable (fun _ ↦ True) computation
+              context fuel table cache resolved hpreserves hchainValid hdirect)
   have hstrength : RelTriple
       (runDirectResolvedWitnessFromTable context fuel table (computation.run cache))
       (runDirectResolvedDetailedFromTable materialized fuel table (computation.run cache))
-      (fun left right ↦ DirectWitnessPermissiveRunRel left
+      (fun left right ↦ DirectWitnessPermissiveRunRel table left
         (projectDirectDetailedClean right)) := by
-    apply relTriple_post_mono hstrong
+    apply relTriple_post_mono hstrongSupported
     intro left right hrelation
+    rcases hrelation with ⟨hrelation, hleftChainValid⟩
     cases left with
     | stoppedFuel => trivial
     | stoppedOrdinary => trivial
@@ -62,14 +93,16 @@ theorem relTriple_runDirectResolvedWitness_runPermissiveFromTable
             rcases hrelation with
               ⟨hvalue, _hcontext, hremaining, _hrightRemaining, htable, _hrightTable,
                 hcache, hrevealed, hmaterialized, _hle, _hright⟩
-            exact ⟨Prod.ext hvalue hcache, hremaining.trans _hrightRemaining.symm,
-              htable.trans _hrightTable.symm, hrevealed, hmaterialized⟩
+            refine ⟨Prod.ext hvalue hcache, hremaining.trans _hrightRemaining.symm,
+              htable, _hrightTable, hrevealed, hmaterialized, hleftChainValid, ?_⟩
+            rw [_hright] at _hcontext
+            exact _hcontext
   have hproject : RelTriple
       (runDirectResolvedWitnessFromTable context fuel table (computation.run cache))
       (projectDirectDetailedClean <$>
         runDirectResolvedDetailedFromTable materialized fuel table (computation.run cache))
-      DirectWitnessPermissiveRunRel := by
-    have hmapped := relTriple_map (R := DirectWitnessPermissiveRunRel)
+      (DirectWitnessPermissiveRunRel table) := by
+    have hmapped := relTriple_map (R := DirectWitnessPermissiveRunRel table)
       (f := id) (g := projectDirectDetailedClean) hstrength
     rw [id_map] at hmapped
     exact hmapped
@@ -85,7 +118,7 @@ theorem relTriple_runDirectResolvedWitness_runPermissiveFromTable
       (runDirectResolvedWitnessFromTable context fuel table (computation.run cache))
       (runCleanFromTable (materializedDeferredState context) fuel table
         (computation.run cache))
-      DirectWitnessPermissiveRunRel :=
+      (DirectWitnessPermissiveRunRel table) :=
     relTriple_of_evalDist_eq_right (congrArg evalDist hprojectEq) hproject
   have hpermissive := relTriple_runCleanFromTable_runPermissiveFromTable
     (computation.run cache) (materializedDeferredState context) fuel table

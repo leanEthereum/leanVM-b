@@ -93,14 +93,14 @@ theorem probEvent_granularAllCanonical_delayedOrdinal_le_two_mul
         pure (source, rightRoot)] ≤
       Pr[fun selection =>
           permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? selection = some target |
-        permissiveDetailedSelectionExperimentAfterTable ordinal adversary parameter ftsSecret q
-          table] * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) :
+        delayedPermissiveDetailedSelectionExperimentAfterTable ordinal adversary parameter
+          ftsSecret q table] * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) :
     Pr[WitnessFirstUsesDelayedLayerRootSnapshotOrdinal ordinal |
         granularAllCanonicalPrivateWitnessSnapshot adversary parameter table ftsSecret q] ≤
       2 * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
   apply probEvent_le_of_common_position_fibers
     (leftPosition := delayedSnapshotLayerRootPosition? ordinal)
-    (common := permissiveDetailedSelectionExperimentAfterTable ordinal adversary parameter
+    (common := delayedPermissiveDetailedSelectionExperimentAfterTable ordinal adversary parameter
       ftsSecret q table)
     (commonPosition := permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition?)
   · intro output hdelayed
@@ -111,8 +111,8 @@ theorem probEvent_granularAllCanonical_delayedOrdinal_le_two_mul
   · intro target
     exact probEvent_delayedRootFiber_le_two_mul_common
       (granularAllCanonicalPrivateWitnessSnapshot adversary parameter table ftsSecret q)
-      (permissiveDetailedSelectionExperimentAfterTable ordinal adversary parameter ftsSecret q
-        table)
+      (delayedPermissiveDetailedSelectionExperimentAfterTable ordinal adversary parameter
+        ftsSecret q table)
       ordinal q target hordinal hq (hgood target)
 
 theorem probEvent_sampledCanonical_delayedOrdinal_le_two_mul
@@ -128,8 +128,8 @@ theorem probEvent_sampledCanonical_delayedOrdinal_le_two_mul
         pure (source, rightRoot)] ≤
       Pr[fun selection =>
           permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? selection = some target |
-        permissiveDetailedSelectionExperimentAfterTable ordinal adversary parameter ftsSecret q
-          table] * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) :
+        delayedPermissiveDetailedSelectionExperimentAfterTable ordinal adversary parameter
+          ftsSecret q table] * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) :
     Pr[WitnessFirstUsesDelayedLayerRootSnapshotOrdinal ordinal |
         sampledGranularAllCanonicalPrivateWitnessSnapshot adversary parameter ftsSecret q] ≤
       2 * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
@@ -157,8 +157,8 @@ theorem probEvent_sampledCanonical_delayed_le_two_mul
         pure (source, rightRoot)] ≤
       Pr[fun selection =>
           permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? selection = some target |
-        permissiveDetailedSelectionExperimentAfterTable ordinal.val adversary parameter ftsSecret q
-          table] * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) :
+        delayedPermissiveDetailedSelectionExperimentAfterTable ordinal.val adversary parameter
+          ftsSecret q table] * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) :
     Pr[WitnessFirstUsesSomeDelayedLayerRootSnapshot |
         sampledGranularAllCanonicalPrivateWitnessSnapshot adversary parameter ftsSecret q] ≤
       (2 * q : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by

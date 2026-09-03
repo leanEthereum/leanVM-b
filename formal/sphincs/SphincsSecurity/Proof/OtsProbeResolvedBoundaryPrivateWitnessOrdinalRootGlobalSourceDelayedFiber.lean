@@ -1,5 +1,5 @@
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalSourceNonRootProbability
-import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedRootAdaptiveProductionCommonExperiment
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalSourceDelayedSelector
 
 /-!
 # Delayed source position fibers
@@ -142,8 +142,8 @@ theorem probEvent_granularAllCanonical_delayedOrdinal_le_of_common_position_fibe
         granularAllCanonicalPrivateWitnessSnapshot adversary parameter table ftsSecret fuel] ≤
       Pr[fun selection =>
           permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? selection = some target |
-        permissiveDetailedSelectionExperimentAfterTable ordinal adversary parameter ftsSecret fuel
-          table] * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) :
+        delayedPermissiveDetailedSelectionExperimentAfterTable ordinal adversary parameter
+          ftsSecret fuel table] * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) :
     Pr[WitnessFirstUsesDelayedLayerRootSnapshotOrdinal ordinal |
         granularAllCanonicalPrivateWitnessSnapshot adversary parameter table ftsSecret fuel] ≤
       ((2 ^ digestBits : Nat) : ENNReal)⁻¹ :=
@@ -159,8 +159,8 @@ theorem probEvent_sampledCanonical_delayedOrdinal_le_of_table_position_fibers
         granularAllCanonicalPrivateWitnessSnapshot adversary parameter table ftsSecret fuel] ≤
       Pr[fun selection =>
           permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? selection = some target |
-        permissiveDetailedSelectionExperimentAfterTable ordinal adversary parameter ftsSecret fuel
-          table] * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) :
+        delayedPermissiveDetailedSelectionExperimentAfterTable ordinal adversary parameter
+          ftsSecret fuel table] * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) :
     Pr[WitnessFirstUsesDelayedLayerRootSnapshotOrdinal ordinal |
         sampledGranularAllCanonicalPrivateWitnessSnapshot adversary parameter ftsSecret fuel] ≤
       ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
