@@ -183,3 +183,60 @@ fn secret_key_survives_a_round_trip() {
         Err(XmssSignError::EpochOutOfRange)
     );
 }
+
+/// The SSZ encoding is the container's fields concatenated, in declaration
+/// order. Assembled independently here, so a reordered or resized field cannot
+/// be mirrored by the impl.
+#[test]
+fn ssz_layout_is_exact() {
+    let seed: [u8; 32] = std::array::from_fn(|i| (i * 5 + 1) as u8);
+    let message = test_message();
+    let epoch = 300;
+    let (sk, pk) = key_gen(seed, 290, 310).unwrap();
+    let sig = sign(&mut StdRng::seed_from_u64(4), &sk, &message, epoch).unwrap();
+
+    let mut expected_pk = Vec::new();
+    expected_pk.extend_from_slice(&pk.merkle_root);
+    expected_pk.extend_from_slice(&pk.public_param);
+    assert_eq!(expected_pk.len(), PUB_KEY_SSZ_LEN);
+    assert_eq!(pk.as_ssz_bytes(), expected_pk);
+    assert_eq!(expected_pk, pk.flatten());
+
+    let mut expected_sig = Vec::new();
+    for chain_tip in &sig.wots_signature.chain_tips {
+        expected_sig.extend_from_slice(chain_tip);
+    }
+    expected_sig.extend_from_slice(&sig.wots_signature.randomness);
+    for neighbour in &sig.merkle_proof {
+        expected_sig.extend_from_slice(neighbour);
+    }
+    assert_eq!(expected_sig.len(), SIGNATURE_SSZ_LEN);
+    assert_eq!(sig.as_ssz_bytes(), expected_sig);
+
+    // Round trip, and the decoded pair still verifies.
+    let decoded_pk = XmssPublicKey::from_ssz_bytes(&expected_pk).unwrap();
+    let decoded_sig = XmssSignature::from_ssz_bytes(&expected_sig).unwrap();
+    assert_eq!(decoded_pk, pk);
+    assert_eq!(decoded_sig, sig);
+    verify(&decoded_pk, &message, &decoded_sig, epoch).unwrap();
+}
+
+/// A fixed-length container rejects any other length, and only that.
+#[test]
+fn ssz_rejects_wrong_lengths() {
+    for len in [0, PUB_KEY_SSZ_LEN - 1, PUB_KEY_SSZ_LEN + 1] {
+        assert!(matches!(
+            XmssPublicKey::from_ssz_bytes(&vec![0u8; len]),
+            Err(DecodeError::InvalidByteLength { .. })
+        ));
+    }
+    for len in [0, SIGNATURE_SSZ_LEN - 1, SIGNATURE_SSZ_LEN + 1] {
+        assert!(matches!(
+            XmssSignature::from_ssz_bytes(&vec![0u8; len]),
+            Err(DecodeError::InvalidByteLength { .. })
+        ));
+    }
+    // Every byte string of the right length is a well-formed encoding.
+    XmssPublicKey::from_ssz_bytes(&[0xab; PUB_KEY_SSZ_LEN]).unwrap();
+    XmssSignature::from_ssz_bytes(&[0xcd; SIGNATURE_SSZ_LEN]).unwrap();
+}

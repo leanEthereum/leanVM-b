@@ -12,6 +12,8 @@
 
 mod hash;
 pub use hash::*;
+mod ssz_serialization;
+pub use ssz_serialization::*;
 mod wots;
 pub use wots::*;
 mod xmss;

@@ -15,10 +15,13 @@ pub use lean_vm::{
 };
 
 pub mod xmss {
+    /// The SSZ traits [`XmssPublicKey`] and [`XmssSignature`] implement: import
+    /// them to call `as_ssz_bytes` and `from_ssz_bytes`.
+    pub use ::xmss::{Decode, DecodeError, Encode};
     pub use ::xmss::{
-        Digest, Epoch, LOG_LIFETIME, MESSAGE_LEN, Message, PUB_KEY_SIZE, PublicParam, SIG_SIZE, WotsSignature,
-        XmssKeyGenError, XmssPublicKey, XmssSecretKey, XmssSignError, XmssSignature, XmssVerifyError, key_gen, sign,
-        verify,
+        Digest, Epoch, LOG_LIFETIME, MESSAGE_LEN, Message, PUB_KEY_SIZE, PUB_KEY_SSZ_LEN, PublicParam, SIG_SIZE,
+        SIGNATURE_SSZ_LEN, WotsSignature, XmssKeyGenError, XmssPublicKey, XmssSecretKey, XmssSignError, XmssSignature,
+        XmssVerifyError, key_gen, sign, verify,
     };
 }
 
