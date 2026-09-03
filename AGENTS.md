@@ -85,7 +85,7 @@ No rayon. Every parallel site is "N independent items, each writing its own disj
 - **Both core clusters share one queue** (P at `USER_INTERACTIVE`, E at `UTILITY`); guided self-scheduling means a slow core claims fewer batches. Do not add a second pool: that was `primitives::epool`, now deleted.
 - **The default holds back one performance worker when efficiency workers exist**, because `cpu::prove` also runs a setup-warming thread and a saturated small cluster stalls every barrier on any descheduled worker. Worth having on an M4 Max, a wash on a homogeneous Zen 4 host, hence the condition rather than a tuned constant.
 
-`LEANVM_NUM_THREADS` (and `RAYON_NUM_THREADS`) sets the **performance**-worker count, leaving E-workers in place. `1` = strictly sequential.
+`LEANVM_NUM_THREADS` sets the **performance**-worker count, leaving E-workers in place. `1` = strictly sequential.
 
 ## Three verifiers, one protocol
 
@@ -130,7 +130,7 @@ Understand the third before changing the verifier. `guests/aggregate.py` is zkDS
 
 | var                                                                                                     | effect                                           |
 | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| `LEANVM_NUM_THREADS` / `RAYON_NUM_THREADS`                                                              | performance-worker count; `1` = sequential       |
+| `LEANVM_NUM_THREADS`                                                                                    | performance-worker count; `1` = sequential       |
 | `LEANVM_PROFILE`                                                                                        | per-stage prover timings                         |
 | `LEANVM_NO_ARENA`                                                                                       | disable the arena (slower where it fits)         |
 | `ZK_ALLOC_STATS`                                                                                        | arena peak/phase, high water, overflow           |

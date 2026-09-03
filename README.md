@@ -1,8 +1,12 @@
 <h1 align="center">leanVM-b</h1>
 
+
+
 <p align="center">
   <img src="./doc/images/banner-b.svg" alt="leanVM-b">
 </p>
+
+Minimal hash-based zkVM, for a Post-Quantum Ethereum.
 
 <p align="center">
   <a href="https://github.com/leanEthereum/leanVM-b/releases/download/doc-latest/leanVM-b.pdf"><img src="https://img.shields.io/badge/Documentation-PDF-blue?style=for-the-badge&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxwYXRoIGQ9Ik0xNCAySDZjLTEuMSAwLTIgLjktMiAydjE2YzAgMS4xLjg5IDIgMS45OSAySDE4YzEuMSAwIDItLjkgMi0yVjhsLTYtNnpNOC41IDE0LjVoMS4yNWMuOTcgMCAxLjc1LS43OCAxLjc1LTEuNzVTMTAuNzIgMTEgOS43NSAxMUg3LjV2Nmgxdi0yLjV6bTAtMVYxMmgxLjI1Yy40MSAwIC43NS4zNC43NS43NXMtLjM0Ljc1LS43NS43NUg4LjV6bTUuNSAzLjVoMnYtMWgtMnYtMWgydi0xaC0ydi0xLjVjMC0uMjguMjItLjUuNS0uNUgxN3YtMWgtMmMtLjgzIDAtMS41LjY3LTEuNSAxLjVWMTd6TTEzIDlWMy41TDE4LjUgOUgxM3oiLz48L3N2Zz4=" alt="Documentation"></a>
@@ -17,6 +21,7 @@
 
 Warning: highly experimental.
 
+leanVM was originally designed over the KoalaBear prime (p = 2^31 - 2^24 + 1) and [Poseidon](https://eprint.iacr.org/2019/458), still available in the branch [koalabear]([koalabear](https://github.com/leanEthereum/leanVM/tree/koalabear)); it is being rewritten over binary fields and BLAKE2s.
 
 # Benchmarks
 

@@ -59,9 +59,8 @@ pub fn init_prover() {
 ///
 /// Thread placement is the pool's own business: performance-core workers run at
 /// `USER_INTERACTIVE` and (on Apple silicon) efficiency-core workers at `UTILITY`,
-/// all drawing from one claim counter. `LEANVM_NUM_THREADS` (or
-/// `RAYON_NUM_THREADS`, still honored) sets the performance-worker count. See the
-/// `parallel` crate.
+/// all drawing from one claim counter. `LEANVM_NUM_THREADS` sets the
+/// performance-worker count. See the `parallel` crate.
 pub fn init_prover_pool() {
     parallel::init();
 }

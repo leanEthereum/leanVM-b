@@ -22,19 +22,17 @@ impl Topology {
 
 /// The pool's shape, resolved once.
 ///
-/// `LEANVM_NUM_THREADS` (or `RAYON_NUM_THREADS`, honored so existing benchmark
-/// invocations keep their meaning) sets the **performance**-worker count; the
-/// efficiency workers are added on top either way, because that count has always
-/// meant "how wide is the fast cluster" here and not "how many threads exist".
+/// `LEANVM_NUM_THREADS` sets the **performance**-worker count; the efficiency
+/// workers are added on top either way, because that count has always meant
+/// "how wide is the fast cluster" here and not "how many threads exist".
 /// `1` is the exception and means strictly sequential (no workers at all), so a
 /// single-threaded debugging run really is one thread.
 #[must_use]
 pub fn topology() -> Topology {
     static TOPOLOGY: OnceLock<Topology> = OnceLock::new();
     *TOPOLOGY.get_or_init(|| {
-        let requested = ["LEANVM_NUM_THREADS", "RAYON_NUM_THREADS"]
-            .iter()
-            .find_map(|key| std::env::var(key).ok())
+        let requested = std::env::var("LEANVM_NUM_THREADS")
+            .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|&n| n > 0);
         match requested {
