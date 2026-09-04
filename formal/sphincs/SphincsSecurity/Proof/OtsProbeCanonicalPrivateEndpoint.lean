@@ -71,6 +71,43 @@ theorem probEvent_sampledCanonical_privateWitnessPlan_le_eight_mul
 
 set_option maxHeartbeats 4000000 in
 set_option maxRecDepth 1000000 in
+theorem probEvent_sampledActualRetained_verifyProbe_le_ten_mul_of_canonical_boundary
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (hqMax : q ≤ 2 ^ securityBits)
+    (hbound : ∀ root,
+      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
+        IsOuterHash q)
+    (hboundaryBridge :
+      Pr[fun outcome => outcome.failed = true |
+          sampledAllDirectBoundaryDetailedRetainedOutcome adversary parameter ftsSecret q] ≤
+        ((2 * q : Nat) : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
+          Pr[fun output => output.1.isSome = true |
+            sampledGranularAllCanonicalPrivateWitnessPlan adversary parameter ftsSecret q]) :
+    Pr[fun result => WinningRetainedVerifyProbeWitness parameter
+        (extendStartTable result.1) ftsSecret result.2 |
+      sampledActualRetainedOtsHashTable adversary parameter ftsSecret] ≤
+      ((10 * q : Nat) : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  calc
+    _ ≤ Pr[fun outcome => outcome.failed = true |
+        sampledAllDirectBoundaryDetailedRetainedOutcome adversary parameter ftsSecret q] :=
+      probEvent_sampledActualRetainedOtsHashTable_verifyProbe_le_boundary_failed adversary
+        parameter ftsSecret q
+    _ ≤ ((2 * q : Nat) : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
+        Pr[fun output => output.1.isSome = true |
+          sampledGranularAllCanonicalPrivateWitnessPlan adversary parameter ftsSecret q] :=
+      hboundaryBridge
+    _ ≤ ((2 * q : Nat) : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
+        ((8 * q : Nat) : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+      exact add_le_add (le_refl _)
+        (probEvent_sampledCanonical_privateWitnessPlan_le_eight_mul adversary parameter
+          ftsSecret q hbound hqMax)
+    _ = _ := by
+      push_cast
+      ring
+
+set_option maxHeartbeats 4000000 in
+set_option maxRecDepth 1000000 in
 theorem probEvent_sampledActualRetained_verifyProbe_le_ten_mul_of_canonical
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
@@ -169,5 +206,30 @@ theorem security_of_canonical_private_bridge_and_boundary_domination
       (hbound q hqPos adversary hq hqMax parameter hparameter ftsSecret hfts)
       (hprivateBridge q hqPos adversary hq hqMax parameter hparameter ftsSecret hfts)
       (hdomination q hqPos adversary hq hqMax parameter hparameter ftsSecret hfts)
+
+theorem security_of_canonical_boundary_bridge
+    (hbound : ∀ (q : Nat), 1 ≤ q → ∀ adversary : Adversary,
+      HasHashQueryBound scheme adversary q → q ≤ 2 ^ securityBits →
+      ∀ parameter ∈ support sampleParameter,
+      ∀ ftsSecret ∈ support sampleFtsSecrets,
+      ∀ root,
+        (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
+          IsOuterHash q)
+    (hboundaryBridge : ∀ (q : Nat), 1 ≤ q → ∀ adversary : Adversary,
+      HasHashQueryBound scheme adversary q → q ≤ 2 ^ securityBits →
+      ∀ parameter ∈ support sampleParameter,
+      ∀ ftsSecret ∈ support sampleFtsSecrets,
+        Pr[fun outcome => outcome.failed = true |
+            sampledAllDirectBoundaryDetailedRetainedOutcome adversary parameter ftsSecret q] ≤
+          ((2 * q : Nat) : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
+            Pr[fun output => output.1.isSome = true |
+              sampledGranularAllCanonicalPrivateWitnessPlan adversary parameter ftsSecret q]) :
+    SphincsSecurityStatement := by
+  apply security_of_sampledWinningRetainedVerifyProbe_grouped_le_mul 10 (by omega)
+  intro q hqPos adversary hq hqMax parameter hparameter ftsSecret hfts
+  exact probEvent_sampledActualRetained_verifyProbe_le_ten_mul_of_canonical_boundary
+    adversary parameter ftsSecret q hqMax
+      (hbound q hqPos adversary hq hqMax parameter hparameter ftsSecret hfts)
+      (hboundaryBridge q hqPos adversary hq hqMax parameter hparameter ftsSecret hfts)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
