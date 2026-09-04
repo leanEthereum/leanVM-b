@@ -158,8 +158,12 @@ theorem probEvent_observedMaterialized_successfulDoomed_firstNonRoot_le_selected
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q ordinal : Nat)
     (table : OtsSecretIndex → HashOutput)
     (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+        (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
     Pr[ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenNonRootHitAt table ordinal |
         observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] ≤
@@ -198,9 +202,13 @@ set_option maxHeartbeats 2000000 in
 theorem probEvent_sampledDiagnostic_successfulDoomed_firstNonRoot_le
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q ordinal : Nat)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
+    (hbound : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+        (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
     Pr[fun outcome => outcome.SuccessfulDoomed ∧
           outcome.FirstExistingHiddenNonRootHitAt ordinal |
@@ -212,7 +220,7 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_firstNonRoot_le
     _ ≤ Pr[fun source => SelectedPrivateSnapshotNonRootHitAt source ordinal |
         granularAllCanonicalPrivateWitnessSnapshot adversary parameter table ftsSecret q] :=
       probEvent_observedMaterialized_successfulDoomed_firstNonRoot_le_selectedNonRoot adversary
-        parameter ftsSecret q ordinal table hbound hq
+        parameter ftsSecret q ordinal table (hbound table) hq
     _ ≤ _ := probEvent_granularAllCanonical_selectedNonRoot_le ordinal adversary parameter
       table ftsSecret q
 

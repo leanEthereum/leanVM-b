@@ -44,7 +44,7 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_firstHit_eq_zero_of_q_le_or
       _ ≤ Pr[fun source => SelectedPrivateSnapshotHitAt source ordinal |
             sampledGranularAllCanonicalPrivateWitnessSnapshot adversary parameter ftsSecret q] :=
         probEvent_sampledSuccessfulFirstHit_le_selectedSnapshot adversary parameter ftsSecret q
-          ordinal hbound hq
+          ordinal hexpanded hq
       _ = 0 := probEvent_selectedPrivateSnapshotHitAt_eq_zero_of_q_le_ordinal adversary
         parameter ftsSecret q ordinal hexpanded hordinal
   · exact zero_le
@@ -180,7 +180,7 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_le_three_mul
             (probEvent_sampledDiagnostic_successfulDoomed_firstRoot_le ordinal adversary
               parameter ftsSecret q hordinal hfuel hbound hq)
             (probEvent_sampledDiagnostic_successfulDoomed_firstNonRoot_le adversary parameter
-              ftsSecret q ordinal hbound hq)
+              ftsSecret q ordinal hexpanded hq)
           _ = 3 * epsilon := by ring
       have hzero :
           (∑ ordinal ∈ Finset.range q, if h : q + ordinal < q + q then

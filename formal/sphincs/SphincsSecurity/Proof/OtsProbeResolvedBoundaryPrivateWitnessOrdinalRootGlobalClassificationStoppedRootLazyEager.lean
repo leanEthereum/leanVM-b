@@ -32,8 +32,12 @@ theorem relTriple_observedRootComparison_privateOrdinalSelection_raw
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
     (q : Nat)
     (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+        (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
     RelTriple
       (do
@@ -97,8 +101,12 @@ theorem relTriple_observedRootComparison_resolvedSelector_raw
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
     (q : Nat) (target : Position)
     (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+        (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
     RelTriple
       (do

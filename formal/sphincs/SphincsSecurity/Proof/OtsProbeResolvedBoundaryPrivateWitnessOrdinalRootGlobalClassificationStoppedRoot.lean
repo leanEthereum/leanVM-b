@@ -146,8 +146,12 @@ theorem probEvent_observedMaterialized_successfulDoomed_firstRoot_le_selectedCle
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q ordinal : Nat)
     (table : OtsSecretIndex → HashOutput)
     (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+        (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
     Pr[ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt table ordinal |
         observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] ≤

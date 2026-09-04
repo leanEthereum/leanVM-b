@@ -209,7 +209,7 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_le_of_selected_ordinals_bou
           probEvent_sampledDiagnostic_successfulDoomed_firstExistingHiddenHitAt_le_raw adversary
             parameter ftsSecret (2 * q) ordinal.val
         _ ≤ _ := probEvent_sampledSuccessfulFirstHit_le_selectedSnapshot adversary parameter
-          ftsSecret q ordinal.val hbound hq
+          ftsSecret q ordinal.val hexpanded hq
     _ = ∑ ordinal : Fin q,
         Pr[fun selected => SelectedPrivateSnapshotHitAt selected ordinal.val | source] := by
       simp only [Finset.sum_fin_eq_sum_range]

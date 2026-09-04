@@ -115,9 +115,13 @@ set_option maxRecDepth 100000 in
 theorem probEvent_sampledSuccessfulFirstHit_le_selectedSnapshot_add_chainStartAt
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q ordinal : Nat)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
+    (hbound : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+        (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
     Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenHitAt ordinal | do
         let table ← sampleOtsHashTable
@@ -159,9 +163,13 @@ set_option maxRecDepth 100000 in
 theorem probEvent_sampledSuccessfulFirstHit_le_selectedSnapshot
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q ordinal : Nat)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
+    (hbound : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+        (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
     Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenHitAt ordinal | do
         let table ← sampleOtsHashTable

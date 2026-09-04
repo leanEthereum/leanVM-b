@@ -306,8 +306,12 @@ theorem relTriple_snapshotComparison_observedSuccessfulRootComparison
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
     (q : Nat) (target : Position)
     (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+        (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
     RelTriple
       (do
@@ -381,8 +385,12 @@ theorem relTriple_observedSuccessfulRootComparison_pendingSelector
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
     (q : Nat) (target : Position)
     (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+        (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
     RelTriple
       (do
@@ -438,8 +446,12 @@ theorem probEvent_observedSuccessfulRootComparison_le_snapshotComparison
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
     (q : Nat) (target : Position)
     (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+        (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
     Pr[fun result : Option
           (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest =>
@@ -676,8 +688,12 @@ theorem relTriple_observedSuccessfulRootComparison_resolvedSelector
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
     (q : Nat) (target : Position)
     (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+        (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
     RelTriple
       (do
