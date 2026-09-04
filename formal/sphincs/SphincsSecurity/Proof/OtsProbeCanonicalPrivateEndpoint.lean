@@ -61,13 +61,20 @@ theorem probEvent_sampledCanonical_privateWitnessPlan_le_eight_mul
     (hbound : ∀ root,
       (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
         IsOuterHash q)
+    (hexpanded : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
     Pr[fun output => output.1.isSome = true |
         sampledGranularAllCanonicalPrivateWitnessPlan adversary parameter ftsSecret q] ≤
       ((8 * q : Nat) : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
   rw [probEvent_sampledCanonical_privateWitnessPlan_eq_snapshot]
   exact probEvent_sampledCanonical_privateWitness_le_eight_mul adversary parameter ftsSecret q
-    hbound hq
+    hbound hexpanded hq
 
 set_option maxHeartbeats 4000000 in
 set_option maxRecDepth 1000000 in
@@ -78,6 +85,13 @@ theorem probEvent_sampledActualRetained_verifyProbe_le_ten_mul_of_canonical_boun
     (hbound : ∀ root,
       (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
         IsOuterHash q)
+    (hexpanded : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (hboundaryBridge :
       Pr[fun outcome => outcome.failed = true |
           sampledAllDirectBoundaryDetailedRetainedOutcome adversary parameter ftsSecret q] ≤
@@ -101,7 +115,7 @@ theorem probEvent_sampledActualRetained_verifyProbe_le_ten_mul_of_canonical_boun
         ((8 * q : Nat) : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
       exact add_le_add (le_refl _)
         (probEvent_sampledCanonical_privateWitnessPlan_le_eight_mul adversary parameter
-          ftsSecret q hbound hqMax)
+          ftsSecret q hbound hexpanded hqMax)
     _ = _ := by
       push_cast
       ring
@@ -115,6 +129,13 @@ theorem probEvent_sampledActualRetained_verifyProbe_le_ten_mul_of_canonical
     (hbound : ∀ root,
       (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
         IsOuterHash q)
+    (hexpanded : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (hprivateBridge :
       Pr[= true |
           sampledGranularAllDirectBoundaryDetailedRetainedPrivate adversary parameter
@@ -161,7 +182,7 @@ theorem probEvent_sampledActualRetained_verifyProbe_le_ten_mul_of_canonical
             ftsSecret q))
         (hprivateBridge.trans
           (probEvent_sampledCanonical_privateWitnessPlan_le_eight_mul adversary parameter
-            ftsSecret q hbound hqMax))
+            ftsSecret q hbound hexpanded hqMax))
     _ = _ := by
       push_cast
       ring
@@ -204,6 +225,9 @@ theorem security_of_canonical_private_bridge_and_boundary_domination
   exact probEvent_sampledActualRetained_verifyProbe_le_ten_mul_of_canonical adversary parameter
     ftsSecret q hqMax
       (hbound q hqPos adversary hq hqMax parameter hparameter ftsSecret hfts)
+      (fun table root =>
+        isQueryBoundP_expandedRetained_all_tables_roots adversary q hq parameter hparameter
+          table ftsSecret hfts root)
       (hprivateBridge q hqPos adversary hq hqMax parameter hparameter ftsSecret hfts)
       (hdomination q hqPos adversary hq hqMax parameter hparameter ftsSecret hfts)
 
@@ -230,6 +254,9 @@ theorem security_of_canonical_boundary_bridge
   exact probEvent_sampledActualRetained_verifyProbe_le_ten_mul_of_canonical_boundary
     adversary parameter ftsSecret q hqMax
       (hbound q hqPos adversary hq hqMax parameter hparameter ftsSecret hfts)
+      (fun table root =>
+        isQueryBoundP_expandedRetained_all_tables_roots adversary q hq parameter hparameter
+          table ftsSecret hfts root)
       (hboundaryBridge q hqPos adversary hq hqMax parameter hparameter ftsSecret hfts)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

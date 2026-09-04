@@ -30,8 +30,12 @@ theorem relTriple_afterPublishedRoot
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
     (table : OtsSecretIndex → HashOutput)
     (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (left right : ResolvedRunResult (Digest × SplitHashCache))
     (hleftSupport : DirectWitnessResult.done left ∈ support
       (runDirectResolvedWitnessFromTable emptyWitnessDeferredContext q table

@@ -825,7 +825,12 @@ theorem relTriple_directSnapshotBoundary_observedMaterialized
     (left right : DeferredContext) (leftFuel rightFuel : Nat)
     (table : OtsSecretIndex → HashOutput)
     (leftCache rightCache : SplitHashCache) (q bound : Nat)
-    (hbound : computation.IsQueryBoundP IsOuterHash bound)
+    (hbound :
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey)) computation).IsQueryBoundP
+        (fun query => query matches Sum.inr _) bound)
     (hcontext : FinalizationContextLE table left right)
     (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
     (hrevealed : left.state.revealed = right.state.revealed)
@@ -855,7 +860,6 @@ theorem relTriple_directSnapshotBoundary_observedMaterialized
       left
       exact ⟨_, observations, rfl, List.prefix_rfl, haligned, by simp⟩
   | query_bind query next ih =>
-      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
       rw [directDetailedBoundaryNormalizedPrivateWitnessSnapshotObserve,
         OracleComp.construct_query_bind, observedMaterializedBoundary,
         OracleComp.construct_query_bind]
@@ -863,6 +867,8 @@ theorem relTriple_directSnapshotBoundary_observedMaterialized
       | inl worldQuery =>
           cases worldQuery with
           | inl n =>
+              rw [simulateQ_expandedAdversaryImpl_query_bind_inl,
+                OracleComp.isQueryBoundP_query_bind_iff] at hbound
               simp only
               let leftObserve : DeferredContext → Nat →
                   (Fin (n + 1) × SplitHashCache) → List PlannedProbeSnapshot →
@@ -950,6 +956,8 @@ theorem relTriple_directSnapshotBoundary_observedMaterialized
               convert hfinish using 1
               cases rightResult <;> rfl
           | inr input =>
+              rw [simulateQ_expandedAdversaryImpl_query_bind_inl,
+                OracleComp.isQueryBoundP_query_bind_iff] at hbound
               simp only
               have hrightValues :
                   (materializedCanonicalContext table right.state).state.values =
@@ -985,7 +993,7 @@ theorem relTriple_directSnapshotBoundary_observedMaterialized
               have houter : IsOuterHash (.inl (.inr input)) := by simp [IsOuterHash]
               have hboundPositive : 0 < bound := by
                 rcases hbound.1 with hnot | hpositive
-                · exact (hnot houter).elim
+                · exact (hnot (by simp)).elim
                 · exact hpositive
               have hleftPositive : 0 < leftFuel := by omega
               have hstrictFuel : leftFuel < rightFuel := by omega
@@ -1069,6 +1077,7 @@ theorem relTriple_directSnapshotBoundary_observedMaterialized
               · rfl
               · cases rightResult <;> rfl
       | inr message =>
+          rw [simulateQ_expandedAdversaryImpl_query_bind_inr] at hbound
           simp only
           let leftObserve : DeferredContext → Nat →
               (Option Signature × SplitHashCache) → List PlannedProbeSnapshot →
@@ -1136,10 +1145,37 @@ theorem relTriple_directSnapshotBoundary_observedMaterialized
             simp only [canonical, hnotPrivate, ↓reduceDIte, hclean.left_published,
               ↓reduceIte, hleftCompletable]
             rw [← hclean.value_eq]
+            have hdetailed : DirectDetailedResult.done nextLeft ∈ support
+                (runDirectResolvedDetailedFromTable left leftFuel table
+                  ((maskedSign parameter root ftsSecret message).run leftCache)) := by
+              rw [← map_erase_runDirectResolvedWitnessFromTable
+                ((maskedSign parameter root ftsSecret message).run leftCache)
+                left leftFuel table, support_map]
+              exact ⟨.done nextLeft, hleftSupport, rfl⟩
+            have hdirect : some nextLeft ∈ support
+                (runDirectResolvedFromTable left leftFuel table
+                  ((maskedSign parameter root ftsSecret message).run leftCache)) :=
+              mem_support_runDirectResolvedFromTable_of_done_detailed
+                ((maskedSign parameter root ftsSecret message).run leftCache)
+                left leftFuel table nextLeft hdetailed
+            have hraw := raw_done_of_mem_runDirectResolvedFromTable
+              ((maskedSign parameter root ftsSecret message).run leftCache)
+              left leftFuel table nextLeft hdirect
+            have houtput : nextLeft.value.1 ∈ support
+                (scheme.sign
+                  (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+                    SecretKey) message) := by
+              exact maskedSign_done_output_mem_support parameter root table ftsSecret
+                message left.state nextLeft.context.state leftCache nextLeft.value.2
+                leftFuel nextLeft.remaining nextLeft.value.1
+                  hclean.context_le.view.leftStarts (by
+                    simpa only [SigningSpec, maskedExpandedAdversaryImpl,
+                      maskedSigningImpl] using hraw)
+            have htailBound := isQueryBoundP_of_bind hbound nextLeft.value.1 houtput
             simpa [leftObserve, IsOuterHash] using
               (ih nextLeft.value.1 snapshots observations canonical nextRight.context
                 nextLeft.remaining nextRight.remaining nextLeft.value.2 nextRight.value.2 bound
-                (by simpa [IsOuterHash] using hbound.2 nextLeft.value.1)
+                (htailBound.mono (by omega))
                 hcanonicalRun.context_le hcanonicalRun.cache_eq hcanonicalRun.revealed_eq
                 hcanonicalRun.values_le hcanonicalRun.left_published
                 hcanonicalRun.right_materialized

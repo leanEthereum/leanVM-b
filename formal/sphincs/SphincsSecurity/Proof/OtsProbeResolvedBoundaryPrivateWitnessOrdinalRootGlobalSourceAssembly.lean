@@ -75,6 +75,13 @@ theorem probEvent_sampledCanonical_privateWitness_le_eight_mul
     (hbound : ∀ root,
       (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
         IsOuterHash q)
+    (hexpanded : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
     Pr[fun output => output.1.isSome = true |
         sampledGranularAllCanonicalPrivateWitnessSnapshot adversary parameter ftsSecret q] ≤
@@ -139,7 +146,8 @@ theorem probEvent_sampledCanonical_privateWitness_le_eight_mul
           (erasePrivateWitnessSnapshotOutput output) |
         sampledGranularAllCanonicalPrivateWitnessSnapshot adversary parameter ftsSecret q] := by
       gcongr
-      exact probEvent_sampledCanonical_root_le_diagnostic adversary parameter ftsSecret q hbound
+      exact probEvent_sampledCanonical_root_le_diagnostic adversary parameter ftsSecret q
+        hexpanded
     _ ≤ (((5 * q : Nat) : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
           (2 * q : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) +
         (q : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by

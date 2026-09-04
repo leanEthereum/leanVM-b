@@ -33,8 +33,12 @@ theorem relTriple_granularAllCanonical_finishedMaterialized
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
     (table : OtsSecretIndex → HashOutput)
     (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q) :
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q) :
     RelTriple
       (granularAllCanonicalPrivateWitnessSnapshot adversary parameter table ftsSecret q)
       (observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table >>=
@@ -49,8 +53,12 @@ theorem relTriple_granularAllCanonical_finishedMaterializedRunFromTable
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
     (table : OtsSecretIndex → HashOutput)
     (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q) :
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q) :
     RelTriple
       (granularAllCanonicalPrivateWitnessSnapshot adversary parameter table ftsSecret q)
       (finishedObservedMaterializedRunFromTable adversary parameter ftsSecret (2 * q) table)
@@ -63,9 +71,13 @@ set_option maxRecDepth 100000 in
 theorem relTriple_sampledGranularAllCanonical_finishedMaterialized
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q) :
+    (hbound : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q) :
     RelTriple
       (sampledGranularAllCanonicalPrivateWitnessSnapshot adversary parameter ftsSecret q)
       (sampledObservedMaterializedClean adversary parameter ftsSecret (2 * q))
@@ -76,7 +88,7 @@ theorem relTriple_sampledGranularAllCanonical_finishedMaterialized
   subst rightTable
   apply relTriple_post_mono
     (relTriple_granularAllCanonical_finishedMaterialized adversary parameter ftsSecret q leftTable
-      hbound)
+      (hbound leftTable))
   intro source observed hrelation
   exact ⟨leftTable, hrelation⟩
 

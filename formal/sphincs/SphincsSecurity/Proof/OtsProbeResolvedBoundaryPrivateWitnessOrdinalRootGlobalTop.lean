@@ -33,8 +33,12 @@ theorem relTriple_granularAllSnapshot_observedMaterializedRetained
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
     (table : OtsSecretIndex → HashOutput)
     (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q) :
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q) :
     RelTriple
       (granularAllCanonicalPrivateWitnessSnapshot adversary parameter table ftsSecret q)
       (observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table)
