@@ -20,6 +20,7 @@ def PermissiveDelayedRootGuessAt
   | some selection =>
       selection.candidate = ⟨.position target, truncateHash output⟩ ∧
         selection.state.values (.position target) = some output ∧
+        Coordinate.position target ∉ selection.state.revealed ∧
         CandidatesAvoidRoots target (truncateHash output) rightRoot
           (selection.candidates.take ordinal)
 
@@ -36,9 +37,14 @@ theorem DelayedPermissiveSelectionRel.delayedRootGuess
     (hgood : privateOrdinalSelectionGoodForSomeOutput target rightRoot ordinal left) :
     PermissiveDelayedRootGuess target rightRoot ordinal right := by
   obtain ⟨output, leftSelection, rightSelection, hleft, hright, hleftGood, hcandidate,
-    hcandidates, _hposition, hvalue⟩ := hrel hgood
+    hcandidates, hposition, hvalue⟩ := hrel hgood
   rw [hright]
-  refine ⟨output, hcandidate.symm.trans hleftGood.1, hvalue, ?_⟩
+  refine ⟨output, hcandidate.symm.trans hleftGood.1, hvalue, ?_, ?_⟩
+  · obtain ⟨selected, hselected, _hroot, hunrevealed⟩ :=
+      (permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition?_eq_some_iff target
+        (some rightSelection)).mp hposition
+    cases Option.some.inj hselected
+    exact hunrevealed
   rw [← hcandidates]
   exact hleftGood.2.2.2.2
 

@@ -15,12 +15,12 @@ open OracleComp.ProgramLogic.Relational
 
 set_option maxHeartbeats 4000000 in
 set_option maxRecDepth 1000000 in
-theorem relTriple_sample_preload_runPermissiveFromTable_then
+theorem relTriple_sample_preload_runPermissiveFromTable_then_tagged
     (target : Position)
     (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
     (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
     (table : OtsSecretIndex → HashOutput)
-    (leftFinish : Option (CleanRunResult α) → ProbComp β)
+    (leftFinish : HashOutput → Option (CleanRunResult α) → ProbComp β)
     (rightFinish : Option (CleanRunResult α) → ProbComp γ)
     (relation : β → γ → Prop)
     (hvalue : state.values (.position target) = none)
@@ -29,16 +29,17 @@ theorem relTriple_sample_preload_runPermissiveFromTable_then
       nextState.values (.position target) = none →
       RelTriple
         (LazyRevealProbe.sampleHashOutput >>= fun output =>
-          leftFinish (some ⟨preloadPositionValue target output nextState,
+          leftFinish output (some ⟨preloadPositionValue target output nextState,
             remaining, value, nextTable⟩))
         (rightFinish (some ⟨nextState, remaining, value, nextTable⟩)) relation)
-    (hsynchronized : ∀ left right,
+    (hfailed : ∀ output, RelTriple (leftFinish output none) (rightFinish none) relation)
+    (hsynchronized : ∀ output left right,
       PermissiveCleanRel left right →
-      RelTriple (leftFinish left) (rightFinish right) relation) :
+      RelTriple (leftFinish output left) (rightFinish right) relation) :
     RelTriple
       (LazyRevealProbe.sampleHashOutput >>= fun output =>
         runPermissiveFromTable (preloadPositionValue target output state) fuel table computation >>=
-          leftFinish)
+          leftFinish output)
       (runPermissiveFromTable state fuel table computation >>= rightFinish)
       relation := by
   induction computation using OracleComp.inductionOn generalizing state fuel with
@@ -57,12 +58,12 @@ theorem relTriple_sample_preload_runPermissiveFromTable_then
               (LazyRevealProbe.sampleHashOutput >>= fun targetOutput =>
                 (liftM (unifSpec.query n) >>= fun output =>
                   runPermissiveFromTable (preloadPositionValue target targetOutput state) fuel
-                    table (next output) >>= leftFinish)) =
+                    table (next output) >>= leftFinish targetOutput)) =
               evalDist
                 (liftM (unifSpec.query n) >>= fun output =>
                   LazyRevealProbe.sampleHashOutput >>= fun targetOutput =>
                     runPermissiveFromTable (preloadPositionValue target targetOutput state) fuel
-                      table (next output) >>= leftFinish) :=
+                      table (next output) >>= leftFinish targetOutput) :=
             OracleComp.DeferredSampling.evalDist_bind_comm _ _ _
           apply relTriple_of_evalDist_eq_left hleft
           apply relTriple_bind (relTriple_refl (liftM (unifSpec.query n)))
@@ -75,12 +76,12 @@ theorem relTriple_sample_preload_runPermissiveFromTable_then
               (LazyRevealProbe.sampleHashOutput >>= fun targetOutput =>
                 (LazyRevealProbe.sampleHashOutput >>= fun output =>
                   runPermissiveFromTable (preloadPositionValue target targetOutput state) fuel
-                    table (next output) >>= leftFinish)) =
+                    table (next output) >>= leftFinish targetOutput)) =
               evalDist
                 (LazyRevealProbe.sampleHashOutput >>= fun output =>
                   LazyRevealProbe.sampleHashOutput >>= fun targetOutput =>
                     runPermissiveFromTable (preloadPositionValue target targetOutput state) fuel
-                      table (next output) >>= leftFinish) :=
+                      table (next output) >>= leftFinish targetOutput) :=
             OracleComp.DeferredSampling.evalDist_bind_comm _ _ _
           apply relTriple_of_evalDist_eq_left hleft
           apply relTriple_bind (relTriple_refl LazyRevealProbe.sampleHashOutput)
@@ -96,11 +97,12 @@ theorem relTriple_sample_preload_runPermissiveFromTable_then
           cases fuel with
           | zero =>
               simp only [pure_bind]
-              apply relTriple_of_evalDist_eq_left
-                (OracleComp.DeferredSampling.evalDist_bind_const_neverFails
-                  LazyRevealProbe.sampleHashOutput (by
-                    simp [LazyRevealProbe.sampleHashOutput]) (leftFinish none))
-              exact hsynchronized none none trivial
+              rw [show rightFinish none =
+                  ((pure () : ProbComp Unit) >>= fun _ => rightFinish none) by simp]
+              apply relTriple_bind
+                (relTriple_true LazyRevealProbe.sampleHashOutput (pure () : ProbComp Unit))
+              intro leftOutput _rightOutput _hrelation
+              exact hfailed leftOutput
           | succ remaining =>
               by_cases hrevealed : coordinate ∈ state.revealed
               · simp only [preloadPositionValue_revealed, hrevealed, ↓reduceIte]
@@ -139,7 +141,9 @@ theorem relTriple_sample_preload_runPermissiveFromTable_then
             have hrun := relTriple_runPermissiveFromTable_of_stateRel (next leftOutput)
               (preloadPositionValue target leftOutput state)
               (state.materialize (.position target) leftOutput) fuel table hstate
-            exact relTriple_bind hrun hsynchronized
+            apply relTriple_bind hrun
+            intro left right hrelation
+            exact hsynchronized leftOutput left right hrelation
           · simp_rw [preloadPositionValue_values_of_ne target _ state coordinate htarget]
             cases hcoordinateValue : state.values coordinate with
             | some output =>
@@ -174,14 +178,14 @@ theorem relTriple_sample_preload_runPermissiveFromTable_then
                             runPermissiveFromTable
                                 (preloadPositionValue target targetOutput
                                   (state.materialize (.position position) output))
-                                fuel table (next output) >>= leftFinish) =
+                                fuel table (next output) >>= leftFinish targetOutput) =
                         evalDist
                           (LazyRevealProbe.sampleHashOutput >>= fun output =>
                             LazyRevealProbe.sampleHashOutput >>= fun targetOutput =>
                               runPermissiveFromTable
                                   (preloadPositionValue target targetOutput
                                     (state.materialize (.position position) output))
-                                  fuel table (next output) >>= leftFinish) :=
+                                  fuel table (next output) >>= leftFinish targetOutput) :=
                       OracleComp.DeferredSampling.evalDist_bind_comm _ _ _
                     simp only [preloadPositionValue_materialize_of_ne target _ state
                       (.position position) _ hposition] at hleft
@@ -200,5 +204,40 @@ theorem relTriple_sample_preload_runPermissiveFromTable_then
                           (next leftOutput) >>= rightFinish)
                       relation
                     exact hcoupling
+
+set_option maxHeartbeats 4000000 in
+set_option maxRecDepth 1000000 in
+theorem relTriple_sample_preload_runPermissiveFromTable_then
+    (target : Position)
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (leftFinish : Option (CleanRunResult α) → ProbComp β)
+    (rightFinish : Option (CleanRunResult α) → ProbComp γ)
+    (relation : β → γ → Prop)
+    (hvalue : state.values (.position target) = none)
+    (hnoPeek : computation.IsQueryBoundP (IsTargetPeek target) 0)
+    (hpreloaded : ∀ nextState remaining value nextTable,
+      nextState.values (.position target) = none →
+      RelTriple
+        (LazyRevealProbe.sampleHashOutput >>= fun output =>
+          leftFinish (some ⟨preloadPositionValue target output nextState,
+            remaining, value, nextTable⟩))
+        (rightFinish (some ⟨nextState, remaining, value, nextTable⟩)) relation)
+    (hsynchronized : ∀ left right,
+      PermissiveCleanRel left right →
+      RelTriple (leftFinish left) (rightFinish right) relation) :
+    RelTriple
+      (LazyRevealProbe.sampleHashOutput >>= fun output =>
+        runPermissiveFromTable (preloadPositionValue target output state) fuel table computation >>=
+          leftFinish)
+      (runPermissiveFromTable state fuel table computation >>= rightFinish)
+      relation := by
+  apply relTriple_sample_preload_runPermissiveFromTable_then_tagged target computation state fuel
+    table (fun _ => leftFinish) rightFinish relation hvalue hnoPeek hpreloaded
+  · intro _output
+    exact hsynchronized none none trivial
+  · intro _output left right hrelation
+    exact hsynchronized left right hrelation
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
