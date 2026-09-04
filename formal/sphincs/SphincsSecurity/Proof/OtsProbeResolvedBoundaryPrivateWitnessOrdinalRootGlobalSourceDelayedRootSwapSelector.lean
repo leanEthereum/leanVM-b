@@ -955,4 +955,91 @@ theorem evalDist_map_erase_permissiveRootAvoidingDetailedOrdinalSelection_hidden
       (fun left right => left = right) := relTriple_map hprojected
   exact evalDist_eq_of_relTriple_eqRel hmapped
 
+theorem rootHiddenStateRel_preloadPositionValue
+    (target : Position) (leftOutput rightOutput : HashOutput)
+    (state : LazyRevealProbe.State Coordinate)
+    (hprivate : Coordinate.position target ∉ state.revealed) :
+    RootHiddenStateRel target leftOutput rightOutput
+      (preloadPositionValue target leftOutput state)
+      (preloadPositionValue target rightOutput state) := by
+  refine ⟨rfl, rfl, rfl, hprivate, ?_, ?_, ?_⟩
+  · simp
+  · simp
+  · intro coordinate hne
+    rw [preloadPositionValue_values_of_ne target leftOutput state coordinate hne,
+      preloadPositionValue_values_of_ne target rightOutput state coordinate hne]
+
+set_option maxRecDepth 100000 in
+theorem evalDist_map_erase_permissiveRootAvoidingDetailedOrdinalSelection_fullSwap
+    (ordinal : Nat) (parameter : PublicParameter) (publicRoot : Digest)
+    (target : Position) (hroot : IsLayerRoot target)
+    (leftOutput rightOutput : HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (candidates : List Probe) (state : LazyRevealProbe.State Coordinate)
+    (hprivate : Coordinate.position target ∉ state.revealed)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (cache : SplitHashCache)
+    (hcache : cache (.hidden (.position target)) = some leftOutput) :
+    evalDist
+        (erasePermissivePrivateOrdinalSelection <$>
+          permissiveActualRootAvoidingDetailedOrdinalSelection ordinal parameter publicRoot target
+            (truncateHash leftOutput) (truncateHash rightOutput) ftsSecret computation candidates
+            (preloadPositionValue target leftOutput state) fuel table cache) =
+      evalDist
+        (erasePermissivePrivateOrdinalSelection <$>
+          permissiveActualRootAvoidingDetailedOrdinalSelection ordinal parameter publicRoot target
+            (truncateHash rightOutput) (truncateHash leftOutput) ftsSecret computation candidates
+            (preloadPositionValue target rightOutput state) fuel table
+            (fullSwapRootCache parameter target (truncateHash leftOutput)
+              (truncateHash rightOutput) rightOutput cache)) := by
+  let middleCache := swapCanonicalRootEncodingCache parameter target
+    (truncateHash leftOutput) (truncateHash rightOutput) cache
+  let rightCache := fullSwapRootCache parameter target (truncateHash leftOutput)
+    (truncateHash rightOutput) rightOutput cache
+  have hstored : StoredLayerRoot (preloadPositionValue target leftOutput state) target
+      (truncateHash leftOutput) := ⟨leftOutput, by simp, rfl⟩
+  have hencoding := rootEncodingCacheRel_swapCanonical parameter target
+    (truncateHash leftOutput) (truncateHash rightOutput) cache
+  have hab := evalDist_permissiveRootAvoidingDetailedOrdinalSelection_encoding ordinal parameter
+    publicRoot target hroot leftOutput rightOutput ftsSecret computation candidates
+    (preloadPositionValue target leftOutput state) fuel table cache middleCache hencoding hstored
+  have habMapped :
+      evalDist
+          (erasePermissivePrivateOrdinalSelection <$>
+            permissiveActualRootAvoidingDetailedOrdinalSelection ordinal parameter publicRoot target
+              (truncateHash leftOutput) (truncateHash rightOutput) ftsSecret computation candidates
+              (preloadPositionValue target leftOutput state) fuel table cache) =
+        evalDist
+          (erasePermissivePrivateOrdinalSelection <$>
+            permissiveComparisonRootAvoidingDetailedOrdinalSelection ordinal parameter publicRoot
+              target leftOutput rightOutput ftsSecret computation candidates
+              (preloadPositionValue target leftOutput state) fuel table middleCache) := by
+    rw [evalDist_map, evalDist_map, hab]
+  have hstate := rootHiddenStateRel_preloadPositionValue target leftOutput rightOutput state hprivate
+  have hhidden : RootHiddenCacheRel target leftOutput rightOutput middleCache rightCache := by
+    exact rootHiddenCacheRel_fullSwapRootCache parameter target leftOutput rightOutput cache hcache
+  have hbc :=
+    evalDist_map_erase_permissiveRootAvoidingDetailedOrdinalSelection_hidden ordinal parameter
+      publicRoot target hroot leftOutput rightOutput ftsSecret computation candidates
+      (preloadPositionValue target leftOutput state)
+      (preloadPositionValue target rightOutput state) fuel table middleCache rightCache hstate hhidden
+  calc
+    _ = evalDist
+        (erasePermissivePrivateOrdinalSelection <$>
+          permissiveComparisonRootAvoidingDetailedOrdinalSelection ordinal parameter publicRoot
+            target leftOutput rightOutput ftsSecret computation candidates
+            (preloadPositionValue target leftOutput state) fuel table middleCache) := habMapped
+    _ = evalDist
+        (erasePermissivePrivateOrdinalSelection <$>
+          permissiveActualRootAvoidingDetailedOrdinalSelection ordinal parameter publicRoot target
+            (truncateHash leftOutput) (truncateHash rightOutput) ftsSecret computation candidates
+            (preloadPositionValue target rightOutput state) fuel table rightCache) := hbc
+    _ = _ := by
+      exact congrArg evalDist (congrArg (Functor.map erasePermissivePrivateOrdinalSelection)
+        (permissiveRootAvoidingDetailedOrdinalSelection_swap_roots ordinal parameter target
+          (truncateHash leftOutput) (truncateHash rightOutput)
+          (maskedSign parameter publicRoot ftsSecret) computation candidates
+          (preloadPositionValue target rightOutput state) fuel table rightCache))
+
 end SphincsSecurity.Concrete.OtsProbeSimulation
