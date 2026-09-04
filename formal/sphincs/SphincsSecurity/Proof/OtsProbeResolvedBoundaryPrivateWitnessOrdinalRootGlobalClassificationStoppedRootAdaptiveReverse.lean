@@ -1820,7 +1820,12 @@ theorem relTriple_directDelayed_observed_shadow
     (observations : List CleanProbeObservation)
     (context : DeferredContext) (leftFuel rightFuel q bound : Nat)
     (cache : SplitHashCache)
-    (hbound : computation.IsQueryBoundP IsOuterHash bound)
+    (hbound :
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, publicRoot, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey)) computation).IsQueryBoundP
+        (fun query => query matches Sum.inr _) bound)
     (hvalid : context.Valid)
     (hcompletable : DeferredCompletable table context)
     (hpublished : PublishedValues context.state)
@@ -1857,12 +1862,24 @@ theorem relTriple_directDelayed_observed_shadow
       simp only [hselected, ↓reduceDIte]
       exact relTriple_false_any _
   | query_bind query next ih =>
-      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
       have hnotSelected : ¬ordinal < snapshots.length := by omega
+      have hmaterializedStarts : StartTableAgrees (materializedDeferredState context) table := by
+        intro index output hvalue
+        rcases index with ⟨lay, tree, leafIdx, chainIdx⟩
+        change (materializedDeferredState context).values
+          (.chainStart lay tree leafIdx chainIdx) = some output at hvalue
+        rw [materializedDeferredState_chainStart, hcanonical] at hvalue
+        have hagrees : Coordinate.chainStart lay tree leafIdx chainIdx ∈
+            context.state.revealed ∧
+            output = table ⟨lay, tree, leafIdx, chainIdx⟩ := by
+          simpa [publicMaterializedValues, resolvedCompletionValue] using hvalue.symm
+        exact hagrees.2
       cases query with
       | inl worldQuery =>
           cases worldQuery with
           | inl n =>
+              rw [simulateQ_expandedAdversaryImpl_query_bind_inl,
+                OracleComp.isQueryBoundP_query_bind_iff] at hbound
               apply relTriple_directDelayed_uniform_observed ordinal parameter publicRoot
                 rightRoot ftsSecret table target n next snapshots observations context leftFuel
                 rightFuel cache hnotSelected hcompletable hpublished hcanonical
@@ -1872,6 +1889,8 @@ theorem relTriple_directDelayed_observed_shadow
                 hcanonical hchainValid hprivate haligned hbefore htracked hcovered hnoHit hpending hlength
                 hleftLower hleftUpper hrightLower hbudget
           | inr input =>
+              rw [simulateQ_expandedAdversaryImpl_query_bind_inl,
+                OracleComp.isQueryBoundP_query_bind_iff] at hbound
               change HashOutput → OracleComp (OracleWorld + SigningSpec)
                 RetainedRestResult at next
               let plan := purePlanProbingHashQuery parameter input context.state
@@ -1916,8 +1935,10 @@ theorem relTriple_directDelayed_observed_shadow
                       selectedComputation observations (materializedDeferredState context)
                       leftFuel rightFuel bound cache (by
                         dsimp only [selectedComputation]
-                        rw [OracleComp.isQueryBoundP_query_bind_iff]
+                        rw [simulateQ_expandedAdversaryImpl_query_bind_inl,
+                          OracleComp.isQueryBoundP_query_bind_iff]
                         exact hbound)
+                      hmaterializedStarts
                       hleftLower (by omega)
                   have hglued := SphincsSecurity.relTriple_trans_exists hsame hfuel
                   apply relTriple_post_mono hglued
@@ -2011,7 +2032,7 @@ theorem relTriple_directDelayed_observed_shadow
                 have houter : IsOuterHash (.inl (.inr input)) := by simp [IsOuterHash]
                 have hboundPositive : 0 < bound := by
                   rcases hbound.1 with hnot | hpositive
-                  · exact (hnot houter).elim
+                  · exact (hnot (by simp)).elim
                   · exact hpositive
                 have hleftPositive : 0 < leftFuel := by omega
                 have hnextLength : nextSnapshots.length ≤ ordinal :=
@@ -2638,6 +2659,7 @@ theorem relTriple_directDelayed_observed_shadow
                                   canonicalizeDirectDelayedSelectedRootIndicator,
                                   hcanonicalDoomed.2.2] at hfinishSupport
       | inr message =>
+          rw [simulateQ_expandedAdversaryImpl_query_bind_inr] at hbound
           change Option Signature → OracleComp (OracleWorld + SigningSpec)
             RetainedRestResult at next
           rw [directDelayedSelectedRootIndicator_signing_eq ordinal parameter publicRoot
@@ -2969,9 +2991,28 @@ theorem relTriple_directDelayed_observed_shadow
               simp only [canonical, hnotPrivate, hrightPublished, hcanonicalFacts.2, ↓reduceIte]
               rfl
             rw [hrightCanonicalEq, houtput, hcache] at hcanonicalBridge
+            have hraw := raw_done_of_mem_runDirectResolvedFromTable
+              ((maskedSign parameter publicRoot ftsSecret message).run cache)
+              context leftFuel table leftResult hleftDirect
+            have hsignOutputLeft : leftResult.value.1 ∈ support
+                (scheme.sign
+                  (⟨parameter, publicRoot, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+                    SecretKey) message) := by
+              exact maskedSign_done_output_mem_support parameter publicRoot table ftsSecret
+                message context.state leftResult.context.state cache leftResult.value.2
+                leftFuel leftResult.remaining leftResult.value.1 hfinal.1.leftStarts (by
+                  simpa only [SigningSpec, maskedExpandedAdversaryImpl,
+                    maskedSigningImpl] using hraw)
+            have hsignOutput : rightResult.value.1 ∈ support
+                (scheme.sign
+                  (⟨parameter, publicRoot, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+                    SecretKey) message) := by
+              rw [← houtput]
+              exact hsignOutputLeft
+            have htailBound := isQueryBoundP_of_bind hbound rightResult.value.1 hsignOutput
             have hrecursive := ih rightResult.value.1 snapshots observations canonical
               leftResult.remaining rightResult.remaining bound rightResult.value.2
-              (by simpa [IsOuterHash] using hbound.2 rightResult.value.1)
+              (htailBound.mono (by omega))
               hcanonicalFacts.1 hcanonicalFacts.2 hcanonicalPublished hcanonicalCanonical
               hcanonicalChainValid hcanonicalPrivate haligned hcanonicalBefore
               (by rw [hcanonicalState]; exact hrightTracked)

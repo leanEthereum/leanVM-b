@@ -118,7 +118,11 @@ theorem probEvent_successfulDoomedFirstRootFiber_le_two_mul_resolvedPermissive
     (hordinal : ordinal < q)
     (hfuel : 2 * q < Fintype.card Digest)
     (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP IsOuterHash q)
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ : SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
     Pr[fun observed =>
         ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget

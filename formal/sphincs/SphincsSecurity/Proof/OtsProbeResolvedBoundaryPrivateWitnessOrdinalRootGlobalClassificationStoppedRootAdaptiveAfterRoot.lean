@@ -27,8 +27,14 @@ theorem relTriple_indicator_observed_directDelayed_afterRootResult
       (runCleanFromTable
         (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) (2 * q) table
         (maskedPublishedTreeRoot.run emptySplitHashCache)))
-    (hbound : (retainedGameRestComputation adversary
-      ⟨rootResult.value.1, parameter⟩).IsQueryBoundP IsOuterHash q)
+    (hbound :
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, rootResult.value.1, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary
+          ⟨rootResult.value.1, parameter⟩)).IsQueryBoundP
+            (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits)
     (hroot : IsLayerRoot target) :
     RelTriple

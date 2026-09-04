@@ -920,6 +920,27 @@ theorem relTriple_observedMaterializedBoundary_ordinaryCache
             simp only [observedMaterializedBoundary] <;>
             apply bind_congr <;> intro result <;> cases result <;> rfl
 
+theorem mem_support_runRaw_done_of_mem_runObservedCleanFromTable_some_of_probeFree
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (observations : List CleanProbeObservation)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (result : ObservedCleanRunResult α)
+    (hprobeFree : computation.IsQueryBoundP LazyRevealProbe.IsProbe 0)
+    (hresult : some result ∈ support
+      (runObservedCleanFromTable observations state fuel table computation)) :
+    LazyRevealProbe.RawResult.done result.state result.remaining result.value ∈
+      support (LazyRevealProbe.runRaw state fuel computation) := by
+  rw [← map_attachCleanProbeObservations_runCleanFromTable_of_probeFree computation
+    observations state fuel table hprobeFree, support_map] at hresult
+  obtain ⟨clean?, hclean, hresult⟩ := hresult
+  cases clean? with
+  | none => simp [attachCleanProbeObservations] at hresult
+  | some clean =>
+      simp [attachCleanProbeObservations] at hresult
+      subst result
+      exact mem_support_runRaw_done_of_mem_runCleanFromTable_some computation state fuel table
+        clean hclean
+
 set_option maxHeartbeats 4000000 in
 set_option maxRecDepth 100000 in
 theorem relTriple_observedMaterializedBoundary_fuel_of_isQueryBoundP
@@ -929,7 +950,13 @@ theorem relTriple_observedMaterializedBoundary_fuel_of_isQueryBoundP
     (observations : List CleanProbeObservation)
     (state : LazyRevealProbe.State Coordinate) (leftFuel rightFuel bound : Nat)
     (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
-    (hbound : computation.IsQueryBoundP IsOuterHash bound)
+    (hbound :
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey)) computation).IsQueryBoundP
+        (fun query => query matches Sum.inr _) bound)
+    (hagrees : StartTableAgrees state table)
     (hleftFuel : bound ≤ leftFuel) (hrightFuel : bound ≤ rightFuel) :
     RelTriple
       (observedMaterializedBoundary parameter root ftsSecret computation observations state
@@ -944,7 +971,6 @@ theorem relTriple_observedMaterializedBoundary_fuel_of_isQueryBoundP
         observedMaterializedBoundary, OracleComp.construct_pure]
       exact relTriple_pure_pure ⟨rfl, rfl, rfl, rfl⟩
   | query_bind query next ih =>
-      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
       rw [observedMaterializedBoundary, OracleComp.construct_query_bind,
         observedMaterializedBoundary, OracleComp.construct_query_bind]
       have continueAfter
@@ -952,7 +978,15 @@ theorem relTriple_observedMaterializedBoundary_fuel_of_isQueryBoundP
             ((OracleWorld + SigningSpec).Range query × SplitHashCache))
           (stepCost tailBound : Nat)
           (hstepBound : step.IsQueryBoundP LazyRevealProbe.IsProbe stepCost)
-          (htailBound : ∀ output, (next output).IsQueryBoundP IsOuterHash tailBound)
+          (htailBound : ∀ result,
+            some result ∈ support
+              (runObservedCleanFromTable observations state leftFuel table step) →
+            (simulateQ
+              (SphincsSecurity.expandedAdversaryImpl
+                (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+                  SecretKey))
+              (next result.value.1)).IsQueryBoundP
+                (fun query => query matches Sum.inr _) tailBound)
           (hleftTotal : stepCost + tailBound ≤ leftFuel)
           (hrightTotal : stepCost + tailBound ≤ rightFuel) :
           RelTriple
@@ -1001,38 +1035,61 @@ theorem relTriple_observedMaterializedBoundary_fuel_of_isQueryBoundP
                   hrightSupport
                 simp only
                 rw [← hstate, ← hvalue, ← hobservations]
+                have hnextAgrees := startTableAgrees_of_mem_runObservedCleanFromTable
+                  step observations state leftFuel table hagrees leftResult hleftSupport
                 exact ih leftResult.value.1 leftResult.observations leftResult.state
                   leftResult.remaining rightResult.remaining tailBound leftResult.value.2
-                  (htailBound leftResult.value.1) (by omega) (by omega)
+                  (htailBound leftResult hleftSupport) hnextAgrees.2 (by omega) (by omega)
       cases query with
       | inl worldQuery =>
           cases worldQuery with
           | inl n =>
+              rw [simulateQ_expandedAdversaryImpl_query_bind_inl,
+                OracleComp.isQueryBoundP_query_bind_iff] at hbound
               change Fin (n + 1) → OracleComp (OracleWorld + SigningSpec) α at next
               simp only
-              have htail : ∀ output, (next output).IsQueryBoundP IsOuterHash bound := by
-                intro output
-                simpa [IsOuterHash] using hbound.2 output
+              have htail : ∀ result,
+                  some result ∈ support
+                    (runObservedCleanFromTable observations state leftFuel table
+                      ((splitUniformImpl n).run cache)) →
+                  (simulateQ
+                    (SphincsSecurity.expandedAdversaryImpl
+                      (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+                        SecretKey))
+                    (next result.value.1)).IsQueryBoundP
+                      (fun query => query matches Sum.inr _) bound := by
+                intro result _hresult
+                exact hbound.2 result.value.1
               have hrun := continueAfter ((splitUniformImpl n).run cache) 0 bound
                 (splitUniformImpl_probeFree n cache) htail (by omega) (by omega)
               convert hrun using 1 <;>
                 simp only [observedMaterializedBoundary] <;>
                 apply bind_congr <;> intro result <;> cases result <;> rfl
           | inr input =>
+              rw [simulateQ_expandedAdversaryImpl_query_bind_inl,
+                OracleComp.isQueryBoundP_query_bind_iff] at hbound
               change HashOutput → OracleComp (OracleWorld + SigningSpec) α at next
               simp only
               have hpositive : 0 < bound := by
                 rcases hbound.1 with hnot | hpositive
-                · exact (hnot (by simp [IsOuterHash])).elim
+                · exact (hnot (by simp)).elim
                 · exact hpositive
               let publicState := (materializedCanonicalContext table state).state
               let plan := purePlanProbingHashQuery parameter input publicState
               let step :=
                 (probingHashQueryAfterRootAwarePublicPlan parameter input publicState plan).run
                   cache
-              have htail : ∀ output, (next output).IsQueryBoundP IsOuterHash (bound - 1) := by
-                intro output
-                simpa [IsOuterHash] using hbound.2 output
+              have htail : ∀ result,
+                  some result ∈ support
+                    (runObservedCleanFromTable observations state leftFuel table step) →
+                  (simulateQ
+                    (SphincsSecurity.expandedAdversaryImpl
+                      (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+                        SecretKey))
+                    (next result.value.1)).IsQueryBoundP
+                      (fun query => query matches Sum.inr _) (bound - 1) := by
+                intro result _hresult
+                exact hbound.2 result.value.1
               have hrun := continueAfter step 1 (bound - 1)
                 (probingHashQueryAfterRootAwarePublicPlan_probeBound parameter input publicState
                   plan cache)
@@ -1041,11 +1098,36 @@ theorem relTriple_observedMaterializedBoundary_fuel_of_isQueryBoundP
                 simp only [step, publicState, plan, observedMaterializedBoundary] <;>
                 apply bind_congr <;> intro result <;> cases result <;> rfl
       | inr message =>
+          rw [simulateQ_expandedAdversaryImpl_query_bind_inr] at hbound
           change Option Signature → OracleComp (OracleWorld + SigningSpec) α at next
           simp only
-          have htail : ∀ output, (next output).IsQueryBoundP IsOuterHash bound := by
-            intro output
-            simpa [IsOuterHash] using hbound.2 output
+          have htail : ∀ result,
+              some result ∈ support
+                (runObservedCleanFromTable observations state leftFuel table
+                  ((maskedSign parameter root ftsSecret message).run cache)) →
+              (simulateQ
+                (SphincsSecurity.expandedAdversaryImpl
+                  (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+                    SecretKey))
+                (next result.value.1)).IsQueryBoundP
+                  (fun query => query matches Sum.inr _) bound := by
+            intro result hresult
+            have hnextAgrees := startTableAgrees_of_mem_runObservedCleanFromTable
+              ((maskedSign parameter root ftsSecret message).run cache) observations state
+              leftFuel table hagrees result hresult
+            have hraw :=
+              mem_support_runRaw_done_of_mem_runObservedCleanFromTable_some_of_probeFree
+                ((maskedSign parameter root ftsSecret message).run cache) observations state
+                leftFuel table result
+                (maskedSign_probeFree parameter root ftsSecret message cache) hresult
+            have houtput : result.value.1 ∈ support
+                (scheme.sign
+                  (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+                    SecretKey) message) := by
+              exact maskedSign_done_output_mem_support parameter root table ftsSecret message
+                state result.state cache result.value.2 leftFuel result.remaining result.value.1
+                hnextAgrees.2 hraw
+            exact isQueryBoundP_of_bind hbound result.value.1 houtput
           have hrun := continueAfter ((maskedSign parameter root ftsSecret message).run cache)
             0 bound (maskedSign_probeFree parameter root ftsSecret message cache) htail
             (by omega) (by omega)
@@ -1265,7 +1347,13 @@ theorem relTriple_indicator_observedMaterializedBoundary_fuel_of_isQueryBoundP
     (observations : List CleanProbeObservation)
     (state : LazyRevealProbe.State Coordinate) (leftFuel rightFuel bound : Nat)
     (cache : SplitHashCache)
-    (hbound : computation.IsQueryBoundP IsOuterHash bound)
+    (hbound :
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, publicRoot, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey)) computation).IsQueryBoundP
+        (fun query => query matches Sum.inr _) bound)
+    (hagrees : StartTableAgrees state table)
     (hleftFuel : bound ≤ leftFuel) (hrightFuel : bound ≤ rightFuel) :
     RelTriple
       ((successfulObservedRootComparisonIndicator table ordinal target ∘
@@ -1280,8 +1368,8 @@ theorem relTriple_indicator_observedMaterializedBoundary_fuel_of_isQueryBoundP
   apply relTriple_map
   apply relTriple_post_mono
     (relTriple_observedMaterializedBoundary_fuel_of_isQueryBoundP parameter publicRoot ftsSecret
-      computation observations state leftFuel rightFuel bound table cache hbound hleftFuel
-      hrightFuel)
+      computation observations state leftFuel rightFuel bound table cache hbound hagrees
+      hleftFuel hrightFuel)
   intro leftResult rightResult hrelation hleftGood
   change successfulObservedRootComparisonIndicator table ordinal target
     (leftResult, rightRoot) = true at hleftGood

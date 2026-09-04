@@ -20,8 +20,14 @@ theorem relTriple_eagerProxy_resolvedObservedAtRoot_afterRootResult
       (runCleanFromTable
         (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) (2 * q) table
         (maskedPublishedTreeRoot.run emptySplitHashCache)))
-    (hbound : (retainedGameRestComputation adversary
-      ⟨rootResult.value.1, parameter⟩).IsQueryBoundP IsOuterHash q)
+    (hbound :
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, rootResult.value.1, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary
+          ⟨rootResult.value.1, parameter⟩)).IsQueryBoundP
+            (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits)
     (hroot : IsLayerRoot target) :
     RelTriple
@@ -345,7 +351,11 @@ theorem probEvent_observedRootComparison_le_production_mul
     (hparent : ∃ parent, Position.parentOf target = some parent)
     (hfuel : 2 * q < Fintype.card Digest)
     (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP IsOuterHash q)
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ : SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
     Pr[fun result : Option
           (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest ↦

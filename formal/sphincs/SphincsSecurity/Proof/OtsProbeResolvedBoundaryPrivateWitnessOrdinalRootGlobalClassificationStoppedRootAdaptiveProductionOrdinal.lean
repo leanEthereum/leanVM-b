@@ -18,9 +18,6 @@ set_option maxRecDepth 100000 in
 theorem probEvent_sampledDiagnostic_successfulDoomed_firstHit_eq_zero_of_q_le_ordinal
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q ordinal : Nat)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
     (hexpanded : ∀ table root,
       (simulateQ
         (SphincsSecurity.expandedAdversaryImpl
@@ -67,9 +64,6 @@ set_option maxHeartbeats 2000000 in
 theorem probEvent_sampledDiagnostic_successfulDoomed_firstRoot_eq_zero_of_q_le_ordinal
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q ordinal : Nat)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
     (hexpanded : ∀ table root,
       (simulateQ
         (SphincsSecurity.expandedAdversaryImpl
@@ -92,16 +86,13 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_firstRoot_eq_zero_of_q_le_o
         exact ⟨hevent.1, outcome.firstExistingHiddenHitAt_of_root hevent.2⟩
       _ = 0 :=
         probEvent_sampledDiagnostic_successfulDoomed_firstHit_eq_zero_of_q_le_ordinal
-          adversary parameter ftsSecret q ordinal hbound hexpanded hq hordinal
+          adversary parameter ftsSecret q ordinal hexpanded hq hordinal
   · exact zero_le
 
 set_option maxHeartbeats 2000000 in
 theorem probEvent_sampledDiagnostic_successfulDoomed_firstNonRoot_eq_zero_of_q_le_ordinal
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q ordinal : Nat)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
     (hexpanded : ∀ table root,
       (simulateQ
         (SphincsSecurity.expandedAdversaryImpl
@@ -124,7 +115,7 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_firstNonRoot_eq_zero_of_q_l
         exact ⟨hevent.1, outcome.firstExistingHiddenHitAt_of_nonRoot hevent.2⟩
       _ = 0 :=
         probEvent_sampledDiagnostic_successfulDoomed_firstHit_eq_zero_of_q_le_ordinal
-          adversary parameter ftsSecret q ordinal hbound hexpanded hq hordinal
+          adversary parameter ftsSecret q ordinal hexpanded hq hordinal
   · exact zero_le
 
 set_option maxHeartbeats 4000000 in
@@ -133,9 +124,6 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_le_three_mul
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
     (hfuel : 2 * q < Fintype.card Digest)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
     (hexpanded : ∀ table root,
       (simulateQ
         (SphincsSecurity.expandedAdversaryImpl
@@ -178,7 +166,7 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_le_three_mul
         calc
           _ ≤ 2 * epsilon + epsilon := add_le_add
             (probEvent_sampledDiagnostic_successfulDoomed_firstRoot_le ordinal adversary
-              parameter ftsSecret q hordinal hfuel hbound hq)
+              parameter ftsSecret q hordinal hfuel hexpanded hq)
             (probEvent_sampledDiagnostic_successfulDoomed_firstNonRoot_le adversary parameter
               ftsSecret q ordinal hexpanded hq)
           _ = 3 * epsilon := by ring
@@ -194,9 +182,9 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_le_three_mul
         have hordinal : ordinal < q := Finset.mem_range.1 hordinalMem
         simp only [show q + ordinal < q + q by omega, ↓reduceDIte]
         rw [probEvent_sampledDiagnostic_successfulDoomed_firstRoot_eq_zero_of_q_le_ordinal
-          adversary parameter ftsSecret q (q + ordinal) hbound hexpanded hq (by omega)]
+          adversary parameter ftsSecret q (q + ordinal) hexpanded hq (by omega)]
         rw [probEvent_sampledDiagnostic_successfulDoomed_firstNonRoot_eq_zero_of_q_le_ordinal
-          adversary parameter ftsSecret q (q + ordinal) hbound hexpanded hq (by omega)]
+          adversary parameter ftsSecret q (q + ordinal) hexpanded hq (by omega)]
         simp
       calc
         _ ≤ (∑ _ordinal ∈ Finset.range q, 3 * epsilon) +
@@ -249,7 +237,7 @@ theorem probEvent_sampledDiagnostic_bad_le_five_mul
       · exact probEvent_sampledObservedMaterializedDiagnostic_final_none_le adversary parameter
           ftsSecret (2 * q) q hbound (by omega)
       · exact probEvent_sampledDiagnostic_successfulDoomed_le_three_mul adversary parameter
-          ftsSecret q hfuel hbound hexpanded hq
+          ftsSecret q hfuel hexpanded hq
     _ = _ := by
       push_cast
       ring

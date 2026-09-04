@@ -1840,7 +1840,12 @@ theorem relTriple_indicator_observed_directDelayed
     (observations delayedObservations : List CleanProbeObservation)
     (left right : DeferredContext) (leftFuel rightFuel : Nat)
     (leftCache rightCache : SplitHashCache) (q bound : Nat)
-    (hbound : computation.IsQueryBoundP IsOuterHash bound)
+    (hbound :
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, publicRoot, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey)) computation).IsQueryBoundP
+        (fun query => query matches Sum.inr _) bound)
     (hcontext : FinalizationContextLE table left right)
     (hcache : ordinaryQueryCache leftCache = ordinaryQueryCache rightCache)
     (hrevealed : left.state.revealed = right.state.revealed)
@@ -1891,7 +1896,6 @@ theorem relTriple_indicator_observed_directDelayed
           publicRoot rightRoot ftsSecret table target value observations right.state rightFuel
           rightCache hnoHit
   | query_bind query next ih =>
-      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
       by_cases hselected : ordinal < snapshots.length
       · have hordinal : ordinal < observations.length := by
           rw [← haligned.length_eq]
@@ -1907,6 +1911,8 @@ theorem relTriple_indicator_observed_directDelayed
         | inl worldQuery =>
             cases worldQuery with
             | inl n =>
+                rw [simulateQ_expandedAdversaryImpl_query_bind_inl,
+                  OracleComp.isQueryBoundP_query_bind_iff] at hbound
                 rw [observedMaterializedBoundary, OracleComp.construct_query_bind,
                   directDelayedSelectedRootIndicator, OracleComp.construct_query_bind]
                 simp only [hselected, ↓reduceDIte]
@@ -2005,6 +2011,8 @@ theorem relTriple_indicator_observed_directDelayed
                     hnextLeftCovered
                     (by omega) (by omega) (by omega) hnextBudget)
             | inr input =>
+                rw [simulateQ_expandedAdversaryImpl_query_bind_inl,
+                  OracleComp.isQueryBoundP_query_bind_iff] at hbound
                 change HashOutput → OracleComp (OracleWorld + SigningSpec)
                   RetainedRestResult at next
                 have hrightValues :
@@ -2178,7 +2186,7 @@ theorem relTriple_indicator_observed_directDelayed
                         output hsafe.target_value hresolvedStarts
                     have hboundPositive : 0 < bound := by
                       rcases hbound.1 with hnot | hpositive
-                      · exact (hnot (by simp [IsOuterHash])).elim
+                      · exact (hnot (by simp)).elim
                       · exact hpositive
                     have hrightPositive : 0 < rightFuel := by omega
                     have hleftDoomed : ∀ result : ObservedCleanRunResult
@@ -2217,9 +2225,16 @@ theorem relTriple_indicator_observed_directDelayed
                     let selectedComputation :=
                       liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
                         (Sum.inl (Sum.inr input))) >>= next
-                    have hselectedBound : selectedComputation.IsQueryBoundP IsOuterHash bound := by
+                    have hselectedBound :
+                        (simulateQ
+                          (SphincsSecurity.expandedAdversaryImpl
+                            (⟨parameter, publicRoot,
+                              tableOtsSecret (extendStartTable table), ftsSecret⟩ : SecretKey))
+                          selectedComputation).IsQueryBoundP
+                            (fun query => query matches Sum.inr _) bound := by
                       unfold selectedComputation
-                      rw [OracleComp.isQueryBoundP_query_bind_iff]
+                      rw [simulateQ_expandedAdversaryImpl_query_bind_inl,
+                        OracleComp.isQueryBoundP_query_bind_iff]
                       exact hbound
                     have hcacheBridge :=
                       relTriple_indicator_observedMaterializedBoundary_ordinaryCache
@@ -2232,7 +2247,7 @@ theorem relTriple_indicator_observed_directDelayed
                       relTriple_indicator_observedMaterializedBoundary_fuel_of_isQueryBoundP
                         snapshots.length parameter publicRoot rightRoot ftsSecret table target
                         selectedComputation delayedObservations resolvedState rightFuel leftFuel
-                        bound leftCache hselectedBound (by omega) hleftLower
+                        bound leftCache hselectedBound hresolvedStarts (by omega) hleftLower
                     have hstateCache := SphincsSecurity.relTriple_trans_exists hsameFuel hcacheBridge
                     have hstateCache' : RelTriple
                         ((successfulObservedRootComparisonIndicator table snapshots.length target ∘
@@ -2398,7 +2413,7 @@ theorem relTriple_indicator_observed_directDelayed
                   have houter : IsOuterHash (.inl (.inr input)) := by simp [IsOuterHash]
                   have hboundPositive : 0 < bound := by
                     rcases hbound.1 with hnot | hpositive
-                    · exact (hnot houter).elim
+                    · exact (hnot (by simp)).elim
                     · exact hpositive
                   have hleftPositive : 0 < leftFuel := by omega
                   have hstrictFuel : leftFuel < rightFuel := by omega
@@ -2786,6 +2801,7 @@ theorem relTriple_indicator_observed_directDelayed
                           intro result
                           cases result <;> rfl
         | inr message =>
+            rw [simulateQ_expandedAdversaryImpl_query_bind_inr] at hbound
             change Option Signature → OracleComp (OracleWorld + SigningSpec)
               RetainedRestResult at next
             have hleft :
@@ -2910,11 +2926,38 @@ theorem relTriple_indicator_observed_directDelayed
             simp only [canonical, hnotPrivate, hclean.left_published, ↓reduceIte,
               hleftCompletable]
             rw [← hclean.value_eq]
+            have hdetailed : DirectDetailedResult.done nextLeft ∈ support
+                (runDirectResolvedDetailedFromTable left leftFuel table
+                  ((maskedSign parameter publicRoot ftsSecret message).run leftCache)) := by
+              rw [← map_erase_runDirectResolvedWitnessFromTable
+                ((maskedSign parameter publicRoot ftsSecret message).run leftCache)
+                left leftFuel table, support_map]
+              exact ⟨.done nextLeft, hleftSupport, rfl⟩
+            have hdirect : some nextLeft ∈ support
+                (runDirectResolvedFromTable left leftFuel table
+                  ((maskedSign parameter publicRoot ftsSecret message).run leftCache)) :=
+              mem_support_runDirectResolvedFromTable_of_done_detailed
+                ((maskedSign parameter publicRoot ftsSecret message).run leftCache)
+                left leftFuel table nextLeft hdetailed
+            have hraw := raw_done_of_mem_runDirectResolvedFromTable
+              ((maskedSign parameter publicRoot ftsSecret message).run leftCache)
+              left leftFuel table nextLeft hdirect
+            have houtput : nextLeft.value.1 ∈ support
+                (scheme.sign
+                  (⟨parameter, publicRoot, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+                    SecretKey) message) := by
+              exact maskedSign_done_output_mem_support parameter publicRoot table ftsSecret
+                message left.state nextLeft.context.state leftCache nextLeft.value.2
+                leftFuel nextLeft.remaining nextLeft.value.1
+                  hclean.context_le.view.leftStarts (by
+                    simpa only [SigningSpec, maskedExpandedAdversaryImpl,
+                      maskedSigningImpl] using hraw)
+            have htailBound := isQueryBoundP_of_bind hbound nextLeft.value.1 houtput
             simpa [observe] using
               (ih nextLeft.value.1 snapshots observations delayedObservations canonical
                 nextRight.context
                 nextLeft.remaining nextRight.remaining nextLeft.value.2 nextRight.value.2 bound
-                (hbound.2 nextLeft.value.1) hcanonicalRun.context_le hcanonicalRun.cache_eq
+                (htailBound.mono (by omega)) hcanonicalRun.context_le hcanonicalRun.cache_eq
                 hcanonicalRun.revealed_eq hcanonicalRun.values_le hcanonicalRun.left_published
                 hcanonicalRun.right_materialized hnextChainValid
                 (canonicalizeMaterializedValues_canonical table nextLeft.context

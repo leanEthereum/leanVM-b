@@ -102,7 +102,7 @@ theorem probEvent_sampledCanonical_privateWitness_le_eight_mul
         · exact probEvent_sampledObservedMaterializedDiagnostic_final_none_le adversary
             parameter ftsSecret (2 * q) q hbound (by omega)
         · exact probEvent_sampledDiagnostic_successfulDoomed_le_three_mul adversary parameter
-            ftsSecret q hfuel hbound hexpanded hq
+            ftsSecret q hfuel hexpanded hq
       _ = _ := by
         push_cast
         ring

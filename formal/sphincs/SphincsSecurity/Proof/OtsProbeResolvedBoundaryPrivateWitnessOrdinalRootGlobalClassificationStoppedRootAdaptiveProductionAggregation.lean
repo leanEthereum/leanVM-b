@@ -253,7 +253,11 @@ theorem probEvent_successfulDoomedFirstRoot_le_commonDetailed
     (q : Nat) (hordinal : ordinal < q)
     (hfuel : 2 * q < Fintype.card Digest)
     (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP IsOuterHash q)
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ : SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
     Pr[ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt table ordinal |
       observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] ≤
@@ -295,8 +299,12 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_firstRoot_le
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
     (q : Nat) (hordinal : ordinal < q)
     (hfuel : 2 * q < Fintype.card Digest)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP IsOuterHash q)
+    (hbound : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ : SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
     Pr[fun outcome => outcome.SuccessfulDoomed ∧
           outcome.FirstExistingHiddenRootHitAt ordinal |
@@ -305,6 +313,6 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_firstRoot_le
   apply probEvent_sampledDiagnostic_successfulDoomed_firstExistingHiddenRootHitAt_le_of_forall
   intro table
   exact probEvent_successfulDoomedFirstRoot_le_commonDetailed ordinal adversary parameter table
-    ftsSecret q hordinal hfuel hbound hq
+    ftsSecret q hordinal hfuel (hbound table) hq
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
