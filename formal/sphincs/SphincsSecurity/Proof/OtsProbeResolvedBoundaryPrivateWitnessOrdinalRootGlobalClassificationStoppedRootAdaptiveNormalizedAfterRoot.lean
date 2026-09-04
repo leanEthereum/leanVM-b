@@ -1,0 +1,423 @@
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedRootAdaptiveAfterRoot
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedRootAdaptiveNormalizeStructural
+
+/-!
+# Normalized adaptive coupling after the public root
+
+The initialized adaptive coupling lands in the eager target-resolution proxy by exact structural
+normalization. The remaining bridge from that proxy to the fully observed eager run is kept
+directional.
+-/
+
+namespace SphincsSecurity.Concrete.OtsProbeSimulation
+
+open OracleComp OracleSpec
+open OracleComp.ProgramLogic.Relational
+
+attribute [local irreducible] maskedPublishedTreeRoot
+
+theorem directDeferredContext_invariants_afterRootResult
+    (table : OtsSecretIndex → HashOutput) (fuel : Nat)
+    (rootResult : CleanRunResult (Digest × SplitHashCache))
+    (hresult : some rootResult ∈ support
+      (runCleanFromTable
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel table
+        (maskedPublishedTreeRoot.run emptySplitHashCache))) :
+    let context := directDeferredContext rootResult.state
+    context.Valid ∧ DeferredCompletable table context ∧
+      StartTableAgrees context.state table ∧
+      ∀ coordinate output,
+        resolvedCompletionValue table context coordinate = some output →
+          ¬context.state.hitAt coordinate output := by
+  dsimp only
+  have hpending := pending_eq_empty_of_mem_runCleanFromTable_maskedPublishedTreeRoot
+    fuel table rootResult hresult
+  have hvalid : (directDeferredContext rootResult.state).Valid := by
+    constructor
+    · intro position output hvalue
+      simpa [directDeferredContext, directDeferredValues] using hvalue
+    · intro coordinate output _hvalue hhit
+      simp [directDeferredContext, LazyRevealProbe.State.hitAt,
+        LazyRevealProbe.State.pendingAt, hpending] at hhit
+  have htable := startTableAgrees_of_mem_runCleanFromTable
+    (maskedPublishedTreeRoot.run emptySplitHashCache)
+    (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel table
+    (startTableAgrees_empty table) rootResult hresult
+  have hprivate : ¬PrivateStructuralHit (directDeferredContext rootResult.state) := by
+    rintro ⟨position, output, _hhidden, _hvalue, hhit⟩
+    simp [directDeferredContext, LazyRevealProbe.State.hitAt,
+      LazyRevealProbe.State.pendingAt, hpending] at hhit
+  have hstart : ¬MissingChainStartHit table (directDeferredContext rootResult.state) := by
+    rintro ⟨index, _hvalue, hhit⟩
+    simp [directDeferredContext, LazyRevealProbe.State.hitAt,
+      LazyRevealProbe.State.pendingAt, hpending] at hhit
+  have hcard : (directDeferredContext rootResult.state).state.pending.card <
+      Fintype.card Digest := by
+    simp [directDeferredContext, hpending]
+  have hcompletable := deferredCompletable_of_valid_of_no_boundary_hit table
+    (directDeferredContext rootResult.state) hvalid htable.2 hprivate hstart hcard
+  have hclean : ∀ coordinate output,
+      resolvedCompletionValue table (directDeferredContext rootResult.state) coordinate =
+          some output →
+        ¬(directDeferredContext rootResult.state).state.hitAt coordinate output := by
+    intro coordinate output _hvalue
+    simp [directDeferredContext, LazyRevealProbe.State.hitAt,
+      LazyRevealProbe.State.pendingAt, hpending]
+  exact ⟨hvalid, hcompletable, htable.2, hclean⟩
+
+set_option maxRecDepth 100000 in
+theorem relTriple_resolveDeferredPositionValue_canonical_afterRootResult
+    (table : OtsSecretIndex → HashOutput) (fuel : Nat) (target : Position)
+    (rootResult : CleanRunResult (Digest × SplitHashCache))
+    (hresult : some rootResult ∈ support
+      (runCleanFromTable
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel table
+        (maskedPublishedTreeRoot.run emptySplitHashCache))) :
+    RelTriple
+      (resolveDeferredPositionValue target
+        (canonicalizeMaterializedValues table (directDeferredContext rootResult.state)))
+      (resolveDeferredPositionValue target (directDeferredContext rootResult.state))
+      (FinalizationResolutionEq table) := by
+  let context := directDeferredContext rootResult.state
+  have hinvariants := directDeferredContext_invariants_afterRootResult table fuel rootResult hresult
+  have hcanonical := valid_completable_canonicalizeMaterializedValues table context
+    hinvariants.1 hinvariants.2.1
+  apply relTriple_resolveDeferredPositionValue_of_finalizationViewEq table target
+  · exact finalizationViewEq_canonicalize_left table context hinvariants.1 hinvariants.2.2.1
+      hinvariants.2.2.2
+  · exact hcanonical.1
+  · exact hinvariants.1
+  · exact hcanonical.2
+
+theorem canonicalized_resolutions_afterRootResult
+    (table : OtsSecretIndex → HashOutput) (target : Position)
+    (rootState : LazyRevealProbe.State Coordinate)
+    (left right : DeferredResolution)
+    (hleft : some left ∈ support
+      (resolveDeferredPositionValue target
+        (canonicalizeMaterializedValues table (directDeferredContext rootState))))
+    (hright : some right ∈ support
+      (resolveDeferredPositionValue target (directDeferredContext rootState)))
+    (hresolution : FinalizationResolutionEq table (some left) (some right)) :
+    let leftContext := canonicalizeMaterializedValues table left.toDeferredContext
+    let rightContext := canonicalizeMaterializedValues table right.toDeferredContext
+    FinalizationContextEq table (some leftContext) (some rightContext) ∧
+      leftContext.state.values = rightContext.state.values ∧
+      leftContext.state.revealed = rightContext.state.revealed ∧
+      CompletionSafeStateEq table
+        (materializedDeferredState leftContext)
+        (materializedDeferredState rightContext) := by
+  dsimp only
+  have hrevealed : left.state.revealed = right.state.revealed := by
+    rw [resolveDeferredPositionValue_state_eq_clearPending target
+          (canonicalizeMaterializedValues table (directDeferredContext rootState)) left hleft,
+      resolveDeferredPositionValue_state_eq_clearPending target
+        (directDeferredContext rootState) right hright]
+    simp [canonicalizeMaterializedValues_revealed, LazyRevealProbe.State.clearPending]
+  have hcontext : FinalizationContextEq table
+      (some left.toDeferredContext) (some right.toDeferredContext) :=
+    ⟨hresolution.2.1, hresolution.2.2.1, hresolution.2.2.2.1,
+      hresolution.2.2.2.2⟩
+  have hcanonical := canonicalizedFinalizationContextEq hcontext hrevealed
+  have hcanonicalRevealed :
+      (canonicalizeMaterializedValues table left.toDeferredContext).state.revealed =
+        (canonicalizeMaterializedValues table right.toDeferredContext).state.revealed := by
+    simpa [canonicalizeMaterializedValues_revealed] using hrevealed
+  refine ⟨hcanonical.1, hcanonical.2, hcanonicalRevealed, ?_⟩
+  exact completionSafeStateEq_materialized_of_finalizationContextEq table
+    (canonicalizeMaterializedValues table left.toDeferredContext)
+    (canonicalizeMaterializedValues table right.toDeferredContext)
+    hcanonical.1 hcanonical.2 hcanonicalRevealed
+
+theorem canonicalMaterializedValues_of_resolveDeferredPositionValue
+    (table : OtsSecretIndex → HashOutput) (position : Position)
+    (context : DeferredContext) (resolved : DeferredResolution)
+    (hpublished : PublishedValues context.state)
+    (hcanonical : CanonicalMaterializedValues table context)
+    (hresolved : some resolved ∈ support
+      (resolveDeferredPositionValue position context)) :
+    CanonicalMaterializedValues table resolved.toDeferredContext := by
+  cases resolved with
+  | mk resolvedContext output =>
+      cases resolvedContext with
+      | mk resolvedState resolvedValues =>
+          have hstate := resolveDeferredPositionValue_state_eq_clearPending position context
+            ⟨⟨resolvedState, resolvedValues⟩, output⟩ hresolved
+          change resolvedState = context.state.clearPending (.position position) at hstate
+          subst resolvedState
+          unfold CanonicalMaterializedValues
+          change context.state.values = publicMaterializedValues table
+            { state := context.state.clearPending (.position position),
+              values := resolvedValues }
+          rw [hcanonical]
+          exact (publicMaterializedValues_clearPending_values table context (.position position)
+            resolvedValues hpublished).symm
+
+theorem left_resolution_canonical_afterRootResult
+    (table : OtsSecretIndex → HashOutput) (fuel : Nat) (target : Position)
+    (rootResult : CleanRunResult (Digest × SplitHashCache))
+    (hresult : some rootResult ∈ support
+      (runCleanFromTable
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel table
+        (maskedPublishedTreeRoot.run emptySplitHashCache)))
+    (left : DeferredResolution)
+    (hleft : some left ∈ support
+      (resolveDeferredPositionValue target
+        (canonicalizeMaterializedValues table (directDeferredContext rootResult.state)))) :
+    CanonicalMaterializedValues table left.toDeferredContext := by
+  have hinvariants := directDeferredContext_invariants_afterRootResult table fuel rootResult hresult
+  have hraw := mem_support_runRaw_done_of_mem_runCleanFromTable_some
+    (maskedPublishedTreeRoot.run emptySplitHashCache)
+    (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel table rootResult hresult
+  have hpublished : PublishedValues rootResult.state :=
+    preservesPublishedValues_maskedPublishedTreeRoot
+      (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) emptySplitHashCache fuel
+      rootResult.state rootResult.remaining rootResult.value.1 rootResult.value.2
+      publishedValues_empty hraw
+  let context := canonicalizeMaterializedValues table (directDeferredContext rootResult.state)
+  have hcontextCanonical : CanonicalMaterializedValues table context :=
+    canonicalizeMaterializedValues_canonical table (directDeferredContext rootResult.state)
+      hinvariants.1.valuesConsistent
+  have hcontextPublished : PublishedValues context.state := by
+    exact hpublished.to_canonicalizedMaterializedValues
+  exact canonicalMaterializedValues_of_resolveDeferredPositionValue table target context left
+    hcontextPublished hcontextCanonical hleft
+
+set_option maxRecDepth 100000 in
+theorem relTriple_eagerProxy_resolvedObservedAtRoot_of_resolved
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (q : Nat) (target : Position) (rightRoot : Digest)
+    (rootResult : CleanRunResult (Digest × SplitHashCache))
+    (hresult : some rootResult ∈ support
+      (runCleanFromTable
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) (2 * q) table
+        (maskedPublishedTreeRoot.run emptySplitHashCache)))
+    (hresolved : ∀ (left right : DeferredResolution),
+      some left ∈ support
+        (resolveDeferredPositionValue target
+          (canonicalizeMaterializedValues table (directDeferredContext rootResult.state))) →
+      some right ∈ support
+        (resolveDeferredPositionValue target (directDeferredContext rootResult.state)) →
+      FinalizationResolutionEq table (some left) (some right) →
+      RelTriple
+        (directDelayedSelectedRootIndicator ordinal parameter rootResult.value.1 ftsSecret table
+          target rightRoot
+          (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) [] []
+          left.toDeferredContext q rootResult.value.2)
+        (fixedComparisonRootIndicator table ordinal target rootResult.value.1 rightRoot <$>
+          observedMaterializedBoundary parameter rootResult.value.1 ftsSecret
+            (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) []
+            (materializedDeferredState right.toDeferredContext) rootResult.remaining
+            rootResult.table (replaceHiddenRootCache target right.output rootResult.value.2))
+        SuccessfulObservedIndicatorRel) :
+    RelTriple
+      (eagerDirectDelayedSelectedRootIndicator ordinal parameter rootResult.value.1 ftsSecret table
+        target rightRoot
+        (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) [] []
+        (canonicalizeMaterializedValues table (directDeferredContext rootResult.state)) q
+        rootResult.value.2)
+      (fixedComparisonRootIndicator table ordinal target rootResult.value.1 rightRoot <$>
+        resolvedEagerObservedRootComparisonAtRoot adversary parameter ftsSecret target rootResult)
+      SuccessfulObservedIndicatorRel := by
+  have hresolve := relTriple_resolveDeferredPositionValue_canonical_afterRootResult table (2 * q)
+    target rootResult hresult
+  have hleft := SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hresolve
+    (fun resolved ↦ resolved ∈ support
+      (resolveDeferredPositionValue target
+        (canonicalizeMaterializedValues table (directDeferredContext rootResult.state))))
+    (fun resolved hsupport ↦ hsupport)
+  have hboth := SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hleft
+  unfold eagerDirectDelayedSelectedRootIndicator resolvedEagerObservedRootComparisonAtRoot
+  simp only [List.length_nil, Nat.not_lt_zero, ↓reduceIte, map_eq_bind_pure_comp, bind_assoc]
+  apply relTriple_bind hboth
+  intro left right hrelation
+  rcases hrelation with ⟨⟨hresolution, hleftSupport⟩, hrightSupport⟩
+  cases left with
+  | none =>
+      cases right with
+      | none => exact relTriple_pure_pure (fun hfalse ↦ (Bool.false_ne_true hfalse).elim)
+      | some right => simp [FinalizationResolutionEq] at hresolution
+  | some left =>
+      cases right with
+      | none => simp [FinalizationResolutionEq] at hresolution
+      | some right =>
+          simpa only [pure_bind, map_eq_bind_pure_comp] using
+            hresolved left right hleftSupport hrightSupport hresolution
+
+set_option maxHeartbeats 8000000 in
+set_option maxRecDepth 1000000 in
+theorem relTriple_indicator_observed_eagerDirectDelayed_afterRootResult
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (q : Nat) (target : Position) (rightRoot : Digest)
+    (rootResult : CleanRunResult (Digest × SplitHashCache))
+    (hresult : some rootResult ∈ support
+      (runCleanFromTable
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) (2 * q) table
+        (maskedPublishedTreeRoot.run emptySplitHashCache)))
+    (hbound :
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, rootResult.value.1, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary
+          ⟨rootResult.value.1, parameter⟩)).IsQueryBoundP
+            (fun query => query matches Sum.inr _) q)
+    (hq : q ≤ 2 ^ securityBits)
+    (hroot : IsLayerRoot target) :
+    RelTriple
+      ((successfulObservedRootComparisonIndicator table ordinal target ∘
+          fun observed ↦ (observed, rightRoot)) <$>
+        observedMaterializedBoundary parameter rootResult.value.1 ftsSecret
+          (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) []
+          rootResult.state rootResult.remaining table rootResult.value.2)
+      (eagerDirectDelayedSelectedRootIndicator ordinal parameter rootResult.value.1 ftsSecret table
+        target rightRoot
+        (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) [] []
+        (canonicalizeMaterializedValues table (directDeferredContext rootResult.state)) q
+        rootResult.value.2)
+      SuccessfulObservedIndicatorRel := by
+  have hdelayed := relTriple_indicator_observed_directDelayed_afterRootResult ordinal adversary
+    parameter table ftsSecret q target rightRoot rootResult hresult hbound hq hroot
+  have hinvariants := directDeferredContext_invariants_afterRootResult table (2 * q) rootResult
+    hresult
+  have hcanonical := valid_completable_canonicalizeMaterializedValues table
+    (directDeferredContext rootResult.state) hinvariants.1 hinvariants.2.1
+  apply relTriple_of_evalDist_eq_right _ hdelayed
+  exact (evalDist_eagerDirectDelayedSelectedRootIndicator_eq
+    (α := RetainedRestResult) ordinal parameter rootResult.value.1 ftsSecret table target rightRoot
+    (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) [] []
+    (canonicalizeMaterializedValues table (directDeferredContext rootResult.state)) q
+    rootResult.value.2 (by simp) (by simp) (by simp) hcanonical.1 hcanonical.2).symm
+
+set_option maxHeartbeats 8000000 in
+set_option maxRecDepth 1000000 in
+theorem relTriple_indicator_afterRootResult_of_eagerProxy
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (q : Nat) (target : Position)
+    (rootResult : CleanRunResult (Digest × SplitHashCache))
+    (hresult : some rootResult ∈ support
+      (runCleanFromTable
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) (2 * q) table
+        (maskedPublishedTreeRoot.run emptySplitHashCache)))
+    (hbound :
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, rootResult.value.1, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary
+          ⟨rootResult.value.1, parameter⟩)).IsQueryBoundP
+            (fun query => query matches Sum.inr _) q)
+    (hq : q ≤ 2 ^ securityBits)
+    (hroot : IsLayerRoot target)
+    (hproxy : ∀ rightRoot,
+      RelTriple
+        (eagerDirectDelayedSelectedRootIndicator ordinal parameter rootResult.value.1 ftsSecret
+          table target rightRoot
+          (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) [] []
+          (canonicalizeMaterializedValues table (directDeferredContext rootResult.state)) q
+          rootResult.value.2)
+        (fixedComparisonRootIndicator table ordinal target rootResult.value.1 rightRoot <$>
+          resolvedEagerObservedRootComparisonAtRoot adversary parameter ftsSecret target
+            rootResult)
+        SuccessfulObservedIndicatorRel) :
+    RelTriple
+      (successfulObservedRootComparisonIndicator table ordinal target <$> (do
+        let observed ← observedMaterializedBoundary parameter rootResult.value.1 ftsSecret
+          (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) []
+          rootResult.state rootResult.remaining table rootResult.value.2
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        pure (retainObservedRoot rootResult.value.1 observed, rightRoot)))
+      (successfulObservedRootComparisonIndicator table ordinal target <$>
+        resolvedEagerObservedRootComparisonAfterRootResult adversary parameter ftsSecret target
+          rootResult)
+      SuccessfulObservedIndicatorRel := by
+  apply relTriple_indicator_afterRootResult_of_fixedComparisonRoot ordinal adversary parameter
+    table ftsSecret target rootResult
+  intro rightRoot
+  have hleft := relTriple_indicator_observed_eagerDirectDelayed_afterRootResult ordinal adversary
+    parameter table ftsSecret q target rightRoot rootResult hresult hbound hq hroot
+  let observed := observedMaterializedBoundary parameter rootResult.value.1 ftsSecret
+    (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) []
+    rootResult.state rootResult.remaining table rootResult.value.2
+  have hretain : RelTriple
+      (fixedComparisonRootIndicator table ordinal target rootResult.value.1 rightRoot <$> observed)
+      ((successfulObservedRootComparisonIndicator table ordinal target ∘
+          fun result ↦ (result, rightRoot)) <$> observed)
+      SuccessfulObservedIndicatorRel := by
+    apply relTriple_map
+    apply relTriple_post_mono (relTriple_refl observed)
+    intro left right heq hgood
+    subst right
+    change successfulObservedRootComparisonIndicator table ordinal target
+      (retainObservedRoot rootResult.value.1 left, rightRoot) = true at hgood
+    change successfulObservedRootComparisonIndicator table ordinal target
+      (left, rightRoot) = true
+    rw [successfulObservedRootComparisonIndicator_eq_true_iff] at hgood ⊢
+    exact successfulDoomedFirstRootGoodForComparisonAt_of_retainObservedRoot table ordinal target
+      rootResult.value.1 rightRoot left hgood
+  have hfirst := SphincsSecurity.relTriple_trans_exists hretain hleft
+  have hsecond := SphincsSecurity.relTriple_trans_exists hfirst (hproxy rightRoot)
+  apply relTriple_post_mono hsecond
+  intro observed resolved hrelation
+  obtain ⟨proxy, hchain, heager⟩ := hrelation
+  obtain ⟨middle, hretained, hnormalized⟩ := hchain
+  exact fun htrue ↦ heager (hnormalized (hretained htrue))
+
+set_option maxHeartbeats 8000000 in
+set_option maxRecDepth 1000000 in
+theorem probEvent_observedRootComparison_le_production_mul_of_eagerProxy
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (q : Nat) (target : Position) (hroot : IsLayerRoot target)
+    (hparent : ∃ parent, Position.parentOf target = some parent)
+    (hfuel : 2 * q < Fintype.card Digest)
+    (hbound : ∀ root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ : SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
+    (hq : q ≤ 2 ^ securityBits)
+    (hproxy : ∀ (rootResult : CleanRunResult (Digest × SplitHashCache)),
+      some rootResult ∈ support
+        (runCleanFromTable
+          (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) (2 * q) table
+          (maskedPublishedTreeRoot.run emptySplitHashCache)) →
+      ∀ rightRoot,
+        RelTriple
+          (eagerDirectDelayedSelectedRootIndicator ordinal parameter rootResult.value.1 ftsSecret
+            table target rightRoot
+            (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) [] []
+            (canonicalizeMaterializedValues table (directDeferredContext rootResult.state)) q
+            rootResult.value.2)
+          (fixedComparisonRootIndicator table ordinal target rootResult.value.1 rightRoot <$>
+            resolvedEagerObservedRootComparisonAtRoot adversary parameter ftsSecret target
+              rootResult)
+          SuccessfulObservedIndicatorRel) :
+    Pr[fun result : Option
+          (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest ↦
+        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          table ordinal target result.2 result.1 | do
+      let observed ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret
+        (2 * q) table
+      let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+      pure (observed, rightRoot)] ≤
+      Pr[fun result ↦ materializedOrdinalSelectionAt target result.2 |
+          materializedRootAwareOrdinalProductionExperimentAfterTable ordinal adversary parameter
+            ftsSecret target (2 * q) table] *
+        ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  apply probEvent_observedRootComparison_le_production_mul_of_afterRootResult ordinal adversary
+    parameter table ftsSecret q target hroot hparent hfuel
+  intro rootResult hresult
+  exact relTriple_indicator_afterRootResult_of_eagerProxy ordinal adversary parameter table
+    ftsSecret q target rootResult hresult (hbound rootResult.value.1) hq hroot
+    (hproxy rootResult hresult)
+
+end SphincsSecurity.Concrete.OtsProbeSimulation

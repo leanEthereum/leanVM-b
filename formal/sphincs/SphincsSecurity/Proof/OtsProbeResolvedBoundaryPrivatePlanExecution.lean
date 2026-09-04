@@ -1,0 +1,241 @@
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivatePreparationInterpreter
+
+/-!
+# Single-execution planned hash handler
+
+The concrete probing hash handler is factored into its state-neutral planner, execution of the one recorded candidate, and a probe-free suffix. This avoids executing the finite scan twice in the plan-traced game.
+-/
+
+namespace SphincsSecurity.Concrete.OtsProbeSimulation
+
+open OracleComp OracleSpec
+
+theorem isUncoveredProbe_imp_isProbe (candidates : List Probe)
+    (query : (LazyRevealProbe.World Coordinate).Domain) :
+    IsUncoveredProbe candidates query → LazyRevealProbe.IsProbe query := by
+  cases query <;> simp [IsUncoveredProbe, LazyRevealProbe.IsProbe]
+
+noncomputable def purePlanProbingHashQuery (parameter : PublicParameter)
+    (input : HashInput) (state : LazyRevealProbe.State Coordinate) : PlannedHashQuery :=
+  match decodeProbe? parameter input with
+  | some candidate =>
+      match decodePosition? parameter input with
+      | some (.leaf lay tree leafIdx) =>
+          ⟨leafInputProbePlan state input candidate lay tree leafIdx,
+            .resolve candidate.outputCoordinate⟩
+      | _ => ⟨some candidate, .resolve candidate.outputCoordinate⟩
+  | none =>
+      match decodePosition? parameter input with
+      | some position@(.chain _ _ _ _ _) => ⟨none, .resolve (.position position)⟩
+      | some position@(.leaf _ _ _) => ⟨none, .resolve (.position position)⟩
+      | some position@(.node _ _ _ _) =>
+          ⟨firstMissingInputCoordinatePlan state input 0
+              (position.children.map Coordinate.position),
+            .resolve (.position position)⟩
+      | _ => ⟨none, .ordinary⟩
+
+set_option maxRecDepth 100000 in
+theorem runDirectResolvedDetailed_planProbingHashQuery
+    (parameter : PublicParameter) (input : HashInput)
+    (state : LazyRevealProbe.State Coordinate) (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (hstate : context.state = state) :
+    runDirectResolvedDetailedFromTable context fuel table
+        ((planProbingHashQuery parameter input).run cache) =
+      pure (.done ⟨context, fuel,
+        (purePlanProbingHashQuery parameter input state, cache), table⟩) := by
+  unfold planProbingHashQuery purePlanProbingHashQuery
+  cases hprobe : decodeProbe? parameter input with
+  | some candidate =>
+      cases hposition : decodePosition? parameter input with
+      | none => simp [runDirectResolvedDetailedFromTable_pure]
+      | some position =>
+          cases position with
+          | leaf lay tree leafIdx =>
+              rw [StateT.run_bind,
+                runDirectResolvedDetailedFromTable_bind,
+                runDirectResolvedDetailed_planLeafInputProbe state input candidate lay tree
+                  leafIdx context fuel table cache hstate]
+              simp [runDirectResolvedDetailedFromTable_pure]
+          | chain | node | ftsLeaf | ftsNode | ftsRoots =>
+              simp [runDirectResolvedDetailedFromTable_pure]
+  | none =>
+      cases hposition : decodePosition? parameter input with
+      | none => simp [runDirectResolvedDetailedFromTable_pure]
+      | some position =>
+          cases position with
+          | node lay tree level nodeIdx =>
+              rw [StateT.run_bind,
+                runDirectResolvedDetailedFromTable_bind,
+                runDirectResolvedDetailed_planFirstMissingInputCoordinate state input 0
+                  ((Position.node lay tree level nodeIdx).children.map Coordinate.position)
+                  context fuel table cache hstate]
+              simp [runDirectResolvedDetailedFromTable_pure]
+          | chain | leaf | ftsLeaf | ftsNode | ftsRoots =>
+              simp [runDirectResolvedDetailedFromTable_pure]
+
+noncomputable def probingHashQueryAfterPlan
+    (parameter : PublicParameter) (input : HashInput) (plan : PlannedHashQuery) :
+    StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) HashOutput :=
+  executePlannedHashQuery parameter input plan
+
+set_option maxRecDepth 100000 in
+theorem probingHashQuery_eq_plan_then_afterPlan_leaf
+    (parameter : PublicParameter) (input : HashInput) (candidate : Probe)
+    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
+    (hprobe : decodeProbe? parameter input = some candidate)
+    (hposition : decodePosition? parameter input = some (.leaf lay tree leafIdx)) :
+    probingHashQuery parameter input = (do
+      let plan ← planProbingHashQuery parameter input
+      probingHashQueryAfterPlan parameter input plan) := by
+  rw [probingHashQuery_eq_planned_leaf parameter input candidate lay tree leafIdx hprobe
+    hposition]
+  unfold planProbingHashQuery probingHashQueryAfterPlan executePlannedHashQuery
+  rw [hprobe, hposition]
+  simp
+
+set_option maxRecDepth 100000 in
+theorem probingHashQuery_eq_plan_then_afterPlan_node
+    (parameter : PublicParameter) (input : HashInput)
+    (lay : Layer) (tree : TreeIndex) (level : Fin maxLayerHeight)
+    (nodeIdx : LeafIndex)
+    (hprobe : decodeProbe? parameter input = none)
+    (hposition : decodePosition? parameter input = some (.node lay tree level nodeIdx)) :
+    probingHashQuery parameter input = (do
+      let plan ← planProbingHashQuery parameter input
+      probingHashQueryAfterPlan parameter input plan) := by
+  rw [probingHashQuery_eq_planned_node parameter input lay tree level nodeIdx hprobe hposition]
+  unfold planProbingHashQuery probingHashQueryAfterPlan executePlannedHashQuery
+  rw [hprobe, hposition]
+  simp
+
+set_option maxRecDepth 100000 in
+theorem probingHashQuery_eq_plan_then_afterPlan_of_probe_some_nonleaf
+    (parameter : PublicParameter) (input : HashInput) (candidate : Probe)
+    (hprobe : decodeProbe? parameter input = some candidate)
+    (hposition : ¬∃ lay tree leafIdx,
+      decodePosition? parameter input = some (.leaf lay tree leafIdx)) :
+    probingHashQuery parameter input = (do
+      let plan ← planProbingHashQuery parameter input
+      probingHashQueryAfterPlan parameter input plan) := by
+  unfold probingHashQuery planProbingHashQuery probingHashQueryAfterPlan executePlannedHashQuery
+  rw [hprobe]
+  cases hdecoded : decodePosition? parameter input with
+  | none => simp
+  | some position =>
+      cases position with
+      | leaf lay tree leafIdx => exact False.elim (hposition ⟨lay, tree, leafIdx, hdecoded⟩)
+      | chain | node | ftsLeaf | ftsNode | ftsRoots => simp
+
+set_option maxRecDepth 100000 in
+theorem probingHashQuery_eq_plan_then_afterPlan_of_probe_none_nonnode
+    (parameter : PublicParameter) (input : HashInput)
+    (hprobe : decodeProbe? parameter input = none)
+    (hposition : ¬∃ lay tree level nodeIdx,
+      decodePosition? parameter input = some (.node lay tree level nodeIdx)) :
+    probingHashQuery parameter input = (do
+      let plan ← planProbingHashQuery parameter input
+      probingHashQueryAfterPlan parameter input plan) := by
+  unfold probingHashQuery planProbingHashQuery probingHashQueryAfterPlan executePlannedHashQuery
+  rw [hprobe]
+  cases hdecoded : decodePosition? parameter input with
+  | none => simp
+  | some position =>
+      cases position with
+      | node lay tree level nodeIdx =>
+          exact False.elim (hposition ⟨lay, tree, level, nodeIdx, hdecoded⟩)
+      | chain | leaf | ftsLeaf | ftsNode | ftsRoots => simp
+
+theorem probingHashQueryAfterPlan_probeBound
+    (parameter : PublicParameter) (input : HashInput) (plan : PlannedHashQuery)
+    (candidates : List Probe) (hplanned : ∀ candidate, plan.candidate? = some candidate →
+      candidate ∈ candidates) (cache : SplitHashCache) :
+    ((probingHashQueryAfterPlan parameter input plan).run cache).IsQueryBoundP
+      (IsUncoveredProbe candidates) 0 := by
+  unfold probingHashQueryAfterPlan executePlannedHashQuery
+  rw [StateT.run_bind]
+  apply OracleComp.isQueryBoundP_bind (n := 0) (m := 0)
+  · cases hopt : plan.candidate? with
+    | none => simp [executeCandidate?]
+    | some candidate =>
+        have hmem := hplanned candidate hopt
+        change (LazyRevealProbe.probeQuery candidate.coordinate candidate.candidate).IsQueryBoundP
+          (IsUncoveredProbe candidates) 0
+        unfold LazyRevealProbe.probeQuery
+        rw [OracleComp.isQueryBoundP_query_iff]
+        simp [IsUncoveredProbe, hmem]
+  · intro result _hresult
+    cases plan.action with
+    | ordinary =>
+        exact OracleComp.IsQueryBoundP.of_imp
+          (isUncoveredProbe_imp_isProbe candidates)
+          (splitHashQuery_probeFree (.ordinary input) result.2)
+    | resolve coordinate =>
+        exact OracleComp.IsQueryBoundP.of_imp
+          (isUncoveredProbe_imp_isProbe candidates)
+          (resolveKnownInput_probeFree parameter coordinate input result.2)
+
+set_option maxRecDepth 100000 in
+theorem evalDist_runDirectDetailedPrivateObserve_probingHashQuery_eq_afterPlan
+    (parameter : PublicParameter) (input : HashInput)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (observe : DeferredContext → Nat → (HashOutput × SplitHashCache) → ProbComp Bool)
+    (hfactor : probingHashQuery parameter input = (do
+      let plan ← planProbingHashQuery parameter input
+      probingHashQueryAfterPlan parameter input plan)) :
+    evalDist (runDirectDetailedPrivateObserve observe context fuel table
+        ((probingHashQuery parameter input).run cache)) =
+      evalDist (runDirectDetailedPrivateObserve observe context fuel table
+        ((probingHashQueryAfterPlan parameter input
+          (purePlanProbingHashQuery parameter input context.state)).run cache)) := by
+  rw [hfactor]
+  unfold runDirectDetailedPrivateObserve
+  rw [StateT.run_bind, runDirectResolvedDetailedFromTable_bind]
+  rw [runDirectResolvedDetailed_planProbingHashQuery parameter input context.state context fuel
+    table cache rfl]
+  simp only [pure_bind]
+
+theorem preservesPublishedValues_probe (candidate : Probe) :
+    PreservesPublishedValues (probe candidate) := by
+  intro state cache fuel finalState remaining value finalCache hpublished hresult
+  change LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈ support
+    (LazyRevealProbe.runRaw state fuel
+      (LazyRevealProbe.probeQuery candidate.coordinate candidate.candidate >>= fun result =>
+        pure (result, cache))) at hresult
+  rw [LazyRevealProbe.probeQuery, LazyRevealProbe.runRaw_probe_query_bind] at hresult
+  cases fuel with
+  | zero => simp at hresult
+  | succ remainingFuel =>
+      by_cases hrevealed : candidate.coordinate ∈ state.revealed
+      · simp [hrevealed, LazyRevealProbe.runRaw] at hresult
+        rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+        exact hpublished
+      · simp [hrevealed, LazyRevealProbe.runRaw] at hresult
+        rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+        simpa [PublishedValues, LazyRevealProbe.State.addPending] using hpublished
+
+theorem preservesPublishedValues_executeCandidate (planned : Option Probe) :
+    PreservesPublishedValues (executeCandidate? planned) := by
+  cases planned with
+  | none => exact PreservesPublishedValues.pure ()
+  | some candidate => exact preservesPublishedValues_probe candidate
+
+theorem preservesPublishedValues_splitHashQuery_ordinary (input : HashInput) :
+    PreservesPublishedValues (splitHashQuery (.ordinary input)) := by
+  have h := preservesPublishedValues_simulateQ_ordinaryHashImpl
+    (liftM (HashSpec.query input) : OracleComp HashSpec HashOutput)
+  simpa [simulateQ_query, ordinaryHashImpl] using h
+
+theorem preservesPublishedValues_probingHashQueryAfterPlan
+    (parameter : PublicParameter) (input : HashInput) (plan : PlannedHashQuery) :
+    PreservesPublishedValues (probingHashQueryAfterPlan parameter input plan) := by
+  unfold probingHashQueryAfterPlan executePlannedHashQuery
+  apply (preservesPublishedValues_executeCandidate plan.candidate?).bind
+  intro _
+  cases plan.action with
+  | ordinary => exact preservesPublishedValues_splitHashQuery_ordinary input
+  | resolve coordinate => exact preservesPublishedValues_resolveKnownInput parameter coordinate input
+
+end SphincsSecurity.Concrete.OtsProbeSimulation
