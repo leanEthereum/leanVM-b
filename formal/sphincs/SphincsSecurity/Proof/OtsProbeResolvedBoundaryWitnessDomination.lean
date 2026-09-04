@@ -156,6 +156,28 @@ noncomputable def granularAllCanonicalBoundaryWitnessPlan
     [] emptyWitnessDeferredContext fuel table
       (maskedPublishedTreeRoot.run emptySplitHashCache)
 
+noncomputable def granularAllCanonicalBoundaryDetailedRetainedOutcome
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp DirectBoundaryOutcome :=
+  runDirectDetailedObserve
+    (canonicalizeDirectDetailedObserve table
+      (granularDetailedRetainedRestObserve adversary parameter table ftsSecret))
+    emptyWitnessDeferredContext fuel table
+      (maskedPublishedTreeRoot.run emptySplitHashCache)
+
+noncomputable def granularAllCanonicalBoundaryRetainedFinishIsNone
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp Bool :=
+  runDirectResolvedObserve
+    (canonicalizeObserve table
+      (granularRetainedRestObserve adversary parameter table ftsSecret))
+    emptyWitnessDeferredContext fuel table
+      (maskedPublishedTreeRoot.run emptySplitHashCache)
+
 theorem boundaryWitnessCovers_of_witness
     (outcome : DirectBoundaryOutcome) (witness : PrivateHitWitness)
     (candidates : List Probe) :
@@ -705,6 +727,85 @@ theorem evalDist_outcome_granularDetailedRetainedRestNormalizedBoundaryWitnessPl
   exact evalDist_outcome_retainedFinalizationBoundaryWitnessPlan table value.1 nextContext
     remaining nextValue nextCandidates
 
+set_option maxRecDepth 100000 in
+theorem evalDist_outcome_granularAllCanonicalBoundaryWitnessPlan
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    evalDist (BoundaryWitnessPlanOutput.outcome <$>
+        granularAllCanonicalBoundaryWitnessPlan adversary parameter table ftsSecret fuel) =
+      evalDist (granularAllCanonicalBoundaryDetailedRetainedOutcome adversary parameter table
+        ftsSecret fuel) := by
+  unfold granularAllCanonicalBoundaryWitnessPlan
+    granularAllCanonicalBoundaryDetailedRetainedOutcome
+  apply evalDist_outcome_runDirectBoundaryWitnessPlanObserve
+  intro context remaining value candidates
+  apply evalDist_outcome_canonicalizeDirectBoundaryWitnessPlanObserve
+  intro nextContext nextRemaining nextValue nextCandidates
+  exact
+    evalDist_outcome_granularDetailedRetainedRestNormalizedBoundaryWitnessPlanObserve
+      adversary parameter table ftsSecret nextContext nextRemaining nextValue nextCandidates
+
+set_option maxRecDepth 100000 in
+theorem evalDist_failed_canonicalGranularRetainedRest
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (context : DeferredContext) (fuel : Nat) (value : Digest × SplitHashCache)
+    (hconsistent : context.ValuesConsistent) :
+    evalDist (DirectBoundaryOutcome.failed <$>
+        canonicalizeDirectDetailedObserve table
+          (granularDetailedRetainedRestObserve adversary parameter table ftsSecret)
+          context fuel value) =
+      evalDist (canonicalizeObserve table
+        (granularRetainedRestObserve adversary parameter table ftsSecret)
+        context fuel value) := by
+  apply evalDist_failed_canonicalizeDirectDetailedObserve
+    table
+    (granularDetailedRetainedRestObserve adversary parameter table ftsSecret)
+    (granularRetainedRestObserve adversary parameter table ftsSecret)
+    context fuel value hconsistent
+  exact evalDist_failed_granularDetailedRetainedRestObserve adversary parameter table ftsSecret
+    (canonicalizeMaterializedValues table context) fuel value
+      (canonicalizeMaterializedValues_valuesConsistent table context hconsistent)
+      (canonicalizeMaterializedValues_startTableAgrees table context)
+
+attribute [local irreducible] maskedPublishedTreeRoot in
+set_option linter.constructorNameAsVariable false in
+set_option maxHeartbeats 1000000 in
+set_option maxRecDepth 100000 in
+theorem evalDist_failed_granularAllCanonicalBoundaryDetailedRetainedOutcome
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    evalDist (DirectBoundaryOutcome.failed <$>
+        granularAllCanonicalBoundaryDetailedRetainedOutcome adversary parameter table
+          ftsSecret fuel) =
+      evalDist (granularAllCanonicalBoundaryRetainedFinishIsNone adversary parameter table
+        ftsSecret fuel) := by
+  let initial : DeferredContext := emptyWitnessDeferredContext
+  unfold granularAllCanonicalBoundaryDetailedRetainedOutcome
+    granularAllCanonicalBoundaryRetainedFinishIsNone
+  apply evalDist_failed_runDirectDetailedObserve
+    (detailedObserve := canonicalizeDirectDetailedObserve table
+      (granularDetailedRetainedRestObserve adversary parameter table ftsSecret))
+    (observe := canonicalizeObserve table
+      (granularRetainedRestObserve adversary parameter table ftsSecret))
+    (context := initial) (fuel := fuel) (table := table)
+    (computation := maskedPublishedTreeRoot.run emptySplitHashCache)
+  intro result hresult
+  have hdirect : some result ∈ support (runDirectResolvedFromTable initial fuel table
+      (maskedPublishedTreeRoot.run emptySplitHashCache)) :=
+    mem_support_runDirectResolvedFromTable_of_done_detailed
+      (maskedPublishedTreeRoot.run emptySplitHashCache) initial fuel table result hresult
+  have hcore : result.table = table ∧ result.context.ValuesConsistent ∧
+      StartTableAgrees result.context.state table :=
+    resolvedCore_of_mem_runDirectResolvedFromTable
+      (maskedPublishedTreeRoot.run emptySplitHashCache) initial fuel table result
+        DeferredContext.valid_empty.valuesConsistent (startTableAgrees_empty table) hdirect
+  exact evalDist_failed_canonicalGranularRetainedRest adversary parameter table
+    ftsSecret result.context result.remaining result.value hcore.2.1
+
 noncomputable def sampledGranularAllCanonicalBoundaryWitnessPlan
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
@@ -718,6 +819,54 @@ noncomputable def sampledRootAwareMaterializedBoundaryDetailedRetainedOutcome
     ProbComp DirectBoundaryOutcome := do
   let table ← sampleOtsHashTable
   rootAwareMaterializedBoundaryDetailedRetainedOutcome adversary parameter table ftsSecret fuel
+
+noncomputable def sampledGranularAllCanonicalBoundaryRetainedFinishIsNone
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    ProbComp Bool := do
+  let table ← sampleOtsHashTable
+  granularAllCanonicalBoundaryRetainedFinishIsNone adversary parameter table ftsSecret fuel
+
+set_option maxRecDepth 100000 in
+theorem evalDist_failed_granularAllCanonicalBoundaryWitnessPlan
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    evalDist ((fun output => output.outcome.failed) <$>
+        granularAllCanonicalBoundaryWitnessPlan adversary parameter table ftsSecret fuel) =
+      evalDist (granularAllCanonicalBoundaryRetainedFinishIsNone adversary parameter table
+        ftsSecret fuel) := by
+  calc
+    _ = evalDist (DirectBoundaryOutcome.failed <$>
+        (BoundaryWitnessPlanOutput.outcome <$>
+          granularAllCanonicalBoundaryWitnessPlan adversary parameter table ftsSecret fuel)) := by
+      rw [Functor.map_map]
+    _ = evalDist (DirectBoundaryOutcome.failed <$>
+        granularAllCanonicalBoundaryDetailedRetainedOutcome adversary parameter table
+          ftsSecret fuel) := by
+      simpa only [evalDist_map] using
+        congrArg (Functor.map DirectBoundaryOutcome.failed)
+          (evalDist_outcome_granularAllCanonicalBoundaryWitnessPlan adversary parameter table
+            ftsSecret fuel)
+    _ = _ := evalDist_failed_granularAllCanonicalBoundaryDetailedRetainedOutcome adversary
+      parameter table ftsSecret fuel
+
+set_option linter.constructorNameAsVariable false in
+set_option maxRecDepth 100000 in
+theorem evalDist_failed_sampledGranularAllCanonicalBoundaryWitnessPlan
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
+    evalDist ((fun output => output.outcome.failed) <$>
+        sampledGranularAllCanonicalBoundaryWitnessPlan adversary parameter ftsSecret fuel) =
+      evalDist (sampledGranularAllCanonicalBoundaryRetainedFinishIsNone adversary parameter
+        ftsSecret fuel) := by
+  unfold sampledGranularAllCanonicalBoundaryWitnessPlan
+    sampledGranularAllCanonicalBoundaryRetainedFinishIsNone
+  rw [map_bind]
+  apply evalDist_bind_congr
+  intro table _htable
+  exact evalDist_failed_granularAllCanonicalBoundaryWitnessPlan adversary parameter table
+    ftsSecret fuel
 
 set_option linter.constructorNameAsVariable false in
 set_option maxRecDepth 100000 in
