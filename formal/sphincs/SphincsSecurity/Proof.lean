@@ -323,6 +323,7 @@ import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGl
 import SphincsSecurity.Proof.OtsProbeGroupedTerminal
 import SphincsSecurity.Proof.OtsProbeCanonicalPrivateEndpoint
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryWitnessCoverage
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryWitnessLift
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to

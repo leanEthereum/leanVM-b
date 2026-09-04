@@ -61,12 +61,15 @@ theorem relTriple_finishDirectWitnessPlan_detailed_of_materializedStable
     (hstep : RelTriple leftRun rightRun
       (DirectWitnessMaterializedStableRunEq table))
     (hclean : ∀ left right,
+      DirectWitnessResult.done left ∈ support leftRun →
+      DirectDetailedResult.done right ∈ support rightRun →
       OrdinaryMaterializedRunEq table left right →
       RelTriple
         (leftObserve left.context left.remaining left.value candidates)
         (rightObserve right.context right.remaining right.value)
         WitnessOrOrdinaryCovers)
     (hdoomed : ∀ (left : ProbComp PrivateWitnessPlanOutput) right,
+      DirectDetailedResult.done right ∈ support rightRun →
       OrdinaryMaterializedDoomedRun table right →
       RelTriple left (rightObserve right.context right.remaining right.value)
         WitnessOrOrdinaryCovers) :
@@ -74,8 +77,14 @@ theorem relTriple_finishDirectWitnessPlan_detailed_of_materializedStable
       (leftRun >>= finishDirectWitnessPlanObserve leftObserve candidates)
       (rightRun >>= finishDirectDetailedObserve rightObserve)
       WitnessOrOrdinaryCovers := by
-  apply relTriple_bind hstep
+  have hleftSupport :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hstep
+      (fun result ↦ result ∈ support leftRun) (fun _ hresult ↦ hresult)
+  have hbothSupport :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hleftSupport
+  apply relTriple_bind hbothSupport
   intro left right hrelation
+  rcases hrelation with ⟨⟨hrelation, hleftMem⟩, hrightMem⟩
   cases left with
   | stoppedFuel =>
       cases right with
@@ -87,7 +96,7 @@ theorem relTriple_finishDirectWitnessPlan_detailed_of_materializedStable
           | fuelExhausted =>
               exact relTriple_any_ordinaryFailure_witnessOrOrdinaryCovers _
       | done right =>
-          exact hdoomed (pure (none, candidates)) right hrelation
+          exact hdoomed (pure (none, candidates)) right hrightMem hrelation
   | stoppedOrdinary =>
       cases right with
       | stopped reason =>
@@ -98,7 +107,7 @@ theorem relTriple_finishDirectWitnessPlan_detailed_of_materializedStable
           | fuelExhausted =>
               exact relTriple_any_ordinaryFailure_witnessOrOrdinaryCovers _
       | done right =>
-          exact hdoomed (pure (none, candidates)) right hrelation
+          exact hdoomed (pure (none, candidates)) right hrightMem hrelation
   | stoppedPrivate witness =>
       have hbase := relTriple_true
         (pure (some witness, candidates) : ProbComp PrivateWitnessPlanOutput)
@@ -121,10 +130,10 @@ theorem relTriple_finishDirectWitnessPlan_detailed_of_materializedStable
               exact relTriple_any_ordinaryFailure_witnessOrOrdinaryCovers _
       | done right =>
           rcases hrelation with hcleanRelation | hdoomedRelation
-          · exact hclean left right hcleanRelation
+          · exact hclean left right hleftMem hrightMem hcleanRelation
           · exact hdoomed
               (leftObserve left.context left.remaining left.value candidates)
-              right hdoomedRelation
+              right hrightMem hdoomedRelation
 
 theorem probEvent_failed_le_witness_add_ordinary_of_relTriple
     (source : ProbComp PrivateWitnessPlanOutput)
