@@ -184,7 +184,7 @@ theorem OriginMonitorState.expected_potential_afterTargetSigner_le
     (secretKey : SecretKey) (request : SignRequest)
     (state : OriginMonitorState configuration)
     (event : (pattern.selected → FewTimeView) → Prop)
-    (q : Nat) (hq : q ≤ 2 ^ 120) (hcache : QueryCache.enncard state.viewed.cache ≤ q)
+    (q : Nat) (hq : q ≤ 2 ^ 125) (hcache : QueryCache.enncard state.viewed.cache ≤ q)
     (hcoherent : state.ScheduleCoherent) :
     (∑' targetRun,
       Pr[= targetRun |
@@ -353,7 +353,7 @@ theorem OriginTargetMonitorState.expected_potential_afterSigner_le
     (targetOrdinal : Nat) (secretKey : SecretKey) (request : SignRequest)
     (state : OriginTargetMonitorState configuration)
     (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
-    (q : Nat) (hq : q ≤ 2 ^ 120)
+    (q : Nat) (hq : q ≤ 2 ^ 125)
     (hcache : QueryCache.enncard state.origin.viewed.cache ≤ q)
     (horigin : state.origin.ScheduleCoherent)
     (htarget : state.TargetScheduleCoherent targetOrdinal) :
@@ -590,7 +590,7 @@ theorem originTargetMonitoredAdversaryImpl_expected_potential_le
     (targetOrdinal : Nat) (input : (OracleWorld + SigningSpec).Domain)
     (state : OriginTargetMonitorState configuration)
     (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
-    (q : Nat) (hq : q ≤ 2 ^ 120)
+    (q : Nat) (hq : q ≤ 2 ^ 125)
     (hcache : QueryCache.enncard state.origin.viewed.cache ≤ q)
     (horigin : state.origin.ScheduleCoherent)
     (htarget : state.TargetScheduleCoherent targetOrdinal) :
@@ -855,7 +855,7 @@ theorem originTargetMonitoredAdversaryImpl_expected_cappedPotential_le
     (targetOrdinal : Nat) (input : (OracleWorld + SigningSpec).Domain)
     (state : OriginTargetMonitorState configuration)
     (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
-    (q : Nat) (hq : q ≤ 2 ^ 120)
+    (q : Nat) (hq : q ≤ 2 ^ 125)
     (hcoherent : state.JointCoherent targetOrdinal) :
     (∑' result,
       Pr[= result |
@@ -905,7 +905,7 @@ theorem originTargetMonitoredAdversaryImpl_expected_cappedPotential_simulateQ_le
     (targetOrdinal : Nat) (computation : OracleComp (OracleWorld + SigningSpec) α)
     (initialState : OriginTargetMonitorState configuration)
     (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
-    (q : Nat) (hq : q ≤ 2 ^ 120)
+    (q : Nat) (hq : q ≤ 2 ^ 125)
     (hcoherent : initialState.JointCoherent targetOrdinal) :
     (∑' result,
       Pr[= result |
@@ -987,7 +987,7 @@ theorem probEvent_originTargetMonitored_complete_le_initial
     (targetOrdinal : Nat) (computation : OracleComp (OracleWorld + SigningSpec) α)
     (initialState : OriginTargetMonitorState configuration)
     (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
-    (q : Nat) (hq : q ≤ 2 ^ 120)
+    (q : Nat) (hq : q ≤ 2 ^ 125)
     (hcoherent : initialState.JointCoherent targetOrdinal) :
     Pr[fun result : α × OriginTargetMonitorState configuration =>
         result.2.Complete ∧
@@ -1079,7 +1079,7 @@ theorem probEvent_originTargetMonitored_complete_le_ideal
     (targetOrdinal : Nat) (computation : OracleComp (OracleWorld + SigningSpec) α)
     (initialCache : QueryCache HashSpec)
     (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
-    (q : Nat) (hq : q ≤ 2 ^ 120)
+    (q : Nat) (hq : q ≤ 2 ^ 125)
     (hcache : QueryCache.enncard initialCache ≤ q) :
     Pr[fun result : α × OriginTargetMonitorState configuration =>
         result.2.Complete ∧

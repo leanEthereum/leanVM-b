@@ -326,7 +326,7 @@ theorem Concrete.probEvent_signWithView_fresh_bind_le_expected
 theorem Concrete.probEvent_signWithView_fixedPrehit_bind_le_mul_of_enncard_le
     {Result : Type} (secretKey : SecretKey) (message : Message)
     (initialCache : QueryCache HashSpec) (target : HashInput) (P : FewTimeView → Prop)
-    (q : Nat) (hq : q ≤ 2 ^ 120) (hcache : QueryCache.enncard initialCache ≤ q)
+    (q : Nat) (hq : q ≤ 2 ^ 125) (hcache : QueryCache.enncard initialCache ≤ q)
     (continuation : (Option Signature × Option FewTimeView) × QueryCache HashSpec →
       ProbComp Result)
     (event : Result → Prop) (epsilon : ℝ≥0∞)
@@ -555,7 +555,7 @@ theorem Concrete.tsum_probOutput_signWithView_fresh_mul_le_expected
 theorem Concrete.tsum_probOutput_signWithView_fixedPrehit_mul_le_of_enncard_le
     (secretKey : SecretKey) (message : Message)
     (initialCache : QueryCache HashSpec) (target : HashInput) (P : FewTimeView → Prop)
-    (q : Nat) (hq : q ≤ 2 ^ 120) (hcache : QueryCache.enncard initialCache ≤ q)
+    (q : Nat) (hq : q ≤ 2 ^ 125) (hcache : QueryCache.enncard initialCache ≤ q)
     (cost : ((Option Signature × Option FewTimeView) × QueryCache HashSpec) → ℝ≥0∞)
     (epsilon : ℝ≥0∞)
     (hoff : ∀ signerResult ∈ support

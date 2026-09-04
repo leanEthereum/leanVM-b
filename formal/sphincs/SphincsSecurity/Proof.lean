@@ -328,6 +328,10 @@ import SphincsSecurity.Proof.OtsProbeResolvedBoundaryWitnessEndpoint
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryWitnessDomination
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryWitnessOrdinary
 import SphincsSecurity.Proof.OtsProbeBoundaryCompletion
+import SphincsSecurity.Proof.FewTimeHonestLeakBound
+import SphincsSecurity.Proof.TightChargeTerminal
+import SphincsSecurity.Proof.Security125Endpoint
+import SphincsSecurity.Proof.Security125Completion
 
 /-!
 The proof of `SphincsSecurityStatement`. The specification to review is `SphincsSecurity/Statement.lean`; the Lean kernel checks the proof against it.

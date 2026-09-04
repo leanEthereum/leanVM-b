@@ -1,12 +1,12 @@
 # SPHINCS security statement
 
-This Lean project proves the classical strong-unforgeability security in the random-oracle model of the concrete SPHINCS instance specified by `doc/sphincs/main.tex` and implemented by `crates/sphincs`: `SphincsSecurityStatement`, which reads `HasClassicalSecurityBits Concrete.scheme 120`.
+This Lean project proves `125` bits of classical strong unforgeability in the random-oracle model for the formalized SPHINCS variant: `sphincs_has_125_bits_of_classical_security : SphincsSecurity125Statement`, which reads `HasClassicalSecurityBits Concrete.scheme 125`. The algorithms and parameters follow `doc/sphincs/main.tex`; the model samples secrets independently and does not prove equivalence to the seed derivation or BLAKE2s used by `crates/sphincs`. The earlier 120-bit theorem remains available.
 
 Everything the claim depends on is in the single module `SphincsSecurity/Statement.lean`, in the order a reviewer needs it: the concrete parameters and types with the tweak and byte layout of every hash input and the target-sum code, the three algorithms with the oracle calls they make, then the strong-unforgeability experiment and the claim. It follows `formal/xmss`, whose statement module is the model for this one and whose proof machinery provides the shared foundations.
 
 ## What the game says
 
-Key generation samples the public parameter, one secret per Winternitz chain of every layer, tree and leaf, and one per few-time leaf of every instance, then builds layer 0's tree for the root. Signing draws a fresh randomizer per digest attempt until the digest's last index group is zero, opens the few-time forest, and produces one one-time signature per layer, recomputing through the random oracle whatever tree it needs; the specification's seed derivation and the signer's cache are implementations of this key and change no probability. Verification is the ordinary verifier. Key generation, the adversary, the signing oracle and the final verification share one lazily sampled oracle, and `q` bounds the hash queries of the whole experiment.
+Key generation samples the public parameter, one secret per Winternitz chain of every layer, tree and leaf, and one per few-time leaf of every instance, then builds layer 0's tree for the root. Signing draws a fresh randomizer per digest attempt until the digest's last index group is zero, opens the few-time forest, and produces one one-time signature per layer, recomputing through the random oracle whatever tree it needs; the proof models independently sampled secrets and does not establish equivalence to the implementation's seed derivation. Verification is the ordinary verifier. Key generation, the adversary, the signing oracle and the final verification share one lazily sampled oracle, and `q` bounds the hash queries of the whole experiment.
 
 Three things differ from the XMSS statement, all because this scheme is stateless.
 
@@ -16,13 +16,25 @@ Three things differ from the XMSS statement, all because this scheme is stateles
 
 Every component of the `Signature` structure is read by verification, the authentication path being the `h` nodes of the `d` layers laid end to end. That matters, an unread component making the strong-unforgeability game trivially winnable by perturbing it, so `signaturePath_flattenPaths` and `authPath_exhausted` prove that the verifier reads a layer's node exactly where the signer laid it and that no entry goes unread. The index decomposition is proven the same way rather than asserted: `treeIndexAt_topLayer`, `layers_link_top`, `layers_link_middle` and `leafIndexAt_bottomLayer` hold for all `2^26` indices.
 
-## Why 120 bits and not 128
+## The 125-bit bound
 
-The bound is the slope `q / 2^bits`, so it bounds what one query buys. Every strategy the specification accounts for costs `2^-128` per query: inverting a chain step, a node or a leaf, recovering a published secret, or grinding a counter onto an already signed codeword, each separated from the others by its tweak, so no query bears on two structural positions and no multi-target factor appears. The few-time leak is at most `2^-122` at `q_s = 2^24` (the exact count is about `2^-122.9`), so it does not bind once the mandatory signing work is included; it is what fixes `signatureLimit`, reaching `2^-128` at `2^25.1` signatures and `2^-120` at `2^26.4`, about two doublings of headroom. Read the claim where an adversary spending all `2^24` signatures lives: the query bound counts every execution path, so the `2^32` attempt caps put the floor at `q = 2^58`, where the bound reads `2^-62` against a true forging probability of about `2^-70`. The slack is that same `2^8` at every `q`, the dominant term being linear in it. Claiming 120 leaves `2^8` for the union bounds and constants a proof accumulates, where XMSS could claim 127 against the same digest length with one hash chain layer and one tree.
+The theorem states `forgeAdvantage Concrete.scheme adversary ≤ q / 2^125` for every positive whole-experiment hash-query budget `q` and every classical adaptive adversary satisfying that bound. It allows at most `2^24` signing requests per key pair, including repeated messages and failed requests. The query budget bounds every execution path, including key generation, signing and final verification; it is not an average-cost or adversary-only budget.
+
+For `q ≤ 2^125`, the retained-verifier event costs at most `(23/7)q / 2^128`. The remaining terms are `4q / 2^128`, `3q / 2^131` and `q / 2^139`. Their sum is below `q / 2^125`. For larger `q`, the endpoint uses the universal probability bound of one.
 
 ## Status
 
-The theorem `sphincs_has_120_bits_of_classical_security` proves the unchanged `SphincsSecurityStatement`. Its final assembly is in `Proof/OtsProbeBoundaryCompletion.lean`: the canonical private-witness event costs at most `8q / 2^128`, the materialized ordinary-failure event costs at most `5q / 2^128`, and `Proof/OtsProbeVerifierBoundary.lean` connects that canonical execution to the original retained verifier. The resulting `13q / 2^128` probe bound fits the grouped terminal endpoint. The proof uses kernel-checked arithmetic rather than `native_decide`.
+`Proof/Security125Completion.lean` closes the 125-bit theorem without an unproved probability premise. `OtsProbeDiagnosticJoint125.lean` bounds diagnostic badness by `(15/7)q / 2^128`, and `OtsProbeResidual125.lean` bounds the residual by `(8/7)q / 2^128`. `OtsProbeJointClassification.lean` shares the diagnostic charge between ordinary failure and private-root failure. The exact execution projections transfer their sum to the original retained-verifier event, and `Security125Endpoint.lean` combines it with the other terminal bounds in the original SUF game.
+
+The root and non-root estimates retain their mutually exclusive selection probabilities. `OtsProbeNonRootSelectionMass125.lean` proves freshness at selection time. `OtsProbeSelectionTransport125.lean` transports canonical selections to the delayed common execution, and `OtsProbeSelectionSchedule125.lean` connects the delayed and root-aware common selectors despite their different probe schedules and fuel budgets. These comparisons cover key generation, adaptive hashing, uniform sampling and signing.
+
+The forest estimate is in `FewTimeHonestLeakBound.lean`; it covers earlier direct targets and targets first queried by verification, and eliminates signer-sourced proper-leak targets. `TightEncodingTerminal.lean` bounds structural badness together with encoding collisions by `3q / 2^128`. The additional uncovered-secret term contributes `q / 2^128`, and `MessageCollision125.lean` supplies `q / 2^139`.
+
+The public theorem depends only on Lean's standard `propext`, `Classical.choice` and `Quot.sound`. There is no `sorryAx`, custom security axiom or `native_decide` dependency. The scheme, game and query-bound definitions are unchanged from the 120-bit result. `securityBits = 120` and `SphincsSecurityStatement` are retained for compatibility with that earlier proof; `SphincsSecurity125Statement` explicitly uses exponent `125`.
+
+## Earlier development notes
+
+The following notes record intermediate proof stages. References to unfinished obligations and earlier constants describe those stages, not the current status above.
 
 ## What is proven
 

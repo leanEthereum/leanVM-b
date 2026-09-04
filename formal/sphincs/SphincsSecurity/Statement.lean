@@ -5,13 +5,13 @@ import VCVio.OracleComp.QueryTracking.QueryBound
 /-!
 # Classical random-oracle security of the concrete SPHINCS instance
 
-This single module is the reviewer-facing statement of what has to be proven. It contains everything the statement depends on: the concrete parameters and types, the byte layout of every hash input, the three algorithms exactly as run in the security experiment, the strong-unforgeability experiment, and the security claim `SphincsSecurityStatement`. Nothing here describes a reduction or an intermediate game, and nothing instantiates the hash: it is a random oracle throughout. What the concrete parameters fix about the layout is proven rather than asserted, each lemma sitting next to the definitions it concerns: the index decomposition of Section `The index`, and the authentication path next to `flattenPaths`.
+This single module is the reviewer-facing statement of what has to be proven. It contains everything the statement depends on: the concrete parameters and types, the byte layout of every hash input, the three algorithms exactly as run in the security experiment, the strong-unforgeability experiment, and the security claims `SphincsSecurity125Statement` and `SphincsSecurityStatement`. Nothing here describes a reduction or an intermediate game, and nothing instantiates the hash: it is a random oracle throughout. What the concrete parameters fix about the layout is proven rather than asserted, each lemma sitting next to the definitions it concerns: the index decomposition of Section `The index`, and the authentication path next to `flattenPaths`.
 
 The instance is the one specified in `doc/sphincs/main.tex`: 32-byte messages, 128-bit digests truncated from a 256-bit random-oracle output, 42 Winternitz chains of length 8 at target sum 191, a hypertree of height 26 over 3 layers of heights 12, 7 and 7, and a few-time forest of 14 trees of `2^10` leaves selected by a 176-bit message digest. A key answers for all `2^26` indices and signs at most `2^24` messages.
 
 Three things differ from `formal/xmss`. The signer takes no epoch, this scheme being stateless, so a signing request is a message alone and what the game caps is the number of signing queries, at `signatureLimit`. Signing is randomized, a fresh `randomnessBits` string per digest attempt, so a message has many valid signatures and a second one on a signed message is a strong forgery. And the secret key holds the sampled secrets rather than precomputed tables, so signing recomputes through the random oracle whatever tree it reads, exactly as `Sig` is specified.
 
-The claim is `120` bits and not `128`. Every strategy the specification accounts for costs `2^-128` per query, and the bound is a slope `q / 2^120`, so `2^8` of slack absorbs the union bounds and the constants a proof accumulates, uniformly in `q`. The few-time leak is at most `2^-122` at `q_s = 2^24` (the exact count is about `2^-122.9`), so it does not bind once the mandatory signing work is included, but it is what fixes `signatureLimit`: it reaches `2^-128` at `2^25.1` signatures and `2^-120` at `2^26.4`, leaving about two doublings of headroom. `HasHashQueryBound` bounds every execution path, so `digestAttemptLimit` and `encodingAttemptLimit` put the admissible floor near `q = 2^58` even though a signature costs `2^20.5` on average, and the claim is read there.
+The strengthened claim is `125` bits: every adversary with a whole-experiment hash-query bound `q` has forgery probability at most `q / 2^125`. The earlier `120`-bit statement is retained as `SphincsSecurityStatement`; `securityBits` names its original exponent for compatibility with the earlier proof. Both statements use exactly the same algorithms, strong-unforgeability game and query accounting. `HasHashQueryBound` bounds every execution path, including key generation, signing and verification, rather than only adversarial hash calls. The theorem is in the classical random-oracle model with independently sampled secrets; equivalence to seed-derived secrets and an instantiation with BLAKE2s are outside this model.
 -/
 
 open OracleComp OracleSpec ENNReal
@@ -43,7 +43,7 @@ def signatureLimit : Nat := 2 ^ 24
 def digestAttemptLimit : Nat := 2 ^ 32
 /-- Encoding counters tried per layer, `C_max`. -/
 def encodingAttemptLimit : Nat := 2 ^ 32
-/-- The claimed security level. -/
+/-- The original security level, retained for the earlier statement and proof. -/
 def securityBits : Nat := 120
 
 abbrev Digest := BitVec digestBits
@@ -872,5 +872,9 @@ noncomputable def Concrete.scheme : Scheme where
 /-- The complete public security claim: `120` bits of classical strong unforgeability in the random-oracle model, at `2^24` signatures per key pair. -/
 abbrev SphincsSecurityStatement : Prop :=
   HasClassicalSecurityBits Concrete.scheme securityBits
+
+/-- The strengthened claim for the same scheme and SUF game: `125` classical random-oracle security bits, at `2^24` signing requests per key pair. -/
+abbrev SphincsSecurity125Statement : Prop :=
+  HasClassicalSecurityBits Concrete.scheme 125
 
 end SphincsSecurity

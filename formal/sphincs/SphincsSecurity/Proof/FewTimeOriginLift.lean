@@ -84,7 +84,7 @@ theorem probEvent_paddedOriginTerminal_le_ideal {f : QueryImpl HashSpec Id}
     _ ≤ _ := by
       simpa only [initialState, event, monitoredEvent] using
         (probEvent_originMonitored_complete_le_ideal configuration secretKey computation
-          initialCache event q hq hinitialCache)
+          initialCache event q (hq.trans (by norm_num)) hinitialCache)
 
 end Concrete
 

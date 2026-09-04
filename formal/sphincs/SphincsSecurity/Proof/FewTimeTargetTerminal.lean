@@ -2127,7 +2127,7 @@ theorem probEvent_originTargetMonitored_complete_fixedPattern_le_ideal
             ProbComp ((pattern.selected → FewTimeView) × FewTimeView))] :=
       probEvent_originTargetMonitored_complete_le_ideal configuration secretKey
         targetOrdinal computation initialCache
-          (FixedFewTimePatternHit pattern.assignment) q hq hcache
+          (FixedFewTimePatternHit pattern.assignment) q (hq.trans (by norm_num)) hcache
     _ = Pr[configuration.Hit |
         ($ᵗ configuration.Sample : ProbComp configuration.Sample)] := by
       rw [probEvent_originConfiguration_hit_eq_pattern_mul]

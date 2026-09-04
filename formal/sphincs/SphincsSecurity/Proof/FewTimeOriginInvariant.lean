@@ -302,7 +302,7 @@ theorem OriginMonitorState.expected_potential_afterSigner_le
     (secretKey : SecretKey) (request : SignRequest)
     (state : OriginMonitorState configuration)
     (event : (pattern.selected → FewTimeView) → Prop)
-    (q : Nat) (hq : q ≤ 2 ^ 120)
+    (q : Nat) (hq : q ≤ 2 ^ 125)
     (hcache : QueryCache.enncard state.viewed.cache ≤ q)
     (hcoherent : state.ScheduleCoherent) :
     (∑' result,
@@ -451,7 +451,7 @@ theorem originMonitoredAdversaryImpl_expected_potential_le
     (input : (OracleWorld + SigningSpec).Domain)
     (state : OriginMonitorState configuration)
     (event : (pattern.selected → FewTimeView) → Prop)
-    (q : Nat) (hq : q ≤ 2 ^ 120)
+    (q : Nat) (hq : q ≤ 2 ^ 125)
     (hcache : QueryCache.enncard state.viewed.cache ≤ q)
     (hcoherent : state.ScheduleCoherent) :
     (∑' result,
@@ -911,7 +911,7 @@ theorem originMonitoredAdversaryImpl_expected_cappedPotential_le
     (input : (OracleWorld + SigningSpec).Domain)
     (state : OriginMonitorState configuration)
     (event : (pattern.selected → FewTimeView) → Prop)
-    (q : Nat) (hq : q ≤ 2 ^ 120)
+    (q : Nat) (hq : q ≤ 2 ^ 125)
     (hcoherent : state.ScheduleCoherent) :
     (∑' result,
       Pr[= result | (originMonitoredAdversaryImpl configuration secretKey input).run state] *
@@ -958,7 +958,7 @@ theorem originMonitoredAdversaryImpl_expected_cappedPotential_simulateQ_le
     (computation : OracleComp (OracleWorld + SigningSpec) α)
     (initialState : OriginMonitorState configuration)
     (event : (pattern.selected → FewTimeView) → Prop)
-    (q : Nat) (hq : q ≤ 2 ^ 120)
+    (q : Nat) (hq : q ≤ 2 ^ 125)
     (hcoherent : initialState.ScheduleCoherent) :
     (∑' result,
       Pr[= result |
@@ -1087,7 +1087,7 @@ theorem probEvent_originMonitored_complete_le_initial
     (computation : OracleComp (OracleWorld + SigningSpec) α)
     (initialState : OriginMonitorState configuration)
     (event : (pattern.selected → FewTimeView) → Prop)
-    (q : Nat) (hq : q ≤ 2 ^ 120)
+    (q : Nat) (hq : q ≤ 2 ^ 125)
     (hcoherent : initialState.ScheduleCoherent) :
     Pr[fun result : α × OriginMonitorState configuration =>
         result.2.Complete ∧ event result.2.observation.views ∧
@@ -1115,7 +1115,7 @@ theorem probEvent_originMonitored_complete_le_ideal
     (computation : OracleComp (OracleWorld + SigningSpec) α)
     (initialCache : QueryCache HashSpec)
     (event : (pattern.selected → FewTimeView) → Prop)
-    (q : Nat) (hq : q ≤ 2 ^ 120)
+    (q : Nat) (hq : q ≤ 2 ^ 125)
     (hcache : QueryCache.enncard initialCache ≤ q) :
     Pr[fun result : α × OriginMonitorState configuration =>
         result.2.Complete ∧ event result.2.observation.views ∧
