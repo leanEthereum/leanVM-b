@@ -321,6 +321,7 @@ import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGl
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryFinalAssembly
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassificationStoppedRootJoint
 import SphincsSecurity.Proof.OtsProbeGroupedTerminal
+import SphincsSecurity.Proof.OtsProbeCanonicalPrivateEndpoint
 
 /-!
 The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
