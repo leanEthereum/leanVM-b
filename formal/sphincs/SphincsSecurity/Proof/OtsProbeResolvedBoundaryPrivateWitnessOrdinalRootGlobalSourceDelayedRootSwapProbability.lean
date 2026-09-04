@@ -762,6 +762,503 @@ theorem relTriple_delayed_permissiveRootAvoidingDetailedOrdinalSelection
                 (next resolved.value.1) candidates resolved.state resolved.remaining table
                 resolved.value.2 target output rightRoot hrevealed
 
+def PermissiveTaggedDelayedRootGuessRel
+    (target : Position) (rightRoot : Digest) (ordinal : Nat) :
+    (HashOutput × Option PermissivePrivateOrdinalSelection) →
+      Option PermissivePrivateOrdinalSelection → Prop :=
+  fun left right =>
+    PermissiveDelayedRootGuess target rightRoot ordinal right →
+      PermissiveDelayedRootGuessAt target left.1 rightRoot ordinal left.2
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem valuesLE_of_mem_delayedPermissiveDetailedOrdinalSelection
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (candidates : List Probe) (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (selection : PermissivePrivateOrdinalSelection)
+    (hselection : some selection ∈ support
+      (delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret computation
+        candidates state fuel table cache)) :
+    LazyRevealProbe.ValuesLE state selection.state := by
+  induction computation using OracleComp.inductionOn generalizing candidates state fuel cache with
+  | pure value =>
+      simp only [delayedPermissiveDetailedOrdinalSelection, OracleComp.construct_pure] at hselection
+      by_cases hselected : ordinal < candidates.length
+      · simp only [hselected, ↓reduceDIte] at hselection
+        simp at hselection
+        subst selection
+        exact LazyRevealProbe.ValuesLE.refl state
+      · simp [hselected] at hselection
+  | query_bind query next ih =>
+      rw [delayedPermissiveDetailedOrdinalSelection, OracleComp.construct_query_bind] at hselection
+      by_cases hselected : ordinal < candidates.length
+      · simp only [hselected, ↓reduceDIte] at hselection
+        simp at hselection
+        subst selection
+        exact LazyRevealProbe.ValuesLE.refl state
+      · simp only [hselected, ↓reduceDIte] at hselection
+        cases query with
+        | inl worldQuery =>
+            cases worldQuery with
+            | inl n =>
+                rw [mem_support_bind_iff] at hselection
+                obtain ⟨result, hresult, htail⟩ := hselection
+                cases result with
+                | none => simp [finishPermissiveDetailedPrivateOrdinalSelection] at htail
+                | some result =>
+                    simp only [finishPermissiveDetailedPrivateOrdinalSelection] at htail
+                    exact (valuesLE_of_mem_runPermissiveFromTable
+                      ((splitUniformImpl n).run cache) state fuel table result hresult).trans
+                      (ih result.value.1 candidates result.state result.remaining result.value.2
+                        htail)
+            | inr input =>
+                let nextCandidates :=
+                  permissiveRootAwareCandidates parameter input table state candidates
+                by_cases hnextSelected : ordinal < nextCandidates.length
+                · simp only [nextCandidates, hnextSelected, ↓reduceDIte] at hselection
+                  simp at hselection
+                  subst selection
+                  exact LazyRevealProbe.ValuesLE.refl state
+                · simp only [nextCandidates, hnextSelected, ↓reduceDIte] at hselection
+                  rw [mem_support_bind_iff] at hselection
+                  obtain ⟨result, hresult, htail⟩ := hselection
+                  cases result with
+                  | none => simp [finishPermissiveDetailedPrivateOrdinalSelection] at htail
+                  | some result =>
+                      simp only [finishPermissiveDetailedPrivateOrdinalSelection] at htail
+                      exact (valuesLE_of_mem_runPermissiveFromTable
+                        (delayedPermissivePublicAction parameter input table state cache)
+                        state fuel table result hresult).trans
+                        (ih result.value.1 nextCandidates result.state result.remaining
+                          result.value.2 htail)
+        | inr message =>
+            rw [mem_support_bind_iff] at hselection
+            obtain ⟨result, hresult, htail⟩ := hselection
+            cases result with
+            | none => simp [finishPermissiveDetailedPrivateOrdinalSelection] at htail
+            | some result =>
+                simp only [finishPermissiveDetailedPrivateOrdinalSelection] at htail
+                exact (valuesLE_of_mem_runPermissiveFromTable
+                  ((maskedSign parameter root ftsSecret message).run cache)
+                  state fuel table result hresult).trans
+                  (ih result.value.1 candidates result.state result.remaining result.value.2 htail)
+
+theorem PermissiveDetailedSelectionRel.delayedRootGuessAt
+    {target : Position} {output : HashOutput} {rightRoot : Digest} {ordinal : Nat}
+    {left right : Option PermissivePrivateOrdinalSelection}
+    (hrel : PermissiveDetailedSelectionRel left right)
+    (hgood : PermissiveDelayedRootGuessAt target output rightRoot ordinal right) :
+    PermissiveDelayedRootGuessAt target output rightRoot ordinal left := by
+  cases left with
+  | none =>
+      cases right with
+      | none => exact hgood
+      | some right => simp [PermissiveDetailedSelectionRel] at hrel
+  | some left =>
+      cases right with
+      | none => simp [PermissiveDetailedSelectionRel] at hrel
+      | some right =>
+          rcases hrel with ⟨hcandidate, hcandidates, hstate⟩
+          refine ⟨hcandidate.trans hgood.1, ?_, ?_, ?_⟩
+          · rw [hstate.values]
+            exact hgood.2.1
+          · rw [hstate.revealed]
+            exact hgood.2.2.1
+          · rw [hcandidates]
+            exact hgood.2.2.2
+
+theorem relTriple_tagged_delayedSelection_of_stateRel
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (candidates : List Probe) (left right : LazyRevealProbe.State Coordinate)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (target : Position) (output : HashOutput) (rightRoot : Digest)
+    (hstate : PermissiveStateRel left right)
+    (hvalue : left.values (.position target) = some output) :
+    RelTriple
+      ((fun selection => (output, selection)) <$>
+        delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret computation
+          candidates left fuel table cache)
+      (delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret computation
+        candidates right fuel table cache)
+      (PermissiveTaggedDelayedRootGuessRel target rightRoot ordinal) := by
+  have hbase := relTriple_delayedPermissiveDetailedOrdinalSelection_of_stateRel ordinal parameter
+    root ftsSecret computation candidates candidates left right fuel table cache rfl hstate
+  have hsupported :=
+    SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hbase
+      (fun selection => match selection with
+        | none => True
+        | some selection => selection.state.values (.position target) = some output)
+      (by
+        intro selection hselection
+        cases selection with
+        | none => trivial
+        | some selection =>
+            exact valuesLE_of_mem_delayedPermissiveDetailedOrdinalSelection ordinal parameter root
+              ftsSecret computation candidates left fuel table cache selection hselection
+              (.position target) output hvalue)
+  rw [map_eq_bind_pure_comp,
+    show delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret computation
+        candidates right fuel table cache =
+      (delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret computation
+          candidates right fuel table cache >>= pure) by simp]
+  apply relTriple_bind hsupported
+  intro leftSelection rightSelection hselection
+  apply relTriple_pure_pure
+  intro hgood
+  obtain ⟨rightOutput, hrightGood⟩ := hgood
+  have hleftGood := hselection.1.delayedRootGuessAt hrightGood
+  cases leftSelection with
+  | none => exact False.elim hleftGood
+  | some leftSelection =>
+      have heq : rightOutput = output :=
+        Option.some.inj (hleftGood.2.1.symm.trans hselection.2)
+      subst rightOutput
+      exact hleftGood
+
+set_option maxHeartbeats 4000000 in
+set_option maxRecDepth 100000 in
+theorem relTriple_sample_preload_runPermissive_finishDetailed_taggedGuess
+    (target : Position) (rightRoot : Digest) (ordinal : Nat)
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) (α × SplitHashCache))
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (leftObserve rightObserve : LazyRevealProbe.State Coordinate → Nat → α →
+      SplitHashCache → List Probe → ProbComp (Option PermissivePrivateOrdinalSelection))
+    (candidates : List Probe)
+    (hvalue : state.values (.position target) = none)
+    (hnoPeek : computation.IsQueryBoundP (IsTargetPeek target) 0)
+    (hpreloaded : ∀ nextState remaining value nextCache,
+      nextState.values (.position target) = none →
+      RelTriple
+        (LazyRevealProbe.sampleHashOutput >>= fun output =>
+          (fun selection => (output, selection)) <$>
+            leftObserve (preloadPositionValue target output nextState) remaining value nextCache
+              candidates)
+        (rightObserve nextState remaining value nextCache candidates)
+        (PermissiveTaggedDelayedRootGuessRel target rightRoot ordinal))
+    (hsynchronized : ∀ output left right remaining value nextCache,
+      PermissiveStateRel left right →
+      left.values (.position target) = some output →
+      RelTriple
+        ((fun selection => (output, selection)) <$>
+          leftObserve left remaining value nextCache candidates)
+        (rightObserve right remaining value nextCache candidates)
+        (PermissiveTaggedDelayedRootGuessRel target rightRoot ordinal)) :
+    RelTriple
+      (LazyRevealProbe.sampleHashOutput >>= fun output =>
+        (fun selection => (output, selection)) <$>
+          (runPermissiveFromTable (preloadPositionValue target output state) fuel table
+              computation >>=
+            finishPermissiveDetailedPrivateOrdinalSelection leftObserve candidates))
+      (runPermissiveFromTable state fuel table computation >>=
+        finishPermissiveDetailedPrivateOrdinalSelection rightObserve candidates)
+      (PermissiveTaggedDelayedRootGuessRel target rightRoot ordinal) := by
+  let leftFinish : HashOutput → Option (CleanRunResult (α × SplitHashCache)) →
+      ProbComp (HashOutput × Option PermissivePrivateOrdinalSelection) :=
+    fun output result => (fun selection => (output, selection)) <$>
+      finishPermissiveDetailedPrivateOrdinalSelection leftObserve candidates result
+  let rightFinish : Option (CleanRunResult (α × SplitHashCache)) →
+      ProbComp (Option PermissivePrivateOrdinalSelection) :=
+    finishPermissiveDetailedPrivateOrdinalSelection rightObserve candidates
+  simp only [map_eq_bind_pure_comp, bind_assoc]
+  change RelTriple
+    (LazyRevealProbe.sampleHashOutput >>= fun output =>
+      runPermissiveFromTable (preloadPositionValue target output state) fuel table computation >>=
+        leftFinish output)
+    (runPermissiveFromTable state fuel table computation >>= rightFinish)
+    (PermissiveTaggedDelayedRootGuessRel target rightRoot ordinal)
+  apply relTriple_sample_preload_runPermissiveFromTable_then_tagged target computation state fuel
+    table leftFinish rightFinish
+    (PermissiveTaggedDelayedRootGuessRel target rightRoot ordinal) hvalue hnoPeek
+  · intro nextState remaining result nextTable hnextValue
+    rcases result with ⟨value, nextCache⟩
+    simpa only [leftFinish, rightFinish, finishPermissiveDetailedPrivateOrdinalSelection,
+      map_eq_bind_pure_comp] using
+      hpreloaded nextState remaining value nextCache hnextValue
+  · intro output
+    exact relTriple_pure_pure (fun hgood => by
+      simp [PermissiveDelayedRootGuess, PermissiveDelayedRootGuessAt] at hgood)
+  · intro output left right hrelation hpreloadedOutput
+    cases left with
+    | none =>
+        cases right with
+        | none => exact relTriple_pure_pure (fun hgood => by
+            simp [PermissiveDelayedRootGuess, PermissiveDelayedRootGuessAt] at hgood)
+        | some right => exact False.elim hrelation
+    | some left =>
+        cases right with
+        | none => exact False.elim hrelation
+        | some right =>
+            rcases hrelation with ⟨hstate, hremaining, hvalueEq, _htable⟩
+            simp only [leftFinish, rightFinish,
+              finishPermissiveDetailedPrivateOrdinalSelection]
+            rw [← hremaining, ← hvalueEq]
+            exact hsynchronized output left.state right.state left.remaining left.value.1
+              left.value.2 hstate hpreloadedOutput
+
+theorem relTriple_sample_preload_pureSelection_taggedGuess
+    (target : Position) (rightRoot : Digest) (ordinal : Nat)
+    (candidate : Probe) (candidates : List Probe)
+    (state : LazyRevealProbe.State Coordinate)
+    (hvalue : state.values (.position target) = none) :
+    RelTriple
+      (LazyRevealProbe.sampleHashOutput >>= fun output =>
+        (pure (output, some ⟨candidate, preloadPositionValue target output state, candidates⟩) :
+          ProbComp (HashOutput × Option PermissivePrivateOrdinalSelection)))
+      (pure (some ⟨candidate, state, candidates⟩) :
+        ProbComp (Option PermissivePrivateOrdinalSelection))
+      (PermissiveTaggedDelayedRootGuessRel target rightRoot ordinal) := by
+  rw [show (pure (some ⟨candidate, state, candidates⟩) :
+      ProbComp (Option PermissivePrivateOrdinalSelection)) =
+    ((pure () : ProbComp Unit) >>= fun _ => pure (some ⟨candidate, state, candidates⟩)) by simp]
+  apply relTriple_bind
+    (relTriple_true LazyRevealProbe.sampleHashOutput (pure () : ProbComp Unit))
+  intro output _unit _hrelation
+  apply relTriple_pure_pure
+  intro hgood
+  obtain ⟨_rightOutput, hgood⟩ := hgood
+  exfalso
+  have himpossible := hgood.2.1
+  rw [hvalue] at himpossible
+  simp at himpossible
+
+theorem relTriple_sample_preload_pureNone_taggedGuess
+    (target : Position) (rightRoot : Digest) (ordinal : Nat) :
+    RelTriple
+      (LazyRevealProbe.sampleHashOutput >>= fun output =>
+        pure (output, (none : Option PermissivePrivateOrdinalSelection)))
+      (pure none : ProbComp (Option PermissivePrivateOrdinalSelection))
+      (PermissiveTaggedDelayedRootGuessRel target rightRoot ordinal) := by
+  rw [show (pure none : ProbComp (Option PermissivePrivateOrdinalSelection)) =
+    ((pure () : ProbComp Unit) >>= fun _ =>
+      pure (none : Option PermissivePrivateOrdinalSelection)) by simp]
+  apply relTriple_bind
+    (relTriple_true LazyRevealProbe.sampleHashOutput (pure () : ProbComp Unit))
+  intro output _unit _hrelation
+  exact relTriple_pure_pure (fun hgood => by
+    simp [PermissiveDelayedRootGuess, PermissiveDelayedRootGuessAt] at hgood)
+
+theorem relTriple_sample_preload_delayedSelector_taggedGuess_of_initial_revealed
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (candidates : List Probe) (state : LazyRevealProbe.State Coordinate)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (target : Position) (rightRoot : Digest)
+    (hrevealed : Coordinate.position target ∈ state.revealed) :
+    RelTriple
+      (LazyRevealProbe.sampleHashOutput >>= fun output =>
+        (fun selection => (output, selection)) <$>
+          delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret computation
+            candidates (preloadPositionValue target output state) fuel table cache)
+      (delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret computation
+        candidates state fuel table cache)
+      (PermissiveTaggedDelayedRootGuessRel target rightRoot ordinal) := by
+  have hbase := relTriple_true
+    (LazyRevealProbe.sampleHashOutput >>= fun output =>
+      (fun selection => (output, selection)) <$>
+        delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret computation
+          candidates (preloadPositionValue target output state) fuel table cache)
+    (delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret computation
+      candidates state fuel table cache)
+  have hright := SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_right_support hbase
+  apply relTriple_post_mono hright
+  intro left right hrelation hgood
+  rcases hrelation with ⟨_htrue, hrightSupport⟩
+  cases right with
+  | none => simp [PermissiveDelayedRootGuess, PermissiveDelayedRootGuessAt] at hgood
+  | some selection =>
+      obtain ⟨_rightOutput, hgood⟩ := hgood
+      exfalso
+      exact hgood.2.2.1
+        (revealed_subset_of_mem_delayedPermissiveDetailedOrdinalSelection ordinal parameter root
+          ftsSecret computation candidates state fuel table cache selection hrightSupport hrevealed)
+
+set_option maxHeartbeats 4000000 in
+set_option maxRecDepth 100000 in
+theorem relTriple_sample_preload_delayedPermissiveDetailedOrdinalSelection_taggedGuess
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (candidates : List Probe) (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (target : Position) (rightRoot : Digest)
+    (hvalue : state.values (.position target) = none) :
+    RelTriple
+      (LazyRevealProbe.sampleHashOutput >>= fun output =>
+        (fun selection => (output, selection)) <$>
+          delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret computation
+            candidates (preloadPositionValue target output state) fuel table cache)
+      (delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret computation
+        candidates state fuel table cache)
+      (PermissiveTaggedDelayedRootGuessRel target rightRoot ordinal) := by
+  induction computation using OracleComp.inductionOn generalizing candidates state fuel cache with
+  | pure value =>
+      by_cases hrevealed : Coordinate.position target ∈ state.revealed
+      · exact relTriple_sample_preload_delayedSelector_taggedGuess_of_initial_revealed ordinal
+          parameter root ftsSecret (pure value) candidates state fuel table cache target rightRoot
+          hrevealed
+      · simp only [delayedPermissiveDetailedOrdinalSelection, OracleComp.construct_pure]
+        by_cases hselected : ordinal < candidates.length
+        · simp only [hselected, ↓reduceDIte]
+          exact relTriple_sample_preload_pureSelection_taggedGuess target rightRoot ordinal
+            (candidates.get ⟨ordinal, hselected⟩) candidates state hvalue
+        · simp only [hselected, ↓reduceDIte, map_pure]
+          exact relTriple_sample_preload_pureNone_taggedGuess target rightRoot ordinal
+  | query_bind query next ih =>
+      by_cases hrevealed : Coordinate.position target ∈ state.revealed
+      · exact relTriple_sample_preload_delayedSelector_taggedGuess_of_initial_revealed ordinal
+          parameter root ftsSecret (liftM (OracleSpec.query query) >>= next) candidates state fuel
+          table cache target rightRoot hrevealed
+      · simp_rw [delayedPermissiveDetailedOrdinalSelection, OracleComp.construct_query_bind]
+        by_cases hselected : ordinal < candidates.length
+        · simp only [hselected, ↓reduceDIte]
+          exact relTriple_sample_preload_pureSelection_taggedGuess target rightRoot ordinal
+            (candidates.get ⟨ordinal, hselected⟩) candidates state hvalue
+        · simp only [hselected, ↓reduceDIte]
+          cases query with
+          | inl worldQuery =>
+              cases worldQuery with
+              | inl n =>
+                  let observe := fun nextState remaining value nextCache laterCandidates =>
+                    delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret
+                      (next value) laterCandidates nextState remaining table nextCache
+                  apply relTriple_sample_preload_runPermissive_finishDetailed_taggedGuess target
+                    rightRoot ordinal ((splitUniformImpl n).run cache) state fuel table observe
+                    observe candidates hvalue (splitUniformImpl_targetPeekFree target n cache)
+                  · intro nextState remaining value nextCache hnextValue
+                    simpa only [observe] using
+                      ih value candidates nextState remaining nextCache hnextValue
+                  · intro output left right remaining value nextCache hstate houtput
+                    exact relTriple_tagged_delayedSelection_of_stateRel ordinal parameter root
+                      ftsSecret (next value) candidates left right remaining table nextCache target
+                      output rightRoot hstate houtput
+              | inr input =>
+                  let nextCandidates :=
+                    permissiveRootAwareCandidates parameter input table state candidates
+                  by_cases hnextSelected : ordinal < nextCandidates.length
+                  · simp only [nextCandidates, hnextSelected, ↓reduceDIte]
+                    rw [show (pure (some
+                        ⟨(permissiveRootAwareCandidates parameter input table state candidates).get
+                            ⟨ordinal, hnextSelected⟩, state,
+                          permissiveRootAwareCandidates parameter input table state candidates⟩) :
+                        ProbComp (Option PermissivePrivateOrdinalSelection)) =
+                      ((pure () : ProbComp Unit) >>= fun _ => pure (some
+                        ⟨(permissiveRootAwareCandidates parameter input table state candidates).get
+                            ⟨ordinal, hnextSelected⟩, state,
+                          permissiveRootAwareCandidates parameter input table state candidates⟩)) by
+                        simp]
+                    apply relTriple_bind
+                      (relTriple_true LazyRevealProbe.sampleHashOutput (pure () : ProbComp Unit))
+                    intro output _unit _hrelation
+                    rw [permissiveRootAwareCandidates_preload_hidden target output state hrevealed
+                      parameter input table candidates]
+                    rw [dif_pos hnextSelected]
+                    exact relTriple_pure_pure (by
+                      intro hgood
+                      obtain ⟨_rightOutput, hgood⟩ := hgood
+                      exfalso
+                      have himpossible := hgood.2.1
+                      rw [hvalue] at himpossible
+                      simp at himpossible)
+                  · simp_rw [permissiveRootAwareCandidates_preload_hidden target _ state hrevealed
+                      parameter input table candidates]
+                    simp only [nextCandidates, hnextSelected, ↓reduceDIte]
+                    simp_rw [delayedPermissivePublicAction_preload_hidden target _ state hrevealed
+                      parameter input table cache]
+                    let observe := fun nextState remaining value nextCache laterCandidates =>
+                      delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret
+                        (next value) laterCandidates nextState remaining table nextCache
+                    apply relTriple_sample_preload_runPermissive_finishDetailed_taggedGuess target
+                      rightRoot ordinal
+                      (delayedPermissivePublicAction parameter input table state cache) state fuel
+                      table observe observe nextCandidates hvalue
+                      (delayedPermissivePublicAction_targetPeekFree target parameter input table
+                        state cache)
+                    · intro nextState remaining value nextCache hnextValue
+                      simpa only [observe] using
+                        ih value nextCandidates nextState remaining nextCache hnextValue
+                    · intro output left right remaining value nextCache hstate houtput
+                      exact relTriple_tagged_delayedSelection_of_stateRel ordinal parameter root
+                        ftsSecret (next value) nextCandidates left right remaining table nextCache
+                        target output rightRoot hstate houtput
+          | inr message =>
+              let observe := fun nextState remaining value nextCache laterCandidates =>
+                delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret
+                  (next value) laterCandidates nextState remaining table nextCache
+              apply relTriple_sample_preload_runPermissive_finishDetailed_taggedGuess target
+                rightRoot ordinal ((maskedSign parameter root ftsSecret message).run cache) state
+                fuel table observe observe candidates hvalue
+                (maskedSign_targetPeekFree target parameter root ftsSecret message cache)
+              · intro nextState remaining value nextCache hnextValue
+                simpa only [observe] using
+                  ih value candidates nextState remaining nextCache hnextValue
+              · intro output left right remaining value nextCache hstate houtput
+                exact relTriple_tagged_delayedSelection_of_stateRel ordinal parameter root
+                  ftsSecret (next value) candidates left right remaining table nextCache target
+                  output rightRoot hstate houtput
+
+theorem probEvent_delayedRootGuess_le_taggedPreloaded
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (candidates : List Probe) (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (target : Position) (rightRoot : Digest)
+    (hvalue : state.values (.position target) = none) :
+    Pr[PermissiveDelayedRootGuess target rightRoot ordinal |
+        delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret computation
+          candidates state fuel table cache] ≤
+      Pr[fun result : HashOutput × Option PermissivePrivateOrdinalSelection =>
+          PermissiveDelayedRootGuessAt target result.1 rightRoot ordinal result.2 |
+        LazyRevealProbe.sampleHashOutput >>= fun output =>
+          (fun selection => (output, selection)) <$>
+            delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret computation
+              candidates (preloadPositionValue target output state) fuel table cache] := by
+  apply probEvent_le_of_relTriple
+    (relTriple_symm
+      (relTriple_sample_preload_delayedPermissiveDetailedOrdinalSelection_taggedGuess ordinal
+        parameter root ftsSecret computation candidates state fuel table cache target rightRoot
+        hvalue))
+  intro right left hrelation hgood
+  exact hrelation hgood
+
+theorem probEvent_taggedPreloaded_le_taggedInstalled
+    (ordinal : Nat) (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (computation : OracleComp (OracleWorld + SigningSpec) α)
+    (candidates : List Probe) (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
+    (target : Position) (rightRoot : Digest) :
+    Pr[fun result : HashOutput × Option PermissivePrivateOrdinalSelection =>
+        PermissiveDelayedRootGuessAt target result.1 rightRoot ordinal result.2 |
+      LazyRevealProbe.sampleHashOutput >>= fun output =>
+        (fun selection => (output, selection)) <$>
+          delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret computation
+            candidates (preloadPositionValue target output state) fuel table cache] ≤
+      Pr[fun result : HashOutput × Option PermissivePrivateOrdinalSelection =>
+          PermissiveDelayedRootGuessAt target result.1 rightRoot ordinal result.2 |
+        LazyRevealProbe.sampleHashOutput >>= fun output =>
+          (fun selection => (output, selection)) <$>
+            delayedPermissiveDetailedOrdinalSelection ordinal parameter root ftsSecret computation
+              candidates (preloadPositionValue target output state) fuel table
+              (replaceHiddenRootCache target output cache)] := by
+  apply probEvent_bind_le_bind_of_forall_le
+  intro output _houtput
+  rw [probEvent_map, probEvent_map]
+  apply probEvent_le_of_relTriple
+    (relTriple_delayedPermissiveDetailedOrdinalSelection_of_ordinaryCacheEq ordinal parameter root
+      ftsSecret computation candidates (preloadPositionValue target output state) fuel table cache
+      (replaceHiddenRootCache target output cache)
+      (ordinaryQueryCache_replaceHiddenRootCache target output cache))
+  intro left right heq hgood
+  rwa [← heq]
+
 theorem relTriple_none_any_permissiveFilteredSelection
     (target : Position)
     (right : ProbComp (Option PermissivePrivateOrdinalSelection)) :
@@ -987,17 +1484,17 @@ theorem probEvent_sampledHigh_permissiveRootAvoidingSelection_le_installedDelaye
     (target : Position) (hroot : IsLayerRoot target)
     (rootResult : CleanRunResult (Digest × SplitHashCache))
     (hunrevealed : Coordinate.position target ∉ rootResult.state.revealed) :
-    Pr[fun result : Digest × Option PermissivePrivateOrdinalSelection =>
-        materializedOrdinalSelectionAt target
-          (erasePermissivePrivateOrdinalSelection result.2) | do
+    Pr[fun result : Digest × Option Probe =>
+        materializedOrdinalSelectionAt target result.2 | do
       let high ← ($ᵗ RootOutputHigh : ProbComp RootOutputHigh)
       let leftRoot ← ($ᵗ Digest : ProbComp Digest)
       let output := fun root => rootOutputOfParts root high
-      let selection ← permissiveActualRootAvoidingDetailedOrdinalSelection ordinal parameter
-        rootResult.value.1 target leftRoot leftRoot ftsSecret
-        (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) []
-        (preloadPositionValue target (output leftRoot) rootResult.state) rootResult.remaining
-        rootResult.table (rootInstalledCache target output rootResult.value.2 leftRoot)
+      let selection ← erasePermissivePrivateOrdinalSelection <$>
+        permissiveActualRootAvoidingDetailedOrdinalSelection ordinal parameter
+          rootResult.value.1 target leftRoot leftRoot ftsSecret
+          (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) []
+          (preloadPositionValue target (output leftRoot) rootResult.state) rootResult.remaining
+          rootResult.table (rootInstalledCache target output rootResult.value.2 leftRoot)
       pure (leftRoot, selection)] ≤
       Pr[fun result =>
           permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? result.2 = some target |
@@ -1014,20 +1511,365 @@ theorem probEvent_sampledHigh_permissiveRootAvoidingSelection_le_installedDelaye
     (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) []
     (preloadPositionValue target (output leftRoot) rootResult.state) rootResult.remaining
     rootResult.table (rootInstalledCache target output rootResult.value.2 leftRoot)
+  let leftErased := erasePermissivePrivateOrdinalSelection <$> left
   let right := delayedPermissiveDetailedOrdinalSelection ordinal parameter rootResult.value.1
     ftsSecret (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) []
     (preloadPositionValue target (output leftRoot) rootResult.state) rootResult.remaining
     rootResult.table (rootInstalledCache target output rootResult.value.2 leftRoot)
-  rw [show (do let selection ← left; pure (leftRoot, selection)) =
-      (fun selection => (leftRoot, selection)) <$> left by simp [map_eq_bind_pure_comp],
+  rw [show (do let selection ← leftErased; pure (leftRoot, selection)) =
+      (fun selection => (leftRoot, selection)) <$> leftErased by simp [map_eq_bind_pure_comp],
     show (do let selection ← right; pure (leftRoot, selection)) =
       (fun selection => (leftRoot, selection)) <$> right by simp [map_eq_bind_pure_comp],
-    probEvent_map, probEvent_map]
+    probEvent_map, probEvent_map, probEvent_map]
   exact probEvent_permissiveRootAvoidingSelection_le_delayedFiber ordinal parameter target hroot
     rootResult.value.1 leftRoot leftRoot ftsSecret
     (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) []
     (preloadPositionValue target (output leftRoot) rootResult.state)
     (by simpa [output] using hunrevealed) rootResult.remaining rootResult.table
     (rootInstalledCache target output rootResult.value.2 leftRoot)
+
+set_option maxRecDepth 100000 in
+theorem probEvent_sampledRoots_taggedInstalledGuess_le_mul
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (hroot : IsLayerRoot target)
+    (rootResult : CleanRunResult (Digest × SplitHashCache))
+    (hunrevealed : Coordinate.position target ∉ rootResult.state.revealed)
+    (hcacheSwap : ∀ high leftRoot rightRoot,
+      fullSwapRootCache parameter target leftRoot rightRoot
+          (rootOutputOfParts rightRoot high)
+          (replaceHiddenRootCache target (rootOutputOfParts leftRoot high) rootResult.value.2) =
+        replaceHiddenRootCache target (rootOutputOfParts rightRoot high) rootResult.value.2) :
+    Pr[fun result : HashOutput × Digest × Option PermissivePrivateOrdinalSelection =>
+        PermissiveDelayedRootGuessAt target result.1 result.2.1 ordinal result.2.2 | do
+      let high ← ($ᵗ RootOutputHigh : ProbComp RootOutputHigh)
+      let leftRoot ← ($ᵗ Digest : ProbComp Digest)
+      let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+      let output := rootOutputOfParts leftRoot high
+      let selection ← delayedPermissiveDetailedOrdinalSelection ordinal parameter
+        rootResult.value.1 ftsSecret
+        (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) []
+        (preloadPositionValue target output rootResult.state) rootResult.remaining rootResult.table
+        (replaceHiddenRootCache target output rootResult.value.2)
+      pure (output, rightRoot, selection)] ≤
+      Pr[fun result =>
+          permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? result.2 = some target |
+        sampledHighInstalledDelayedSelectionAfterRootResult ordinal adversary parameter ftsSecret
+          target rootResult] * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  let delayed := fun high leftRoot =>
+    delayedPermissiveDetailedOrdinalSelection ordinal parameter rootResult.value.1 ftsSecret
+      (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) []
+      (preloadPositionValue target (rootOutputOfParts leftRoot high) rootResult.state)
+      rootResult.remaining rootResult.table
+      (replaceHiddenRootCache target (rootOutputOfParts leftRoot high) rootResult.value.2)
+  let actual := fun high leftRoot rightRoot =>
+    permissiveActualRootAvoidingDetailedOrdinalSelection ordinal parameter rootResult.value.1
+      target (truncateHash (rootOutputOfParts leftRoot high)) rightRoot ftsSecret
+      (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) []
+      (preloadPositionValue target (rootOutputOfParts leftRoot high) rootResult.state)
+      rootResult.remaining rootResult.table
+      (replaceHiddenRootCache target (rootOutputOfParts leftRoot high) rootResult.value.2)
+  calc
+    _ ≤ Pr[fun result : Digest × Digest × Option Probe =>
+          materializedOrdinalSelectionMatches target result.1 result.2.2 | do
+        let high ← ($ᵗ RootOutputHigh : ProbComp RootOutputHigh)
+        let leftRoot ← ($ᵗ Digest : ProbComp Digest)
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        let selection ← erasePermissivePrivateOrdinalSelection <$>
+          actual high leftRoot rightRoot
+        pure (leftRoot, rightRoot, selection)] := by
+      apply probEvent_bind_le_bind_of_forall_le
+      intro high _hhigh
+      apply probEvent_bind_le_bind_of_forall_le
+      intro leftRoot _hleftRoot
+      apply probEvent_bind_le_bind_of_forall_le
+      intro rightRoot _hrightRoot
+      have hdelayed : (do
+          let selection ← delayed high leftRoot
+          pure (rootOutputOfParts leftRoot high, rightRoot, selection)) =
+          (fun selection => (rootOutputOfParts leftRoot high, rightRoot, selection)) <$>
+            delayed high leftRoot := by simp [map_eq_bind_pure_comp]
+      have hactual : (do
+          let selection ← erasePermissivePrivateOrdinalSelection <$>
+            actual high leftRoot rightRoot
+          pure (leftRoot, rightRoot, selection)) =
+          (fun selection => (leftRoot, rightRoot, selection)) <$>
+            (erasePermissivePrivateOrdinalSelection <$> actual high leftRoot rightRoot) := by
+        simp [map_eq_bind_pure_comp]
+      rw [hdelayed, hactual, probEvent_map, probEvent_map, probEvent_map]
+      change Pr[PermissiveDelayedRootGuessAt target (rootOutputOfParts leftRoot high) rightRoot
+          ordinal | delayed high leftRoot] ≤
+        Pr[materializedOrdinalSelectionMatches target leftRoot ∘
+            erasePermissivePrivateOrdinalSelection | actual high leftRoot rightRoot]
+      apply probEvent_le_of_relTriple
+        (relTriple_symm
+          (relTriple_delayed_permissiveRootAvoidingDetailedOrdinalSelection ordinal parameter
+            rootResult.value.1 target (rootOutputOfParts leftRoot high) rightRoot ftsSecret
+            (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) []
+            (preloadPositionValue target (rootOutputOfParts leftRoot high) rootResult.state)
+            rootResult.remaining rootResult.table
+            (replaceHiddenRootCache target (rootOutputOfParts leftRoot high)
+              rootResult.value.2)))
+      intro right left hrelation hgood
+      have heq := hrelation hgood
+      rw [heq]
+      cases right with
+      | none => exact False.elim hgood
+      | some selection =>
+          simpa [Function.comp_def, materializedOrdinalSelectionMatches,
+            erasePermissivePrivateOrdinalSelection, truncateHash_rootOutputOfParts] using hgood.1
+    _ ≤ Pr[fun result : Digest × Option Probe =>
+          materializedOrdinalSelectionAt target result.2 | do
+        let high ← ($ᵗ RootOutputHigh : ProbComp RootOutputHigh)
+        let leftRoot ← ($ᵗ Digest : ProbComp Digest)
+        let selection ← erasePermissivePrivateOrdinalSelection <$> actual high leftRoot leftRoot
+        pure (leftRoot, selection)] *
+          ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+      apply probEvent_bind_le_bind_mul_of_forall
+      intro high _hhigh
+      simpa [actual, truncateHash_rootOutputOfParts, rootInstalledCache] using
+        (probEvent_uniformActualRoot_permissiveRootAvoidingSelection_le_mul ordinal parameter
+          rootResult.value.1 target hroot (fun root => rootOutputOfParts root high)
+          (fun root => truncateHash_rootOutputOfParts root high) ftsSecret
+          (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) []
+          rootResult.state hunrevealed rootResult.remaining rootResult.table
+          (fun root => replaceHiddenRootCache target (rootOutputOfParts root high)
+            rootResult.value.2)
+          (by intro root; simp [replaceHiddenRootCache])
+          (hcacheSwap high))
+    _ ≤ _ := by
+      gcongr
+      simpa [actual, truncateHash_rootOutputOfParts, rootInstalledCache] using
+        (probEvent_sampledHigh_permissiveRootAvoidingSelection_le_installedDelayed ordinal
+          adversary parameter ftsSecret target hroot rootResult hunrevealed)
+
+set_option maxRecDepth 100000 in
+theorem probEvent_delayedRootGuess_afterRootResult_le_mul
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (hroot : IsLayerRoot target)
+    (rootResult : CleanRunResult (Digest × SplitHashCache))
+    (hvalue : rootResult.state.values (.position target) = none)
+    (hunrevealed : Coordinate.position target ∉ rootResult.state.revealed)
+    (hcacheSwap : ∀ high leftRoot rightRoot,
+      fullSwapRootCache parameter target leftRoot rightRoot
+          (rootOutputOfParts rightRoot high)
+          (replaceHiddenRootCache target (rootOutputOfParts leftRoot high) rootResult.value.2) =
+        replaceHiddenRootCache target (rootOutputOfParts rightRoot high) rootResult.value.2) :
+    Pr[fun result : Option PermissivePrivateOrdinalSelection × Digest =>
+        PermissiveDelayedRootGuess target result.2 ordinal result.1 | do
+      let selection ← delayedPermissiveDetailedOrdinalSelection ordinal parameter
+        rootResult.value.1 ftsSecret
+        (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) []
+        rootResult.state rootResult.remaining rootResult.table rootResult.value.2
+      let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+      pure (selection, rightRoot)] ≤
+      Pr[fun result =>
+          permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? result.2 = some target |
+        sampledHighInstalledDelayedSelectionAfterRootResult ordinal adversary parameter ftsSecret
+          target rootResult] * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  let raw := delayedPermissiveDetailedOrdinalSelection ordinal parameter rootResult.value.1
+    ftsSecret (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) []
+    rootResult.state rootResult.remaining rootResult.table rootResult.value.2
+  let installed := fun output =>
+    delayedPermissiveDetailedOrdinalSelection ordinal parameter rootResult.value.1 ftsSecret
+      (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) []
+      (preloadPositionValue target output rootResult.state) rootResult.remaining rootResult.table
+      (replaceHiddenRootCache target output rootResult.value.2)
+  let reordered : ProbComp (Option PermissivePrivateOrdinalSelection × Digest) := do
+    let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+    let selection ← raw
+    pure (selection, rightRoot)
+  let tagged : ProbComp (HashOutput × Digest × Option PermissivePrivateOrdinalSelection) := do
+    let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+    let output ← LazyRevealProbe.sampleHashOutput
+    let selection ← installed output
+    pure (output, rightRoot, selection)
+  have hreorder : evalDist (do
+      let selection ← raw
+      let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+      pure (selection, rightRoot)) = evalDist reordered := by
+    exact OracleComp.DeferredSampling.evalDist_bind_comm raw
+      ($ᵗ Digest : ProbComp Digest) (fun selection rightRoot => pure (selection, rightRoot))
+  calc
+    _ = Pr[fun result : Option PermissivePrivateOrdinalSelection × Digest =>
+          PermissiveDelayedRootGuess target result.2 ordinal result.1 | reordered] := by
+      apply OracleComp.probEvent_congr' (fun _ _ => Iff.rfl)
+      exact hreorder
+    _ ≤ Pr[fun result : HashOutput × Digest × Option PermissivePrivateOrdinalSelection =>
+          PermissiveDelayedRootGuessAt target result.1 result.2.1 ordinal result.2.2 |
+        tagged] := by
+      unfold reordered tagged
+      apply probEvent_bind_le_bind_of_forall_le
+      intro rightRoot _hrightRoot
+      have hraw : (do let selection ← raw; pure (selection, rightRoot)) =
+          (fun selection => (selection, rightRoot)) <$> raw := by
+        simp [map_eq_bind_pure_comp]
+      have htaggedPair : (do
+          let output ← LazyRevealProbe.sampleHashOutput
+          let selection ← installed output
+          pure (output, rightRoot, selection)) =
+          (fun result : HashOutput × Option PermissivePrivateOrdinalSelection =>
+            (result.1, rightRoot, result.2)) <$> (do
+              let output ← LazyRevealProbe.sampleHashOutput
+              (fun selection => (output, selection)) <$> installed output) := by
+        simp [map_eq_bind_pure_comp, bind_assoc]
+      rw [hraw, htaggedPair, probEvent_map, probEvent_map]
+      calc
+        _ ≤ Pr[fun result : HashOutput × Option PermissivePrivateOrdinalSelection =>
+              PermissiveDelayedRootGuessAt target result.1 rightRoot ordinal result.2 |
+            LazyRevealProbe.sampleHashOutput >>= fun output =>
+              (fun selection => (output, selection)) <$>
+                delayedPermissiveDetailedOrdinalSelection ordinal parameter rootResult.value.1
+                  ftsSecret
+                  (retainedGameRestComputation adversary
+                    ⟨rootResult.value.1, parameter⟩) []
+                  (preloadPositionValue target output rootResult.state) rootResult.remaining
+                  rootResult.table rootResult.value.2] :=
+          probEvent_delayedRootGuess_le_taggedPreloaded ordinal parameter rootResult.value.1
+            ftsSecret
+            (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) []
+            rootResult.state rootResult.remaining rootResult.table rootResult.value.2 target
+            rightRoot hvalue
+        _ ≤ _ := by
+          change Pr[fun result : HashOutput × Option PermissivePrivateOrdinalSelection =>
+              PermissiveDelayedRootGuessAt target result.1 rightRoot ordinal result.2 |
+            LazyRevealProbe.sampleHashOutput >>= fun output =>
+              (fun selection => (output, selection)) <$>
+                delayedPermissiveDetailedOrdinalSelection ordinal parameter rootResult.value.1
+                  ftsSecret
+                  (retainedGameRestComputation adversary
+                    ⟨rootResult.value.1, parameter⟩) []
+                  (preloadPositionValue target output rootResult.state) rootResult.remaining
+                  rootResult.table rootResult.value.2] ≤
+            Pr[fun result : HashOutput × Option PermissivePrivateOrdinalSelection =>
+                PermissiveDelayedRootGuessAt target result.1 rightRoot ordinal result.2 |
+              LazyRevealProbe.sampleHashOutput >>= fun output =>
+                (fun selection => (output, selection)) <$> installed output]
+          simpa only [installed] using
+            (probEvent_taggedPreloaded_le_taggedInstalled ordinal parameter rootResult.value.1
+              ftsSecret
+              (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) []
+              rootResult.state rootResult.remaining rootResult.table rootResult.value.2 target
+              rightRoot)
+    _ = Pr[fun result : HashOutput × Digest × Option PermissivePrivateOrdinalSelection =>
+          PermissiveDelayedRootGuessAt target result.1 result.2.1 ordinal result.2.2 | do
+        let high ← ($ᵗ RootOutputHigh : ProbComp RootOutputHigh)
+        let leftRoot ← ($ᵗ Digest : ProbComp Digest)
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        let output := rootOutputOfParts leftRoot high
+        let selection ← installed output
+        pure (output, rightRoot, selection)] := by
+      let parts : ProbComp HashOutput := do
+        let high ← ($ᵗ RootOutputHigh : ProbComp RootOutputHigh)
+        let root ← ($ᵗ Digest : ProbComp Digest)
+        pure (rootOutputOfParts root high)
+      have hparts : evalDist parts = evalDist LazyRevealProbe.sampleHashOutput := by
+        calc
+          _ = evalDist (do
+                let root ← ($ᵗ Digest : ProbComp Digest)
+                let high ← ($ᵗ RootOutputHigh : ProbComp RootOutputHigh)
+                pure (rootOutputOfParts root high)) := by
+              exact OracleComp.DeferredSampling.evalDist_bind_comm
+                ($ᵗ RootOutputHigh : ProbComp RootOutputHigh)
+                ($ᵗ Digest : ProbComp Digest)
+                (fun high root => pure (rootOutputOfParts root high))
+          _ = _ := evalDist_sample_rootOutputOfParts
+      let continuation := fun output : HashOutput => do
+        let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+        let selection ← installed output
+        pure (output, rightRoot, selection)
+      have htagged : evalDist tagged = evalDist (parts >>= continuation) := by
+        calc
+          _ = evalDist (LazyRevealProbe.sampleHashOutput >>= continuation) := by
+            unfold tagged continuation
+            exact OracleComp.DeferredSampling.evalDist_bind_comm
+              ($ᵗ Digest : ProbComp Digest) LazyRevealProbe.sampleHashOutput
+              (fun rightRoot output => do
+                let selection ← installed output
+                pure (output, rightRoot, selection))
+          _ = _ := (evalDist_bind_eq_of_evalDist_eq hparts continuation).symm
+      apply OracleComp.probEvent_congr' (fun _ _ => Iff.rfl)
+      calc
+        evalDist tagged = evalDist (parts >>= continuation) := htagged
+        _ = _ := by simp [parts, continuation, bind_assoc]
+    _ ≤ _ := probEvent_sampledRoots_taggedInstalledGuess_le_mul ordinal adversary parameter
+      ftsSecret target hroot rootResult hunrevealed hcacheSwap
+
+theorem fullSwapRootCache_replace_of_swapCanonical_eq
+    (parameter : PublicParameter) (target : Position)
+    (leftRoot rightRoot : Digest) (leftOutput rightOutput : HashOutput)
+    (cache : SplitHashCache)
+    (hcache : swapCanonicalRootEncodingCache parameter target leftRoot rightRoot cache = cache) :
+    fullSwapRootCache parameter target leftRoot rightRoot rightOutput
+        (replaceHiddenRootCache target leftOutput cache) =
+      replaceHiddenRootCache target rightOutput cache := by
+  unfold fullSwapRootCache
+  funext key
+  cases key with
+  | ordinary input =>
+      simpa [swapCanonicalRootEncodingCache, replaceHiddenRootCache] using
+        congrFun hcache (.ordinary input)
+  | hidden coordinate =>
+      by_cases heq : coordinate = .position target
+      · subst coordinate
+        simp [replaceHiddenRootCache]
+      · simp [swapCanonicalRootEncodingCache, replaceHiddenRootCache, heq]
+
+set_option maxRecDepth 100000 in
+theorem probEvent_delayedRootGuess_afterRootResult_le_installed_mul
+    (ordinal : Nat) (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (target : Position) (hroot : IsLayerRoot target)
+    (rootResult : CleanRunResult (Digest × SplitHashCache))
+    (hvalue : rootResult.state.values (.position target) = none)
+    (hunrevealed : Coordinate.position target ∉ rootResult.state.revealed)
+    (hbaseSwap : ∀ leftRoot rightRoot,
+      swapCanonicalRootEncodingCache parameter target leftRoot rightRoot
+          rootResult.value.2 = rootResult.value.2) :
+    Pr[fun result : Option PermissivePrivateOrdinalSelection × Digest =>
+        PermissiveDelayedRootGuess target result.2 ordinal result.1 | do
+      let selection ← delayedPermissiveDetailedOrdinalSelection ordinal parameter
+        rootResult.value.1 ftsSecret
+        (retainedGameRestComputation adversary ⟨rootResult.value.1, parameter⟩) []
+        rootResult.state rootResult.remaining rootResult.table rootResult.value.2
+      let rightRoot ← ($ᵗ Digest : ProbComp Digest)
+      pure (selection, rightRoot)] ≤
+      Pr[fun selection =>
+          permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? selection = some target |
+        installedDelayedPermissiveDetailedSelectionAfterRootResult ordinal adversary parameter
+          ftsSecret target rootResult] * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+  have hfullSwap (high : RootOutputHigh) (leftRoot rightRoot : Digest) :
+      fullSwapRootCache parameter target leftRoot rightRoot
+          (rootOutputOfParts rightRoot high)
+          (replaceHiddenRootCache target (rootOutputOfParts leftRoot high)
+            rootResult.value.2) =
+        replaceHiddenRootCache target (rootOutputOfParts rightRoot high)
+          rootResult.value.2 := by
+    exact fullSwapRootCache_replace_of_swapCanonical_eq parameter target leftRoot rightRoot
+      (rootOutputOfParts leftRoot high) (rootOutputOfParts rightRoot high)
+      rootResult.value.2 (hbaseSwap leftRoot rightRoot)
+  calc
+    _ ≤ Pr[fun result =>
+          permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? result.2 = some target |
+        sampledHighInstalledDelayedSelectionAfterRootResult ordinal adversary parameter
+          ftsSecret target rootResult] * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ :=
+      probEvent_delayedRootGuess_afterRootResult_le_mul ordinal adversary parameter ftsSecret
+        target hroot rootResult hvalue hunrevealed hfullSwap
+    _ = _ := by
+      congr 1
+      rw [show Pr[fun result =>
+            permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? result.2 = some target |
+          sampledHighInstalledDelayedSelectionAfterRootResult ordinal adversary parameter
+            ftsSecret target rootResult] =
+          Pr[fun selection =>
+            permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? selection = some target |
+            Prod.snd <$> sampledHighInstalledDelayedSelectionAfterRootResult ordinal adversary
+              parameter ftsSecret target rootResult] by
+              rw [probEvent_map]
+              rfl]
+      apply OracleComp.probEvent_congr' (fun _ _ => Iff.rfl)
+      exact evalDist_sampledHighInstalledDelayed_snd_eq_installed ordinal adversary parameter
+        ftsSecret target rootResult
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

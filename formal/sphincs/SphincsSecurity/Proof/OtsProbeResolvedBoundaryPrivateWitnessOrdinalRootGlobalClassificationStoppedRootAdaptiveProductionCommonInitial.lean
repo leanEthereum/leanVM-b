@@ -79,4 +79,45 @@ theorem initialRootOptionFacts_of_mem
       exact initialRootResult_target_absent_pending_empty target hroot hparent fuel table
         rootResult hresult
 
+def InitialRootSwapFacts (parameter : PublicParameter) (target : Position) :
+    Option (CleanRunResult (Digest × SplitHashCache)) → Prop
+  | none => True
+  | some rootResult =>
+      ∀ leftRoot rightRoot,
+        swapCanonicalRootEncodingCache parameter target leftRoot rightRoot
+            rootResult.value.2 = rootResult.value.2
+
+set_option maxHeartbeats 2000000 in
+set_option maxRecDepth 100000 in
+theorem initialRootSwapFacts_of_mem
+    (parameter : PublicParameter) (target : Position)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (result : Option (CleanRunResult (Digest × SplitHashCache)))
+    (hresult : result ∈ support (rootAwareProductionInitialRun fuel table)) :
+    InitialRootSwapFacts parameter target result := by
+  cases result with
+  | none => simp [InitialRootSwapFacts]
+  | some rootResult =>
+      unfold rootAwareProductionInitialRun at hresult
+      intro leftRoot rightRoot
+      exact swapCanonicalRootEncodingCache_of_mem_runCleanFromTable_maskedPublishedTreeRoot
+        parameter target leftRoot rightRoot
+        (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate) fuel table
+        rootResult hresult
+
+def InitialRootAllFacts (parameter : PublicParameter) (target : Position)
+    (result : Option (CleanRunResult (Digest × SplitHashCache))) : Prop :=
+  InitialRootOptionFacts target result ∧ InitialRootSwapFacts parameter target result
+
+set_option maxRecDepth 100000 in
+theorem initialRootAllFacts_of_mem
+    (parameter : PublicParameter) (target : Position) (hroot : IsLayerRoot target)
+    (hparent : ∃ parent, Position.parentOf target = some parent)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput)
+    (result : Option (CleanRunResult (Digest × SplitHashCache)))
+    (hresult : result ∈ support (rootAwareProductionInitialRun fuel table)) :
+    InitialRootAllFacts parameter target result :=
+  ⟨initialRootOptionFacts_of_mem target hroot hparent fuel table result hresult,
+    initialRootSwapFacts_of_mem parameter target fuel table result hresult⟩
+
 end SphincsSecurity.Concrete.OtsProbeSimulation

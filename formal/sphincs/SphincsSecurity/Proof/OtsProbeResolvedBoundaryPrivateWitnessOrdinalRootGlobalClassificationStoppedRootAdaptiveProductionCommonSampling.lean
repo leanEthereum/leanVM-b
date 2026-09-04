@@ -13,6 +13,79 @@ namespace SphincsSecurity.Concrete.OtsProbeSimulation
 open OracleComp OracleSpec
 open OracleComp.ProgramLogic.Relational
 
+set_option maxRecDepth 100000 in
+theorem valuesLE_of_mem_runPermissiveFromTable
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (result : CleanRunResult α)
+    (hresult : some result ∈ support
+      (runPermissiveFromTable state fuel table computation)) :
+    LazyRevealProbe.ValuesLE state result.state := by
+  induction computation using OracleComp.inductionOn generalizing state fuel with
+  | pure value =>
+      simp [runPermissiveFromTable] at hresult
+      rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
+      exact LazyRevealProbe.ValuesLE.refl state
+  | query_bind query next ih =>
+      cases query with
+      | uniform n =>
+          rw [runPermissiveFromTable_uniform_query_bind, mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, htail⟩ := hresult
+          exact ih output state fuel htail
+      | hashOutput =>
+          rw [runPermissiveFromTable_hashOutput_query_bind, mem_support_bind_iff] at hresult
+          obtain ⟨output, _houtput, htail⟩ := hresult
+          exact ih output state fuel htail
+      | ensure coordinate =>
+          rw [runPermissiveFromTable_ensure_query_bind] at hresult
+          exact (LazyRevealProbe.valuesLE_ensure state coordinate).trans
+            (ih () (state.ensure coordinate) fuel hresult)
+      | probe coordinate candidate =>
+          rw [runPermissiveFromTable_probe_query_bind] at hresult
+          cases fuel with
+          | zero => simp at hresult
+          | succ remaining =>
+              by_cases hrevealed : coordinate ∈ state.revealed
+              · simp only [hrevealed, ↓reduceIte] at hresult
+                exact ih () state remaining hresult
+              · simp only [hrevealed, ↓reduceIte] at hresult
+                exact (LazyRevealProbe.valuesLE_addPending state coordinate candidate).trans
+                  (ih () (state.addPending coordinate candidate) remaining hresult)
+      | peek coordinate =>
+          rw [runPermissiveFromTable_peek_query_bind] at hresult
+          exact ih (state.values coordinate) state fuel hresult
+      | publish coordinate =>
+          rw [runPermissiveFromTable_publish_query_bind] at hresult
+          exact (LazyRevealProbe.valuesLE_publish state coordinate).trans
+            (ih () (state.publish coordinate) fuel hresult)
+      | reveal coordinate =>
+          rw [runPermissiveFromTable_reveal_query_bind] at hresult
+          cases hvalue : state.values coordinate with
+          | some output =>
+              simp only [hvalue] at hresult
+              exact ih output state fuel hresult
+          | none =>
+              simp only [hvalue] at hresult
+              cases coordinate with
+              | chainStart lay tree leafIdx chainIdx =>
+                  exact (LazyRevealProbe.valuesLE_materialize_of_none state
+                    (.chainStart lay tree leafIdx chainIdx)
+                    (table ⟨lay, tree, leafIdx, chainIdx⟩) hvalue).trans
+                    (ih (table ⟨lay, tree, leafIdx, chainIdx⟩)
+                      (state.materialize (.chainStart lay tree leafIdx chainIdx)
+                        (table ⟨lay, tree, leafIdx, chainIdx⟩)) fuel hresult)
+              | position position =>
+                  rw [mem_support_bind_iff] at hresult
+                  obtain ⟨output, _houtput, htail⟩ := hresult
+                  exact (LazyRevealProbe.valuesLE_materialize_of_none state
+                    (.position position) output hvalue).trans
+                    (ih output (state.materialize (.position position) output) fuel htail)
+
+def PreloadedOutputAt (target : Position) (output : HashOutput) :
+    Option (CleanRunResult α) → Prop
+  | none => True
+  | some result => result.state.values (.position target) = some output
+
 set_option maxHeartbeats 4000000 in
 set_option maxRecDepth 1000000 in
 theorem relTriple_sample_preload_runPermissiveFromTable_then_tagged
@@ -35,6 +108,7 @@ theorem relTriple_sample_preload_runPermissiveFromTable_then_tagged
     (hfailed : ∀ output, RelTriple (leftFinish output none) (rightFinish none) relation)
     (hsynchronized : ∀ output left right,
       PermissiveCleanRel left right →
+      PreloadedOutputAt target output left →
       RelTriple (leftFinish output left) (rightFinish right) relation) :
     RelTriple
       (LazyRevealProbe.sampleHashOutput >>= fun output =>
@@ -138,12 +212,23 @@ theorem relTriple_sample_preload_runPermissiveFromTable_then_tagged
                 (preloadPositionValue target leftOutput state)
                 (state.materialize (.position target) leftOutput) :=
               permissiveStateRel_preload_materialize target leftOutput state
-            have hrun := relTriple_runPermissiveFromTable_of_stateRel (next leftOutput)
+            have hrunBase := relTriple_runPermissiveFromTable_of_stateRel (next leftOutput)
               (preloadPositionValue target leftOutput state)
               (state.materialize (.position target) leftOutput) fuel table hstate
+            have hrun :=
+              SphincsSecurity.Concrete.FtsProbeSimulation.relTriple_and_left_support hrunBase
+                (PreloadedOutputAt target leftOutput)
+                (by
+                  intro result hresult
+                  cases result with
+                  | none => trivial
+                  | some result =>
+                      exact valuesLE_of_mem_runPermissiveFromTable (next leftOutput)
+                        (preloadPositionValue target leftOutput state) fuel table result hresult
+                        (.position target) leftOutput (by simp))
             apply relTriple_bind hrun
             intro left right hrelation
-            exact hsynchronized leftOutput left right hrelation
+            exact hsynchronized leftOutput left right hrelation.1 hrelation.2
           · simp_rw [preloadPositionValue_values_of_ne target _ state coordinate htarget]
             cases hcoordinateValue : state.values coordinate with
             | some output =>
@@ -237,7 +322,7 @@ theorem relTriple_sample_preload_runPermissiveFromTable_then
     table (fun _ => leftFinish) rightFinish relation hvalue hnoPeek hpreloaded
   · intro _output
     exact hsynchronized none none trivial
-  · intro _output left right hrelation
+  · intro _output left right hrelation _hpreloaded
     exact hsynchronized left right hrelation
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
