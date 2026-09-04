@@ -940,6 +940,103 @@ theorem evalDist_sampledCleanStep_eq_safeGuardedContinuation
           simp only [directDeferredContext]
           rw [if_pos ⟨hnextPublished, hnextBudget⟩]
 
+noncomputable def supportedGuardedMaterializedCleanContinuation
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (next : β → OracleComp (OracleWorld + SigningSpec) α)
+    (bound : Nat) (initialState : LazyRevealProbe.State Coordinate)
+    (admissible : LazyRevealProbe.State Coordinate → β → Prop)
+    (table : OtsSecretIndex → HashOutput) (context : DeferredContext) (fuel : Nat)
+    (value : β × SplitHashCache) : ProbComp Bool := by
+  classical
+  exact if PublishedValues context.state ∧ bound ≤ fuel ∧
+      LazyRevealProbe.ValuesLE initialState context.state ∧
+      StartTableAgrees initialState table ∧ StartTableAgrees context.state table ∧
+      admissible context.state value.1 then
+    materializedCleanBoundaryFailureFromTable parameter root ftsSecret (next value.1)
+      context.state fuel table value.2
+  else
+    pure false
+
+set_option maxRecDepth 100000 in
+theorem evalDist_sampledCleanStep_eq_safeSupportedGuardedContinuation
+    (parameter : PublicParameter) (root : Digest)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (next : β → OracleComp (OracleWorld + SigningSpec) α)
+    (inner : StateT SplitHashCache
+      (OracleComp (LazyRevealProbe.World Coordinate)) β)
+    (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
+    (cache : SplitHashCache) (stepBound nextBound : Nat)
+    (admissible : LazyRevealProbe.State Coordinate → β → Prop)
+    (hpublished : PublishedValues state)
+    (hinnerBound : (inner.run cache).IsQueryBoundP LazyRevealProbe.IsProbe stepBound)
+    (hpreserves : PreservesPublishedValues inner)
+    (hadmissible : ∀ table result,
+      StartTableAgrees state table →
+      some result ∈ support (runCleanFromTable state fuel table (inner.run cache)) →
+      admissible result.state result.value.1)
+    (hbudget : nextBound + stepBound ≤ fuel) :
+    𝒟[do
+        let base ← sampleOtsHashTable
+        let table := completedStartTable state base
+        let result ← runCleanFromTable state fuel table (inner.run cache)
+        finishCleanFailureObserve
+          (fun nextTable nextState remaining value ↦
+            materializedCleanBoundaryFailureFromTable parameter root ftsSecret
+              (next (value : β × SplitHashCache).1) nextState remaining nextTable value.2)
+          result] =
+      𝒟[runDirectDetailedSafeOrdinaryWithCompletionTable
+        (supportedGuardedMaterializedCleanContinuation parameter root ftsSecret next nextBound
+          state admissible)
+        (directDeferredContext state) fuel (inner.run cache)] := by
+  symm
+  calc
+    _ = 𝒟[do
+        let base ← sampleOtsHashTable
+        let table := completedStartTable state base
+        let result ← runCleanFromTable state fuel table (inner.run cache)
+        finishCleanFailureObserve
+          (fun nextTable nextState remaining value ↦
+            supportedGuardedMaterializedCleanContinuation parameter root ftsSecret next nextBound
+              state admissible nextTable (directDeferredContext nextState) remaining value)
+          result] :=
+      evalDist_runDirectDetailedSafeOrdinary_eq_sampledCleanFailureObserve
+        (inner.run cache)
+        (fun nextTable nextState remaining value ↦
+          supportedGuardedMaterializedCleanContinuation parameter root ftsSecret next nextBound
+            state admissible nextTable (directDeferredContext nextState) remaining
+              (value : β × SplitHashCache))
+        state fuel (hinnerBound.mono (by omega))
+    _ = _ := by
+      apply evalDist_bind_congr
+      intro base _hbase
+      apply evalDist_bind_congr
+      intro result hresult
+      cases result with
+      | none => rfl
+      | some result =>
+          let table := completedStartTable state base
+          have hinitialStarts : StartTableAgrees state table :=
+            startTableAgrees_completedStartTable state base
+          have hnextStarts := startTableAgrees_of_mem_runCleanFromTable
+            (inner.run cache) state fuel table hinitialStarts result hresult
+          have hraw := mem_support_runRaw_done_of_mem_runCleanFromTable_some
+            (inner.run cache) state fuel table result hresult
+          have hvalues := LazyRevealProbe.valuesLE_of_mem_runRaw_done
+            (inner.run cache) state result.state fuel result.remaining result.value hraw
+          have hnextPublished := publishedValues_of_mem_runCleanFromTable inner state cache fuel
+            table result hpublished hpreserves hresult
+          have hfuel := fuel_le_remaining_add_of_mem_runCleanFromTable (inner.run cache) state fuel
+            table result stepBound hinnerBound hresult
+          have hnextBudget : nextBound ≤ result.remaining := by omega
+          have hallowed := hadmissible table result hinitialStarts hresult
+          simp only [finishCleanFailureObserve]
+          unfold supportedGuardedMaterializedCleanContinuation
+          simp only [directDeferredContext]
+          rw [hnextStarts.1]
+          rw [if_pos
+            ⟨hnextPublished, hnextBudget, hvalues, hinitialStarts, hnextStarts.2, hallowed⟩]
+
 theorem probEvent_sampledRunThenFinalizeClean_none_le
     (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
     (state : LazyRevealProbe.State Coordinate) (fuel : Nat)
@@ -967,7 +1064,12 @@ theorem probEvent_sampledMaterializedCleanBoundaryFailure_le
     (computation : OracleComp (OracleWorld + SigningSpec) α)
     (state : LazyRevealProbe.State Coordinate) (fuel bound : Nat)
     (cache : SplitHashCache)
-    (hbound : computation.IsQueryBoundP IsOuterHash bound)
+    (hbound : ∀ table,
+      StartTableAgrees state table →
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ : SecretKey))
+        computation).IsQueryBoundP (fun query => query matches Sum.inr _) bound)
     (hbudget : bound ≤ fuel)
     (hpublished : PublishedValues state) :
     Pr[= true |
@@ -1007,23 +1109,23 @@ theorem probEvent_sampledMaterializedCleanBoundaryFailure_le
           (pure (value, cache) : OracleComp (LazyRevealProbe.World Coordinate)
             (α × SplitHashCache)) state fuel (by simp)
   | query_bind query next ih =>
-      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
       cases query with
       | inl worldQuery =>
           cases worldQuery with
           | inl n =>
               have hinnerBound : ((splitUniformImpl n).run cache).IsQueryBoundP
                   LazyRevealProbe.IsProbe 0 := splitUniformImpl_probeFree n cache
-              have hstep := evalDist_sampledCleanStep_eq_safeGuardedContinuation
+              have hstep := evalDist_sampledCleanStep_eq_safeSupportedGuardedContinuation
                 parameter root ftsSecret next (splitUniformImpl n) state fuel cache 0 bound
-                hpublished hinnerBound (preservesPublishedValuesImpl_splitUniformImpl n)
-                (by omega)
+                (fun _ _ ↦ True) hpublished hinnerBound
+                (preservesPublishedValuesImpl_splitUniformImpl n) (by simp) (by omega)
               have hdist :
                   𝒟[sampledMaterializedCleanBoundaryFailure parameter root ftsSecret
                     ((liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
                       (.inl (.inl n)))) >>= next) state fuel cache] =
                     𝒟[runDirectDetailedSafeOrdinaryWithCompletionTable
-                      (guardedMaterializedCleanContinuation parameter root ftsSecret next bound)
+                      (supportedGuardedMaterializedCleanContinuation parameter root ftsSecret next
+                        bound state (fun _ _ ↦ True))
                       (directDeferredContext state) fuel ((splitUniformImpl n).run cache)] := by
                 calc
                   _ = 𝒟[do
@@ -1046,7 +1148,8 @@ theorem probEvent_sampledMaterializedCleanBoundaryFailure_le
                   _ = _ := hstep
               calc
                 _ = Pr[= true | runDirectDetailedSafeOrdinaryWithCompletionTable
-                      (guardedMaterializedCleanContinuation parameter root ftsSecret next bound)
+                      (supportedGuardedMaterializedCleanContinuation parameter root ftsSecret next
+                        bound state (fun _ _ ↦ True))
                       (directDeferredContext state) fuel ((splitUniformImpl n).run cache)] :=
                   OracleComp.probOutput_congr rfl hdist
                 _ ≤ _ := by
@@ -1054,36 +1157,83 @@ theorem probEvent_sampledMaterializedCleanBoundaryFailure_le
                   apply probEvent_runDirectDetailedSafeOrdinaryWithCompletionTable_le
                   intro nextContext remaining value
                   rw [probEvent_eq_eq_probOutput]
-                  by_cases hguard : PublishedValues nextContext.state ∧ bound ≤ remaining
-                  · simp only [guardedMaterializedCleanContinuation, hguard]
-                    exact ih value.1 nextContext.state remaining bound value.2
-                      (by simpa [IsOuterHash] using hbound.2 value.1) hguard.2 hguard.1
-                  · simp [guardedMaterializedCleanContinuation, hguard]
+                  by_cases hguard : PublishedValues nextContext.state ∧ bound ≤ remaining ∧
+                      LazyRevealProbe.ValuesLE state nextContext.state
+                  · rcases hguard with ⟨hnextPublished, hnextBudget, hvalues⟩
+                    have hinitial : ∀ base,
+                        StartTableAgrees state (completedStartTable nextContext.state base) := by
+                      intro base index output hvalue
+                      exact startTableAgrees_completedStartTable nextContext.state base index output
+                        (hvalues index.coordinate output hvalue)
+                    simpa [supportedGuardedMaterializedCleanContinuation, hnextPublished,
+                      hnextBudget, hvalues, hinitial,
+                      startTableAgrees_completedStartTable,
+                      sampledMaterializedCleanBoundaryFailure] using
+                      (ih value.1 nextContext.state remaining bound value.2
+                      (by
+                        intro table hagrees
+                        have hinitial' : StartTableAgrees state table := by
+                          intro index output hvalue
+                          exact hagrees index output (hvalues index.coordinate output hvalue)
+                        have hsource := hbound table hinitial'
+                        rw [simulateQ_expandedAdversaryImpl_query_bind_inl,
+                          OracleComp.isQueryBoundP_query_bind_iff] at hsource
+                        exact hsource.2 value.1)
+                      hnextBudget hnextPublished)
+                  · have hcondition : ∀ base,
+                        ¬(PublishedValues nextContext.state ∧ bound ≤ remaining ∧
+                          LazyRevealProbe.ValuesLE state nextContext.state ∧
+                          StartTableAgrees state
+                            (completedStartTable nextContext.state base) ∧
+                          StartTableAgrees nextContext.state
+                            (completedStartTable nextContext.state base) ∧ True) := by
+                      intro base hfull
+                      exact hguard ⟨hfull.1, hfull.2.1, hfull.2.2.1⟩
+                    simp only [supportedGuardedMaterializedCleanContinuation]
+                    simp_rw [if_neg (hcondition _)]
+                    have hdist : 𝒟[(do
+                        let _base ← sampleOtsHashTable
+                        pure false : ProbComp Bool)] = 𝒟[(pure false : ProbComp Bool)] :=
+                      evalDist_sampleOtsHashTable_bind_const _
+                    have hpure : Pr[= true | (pure false : ProbComp Bool)] ≤
+                        ((remaining + nextContext.state.pending.card : Nat) : ENNReal) *
+                          ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+                      simpa only [probOutput_pure, Bool.true_eq_false, ↓reduceIte] using
+                        (zero_le : (0 : ENNReal) ≤
+                          ((remaining + nextContext.state.pending.card : Nat) : ENNReal) *
+                            ((2 ^ digestBits : Nat) : ENNReal)⁻¹)
+                    exact (OracleComp.probOutput_congr rfl hdist).le.trans hpure
           | inr input =>
               let publicState := canonicalPublicProbeState state
               let plan := purePlanProbingHashQuery parameter input publicState
               let inner := probingHashQueryAfterRootAwarePublicPlan parameter input publicState plan
               let nextBound := bound - 1
               have hpositive : 0 < bound := by
-                rcases hbound.1 with hnot | hpositive
+                let table := completedStartTable state (fun _ ↦ 0)
+                have hsource := hbound table (startTableAgrees_completedStartTable state _)
+                rw [simulateQ_expandedAdversaryImpl_query_bind_inl,
+                  OracleComp.isQueryBoundP_query_bind_iff] at hsource
+                rcases hsource.1 with hnot | hpositive
                 · exact (hnot (by simp [IsOuterHash])).elim
                 · exact hpositive
               have hinnerBound : (inner.run cache).IsQueryBoundP
                   LazyRevealProbe.IsProbe 1 :=
                 probingHashQueryAfterRootAwarePublicPlan_isProbeBound_one parameter input
                   publicState plan cache
-              have hstep := evalDist_sampledCleanStep_eq_safeGuardedContinuation
-                parameter root ftsSecret next inner state fuel cache 1 nextBound hpublished
-                hinnerBound
+              have hstep := evalDist_sampledCleanStep_eq_safeSupportedGuardedContinuation
+                parameter root ftsSecret next inner state fuel cache 1 nextBound
+                (fun _ _ ↦ True) hpublished hinnerBound
                 (preservesPublishedValues_probingHashQueryAfterRootAwarePublicPlan parameter input
                   publicState plan)
+                (by simp)
                 (by dsimp only [nextBound]; omega)
               have hdist :
                   𝒟[sampledMaterializedCleanBoundaryFailure parameter root ftsSecret
                     ((liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
                       (.inl (.inr input)))) >>= next) state fuel cache] =
                     𝒟[runDirectDetailedSafeOrdinaryWithCompletionTable
-                      (guardedMaterializedCleanContinuation parameter root ftsSecret next nextBound)
+                      (supportedGuardedMaterializedCleanContinuation parameter root ftsSecret next
+                        nextBound state (fun _ _ ↦ True))
                       (directDeferredContext state) fuel (inner.run cache)] := by
                 calc
                   _ = 𝒟[do
@@ -1106,7 +1256,8 @@ theorem probEvent_sampledMaterializedCleanBoundaryFailure_le
                   _ = _ := hstep
               calc
                 _ = Pr[= true | runDirectDetailedSafeOrdinaryWithCompletionTable
-                      (guardedMaterializedCleanContinuation parameter root ftsSecret next nextBound)
+                      (supportedGuardedMaterializedCleanContinuation parameter root ftsSecret next
+                        nextBound state (fun _ _ ↦ True))
                       (directDeferredContext state) fuel (inner.run cache)] :=
                   OracleComp.probOutput_congr rfl hdist
                 _ ≤ _ := by
@@ -1115,28 +1266,85 @@ theorem probEvent_sampledMaterializedCleanBoundaryFailure_le
                   intro nextContext remaining value
                   rw [probEvent_eq_eq_probOutput]
                   by_cases hguard : PublishedValues nextContext.state ∧
-                      nextBound ≤ remaining
-                  · simp only [guardedMaterializedCleanContinuation, hguard]
-                    exact ih value.1 nextContext.state remaining nextBound value.2
+                      nextBound ≤ remaining ∧
+                      LazyRevealProbe.ValuesLE state nextContext.state
+                  · rcases hguard with ⟨hnextPublished, hnextBudget, hvalues⟩
+                    have hinitial : ∀ base,
+                        StartTableAgrees state (completedStartTable nextContext.state base) := by
+                      intro base index output hvalue
+                      exact startTableAgrees_completedStartTable nextContext.state base index output
+                        (hvalues index.coordinate output hvalue)
+                    simpa [supportedGuardedMaterializedCleanContinuation, hnextPublished,
+                      hnextBudget, hvalues, hinitial,
+                      startTableAgrees_completedStartTable,
+                      sampledMaterializedCleanBoundaryFailure] using
+                      (ih value.1 nextContext.state remaining nextBound value.2
                       (by
+                        intro table hagrees
+                        have hinitial' : StartTableAgrees state table := by
+                          intro index output hvalue
+                          exact hagrees index output (hvalues index.coordinate output hvalue)
+                        have hsource := hbound table hinitial'
+                        rw [simulateQ_expandedAdversaryImpl_query_bind_inl,
+                          OracleComp.isQueryBoundP_query_bind_iff] at hsource
                         dsimp only [nextBound]
-                        simpa [IsOuterHash] using hbound.2 value.1)
-                      hguard.2 hguard.1
-                  · simp [guardedMaterializedCleanContinuation, hguard]
+                        simpa using hsource.2 value.1)
+                      hnextBudget hnextPublished)
+                  · have hcondition : ∀ base,
+                        ¬(PublishedValues nextContext.state ∧ nextBound ≤ remaining ∧
+                          LazyRevealProbe.ValuesLE state nextContext.state ∧
+                          StartTableAgrees state
+                            (completedStartTable nextContext.state base) ∧
+                          StartTableAgrees nextContext.state
+                            (completedStartTable nextContext.state base) ∧ True) := by
+                      intro base hfull
+                      exact hguard ⟨hfull.1, hfull.2.1, hfull.2.2.1⟩
+                    simp only [supportedGuardedMaterializedCleanContinuation]
+                    simp_rw [if_neg (hcondition _)]
+                    have hdist : 𝒟[(do
+                        let _base ← sampleOtsHashTable
+                        pure false : ProbComp Bool)] = 𝒟[(pure false : ProbComp Bool)] :=
+                      evalDist_sampleOtsHashTable_bind_const _
+                    have hpure : Pr[= true | (pure false : ProbComp Bool)] ≤
+                        ((remaining + nextContext.state.pending.card : Nat) : ENNReal) *
+                          ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+                      simpa only [probOutput_pure, Bool.true_eq_false, ↓reduceIte] using
+                        (zero_le : (0 : ENNReal) ≤
+                          ((remaining + nextContext.state.pending.card : Nat) : ENNReal) *
+                            ((2 ^ digestBits : Nat) : ENNReal)⁻¹)
+                    exact (OracleComp.probOutput_congr rfl hdist).le.trans hpure
       | inr message =>
           have hinnerBound : ((maskedSign parameter root ftsSecret message).run cache).IsQueryBoundP
               LazyRevealProbe.IsProbe 0 :=
             maskedSign_probeFree parameter root ftsSecret message cache
-          have hstep := evalDist_sampledCleanStep_eq_safeGuardedContinuation
+          let admissible := fun (finalState : LazyRevealProbe.State Coordinate)
+              (output : (OracleWorld + SigningSpec).Range (.inr message)) ↦ ∀ table,
+            StartTableAgrees finalState table →
+            output ∈ support
+              (scheme.sign
+                (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+                  SecretKey)
+                message)
+          have hstep := evalDist_sampledCleanStep_eq_safeSupportedGuardedContinuation
             parameter root ftsSecret next (maskedSign parameter root ftsSecret message)
-            state fuel cache 0 bound hpublished hinnerBound
-            (preservesPublishedValues_maskedSign parameter root ftsSecret message) (by omega)
+            state fuel cache 0 bound admissible hpublished hinnerBound
+            (preservesPublishedValues_maskedSign parameter root ftsSecret message)
+            (by
+              intro table result _hstarts hresult nextTable hnextStarts
+              have hraw := mem_support_runRaw_done_of_mem_runCleanFromTable_some
+                ((maskedSign parameter root ftsSecret message).run cache) state fuel table result
+                hresult
+              exact maskedSign_done_output_mem_support parameter root nextTable ftsSecret message
+                state result.state cache result.value.2 fuel result.remaining result.value.1
+                hnextStarts hraw)
+            (by omega)
           have hdist :
               𝒟[sampledMaterializedCleanBoundaryFailure parameter root ftsSecret
                 ((liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
                   (.inr message))) >>= next) state fuel cache] =
                 𝒟[runDirectDetailedSafeOrdinaryWithCompletionTable
-                  (guardedMaterializedCleanContinuation parameter root ftsSecret next bound)
+                  (supportedGuardedMaterializedCleanContinuation parameter root ftsSecret next
+                    bound state admissible)
                   (directDeferredContext state) fuel
                   ((maskedSign parameter root ftsSecret message).run cache)] := by
             calc
@@ -1160,7 +1368,8 @@ theorem probEvent_sampledMaterializedCleanBoundaryFailure_le
               _ = _ := hstep
           calc
             _ = Pr[= true | runDirectDetailedSafeOrdinaryWithCompletionTable
-                  (guardedMaterializedCleanContinuation parameter root ftsSecret next bound)
+                  (supportedGuardedMaterializedCleanContinuation parameter root ftsSecret next
+                    bound state admissible)
                   (directDeferredContext state) fuel
                   ((maskedSign parameter root ftsSecret message).run cache)] :=
               OracleComp.probOutput_congr rfl hdist
@@ -1169,11 +1378,53 @@ theorem probEvent_sampledMaterializedCleanBoundaryFailure_le
               apply probEvent_runDirectDetailedSafeOrdinaryWithCompletionTable_le
               intro nextContext remaining value
               rw [probEvent_eq_eq_probOutput]
-              by_cases hguard : PublishedValues nextContext.state ∧ bound ≤ remaining
-              · simp only [guardedMaterializedCleanContinuation, hguard]
-                exact ih value.1 nextContext.state remaining bound value.2
-                  (by simpa [IsOuterHash] using hbound.2 value.1) hguard.2 hguard.1
-              · simp [guardedMaterializedCleanContinuation, hguard]
+              by_cases hguard : PublishedValues nextContext.state ∧ bound ≤ remaining ∧
+                  LazyRevealProbe.ValuesLE state nextContext.state ∧
+                  admissible nextContext.state value.1
+              · rcases hguard with
+                  ⟨hnextPublished, hnextBudget, hvalues, hallowed⟩
+                have hinitial : ∀ base,
+                    StartTableAgrees state (completedStartTable nextContext.state base) := by
+                  intro base index output hvalue
+                  exact startTableAgrees_completedStartTable nextContext.state base index output
+                    (hvalues index.coordinate output hvalue)
+                simpa [supportedGuardedMaterializedCleanContinuation, hnextPublished,
+                  hnextBudget, hvalues, hinitial, startTableAgrees_completedStartTable,
+                  hallowed, sampledMaterializedCleanBoundaryFailure] using
+                  (ih value.1 nextContext.state remaining bound value.2
+                    (by
+                      intro table hagrees
+                      have hinitial' : StartTableAgrees state table := by
+                        intro index output hvalue
+                        exact hagrees index output (hvalues index.coordinate output hvalue)
+                      have hsource := hbound table hinitial'
+                      rw [simulateQ_expandedAdversaryImpl_query_bind_inr] at hsource
+                      exact isQueryBoundP_of_bind hsource value.1 (hallowed table hagrees))
+                    hnextBudget hnextPublished)
+              · have hcondition : ∀ base,
+                    ¬(PublishedValues nextContext.state ∧ bound ≤ remaining ∧
+                      LazyRevealProbe.ValuesLE state nextContext.state ∧
+                      StartTableAgrees state (completedStartTable nextContext.state base) ∧
+                      StartTableAgrees nextContext.state
+                        (completedStartTable nextContext.state base) ∧
+                      admissible nextContext.state value.1) := by
+                  intro base hfull
+                  exact hguard
+                    ⟨hfull.1, hfull.2.1, hfull.2.2.1, hfull.2.2.2.2.2⟩
+                simp only [supportedGuardedMaterializedCleanContinuation]
+                simp_rw [if_neg (hcondition _)]
+                have hdist : 𝒟[(do
+                    let _base ← sampleOtsHashTable
+                    pure false : ProbComp Bool)] = 𝒟[(pure false : ProbComp Bool)] :=
+                  evalDist_sampleOtsHashTable_bind_const _
+                have hpure : Pr[= true | (pure false : ProbComp Bool)] ≤
+                    ((remaining + nextContext.state.pending.card : Nat) : ENNReal) *
+                      ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
+                  simpa only [probOutput_pure, Bool.true_eq_false, ↓reduceIte] using
+                    (zero_le : (0 : ENNReal) ≤
+                      ((remaining + nextContext.state.pending.card : Nat) : ENNReal) *
+                        ((2 ^ digestBits : Nat) : ENNReal)⁻¹)
+                exact (OracleComp.probOutput_congr rfl hdist).le.trans hpure
 
 noncomputable def sampledMaterializedCleanUnguarded
     (adversary : Adversary) (parameter : PublicParameter)
@@ -1296,9 +1547,12 @@ set_option maxRecDepth 100000 in
 theorem probEvent_sampledMaterializedCleanUnguarded_none_le_of_fuel
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel q : Nat)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
+    (hbound : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ : SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (hbudget : q ≤ fuel) :
     Pr[= none | sampledMaterializedCleanUnguarded adversary parameter ftsSecret fuel] ≤
       (fuel : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
@@ -1336,7 +1590,8 @@ theorem probEvent_sampledMaterializedCleanUnguarded_none_le_of_fuel
               (probEvent_sampledMaterializedCleanBoundaryFailure_le parameter value.1
               ftsSecret
               (retainedGameRestComputation adversary ⟨value.1, parameter⟩)
-              context.state remaining q value.2 (hbound value.1) hguard.2 hguard.1)
+              context.state remaining q value.2 (fun table _ ↦ hbound table value.1)
+              hguard.2 hguard.1)
           · simp [guardedMaterializedRootContinuation, hguard])
         (directDeferredContext
           (LazyRevealProbe.State.empty : LazyRevealProbe.State Coordinate)) fuel
@@ -1345,9 +1600,12 @@ theorem probEvent_sampledMaterializedCleanUnguarded_none_le_of_fuel
 theorem probEvent_sampledMaterializedCleanUnguarded_none_le
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q) :
+    (hbound : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ : SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q) :
     Pr[= none | sampledMaterializedCleanUnguarded adversary parameter ftsSecret q] ≤
       (q : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ :=
   probEvent_sampledMaterializedCleanUnguarded_none_le_of_fuel adversary parameter ftsSecret q q

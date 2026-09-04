@@ -472,9 +472,12 @@ theorem probEvent_sampledObservedMaterializedDiagnostic_final_none_eq
 theorem probEvent_sampledObservedMaterializedDiagnostic_final_none_le
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel q : Nat)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
+    (hbound : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ : SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (hbudget : q ≤ fuel) :
     Pr[fun outcome => outcome.final = none |
         sampledObservedMaterializedDiagnostic adversary parameter ftsSecret fuel] ≤

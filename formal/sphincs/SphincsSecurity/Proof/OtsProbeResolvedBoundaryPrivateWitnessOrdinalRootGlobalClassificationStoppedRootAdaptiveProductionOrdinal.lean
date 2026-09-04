@@ -211,9 +211,6 @@ theorem probEvent_sampledDiagnostic_bad_le_five_mul
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
     (hfuel : 2 * q < Fintype.card Digest)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
     (hexpanded : ∀ table root,
       (simulateQ
         (SphincsSecurity.expandedAdversaryImpl
@@ -235,7 +232,7 @@ theorem probEvent_sampledDiagnostic_bad_le_five_mul
           ((3 * q : Nat) : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
       apply add_le_add
       · exact probEvent_sampledObservedMaterializedDiagnostic_final_none_le adversary parameter
-          ftsSecret (2 * q) q hbound (by omega)
+          ftsSecret (2 * q) q hexpanded (by omega)
       · exact probEvent_sampledDiagnostic_successfulDoomed_le_three_mul adversary parameter
           ftsSecret q hfuel hexpanded hq
     _ = _ := by

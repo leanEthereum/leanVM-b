@@ -168,9 +168,6 @@ set_option maxRecDepth 100000 in
 theorem probEvent_sampledDiagnostic_successfulDoomed_le_of_selected_ordinals_bound
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
     (hexpanded : ∀ table root,
       (simulateQ
         (SphincsSecurity.expandedAdversaryImpl
@@ -248,9 +245,6 @@ set_option maxRecDepth 100000 in
 theorem probEvent_sampledDiagnostic_successfulDoomed_le_of_selected_ordinals
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
     (hexpanded : ∀ table root,
       (simulateQ
         (SphincsSecurity.expandedAdversaryImpl
@@ -267,15 +261,12 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_le_of_selected_ordinals
         sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)] ≤
       (q : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
   exact probEvent_sampledDiagnostic_successfulDoomed_le_of_selected_ordinals_bound adversary parameter
-    ftsSecret q hbound hexpanded hq (((2 ^ digestBits : Nat) : ENNReal)⁻¹) hordinal
+    ftsSecret q hexpanded hq (((2 ^ digestBits : Nat) : ENNReal)⁻¹) hordinal
 
 set_option maxHeartbeats 2000000 in
 theorem probEvent_sampledDiagnostic_bad_le_of_selected_ordinals_bound
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
     (hexpanded : ∀ table root,
       (simulateQ
         (SphincsSecurity.expandedAdversaryImpl
@@ -302,17 +293,14 @@ theorem probEvent_sampledDiagnostic_bad_le_of_selected_ordinals_bound
           (q : ENNReal) * bound := by
       apply add_le_add
       · exact probEvent_sampledObservedMaterializedDiagnostic_final_none_le adversary parameter
-          ftsSecret (2 * q) q hbound (by omega)
+          ftsSecret (2 * q) q hexpanded (by omega)
       · exact probEvent_sampledDiagnostic_successfulDoomed_le_of_selected_ordinals_bound
-          adversary parameter ftsSecret q hbound hexpanded hq bound hordinal
+          adversary parameter ftsSecret q hexpanded hq bound hordinal
 
 set_option maxHeartbeats 2000000 in
 theorem probEvent_sampledDiagnostic_bad_le_of_selected_ordinals
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
     (hexpanded : ∀ table root,
       (simulateQ
         (SphincsSecurity.expandedAdversaryImpl
@@ -332,7 +320,7 @@ theorem probEvent_sampledDiagnostic_bad_le_of_selected_ordinals
     _ ≤ ((2 * q : Nat) : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
           (q : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ :=
       probEvent_sampledDiagnostic_bad_le_of_selected_ordinals_bound adversary parameter
-        ftsSecret q hbound hexpanded hq (((2 ^ digestBits : Nat) : ENNReal)⁻¹) hordinal
+        ftsSecret q hexpanded hq (((2 ^ digestBits : Nat) : ENNReal)⁻¹) hordinal
     _ = _ := by
       push_cast
       ring
@@ -341,9 +329,6 @@ set_option maxHeartbeats 2000000 in
 theorem probEvent_sampledDiagnostic_bad_le_of_selected_ordinals_mul
     (c : Nat) (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
     (hexpanded : ∀ table root,
       (simulateQ
         (SphincsSecurity.expandedAdversaryImpl
@@ -365,7 +350,7 @@ theorem probEvent_sampledDiagnostic_bad_le_of_selected_ordinals_mul
           (q : ENNReal) * ((c : ENNReal) *
             ((2 ^ digestBits : Nat) : ENNReal)⁻¹) :=
       probEvent_sampledDiagnostic_bad_le_of_selected_ordinals_bound adversary parameter
-        ftsSecret q hbound hexpanded hq
+        ftsSecret q hexpanded hq
         ((c : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) hordinal
     _ = _ := by
       push_cast
