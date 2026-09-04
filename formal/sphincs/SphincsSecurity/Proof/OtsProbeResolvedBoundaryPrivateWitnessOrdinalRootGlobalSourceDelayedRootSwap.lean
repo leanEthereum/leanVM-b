@@ -226,6 +226,121 @@ theorem rootHiddenPermissiveRelates_publishCoordinate_of_ne
   exact relTriple_pure_pure
     ⟨hstate.publish_of_ne coordinate hne, rfl, rfl, trivial, hcache⟩
 
+theorem rootHiddenPermissiveRelates_revealCoordinateOutput_of_ne
+    (target : Position) (leftOutput rightOutput : HashOutput)
+    (coordinate : Coordinate) (hne : coordinate ≠ .position target) :
+    RootHiddenPermissiveRelates target leftOutput rightOutput
+      (revealCoordinateOutput coordinate) (revealCoordinateOutput coordinate) := by
+  intro leftState rightState hstate fuel table leftCache rightCache hcache
+  rw [revealCoordinateOutput_run_eq, revealCoordinateOutput_run_eq,
+    LazyRevealProbe.revealQuery, runPermissiveFromTable_reveal_query_bind,
+    runPermissiveFromTable_reveal_query_bind]
+  have hvalue := hstate.other_values coordinate hne
+  cases hleft : leftState.values coordinate with
+  | some output =>
+      have hright : rightState.values coordinate = some output := by
+        rw [← hvalue]
+        exact hleft
+      simp only [hright, runPermissiveFromTable, OracleComp.construct_pure]
+      exact relTriple_pure_pure ⟨hstate, rfl, rfl, rfl,
+        hcache.update_same_hidden_of_ne coordinate output hne⟩
+  | none =>
+      have hright : rightState.values coordinate = none := by
+        rw [← hvalue]
+        exact hleft
+      simp only [hright]
+      cases coordinate with
+      | chainStart lay tree leafIdx chainIdx =>
+          simp only [runPermissiveFromTable, OracleComp.construct_pure]
+          exact relTriple_pure_pure
+            ⟨hstate.materialize_other (.chainStart lay tree leafIdx chainIdx)
+                (table ⟨lay, tree, leafIdx, chainIdx⟩) hne,
+              rfl, rfl, rfl,
+              hcache.update_same_hidden_of_ne (.chainStart lay tree leafIdx chainIdx)
+                (table ⟨lay, tree, leafIdx, chainIdx⟩) hne⟩
+      | position position =>
+          apply relTriple_bind (relTriple_refl LazyRevealProbe.sampleHashOutput)
+          intro leftSample rightSample hsample
+          subst rightSample
+          simp only [runPermissiveFromTable, OracleComp.construct_pure]
+          exact relTriple_pure_pure
+            ⟨hstate.materialize_other (.position position) leftSample hne,
+              rfl, rfl, rfl,
+              hcache.update_same_hidden_of_ne (.position position) leftSample hne⟩
+
+theorem rootHiddenPermissiveRelates_modifyOrdinary
+    (target : Position) (leftOutput rightOutput : HashOutput)
+    (input : HashInput) (output : HashOutput) :
+    RootHiddenPermissiveRelates target leftOutput rightOutput
+      (modify fun cache : SplitHashCache =>
+        Function.update cache (.ordinary input) (some output))
+      (modify fun cache : SplitHashCache =>
+        Function.update cache (.ordinary input) (some output)) := by
+  intro leftState rightState hstate fuel table leftCache rightCache hcache
+  simp only [StateT.run_modify, runPermissiveFromTable, OracleComp.construct_pure]
+  exact relTriple_pure_pure
+    ⟨hstate, rfl, rfl, trivial, hcache.update_same_ordinary input output⟩
+
+theorem rootHiddenPermissiveRelates_executeCandidate
+    (target : Position) (leftOutput rightOutput : HashOutput)
+    (candidate? : Option Probe) :
+    RootHiddenPermissiveRelates target leftOutput rightOutput
+      (executeCandidate? candidate?) (executeCandidate? candidate?) := by
+  cases candidate? with
+  | none => exact rootHiddenPermissiveRelates_pure target leftOutput rightOutput ()
+  | some candidate => exact rootHiddenPermissiveRelates_probe target leftOutput rightOutput candidate
+
+theorem rootHiddenPermissiveRelates_resolvePublicKnownInput_of_ne
+    (parameter : PublicParameter)
+    (target : Position) (leftOutput rightOutput : HashOutput)
+    (publicState : LazyRevealProbe.State Coordinate)
+    (coordinate : Coordinate) (hne : coordinate ≠ .position target)
+    (input : HashInput) :
+    RootHiddenPermissiveRelates target leftOutput rightOutput
+      (resolvePublicKnownInput parameter publicState coordinate input)
+      (resolvePublicKnownInput parameter publicState coordinate input) := by
+  unfold resolvePublicKnownInput
+  cases hknown : purePeekTableInput parameter publicState coordinate with
+  | none =>
+      exact rootHiddenPermissiveRelates_splitHashQuery_ordinary target leftOutput rightOutput input
+  | some knownInput =>
+      by_cases heq : knownInput = input
+      · simp only [heq, ↓reduceIte]
+        exact (rootHiddenPermissiveRelates_revealCoordinateOutput_of_ne target leftOutput
+          rightOutput coordinate hne).bind fun leftValue rightValue hvalue => by
+            subst rightValue
+            exact (rootHiddenPermissiveRelates_publishCoordinate_of_ne target leftOutput
+              rightOutput coordinate hne).bind fun _ _ _ =>
+                (rootHiddenPermissiveRelates_modifyOrdinary target leftOutput rightOutput input
+                  leftValue).bind fun _ _ _ =>
+                    rootHiddenPermissiveRelates_pure target leftOutput rightOutput leftValue
+      · simp only [heq, ↓reduceIte]
+        exact rootHiddenPermissiveRelates_splitHashQuery_ordinary target leftOutput rightOutput input
+
+theorem rootHiddenPermissiveRelates_probingHashQueryAfterPublicPlan
+    (parameter : PublicParameter)
+    (target : Position) (leftOutput rightOutput : HashOutput)
+    (input : HashInput) (publicState : LazyRevealProbe.State Coordinate)
+    (plan : PlannedHashQuery)
+    (hsafe : plan.action ≠ .resolve (.position target)) :
+    RootHiddenPermissiveRelates target leftOutput rightOutput
+      (probingHashQueryAfterPublicPlan parameter input publicState plan)
+      (probingHashQueryAfterPublicPlan parameter input publicState plan) := by
+  unfold probingHashQueryAfterPublicPlan
+  exact (rootHiddenPermissiveRelates_executeCandidate target leftOutput rightOutput
+    plan.candidate?).bind fun _ _ _ => by
+      cases haction : plan.action with
+      | ordinary =>
+          exact rootHiddenPermissiveRelates_splitHashQuery_ordinary target leftOutput
+            rightOutput input
+      | resolve coordinate =>
+          have hne : coordinate ≠ .position target := by
+            intro heq
+            apply hsafe
+            rw [haction, heq]
+          exact rootHiddenPermissiveRelates_resolvePublicKnownInput_of_ne parameter target
+            leftOutput rightOutput publicState coordinate hne input
+
 theorem rootHiddenPermissiveRelates_revealPublishedCoordinate_of_ne
     (target : Position) (leftOutput rightOutput : HashOutput)
     (coordinate : Coordinate) (hne : coordinate ≠ .position target) :
