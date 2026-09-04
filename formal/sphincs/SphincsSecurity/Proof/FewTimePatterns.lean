@@ -103,7 +103,7 @@ theorem fewTimePattern_scaled_sum_le {signatures : Nat}
                 distinct ^ 14 * 2 ^ (26 * (14 - distinct)) := by
               rw [show ftsTrees - 1 = 14 by decide]
               ring
-    _ ≤ Nat.factorial 14 * 2 ^ 382 := by native_decide
+    _ ≤ Nat.factorial 14 * 2 ^ 382 := by exact leak_union_bound_scaled_sum
 
 theorem fewTimePattern_sum_le {signatures : Nat}
     (hsignatures : signatures ≤ signatureLimit) :

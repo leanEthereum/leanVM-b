@@ -149,7 +149,7 @@ def exampleValidDigest : Digest :=
 
 theorem exampleValidDigest_valid : ValidDigest exampleValidDigest := by
   refine ⟨digestEncoding exampleValidDigest, ?_⟩
-  native_decide
+  decide
 
 theorem validDigests_nonempty : validDigests.Nonempty := by
   exact ⟨exampleValidDigest, Finset.mem_filter.mpr

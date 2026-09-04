@@ -327,10 +327,10 @@ import SphincsSecurity.Proof.OtsProbeResolvedBoundaryWitnessLift
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryWitnessEndpoint
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryWitnessDomination
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryWitnessOrdinary
+import SphincsSecurity.Proof.OtsProbeBoundaryCompletion
 
 /-!
-The proof of `SphincsSecurityStatement`, in progress. Only `SphincsSecurity/Statement.lean` has to
-be trusted; everything here is checked by Lean.
+The proof of `SphincsSecurityStatement`. The specification to review is `SphincsSecurity/Statement.lean`; the Lean kernel checks the proof against it.
 
 What is proven so far is correctness: `Correctness.eval_verify` says `Ver` accepts a signature built
 from the secrets, under an arbitrary answer function rather than under the lazy oracle. That is the
