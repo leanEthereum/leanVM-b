@@ -123,9 +123,13 @@ theorem probEvent_sampledCanonical_firstUsesNonRootOrdinal_le
 theorem probEvent_sampledCanonical_nonRoot_le_mul
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q) :
+    (hbound : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q) :
     Pr[fun output => WitnessFirstUsesSomeNonLayerRoot
           (erasePrivateWitnessSnapshotOutput output) |
         sampledGranularAllCanonicalPrivateWitnessSnapshot adversary parameter ftsSecret q] ≤

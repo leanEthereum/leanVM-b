@@ -167,6 +167,36 @@ theorem support_granularDetailedRetainedRestNormalizedPrivateWitnessPlanObserve_
     parameter table ftsSecret context fuel value candidates q hbound
     (erasePrivateWitnessPlanOutput output) herased
 
+theorem support_granularDetailedRetainedRestNormalizedPrivateWitnessPlanObserve_length_le_of_expanded
+    (adversary : Adversary) (parameter : PublicParameter)
+    (table : OtsSecretIndex → HashOutput)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (context : DeferredContext) (fuel : Nat)
+    (value : Digest × SplitHashCache) (candidates : List Probe) (q : Nat)
+    (hbound :
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, value.1, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨value.1, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table)
+    (output : PrivateWitnessPlanOutput)
+    (houtput : output ∈ support
+      (granularDetailedRetainedRestNormalizedPrivateWitnessPlanObserve adversary parameter table
+        ftsSecret context fuel value candidates)) :
+    output.2.length ≤ candidates.length + q := by
+  have herased : erasePrivateWitnessPlanOutput output ∈ support
+      (granularDetailedRetainedRestNormalizedPrivatePlanObserve adversary parameter table
+        ftsSecret context fuel value candidates) := by
+    rw [← map_erase_granularDetailedRetainedRestNormalizedPrivateWitnessPlanObserve adversary
+      parameter table ftsSecret context fuel value candidates, support_map]
+    exact ⟨output, houtput, rfl⟩
+  exact support_granularDetailedRetainedRestNormalizedPrivatePlanObserve_length_le_of_expanded
+    adversary parameter table ftsSecret context fuel value candidates q hbound hconsistent hstarts
+    (erasePrivateWitnessPlanOutput output) herased
+
 theorem supported_retained_privateWitness_has_bounded_ordinal
     (adversary : Adversary) (parameter : PublicParameter)
     (table : OtsSecretIndex → HashOutput)

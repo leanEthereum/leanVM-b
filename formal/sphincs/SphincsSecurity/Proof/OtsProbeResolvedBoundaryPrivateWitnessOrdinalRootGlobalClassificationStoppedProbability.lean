@@ -23,8 +23,12 @@ theorem snapshots_length_le_of_mem_granularAllCanonical
     (table : OtsSecretIndex → HashOutput)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
     (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (output : PrivateWitnessSnapshotOutput)
     (houtput : output ∈ support
       (granularAllCanonicalPrivateWitnessSnapshot adversary parameter table ftsSecret q)) :
@@ -32,7 +36,7 @@ theorem snapshots_length_le_of_mem_granularAllCanonical
   classical
   unfold granularAllCanonicalPrivateWitnessSnapshot runDirectWitnessSnapshotObserve at houtput
   rw [mem_support_bind_iff] at houtput
-  obtain ⟨result, _hresult, hfinish⟩ := houtput
+  obtain ⟨result, hresult, hfinish⟩ := houtput
   cases result with
   | stoppedFuel =>
       simp [finishDirectWitnessSnapshotObserve] at hfinish
@@ -47,6 +51,10 @@ theorem snapshots_length_le_of_mem_granularAllCanonical
       subst output
       simp
   | done resolved =>
+      have hcore := resolvedCore_of_done_mem_runDirectResolvedWitnessFromTable
+        (maskedPublishedTreeRoot.run emptySplitHashCache) emptyWitnessDeferredContext q table
+        resolved DeferredContext.valid_empty.valuesConsistent (startTableAgrees_empty table)
+        hresult
       simp only [finishDirectWitnessSnapshotObserve] at hfinish
       unfold canonicalizeDirectWitnessSnapshotObserve at hfinish
       let canonical := canonicalizeMaterializedValues table resolved.context
@@ -88,9 +96,12 @@ theorem snapshots_length_le_of_mem_granularAllCanonical
               rw [← hmap', support_map]
               exact ⟨output, hfinish, rfl⟩
             have hlength :=
-              support_granularDetailedRetainedRestNormalizedPrivateWitnessPlanObserve_length_le
+              support_granularDetailedRetainedRestNormalizedPrivateWitnessPlanObserve_length_le_of_expanded
                 adversary parameter table ftsSecret canonical resolved.remaining resolved.value
-                [] q (hbound resolved.value.1) (erasePrivateWitnessSnapshotOutput output) herased
+                [] q (hbound resolved.value.1)
+                (canonicalizeMaterializedValues_valuesConsistent table resolved.context hcore.2.1)
+                (canonicalizeMaterializedValues_startTableAgrees table resolved.context)
+                (erasePrivateWitnessSnapshotOutput output) herased
             simpa [erasePrivateWitnessSnapshotOutput] using hlength
           · simp [hcompletable] at hfinish
             subst output
@@ -104,9 +115,13 @@ set_option maxRecDepth 100000 in
 theorem snapshots_length_le_of_mem_sampledGranularAllCanonical
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
+    (hbound : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (output : PrivateWitnessSnapshotOutput)
     (houtput : output ∈ support
       (sampledGranularAllCanonicalPrivateWitnessSnapshot adversary parameter ftsSecret q)) :
@@ -115,15 +130,19 @@ theorem snapshots_length_le_of_mem_sampledGranularAllCanonical
   rw [mem_support_bind_iff] at houtput
   obtain ⟨table, _htable, hrest⟩ := houtput
   exact snapshots_length_le_of_mem_granularAllCanonical adversary parameter table ftsSecret q
-    hbound output hrest
+    (hbound table) output hrest
 
 set_option maxHeartbeats 2000000 in
 theorem probEvent_selectedPrivateSnapshotHitAt_eq_zero_of_q_le_ordinal
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q ordinal : Nat)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
+    (hbound : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (hordinal : q ≤ ordinal) :
     Pr[fun source => SelectedPrivateSnapshotHitAt source ordinal |
         sampledGranularAllCanonicalPrivateWitnessSnapshot adversary parameter ftsSecret q] = 0 := by
@@ -137,7 +156,7 @@ theorem probEvent_selectedPrivateSnapshotHitAt_eq_zero_of_q_le_ordinal
   have hlength : source.2.length ≤ q :=
     snapshots_length_le_of_mem_granularAllCanonical
       (adversary := adversary) (parameter := parameter) (table := table)
-      (ftsSecret := ftsSecret) (q := q) (hbound := hbound) (output := source)
+      (ftsSecret := ftsSecret) (q := q) (hbound := hbound table) (output := source)
       (houtput := hsource)
   have : ordinal < q := by
     rw [← hselectedOrdinal]
@@ -152,6 +171,13 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_le_of_selected_ordinals_bou
     (hbound : ∀ root,
       (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
         IsOuterHash q)
+    (hexpanded : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits)
     (bound : ENNReal)
     (hordinal : ∀ ordinal : Fin q,
@@ -209,7 +235,7 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_le_of_selected_ordinals_bou
         have hlt : ordinal < q := Finset.mem_range.1 hordinalMem
         simp only [show q + ordinal < q + q by omega, ↓reduceDIte]
         exact probEvent_selectedPrivateSnapshotHitAt_eq_zero_of_q_le_ordinal adversary parameter
-          ftsSecret q (q + ordinal) hbound (by omega)
+          ftsSecret q (q + ordinal) hexpanded (by omega)
       rw [hfirst, hzero, add_zero]
     _ ≤ ∑ _ordinal : Fin q, bound := by
       apply Finset.sum_le_sum
@@ -225,6 +251,13 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_le_of_selected_ordinals
     (hbound : ∀ root,
       (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
         IsOuterHash q)
+    (hexpanded : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits)
     (hordinal : ∀ ordinal : Fin q,
       Pr[fun source => SelectedPrivateSnapshotHitAt source ordinal.val |
@@ -234,7 +267,7 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_le_of_selected_ordinals
         sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)] ≤
       (q : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
   exact probEvent_sampledDiagnostic_successfulDoomed_le_of_selected_ordinals_bound adversary parameter
-    ftsSecret q hbound hq (((2 ^ digestBits : Nat) : ENNReal)⁻¹) hordinal
+    ftsSecret q hbound hexpanded hq (((2 ^ digestBits : Nat) : ENNReal)⁻¹) hordinal
 
 set_option maxHeartbeats 2000000 in
 theorem probEvent_sampledDiagnostic_bad_le_of_selected_ordinals_bound
@@ -243,6 +276,13 @@ theorem probEvent_sampledDiagnostic_bad_le_of_selected_ordinals_bound
     (hbound : ∀ root,
       (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
         IsOuterHash q)
+    (hexpanded : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits)
     (bound : ENNReal)
     (hordinal : ∀ ordinal : Fin q,
@@ -264,7 +304,7 @@ theorem probEvent_sampledDiagnostic_bad_le_of_selected_ordinals_bound
       · exact probEvent_sampledObservedMaterializedDiagnostic_final_none_le adversary parameter
           ftsSecret (2 * q) q hbound (by omega)
       · exact probEvent_sampledDiagnostic_successfulDoomed_le_of_selected_ordinals_bound
-          adversary parameter ftsSecret q hbound hq bound hordinal
+          adversary parameter ftsSecret q hbound hexpanded hq bound hordinal
 
 set_option maxHeartbeats 2000000 in
 theorem probEvent_sampledDiagnostic_bad_le_of_selected_ordinals
@@ -273,6 +313,13 @@ theorem probEvent_sampledDiagnostic_bad_le_of_selected_ordinals
     (hbound : ∀ root,
       (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
         IsOuterHash q)
+    (hexpanded : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits)
     (hordinal : ∀ ordinal : Fin q,
       Pr[fun source => SelectedPrivateSnapshotHitAt source ordinal.val |
@@ -285,7 +332,7 @@ theorem probEvent_sampledDiagnostic_bad_le_of_selected_ordinals
     _ ≤ ((2 * q : Nat) : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
           (q : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ :=
       probEvent_sampledDiagnostic_bad_le_of_selected_ordinals_bound adversary parameter
-        ftsSecret q hbound hq (((2 ^ digestBits : Nat) : ENNReal)⁻¹) hordinal
+        ftsSecret q hbound hexpanded hq (((2 ^ digestBits : Nat) : ENNReal)⁻¹) hordinal
     _ = _ := by
       push_cast
       ring
@@ -297,6 +344,13 @@ theorem probEvent_sampledDiagnostic_bad_le_of_selected_ordinals_mul
     (hbound : ∀ root,
       (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
         IsOuterHash q)
+    (hexpanded : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits)
     (hordinal : ∀ ordinal : Fin q,
       Pr[fun source => SelectedPrivateSnapshotHitAt source ordinal.val |
@@ -311,7 +365,7 @@ theorem probEvent_sampledDiagnostic_bad_le_of_selected_ordinals_mul
           (q : ENNReal) * ((c : ENNReal) *
             ((2 ^ digestBits : Nat) : ENNReal)⁻¹) :=
       probEvent_sampledDiagnostic_bad_le_of_selected_ordinals_bound adversary parameter
-        ftsSecret q hbound hq
+        ftsSecret q hbound hexpanded hq
         ((c : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) hordinal
     _ = _ := by
       push_cast

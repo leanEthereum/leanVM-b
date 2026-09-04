@@ -102,9 +102,13 @@ theorem probEvent_delayedGoodComparison_le_common_mul_allTargets
 theorem probEvent_sampledCanonical_delayed_le_two_mul_closed
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
+    (hbound : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
     Pr[WitnessFirstUsesSomeDelayedLayerRootSnapshot |
         sampledGranularAllCanonicalPrivateWitnessSnapshot adversary parameter ftsSecret q] ≤

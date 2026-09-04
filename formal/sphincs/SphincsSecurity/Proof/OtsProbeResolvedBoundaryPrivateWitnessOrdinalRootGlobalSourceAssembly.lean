@@ -102,7 +102,7 @@ theorem probEvent_sampledCanonical_privateWitness_le_eight_mul
         · exact probEvent_sampledObservedMaterializedDiagnostic_final_none_le adversary
             parameter ftsSecret (2 * q) q hbound (by omega)
         · exact probEvent_sampledDiagnostic_successfulDoomed_le_three_mul adversary parameter
-            ftsSecret q hfuel hbound hq
+            ftsSecret q hfuel hbound hexpanded hq
       _ = _ := by
         push_cast
         ring
@@ -155,8 +155,8 @@ theorem probEvent_sampledCanonical_privateWitness_le_eight_mul
       · apply add_le_add
         · exact hdiagnostic
         · exact probEvent_sampledCanonical_delayed_le_two_mul_closed adversary parameter
-            ftsSecret q hbound hq
-      · exact probEvent_sampledCanonical_nonRoot_le_mul adversary parameter ftsSecret q hbound
+            ftsSecret q hexpanded hq
+      · exact probEvent_sampledCanonical_nonRoot_le_mul adversary parameter ftsSecret q hexpanded
     _ = _ := by
       push_cast
       ring

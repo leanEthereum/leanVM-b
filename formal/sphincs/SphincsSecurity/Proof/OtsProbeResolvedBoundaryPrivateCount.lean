@@ -99,6 +99,41 @@ theorem support_canonicalizeDirectDetailedPrivatePlanObserve_length_le
       subst output
       simp
 
+theorem support_canonicalizeDirectDetailedPrivatePlanObserve_length_le_at
+    (table : OtsSecretIndex → HashOutput)
+    (observe : DeferredContext → Nat → α → List Probe → ProbComp (Bool × List Probe))
+    (context : DeferredContext) (fuel : Nat) (value : α)
+    (candidates : List Probe) (bound : Nat)
+    (hobserve : ∀ output,
+      output ∈ support
+          (observe (canonicalizeMaterializedValues table context) fuel value candidates) →
+        output.2.length ≤ candidates.length + bound)
+    (output : Bool × List Probe)
+    (houtput : output ∈ support
+      (canonicalizeDirectDetailedPrivatePlanObserve table observe
+        context fuel value candidates)) :
+    output.2.length ≤ candidates.length + bound := by
+  unfold canonicalizeDirectDetailedPrivatePlanObserve at houtput
+  by_cases hprivate : PrivateStructuralHit (canonicalizeMaterializedValues table context)
+  · simp [hprivate] at houtput
+    subst output
+    simp
+  · simp only [hprivate, ↓reduceIte] at houtput
+    by_cases hpublished : PublishedValues context.state
+    · simp only [hpublished, ↓reduceIte] at houtput
+      unfold classifyDirectDetailedPrivatePlanObserve at houtput
+      simp only [hprivate, ↓reduceIte] at houtput
+      by_cases hcompletable :
+          DeferredCompletable table (canonicalizeMaterializedValues table context)
+      · simp only [hcompletable, ↓reduceIte] at houtput
+        exact hobserve output houtput
+      · simp [hcompletable] at houtput
+        subst output
+        simp
+    · simp [hpublished] at houtput
+      subst output
+      simp
+
 theorem support_runDirectDetailedPrivatePlanObserve_length_le
     (observe : DeferredContext → Nat → α → List Probe → ProbComp (Bool × List Probe))
     (candidates : List Probe) (context : DeferredContext) (fuel : Nat)
@@ -116,6 +151,47 @@ theorem support_runDirectDetailedPrivatePlanObserve_length_le
   obtain ⟨result, hresult, houtput⟩ := houtput
   exact support_finishDirectDetailedPrivatePlanObserve_length_le observe candidates result bound
     hobserve output houtput
+
+theorem support_runDirectDetailedPrivatePlanObserve_length_le_of_done
+    (observe : DeferredContext → Nat → α → List Probe → ProbComp (Bool × List Probe))
+    (candidates : List Probe) (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α) (bound : Nat)
+    (hobserve : ∀ result,
+      DirectDetailedResult.done result ∈ support
+          (runDirectResolvedDetailedFromTable context fuel table computation) →
+        ∀ output, output ∈ support
+            (observe result.context result.remaining result.value candidates) →
+          output.2.length ≤ candidates.length + bound)
+    (output : Bool × List Probe)
+    (houtput : output ∈ support
+      (runDirectDetailedPrivatePlanObserve observe candidates context fuel table computation)) :
+    output.2.length ≤ candidates.length + bound := by
+  unfold runDirectDetailedPrivatePlanObserve at houtput
+  rw [mem_support_bind_iff] at houtput
+  obtain ⟨result, hresult, houtput⟩ := houtput
+  cases result with
+  | stopped reason =>
+      cases reason <;>
+        simp [finishDirectDetailedPrivatePlanObserve] at houtput <;>
+        subst output <;> simp
+  | done result =>
+      exact hobserve result hresult output houtput
+
+theorem resolvedCore_of_done_runDirectResolvedDetailedFromTable_for_count
+    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (context : DeferredContext) (fuel : Nat)
+    (table : OtsSecretIndex → HashOutput) (result : ResolvedRunResult α)
+    (hconsistent : context.ValuesConsistent)
+    (hstarts : StartTableAgrees context.state table)
+    (hresult : DirectDetailedResult.done result ∈ support
+      (runDirectResolvedDetailedFromTable context fuel table computation)) :
+    result.table = table ∧ result.context.ValuesConsistent ∧
+      StartTableAgrees result.context.state table := by
+  apply resolvedCore_of_mem_runDirectResolvedFromTable computation context fuel table result
+    hconsistent hstarts
+  exact mem_support_runDirectResolvedFromTable_of_done_detailed computation context fuel table
+    result hresult
 
 set_option maxRecDepth 100000 in
 theorem support_directDetailedBoundaryPrivatePlanObserve_length_le

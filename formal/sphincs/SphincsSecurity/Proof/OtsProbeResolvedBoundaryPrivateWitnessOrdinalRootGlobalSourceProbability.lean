@@ -20,9 +20,13 @@ set_option maxRecDepth 100000 in
 theorem probEvent_sampledCanonical_delayed_le_sum_ordinals
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q) :
+    (hbound : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q) :
     Pr[WitnessFirstUsesSomeDelayedLayerRootSnapshot |
         sampledGranularAllCanonicalPrivateWitnessSnapshot adversary parameter ftsSecret q] ≤
       ∑ ordinal : Fin q,
@@ -41,7 +45,7 @@ theorem probEvent_sampledCanonical_delayed_le_sum_ordinals
       have hlength : output.2.length ≤ q :=
         snapshots_length_le_of_mem_granularAllCanonical
           (adversary := adversary) (parameter := parameter) (table := table)
-          (ftsSecret := ftsSecret) (q := q) (hbound := hbound) (output := output)
+          (ftsSecret := ftsSecret) (q := q) (hbound := hbound table) (output := output)
           (houtput := hrest)
       obtain ⟨ordinal, witness, sourceOrdinal, hwitness, hordinal, hfirst, hroot,
         hstate, hrevealed, hvalue⟩ := hdelayed
@@ -65,9 +69,13 @@ set_option maxRecDepth 100000 in
 theorem probEvent_sampledCanonical_delayed_le_mul_of_ordinals
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
+    (hbound : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (hordinal : ∀ ordinal : Fin q,
       Pr[WitnessFirstUsesDelayedLayerRootSnapshotOrdinal ordinal.val |
           sampledGranularAllCanonicalPrivateWitnessSnapshot adversary parameter ftsSecret q] ≤
@@ -89,9 +97,13 @@ set_option maxRecDepth 100000 in
 theorem probEvent_sampledCanonical_nonRoot_le_sum_ordinals
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q) :
+    (hbound : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q) :
     Pr[fun output => WitnessFirstUsesSomeNonLayerRoot
           (erasePrivateWitnessSnapshotOutput output) |
         sampledGranularAllCanonicalPrivateWitnessSnapshot adversary parameter ftsSecret q] ≤
@@ -113,7 +125,7 @@ theorem probEvent_sampledCanonical_nonRoot_le_sum_ordinals
       have hlength : output.2.length ≤ q :=
         snapshots_length_le_of_mem_granularAllCanonical
           (adversary := adversary) (parameter := parameter) (table := table)
-          (ftsSecret := ftsSecret) (q := q) (hbound := hbound) (output := output)
+          (ftsSecret := ftsSecret) (q := q) (hbound := hbound table) (output := output)
           (houtput := hrest)
       obtain ⟨ordinal, witness, sourceOrdinal, hwitness, hordinal, hfirst, hroot⟩ :=
         hnonRoot
@@ -144,9 +156,13 @@ set_option maxRecDepth 100000 in
 theorem probEvent_sampledCanonical_nonRoot_le_mul_of_ordinals
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
-    (hbound : ∀ root,
-      (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
-        IsOuterHash q)
+    (hbound : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (hordinal : ∀ ordinal : Fin q,
       Pr[fun output => WitnessFirstUsesNonLayerRootOrdinal ordinal.val
             (erasePrivateWitnessSnapshotOutput output) |

@@ -21,6 +21,13 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_firstHit_eq_zero_of_q_le_or
     (hbound : ∀ root,
       (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
         IsOuterHash q)
+    (hexpanded : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits)
     (hordinal : q ≤ ordinal) :
     Pr[fun outcome => outcome.SuccessfulDoomed ∧
@@ -39,7 +46,7 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_firstHit_eq_zero_of_q_le_or
         probEvent_sampledSuccessfulFirstHit_le_selectedSnapshot adversary parameter ftsSecret q
           ordinal hbound hq
       _ = 0 := probEvent_selectedPrivateSnapshotHitAt_eq_zero_of_q_le_ordinal adversary
-        parameter ftsSecret q ordinal hbound hordinal
+        parameter ftsSecret q ordinal hexpanded hordinal
   · exact zero_le
 
 theorem ObservedMaterializedDiagnostic.firstExistingHiddenHitAt_of_root
@@ -63,6 +70,13 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_firstRoot_eq_zero_of_q_le_o
     (hbound : ∀ root,
       (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
         IsOuterHash q)
+    (hexpanded : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits)
     (hordinal : q ≤ ordinal) :
     Pr[fun outcome => outcome.SuccessfulDoomed ∧
@@ -78,7 +92,7 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_firstRoot_eq_zero_of_q_le_o
         exact ⟨hevent.1, outcome.firstExistingHiddenHitAt_of_root hevent.2⟩
       _ = 0 :=
         probEvent_sampledDiagnostic_successfulDoomed_firstHit_eq_zero_of_q_le_ordinal
-          adversary parameter ftsSecret q ordinal hbound hq hordinal
+          adversary parameter ftsSecret q ordinal hbound hexpanded hq hordinal
   · exact zero_le
 
 set_option maxHeartbeats 2000000 in
@@ -88,6 +102,13 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_firstNonRoot_eq_zero_of_q_l
     (hbound : ∀ root,
       (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
         IsOuterHash q)
+    (hexpanded : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits)
     (hordinal : q ≤ ordinal) :
     Pr[fun outcome => outcome.SuccessfulDoomed ∧
@@ -103,7 +124,7 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_firstNonRoot_eq_zero_of_q_l
         exact ⟨hevent.1, outcome.firstExistingHiddenHitAt_of_nonRoot hevent.2⟩
       _ = 0 :=
         probEvent_sampledDiagnostic_successfulDoomed_firstHit_eq_zero_of_q_le_ordinal
-          adversary parameter ftsSecret q ordinal hbound hq hordinal
+          adversary parameter ftsSecret q ordinal hbound hexpanded hq hordinal
   · exact zero_le
 
 set_option maxHeartbeats 4000000 in
@@ -115,6 +136,13 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_le_three_mul
     (hbound : ∀ root,
       (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
         IsOuterHash q)
+    (hexpanded : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
     Pr[ObservedMaterializedDiagnostic.SuccessfulDoomed |
         sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)] ≤
@@ -166,9 +194,9 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_le_three_mul
         have hordinal : ordinal < q := Finset.mem_range.1 hordinalMem
         simp only [show q + ordinal < q + q by omega, ↓reduceDIte]
         rw [probEvent_sampledDiagnostic_successfulDoomed_firstRoot_eq_zero_of_q_le_ordinal
-          adversary parameter ftsSecret q (q + ordinal) hbound hq (by omega)]
+          adversary parameter ftsSecret q (q + ordinal) hbound hexpanded hq (by omega)]
         rw [probEvent_sampledDiagnostic_successfulDoomed_firstNonRoot_eq_zero_of_q_le_ordinal
-          adversary parameter ftsSecret q (q + ordinal) hbound hq (by omega)]
+          adversary parameter ftsSecret q (q + ordinal) hbound hexpanded hq (by omega)]
         simp
       calc
         _ ≤ (∑ _ordinal ∈ Finset.range q, 3 * epsilon) +
@@ -198,6 +226,13 @@ theorem probEvent_sampledDiagnostic_bad_le_five_mul
     (hbound : ∀ root,
       (retainedGameRestComputation adversary ⟨root, parameter⟩).IsQueryBoundP
         IsOuterHash q)
+    (hexpanded : ∀ table root,
+      (simulateQ
+        (SphincsSecurity.expandedAdversaryImpl
+          (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ :
+            SecretKey))
+        (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
+          (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
     Pr[ObservedMaterializedDiagnostic.Bad |
         sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)] ≤
@@ -214,7 +249,7 @@ theorem probEvent_sampledDiagnostic_bad_le_five_mul
       · exact probEvent_sampledObservedMaterializedDiagnostic_final_none_le adversary parameter
           ftsSecret (2 * q) q hbound (by omega)
       · exact probEvent_sampledDiagnostic_successfulDoomed_le_three_mul adversary parameter
-          ftsSecret q hfuel hbound hq
+          ftsSecret q hfuel hbound hexpanded hq
     _ = _ := by
       push_cast
       ring
