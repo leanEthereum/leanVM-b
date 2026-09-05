@@ -8,22 +8,19 @@ attribute [local instance] Classical.propDecidable
 set_option backward.isDefEq.respectTransparency false
 
 def ChargedNativeRootQuery (parameter : PublicParameter) (input : HashInput) (context : DeferredContext) : Prop :=
-  (purePlanProbingHashQuery parameter input context.state).candidate? ≠ none ∨
-    KnownHiddenStructuralRootQuery parameter input context ∨ MaterializedHiddenEncodingRootQuery parameter input context
+  KnownHiddenStructuralRootQuery parameter input context ∨ MaterializedHiddenEncodingRootQuery parameter input context
 
 theorem chargedNativeRootQuery_replaceNativePosition
     (parameter : PublicParameter) (input : HashInput) (target : Position) (output : HashOutput) (context : DeferredContext) :
     ChargedNativeRootQuery parameter input (replaceNativePosition target output context) ↔ ChargedNativeRootQuery parameter input context := by
-  simp only [ChargedNativeRootQuery, ← purePlanProbingHashQuery_replaceNativePosition parameter input target output context,
+  simp only [ChargedNativeRootQuery,
     ← knownHiddenStructuralRootQuery_replaceNativePosition parameter target output context input, materializedHiddenEncodingRootQuery_replaceNativePosition]
 
 theorem chargedNativeRootQuery_of_visible_state_eq
     (parameter : PublicParameter) (input : HashInput) (left right : DeferredContext)
     (hvalues : left.state.values = right.state.values) (hrevealed : left.state.revealed = right.state.revealed) :
     ChargedNativeRootQuery parameter input left ↔ ChargedNativeRootQuery parameter input right := by
-  have hplan := purePlanProbingHashQuery_eq_of_value_presence left.state right.state
-    (fun coordinate => congrArg Option.isSome (congrFun hvalues coordinate)) parameter input
-  simp only [ChargedNativeRootQuery, KnownHiddenStructuralRootQuery, MaterializedHiddenEncodingRootQuery, hplan,
+  simp only [ChargedNativeRootQuery, KnownHiddenStructuralRootQuery, MaterializedHiddenEncodingRootQuery,
     hvalues, hrevealed, purePeekTableInput_eq_of_values_eq parameter hvalues]
 
 def ChargedNativeRootCut (parameter : PublicParameter) (context : DeferredContext) (cut : OuterQueryCut α) : Prop :=
