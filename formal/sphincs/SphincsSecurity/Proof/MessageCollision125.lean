@@ -6,10 +6,20 @@ namespace SphincsSecurity.Concrete.Range125
 
 open OracleComp OracleSpec ENNReal
 
-theorem singletonOriginUnionBound_le_inv (q : Nat) (hq : q ≤ 2 ^ 125) :
+set_option maxRecDepth 100000 in
+theorem singletonOriginUnionBound_le_inv (q : Nat) (hq : q ≤ 2 ^ 126) :
     singletonOriginUnionBound signatureLimit q ≤
       ((2 ^ 141 : Nat) : ℝ≥0∞)⁻¹ := by
   classical
+  have hratio : 1 + (q : ℝ≥0∞) * ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹ ≤ 2 := by
+    calc
+      _ ≤ 1 + ((2 ^ 126 : Nat) : ℝ≥0∞) * ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹ := by gcongr
+      _ ≤ _ := by
+        apply (ENNReal.toReal_le_toReal (by finiteness) (by finiteness)).mp
+        rw [ENNReal.toReal_add (by finiteness) (by finiteness)]
+        simp only [ENNReal.toReal_mul, ENNReal.toReal_inv, ENNReal.toReal_natCast,
+          ENNReal.toReal_ofNat, ENNReal.toReal_one]
+        norm_num
   rw [singletonOriginUnionBound_eq]
   calc
     (∑ pattern : FewTimePattern signatureLimit 1,
@@ -19,9 +29,8 @@ theorem singletonOriginUnionBound_le_inv (q : Nat) (hq : q ≤ 2 ^ 125) :
           2 * ((2 ^ 166 : Nat) : ℝ≥0∞)⁻¹ := by
       apply Finset.sum_le_sum
       intro pattern _
-      have hmass := pattern.originChoiceMass_le_five_fourths_pow hq
-      rw [pow_one] at hmass
-      have hratio : (5 / 4 : ℝ≥0∞) ≤ 2 := ENNReal.div_le_of_le_mul (by norm_num)
+      have hmass := originChoiceMass_le pattern.selected q ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹
+      rw [Fintype.card_coe, pattern.card_selected, pow_one] at hmass
       have hmass : originChoiceMass pattern.selected q ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹ ≤ 2 :=
         hmass.trans hratio
       simpa only [mul_comm] using
@@ -40,7 +49,7 @@ theorem singletonOriginUnionBound_le_inv (q : Nat) (hq : q ≤ 2 ^ 125) :
 theorem probEvent_exists_singletonOriginConfiguration_fixedOrdinal_viewedEvent_le
     (secretKey : SecretKey) (computation : OracleComp (OracleWorld + SigningSpec) α)
     (initialCache : QueryCache HashSpec) (signatures sources q : Nat)
-    (hq : q ≤ 2 ^ 125) (hcache : QueryCache.enncard initialCache ≤ q)
+    (hq : q ≤ 2 ^ 126) (hcache : QueryCache.enncard initialCache ≤ q)
     (candidates : Nat)
     (viewedEvent : ∀ pattern : FewTimePattern signatures 1,
       OriginConfiguration pattern sources → Fin candidates →
@@ -126,7 +135,7 @@ theorem probEvent_exists_singletonOriginConfiguration_fixedOrdinal_viewedEvent_l
 theorem probEvent_someFixedSingletonOriginTargetViewedTerminal_le
     (secretKey : SecretKey) (computation : OracleComp (OracleWorld + SigningSpec) α)
     (initialCache : QueryCache HashSpec) (signatures sources q : Nat)
-    (hq : q ≤ 2 ^ 125) (hcache : QueryCache.enncard initialCache ≤ q)
+    (hq : q ≤ 2 ^ 126) (hcache : QueryCache.enncard initialCache ≤ q)
     (candidates : Nat) :
     Pr[SomeFixedSingletonOriginTargetViewedTerminal secretKey computation initialCache
         signatures sources q candidates |
@@ -147,7 +156,7 @@ theorem probEvent_someFixedSingletonOriginTargetViewedTerminal_le
 theorem probEvent_someFixedOneOriginTargetViewedTerminal_le
     (secretKey : SecretKey) (computation : OracleComp (OracleWorld + SigningSpec) α)
     (initialCache : QueryCache HashSpec) (signatures sources q : Nat)
-    (hq : q ≤ 2 ^ 125) (hcache : QueryCache.enncard initialCache ≤ q)
+    (hq : q ≤ 2 ^ 126) (hcache : QueryCache.enncard initialCache ≤ q)
     (candidates : Nat) :
     Pr[SomeFixedOneOriginTargetViewedTerminal secretKey computation initialCache
         signatures sources q candidates |
@@ -168,7 +177,7 @@ theorem probEvent_someFixedOneOriginTargetViewedTerminal_le
 
 theorem probEvent_gameRestWithViewTrace_nonfresh_messageCollision_le
     (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
-    (hqMax : q ≤ 2 ^ 125)
+    (hqMax : q ≤ 2 ^ 126)
     (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
     (hots : otsSecret ∈ support sampleOtsSecrets)
@@ -296,7 +305,7 @@ set_option maxHeartbeats 2000000 in
 
 theorem probEvent_gameRestWithViewTrace_fresh_messageCollision_le
     (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
-    (hqMax : q ≤ 2 ^ 125)
+    (hqMax : q ≤ 2 ^ 126)
     (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
     (hots : otsSecret ∈ support sampleOtsSecrets)
@@ -541,7 +550,7 @@ theorem probEvent_gameRestWithViewTrace_fresh_messageCollision_le
 
 theorem probEvent_gameAfterSecretsWithViewTrace_nonfresh_messageCollision_le
     (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
-    (hqMax : q ≤ 2 ^ 125)
+    (hqMax : q ≤ 2 ^ 126)
     (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
     (hots : otsSecret ∈ support sampleOtsSecrets)
@@ -568,7 +577,7 @@ theorem probEvent_gameAfterSecretsWithViewTrace_nonfresh_messageCollision_le
 
 theorem probEvent_gameAfterSecretsWithViewTrace_fresh_messageCollision_le
     (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
-    (hqMax : q ≤ 2 ^ 125)
+    (hqMax : q ≤ 2 ^ 126)
     (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
     (hots : otsSecret ∈ support sampleOtsSecrets)
@@ -595,7 +604,7 @@ theorem probEvent_gameAfterSecretsWithViewTrace_fresh_messageCollision_le
 
 theorem probEvent_gameAfterSecretsWithViewTrace_messageCollision_le
     (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
-    (hqMax : q ≤ 2 ^ 125)
+    (hqMax : q ≤ 2 ^ 126)
     (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
     (hots : otsSecret ∈ support sampleOtsSecrets)
@@ -626,7 +635,7 @@ theorem probEvent_gameAfterSecretsWithViewTrace_messageCollision_le
 
 theorem probEvent_gameAfterSecretsWithViewTrace_messageCollision_le_inv
     (adversary : Adversary) (q : Nat) (hqPos : 1 ≤ q)
-    (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 125)
+    (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 126)
     (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
     (hots : otsSecret ∈ support sampleOtsSecrets)
@@ -667,7 +676,7 @@ theorem probEvent_gameAfterSecretsWithViewTrace_messageCollision_le_inv
 
 theorem probEvent_sampled_cleanMessage_le
     (adversary : Adversary) (q : Nat) (hqPos : 1 ≤ q)
-    (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 125) :
+    (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 126) :
     Pr[SampledViewedEvent cleanMessageEvent | sampledViewedGame adversary] ≤
       (q : ℝ≥0∞) * ((2 ^ 139 : Nat) : ℝ≥0∞)⁻¹ := by
   rw [probEvent_sampledViewedGame_eq_weighted]

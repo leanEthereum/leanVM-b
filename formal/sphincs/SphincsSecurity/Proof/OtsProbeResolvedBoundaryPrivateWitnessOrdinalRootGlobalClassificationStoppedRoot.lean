@@ -153,7 +153,7 @@ theorem probEvent_observedMaterialized_successfulDoomed_firstRoot_le_selectedCle
         (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
         (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
-    Pr[ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt table ordinal |
+    Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt table ordinal |
         observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] ≤
       Pr[fun source => SelectedPrivateSnapshotCleanRootHitAt table source ordinal |
         granularAllCanonicalPrivateWitnessSnapshot adversary parameter table ftsSecret q] := by
@@ -164,9 +164,9 @@ theorem probEvent_observedMaterialized_successfulDoomed_firstRoot_le_selectedCle
   intro observed source hrelation hevent
   cases observed with
   | none =>
-      simp [ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hevent
+      simp [ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt] at hevent
   | some result =>
-      obtain ⟨⟨finalResult, hfinish⟩, _hdoomed, selected, hselected, hfirst, hroot⟩ := hevent
+      obtain ⟨⟨finalResult, hfinish⟩, selected, hselected, hfirst, hroot⟩ := hevent
       exact hrelation.selectedCleanRoot_of_successful_firstRoot finalResult hfinish ordinal
         selected hselected hfirst hroot
 

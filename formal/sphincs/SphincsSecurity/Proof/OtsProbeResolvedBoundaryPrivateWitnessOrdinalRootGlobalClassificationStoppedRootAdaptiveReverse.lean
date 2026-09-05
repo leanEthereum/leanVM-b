@@ -1714,7 +1714,7 @@ theorem goodForRoots_of_true_mem_directDelayed_selected_hash
       simp only [hsafe, ↓reduceIte] at hrest
       rw [support_map] at hrest
       obtain ⟨observed, hobserved, hindicator⟩ := hrest
-      have hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      have hgood : ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
           table ordinal target rightRoot observed := by
         change successfulObservedRootComparisonIndicator table ordinal target
           (observed, rightRoot) = true at hindicator
@@ -1722,9 +1722,9 @@ theorem goodForRoots_of_true_mem_directDelayed_selected_hash
         exact hindicator
       cases observed with
       | none =>
-          simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-            ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-            ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hgood
+          simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+            ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+            ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt] at hgood
       | some result =>
           have hresolvedValid := hvalid.of_resolveDeferredPositionValue target resolved
             hresolvedOption
@@ -1750,7 +1750,7 @@ theorem goodForRoots_of_true_mem_directDelayed_selected_hash
             rw [purePlanProbingHashQuery_eq_of_values_eq hvalues parameter input,
               purePlanProbingHashQuery_eq_of_values_eq hpreserved parameter input]
             exact hcandidate
-          obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩, _hdoomed,
+          obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩,
             selected, hselectedOrdinal, hfirst, _hroot⟩, hposition⟩, _hcomparison⟩ := hgood
           have hobservation :=
             selected_observation_eq_of_mem_observedMaterializedBoundary_hash_query ordinal
@@ -2477,9 +2477,9 @@ theorem relTriple_directDelayed_observed_shadow
                   cases result with
                   | none =>
                       simp [rightObserve, successfulObservedRootComparisonIndicator,
-                        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-                        ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-                        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt]
+                        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+                        ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+                        ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt]
                   | some result => rfl
                 cases hcandidate : candidate? with
                 | none =>
@@ -2714,9 +2714,9 @@ theorem relTriple_directDelayed_observed_shadow
             cases result with
             | none =>
                 simp [rightObserve, successfulObservedRootComparisonIndicator,
-                  ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-                  ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-                  ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt]
+                  ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+                  ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+                  ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt]
             | some result => rfl
           dsimp only [rightContext, materializedDeferredContext] at hstep
           change RelTriple _
@@ -3043,9 +3043,9 @@ theorem relTriple_directDelayed_observed_shadow
           cases result with
           | none =>
               simp [successfulObservedRootComparisonIndicator,
-                ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-                ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-                ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt]
+                ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+                ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+                ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt]
           | some result => rfl
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

@@ -16,7 +16,7 @@ theorem hasExistingHiddenHit_of_mem_diagnosticFromTable_successfulDoomed
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
     (table : OtsSecretIndex → HashOutput)
-    (hq : q ≤ 2 ^ 125)
+    (hq : q ≤ 2 ^ 126)
     (outcome : ObservedMaterializedDiagnostic
       (RetainedGameResult × SplitHashCache))
     (houtcome : outcome ∈ support
@@ -73,10 +73,10 @@ theorem hasExistingHiddenHit_of_mem_diagnosticFromTable_successfulDoomed
             table_eq_and_startTableAgrees_of_mem_observedMaterializedRetainedRunFromTable
               adversary parameter ftsSecret (2 * q) table before hbefore
           have hcard : before.state.pending.card < Fintype.card Digest := by
-            have hq' : 2 * q ≤ 2 ^ (125 + 1) := by
-              have : 2 * q ≤ 2 * 2 ^ 125 := Nat.mul_le_mul_left 2 hq
+            have hq' : 2 * q ≤ 2 ^ (126 + 1) := by
+              have : 2 * q ≤ 2 * 2 ^ 126 := Nat.mul_le_mul_left 2 hq
               simpa [pow_succ, Nat.mul_comm] using this
-            have hspace : 2 ^ (125 + 1) < Fintype.card Digest := by
+            have hspace : 2 ^ (126 + 1) < Fintype.card Digest := by
               norm_num [securityBits, digestBits]
             exact hpending.trans_lt (hq'.trans_lt hspace)
           have hconsistent :
@@ -95,7 +95,7 @@ set_option maxRecDepth 100000 in
 theorem hasExistingHiddenHit_of_mem_sampledDiagnostic_successfulDoomed
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
-    (hq : q ≤ 2 ^ 125)
+    (hq : q ≤ 2 ^ 126)
     (outcome : ObservedMaterializedDiagnostic
       (RetainedGameResult × SplitHashCache))
     (houtcome : outcome ∈ support
@@ -116,7 +116,7 @@ set_option maxRecDepth 100000 in
 theorem probEvent_sampledDiagnostic_successfulDoomed_le_sum_successfulFirstOrdinals
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
-    (hq : q ≤ 2 ^ 125) :
+    (hq : q ≤ 2 ^ 126) :
     Pr[ObservedMaterializedDiagnostic.SuccessfulDoomed |
         sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)] ≤
       ∑ ordinal : Fin (2 * q),

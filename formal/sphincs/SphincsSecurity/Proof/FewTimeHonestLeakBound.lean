@@ -7,7 +7,7 @@ open OracleComp OracleSpec ENNReal
 
 theorem probEvent_gameAfterSecretsWithViewTrace_honest_leak_le
     (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
-    (hqMax : q ≤ 2 ^ 125)
+    (hqMax : q ≤ 2 ^ 126)
     (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
     (hots : otsSecret ∈ support sampleOtsSecrets)
@@ -50,7 +50,7 @@ theorem probEvent_gameAfterSecretsWithViewTrace_honest_leak_le_three_mul_inv131
   calc
     _ ≤ q * rawTargetOriginUnionBound signatureLimit q +
         ((q + 1 : Nat) : ℝ≥0∞) * rawTargetOriginUnionBound signatureLimit q :=
-      probEvent_gameAfterSecretsWithViewTrace_honest_leak_le adversary q hq hqMax
+      probEvent_gameAfterSecretsWithViewTrace_honest_leak_le adversary q hq (hqMax.trans (by norm_num))
         parameter hparameter otsSecret hots ftsSecret hfts
     _ = ((2 * q + 1 : Nat) : ℝ≥0∞) * rawTargetOriginUnionBound signatureLimit q := by
       push_cast

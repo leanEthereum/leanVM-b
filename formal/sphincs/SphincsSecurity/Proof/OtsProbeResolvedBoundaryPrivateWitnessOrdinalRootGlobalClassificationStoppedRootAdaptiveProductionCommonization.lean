@@ -259,7 +259,7 @@ theorem probEvent_successfulDoomedFirstRootFiber_le_commonDetailedFiber
           (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
     Pr[fun observed =>
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget
+        ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget
           table ordinal target observed |
       observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] ≤
       Pr[fun selection =>

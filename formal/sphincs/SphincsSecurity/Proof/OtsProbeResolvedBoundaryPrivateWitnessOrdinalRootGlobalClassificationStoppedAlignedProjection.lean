@@ -165,7 +165,7 @@ theorem probEvent_observedMaterialized_successfulDoomed_firstNonRoot_le_selected
         (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
         (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
-    Pr[ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenNonRootHitAt table ordinal |
+    Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenNonRootHitAt table ordinal |
         observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] ≤
       Pr[fun source => SelectedPrivateSnapshotNonRootHitAt source ordinal |
         granularAllCanonicalPrivateWitnessSnapshot adversary parameter table ftsSecret q] := by
@@ -177,7 +177,7 @@ theorem probEvent_observedMaterialized_successfulDoomed_firstNonRoot_le_selected
         Pr[ObservedMaterializedOutput.FirstExistingHiddenChainStartHitAt ordinal | observed] := by
       apply probEvent_le_failure_add_residual_of_relTriple observed source
         (fun observed source => SnapshotObservedFirstStoppedRel table source observed)
-        (ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenNonRootHitAt table ordinal)
+        (ObservedCleanRunOption.SuccessfulFirstExistingHiddenNonRootHitAt table ordinal)
         (ObservedMaterializedOutput.FirstExistingHiddenChainStartHitAt ordinal)
         (fun source => SelectedPrivateSnapshotNonRootHitAt source ordinal)
         (relTriple_symm
@@ -186,9 +186,9 @@ theorem probEvent_observedMaterialized_successfulDoomed_firstNonRoot_le_selected
       intro right left hrelation hevent hnotChain
       cases right with
       | none =>
-          simp [ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenNonRootHitAt] at hevent
+          simp [ObservedCleanRunOption.SuccessfulFirstExistingHiddenNonRootHitAt] at hevent
       | some result =>
-          obtain ⟨⟨finalResult, hfinish⟩, _hdoomed, selected, hselected, hfirst,
+          obtain ⟨⟨finalResult, hfinish⟩, selected, hselected, hfirst,
             hnonRoot⟩ := hevent
           exact hrelation.selectedNonRoot_of_successful_firstNonRoot finalResult hfinish ordinal
             selected hselected hfirst hnonRoot hnotChain

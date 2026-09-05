@@ -492,14 +492,14 @@ theorem finished_probe_matches_of_successful_root
     {rightRoot leftRoot : Digest}
     {result : ObservedCleanRunResult α} {candidate : Probe}
     {selected : Fin result.observations.length}
-    (hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    (hgood : ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
       table ordinal target rightRoot (some result))
     (hselected : selected.val = ordinal)
     (hcandidate : candidate = (result.observations.get selected).toProbe)
     (hstored : StoredLayerRoot result.state target leftRoot)
     (htracked : CleanProbeObservationsTrackedBy result.observations result.state) :
     (MaterializedSelectionOutcome.finished (some candidate)).Matches target leftRoot := by
-  obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩, _hdoomed,
+  obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩,
       goodSelected, hgoodSelected, hfirst, _hroot⟩,
     hposition⟩, _hcomparison⟩ := hgood
   obtain ⟨hitSelected, hhitSelected, hhit, _hnoEarlier⟩ := hfirst
@@ -549,12 +549,12 @@ theorem selected_finish_matches_of_successful_root
     (hrun : some result ∈ support
       (observedMaterializedBoundary parameter publicRoot ftsSecret computation observations state
         fuel table cache))
-    (hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    (hgood : ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
       table ordinal target rightRoot (some result)) :
     (MaterializedSelectionOutcome.finished
       (some (candidates.get ⟨ordinal, hselected⟩))).Matches target leftRoot := by
   have hgood' := hgood
-  obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩, _hdoomed,
+  obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩,
       goodSelected, hgoodSelected, _hfirst, _hroot⟩,
     _hposition⟩, _hcomparison⟩ := hgood
   have hobservationSelected : ordinal < observations.length := by
@@ -623,9 +623,9 @@ theorem successful_root_not_of_noncompletable_prefix
     (hrun : some result ∈ support
       (observedMaterializedBoundary parameter publicRoot ftsSecret computation observations state
         fuel table cache))
-    (hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    (hgood : ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
       table ordinal target rightRoot (some result)) : False := by
-  obtain ⟨⟨⟨⟨finalResult, hfinish⟩, _hdoomed,
+  obtain ⟨⟨⟨⟨finalResult, hfinish⟩,
       _selected, _hselected, hfirst, _hroot⟩,
     _hposition⟩, _hcomparison⟩ := hgood
   have hprefix := observations_prefix_of_mem_observedMaterializedBoundary parameter publicRoot
@@ -656,9 +656,9 @@ theorem successful_root_not_of_revealed_prefix
     (hrun : some result ∈ support
       (observedMaterializedBoundary parameter publicRoot ftsSecret computation observations state
         fuel table cache))
-    (hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    (hgood : ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
       table ordinal target rightRoot (some result)) : False := by
-  obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩, _hdoomed,
+  obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩,
       selected, hselected, hfirst, _hroot⟩,
     hposition⟩, _hcomparison⟩ := hgood
   obtain ⟨hitSelected, hhitSelected, hhit, _hnoEarlier⟩ := hfirst
@@ -700,7 +700,7 @@ theorem selected_finish_pair_matches_of_successful_root
     (hpair : pair ∈ support
       (finishObservedWithSelectionOutcome parameter publicRoot ftsSecret computation observations
         state fuel table cache (.finished (some (candidates.get ⟨ordinal, hselected⟩)))))
-    (hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    (hgood : ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
       table ordinal target rightRoot pair.1) :
     pair.2.Matches target leftRoot := by
   unfold finishObservedWithSelectionOutcome at hpair
@@ -710,9 +710,9 @@ theorem selected_finish_pair_matches_of_successful_root
   subst pair
   cases observed with
   | none =>
-      simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hgood
+      simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+        ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+        ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt] at hgood
   | some result =>
       exact selected_finish_matches_of_successful_root hselected haligned hstored htracked
         hobserved hgood
@@ -740,7 +740,7 @@ theorem successful_root_not_of_unsafe_hash_prefix
         (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
           (Sum.inl (Sum.inr input))) >>= next)
         observations state fuel table cache))
-    (hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    (hgood : ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
       table ordinal target rightRoot (some result)) : False := by
   rw [observedMaterializedBoundary_hash_query_bind, mem_support_bind_iff] at hrun
   obtain ⟨step?, hstep, hrest⟩ := hrun
@@ -780,7 +780,7 @@ theorem successful_root_not_of_unsafe_hash_prefix
         change result.observations[observations.length] = step.observations[observations.length]
           at hget'
         exact hget'.trans hstepGet
-      obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩, _hdoomed,
+      obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩,
           _selected, _hselected, hfirst, _hroot⟩,
         _hposition⟩, hcomparison⟩ := hgood
       obtain ⟨_firstSelected, _hfirstSelected, _hfirstHit, hnoEarlier⟩ := hfirst
@@ -840,7 +840,7 @@ theorem selected_hash_finish_pair_matches_of_successful_root
               (purePlanProbingHashQuery parameter input
                 (materializedCanonicalContext table state).state))).get
               ⟨ordinal, hnextSelected⟩)))))
-    (hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    (hgood : ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
       table ordinal target rightRoot pair.1) :
     pair.2.Matches target leftRoot := by
   unfold finishObservedWithSelectionOutcome at hpair
@@ -850,9 +850,9 @@ theorem selected_hash_finish_pair_matches_of_successful_root
   subst pair
   cases observed with
   | none =>
-      simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hgood
+      simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+        ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+        ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt] at hgood
   | some result =>
       have hobserved' := hobserved
       have hgood' := hgood
@@ -911,7 +911,7 @@ theorem selected_hash_finish_pair_matches_of_successful_root
                 change result.observations[observations.length] =
                   step.observations[observations.length] at hget'
                 exact hget'.trans hstepGet
-              obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩, _hdoomed,
+              obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩,
                   selected, hselectedOrdinal, _hfirst, _hroot⟩,
                 _hposition⟩, _hcomparison⟩ := hgood
               have hselectedEq : selected = ⟨observations.length, hresultIndex⟩ := by
@@ -965,7 +965,7 @@ theorem successful_root_forces_match_of_mem_observedRootSelectionSharedPrefix
     (hpair : pair ∈ support
       (observedRootSelectionSharedPrefix ordinal parameter publicRoot target leftRoot rightRoot
         ftsSecret computation observations candidates state fuel table cache))
-    (hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    (hgood : ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
       table ordinal target rightRoot pair.1) :
     pair.2.Matches target leftRoot := by
   induction computation using OracleComp.inductionOn generalizing
@@ -985,7 +985,7 @@ theorem successful_root_forces_match_of_mem_observedRootSelectionSharedPrefix
             simp) hgood
       · simp only [hselected, ↓reduceDIte, support_pure, Set.mem_singleton_iff] at hpair
         subst pair
-        obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩, _hdoomed,
+        obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩,
             selected, hselectedOrdinal, _hfirst, _hroot⟩,
           _hposition⟩, _hcomparison⟩ := hgood
         have hobservationLength : ordinal < observations.length := by
@@ -1014,9 +1014,9 @@ theorem successful_root_forces_match_of_mem_observedRootSelectionSharedPrefix
                 | stopped reason =>
                     simp [continueObservedRootSelectionSharedPrefix] at hcontinue
                     subst pair
-                    simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-                      ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-                      ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hgood
+                    simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+                      ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+                      ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt] at hgood
                 | done step =>
                     unfold continueObservedRootSelectionSharedPrefix at hcontinue
                     by_cases hcompletable :
@@ -1031,9 +1031,9 @@ theorem successful_root_forces_match_of_mem_observedRootSelectionSharedPrefix
                         subst pair
                         cases observed with
                         | none =>
-                            simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-                              ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-                              ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt]
+                            simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+                              ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+                              ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt]
                               at hgood
                         | some result =>
                             exact (successful_root_not_of_revealed_prefix hlength hrevealed
@@ -1088,9 +1088,9 @@ theorem successful_root_forces_match_of_mem_observedRootSelectionSharedPrefix
                       subst pair
                       cases observed with
                       | none =>
-                          simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-                            ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-                            ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt]
+                          simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+                            ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+                            ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt]
                             at hgood
                       | some result =>
                           let observedStep : ObservedCleanRunResult (Fin (n + 1) × SplitHashCache) :=
@@ -1163,9 +1163,9 @@ theorem successful_root_forces_match_of_mem_observedRootSelectionSharedPrefix
                     | stopped reason =>
                         simp [continueObservedRootSelectionSharedPrefix] at hcontinue
                         subst pair
-                        simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-                          ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-                          ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt]
+                        simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+                          ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+                          ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt]
                           at hgood
                     | done step =>
                         unfold continueObservedRootSelectionSharedPrefix at hcontinue
@@ -1182,9 +1182,9 @@ theorem successful_root_forces_match_of_mem_observedRootSelectionSharedPrefix
                             subst pair
                             cases observed with
                             | none =>
-                                simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-                                  ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-                                  ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt]
+                                simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+                                  ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+                                  ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt]
                                   at hgood
                             | some result =>
                                 have hnextLength : nextObservations.length ≤ ordinal := by
@@ -1269,9 +1269,9 @@ theorem successful_root_forces_match_of_mem_observedRootSelectionSharedPrefix
                           subst pair
                           cases observed with
                           | none =>
-                              simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-                                ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-                                ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt]
+                              simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+                                ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+                                ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt]
                                 at hgood
                           | some result =>
                               let observedStep : ObservedCleanRunResult (HashOutput × SplitHashCache) :=
@@ -1342,9 +1342,9 @@ theorem successful_root_forces_match_of_mem_observedRootSelectionSharedPrefix
                     subst pair
                     cases observed with
                     | none =>
-                        simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-                          ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-                          ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt]
+                        simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+                          ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+                          ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt]
                           at hgood
                     | some result =>
                         cases hcandidate : candidate? with
@@ -1371,9 +1371,9 @@ theorem successful_root_forces_match_of_mem_observedRootSelectionSharedPrefix
             | stopped reason =>
                 simp [continueObservedRootSelectionSharedPrefix] at hcontinue
                 subst pair
-                simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-                  ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-                  ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hgood
+                simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+                  ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+                  ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt] at hgood
             | done step =>
                 unfold continueObservedRootSelectionSharedPrefix at hcontinue
                 by_cases hcompletable :
@@ -1388,9 +1388,9 @@ theorem successful_root_forces_match_of_mem_observedRootSelectionSharedPrefix
                     subst pair
                     cases observed with
                     | none =>
-                        simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-                          ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-                          ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt]
+                        simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+                          ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+                          ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt]
                           at hgood
                     | some result =>
                         exact (successful_root_not_of_revealed_prefix hlength hrevealed hobserved
@@ -1450,9 +1450,9 @@ theorem successful_root_forces_match_of_mem_observedRootSelectionSharedPrefix
                   subst pair
                   cases observed with
                   | none =>
-                      simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-                        ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-                        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt]
+                      simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+                        ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+                        ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt]
                         at hgood
                   | some result =>
                       let observedStep :
@@ -1519,7 +1519,7 @@ theorem successful_root_forces_match_after_installed_root
         rootResult.remaining rootResult.table
         (rootInstalledCache target (fun root => rootOutputOfParts root high)
           rootResult.value.2 leftRoot)))
-    (hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    (hgood : ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
       rootResult.table ordinal target rightRoot
       (retainObservedRoot rootResult.value.1 pair.1)) :
     pair.2.Matches target leftRoot := by
@@ -1553,20 +1553,20 @@ theorem successful_root_forces_match_after_installed_root
   have hbudgetInitial : rootResult.remaining + initialState.pending.card <
       Fintype.card Digest := by
     simpa [initialState, rootContext, context, directDeferredContext, hpending] using hbudget
-  have hgoodPair : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+  have hgoodPair : ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
       rootResult.table ordinal target rightRoot pair.1 := by
     cases hpairFirst : pair.1 with
     | none =>
         rw [hpairFirst] at hgood
         simp [retainObservedRoot,
-          ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-          ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-          ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hgood
+          ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+          ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+          ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt] at hgood
     | some result =>
         rw [hpairFirst] at hgood
         simp only [retainObservedRoot] at hgood
-        rcases hgood with ⟨⟨⟨hfinish, hdoomed, hfirst⟩, hposition⟩, havoid⟩
-        refine ⟨⟨⟨?_, hdoomed, ?_⟩, ?_⟩, ?_⟩
+        rcases hgood with ⟨⟨⟨hfinish, hfirst⟩, hposition⟩, havoid⟩
+        refine ⟨⟨⟨?_, ?_⟩, ?_⟩, ?_⟩
         · obtain ⟨finalResult, hfinalResult⟩ := hfinish
           unfold finishObservedCleanRunFromTable at hfinalResult
           rw [mem_support_bind_iff] at hfinalResult
@@ -1843,9 +1843,9 @@ theorem relTriple_eagerObservedRootComparison_materializedRootAwareOutcomeAfterT
   | none =>
       apply relTriple_pure_pure
       intro hgood
-      simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hgood
+      simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+        ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+        ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt] at hgood
   | some result =>
       obtain ⟨hvalue, hrevealed, hpending, htable, hstarts, hbudget⟩ := hready
       have hstartsResult : StartTableAgrees result.state result.table := by
@@ -1864,7 +1864,7 @@ theorem probEvent_eagerObservedRootComparison_le_production_mul
     (fuel : Nat) (table : OtsSecretIndex → HashOutput)
     (hfuel : fuel < Fintype.card Digest) :
     Pr[fun result =>
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
           table ordinal target result.2 result.1 |
       eagerObservedRootComparisonExperimentAfterTable ordinal adversary parameter ftsSecret
         target fuel table] ≤

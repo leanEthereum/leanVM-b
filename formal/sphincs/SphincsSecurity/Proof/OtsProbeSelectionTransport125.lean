@@ -7,12 +7,14 @@ open OracleComp.ProgramLogic.Relational
 
 attribute [local irreducible] maskedPublishedTreeRoot
 
-/-- A successful canonical selection names the same candidate in the common execution. -/
+/-- A successful canonical selection preserves its candidate, history, and materialized shadow. -/
 def CanonicalSelectionPreserved :
     Option PrivateOrdinalSelection → Option PermissivePrivateOrdinalSelection → Prop
   | none, _ => True
   | some _, none => False
-  | some left, some right => left.candidate = right.candidate
+  | some left, some right => left.candidate = right.candidate ∧
+      PermissiveStateRel (materializedDeferredState left.context) right.state ∧
+        left.candidates = right.candidates
 
 theorem relTriple_none_any_selectionPreserved
     (right : ProbComp (Option PermissivePrivateOrdinalSelection)) :
@@ -44,7 +46,11 @@ theorem relTriple_selectionPreserved_trans
       | some middleSelected =>
           cases rightSelection with
           | none => exact False.elim hsecond
-          | some rightSelected => exact hfirst.trans hsecond.1
+          | some rightSelected =>
+              exact ⟨hfirst.1.trans hsecond.1,
+                ⟨hfirst.2.1.values.trans hsecond.2.2.values,
+                  hfirst.2.1.revealed.trans hsecond.2.2.revealed⟩,
+                hfirst.2.2.trans hsecond.2.1⟩
 
 set_option maxRecDepth 100000 in
 theorem relTriple_finishDirect_selectionPreserved
@@ -181,7 +187,7 @@ theorem relTriple_directBoundary_selectionPreserved
         delayedPermissiveDetailedOrdinalSelection, OracleComp.construct_pure]
       by_cases hselected : ordinal < candidates.length
       · simp only [selectedPrivateOrdinal?, hselected, ↓reduceDIte]
-        exact relTriple_pure_pure rfl
+        exact relTriple_pure_pure ⟨rfl, ⟨rfl, rfl⟩, rfl⟩
       · simp only [selectedPrivateOrdinal?, hselected, ↓reduceDIte]
         exact relTriple_pure_pure trivial
   | query_bind query next ih =>
@@ -189,7 +195,7 @@ theorem relTriple_directBoundary_selectionPreserved
         delayedPermissiveDetailedOrdinalSelection, OracleComp.construct_query_bind]
       by_cases hselected : ordinal < candidates.length
       · simp only [hselected, ↓reduceDIte]
-        exact relTriple_pure_pure rfl
+        exact relTriple_pure_pure ⟨rfl, ⟨rfl, rfl⟩, rfl⟩
       · simp only [hselected, ↓reduceDIte]
         cases query with
         | inl worldQuery =>
@@ -254,7 +260,7 @@ theorem relTriple_directBoundary_selectionPreserved
                     rw [List.get_eq_getElem, List.get_eq_getElem]
                     simp only [hrightCandidates]
                   apply relTriple_pure_pure
-                  exact hcandidate
+                  exact ⟨hcandidate, ⟨rfl, rfl⟩, hrightCandidates.symm⟩
                 · have hrightSelected : ¬ordinal <
                       (permissiveRootAwareCandidates parameter input table
                         (materializedDeferredState context) candidates).length := by

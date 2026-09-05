@@ -47,7 +47,7 @@ theorem probEvent_successfulDoomedFirstRootFiber_le_two_mul_production
           (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
     Pr[fun observed =>
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget
+        ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget
           table ordinal target observed |
       observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] ≤
       Pr[fun result ↦ materializedOrdinalSelectionAt target result.2 |
@@ -56,7 +56,7 @@ theorem probEvent_successfulDoomedFirstRootFiber_le_two_mul_production
         (2 * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) := by
   let run := observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table
   let probability := Pr[fun observed =>
-      ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget
+      ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget
         table ordinal target observed | run]
   let weight := Pr[fun result ↦ materializedOrdinalSelectionAt target result.2 |
       materializedRootAwareOrdinalProductionExperimentAfterTable ordinal adversary parameter
@@ -65,7 +65,7 @@ theorem probEvent_successfulDoomedFirstRootFiber_le_two_mul_production
   have hgood :
       Pr[fun result : Option
             (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest ↦
-          ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
             table ordinal target result.2 result.1 | do
         let observed ← run
         let rightRoot ← ($ᵗ Digest : ProbComp Digest)
@@ -75,7 +75,7 @@ theorem probEvent_successfulDoomedFirstRootFiber_le_two_mul_production
   have hsplit : probability ≤
       Pr[fun result : Option
             (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest =>
-          ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
             table ordinal target result.2 result.1 | do
         let observed ← run
         let rightRoot ← ($ᵗ Digest : ProbComp Digest)
@@ -103,7 +103,7 @@ theorem probEvent_successfulDoomedFirstRootFiber_le_two_mul_production
         probability ≤
             Pr[fun result : Option
                   (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest =>
-                ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+                ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
                   table ordinal target result.2 result.1 | do
               let observed ← run
               let rightRoot ← ($ᵗ Digest : ProbComp Digest)

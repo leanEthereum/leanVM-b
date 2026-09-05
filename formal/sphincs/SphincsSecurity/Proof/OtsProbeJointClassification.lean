@@ -130,6 +130,41 @@ def JointSnapshotResidual (source : BoundaryWitnessSnapshotOutput) : Prop :=
     WitnessFirstUsesSomeNonLayerRoot (erasePrivateWitnessSnapshotOutput source.witnessSnapshot)
 
 set_option maxRecDepth 100000 in
+theorem BoundarySnapshotDiagnosticRel.failure_classification
+    (adversary : Adversary) (parameter : PublicParameter)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
+    (table : OtsSecretIndex → HashOutput)
+    (source : BoundaryWitnessSnapshotOutput)
+    (diagnostic : ObservedMaterializedDiagnostic (RetainedGameResult × SplitHashCache))
+    (hsource : source ∈ support
+      (sampledGranularAllCanonicalBoundaryWitnessSnapshot adversary parameter ftsSecret q))
+    (hdiagnostic : diagnostic ∈ support
+      (sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)))
+    (hrelation : BoundarySnapshotDiagnosticRel table source diagnostic) :
+    diagnostic.Bad ∨ (source.outcome.failed = true → JointSnapshotResidual source) := by
+  rcases hrelation with hbad | ⟨⟨result, aligned, hbefore, hprefix, haligned, hstored⟩, hprivate⟩
+  · exact Or.inl hbad
+  · right
+    intro hfailed
+    have hcovered := privateWitnessCovered_erase_of_mem_sampledGranularAllCanonical adversary
+      parameter ftsSecret q source.witnessSnapshot
+      (witnessSnapshot_mem_support_of_mem_joint adversary parameter ftsSecret q source hsource)
+    have hwitness : (erasePrivateWitnessSnapshotOutput source.witnessSnapshot).1.isSome = true :=
+      hprivate hfailed
+    rcases witnessFirstUsesSome_root_or_nonRoot hcovered hwitness with hroot | hnonRoot
+    · have hvalue : SnapshotObservedPrefixValueRel table source.witnessSnapshot diagnostic.before :=
+        Or.inr ⟨result, aligned, hbefore, hprefix, haligned, hstored⟩
+      have hrootRel := hvalue.to_rootRel
+        (sourceSnapshotStopInvariant_of_mem_joint adversary parameter ftsSecret q source hsource)
+        (fun before hbefore => tracked_of_mem_sampledDiagnostic_before adversary parameter
+          ftsSecret (2 * q) diagnostic before hdiagnostic hbefore)
+      rcases hrootRel with hnone | hdelayed
+      · rw [hbefore] at hnone
+        cases hnone
+      · exact Or.inl (hdelayed hroot)
+    · exact Or.inr hnonRoot
+
+set_option maxRecDepth 100000 in
 theorem relTriple_sampledJointSnapshot_failure_classification
     (adversary : Adversary) (parameter : PublicParameter)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (q : Nat)
@@ -153,27 +188,7 @@ theorem relTriple_sampledJointSnapshot_failure_classification
   apply relTriple_post_mono hboth
   intro source diagnostic hfacts
   obtain ⟨⟨⟨table, hrelation⟩, hsource⟩, hdiagnostic⟩ := hfacts
-  rcases hrelation with hbad | ⟨⟨result, aligned, hbefore, hprefix, haligned, hstored⟩, hprivate⟩
-  · exact Or.inl hbad
-  · right
-    intro hfailed
-    have hcovered := privateWitnessCovered_erase_of_mem_sampledGranularAllCanonical adversary
-      parameter ftsSecret q source.witnessSnapshot
-      (witnessSnapshot_mem_support_of_mem_joint adversary parameter ftsSecret q source hsource)
-    have hwitness : (erasePrivateWitnessSnapshotOutput source.witnessSnapshot).1.isSome = true :=
-      hprivate hfailed
-    rcases witnessFirstUsesSome_root_or_nonRoot hcovered hwitness with hroot | hnonRoot
-    · have hvalue : SnapshotObservedPrefixValueRel table source.witnessSnapshot diagnostic.before :=
-        Or.inr ⟨result, aligned, hbefore, hprefix, haligned, hstored⟩
-      have hrootRel := hvalue.to_rootRel
-        (sourceSnapshotStopInvariant_of_mem_joint adversary parameter ftsSecret q source hsource)
-        (fun before hbefore => tracked_of_mem_sampledDiagnostic_before adversary parameter
-          ftsSecret (2 * q) diagnostic before hdiagnostic hbefore)
-      rcases hrootRel with hnone | hdelayed
-      · rw [hbefore] at hnone
-        cases hnone
-      · exact Or.inl (hdelayed hroot)
-    · exact Or.inr hnonRoot
+  exact hrelation.failure_classification adversary parameter ftsSecret q table source diagnostic hsource hdiagnostic
 
 set_option maxRecDepth 100000 in
 theorem probEvent_sampledJointSnapshot_failed_le_diagnostic_add_residual

@@ -22,7 +22,7 @@ theorem relTriple_afterPublishedRoot_firstStopped
             SecretKey))
         (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
         (fun query => query matches Sum.inr _) q)
-    (hq : q ≤ 2 ^ 125)
+    (hq : q ≤ 2 ^ 126)
     (left right : ResolvedRunResult (Digest × SplitHashCache))
     (hleftSupport : DirectWitnessResult.done left ∈ support
       (runDirectResolvedWitnessFromTable emptyWitnessDeferredContext q table
@@ -109,7 +109,7 @@ theorem relTriple_finishAfterPublishedRoot_firstStopped
             SecretKey))
         (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
         (fun query => query matches Sum.inr _) q)
-    (hq : q ≤ 2 ^ 125)
+    (hq : q ≤ 2 ^ 126)
     (leftResult : DirectWitnessResult (Digest × SplitHashCache))
     (rightResult : Option (ObservedCleanRunResult (Digest × SplitHashCache)))
     (hstep : WitnessObservedFirstStoppedStepRel table [] leftResult rightResult)
@@ -183,7 +183,7 @@ theorem relTriple_granularAllSnapshot_observedMaterializedRetained_firstStopped
             SecretKey))
         (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
         (fun query => query matches Sum.inr _) q)
-    (hq : q ≤ 2 ^ 125) :
+    (hq : q ≤ 2 ^ 126) :
     RelTriple
       (granularAllCanonicalPrivateWitnessSnapshot adversary parameter table ftsSecret q)
       (observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table)
@@ -262,7 +262,7 @@ theorem relTriple_sampledGranularAllCanonical_observedMaterializedRetained_first
               SecretKey))
           (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
           (fun query => query matches Sum.inr _) q)
-    (hq : q ≤ 2 ^ 125) :
+    (hq : q ≤ 2 ^ 126) :
     RelTriple
       (sampledGranularAllCanonicalPrivateWitnessSnapshot adversary parameter ftsSecret q)
       (sampleOtsHashTable >>= fun table =>
@@ -290,7 +290,7 @@ theorem probEvent_sampledSuccessfulFirstHit_le_selectedSnapshot_add_chainStartAt
             SecretKey))
         (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
         (fun query => query matches Sum.inr _) q)
-    (hq : q ≤ 2 ^ 125) :
+    (hq : q ≤ 2 ^ 126) :
     Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenHitAt ordinal | do
         let table ← sampleOtsHashTable
         observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] ≤
@@ -338,7 +338,7 @@ theorem probEvent_sampledSuccessfulFirstHit_le_selectedSnapshot
             SecretKey))
         (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
         (fun query => query matches Sum.inr _) q)
-    (hq : q ≤ 2 ^ 125) :
+    (hq : q ≤ 2 ^ 126) :
     Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenHitAt ordinal | do
         let table ← sampleOtsHashTable
         observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] ≤
@@ -379,8 +379,8 @@ theorem probEvent_observedMaterialized_successfulDoomed_firstNonRoot_le_selected
             SecretKey))
         (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
         (fun query => query matches Sum.inr _) q)
-    (hq : q ≤ 2 ^ 125) :
-    Pr[ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenNonRootHitAt table ordinal |
+    (hq : q ≤ 2 ^ 126) :
+    Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenNonRootHitAt table ordinal |
         observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] ≤
       Pr[fun source => SelectedPrivateSnapshotNonRootHitAt source ordinal |
         granularAllCanonicalPrivateWitnessSnapshot adversary parameter table ftsSecret q] := by
@@ -392,7 +392,7 @@ theorem probEvent_observedMaterialized_successfulDoomed_firstNonRoot_le_selected
         Pr[ObservedMaterializedOutput.FirstExistingHiddenChainStartHitAt ordinal | observed] := by
       apply probEvent_le_failure_add_residual_of_relTriple observed source
         (fun observed source => SnapshotObservedFirstStoppedRel table source observed)
-        (ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenNonRootHitAt table ordinal)
+        (ObservedCleanRunOption.SuccessfulFirstExistingHiddenNonRootHitAt table ordinal)
         (ObservedMaterializedOutput.FirstExistingHiddenChainStartHitAt ordinal)
         (fun source => SelectedPrivateSnapshotNonRootHitAt source ordinal)
         (relTriple_symm
@@ -401,9 +401,9 @@ theorem probEvent_observedMaterialized_successfulDoomed_firstNonRoot_le_selected
       intro right left hrelation hevent hnotChain
       cases right with
       | none =>
-          simp [ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenNonRootHitAt] at hevent
+          simp [ObservedCleanRunOption.SuccessfulFirstExistingHiddenNonRootHitAt] at hevent
       | some result =>
-          obtain ⟨⟨finalResult, hfinish⟩, _hdoomed, selected, hselected, hfirst,
+          obtain ⟨⟨finalResult, hfinish⟩, selected, hselected, hfirst,
             hnonRoot⟩ := hevent
           exact hrelation.selectedNonRoot_of_successful_firstNonRoot finalResult hfinish ordinal
             selected hselected hfirst hnonRoot hnotChain
@@ -424,7 +424,7 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_firstNonRoot_le
             SecretKey))
         (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
         (fun query => query matches Sum.inr _) q)
-    (hq : q ≤ 2 ^ 125) :
+    (hq : q ≤ 2 ^ 126) :
     Pr[fun outcome => outcome.SuccessfulDoomed ∧
           outcome.FirstExistingHiddenNonRootHitAt ordinal |
         sampledObservedMaterializedDiagnostic adversary parameter ftsSecret (2 * q)] ≤

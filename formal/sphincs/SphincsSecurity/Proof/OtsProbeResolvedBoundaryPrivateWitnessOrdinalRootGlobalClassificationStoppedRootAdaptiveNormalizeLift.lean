@@ -133,7 +133,7 @@ theorem no_existingHiddenHit_of_true_mem_directDelayedSelectedRootIndicator
                     split at hrest
                     · rw [support_map] at hrest
                       obtain ⟨observed, hobserved, hindicator⟩ := hrest
-                      have hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+                      have hgood : ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
                           table ordinal target rightRoot observed := by
                         change successfulObservedRootComparisonIndicator table ordinal target
                           (observed, rightRoot) = true at hindicator
@@ -141,12 +141,12 @@ theorem no_existingHiddenHit_of_true_mem_directDelayedSelectedRootIndicator
                         exact hindicator
                       cases observed with
                       | none =>
-                          simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-                            ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-                            ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt]
+                          simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+                            ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+                            ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt]
                             at hgood
                       | some result =>
-                          obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩, _hdoomed,
+                          obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩,
                             _selected, _hselected, hfirst, _hroot⟩, _hposition⟩,
                             _hcomparison⟩ := hgood
                           have hprefix := observations_prefix_of_mem_observedMaterializedBoundary
@@ -1620,16 +1620,12 @@ theorem successfulDoomedFirstRootGoodForComparisonAt_iff_of_completionSafeEq
     (hstate : CompletionSafeStateEq table left.state right.state)
     (hleftTable : left.table = table) (hrightTable : right.table = table)
     (hobservations : left.observations = right.observations) :
-    ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
         table ordinal target rightRoot (some left) ↔
-      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
         table ordinal target rightRoot (some right) := by
   have hfinish := successful_finishObservedCleanRunFromTable_iff_of_completionSafeEq hstate
     hleftTable hrightTable
-  have hdoomed :
-      (¬DeferredCompletable table (directDeferredContext left.state)) ↔
-        ¬DeferredCompletable table (directDeferredContext right.state) :=
-    not_congr hstate.directDeferredCompletable_iff
   have hfirst :
       ObservedCleanRunOption.FirstExistingHiddenRootHitAt ordinal (some left) ↔
         ObservedCleanRunOption.FirstExistingHiddenRootHitAt ordinal (some right) := by
@@ -1641,10 +1637,10 @@ theorem successfulDoomedFirstRootGoodForComparisonAt_iff_of_completionSafeEq
   have hposition := observedFirstLayerRootPosition?_eq_of_observations_eq ordinal left right
     hobservations
   have hprefix := observedPrefixProbes_eq_of_observations_eq ordinal left right hobservations
-  simp only [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-    ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-    ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt]
-  rw [hfinish, hdoomed, hfirst, hposition, hprefix]
+  simp only [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+    ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+    ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt]
+  rw [hfinish, hfirst, hposition, hprefix]
 
 def ObservedCompletionSafeEqRel
     (table : OtsSecretIndex → HashOutput)

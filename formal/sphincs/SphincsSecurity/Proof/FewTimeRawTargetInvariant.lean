@@ -135,7 +135,7 @@ theorem OriginTargetMonitorState.expected_rawPotential_afterSigner_le
     (state : OriginTargetMonitorState configuration)
     (secretKey : SecretKey) (request : SignRequest)
     (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
-    (q : Nat) (hq : q ≤ 2 ^ 125)
+    (q : Nat) (hq : q ≤ 2 ^ 126)
     (hcache : QueryCache.enncard state.origin.viewed.cache ≤ q)
     (hcoherent : state.origin.ScheduleCoherent) :
     (∑' result, Pr[= result |

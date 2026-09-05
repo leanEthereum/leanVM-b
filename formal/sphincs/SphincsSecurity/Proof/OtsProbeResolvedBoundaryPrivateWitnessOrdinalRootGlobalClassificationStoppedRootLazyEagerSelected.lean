@@ -28,14 +28,14 @@ theorem relTriple_indicator_resolveSelectedRoot_then_observedMaterializedBoundar
     (fuel : Nat) (table : OtsSecretIndex → HashOutput)
     (cache : SplitHashCache)
     (hselectedHit : ∀ result : ObservedCleanRunResult (α × SplitHashCache),
-      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
           table ordinal target rightRoot (some result) →
         ∀ selected : Fin result.observations.length, selected.val = ordinal →
           (result.observations.get selected).coordinate = .position target ∧
             (result.observations.get selected).revealedAtProbe = false ∧
             truncateHash output = (result.observations.get selected).candidate)
     (hactualAvoid : ∀ result : ObservedCleanRunResult (α × SplitHashCache),
-      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
           table ordinal target rightRoot (some result) →
         ∀ earlier : Fin result.observations.length, earlier.val < ordinal →
           (result.observations.get earlier).toProbe ≠
@@ -94,7 +94,7 @@ theorem relTriple_indicator_resolveSelectedRoot_then_observedMaterializedBoundar
       some result ∈ support
           (observedMaterializedBoundary parameter root ftsSecret computation observations
             (materializedDeferredState resolved.toDeferredContext) fuel table cache) →
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
             table ordinal target rightRoot (some result) →
           ∀ selected : Fin result.observations.length, selected.val = ordinal →
             (result.observations.get selected).coordinate = .position target ∧
@@ -107,7 +107,7 @@ theorem relTriple_indicator_resolveSelectedRoot_then_observedMaterializedBoundar
       some result ∈ support
           (observedMaterializedBoundary parameter root ftsSecret computation observations
             (materializedDeferredState resolved.toDeferredContext) fuel table cache) →
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
             table ordinal target rightRoot (some result) →
           ∀ earlier : Fin result.observations.length, earlier.val < ordinal →
             (result.observations.get earlier).toProbe ≠

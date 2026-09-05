@@ -22,7 +22,7 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_firstHit_eq_zero_of_q_le_or
             SecretKey))
         (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
           (fun query => query matches Sum.inr _) q)
-    (hq : q ≤ 2 ^ 125)
+    (hq : q ≤ 2 ^ 126)
     (hordinal : q ≤ ordinal) :
     Pr[fun outcome => outcome.SuccessfulDoomed ∧
           outcome.FirstExistingHiddenHitAt ordinal |
@@ -55,7 +55,7 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_firstRoot_eq_zero_of_q_le_o
             SecretKey))
         (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
           (fun query => query matches Sum.inr _) q)
-    (hq : q ≤ 2 ^ 125)
+    (hq : q ≤ 2 ^ 126)
     (hordinal : q ≤ ordinal) :
     Pr[fun outcome => outcome.SuccessfulDoomed ∧
           outcome.FirstExistingHiddenRootHitAt ordinal |
@@ -85,7 +85,7 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_firstNonRoot_eq_zero_of_q_l
             SecretKey))
         (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
           (fun query => query matches Sum.inr _) q)
-    (hq : q ≤ 2 ^ 125)
+    (hq : q ≤ 2 ^ 126)
     (hordinal : q ≤ ordinal) :
     Pr[fun outcome => outcome.SuccessfulDoomed ∧
           outcome.FirstExistingHiddenNonRootHitAt ordinal |
@@ -131,7 +131,7 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_le_fifteen_sevenths_mul
           Pr[fun outcome => outcome.SuccessfulDoomed ∧
               outcome.FirstExistingHiddenNonRootHitAt ordinal.val | diagnostic]) :=
       probEvent_sampledDiagnostic_successfulDoomed_le_sum_successfulFirstOrdinals adversary
-        parameter ftsSecret q hq
+        parameter ftsSecret q (hq.trans (by norm_num))
     _ ≤ ∑ _ordinal : Fin q, (15 / 7) * epsilon := by
       simp only [Finset.sum_fin_eq_sum_range]
       rw [show 2 * q = q + q by omega, Finset.sum_range_add]
@@ -153,7 +153,7 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_le_fifteen_sevenths_mul
             (probEvent_sampledDiagnostic_successfulDoomed_firstRoot_le ordinal adversary
               parameter ftsSecret q hordinal hfuel hexpanded hq)
             (probEvent_sampledDiagnostic_successfulDoomed_firstNonRoot_le adversary parameter
-              ftsSecret q ordinal hexpanded hq)
+              ftsSecret q ordinal hexpanded (hq.trans (by norm_num)))
           _ = (15 / 7) * epsilon := by
             rw [← add_one_mul]
             have hcoeff : (8 / 7 : ENNReal) + 1 = 15 / 7 := by
@@ -173,9 +173,9 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_le_fifteen_sevenths_mul
         have hordinal : ordinal < q := Finset.mem_range.1 hordinalMem
         simp only [show q + ordinal < q + q by omega, ↓reduceDIte]
         rw [probEvent_sampledDiagnostic_successfulDoomed_firstRoot_eq_zero_of_q_le_ordinal
-          adversary parameter ftsSecret q (q + ordinal) hexpanded hq (by omega)]
+          adversary parameter ftsSecret q (q + ordinal) hexpanded (hq.trans (by norm_num)) (by omega)]
         rw [probEvent_sampledDiagnostic_successfulDoomed_firstNonRoot_eq_zero_of_q_le_ordinal
-          adversary parameter ftsSecret q (q + ordinal) hexpanded hq (by omega)]
+          adversary parameter ftsSecret q (q + ordinal) hexpanded (hq.trans (by norm_num)) (by omega)]
         simp
       calc
         _ ≤ (∑ _ordinal ∈ Finset.range q, (15 / 7) * epsilon) +

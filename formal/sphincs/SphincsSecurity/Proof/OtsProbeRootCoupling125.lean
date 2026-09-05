@@ -29,7 +29,7 @@ theorem relTriple_indicator_observed_directDelayed_afterRootResult
         (retainedGameRestComputation adversary
           ⟨rootResult.value.1, parameter⟩)).IsQueryBoundP
             (fun query => query matches Sum.inr _) q)
-    (hq : q ≤ 2 ^ 125)
+    (hq : q ≤ 2 ^ 126)
     (hroot : IsLayerRoot target) :
     RelTriple
       ((successfulObservedRootComparisonIndicator table ordinal target ∘
@@ -160,7 +160,7 @@ theorem relTriple_indicator_observed_eagerDirectDelayed_afterRootResult
         (retainedGameRestComputation adversary
           ⟨rootResult.value.1, parameter⟩)).IsQueryBoundP
             (fun query => query matches Sum.inr _) q)
-    (hq : q ≤ 2 ^ 125)
+    (hq : q ≤ 2 ^ 126)
     (hroot : IsLayerRoot target) :
     RelTriple
       ((successfulObservedRootComparisonIndicator table ordinal target ∘
@@ -207,7 +207,7 @@ theorem relTriple_indicator_afterRootResult_of_eagerProxy
         (retainedGameRestComputation adversary
           ⟨rootResult.value.1, parameter⟩)).IsQueryBoundP
             (fun query => query matches Sum.inr _) q)
-    (hq : q ≤ 2 ^ 125)
+    (hq : q ≤ 2 ^ 126)
     (hroot : IsLayerRoot target)
     (hproxy : ∀ rightRoot,
       RelTriple
@@ -278,7 +278,7 @@ theorem probEvent_observedRootComparison_le_production_mul_of_eagerProxy
           (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ : SecretKey))
         (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
           (fun query => query matches Sum.inr _) q)
-    (hq : q ≤ 2 ^ 125)
+    (hq : q ≤ 2 ^ 126)
     (hproxy : ∀ (rootResult : CleanRunResult (Digest × SplitHashCache)),
       some rootResult ∈ support
         (runCleanFromTable
@@ -297,7 +297,7 @@ theorem probEvent_observedRootComparison_le_production_mul_of_eagerProxy
           SuccessfulObservedIndicatorRel) :
     Pr[fun result : Option
           (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest ↦
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
           table ordinal target result.2 result.1 | do
       let observed ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret
         (2 * q) table
@@ -334,7 +334,7 @@ theorem relTriple_eagerProxy_resolvedObservedAtRoot_afterRootResult
         (retainedGameRestComputation adversary
           ⟨rootResult.value.1, parameter⟩)).IsQueryBoundP
             (fun query => query matches Sum.inr _) q)
-    (hq : q ≤ 2 ^ 125)
+    (hq : q ≤ 2 ^ 126)
     (hroot : IsLayerRoot target) :
     RelTriple
       (eagerDirectDelayedSelectedRootIndicator ordinal parameter rootResult.value.1 ftsSecret table
@@ -578,13 +578,9 @@ theorem relTriple_eagerProxy_resolvedObservedAtRoot_afterRootResult
                     have hobservations : leftResult.observations = rightResult.observations := by
                       rw [hleftObservations, hrightObservations]
                     rcases hleftGood with
-                      ⟨⟨⟨hfinish, hdoomed, hfirstRoot⟩, hposition⟩, hcomparison⟩
+                      ⟨⟨⟨hfinish, hfirstRoot⟩, hposition⟩, hcomparison⟩
                     have hrightFinish := exists_finishObservedCleanRunFromTable_of_state_table_eq
                       leftResult rightResult hstate htable hfinish
-                    have hrightDoomed :
-                        ¬DeferredCompletable table (directDeferredContext rightResult.state) := by
-                      rw [← hstate]
-                      exact hdoomed
                     have hrightPosition :
                         observedFirstLayerRootPosition? ordinal (some rightResult) = some target := by
                       rw [← observedFirstLayerRootPosition?_eq_of_observations_eq ordinal
@@ -603,7 +599,7 @@ theorem relTriple_eagerProxy_resolvedObservedAtRoot_afterRootResult
                       rw [← observedPrefixProbes_eq_of_observations_eq ordinal leftResult
                         rightResult hobservations]
                       exact hcomparison
-                    exact ⟨⟨⟨hrightFinish, hrightDoomed, hrightFirstRoot⟩,
+                    exact ⟨⟨⟨hrightFinish, hrightFirstRoot⟩,
                       hrightPosition⟩, hrightComparison⟩
           have hsecond := SphincsSecurity.relTriple_trans_exists hfirst hcacheBridge
           have hretain : RelTriple
@@ -622,9 +618,9 @@ theorem relTriple_eagerProxy_resolvedObservedAtRoot_afterRootResult
             rw [successfulObservedRootComparisonIndicator_eq_true_iff,
               successfulObservedRootComparisonIndicator_eq_true_iff]
             change
-              ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt table ordinal
+              ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt table ordinal
                   target rightRoot leftResult ↔
-                ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt table ordinal
+                ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt table ordinal
                   target rightRoot (retainObservedRoot rootResult.value.1 leftResult)
             exact (successfulDoomedFirstRootGoodForComparisonAt_retainObservedRoot_iff table
               ordinal target rootResult.value.1 rightRoot leftResult).symm
@@ -661,10 +657,10 @@ theorem probEvent_observedRootComparison_le_production_mul
           (⟨parameter, root, tableOtsSecret (extendStartTable table), ftsSecret⟩ : SecretKey))
         (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
           (fun query => query matches Sum.inr _) q)
-    (hq : q ≤ 2 ^ 125) :
+    (hq : q ≤ 2 ^ 126) :
     Pr[fun result : Option
           (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest ↦
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
           table ordinal target result.2 result.1 | do
       let observed ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret
         (2 * q) table

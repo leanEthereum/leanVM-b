@@ -27,7 +27,7 @@ theorem probEvent_successfulDoomedFirstRootFiber_le_eight_sevenths_mul_productio
           (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ 125) :
     Pr[fun observed =>
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget
+        ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget
           table ordinal target observed |
       observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] ≤
       Pr[fun result ↦ materializedOrdinalSelectionAt target result.2 |
@@ -36,7 +36,7 @@ theorem probEvent_successfulDoomedFirstRootFiber_le_eight_sevenths_mul_productio
         ((8 / 7) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) := by
   let run := observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table
   let probability := Pr[fun observed =>
-      ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget
+      ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget
         table ordinal target observed | run]
   let weight := Pr[fun result ↦ materializedOrdinalSelectionAt target result.2 |
       materializedRootAwareOrdinalProductionExperimentAfterTable ordinal adversary parameter
@@ -45,17 +45,17 @@ theorem probEvent_successfulDoomedFirstRootFiber_le_eight_sevenths_mul_productio
   have hgood :
       Pr[fun result : Option
             (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest ↦
-          ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
             table ordinal target result.2 result.1 | do
         let observed ← run
         let rightRoot ← ($ᵗ Digest : ProbComp Digest)
         pure (observed, rightRoot)] ≤ weight * epsilon := by
     exact probEvent_observedRootComparison_le_production_mul ordinal adversary parameter table
-      ftsSecret q target hroot hparent hfuel hbound hq
+      ftsSecret q target hroot hparent hfuel hbound (hq.trans (by norm_num))
   have hsplit : probability ≤
       Pr[fun result : Option
             (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest =>
-          ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
             table ordinal target result.2 result.1 | do
         let observed ← run
         let rightRoot ← ($ᵗ Digest : ProbComp Digest)
@@ -105,7 +105,7 @@ theorem probEvent_successfulDoomedFirstRootFiber_le_commonDetailedFiber
           (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ 125) :
     Pr[fun observed =>
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget
+        ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget
           table ordinal target observed |
       observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] ≤
       Pr[fun selection =>
@@ -140,7 +140,7 @@ theorem probEvent_successfulDoomedFirstRoot_le_commonDetailed
         (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
           (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ 125) :
-    Pr[ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt table ordinal |
+    Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt table ordinal |
       observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] ≤
       (8 / 7) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
   apply probEvent_le_of_common_position_fibers
@@ -153,16 +153,16 @@ theorem probEvent_successfulDoomedFirstRoot_le_commonDetailed
   · intro target
     by_cases hexists : ∃ observed ∈ support
         (observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table),
-        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt table ordinal observed ∧
+        ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt table ordinal observed ∧
           observedFirstLayerRootPosition? ordinal observed = some target
     · have hstructure :=
         root_and_parent_of_existing_successfulDoomedFirstRootFiber hexists
-      simpa [ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget] using
+      simpa [ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget] using
         probEvent_successfulDoomedFirstRootFiber_le_commonDetailedFiber ordinal adversary
           parameter table ftsSecret q target hstructure.1 hstructure.2 hordinal hfuel hbound hq
     · simp only [not_exists, not_and] at hexists
       have hzero : Pr[fun observed =>
-          ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt
+          ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt
               table ordinal observed ∧
             observedFirstLayerRootPosition? ordinal observed = some target |
           observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] =

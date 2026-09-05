@@ -61,7 +61,7 @@ theorem rawTargetMonitoredAdversaryImpl_expected_cappedRawPotential_le
     (targetOrdinal : Nat) (input : (OracleWorld + SigningSpec).Domain)
     (state : OriginTargetMonitorState configuration)
     (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
-    (q : Nat) (hq : q ≤ 2 ^ 125)
+    (q : Nat) (hq : q ≤ 2 ^ 126)
     (hcoherent : state.JointCoherent targetOrdinal) :
     (∑' result,
       Pr[= result |
@@ -111,7 +111,7 @@ theorem rawTargetMonitoredAdversaryImpl_expected_cappedRawPotential_simulateQ_le
     (targetOrdinal : Nat) (computation : OracleComp (OracleWorld + SigningSpec) α)
     (initialState : OriginTargetMonitorState configuration)
     (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
-    (q : Nat) (hq : q ≤ 2 ^ 125)
+    (q : Nat) (hq : q ≤ 2 ^ 126)
     (hcoherent : initialState.JointCoherent targetOrdinal) :
     (∑' result,
       Pr[= result |
@@ -173,7 +173,7 @@ theorem probEvent_rawTargetMonitored_complete_le_initial
     (targetOrdinal : Nat) (computation : OracleComp (OracleWorld + SigningSpec) α)
     (initialState : OriginTargetMonitorState configuration)
     (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
-    (q : Nat) (hq : q ≤ 2 ^ 125)
+    (q : Nat) (hq : q ≤ 2 ^ 126)
     (hcoherent : initialState.JointCoherent targetOrdinal) :
     Pr[fun result : α × OriginTargetMonitorState configuration =>
         result.2.Complete ∧
@@ -218,7 +218,7 @@ theorem probEvent_rawTargetMonitored_complete_le_ideal
     (targetOrdinal : Nat) (computation : OracleComp (OracleWorld + SigningSpec) α)
     (initialCache : QueryCache HashSpec)
     (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
-    (q : Nat) (hq : q ≤ 2 ^ 125)
+    (q : Nat) (hq : q ≤ 2 ^ 126)
     (hcache : QueryCache.enncard initialCache ≤ q) :
     Pr[fun result : α × OriginTargetMonitorState configuration =>
         result.2.Complete ∧
@@ -247,7 +247,7 @@ theorem probEvent_rawTargetMonitored_complete_fixedPattern_le_ideal
     {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
     (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
     (targetOrdinal : Nat) (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (initialCache : QueryCache HashSpec) (q : Nat) (hq : q ≤ 2 ^ 125)
+    (initialCache : QueryCache HashSpec) (q : Nat) (hq : q ≤ 2 ^ 126)
     (hcache : QueryCache.enncard initialCache ≤ q) :
     Pr[fun result : α × OriginTargetMonitorState configuration =>
         result.2.Complete ∧

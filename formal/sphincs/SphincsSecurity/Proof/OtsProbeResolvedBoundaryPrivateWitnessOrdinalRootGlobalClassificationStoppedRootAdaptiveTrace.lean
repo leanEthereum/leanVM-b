@@ -424,9 +424,9 @@ theorem successfulDoomedFirstRootGoodForComparisonAt_iff_of_eventEq
     (target : Position) (rightRoot : Digest)
     (left right : Option (ObservedCleanRunResult α))
     (hrel : ObservedCleanRunOption.EventEq left right) :
-    ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
         table ordinal target rightRoot left ↔
-      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
         table ordinal target rightRoot right := by
   cases left with
   | none =>
@@ -443,10 +443,10 @@ theorem successfulDoomedFirstRootGoodForComparisonAt_iff_of_eventEq
           have hfirst := firstExistingHiddenRootHitAt_iff_of_eventEq ordinal left right htrace
           have hposition := observedFirstLayerRootPosition?_eq_of_eventEq ordinal left right htrace
           have hprefix := observedPrefixProbes_eq_of_eventEq ordinal left right htrace
-          simp only [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-            ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-            ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt]
-          rw [hfinish, hstate, hfirst, hposition, hprefix]
+          simp only [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+            ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+            ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt]
+          rw [hfinish, hfirst, hposition, hprefix]
 
 set_option maxRecDepth 100000 in
 theorem evalDist_delayedSelectedRootIndicator_eq_of_eventEq

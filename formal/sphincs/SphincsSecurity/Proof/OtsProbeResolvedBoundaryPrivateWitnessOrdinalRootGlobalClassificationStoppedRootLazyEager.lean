@@ -165,7 +165,7 @@ theorem RawObservedPendingSelectorRel.data_of_good
     {result : ObservedCleanRunResult (RetainedGameResult × SplitHashCache)}
     {rightRoot : Digest} {selection : Option PrivateOrdinalSelection × Digest}
     (hrelation : RawObservedPendingSelectorRel table ordinal (some result, rightRoot) selection)
-    (hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    (hgood : ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
       table ordinal target rightRoot (some result)) :
     ∃ selected output,
       selection.1 = some selected ∧
@@ -197,7 +197,7 @@ theorem RawObservedPendingSelectorRel.data_of_good
     rw [hselection] at hpending
     exact hpending
   have hgoodData := hgood
-  obtain ⟨⟨⟨⟨finalResult, hfinish⟩, _hdoomed,
+  obtain ⟨⟨⟨⟨finalResult, hfinish⟩,
     observedSelected, hobservedOrdinal, hfirst, hobservedRoot⟩, hposition⟩,
     _hcomparison⟩ := hgoodData
   rcases hsourceObserved.selectedAligned_or_chain_of_successful_firstHit
@@ -394,9 +394,9 @@ def SuccessfulObservedLazyEagerRel
       (Option (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest) →
         Prop :=
   fun lazy eager ↦
-    ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
         table ordinal target lazy.2 lazy.1 →
-      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
         table ordinal target eager.2 eager.1
 
 theorem probEvent_successfulObservedRootComparison_eq_indicator
@@ -404,7 +404,7 @@ theorem probEvent_successfulObservedRootComparison_eq_indicator
     (run : ProbComp
       (Option (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest)) :
     Pr[fun result ↦
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
           table ordinal target result.2 result.1 | run] =
       Pr[= true |
         successfulObservedRootComparisonIndicator table ordinal target <$> run] := by
@@ -433,14 +433,14 @@ theorem probEvent_observedRootComparison_le_resolvedEager_of_indicator
       (fun lazy eager ↦ lazy = true → eager = true)) :
     Pr[fun result : Option
           (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest ↦
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
           table ordinal target result.2 result.1 | do
       let observed ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret
         (2 * q) table
       let rightRoot ← ($ᵗ Digest : ProbComp Digest)
       pure (observed, rightRoot)] ≤
       Pr[fun result ↦
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
           table ordinal target result.2 result.1 |
         resolvedEagerObservedRootComparisonExperimentAfterTable adversary parameter ftsSecret
           target (2 * q) table] := by
@@ -467,14 +467,14 @@ theorem probEvent_observedRootComparison_le_resolvedEager
       (SuccessfulObservedLazyEagerRel table ordinal target)) :
     Pr[fun result : Option
           (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest ↦
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
           table ordinal target result.2 result.1 | do
       let observed ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret
         (2 * q) table
       let rightRoot ← ($ᵗ Digest : ProbComp Digest)
       pure (observed, rightRoot)] ≤
       Pr[fun result ↦
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
           table ordinal target result.2 result.1 |
         resolvedEagerObservedRootComparisonExperimentAfterTable adversary parameter ftsSecret
           target (2 * q) table] := by
@@ -500,7 +500,7 @@ theorem probEvent_observedRootComparison_le_production_mul_of_lazyEager
       (SuccessfulObservedLazyEagerRel table ordinal target)) :
     Pr[fun result : Option
           (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest ↦
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
           table ordinal target result.2 result.1 | do
       let observed ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret
         (2 * q) table
@@ -512,14 +512,14 @@ theorem probEvent_observedRootComparison_le_production_mul_of_lazyEager
         ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
   calc
     _ ≤ Pr[fun result ↦
-          ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
             table ordinal target result.2 result.1 |
           resolvedEagerObservedRootComparisonExperimentAfterTable adversary parameter ftsSecret
             target (2 * q) table] :=
       probEvent_observedRootComparison_le_resolvedEager ordinal adversary parameter table
         ftsSecret q target hrel
     _ = Pr[fun result ↦
-          ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
             table ordinal target result.2 result.1 |
           eagerObservedRootComparisonExperimentAfterTable ordinal adversary parameter ftsSecret
             target (2 * q) table] := by
@@ -548,7 +548,7 @@ theorem probEvent_observedRootComparison_le_production_mul_of_indicator
       (fun lazy eager ↦ lazy = true → eager = true)) :
     Pr[fun result : Option
           (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest ↦
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
           table ordinal target result.2 result.1 | do
       let observed ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret
         (2 * q) table
@@ -560,14 +560,14 @@ theorem probEvent_observedRootComparison_le_production_mul_of_indicator
         ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
   calc
     _ ≤ Pr[fun result ↦
-          ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
             table ordinal target result.2 result.1 |
           resolvedEagerObservedRootComparisonExperimentAfterTable adversary parameter ftsSecret
             target (2 * q) table] :=
       probEvent_observedRootComparison_le_resolvedEager_of_indicator ordinal adversary parameter
         table ftsSecret q target hrel
     _ = Pr[fun result ↦
-          ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
             table ordinal target result.2 result.1 |
           eagerObservedRootComparisonExperimentAfterTable ordinal adversary parameter ftsSecret
             target (2 * q) table] := by

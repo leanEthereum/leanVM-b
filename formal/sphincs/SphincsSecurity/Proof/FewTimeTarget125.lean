@@ -8,7 +8,7 @@ theorem probEvent_originTargetMonitored_complete_fixedPattern_le_ideal
     {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
     (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
     (targetOrdinal : Nat) (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (initialCache : QueryCache HashSpec) (q : Nat) (hq : q ≤ 2 ^ 125)
+    (initialCache : QueryCache HashSpec) (q : Nat) (hq : q ≤ 2 ^ 126)
     (hcache : QueryCache.enncard initialCache ≤ q) :
     Pr[fun result : α × OriginTargetMonitorState configuration =>
         result.2.Complete ∧
@@ -38,7 +38,7 @@ theorem probEvent_exists_fixedOrdinal_viewedEvent_le_ideal
     {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
     (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
     (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (initialCache : QueryCache HashSpec) (q : Nat) (hq : q ≤ 2 ^ 125)
+    (initialCache : QueryCache HashSpec) (q : Nat) (hq : q ≤ 2 ^ 126)
     (hcache : QueryCache.enncard initialCache ≤ q) (candidates : Nat)
     (viewedEvent : Fin candidates → α × ViewedFullTraceState → Prop)
     (himp : ∀ (candidate : Fin candidates)

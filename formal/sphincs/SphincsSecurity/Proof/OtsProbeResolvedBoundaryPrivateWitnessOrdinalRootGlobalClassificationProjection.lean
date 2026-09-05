@@ -28,24 +28,22 @@ def ObservedCleanRunOption.FirstExistingHiddenNonRootHitAt
         selected.val = ordinal ∧ FirstExistingHiddenHitAt result ordinal ∧
           ¬(result.observations.get selected).toProbe.IsLayerRoot
 
-def ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt
-    (table : OtsSecretIndex → HashOutput) (ordinal : Nat) :
+def ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt
+    (_table : OtsSecretIndex → HashOutput) (ordinal : Nat) :
     Option (ObservedCleanRunResult α) → Prop
   | none => False
   | some result =>
       (∃ finalResult, some finalResult ∈ support
         (finishObservedCleanRunFromTable (some result))) ∧
-      ¬DeferredCompletable table (directDeferredContext result.state) ∧
       ObservedCleanRunOption.FirstExistingHiddenRootHitAt ordinal (some result)
 
-def ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenNonRootHitAt
-    (table : OtsSecretIndex → HashOutput) (ordinal : Nat) :
+def ObservedCleanRunOption.SuccessfulFirstExistingHiddenNonRootHitAt
+    (_table : OtsSecretIndex → HashOutput) (ordinal : Nat) :
     Option (ObservedCleanRunResult α) → Prop
   | none => False
   | some result =>
       (∃ finalResult, some finalResult ∈ support
         (finishObservedCleanRunFromTable (some result))) ∧
-      ¬DeferredCompletable table (directDeferredContext result.state) ∧
       ObservedCleanRunOption.FirstExistingHiddenNonRootHitAt ordinal (some result)
 
 theorem before_eq_of_mem_finishObservedMaterializedDiagnostic
@@ -105,20 +103,20 @@ theorem probEvent_finishDiagnostic_successfulDoomed_firstExistingHiddenRootHitAt
     Pr[fun outcome => outcome.SuccessfulDoomed ∧
           outcome.FirstExistingHiddenRootHitAt ordinal |
         run >>= finishObservedMaterializedDiagnostic table] ≤
-      Pr[ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt table ordinal |
+      Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt table ordinal |
         run] := by
   apply probEvent_bind_le_probEvent
   intro result _hresult hnot
   apply probEvent_eq_zero
   intro outcome houtcome hevent
-  obtain ⟨before, finalResult, hresult, hbefore, _hfinalEq, hfinal, hdoomed⟩ :=
+  obtain ⟨before, finalResult, hresult, hbefore, _hfinalEq, hfinal, _hdoomed⟩ :=
     successfulDoomed_data_of_mem_finishObservedMaterializedDiagnostic table result outcome
       houtcome hevent.1
   subst result
   obtain ⟨rootResult, selected, hrootBefore, hselected, hfirst, hroot⟩ := hevent.2
   have hsame : rootResult = before := Option.some.inj (hrootBefore.symm.trans hbefore)
   subst rootResult
-  exact hnot ⟨⟨finalResult, hfinal⟩, hdoomed,
+  exact hnot ⟨⟨finalResult, hfinal⟩,
     ⟨selected, hselected, hfirst, hroot⟩⟩
 
 theorem probEvent_finishDiagnostic_successfulDoomed_firstExistingHiddenNonRootHitAt_le
@@ -127,20 +125,20 @@ theorem probEvent_finishDiagnostic_successfulDoomed_firstExistingHiddenNonRootHi
     Pr[fun outcome => outcome.SuccessfulDoomed ∧
           outcome.FirstExistingHiddenNonRootHitAt ordinal |
         run >>= finishObservedMaterializedDiagnostic table] ≤
-      Pr[ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenNonRootHitAt table ordinal |
+      Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenNonRootHitAt table ordinal |
         run] := by
   apply probEvent_bind_le_probEvent
   intro result _hresult hnot
   apply probEvent_eq_zero
   intro outcome houtcome hevent
-  obtain ⟨before, finalResult, hresult, hbefore, _hfinalEq, hfinal, hdoomed⟩ :=
+  obtain ⟨before, finalResult, hresult, hbefore, _hfinalEq, hfinal, _hdoomed⟩ :=
     successfulDoomed_data_of_mem_finishObservedMaterializedDiagnostic table result outcome
       houtcome hevent.1
   subst result
   obtain ⟨nonRootResult, selected, hnonRootBefore, hselected, hfirst, hnonRoot⟩ := hevent.2
   have hsame : nonRootResult = before := Option.some.inj (hnonRootBefore.symm.trans hbefore)
   subst nonRootResult
-  exact hnot ⟨⟨finalResult, hfinal⟩, hdoomed,
+  exact hnot ⟨⟨finalResult, hfinal⟩,
     ⟨selected, hselected, hfirst, hnonRoot⟩⟩
 
 theorem probEvent_finishDiagnostic_firstExistingHiddenRootHitAt_le
@@ -229,7 +227,7 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_firstExistingHiddenRootHitA
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel ordinal : Nat)
     (bound : ENNReal)
     (hbound : ∀ table,
-      Pr[ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt table ordinal |
+      Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt table ordinal |
           observedMaterializedRetainedRunFromTable adversary parameter ftsSecret fuel table] ≤
         bound) :
     Pr[fun outcome => outcome.SuccessfulDoomed ∧
@@ -239,7 +237,7 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_firstExistingHiddenRootHitA
   apply probEvent_bind_le_of_forall_le
   intro table _htable
   calc
-    _ ≤ Pr[ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt table ordinal |
+    _ ≤ Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt table ordinal |
           observedMaterializedRetainedRunFromTable adversary parameter ftsSecret fuel table] :=
       probEvent_finishDiagnostic_successfulDoomed_firstExistingHiddenRootHitAt_le table
         (observedMaterializedRetainedRunFromTable adversary parameter ftsSecret fuel table) ordinal
@@ -255,7 +253,7 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_firstExistingHiddenNonRootH
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel ordinal : Nat)
     (bound : ENNReal)
     (hbound : ∀ table,
-      Pr[ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenNonRootHitAt table ordinal |
+      Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenNonRootHitAt table ordinal |
           observedMaterializedRetainedRunFromTable adversary parameter ftsSecret fuel table] ≤
         bound) :
     Pr[fun outcome => outcome.SuccessfulDoomed ∧
@@ -265,7 +263,7 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_firstExistingHiddenNonRootH
   apply probEvent_bind_le_of_forall_le
   intro table _htable
   calc
-    _ ≤ Pr[ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenNonRootHitAt table ordinal |
+    _ ≤ Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenNonRootHitAt table ordinal |
           observedMaterializedRetainedRunFromTable adversary parameter ftsSecret fuel table] :=
       probEvent_finishDiagnostic_successfulDoomed_firstExistingHiddenNonRootHitAt_le table
         (observedMaterializedRetainedRunFromTable adversary parameter ftsSecret fuel table) ordinal

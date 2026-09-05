@@ -403,7 +403,7 @@ theorem probEvent_observedRootComparison_le_production_mul_of_eagerProxy
           SuccessfulObservedIndicatorRel) :
     Pr[fun result : Option
           (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest ↦
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
           table ordinal target result.2 result.1 | do
       let observed ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret
         (2 * q) table

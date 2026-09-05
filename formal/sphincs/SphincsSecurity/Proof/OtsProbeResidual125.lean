@@ -33,8 +33,8 @@ theorem probEvent_canonicalNonRootSelection_le_delayedCommon
       | none => exact False.elim hrelation
       | some right =>
           change ¬right.candidate.IsLayerRoot
-          change left.candidate = right.candidate at hrelation
-          rwa [← hrelation]
+          have hcandidate : left.candidate = right.candidate := hrelation.1
+          rwa [← hcandidate]
 
 theorem rootSelection_nonRootSelection_mass_le_one
     (common : ProbComp (Option PermissivePrivateOrdinalSelection)) :

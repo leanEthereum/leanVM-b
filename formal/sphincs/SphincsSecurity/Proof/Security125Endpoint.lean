@@ -14,7 +14,8 @@ theorem forgeAdvantage_le_opening_add_concrete125
       ((4 * q : Nat) : ℝ≥0∞) * ((2 ^ 128 : Nat) : ℝ≥0∞)⁻¹ +
       ((3 * q : Nat) : ℝ≥0∞) * ((2 ^ 131 : Nat) : ℝ≥0∞)⁻¹ +
       (q : ℝ≥0∞) * ((2 ^ 139 : Nat) : ℝ≥0∞)⁻¹ := by
-  have hmessage := Range125.probEvent_sampled_cleanMessage_le adversary q hqPos hq hqMax
+  have hmessage := Range125.probEvent_sampled_cleanMessage_le adversary q hqPos hq
+    (hqMax.trans (by norm_num))
   have huncovered := FtsProbeSimulation.probEvent_sampledViewedGame_cleanUncovered_le
     adversary q hq
   change Pr[SampledViewedEvent cleanUncoveredEvent | sampledViewedGame adversary] ≤

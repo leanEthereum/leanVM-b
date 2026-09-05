@@ -40,7 +40,7 @@ theorem rawTargetMonitoredAdversaryImpl_expected_rawPotential_le
     (targetOrdinal : Nat) (input : (OracleWorld + SigningSpec).Domain)
     (state : OriginTargetMonitorState configuration)
     (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
-    (q : Nat) (hq : q ≤ 2 ^ 125)
+    (q : Nat) (hq : q ≤ 2 ^ 126)
     (hcache : QueryCache.enncard state.origin.viewed.cache ≤ q)
     (horigin : state.origin.ScheduleCoherent)
     (htarget : state.TargetScheduleCoherent targetOrdinal) :

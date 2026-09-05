@@ -169,14 +169,14 @@ theorem root_and_parent_of_successfulDoomedFirstRootHitAtTarget
     (observed : Option (ObservedCleanRunResult (RetainedGameResult × SplitHashCache))) :
     observed ∈ support
         (observedMaterializedRetainedRunFromTable adversary parameter ftsSecret fuel table) →
-      ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget
+      ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget
           table ordinal target observed →
       IsLayerRoot target ∧ ∃ parent, Position.parentOf target = some parent := by
   cases observed with
   | none =>
       intro _hsupport hhit
-      simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hhit
+      simp [ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+        ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt] at hhit
   | some result =>
       intro hsupport hhit
       have hparents : CleanProbeObservationsHaveStructuralParents result.observations := by
@@ -210,7 +210,7 @@ theorem root_and_parent_of_successfulDoomedFirstRootHitAtTarget
                     rootResult.value.2 restResult hrootParents hrestResult
                 rw [hreturn]
                 exact hrestParents
-      obtain ⟨⟨_final, _hdoomed, selected, hselected, _hfirst, _hroot⟩, hposition⟩ := hhit
+      obtain ⟨⟨_final, selected, hselected, _hfirst, _hroot⟩, hposition⟩ := hhit
       have hlt : ordinal < result.observations.length := by
         rw [← hselected]
         exact selected.isLt
@@ -236,7 +236,7 @@ theorem root_and_parent_of_existing_successfulDoomedFirstRootFiber
     {ordinal : Nat} {target : Position}
     (hexists : ∃ observed ∈ support
         (observedMaterializedRetainedRunFromTable adversary parameter ftsSecret fuel table),
-        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt table ordinal observed ∧
+        ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt table ordinal observed ∧
           observedFirstLayerRootPosition? ordinal observed = some target) :
     IsLayerRoot target ∧ ∃ parent, Position.parentOf target = some parent := by
   obtain ⟨observed, hsupport, hevent, hposition⟩ := hexists
@@ -259,7 +259,7 @@ theorem probEvent_successfulDoomedFirstRoot_le_commonDetailed
         (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
           (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
-    Pr[ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt table ordinal |
+    Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt table ordinal |
       observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] ≤
       2 * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
   apply probEvent_le_of_common_position_fibers
@@ -272,16 +272,16 @@ theorem probEvent_successfulDoomedFirstRoot_le_commonDetailed
   · intro target
     by_cases hexists : ∃ observed ∈ support
         (observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table),
-        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt table ordinal observed ∧
+        ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt table ordinal observed ∧
           observedFirstLayerRootPosition? ordinal observed = some target
     · have hstructure :=
         root_and_parent_of_existing_successfulDoomedFirstRootFiber hexists
-      simpa [ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget] using
+      simpa [ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget] using
         probEvent_successfulDoomedFirstRootFiber_le_commonDetailedFiber ordinal adversary
           parameter table ftsSecret q target hstructure.1 hstructure.2 hordinal hfuel hbound hq
     · simp only [not_exists, not_and] at hexists
       have hzero : Pr[fun observed =>
-          ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt
+          ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt
               table ordinal observed ∧
             observedFirstLayerRootPosition? ordinal observed = some target |
           observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] =

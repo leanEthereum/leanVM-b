@@ -120,9 +120,9 @@ theorem relTriple_indicator_lazyObserved_resolvedEager_of_afterRootResult
               let rightRoot ← ($ᵗ Digest : ProbComp Digest)
               pure (none, rightRoot))) = evalDist (pure false : ProbComp Bool) by
           simp [successfulObservedRootComparisonIndicator,
-            ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-            ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-            ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt]
+            ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+            ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+            ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt]
           rw [map_eq_bind_pure_comp]
           apply SPMF.ext
           intro output
@@ -137,9 +137,9 @@ theorem relTriple_indicator_lazyObserved_resolvedEager_of_afterRootResult
           SuccessfulObservedIndicatorRel :=
         relTriple_pure_pure (fun hfalse ↦ by simp at hfalse)
       simpa [successfulObservedRootComparisonIndicator,
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] using hpure
+        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+        ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+        ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt] using hpure
   | some rootResult =>
       simpa only [map_eq_bind_pure_comp] using hbridge rootResult hleftRoot
 
@@ -216,7 +216,7 @@ theorem probEvent_observedRootComparison_le_production_mul_of_afterRootResult
         SuccessfulObservedIndicatorRel) :
     Pr[fun result : Option
           (ObservedCleanRunResult (RetainedGameResult × SplitHashCache)) × Digest ↦
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
           table ordinal target result.2 result.1 | do
       let observed ← observedMaterializedRetainedRunFromTable adversary parameter ftsSecret
         (2 * q) table

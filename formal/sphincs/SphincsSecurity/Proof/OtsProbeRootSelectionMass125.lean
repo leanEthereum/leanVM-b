@@ -63,7 +63,7 @@ theorem probEvent_successfulDoomedFirstRoot_le_selected_mass
         (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
           (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ 125) :
-    Pr[ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt table ordinal |
+    Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt table ordinal |
       observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] ≤
       Pr[fun selection =>
         (permissivePrivateOrdinalSelectionUnrevealedLayerRootPosition? selection).isSome = true |
@@ -79,16 +79,16 @@ theorem probEvent_successfulDoomedFirstRoot_le_selected_mass
   · intro target
     by_cases hexists : ∃ observed ∈ support
         (observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table),
-        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt table ordinal observed ∧
+        ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt table ordinal observed ∧
           observedFirstLayerRootPosition? ordinal observed = some target
     · have hstructure :=
         root_and_parent_of_existing_successfulDoomedFirstRootFiber hexists
-      simpa [ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget] using
+      simpa [ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget] using
         probEvent_successfulDoomedFirstRootFiber_le_commonDetailedFiber ordinal adversary
           parameter table ftsSecret q target hstructure.1 hstructure.2 hordinal hfuel hbound hq
     · simp only [not_exists, not_and] at hexists
       have hzero : Pr[fun observed =>
-          ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt
+          ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt
               table ordinal observed ∧
             observedFirstLayerRootPosition? ordinal observed = some target |
           observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] =

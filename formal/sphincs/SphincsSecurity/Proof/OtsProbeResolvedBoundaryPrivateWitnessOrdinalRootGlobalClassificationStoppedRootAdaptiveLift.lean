@@ -1010,7 +1010,7 @@ theorem relTriple_indicator_observedMaterializedBoundary_completionSafe_of_left_
     (hstate : CompletionSafeStateLE table leftState rightState)
     (hleftStarts : StartTableAgrees leftState table)
     (hbudget : fuel + rightState.pending.card < Fintype.card Digest)
-    (hleftDoomed : ∀ result : ObservedCleanRunResult (α × SplitHashCache),
+    (_hleftDoomed : ∀ result : ObservedCleanRunResult (α × SplitHashCache),
       some result ∈ support
           (observedMaterializedBoundary parameter publicRoot ftsSecret computation observations
             leftState fuel table cache) →
@@ -1051,9 +1051,9 @@ theorem relTriple_indicator_observedMaterializedBoundary_completionSafe_of_left_
   rcases hrelation with ⟨⟨hcompletion, hleftSupport⟩, hrightSupport⟩
   cases rightResult with
   | none =>
-      simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hrightGood
+      simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+        ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+        ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt] at hrightGood
   | some rightResult =>
       cases leftResult with
       | none => simp [ObservedCompletionSafeRel] at hcompletion
@@ -1063,7 +1063,7 @@ theorem relTriple_indicator_observedMaterializedBoundary_completionSafe_of_left_
           have hobservations : leftResult.observations = rightResult.observations := by
             rw [hleftObservations, hrightObservations]
           rcases hrightGood with
-            ⟨⟨⟨⟨rightFinal, hrightFinish⟩, _hrightDoomed, hrightFirstRoot⟩,
+            ⟨⟨⟨⟨rightFinal, hrightFinish⟩, hrightFirstRoot⟩,
               hrightPosition⟩, hrightComparison⟩
           have hleftTable : leftResult.table = table :=
             (startTableAgrees_of_mem_observedMaterializedBoundary parameter publicRoot ftsSecret
@@ -1101,8 +1101,7 @@ theorem relTriple_indicator_observedMaterializedBoundary_completionSafe_of_left_
             rw [observedPrefixProbes_eq_of_observations_eq ordinal leftResult rightResult
               hobservations]
             exact hrightComparison
-          exact ⟨⟨⟨⟨leftFinal, hleftFinish⟩,
-            hleftDoomed leftResult (by simpa [leftRun] using hleftSupport), hleftFirstRoot⟩,
+          exact ⟨⟨⟨⟨leftFinal, hleftFinish⟩, hleftFirstRoot⟩,
             hleftPosition⟩, hleftComparison⟩
 
 set_option maxRecDepth 100000 in
@@ -1135,7 +1134,7 @@ theorem selectedHash_goodForRoots
         (liftM (OracleSpec.query (spec := OracleWorld + SigningSpec)
           (Sum.inl (Sum.inr input))) >>= next)
         observations right.state fuel table cache))
-    (hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    (hgood : ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
       table ordinal target rightRoot (some result)) :
     ∃ output,
       let selection : PrivateOrdinalSelection :=
@@ -1161,7 +1160,7 @@ theorem selectedHash_goodForRoots
         (materializedCanonicalContext table right.state).state) = some candidate := by
     rw [hplanEq]
     exact hcandidate
-  obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩, _hdoomed,
+  obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩,
     selected, hselected, hfirst, _hroot⟩, hposition⟩, hcomparison⟩ := hgood
   have hobservation :=
     selected_observation_eq_of_mem_observedMaterializedBoundary_hash_query ordinal parameter
@@ -1260,7 +1259,7 @@ theorem relTriple_indicator_observedMaterializedBoundary_pure_false
   change successfulObservedRootComparisonIndicator table ordinal target
     (some ⟨state, fuel, (value, cache), table, observations⟩, rightRoot) = true at hgood
   rw [successfulObservedRootComparisonIndicator_eq_true_iff] at hgood
-  obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩, _hdoomed,
+  obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩,
     selected, _hselected, hfirst, _hroot⟩, _hposition⟩, _hcomparison⟩ := hgood
   obtain ⟨first, _hfirstOrdinal, hfirstHit, _hbefore⟩ := hfirst
   exact (hnoHit (observations.get first) (List.get_mem observations first) hfirstHit).elim
@@ -1297,7 +1296,7 @@ theorem relTriple_indicator_observedMaterializedBoundary_false_of_ordinal_lt
   unfold real at hrealSupport
   rw [support_map] at hrealSupport
   obtain ⟨observed, hobserved, hindicator⟩ := hrealSupport
-  have hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+  have hgood : ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
       table ordinal target rightRoot observed := by
     change successfulObservedRootComparisonIndicator table ordinal target
       (observed, rightRoot) = true at hindicator
@@ -1305,11 +1304,11 @@ theorem relTriple_indicator_observedMaterializedBoundary_false_of_ordinal_lt
     exact hindicator
   cases observed with
   | none =>
-      simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hgood
+      simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+        ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+        ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt] at hgood
   | some result =>
-      obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩, _hdoomed,
+      obtain ⟨⟨⟨⟨_finalResult, _hfinish⟩,
         _selected, _hselected, hfirst, _hroot⟩, _hposition⟩, _hcomparison⟩ := hgood
       obtain ⟨first, hfirstOrdinal, hfirstHit, _hbefore⟩ := hfirst
       have hprefix := observations_prefix_of_mem_observedMaterializedBoundary parameter
@@ -1402,7 +1401,7 @@ theorem relTriple_observed_finishDirectDelayed_of_firstStopped
     unfold realRun at hrealSupport
     rw [support_map] at hrealSupport
     obtain ⟨observed, hobserved, hindicator⟩ := hrealSupport
-    have hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    have hgood : ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
         table ordinal target rightRoot observed := by
       change successfulObservedRootComparisonIndicator table ordinal target
         (observed, rightRoot) = true at hindicator
@@ -1410,9 +1409,9 @@ theorem relTriple_observed_finishDirectDelayed_of_firstStopped
       exact hindicator
     cases observed with
     | none =>
-        simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-          ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-          ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hgood
+        simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+          ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+          ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt] at hgood
     | some result =>
         obtain ⟨finalResult, hfinish⟩ := hgood.1.1.1
         exact not_missingChainStartHit_of_successful_observedMaterializedBoundary parameter
@@ -1769,20 +1768,20 @@ theorem relTriple_indicator_observedMaterializedHashContinuation_hidden_notCompl
     intro observed sourceOutput hrelation
     rw [EqRel, Bool.eq_false_iff]
     intro htrue
-    have hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    have hgood : ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
         table ordinal target rightRoot observed := by
       rw [successfulObservedRootComparisonIndicator_eq_true_iff] at htrue
       exact htrue
     cases observed with
     | none =>
-        simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-          ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-          ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hgood
+        simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+          ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+          ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt] at hgood
     | some result =>
         have hsourceOutput : sourceOutput = (none, nextSnapshots) := by
           simpa [source] using hrelation.2
         subst sourceOutput
-        obtain ⟨⟨⟨⟨finalResult, hfinish⟩, _hdoomed,
+        obtain ⟨⟨⟨⟨finalResult, hfinish⟩,
           selected, hselected, hfirst, hroot⟩, _hposition⟩, _hcomparison⟩ := hgood
         have hrootAll : ∀ other : Fin result.observations.length,
             other.val = ordinal → (result.observations.get other).toProbe.IsLayerRoot := by
@@ -2299,7 +2298,7 @@ theorem relTriple_indicator_observed_directDelayed
                     rw [support_map] at hactualSupport
                     obtain ⟨result, hresult, hindicator⟩ := hactualSupport
                     have hgood :
-                        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+                        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
                           table snapshots.length target rightRoot result := by
                       change successfulObservedRootComparisonIndicator table snapshots.length target
                         (result, rightRoot) = true at hindicator
@@ -2307,9 +2306,9 @@ theorem relTriple_indicator_observed_directDelayed
                       exact hindicator
                     cases result with
                     | none =>
-                        simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-                          ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-                          ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt]
+                        simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+                          ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+                          ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt]
                           at hgood
                     | some result =>
                         obtain ⟨output, houtputGood, houtputCovered⟩ :=
@@ -2371,9 +2370,9 @@ theorem relTriple_indicator_observed_directDelayed
                     cases result with
                     | none =>
                         simp [successfulObservedRootComparisonIndicator,
-                          ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-                          ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-                          ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt]
+                          ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+                          ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+                          ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt]
                     | some result => rfl
                   have hrealPointwise (result : Option (ObservedCleanRunResult
                       (HashOutput × SplitHashCache))) :
@@ -2396,9 +2395,9 @@ theorem relTriple_indicator_observed_directDelayed
                     cases result with
                     | none =>
                         simp [successfulObservedRootComparisonIndicator,
-                          ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-                          ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-                          ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt]
+                          ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+                          ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+                          ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt]
                     | some result => rfl
                   rw [map_bind]
                   let observe : DeferredContext → Nat → (HashOutput × SplitHashCache) →
@@ -2828,9 +2827,9 @@ theorem relTriple_indicator_observed_directDelayed
               cases result with
               | none =>
                   simp [successfulObservedRootComparisonIndicator,
-                    ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-                    ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-                    ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt]
+                    ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+                    ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+                    ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt]
               | some result => rfl
             rw [directDelayedSelectedRootIndicator, OracleComp.construct_query_bind]
             simp only [hselected, ↓reduceDIte]

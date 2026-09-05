@@ -47,7 +47,7 @@ theorem probEvent_observedMaterialized_successfulDoomed_firstRoot_le_selectedSna
         (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
         (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
-    Pr[ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt table ordinal |
+    Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt table ordinal |
         observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] ≤
       Pr[fun source => SelectedPrivateSnapshotHitAt source ordinal |
         granularAllCanonicalPrivateWitnessSnapshot adversary parameter table ftsSecret q] := by
@@ -57,9 +57,9 @@ theorem probEvent_observedMaterialized_successfulDoomed_firstRoot_le_selectedSna
         parameter ftsSecret q table hbound hq))
   intro observed source hrelation hevent
   cases observed with
-  | none => simp [ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hevent
+  | none => simp [ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt] at hevent
   | some result =>
-      obtain ⟨⟨finalResult, hfinish⟩, _hdoomed, selected, hselected, hfirst, hroot⟩ := hevent
+      obtain ⟨⟨finalResult, hfinish⟩, selected, hselected, hfirst, hroot⟩ := hevent
       apply hrelation.selected_of_successful_firstRoot finalResult hfinish ordinal hfirst
       intro other hother
       have heq : other = selected := Fin.ext (hother.trans hselected.symm)
@@ -80,7 +80,7 @@ theorem probEvent_observedMaterialized_successfulDoomed_firstNonRoot_le_selected
         (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
         (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
-    Pr[ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenNonRootHitAt table ordinal |
+    Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenNonRootHitAt table ordinal |
         observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] ≤
       Pr[fun source => SelectedPrivateSnapshotHitAt source ordinal |
           granularAllCanonicalPrivateWitnessSnapshot adversary parameter table ftsSecret q] +
@@ -93,7 +93,7 @@ theorem probEvent_observedMaterialized_successfulDoomed_firstNonRoot_le_selected
     (2 * q) table
   apply probEvent_le_failure_add_residual_of_relTriple observed source
     (fun observed source => SnapshotObservedFirstStoppedRel table source observed)
-    (ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenNonRootHitAt table ordinal)
+    (ObservedCleanRunOption.SuccessfulFirstExistingHiddenNonRootHitAt table ordinal)
     (fun observed => match observed with
       | none => False
       | some result => FirstExistingHiddenChainStartHitAt result.observations ordinal)
@@ -103,9 +103,9 @@ theorem probEvent_observedMaterialized_successfulDoomed_firstNonRoot_le_selected
         parameter ftsSecret q table hbound hq))
   intro right left hrelation hevent hnotChain
   cases right with
-  | none => simp [ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenNonRootHitAt] at hevent
+  | none => simp [ObservedCleanRunOption.SuccessfulFirstExistingHiddenNonRootHitAt] at hevent
   | some result =>
-      obtain ⟨⟨finalResult, hfinish⟩, _hdoomed, _selected, _hselected, hfirst,
+      obtain ⟨⟨finalResult, hfinish⟩, _selected, _hselected, hfirst,
         _hnonRoot⟩ := hevent
       rcases hrelation.selected_or_chain_of_successful_firstNonRoot finalResult hfinish ordinal
         hfirst with hselected | hchain
@@ -127,9 +127,9 @@ theorem probEvent_observedMaterialized_successfulDoomed_firstHit_le_selectedSnap
         (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ securityBits) :
     Pr[fun observed =>
-        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt table ordinal
+        ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt table ordinal
             observed ∨
-          ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenNonRootHitAt table ordinal
+          ObservedCleanRunOption.SuccessfulFirstExistingHiddenNonRootHitAt table ordinal
             observed |
         observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] ≤
       Pr[fun source => SelectedPrivateSnapshotHitAt source ordinal |
@@ -144,8 +144,8 @@ theorem probEvent_observedMaterialized_successfulDoomed_firstHit_le_selectedSnap
   apply probEvent_le_failure_add_residual_of_relTriple observed source
     (fun observed source => SnapshotObservedFirstStoppedRel table source observed)
     (fun observed =>
-      ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt table ordinal observed ∨
-        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenNonRootHitAt table ordinal
+      ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt table ordinal observed ∨
+        ObservedCleanRunOption.SuccessfulFirstExistingHiddenNonRootHitAt table ordinal
           observed)
     (fun observed => match observed with
       | none => False
@@ -157,9 +157,9 @@ theorem probEvent_observedMaterialized_successfulDoomed_firstHit_le_selectedSnap
   intro right left hrelation hevent hnotChain
   rcases hevent with hroot | hnonRoot
   · cases right with
-    | none => simp [ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hroot
+    | none => simp [ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt] at hroot
     | some result =>
-        obtain ⟨⟨finalResult, hfinish⟩, _hdoomed, selected, hselected, hfirst, hroot⟩ :=
+        obtain ⟨⟨finalResult, hfinish⟩, selected, hselected, hfirst, hroot⟩ :=
           hroot
         apply hrelation.selected_of_successful_firstRoot finalResult hfinish ordinal hfirst
         intro other hother
@@ -168,9 +168,9 @@ theorem probEvent_observedMaterialized_successfulDoomed_firstHit_le_selectedSnap
         exact hroot
   · cases right with
     | none =>
-        simp [ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenNonRootHitAt] at hnonRoot
+        simp [ObservedCleanRunOption.SuccessfulFirstExistingHiddenNonRootHitAt] at hnonRoot
     | some result =>
-        obtain ⟨⟨finalResult, hfinish⟩, _hdoomed, _selected, _hselected, hfirst,
+        obtain ⟨⟨finalResult, hfinish⟩, _selected, _hselected, hfirst,
           _hnonRoot⟩ := hnonRoot
         rcases hrelation.selected_or_chain_of_successful_firstNonRoot finalResult hfinish ordinal
           hfirst with hselected | hchain

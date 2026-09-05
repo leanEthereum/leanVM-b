@@ -1168,9 +1168,9 @@ theorem ObservedOrdinaryCacheRel.successfulDoomedFirstRootGoodForComparisonAt
     (hrightNoHit : ∀ observation ∈ rightPrefix, ¬observation.ExistingHiddenHit)
     (left right : ObservedCleanRunResult (α × SplitHashCache))
     (hrel : ObservedOrdinaryCacheRel leftPrefix rightPrefix (some left) (some right))
-    (hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    (hgood : ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
       table ordinal target rightRoot (some left)) :
-    ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
       table ordinal target rightRoot (some right) := by
   rcases hrel with ⟨hstate, _hremaining, htable, _hvalue, _hcache,
     suffix, hleftObservations, hrightObservations⟩
@@ -1182,7 +1182,7 @@ theorem ObservedOrdinaryCacheRel.successfulDoomedFirstRootGoodForComparisonAt
       hprefixLength]
   rcases hgood with ⟨hhitTarget, hcomparison⟩
   rcases hhitTarget with ⟨hsuccessful, hposition⟩
-  rcases hsuccessful with ⟨hfinish, hdoomed, hfirstRoot⟩
+  rcases hsuccessful with ⟨hfinish, hfirstRoot⟩
   rcases hfirstRoot with ⟨selected, hselected, hfirst, hroot⟩
   have hrightSelectedLt : ordinal < right.observations.length := by
     rw [← hobservationLength, ← hselected]
@@ -1243,11 +1243,7 @@ theorem ObservedOrdinaryCacheRel.successfulDoomedFirstRootGoodForComparisonAt
     simpa [observedPrefixProbes, hleftTake, hrightTake, hprobes] using hcomparison
   have hrightFinish := exists_finishObservedCleanRunFromTable_of_state_table_eq
     left right hstate htable hfinish
-  have hrightDoomed :
-      ¬DeferredCompletable table (directDeferredContext right.state) := by
-    rw [← hstate]
-    exact hdoomed
-  exact ⟨⟨⟨hrightFinish, hrightDoomed, hrightFirstRoot⟩,
+  exact ⟨⟨⟨hrightFinish, hrightFirstRoot⟩,
     hrightPosition⟩, hrightComparison⟩
 
 theorem ObservedFuelRel.successfulDoomedFirstRootGoodForComparisonAt
@@ -1255,19 +1251,15 @@ theorem ObservedFuelRel.successfulDoomedFirstRootGoodForComparisonAt
     (target : Position) (rightRoot : Digest)
     (left right : ObservedCleanRunResult (α × SplitHashCache))
     (hrel : ObservedFuelRel (some left) (some right))
-    (hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    (hgood : ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
       table ordinal target rightRoot (some left)) :
-    ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
       table ordinal target rightRoot (some right) := by
   rcases hrel with ⟨hstate, htable, _hvalue, hobservations⟩
   rcases hgood with
-    ⟨⟨⟨hfinish, hdoomed, hfirstRoot⟩, hposition⟩, hcomparison⟩
+    ⟨⟨⟨hfinish, hfirstRoot⟩, hposition⟩, hcomparison⟩
   have hrightFinish := exists_finishObservedCleanRunFromTable_of_state_table_eq
     left right hstate htable hfinish
-  have hrightDoomed :
-      ¬DeferredCompletable table (directDeferredContext right.state) := by
-    rw [← hstate]
-    exact hdoomed
   have hrightPosition :
       observedFirstLayerRootPosition? ordinal (some right) = some target := by
     rw [← observedFirstLayerRootPosition?_eq_of_observations_eq ordinal left right
@@ -1284,7 +1276,7 @@ theorem ObservedFuelRel.successfulDoomedFirstRootGoodForComparisonAt
       (observedPrefixProbes ordinal (some right)) := by
     rw [← observedPrefixProbes_eq_of_observations_eq ordinal left right hobservations]
     exact hcomparison
-  exact ⟨⟨⟨hrightFinish, hrightDoomed, hrightFirstRoot⟩,
+  exact ⟨⟨⟨hrightFinish, hrightFirstRoot⟩,
     hrightPosition⟩, hrightComparison⟩
 
 set_option maxHeartbeats 4000000 in
@@ -1326,9 +1318,9 @@ theorem relTriple_indicator_observedMaterializedBoundary_ordinaryCache
   rw [successfulObservedRootComparisonIndicator_eq_true_iff]
   cases leftResult with
   | none =>
-      simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hleftGood
+      simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+        ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+        ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt] at hleftGood
   | some leftResult =>
       cases rightResult with
       | none => simp [ObservedOrdinaryCacheRel] at hrelation
@@ -1379,9 +1371,9 @@ theorem relTriple_indicator_observedMaterializedBoundary_fuel_of_isQueryBoundP
   rw [successfulObservedRootComparisonIndicator_eq_true_iff]
   cases leftResult with
   | none =>
-      simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hleftGood
+      simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+        ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+        ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt] at hleftGood
   | some leftResult =>
       cases rightResult with
       | none => simp [ObservedFuelRel] at hrelation

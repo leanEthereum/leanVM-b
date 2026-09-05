@@ -21,7 +21,7 @@ noncomputable instance (parameter : PublicParameter)
 theorem probEvent_exists_fixedRawTargetViewedTerminal_le_idealOrigin
     (secretKey : SecretKey) (computation : OracleComp (OracleWorld + SigningSpec) α)
     (initialCache : QueryCache HashSpec) (signatures sources q : Nat)
-    (hq : q ≤ 2 ^ 125) (hcache : QueryCache.enncard initialCache ≤ q) :
+    (hq : q ≤ 2 ^ 126) (hcache : QueryCache.enncard initialCache ≤ q) :
     Pr[fun result => ∃ distinct ∈ Finset.Icc 1 14,
         ∃ pattern : FewTimePattern signatures distinct,
         ∃ configuration : OriginConfiguration pattern sources,
@@ -43,7 +43,7 @@ theorem probEvent_exists_fixedRawTargetViewedTerminal_le_idealOrigin
 
 theorem probEvent_gameRestWithViewTrace_nonfresh_honest_leak_le
     (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
-    (hqMax : q ≤ 2 ^ 125)
+    (hqMax : q ≤ 2 ^ 126)
     (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
     (hots : otsSecret ∈ support sampleOtsSecrets)
@@ -168,7 +168,7 @@ theorem probEvent_gameRestWithViewTrace_nonfresh_honest_leak_le
 
 theorem probEvent_gameAfterSecretsWithViewTrace_nonfresh_honest_leak_le
     (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
-    (hqMax : q ≤ 2 ^ 125)
+    (hqMax : q ≤ 2 ^ 126)
     (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
     (hots : otsSecret ∈ support sampleOtsSecrets)
@@ -206,7 +206,7 @@ theorem probEvent_gameAfterSecretsWithViewTrace_nonfresh_honest_leak_le_mul_inv1
           ∧ ¬VerifierFreshTarget parameter result |
       gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret] ≤
       q * ((2 ^ 131 : Nat) : ℝ≥0∞)⁻¹ := by
-  exact (probEvent_gameAfterSecretsWithViewTrace_nonfresh_honest_leak_le adversary q hq hqMax
+  exact (probEvent_gameAfterSecretsWithViewTrace_nonfresh_honest_leak_le adversary q hq (hqMax.trans (by norm_num))
     parameter hparameter otsSecret hots ftsSecret hfts).trans
       (mul_le_mul' le_rfl (rawTargetOriginUnionBound_le_inv131 le_rfl hqMax))
 

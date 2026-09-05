@@ -40,19 +40,19 @@ theorem successfulDoomedFirstRootGoodForComparisonAt_retainObservedRoot
     (root rightRoot : Digest)
     (observed : Option
       (ObservedCleanRunResult (RetainedRestResult × SplitHashCache)))
-    (hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    (hgood : ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
       table ordinal target rightRoot observed) :
-    ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
       table ordinal target rightRoot (retainObservedRoot root observed) := by
   cases observed with
   | none =>
-      simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hgood
+      simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+        ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+        ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt] at hgood
   | some result =>
       simp only [retainObservedRoot]
-      rcases hgood with ⟨⟨⟨hfinish, hdoomed, hfirst⟩, hposition⟩, havoid⟩
-      refine ⟨⟨⟨?_, hdoomed, ?_⟩, ?_⟩, ?_⟩
+      rcases hgood with ⟨⟨⟨hfinish, hfirst⟩, hposition⟩, havoid⟩
+      refine ⟨⟨⟨?_, ?_⟩, ?_⟩, ?_⟩
       · obtain ⟨finalResult, hfinalResult⟩ := hfinish
         unfold finishObservedCleanRunFromTable at hfinalResult
         rw [mem_support_bind_iff] at hfinalResult
@@ -77,20 +77,20 @@ theorem successfulDoomedFirstRootGoodForComparisonAt_of_retainObservedRoot
     (root rightRoot : Digest)
     (observed : Option
       (ObservedCleanRunResult (RetainedRestResult × SplitHashCache)))
-    (hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    (hgood : ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
       table ordinal target rightRoot (retainObservedRoot root observed)) :
-    ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
       table ordinal target rightRoot observed := by
   cases observed with
   | none =>
       simp [retainObservedRoot,
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hgood
+        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+        ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+        ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt] at hgood
   | some result =>
       simp only [retainObservedRoot] at hgood
-      rcases hgood with ⟨⟨⟨hfinish, hdoomed, hfirst⟩, hposition⟩, havoid⟩
-      refine ⟨⟨⟨?_, hdoomed, ?_⟩, ?_⟩, ?_⟩
+      rcases hgood with ⟨⟨⟨hfinish, hfirst⟩, hposition⟩, havoid⟩
+      refine ⟨⟨⟨?_, ?_⟩, ?_⟩, ?_⟩
       · obtain ⟨finalResult, hfinalResult⟩ := hfinish
         unfold finishObservedCleanRunFromTable at hfinalResult
         rw [mem_support_bind_iff] at hfinalResult
@@ -114,9 +114,9 @@ theorem successfulDoomedFirstRootGoodForComparisonAt_retainObservedRoot_iff
     (root rightRoot : Digest)
     (observed : Option
       (ObservedCleanRunResult (RetainedRestResult × SplitHashCache))) :
-    ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
         table ordinal target rightRoot (retainObservedRoot root observed) ↔
-      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
         table ordinal target rightRoot observed := by
   constructor
   · exact successfulDoomedFirstRootGoodForComparisonAt_of_retainObservedRoot
@@ -137,14 +137,14 @@ theorem relTriple_delayedSelectedRootIndicator
     (hcovered : PendingCoveredBy (selection.candidates.take ordinal) selection.context)
     (fuel : Nat) (cache : SplitHashCache)
     (hselectedHit : ∀ result : ObservedCleanRunResult (RetainedRestResult × SplitHashCache),
-      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
           table ordinal target rightRoot (some result) →
         ∀ selected : Fin result.observations.length, selected.val = ordinal →
           (result.observations.get selected).coordinate = .position target ∧
             (result.observations.get selected).revealedAtProbe = false ∧
             truncateHash output = (result.observations.get selected).candidate)
     (hactualAvoid : ∀ result : ObservedCleanRunResult (RetainedRestResult × SplitHashCache),
-      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
           table ordinal target rightRoot (some result) →
         ∀ earlier : Fin result.observations.length, earlier.val < ordinal →
           (result.observations.get earlier).toProbe ≠
@@ -225,7 +225,7 @@ theorem relTriple_delayedSelectedRootIndicator_supported
       some result ∈ support
           (observedMaterializedBoundary parameter root ftsSecret computation observations
             (materializedDeferredState resolved.toDeferredContext) fuel table cache) →
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
             table ordinal target rightRoot (some result) →
           ∀ selected : Fin result.observations.length, selected.val = ordinal →
             (result.observations.get selected).coordinate = .position target ∧
@@ -238,7 +238,7 @@ theorem relTriple_delayedSelectedRootIndicator_supported
       some result ∈ support
           (observedMaterializedBoundary parameter root ftsSecret computation observations
             (materializedDeferredState resolved.toDeferredContext) fuel table cache) →
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
             table ordinal target rightRoot (some result) →
           ∀ earlier : Fin result.observations.length, earlier.val < ordinal →
             (result.observations.get earlier).toProbe ≠

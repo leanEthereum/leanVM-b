@@ -19,14 +19,14 @@ noncomputable def successfulObservedRootComparisonIndicator
   by
     classical
     exact fun result ↦ decide
-      (ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      (ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
         table ordinal target result.2 result.1)
 
 @[simp] theorem successfulObservedRootComparisonIndicator_eq_true_iff
     (table : OtsSecretIndex → HashOutput) (ordinal : Nat) (target : Position)
     (result : Option (ObservedCleanRunResult α) × Digest) :
     successfulObservedRootComparisonIndicator table ordinal target result = true ↔
-      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
         table ordinal target result.2 result.1 := by
   classical
   simp [successfulObservedRootComparisonIndicator]
@@ -272,12 +272,12 @@ theorem ObservedSafeTargetPendingRel.successfulDoomedFirstRootGoodForComparisonA
       earlier.val < ordinal →
         (left.observations.get earlier).toProbe ≠
           ⟨.position target, truncateHash output⟩)
-    (hgood : ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    (hgood : ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
       table ordinal target rightRoot (some left)) :
-    ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+    ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
       table ordinal target rightRoot (some right) := by
   rcases hrel with ⟨_hvalue, _htable, _hremaining, hobservations, hstate⟩
-  rcases hgood with ⟨⟨⟨hfinish, hdoomed, hfirstRoot⟩, hposition⟩, hcomparison⟩
+  rcases hgood with ⟨⟨⟨hfinish, hfirstRoot⟩, hposition⟩, hcomparison⟩
   rcases hfinish with ⟨leftFinal, hleftFinal⟩
   have hfinishRel :=
     relTriple_finishObservedCleanRunFromTable_safeTargetPending_coordinates
@@ -290,11 +290,6 @@ theorem ObservedSafeTargetPendingRel.successfulDoomedFirstRootGoodForComparisonA
     cases rightFinal? with
     | none => simp [ObservedSafeTargetPendingRel] at hfinalRel
     | some rightFinal => exact ⟨rightFinal, hrightFinal⟩
-  have hrightDoomed :
-      ¬DeferredCompletable table (directDeferredContext right.state) := by
-    intro hrightCompletable
-    exact hdoomed (deferredCompletable_direct_of_probeStateLE table
-      (hstate.toProbeStateLE hroot) hrightCompletable)
   rcases hfirstRoot with ⟨selected, hselected, hfirst, _hselectedRoot⟩
   have hfirstInstalled := firstExistingHiddenHitAt_map_installPositionValueAtProbe
     target output left ordinal hfirst hselectedHit hactualAvoid
@@ -321,7 +316,7 @@ theorem ObservedSafeTargetPendingRel.successfulDoomedFirstRootGoodForComparisonA
     rw [← observedPrefixProbes_eq_of_observations_eq ordinal installed right
       hobservations.symm]
     simpa [installed] using hcomparison
-  exact ⟨⟨⟨hrightFinish, hrightDoomed, hfirstRootRight⟩,
+  exact ⟨⟨⟨hrightFinish, hfirstRootRight⟩,
     hpositionRight⟩, hcomparisonRight⟩
 
 theorem ObservedSafeTargetPendingRel.pure
@@ -662,14 +657,14 @@ theorem relTriple_observedMaterializedBoundary_after_target_resolution_successfu
     (fuel : Nat) (table : OtsSecretIndex → HashOutput)
     (cache : SplitHashCache)
     (hselectedHit : ∀ result : ObservedCleanRunResult (α × SplitHashCache),
-      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
           table ordinal target rightRoot (some result) →
         ∀ selected : Fin result.observations.length, selected.val = ordinal →
           (result.observations.get selected).coordinate = .position target ∧
             (result.observations.get selected).revealedAtProbe = false ∧
             truncateHash output = (result.observations.get selected).candidate)
     (hactualAvoid : ∀ result : ObservedCleanRunResult (α × SplitHashCache),
-      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
           table ordinal target rightRoot (some result) →
         ∀ earlier : Fin result.observations.length, earlier.val < ordinal →
           (result.observations.get earlier).toProbe ≠
@@ -684,9 +679,9 @@ theorem relTriple_observedMaterializedBoundary_after_target_resolution_successfu
             values := selection.context.values.install target output })
         fuel table cache)
       (fun lazy eager ↦
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
             table ordinal target rightRoot lazy →
-          ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
             table ordinal target rightRoot eager) := by
   have hbase := relTriple_observedMaterializedBoundary_after_target_resolution parameter root
     ftsSecret target output rightRoot ordinal hroot selection hgood hcovered resolved hresolved
@@ -695,9 +690,9 @@ theorem relTriple_observedMaterializedBoundary_after_target_resolution_successfu
   intro lazy eager hrelation hlazy
   cases lazy with
   | none =>
-      simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hlazy
+      simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+        ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+        ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt] at hlazy
   | some result =>
       cases eager with
       | none => simp [ObservedSafeTargetPendingRel] at hrelation
@@ -722,14 +717,14 @@ theorem relTriple_indicator_observedMaterializedBoundary_after_target_resolution
     (fuel : Nat) (table : OtsSecretIndex → HashOutput)
     (cache : SplitHashCache)
     (hselectedHit : ∀ result : ObservedCleanRunResult (α × SplitHashCache),
-      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
           table ordinal target rightRoot (some result) →
         ∀ selected : Fin result.observations.length, selected.val = ordinal →
           (result.observations.get selected).coordinate = .position target ∧
             (result.observations.get selected).revealedAtProbe = false ∧
             truncateHash output = (result.observations.get selected).candidate)
     (hactualAvoid : ∀ result : ObservedCleanRunResult (α × SplitHashCache),
-      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
           table ordinal target rightRoot (some result) →
         ∀ earlier : Fin result.observations.length, earlier.val < ordinal →
           (result.observations.get earlier).toProbe ≠
@@ -755,7 +750,7 @@ theorem relTriple_indicator_observedMaterializedBoundary_after_target_resolution
   apply relTriple_post_mono hbase
   intro lazy eager hrelation hlazy
   have hlazyGood :
-      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
         table ordinal target rightRoot lazy := by
     simpa using hlazy
   have heagerGood := hrelation hlazyGood
@@ -780,7 +775,7 @@ theorem relTriple_observedMaterializedBoundary_after_target_resolution_successfu
       some result ∈ support
           (observedMaterializedBoundary parameter root ftsSecret computation observations
             (materializedDeferredState resolved.toDeferredContext) fuel table cache) →
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
             table ordinal target rightRoot (some result) →
           ∀ selected : Fin result.observations.length, selected.val = ordinal →
             (result.observations.get selected).coordinate = .position target ∧
@@ -790,7 +785,7 @@ theorem relTriple_observedMaterializedBoundary_after_target_resolution_successfu
       some result ∈ support
           (observedMaterializedBoundary parameter root ftsSecret computation observations
             (materializedDeferredState resolved.toDeferredContext) fuel table cache) →
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
             table ordinal target rightRoot (some result) →
           ∀ earlier : Fin result.observations.length, earlier.val < ordinal →
             (result.observations.get earlier).toProbe ≠
@@ -805,9 +800,9 @@ theorem relTriple_observedMaterializedBoundary_after_target_resolution_successfu
             values := selection.context.values.install target output })
         fuel table cache)
       (fun lazy eager ↦
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
             table ordinal target rightRoot lazy →
-          ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+          ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
             table ordinal target rightRoot eager) := by
   let lazyRun := observedMaterializedBoundary parameter root ftsSecret computation observations
     (materializedDeferredState resolved.toDeferredContext) fuel table cache
@@ -822,9 +817,9 @@ theorem relTriple_observedMaterializedBoundary_after_target_resolution_successfu
   rcases hrelation with ⟨hrelation, hlazySupport⟩
   cases lazy with
   | none =>
-      simp [ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt,
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootHitAtTarget,
-        ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt] at hlazy
+      simp [ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt,
+        ObservedCleanRunOption.SuccessfulFirstRootHitAtTarget,
+        ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt] at hlazy
   | some result =>
       cases eager with
       | none => simp [ObservedSafeTargetPendingRel] at hrelation
@@ -853,7 +848,7 @@ theorem relTriple_indicator_observedMaterializedBoundary_after_target_resolution
       some result ∈ support
           (observedMaterializedBoundary parameter root ftsSecret computation observations
             (materializedDeferredState resolved.toDeferredContext) fuel table cache) →
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
             table ordinal target rightRoot (some result) →
           ∀ selected : Fin result.observations.length, selected.val = ordinal →
             (result.observations.get selected).coordinate = .position target ∧
@@ -863,7 +858,7 @@ theorem relTriple_indicator_observedMaterializedBoundary_after_target_resolution
       some result ∈ support
           (observedMaterializedBoundary parameter root ftsSecret computation observations
             (materializedDeferredState resolved.toDeferredContext) fuel table cache) →
-        ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+        ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
             table ordinal target rightRoot (some result) →
           ∀ earlier : Fin result.observations.length, earlier.val < ordinal →
             (result.observations.get earlier).toProbe ≠
@@ -890,7 +885,7 @@ theorem relTriple_indicator_observedMaterializedBoundary_after_target_resolution
   apply relTriple_post_mono hbase
   intro lazy eager hrelation hlazy
   have hlazyGood :
-      ObservedCleanRunOption.SuccessfulDoomedFirstRootGoodForComparisonAt
+      ObservedCleanRunOption.SuccessfulFirstRootGoodForComparisonAt
         table ordinal target rightRoot lazy := by
     simpa using hlazy
   have heagerGood := hrelation hlazyGood

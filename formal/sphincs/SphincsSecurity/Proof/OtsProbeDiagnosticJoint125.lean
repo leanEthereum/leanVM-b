@@ -19,13 +19,13 @@ theorem probEvent_diagnosticNonRoot_le_common_mass
         (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
           (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ 125) :
-    Pr[ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenNonRootHitAt table ordinal |
+    Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenNonRootHitAt table ordinal |
       observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] ≤
     Pr[PermissiveSelectionNonRoot |
       permissiveDetailedSelectionExperimentAfterTable ordinal adversary parameter ftsSecret
         (2 * q) table] * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
   apply (probEvent_observedMaterialized_successfulDoomed_firstNonRoot_le_selectedNonRoot
-    adversary parameter ftsSecret q ordinal table hbound hq).trans
+    adversary parameter ftsSecret q ordinal table hbound (hq.trans (by norm_num))).trans
   apply (probEvent_granularAllCanonical_nonRoot_le_selectionFire ordinal adversary parameter
     table ftsSecret q).trans
   apply (probEvent_selectionNonRootFire_le_selected_mass _
@@ -51,9 +51,9 @@ theorem probEvent_diagnosticRawOrdinal_pair_le_eight_sevenths
         (retainedGameRestComputation adversary ⟨root, parameter⟩)).IsQueryBoundP
           (fun query => query matches Sum.inr _) q)
     (hq : q ≤ 2 ^ 125) :
-    Pr[ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenRootHitAt table ordinal |
+    Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenRootHitAt table ordinal |
       observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] +
-    Pr[ObservedCleanRunOption.SuccessfulDoomedFirstExistingHiddenNonRootHitAt table ordinal |
+    Pr[ObservedCleanRunOption.SuccessfulFirstExistingHiddenNonRootHitAt table ordinal |
       observedMaterializedRetainedRunFromTable adversary parameter ftsSecret (2 * q) table] ≤
     (8 / 7 : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
   let common := permissiveDetailedSelectionExperimentAfterTable ordinal adversary parameter
@@ -148,7 +148,7 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_le_eight_sevenths_mul
           Pr[fun outcome => outcome.SuccessfulDoomed ∧
               outcome.FirstExistingHiddenNonRootHitAt ordinal.val | diagnostic]) :=
       probEvent_sampledDiagnostic_successfulDoomed_le_sum_successfulFirstOrdinals adversary
-        parameter ftsSecret q hq
+        parameter ftsSecret q (hq.trans (by norm_num))
     _ ≤ ∑ _ordinal : Fin q, (8 / 7) * epsilon := by
       simp only [Finset.sum_fin_eq_sum_range]
       rw [show 2 * q = q + q by omega, Finset.sum_range_add]
@@ -179,9 +179,9 @@ theorem probEvent_sampledDiagnostic_successfulDoomed_le_eight_sevenths_mul
         have hordinal : ordinal < q := Finset.mem_range.1 hordinalMem
         simp only [show q + ordinal < q + q by omega, ↓reduceDIte]
         rw [probEvent_sampledDiagnostic_successfulDoomed_firstRoot_eq_zero_of_q_le_ordinal
-          adversary parameter ftsSecret q (q + ordinal) hexpanded hq (by omega)]
+          adversary parameter ftsSecret q (q + ordinal) hexpanded (hq.trans (by norm_num)) (by omega)]
         rw [probEvent_sampledDiagnostic_successfulDoomed_firstNonRoot_eq_zero_of_q_le_ordinal
-          adversary parameter ftsSecret q (q + ordinal) hexpanded hq (by omega)]
+          adversary parameter ftsSecret q (q + ordinal) hexpanded (hq.trans (by norm_num)) (by omega)]
         simp
       calc
         _ ≤ (∑ _ordinal ∈ Finset.range q, (8 / 7) * epsilon) +

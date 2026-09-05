@@ -1,9 +1,11 @@
-import SphincsSecurity.Proof.TightEncodingSettlement
+import SphincsSecurity.Proof.EncodingMessagePrehit
 import SphincsSecurity.Proof.TightChargeStep
 
 namespace SphincsSecurity.Concrete.TightEncoding
 
 open OracleComp OracleSpec ENNReal
+
+attribute [local instance] Classical.propDecidable
 
 noncomputable def encodingStructuralPotential (cache : QueryCache HashSpec)
     (secretKey : SecretKey) : Nat :=
@@ -389,7 +391,7 @@ theorem uniform_encodingSelectionTotalPotential_cacheQuery_le_of_no_new_messages
         _ = encodingSelectionTotalPotential cache hfinite secretKey + 2 * eps := by
           rw [hbefore]
 
-theorem uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settles
+theorem uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settles_stopped
     {cache : QueryCache HashSpec} (hfinite : Finite cache)
     {secretKey : SecretKey} {input : HashInput} {queriedPosition : Position}
     (hclean : ¬ Bad secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache)
@@ -412,8 +414,9 @@ theorem uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settles
         encodingStructuralPotential cache secretKey) :
     (∑' answer : HashOutput,
       Pr[= answer | ($ᵗ HashOutput : ProbComp HashOutput)] *
-        encodingSelectionTotalPotential (cache.cacheQuery input answer)
-          (finite_cacheQuery hfinite input answer) secretKey) ≤
+        (if truncateHash answer ∈ (messageTargets ∪ tightSettlingTargets secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache hfinite queriedPosition) then 1
+        else encodingSelectionTotalPotential (cache.cacheQuery input answer)
+          (finite_cacheQuery hfinite input answer) secretKey)) ≤
       encodingSelectionTotalPotential cache hfinite secretKey := by
   let eps := (Fintype.card Digest : ℝ≥0∞)⁻¹
   let targets := messageTargets ∪
@@ -433,8 +436,10 @@ theorem uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settles
           Pr[= answer | ($ᵗ HashOutput : ProbComp HashOutput)] * 1 := by
             apply ENNReal.tsum_le_tsum
             intro answer
-            exact mul_le_mul_right
-              (encodingSelectionTotalPotential_le_one _ secretKey) _
+            apply mul_le_mul' le_rfl
+            split_ifs
+            · exact le_rfl
+            · exact encodingSelectionTotalPotential_le_one _ secretKey
       _ = 1 := by simp only [mul_one, tsum_probOutput_of_liftM_PMF]
       _ = encodingSelectionTotalPotential cache hfinite secretKey := by
             rw [encodingSelectionTotalPotential, if_neg hclean, min_eq_left]
@@ -452,15 +457,15 @@ theorem uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settles
             tightSettlingTargets secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache hfinite queriedPosition).card
       omega
     have hpointwise (answer : HashOutput) :
-        encodingSelectionTotalPotential (cache.cacheQuery input answer)
-            (finite_cacheQuery hfinite input answer) secretKey ≤
+        (if truncateHash answer ∈ targets then 1
+        else encodingSelectionTotalPotential (cache.cacheQuery input answer)
+            (finite_cacheQuery hfinite input answer) secretKey) ≤
           (credit : ℝ≥0∞) * eps + encodingSelectionPotential cache hfinite secretKey +
             if truncateHash answer ∈ targets then 1 else 0 := by
       by_cases hmem : truncateHash answer ∈ targets
-      · rw [if_pos hmem]
-        exact (encodingSelectionTotalPotential_le_one _ secretKey).trans
-          (le_add_left le_rfl)
-      · rw [if_neg hmem, add_zero]
+      · simp only [if_pos hmem]
+        exact le_add_left le_rfl
+      · simp only [if_neg hmem, add_zero]
         have hcleanAfter := hsafe answer (fun htarget =>
           hmem (Finset.mem_union_right _ htarget))
         refine (encodingSelectionTotalPotential_le_uncapped _ secretKey hcleanAfter).trans ?_
@@ -519,7 +524,82 @@ theorem uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settles
               _ = _ := by rw [← Nat.cast_add, hcredit]
       _ = encodingSelectionTotalPotential cache hfinite secretKey := hbefore.symm
 
-theorem uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settlingPosition
+theorem uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settles
+    {cache : QueryCache HashSpec} (hfinite : Finite cache)
+    {secretKey : SecretKey} {input : HashInput} {queriedPosition : Position}
+    (hclean : ¬ Bad secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache)
+    (huncached : cache input = none)
+    (hqueried : AtPosition secretKey.parameter input queriedPosition)
+    (hsafe : ∀ answer : HashOutput,
+      truncateHash answer ∉ tightSettlingTargets secretKey.parameter secretKey.otsSecret
+        secretKey.ftsSecret cache hfinite queriedPosition →
+      ¬Bad secretKey.parameter secretKey.otsSecret secretKey.ftsSecret (cache.cacheQuery input answer))
+    (messageTargets : Finset Digest)
+    (hdirectTargets : ∀ (position : EncodingPosition) (index : Index),
+      treeIndexAt index position.lay = position.tree →
+      leafIndexAt index position.lay = position.leafIdx →
+      layerMessagePosition index position.lay = queriedPosition →
+      encodingMessageTargets secretKey.parameter cache hfinite position ⊆ messageTargets)
+    (hdrop : ∀ answer : HashOutput,
+      encodingStructuralPotential (cache.cacheQuery input answer) secretKey +
+          (messageTargets ∪
+            tightSettlingTargets secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache hfinite queriedPosition).card ≤
+        encodingStructuralPotential cache secretKey) :
+    (∑' answer : HashOutput,
+      Pr[= answer | ($ᵗ HashOutput : ProbComp HashOutput)] *
+        encodingSelectionTotalPotential (cache.cacheQuery input answer)
+          (finite_cacheQuery hfinite input answer) secretKey) ≤
+      encodingSelectionTotalPotential cache hfinite secretKey := by
+  apply le_trans _ (uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settles_stopped
+    hfinite hclean huncached hqueried hsafe messageTargets hdirectTargets hdrop)
+  apply ENNReal.tsum_le_tsum
+  intro answer
+  apply mul_le_mul' le_rfl
+  split_ifs
+  · exact encodingSelectionTotalPotential_le_one _ secretKey
+  · exact le_rfl
+
+theorem uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settles_prehit
+    {cache : QueryCache HashSpec} (hfinite : Finite cache)
+    {secretKey : SecretKey} {input : HashInput} {queriedPosition : Position}
+    (hclean : ¬ Bad secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache)
+    (huncached : cache input = none)
+    (hqueried : AtPosition secretKey.parameter input queriedPosition)
+    (hsafe : ∀ answer : HashOutput,
+      truncateHash answer ∉ tightSettlingTargets secretKey.parameter secretKey.otsSecret
+        secretKey.ftsSecret cache hfinite queriedPosition →
+      ¬Bad secretKey.parameter secretKey.otsSecret secretKey.ftsSecret (cache.cacheQuery input answer))
+    (messageTargets : Finset Digest)
+    (hdirectTargets : ∀ (position : EncodingPosition) (index : Index),
+      treeIndexAt index position.lay = position.tree →
+      leafIndexAt index position.lay = position.leafIdx →
+      layerMessagePosition index position.lay = queriedPosition →
+      encodingMessageTargets secretKey.parameter cache hfinite position ⊆ messageTargets)
+    (hdrop : ∀ answer : HashOutput,
+      encodingStructuralPotential (cache.cacheQuery input answer) secretKey +
+          (messageTargets ∪
+            tightSettlingTargets secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache hfinite queriedPosition).card ≤
+        encodingStructuralPotential cache secretKey) :
+    (∑' answer : HashOutput,
+      Pr[= answer | ($ᵗ HashOutput : ProbComp HashOutput)] *
+        (if EncodingMessagePrehit cache secretKey input answer then 1
+        else encodingSelectionTotalPotential (cache.cacheQuery input answer)
+          (finite_cacheQuery hfinite input answer) secretKey)) ≤
+      encodingSelectionTotalPotential cache hfinite secretKey := by
+  apply le_trans _ (uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settles_stopped
+    hfinite hclean huncached hqueried hsafe messageTargets hdirectTargets hdrop)
+  apply ENNReal.tsum_le_tsum
+  intro answer
+  apply mul_le_mul' le_rfl
+  by_cases hhit : EncodingMessagePrehit cache secretKey input answer
+  · have hmem := hhit.mem_settlementTargets hfinite huncached hqueried messageTargets hdirectTargets
+    simp only [hhit, hmem, if_true, le_refl]
+  · simp only [hhit, if_false]
+    split_ifs
+    · exact encodingSelectionTotalPotential_le_one _ secretKey
+    · exact le_rfl
+
+theorem uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settlingPosition_prehit
     {cache : QueryCache HashSpec} (hfinite : Finite cache)
     {secretKey : SecretKey} {input : HashInput} {queriedPosition : Position}
     (hclean : ¬ Bad secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache)
@@ -532,8 +612,9 @@ theorem uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settlingPositio
         (cache.cacheQuery input answer) queriedPosition) :
     (∑' answer : HashOutput,
       Pr[= answer | ($ᵗ HashOutput : ProbComp HashOutput)] *
-        encodingSelectionTotalPotential (cache.cacheQuery input answer)
-          (finite_cacheQuery hfinite input answer) secretKey) ≤
+        (if EncodingMessagePrehit cache secretKey input answer then 1
+        else encodingSelectionTotalPotential (cache.cacheQuery input answer)
+          (finite_cacheQuery hfinite input answer) secretKey)) ≤
       encodingSelectionTotalPotential cache hfinite secretKey := by
   have hnotEncoding : ∀ position : EncodingPosition,
       ¬ AtEncodingPosition secretKey.parameter input position := by
@@ -546,7 +627,7 @@ theorem uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settlingPositio
   · obtain ⟨directPosition, directIndex, hdirectTree, hdirectLeaf,
       hdirectMessage⟩ := hdirect
     let messageTargets := encodingMessageTargets secretKey.parameter cache hfinite directPosition
-    apply uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settles
+    apply uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settles_prehit
       hfinite hclean huncached hqueried
       (fun answer havoid => clean_cacheQuery_of_settling_of_avoids_tight
         secretKey.parameter secretKey.otsSecret secretKey.ftsSecret hfinite hclean
@@ -583,7 +664,7 @@ theorem uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settlingPositio
       rw [encodingStructuralPotential, encodingStructuralPotential]
       dsimp only [messageTargets] at hstage hunion ⊢
       omega
-  · apply uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settles
+  · apply uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settles_prehit
       hfinite hclean huncached hqueried
       (fun answer havoid => clean_cacheQuery_of_settling_of_avoids_tight
         secretKey.parameter secretKey.otsSecret secretKey.ftsSecret hfinite hclean
@@ -599,6 +680,31 @@ theorem uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settlingPositio
       rw [encodingStructuralPotential, encodingStructuralPotential]
       simp only [Finset.empty_union]
       omega
+
+theorem uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settlingPosition
+    {cache : QueryCache HashSpec} (hfinite : Finite cache)
+    {secretKey : SecretKey} {input : HashInput} {queriedPosition : Position}
+    (hclean : ¬ Bad secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache)
+    (huncached : cache input = none)
+    (hqueried : AtPosition secretKey.parameter input queriedPosition)
+    (hunsettled : ¬ Settled secretKey.parameter secretKey.otsSecret
+      secretKey.ftsSecret cache queriedPosition)
+    (hsettles : ∀ answer : HashOutput,
+      Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret
+        (cache.cacheQuery input answer) queriedPosition) :
+    (∑' answer : HashOutput,
+      Pr[= answer | ($ᵗ HashOutput : ProbComp HashOutput)] *
+        encodingSelectionTotalPotential (cache.cacheQuery input answer)
+          (finite_cacheQuery hfinite input answer) secretKey) ≤
+      encodingSelectionTotalPotential cache hfinite secretKey := by
+  apply le_trans _ (uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settlingPosition_prehit
+    hfinite hclean huncached hqueried hunsettled hsettles)
+  apply ENNReal.tsum_le_tsum
+  intro answer
+  apply mul_le_mul' le_rfl
+  split_ifs
+  · exact encodingSelectionTotalPotential_le_one _ secretKey
+  · exact le_rfl
 
 theorem uniform_encodingSelectionTotalPotential_cacheQuery_sum_le
     {cache : QueryCache HashSpec} (hfinite : Finite cache)
