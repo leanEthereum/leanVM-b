@@ -531,6 +531,7 @@ import SphincsSecurity.Proof.OtsProbeStartErasureBound
 import SphincsSecurity.Proof.EncodingExhaustionProbability
 import SphincsSecurity.Proof.EncodingExhaustionBound
 import SphincsSecurity.Proof.EncodingSigningFailure
+import SphincsSecurity.Proof.Security126Completion
 
 /-!
 The proof of `SphincsSecurityStatement`. The specification to review is `SphincsSecurity/Statement.lean`; the Lean kernel checks the proof against it.
