@@ -532,6 +532,7 @@ import SphincsSecurity.Proof.EncodingExhaustionProbability
 import SphincsSecurity.Proof.EncodingExhaustionBound
 import SphincsSecurity.Proof.EncodingSigningFailure
 import SphincsSecurity.Proof.Security126Completion
+import SphincsSecurity.Proof.JointNativeQueryCharge
 
 /-!
 The proof of `SphincsSecurityStatement`. The specification to review is `SphincsSecurity/Statement.lean`; the Lean kernel checks the proof against it.
