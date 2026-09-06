@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.FewTimeWeightedOriginAdaptive
 import SphincsSecurity.Proof.Arith
 import SphincsSecurity.Proof.Bytes
 import SphincsSecurity.Proof.Code
