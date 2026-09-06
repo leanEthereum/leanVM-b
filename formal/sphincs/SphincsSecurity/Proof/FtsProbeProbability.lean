@@ -396,6 +396,90 @@ theorem simulateQ_expanded_tracedGameRestComputation
     simulateQ_expanded_liftOracleWorldLeft]
   simp [simulateQ_pure]
 
+theorem relTriple_probingHashQuery_step
+    (parameter : PublicParameter) (table : Coordinate → Digest)
+    (state : AdaptiveRevealProbe.State Coordinate) (remaining : Nat)
+    (cache : SplitHashCache) (input : HashInput)
+    (hclean : AdaptiveRevealProbe.tableHits state table = false)
+    (hsynced : RevealedSynced parameter table state cache) :
+    RelTriple
+      (AdaptiveRevealProbe.runDetailed table state (remaining + 1)
+        ((probingHashQuery parameter input).run cache))
+      ((randomOracle input).run (mergedCache parameter table cache))
+      (CleanStepRel parameter table) := by
+  cases hdecode : decodeProbe? parameter input with
+  | none =>
+      apply relTriple_of_coupledAt_clean
+        (runDetailed_probingHashQuery_decode_none parameter table state
+          (remaining + 1) cache input hdecode hclean)
+      intro finalState output finalCache hresult
+      exact ⟨probingHashQuery_done_false_clean parameter table state
+          finalState (remaining + 1) cache finalCache input output hclean hresult,
+        probingHashQuery_done_false_revealedSynced parameter table state
+          finalState (remaining + 1) cache finalCache input output hclean hsynced
+          hresult⟩
+  | some probe =>
+      cases hrevealed : state.revealed
+          (probe.index, probe.tree, probe.leafIdx) with
+      | none =>
+          by_cases hhit : table (probe.index, probe.tree, probe.leafIdx) =
+              probe.candidate
+          · have hleft : ∀ result ∈ support
+                (AdaptiveRevealProbe.runDetailed table state (remaining + 1)
+                  ((probingHashQuery parameter input).run cache)),
+                result.hit = true := by
+              intro result hresult
+              exact runDetailed_probingHashQuery_hidden_hit parameter table
+                state remaining cache input probe hdecode hrevealed hhit result hresult
+            apply relTriple_post_mono
+              (relTriple_and_left_support
+                (relTriple_true
+                  (AdaptiveRevealProbe.runDetailed table state (remaining + 1)
+                    ((probingHashQuery parameter input).run cache))
+                  ((randomOracle input).run
+                    (mergedCache parameter table cache)))
+                (fun result => result.hit = true) hleft)
+            intro maskedResult ordinaryResult hresult
+            cases maskedResult with
+            | stopped hit =>
+                left
+                simpa [AdaptiveRevealProbe.DetailedResult.hit] using hresult.2
+            | done hit finalState valueCache =>
+                left
+                simpa [AdaptiveRevealProbe.DetailedResult.hit] using hresult.2
+          · apply relTriple_of_coupledAt_clean
+              (runDetailed_probingHashQuery_hidden_miss parameter table state
+                remaining cache input probe hdecode hrevealed hclean hhit)
+            intro finalState output finalCache hresult
+            exact ⟨probingHashQuery_done_false_clean parameter table state
+                finalState (remaining + 1) cache finalCache input output hclean hresult,
+              probingHashQuery_done_false_revealedSynced parameter table state
+                finalState (remaining + 1) cache finalCache input output hclean hsynced
+                hresult⟩
+      | some revealedValue =>
+          by_cases hhit : table (probe.index, probe.tree, probe.leafIdx) =
+              probe.candidate
+          · apply relTriple_of_coupledAt_clean
+              (runDetailed_probingHashQuery_revealed_hit parameter table state
+                remaining cache input probe hdecode revealedValue hrevealed hclean
+                hhit hsynced)
+            intro finalState output finalCache hresult
+            exact ⟨probingHashQuery_done_false_clean parameter table state
+                finalState (remaining + 1) cache finalCache input output hclean hresult,
+              probingHashQuery_done_false_revealedSynced parameter table state
+                finalState (remaining + 1) cache finalCache input output hclean hsynced
+                hresult⟩
+          · apply relTriple_of_coupledAt_clean
+              (runDetailed_probingHashQuery_revealed_miss parameter table state
+                remaining cache input probe hdecode revealedValue hrevealed hclean
+                hhit)
+            intro finalState output finalCache hresult
+            exact ⟨probingHashQuery_done_false_clean parameter table state
+                finalState (remaining + 1) cache finalCache input output hclean hresult,
+              probingHashQuery_done_false_revealedSynced parameter table state
+                finalState (remaining + 1) cache finalCache input output hclean hsynced
+                hresult⟩
+
 set_option maxRecDepth 10000 in
 theorem relTriple_maskedExpandedAdversaryImpl_step
     (secretKey : SecretKey) (table : Coordinate → Digest)
@@ -436,78 +520,8 @@ theorem relTriple_maskedExpandedAdversaryImpl_step
               ((probingHashQuery secretKey.parameter hashInput).run cache))
             ((randomOracle hashInput).run
               (mergedCache secretKey.parameter table cache)) _
-          cases hdecode : decodeProbe? secretKey.parameter hashInput with
-          | none =>
-              apply relTriple_of_coupledAt_clean
-                (runDetailed_probingHashQuery_decode_none secretKey.parameter table state
-                  (remaining + 1) cache hashInput hdecode hclean)
-              intro finalState output finalCache hresult
-              exact ⟨probingHashQuery_done_false_clean secretKey.parameter table state
-                  finalState (remaining + 1) cache finalCache hashInput output hclean hresult,
-                probingHashQuery_done_false_revealedSynced secretKey.parameter table state
-                  finalState (remaining + 1) cache finalCache hashInput output hclean hsynced
-                  hresult⟩
-          | some probe =>
-              cases hrevealed : state.revealed
-                  (probe.index, probe.tree, probe.leafIdx) with
-              | none =>
-                  by_cases hhit : table (probe.index, probe.tree, probe.leafIdx) =
-                      probe.candidate
-                  · have hleft : ∀ result ∈ support
-                        (AdaptiveRevealProbe.runDetailed table state (remaining + 1)
-                          ((probingHashQuery secretKey.parameter hashInput).run cache)),
-                        result.hit = true := by
-                      intro result hresult
-                      exact runDetailed_probingHashQuery_hidden_hit secretKey.parameter table
-                        state remaining cache hashInput probe hdecode hrevealed hhit result hresult
-                    apply relTriple_post_mono
-                      (relTriple_and_left_support
-                        (relTriple_true
-                          (AdaptiveRevealProbe.runDetailed table state (remaining + 1)
-                            ((probingHashQuery secretKey.parameter hashInput).run cache))
-                          ((randomOracle hashInput).run
-                            (mergedCache secretKey.parameter table cache)))
-                        (fun result => result.hit = true) hleft)
-                    intro maskedResult ordinaryResult hresult
-                    cases maskedResult with
-                    | stopped hit =>
-                        left
-                        simpa [AdaptiveRevealProbe.DetailedResult.hit] using hresult.2
-                    | done hit finalState valueCache =>
-                        left
-                        simpa [AdaptiveRevealProbe.DetailedResult.hit] using hresult.2
-                  · apply relTriple_of_coupledAt_clean
-                      (runDetailed_probingHashQuery_hidden_miss secretKey.parameter table state
-                        remaining cache hashInput probe hdecode hrevealed hclean hhit)
-                    intro finalState output finalCache hresult
-                    exact ⟨probingHashQuery_done_false_clean secretKey.parameter table state
-                        finalState (remaining + 1) cache finalCache hashInput output hclean hresult,
-                      probingHashQuery_done_false_revealedSynced secretKey.parameter table state
-                        finalState (remaining + 1) cache finalCache hashInput output hclean hsynced
-                        hresult⟩
-              | some revealedValue =>
-                  by_cases hhit : table (probe.index, probe.tree, probe.leafIdx) =
-                      probe.candidate
-                  · apply relTriple_of_coupledAt_clean
-                      (runDetailed_probingHashQuery_revealed_hit secretKey.parameter table state
-                        remaining cache hashInput probe hdecode revealedValue hrevealed hclean
-                        hhit hsynced)
-                    intro finalState output finalCache hresult
-                    exact ⟨probingHashQuery_done_false_clean secretKey.parameter table state
-                        finalState (remaining + 1) cache finalCache hashInput output hclean hresult,
-                      probingHashQuery_done_false_revealedSynced secretKey.parameter table state
-                        finalState (remaining + 1) cache finalCache hashInput output hclean hsynced
-                        hresult⟩
-                  · apply relTriple_of_coupledAt_clean
-                      (runDetailed_probingHashQuery_revealed_miss secretKey.parameter table state
-                        remaining cache hashInput probe hdecode revealedValue hrevealed hclean
-                        hhit)
-                    intro finalState output finalCache hresult
-                    exact ⟨probingHashQuery_done_false_clean secretKey.parameter table state
-                        finalState (remaining + 1) cache finalCache hashInput output hclean hresult,
-                      probingHashQuery_done_false_revealedSynced secretKey.parameter table state
-                        finalState (remaining + 1) cache finalCache hashInput output hclean hsynced
-                        hresult⟩
+          exact relTriple_probingHashQuery_step secretKey.parameter table state remaining
+            cache hashInput hclean hsynced
   | inr message =>
       change RelTriple
         (AdaptiveRevealProbe.runDetailed table state (remaining + 1)

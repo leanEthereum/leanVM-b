@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.OtsProbeNativePublicationCache
+import SphincsSecurity.Proof.FtsProbeNativeQuery
 import SphincsSecurity.Proof.FtsProbeNativePublicationOrigin
 import SphincsSecurity.Proof.FtsProbeNativeHistory
 import SphincsSecurity.Proof.SecurityCappedHistoryFtsEndpoint
