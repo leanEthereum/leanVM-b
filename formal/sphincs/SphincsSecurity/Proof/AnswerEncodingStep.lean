@@ -1,5 +1,5 @@
 import SphincsSecurity.Proof.EncodingWithoutParent
-import SphincsSecurity.Proof.TightEncodingStageCost
+import SphincsSecurity.Proof.EncodingMessageReserve
 
 namespace SphincsSecurity.Concrete
 
@@ -8,19 +8,19 @@ open OracleComp OracleSpec ENNReal
 attribute [local irreducible] instFintypePosition answerPotential
 
 noncomputable def answerEncodingPotential (cache : QueryCache HashSpec) (secretKey : SecretKey) : Nat :=
-  answerPotential secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache + encodingStagePotential cache secretKey
+  answerPotential secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache + encodingMessageReserve cache secretKey
 
 @[simp] theorem answerEncodingPotential_empty (secretKey : SecretKey) : answerEncodingPotential ∅ secretKey = 0 := by
-  rw [answerEncodingPotential, answerPotential_empty, encodingStagePotential_empty, Nat.zero_add]
+  rw [answerEncodingPotential, answerPotential_empty, encodingMessageReserve_empty, Nat.zero_add]
 
 theorem answerEncodingPotential_cacheQuery_le_increment
     {cache : QueryCache HashSpec} {secretKey : SecretKey} {input : HashInput} {answer : HashOutput} {position : EncodingPosition}
     (hfresh : cache input = none) (hat : AtEncodingPosition secretKey.parameter input position) :
     answerEncodingPotential (cache.cacheQuery input answer) secretKey ≤
-      answerEncodingPotential cache secretKey + TightEncoding.encodingStageIncrement cache secretKey position := by
+      answerEncodingPotential cache secretKey + encodingMessageIncrement cache secretKey position := by
   have ha := answerPotential_cacheQuery_le_of_not_atPosition secretKey.parameter secretKey.otsSecret secretKey.ftsSecret
     (answer := answer) hfresh (fun candidate hc => hat.not_atPosition candidate hc)
-  have he := TightEncoding.encodingStagePotential_cacheQuery_le_increment (answer := answer) hfresh hat
+  have he := encodingMessageReserve_cacheQuery_le_increment (answer := answer) hfresh hat
   rw [answerEncodingPotential, answerEncodingPotential]
   omega
 
@@ -38,8 +38,8 @@ theorem encodingMessageTargets_for_settling_query
         treeIndexAt index position.lay = position.tree → leafIndexAt index position.lay = position.leafIdx →
         layerMessagePosition index position.lay = queried →
         encodingMessageTargets secretKey.parameter cache hfinite position ⊆ targets) ∧
-      ∀ answer : HashOutput, encodingStagePotential (cache.cacheQuery input answer) secretKey + targets.card ≤
-        encodingStagePotential cache secretKey := by
+      ∀ answer : HashOutput, encodingMessageReserve (cache.cacheQuery input answer) secretKey + targets.card ≤
+        encodingMessageReserve cache secretKey := by
   classical
   have hnotEncoding : ∀ position : EncodingPosition, ¬ AtEncodingPosition secretKey.parameter input position :=
     fun position h => h.not_atPosition queried hat
@@ -54,7 +54,7 @@ theorem encodingMessageTargets_for_settling_query
       subst candidate
       exact Finset.Subset.rfl
     · intro answer
-      apply encodingStagePotential_add_messageTargets_card_le_of_new_message hfinite hfresh hnotEncoding ?_ ?_
+      apply encodingMessageReserve_add_messageTargets_card_le_of_new_message hfinite hfresh hnotEncoding ?_ ?_
       · rintro ⟨other, hoTree, hoLeaf, hoSettled⟩
         have ho := layerMessagePosition_eq_of_position_eq index other position.lay
           (htree.trans hoTree.symm) (hleaf.trans hoLeaf.symm)
@@ -66,8 +66,8 @@ theorem encodingMessageTargets_for_settling_query
       exact (hdirect ⟨position, index, htree, hleaf, heq⟩).elim
     · intro answer
       exact (Nat.add_le_add
-        (encodingStagePotential_cacheQuery_le_of_not_atEncoding (answer := answer) hfresh hnotEncoding)
-        (Nat.le_refl _)).trans (add_empty_card_le (encodingStagePotential cache secretKey))
+        (encodingMessageReserve_cacheQuery_le_of_not_atEncoding (answer := answer) hfresh hnotEncoding)
+        (Nat.le_refl _)).trans (add_empty_card_le (encodingMessageReserve cache secretKey))
 
 theorem answerEncoding_step_of_settling
     {cache : QueryCache HashSpec} (hfinite : Finite cache) {secretKey : SecretKey}
@@ -131,7 +131,7 @@ theorem answerEncoding_step_of_no_new_messages
     obtain ⟨hcleanAfter, ha⟩ := hsafe answer hnoParent havoid
     refine ⟨hcleanAfter, ?_, encodingSelectionPotential_cacheQuery_le_of_no_new_messages
       hfinite hfresh hnotEncoding (hnoNew answer)⟩
-    have he := encodingStagePotential_cacheQuery_le_of_not_atEncoding (secretKey := secretKey) (answer := answer) hfresh hnotEncoding
+    have he := encodingMessageReserve_cacheQuery_le_of_not_atEncoding (secretKey := secretKey) (answer := answer) hfresh hnotEncoding
     rw [answerEncodingPotential, answerEncodingPotential]
     omega
 

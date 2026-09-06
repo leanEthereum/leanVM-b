@@ -110,7 +110,7 @@ theorem uniform_answerEncodingTotalPotential_atEncoding_le
     (∑' answer : HashOutput, Pr[= answer | ($ᵗ HashOutput : ProbComp HashOutput)] *
       answerEncodingTotalPotential (cache.cacheQuery input answer) (finite_cacheQuery hfinite input answer) secretKey) ≤
       answerEncodingTotalPotential cache hfinite secretKey +
-        ((TightEncoding.encodingStageIncrement cache secretKey position + 1 : Nat) : ℝ≥0∞) * (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
+        ((encodingMessageIncrement cache secretKey position + 1 : Nat) : ℝ≥0∞) * (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
   let eps := (Fintype.card Digest : ℝ≥0∞)⁻¹
   have hmass : (∑' answer : HashOutput, Pr[= answer | ($ᵗ HashOutput : ProbComp HashOutput)] *
       answerEncodingTotalPotential (cache.cacheQuery input answer) (finite_cacheQuery hfinite input answer) secretKey) ≤ 1 := by
@@ -129,7 +129,7 @@ theorem uniform_answerEncodingTotalPotential_atEncoding_le
         rw [answerEncodingTotalPotential, if_neg hbad, min_eq_right (le_of_not_ge hlarge)]
       calc
         _ ≤ ∑' answer : HashOutput, Pr[= answer | ($ᵗ HashOutput : ProbComp HashOutput)] *
-            (((answerEncodingPotential cache secretKey + TightEncoding.encodingStageIncrement cache secretKey position : Nat) : ℝ≥0∞) * eps +
+            (((answerEncodingPotential cache secretKey + encodingMessageIncrement cache secretKey position : Nat) : ℝ≥0∞) * eps +
               encodingSelectionPotential (cache.cacheQuery input answer) (finite_cacheQuery hfinite input answer) secretKey) := by
           apply ENNReal.tsum_le_tsum
           intro answer
@@ -139,12 +139,12 @@ theorem uniform_answerEncodingTotalPotential_atEncoding_le
           rw [answerEncodingTotalPotential, if_neg hclean]
           exact (min_le_right _ _).trans (add_le_add (mul_le_mul' (Nat.cast_le.mpr
             (answerEncodingPotential_cacheQuery_le_increment (answer := answer) hfresh hat)) le_rfl) le_rfl)
-        _ = ((answerEncodingPotential cache secretKey + TightEncoding.encodingStageIncrement cache secretKey position : Nat) : ℝ≥0∞) * eps +
+        _ = ((answerEncodingPotential cache secretKey + encodingMessageIncrement cache secretKey position : Nat) : ℝ≥0∞) * eps +
             ∑' answer : HashOutput, Pr[= answer | ($ᵗ HashOutput : ProbComp HashOutput)] *
               encodingSelectionPotential (cache.cacheQuery input answer) (finite_cacheQuery hfinite input answer) secretKey := by
           simp_rw [mul_add, ENNReal.tsum_add]
           rw [ENNReal.tsum_mul_right, tsum_probOutput_of_liftM_PMF, one_mul]
-        _ ≤ ((answerEncodingPotential cache secretKey + TightEncoding.encodingStageIncrement cache secretKey position : Nat) : ℝ≥0∞) * eps +
+        _ ≤ ((answerEncodingPotential cache secretKey + encodingMessageIncrement cache secretKey position : Nat) : ℝ≥0∞) * eps +
             (encodingSelectionPotential cache hfinite secretKey + eps) :=
           add_le_add le_rfl (uniform_encodingSelectionPotential_cacheQuery_atPosition_sum_le hfinite hfresh hat)
         _ = _ := by
@@ -167,7 +167,7 @@ theorem answerEncodingTotalPotential_cacheQuery_le_of_nonstructural
       (answer := answer) hbad hfresh hnotStructural).1
     have ha := answerPotential_cacheQuery_le_of_not_atPosition secretKey.parameter secretKey.otsSecret secretKey.ftsSecret
       (answer := answer) hfresh hnotStructural
-    have he := encodingStagePotential_cacheQuery_le_of_not_atEncoding (secretKey := secretKey) (answer := answer) hfresh hnotEncoding
+    have he := encodingMessageReserve_cacheQuery_le_of_not_atEncoding (secretKey := secretKey) (answer := answer) hfresh hnotEncoding
     have hp : answerEncodingPotential (cache.cacheQuery input answer) secretKey ≤ answerEncodingPotential cache secretKey := by
       rw [answerEncodingPotential, answerEncodingPotential]
       exact Nat.add_le_add ha he

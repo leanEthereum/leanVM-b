@@ -13,7 +13,7 @@ noncomputable def parentStoppedEncodingQueryCharge (secretKey : SecretKey)
     (cache : QueryCache HashSpec) (input : HashInput) : ℝ≥0∞ :=
   if cache input = none then
     if hencoding : ∃ position : EncodingPosition, AtEncodingPosition secretKey.parameter input position then
-      ((TightEncoding.encodingStageIncrement cache secretKey (Classical.choose hencoding) + 1 : Nat) : ℝ≥0∞)
+      ((encodingMessageIncrement cache secretKey (Classical.choose hencoding) + 1 : Nat) : ℝ≥0∞)
     else if ∃ position : Position, AtPosition secretKey.parameter input position ∧
         ¬ Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache position ∧
         ∀ answer : HashOutput, Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret (cache.cacheQuery input answer) position then 0
