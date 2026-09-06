@@ -1,5 +1,6 @@
 import SphincsSecurity.Proof.SecurityVerifierPrimitiveEndpoint
 import SphincsSecurity.Proof.SettledCollisionGame
+import SphincsSecurity.Proof.SecuritySettledCollisionEndpoint
 import SphincsSecurity.Proof.SecurityOccupancyEndpoint
 import SphincsSecurity.Proof.FewTimeWeightedOriginAdaptive
 import SphincsSecurity.Proof.Arith
