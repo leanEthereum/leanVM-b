@@ -1,24 +1,24 @@
-import SphincsSecurity.Proof.FewTimeWeightedTargetUnion
+import SphincsSecurity.Proof.FewTimeUsedTargetUnion
 import SphincsSecurity.Proof.FewTimeHonestLeakBound
 
 namespace SphincsSecurity.Concrete
 
 open OracleComp OracleSpec ENNReal
 
-theorem probEvent_exists_fixedRawTargetViewedTerminal_le_weightedOrigin
+theorem probEvent_exists_fixedRawTargetViewedTerminal_le_usedWeightedOrigin
     (secretKey : SecretKey) (computation : OracleComp (OracleWorld + SigningSpec) α)
     (initialCache : QueryCache HashSpec) (signatures sources q : Nat)
     (hq : q ≤ 2 ^ 127) (hcache : QueryCache.enncard initialCache ≤ q) :
     Pr[fun result => ∃ distinct ∈ Finset.Icc 1 14,
-        ∃ pattern : FewTimePattern signatures distinct,
-        ∃ configuration : OriginConfiguration pattern sources,
+        ∃ pattern : UsedFewTimePattern signatures distinct,
+        ∃ configuration : OriginConfiguration pattern.1 sources,
         ∃ candidate : Fin q,
           FixedRawTargetViewedTerminal secretKey computation initialCache q
             configuration candidate.val result |
       (simulateQ (viewedFullTracedMappedAdversaryImpl secretKey)
         computation).run ⟨initialCache, ⟨[], [], []⟩, [], none⟩] ≤
-      q * weightedRawTargetOriginUnionBound signatures sources (digestReuseWeight q) := by
-  apply probEvent_exists_originConfiguration_fixedRawOrdinal_viewedEvent_le_weightedOrigin
+      q * usedWeightedRawTargetOriginUnionBound signatures sources (digestReuseWeight q) := by
+  apply probEvent_exists_originConfiguration_fixedRawOrdinal_viewedEvent_le_usedWeightedOrigin
     secretKey computation initialCache signatures sources q hq hcache q
       (fun _ _ configuration candidate =>
         FixedRawTargetViewedTerminal secretKey computation initialCache q
@@ -28,7 +28,7 @@ theorem probEvent_exists_fixedRawTargetViewedTerminal_le_weightedOrigin
   obtain ⟨hcomplete, hhit⟩ := hterminal result hresult rfl
   exact ⟨hcomplete, hhit, hcacheFinal⟩
 
-theorem probEvent_gameRestWithViewTrace_nonfresh_honest_leak_le_weighted
+theorem probEvent_gameRestWithViewTrace_nonfresh_honest_leak_le_usedWeighted
     (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
     (hqMax : q ≤ 2 ^ 127)
     (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
@@ -49,7 +49,7 @@ theorem probEvent_gameRestWithViewTrace_nonfresh_honest_leak_le_weighted
           ∧ ¬VerifierFreshTarget parameter result |
       gameRestWithViewTrace adversary ⟨root, parameter⟩
         ⟨parameter, root, otsSecret, ftsSecret⟩ rootCache] ≤
-      q * weightedRawTargetOriginUnionBound signatureLimit q (digestReuseWeight q) := by
+      q * usedWeightedRawTargetOriginUnionBound signatureLimit q (digestReuseWeight q) := by
   classical
   let secretKey : SecretKey := ⟨parameter, root, otsSecret, ftsSecret⟩
   let publicKey : PublicKey := ⟨root, parameter⟩
@@ -70,8 +70,8 @@ theorem probEvent_gameRestWithViewTrace_nonfresh_honest_leak_le_weighted
       ⟨finalCache, prior.2.trace, prior.2.views, some targetView⟩)
   let prefixEvent := fun prior : Forgery × ViewedFullTraceState =>
     ∃ distinct ∈ Finset.Icc 1 14,
-      ∃ pattern : FewTimePattern signatureLimit distinct,
-      ∃ configuration : OriginConfiguration pattern q,
+      ∃ pattern : UsedFewTimePattern signatureLimit distinct,
+      ∃ configuration : OriginConfiguration pattern.1 q,
       ∃ candidate : Fin q,
         FixedRawTargetViewedTerminal secretKey (adversary.main publicKey)
           rootCache q configuration candidate.val prior
@@ -130,7 +130,7 @@ theorem probEvent_gameRestWithViewTrace_nonfresh_honest_leak_le_weighted
           hclassified
         apply hnotPrefix
         exact ⟨distinct, hdistinct, pattern, configuration, candidate, hterminal⟩
-    _ ≤ _ := probEvent_exists_fixedRawTargetViewedTerminal_le_weightedOrigin
+    _ ≤ _ := probEvent_exists_fixedRawTargetViewedTerminal_le_usedWeightedOrigin
       secretKey (adversary.main publicKey) rootCache signatureLimit q q hqMax
         (by
           have hroot' : QueryCache.enncard rootCache ≤ q := by
@@ -153,7 +153,7 @@ theorem probEvent_gameRestWithViewTrace_nonfresh_honest_leak_le_weighted
             exact hbound
           exact hroot')
 
-theorem probEvent_gameAfterSecretsWithViewTrace_nonfresh_honest_leak_le_weighted
+theorem probEvent_gameAfterSecretsWithViewTrace_nonfresh_honest_leak_le_usedWeighted
     (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
     (hqMax : q ≤ 2 ^ 127)
     (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
@@ -165,7 +165,7 @@ theorem probEvent_gameAfterSecretsWithViewTrace_nonfresh_honest_leak_le_weighted
         ViewedHonestProperFewTimeLeakWitness parameter otsSecret ftsSecret result
           ∧ ¬VerifierFreshTarget parameter result |
       gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret] ≤
-      q * weightedRawTargetOriginUnionBound signatureLimit q (digestReuseWeight q) := by
+      q * usedWeightedRawTargetOriginUnionBound signatureLimit q (digestReuseWeight q) := by
   rw [gameAfterSecretsWithViewTrace]
   apply probEvent_bind_le_of_forall_le
   rintro ⟨root, rootCache⟩ hroot
@@ -177,10 +177,10 @@ theorem probEvent_gameAfterSecretsWithViewTrace_nonfresh_honest_leak_le_weighted
     gameRestWithViewTrace adversary ⟨root, parameter⟩
       ⟨parameter, root, otsSecret, ftsSecret⟩ rootCache >>= pure ∘ attach] ≤ _
   rw [probEvent_bind_pure_comp]
-  exact probEvent_gameRestWithViewTrace_nonfresh_honest_leak_le_weighted adversary q hq hqMax
+  exact probEvent_gameRestWithViewTrace_nonfresh_honest_leak_le_usedWeighted adversary q hq hqMax
     parameter hparameter otsSecret hots ftsSecret hfts root rootCache hroot
 
-theorem probEvent_gameRestWithViewTrace_fresh_honest_leak_le_weighted
+theorem probEvent_gameRestWithViewTrace_fresh_honest_leak_le_usedWeighted
     (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
     (hqMax : q ≤ 2 ^ 127)
     (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
@@ -201,7 +201,7 @@ theorem probEvent_gameRestWithViewTrace_fresh_honest_leak_le_weighted
           ∧ VerifierFreshTarget parameter result |
       gameRestWithViewTrace adversary ⟨root, parameter⟩
         ⟨parameter, root, otsSecret, ftsSecret⟩ rootCache] ≤
-      ((q + 1 : Nat) : ℝ≥0∞) * weightedRawTargetOriginUnionBound signatureLimit q (digestReuseWeight q) := by
+      ((q + 1 : Nat) : ℝ≥0∞) * usedWeightedRawTargetOriginUnionBound signatureLimit q (digestReuseWeight q) := by
   classical
   let secretKey : SecretKey := ⟨parameter, root, otsSecret, ftsSecret⟩
   let publicKey : PublicKey := ⟨root, parameter⟩
@@ -244,7 +244,7 @@ theorem probEvent_gameRestWithViewTrace_fresh_honest_leak_le_weighted
         (otsSecret topLayer rootTree) : OracleComp HashSpec Digest)) :
           OracleComp OracleWorld Digest) q hrootBound (root, rootCache) hroot
   have hprefixBound :=
-    probEvent_exists_fixedRawTargetViewedTerminal_le_weightedOrigin_of_candidates
+    probEvent_exists_fixedRawTargetViewedTerminal_le_usedWeightedOrigin_of_candidates
       (α := Forgery × HashOutput) (secretKey := secretKey)
       (computation := adversaryWithTargetQuery adversary publicKey)
       (initialCache := rootCache) (signatures := signatureLimit) (sources := q)
@@ -255,14 +255,14 @@ theorem probEvent_gameRestWithViewTrace_fresh_honest_leak_le_weighted
     show ⟨parameter, root, otsSecret, ftsSecret⟩ = secretKey from rfl, hgame]
   change Pr[freshEvent | run >>= finish] ≤ _
   have hfirst : Pr[freshEvent | run >>= finish] ≤
-      Pr[SomeFixedRawTargetViewedTerminal secretKey
+      Pr[SomeUsedFixedRawTargetViewedTerminal secretKey
         (adversaryWithTargetQuery adversary publicKey) rootCache signatureLimit q q (q + 1) |
           (simulateQ (viewedFullTracedMappedAdversaryImpl secretKey)
             (adversaryWithTargetQuery adversary publicKey)).run
               ⟨rootCache, ⟨[], [], []⟩, [], none⟩] := by
     rw [adversaryWithTargetQuery_viewed_run]
     change Pr[_ | run >>= _] ≤
-      Pr[SomeFixedRawTargetViewedTerminal secretKey
+      Pr[SomeUsedFixedRawTargetViewedTerminal secretKey
         (adversaryWithTargetQuery adversary publicKey) rootCache signatureLimit q q (q + 1) |
           run >>= _]
     apply probEvent_bind_le_bind_of_forall_le
@@ -278,14 +278,14 @@ theorem probEvent_gameRestWithViewTrace_fresh_honest_leak_le_weighted
     rw [show tweakableHashInput publicKey.parameter .message
       (messageDigestPayload publicKey.root forgery.message
         forgery.signature.randomness) = input from rfl]
-    change _ ≤ Pr[SomeFixedRawTargetViewedTerminal secretKey
+    change _ ≤ Pr[SomeUsedFixedRawTargetViewedTerminal secretKey
       (adversaryWithTargetQuery adversary publicKey) rootCache signatureLimit q q (q + 1) |
       (randomOracle input).run state.cache >>= pure ∘ fun source =>
         ((forgery, source.1), appendDirectTargetViewedState input state.cache
           source.1 source.2 state)]
     rw [probEvent_bind_pure_comp]
     change Pr[_ | (randomOracle input).run state.cache >>= _] ≤
-      Pr[fun source => SomeFixedRawTargetViewedTerminal secretKey
+      Pr[fun source => SomeUsedFixedRawTargetViewedTerminal secretKey
         (adversaryWithTargetQuery adversary publicKey) rootCache signatureLimit q q (q + 1)
           ((forgery, source.1),
         appendDirectTargetViewedState input state.cache source.1 source.2 state) |
@@ -403,12 +403,15 @@ theorem probEvent_gameRestWithViewTrace_fresh_honest_leak_le_weighted
         hparameter otsSecret hots ftsSecret hfts result hresult
     let candidate : Fin (q + 1) :=
       ⟨(rawTargetCandidateViews state.trace.intervals).length, by omega⟩
-    unfold SomeFixedRawTargetViewedTerminal at hnotPrefix
+    unfold SomeUsedFixedRawTargetViewedTerminal at hnotPrefix
     apply hnotPrefix
     refine ⟨hproper.1.cover.entries.card,
       Finset.mem_Icc.2 ⟨hproper.1.cover.entries_card_pos,
         hproper.1.cover.entries_card_le_trees⟩,
-      hproper.1.cover.pattern.pad hvalid, configuration, candidate, ?_⟩
+      ⟨hproper.1.cover.pattern.pad hvalid,
+        hproper.1.cover.pattern.pad_assignment_surjective hvalid
+          hproper.1.cover.pattern_assignment_surjective⟩,
+      configuration, candidate, ?_⟩
     exact configuration.raw_verifierTarget_fixedTerminal adversary parameter otsSecret
       ftsSecret result hresult f hf digest hproper hvalid hrealized
         rootCache state hprior rfl rfl input output digestCache rfl hmiss
@@ -416,15 +419,15 @@ theorem probEvent_gameRestWithViewTrace_fresh_honest_leak_le_weighted
             (by simp [signAttemptResultOfOutput, hdigestOutput, hadmissible]) q hdigestCard
   calc
     Pr[freshEvent | run >>= finish] ≤
-        Pr[SomeFixedRawTargetViewedTerminal secretKey
+        Pr[SomeUsedFixedRawTargetViewedTerminal secretKey
           (adversaryWithTargetQuery adversary publicKey) rootCache signatureLimit q q (q + 1) |
             (simulateQ (viewedFullTracedMappedAdversaryImpl secretKey)
               (adversaryWithTargetQuery adversary publicKey)).run
                 ⟨rootCache, ⟨[], [], []⟩, [], none⟩] := hfirst
-    _ ≤ ((q + 1 : Nat) : ℝ≥0∞) * weightedRawTargetOriginUnionBound signatureLimit q (digestReuseWeight q) :=
+    _ ≤ ((q + 1 : Nat) : ℝ≥0∞) * usedWeightedRawTargetOriginUnionBound signatureLimit q (digestReuseWeight q) :=
       hprefixBound
 
-theorem probEvent_gameAfterSecretsWithViewTrace_fresh_honest_leak_le_weighted
+theorem probEvent_gameAfterSecretsWithViewTrace_fresh_honest_leak_le_usedWeighted
     (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
     (hqMax : q ≤ 2 ^ 127)
     (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
@@ -436,7 +439,7 @@ theorem probEvent_gameAfterSecretsWithViewTrace_fresh_honest_leak_le_weighted
         ViewedHonestProperFewTimeLeakWitness parameter otsSecret ftsSecret result
           ∧ VerifierFreshTarget parameter result |
       gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret] ≤
-      ((q + 1 : Nat) : ℝ≥0∞) * weightedRawTargetOriginUnionBound signatureLimit q (digestReuseWeight q) := by
+      ((q + 1 : Nat) : ℝ≥0∞) * usedWeightedRawTargetOriginUnionBound signatureLimit q (digestReuseWeight q) := by
   rw [gameAfterSecretsWithViewTrace]
   apply probEvent_bind_le_of_forall_le
   rintro ⟨root, rootCache⟩ hroot
@@ -448,10 +451,10 @@ theorem probEvent_gameAfterSecretsWithViewTrace_fresh_honest_leak_le_weighted
     gameRestWithViewTrace adversary ⟨root, parameter⟩
       ⟨parameter, root, otsSecret, ftsSecret⟩ rootCache >>= pure ∘ attach] ≤ _
   rw [probEvent_bind_pure_comp]
-  exact probEvent_gameRestWithViewTrace_fresh_honest_leak_le_weighted adversary q hq hqMax
+  exact probEvent_gameRestWithViewTrace_fresh_honest_leak_le_usedWeighted adversary q hq hqMax
     parameter hparameter otsSecret hots ftsSecret hfts root rootCache hroot
 
-theorem probEvent_gameAfterSecretsWithViewTrace_honest_leak_le_weighted
+theorem probEvent_gameAfterSecretsWithViewTrace_honest_leak_le_usedWeighted
     (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
     (hqMax : q ≤ 2 ^ 127)
     (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
@@ -461,8 +464,8 @@ theorem probEvent_gameAfterSecretsWithViewTrace_honest_leak_le_weighted
     (hfts : ftsSecret ∈ support sampleFtsSecrets) :
     Pr[ViewedHonestProperFewTimeLeakWitness parameter otsSecret ftsSecret |
       gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret] ≤
-      q * weightedRawTargetOriginUnionBound signatureLimit q (digestReuseWeight q) +
-        ((q + 1 : Nat) : ℝ≥0∞) * weightedRawTargetOriginUnionBound signatureLimit q (digestReuseWeight q) := by
+      q * usedWeightedRawTargetOriginUnionBound signatureLimit q (digestReuseWeight q) +
+        ((q + 1 : Nat) : ℝ≥0∞) * usedWeightedRawTargetOriginUnionBound signatureLimit q (digestReuseWeight q) := by
   classical
   calc
     _ ≤ Pr[fun result =>
@@ -477,17 +480,17 @@ theorem probEvent_gameAfterSecretsWithViewTrace_honest_leak_le_weighted
         · exact Or.inr ⟨hproper, hfresh⟩
         · exact Or.inl ⟨hproper, hfresh⟩
     _ ≤ _ := (probEvent_or_le _ _ _).trans (add_le_add
-      (probEvent_gameAfterSecretsWithViewTrace_nonfresh_honest_leak_le_weighted adversary q hq
+      (probEvent_gameAfterSecretsWithViewTrace_nonfresh_honest_leak_le_usedWeighted adversary q hq
         hqMax parameter hparameter otsSecret hots ftsSecret hfts)
-      (probEvent_gameAfterSecretsWithViewTrace_fresh_honest_leak_le_weighted adversary q hq
+      (probEvent_gameAfterSecretsWithViewTrace_fresh_honest_leak_le_usedWeighted adversary q hq
         hqMax parameter hparameter otsSecret hots ftsSecret hfts))
 
-theorem probEvent_sampled_honest_leak_le_weighted
+theorem probEvent_sampled_honest_leak_le_usedWeighted
     (adversary : Adversary) (q : Nat)
     (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 127) :
     Pr[SampledViewedEvent ViewedHonestProperFewTimeLeakWitness | sampledViewedGame adversary] ≤
       ((2 * q + 1 : Nat) : ℝ≥0∞) *
-        weightedRawTargetOriginUnionBound signatureLimit q (digestReuseWeight q) := by
+        usedWeightedRawTargetOriginUnionBound signatureLimit q (digestReuseWeight q) := by
   rw [sampledViewedGame]
   apply probEvent_bind_le_of_forall_le
   intro secrets hsecrets
@@ -495,9 +498,36 @@ theorem probEvent_sampled_honest_leak_le_weighted
   rw [bind_pure_comp, probEvent_map]
   change Pr[ViewedHonestProperFewTimeLeakWitness secrets.parameter secrets.otsSecret secrets.ftsSecret |
     gameAfterSecretsWithViewTrace adversary secrets.parameter secrets.otsSecret secrets.ftsSecret] ≤ _
-  apply (probEvent_gameAfterSecretsWithViewTrace_honest_leak_le_weighted adversary q hq hqMax
+  apply (probEvent_gameAfterSecretsWithViewTrace_honest_leak_le_usedWeighted adversary q hq hqMax
     secrets.parameter hparameter secrets.otsSecret hots secrets.ftsSecret hfts).trans_eq
   push_cast
   ring
+
+theorem probEvent_gameAfterSecretsWithViewTrace_honest_leak_le_weighted
+    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
+    (hqMax : q ≤ 2 ^ 127)
+    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
+    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
+    (hots : otsSecret ∈ support sampleOtsSecrets)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (hfts : ftsSecret ∈ support sampleFtsSecrets) :
+    Pr[ViewedHonestProperFewTimeLeakWitness parameter otsSecret ftsSecret |
+      gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret] ≤
+      q * weightedRawTargetOriginUnionBound signatureLimit q (digestReuseWeight q) +
+        ((q + 1 : Nat) : ℝ≥0∞) * weightedRawTargetOriginUnionBound signatureLimit q (digestReuseWeight q) := by
+  apply (probEvent_gameAfterSecretsWithViewTrace_honest_leak_le_usedWeighted
+    adversary q hq hqMax parameter hparameter otsSecret hots ftsSecret hfts).trans
+  exact add_le_add
+    (mul_le_mul_left' (usedWeightedRawTargetOriginUnionBound_le_weighted _ _ _) _)
+    (mul_le_mul_left' (usedWeightedRawTargetOriginUnionBound_le_weighted _ _ _) _)
+
+theorem probEvent_sampled_honest_leak_le_weighted
+    (adversary : Adversary) (q : Nat)
+    (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 127) :
+    Pr[SampledViewedEvent ViewedHonestProperFewTimeLeakWitness | sampledViewedGame adversary] ≤
+      ((2 * q + 1 : Nat) : ℝ≥0∞) *
+        weightedRawTargetOriginUnionBound signatureLimit q (digestReuseWeight q) := by
+  exact (probEvent_sampled_honest_leak_le_usedWeighted adversary q hq hqMax).trans
+    (mul_le_mul_left' (usedWeightedRawTargetOriginUnionBound_le_weighted _ _ _) _)
 
 end SphincsSecurity.Concrete

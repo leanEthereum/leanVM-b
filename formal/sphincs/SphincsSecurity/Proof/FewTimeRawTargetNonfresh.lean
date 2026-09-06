@@ -142,7 +142,7 @@ theorem probEvent_gameRestWithViewTrace_nonfresh_honest_leak_le
       · obtain ⟨distinct, hdistinct, pattern, configuration, candidate, hterminal⟩ :=
           hclassified
         apply hnotPrefix
-        exact ⟨distinct, hdistinct, pattern, configuration, candidate, hterminal⟩
+        exact ⟨distinct, hdistinct, pattern.1, configuration, candidate, hterminal⟩
     _ ≤ _ := probEvent_exists_fixedRawTargetViewedTerminal_le_idealOrigin
       secretKey (adversary.main publicKey) rootCache signatureLimit q q hqMax
         (by

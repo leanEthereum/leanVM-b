@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.SecurityUsedForestEndpoint
 import SphincsSecurity.Proof.SecurityUnconditionalGuessesEndpoint
 import SphincsSecurity.Proof.FewTimeOccupancy127
 import SphincsSecurity.Proof.FewTimeUsedPatterns

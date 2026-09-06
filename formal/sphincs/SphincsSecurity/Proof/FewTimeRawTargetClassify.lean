@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.FewTimeRawTargetSource
+import SphincsSecurity.Proof.FewTimeUsedPatterns
 
 namespace SphincsSecurity.Concrete
 
@@ -33,8 +34,8 @@ theorem gameAfterSecretsWithViewTrace_honestLeak_target_classified_at_adversary_
     let secretKey : SecretKey := ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
     VerifierFreshTarget parameter result ∨
       ∃ (distinct : Nat) (_ : distinct ∈ Finset.Icc 1 14)
-          (pattern : FewTimePattern signatureLimit distinct)
-          (configuration : OriginConfiguration pattern q) (candidate : Fin q),
+          (pattern : UsedFewTimePattern signatureLimit distinct)
+          (configuration : OriginConfiguration pattern.1 q) (candidate : Fin q),
         FixedRawTargetViewedTerminal secretKey
           (adversary.main ⟨result.1.1, parameter⟩) rootCache q
             configuration candidate.val (result.1.2.1, state) := by
@@ -84,7 +85,10 @@ theorem gameAfterSecretsWithViewTrace_honestLeak_target_classified_at_adversary_
     refine Or.inr ⟨hproper.1.cover.entries.card,
       Finset.mem_Icc.2 ⟨hproper.1.cover.entries_card_pos,
         hproper.1.cover.entries_card_le_trees⟩,
-      hproper.1.cover.pattern.pad hle, configuration, candidate, hviewedCache, ?_⟩
+      ⟨hproper.1.cover.pattern.pad hle,
+        hproper.1.cover.pattern.pad_assignment_surjective hle
+          hproper.1.cover.pattern_assignment_surjective⟩,
+      configuration, candidate, hviewedCache, ?_⟩
     intro monitored hmonitored heq
     have hstateEq : monitored.2.origin.viewed = state := congrArg Prod.snd heq
     have htrace' : result.2.trace = monitored.2.origin.viewed.trace := by

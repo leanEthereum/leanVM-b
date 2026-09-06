@@ -50,7 +50,7 @@ noncomputable def usedFewTimePatternEquiv (signatures distinct : Nat) :
   right_inv pattern := by rcases pattern with ⟨⟨selected, hcard⟩, ⟨assignment, hsurjective⟩⟩; rfl
 
 noncomputable instance (signatures distinct : Nat) : Fintype (UsedFewTimePattern signatures distinct) :=
-  Fintype.ofEquiv _ (usedFewTimePatternEquiv signatures distinct).symm
+  by classical exact Subtype.fintype _
 
 theorem usedFewTimePattern_card (signatures distinct : Nat) :
     Fintype.card (UsedFewTimePattern signatures distinct) =
