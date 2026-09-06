@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.FtsProbeJointExecution
+import SphincsSecurity.Proof.OtsProbeOuterCapLive
 import SphincsSecurity.Proof.FtsProbeJointContinuation
 import SphincsSecurity.Proof.FtsProbeJointSigningLog
 import SphincsSecurity.Proof.FtsProbeJointQueryInvariants
