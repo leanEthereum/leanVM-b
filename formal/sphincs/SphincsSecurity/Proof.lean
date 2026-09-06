@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.FtsProbeJointExecution
+import SphincsSecurity.Proof.FtsProbeRetainedLogCoverage
 import SphincsSecurity.Proof.FtsProbeStableDigestTransport
 import SphincsSecurity.Proof.SecurityJointRetainedFtsEndpoint
 import SphincsSecurity.Proof.SecurityOuterCappedHistoryFtsEndpoint
