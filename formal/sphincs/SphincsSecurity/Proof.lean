@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.JointProbeMaterializedRetained
 import SphincsSecurity.Proof.JointProbeTerminalBudget
 import SphincsSecurity.Proof.JointProbeCandidateBudget
 import SphincsSecurity.Proof.SecurityJointCompletionSplitEndpoint
