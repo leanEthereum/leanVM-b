@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.SecurityJointResolvedEndpoint
 import SphincsSecurity.Proof.JointProbeResolvedSigner
 import SphincsSecurity.Proof.JointProbeResolvedBlocks
 import SphincsSecurity.Proof.JointProbeResolvedRetained
