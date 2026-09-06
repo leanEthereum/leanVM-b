@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.SecurityErasedPrefixEndpoint
 import SphincsSecurity.Proof.SecurityStartPrefixEndpoint
 import SphincsSecurity.Proof.SecurityAnswerEncodingEndpoint
 import SphincsSecurity.Proof.SecurityNonOtsEndpoint
