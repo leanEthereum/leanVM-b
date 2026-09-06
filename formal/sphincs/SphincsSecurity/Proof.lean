@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.JointProbeCandidateBudget
+import SphincsSecurity.Proof.SecurityJointCompletionSplitEndpoint
 import SphincsSecurity.Proof.SecurityJointResolvedEndpoint
 import SphincsSecurity.Proof.JointProbeResolvedSigner
 import SphincsSecurity.Proof.JointProbeResolvedBlocks

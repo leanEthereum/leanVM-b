@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.JointProbeRetainedCost
+import SphincsSecurity.Proof.OtsProbeCappedCost
 
 namespace SphincsSecurity.Concrete
 
@@ -9,8 +10,9 @@ noncomputable def sampledNativeFtsHistoryCutCharge
   ∑' parameter, Pr[= parameter | sampleParameter] *
     ∑' ftsSecret, Pr[= ftsSecret | sampleFtsSecrets] *
       OtsProbeSimulation.sharedHistoryCutCharge targets
-        (FtsProbeSimulation.nativeFtsRetainedSource adversary parameter (FtsProbeSimulation.curryFtsTableEquiv ftsSecret) q)
-        (OtsProbeSimulation.ensuredInitialContext ∅) q
+        (OtsProbeSimulation.capProbeQueries
+          (FtsProbeSimulation.nativeFtsRetainedSource adversary parameter (FtsProbeSimulation.curryFtsTableEquiv ftsSecret) q) q)
+        (OtsProbeSimulation.ensuredInitialContext targets) q
 
 theorem sampledNativeFtsHistoryCutCharge_le_cost
     (targets : Finset Position) (adversary : Adversary) (q : Nat) :
@@ -21,7 +23,8 @@ theorem sampledNativeFtsHistoryCutCharge_le_cost
   apply mul_le_mul' le_rfl
   apply ENNReal.tsum_le_tsum
   intro ftsSecret
-  exact mul_le_mul' le_rfl (OtsProbeSimulation.sharedHistoryCutCharge_le_expectedProbeCost targets _ _ q)
+  exact mul_le_mul' le_rfl (OtsProbeSimulation.sharedHistoryCutCharge_cap_ensuredInitial_le_cost _ targets q
+    (FtsProbeSimulation.nativeFtsRetainedSource_probeBound adversary parameter _ q))
 
 theorem sampledNativeFtsHistoryCut_add_fts_charge_le_q
     (targets : Finset Position) (adversary : Adversary) (q : Nat) :
