@@ -69,12 +69,10 @@ theorem probEvent_retainedOtherResidual_le_viewed (adversary : Adversary) :
   intro left right hrel hleft
   exact otherViewedTerminalEvent_of_retained_log adversary secrets left right hrel.1 hrel.2 hleft
 
-theorem probEvent_firstParentEncodingResidual_le_jointOts_add_fts_add_remaining (adversary : Adversary)
-    (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqSpace : q + 1 < Fintype.card Digest) :
+theorem probEvent_firstParentEncodingResidual_le_ots_allowance (adversary : Adversary) (allowance : ENNReal)
+    (hots : Pr[SampledFirstParentOrOtsWitness | sampledFirstParentRetainedGame adversary] ≤ allowance) :
     Pr[firstParentEncodingResidual | sampledFirstParentSettlementGame adversary] ≤
-      (sampledQueryCharge (fun secretKey _ input => otsHashInputCharge secretKey.parameter input) adversary *
-        privateHistoryGuessRate q + (q : ENNReal) * ((2 ^ 216 : Nat) : ENNReal)⁻¹) +
-      (sampledQueryCharge ftsParentQueryCharge adversary * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
+      allowance + (sampledQueryCharge ftsParentQueryCharge adversary * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
         Pr[SampledViewedEvent otherViewedTerminalEvent | sampledViewedGame adversary]) := by
   rw [← sampledFirstParentRetainedGame_verdict_projection, probEvent_map]
   apply (probEvent_mono
@@ -82,11 +80,21 @@ theorem probEvent_firstParentEncodingResidual_le_jointOts_add_fts_add_remaining 
       SampledFirstFtsParentRecord (result.1, firstParentRetainedVerdictProjection result.2) ∨ retainedOtherResidual result)
     (fun _ hresult hresidual => firstParentEncodingResidual_ots_or_fts_or_remaining adversary hresult hresidual)).trans
   apply (probEvent_or_le _ _ _).trans
-  apply add_le_add (probEvent_sampledFirstParentOrOtsWitness_le_actualOtsCount_rate_add_erasure adversary q hq hqSpace)
+  apply add_le_add hots
   apply (probEvent_or_le _ _ _).trans
   apply add_le_add _ (probEvent_retainedOtherResidual_le_viewed adversary)
   have hfts := probEvent_sampledFirstFtsParentRecord_le_queryCharge adversary
   rw [← sampledFirstParentRetainedGame_verdict_projection, probEvent_map] at hfts
   exact hfts
+
+theorem probEvent_firstParentEncodingResidual_le_jointOts_add_fts_add_remaining (adversary : Adversary)
+    (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqSpace : q + 1 < Fintype.card Digest) :
+    Pr[firstParentEncodingResidual | sampledFirstParentSettlementGame adversary] ≤
+      (sampledQueryCharge (fun secretKey _ input => otsHashInputCharge secretKey.parameter input) adversary *
+        privateHistoryGuessRate q + (q : ENNReal) * ((2 ^ 216 : Nat) : ENNReal)⁻¹) +
+      (sampledQueryCharge ftsParentQueryCharge adversary * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ +
+        Pr[SampledViewedEvent otherViewedTerminalEvent | sampledViewedGame adversary]) :=
+  probEvent_firstParentEncodingResidual_le_ots_allowance adversary _
+    (probEvent_sampledFirstParentOrOtsWitness_le_actualOtsCount_rate_add_erasure adversary q hq hqSpace)
 
 end SphincsSecurity.Concrete
