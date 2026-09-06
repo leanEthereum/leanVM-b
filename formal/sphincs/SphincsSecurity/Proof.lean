@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.FirstOtsParentGame
 import SphincsSecurity.Proof.OtsProbeEarlyParentRetained
 import SphincsSecurity.Proof.SecurityVerifierPrimitiveEndpoint
 import SphincsSecurity.Proof.SettledCollisionGame
