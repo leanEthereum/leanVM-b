@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.OtsProbeEncodingPotentialHash
+import SphincsSecurity.Proof.JointProbeMaterializedPotential
 import SphincsSecurity.Proof.JointProbeMaterializedRetained
 import SphincsSecurity.Proof.JointProbeTerminalBudget
 import SphincsSecurity.Proof.JointProbeCandidateBudget
