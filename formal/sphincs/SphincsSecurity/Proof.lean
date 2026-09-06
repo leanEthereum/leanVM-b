@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.JointProbeSourceRetained
 import SphincsSecurity.Proof.SecurityJointObservedReserveEndpoint
 import SphincsSecurity.Proof.SecurityJointErasedCostEndpoint
 import SphincsSecurity.Proof.SecurityJointProbeChargeEndpoint
