@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.FtsProbeJointQueryInvariants
 import SphincsSecurity.Proof.FtsProbeJointSignerSynced
 import SphincsSecurity.Proof.FtsProbeHashStep
 import SphincsSecurity.Proof.FtsProbeNativeLayerCache
