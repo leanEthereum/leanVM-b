@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.SecurityJointProbeChargeEndpoint
 import SphincsSecurity.Proof.SecurityJointFtsHitEndpoint
 import SphincsSecurity.Proof.FtsProbeJointExecution
 import SphincsSecurity.Proof.FtsProbeRetainedLogCoverage
