@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.FtsProbeNativeLayerCache
 import SphincsSecurity.Proof.FtsProbeNativePublicationInvariants
 import SphincsSecurity.Proof.OtsProbeNativePublicationCache
 import SphincsSecurity.Proof.FtsProbeNativeQuery
