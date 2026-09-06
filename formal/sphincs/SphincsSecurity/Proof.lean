@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.SecurityNonOtsEndpoint
 import SphincsSecurity.Proof.SecurityParentResidualEndpoint
 import SphincsSecurity.Proof.FirstFtsParentGame
 import SphincsSecurity.Proof.FirstOtsParentGame
