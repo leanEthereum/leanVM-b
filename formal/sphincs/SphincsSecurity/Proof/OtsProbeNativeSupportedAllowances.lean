@@ -79,6 +79,22 @@ theorem canonicalTraceCharge_eq_native_components_of_safe
       rw [hhead, htail, Finset.sum_add_distrib]
       ac_rfl
 
+theorem nativeRetainedTraceCharge_eq_components_of_querySpace
+    (targets : Finset Position) (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqSpace : q + 1 < Fintype.card Digest)
+    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
+    (table : OtsSecretIndex → HashOutput) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (hfts : ftsSecret ∈ support sampleFtsSecrets)
+    (trace : Option (ResolvedRunResult (RetainedRestResult × SplitHashCache)) × List CanonicalQuerySelection)
+    (htrace : trace ∈ support (nativeChainTraceAfterRoot targets parameter table ftsSecret (q + 1)
+      (fun root => retainedGameRestComputation adversary ⟨root, parameter⟩))) :
+    canonicalTraceCharge (canonicalGuessCharge parameter table) trace.2 =
+      canonicalTraceCharge (nativeStartCharge parameter table) trace.2 +
+        (∑ target : Position, canonicalTraceCharge (nativeMissingStructuralCharge target parameter table) trace.2) +
+        canonicalTraceCharge (nativeMaterializedCharge parameter table) trace.2 := by
+  exact canonicalTraceCharge_eq_native_components_of_safe Finset.univ parameter table trace.2
+    (nativeRetainedTraceAfterRoot_entry_safe_of_querySpace targets adversary q hq hqSpace parameter hparameter table ftsSecret hfts trace htrace)
+    (by intro entry hentry input heq target digest hcandidate; exact Finset.mem_univ target)
+
 theorem nativeRetainedTraceCharge_eq_components
     (targets : Finset Position) (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 126)
     (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
@@ -91,12 +107,13 @@ theorem nativeRetainedTraceCharge_eq_components
       canonicalTraceCharge (nativeStartCharge parameter table) trace.2 +
         (∑ target : Position, canonicalTraceCharge (nativeMissingStructuralCharge target parameter table) trace.2) +
         canonicalTraceCharge (nativeMaterializedCharge parameter table) trace.2 := by
-  exact canonicalTraceCharge_eq_native_components_of_safe Finset.univ parameter table trace.2
-    (nativeRetainedTraceAfterRoot_entry_safe targets adversary q hq hqMax parameter hparameter table ftsSecret hfts trace htrace)
-    (by intro entry hentry input heq target digest hcandidate; exact Finset.mem_univ target)
+  exact nativeRetainedTraceCharge_eq_components_of_querySpace targets adversary q hq
+    (by
+      have hspace : 2 ^ 126 + 1 < Fintype.card Digest := by norm_num [digestBits]
+      omega) parameter hparameter table ftsSecret hfts trace htrace
 
-theorem expected_nativeRetainedGuessCharge_le_missing_add_erasure
-    (targets : Finset Position) (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 126)
+theorem expected_nativeRetainedGuessCharge_le_missing_add_erasure_of_querySpace
+    (targets : Finset Position) (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqSpace : q + 1 < Fintype.card Digest)
     (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
     (table : OtsSecretIndex → HashOutput) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
     (hfts : ftsSecret ∈ support sampleFtsSecrets) :
@@ -118,12 +135,30 @@ theorem expected_nativeRetainedGuessCharge_le_missing_add_erasure
     apply tsum_congr
     intro trace
     by_cases htrace : trace ∈ support traceRun
-    · rw [nativeRetainedTraceCharge_eq_components targets adversary q hq hqMax parameter hparameter table ftsSecret hfts trace htrace]
+    · rw [nativeRetainedTraceCharge_eq_components_of_querySpace targets adversary q hq hqSpace parameter hparameter table ftsSecret hfts trace htrace]
     · simp [probOutput_eq_zero_of_not_mem_support htrace]
   change _ ≤ _ + _
   rw [heq]
   simp only [mul_add, ENNReal.tsum_add]
   apply add_le_add le_rfl
   exact expected_nativeMaterializedRetainedTraceCharge_le targets adversary q hq parameter hparameter table ftsSecret hfts (q + 1)
+
+theorem expected_nativeRetainedGuessCharge_le_missing_add_erasure
+    (targets : Finset Position) (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 126)
+    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
+    (table : OtsSecretIndex → HashOutput) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (hfts : ftsSecret ∈ support sampleFtsSecrets) :
+    (∑' trace, Pr[= trace | nativeChainTraceAfterRoot targets parameter table ftsSecret (q + 1)
+      (fun root => retainedGameRestComputation adversary ⟨root, parameter⟩)] *
+      canonicalTraceCharge (canonicalGuessCharge parameter table) trace.2) ≤
+    (∑' trace, Pr[= trace | nativeChainTraceAfterRoot targets parameter table ftsSecret (q + 1)
+      (fun root => retainedGameRestComputation adversary ⟨root, parameter⟩)] *
+      (canonicalTraceCharge (nativeStartCharge parameter table) trace.2 +
+        ∑ target : Position, canonicalTraceCharge (nativeMissingStructuralCharge target parameter table) trace.2)) +
+      (q : ENNReal) * ((2 ^ 216 : Nat) : ENNReal)⁻¹ := by
+  exact expected_nativeRetainedGuessCharge_le_missing_add_erasure_of_querySpace targets adversary q hq
+    (by
+      have hspace : 2 ^ 126 + 1 < Fintype.card Digest := by norm_num [digestBits]
+      omega) parameter hparameter table ftsSecret hfts
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

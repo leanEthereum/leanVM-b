@@ -4,14 +4,18 @@ namespace SphincsSecurity.Concrete.FtsProbeSimulation
 
 open _root_.OracleComp OracleSpec ENNReal
 
-theorem cost_le_four_thirds_of_feedback (cost actual probability : ℝ≥0∞) (q : Nat)
-    (hcost : cost ≤ q) (hq : q ≤ 2 ^ 126)
+theorem cost_le_factor_of_feedback (cost actual probability factor : ℝ≥0∞) (q : Nat)
+    (hcost : cost ≤ q) (hfactor : factor ≠ ∞)
+    (hcoefficient : ((q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹) * factor + 1 ≤ factor)
     (hfeedback : cost ≤ actual + probability * q)
     (hprobability : probability ≤ cost * (Fintype.card Digest : ℝ≥0∞)⁻¹) :
-    cost ≤ (4 / 3 : ℝ≥0∞) * actual := by
+    cost ≤ factor * actual := by
   classical
+  have hfactorZero : factor ≠ 0 := by
+    intro hzero
+    simp [hzero] at hcoefficient
   rcases Classical.em (actual = ∞) with hactual | hactual
-  · simp [hactual]
+  · simp [hactual, hfactorZero]
   have hfinite : cost ≠ ∞ := ne_top_of_le_ne_top (by finiteness) hcost
   let fraction : ℝ≥0∞ := (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹
   have hbound : cost ≤ actual + cost * fraction := by
@@ -21,8 +25,7 @@ theorem cost_le_four_thirds_of_feedback (cost actual probability : ℝ≥0∞) (
     dsimp [fraction]
     rw [show Fintype.card Digest = 2 ^ digestBits by simp]
     ring
-  have hcoefficient := OtsProbeSimulation.rootBudget_four_thirds hq
-  change fraction * (4 / 3 : ℝ≥0∞) + 1 ≤ (4 / 3 : ℝ≥0∞) at hcoefficient
+  change fraction * factor + 1 ≤ factor at hcoefficient
   have hboundReal := (ENNReal.toReal_le_toReal hfinite (by dsimp [fraction]; finiteness)).mpr hbound
   have hcoefficientReal := (ENNReal.toReal_le_toReal (by dsimp [fraction]; finiteness)
     (by finiteness)).mpr hcoefficient
@@ -32,9 +35,17 @@ theorem cost_le_four_thirds_of_feedback (cost actual probability : ℝ≥0∞) (
   apply (ENNReal.toReal_le_toReal hfinite (by finiteness)).mp
   rw [ENNReal.toReal_mul]
   have hscaled := mul_le_mul_of_nonneg_right hboundReal
-    (show 0 ≤ (4 / 3 : ℝ≥0∞).toReal from ENNReal.toReal_nonneg)
+    (show 0 ≤ factor.toReal from ENNReal.toReal_nonneg)
   have hcancel := mul_le_mul_of_nonneg_left hcoefficientReal cost.toReal_nonneg
   nlinarith
+
+theorem cost_le_four_thirds_of_feedback (cost actual probability : ℝ≥0∞) (q : Nat)
+    (hcost : cost ≤ q) (hq : q ≤ 2 ^ 126)
+    (hfeedback : cost ≤ actual + probability * q)
+    (hprobability : probability ≤ cost * (Fintype.card Digest : ℝ≥0∞)⁻¹) :
+    cost ≤ (4 / 3 : ℝ≥0∞) * actual := by
+  exact cost_le_factor_of_feedback cost actual probability (4 / 3) q hcost (by finiteness)
+    (OtsProbeSimulation.rootBudget_four_thirds hq) hfeedback hprobability
 
 theorem maskedFtsProbeCharge_le_four_thirds_actual_cache
     (adversary : Adversary) (parameter : PublicParameter)

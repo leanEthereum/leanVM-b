@@ -186,8 +186,8 @@ theorem nativeChainTraceAfterRoot_entry_resources
       exact hpending.trans ((canonicalTraceCandidates_length_le_hashCount parameter _).trans
         (canonicalTraceHashCount_take_le trace.2 ordinal))
 
-theorem nativeRetainedTraceAfterRoot_entry_safe
-    (targets : Finset Position) (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 126)
+theorem nativeRetainedTraceAfterRoot_entry_safe_of_querySpace
+    (targets : Finset Position) (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqSpace : q + 1 < Fintype.card Digest)
     (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
     (table : OtsSecretIndex → HashOutput) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
     (hfts : ftsSecret ∈ support sampleFtsSecrets)
@@ -199,8 +199,21 @@ theorem nativeRetainedTraceAfterRoot_entry_safe
   have hresources := nativeChainTraceAfterRoot_entry_resources targets parameter table ftsSecret (q + 1) _ trace htrace
   intro entry hentry
   have hentry := hresources entry hentry
-  have hspace : 2 ^ 126 + 1 < Fintype.card Digest := by norm_num [digestBits]
   constructor <;> omega
+
+theorem nativeRetainedTraceAfterRoot_entry_safe
+    (targets : Finset Position) (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 126)
+    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
+    (table : OtsSecretIndex → HashOutput) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+    (hfts : ftsSecret ∈ support sampleFtsSecrets)
+    (trace : Option (ResolvedRunResult (RetainedRestResult × SplitHashCache)) × List CanonicalQuerySelection)
+    (htrace : trace ∈ support (nativeChainTraceAfterRoot targets parameter table ftsSecret (q + 1)
+      (fun root => retainedGameRestComputation adversary ⟨root, parameter⟩))) :
+    ∀ entry ∈ trace.2, 0 < entry.fuel ∧ entry.context.state.pending.card + 1 < Fintype.card Digest := by
+  exact nativeRetainedTraceAfterRoot_entry_safe_of_querySpace targets adversary q hq
+    (by
+      have hspace : 2 ^ 126 + 1 < Fintype.card Digest := by norm_num [digestBits]
+      omega) parameter hparameter table ftsSecret hfts trace htrace
 
 theorem canonicalGuessCharge_of_nativeRetainedTraceAfterRoot
     (targets : Finset Position) (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 126)
