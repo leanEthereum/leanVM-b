@@ -1,6 +1,7 @@
 import SphincsSecurity.Proof.OtsProbeFullQueryTraceCoupling
 import SphincsSecurity.Proof.OtsProbeNativeTraceCompletion
 import SphincsSecurity.Proof.OtsProbeParentSettlement
+import SphincsSecurity.Proof.SigningParentSettlement
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -40,6 +41,28 @@ def EarlyOtsParentAtQuery (parameter : PublicParameter)
     ¬ Settled parameter otsSecret ftsSecret snapshot.state.1.cache child ∧
     Settled parameter otsSecret ftsSecret result.1.2.1.cache parent ∧
     snapshot.state.1.cache (cachedInput parameter otsSecret ftsSecret result.1.2.1.cache parent) ≠ none
+
+theorem EarlyOtsParentAtQuery.of_signing_cut
+    (secretKey : SecretKey) (message : Message) (randomness : Randomness)
+    (index : Index) (leaves : DigestTree → FtsLeaf) (ordinal : Nat)
+    {actual : (α × (ViewedFullTraceState × Bool)) × List PrehitQuerySnapshot}
+    {snapshot : PrehitQuerySnapshot} (hsnapshot : snapshot ∈ actual.2)
+    {loopCache middleCache : QueryCache HashSpec}
+    (hloop : (some (randomness, index, leaves), loopCache) ∈ support
+      ((simulateQ romImpl (signDigestLoop digestAttemptLimit secretKey message)).run snapshot.state.1.cache))
+    {cut : HashQueryCut (Option Signature)}
+    (hcut : (cut, middleCache) ∈ support ((simulateQ (randomOracle : QueryImpl HashSpec _)
+      (hashQueryCutAt (signAfterDigest secretKey randomness index leaves) ordinal)).run loopCache))
+    {input : HashInput} {answer : HashOutput}
+    (hots : ∀ position, AtPosition secretKey.parameter input position → IsOtsPosition position)
+    (hparent : ParentSettlement secretKey.parameter secretKey.otsSecret secretKey.ftsSecret middleCache input answer)
+    (hle : middleCache.cacheQuery input answer ≤ actual.1.2.1.cache) :
+    EarlyOtsParentAtQuery secretKey.parameter secretKey.otsSecret secretKey.ftsSecret actual := by
+  obtain ⟨child, parent, hat, hparentOf, hunsettled, hsettled, hcached⟩ :=
+    signAfterDigest_parentSettlement_input_cached_signingEntry secretKey message randomness index leaves ordinal
+      hloop hcut (agreesWithFn_fromCache middleCache) hparent hle
+  exact ⟨snapshot, hsnapshot, child, parent, (hots child hat).parent hparentOf,
+    hparentOf, hunsettled, hsettled, hcached⟩
 
 theorem not_earlyOtsParentAtQuery_of_full_native_trace
     (parameter : PublicParameter) (root : Digest) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
