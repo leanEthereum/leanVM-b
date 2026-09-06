@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.OtsProbeLayerEncodingFailure
 import SphincsSecurity.Proof.JointProbeMaterializedPotential
 import SphincsSecurity.Proof.JointProbeMaterializedRetained
 import SphincsSecurity.Proof.JointProbeTerminalBudget
