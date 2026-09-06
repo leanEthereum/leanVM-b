@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.SecurityCommonPrefixEndpoint
 import SphincsSecurity.Proof.SecurityErasedPrefixEndpoint
 import SphincsSecurity.Proof.SecurityStartPrefixEndpoint
 import SphincsSecurity.Proof.SecurityAnswerEncodingEndpoint
