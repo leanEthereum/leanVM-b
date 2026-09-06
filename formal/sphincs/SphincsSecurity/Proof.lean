@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.FtsProbeJointExecution
+import SphincsSecurity.Proof.SecurityJointRetainedFtsEndpoint
 import SphincsSecurity.Proof.SecurityOuterCappedHistoryFtsEndpoint
 import SphincsSecurity.Proof.OtsProbeOuterCapLive
 import SphincsSecurity.Proof.FtsProbeJointContinuation
