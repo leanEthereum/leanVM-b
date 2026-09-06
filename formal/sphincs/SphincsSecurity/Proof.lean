@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.SecurityJointErasedCostEndpoint
 import SphincsSecurity.Proof.SecurityJointProbeChargeEndpoint
 import SphincsSecurity.Proof.SecurityJointFtsHitEndpoint
 import SphincsSecurity.Proof.FtsProbeJointExecution
