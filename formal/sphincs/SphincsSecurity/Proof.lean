@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.SecurityStoppedParentEndpoint
 import SphincsSecurity.Proof.SecurityJointNonSecretEndpoint
 import SphincsSecurity.Proof.SecurityJointMaterializedBoundEndpoint
 import SphincsSecurity.Proof.JointProbeRetainedPublicationInvariant
