@@ -8,7 +8,7 @@ attribute [local instance] Classical.propDecidable
 attribute [local irreducible] sampleOtsHashTable
 set_option backward.isDefEq.respectTransparency false
 
-theorem sum_privateResolvedRawCandidate_le_capped_common
+theorem sum_privateResolvedRawCandidate_le_capped_common_cuts
     (targets : Finset Position) (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
     (fuel : Nat) (table : OtsSecretIndex → HashOutput) (q : Nat)
     (hbound : LiveResolvedQueryBound LazyRevealProbe.IsProbe computation q (ensuredInitialContext targets) fuel table) :
@@ -16,7 +16,8 @@ theorem sum_privateResolvedRawCandidate_le_capped_common
       Pr[PrivateCandidatePairHit | privateResolvedSelectedCandidate target (privateRawCutCandidate target) <$>
         runPrivateResolvedView target table (ensuredInitialContext targets) fuel
           (privatePositionProbeCutAt target computation ordinal)]) ≤
-    erasedStructuralQueryCharge (capProbeQueries computation q) (ensuredInitialContext targets) table *
+    (∑ target ∈ targets, ∑ ordinal ∈ Finset.range q,
+      commonPrivateCutCharge target (capProbeQueries computation q) (ensuredInitialContext targets) table ordinal) *
       (Fintype.card Digest : ENNReal)⁻¹ := by
   have hvalid := ensuredInitialContext_valid targets
   have hcomplete := ensuredInitialContext_completable targets table
@@ -44,8 +45,19 @@ theorem sum_privateResolvedRawCandidate_le_capped_common
     _ = (∑ target ∈ targets, ∑ ordinal ∈ Finset.range q,
         commonPrivateCutCharge target (capProbeQueries computation q) (ensuredInitialContext targets) table ordinal) *
           (Fintype.card Digest : ENNReal)⁻¹ := by simp_rw [Finset.sum_mul]
-    _ ≤ _ := mul_le_mul'
-      (sum_commonPrivateCutCharge_le_erasedStructuralCharge targets _ (ensuredInitialContext targets) table q) le_rfl
+
+theorem sum_privateResolvedRawCandidate_le_capped_common
+    (targets : Finset Position) (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
+    (fuel : Nat) (table : OtsSecretIndex → HashOutput) (q : Nat)
+    (hbound : LiveResolvedQueryBound LazyRevealProbe.IsProbe computation q (ensuredInitialContext targets) fuel table) :
+    (∑ target ∈ targets, ∑ ordinal ∈ Finset.range q,
+      Pr[PrivateCandidatePairHit | privateResolvedSelectedCandidate target (privateRawCutCandidate target) <$>
+        runPrivateResolvedView target table (ensuredInitialContext targets) fuel
+          (privatePositionProbeCutAt target computation ordinal)]) ≤
+    erasedStructuralQueryCharge (capProbeQueries computation q) (ensuredInitialContext targets) table *
+      (Fintype.card Digest : ENNReal)⁻¹ :=
+  (sum_privateResolvedRawCandidate_le_capped_common_cuts targets computation fuel table q hbound).trans
+    (mul_le_mul' (sum_commonPrivateCutCharge_le_erasedStructuralCharge targets _ (ensuredInitialContext targets) table q) le_rfl)
 
 noncomputable def sampledNativeCappedStructuralCharge
     (targets : Finset Position) (adversary : Adversary) (q : Nat) : ENNReal :=

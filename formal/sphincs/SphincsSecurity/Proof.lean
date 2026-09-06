@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.SecuritySharedHistoryEndpoint
 import SphincsSecurity.Proof.SecurityCappedPrefixEndpoint
 import SphincsSecurity.Proof.SecurityCommonPrefixEndpoint
 import SphincsSecurity.Proof.SecurityErasedPrefixEndpoint
