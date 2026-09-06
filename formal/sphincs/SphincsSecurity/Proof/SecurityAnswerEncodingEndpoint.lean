@@ -7,6 +7,21 @@ namespace SphincsSecurity.Concrete
 open OracleComp OracleSpec ENNReal
 open OtsProbeSimulation
 
+theorem probEvent_otherViewedTerminal_le_fts_allowance_remaining127
+    (adversary : Adversary) (q : Nat) (hqPos : 1 ≤ q)
+    (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 127) (allowance : ENNReal)
+    (hfts : Pr[SampledViewedEvent cleanUncoveredEvent | sampledViewedGame adversary] ≤ allowance) :
+    Pr[SampledViewedEvent otherViewedTerminalEvent | sampledViewedGame adversary] ≤
+      allowance + ((q : ENNReal) * ((2 ^ 139 : Nat) : ENNReal)⁻¹ +
+        ((2 * q + 1 : Nat) : ENNReal) * weightedRawTargetOriginUnionBound signatureLimit q (digestReuseWeight q)) := by
+  change Pr[fun result => SampledViewedEvent cleanUncoveredEvent result ∨
+    SampledViewedEvent cleanMessageEvent result ∨ SampledViewedEvent ViewedHonestProperFewTimeLeakWitness result |
+      sampledViewedGame adversary] ≤ _
+  exact (probEvent_or_le _ _ _).trans (add_le_add hfts
+    ((probEvent_or_le _ _ _).trans (add_le_add
+      (probEvent_sampled_cleanMessage_le127 adversary q hqPos hq hqMax)
+      (probEvent_sampled_honest_leak_le_weighted adversary q hq hqMax))))
+
 theorem probEvent_otherViewedTerminal_le_queryRate_remaining127
     (adversary : Adversary) (q : Nat) (hqPos : 1 ≤ q)
     (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 127) :
@@ -16,15 +31,8 @@ theorem probEvent_otherViewedTerminal_le_queryRate_remaining127
         ((q : ENNReal) * ((2 ^ 139 : Nat) : ENNReal)⁻¹ +
           ((2 * q + 1 : Nat) : ENNReal) *
             weightedRawTargetOriginUnionBound signatureLimit q (digestReuseWeight q)) := by
-  change Pr[fun result => SampledViewedEvent cleanUncoveredEvent result ∨
-    SampledViewedEvent cleanMessageEvent result ∨ SampledViewedEvent ViewedHonestProperFewTimeLeakWitness result |
-      sampledViewedGame adversary] ≤ _
-  apply (probEvent_or_le _ _ _).trans
-  apply add_le_add
-    (FtsProbeSimulation.probEvent_sampledViewedGame_cleanUncovered_le_queryRate adversary q hq ?_)
-    ((probEvent_or_le _ _ _).trans (add_le_add
-      (probEvent_sampled_cleanMessage_le127 adversary q hqPos hq hqMax)
-      (probEvent_sampled_honest_leak_le_weighted adversary q hq hqMax)))
+  apply probEvent_otherViewedTerminal_le_fts_allowance_remaining127 adversary q hqPos hq hqMax
+  apply FtsProbeSimulation.probEvent_sampledViewedGame_cleanUncovered_le_queryRate adversary q hq
   have hspace : 2 ^ 127 < Fintype.card Digest := by norm_num [digestBits]
   omega
 

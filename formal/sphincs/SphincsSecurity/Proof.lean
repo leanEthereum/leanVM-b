@@ -1,3 +1,6 @@
+import SphincsSecurity.Proof.SecurityUnconditionalGuessesEndpoint
+import SphincsSecurity.Proof.FewTimeOccupancy127
+import SphincsSecurity.Proof.FewTimeUsedPatterns
 import SphincsSecurity.Proof.SecuritySharedHistoryEndpoint
 import SphincsSecurity.Proof.SecurityCappedPrefixEndpoint
 import SphincsSecurity.Proof.SecurityCommonPrefixEndpoint
