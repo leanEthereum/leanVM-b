@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.FtsProbeJointContinuation
 import SphincsSecurity.Proof.FtsProbeJointSigningLog
 import SphincsSecurity.Proof.FtsProbeJointQueryInvariants
 import SphincsSecurity.Proof.FtsProbeJointSignerSynced
