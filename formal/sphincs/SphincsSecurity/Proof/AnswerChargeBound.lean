@@ -19,17 +19,19 @@ theorem probEvent_bad_le_answer_add_parent
       ((q + answerPotential parameter otsSecret ftsSecret cache : Nat) : ℝ≥0∞) *
           ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ +
         Pr[fun result => result.2 = true |
-          runExceptionMonitor (ParentSettlement parameter otsSecret ftsSecret) computation cache false] := by
+          runExceptionMonitor (CleanParentSettlement parameter otsSecret ftsSecret) computation cache false] := by
   have hbound := probEvent_bad_le_amortized_add_exception
-    (ParentSettlement parameter otsSecret ftsSecret) (Inv := Finite)
+    (CleanParentSettlement parameter otsSecret ftsSecret) (Inv := Finite)
     (potential := answerPotential parameter otsSecret ftsSecret) (c := 1)
     (ε := ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹)
     (fun target => by
       rw [← probOutput_map]
       exact probOutput_truncateHash_le target)
     (fun cache input answer hfinite => finite_cacheQuery hfinite input answer)
-    (fun cache hfinite hclean input hfresh =>
-      answerCharge_step parameter otsSecret ftsSecret hfinite hclean input hfresh)
+    (fun cache hfinite hclean input hfresh => by
+      obtain ⟨targets, hcard, hsafe⟩ := answerCharge_step parameter otsSecret ftsSecret hfinite hclean input hfresh
+      exact ⟨targets, hcard, fun answer hnoParent havoid =>
+        hsafe answer (fun hparent => hnoParent ⟨hclean, hparent⟩) havoid⟩)
     computation q hq cache hfinite hclean
   simpa only [Nat.one_mul] using hbound
 
@@ -44,27 +46,29 @@ theorem probEvent_le_answer_add_parent_residual
       ((q + answerPotential parameter otsSecret ftsSecret cache : Nat) : ℝ≥0∞) *
           ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ +
         Pr[fun result => event result.1 ∧ (result.2 = true ∨ ¬ Bad parameter otsSecret ftsSecret result.1.2) |
-          runExceptionMonitor (ParentSettlement parameter otsSecret ftsSecret) computation cache false] := by
+          runExceptionMonitor (CleanParentSettlement parameter otsSecret ftsSecret) computation cache false] := by
   have hbound := probEvent_bad_without_exception_le_amortized
-    (ParentSettlement parameter otsSecret ftsSecret) (Inv := Finite)
+    (CleanParentSettlement parameter otsSecret ftsSecret) (Inv := Finite)
     (potential := answerPotential parameter otsSecret ftsSecret) (c := 1)
     (ε := ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹)
     (fun target => by
       rw [← probOutput_map]
       exact probOutput_truncateHash_le target)
     (fun cache input answer hfinite => finite_cacheQuery hfinite input answer)
-    (fun cache hfinite hclean input hfresh =>
-      answerCharge_step parameter otsSecret ftsSecret hfinite hclean input hfresh)
+    (fun cache hfinite hclean input hfresh => by
+      obtain ⟨targets, hcard, hsafe⟩ := answerCharge_step parameter otsSecret ftsSecret hfinite hclean input hfresh
+      exact ⟨targets, hcard, fun answer hnoParent havoid =>
+        hsafe answer (fun hparent => hnoParent ⟨hclean, hparent⟩) havoid⟩)
     computation q hq cache hfinite hclean
   simp only [Nat.one_mul] at hbound
   exact (probEvent_le_bad_without_exception_add_residual
-    (ParentSettlement parameter otsSecret ftsSecret) (Bad parameter otsSecret ftsSecret) event computation cache).trans
+    (CleanParentSettlement parameter otsSecret ftsSecret) (Bad parameter otsSecret ftsSecret) event computation cache).trans
       (add_le_add hbound le_rfl)
 
 noncomputable def sampledParentSettlementGame (adversary : Adversary) :
     ProbComp (SampledSecrets × ((Bool × QueryCache HashSpec) × Bool)) := do
   let secrets ← sampleSecrets
-  let result ← runExceptionMonitor (ParentSettlement secrets.parameter secrets.otsSecret secrets.ftsSecret)
+  let result ← runExceptionMonitor (CleanParentSettlement secrets.parameter secrets.otsSecret secrets.ftsSecret)
     (gameAfterSecrets adversary secrets.parameter secrets.otsSecret secrets.ftsSecret) ∅ false
   pure (secrets, result)
 
@@ -75,10 +79,10 @@ theorem sampledParentSettlementGame_project (adversary : Adversary) :
   intro secrets
   rw [bind_pure_comp, Functor.map_map]
   change (Prod.fst ∘ Prod.fst) <$>
-    runExceptionMonitor (ParentSettlement secrets.parameter secrets.otsSecret secrets.ftsSecret)
+    runExceptionMonitor (CleanParentSettlement secrets.parameter secrets.otsSecret secrets.ftsSecret)
       (gameAfterSecrets adversary secrets.parameter secrets.otsSecret secrets.ftsSecret) ∅ false = _
   rw [StateT.run'_eq, ← runExceptionMonitor_project
-    (ParentSettlement secrets.parameter secrets.otsSecret secrets.ftsSecret)
+    (CleanParentSettlement secrets.parameter secrets.otsSecret secrets.ftsSecret)
     (gameAfterSecrets adversary secrets.parameter secrets.otsSecret secrets.ftsSecret) ∅ false,
     Functor.map_map]
   rfl
@@ -98,7 +102,7 @@ theorem forgeAdvantage_le_answer_add_parent_residual
         ((q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ +
           Pr[fun result => result.1.1 = true ∧
               (result.2 = true ∨ ¬ Bad secrets.parameter secrets.otsSecret secrets.ftsSecret result.1.2) |
-            runExceptionMonitor (ParentSettlement secrets.parameter secrets.otsSecret secrets.ftsSecret)
+            runExceptionMonitor (CleanParentSettlement secrets.parameter secrets.otsSecret secrets.ftsSecret)
               (gameAfterSecrets adversary secrets.parameter secrets.otsSecret secrets.ftsSecret) ∅ false]) := by
       apply ENNReal.tsum_le_tsum
       intro secrets
@@ -134,7 +138,7 @@ theorem probEvent_sampledViewedGame_bad_le_answer_add_parent
     _ ≤ ∑' secrets : SampledSecrets, Pr[= secrets | sampleSecrets] *
         ((q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ +
           Pr[fun result => result.2 = true |
-            runExceptionMonitor (ParentSettlement secrets.parameter secrets.otsSecret secrets.ftsSecret)
+            runExceptionMonitor (CleanParentSettlement secrets.parameter secrets.otsSecret secrets.ftsSecret)
               (gameAfterSecrets adversary secrets.parameter secrets.otsSecret secrets.ftsSecret) ∅ false]) := by
       apply ENNReal.tsum_le_tsum
       intro secrets

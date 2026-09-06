@@ -18,6 +18,9 @@ def ParentSettlement (cache : QueryCache HashSpec) (input : HashInput) (answer :
       child.parentOf = some parent ∧
       Settled parameter otsSecret ftsSecret (cache.cacheQuery input answer) parent
 
+def CleanParentSettlement (cache : QueryCache HashSpec) (input : HashInput) (answer : HashOutput) : Prop :=
+  ¬ Bad parameter otsSecret ftsSecret cache ∧ ParentSettlement parameter otsSecret ftsSecret cache input answer
+
 noncomputable def answerContribution (cache : QueryCache HashSpec) (position : Position) : Nat :=
   open Classical in
   if Settled parameter otsSecret ftsSecret cache position then 0

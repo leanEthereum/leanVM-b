@@ -9,7 +9,7 @@ open OracleComp OracleSpec ENNReal
 noncomputable def sampledFirstParentSettlementGame (adversary : Adversary) :
     ProbComp (SampledSecrets × ((Bool × QueryCache HashSpec) × Option ExceptionRecord)) := do
   let secrets ← sampleSecrets
-  let result ← runFirstException (ParentSettlement secrets.parameter secrets.otsSecret secrets.ftsSecret)
+  let result ← runFirstException (CleanParentSettlement secrets.parameter secrets.otsSecret secrets.ftsSecret)
     (gameAfterSecrets adversary secrets.parameter secrets.otsSecret secrets.ftsSecret) ∅ none
   pure (secrets, result)
 
@@ -20,7 +20,7 @@ theorem sampledFirstParentSettlementGame_flag_projection (adversary : Adversary)
   apply bind_congr
   intro secrets
   have hproject := runFirstException_flag_projection
-    (ParentSettlement secrets.parameter secrets.otsSecret secrets.ftsSecret)
+    (CleanParentSettlement secrets.parameter secrets.otsSecret secrets.ftsSecret)
     (gameAfterSecrets adversary secrets.parameter secrets.otsSecret secrets.ftsSecret) ∅ none
   simp only [Option.isSome_none] at hproject
   rw [bind_pure_comp, bind_pure_comp, Functor.map_map, ← hproject, Functor.map_map]
@@ -44,7 +44,7 @@ theorem sampledFirstParentSettlementGame_support (adversary : Adversary)
     (hresult : result ∈ support (sampledFirstParentSettlementGame adversary)) :
     result.1 ∈ support sampleSecrets ∧
       result.2 ∈ support (runFirstException
-        (ParentSettlement result.1.parameter result.1.otsSecret result.1.ftsSecret)
+        (CleanParentSettlement result.1.parameter result.1.otsSecret result.1.ftsSecret)
         (gameAfterSecrets adversary result.1.parameter result.1.otsSecret result.1.ftsSecret) ∅ none) := by
   rw [sampledFirstParentSettlementGame, mem_support_bind_iff] at hresult
   obtain ⟨secrets, hsecrets, hresult⟩ := hresult
@@ -58,7 +58,7 @@ theorem sampledFirstParentSettlementGame_record_valid (adversary : Adversary)
     {result : SampledSecrets × ((Bool × QueryCache HashSpec) × Option ExceptionRecord)}
     (hresult : result ∈ support (sampledFirstParentSettlementGame adversary))
     {record : ExceptionRecord} (hrecord : record ∈ result.2.2) :
-    record.Valid (ParentSettlement result.1.parameter result.1.otsSecret result.1.ftsSecret) ∅ result.2.1.2 := by
+    record.Valid (CleanParentSettlement result.1.parameter result.1.otsSecret result.1.ftsSecret) ∅ result.2.1.2 := by
   have hsupport := (sampledFirstParentSettlementGame_support adversary hresult).2
   exact runFirstException_none_valid _ _ _ hsupport record hrecord
 
@@ -79,6 +79,6 @@ theorem sampledFirstParentSettlementGame_record_full_parent_input (adversary : A
       honestValue (fromCache result.2.1.2) result.1.parameter result.1.otsSecret result.1.ftsSecret child =
         truncateHash record.answer := by
   have hvalid := sampledFirstParentSettlementGame_record_valid adversary hresult hrecord
-  exact hvalid.2.2.1.exists_full_parent_input result.1.parameter result.1.otsSecret result.1.ftsSecret hvalid.2.2.2
+  exact hvalid.2.2.1.2.exists_full_parent_input result.1.parameter result.1.otsSecret result.1.ftsSecret hvalid.2.2.2
 
 end SphincsSecurity.Concrete
