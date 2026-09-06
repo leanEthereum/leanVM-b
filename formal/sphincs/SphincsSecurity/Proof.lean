@@ -3,6 +3,7 @@ import SphincsSecurity.Proof.SettledCollisionGame
 import SphincsSecurity.Proof.SecuritySettledCollisionEndpoint
 import SphincsSecurity.Proof.OtsProbePrivateWeightedGame
 import SphincsSecurity.Proof.SecurityQueryRateEndpoint
+import SphincsSecurity.Proof.SecurityWeighted127Endpoint
 import SphincsSecurity.Proof.SecurityOccupancyEndpoint
 import SphincsSecurity.Proof.FewTimeWeightedOriginAdaptive
 import SphincsSecurity.Proof.Arith
