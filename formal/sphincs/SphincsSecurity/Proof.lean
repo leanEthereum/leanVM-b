@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.JointProbeResolvedBlocks
+import SphincsSecurity.Proof.JointProbeResolvedRetained
 import SphincsSecurity.Proof.JointProbeRetainedCutBudget
 import SphincsSecurity.Proof.JointProbeNativeFtsRisk
 import SphincsSecurity.Proof.JointProbeSourceRetained
