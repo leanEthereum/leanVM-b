@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.SecurityNativeJointSecretsEndpoint
 import SphincsSecurity.Proof.SecuritySharedTargetsEndpoint
 import SphincsSecurity.Proof.SecurityUsedForestEndpoint
 import SphincsSecurity.Proof.SecurityUnconditionalGuessesEndpoint
