@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.InterleavedCoverCharge
+import SphincsSecurity.Proof.ValidInterleavedCover
 import SphincsSecurity.Proof.RetainedSigningTrace
 
 namespace SphincsSecurity.Concrete.FtsProbeSimulation
@@ -61,17 +61,18 @@ noncomputable def expectedRetainedCoverCharge (adversary : Adversary) (parameter
     (table : Coordinate → Digest) (q : Nat) : ENNReal :=
   ∑' rootResult, Pr[= rootResult | (simulateQ (randomOracle : QueryImpl HashSpec _)
       (treeRoot parameter topLayer rootTree (otsSecret topLayer rootTree))).run ∅] *
-    expectedInterleavedCoverCharge
+    expectedValidInterleavedCoverCharge
       ⟨parameter, rootResult.1, otsSecret, fun index tree leafIdx => table (index, tree, leafIdx)⟩ q
       (unloggedRetainedRestComputation adversary ⟨rootResult.1, parameter⟩) (rootResult.2, [])
 
-theorem probEvent_actualRetained_observedCover_le_charge (adversary : Adversary)
+theorem probEvent_actualRetained_validObservedCover_le_charge (adversary : Adversary)
     (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
     (table : Coordinate → Digest) (q : Nat) (hq : q ≤ 2 ^ 127)
     (hbudget : (gameAfterSecrets adversary parameter otsSecret
       (fun index tree leafIdx => table (index, tree, leafIdx))).IsQueryBoundP (· matches Sum.inr _) q) :
-    Pr[fun result => ObservedFewTimeCover (messageAnswers parameter result.2)
+    Pr[fun result => SigningTranscript.Valid result.1.2.1.2 ∧
+      ObservedFewTimeCover (messageAnswers parameter result.2)
       result.1.1 result.1.2.1.2 result.1.2.1.1 |
         actualRetainedGameAfterSecrets adversary parameter otsSecret table] ≤
       expectedRetainedCoverCharge adversary parameter otsSecret table q := by
@@ -83,7 +84,7 @@ theorem probEvent_actualRetained_observedCover_le_charge (adversary : Adversary)
   · apply mul_le_mul' le_rfl
     simp only [bind_pure_comp, probEvent_map]
     rw [retainedGameRestComputation_interleaved, probEvent_map]
-    apply probEvent_interleaved_observedCover_from_emptyLog_le_charge _ q hq _ _ Prod.fst
+    apply probEvent_interleaved_validObservedCover_from_emptyLog_le_charge _ q hq _ _ Prod.fst
     intro result hresult
     apply actualRetainedGameAfterSecrets_cache_bound adversary parameter otsSecret table q hbudget
       ((rootResult.1, (interleavedRetainedProjection result).1), result.2.1)
@@ -97,18 +98,19 @@ theorem probEvent_actualRetained_observedCover_le_charge (adversary : Adversary)
       rfl
   · rw [probOutput_eq_zero_of_not_mem_support hroot, zero_mul, zero_mul]
 
-theorem probEvent_actualRetained_observedCover_le_charge_of_hashQueryBound (adversary : Adversary)
+theorem probEvent_actualRetained_validObservedCover_le_charge_of_hashQueryBound (adversary : Adversary)
     (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
     (hots : otsSecret ∈ support sampleOtsSecrets)
     (table : Coordinate → Digest)
     (hfts : (fun index tree leafIdx => table (index, tree, leafIdx)) ∈ support sampleFtsSecrets)
     (q : Nat) (hq : q ≤ 2 ^ 127) (hbudget : HasHashQueryBound scheme adversary q) :
-    Pr[fun result => ObservedFewTimeCover (messageAnswers parameter result.2)
+    Pr[fun result => SigningTranscript.Valid result.1.2.1.2 ∧
+      ObservedFewTimeCover (messageAnswers parameter result.2)
       result.1.1 result.1.2.1.2 result.1.2.1.1 |
         actualRetainedGameAfterSecrets adversary parameter otsSecret table] ≤
       expectedRetainedCoverCharge adversary parameter otsSecret table q :=
-  probEvent_actualRetained_observedCover_le_charge adversary parameter otsSecret table q hq
+  probEvent_actualRetained_validObservedCover_le_charge adversary parameter otsSecret table q hq
     (isQueryBoundP_gameAfterSecrets adversary q hbudget hparameter hots hfts)
 
 end SphincsSecurity.Concrete.FtsProbeSimulation
