@@ -653,6 +653,13 @@ import SphincsSecurity.Proof.FutureTargetAssignment
 import SphincsSecurity.Proof.TargetAssignmentReuse
 import SphincsSecurity.Proof.TargetAssignmentArrival
 import SphincsSecurity.Proof.TargetAssignmentSigning
+import SphincsSecurity.Proof.SubsetTargetAssignment
+import SphincsSecurity.Proof.SubsetTargetExpectation
+import SphincsSecurity.Proof.CachedTargetSubsetMatch
+import SphincsSecurity.Proof.TargetCacheProductQuery
+import SphincsSecurity.Proof.TargetBlockExpectation
+import SphincsSecurity.Proof.NormalizedTargetMatches
+import SphincsSecurity.Proof.NormalizedTargetCacheQuery
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
