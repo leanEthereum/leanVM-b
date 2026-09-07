@@ -645,6 +645,7 @@ import SphincsSecurity.Proof.MixedDerivativeQuery
 import SphincsSecurity.Proof.ClosedMixedSigning
 import SphincsSecurity.Proof.AdaptiveMixedEnvelope
 import SphincsSecurity.Proof.FiniteInitialEnvelope
+import SphincsSecurity.Proof.QueryInitial127
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
