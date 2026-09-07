@@ -43,6 +43,34 @@ theorem collisionStructuralEnvelope_le_recordPotential
         simp only [collisionStructuralEnvelope, Option.isSome_some, if_true, he, if_false, collisionStructuralRecordPotential,
           collisionAnswerEncodingMonitorPotential, ftsParentSelectionPotential, firstExceptionSelectionPotential, hselected, zero_add, le_refl]
 
+theorem expected_collisionStructuralEnvelope_step_le
+    (parameter : PublicParameter) (root : Digest) (otsTable : OtsSecretIndex → HashOutput) (ftsTable : Coordinate → Digest)
+    (input : (OracleWorld + SigningSpec).Domain) (frame : Option Frame) (cache : QueryCache HashSpec) (hfinite : Finite cache) :
+    (∑' result, Pr[= result | stepWithFailure (parentException parameter otsTable ftsTable) parameter root otsTable ftsTable
+      input frame cache false false] * collisionStructuralEnvelope parameter root otsTable ftsTable cache result.1.2) ≤
+      collisionStructuralRecordPotential (secretKey parameter root otsTable ftsTable) cache none +
+        expectedPreExceptionCharge (parentException parameter otsTable ftsTable) (collisionSigningStructuralCharge (secretKey parameter root otsTable ftsTable))
+          (expandedAdversaryImpl (secretKey parameter root otsTable ftsTable) input) cache false * (Fintype.card Digest : ENNReal)⁻¹ := by
+  let exception := parentException parameter otsTable ftsTable
+  let cost := collisionStructuralEnvelope parameter root otsTable ftsTable cache (α := (OracleWorld + SigningSpec).Range input)
+  calc
+    _ = ∑' result, Pr[= result | runFirstException exception (expandedAdversaryImpl (secretKey parameter root otsTable ftsTable) input) cache none] *
+        cost (result.1, result.2.isSome) := by
+      have hm := tsum_probOutput_map_mul
+        (stepWithFailure exception parameter root otsTable ftsTable input frame cache false false) Prod.fst (fun result => cost result.2)
+      rw [stepWithFailure_project, step_expect_original] at hm
+      have hflag := runFirstException_flag_projection exception (expandedAdversaryImpl (secretKey parameter root otsTable ftsTable) input) cache none
+      simp only [Option.isSome_none] at hflag
+      rw [← hm, ← hflag, tsum_probOutput_map_mul]
+    _ ≤ ∑' result, Pr[= result | runFirstException exception (expandedAdversaryImpl (secretKey parameter root otsTable ftsTable) input) cache none] *
+        collisionStructuralRecordPotential (secretKey parameter root otsTable ftsTable) result.1.2 result.2 := by
+      apply ENNReal.tsum_le_tsum
+      intro result
+      by_cases hr : result ∈ support (runFirstException exception (expandedAdversaryImpl (secretKey parameter root otsTable ftsTable) input) cache none)
+      · exact mul_le_mul' le_rfl (collisionStructuralEnvelope_le_recordPotential parameter root otsTable ftsTable input cache result hr)
+      · rw [probOutput_eq_zero_of_not_mem_support hr, zero_mul, zero_mul]
+    _ ≤ _ := expected_collisionStructuralRecordPotential_le_preCharge (secretKey parameter root otsTable ftsTable) _ cache hfinite none
+
 theorem expected_collisionSurvivingStructuralPotential_step_le
     (parameter : PublicParameter) (root : Digest) (otsTable : OtsSecretIndex → HashOutput) (ftsTable : Coordinate → Digest)
     (input : (OracleWorld + SigningSpec).Domain) (frame : Frame) (cache : QueryCache HashSpec)
@@ -71,21 +99,6 @@ theorem expected_collisionSurvivingStructuralPotential_step_le
               simp [hf] at h
             cases ho : result.1.2.2 <;> simp [collisionSurvivingStructuralPotential, cost, collisionStructuralEnvelope, he, ho]
       · rw [probOutput_eq_zero_of_not_mem_support hr, zero_mul, zero_mul]
-    _ = ∑' result, Pr[= result | runFirstException exception (expandedAdversaryImpl (secretKey parameter root otsTable ftsTable) input) cache none] *
-        cost (result.1, result.2.isSome) := by
-      have hm := tsum_probOutput_map_mul
-        (stepWithFailure exception parameter root otsTable ftsTable input (some frame) cache false false) Prod.fst (fun result => cost result.2)
-      rw [stepWithFailure_project, step_expect_original] at hm
-      have hflag := runFirstException_flag_projection exception (expandedAdversaryImpl (secretKey parameter root otsTable ftsTable) input) cache none
-      simp only [Option.isSome_none] at hflag
-      rw [← hm, ← hflag, tsum_probOutput_map_mul]
-    _ ≤ ∑' result, Pr[= result | runFirstException exception (expandedAdversaryImpl (secretKey parameter root otsTable ftsTable) input) cache none] *
-        collisionStructuralRecordPotential (secretKey parameter root otsTable ftsTable) result.1.2 result.2 := by
-      apply ENNReal.tsum_le_tsum
-      intro result
-      by_cases hr : result ∈ support (runFirstException exception (expandedAdversaryImpl (secretKey parameter root otsTable ftsTable) input) cache none)
-      · exact mul_le_mul' le_rfl (collisionStructuralEnvelope_le_recordPotential parameter root otsTable ftsTable input cache result hr)
-      · rw [probOutput_eq_zero_of_not_mem_support hr, zero_mul, zero_mul]
-    _ ≤ _ := expected_collisionStructuralRecordPotential_le_preCharge (secretKey parameter root otsTable ftsTable) _ cache hfinite none
+    _ ≤ _ := expected_collisionStructuralEnvelope_step_le parameter root otsTable ftsTable input (some frame) cache hfinite
 
 end SphincsSecurity.Concrete.FtsProbeSimulation.JointOriginal

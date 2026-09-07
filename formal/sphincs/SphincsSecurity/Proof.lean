@@ -775,6 +775,7 @@ import SphincsSecurity.Proof.SecurityCollisionEncodingAllocation
 import SphincsSecurity.Proof.SecurityCollisionTerminalAllocation
 import SphincsSecurity.Proof.ParentReserveConservation
 import SphincsSecurity.Proof.SecurityParentReserveConservation
+import SphincsSecurity.Proof.SecurityParentRefundAllocation
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 

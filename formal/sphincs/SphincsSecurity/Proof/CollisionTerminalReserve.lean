@@ -12,7 +12,11 @@ set_option backward.isDefEq.respectTransparency false
 noncomputable def collisionTerminalReserve
     (parameter : PublicParameter) (otsTable : OtsSecretIndex → HashOutput) (ftsTable : Coordinate → Digest)
     (result : (Option Frame × ((Option RetainedGameResult × QueryCache HashSpec) × Bool)) × Bool) : ENNReal :=
-  if SurvivingStructuralFailure parameter otsTable ftsTable result then 0
+  if SurvivingStructuralFailure parameter otsTable ftsTable result then
+    if result.1.2.2 || result.2 then 0 else
+      (parentReserve parameter (secretKey parameter default otsTable ftsTable).otsSecret
+        (secretKey parameter default otsTable ftsTable).ftsSecret
+        (fun position => ¬ OtsProbeSimulation.IsOtsPosition position) result.1.2.1.2 : ENNReal) * (Fintype.card Digest : ENNReal)⁻¹
   else collisionSurvivingStructuralPotential (secretKey parameter default otsTable ftsTable)
     result.1.2.1.2 result.1.2.2 result.2
 
@@ -25,14 +29,19 @@ theorem structuralFailure_add_collisionTerminalReserve_le_potential
       collisionSurvivingStructuralPotential (secretKey parameter default otsTable ftsTable)
         result.1.2.1.2 result.1.2.2 result.2 := by
   by_cases he : SurvivingStructuralFailure parameter otsTable ftsTable result
-  · simp only [collisionTerminalReserve, if_pos he, add_zero]
+  · simp only [collisionTerminalReserve, if_pos he]
     obtain ⟨hf, hh | hb⟩ := he
     · simp [collisionSurvivingStructuralPotential, hf, hh]
     · cases hh : result.1.2.2 with
       | true => simp [collisionSurvivingStructuralPotential, hf]
       | false =>
-          simp only [collisionSurvivingStructuralPotential, hf, Bool.false_eq_true, if_false]
-          exact collisionStructuralRecordPotential_none_ge_bad _ _ hfinite hb
+          simp only [collisionSurvivingStructuralPotential, hf, Bool.false_or, Bool.false_eq_true, if_false]
+          simp only [collisionStructuralRecordPotential, collisionAnswerEncodingMonitorPotential, Option.isSome_none,
+            Bool.false_eq_true, if_false, collisionAnswerEncodingAdaptivePotential_eq hfinite,
+            collisionAnswerEncodingTotalPotential_eq_one_of_bad_or_encodingBad hfinite
+              (secretKey := secretKey parameter default otsTable ftsTable) hb,
+            ftsParentSelectionPotential, firstExceptionSelectionPotential]
+          exact le_rfl
   · simp only [collisionTerminalReserve, if_neg he, zero_add, le_refl]
 
 theorem answer_parent_reserves_le_collisionRecordPotential

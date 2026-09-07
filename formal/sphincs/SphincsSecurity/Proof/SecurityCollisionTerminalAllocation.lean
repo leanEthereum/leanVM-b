@@ -7,9 +7,11 @@ namespace SphincsSecurity.Concrete.FtsProbeSimulation.JointOriginal
 open _root_.OracleComp OracleSpec ENNReal
 set_option backward.isDefEq.respectTransparency false
 
-theorem forgeAdvantage_add_collisionTerminal_message_signing_encodingReserves_le_collision_live
-    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 127) :
-    forgeAdvantage scheme adversary + sampledCollisionTerminalReserve adversary q (q + 1) +
+theorem forgeAdvantage_add_collisionCredit_message_signing_encodingReserves_le_collision_live
+    (adversary : Adversary) (q : Nat) (hqMax : q ≤ 2 ^ 127) (credit : ENNReal)
+    (hcollision : forgeAdvantage scheme adversary + credit ≤ sampledParentSharedFailureRisk adversary q (q + 1) +
+      sampledBeforeFailureCollisionCharge adversary q (q + 1) * (Fintype.card Digest : ENNReal)⁻¹ + sampledLiveNonSecretResidual adversary q (q + 1)) :
+    forgeAdvantage scheme adversary + credit +
       (sampledSelectedJointQueryCharge MessageHashInput adversary q + sampledBeforeFailureHashCharge messageHashCharge adversary q (q + 1) +
         sampledSigningNonEncodingReserve adversary q (q + 1) + sampledOuterEncodingReserve adversary q (q + 1)) * (Fintype.card Digest : ENNReal)⁻¹ ≤
       (sampledBeforeFailureRestHashCharge adversary q (q + 1) + (q : ENNReal)) * (Fintype.card Digest : ENNReal)⁻¹ +
@@ -26,14 +28,13 @@ theorem forgeAdvantage_add_collisionTerminal_message_signing_encodingReserves_le
       (sampledNativeFtsOtsFailure_add_fts_hit_add_nonSecret_le_query_rate adversary q (q + 1) (by omega) hspace)
   have hstructural := (sampledBeforeFailureCollisionBase_add_signingNonEncoding_add_encoding_le adversary q (q + 1)).trans
     (add_le_add le_rfl (sampledBeforeFailureSelectedCharge_le_erased NonMessageNonSecretHashInput adversary q (q + 1)))
-  have hbound : forgeAdvantage scheme adversary + sampledCollisionTerminalReserve adversary q (q + 1) +
+  have hbound : forgeAdvantage scheme adversary + credit +
       (sampledSigningNonEncodingReserve adversary q (q + 1) + sampledOuterEncodingReserve adversary q (q + 1) + sampledJointNonSecretQueryCharge adversary q) * (Fintype.card Digest : ENNReal)⁻¹ ≤
       (sampledBeforeFailureHashCharge nonMessageHashCharge adversary q (q + 1) + sampledSelectedJointQueryCharge NonMessageNonSecretHashInput adversary q) *
           (Fintype.card Digest : ENNReal)⁻¹ +
         ((q : ENNReal) * (Fintype.card Digest : ENNReal)⁻¹ + (q : ENNReal) / ((2 ^ 216 : Nat) : ENNReal)) +
         sampledBeforeFailureEncodingPairCharge adversary q (q + 1) * (Fintype.card Digest : ENNReal)⁻¹ +
         sampledLiveNonSecretResidual adversary q (q + 1) := by
-    have hcollision := forgeAdvantage_add_collisionTerminalReserve_le_sharedFailure_add_charge_add_live_residual adversary q hq (q + 1)
     rw [sampledBeforeFailureCollisionCharge_eq_base_add_pairs, add_mul] at hcollision
     apply (add_le_add hcollision le_rfl).trans
     calc
@@ -56,6 +57,18 @@ theorem forgeAdvantage_add_collisionTerminal_message_signing_encodingReserves_le
     (sampledBeforeFailureHashCharge messageHashCharge adversary q (q + 1) * (Fintype.card Digest : ENNReal)⁻¹))
   rw [sampledBeforeFailureRestHashCharge_eq_nonMessage_add_message]
   simpa only [add_mul, add_assoc, add_comm, add_left_comm] using hbound'
+
+theorem forgeAdvantage_add_collisionTerminal_message_signing_encodingReserves_le_collision_live
+    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 127) :
+    forgeAdvantage scheme adversary + sampledCollisionTerminalReserve adversary q (q + 1) +
+      (sampledSelectedJointQueryCharge MessageHashInput adversary q + sampledBeforeFailureHashCharge messageHashCharge adversary q (q + 1) +
+        sampledSigningNonEncodingReserve adversary q (q + 1) + sampledOuterEncodingReserve adversary q (q + 1)) * (Fintype.card Digest : ENNReal)⁻¹ ≤
+      (sampledBeforeFailureRestHashCharge adversary q (q + 1) + (q : ENNReal)) * (Fintype.card Digest : ENNReal)⁻¹ +
+      (q : ENNReal) / ((2 ^ 216 : Nat) : ENNReal) +
+      sampledBeforeFailureEncodingPairCharge adversary q (q + 1) * (Fintype.card Digest : ENNReal)⁻¹ + sampledLiveNonSecretResidual adversary q (q + 1) :=
+  forgeAdvantage_add_collisionCredit_message_signing_encodingReserves_le_collision_live adversary q hqMax
+    (sampledCollisionTerminalReserve adversary q (q + 1))
+    (forgeAdvantage_add_collisionTerminalReserve_le_sharedFailure_add_charge_add_live_residual adversary q hq (q + 1))
 
 theorem forgeAdvantage_add_collisionTerminal_message_signing_encoding_executionReserves_remainder_gap_le_collisionEnvelope
     (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 127) :
