@@ -643,6 +643,7 @@ import SphincsSecurity.Proof.OccupancyReuseDerivative
 import SphincsSecurity.Proof.MixedSigningGrowth
 import SphincsSecurity.Proof.MixedDerivativeQuery
 import SphincsSecurity.Proof.ClosedMixedSigning
+import SphincsSecurity.Proof.AdaptiveMixedEnvelope
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
