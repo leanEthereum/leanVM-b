@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.SigningMacroBudget
+import SphincsSecurity.Proof.SigningRetryBudget
 
 namespace SphincsSecurity.Concrete
 
@@ -17,20 +18,22 @@ theorem consumesHashQueries_sign_28504 (key : SecretKey) (message : Message) :
   · intro path
     exact consumesHashQueries_zero _
 
+/-- Debit from the syntactic continuation bound, including repeatable digest rejection. -/
 def signingExecutionHashCost : (OracleWorld + SigningSpec).Domain → Nat
   | .inl (.inl _) => 0
   | .inl (.inr _) => 1
-  | .inr _ => 28504
+  | .inr _ => digestAttemptLimit
 
 def unusedSigningExecutionCost : (OracleWorld + SigningSpec).Domain → Nat
   | .inl _ => 0
-  | .inr _ => 27480
+  | .inr _ => digestAttemptLimit - 1024
 
 theorem signingMacroHashCost_add_unused_execution (input : (OracleWorld + SigningSpec).Domain) :
     signingMacroHashCost input + unusedSigningExecutionCost input = signingExecutionHashCost input := by
   cases input with
   | inl world => cases world <;> rfl
-  | inr message => rfl
+  | inr message =>
+      norm_num [signingMacroHashCost, unusedSigningExecutionCost, signingExecutionHashCost, digestAttemptLimit]
 
 theorem expanded_query_bound_signing_execution {α : Type} (key : SecretKey)
     (input : (OracleWorld + SigningSpec).Domain)
@@ -54,7 +57,7 @@ theorem expanded_query_bound_signing_execution {α : Type} (key : SecretKey)
       obtain ⟨base, hbase, rfl⟩ := hresult
       have houtput := unloggedMappedAdversaryImpl_output_mem_support_expanded key (.inr message) state.1 base.2 base.1 hbase
       rw [simulateQ_expandedAdversaryImpl_query_bind_inr] at hbound
-      have hcost := consumesHashQueries_sign_28504 key message
+      have hcost := consumesHashQueries_sign_retryLimit key message
       unfold ConsumesHashQueries at hcost
       exact hcost _ q hbound base.1 houtput
 
