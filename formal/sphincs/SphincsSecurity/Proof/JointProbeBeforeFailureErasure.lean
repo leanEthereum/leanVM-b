@@ -50,15 +50,17 @@ theorem tsum_raw_retainedPrefix_eq_observer
 
 namespace JointOriginal
 
-theorem beforeFailureOuterNonSecretCharge_le_erased
-    (adversary : Adversary) (parameter : PublicParameter) (table : Coordinate → Digest) (q fuel : Nat) :
+theorem beforeFailureOuterSelectedCharge_le_erased
+    (adversary : Adversary) (parameter : PublicParameter) (table : Coordinate → Digest) (q fuel : Nat)
+    (selected : HashInput → Prop) :
     (∑' otsTable, Pr[= otsTable | OtsProbeSimulation.sampleOtsHashTable] *
       ∑' initial, Pr[= initial | initializeRoot parameter otsTable table q fuel] *
         expectedBeforeFailureOuterCharge (parentException parameter otsTable table)
-          (fun _ input => if NonSecretHashInput parameter input then 1 else 0) parameter initial.2.1 otsTable table
+          (fun _ input => if selected input then 1 else 0) parameter initial.2.1 otsTable table
           (retainedComputation adversary parameter initial.2.1 q) initial.1 initial.2.2 false initial.1.isNone) ≤
-      expectedJointRetainedCharge adversary parameter table q (jointNonSecretQueryCharge parameter) := by
-  let select := IsSelectedOuterHash (NonSecretHashInput parameter)
+      expectedJointRetainedCharge adversary parameter table q
+        (fun input _ _ _ _ => if IsSelectedOuterHash selected input then 1 else 0) := by
+  let select := IsSelectedOuterHash selected
   calc
     _ = ∑' ordinal : Nat, ∑' otsTable : OtsProbeSimulation.OtsSecretIndex → HashOutput, Pr[= otsTable | OtsProbeSimulation.sampleOtsHashTable] *
         ∑' initial, Pr[= initial | initializeRoot parameter otsTable table q fuel] *
@@ -92,12 +94,25 @@ theorem beforeFailureOuterNonSecretCharge_le_erased
         AdaptiveRevealProbe.State.empty q (OtsProbeSimulation.ensuredInitialContext ∅) 0 []
     _ = expectedJointRetainedCharge adversary parameter table q (fun input _ _ _ _ => if select input then 1 else 0) :=
       tsum_raw_retainedPrefix_eq_observer adversary parameter table q select
+
+theorem beforeFailureOuterNonSecretCharge_le_erased
+    (adversary : Adversary) (parameter : PublicParameter) (table : Coordinate → Digest) (q fuel : Nat) :
+    (∑' otsTable, Pr[= otsTable | OtsProbeSimulation.sampleOtsHashTable] *
+      ∑' initial, Pr[= initial | initializeRoot parameter otsTable table q fuel] *
+        expectedBeforeFailureOuterCharge (parentException parameter otsTable table)
+          (fun _ input => if NonSecretHashInput parameter input then 1 else 0) parameter initial.2.1 otsTable table
+          (retainedComputation adversary parameter initial.2.1 q) initial.1 initial.2.2 false initial.1.isNone) ≤
+      expectedJointRetainedCharge adversary parameter table q (jointNonSecretQueryCharge parameter) := by
+  calc
+    _ ≤ expectedJointRetainedCharge adversary parameter table q
+        (fun input _ _ _ _ => if IsSelectedOuterHash (NonSecretHashInput parameter) input then 1 else 0) :=
+      beforeFailureOuterSelectedCharge_le_erased adversary parameter table q fuel (NonSecretHashInput parameter)
     _ = _ := by
       congr 1
       funext input context cache state ftsCache
       cases input with
-      | inl query => cases query <;> simp [select, IsSelectedOuterHash, jointNonSecretQueryCharge]
-      | inr message => simp [select, IsSelectedOuterHash, jointNonSecretQueryCharge]
+      | inl query => cases query <;> simp [IsSelectedOuterHash, jointNonSecretQueryCharge]
+      | inr message => simp [IsSelectedOuterHash, jointNonSecretQueryCharge]
 
 theorem sampledBeforeFailureOuterNonSecretCharge_le_erased
     (adversary : Adversary) (q fuel : Nat) :

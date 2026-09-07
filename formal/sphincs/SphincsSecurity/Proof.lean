@@ -614,6 +614,7 @@ import SphincsSecurity.Proof.EncodingSigningFailure
 import SphincsSecurity.Proof.Security126Completion
 import SphincsSecurity.Proof.SecuritySampledBeforeSharedFailure
 import SphincsSecurity.Proof.SecurityJointBeforeFailureBound
+import SphincsSecurity.Proof.SecurityJointMessageReserve
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
