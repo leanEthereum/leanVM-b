@@ -670,6 +670,14 @@ import SphincsSecurity.Proof.TargetShapeOperators
 import SphincsSecurity.Proof.TargetShapeEnvelope
 import SphincsSecurity.Proof.TargetShapeNilpotence
 import SphincsSecurity.Proof.TargetShapeBinomial
+import SphincsSecurity.Proof.TargetShapeReindex
+import SphincsSecurity.Proof.ConcreteTargetShapeSigning
+import SphincsSecurity.Proof.ConcreteTargetShapeQuery
+import SphincsSecurity.Proof.TargetShapeContinuation
+import SphincsSecurity.Proof.TargetShapeExpectation
+import SphincsSecurity.Proof.WorldTargetShapeEnvelope
+import SphincsSecurity.Proof.TargetCacheEnvelope
+import SphincsSecurity.Proof.AdaptiveTargetShape
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
