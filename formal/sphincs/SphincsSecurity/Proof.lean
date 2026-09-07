@@ -647,6 +647,12 @@ import SphincsSecurity.Proof.AdaptiveMixedEnvelope
 import SphincsSecurity.Proof.FiniteInitialEnvelope
 import SphincsSecurity.Proof.QueryInitial127
 import SphincsSecurity.Proof.AdaptiveOccupancy127
+import SphincsSecurity.Proof.TargetAssignmentCount
+import SphincsSecurity.Proof.TargetAssignmentExpectation
+import SphincsSecurity.Proof.FutureTargetAssignment
+import SphincsSecurity.Proof.TargetAssignmentReuse
+import SphincsSecurity.Proof.TargetAssignmentArrival
+import SphincsSecurity.Proof.TargetAssignmentSigning
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
