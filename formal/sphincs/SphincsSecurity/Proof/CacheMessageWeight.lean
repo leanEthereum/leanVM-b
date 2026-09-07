@@ -55,6 +55,23 @@ theorem cacheMessageWeight_mul_right (parameter : PublicParameter)
   | none => exact (zero_mul _).symm
   | some output => simp only; split_ifs <;> simp only [zero_mul]
 
+theorem cacheMessageWeight_of_no_message (parameter : PublicParameter)
+    (weight : HashInput → FewTimeView → ENNReal) (cache : QueryCache HashSpec)
+    (hnone : ∀ input, MessageHashInput parameter input → cache input = none) :
+    cacheMessageWeight parameter weight cache = 0 := by
+  unfold cacheMessageWeight
+  apply ENNReal.tsum_eq_zero.mpr
+  intro input
+  unfold cacheMessageEntryWeight
+  cases hcache : cache input with
+  | none => rfl
+  | some output =>
+      simp only
+      split_ifs with hgood
+      · rw [hnone input hgood.1] at hcache
+        contradiction
+      · rfl
+
 theorem cacheMessageWeight_cacheQuery (parameter : PublicParameter)
     (weight : HashInput → FewTimeView → ENNReal) (cache : QueryCache HashSpec)
     (input : HashInput) (output : HashOutput) (hfresh : cache input = none) :

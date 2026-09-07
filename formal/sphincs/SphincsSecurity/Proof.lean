@@ -636,6 +636,7 @@ import SphincsSecurity.Proof.FewTimeTargetIncrementBound
 import SphincsSecurity.Proof.ExpectedReuseArrival
 import SphincsSecurity.Proof.AllMessageReuseArrival
 import SphincsSecurity.Proof.AllMessageOccupancyArrival
+import SphincsSecurity.Proof.WorldPairReserve
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
