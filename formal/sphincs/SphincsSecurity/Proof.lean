@@ -640,6 +640,8 @@ import SphincsSecurity.Proof.WorldPairReserve
 import SphincsSecurity.Proof.LinearReserveMessageCount
 import SphincsSecurity.Proof.WorldIndexMoment
 import SphincsSecurity.Proof.OccupancyReuseDerivative
+import SphincsSecurity.Proof.MixedSigningGrowth
+import SphincsSecurity.Proof.MixedDerivativeQuery
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
