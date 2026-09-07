@@ -678,6 +678,14 @@ import SphincsSecurity.Proof.TargetShapeExpectation
 import SphincsSecurity.Proof.WorldTargetShapeEnvelope
 import SphincsSecurity.Proof.TargetCacheEnvelope
 import SphincsSecurity.Proof.AdaptiveTargetShape
+import SphincsSecurity.Proof.SourceGroupExpectation
+import SphincsSecurity.Proof.WeightedTargetGroups
+import SphincsSecurity.Proof.TargetSourceMultiplicity
+import SphincsSecurity.Proof.TargetShapeBlocks
+import SphincsSecurity.Proof.FreshTargetShapeAverage
+import SphincsSecurity.Proof.TargetShapeCardinality
+import SphincsSecurity.Proof.TargetIndexEnvelope
+import SphincsSecurity.Proof.FreshTargetEnvelope
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
