@@ -4,6 +4,7 @@ import SphincsSecurity.Proof.JointProbeOriginalRetainedExecution
 import SphincsSecurity.Proof.JointProbeOriginalParentFailure
 import SphincsSecurity.Proof.JointProbeOriginalStoppedBudget
 import SphincsSecurity.Proof.JointProbeOriginalSampledFailureBound
+import SphincsSecurity.Proof.JointProbeOriginalSampledParentBound
 import SphincsSecurity.Proof.SigningStoppedGameBudget
 import SphincsSecurity.Proof.SigningOuterStructuralBudget
 import SphincsSecurity.Proof.RootStructuralCharge
