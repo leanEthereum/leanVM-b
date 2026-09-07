@@ -767,6 +767,7 @@ import SphincsSecurity.Proof.SecuritySigningGap
 import SphincsSecurity.Proof.SigningRetryCount
 import SphincsSecurity.Proof.SecurityTerminalAllocation
 import SphincsSecurity.Proof.SecuritySettledAllocation
+import SphincsSecurity.Proof.EncodingCollisionRefund
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
