@@ -701,6 +701,12 @@ import SphincsSecurity.Proof.IndexDifferenceTransform
 import SphincsSecurity.Proof.IndexDifferenceEnvelope
 import SphincsSecurity.Proof.IndexDifferenceInitial
 import SphincsSecurity.Proof.TargetIndexEnvelope127
+import SphincsSecurity.Proof.HashPrefixBudget
+import SphincsSecurity.Proof.FtsOpeningQueryCost
+import SphincsSecurity.Proof.SigningQueryCost
+import SphincsSecurity.Proof.SigningMacroBudget
+import SphincsSecurity.Proof.AdaptiveIndexCharge
+import SphincsSecurity.Proof.AdaptiveIndexCharge127
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
