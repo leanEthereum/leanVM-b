@@ -1,11 +1,12 @@
 import SphincsSecurity.Proof.JointProbeMessageHashBudget
 import SphincsSecurity.Proof.SecurityJointBeforeFailureBound
+import SphincsSecurity.Proof.SecurityLiveNonSecretResidual
 
 namespace SphincsSecurity.Concrete.FtsProbeSimulation.JointOriginal
 
 open _root_.OracleComp OracleSpec ENNReal
 
-theorem forgeAdvantage_add_messageReserves_le_joint_beforeFailureBudget
+theorem forgeAdvantage_add_messageReserves_le_joint_beforeFailureBudget_live
     (adversary : Adversary) (q : Nat)
     (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 127) :
     forgeAdvantage scheme adversary +
@@ -13,7 +14,7 @@ theorem forgeAdvantage_add_messageReserves_le_joint_beforeFailureBudget
         (Fintype.card Digest : ENNReal)⁻¹ ≤
       (sampledBeforeFailureRestHashCharge adversary q (q + 1) + (q : ENNReal)) * (Fintype.card Digest : ENNReal)⁻¹ +
       (q : ENNReal) / ((2 ^ 216 : Nat) : ENNReal) +
-      Pr[retainedNonSecretResidual | OtsProbeSimulation.sampledFirstParentRetainedGame adversary] := by
+      sampledLiveNonSecretResidual adversary q (q + 1) := by
   have hspace : q + 1 < Fintype.card Digest := by
     have hcard : Fintype.card Digest = 2 ^ 128 := by
       rw [show Fintype.card Digest = 2 ^ digestBits from card_bitVec digestBits]
@@ -29,12 +30,12 @@ theorem forgeAdvantage_add_messageReserves_le_joint_beforeFailureBudget
       (sampledBeforeFailureHashCharge nonMessageHashCharge adversary q (q + 1) + sampledSelectedJointQueryCharge NonMessageNonSecretHashInput adversary q) *
           (Fintype.card Digest : ENNReal)⁻¹ +
         ((q : ENNReal) * (Fintype.card Digest : ENNReal)⁻¹ + (q : ENNReal) / ((2 ^ 216 : Nat) : ENNReal)) +
-        Pr[retainedNonSecretResidual | OtsProbeSimulation.sampledFirstParentRetainedGame adversary] := by
-    apply (add_le_add (forgeAdvantage_le_sharedFailure_add_beforeFailureStructural adversary q hq (q + 1)) le_rfl).trans
+        sampledLiveNonSecretResidual adversary q (q + 1) := by
+    apply (add_le_add (forgeAdvantage_le_sharedFailure_add_structural_add_live_residual adversary q hq (q + 1)) le_rfl).trans
     calc
       _ = sampledBeforeFailureStructuralCharge adversary q (q + 1) * (Fintype.card Digest : ENNReal)⁻¹ +
           (sampledParentSharedFailureRisk adversary q (q + 1) + sampledJointNonSecretQueryCharge adversary q * (Fintype.card Digest : ENNReal)⁻¹) +
-          Pr[retainedNonSecretResidual | OtsProbeSimulation.sampledFirstParentRetainedGame adversary] := by ac_rfl
+          sampledLiveNonSecretResidual adversary q (q + 1) := by ac_rfl
       _ ≤ _ := add_le_add (add_le_add (mul_le_mul' hstructural le_rfl) hshared) le_rfl
   have hother : sampledSelectedJointQueryCharge NonMessageNonSecretHashInput adversary q ≤ q := by
     apply le_trans _ (sampledJointNonSecretQueryCharge_le_queryBound adversary q)
@@ -49,6 +50,18 @@ theorem forgeAdvantage_add_messageReserves_le_joint_beforeFailureBudget
     (sampledBeforeFailureHashCharge messageHashCharge adversary q (q + 1) * (Fintype.card Digest : ENNReal)⁻¹))
   rw [sampledBeforeFailureRestHashCharge_eq_nonMessage_add_message]
   simpa only [add_mul, add_assoc, add_comm, add_left_comm] using hbound'
+
+theorem forgeAdvantage_add_messageReserves_le_joint_beforeFailureBudget
+    (adversary : Adversary) (q : Nat)
+    (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 127) :
+    forgeAdvantage scheme adversary +
+      (sampledSelectedJointQueryCharge MessageHashInput adversary q + sampledBeforeFailureHashCharge messageHashCharge adversary q (q + 1)) *
+        (Fintype.card Digest : ENNReal)⁻¹ ≤
+      (sampledBeforeFailureRestHashCharge adversary q (q + 1) + (q : ENNReal)) * (Fintype.card Digest : ENNReal)⁻¹ +
+      (q : ENNReal) / ((2 ^ 216 : Nat) : ENNReal) +
+      Pr[retainedNonSecretResidual | OtsProbeSimulation.sampledFirstParentRetainedGame adversary] :=
+  (forgeAdvantage_add_messageReserves_le_joint_beforeFailureBudget_live adversary q hq hqMax).trans
+    (add_le_add le_rfl (sampledLiveNonSecretResidual_le_original adversary q hq (q + 1)))
 
 theorem forgeAdvantage_add_messageReserves_le_joint_beforeFailureBudget_remaining127
     (adversary : Adversary) (q : Nat) (hqPos : 1 ≤ q)
