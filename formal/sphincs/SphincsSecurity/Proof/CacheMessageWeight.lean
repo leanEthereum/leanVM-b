@@ -55,6 +55,19 @@ theorem cacheMessageWeight_mul_right (parameter : PublicParameter)
   | none => exact (zero_mul _).symm
   | some output => simp only; split_ifs <;> simp only [zero_mul]
 
+theorem cacheMessageWeight_sum {α : Type} [DecidableEq α] (parameter : PublicParameter) (indices : Finset α)
+    (weight : α → HashInput → FewTimeView → ENNReal) (cache : QueryCache HashSpec) :
+    cacheMessageWeight parameter (fun input source => ∑ index ∈ indices, weight index input source) cache =
+      ∑ index ∈ indices, cacheMessageWeight parameter (weight index) cache := by
+  induction indices using Finset.induction_on with
+  | empty =>
+      simp only [Finset.sum_empty, cacheMessageWeight, cacheMessageEntryWeight]
+      apply ENNReal.tsum_eq_zero.mpr
+      intro input
+      cases cache input <;> simp
+  | @insert index indices hnot ih =>
+      simp only [Finset.sum_insert hnot, cacheMessageWeight_add, ih]
+
 theorem cacheMessageWeight_of_no_message (parameter : PublicParameter)
     (weight : HashInput → FewTimeView → ENNReal) (cache : QueryCache HashSpec)
     (hnone : ∀ input, MessageHashInput parameter input → cache input = none) :

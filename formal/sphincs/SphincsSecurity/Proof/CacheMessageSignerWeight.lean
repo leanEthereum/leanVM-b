@@ -7,6 +7,11 @@ open _root_.OracleComp OracleSpec ENNReal
 attribute [local instance] Classical.propDecidable
 set_option backward.isDefEq.respectTransparency false
 
+theorem successfulSignerInputWeight_const (key : SecretKey) (message : Message) (weight : FewTimeView → ENNReal)
+    (result : (Option Signature × Option FewTimeView) × QueryCache HashSpec) :
+    successfulSignerInputWeight key message (fun _ source => weight source) result = successfulSignerViewWeight weight result := by
+  cases result.1.1 <;> cases result.1.2 <;> rfl
+
 theorem cachedSignerInputWeight_le_cacheMessageEntryWeight (key : SecretKey) (message : Message)
     (before : QueryCache HashSpec) (weight : HashInput → FewTimeView → ENNReal) (input : HashInput) :
     cachedSignerInputWeight key message before weight input ≤ cacheMessageEntryWeight key.parameter weight before input := by
