@@ -754,6 +754,10 @@ import SphincsSecurity.Proof.SigningExecutionIndexBudget
 import SphincsSecurity.Proof.StoppedExecutionReserve
 import SphincsSecurity.Proof.InitializedExecutionReserve
 import SphincsSecurity.Proof.SecurityExecutionReserve
+import SphincsSecurity.Proof.StoppedBudgetRemainder
+import SphincsSecurity.Proof.StoppedRemainder127
+import SphincsSecurity.Proof.InitializedStoppedRemainder
+import SphincsSecurity.Proof.SecurityStoppedRemainder
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
