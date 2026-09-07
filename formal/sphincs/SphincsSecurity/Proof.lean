@@ -759,6 +759,11 @@ import SphincsSecurity.Proof.StoppedRemainder127
 import SphincsSecurity.Proof.InitializedStoppedRemainder
 import SphincsSecurity.Proof.SecurityStoppedRemainder
 import SphincsSecurity.Proof.MessageCacheSlots
+import SphincsSecurity.Proof.SigningQueryCommutationGap
+import SphincsSecurity.Proof.SigningRawIndexGap
+import SphincsSecurity.Proof.StoppedSigningGap
+import SphincsSecurity.Proof.StoppedSigningGapBound
+import SphincsSecurity.Proof.SecuritySigningGap
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
