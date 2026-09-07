@@ -696,6 +696,11 @@ import SphincsSecurity.Proof.WorldRawIndexEnvelope
 import SphincsSecurity.Proof.RawIndexCacheEnvelope
 import SphincsSecurity.Proof.AdaptiveRawIndex
 import SphincsSecurity.Proof.InitialRawIndexEnvelope
+import SphincsSecurity.Proof.PowerDifferenceCoefficients
+import SphincsSecurity.Proof.IndexDifferenceTransform
+import SphincsSecurity.Proof.IndexDifferenceEnvelope
+import SphincsSecurity.Proof.IndexDifferenceInitial
+import SphincsSecurity.Proof.TargetIndexEnvelope127
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
