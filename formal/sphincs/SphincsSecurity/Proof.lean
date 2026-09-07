@@ -630,6 +630,7 @@ import SphincsSecurity.Proof.SecurityWorldCoverBudget
 import SphincsSecurity.Proof.AdaptiveTargetFutureCoverage
 import SphincsSecurity.Proof.FutureCoverageBound
 import SphincsSecurity.Proof.SecurityFutureCacheCharge
+import SphincsSecurity.Proof.SecurityCacheCapacity
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
