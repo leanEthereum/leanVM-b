@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.SigningOuterStructuralBudget
 import SphincsSecurity.Proof.RootStructuralCharge
 import SphincsSecurity.Proof.SecurityStoppedParentEndpoint
 import SphincsSecurity.Proof.SecurityJointNonSecretEndpoint
