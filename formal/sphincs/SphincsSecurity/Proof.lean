@@ -1,5 +1,6 @@
 import SphincsSecurity.Proof.JointProbeOriginalExecutionBudget
 import SphincsSecurity.Proof.JointProbeOriginalFtsWitness
+import SphincsSecurity.Proof.JointProbeOriginalRetainedExecution
 import SphincsSecurity.Proof.SigningStoppedGameBudget
 import SphincsSecurity.Proof.SigningOuterStructuralBudget
 import SphincsSecurity.Proof.RootStructuralCharge
