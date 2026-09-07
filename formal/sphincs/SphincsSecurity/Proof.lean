@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.JointProbeOriginalQueryBudget
 import SphincsSecurity.Proof.SigningStoppedGameBudget
 import SphincsSecurity.Proof.SigningOuterStructuralBudget
 import SphincsSecurity.Proof.RootStructuralCharge
