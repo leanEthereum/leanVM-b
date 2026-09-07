@@ -22,9 +22,19 @@ theorem rawIndexCacheEnvelope_eq_index (key : SecretKey) (q signatures : Nat) (s
     (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
     rawIndexCacheEnvelope key q signatures state groups remaining =
       targetIndexEnvelope (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight q)
-        (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) (cacheSlotCount q state.1) signatures
+        (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) (messageCacheSlotCount key.parameter q state.1) signatures
         (targetIndexMoments key state.1 state.2) groups.card remaining.card :=
   targetShapeEnvelope_lift _ _ _ _ _ _ groups remaining hvalid
+
+theorem rawIndexCacheEnvelope_initial (key : SecretKey) (q signatures : Nat) (cache : QueryCache HashSpec)
+    (hnone : ∀ input, FtsProbeSimulation.MessageHashInput key.parameter input → cache input = none)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    rawIndexCacheEnvelope key q signatures (cache, []) groups remaining =
+      targetIndexEnvelope (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight q)
+        (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) q signatures
+        initialTargetIndexVector groups.card remaining.card := by
+  rw [rawIndexCacheEnvelope_eq_index key q signatures (cache, []) groups remaining hvalid,
+    messageCacheSlotCount_initial key.parameter q cache hnone, targetIndexMoments_initial key cache hnone]
 
 theorem expected_adaptive_validRawIndex_le_initial {α : Type} (key : SecretKey) (q : Nat) (hq : q ≤ 2 ^ 127)
     (computation : OracleComp (OracleWorld + SigningSpec) α) (cache : QueryCache HashSpec)
@@ -41,10 +51,6 @@ theorem expected_adaptive_validRawIndex_le_initial {α : Type} (key : SecretKey)
     simp only [List.not_mem_nil] at hentry
   have hbound := expected_adaptive_validRawIndexShape_le key q hq computation (cache, []) hsigned hbudget groups remaining hvalid
   simp only [cappedRawIndexCacheEnvelope, if_pos (show SigningTranscript.Valid [] from Nat.zero_le _), List.length_nil, Nat.sub_zero] at hbound
-  apply hbound.trans
-  apply (targetShapeEnvelope_queries_mono _ _ _ signatureLimit (observedRawIndexShapeVector key (cache, []))
-    (show cacheSlotCount q cache ≤ q from Nat.sub_le _ _) groups remaining hvalid).trans_eq
-  unfold observedRawIndexShapeVector
-  rw [targetShapeEnvelope_lift _ _ _ q signatureLimit _ groups remaining hvalid, targetIndexMoments_initial key cache hnone]
+  exact hbound.trans_eq (rawIndexCacheEnvelope_initial key q signatureLimit cache hnone groups remaining hvalid)
 
 end SphincsSecurity.Concrete

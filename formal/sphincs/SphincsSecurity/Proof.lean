@@ -758,6 +758,7 @@ import SphincsSecurity.Proof.StoppedBudgetRemainder
 import SphincsSecurity.Proof.StoppedRemainder127
 import SphincsSecurity.Proof.InitializedStoppedRemainder
 import SphincsSecurity.Proof.SecurityStoppedRemainder
+import SphincsSecurity.Proof.MessageCacheSlots
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 

@@ -39,7 +39,7 @@ theorem expected_randomOracle_newCachedTargetEnvelope_le (key : SecretKey) (q si
     calc
       _ ≤ ∑' output, Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
           newTargetEnvelopeCharge key before (before.cacheQuery input output) log (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight q)
-            (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) (cacheSlotCount q before) signatures groups remaining := by
+            (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) (messageCacheSlotCount key.parameter q before) signatures groups remaining := by
         apply ENNReal.tsum_le_tsum
         intro output
         exact mul_le_mul' le_rfl (newCachedTargetEnvelope_le_fixed key q signatures before (before.cacheQuery input output, log)

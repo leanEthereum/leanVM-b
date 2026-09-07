@@ -10,6 +10,19 @@ set_option backward.isDefEq.respectTransparency false
 noncomputable def cappedRawIndexCacheEnvelope (key : SecretKey) (q : Nat) (state : CoverLogState) (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) : ENNReal :=
   if SigningTranscript.Valid state.2 then rawIndexCacheEnvelope key q (signatureLimit - state.2.length) state groups remaining else 0
 
+theorem cappedRawIndexCacheEnvelope_nonmessage_step (key : SecretKey) (q : Nat) (state : CoverLogState)
+    (input : HashInput) (hsigned : SigningDigestsCached key.parameter state.1 key.root state.2)
+    (hmessage : ¬ FtsProbeSimulation.MessageHashInput key.parameter input)
+    (result : HashOutput × CoverLogState)
+    (hr : result ∈ support ((logTracedMappedAdversaryImpl key (.inl (.inr input))).run state)) :
+    cappedRawIndexCacheEnvelope key q result.2 = cappedRawIndexCacheEnvelope key q state := by
+  rw [logTracedMappedAdversaryImpl_run_map, support_map] at hr
+  obtain ⟨base, hb, rfl⟩ := hr
+  have heq := rawIndexCacheEnvelope_randomOracle_nonmessage key q (signatureLimit - state.2.length) state.1 state.2 input
+    hsigned hmessage base hb
+  funext groups remaining
+  simp only [signingLogFragment, List.append_nil, cappedRawIndexCacheEnvelope, heq]
+
 theorem expected_logTraced_cappedRawIndexCacheEnvelope_le (key : SecretKey) (q : Nat) (hq : q ≤ 2 ^ 127)
     (state : CoverLogState) (hsigned : SigningDigestsCached key.parameter state.1 key.root state.2)
     (hcache : QueryCache.enncard state.1 ≤ q) (input : (OracleWorld + SigningSpec).Domain)

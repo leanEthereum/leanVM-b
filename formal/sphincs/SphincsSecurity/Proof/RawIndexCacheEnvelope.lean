@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.WorldRawIndexEnvelope
+import SphincsSecurity.Proof.MessageCacheSlots
 import SphincsSecurity.Proof.MixedCacheEnvelope
 
 namespace SphincsSecurity.Concrete
@@ -8,8 +8,44 @@ set_option backward.isDefEq.respectTransparency false
 
 noncomputable def rawIndexCacheEnvelope (key : SecretKey) (q : Nat) (signatures : Nat) (state : CoverLogState) : TargetShapeVector :=
   targetShapeEnvelope (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight q)
-    (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) (cacheSlotCount q state.1) signatures
+    (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) (messageCacheSlotCount key.parameter q state.1) signatures
     (observedRawIndexShapeVector key state)
+
+theorem rawIndexCacheEnvelope_cacheQuery_nonmessage (key : SecretKey) (q signatures : Nat)
+    (before : QueryCache HashSpec) (log : QueryLog SigningSpec) (input : HashInput) (output : HashOutput)
+    (hfresh : before input = none) (hsigned : SigningDigestsCached key.parameter before key.root log)
+    (hmessage : ¬ FtsProbeSimulation.MessageHashInput key.parameter input) :
+    rawIndexCacheEnvelope key q signatures (before.cacheQuery input output, log) =
+      rawIndexCacheEnvelope key q signatures (before, log) := by
+  have hshape : observedRawIndexShapeVector key (before.cacheQuery input output, log) = observedRawIndexShapeVector key (before, log) := by
+    funext groups remaining
+    change targetIndexMoments key (before.cacheQuery input output) log groups.card remaining.card = _
+    rw [targetIndexMoments_cacheQuery key _ _ before log input output hfresh hsigned]
+    simp only [hmessage, false_and, if_false, add_zero]
+    rfl
+  simp only [rawIndexCacheEnvelope, messageCacheSlotCount_cacheQuery_nonmessage key.parameter q before input output hmessage, hshape]
+
+theorem allCacheSlots_rawIndexEnvelope_le (key : SecretKey) (q signatures : Nat) (state : CoverLogState)
+    (hfinite : Finite state.1) (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    targetShapeEnvelope (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight q)
+      (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) (cacheSlotCount q state.1) signatures
+      (observedRawIndexShapeVector key state) groups remaining ≤ rawIndexCacheEnvelope key q signatures state groups remaining :=
+  targetShapeEnvelope_queries_mono _ _ _ _ _ (cacheSlotCount_le_message key.parameter q state.1 hfinite) groups remaining hvalid
+
+theorem rawIndexCacheEnvelope_randomOracle_nonmessage (key : SecretKey) (q signatures : Nat)
+    (before : QueryCache HashSpec) (log : QueryLog SigningSpec) (input : HashInput)
+    (hsigned : SigningDigestsCached key.parameter before key.root log)
+    (hmessage : ¬ FtsProbeSimulation.MessageHashInput key.parameter input)
+    (result : HashOutput × QueryCache HashSpec) (hr : result ∈ support ((randomOracle input).run before)) :
+    rawIndexCacheEnvelope key q signatures (result.2, log) = rawIndexCacheEnvelope key q signatures (before, log) := by
+  by_cases hfresh : before input = none
+  · rw [randomOracle, QueryImpl.withCaching_run_none _ hfresh, support_map] at hr
+    obtain ⟨output, _, rfl⟩ := hr
+    exact rawIndexCacheEnvelope_cacheQuery_nonmessage key q signatures before log input output hfresh hsigned hmessage
+  · obtain ⟨output, ho⟩ := Option.ne_none_iff_exists'.mp hfresh
+    rw [randomOracle, QueryImpl.withCaching_run_some _ ho, mem_support_pure_iff] at hr
+    subst result
+    rfl
 
 theorem expected_randomOracle_rawIndexCacheEnvelope_le (key : SecretKey) (q : Nat) (signatures : Nat)
     (before : QueryCache HashSpec) (log : QueryLog SigningSpec) (input : HashInput)
@@ -25,14 +61,20 @@ theorem expected_randomOracle_rawIndexCacheEnvelope_le (key : SecretKey) (q : Na
         rw [randomOracle, QueryImpl.withCaching_run_none _ hfresh, support_map]
         exact ⟨default, hdefault, rfl⟩)
       rwa [enncard_cacheQuery_of_fresh before input default hfresh] at h
-    let slots := cacheSlotCount q (before.cacheQuery input default)
-    have hbefore : cacheSlotCount q before = slots + 1 := cacheSlotCount_cacheQuery_succ q before input default hfresh hcap'
-    have hslots (output : HashOutput) : cacheSlotCount q (before.cacheQuery input output) = slots := by
-      have h := cacheSlotCount_cacheQuery_succ q before input output hfresh hcap'
-      omega
-    rw [randomOracle, QueryImpl.withCaching_run_none _ hfresh, tsum_probOutput_map_mul]
-    simp only [rawIndexCacheEnvelope, hslots, hbefore]
-    exact expected_fresh_rawIndexEnvelope_le key q slots signatures before log input hfresh hsigned groups remaining hvalid
+    by_cases hmessage : FtsProbeSimulation.MessageHashInput key.parameter input
+    · let slots := messageCacheSlotCount key.parameter q (before.cacheQuery input default)
+      have hbefore : messageCacheSlotCount key.parameter q before = slots + 1 :=
+        messageCacheSlotCount_cacheQuery_succ key.parameter q before input default hfresh hmessage hcap'
+      have hslots (output : HashOutput) : messageCacheSlotCount key.parameter q (before.cacheQuery input output) = slots := by
+        have h := messageCacheSlotCount_cacheQuery_succ key.parameter q before input output hfresh hmessage hcap'
+        omega
+      rw [randomOracle, QueryImpl.withCaching_run_none _ hfresh, tsum_probOutput_map_mul]
+      simp only [rawIndexCacheEnvelope, hslots, hbefore]
+      exact expected_fresh_rawIndexEnvelope_le key q slots signatures before log input hfresh hsigned groups remaining hvalid
+    · rw [randomOracle, QueryImpl.withCaching_run_none _ hfresh, tsum_probOutput_map_mul]
+      simp only [rawIndexCacheEnvelope_cacheQuery_nonmessage key q signatures before log input _ hfresh hsigned hmessage,
+        ENNReal.tsum_mul_right]
+      exact mul_le_of_le_one_left' tsum_probOutput_le_one
   · obtain ⟨output, houtput⟩ := Option.ne_none_iff_exists'.mp hfresh
     rw [randomOracle, QueryImpl.withCaching_run_some _ houtput, tsum_probOutput_pure_mul]
 
@@ -82,15 +124,15 @@ theorem expected_logTraced_sign_rawIndexCacheEnvelope_le (key : SecretKey) (q : 
     (∑' result, Pr[= result | (logTracedMappedAdversaryImpl key (.inr message)).run state] *
       rawIndexCacheEnvelope key q signatures result.2 groups remaining) ≤
       rawIndexCacheEnvelope key q (signatures + 1) state groups remaining := by
-  apply le_trans ?_ (expected_logTraced_sign_rawIndexEnvelope_le key q (cacheSlotCount q state.1) signatures
+  apply le_trans ?_ (expected_logTraced_sign_rawIndexEnvelope_le key q (messageCacheSlotCount key.parameter q state.1) signatures
     hq state hsigned hcache message groups remaining hvalid)
   apply ENNReal.tsum_le_tsum
   intro result
   by_cases hresult : result ∈ support ((logTracedMappedAdversaryImpl key (.inr message)).run state)
   · apply mul_le_mul' le_rfl
     exact targetShapeEnvelope_queries_mono _ _ _ signatures _
-      (cacheSlotCount_antitone q state.1 result.2.1 (logTracedMappedAdversaryImpl_cache_le key (.inr message) state result hresult)
-        (hcap result hresult)) groups remaining hvalid
+      (messageCacheSlotCount_antitone key.parameter q state.1 result.2.1 (logTracedMappedAdversaryImpl_cache_le key (.inr message) state result hresult)
+        (Finite.of_enncard_le (hcap result hresult))) groups remaining hvalid
   · rw [probOutput_eq_zero_of_not_mem_support hresult, zero_mul, zero_mul]
 
 end SphincsSecurity.Concrete

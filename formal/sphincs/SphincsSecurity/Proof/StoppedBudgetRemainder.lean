@@ -119,4 +119,47 @@ theorem expectedStoppedExecutionCharge_add_remainder_le_queryBudget
               (logTracedMappedAdversaryImpl_signingDigestsCached key input state hsigned _ hl) (htail _ hl))
           · rw [probOutput_eq_zero_of_not_mem_support hr, zero_mul, zero_mul]
 
+theorem stepWithFailure_expect_rawIndex_nonmessage
+    (exception : QueryCache HashSpec → HashInput → HashOutput → Prop)
+    (parameter : PublicParameter) (root : Digest) (otsTable : OtsSecretIndex → HashOutput) (ftsTable : Coordinate → Digest)
+    (cap : Nat) (input : HashInput) (frame : Option Frame) (state : CoverLogState) (hit failed : Bool)
+    (hsigned : SigningDigestsCached parameter state.1 root state.2) (hmessage : ¬ MessageHashInput parameter input)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) :
+    (∑' result, Pr[= result | stepWithFailure exception parameter root otsTable ftsTable (.inl (.inr input)) frame state.1 hit failed] *
+      cappedRawIndexCacheEnvelope (secretKey parameter root otsTable ftsTable) cap
+        (stepSigningLogState (.inl (.inr input)) state.2 result) groups remaining) =
+      cappedRawIndexCacheEnvelope (secretKey parameter root otsTable ftsTable) cap state groups remaining := by
+  let key := secretKey parameter root otsTable ftsTable
+  rw [stepWithFailure_expect_logged exception parameter root otsTable ftsTable (.inl (.inr input)) frame state.1 state.2 hit failed
+    (fun _ current => cappedRawIndexCacheEnvelope key cap current groups remaining)]
+  calc
+    _ = ∑' result, Pr[= result | (logTracedMappedAdversaryImpl key (.inl (.inr input))).run state] *
+        cappedRawIndexCacheEnvelope key cap state groups remaining := by
+      apply tsum_congr
+      intro result
+      by_cases hr : result ∈ support ((logTracedMappedAdversaryImpl key (.inl (.inr input))).run state)
+      · rw [cappedRawIndexCacheEnvelope_nonmessage_step key cap state input hsigned hmessage result hr]
+      · rw [probOutput_eq_zero_of_not_mem_support hr, zero_mul, zero_mul]
+    _ = _ := by rw [ENNReal.tsum_mul_right, logTracedMappedAdversaryImpl_mass, one_mul]
+
+theorem nonmessage_execution_index_budget_conserved
+    (exception : QueryCache HashSpec → HashInput → HashOutput → Prop)
+    (parameter : PublicParameter) (root : Digest) (otsTable : OtsSecretIndex → HashOutput) (ftsTable : Coordinate → Digest)
+    (cap budget : Nat) (input : HashInput) (frame : Option Frame) (state : CoverLogState) (hit failed : Bool)
+    (hsigned : SigningDigestsCached parameter state.1 root state.2) (hmessage : ¬ MessageHashInput parameter input)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) :
+    (unusedTargetExecutionCost parameter state.1 (.inl (.inr input)) : ENNReal) *
+        cappedRawIndexCacheEnvelope (secretKey parameter root otsTable ftsTable) cap state groups remaining +
+      (∑' result, Pr[= result | stepWithFailure exception parameter root otsTable ftsTable (.inl (.inr input)) frame state.1 hit failed] *
+        ((budget : ENNReal) * cappedRawIndexCacheEnvelope (secretKey parameter root otsTable ftsTable) cap
+          (stepSigningLogState (.inl (.inr input)) state.2 result) groups remaining)) =
+      ((budget + 1 : Nat) : ENNReal) * cappedRawIndexCacheEnvelope (secretKey parameter root otsTable ftsTable) cap state groups remaining := by
+  have hcost : unusedTargetExecutionCost parameter state.1 (.inl (.inr input)) = 1 := by
+    simp [unusedTargetExecutionCost, unusedTargetHashCost, targetArrivalHashCost, freshWorldTargetHashCost,
+      signingMacroHashCost, unusedSigningExecutionCost, hmessage]
+  rw [hcost, Nat.cast_one, one_mul]
+  simp_rw [mul_left_comm (Pr[= _ | _])]
+  rw [ENNReal.tsum_mul_left, stepWithFailure_expect_rawIndex_nonmessage exception parameter root otsTable ftsTable cap input frame state hit failed
+    hsigned hmessage groups remaining, Nat.cast_add, Nat.cast_one, add_mul, one_mul, add_comm]
+
 end SphincsSecurity.Concrete.FtsProbeSimulation.JointOriginal

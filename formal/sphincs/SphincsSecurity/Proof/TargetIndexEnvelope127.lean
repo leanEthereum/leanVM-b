@@ -38,11 +38,7 @@ theorem expected_adaptive_cappedRawIndex_le_initial {α : Type} (key : SecretKey
   have hinitial : cappedRawIndexCacheEnvelope key q (cache, []) groups remaining = rawIndexCacheEnvelope key q signatureLimit (cache, []) groups remaining := by
     simp only [cappedRawIndexCacheEnvelope, if_pos (show SigningTranscript.Valid [] from Nat.zero_le _), List.length_nil, Nat.sub_zero]
   rw [hinitial] at hbound
-  apply hbound.trans
-  apply (targetShapeEnvelope_queries_mono _ _ _ signatureLimit (observedRawIndexShapeVector key (cache, []))
-    (show cacheSlotCount q cache ≤ q from Nat.sub_le _ _) groups remaining hvalid).trans_eq
-  unfold observedRawIndexShapeVector
-  rw [targetShapeEnvelope_lift _ _ _ q signatureLimit _ groups remaining hvalid, targetIndexMoments_initial key cache hnone]
+  exact hbound.trans_eq (rawIndexCacheEnvelope_initial key q signatureLimit cache hnone groups remaining hvalid)
 
 theorem expected_adaptive_cappedRawIndex_full_le_127 {α : Type} (key : SecretKey) (q : Nat) (hq : q ≤ 2 ^ 127)
     (computation : OracleComp (OracleWorld + SigningSpec) α) (cache : QueryCache HashSpec)

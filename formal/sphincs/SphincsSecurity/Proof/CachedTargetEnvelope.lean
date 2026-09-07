@@ -29,11 +29,12 @@ theorem newCachedTargetEnvelope_le_fixed (key : SecretKey) (q signatures : Nat) 
     (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
     newCachedTargetEnvelope key q signatures before after groups remaining ≤
       newTargetEnvelopeCharge key before after.1 after.2 (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight q)
-        (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) (cacheSlotCount q before) signatures groups remaining := by
+        (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) (messageCacheSlotCount key.parameter q before) signatures groups remaining := by
   apply cacheMessageWeight_mono
   intro input target
   split_ifs
-  · exact targetShapeEnvelope_queries_mono _ _ _ signatures _ (cacheSlotCount_antitone q before after.1 hcache hcap) groups remaining hvalid
+  · exact targetShapeEnvelope_queries_mono _ _ _ signatures _ ((cacheSlotCount_antitone q before after.1 hcache hcap).trans
+      (cacheSlotCount_le_message key.parameter q before ((Finite.of_enncard_le hcap).of_le hcache))) groups remaining hvalid
   · exact le_rfl
 
 theorem expected_logTraced_sign_newCachedTargetEnvelope_le (key : SecretKey) (q signatures : Nat)
@@ -46,7 +47,7 @@ theorem expected_logTraced_sign_newCachedTargetEnvelope_le (key : SecretKey) (q 
   calc
     _ ≤ ∑' result, Pr[= result | (logTracedMappedAdversaryImpl key (.inr message)).run state] *
         newTargetEnvelopeCharge key state.1 result.2.1 result.2.2 (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight q)
-          (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) (cacheSlotCount q state.1) signatures groups remaining := by
+          (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) (messageCacheSlotCount key.parameter q state.1) signatures groups remaining := by
       apply ENNReal.tsum_le_tsum
       intro result
       by_cases hresult : result ∈ support ((logTracedMappedAdversaryImpl key (.inr message)).run state)
@@ -61,7 +62,7 @@ theorem expected_logTraced_sign_newCachedTargetEnvelope_le (key : SecretKey) (q 
       rw [hrun, tsum_probOutput_map_mul]
       have h := expected_signWithView_newTargetEnvelopeCharge_le key message state.1 state.2 hsigned
         (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight q)
-        (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) (cacheSlotCount q state.1) signatures groups remaining hvalid
+        (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) (messageCacheSlotCount key.parameter q state.1) signatures groups remaining hvalid
       apply h.trans_eq
       unfold rawIndexCacheEnvelope observedRawIndexShapeVector
       rw [targetShapeEnvelope_lift _ _ _ _ _ _ groups remaining hvalid]
