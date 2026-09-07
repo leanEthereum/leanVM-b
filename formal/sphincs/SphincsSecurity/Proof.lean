@@ -626,6 +626,7 @@ import SphincsSecurity.Proof.FewTimeOccupancyGrowth
 import SphincsSecurity.Proof.ObservedSignerOccupancy
 import SphincsSecurity.Proof.RetainedBinomialOccupancy
 import SphincsSecurity.Proof.RetainedCompletion
+import SphincsSecurity.Proof.SecurityWorldCoverBudget
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
