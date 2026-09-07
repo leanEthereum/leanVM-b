@@ -1,4 +1,6 @@
 import SphincsSecurity.Proof.SecurityBeforeSharedFailure
+import SphincsSecurity.Proof.JointProbeBeforeFailureNonSecretBudget
+import SphincsSecurity.Proof.SecurityJointNonSecretEndpoint
 
 namespace SphincsSecurity.Concrete.FtsProbeSimulation.JointOriginal
 
@@ -108,5 +110,99 @@ theorem forgeAdvantage_le_sharedFailure_add_beforeFailureStructural_remaining127
   (forgeAdvantage_le_sharedFailure_add_beforeFailureStructural adversary q hq fuel).trans
     (add_le_add le_rfl ((probEvent_retainedNonSecretResidual_le_viewed adversary).trans
       (probEvent_sampled_messageOrForest_le127 adversary q hqPos hq hqMax)))
+
+noncomputable def sampledBeforeFailureRestHashCharge (adversary : Adversary) (q fuel : Nat) : ENNReal :=
+  ∑' parameter, Pr[= parameter | sampleParameter] *
+    ∑' ftsSecret, Pr[= ftsSecret | sampleFtsSecrets] *
+      ∑' table, Pr[= table | OtsProbeSimulation.sampleOtsHashTable] *
+        ∑' initial, Pr[= initial | initializeRoot parameter table (curryFtsTableEquiv ftsSecret) q fuel] *
+          expectedBeforeFailureCharge (parentException parameter table (curryFtsTableEquiv ftsSecret)) (fun _ _ => 1)
+            parameter initial.2.1 table (curryFtsTableEquiv ftsSecret) (retainedComputation adversary parameter initial.2.1 q)
+              initial.1 initial.2.2 false initial.1.isNone
+
+noncomputable def sampledBeforeFailureOuterNonSecretCharge (adversary : Adversary) (q fuel : Nat) : ENNReal :=
+  ∑' parameter, Pr[= parameter | sampleParameter] *
+    ∑' ftsSecret, Pr[= ftsSecret | sampleFtsSecrets] *
+      ∑' table, Pr[= table | OtsProbeSimulation.sampleOtsHashTable] *
+        ∑' initial, Pr[= initial | initializeRoot parameter table (curryFtsTableEquiv ftsSecret) q fuel] *
+          expectedBeforeFailureOuterCharge (parentException parameter table (curryFtsTableEquiv ftsSecret))
+            (fun _ input => if NonSecretHashInput parameter input then 1 else 0)
+            parameter initial.2.1 table (curryFtsTableEquiv ftsSecret) (retainedComputation adversary parameter initial.2.1 q)
+              initial.1 initial.2.2 false initial.1.isNone
+
+theorem sampledBeforeFailureRestHashCharge_le_queryBound
+    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q) (fuel : Nat) :
+    sampledBeforeFailureRestHashCharge adversary q fuel ≤ q := by
+  unfold sampledBeforeFailureRestHashCharge
+  calc
+    _ ≤ ∑' parameter, Pr[= parameter | sampleParameter] *
+        ∑' ftsSecret, Pr[= ftsSecret | sampleFtsSecrets] *
+          ∑' table, Pr[= table | OtsProbeSimulation.sampleOtsHashTable] * (q : ENNReal) := by
+      apply ENNReal.tsum_le_tsum
+      intro parameter
+      by_cases hp : parameter ∈ support sampleParameter
+      · apply mul_le_mul' le_rfl
+        apply ENNReal.tsum_le_tsum
+        intro ftsSecret
+        apply mul_le_mul' le_rfl
+        apply ENNReal.tsum_le_tsum
+        intro table
+        exact mul_le_mul' le_rfl (initializedBeforeFailureHashCharge_le_queryBound adversary q hq parameter hp table
+          (curryFtsTableEquiv ftsSecret) (mem_support_sampleFtsSecrets ftsSecret) fuel)
+      · rw [probOutput_eq_zero_of_not_mem_support hp, zero_mul, zero_mul]
+    _ ≤ _ := by
+      simp_rw [ENNReal.tsum_mul_right]
+      exact (mul_le_mul' tsum_probOutput_le_one
+        (mul_le_mul' tsum_probOutput_le_one (mul_le_mul' tsum_probOutput_le_one le_rfl))).trans_eq (by simp)
+
+theorem sampledBeforeFailureStructural_le_restHash_add_outerNonSecret (adversary : Adversary) (q fuel : Nat) :
+    sampledBeforeFailureStructuralCharge adversary q fuel ≤
+      sampledBeforeFailureRestHashCharge adversary q fuel + sampledBeforeFailureOuterNonSecretCharge adversary q fuel := by
+  unfold sampledBeforeFailureStructuralCharge initializedBeforeFailureStructuralCharge
+    sampledBeforeFailureRestHashCharge sampledBeforeFailureOuterNonSecretCharge
+  rw [← ENNReal.tsum_add]
+  apply ENNReal.tsum_le_tsum
+  intro parameter
+  rw [← mul_add, ← ENNReal.tsum_add]
+  apply mul_le_mul' le_rfl
+  apply ENNReal.tsum_le_tsum
+  intro ftsSecret
+  rw [← mul_add, ← ENNReal.tsum_add]
+  apply mul_le_mul' le_rfl
+  apply ENNReal.tsum_le_tsum
+  intro table
+  rw [← mul_add, ← ENNReal.tsum_add]
+  apply mul_le_mul' le_rfl
+  apply ENNReal.tsum_le_tsum
+  intro initial
+  rw [← mul_add]
+  exact mul_le_mul' le_rfl (beforeFailureStructural_le_hash_add_nonSecret
+    (parentException parameter table (curryFtsTableEquiv ftsSecret)) parameter initial.2.1 table (curryFtsTableEquiv ftsSecret)
+    (retainedComputation adversary parameter initial.2.1 q) initial.1 initial.2.2 false initial.1.isNone)
+
+theorem forgeAdvantage_add_sharedNonSecret_le_beforeFailureBudget
+    (adversary : Adversary) (q : Nat) (hqPos : 1 ≤ q)
+    (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 127) :
+    forgeAdvantage scheme adversary + sampledJointNonSecretQueryCharge adversary q * (Fintype.card Digest : ENNReal)⁻¹ ≤
+      (sampledBeforeFailureRestHashCharge adversary q (q + 1) + sampledBeforeFailureOuterNonSecretCharge adversary q (q + 1)) *
+        (Fintype.card Digest : ENNReal)⁻¹ +
+      ((q : ENNReal) * (Fintype.card Digest : ENNReal)⁻¹ + (q : ENNReal) / ((2 ^ 216 : Nat) : ENNReal)) +
+      ((q : ENNReal) * ((2 ^ 139 : Nat) : ENNReal)⁻¹ + (q : ENNReal) * (15 * ((2 ^ 132 : Nat) : ENNReal)⁻¹)) := by
+  have hspace : q + 1 < Fintype.card Digest := by
+    have hcard : Fintype.card Digest = 2 ^ 128 := by
+      rw [show Fintype.card Digest = 2 ^ digestBits from card_bitVec digestBits]
+      rfl
+    rw [hcard]
+    omega
+  have hshared := (add_le_add ((sampledParentSharedFailureRisk_le_nativeCompletion adversary q (q + 1)).trans
+    (sampledNativeFtsCompletionRisk_le_ots_add_fts_hit adversary q (q + 1))) le_rfl).trans
+      (sampledNativeFtsOtsFailure_add_fts_hit_add_nonSecret_le_query_rate adversary q (q + 1) (by omega) hspace)
+  apply (add_le_add (forgeAdvantage_le_sharedFailure_add_beforeFailureStructural_remaining127 adversary q hqPos hq hqMax (q + 1)) le_rfl).trans
+  calc
+    _ = sampledBeforeFailureStructuralCharge adversary q (q + 1) * (Fintype.card Digest : ENNReal)⁻¹ +
+        (sampledParentSharedFailureRisk adversary q (q + 1) + sampledJointNonSecretQueryCharge adversary q * (Fintype.card Digest : ENNReal)⁻¹) +
+        ((q : ENNReal) * ((2 ^ 139 : Nat) : ENNReal)⁻¹ + (q : ENNReal) * (15 * ((2 ^ 132 : Nat) : ENNReal)⁻¹)) := by ac_rfl
+    _ ≤ _ := add_le_add (add_le_add
+      (mul_le_mul' (sampledBeforeFailureStructural_le_restHash_add_outerNonSecret adversary q (q + 1)) le_rfl) hshared) le_rfl
 
 end SphincsSecurity.Concrete.FtsProbeSimulation.JointOriginal
