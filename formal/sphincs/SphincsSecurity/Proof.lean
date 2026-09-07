@@ -634,6 +634,8 @@ import SphincsSecurity.Proof.SecurityCacheCapacity
 import SphincsSecurity.Proof.CachedSourceIncrement
 import SphincsSecurity.Proof.FewTimeTargetIncrementBound
 import SphincsSecurity.Proof.ExpectedReuseArrival
+import SphincsSecurity.Proof.AllMessageReuseArrival
+import SphincsSecurity.Proof.AllMessageOccupancyArrival
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 

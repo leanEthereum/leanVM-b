@@ -47,6 +47,18 @@ theorem coverageOccupancyCompletionIncrement_zero {n : Nat} (views : Fin n → O
   rw [coverageOccupancyCompletionIncrement, coverageOccupancyCompletion_zero, coverageOccupancyCompletion_zero,
     coverageOccupancyMoment_insert_eq, Nat.cast_add, ENNReal.add_sub_cancel_left (by finiteness)]
 
+theorem expected_coverageOccupancyCompletionIncrement {n : Nat} (views : Fin n → Option FewTimeView)
+    (remaining : Nat) :
+    coverageOccupancyCompletion views remaining +
+      (∑' source, Pr[= source | ($ᵗ FewTimeView : ProbComp FewTimeView)] *
+        coverageOccupancyCompletionIncrement views remaining source) =
+      coverageOccupancyCompletion views (remaining + 1) := by
+  have hmass : (∑' source, Pr[= source | ($ᵗ FewTimeView : ProbComp FewTimeView)]) = 1 :=
+    tsum_probOutput_eq_one' (by simp)
+  rw [← expected_coverageOccupancyCompletion_insert]
+  simp only [← coverageOccupancyCompletion_add_increment, mul_add, ENNReal.tsum_add, ENNReal.tsum_mul_right,
+    hmass, one_mul]
+
 theorem expected_coverageOccupancyCompletionIncrement_insert {n : Nat} (views : Fin n → Option FewTimeView)
     (remaining : Nat) (source : FewTimeView) :
     (∑' next, Pr[= next | ($ᵗ FewTimeView : ProbComp FewTimeView)] *

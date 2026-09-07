@@ -42,6 +42,19 @@ theorem cacheMessageWeight_add (parameter : PublicParameter)
   · exact (add_zero _).symm
   · split_ifs <;> simp only [add_zero]
 
+theorem cacheMessageWeight_mul_right (parameter : PublicParameter)
+    (weight : HashInput → FewTimeView → ENNReal) (cache : QueryCache HashSpec) (factor : ENNReal) :
+    cacheMessageWeight parameter (fun input view => weight input view * factor) cache =
+      cacheMessageWeight parameter weight cache * factor := by
+  unfold cacheMessageWeight
+  rw [← ENNReal.tsum_mul_right]
+  apply tsum_congr
+  intro input
+  unfold cacheMessageEntryWeight
+  cases cache input with
+  | none => exact (zero_mul _).symm
+  | some output => simp only; split_ifs <;> simp only [zero_mul]
+
 theorem cacheMessageWeight_cacheQuery (parameter : PublicParameter)
     (weight : HashInput → FewTimeView → ENNReal) (cache : QueryCache HashSpec)
     (input : HashInput) (output : HashOutput) (hfresh : cache input = none) :
