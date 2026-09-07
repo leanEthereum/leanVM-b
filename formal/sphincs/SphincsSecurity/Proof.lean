@@ -631,6 +631,8 @@ import SphincsSecurity.Proof.AdaptiveTargetFutureCoverage
 import SphincsSecurity.Proof.FutureCoverageBound
 import SphincsSecurity.Proof.SecurityFutureCacheCharge
 import SphincsSecurity.Proof.SecurityCacheCapacity
+import SphincsSecurity.Proof.CachedSourceIncrement
+import SphincsSecurity.Proof.FewTimeTargetIncrementBound
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 

@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.FutureCoverageCharge
+import SphincsSecurity.Proof.EligibleTargetReuse
 
 namespace SphincsSecurity.Concrete
 
@@ -15,7 +16,7 @@ noncomputable def cachedFutureCoverage (remaining : Nat) (parameter : PublicPara
 noncomputable def cachedFutureCoverageReuseCharge (remaining : Nat) (key : SecretKey) (message : Message)
     (before : QueryCache HashSpec) (log : QueryLog SigningSpec) (q : Nat) : ENNReal :=
   cacheMessageWeight key.parameter (fun input target =>
-    targetFutureCoverageReuseCharge remaining key message before log (payloadOf input) target q) before
+    targetInputReuseCharge remaining key message before log (payloadOf input) target q) before
 
 theorem signWithView_newTarget_futureCoverage_eq (remaining : Nat) (key : SecretKey) (message : Message)
     (before : QueryCache HashSpec) (log : QueryLog SigningSpec)
@@ -102,7 +103,7 @@ theorem expected_signWithView_cachedFutureCoverage_le (remaining : Nat) (key : S
     · rw [probOutput_eq_zero_of_not_mem_support hresult, zero_mul, zero_mul, zero_mul, add_zero]
   rw [heq, expected_cacheMessageWeight]
   have hprior := cacheMessageWeight_mono key.parameter _ _ before (fun input target =>
-    expected_signWithView_observedTargetFutureCoverage_le remaining key message before log (payloadOf input) target hsigned q hq hcache)
+    expected_signWithView_observedTargetFutureCoverage_le_inputReuse remaining key message before log (payloadOf input) target hsigned q hq hcache)
   rw [cacheMessageWeight_add] at hprior
   exact (add_le_add hprior (expected_newMessageFutureCoverage_le remaining key.parameter
     (fixedSigningViews key.parameter before key.root log) (signWithView key message) before hfinite)).trans_eq (by
