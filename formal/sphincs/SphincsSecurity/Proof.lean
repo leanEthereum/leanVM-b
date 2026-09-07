@@ -722,6 +722,15 @@ import SphincsSecurity.Proof.CachedTargetCoverage
 import SphincsSecurity.Proof.AdaptiveTargetCoverage127
 import SphincsSecurity.Proof.RetainedTargetCoverage127
 import SphincsSecurity.Proof.SecurityTargetCoverage127
+import SphincsSecurity.Proof.BeforeFailureSigningCharge
+import SphincsSecurity.Proof.SigningEncodingReserve
+import SphincsSecurity.Proof.BeforeFailureStructuralReserve
+import SphincsSecurity.Proof.SampledSigningReserve
+import SphincsSecurity.Proof.SecuritySigningReserve
+import SphincsSecurity.Proof.PreExceptionSurvivalCost
+import SphincsSecurity.Proof.FtsSigningReserve
+import SphincsSecurity.Proof.SelectedSigningReserve
+import SphincsSecurity.Proof.NewTargetSigningReserve
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
