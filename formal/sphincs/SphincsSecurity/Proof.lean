@@ -665,6 +665,11 @@ import SphincsSecurity.Proof.TargetMixedGrowthPolynomial
 import SphincsSecurity.Proof.TargetSigningCacheGrowth
 import SphincsSecurity.Proof.NormalizedTargetLogSigning
 import SphincsSecurity.Proof.ClosedTargetMixedSigning
+import SphincsSecurity.Proof.TargetMomentShapes
+import SphincsSecurity.Proof.TargetShapeOperators
+import SphincsSecurity.Proof.TargetShapeEnvelope
+import SphincsSecurity.Proof.TargetShapeNilpotence
+import SphincsSecurity.Proof.TargetShapeBinomial
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
