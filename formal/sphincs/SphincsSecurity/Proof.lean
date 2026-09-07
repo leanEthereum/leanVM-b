@@ -707,6 +707,21 @@ import SphincsSecurity.Proof.SigningQueryCost
 import SphincsSecurity.Proof.SigningMacroBudget
 import SphincsSecurity.Proof.AdaptiveIndexCharge
 import SphincsSecurity.Proof.AdaptiveIndexCharge127
+import SphincsSecurity.Proof.NewTargetSigningStability
+import SphincsSecurity.Proof.FreshTargetPayload
+import SphincsSecurity.Proof.NewTargetEnvelopeCharge
+import SphincsSecurity.Proof.ExpectedNewTargetEnvelope
+import SphincsSecurity.Proof.CachedTargetEnvelope
+import SphincsSecurity.Proof.CachedTargetSigning
+import SphincsSecurity.Proof.NewTargetWorld
+import SphincsSecurity.Proof.CachedTargetWorld
+import SphincsSecurity.Proof.CappedTargetEnvelope
+import SphincsSecurity.Proof.AdaptiveCachedTarget
+import SphincsSecurity.Proof.CachedTargetEnvelope127
+import SphincsSecurity.Proof.CachedTargetCoverage
+import SphincsSecurity.Proof.AdaptiveTargetCoverage127
+import SphincsSecurity.Proof.RetainedTargetCoverage127
+import SphincsSecurity.Proof.SecurityTargetCoverage127
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
