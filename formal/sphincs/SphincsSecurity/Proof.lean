@@ -686,6 +686,16 @@ import SphincsSecurity.Proof.FreshTargetShapeAverage
 import SphincsSecurity.Proof.TargetShapeCardinality
 import SphincsSecurity.Proof.TargetIndexEnvelope
 import SphincsSecurity.Proof.FreshTargetEnvelope
+import SphincsSecurity.Proof.WeightedPowerSigning
+import SphincsSecurity.Proof.RawIndexSigningGrowth
+import SphincsSecurity.Proof.RawIndexMomentAlgebra
+import SphincsSecurity.Proof.ExpectedRawIndexGrowth
+import SphincsSecurity.Proof.ClosedRawIndexSigning
+import SphincsSecurity.Proof.RawIndexQuery
+import SphincsSecurity.Proof.WorldRawIndexEnvelope
+import SphincsSecurity.Proof.RawIndexCacheEnvelope
+import SphincsSecurity.Proof.AdaptiveRawIndex
+import SphincsSecurity.Proof.InitialRawIndexEnvelope
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
