@@ -21,6 +21,27 @@ theorem initialTargetIndexEnvelope_le_127 (q : Nat) (hq : q ≤ 2 ^ 127) :
   rw [initialTargetIndexEnvelope_eq_finite]
   exact finiteInitialMixedEnvelope_le_127 q hq
 
+noncomputable def initialRawIndexRate (q : Nat) : ENNReal :=
+  finiteInitialMixedEnvelope q * ((2 ^ 176 : Nat) : ENNReal)⁻¹
+
+theorem initialRawIndexRate_le_127 (q : Nat) (hq : q ≤ 2 ^ 127) :
+    initialRawIndexRate q ≤ (29 / 64 : ENNReal) * ((2 ^ 127 : Nat) : ENNReal)⁻¹ := by
+  apply (mul_le_mul' (finiteInitialMixedEnvelope_le_127 q hq) le_rfl).trans_eq
+  have hl : (29 : ENNReal) * 2 ^ 43 * ((2 ^ 176 : Nat) : ENNReal)⁻¹ ≠ ∞ := by finiteness
+  have hr : (29 / 64 : ENNReal) * ((2 ^ 127 : Nat) : ENNReal)⁻¹ ≠ ∞ := by finiteness
+  apply (ENNReal.toReal_eq_toReal_iff' hl hr).mp
+  norm_num [ENNReal.toReal_mul, ENNReal.toReal_inv, ENNReal.toReal_div]
+
+theorem cappedRawIndexCacheEnvelope_initial_scaled (key : SecretKey) (q : Nat) (cache : QueryCache HashSpec)
+    (hnone : ∀ input, FtsProbeSimulation.MessageHashInput key.parameter input → cache input = none) :
+    cappedRawIndexCacheEnvelope key q (cache, []) ∅ Finset.univ * ((2 ^ 176 : Nat) : ENNReal)⁻¹ = initialRawIndexRate q := by
+  have hvalid : TargetShapeValid ∅ Finset.univ := by constructor <;> simp
+  have hcard : (Finset.univ : Finset FtsTree).card = 14 := by norm_num [FtsTree, ftsTrees]
+  simp only [cappedRawIndexCacheEnvelope, if_pos (show SigningTranscript.Valid [] from Nat.zero_le _), List.length_nil, Nat.sub_zero]
+  rw [rawIndexCacheEnvelope_initial key q signatureLimit cache hnone ∅ Finset.univ hvalid,
+    Finset.card_empty, hcard, initialTargetIndexEnvelope_eq_finite]
+  rfl
+
 theorem expected_adaptive_cappedRawIndex_le_initial {α : Type} (key : SecretKey) (q : Nat) (hq : q ≤ 2 ^ 127)
     (computation : OracleComp (OracleWorld + SigningSpec) α) (cache : QueryCache HashSpec)
     (hnone : ∀ input, FtsProbeSimulation.MessageHashInput key.parameter input → cache input = none)

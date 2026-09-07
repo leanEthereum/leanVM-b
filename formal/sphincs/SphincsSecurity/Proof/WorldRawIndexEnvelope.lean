@@ -27,6 +27,39 @@ theorem expected_logTraced_sign_rawIndexShape_le (key : SecretKey) (q : Nat) (hq
   apply (expected_signWithView_targetIndexMoments_le key message state.1 state.2 groups.card remaining.card hsigned q hq hcache).trans_eq
   exact (targetShapeSigning_lift _ _ _ groups remaining hvalid).symm
 
+theorem expected_fresh_message_rawIndexShape_eq (key : SecretKey)
+    (before : QueryCache HashSpec) (log : QueryLog SigningSpec) (input : HashInput) (hfresh : before input = none)
+    (hsigned : SigningDigestsCached key.parameter before key.root log)
+    (hmessage : FtsProbeSimulation.MessageHashInput key.parameter input)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) :
+    (∑' output, Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
+      observedRawIndexShapeVector key (before.cacheQuery input output, log) groups remaining) =
+        targetShapeQuery (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹)
+          (observedRawIndexShapeVector key (before, log)) groups remaining := by
+  change (∑' output, Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
+    targetIndexMoments key (before.cacheQuery input output) log groups.card remaining.card) = _
+  rw [expected_message_targetIndexMoments key groups.card remaining.card before log input hfresh hsigned hmessage]
+  change _ = targetShapeQuery _ (liftTargetIndexVector (targetIndexMoments key before log)) groups remaining
+  rw [targetShapeQuery_lift]
+  simp only [liftTargetIndexVector, targetIndexQuery, targetIndexCacheLower, div_eq_mul_inv]
+  ring
+
+theorem expected_fresh_message_rawIndexEnvelope_eq (key : SecretKey) (q queries signatures : Nat)
+    (before : QueryCache HashSpec) (log : QueryLog SigningSpec) (input : HashInput) (hfresh : before input = none)
+    (hsigned : SigningDigestsCached key.parameter before key.root log)
+    (hmessage : FtsProbeSimulation.MessageHashInput key.parameter input)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) :
+    (∑' output, Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
+      targetShapeEnvelope (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight q)
+        (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) queries signatures
+        (observedRawIndexShapeVector key (before.cacheQuery input output, log)) groups remaining) =
+      targetShapeEnvelope (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight q)
+        (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) (queries + 1) signatures
+        (observedRawIndexShapeVector key (before, log)) groups remaining := by
+  rw [targetShapeEnvelope_expected]
+  simp_rw [expected_fresh_message_rawIndexShape_eq key before log input hfresh hsigned hmessage]
+  rw [targetShapeEnvelope_query]
+
 theorem expected_fresh_rawIndexShape_le (key : SecretKey)
     (before : QueryCache HashSpec) (log : QueryLog SigningSpec) (input : HashInput) (hfresh : before input = none)
     (hsigned : SigningDigestsCached key.parameter before key.root log)
@@ -38,12 +71,7 @@ theorem expected_fresh_rawIndexShape_le (key : SecretKey)
   change (∑' output, Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
     targetIndexMoments key (before.cacheQuery input output) log groups.card remaining.card) ≤ _
   by_cases hmessage : FtsProbeSimulation.MessageHashInput key.parameter input
-  · rw [expected_message_targetIndexMoments key groups.card remaining.card before log input hfresh hsigned hmessage]
-    apply le_of_eq
-    change _ = targetShapeQuery _ (liftTargetIndexVector (targetIndexMoments key before log)) groups remaining
-    rw [targetShapeQuery_lift]
-    simp only [liftTargetIndexVector, targetIndexQuery, targetIndexCacheLower, div_eq_mul_inv]
-    ring
+  · exact (expected_fresh_message_rawIndexShape_eq key before log input hfresh hsigned hmessage groups remaining).le
   · have hmass : (∑' output, Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)]) = 1 := tsum_probOutput_eq_one' (by simp)
     simp only [targetIndexMoments_cacheQuery key groups.card remaining.card before log input _ hfresh hsigned,
       hmessage, false_and, if_false, add_zero, ENNReal.tsum_mul_right, hmass, one_mul]

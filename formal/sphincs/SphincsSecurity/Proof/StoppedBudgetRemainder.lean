@@ -119,6 +119,44 @@ theorem expectedStoppedExecutionCharge_add_remainder_le_queryBudget
               (logTracedMappedAdversaryImpl_signingDigestsCached key input state hsigned _ hl) (htail _ hl))
           · rw [probOutput_eq_zero_of_not_mem_support hr, zero_mul, zero_mul]
 
+theorem stepWithFailure_expect_rawIndex_world
+    (exception : QueryCache HashSpec → HashInput → HashOutput → Prop)
+    (parameter : PublicParameter) (root : Digest) (otsTable : OtsSecretIndex → HashOutput) (ftsTable : Coordinate → Digest)
+    (cap : Nat) (input : OracleWorld.Domain) (frame : Option Frame) (state : CoverLogState) (hit failed : Bool)
+    (hsigned : SigningDigestsCached parameter state.1 root state.2)
+    (hcap : ∀ result ∈ support ((logTracedMappedAdversaryImpl (secretKey parameter root otsTable ftsTable) (.inl input)).run state),
+      QueryCache.enncard result.2.1 ≤ cap)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    (∑' result, Pr[= result | stepWithFailure exception parameter root otsTable ftsTable (.inl input) frame state.1 hit failed] *
+      cappedRawIndexCacheEnvelope (secretKey parameter root otsTable ftsTable) cap
+        (stepSigningLogState (.inl input) state.2 result) groups remaining) =
+      cappedRawIndexCacheEnvelope (secretKey parameter root otsTable ftsTable) cap state groups remaining := by
+  rw [stepWithFailure_expect_logged exception parameter root otsTable ftsTable (.inl input) frame state.1 state.2 hit failed
+    (fun _ current => cappedRawIndexCacheEnvelope (secretKey parameter root otsTable ftsTable) cap current groups remaining)]
+  exact expected_logTraced_world_cappedRawIndex_eq (secretKey parameter root otsTable ftsTable) cap state input hsigned hcap groups remaining hvalid
+
+theorem world_arrival_unused_index_budget_conserved
+    (exception : QueryCache HashSpec → HashInput → HashOutput → Prop)
+    (parameter : PublicParameter) (root : Digest) (otsTable : OtsSecretIndex → HashOutput) (ftsTable : Coordinate → Digest)
+    (cap budget : Nat) (input : OracleWorld.Domain) (frame : Option Frame) (state : CoverLogState) (hit failed : Bool)
+    (hsigned : SigningDigestsCached parameter state.1 root state.2)
+    (hcap : ∀ result ∈ support ((logTracedMappedAdversaryImpl (secretKey parameter root otsTable ftsTable) (.inl input)).run state),
+      QueryCache.enncard result.2.1 ≤ cap)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    (targetArrivalHashCost parameter state.1 (.inl input) : ENNReal) *
+        cappedRawIndexCacheEnvelope (secretKey parameter root otsTable ftsTable) cap state groups remaining +
+      (unusedTargetExecutionCost parameter state.1 (.inl input) : ENNReal) *
+        cappedRawIndexCacheEnvelope (secretKey parameter root otsTable ftsTable) cap state groups remaining +
+      (∑' result, Pr[= result | stepWithFailure exception parameter root otsTable ftsTable (.inl input) frame state.1 hit failed] *
+        ((budget : ENNReal) * cappedRawIndexCacheEnvelope (secretKey parameter root otsTable ftsTable) cap
+          (stepSigningLogState (.inl input) state.2 result) groups remaining)) =
+      ((budget + signingExecutionHashCost (.inl input) : Nat) : ENNReal) *
+        cappedRawIndexCacheEnvelope (secretKey parameter root otsTable ftsTable) cap state groups remaining := by
+  rw [← add_mul, ← Nat.cast_add, targetArrivalHashCost_add_unused_execution]
+  simp_rw [mul_left_comm (Pr[= _ | _])]
+  rw [ENNReal.tsum_mul_left, stepWithFailure_expect_rawIndex_world exception parameter root otsTable ftsTable cap input frame state hit failed
+    hsigned hcap groups remaining hvalid, ← add_mul, ← Nat.cast_add, Nat.add_comm]
+
 theorem stepWithFailure_expect_rawIndex_nonmessage
     (exception : QueryCache HashSpec → HashInput → HashOutput → Prop)
     (parameter : PublicParameter) (root : Digest) (otsTable : OtsSecretIndex → HashOutput) (ftsTable : Coordinate → Digest)

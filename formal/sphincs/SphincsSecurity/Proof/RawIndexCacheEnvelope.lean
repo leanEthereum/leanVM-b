@@ -47,12 +47,12 @@ theorem rawIndexCacheEnvelope_randomOracle_nonmessage (key : SecretKey) (q signa
     subst result
     rfl
 
-theorem expected_randomOracle_rawIndexCacheEnvelope_le (key : SecretKey) (q : Nat) (signatures : Nat)
+theorem expected_randomOracle_rawIndexCacheEnvelope_eq (key : SecretKey) (q : Nat) (signatures : Nat)
     (before : QueryCache HashSpec) (log : QueryLog SigningSpec) (input : HashInput)
     (hsigned : SigningDigestsCached key.parameter before key.root log)
-    (hcap : ∀ result ∈ support ((randomOracle input).run before), QueryCache.enncard result.2 ≤ q) (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    (hcap : ∀ result ∈ support ((randomOracle input).run before), QueryCache.enncard result.2 ≤ q) (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (_hvalid : TargetShapeValid groups remaining) :
     (∑' result, Pr[= result | (randomOracle input).run before] *
-      rawIndexCacheEnvelope key q signatures (result.2, log) groups remaining) ≤
+      rawIndexCacheEnvelope key q signatures (result.2, log) groups remaining) =
       rawIndexCacheEnvelope key q signatures (before, log) groups remaining := by
   by_cases hfresh : before input = none
   · have hcap' : QueryCache.enncard before + 1 ≤ q := by
@@ -70,20 +70,31 @@ theorem expected_randomOracle_rawIndexCacheEnvelope_le (key : SecretKey) (q : Na
         omega
       rw [randomOracle, QueryImpl.withCaching_run_none _ hfresh, tsum_probOutput_map_mul]
       simp only [rawIndexCacheEnvelope, hslots, hbefore]
-      exact expected_fresh_rawIndexEnvelope_le key q slots signatures before log input hfresh hsigned groups remaining hvalid
+      exact expected_fresh_message_rawIndexEnvelope_eq key q slots signatures before log input hfresh hsigned hmessage groups remaining
     · rw [randomOracle, QueryImpl.withCaching_run_none _ hfresh, tsum_probOutput_map_mul]
       simp only [rawIndexCacheEnvelope_cacheQuery_nonmessage key q signatures before log input _ hfresh hsigned hmessage,
         ENNReal.tsum_mul_right]
-      exact mul_le_of_le_one_left' tsum_probOutput_le_one
+      have hmass : (∑' output, Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)]) = 1 := tsum_probOutput_eq_one' (by simp)
+      change (∑' output, Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)]) * _ = _
+      rw [hmass, one_mul]
   · obtain ⟨output, houtput⟩ := Option.ne_none_iff_exists'.mp hfresh
     rw [randomOracle, QueryImpl.withCaching_run_some _ houtput, tsum_probOutput_pure_mul]
 
-theorem expected_romImpl_rawIndexCacheEnvelope_le (key : SecretKey) (q : Nat) (signatures : Nat)
+theorem expected_randomOracle_rawIndexCacheEnvelope_le (key : SecretKey) (q : Nat) (signatures : Nat)
+    (before : QueryCache HashSpec) (log : QueryLog SigningSpec) (input : HashInput)
+    (hsigned : SigningDigestsCached key.parameter before key.root log)
+    (hcap : ∀ result ∈ support ((randomOracle input).run before), QueryCache.enncard result.2 ≤ q) (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    (∑' result, Pr[= result | (randomOracle input).run before] *
+      rawIndexCacheEnvelope key q signatures (result.2, log) groups remaining) ≤
+      rawIndexCacheEnvelope key q signatures (before, log) groups remaining :=
+  (expected_randomOracle_rawIndexCacheEnvelope_eq key q signatures before log input hsigned hcap groups remaining hvalid).le
+
+theorem expected_romImpl_rawIndexCacheEnvelope_eq (key : SecretKey) (q : Nat) (signatures : Nat)
     (before : QueryCache HashSpec) (log : QueryLog SigningSpec) (input : OracleWorld.Domain)
     (hsigned : SigningDigestsCached key.parameter before key.root log)
     (hcap : ∀ result ∈ support ((romImpl input).run before), QueryCache.enncard result.2 ≤ q) (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
     (∑' result, Pr[= result | (romImpl input).run before] *
-      rawIndexCacheEnvelope key q signatures (result.2, log) groups remaining) ≤
+      rawIndexCacheEnvelope key q signatures (result.2, log) groups remaining) =
       rawIndexCacheEnvelope key q signatures (before, log) groups remaining := by
   cases input with
   | inl input =>
@@ -92,19 +103,29 @@ theorem expected_romImpl_rawIndexCacheEnvelope_le (key : SecretKey) (q : Nat) (s
         simpa [simulateQ_query] using (unifFwdImpl.simulateQ_run
           (hashSpec := HashSpec) (liftM (unifSpec.query input) : ProbComp (unifSpec.Range input)) before)
       change (∑' result, Pr[= result | (unifFwdImpl HashSpec input).run before] *
-        rawIndexCacheEnvelope key q signatures (result.2, log) groups remaining) ≤ _
+        rawIndexCacheEnvelope key q signatures (result.2, log) groups remaining) = _
       rw [hrun, tsum_probOutput_map_mul]
       dsimp only
       rw [ENNReal.tsum_mul_right]
-      exact mul_le_of_le_one_left' tsum_probOutput_le_one
-  | inr input => exact expected_randomOracle_rawIndexCacheEnvelope_le key q signatures before log input hsigned hcap groups remaining hvalid
+      rw [tsum_probOutput_eq_one', one_mul]
+      simp
+  | inr input => exact expected_randomOracle_rawIndexCacheEnvelope_eq key q signatures before log input hsigned hcap groups remaining hvalid
 
-theorem expected_logTraced_world_rawIndexCacheEnvelope_le (key : SecretKey) (q : Nat) (signatures : Nat)
+theorem expected_romImpl_rawIndexCacheEnvelope_le (key : SecretKey) (q : Nat) (signatures : Nat)
+    (before : QueryCache HashSpec) (log : QueryLog SigningSpec) (input : OracleWorld.Domain)
+    (hsigned : SigningDigestsCached key.parameter before key.root log)
+    (hcap : ∀ result ∈ support ((romImpl input).run before), QueryCache.enncard result.2 ≤ q) (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    (∑' result, Pr[= result | (romImpl input).run before] *
+      rawIndexCacheEnvelope key q signatures (result.2, log) groups remaining) ≤
+      rawIndexCacheEnvelope key q signatures (before, log) groups remaining :=
+  (expected_romImpl_rawIndexCacheEnvelope_eq key q signatures before log input hsigned hcap groups remaining hvalid).le
+
+theorem expected_logTraced_world_rawIndexCacheEnvelope_eq (key : SecretKey) (q : Nat) (signatures : Nat)
     (state : CoverLogState) (input : OracleWorld.Domain) (hsigned : SigningDigestsCached key.parameter state.1 key.root state.2)
     (hcap : ∀ result ∈ support ((logTracedMappedAdversaryImpl key (.inl input)).run state), QueryCache.enncard result.2.1 ≤ q)
     (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
     (∑' result, Pr[= result | (logTracedMappedAdversaryImpl key (.inl input)).run state] *
-      rawIndexCacheEnvelope key q signatures result.2 groups remaining) ≤ rawIndexCacheEnvelope key q signatures state groups remaining := by
+      rawIndexCacheEnvelope key q signatures result.2 groups remaining) = rawIndexCacheEnvelope key q signatures state groups remaining := by
   have hbase (result : OracleWorld.Range input × QueryCache HashSpec)
       (hresult : result ∈ support ((romImpl input).run state.1)) : QueryCache.enncard result.2 ≤ q := by
     apply hcap (result.1, (result.2, state.2))
@@ -114,7 +135,15 @@ theorem expected_logTraced_world_rawIndexCacheEnvelope_le (key : SecretKey) (q :
     · simp only [signingLogFragment, List.append_nil]
   rw [logTracedMappedAdversaryImpl_run_map, tsum_probOutput_map_mul]
   simpa only [signingLogFragment, List.append_nil, unloggedMappedAdversaryImpl, OracleSpec.Range, OracleSpec.add_apply_inl] using
-    expected_romImpl_rawIndexCacheEnvelope_le key q signatures state.1 state.2 input hsigned hbase groups remaining hvalid
+    expected_romImpl_rawIndexCacheEnvelope_eq key q signatures state.1 state.2 input hsigned hbase groups remaining hvalid
+
+theorem expected_logTraced_world_rawIndexCacheEnvelope_le (key : SecretKey) (q : Nat) (signatures : Nat)
+    (state : CoverLogState) (input : OracleWorld.Domain) (hsigned : SigningDigestsCached key.parameter state.1 key.root state.2)
+    (hcap : ∀ result ∈ support ((logTracedMappedAdversaryImpl key (.inl input)).run state), QueryCache.enncard result.2.1 ≤ q)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    (∑' result, Pr[= result | (logTracedMappedAdversaryImpl key (.inl input)).run state] *
+      rawIndexCacheEnvelope key q signatures result.2 groups remaining) ≤ rawIndexCacheEnvelope key q signatures state groups remaining :=
+  (expected_logTraced_world_rawIndexCacheEnvelope_eq key q signatures state input hsigned hcap groups remaining hvalid).le
 
 theorem expected_logTraced_sign_rawIndexCacheEnvelope_le (key : SecretKey) (q : Nat) (signatures : Nat) (hq : q ≤ 2 ^ 127)
     (state : CoverLogState) (hsigned : SigningDigestsCached key.parameter state.1 key.root state.2)

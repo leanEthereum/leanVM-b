@@ -23,6 +23,30 @@ theorem cappedRawIndexCacheEnvelope_nonmessage_step (key : SecretKey) (q : Nat) 
   funext groups remaining
   simp only [signingLogFragment, List.append_nil, cappedRawIndexCacheEnvelope, heq]
 
+theorem expected_logTraced_world_cappedRawIndex_eq (key : SecretKey) (q : Nat) (state : CoverLogState)
+    (input : OracleWorld.Domain) (hsigned : SigningDigestsCached key.parameter state.1 key.root state.2)
+    (hcap : ∀ result ∈ support ((logTracedMappedAdversaryImpl key (.inl input)).run state), QueryCache.enncard result.2.1 ≤ q)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    (∑' result, Pr[= result | (logTracedMappedAdversaryImpl key (.inl input)).run state] *
+      cappedRawIndexCacheEnvelope key q result.2 groups remaining) = cappedRawIndexCacheEnvelope key q state groups remaining := by
+  have hrewrite : (∑' result, Pr[= result | (logTracedMappedAdversaryImpl key (.inl input)).run state] *
+      cappedRawIndexCacheEnvelope key q result.2 groups remaining) =
+      ∑' result, Pr[= result | (logTracedMappedAdversaryImpl key (.inl input)).run state] *
+        (if SigningTranscript.Valid state.2 then rawIndexCacheEnvelope key q (signatureLimit - state.2.length) result.2 groups remaining else 0) := by
+    apply tsum_congr
+    intro result
+    by_cases hr : result ∈ support ((logTracedMappedAdversaryImpl key (.inl input)).run state)
+    · have hlog : result.2.2 = state.2 := by
+        rw [logTracedMappedAdversaryImpl_run_map, support_map] at hr
+        obtain ⟨base, _, rfl⟩ := hr
+        simp only [signingLogFragment, List.append_nil]
+      simp only [cappedRawIndexCacheEnvelope, hlog]
+    · rw [probOutput_eq_zero_of_not_mem_support hr, zero_mul, zero_mul]
+  rw [hrewrite, cappedRawIndexCacheEnvelope]
+  split_ifs with hv
+  · exact expected_logTraced_world_rawIndexCacheEnvelope_eq key q (signatureLimit - state.2.length) state input hsigned hcap groups remaining hvalid
+  · simp only [mul_zero, tsum_zero]
+
 theorem expected_logTraced_cappedRawIndexCacheEnvelope_le (key : SecretKey) (q : Nat) (hq : q ≤ 2 ^ 127)
     (state : CoverLogState) (hsigned : SigningDigestsCached key.parameter state.1 key.root state.2)
     (hcache : QueryCache.enncard state.1 ≤ q) (input : (OracleWorld + SigningSpec).Domain)
@@ -34,20 +58,8 @@ theorem expected_logTraced_cappedRawIndexCacheEnvelope_le (key : SecretKey) (q :
   · rw [cappedRawIndexCacheEnvelope, if_pos hactive.valid_before]
     cases input with
     | inl world =>
-        apply le_trans ?_ (expected_logTraced_world_rawIndexCacheEnvelope_le key q (signatureLimit - state.2.length) state world hsigned hcap groups remaining hvalid)
-        apply ENNReal.tsum_le_tsum
-        intro result
-        by_cases hresult : result ∈ support ((logTracedMappedAdversaryImpl key (.inl world)).run state)
-        · apply mul_le_mul' le_rfl
-          have hlog : result.2.2 = state.2 := by
-            rw [logTracedMappedAdversaryImpl_run_map, support_map] at hresult
-            obtain ⟨base, _, rfl⟩ := hresult
-            simp only [signingLogFragment, List.append_nil]
-          unfold cappedRawIndexCacheEnvelope
-          split_ifs
-          · rw [hlog]
-          · exact bot_le
-        · rw [probOutput_eq_zero_of_not_mem_support hresult, zero_mul, zero_mul]
+        rw [expected_logTraced_world_cappedRawIndex_eq key q state world hsigned hcap groups remaining hvalid,
+          cappedRawIndexCacheEnvelope, if_pos hactive.valid_before]
     | inr message =>
         have hlength : state.2.length < signatureLimit := hactive
         have hremaining : signatureLimit - state.2.length = signatureLimit - (state.2.length + 1) + 1 := by omega
