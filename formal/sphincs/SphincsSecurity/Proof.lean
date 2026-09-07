@@ -749,6 +749,11 @@ import SphincsSecurity.Proof.StoppedTargetCoverageCharge
 import SphincsSecurity.Proof.StoppedRetainedCoverage
 import SphincsSecurity.Proof.InitializedStoppedTarget
 import SphincsSecurity.Proof.SecurityStoppedTarget
+import SphincsSecurity.Proof.SigningExecutionBudget
+import SphincsSecurity.Proof.SigningExecutionIndexBudget
+import SphincsSecurity.Proof.StoppedExecutionReserve
+import SphincsSecurity.Proof.InitializedExecutionReserve
+import SphincsSecurity.Proof.SecurityExecutionReserve
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
