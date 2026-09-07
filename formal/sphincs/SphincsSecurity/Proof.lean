@@ -769,6 +769,7 @@ import SphincsSecurity.Proof.SecurityTerminalAllocation
 import SphincsSecurity.Proof.SecuritySettledAllocation
 import SphincsSecurity.Proof.EncodingCollisionRefund
 import SphincsSecurity.Proof.CollisionAnswerEncodingPotential
+import SphincsSecurity.Proof.SecurityCollisionSharedFailure
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
