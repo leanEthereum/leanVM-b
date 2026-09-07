@@ -25,7 +25,7 @@ theorem expected_romImpl_pairReserve_le (remaining : Nat) (key : SecretKey) (q :
       exact mul_le_of_le_one_left' tsum_probOutput_le_one
   | inr input => exact expected_randomOracle_pairReserve_le remaining key q before log input hsigned hcap
 
-private theorem simulateQ_romImpl_support_nonempty {α : Type}
+theorem simulateQ_romImpl_support_nonempty {α : Type}
     (computation : OracleComp OracleWorld α) (cache : QueryCache HashSpec) :
     (support ((simulateQ romImpl computation).run cache)).Nonempty := by
   by_contra hnone
@@ -34,7 +34,7 @@ private theorem simulateQ_romImpl_support_nonempty {α : Type}
   rw [simulateQ_run_mass_of_query_mass romImpl romImpl_query_mass computation cache] at hzero
   exact one_ne_zero hzero
 
-private theorem simulateQ_romImpl_initial_cache_bound {α : Type} (q : Nat)
+theorem simulateQ_romImpl_initial_cache_bound {α : Type} (q : Nat)
     (computation : OracleComp OracleWorld α) (cache : QueryCache HashSpec)
     (hcap : ∀ result ∈ support ((simulateQ romImpl computation).run cache), QueryCache.enncard result.2 ≤ q) :
     QueryCache.enncard cache ≤ q := by
