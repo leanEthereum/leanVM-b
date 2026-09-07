@@ -59,15 +59,21 @@ namespace JointOriginal
 attribute [local irreducible] signingStructuralCharge nonMessageNonEncodingHashCharge
 attribute [local irreducible] nonMessageHashCharge expectedBeforeFailureCharge expectedBeforeFailureSigningCharge expectedBeforeFailureOuterCharge
 
-theorem beforeFailureStructural_add_signingNonEncoding_add_outerReserve_le
+theorem beforeFailureCharge_add_signingNonEncoding_add_outerReserve_le
     (exception : QueryCache HashSpec → HashInput → HashOutput → Prop)
     (parameter : PublicParameter) (root : Digest) (otsTable : OtsSecretIndex → HashOutput) (ftsTable : Coordinate → Digest)
-    (extra : QueryCache HashSpec → HashInput → ENNReal)
+    (charge extra : QueryCache HashSpec → HashInput → ENNReal)
+    (hsign : ∀ message cache hit,
+      expectedPreExceptionCharge exception charge (sign (secretKey parameter root otsTable ftsTable) message) cache hit +
+        expectedPreExceptionCharge exception (nonMessageNonEncodingHashCharge parameter)
+          (sign (secretKey parameter root otsTable ftsTable) message) cache hit ≤
+        expectedPreExceptionCharge exception (nonMessageHashCharge parameter)
+          (sign (secretKey parameter root otsTable ftsTable) message) cache hit)
     (hhash : ∀ cache input,
-      signingStructuralCharge (secretKey parameter root otsTable ftsTable) cache input + extra cache input ≤
+      charge cache input + extra cache input ≤
         nonMessageHashCharge parameter cache input + if NonMessageNonSecretHashInput parameter input then 1 else 0)
     (computation : OracleComp (OracleWorld + SigningSpec) α) (frame : Option Frame) (cache : QueryCache HashSpec) (hit failed : Bool) :
-    expectedBeforeFailureCharge exception (signingStructuralCharge (secretKey parameter root otsTable ftsTable))
+    expectedBeforeFailureCharge exception charge
         parameter root otsTable ftsTable computation frame cache hit failed +
       expectedBeforeFailureSigningCharge exception (nonMessageNonEncodingHashCharge parameter)
         parameter root otsTable ftsTable computation frame cache hit failed +
@@ -84,7 +90,7 @@ theorem beforeFailureStructural_add_signingNonEncoding_add_outerReserve_le
   | query_bind input next ih =>
       rw [expectedBeforeFailureCharge_query_bind, expectedBeforeFailureSigningCharge_query_bind,
         expectedBeforeFailureOuterCharge_query_bind, expectedBeforeFailureCharge_query_bind, expectedBeforeFailureOuterCharge_query_bind]
-      have hhead : ((if failed then 0 else expectedPreExceptionCharge exception (signingStructuralCharge key) (expandedAdversaryImpl key input) cache hit) +
+      have hhead : ((if failed then 0 else expectedPreExceptionCharge exception charge (expandedAdversaryImpl key input) cache hit) +
           beforeFailureSigningStepCharge exception (nonMessageNonEncodingHashCharge parameter) key cache hit failed input) +
           (if hit || failed then 0 else outerHashQueryCharge extra input cache) ≤
           (if failed then 0 else expectedPreExceptionCharge exception (nonMessageHashCharge parameter) (expandedAdversaryImpl key input) cache hit) +
@@ -101,9 +107,9 @@ theorem beforeFailureStructural_add_signingNonEncoding_add_outerReserve_le
             simp only [beforeFailureSigningStepCharge, outerHashQueryCharge, ite_self, add_zero, expandedAdversaryImpl, scheme]
             cases failed with
             | true => simp
-            | false => exact expectedPreExceptionCharge_sign_add_nonEncoding_le_nonMessage exception key message cache hit
+            | false => exact hsign message cache hit
       have htail : (∑' result, Pr[= result | stepWithFailure exception parameter root otsTable ftsTable input frame cache hit failed] *
-          expectedBeforeFailureCharge exception (signingStructuralCharge key) parameter root otsTable ftsTable (next result.1.2.1.1)
+          expectedBeforeFailureCharge exception charge parameter root otsTable ftsTable (next result.1.2.1.1)
             result.1.1 result.1.2.1.2 result.1.2.2 result.2) +
           (∑' result, Pr[= result | stepWithFailure exception parameter root otsTable ftsTable input frame cache hit failed] *
           expectedBeforeFailureSigningCharge exception (nonMessageNonEncodingHashCharge parameter) parameter root otsTable ftsTable (next result.1.2.1.1)
@@ -123,6 +129,29 @@ theorem beforeFailureStructural_add_signingNonEncoding_add_outerReserve_le
         rw [← mul_add, ← mul_add, ← mul_add]
         exact mul_le_mul' le_rfl (ih result.1.2.1.1 result.1.1 result.1.2.1.2 result.1.2.2 result.2)
       convert add_le_add hhead htail using 1 <;> ac_rfl
+
+theorem beforeFailureStructural_add_signingNonEncoding_add_outerReserve_le
+    (exception : QueryCache HashSpec → HashInput → HashOutput → Prop)
+    (parameter : PublicParameter) (root : Digest) (otsTable : OtsSecretIndex → HashOutput) (ftsTable : Coordinate → Digest)
+    (extra : QueryCache HashSpec → HashInput → ENNReal)
+    (hhash : ∀ cache input,
+      signingStructuralCharge (secretKey parameter root otsTable ftsTable) cache input + extra cache input ≤
+        nonMessageHashCharge parameter cache input + if NonMessageNonSecretHashInput parameter input then 1 else 0)
+    (computation : OracleComp (OracleWorld + SigningSpec) α) (frame : Option Frame) (cache : QueryCache HashSpec) (hit failed : Bool) :
+    expectedBeforeFailureCharge exception (signingStructuralCharge (secretKey parameter root otsTable ftsTable))
+        parameter root otsTable ftsTable computation frame cache hit failed +
+      expectedBeforeFailureSigningCharge exception (nonMessageNonEncodingHashCharge parameter)
+        parameter root otsTable ftsTable computation frame cache hit failed +
+      expectedBeforeFailureOuterCharge exception extra
+        parameter root otsTable ftsTable computation frame cache hit failed ≤
+      expectedBeforeFailureCharge exception (nonMessageHashCharge parameter)
+        parameter root otsTable ftsTable computation frame cache hit failed +
+      expectedBeforeFailureOuterCharge exception (fun _ input => if NonMessageNonSecretHashInput parameter input then 1 else 0)
+        parameter root otsTable ftsTable computation frame cache hit failed :=
+  beforeFailureCharge_add_signingNonEncoding_add_outerReserve_le exception parameter root otsTable ftsTable
+    (signingStructuralCharge (secretKey parameter root otsTable ftsTable)) extra
+    (expectedPreExceptionCharge_sign_add_nonEncoding_le_nonMessage exception (secretKey parameter root otsTable ftsTable))
+    hhash computation frame cache hit failed
 
 theorem beforeFailureStructural_add_signingNonEncoding_add_settledEncoding_le
     (exception : QueryCache HashSpec → HashInput → HashOutput → Prop)
