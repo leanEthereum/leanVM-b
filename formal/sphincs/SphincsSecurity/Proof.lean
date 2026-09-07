@@ -619,6 +619,7 @@ import SphincsSecurity.Proof.JointProbeInitializedMessageAnswers
 import SphincsSecurity.Proof.SecurityErasedMessagePatterns
 import SphincsSecurity.Proof.ObservedCoverPattern
 import SphincsSecurity.Proof.ObservedAdaptiveCoverBound
+import SphincsSecurity.Proof.ObservedSignerCoverStep
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
