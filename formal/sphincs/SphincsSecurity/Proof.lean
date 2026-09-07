@@ -660,6 +660,11 @@ import SphincsSecurity.Proof.TargetCacheProductQuery
 import SphincsSecurity.Proof.TargetBlockExpectation
 import SphincsSecurity.Proof.NormalizedTargetMatches
 import SphincsSecurity.Proof.NormalizedTargetCacheQuery
+import SphincsSecurity.Proof.TargetSigningMatchFactors
+import SphincsSecurity.Proof.TargetMixedGrowthPolynomial
+import SphincsSecurity.Proof.TargetSigningCacheGrowth
+import SphincsSecurity.Proof.NormalizedTargetLogSigning
+import SphincsSecurity.Proof.ClosedTargetMixedSigning
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
