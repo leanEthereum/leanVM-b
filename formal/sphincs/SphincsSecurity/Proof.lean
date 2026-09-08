@@ -802,6 +802,7 @@ import SphincsSecurity.Proof.SecurityNetCoverageRefund
 import SphincsSecurity.Proof.SecurityNetParentFunding
 import SphincsSecurity.Proof.SecurityCompleteCoverageRefund
 import SphincsSecurity.Proof.SecurityRetiredCoverageRefund
+import SphincsSecurity.Proof.StructuralCoverageOverlap
 import SphincsSecurity.Proof.InitialPaidCoverageResidual
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
