@@ -66,6 +66,19 @@ theorem ReadyParentRelease.honest_input
   obtain ⟨child, hat, hp, hb, ⟨answer, ha⟩, _⟩ := hready
   exact ⟨child, hat, hp, eq_cachedInput_and_children_of_settled_cacheQuery parameter otsSecret ftsSecret hfresh hat hb ha⟩
 
+theorem ReadyParentRelease.newly_settled_children
+    {cache : QueryCache HashSpec} {input : HashInput} {answer : HashOutput} {parent : Position}
+    (hfresh : cache input = none) (hready : ReadyParentRelease parameter otsSecret ftsSecret cache input parent) :
+    (¬ ∀ child ∈ parent.children, Settled parameter otsSecret ftsSecret cache child) ∧
+      (∀ child ∈ parent.children, Settled parameter otsSecret ftsSecret (cache.cacheQuery input answer) child) := by
+  obtain ⟨child, hat, hp, hb, ⟨otherAnswer, ha⟩, hother⟩ := hready
+  refine ⟨fun hall => hb (hall child (Position.mem_children_iff.mpr hp)), ?_⟩
+  intro sibling hs
+  by_cases heq : sibling = child
+  · subst sibling
+    exact settled_cacheQuery_of_settled_cacheQuery parameter otsSecret ftsSecret hfresh hat hb ha answer
+  · exact (hother sibling hs heq).mono (le_cacheQuery (answer := answer) hfresh)
+
 theorem readyParentRelease_iff_newly_settled_children
     {cache : QueryCache HashSpec} {input : HashInput} {answer : HashOutput} (hfresh : cache input = none)
     (hnoParent : ¬ ParentSettlement parameter otsSecret ftsSecret cache input answer) (parent : Position) :
@@ -73,13 +86,7 @@ theorem readyParentRelease_iff_newly_settled_children
       (¬ ∀ child ∈ parent.children, Settled parameter otsSecret ftsSecret cache child) ∧
         (∀ child ∈ parent.children, Settled parameter otsSecret ftsSecret (cache.cacheQuery input answer) child) := by
   constructor
-  · rintro ⟨child, hat, hp, hb, ⟨otherAnswer, ha⟩, hother⟩
-    refine ⟨fun hall => hb (hall child (Position.mem_children_iff.mpr hp)), ?_⟩
-    intro sibling hs
-    by_cases heq : sibling = child
-    · subst sibling
-      exact settled_cacheQuery_of_settled_cacheQuery parameter otsSecret ftsSecret hfresh hat hb ha answer
-    · exact (hother sibling hs heq).mono (le_cacheQuery (answer := answer) hfresh)
+  · exact ReadyParentRelease.newly_settled_children parameter otsSecret ftsSecret hfresh
   · rintro ⟨hb, ha⟩
     push Not at hb
     obtain ⟨child, hc, hb⟩ := hb

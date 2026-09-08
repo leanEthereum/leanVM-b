@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.StoppedParentReleaseBound
+import SphincsSecurity.Proof.NetParentReleaseCharge
 import SphincsSecurity.Proof.FiniteQueryChargeMonotonicity
 import SphincsSecurity.Proof.JointParentReserveConservation
 
@@ -8,16 +8,22 @@ open OracleComp OracleSpec ENNReal
 attribute [local irreducible] instFintypePosition parentReserve directParentRelease
 set_option backward.isDefEq.respectTransparency false
 
+noncomputable def directFtsParentReleaseCharge (key : SecretKey) : QueryCache HashSpec → HashInput → ENNReal :=
+  directParentQueryCharge key.parameter key.otsSecret key.ftsSecret (fun position => ¬ OtsProbeSimulation.IsOtsPosition position)
+
+theorem directFtsParentReleaseCharge_le_released (key : SecretKey) (cache : QueryCache HashSpec) (input : HashInput) :
+    directFtsParentReleaseCharge key cache input ≤ releasedFtsParentQueryCharge key cache input :=
+  directParentQueryCharge_le_released key.parameter key.otsSecret key.ftsSecret
+    (fun position => ¬ OtsProbeSimulation.IsOtsPosition position) cache input
+
 noncomputable def localizedFtsParentReleaseCharge (key : SecretKey) (cache : QueryCache HashSpec) (input : HashInput) : ENNReal :=
-  directParentQueryCharge key.parameter key.otsSecret key.ftsSecret (fun position => ¬ OtsProbeSimulation.IsOtsPosition position) cache input +
-    (parentReserve key.parameter key.otsSecret key.ftsSecret (fun position => ¬ OtsProbeSimulation.IsOtsPosition position) cache : ENNReal) *
-      directParentQueryCharge key.parameter key.otsSecret key.ftsSecret (fun _ => True) cache input * ((2 ^ digestBits : Nat) : ENNReal)⁻¹
+  localizedParentReleaseCharge key.parameter key.otsSecret key.ftsSecret (fun position => ¬ OtsProbeSimulation.IsOtsPosition position) cache input
 
 theorem releasedFtsParentQueryCharge_le_localized
     (key : SecretKey) (cache : QueryCache HashSpec) (hfinite : Finite cache) (input : HashInput) :
     releasedFtsParentQueryCharge key cache input ≤ localizedFtsParentReleaseCharge key cache input :=
-  releasedParentQueryCharge_le_direct_add_scaled key.parameter key.otsSecret key.ftsSecret
-    (fun position => ¬ OtsProbeSimulation.IsOtsPosition position) hfinite input
+  releasedParentQueryCharge_le_localized key.parameter key.otsSecret key.ftsSecret
+    (fun position => ¬ OtsProbeSimulation.IsOtsPosition position) cache hfinite input
 
 theorem releasedFtsParentQueryCharge_add_discard_le_localized
     (exception : QueryCache HashSpec → HashInput → HashOutput → Prop) (key : SecretKey)
@@ -25,7 +31,7 @@ theorem releasedFtsParentQueryCharge_add_discard_le_localized
     (cache : QueryCache HashSpec) (hfinite : Finite cache) (input : HashInput) :
     releasedFtsParentQueryCharge key cache input + discardedFtsParentQueryCharge exception key cache input ≤
       localizedFtsParentReleaseCharge key cache input :=
-  releasedParentQueryCharge_add_discard_le_direct_add_scaled key.parameter key.otsSecret key.ftsSecret
+  releasedParentQueryCharge_add_discard_le_localized key.parameter key.otsSecret key.ftsSecret
     (fun position => ¬ OtsProbeSimulation.IsOtsPosition position) exception hsub cache hfinite input
 
 namespace FtsProbeSimulation.JointOriginal
