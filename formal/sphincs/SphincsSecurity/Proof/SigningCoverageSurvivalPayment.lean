@@ -80,15 +80,31 @@ theorem newTargetCoverageExcess_le_indexEnvelope
         ∅ Finset.univ hvalid]
       rfl
 
-theorem signingNewTargetCoverage_le_credit_add_excess
-    (exception : QueryCache HashSpec → HashInput → HashOutput → Prop)
-    (key : SecretKey) (message : Message) (cache : QueryCache HashSpec) (hit : Bool)
+noncomputable def signingNewTargetCoverageResidual (key : SecretKey) (message : Message) (cache : QueryCache HashSpec)
+    (log : QueryLog SigningSpec) (uniform reuse arrival : ENNReal) (queries signings : Nat) : ENNReal :=
+  ∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run cache] *
+    (newTargetEnvelopeCharge key cache result.2 (log ++ [⟨message, result.1.1⟩])
+      uniform reuse arrival queries signings ∅ Finset.univ * ((2 ^ 140 : Nat) : ENNReal)⁻¹ -
+        28504 * (Fintype.card Digest : ENNReal)⁻¹)
+
+theorem signingNewTargetCoverageResidual_le_excess (key : SecretKey) (message : Message) (cache : QueryCache HashSpec)
     (log : QueryLog SigningSpec) (hsigned : SigningDigestsCached key.parameter cache key.root log)
     (reference : HashInput) (hreference : cache (tweakableHashInput key.parameter .message reference) = none)
     (uniform reuse arrival : ENNReal) (queries signings : Nat) :
+    signingNewTargetCoverageResidual key message cache log uniform reuse arrival queries signings ≤
+      newTargetCoverageExcess key cache log reference uniform reuse arrival queries signings :=
+  expected_signWithView_newTargetEnvelopeCharge_transform_le key message cache log hsigned reference hreference
+    uniform reuse arrival queries signings ∅ Finset.univ
+    (fun value => value * ((2 ^ 140 : Nat) : ENNReal)⁻¹ - 28504 * (Fintype.card Digest : ENNReal)⁻¹) (by simp)
+
+theorem signingNewTargetCoverage_le_credit_add_residual
+    (exception : QueryCache HashSpec → HashInput → HashOutput → Prop)
+    (key : SecretKey) (message : Message) (cache : QueryCache HashSpec) (hit : Bool)
+    (log : QueryLog SigningSpec)
+    (uniform reuse arrival : ENNReal) (queries signings : Nat) :
     signingNewTargetCoverage exception key message cache hit log uniform reuse arrival queries signings ≤
       signingSurvivalCredit exception key message cache hit * (Fintype.card Digest : ENNReal)⁻¹ +
-        newTargetCoverageExcess key cache log reference uniform reuse arrival queries signings := by
+        signingNewTargetCoverageResidual key message cache log uniform reuse arrival queries signings := by
   let charge := fun result : (Option Signature × Option FewTimeView) × QueryCache HashSpec =>
     newTargetEnvelopeCharge key cache result.2 (log ++ [⟨message, result.1.1⟩])
       uniform reuse arrival queries signings ∅ Finset.univ * ((2 ^ 140 : Nat) : ENNReal)⁻¹
@@ -113,10 +129,20 @@ theorem signingNewTargetCoverage_le_credit_add_excess
         (charge result.1 - allowance)) =
         ∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run cache] * (charge result - allowance) := by
       rw [← runExceptionMonitor_project exception (signWithView key message) cache hit, tsum_probOutput_map_mul]
-    rw [hproject]
-    exact expected_signWithView_newTargetEnvelopeCharge_transform_le key message cache log hsigned reference hreference
-      uniform reuse arrival queries signings ∅ Finset.univ
-      (fun value => value * ((2 ^ 140 : Nat) : ENNReal)⁻¹ - allowance) (by simp)
+    exact le_of_eq hproject
+
+theorem signingNewTargetCoverage_le_credit_add_excess
+    (exception : QueryCache HashSpec → HashInput → HashOutput → Prop)
+    (key : SecretKey) (message : Message) (cache : QueryCache HashSpec) (hit : Bool)
+    (log : QueryLog SigningSpec) (hsigned : SigningDigestsCached key.parameter cache key.root log)
+    (reference : HashInput) (hreference : cache (tweakableHashInput key.parameter .message reference) = none)
+    (uniform reuse arrival : ENNReal) (queries signings : Nat) :
+    signingNewTargetCoverage exception key message cache hit log uniform reuse arrival queries signings ≤
+      signingSurvivalCredit exception key message cache hit * (Fintype.card Digest : ENNReal)⁻¹ +
+        newTargetCoverageExcess key cache log reference uniform reuse arrival queries signings :=
+  (signingNewTargetCoverage_le_credit_add_residual exception key message cache hit log uniform reuse arrival queries signings).trans
+    (add_le_add le_rfl (signingNewTargetCoverageResidual_le_excess key message cache log hsigned reference hreference
+      uniform reuse arrival queries signings))
 
 theorem expected_encodingPairs_add_newTargetCoverage_le_reserved_add_excess
     (exception : QueryCache HashSpec → HashInput → HashOutput → Prop)
@@ -136,6 +162,28 @@ theorem expected_encodingPairs_add_newTargetCoverage_le_reserved_add_excess
     (sign key message) cache hit * (Fintype.card Digest : ENNReal)⁻¹))
     (signingNewTargetCoverage_le_credit_add_excess exception key message cache hit
     log hsigned reference hreference uniform reuse arrival queries signings)
+  apply h.trans
+  rw [← add_assoc, ← add_mul]
+  exact add_le_add (mul_le_mul' (expected_encodingPairs_add_survival_sign_le_reserved exception key message cap hcapMax
+    cache hfinite hit hcap) le_rfl) le_rfl
+
+theorem expected_encodingPairs_add_newTargetCoverage_le_reserved_add_residual
+    (exception : QueryCache HashSpec → HashInput → HashOutput → Prop)
+    (key : SecretKey) (message : Message) (cap : Nat) (hcapMax : cap ≤ 2 ^ 127)
+    (cache : QueryCache HashSpec) (hfinite : Finite cache) (hit : Bool)
+    (hcap : ∀ result ∈ support ((simulateQ romImpl (sign key message)).run cache), QueryCache.enncard result.2 ≤ cap)
+    (log : QueryLog SigningSpec)
+    (uniform reuse arrival : ENNReal) (queries signings : Nat) :
+    expectedPreExceptionCharge exception (encodingPairIncrementCharge key) (sign key message) cache hit *
+        (Fintype.card Digest : ENNReal)⁻¹ +
+      signingNewTargetCoverage exception key message cache hit log uniform reuse arrival queries signings ≤
+      expectedPreExceptionCharge exception (nonMessageNonEncodingHashCharge key.parameter) (sign key message) cache hit *
+          (Fintype.card Digest : ENNReal)⁻¹ +
+        signingNewTargetCoverageResidual key message cache log uniform reuse arrival queries signings := by
+  have h := add_le_add (le_refl (expectedPreExceptionCharge exception (encodingPairIncrementCharge key)
+    (sign key message) cache hit * (Fintype.card Digest : ENNReal)⁻¹))
+    (signingNewTargetCoverage_le_credit_add_residual exception key message cache hit
+    log uniform reuse arrival queries signings)
   apply h.trans
   rw [← add_assoc, ← add_mul]
   exact add_le_add (mul_le_mul' (expected_encodingPairs_add_survival_sign_le_reserved exception key message cap hcapMax
