@@ -49,6 +49,13 @@ theorem boundedUnionPotential_mono_right (left : ENNReal) {smaller larger : ENNR
   rw [boundedUnionPotential_comm left smaller, boundedUnionPotential_comm left larger]
   exact boundedUnionPotential_mono_left h left
 
+theorem boundedUnionPotential_add_complement (left right : ENNReal) :
+    boundedUnionPotential left right + (1 - min 1 left) * (1 - min 1 right) = 1 := by
+  rw [boundedUnionPotential_comm, boundedUnionPotential]
+  calc
+    _ = min 1 left + (1 - min 1 left) * (min 1 right + (1 - min 1 right)) := by ring
+    _ = _ := by rw [add_tsub_cancel_of_le (min_le_left _ _), mul_one, add_tsub_cancel_of_le (min_le_left _ _)]
+
 theorem boundedUnionPotential_add_decrease (left before after : ENNReal) (h : min 1 after ≤ min 1 before) :
     boundedUnionPotential left after + (min 1 before - min 1 after) * (1 - min 1 left) =
       boundedUnionPotential left before := by
@@ -119,5 +126,35 @@ theorem expected_boundedUnionPotential_le_of_left_le
         (expected_boundedUnionPotential_le computation right beforeLeft).trans (add_le_add le_rfl (mul_le_mul' le_rfl hright))
       _ = _ := by
         rw [boundedUnionPotential_comm, boundedUnionPotential, min_eq_right (le_of_not_ge hlarge)]
+
+theorem expected_boundedUnionPotential_stopped_le
+    (computation : SPMF α) (left right : α → ENNReal) (stopped : α → Bool) (beforeLeft beforeRight : ENNReal)
+    (hleft : ∀ result ∈ support computation, stopped result = false → left result ≤ beforeLeft)
+    (hright : (∑' result, Pr[= result | computation] * right result) ≤ beforeRight) :
+    (∑' result, Pr[= result | computation] * boundedUnionPotential (if stopped result then 1 else left result) (right result)) ≤
+      boundedUnionPotential beforeLeft beforeRight + (1 - min 1 beforeLeft) *
+        ∑' result, Pr[= result | computation] * (if stopped result then 1 - min 1 (right result) else 0) := by
+  calc
+    _ ≤ ∑' result, Pr[= result | computation] *
+        (boundedUnionPotential beforeLeft (right result) + (1 - min 1 beforeLeft) *
+          (if stopped result then 1 - min 1 (right result) else 0)) := by
+      apply ENNReal.tsum_le_tsum
+      intro result
+      by_cases hr : result ∈ support computation
+      · apply mul_le_mul' le_rfl
+        cases hs : stopped result with
+        | true =>
+            simp only [if_true]
+            rw [boundedUnionPotential_eq_one_of_left _ _ le_rfl, boundedUnionPotential_add_complement]
+        | false =>
+            simp only [Bool.false_eq_true, if_false, mul_zero, add_zero]
+            exact boundedUnionPotential_mono_left (hleft result hr hs) _
+      · rw [probOutput_eq_zero_of_not_mem_support hr, zero_mul, zero_mul]
+    _ = (∑' result, Pr[= result | computation] * boundedUnionPotential beforeLeft (right result)) +
+        (1 - min 1 beforeLeft) * ∑' result, Pr[= result | computation] * (if stopped result then 1 - min 1 (right result) else 0) := by
+      simp_rw [mul_add, ENNReal.tsum_add, mul_left_comm (Pr[= _ | computation]) (1 - min 1 beforeLeft)]
+      rw [ENNReal.tsum_mul_left]
+    _ ≤ _ := add_le_add (expected_boundedUnionPotential_le_of_left_le computation (fun _ => beforeLeft) right
+      beforeLeft beforeRight (fun _ _ => le_rfl) hright) le_rfl
 
 end SphincsSecurity
