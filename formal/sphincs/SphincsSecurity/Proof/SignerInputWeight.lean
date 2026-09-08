@@ -67,15 +67,17 @@ theorem successfulSignerInputWeight_le_fresh_add_prehit (key : SecretKey) (messa
               rw [← hsource]
               exact (le_of_eq (if_pos hprehit).symm).trans (ENNReal.le_tsum input)
 
-theorem expected_successfulSignerInputWeight_le_mass_mul (key : SecretKey) (message : Message)
+theorem expected_successfulSignerInputWeight_le_freshMass_add_reuseWeight (key : SecretKey) (message : Message)
     (before : QueryCache HashSpec) (weight : HashInput → FewTimeView → ENNReal) (uniformWeight : FewTimeView → ENNReal)
     (hweight : ∀ input view, weight input view ≤ uniformWeight view)
-    (q : Nat) (hq : q ≤ 2 ^ 127) (hcache : QueryCache.enncard before ≤ q) :
+    (reuseWeight : ENNReal)
+    (hreuse : ∀ input, Pr[PrehitSuccessfulSignerView (onlyInputCache before input) key message (fun _ => True) |
+      (simulateQ romImpl (signWithView key message)).run before] ≤ reuseWeight) :
     (∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run before] *
       successfulSignerInputWeight key message weight result) ≤
       freshDigestSelectionProbability key message before *
         (∑' view, Pr[= view | ($ᵗ FewTimeView : ProbComp FewTimeView)] * uniformWeight view) +
-        (∑' input, cachedSignerInputWeight key message before weight input) * digestReuseWeight q := by
+        (∑' input, cachedSignerInputWeight key message before weight input) * reuseWeight := by
   have hexpect {α : Type} (event : α → ((Option Signature × Option FewTimeView) × QueryCache HashSpec) → Prop)
       (value : α → ENNReal) :
       (∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run before] *
@@ -106,17 +108,30 @@ theorem expected_successfulSignerInputWeight_le_mass_mul (key : SecretKey) (mess
       simp only [mul_add, ENNReal.tsum_add, hexpect]
     _ ≤ (∑' view, (freshDigestSelectionProbability key message before *
           Pr[= view | ($ᵗ FewTimeView : ProbComp FewTimeView)]) * uniformWeight view) +
-        ∑' input, digestReuseWeight q * cachedSignerInputWeight key message before weight input := by
+        ∑' input, reuseWeight * cachedSignerInputWeight key message before weight input := by
       apply add_le_add
       · apply ENNReal.tsum_le_tsum
         intro view
         apply mul_le_mul' _ le_rfl
         simpa only [probEvent_eq_eq_probOutput] using probEvent_signWithView_freshSuccessful_le_mass_mul_uniform key message before (· = view)
       · exact ENNReal.tsum_le_tsum (fun input => mul_le_mul'
-          (probEvent_signWithView_fixedPrehit_le_digestReuseWeight key message before input (fun _ => True) q hq hcache) le_rfl)
+          (hreuse input) le_rfl)
     _ = _ := by
       simp only [mul_assoc, ENNReal.tsum_mul_left]
-      rw [mul_comm (digestReuseWeight q)]
+      rw [mul_comm reuseWeight]
+
+theorem expected_successfulSignerInputWeight_le_mass_mul (key : SecretKey) (message : Message)
+    (before : QueryCache HashSpec) (weight : HashInput → FewTimeView → ENNReal) (uniformWeight : FewTimeView → ENNReal)
+    (hweight : ∀ input view, weight input view ≤ uniformWeight view)
+    (q : Nat) (hq : q ≤ 2 ^ 127) (hcache : QueryCache.enncard before ≤ q) :
+    (∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run before] *
+      successfulSignerInputWeight key message weight result) ≤
+      freshDigestSelectionProbability key message before *
+        (∑' view, Pr[= view | ($ᵗ FewTimeView : ProbComp FewTimeView)] * uniformWeight view) +
+        (∑' input, cachedSignerInputWeight key message before weight input) * digestReuseWeight q :=
+  expected_successfulSignerInputWeight_le_freshMass_add_reuseWeight key message before weight uniformWeight hweight
+    (digestReuseWeight q) (fun input =>
+      probEvent_signWithView_fixedPrehit_le_digestReuseWeight key message before input (fun _ => True) q hq hcache)
 
 theorem expected_successfulSignerInputWeight_le (key : SecretKey) (message : Message)
     (before : QueryCache HashSpec) (weight : HashInput → FewTimeView → ENNReal) (uniformWeight : FewTimeView → ENNReal)
