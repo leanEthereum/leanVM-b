@@ -1,5 +1,5 @@
 import SphincsSecurity.Proof.ObservedCoverPattern
-import SphincsSecurity.Proof.FewTimeConditionalCoverage
+import SphincsSecurity.Proof.FewTimeDistinctCoverage
 
 namespace SphincsSecurity.Concrete
 
@@ -56,6 +56,17 @@ theorem observedFewTimeCover_after_query_covered (parameter : PublicParameter) (
   refine ⟨slot, fewTimeTargetView (digestIndex signedDigest) (digestLeaves signedDigest), ?_, hindex, hleaf⟩
   simpa only [eligibleSigningViews, hslot] using hview
 
+theorem probEvent_uniform_observedFewTimeCover_le_distinct
+    (parameter : PublicParameter) (cache : QueryCache HashSpec) (root : Digest) (log : QueryLog SigningSpec) (forgery : Forgery) :
+    Pr[fun output => ObservedFewTimeCover
+      (messageAnswers parameter (cache.cacheQuery (tweakableHashInput parameter .message
+        (messageDigestPayload root forgery.message forgery.signature.randomness)) output)) root log forgery |
+      ($ᵗ HashOutput : ProbComp HashOutput)] ≤
+      (distinctCoverageCount (eligibleSigningViews (messageAnswers parameter cache) root
+        (messageDigestPayload root forgery.message forgery.signature.randomness) log) : ENNReal) * ((2 ^ 176 : Nat) : ENNReal)⁻¹ := by
+  apply (probEvent_mono (fun output _ hcover => observedFewTimeCover_after_query_covered parameter cache root log forgery output hcover)).trans
+  exact (probEvent_uniformHashOutput_covered_eq_distinct _).le
+
 theorem probEvent_uniform_observedFewTimeCover_le_occupancy
     (parameter : PublicParameter) (cache : QueryCache HashSpec) (root : Digest) (log : QueryLog SigningSpec) (forgery : Forgery) :
     Pr[fun output => ObservedFewTimeCover
@@ -64,8 +75,18 @@ theorem probEvent_uniform_observedFewTimeCover_le_occupancy
       ($ᵗ HashOutput : ProbComp HashOutput)] ≤
       (coverageOccupancyMoment (eligibleSigningViews (messageAnswers parameter cache) root
         (messageDigestPayload root forgery.message forgery.signature.randomness) log) : ENNReal) * ((2 ^ 176 : Nat) : ENNReal)⁻¹ := by
-  apply (probEvent_mono (fun output _ hcover => observedFewTimeCover_after_query_covered parameter cache root log forgery output hcover)).trans
-  exact probEvent_uniformHashOutput_covered_le_occupancy _
+  apply (probEvent_uniform_observedFewTimeCover_le_distinct parameter cache root log forgery).trans
+  exact mul_le_mul' (Nat.cast_le.mpr (distinctCoverageCount_le_occupancy _)) le_rfl
+
+theorem probEvent_fresh_observedFewTimeCover_le_distinct
+    (parameter : PublicParameter) (cache : QueryCache HashSpec) (root : Digest) (log : QueryLog SigningSpec) (forgery : Forgery)
+    (hfresh : cache (tweakableHashInput parameter .message (messageDigestPayload root forgery.message forgery.signature.randomness)) = none) :
+    Pr[fun result : HashOutput × QueryCache HashSpec => ObservedFewTimeCover (messageAnswers parameter result.2) root log forgery |
+      (randomOracle (tweakableHashInput parameter .message (messageDigestPayload root forgery.message forgery.signature.randomness))).run cache] ≤
+      (distinctCoverageCount (eligibleSigningViews (messageAnswers parameter cache) root
+        (messageDigestPayload root forgery.message forgery.signature.randomness) log) : ENNReal) * ((2 ^ 176 : Nat) : ENNReal)⁻¹ := by
+  rw [OracleSpec.randomOracle, QueryImpl.withCaching_run_none _ hfresh, probEvent_map]
+  exact probEvent_uniform_observedFewTimeCover_le_distinct parameter cache root log forgery
 
 theorem probEvent_fresh_observedFewTimeCover_le_occupancy
     (parameter : PublicParameter) (cache : QueryCache HashSpec) (root : Digest) (log : QueryLog SigningSpec) (forgery : Forgery)
@@ -74,13 +95,28 @@ theorem probEvent_fresh_observedFewTimeCover_le_occupancy
       (randomOracle (tweakableHashInput parameter .message (messageDigestPayload root forgery.message forgery.signature.randomness))).run cache] ≤
       (coverageOccupancyMoment (eligibleSigningViews (messageAnswers parameter cache) root
         (messageDigestPayload root forgery.message forgery.signature.randomness) log) : ENNReal) * ((2 ^ 176 : Nat) : ENNReal)⁻¹ := by
-  rw [OracleSpec.randomOracle, QueryImpl.withCaching_run_none _ hfresh, probEvent_map]
-  exact probEvent_uniform_observedFewTimeCover_le_occupancy parameter cache root log forgery
+  apply (probEvent_fresh_observedFewTimeCover_le_distinct parameter cache root log forgery hfresh).trans
+  exact mul_le_mul' (Nat.cast_le.mpr (distinctCoverageCount_le_occupancy _)) le_rfl
 
 def ObservedCoverAtPayload (answers : HashInput → Option HashOutput) (root : Digest)
     (log : QueryLog SigningSpec) (payload : HashInput) : Prop :=
   ∃ forgery, messageDigestPayload root forgery.message forgery.signature.randomness = payload ∧
     ObservedFewTimeCover answers root log forgery
+
+theorem probEvent_uniform_observedCoverAtPayload_le_distinct
+    (parameter : PublicParameter) (cache : QueryCache HashSpec) (root : Digest)
+    (log : QueryLog SigningSpec) (payload : HashInput) :
+    Pr[fun output => ObservedCoverAtPayload
+      (messageAnswers parameter (cache.cacheQuery (tweakableHashInput parameter .message payload) output)) root log payload |
+      ($ᵗ HashOutput : ProbComp HashOutput)] ≤
+      (distinctCoverageCount (eligibleSigningViews (messageAnswers parameter cache) root payload log) : ENNReal) *
+        ((2 ^ 176 : Nat) : ENNReal)⁻¹ := by
+  apply (probEvent_mono (q := fun output => Admissible (truncateMessageDigest output) ∧
+    CoveredFewTimeView (eligibleSigningViews (messageAnswers parameter cache) root payload log)
+      (hashOutputFewTimeView output)) ?_).trans ((probEvent_uniformHashOutput_covered_eq_distinct _).le)
+  intro output _ hcover
+  obtain ⟨forgery, rfl, hcover⟩ := hcover
+  exact observedFewTimeCover_after_query_covered parameter cache root log forgery output hcover
 
 theorem probEvent_uniform_observedCoverAtPayload_le_occupancy
     (parameter : PublicParameter) (cache : QueryCache HashSpec) (root : Digest)
@@ -90,12 +126,20 @@ theorem probEvent_uniform_observedCoverAtPayload_le_occupancy
       ($ᵗ HashOutput : ProbComp HashOutput)] ≤
       (coverageOccupancyMoment (eligibleSigningViews (messageAnswers parameter cache) root payload log) : ENNReal) *
         ((2 ^ 176 : Nat) : ENNReal)⁻¹ := by
-  apply (probEvent_mono (q := fun output => Admissible (truncateMessageDigest output) ∧
-    CoveredFewTimeView (eligibleSigningViews (messageAnswers parameter cache) root payload log)
-      (hashOutputFewTimeView output)) ?_).trans (probEvent_uniformHashOutput_covered_le_occupancy _)
-  intro output _ hcover
-  obtain ⟨forgery, rfl, hcover⟩ := hcover
-  exact observedFewTimeCover_after_query_covered parameter cache root log forgery output hcover
+  apply (probEvent_uniform_observedCoverAtPayload_le_distinct parameter cache root log payload).trans
+  exact mul_le_mul' (Nat.cast_le.mpr (distinctCoverageCount_le_occupancy _)) le_rfl
+
+theorem probEvent_fresh_observedCoverAtPayload_le_distinct
+    (parameter : PublicParameter) (cache : QueryCache HashSpec) (root : Digest)
+    (log : QueryLog SigningSpec) (payload : HashInput)
+    (hfresh : cache (tweakableHashInput parameter .message payload) = none) :
+    Pr[fun result : HashOutput × QueryCache HashSpec =>
+      ObservedCoverAtPayload (messageAnswers parameter result.2) root log payload |
+      (randomOracle (tweakableHashInput parameter .message payload)).run cache] ≤
+      (distinctCoverageCount (eligibleSigningViews (messageAnswers parameter cache) root payload log) : ENNReal) *
+        ((2 ^ 176 : Nat) : ENNReal)⁻¹ := by
+  rw [OracleSpec.randomOracle, QueryImpl.withCaching_run_none _ hfresh, probEvent_map]
+  exact probEvent_uniform_observedCoverAtPayload_le_distinct parameter cache root log payload
 
 theorem probEvent_fresh_observedCoverAtPayload_le_occupancy
     (parameter : PublicParameter) (cache : QueryCache HashSpec) (root : Digest)
@@ -106,7 +150,7 @@ theorem probEvent_fresh_observedCoverAtPayload_le_occupancy
       (randomOracle (tweakableHashInput parameter .message payload)).run cache] ≤
       (coverageOccupancyMoment (eligibleSigningViews (messageAnswers parameter cache) root payload log) : ENNReal) *
         ((2 ^ 176 : Nat) : ENNReal)⁻¹ := by
-  rw [OracleSpec.randomOracle, QueryImpl.withCaching_run_none _ hfresh, probEvent_map]
-  exact probEvent_uniform_observedCoverAtPayload_le_occupancy parameter cache root log payload
+  apply (probEvent_fresh_observedCoverAtPayload_le_distinct parameter cache root log payload hfresh).trans
+  exact mul_le_mul' (Nat.cast_le.mpr (distinctCoverageCount_le_occupancy _)) le_rfl
 
 end SphincsSecurity.Concrete
