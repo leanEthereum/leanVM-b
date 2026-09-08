@@ -762,6 +762,9 @@ import SphincsSecurity.Proof.MessageCacheSlots
 import SphincsSecurity.Proof.SigningQueryCommutationGap
 import SphincsSecurity.Proof.SigningRawIndexGap
 import SphincsSecurity.Proof.FreshSigningEnvelopeGap
+import SphincsSecurity.Proof.RemainingFreshSigningGap
+import SphincsSecurity.Proof.SigningEnvelopeRefund
+import SphincsSecurity.Proof.SampledSigningEnvelopeGap
 import SphincsSecurity.Proof.StoppedSigningGap
 import SphincsSecurity.Proof.StoppedSigningGapBound
 import SphincsSecurity.Proof.SecuritySigningGap
