@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.JointUniformCollisionCoverage
+import SphincsSecurity.Proof.JointHashCollisionCoverage
 
 namespace SphincsSecurity.Concrete.FtsProbeSimulation.JointOriginal
 
@@ -57,7 +58,7 @@ noncomputable def jointCollisionCoverageBudgetStepCharge
   if hit || failed then 0 else
     match input with
     | .inl (.inl _) => 0
-    | .inl (.inr hash) => jointCollisionCoverageHashCharge parameter root otsTable ftsTable cap budget hash frame state
+    | .inl (.inr hash) => jointCollisionCoverageBudgetHashCharge parameter root otsTable ftsTable cap budget hash frame state
     | .inr message =>
         digestSelectionCollisionRisk (secretKey parameter root otsTable ftsTable) cap
           (budget - signingExecutionHashCost (.inr message)) message state.1 state.2 +
@@ -130,7 +131,7 @@ theorem expected_jointCollisionCoverageBudget_step_add_credit_le
             | inr input =>
                 simpa only [jointCollisionCoverageBudgetStepCredit, jointCollisionCoverageBudgetStepCharge, Bool.false_or,
                   Bool.false_eq_true, if_false, signingExecutionHashCost, add_assoc] using
-                  expected_jointCollisionCoverageBudget_hash_add_credit_le parameter root otsTable ftsTable cap budget hcap hcost input frame state
+                  expected_jointCollisionCoverageBudget_hash_add_credit_le_refined parameter root otsTable ftsTable cap budget hcap hcost input frame state
                     hfinite henabled (hcomputed frame rfl) hsigned hcache
         | inr message =>
             simpa only [jointCollisionCoverageBudgetStepCredit, jointCollisionCoverageBudgetStepCharge, Bool.false_or,

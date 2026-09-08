@@ -22,6 +22,45 @@ noncomputable def jointCollisionCoverageStepFailureCharge
     input frame state.1 false false] *
       (if result.2 then 1 - jointCollisionCoverageStepEnvelope parameter root otsTable ftsTable cap budget input state result.1.2 else 0)
 
+theorem expected_jointCollisionCoverage_step_le_envelope
+    (parameter : PublicParameter) (root : Digest) (otsTable : OtsSecretIndex → HashOutput) (ftsTable : Coordinate → Digest)
+    (cap budget : Nat) (input : (OracleWorld + SigningSpec).Domain) (frame : Frame) (state : CoverLogState)
+    (henabled : frame.Enabled parameter otsTable ftsTable input state.1 false)
+    (hcomputed : OtsProbeSimulation.DeferredComputationsClosed frame.context) :
+    (∑' result, Pr[= result | stepWithFailure (parentException parameter otsTable ftsTable) parameter root otsTable ftsTable
+      input (some frame) state.1 false false] *
+        jointCollisionCoveragePotential (secretKey parameter root otsTable ftsTable) cap budget
+          (stepSigningLogState input state.2 result) result.1.2.2 result.2) ≤
+      (∑' result, Pr[= result | stepWithFailure (parentException parameter otsTable ftsTable) parameter root otsTable ftsTable
+        input (some frame) state.1 false false] *
+          jointCollisionCoverageStepEnvelope parameter root otsTable ftsTable cap budget input state result.1.2) +
+        jointCollisionCoverageStepFailureCharge parameter root otsTable ftsTable cap budget input (some frame) state := by
+  let exception := parentException parameter otsTable ftsTable
+  let computation := stepWithFailure exception parameter root otsTable ftsTable input (some frame) state.1 false false
+  let cost := jointCollisionCoverageStepEnvelope parameter root otsTable ftsTable cap budget input state
+  rw [jointCollisionCoverageStepFailureCharge, ← ENNReal.tsum_add]
+  apply ENNReal.tsum_le_tsum
+  intro result
+  rw [← mul_add]
+  by_cases hr : result ∈ support computation
+  · apply mul_le_mul' le_rfl
+    cases hf : result.2 with
+    | true =>
+        simp only [if_true]
+        rw [add_tsub_cancel_of_le (show cost result.1.2 ≤ 1 from boundedUnionPotential_le_one _ _)]
+        exact jointCollisionCoveragePotential_le_one _ _ _ _ _ _
+    | false =>
+        have he : ¬ EarlyOtsParentTransition parameter otsTable ftsTable state.1 result.1.2.1.2 := by
+          intro he
+          have h := stepWithFailure_earlyOtsParent_imp_failed exception parameter root otsTable ftsTable input frame state.1
+            henabled hcomputed result hr he
+          simp [hf] at h
+        simp only [Bool.false_eq_true, if_false, add_zero]
+        apply boundedUnionPotential_mono_left
+        cases hh : result.1.2.2 <;>
+          simp [collisionStopPotential, collisionSurvivingStructuralPotential, collisionStructuralEnvelope, stepSigningLogState, he, hh]
+  · rw [probOutput_eq_zero_of_not_mem_support hr, zero_mul, zero_mul]
+
 theorem expected_jointCollisionCoverage_step_le_record
     (parameter : PublicParameter) (root : Digest) (otsTable : OtsSecretIndex → HashOutput) (ftsTable : Coordinate → Digest)
     (cap budget : Nat) (input : (OracleWorld + SigningSpec).Domain) (frame : Frame) (state : CoverLogState)
@@ -39,33 +78,7 @@ theorem expected_jointCollisionCoverage_step_le_record
   let exception := parentException parameter otsTable ftsTable
   let computation := stepWithFailure exception parameter root otsTable ftsTable input (some frame) state.1 false false
   let cost := jointCollisionCoverageStepEnvelope parameter root otsTable ftsTable cap budget input state
-  have hstep : (∑' result, Pr[= result | computation] *
-      jointCollisionCoveragePotential (secretKey parameter root otsTable ftsTable) cap budget
-        (stepSigningLogState input state.2 result) result.1.2.2 result.2) ≤
-      (∑' result, Pr[= result | computation] * cost result.1.2) +
-        jointCollisionCoverageStepFailureCharge parameter root otsTable ftsTable cap budget input (some frame) state := by
-    rw [jointCollisionCoverageStepFailureCharge, ← ENNReal.tsum_add]
-    apply ENNReal.tsum_le_tsum
-    intro result
-    rw [← mul_add]
-    by_cases hr : result ∈ support computation
-    · apply mul_le_mul' le_rfl
-      cases hf : result.2 with
-      | true =>
-          simp only [if_true]
-          rw [add_tsub_cancel_of_le (show cost result.1.2 ≤ 1 from boundedUnionPotential_le_one _ _)]
-          exact jointCollisionCoveragePotential_le_one _ _ _ _ _ _
-      | false =>
-          have he : ¬ EarlyOtsParentTransition parameter otsTable ftsTable state.1 result.1.2.1.2 := by
-            intro he
-            have h := stepWithFailure_earlyOtsParent_imp_failed exception parameter root otsTable ftsTable input frame state.1
-              henabled hcomputed result hr he
-            simp [hf] at h
-          simp only [Bool.false_eq_true, if_false, add_zero]
-          apply boundedUnionPotential_mono_left
-          cases hh : result.1.2.2 <;>
-            simp [collisionStopPotential, collisionSurvivingStructuralPotential, collisionStructuralEnvelope, stepSigningLogState, he, hh]
-    · rw [probOutput_eq_zero_of_not_mem_support hr, zero_mul, zero_mul]
+  have hstep := expected_jointCollisionCoverage_step_le_envelope parameter root otsTable ftsTable cap budget input frame state henabled hcomputed
   apply hstep.trans
   apply add_le_add ?_ le_rfl
   have hm := tsum_probOutput_map_mul computation Prod.fst (fun result => cost result.2)
