@@ -45,7 +45,7 @@ theorem sampledCoverageRefund_mono (left right : CoverageRefundFamily) (hle : le
   apply mul_le_mul' le_rfl
   exact expectedCoverageRefund_mono _ _ _ _ _ _ _ _ (hle parameter initial.2.1 table (curryFtsTableEquiv ftsSecret) q) _ _ _ _ _ _
 
-private theorem expected_le_constant_add {α : Type} (computation : ProbComp α)
+theorem coverage_expected_le_constant_add {α : Type} (computation : ProbComp α)
     (value risk : α → ENNReal) (bound : ENNReal)
     (h : ∀ result ∈ support computation, value result ≤ bound + risk result) :
     (∑' result, Pr[= result | computation] * value result) ≤
@@ -72,11 +72,11 @@ theorem sampledLiveNonSecretResidual_pairs_refund_of_family_le
   unfold sampledLiveNonSecretResidual sampledCoverageRefund sampledPaidCoverageResidual
     sampledSigningEncodingPairCharge sampledSigningNonEncodingReserve
   simp only [← ENNReal.tsum_mul_right, mul_assoc, add_assoc, ← ENNReal.tsum_add, ← mul_add]
-  apply expected_le_constant_add
+  apply coverage_expected_le_constant_add
   intro parameter hp
-  apply expected_le_constant_add
+  apply coverage_expected_le_constant_add
   intro ftsSecret hfts
-  apply expected_le_constant_add
+  apply coverage_expected_le_constant_add
   intro table _
   simpa only [initializedBeforeFailureSigningCharge, ← ENNReal.tsum_mul_right, mul_assoc,
     add_assoc, ← ENNReal.tsum_add, ← mul_add] using
