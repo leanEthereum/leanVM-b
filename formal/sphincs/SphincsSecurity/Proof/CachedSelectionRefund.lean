@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.UnmatchedSelectionWeight
+import SphincsSecurity.Proof.MessageFreshSelectionScale
 import SphincsSecurity.Proof.SampledSigningEnvelopeGap
 
 namespace SphincsSecurity.Concrete
@@ -8,7 +9,13 @@ attribute [local instance] Classical.propDecidable
 
 noncomputable def cachedSelectionFraction (key : SecretKey) (message : Message) (cache : QueryCache HashSpec) : ENNReal :=
   cachedMessageEntryCountWhere cache key.parameter key.root message (fun _ => True) /
-    (cachedMessageEntryCountWhere cache key.parameter key.root message (fun _ => True) + ((2 ^ 118 : Nat) : ENNReal))
+    (cachedMessageEntryCountWhere cache key.parameter key.root message (fun _ => True) + messageFreshSelectionScale key message cache)
+
+theorem cachedSelectionFraction_ge_coarse (key : SecretKey) (message : Message) (cache : QueryCache HashSpec) :
+    cachedMessageEntryCountWhere cache key.parameter key.root message (fun _ => True) /
+        (cachedMessageEntryCountWhere cache key.parameter key.root message (fun _ => True) + ((2 ^ 118 : Nat) : ENNReal)) ≤
+      cachedSelectionFraction key message cache :=
+  ENNReal.div_le_div_left (add_le_add le_rfl (messageFreshSelectionScale_le_pow118 key message cache)) _
 
 noncomputable def rawIndexSigningIncrementEnvelope (key : SecretKey) (cap queries signings : Nat)
     (state : CoverLogState) : TargetShapeVector :=
@@ -44,7 +51,7 @@ theorem rawIndexSelectionGaps_ge_cached_fraction
     cachedSelectionFraction key message state.1 * rawIndexSigningIncrementEnvelope key cap queries signings state groups remaining ≤
       rawIndexNonfreshSigningGap key cap queries signings state message groups remaining +
         rawIndexReuseSigningGap key cap queries signings state message groups remaining :=
-  (mul_le_mul' (nonfreshSelection_ge_cached_fraction key message state.1 cap hcache) le_rfl).trans
+  (mul_le_mul' (nonfreshSelection_ge_message_fraction key message state.1 cap hcap hcache) le_rfl).trans
     (rawIndexSelectionGaps_ge_nonfresh_increment key cap queries signings hcap state hcache message groups remaining)
 
 noncomputable def rawIndexUnmatchedSelectionRefund (key : SecretKey) (cap queries signings : Nat)
@@ -52,7 +59,17 @@ noncomputable def rawIndexUnmatchedSelectionRefund (key : SecretKey) (cap querie
   fun G R => targetShapeEnvelope (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight cap)
       (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹)
       queries signings (unmatchedRawIndexShape key message state) G R /
-    (cachedMessageEntryCountWhere state.1 key.parameter key.root message (fun _ => True) + ((2 ^ 118 : Nat) : ENNReal))
+    (cachedMessageEntryCountWhere state.1 key.parameter key.root message (fun _ => True) + messageFreshSelectionScale key message state.1)
+
+theorem rawIndexUnmatchedSelectionRefund_ge_coarse
+    (key : SecretKey) (cap queries signings : Nat) (state : CoverLogState) (message : Message)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) :
+    targetShapeEnvelope (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight cap)
+        (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹)
+        queries signings (unmatchedRawIndexShape key message state) groups remaining /
+        (cachedMessageEntryCountWhere state.1 key.parameter key.root message (fun _ => True) + ((2 ^ 118 : Nat) : ENNReal)) ≤
+      rawIndexUnmatchedSelectionRefund key cap queries signings state message groups remaining :=
+  ENNReal.div_le_div_left (add_le_add le_rfl (messageFreshSelectionScale_le_pow118 key message state.1)) _
 
 theorem rawIndexUnmatchedSelectionRefund_of_no_cached_selection
     (key : SecretKey) (cap queries signings : Nat) (state : CoverLogState) (message : Message)
@@ -62,9 +79,9 @@ theorem rawIndexUnmatchedSelectionRefund_of_no_cached_selection
       targetShapeEnvelope (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight cap)
         (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹)
         queries signings (targetReuseStep (observedRawIndexShapeVector key state)) groups remaining /
-        ((2 ^ 118 : Nat) : ENNReal) := by
+        messageFreshSelectionScale key message state.1 := by
   rw [rawIndexUnmatchedSelectionRefund, hcount, zero_add]
-  exact congrArg (fun value => value / ((2 ^ 118 : Nat) : ENNReal))
+  exact congrArg (fun value => value / messageFreshSelectionScale key message state.1)
     (targetShapeEnvelope_congr _ _ _ queries signings
       (fun G R hv => unmatchedRawIndexShape_eq_reuse_of_no_cached_selection key message state hcount G R hv)
       groups remaining hvalid)
@@ -84,24 +101,26 @@ theorem rawIndexSelectionGaps_ge_fraction_add_unmatched
   have hcount : cachedMessageEntryCountWhere state.1 key.parameter key.root message (fun _ => True) ≠ ⊤ :=
     ne_top_of_le_ne_top (by finiteness)
       ((cachedMessageEntryCountWhere_le_enncard state.1 key.parameter key.root message (fun _ => True)).trans hcache)
-  have hdom : unmatched / ((2 ^ 118 : Nat) : ENNReal) ≤
+  have hdom : unmatched / messageFreshSelectionScale key message state.1 ≤
       rawIndexSigningIncrementEnvelope key cap queries signings state groups remaining := by
     calc
-      _ = ((2 ^ 118 : Nat) : ENNReal)⁻¹ * unmatched := by rw [div_eq_mul_inv, mul_comm]
+      _ = (messageFreshSelectionScale key message state.1)⁻¹ * unmatched := by rw [div_eq_mul_inv, mul_comm]
       _ ≤ digestReuseWeight cap *
           targetShapeEnvelope (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight cap)
             (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹)
             queries signings (targetReuseStep (observedRawIndexShapeVector key state)) groups remaining :=
-        mul_le_mul' (inv_pow118_le_digestReuseWeight cap)
+        mul_le_mul' (inv_messageFreshSelectionScale_le_digestReuseWeight key message state.1 cap hcache)
           (targetShapeEnvelope_mono _ _ _ queries signings
             (fun G R hv => unmatchedRawIndexShape_le_reuse key message state G R hv) groups remaining hvalid)
       _ ≤ _ := le_add_of_nonneg_left zero_le
   have h := selection_fraction_unmatched_lower _ (freshDigestSelectionProbability key message state.1)
-    (exactDigestReuseWeight key message state.1) ((2 ^ 118 : Nat) : ENNReal)
+    (exactDigestReuseWeight key message state.1) (messageFreshSelectionScale key message state.1)
     (rawIndexSigningIncrementEnvelope key cap queries signings state groups remaining) unmatched hcount
     (freshDigestSelectionProbability_le_one key message state.1)
-    (nonfreshSelection_ge_cached_fraction key message state.1 cap hcache) (by norm_num) (by finiteness)
-    (freshDigestSelectionProbability_le_exactReuse_mul_pow118 key message state.1) hdom
+    (nonfreshSelection_ge_message_fraction key message state.1 cap hcap hcache)
+    (ne_of_gt (messageFreshSelectionScale_pos key message state.1 cap hcap hcache))
+    (messageFreshSelectionScale_ne_top key message state.1)
+    (freshDigestSelectionProbability_le_exactReuse_mul_messageScale key message state.1) hdom
   exact h.trans (add_le_add
     (rawIndexSelectionGaps_ge_nonfresh_increment key cap queries signings hcap state hcache message groups remaining) le_rfl)
 
