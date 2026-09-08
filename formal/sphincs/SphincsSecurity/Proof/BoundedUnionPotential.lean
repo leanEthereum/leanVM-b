@@ -7,6 +7,10 @@ open _root_.OracleComp OracleSpec ENNReal
 noncomputable def boundedUnionPotential (left right : ENNReal) : ENNReal :=
   min 1 right + (1 - min 1 right) * min 1 left
 
+theorem boundedUnionPotential_min_right (left right : ENNReal) :
+    boundedUnionPotential left (min 1 right) = boundedUnionPotential left right := by
+  simp only [boundedUnionPotential, ← min_assoc, min_self]
+
 theorem boundedUnionPotential_le_one (left right : ENNReal) : boundedUnionPotential left right ≤ 1 := by
   apply (add_le_add le_rfl (mul_le_of_le_one_right' (min_le_left _ _))).trans_eq
   exact add_tsub_cancel_of_le (min_le_left _ _)
@@ -126,6 +130,21 @@ theorem expected_boundedUnionPotential_le_of_left_le
         (expected_boundedUnionPotential_le computation right beforeLeft).trans (add_le_add le_rfl (mul_le_mul' le_rfl hright))
       _ = _ := by
         rw [boundedUnionPotential_comm, boundedUnionPotential, min_eq_right (le_of_not_ge hlarge)]
+
+theorem expected_boundedUnionPotential_le_of_right_le
+    (computation : SPMF α) (left right : α → ENNReal) (beforeLeft fixedRight charge : ENNReal)
+    (hleft : (∑' result, Pr[= result | computation] * left result) ≤ beforeLeft + charge)
+    (hright : ∀ result ∈ support computation, right result ≤ fixedRight) :
+    (∑' result, Pr[= result | computation] * boundedUnionPotential (left result) (right result)) ≤
+      boundedUnionPotential beforeLeft fixedRight + (1 - min 1 fixedRight) * charge := by
+  have h := expected_boundedUnionPotential_add_decrease_le computation left beforeLeft fixedRight fixedRight charge hleft le_rfl
+  simp only [tsub_self, zero_mul, add_zero] at h
+  apply le_trans ?_ h
+  apply ENNReal.tsum_le_tsum
+  intro result
+  by_cases hr : result ∈ support computation
+  · exact mul_le_mul' le_rfl (boundedUnionPotential_mono_right _ (hright result hr))
+  · rw [probOutput_eq_zero_of_not_mem_support hr, zero_mul, zero_mul]
 
 theorem expected_boundedUnionPotential_stopped_le
     (computation : SPMF α) (left right : α → ENNReal) (stopped : α → Bool) (beforeLeft beforeRight : ENNReal)
