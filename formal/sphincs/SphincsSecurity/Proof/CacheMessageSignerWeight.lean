@@ -27,6 +27,19 @@ theorem cachedSignerInputWeight_le_cacheMessageEntryWeight (key : SecretKey) (me
       · exact bot_le
       · exact le_rfl
 
+theorem expected_successfulSignerInputWeight_le_allMessage_mass_mul (key : SecretKey) (message : Message)
+    (before : QueryCache HashSpec) (weight : HashInput → FewTimeView → ENNReal) (uniformWeight : FewTimeView → ENNReal)
+    (hweight : ∀ input view, weight input view ≤ uniformWeight view)
+    (q : Nat) (hq : q ≤ 2 ^ 127) (hcache : QueryCache.enncard before ≤ q) :
+    (∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run before] *
+      successfulSignerInputWeight key message weight result) ≤
+      freshDigestSelectionProbability key message before *
+        (∑' view, Pr[= view | ($ᵗ FewTimeView : ProbComp FewTimeView)] * uniformWeight view) +
+        cacheMessageWeight key.parameter weight before * digestReuseWeight q := by
+  apply (expected_successfulSignerInputWeight_le_mass_mul key message before weight uniformWeight hweight q hq hcache).trans
+  exact add_le_add le_rfl (mul_le_mul'
+    (ENNReal.tsum_le_tsum (cachedSignerInputWeight_le_cacheMessageEntryWeight key message before weight)) le_rfl)
+
 theorem expected_successfulSignerInputWeight_le_allMessage (key : SecretKey) (message : Message)
     (before : QueryCache HashSpec) (weight : HashInput → FewTimeView → ENNReal) (uniformWeight : FewTimeView → ENNReal)
     (hweight : ∀ input view, weight input view ≤ uniformWeight view)
@@ -34,9 +47,8 @@ theorem expected_successfulSignerInputWeight_le_allMessage (key : SecretKey) (me
     (∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run before] *
       successfulSignerInputWeight key message weight result) ≤
       (∑' view, Pr[= view | ($ᵗ FewTimeView : ProbComp FewTimeView)] * uniformWeight view) +
-        cacheMessageWeight key.parameter weight before * digestReuseWeight q := by
-  apply (expected_successfulSignerInputWeight_le key message before weight uniformWeight hweight q hq hcache).trans
-  exact add_le_add le_rfl (mul_le_mul'
-    (ENNReal.tsum_le_tsum (cachedSignerInputWeight_le_cacheMessageEntryWeight key message before weight)) le_rfl)
+        cacheMessageWeight key.parameter weight before * digestReuseWeight q :=
+  (expected_successfulSignerInputWeight_le_allMessage_mass_mul key message before weight uniformWeight hweight q hq hcache).trans
+    (add_le_add (mul_le_of_le_one_left' (freshDigestSelectionProbability_le_one key message before)) le_rfl)
 
 end SphincsSecurity.Concrete

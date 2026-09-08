@@ -44,6 +44,22 @@ theorem targetIndexMoments_raised (key : SecretKey) (cache : QueryCache HashSpec
   simp only [Nat.cast_add, Nat.cast_one, add_one_pow_eq_cachePowerArrival, mul_add, Finset.sum_add_distrib,
     targetIndexTreeLower_eq_weighted, targetIndexMoments]
 
+theorem expected_signWithView_frozenRawIndex_le_mass_mul (key : SecretKey) (message : Message) (before : QueryCache HashSpec)
+    (log : QueryLog SigningSpec) (power degree : Nat) (hsigned : SigningDigestsCached key.parameter before key.root log)
+    (q : Nat) (hq : q ≤ 2 ^ 127) (hcache : QueryCache.enncard before ≤ q) :
+    (∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run before] *
+      observedWeightedPowerMoments (fun index => cachedIndexMultiplicity key.parameter before index ^ power) key
+        (result.2, log ++ [⟨message, result.1.1⟩]) degree) ≤
+      targetIndexMoments key before log power degree +
+        freshDigestSelectionProbability key message before *
+          ((Fintype.card Index : ENNReal)⁻¹ * targetIndexTreeLower (targetIndexMoments key before log) power degree) +
+          digestReuseWeight q * targetIndexReuseStep (targetIndexMoments key before log) power degree := by
+  apply (expected_signWithView_weightedPower_le_mass_mul (fun index => cachedIndexMultiplicity key.parameter before index ^ power)
+    key message before log degree hsigned q hq hcache).trans_eq
+  rw [← targetIndexTreeLower_eq_weighted, ← targetIndexReuseStep_eq_cached]
+  simp only [targetIndexMoments_eq_weightedPower, div_eq_mul_inv]
+  ring
+
 theorem expected_signWithView_frozenRawIndex_le (key : SecretKey) (message : Message) (before : QueryCache HashSpec)
     (log : QueryLog SigningSpec) (power degree : Nat) (hsigned : SigningDigestsCached key.parameter before key.root log)
     (q : Nat) (hq : q ≤ 2 ^ 127) (hcache : QueryCache.enncard before ≤ q) :
@@ -52,11 +68,9 @@ theorem expected_signWithView_frozenRawIndex_le (key : SecretKey) (message : Mes
         (result.2, log ++ [⟨message, result.1.1⟩]) degree) ≤
       targetIndexMoments key before log power degree +
         (Fintype.card Index : ENNReal)⁻¹ * targetIndexTreeLower (targetIndexMoments key before log) power degree +
-          digestReuseWeight q * targetIndexReuseStep (targetIndexMoments key before log) power degree := by
-  apply (expected_signWithView_weightedPower_le (fun index => cachedIndexMultiplicity key.parameter before index ^ power)
-    key message before log degree hsigned q hq hcache).trans_eq
-  rw [← targetIndexTreeLower_eq_weighted, ← targetIndexReuseStep_eq_cached]
-  simp only [targetIndexMoments_eq_weightedPower, div_eq_mul_inv]
-  ring
+          digestReuseWeight q * targetIndexReuseStep (targetIndexMoments key before log) power degree :=
+  (expected_signWithView_frozenRawIndex_le_mass_mul key message before log power degree hsigned q hq hcache).trans
+    (add_le_add (add_le_add le_rfl
+      (mul_le_of_le_one_left' (freshDigestSelectionProbability_le_one key message before))) le_rfl)
 
 end SphincsSecurity.Concrete

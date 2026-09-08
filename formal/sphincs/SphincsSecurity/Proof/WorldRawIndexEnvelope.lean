@@ -10,6 +10,24 @@ set_option backward.isDefEq.respectTransparency false
 noncomputable def observedRawIndexShapeVector (key : SecretKey) (state : CoverLogState) : TargetShapeVector :=
   liftTargetIndexVector (targetIndexMoments key state.1 state.2)
 
+theorem expected_logTraced_sign_rawIndexShape_le_freshMass (key : SecretKey) (q : Nat) (hq : q ≤ 2 ^ 127)
+    (state : CoverLogState)
+    (hsigned : SigningDigestsCached key.parameter state.1 key.root state.2)
+    (hcache : QueryCache.enncard state.1 ≤ q) (message : Message)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    (∑' result, Pr[= result | (logTracedMappedAdversaryImpl key (.inr message)).run state] *
+      observedRawIndexShapeVector key result.2 groups remaining) ≤
+        targetShapeSigning (freshDigestSelectionProbability key message state.1 *
+          (Fintype.card Index : ENNReal)⁻¹) (digestReuseWeight q)
+          (observedRawIndexShapeVector key state) groups remaining := by
+  rw [logTracedMappedAdversaryImpl_run_map, tsum_probOutput_map_mul]
+  have hrun : (unloggedMappedAdversaryImpl key (.inr message)).run state.1 =
+      (fun result => (result.1.1, result.2)) <$> (simulateQ romImpl (signWithView key message)).run state.1 :=
+    (simulateQ_signWithView_fst_run key message state.1).symm
+  rw [hrun, tsum_probOutput_map_mul]
+  apply (expected_signWithView_targetIndexMoments_le_freshMass key message state.1 state.2 groups.card remaining.card hsigned q hq hcache).trans_eq
+  exact (targetShapeSigning_lift _ _ _ groups remaining hvalid).symm
+
 theorem expected_logTraced_sign_rawIndexShape_le (key : SecretKey) (q : Nat) (hq : q ≤ 2 ^ 127)
     (state : CoverLogState)
     (hsigned : SigningDigestsCached key.parameter state.1 key.root state.2)
@@ -19,13 +37,10 @@ theorem expected_logTraced_sign_rawIndexShape_le (key : SecretKey) (q : Nat) (hq
       observedRawIndexShapeVector key result.2 groups remaining) ≤
         targetShapeSigning (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight q)
           (observedRawIndexShapeVector key state) groups remaining := by
-  rw [logTracedMappedAdversaryImpl_run_map, tsum_probOutput_map_mul]
-  have hrun : (unloggedMappedAdversaryImpl key (.inr message)).run state.1 =
-      (fun result => (result.1.1, result.2)) <$> (simulateQ romImpl (signWithView key message)).run state.1 :=
-    (simulateQ_signWithView_fst_run key message state.1).symm
-  rw [hrun, tsum_probOutput_map_mul]
-  apply (expected_signWithView_targetIndexMoments_le key message state.1 state.2 groups.card remaining.card hsigned q hq hcache).trans_eq
-  exact (targetShapeSigning_lift _ _ _ groups remaining hvalid).symm
+  apply (expected_logTraced_sign_rawIndexShape_le_freshMass key q hq state hsigned hcache message groups remaining hvalid).trans
+  unfold targetShapeSigning
+  exact add_le_add (add_le_add le_rfl (mul_le_mul'
+    (mul_le_of_le_one_left' (freshDigestSelectionProbability_le_one key message state.1)) le_rfl)) le_rfl
 
 theorem expected_fresh_message_rawIndexShape_eq (key : SecretKey)
     (before : QueryCache HashSpec) (log : QueryLog SigningSpec) (input : HashInput) (hfresh : before input = none)
