@@ -73,12 +73,12 @@ theorem expected_logTraced_world_reuseRawEnvelope_le (key : SecretKey) (reuse : 
   simpa only [signingLogFragment, List.append_nil, unloggedMappedAdversaryImpl, OracleSpec.Range, OracleSpec.add_apply_inl] using
     expected_world_reuseRawEnvelope_le key reuse budget signatures state.1 state.2 input hsigned hcost groups remaining hvalid
 
-theorem expected_logTraced_sign_reuseRawEnvelope_le (key : SecretKey) (reuse : ENNReal) (budget signatures : Nat)
+theorem expected_logTraced_sign_reuseRawEnvelope_fixed_le (key : SecretKey) (reuse : ENNReal) (budget signatures : Nat)
     (state : CoverLogState) (hsigned : SigningDigestsCached key.parameter state.1 key.root state.2) (message : Message)
     (hreuse : exactDigestReuseWeight key message state.1 ≤ reuse)
     (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
     (∑' result, Pr[= result | (logTracedMappedAdversaryImpl key (.inr message)).run state] *
-      reuseRawEnvelope key reuse (budget - signingExecutionHashCost (.inr message)) signatures result.2 groups remaining) ≤
+      reuseRawEnvelope key reuse budget signatures result.2 groups remaining) ≤
       reuseRawEnvelope key reuse budget (signatures + 1) state groups remaining := by
   have hstep : TargetShapeLE
       (fun G R => ∑' result, Pr[= result | (logTracedMappedAdversaryImpl key (.inr message)).run state] *
@@ -93,7 +93,17 @@ theorem expected_logTraced_sign_reuseRawEnvelope_le (key : SecretKey) (reuse : E
   unfold reuseRawEnvelope
   rw [targetShapeEnvelope_expected]
   exact (targetShapeEnvelope_mono _ _ _ _ _ hstep groups remaining hvalid).trans
-    ((targetShapeEnvelope_signing_le _ _ _ _ _ _ groups remaining hvalid).trans
-      (targetShapeEnvelope_queries_mono _ _ _ _ _ (Nat.sub_le _ _) groups remaining hvalid))
+    (targetShapeEnvelope_signing_le _ _ _ _ _ _ groups remaining hvalid)
+
+theorem expected_logTraced_sign_reuseRawEnvelope_le (key : SecretKey) (reuse : ENNReal) (budget signatures : Nat)
+    (state : CoverLogState) (hsigned : SigningDigestsCached key.parameter state.1 key.root state.2) (message : Message)
+    (hreuse : exactDigestReuseWeight key message state.1 ≤ reuse)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    (∑' result, Pr[= result | (logTracedMappedAdversaryImpl key (.inr message)).run state] *
+      reuseRawEnvelope key reuse (budget - signingExecutionHashCost (.inr message)) signatures result.2 groups remaining) ≤
+      reuseRawEnvelope key reuse budget (signatures + 1) state groups remaining := by
+  exact (expected_logTraced_sign_reuseRawEnvelope_fixed_le key reuse (budget - signingExecutionHashCost (.inr message))
+    signatures state hsigned message hreuse groups remaining hvalid).trans
+      (targetShapeEnvelope_queries_mono _ _ _ _ _ (Nat.sub_le _ _) groups remaining hvalid)
 
 end SphincsSecurity.Concrete

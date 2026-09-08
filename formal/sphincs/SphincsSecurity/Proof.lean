@@ -815,6 +815,7 @@ import SphincsSecurity.Proof.CachedSelectionRefund
 import SphincsSecurity.Proof.AdmissibleDeficitMoments
 import SphincsSecurity.Proof.MessageDeficitGame
 import SphincsSecurity.Proof.InitialNearUniformRaw
+import SphincsSecurity.Proof.NearUniformCoverageProbability
 
 /-!
 The proof of `SphincsSecurityStatement`. The specification to review is `SphincsSecurity/Statement.lean`; the Lean kernel checks the proof against it.
