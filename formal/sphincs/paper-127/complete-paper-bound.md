@@ -12,8 +12,8 @@ The scheme uses independently sampled secrets and a classical random oracle with
 
 - reference-frontier-transfer.md supplies the exact conditional reference-encoding law, the transfer of canonical OTS prefixes to independent chain challenges, and the expected-cost bound for nonreference equal-code or different-code witnesses.
 - paid-probe-quadratic.md supplies an exact planted-graph exposure and a primitive bound that pays the message-query charge in one stopped execution.
-- cached-target-forecast.md supplies the degree-14 charged coverage bound and the degree-13 near-target certificate bound, including targets cached before signing. Its one terminal Poisson family controls all adaptive charging times. It also bounds the three exceptional conditions.
-- fts-useful-witness.md handles true FTS guesses that become useful before or after digest preparation, and distinguishes alternative preimages even when found before later secret disclosure.
+- cached-target-forecast.md supplies the degree-14 charged coverage bound and the degree-13 near-target certificate bound, including targets cached before signing. The exact rejection bridge in discrete-target-coupling.md gives one terminal Poisson family controlling all adaptive charging times. These notes also bound the exceptional conditions.
+- fts-useful-witness.md handles true FTS guesses that become useful before or after digest preparation, and distinguishes alternative preimages even when found before later secret disclosure. fts-guess-kernel.md supplies the explicit deferred-secret and forced-branch likelihood identities.
 
 These arguments use changes of experiment only for analysis. They preserve the original marginal law where stated and never give extra interfaces or an internal success flag to the original adversary. The forced-first-guess games are explicitly compared by likelihood and used only for the uniform message-target estimate.
 
@@ -43,7 +43,7 @@ For x_0<=x<=1/2, let B be the first primitive equality match and A_msg the messa
 
     P[B]+(3/(2N))E[A_msg]<=2x-x^2/8.
 
-The coverage certificate estimate in the same stopped experiment gives the following unconditioned event bound. Write G for the event that no cache, deficit, or clock exception occurs before termination:
+The coverage certificate estimate in the same stopped experiment gives the following unconditioned event bound. Write G for the event that no cache, deficit, or proposal exception occurs before termination:
 
     P[covered forgery and no B and G]<= (3/(2N))E[A_msg]+2^-16 x.
 

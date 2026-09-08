@@ -9,12 +9,23 @@ rho = F(1025, 1024) * F(L, N)
 beta = F(1537, 1024)
 v_max = F(1, I) + rho * (arrival * q_max + 2**80 + S + 14)
 assert 0 < v_max < 1
-assert v_max / (1 - v_max) < beta / I
-clock_mean = beta * F(S + S // 128, I)
-assert clock_mean == F(198273, 524288) < F(19, 50)
-clock_exponent = F(S, 2 * 128 * 127) - F(S, 128**2)
-assert clock_exponent == -F(64512, 127) < -500
-assert sum(F(500**j, factorial(j)) for j in range(1001)) > 2**700
+assert I * v_max < beta
+theta = F(1, 128)
+proposal_slack = S // 128
+minimum_proposals = beta * S + proposal_slack + 13
+assert minimum_proposals == 25313293
+proposal_mean = F(19, 50) * I
+u = (beta - 1) * (theta + theta**2 / (2 * (1 - theta / 3)))
+assert 0 < u < 1
+log_geometric_mgf = -(beta - 1) * theta + u + u**2 / (2 * (1 - u))
+assert log_geometric_mgf >= 0
+proposal_prefix_exponent = -theta * proposal_slack + S * log_geometric_mgf
+short_pool_exponent = -theta * (proposal_mean - minimum_proposals) + proposal_mean * theta**2 / 2
+assert proposal_prefix_exponent < -500
+assert short_pool_exponent < -500
+exp_lower_argument = F(7, 10)
+assert sum(exp_lower_argument**j / factorial(j) for j in range(4)) > 2
+assert 701 * exp_lower_argument < 500
 assert 14 * sum(2 ** (h + 1) - 1 for h in range(10)) == 28504 > L
 
 acceptance_floor = F(1, L) * (1 - F(2**93 + 2**32, N))
@@ -34,15 +45,15 @@ for k in range(1, 15):
     stirling.append(row)
 
 mu = F(19, 50)
-exp_minus_mu_upper = sum((-mu) ** j / factorial(j) for j in range(17))
+exp_minus_mu_upper = sum((-mu) ** j / factorial(j) for j in range(5))
 
 
 def poisson_weighted_series_upper(power, first):
-    ratio = mu * F(81, 80) ** power / 81
-    assert ratio < F(1, 100)
+    ratio = mu * F(13, 12) ** power / 13
+    assert ratio < F(1, 10)
     return exp_minus_mu_upper * (
-        sum(F(j**power) * mu**j / factorial(j) for j in range(first, 81))
-        + F(81**power) * mu**81 / factorial(81) * F(100, 99)
+        sum(F(j**power) * mu**j / factorial(j) for j in range(first, 12))
+        + F(12**power) * mu**12 / factorial(12) * F(10, 9)
     )
 
 
@@ -58,10 +69,11 @@ assert tail < F(5, 1000000)
 assert F(10**14, scale) < F(3, 8)
 assert F(11**14, scale) < F(3, 2)
 
-exp6_upper = sum(F(6**j, factorial(j)) for j in range(61)) + F(6**61, factorial(61)) / (1 - F(6, 62))
-assert exp6_upper < 405
+exp1_upper = sum(F(1, factorial(j)) for j in range(6)) + F(1, factorial(6)) / (1 - F(1, 7))
+assert exp1_upper < F(68, 25)
+assert F(68, 25) ** 6 < 405
 assert -16 * (F(3, 2) - F(1, 5)) + F(1, 2000) / F(3, 8) ** 2 * (405 - 1 - 6) < -19
-assert sum(F(19**j, factorial(j)) for j in range(81)) > 2**27
+assert 27 * exp_lower_argument < 19
 excess = F(5, 1000000) + F(3, 100000) * F(1, 5) + F(3, 4) * F(3, 100000) ** 2 + F(1, 2**31)
 assert excess < F(1, 2**16)
 
@@ -80,7 +92,7 @@ error_per_x = F(1, 2**94) + F(1, 2**109) + F(1, 2**572)
 assert error_per_x < F(1, 2**17)
 assert F(7, 4) + F(1, 2**16) + error_per_x < 2
 
-print("Exact cache, deficit, Poisson domination, and closing constants passed.")
+print("Exact cache, deficit, discrete proposal, and closing constants passed.")
 print("Degree-14 Poisson excess upper bound:", float(excess))
 print("Degree-13 near-target mean upper bound:", float(near_mean))
 print("These arithmetic checks do not verify the adaptive couplings or the SUF theorem.")

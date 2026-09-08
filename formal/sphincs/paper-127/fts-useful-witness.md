@@ -1,6 +1,6 @@
 # Useful FTS witnesses at small query budgets
 
-This paper argument uses the near-target certificate bound in cached-target-forecast.md. Its purpose is to count a usable secret guess, rather than treating every hidden input guess as a complete forgery. Both chronological orders of digest preparation and secret guessing are included.
+This paper argument uses the near-target certificate bound in cached-target-forecast.md. Its purpose is to count a usable secret guess, rather than treating every hidden input guess as a complete forgery. Both chronological orders of digest preparation and secret guessing are included. The exact deferred-secret and forced-branch kernels are developed in fts-guess-kernel.md.
 
 ## Separate alternative preimages from true guesses
 
@@ -25,7 +25,7 @@ The count is of distinct leaves, not repeated successful uses of one guessed val
 
 Consider a signature requiring exactly one secret still undisclosed at the time of forgery. Its other 13 coordinates are covered by signing views at other inputs. Thus its digest supplies a near-target certificate for the missing coordinate. The real execution contains both a true guess and a near-target certificate, in either order.
 
-For each of the at most q hash slots j, define a modified experiment. Before j, force every eligible undisclosed-leaf query to miss its true secret. At j, if it is eligible, force its candidate to be the true secret. Continue normally afterwards. Stop on the same cache and clock exceptions as in the coverage argument.
+For each of the at most q hash slots j, define a modified experiment. Before j, force every eligible undisclosed-leaf query to miss its true secret. At j, if it is eligible, force its candidate to be the true secret. Continue normally afterwards. Stop on the same cache, deficit, and proposal exceptions as in the coverage argument.
 
 The forced-miss kernel maintains a secret uniform on its remaining values and produces an independent noncanonical hash answer, which is allowed to equal its public leaf hash. At the forced hit, the secret becomes the queried candidate and its answer is the public hash. Other secrets and all already disclosed values are unchanged. This is a conditional-kernel construction; it does not give the original adversary a true-guess flag.
 

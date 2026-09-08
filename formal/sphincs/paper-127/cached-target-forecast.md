@@ -88,43 +88,40 @@ For B~Binomial(b,a), mu=ba, and k<=d,
 
 Expand binomial moments in falling factorials; E[(B)_j]<=(ba)^j and the partition count is at most choose(k,j) k^(k-j). Thus E[B^k]<=(mu+k)^k, and expanding the shift by c proves the displayed bound. Coefficient positivity now gives E_B[f_r(c+B,u)]<=f_r(c+ba+d,u).
 
-On a clean prefix c<=at+2^80, so c+ba+d+r<=aq+2^80+S+14. Throughout the remaining r signing transitions, interpret T at this bounded starting point as the Markov chain with a diagonal increment of probability1/I and a signing-only increment of probability rho*c. All its probabilities are valid in this range. Its signing increments are dominated by Bernoulli(v_q), where
+On a clean prefix c<=at+2^80, so c+ba+d+r<=aq+2^80+S+14. Throughout the remaining r signing transitions, interpret T at this bounded starting point as the Markov chain with a diagonal increment of probability 1/I and a signing-only increment of probability rho*c. All its probabilities are valid in this range. Its signing increments are dominated by Bernoulli(v_q), where
 
     v_q=1/I+rho*(aq+2^80+S+14).
 
-Set beta=1537/1024. Exact rational arithmetic gives v_q/(1-v_q)<=beta/I for q<=N/2. Bernoulli(v_q) is dominated by Poisson(-log(1-v_q)), hence by Poisson(beta/I). It follows that
+Set beta=1537/1024. Exact rational arithmetic gives I*v_q<=beta for q<=N/2. The bounded signing process is dominated by r independent Bernoulli(v_q) increments. It follows that
 
-    W_14 <= (1/2^48) sum_i E[(s_i+Poisson((beta/I)r))^14],
-    W_near <= (14/2^38) sum_i E[(s_i+Poisson((beta/I)r))^13].
+    W_14 <= (1/2^48) sum_i E[(s_i+Binomial(r,v_q))^14],
+    W_near <= (14/2^38) sum_i E[(s_i+Binomial(r,v_q))^13].
 
 No tail event for hypothetical future cache counts is needed: the polynomial moment comparison occurs before the bounded Markov interpretation.
 
-## One Poisson family for every adaptive charging time
+## One discrete terminal word for every adaptive charging time
 
-Use I independent homogeneous Poisson clocks, each of rate beta/I. At the next signing invocation, accept a proposal of index i with probability p_i/(beta/I), where p is the actual selected-index distribution, filled on exhaustion as above. These probabilities are at most one on clean prefixes and sum to total accepted rate one. Thus the selected index has exactly the required distribution, and the elapsed time until the next acceptance is Exp(1), independently of the past.
+The exact finite-word construction is in discrete-target-coupling.md. At the next signing invocation, repeatedly propose a uniform index i and accept with probability I*p_i/beta, where p is the actual selected-index distribution. Equivalently, run the actual invocation first, independently sample a geometric proposal-block length of mean beta and its rejected indices, then append the invocation's selected index. The two joint kernels agree exactly. A signing record contains message queries, the returned Option signature, and actual hash cost; it does not disclose hidden internal non-message query inputs.
 
-After selecting that index, sample the rest of the signing macro with its actual conditional distribution. Equivalently, sample the actual macro first and then a conditional Poisson bridge using its already determined selected index. Given the complete macro trace, the bridge depends only on its selected index and the pre-macro distribution p. Future clocks and unqueried message cells retain their required conditional laws at macro boundaries. External queries do not advance clock time.
+The construction preserves the actual conditional signing law and unqueried message cells at boundaries. External queries consume no proposals. Independently choose a terminal proposal-word length J~Poisson((19/50)*I). Let Z_i count index i among the first J proposals. Finite-prefix independence and the Poisson-multinomial identity make these terminal Z_i independent Poisson(19/50) variables.
 
-The boundary qualification matters. During a macro, conditioning on its already chosen Poisson index can bias its next message answer. The target forecast and the identity E[fresh queries|boundary]=LF are applied before drawing that index, and the next forecast is applied after the entire macro. Cache and deficit exceptional probabilities use the original hash-prefix filtration and the unchanged marginal law of message answers. No claim of uniformity conditional on the in-progress Poisson bridge is needed.
+Put D=S/128, and let K_s be the number of proposals consumed by s completed signing invocations. The third exceptional condition is the union of J<beta*S+D+13 initially and K_s>beta*s+D at any signing boundary. Exact geometric and Poisson exponential bounds give a combined probability below 2^-700. Finish a signing invocation before acting on an exception caused by its proposal block, so all its message calls remain in the charged execution.
 
-Let T_s be the time of the s-th accepted index. Actual signing counts satisfy s_i<=Z_i(T_s), where Z_i counts all proposals, including rejections. Put Delta=S/128 and T_star=S+Delta. The third exceptional condition is T_s>s+Delta at any signing prefix. The exponential martingale for sums of Exp(1)-1, with parameter 1/128, bounds its probability by
+At a clean boundary, let z_i count consumed proposals. Then z_i>=s_i, and m=J-K_s>=beta*(S-s)+13. Conditional on the boundary history, each future bin count is Binomial(m,1/I). For r=S-s and 0<=j<=d<=14,
 
-    exp(S/(2*128*127)-S/128^2)
-      = exp(-64512/127) < exp(-500) <2^-700.
+    (r)_j v_q^j <= (beta*r/I)^j <= (m)_j/I^j.
 
-After early termination or an exception, dummy uniform signing choices can complete the coupling. The proposal clocks remain independent homogeneous Poisson processes.
+These are falling-factorial moments. Their nonnegative expansions into shifted powers show that the future binomial count dominates the required degree-d forecast in moments. Thus, with
 
-At any clean macro boundary, T_star-T_s>=S-s=r. The future increments of the same clocks therefore dominate the future Poisson variables in the raw-forecast bound. Define
+    R_14=(1/2^48) sum_i Z_i^14,
+    R_near=(14/2^38) sum_i Z_i^13,
 
-    R_14=(1/2^48) sum_i Z_i(T_star)^14,
-    R_near=(14/2^38) sum_i Z_i(T_star)^13.
-
-For the enlarged boundary filtration F_j,
+the enlarged boundary filtration F_j satisfies
 
     W_14,j <= E[R_14 | F_j],
     W_near,j <= E[R_near | F_j].
 
-This is one terminal variable for all query times. Its Poisson means are beta*T_star/I=198273/524288<19/50. No conditioning on a future good event has been used; the process is killed on prefix exceptions.
+This is one terminal variable for all query times. No probability law has been conditioned on a future good event, or on the terminal word being long enough. The process is killed on adapted exceptions and retains banked certificates. Unconditional Poisson moments therefore control the adaptive excess charges below.
 
 ## Paying the adaptive charges
 
@@ -150,6 +147,8 @@ Let Y count bins with occupancy 11, let r=11^14/2^48, and let H be the contribut
 
     (B+rY+H-3/2)_+ <= H+(B-3/2)_++YB+rY(Y-1)/2.
 
-The 11-bin indicator and bulk contribution of the same bin have product zero; those of different bins are independent. Therefore E[YB]<=E[Y]E[B] and E[Y(Y-1)]<=E[Y]^2. These bounds give the claimed excess. The degree-13 mean is bounded by its series with an explicit geometric remainder; its rational upper bound is below 557. The script coverage-closing-checks.py checks all the numerical certificates with rational arithmetic.
+The 11-bin indicator and bulk contribution of the same bin have product zero; those of different bins are independent. Therefore E[YB]<=E[Y]E[B] and E[Y(Y-1)]<=E[Y]^2. These bounds give the claimed excess. The degree-13 mean is bounded by its series with an explicit geometric remainder; its rational upper bound is below 557.
+
+The arithmetic can use short certificates. For lambda=19/50, bound exp(-lambda) by its alternating Taylor polynomial through degree 4. For t_j=j^d lambda^j/j!, with d<=14 and j>=12, the ratio t_(j+1)/t_j=lambda*(1+1/j)^d/(j+1) decreases with j and is below 1/10 at j=12. Thus sum_(j>=12) t_j<=(10/9)t_12. This bounds the degree-13 mean and the degree-14 tail using only terms through 12. The exponential inequalities used above and in the proposal tail need no long series: the degree-3 Taylor polynomial gives exp(7/10)>2, so exp(19)>2^27 and exp(500)>2^701; summing exp(1) through degree 5 with a geometric tail gives exp(1)<68/25, hence exp(6)<(68/25)^6<405. The script coverage-closing-checks.py checks these rational certificates.
 
 Combining these estimates with the certificate counter proves the two stated coverage results. Adding the three original exceptional-event probabilities gives epsilon(q), without any multiplication by the number of cached targets.

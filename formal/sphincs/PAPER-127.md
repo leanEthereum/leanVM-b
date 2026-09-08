@@ -14,7 +14,7 @@ The new target is a two-regime argument, split at
 
 For x<=x_0, bound completed primitive forgery witnesses and ordinary coverage charges together by (7/4)x. For x>=x_0, use the paper primitive bound 2x-x^2/8, which already includes the same ordinary coverage charge. In either range, the proposed unpaid coverage excess is at most 2^-16 x plus smaller errors.
 
-The new arguments for the two previously open obligations are [cached-target-forecast.md](paper-127/cached-target-forecast.md) and [fts-useful-witness.md](paper-127/fts-useful-witness.md). Their assembly is in [complete-paper-bound.md](paper-127/complete-paper-bound.md). The arithmetic has been checked exactly; that check does not establish the probability couplings.
+The new arguments for the two previously open obligations are [cached-target-forecast.md](paper-127/cached-target-forecast.md) and [fts-useful-witness.md](paper-127/fts-useful-witness.md). The exact discrete couplings are developed in [discrete-target-coupling.md](paper-127/discrete-target-coupling.md) and [fts-guess-kernel.md](paper-127/fts-guess-kernel.md). Their assembly is in [complete-paper-bound.md](paper-127/complete-paper-bound.md). The arithmetic and finite examples have been checked exactly; those checks do not substitute for the written probability arguments or their formalization.
 
 ## Exact reference encodings and OTS witnesses
 
@@ -84,7 +84,7 @@ The coverage argument applies to an execution stopped at prefix exceptions and, 
 
 A certificate records a target whose coordinates are covered by successful signing views at inputs other than its own input. Targets may be queried before the signatures that eventually cover them. Retain the existing target-shape forecasts for such pending targets. At first completion, bank one certificate and discard its forecast, which is at least one. At an exceptional stop, discard pending forecasts and retain the bank. This bounds an expected count without multiplying exception probabilities by the number of targets.
 
-Use the actual remaining budget b=q-t in the forecast. Its fresh-target price W_j/N is bounded using positive polynomial moments and a Poisson process that dominates the selected signing indices. The construction produces one terminal variable R, common to every external-query or signing boundary, such that
+Use the actual remaining budget b=q-t in the forecast. Its fresh-target price W_j/N is bounded using positive polynomial moments and a discrete rejection sampler that embeds selected signing indices in uniform index proposals. The construction produces one terminal variable R, common to every external-query or signing boundary, such that
 
     W_j <= E[R | F_j],       E[(R-3/2)_+] < 2^-16.
 
@@ -96,12 +96,12 @@ Conditional Jensen and the tower identity then bound the excess adaptive charge 
 
     E[completed near-target certificates] <= 557x.
 
-For the terminal Poisson comparison, take I=2^26 bins, proposal rate beta/I per bin with beta=1537/1024, and terminal time S+S/128 for S=2^24 signings. The resulting bin means are 198273/524288<19/50. For independent Poisson variables Z_i with mean 19/50, the required arithmetic is
+For the terminal Poisson comparison, take I=2^26 bins and a terminal proposal-word length J~Poisson((19/50)*I). Its occupancy counts Z_i are independent Poisson(19/50) variables. Each signing index is accepted from uniform proposals by rejection sampling, with mean beta=1537/1024 proposals per signing. The exact bridge can run the actual signing invocation first and add its auxiliary rejected proposals afterward. This preserves the original signing record and unqueried message cells. The required terminal arithmetic is
 
     E[(sum_i Z_i^14/2^48-3/2)_+] < 2^-16,
     (14/2^38) E[sum_i Z_i^13] < 557.
 
-The cap on each cached index, the message-deficit stop controlling cached digest reuse, and the Poisson waiting-time stop together cost at most
+Stop initially if J<25313293 and at a signing boundary if more than beta*s+S/128 proposals have been consumed. On a clean prefix the unused proposal counts dominate every required degree-14 forecast in falling-factorial moments. The two proposal exceptions together cost less than 2^-700. With the cap on each cached index and the message-deficit stop controlling cached digest reuse, the total is at most
 
     epsilon(q)=q/2^222+q/2^237+2^-700.
 
@@ -113,7 +113,7 @@ Separate true secret guesses from alternative preimages. A query H_l(z)=Y_l with
 
 Before a true secret guess, that secret is uniform on its unexcluded values. Its conditional guessing probability is at most 1/(N-q). Two distinct true guesses therefore cost at most x^2/(2(1-x)^2). A forgery needing just one undisclosed secret also needs a near-target certificate, before or after the guess.
 
-For each possible first-guess hash slot, use a conditional experiment that forces earlier eligible guesses to miss and that slot to hit. Its likelihood weight is at most 1/(N-q). This transformation must preserve the message-oracle law, the original path budget, and already disclosed secrets. The uniform near-target estimate then gives a total bound of 557x^2/(1-x), covering either chronological order and targets completed by later signatures.
+For each possible first-guess hash slot, use a conditional experiment that forces earlier eligible guesses to miss and that slot to hit. The explicit deferred-secret kernel gives likelihood weight p_j*product_(t<j)(1-p_t)<=1/(N-q). It changes only local branch probabilities, preserving unqueried message cells, the original path budget, and already disclosed secrets. The uniform near-target estimate then gives a total bound of 557x^2/(1-x), covering either chronological order and targets completed by later signatures.
 
 The combined extra FTS contribution is thus
 
@@ -141,6 +141,6 @@ The implementation order should follow the mathematical dependencies and produce
 4. Establish the paid primitive inequality in the concrete augmented experiment and combine it with degree-14 coverage. This closes the remaining range up to q=N/2.
 5. Assemble the public 127-bit theorem for the unchanged statement and inspect its assumptions and axioms. This is completion; intermediate numerical endpoints are not completion.
 
-Before returning to Lean, scrutiny should concentrate on the macro-boundary filtration in the Poisson coupling and the preservation of unqueried message cells in the forced-guess kernels. Those are mathematical obligations with written arguments, not routine bookkeeping. The plan does not depend on a further improvement of the final constants if those arguments survive review.
+The two coupling interfaces now have explicit paper kernels: a geometric rejection bridge with independent auxiliary randomness, and a deferred-secret kernel whose local hit and miss probabilities give the forced-guess likelihood exactly. The common terminal domination follows from finite-prefix independence and falling-factorial moments. Formalization must retain the recorded-history boundary: message queries, signing responses, and actual costs are recorded, while secret-dependent internal non-message inputs remain hidden. The plan does not depend on a further improvement of the final constants.
 
-The Python files under paper-127 contain exact rational checks of partial-table likelihoods, conditional reference-table laws, finite probe decision problems, moment bounds, and closing constants. In particular, coverage-closing-checks.py checks the new Poisson and two-regime arithmetic. They can each be run with Python 3 and use only its standard library. These checks support the written arguments; they neither implement the security experiment nor certify the adaptive probability constructions or the final Lean theorem.
+The Python files under paper-127 contain exact rational checks of partial-table likelihoods, conditional reference-table laws, finite probe decision problems, moment bounds, and closing constants. In particular, coverage-closing-checks.py checks the new proposal, Poisson, and two-regime arithmetic; adaptive-kernel-checks.py checks the local planted-table kernel and rejection-bridge factorization on finite examples. They can each be run with Python 3 and use only its standard library. These checks support the written arguments; they neither implement the security experiment nor certify the full adaptive constructions or the final Lean theorem.
