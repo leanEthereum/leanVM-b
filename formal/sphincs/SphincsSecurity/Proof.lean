@@ -811,6 +811,7 @@ import SphincsSecurity.Proof.InitialPaidCoverageResidual
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 import SphincsSecurity.Proof.ExactSignerReuse
+import SphincsSecurity.Proof.CachedSelectionRefund
 
 /-!
 The proof of `SphincsSecurityStatement`. The specification to review is `SphincsSecurity/Statement.lean`; the Lean kernel checks the proof against it.
