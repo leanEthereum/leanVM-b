@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.ExactSigningEnvelopeGap
+import SphincsSecurity.Proof.UnmatchedSigningEnvelopeGap
 import SphincsSecurity.Proof.SigningCoverageExecutionPayment
 
 namespace SphincsSecurity.Concrete
@@ -12,6 +12,7 @@ noncomputable def remainingRawIndexSigningGap (key : SecretKey) (cap budget : Na
   fun G R => if ValidSigningStep state.2 (.inr message) then
     rawIndexNonfreshSigningGap key cap budget (signatureLimit - (state.2.length + 1)) state message G R +
       rawIndexReuseSigningGap key cap budget (signatureLimit - (state.2.length + 1)) state message G R +
+      rawIndexUnmatchedSigningGap key cap budget (signatureLimit - (state.2.length + 1)) state message G R +
       signingQueryCommutationGap (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight cap)
         (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹)
         budget (signatureLimit - (state.2.length + 1)) (observedRawIndexShapeVector key state) G R
@@ -30,10 +31,10 @@ theorem expected_logTraced_sign_cappedRemainingRawIndex_add_gap_le
   · have hremaining : signatureLimit - state.2.length = signatureLimit - (state.2.length + 1) + 1 := by
       have hlength : state.2.length < signatureLimit := hactive
       omega
-    rw [remainingRawIndexSigningGap, if_pos hactive, ← add_assoc, ← add_assoc,
+    rw [remainingRawIndexSigningGap, if_pos hactive, ← add_assoc, ← add_assoc, ← add_assoc,
       cappedRemainingRawIndexEnvelope, if_pos hactive.valid_before, hremaining]
-    apply le_trans (add_le_add (add_le_add (add_le_add ?_ le_rfl) le_rfl) le_rfl)
-      (expected_logTraced_sign_rawIndexEnvelope_add_selection_gaps_le key cap budget
+    apply le_trans (add_le_add (add_le_add (add_le_add (add_le_add ?_ le_rfl) le_rfl) le_rfl) le_rfl)
+      (expected_logTraced_sign_rawIndexEnvelope_add_all_selection_gaps_le key cap budget
         (signatureLimit - (state.2.length + 1)) hcap state hsigned hcache message groups remaining hvalid)
     apply ENNReal.tsum_le_tsum
     intro result

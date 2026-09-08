@@ -65,7 +65,7 @@ theorem cachedSelectionCoverageGap_le_signingEnvelopeGap
       hcap state hactive.1 message ∅ Finset.univ
     unfold signingCoverageEnvelopeGap remainingRawIndexSigningGap
     rw [if_pos hactive.2]
-    exact mul_le_mul' (mul_le_mul' (mul_le_mul' (h.trans le_self_add) le_rfl) le_rfl) le_rfl
+    exact mul_le_mul' (mul_le_mul' (mul_le_mul' ((h.trans le_self_add).trans le_self_add) le_rfl) le_rfl) le_rfl
   · exact zero_le
 
 namespace FtsProbeSimulation.JointOriginal
