@@ -1,6 +1,6 @@
 # A quadratic primitive bound that pays for message queries
 
-This paper result strengthens two-probe-quadratic.md by including a reward for message queries made before failure. It also describes the proposed exact exposure of the concrete signature game needed to apply it. The charged FTS coverage estimate remains a separate obligation.
+This paper result strengthens two-probe-quadratic.md by including a reward for message queries made before failure. It also describes the proposed exact exposure of the concrete signature game needed to apply it. The separate charged coverage argument is developed in cached-target-forecast.md.
 
 ## Abstract bound
 
@@ -86,8 +86,8 @@ On a run with no B, an accepting OTS component must use its canonical message, c
 
 Hence a strong forgery without B must use a message-hash input whose forest coordinates are all covered by successful signing responses at other inputs. If the same message and randomizer had produced a successful signature, the canonical component values make the accepted signature identical to that response, so it is not a strong forgery. This preserves target-input exclusion. Retry exhaustion does not create an exception: a canonical OTS input with J=none has no accepted counter.
 
-To conclude the desired full bound, one still needs the charged coverage inequality in this same stopped experiment,
+To conclude the desired full bound, this must be combined with a charged coverage inequality in the same stopped experiment,
 
     P[covered forgery and no B] <= (3/(2N)) E[A] + 2^-16 x + epsilon.
 
-The paid-probe estimate would then give P[forge]<=2x-x^2/8+2^-16 x+epsilon. Ordinary index occupancy alone does not prove the displayed coverage inequality for previously cached targets. That remains a genuine gap.
+The paid-probe estimate then gives P[forge]<=2x-x^2/8+2^-16 x+epsilon. Ordinary index occupancy alone does not prove the displayed coverage inequality for previously cached targets. The proposed solution in cached-target-forecast.md uses a common terminal variable to dominate every adaptive target forecast, retaining completed certificates on exceptional stopping. See complete-paper-bound.md for the final assembly and its current status.

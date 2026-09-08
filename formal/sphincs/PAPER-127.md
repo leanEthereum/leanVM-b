@@ -1,6 +1,6 @@
 # Paper route to 127-bit strong unforgeability
 
-This is a proof strategy for the unchanged concrete scheme at source commit a743f717. Full 127-bit security remains open, mathematically and in Lean. The linked notes supply paper arguments for the OTS witness estimates and a joint primitive bound. The two remaining full-game obligations are stated explicitly below. No Lean implementation change accompanies these notes.
+This is a proof strategy for the unchanged concrete scheme at source commit a743f717. The linked notes now give a candidate paper argument through the final 127-bit inequality, including proposed solutions to cached-target charging and useful FTS guessing. This is not a completed Lean proof. The adaptive probability constructions and their exact connection to the original experiment are the main review and formalization risks. No Lean implementation change accompanies these notes.
 
 ## Target and revised closing argument
 
@@ -12,9 +12,9 @@ The new target is a two-regime argument, split at
 
     x_0 = 3*2^-14,       q_0 = 3*2^114.
 
-For x<=x_0, aim to bound completed primitive forgery witnesses and ordinary coverage charges together by (7/4)x. For x>=x_0, use the paper primitive bound 2x-x^2/8, which already includes the same ordinary coverage charge. In either range, the proposed unpaid coverage excess is at most 2^-16 x plus smaller errors.
+For x<=x_0, bound completed primitive forgery witnesses and ordinary coverage charges together by (7/4)x. For x>=x_0, use the paper primitive bound 2x-x^2/8, which already includes the same ordinary coverage charge. In either range, the proposed unpaid coverage excess is at most 2^-16 x plus smaller errors.
 
-This leaves two substantive obligations: complete the FTS work accounting for the small-budget bound, and prove the charged coverage estimate for targets that may have been cached before signing. The arithmetic is sufficient if those obligations hold; it does not establish them.
+The new arguments for the two previously open obligations are [cached-target-forecast.md](paper-127/cached-target-forecast.md) and [fts-useful-witness.md](paper-127/fts-useful-witness.md). Their assembly is in [complete-paper-bound.md](paper-127/complete-paper-bound.md). The arithmetic has been checked exactly; that check does not establish the probability couplings.
 
 ## Exact reference encodings and OTS witnesses
 
@@ -50,7 +50,7 @@ The chain likelihood argument handles arbitrary precomputation, merged paths, ad
     [c(x)+82x/(1-x)] E[Q]/N
         + [1+3444x/(1-x)] E[A_enc]/N.
 
-For x<=x_0, both coefficients are below 7/4. The two expected costs refer to the same actual execution and disjoint query classes. This is stronger than charging each event class the whole q. It does not assume that inversions occur only after preparation.
+For x<=x_0, both coefficients are below 131/80. The two expected costs refer to the same actual execution and disjoint query classes. This is stronger than charging each event class the whole q. It does not assume that inversions occur only after preparation.
 
 The estimate is for paths actually reaching the canonical frontier. A forgery that instead merges above that frontier requires a noncanonical output match. Such upper structural hashes can be analyzed with their canonical inputs and outputs exposed and their other rows still uniform. A fresh noncanonical query has match probability 1/N. Merely revealing full upper function tables would not justify this probability statement.
 
@@ -76,29 +76,54 @@ An elementary polynomial inequality bounds this by 2x-x^2/8 for q<=N/2. Thus ord
 
 With no primitive match, an accepted OTS component is canonical, every accepted FTS secret has already been disclosed, and authentication nodes are canonical. A different signature on the same message and randomizer would force a primitive match. Therefore a strong forgery with no B gives a digest target covered by successful signing views at other inputs. This retains target-input exclusion and the actual Option failure cases.
 
-## Remaining obligation: charged cached-target coverage
+## Proposed solution: charged cached-target coverage
 
-The required estimate is an adaptive coverage statement that can be applied to the full execution or to an execution stopped at B. With A_msg counting message queries in that execution, the desired bound is
+The coverage argument applies to an execution stopped at prefix exceptions and, optionally, at B. With A_msg counting message queries in that execution, the proposed bound is
 
-    P[covered target] <= (3/(2N)) E[A_msg] + 2^-16 x + epsilon.
+    E[completed full-target certificates] <= (3/(2N)) E[A_msg] + 2^-16 x.
 
-Coverage must use signing views at inputs other than the target's own input. Targets may be queried before the signatures that eventually cover them. The statement must retain this exclusion, cached digest reuse, the actual signing limit, and the same q. This inequality is unproved.
+A certificate records a target whose coordinates are covered by successful signing views at inputs other than its own input. Targets may be queried before the signatures that eventually cover them. Retain the existing target-shape forecasts for such pending targets. At first completion, bank one certificate and discard its forecast, which is at least one. At an exceptional stop, discard pending forecasts and retain the bank. This bounds an expected count without multiplying exception probabilities by the number of targets.
 
-An auxiliary Poisson calculation supports the proposed excess. If Z_i are 2^26 independent Poisson variables of mean 19/50 and R_P=sum_i Z_i^14/2^48, then E[(R_P-3/2)_+]<2^-16. A proof splits occupancies into at most 10, exactly 11, and at least 12, using exponential and factorial moments with exact rational bounds.
+Use the actual remaining budget b=q-t in the forecast. Its fresh-target price W_j/N is bounded using positive polynomial moments and a Poisson process that dominates the selected signing indices. The construction produces one terminal variable R, common to every external-query or signing boundary, such that
 
-Near-uniform reuse can support a domination of ordinary index occupancy, apart from small cache and waiting-time errors. That does not by itself control targets that were queried earlier and become covered later. A sufficient next lemma would dominate the positive excess of a predictable target-completion forecast by a conditional expectation of (R_P-3/2)_+, or establish an equivalent charged supermartingale. The existing first-moment envelope does not prove this stronger claim.
+    W_j <= E[R | F_j],       E[(R-3/2)_+] < 2^-16.
 
-## Remaining obligation: FTS work at small budgets
+Here F_j is the enlarged boundary filtration. No independence between an adaptively chosen charging time and final occupancy is assumed. For predictable creation multipliers a_j, the concrete signing cost and a finite stopping-time identity give
 
-For x<=x_0, the OTS work now has a rate below 7/(4N) with its actual allocation retained. The missing step is a compatible FTS bound. Finding a preimage of an undisclosed FTS leaf hash must produce a usable signature, which also requires an admissible digest with all other forest coordinates available. Both chronological orders must be handled: a digest may prepare the missing leaf before inversion, or an inversion may precede the digest search. Cached digests can acquire the remaining coordinates through later signing calls.
+    sum_j a_j <= q,       E[sum_j a_j] <= E[A_msg].
 
-A useful analysis can expose all FTS leaf hashes, keep their secrets hidden until disclosed, and treat each leaf as a separate one-step inversion challenge. A signature needing two undisclosed leaf inversions requires two distinct contacts. A signature needing one requires a near-covered digest target. The required target-marking bound must share its message-query costs with ordinary coverage. It cannot be obtained by assigning the full q separately to inversions and digest searches.
+Conditional Jensen and the tower identity then bound the excess adaptive charge by q E[(R-3/2)_+]. This is the missing strengthening over an ordinary first-moment occupancy envelope. The same construction at degree 13, summed over the 14 choices of a missing coordinate, gives
 
-The sufficient small-budget conclusion is a bound on completed primitive forgery witnesses plus the ordinary message charge by (7/4)x, using the same query allocation. This is a proposed full-game inequality, not a consequence already established by the OTS lemmas.
+    E[completed near-target certificates] <= 557x.
+
+For the terminal Poisson comparison, take I=2^26 bins, proposal rate beta/I per bin with beta=1537/1024, and terminal time S+S/128 for S=2^24 signings. The resulting bin means are 198273/524288<19/50. For independent Poisson variables Z_i with mean 19/50, the required arithmetic is
+
+    E[(sum_i Z_i^14/2^48-3/2)_+] < 2^-16,
+    (14/2^38) E[sum_i Z_i^13] < 557.
+
+The cap on each cached index, the message-deficit stop controlling cached digest reuse, and the Poisson waiting-time stop together cost at most
+
+    epsilon(q)=q/2^222+q/2^237+2^-700.
+
+The paper makes two stopping distinctions explicit. Exceptions inside signing are acted upon only at the end of the invocation, retaining all its actual message calls in A_msg. Also, the original game rejects a final signing log longer than S; an analysis may terminate with a losing result before request S+1, without conditioning on a future valid log or changing the scheme's signing interface.
+
+## Proposed solution: useful FTS guesses at small budgets
+
+Separate true secret guesses from alternative preimages. A query H_l(z)=Y_l with z different from the true secret is a cheap output-match event, with rate 1/N per fresh FTS query. This includes alternative preimages found before a later disclosure of the true secret.
+
+Before a true secret guess, that secret is uniform on its unexcluded values. Its conditional guessing probability is at most 1/(N-q). Two distinct true guesses therefore cost at most x^2/(2(1-x)^2). A forgery needing just one undisclosed secret also needs a near-target certificate, before or after the guess.
+
+For each possible first-guess hash slot, use a conditional experiment that forces earlier eligible guesses to miss and that slot to hit. Its likelihood weight is at most 1/(N-q). This transformation must preserve the message-oracle law, the original path budget, and already disclosed secrets. The uniform near-target estimate then gives a total bound of 557x^2/(1-x), covering either chronological order and targets completed by later signatures.
+
+The combined extra FTS contribution is thus
+
+    557x^2/(1-x)+x^2/(2(1-x)^2) < (9/80)x       for x<=x_0.
+
+The OTS coefficients, cheap structural output matches, and the ordinary message-query charge all fit below 131/80 with their disjoint query allocations retained. Together with this extra FTS term, the coefficient is below 131/80+9/80=7/4.
 
 ## Closure and next milestone
 
-If the two remaining obligations hold, then for x<=x_0,
+The proposed lemmas yield, for x<=x_0,
 
     P[forge] <= (7/4)x + 2^-16 x + epsilon < 2x.
 
@@ -106,8 +131,16 @@ For x_0<=x<=1/2, the paid primitive bound and charged coverage give
 
     P[forge] <= 2x-x^2/8+2^-16 x+epsilon.
 
-At x=x_0, x/8-2^-16=2^-17, and this difference increases with x. Thus the large-budget range leaves at least 2^-17 x for the remaining errors. The candidate errors q/2^216+q/2^223+q/2^237+2^-700 fit inside that margin for q>=1, if their stated bounds are established in the final construction. At q>=N/2 use the probability bound by one.
+At x=x_0, x/8-2^-16=2^-17, and this difference increases with x. Thus the large-budget range leaves at least 2^-17 x for the remaining errors. For q>=1, epsilon(q)/x<=2^-94+2^-109+2^-572<2^-17. At q>=N/2 use the probability bound by one. Both nontrivial ranges therefore close numerically at P[forge]<=2x=q/2^127.
 
-The next mathematical milestone is the charged target-completion estimate, including the version with one missing FTS coordinate. It is the common missing ingredient in the two remaining obligations. Return to Lean only after these ingredients form one complete paper proof for the original strong-unforgeability game. The paper lemmas and their arithmetic checks do not constitute a completed 127-bit Lean theorem.
+The implementation order should follow the mathematical dependencies and produce useful endpoints:
 
-The Python files under paper-127 contain exact rational checks of the partial-table likelihoods, conditional reference-table laws, finite probe decision problems, and closing constants. They can each be run with Python 3 and use only its standard library. These checks support the written arguments; they neither implement the security experiment nor certify the missing full-game inequalities.
+1. Review the exact planted-graph and reference-encoding experiments against the concrete byte domains and independently sampled secrets. Establish the SUF decomposition with Option failures and the rejection of overlong logs.
+2. Establish the degree-14 and degree-13 certificate bounds with one terminal domination, the same stopped execution costs, and no conditioning on future good events. This is the highest-risk new probability construction and should be the first new coverage endpoint.
+3. Establish the forced-first-guess comparison and combine it with degree-13 coverage. The resulting endpoint should prove the original-game bound throughout q<=3*2^114, using the OTS likelihood estimates and disjoint query costs.
+4. Establish the paid primitive inequality in the concrete augmented experiment and combine it with degree-14 coverage. This closes the remaining range up to q=N/2.
+5. Assemble the public 127-bit theorem for the unchanged statement and inspect its assumptions and axioms. This is completion; intermediate numerical endpoints are not completion.
+
+Before returning to Lean, scrutiny should concentrate on the macro-boundary filtration in the Poisson coupling and the preservation of unqueried message cells in the forced-guess kernels. Those are mathematical obligations with written arguments, not routine bookkeeping. The plan does not depend on a further improvement of the final constants if those arguments survive review.
+
+The Python files under paper-127 contain exact rational checks of partial-table likelihoods, conditional reference-table laws, finite probe decision problems, moment bounds, and closing constants. In particular, coverage-closing-checks.py checks the new Poisson and two-regime arithmetic. They can each be run with Python 3 and use only its standard library. These checks support the written arguments; they neither implement the security experiment nor certify the adaptive probability constructions or the final Lean theorem.
