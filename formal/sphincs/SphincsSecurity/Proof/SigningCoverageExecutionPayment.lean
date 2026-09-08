@@ -100,4 +100,39 @@ theorem expected_surviving_sign_coverage_pairs_refund_le_reserved_add_residual
   unfold signingRemainingCoverageResidual
   convert hcombined using 1 <;> ring
 
+theorem expected_surviving_sign_remainingCoverage_eq_zero_of_inactive
+    (exception : QueryCache HashSpec → HashInput → HashOutput → Prop)
+    (key : SecretKey) (cap budget : Nat) (message : Message) (state : CoverLogState) (hit : Bool)
+    (hinactive : ¬ ValidSigningStep state.2 (.inr message)) :
+    expectedSurvivingSigningPotential exception key message state hit (fun current =>
+      remainingCoveragePotential key cap budget current ∅ Finset.univ * ((2 ^ 140 : Nat) : ENNReal)⁻¹) = 0 := by
+  have hinvalid (signature : Option Signature) : ¬ SigningTranscript.Valid (state.2 ++ [⟨message, signature⟩]) := by
+    have hlength : ¬ state.2.length < signatureLimit := hinactive
+    simp only [SigningTranscript.Valid, List.length_append, List.length_singleton]
+    omega
+  simp only [expectedSurvivingSigningPotential, remainingCoveragePotential, cappedRemainingCachedTargetEnvelope,
+    cappedRemainingRawIndexEnvelope, if_neg (hinvalid _), zero_mul, zero_add, ite_self, mul_zero, tsum_zero]
+
+theorem expected_surviving_sign_coverage_pairs_refund_le_reserved_of_inactive
+    (exception : QueryCache HashSpec → HashInput → HashOutput → Prop)
+    (key : SecretKey) (cap budget : Nat) (hcapMax : cap ≤ 2 ^ 127) (message : Message) (state : CoverLogState) (hit : Bool)
+    (hinactive : ¬ ValidSigningStep state.2 (.inr message)) (hcache : QueryCache.enncard state.1 ≤ cap)
+    (hcost : signingExecutionHashCost (.inr message) ≤ budget)
+    (hcap : ∀ result ∈ support ((simulateQ romImpl (sign key message)).run state.1), QueryCache.enncard result.2 ≤ cap) :
+    expectedSurvivingSigningPotential exception key message state hit (fun current =>
+      remainingCoveragePotential key cap (budget - signingExecutionHashCost (.inr message)) current ∅ Finset.univ *
+        ((2 ^ 140 : Nat) : ENNReal)⁻¹) +
+      expectedPreExceptionCharge exception (encodingPairIncrementCharge key) (sign key message) state.1 hit *
+        (Fintype.card Digest : ENNReal)⁻¹ + signingCoverageExecutionRefund key cap budget message state ≤
+      remainingCoveragePotential key cap budget state ∅ Finset.univ * ((2 ^ 140 : Nat) : ENNReal)⁻¹ +
+        expectedPreExceptionCharge exception (nonMessageNonEncodingHashCharge key.parameter) (sign key message) state.1 hit *
+          (Fintype.card Digest : ENNReal)⁻¹ := by
+  rw [expected_surviving_sign_remainingCoverage_eq_zero_of_inactive exception key cap _ message state hit hinactive, zero_add]
+  have hrefund : signingCoverageExecutionRefund key cap budget message state ≤
+      remainingCoveragePotential key cap budget state ∅ Finset.univ * ((2 ^ 140 : Nat) : ENNReal)⁻¹ :=
+    le_add_self.trans_eq (remainingCoverage_add_signingExecutionRefund key cap budget message state hcost)
+  have hpairs := mul_le_mul' (expectedPreException_signingEncodingPairs_le_reserved exception key message cap hcapMax
+    state.1 (Finite.of_enncard_le hcache) hit hcap) (le_refl (Fintype.card Digest : ENNReal)⁻¹)
+  exact (add_le_add hpairs hrefund).trans_eq (add_comm _ _)
+
 end SphincsSecurity.Concrete

@@ -7,7 +7,7 @@ namespace SphincsSecurity.Concrete.FtsProbeSimulation.JointOriginal
 open _root_.OracleComp OracleSpec ENNReal
 set_option backward.isDefEq.respectTransparency false
 
-private theorem parent_funding_double_shared_refund
+theorem parent_funding_double_shared_refund
     (adv base extra pending funding loss terminal shared release rate : ENNReal)
     (hbalance : pending + loss = funding) (hloss : loss ≤ terminal + shared + release)
     (hbound : adv + (2 * pending * rate + (terminal + 2 * shared) * rate) + extra ≤ base) :

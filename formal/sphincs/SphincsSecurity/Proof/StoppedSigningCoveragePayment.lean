@@ -56,7 +56,8 @@ noncomputable def paidRemainingCoverageStepResidual
     (key : SecretKey) (cap budget : Nat) (input : (OracleWorld + SigningSpec).Domain) (state : CoverLogState) (hit failed : Bool) : ENNReal :=
   match input with
   | .inl _ => 0
-  | .inr message => survivingLogPotential (signingRemainingCoverageResidual key cap budget message) state hit failed
+  | .inr message => if ValidSigningStep state.2 (.inr message) then
+      survivingLogPotential (signingRemainingCoverageResidual key cap budget message) state hit failed else 0
 
 theorem stepWithFailure_sign_coverage_pairs_refund_le_reserved_add_residual
     (exception : QueryCache HashSpec → HashInput → HashOutput → Prop)
@@ -148,15 +149,26 @@ theorem stepWithFailure_coverage_pairs_refund_le_reserved_add_residual
           beforeFailureSigningStepCharge_of_stopped exception _ _ _ _ _ _ hstop,
           beforeFailureSigningStepCharge_of_stopped exception _ _ _ _ _ _ hstop]
         simp only [paidRemainingCoverageStepRefund, paidRemainingCoverageStepResidual, survivingLogPotential, hstop,
-          if_true, zero_mul, zero_add, le_refl]
+          if_true, ite_self, zero_mul, zero_add, le_refl]
       · have hh : hit = false := by cases hit <;> simp_all
         have hf : failed = false := by cases failed <;> simp_all
         subst hit
         subst failed
         simp only [beforeFailureSigningStepCharge, paidRemainingCoverageStepRefund, paidRemainingCoverageStepResidual,
           survivingLogPotential, Bool.false_or, Bool.false_eq_true, if_false]
-        apply stepWithFailure_sign_coverage_pairs_refund_le_reserved_add_residual exception parameter root otsTable ftsTable
-          cap budget hcapMax message frame state false hsigned hcache hcost
-        simpa only [OracleSpec.Range, OracleSpec.add_apply_inr, expandedAdversaryImpl, scheme] using hcap
+        have hsignCap : ∀ result ∈ support ((simulateQ romImpl (sign (secretKey parameter root otsTable ftsTable) message)).run state.1),
+            QueryCache.enncard result.2 ≤ cap := by
+          simpa only [OracleSpec.Range, OracleSpec.add_apply_inr, expandedAdversaryImpl, scheme] using hcap
+        by_cases hactive : ValidSigningStep state.2 (.inr message)
+        · rw [if_pos hactive]
+          exact stepWithFailure_sign_coverage_pairs_refund_le_reserved_add_residual exception parameter root otsTable ftsTable
+            cap budget hcapMax message frame state false hsigned hcache hcost hsignCap
+        · rw [if_neg hactive, add_zero]
+          apply le_trans (add_le_add (add_le_add
+            (stepWithFailure_sign_expect_surviving_le exception parameter root otsTable ftsTable message frame state false false
+              (fun current => remainingCoveragePotential (secretKey parameter root otsTable ftsTable) cap
+                (budget - signingExecutionHashCost (.inr message)) current ∅ Finset.univ * ((2 ^ 140 : Nat) : ENNReal)⁻¹)) le_rfl) le_rfl)
+          exact expected_surviving_sign_coverage_pairs_refund_le_reserved_of_inactive exception (secretKey parameter root otsTable ftsTable)
+            cap budget hcapMax message state false hactive hcache hcost hsignCap
 
 end SphincsSecurity.Concrete.FtsProbeSimulation.JointOriginal
