@@ -1,5 +1,5 @@
 import SphincsSecurity.Proof.SecurityNetParentFunding
-import SphincsSecurity.Proof.CoverageCompletionRetirement
+import SphincsSecurity.Proof.JointCoverageUnusedBound
 
 namespace SphincsSecurity.Concrete.FtsProbeSimulation.JointOriginal
 
@@ -127,5 +127,25 @@ theorem forgeAdvantage_add_netParentFunding_unusedSigningCompletion_le
     (sampled_remainingUnused_add_signingAfterPairs_add_completion_le_retiredNetRefund adversary q hq hqMax (q + 1))).trans
       (forgeAdvantage_add_netParentFunding_retiredNetCoverageRefund_le adversary q hq hqMax)
   convert h using 1 <;> first | rfl | ring
+
+theorem forgeAdvantage_add_doubleParentCredit_jointSigningCompletion_le
+    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 127) :
+    forgeAdvantage scheme adversary + sampledCollisionDoubleParentCredit adversary q (q + 1) +
+      sampledJointCollisionCoverageCredit adversary q (q + 1) + sampledJointCollisionCoverageCompletionCredit adversary q (q + 1) +
+      (sampledSelectedJointQueryCharge MessageHashInput adversary q + sampledBeforeFailureHashCharge messageHashCharge adversary q (q + 1) +
+        sampledSigningNonEncodingReserveAfterPairs adversary q (q + 1) + sampledOuterEncodingReserveAfterPairs adversary q (q + 1)) *
+          (Fintype.card Digest : ENNReal)⁻¹ ≤
+      (sampledBeforeFailureRestHashCharge adversary q (q + 1) + (q : ENNReal)) * (Fintype.card Digest : ENNReal)⁻¹ +
+        2 * ((q : ENNReal) / ((2 ^ 216 : Nat) : ENNReal)) + (q : ENNReal) * initialRawIndexRate q := by
+  have h := add_le_add_left
+    (sampled_jointCredit_add_signingAfterPairs_add_completion_le_retiredNetRefund_add_exhaustion adversary q hq hqMax (q + 1))
+    (forgeAdvantage scheme adversary + sampledCollisionDoubleParentCredit adversary q (q + 1) +
+      (sampledSelectedJointQueryCharge MessageHashInput adversary q + sampledBeforeFailureHashCharge messageHashCharge adversary q (q + 1) +
+        sampledOuterEncodingReserveAfterPairs adversary q (q + 1)) * (Fintype.card Digest : ENNReal)⁻¹)
+  have hbase := add_le_add (forgeAdvantage_add_doubleParentCredit_retiredNetCoverageRefund_le adversary q hq hqMax)
+    (le_refl ((q : ENNReal) * ((2 ^ 216 : Nat) : ENNReal)⁻¹))
+  have hcombined := h.trans (by simpa only [add_assoc, add_comm, add_left_comm, div_eq_mul_inv] using hbase)
+  simp only [div_eq_mul_inv] at hcombined ⊢
+  convert hcombined using 1 <;> first | rfl | ring
 
 end SphincsSecurity.Concrete.FtsProbeSimulation.JointOriginal
