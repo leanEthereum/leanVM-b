@@ -405,18 +405,17 @@ def FreshSuccessfulSignerView (initialCache : QueryCache HashSpec)
 
 set_option maxRecDepth 100000 in
 set_option linter.constructorNameAsVariable false in
-theorem probEvent_signWithView_freshSuccessful_le_uniform
+theorem probEvent_signWithView_freshSuccessful_le_freshSelected
     (secretKey : SecretKey) (message : Message) (initialCache : QueryCache HashSpec)
     (P : FewTimeView → Prop) :
     Pr[FreshSuccessfulSignerView initialCache secretKey message P |
       (simulateQ romImpl (signWithView secretKey message)).run initialCache] ≤
-      Pr[P | ($ᵗ FewTimeView : ProbComp FewTimeView)] := by
+      Pr[FreshSelectedView initialCache secretKey message P |
+        (simulateQ romImpl (signDigestLoop digestAttemptLimit secretKey message)).run
+          initialCache] := by
   rw [signWithView, simulateQ_bind, StateT.run_bind]
-  refine (probEvent_bind_le_probEvent
-    (p := FreshSelectedView initialCache secretKey message P) ?_).trans
-    (probEvent_signDigestLoop_freshSelectedView_le_uniform digestAttemptLimit
-      secretKey message initialCache initialCache P
-      (onlyRejectedNewMessageEntries_self initialCache secretKey message))
+  refine probEvent_bind_le_probEvent
+    (p := FreshSelectedView initialCache secretKey message P) ?_
   intro loopResult hloop hnotFresh
   cases hloopResult : loopResult.1 with
   | none =>
@@ -459,5 +458,17 @@ theorem probEvent_signWithView_freshSuccessful_le_uniform
         exact hmiss
       · rw [← hview]
         exact hP
+
+theorem probEvent_signWithView_freshSuccessful_le_uniform
+    (secretKey : SecretKey) (message : Message) (initialCache : QueryCache HashSpec)
+    (P : FewTimeView → Prop) :
+    Pr[FreshSuccessfulSignerView initialCache secretKey message P |
+      (simulateQ romImpl (signWithView secretKey message)).run initialCache] ≤
+      Pr[P | ($ᵗ FewTimeView : ProbComp FewTimeView)] :=
+  (probEvent_signWithView_freshSuccessful_le_freshSelected secretKey message
+    initialCache P).trans
+      (probEvent_signDigestLoop_freshSelectedView_le_uniform digestAttemptLimit
+        secretKey message initialCache initialCache P
+        (onlyRejectedNewMessageEntries_self initialCache secretKey message))
 
 end SphincsSecurity.Concrete
