@@ -1,5 +1,5 @@
 import SphincsSecurity.Proof.SecurityNetParentFunding
-import SphincsSecurity.Proof.SampledRetiredCoverageRefund
+import SphincsSecurity.Proof.CoverageCompletionRetirement
 
 namespace SphincsSecurity.Concrete.FtsProbeSimulation.JointOriginal
 
@@ -96,5 +96,36 @@ theorem forgeAdvantage_add_netParentFunding_retiredNetCoverageRefund_pairs_le
   convert mul_le_mul' (mul_le_mul' (le_refl (2 : ENNReal)) (sampledCrossParentReleaseCharge_le_pairs adversary q hq (q + 1)))
     (le_refl (Fintype.card Digest : ENNReal)⁻¹) using 1
   ring
+
+theorem forgeAdvantage_add_doubleParentCredit_unusedSigningCompletion_le
+    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 127) :
+    forgeAdvantage scheme adversary + sampledCollisionDoubleParentCredit adversary q (q + 1) +
+      sampledRemainingUnusedCoverageCharge adversary q (q + 1) +
+      sampledJointCollisionCoverageCompletionCredit adversary q (q + 1) +
+      (sampledSelectedJointQueryCharge MessageHashInput adversary q + sampledBeforeFailureHashCharge messageHashCharge adversary q (q + 1) +
+        sampledSigningNonEncodingReserveAfterPairs adversary q (q + 1) + sampledOuterEncodingReserveAfterPairs adversary q (q + 1)) *
+          (Fintype.card Digest : ENNReal)⁻¹ ≤
+      (sampledBeforeFailureRestHashCharge adversary q (q + 1) + (q : ENNReal)) * (Fintype.card Digest : ENNReal)⁻¹ +
+        (q : ENNReal) / ((2 ^ 216 : Nat) : ENNReal) + (q : ENNReal) * initialRawIndexRate q := by
+  have h := (add_le_add le_rfl
+    (sampled_remainingUnused_add_signingAfterPairs_add_completion_le_retiredNetRefund adversary q hq hqMax (q + 1))).trans
+      (forgeAdvantage_add_doubleParentCredit_retiredNetCoverageRefund_le adversary q hq hqMax)
+  convert h using 1 <;> first | rfl | ring
+
+theorem forgeAdvantage_add_netParentFunding_unusedSigningCompletion_le
+    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 127) :
+    forgeAdvantage scheme adversary + sampledNetParentFunding adversary q (q + 1) * (Fintype.card Digest : ENNReal)⁻¹ +
+      sampledRemainingUnusedCoverageCharge adversary q (q + 1) +
+      sampledJointCollisionCoverageCompletionCredit adversary q (q + 1) +
+      (sampledSelectedJointQueryCharge MessageHashInput adversary q + sampledBeforeFailureHashCharge messageHashCharge adversary q (q + 1) +
+        sampledSigningNonEncodingReserveAfterPairs adversary q (q + 1) + sampledOuterEncodingReserveAfterPairs adversary q (q + 1)) *
+          (Fintype.card Digest : ENNReal)⁻¹ ≤
+      (sampledBeforeFailureRestHashCharge adversary q (q + 1) + (q : ENNReal)) * (Fintype.card Digest : ENNReal)⁻¹ +
+        (q : ENNReal) / ((2 ^ 216 : Nat) : ENNReal) + (q : ENNReal) * initialRawIndexRate q +
+        2 * sampledCrossParentReleaseCharge adversary q (q + 1) * (Fintype.card Digest : ENNReal)⁻¹ := by
+  have h := (add_le_add le_rfl
+    (sampled_remainingUnused_add_signingAfterPairs_add_completion_le_retiredNetRefund adversary q hq hqMax (q + 1))).trans
+      (forgeAdvantage_add_netParentFunding_retiredNetCoverageRefund_le adversary q hq hqMax)
+  convert h using 1 <;> first | rfl | ring
 
 end SphincsSecurity.Concrete.FtsProbeSimulation.JointOriginal
