@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.RemainingCoveragePotential
+import SphincsSecurity.Proof.RemainingCoverageGap
 import SphincsSecurity.Proof.StoppedTargetCharge
 
 namespace SphincsSecurity.Concrete.FtsProbeSimulation.JointOriginal
@@ -14,10 +14,8 @@ noncomputable def expectedRemainingUnusedCoverageCharge
     (computation : OracleComp (OracleWorld + SigningSpec) α) : Nat → Option Frame → CoverLogState → Bool → Bool → ENNReal :=
   OracleComp.construct (fun _ _ _ _ _ _ => 0)
     (fun input _ next budget frame state hit failed =>
-      survivingLogPotential (fun current =>
-        cappedRemainingRawIndexEnvelope (secretKey parameter root otsTable ftsTable) cap budget current groups remaining *
-          (unusedTargetExecutionCost parameter current.1 input : ENNReal) *
-            (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹)) state hit failed +
+      survivingLogPotential (fun current => remainingUnusedCoverageStepCharge
+        (secretKey parameter root otsTable ftsTable) cap budget current input groups remaining) state hit failed +
         ∑' result, Pr[= result | stepWithFailure exception parameter root otsTable ftsTable input frame state.1 hit failed] *
           next result.1.2.1.1 (budget - signingExecutionHashCost input) result.1.1
             (stepSigningLogState input state.2 result) result.1.2.2 result.2) computation
@@ -39,10 +37,8 @@ theorem expectedRemainingUnusedCoverageCharge_query_bind
     (budget : Nat) (frame : Option Frame) (state : CoverLogState) (hit failed : Bool) :
     expectedRemainingUnusedCoverageCharge exception parameter root otsTable ftsTable cap groups remaining
         (OracleSpec.query input >>= next) budget frame state hit failed =
-      survivingLogPotential (fun current =>
-        cappedRemainingRawIndexEnvelope (secretKey parameter root otsTable ftsTable) cap budget current groups remaining *
-          (unusedTargetExecutionCost parameter current.1 input : ENNReal) *
-            (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹)) state hit failed +
+      survivingLogPotential (fun current => remainingUnusedCoverageStepCharge
+        (secretKey parameter root otsTable ftsTable) cap budget current input groups remaining) state hit failed +
         ∑' result, Pr[= result | stepWithFailure exception parameter root otsTable ftsTable input frame state.1 hit failed] *
           expectedRemainingUnusedCoverageCharge exception parameter root otsTable ftsTable cap groups remaining
             (next result.1.2.1.1) (budget - signingExecutionHashCost input) result.1.1
@@ -60,10 +56,8 @@ theorem stepWithFailure_remainingCoverage_add_unused_le
       survivingLogPotential (fun current => remainingCoveragePotential (secretKey parameter root otsTable ftsTable)
         cap (budget - signingExecutionHashCost input) current groups remaining)
           (stepSigningLogState input state.2 result) result.1.2.2 result.2) +
-      survivingLogPotential (fun current =>
-        cappedRemainingRawIndexEnvelope (secretKey parameter root otsTable ftsTable) cap budget current groups remaining *
-          (unusedTargetExecutionCost parameter current.1 input : ENNReal) *
-            (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹)) state hit failed ≤
+      survivingLogPotential (fun current => remainingUnusedCoverageStepCharge
+        (secretKey parameter root otsTable ftsTable) cap budget current input groups remaining) state hit failed ≤
       survivingLogPotential (fun current => remainingCoveragePotential (secretKey parameter root otsTable ftsTable)
         cap budget current groups remaining) state hit failed := by
   have hstep := stepWithFailure_expect_surviving_le exception parameter root otsTable ftsTable input frame state hit failed
@@ -73,7 +67,7 @@ theorem stepWithFailure_remainingCoverage_add_unused_le
   unfold survivingLogPotential
   split_ifs
   · simp only [zero_add, le_refl]
-  · exact expected_logTraced_remainingCoverage_add_unused_le (secretKey parameter root otsTable ftsTable)
+  · exact expected_logTraced_remainingCoverage_add_stepCharge_le (secretKey parameter root otsTable ftsTable)
       cap budget hcap state hsigned hcache input hcost groups remaining hvalid
 
 theorem expected_runWithFailure_remainingTarget_add_unused_le
