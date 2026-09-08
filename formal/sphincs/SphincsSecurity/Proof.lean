@@ -778,6 +778,8 @@ import SphincsSecurity.Proof.SecurityParentReserveConservation
 import SphincsSecurity.Proof.SecurityParentRefundAllocation
 import SphincsSecurity.Proof.SecurityDoubleSharedRefundAllocation
 import SphincsSecurity.Proof.DirectParentReleaseBudget
+import SphincsSecurity.Proof.AdaptiveRemainingRawIndex
+import SphincsSecurity.Proof.SecurityRemainingCoverage
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 

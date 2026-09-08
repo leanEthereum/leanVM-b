@@ -1,0 +1,151 @@
+import SphincsSecurity.Proof.RemainingTargetEnvelope
+
+namespace SphincsSecurity.Concrete
+
+open _root_.OracleComp OracleSpec ENNReal
+open FtsProbeSimulation (MessageHashInput)
+attribute [local instance] Classical.propDecidable
+set_option backward.isDefEq.respectTransparency false
+
+noncomputable def remainingCachedTargetEnvelope (key : SecretKey) (cap budget signatures : Nat) (state : CoverLogState)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) : ENNReal :=
+  cacheMessageWeight key.parameter (fun input target => remainingTargetEnvelope key cap budget (payloadOf input) target signatures state groups remaining) state.1
+
+noncomputable abbrev remainingNewTargetEnvelope (key : SecretKey) (cap budget signatures : Nat)
+    (before : QueryCache HashSpec) (after : CoverLogState) (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) : ENNReal :=
+  newTargetEnvelopeCharge key before after.1 after.2 (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight cap)
+    (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) budget signatures groups remaining
+
+theorem remainingCachedTargetEnvelope_split (key : SecretKey) (cap budget signatures : Nat)
+    (before : QueryCache HashSpec) (after : CoverLogState) (hle : before ≤ after.1)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) :
+    remainingCachedTargetEnvelope key cap budget signatures after groups remaining =
+      cacheMessageWeight key.parameter (fun input target => remainingTargetEnvelope key cap budget (payloadOf input) target signatures after groups remaining) before +
+        remainingNewTargetEnvelope key cap budget signatures before after groups remaining :=
+  cacheMessageWeight_of_le key.parameter _ before after.1 hle
+
+theorem remainingCachedTargetEnvelope_budget_mono (key : SecretKey) (cap signatures : Nat) (state : CoverLogState)
+    {smaller larger : Nat} (hbudget : smaller ≤ larger)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    remainingCachedTargetEnvelope key cap smaller signatures state groups remaining ≤
+      remainingCachedTargetEnvelope key cap larger signatures state groups remaining := by
+  apply cacheMessageWeight_mono
+  intro input target
+  exact remainingTargetEnvelope_budget_mono key cap (payloadOf input) target signatures state hbudget groups remaining hvalid
+
+theorem expected_randomOracle_remainingNewTarget_le (key : SecretKey) (cap budget signatures : Nat)
+    (state : CoverLogState) (input : HashInput) (hsigned : SigningDigestsCached key.parameter state.1 key.root state.2)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    (∑' result, Pr[= result | (randomOracle input).run state.1] *
+      remainingNewTargetEnvelope key cap budget signatures state.1 (result.2, state.2) groups remaining) ≤
+      (freshWorldTargetHashCost key.parameter state.1 (.inr input) : ENNReal) *
+        ((((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) *
+          remainingRawIndexEnvelope key cap budget signatures state groups remaining) := by
+  by_cases hfresh : state.1 input = none
+  · rw [randomOracle, QueryImpl.withCaching_run_none _ hfresh, tsum_probOutput_map_mul]
+    change (∑' output : HashOutput, Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
+      remainingNewTargetEnvelope key cap budget signatures state.1 (state.1.cacheQuery input output, state.2) groups remaining) ≤ _
+    simp only [remainingNewTargetEnvelope, newTargetEnvelopeCharge_cacheQuery key state.1 state.2 _ _ _ _ _ groups remaining input _ hfresh]
+    by_cases hmessage : MessageHashInput key.parameter input
+    · obtain ⟨payload, rfl⟩ := hmessage
+      simp only [show MessageHashInput key.parameter (tweakableHashInput key.parameter .message payload) from ⟨payload, rfl⟩,
+        true_and, payloadOf_tweakableHashInput, freshWorldTargetHashCost, hfresh, and_self, if_true, Nat.cast_one, one_mul]
+      rw [expected_cacheQuery_freshTargetEnvelope key state.1 state.2 payload hfresh hsigned _ _ _ _ _ groups remaining hvalid]
+      unfold remainingRawIndexEnvelope observedRawIndexShapeVector
+      rw [targetShapeEnvelope_lift _ _ _ _ _ _ groups remaining hvalid]
+    · simp only [hmessage, false_and, if_false, mul_zero, tsum_zero, zero_le]
+  · obtain ⟨output, ho⟩ := Option.ne_none_iff_exists'.mp hfresh
+    rw [randomOracle, QueryImpl.withCaching_run_some _ ho, tsum_probOutput_pure_mul]
+    rw [remainingNewTargetEnvelope, newTargetEnvelopeCharge, cacheMessageWeight_fresh_restriction]
+    exact zero_le
+
+theorem expected_logTraced_world_remainingNewTarget_le (key : SecretKey) (cap budget signatures : Nat)
+    (state : CoverLogState) (input : OracleWorld.Domain) (hsigned : SigningDigestsCached key.parameter state.1 key.root state.2)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    (∑' result, Pr[= result | (logTracedMappedAdversaryImpl key (.inl input)).run state] *
+      remainingNewTargetEnvelope key cap budget signatures state.1 result.2 groups remaining) ≤
+      (freshWorldTargetHashCost key.parameter state.1 input : ENNReal) *
+        ((((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) *
+          remainingRawIndexEnvelope key cap budget signatures state groups remaining) := by
+  rw [logTracedMappedAdversaryImpl_run_map, tsum_probOutput_map_mul]
+  simp only [signingLogFragment, List.append_nil]
+  cases input with
+  | inr input => exact expected_randomOracle_remainingNewTarget_le key cap budget signatures state input hsigned groups remaining hvalid
+  | inl sample =>
+      have hrun : (unifFwdImpl HashSpec sample).run state.1 =
+          (fun output => (output, state.1)) <$> (liftM (unifSpec.query sample) : ProbComp (unifSpec.Range sample)) := by
+        simpa [simulateQ_query] using (unifFwdImpl.simulateQ_run
+          (hashSpec := HashSpec) (liftM (unifSpec.query sample) : ProbComp (unifSpec.Range sample)) state.1)
+      change (∑' result, Pr[= result | (unifFwdImpl HashSpec sample).run state.1] *
+        remainingNewTargetEnvelope key cap budget signatures state.1 (result.2, state.2) groups remaining) ≤ _
+      rw [hrun, tsum_probOutput_map_mul]
+      simp only [remainingNewTargetEnvelope, newTargetEnvelopeCharge, cacheMessageWeight_fresh_restriction, mul_zero, tsum_zero, zero_le]
+
+theorem expected_logTraced_world_remainingCachedTarget_le (key : SecretKey) (cap budget signatures : Nat)
+    (state : CoverLogState) (input : OracleWorld.Domain) (hsigned : SigningDigestsCached key.parameter state.1 key.root state.2)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    (∑' result, Pr[= result | (logTracedMappedAdversaryImpl key (.inl input)).run state] *
+      remainingCachedTargetEnvelope key cap budget signatures result.2 groups remaining) ≤
+      remainingCachedTargetEnvelope key cap (budget + signingExecutionHashCost (.inl input)) signatures state groups remaining +
+        (freshWorldTargetHashCost key.parameter state.1 input : ENNReal) *
+          ((((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) *
+            remainingRawIndexEnvelope key cap budget signatures state groups remaining) := by
+  have hold : (∑' result, Pr[= result | (logTracedMappedAdversaryImpl key (.inl input)).run state] *
+      cacheMessageWeight key.parameter (fun query target => remainingTargetEnvelope key cap budget (payloadOf query) target signatures result.2 groups remaining) state.1) ≤
+      remainingCachedTargetEnvelope key cap (budget + signingExecutionHashCost (.inl input)) signatures state groups remaining := by
+    rw [expected_cacheMessageWeight]
+    apply cacheMessageWeight_mono
+    intro query target
+    exact expected_logTraced_world_remainingTarget_le key cap budget (payloadOf query) target signatures state input hsigned groups remaining hvalid
+  apply le_trans ?_ (add_le_add hold (expected_logTraced_world_remainingNewTarget_le key cap budget signatures state input hsigned groups remaining hvalid))
+  rw [← ENNReal.tsum_add]
+  apply ENNReal.tsum_le_tsum
+  intro result
+  by_cases hr : result ∈ support ((logTracedMappedAdversaryImpl key (.inl input)).run state)
+  · rw [remainingCachedTargetEnvelope_split key cap budget signatures state.1 result.2
+      (logTracedMappedAdversaryImpl_cache_le key (.inl input) state result hr), mul_add]
+  · rw [probOutput_eq_zero_of_not_mem_support hr, zero_mul, zero_mul, zero_mul, add_zero]
+
+theorem expected_logTraced_sign_remainingNewTarget_le (key : SecretKey) (cap budget signatures : Nat)
+    (state : CoverLogState) (hsigned : SigningDigestsCached key.parameter state.1 key.root state.2) (message : Message)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    (∑' result, Pr[= result | (logTracedMappedAdversaryImpl key (.inr message)).run state] *
+      remainingNewTargetEnvelope key cap budget signatures state.1 result.2 groups remaining) ≤
+      (Fintype.card Index : ENNReal)⁻¹ * remainingRawIndexEnvelope key cap budget signatures state groups remaining := by
+  rw [logTracedMappedAdversaryImpl_run_map, tsum_probOutput_map_mul]
+  have hrun : (unloggedMappedAdversaryImpl key (.inr message)).run state.1 =
+      (fun result => (result.1.1, result.2)) <$> (simulateQ romImpl (signWithView key message)).run state.1 :=
+    (simulateQ_signWithView_fst_run key message state.1).symm
+  rw [hrun, tsum_probOutput_map_mul]
+  have h := expected_signWithView_newTargetEnvelopeCharge_le key message state.1 state.2 hsigned
+    (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight cap)
+    (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) budget signatures groups remaining hvalid
+  apply h.trans_eq
+  unfold remainingRawIndexEnvelope observedRawIndexShapeVector
+  rw [targetShapeEnvelope_lift _ _ _ _ _ _ groups remaining hvalid]
+
+theorem expected_logTraced_sign_remainingCachedTarget_le (key : SecretKey) (cap budget signatures : Nat) (hcap : cap ≤ 2 ^ 127)
+    (state : CoverLogState) (hsigned : SigningDigestsCached key.parameter state.1 key.root state.2)
+    (hcache : QueryCache.enncard state.1 ≤ cap) (message : Message)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    (∑' result, Pr[= result | (logTracedMappedAdversaryImpl key (.inr message)).run state] *
+      remainingCachedTargetEnvelope key cap budget signatures result.2 groups remaining) ≤
+      remainingCachedTargetEnvelope key cap budget (signatures + 1) state groups remaining +
+        (Fintype.card Index : ENNReal)⁻¹ * remainingRawIndexEnvelope key cap budget signatures state groups remaining := by
+  have hold : (∑' result, Pr[= result | (logTracedMappedAdversaryImpl key (.inr message)).run state] *
+      cacheMessageWeight key.parameter (fun query target => remainingTargetEnvelope key cap budget (payloadOf query) target signatures result.2 groups remaining) state.1) ≤
+      remainingCachedTargetEnvelope key cap budget (signatures + 1) state groups remaining := by
+    rw [expected_cacheMessageWeight]
+    apply cacheMessageWeight_mono
+    intro query target
+    exact expected_logTraced_sign_remainingTarget_le key cap budget (payloadOf query) target signatures hcap state hsigned hcache message groups remaining hvalid
+  apply le_trans ?_ (add_le_add hold (expected_logTraced_sign_remainingNewTarget_le key cap budget signatures state hsigned message groups remaining hvalid))
+  rw [← ENNReal.tsum_add]
+  apply ENNReal.tsum_le_tsum
+  intro result
+  by_cases hr : result ∈ support ((logTracedMappedAdversaryImpl key (.inr message)).run state)
+  · rw [remainingCachedTargetEnvelope_split key cap budget signatures state.1 result.2
+      (logTracedMappedAdversaryImpl_cache_le key (.inr message) state result hr), mul_add]
+  · rw [probOutput_eq_zero_of_not_mem_support hr, zero_mul, zero_mul, zero_mul, add_zero]
+
+end SphincsSecurity.Concrete
