@@ -8,7 +8,7 @@ open ENNReal
 set_option backward.isDefEq.respectTransparency false
 
 def signingOrderCoefficientRow (steps : Nat) : Nat :=
-  ∑ degree ∈ Finset.range 15, steps.choose degree * 33296 ^ degree * coverageFactorialCoefficient degree * degree.factorial
+  ∑ degree ∈ Finset.range 15, steps.choose degree * 32784 ^ degree * coverageFactorialCoefficient degree * degree.factorial
 
 theorem coverageFactorialCoefficient_of_ge (degree : Nat) (hdegree : 15 ≤ degree) : coverageFactorialCoefficient degree = 0 := by
   apply List.getD_eq_default
@@ -27,7 +27,7 @@ theorem signingOrderMajorant_initial_eq_row (steps : Nat) :
   rw [signingOrderMajorant_iterate_eq_binomial]
   simp only [Nat.zero_add]
   have htrunc := mixedBinomial_sum_truncate
-    (fun degree => (33296 : ENNReal) ^ degree * ((1025 / 1024 : ENNReal) * initialMixedDerivativeVector 0 degree)) steps 14
+    (fun degree => (32784 : ENNReal) ^ degree * ((1025 / 1024 : ENNReal) * initialMixedDerivativeVector 0 degree)) steps 14
     (fun degree hdegree => by rw [initialMixedDerivativeVector_order_zero 0 degree (by omega), mul_zero, mul_zero])
   simp only [mul_assoc]
   rw [htrunc]
@@ -98,5 +98,14 @@ theorem signingFactorialEnvelope_le : signingFactorialEnvelope ≤ (29 : ENNReal
   have hden : signingOrderCommonDenominator ≠ 0 := by unfold signingOrderCommonDenominator; positivity
   apply (ENNReal.div_le_iff (by exact_mod_cast hden) (ENNReal.natCast_ne_top _)).mpr
   exact_mod_cast signingOrder_arithmetic_certificate
+
+theorem signingOrder_arithmetic_certificate_sharp : signingOrderCommonNumerator ≤ 27 * 2 ^ 43 * signingOrderCommonDenominator := by
+  decide
+
+theorem signingFactorialEnvelope_le_sharp : signingFactorialEnvelope ≤ (27 : ENNReal) * 2 ^ 43 := by
+  rw [signingFactorialEnvelope_eq_common_fraction]
+  have hden : signingOrderCommonDenominator ≠ 0 := by unfold signingOrderCommonDenominator; positivity
+  apply (ENNReal.div_le_iff (by exact_mod_cast hden) (ENNReal.natCast_ne_top _)).mpr
+  exact_mod_cast signingOrder_arithmetic_certificate_sharp
 
 end SphincsSecurity.Concrete

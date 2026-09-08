@@ -12,7 +12,9 @@ noncomputable def expectedRemainingUnusedCoverageCharge
     (parameter : PublicParameter) (root : Digest) (otsTable : OtsSecretIndex → HashOutput) (ftsTable : Coordinate → Digest)
     (cap : Nat) (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree)
     (computation : OracleComp (OracleWorld + SigningSpec) α) : Nat → Option Frame → CoverLogState → Bool → Bool → ENNReal :=
-  OracleComp.construct (fun _ _ _ _ _ _ => 0)
+  OracleComp.construct (fun _ budget _ state hit failed =>
+    survivingLogPotential (fun current => remainingCoverageTerminalReserve
+      (secretKey parameter root otsTable ftsTable) cap budget current groups remaining) state hit failed)
     (fun input _ next budget frame state hit failed =>
       survivingLogPotential (fun current => remainingUnusedCoverageStepCharge
         (secretKey parameter root otsTable ftsTable) cap budget current input groups remaining) state hit failed +
@@ -26,7 +28,9 @@ noncomputable def expectedRemainingUnusedCoverageCharge
     (cap : Nat) (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree)
     (value : α) (budget : Nat) (frame : Option Frame) (state : CoverLogState) (hit failed : Bool) :
     expectedRemainingUnusedCoverageCharge exception parameter root otsTable ftsTable cap groups remaining
-      (pure value) budget frame state hit failed = 0 := rfl
+      (pure value) budget frame state hit failed =
+      survivingLogPotential (fun current => remainingCoverageTerminalReserve
+        (secretKey parameter root otsTable ftsTable) cap budget current groups remaining) state hit failed := rfl
 
 theorem expectedRemainingUnusedCoverageCharge_query_bind
     (exception : QueryCache HashSpec → HashInput → HashOutput → Prop)
@@ -92,16 +96,11 @@ theorem expected_runWithFailure_remainingTarget_add_unused_le
   induction computation using OracleComp.inductionOn generalizing budget frame state hit failed with
   | pure value =>
       simp only [withSigningLog_pure, runWithFailure_pure, tsum_probOutput_pure_mul,
-        expectedRemainingUnusedCoverageCharge_pure, add_zero, Prod.mk.eta]
+        expectedRemainingUnusedCoverageCharge_pure, Prod.mk.eta]
       unfold survivingLogPotential
       split_ifs
-      · exact le_rfl
-      · change cappedRemainingCachedTargetEnvelope key cap 0 state groups remaining ≤ remainingCoveragePotential key cap budget state groups remaining
-        apply le_trans (b := cappedRemainingCachedTargetEnvelope key cap budget state groups remaining) ?_ le_self_add
-        simp only [cappedRemainingCachedTargetEnvelope]
-        split_ifs
-        · exact remainingCachedTargetEnvelope_budget_mono key cap _ state (Nat.zero_le budget) groups remaining hvalid
-        · exact le_rfl
+      · simp only [zero_add, le_refl]
+      · exact le_of_eq (remainingTarget_add_terminalReserve key cap budget state groups remaining hvalid)
   | query_bind input next ih =>
       have htail := simulateQ_logTraced_tail_cache_bound key cap input next state hcache
       have hbefore := simulateQ_logTraced_initial_cache_bound key cap (OracleSpec.query input >>= next) state hcache

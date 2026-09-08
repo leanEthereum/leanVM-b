@@ -6,7 +6,7 @@ open ENNReal
 set_option backward.isDefEq.respectTransparency false
 
 noncomputable def signingOrderMajorant (weight : Nat → ENNReal) (order : Nat) : ENNReal :=
-  (1 / 65536 : ENNReal) * weight order + (2081 / 4096 : ENNReal) * weight (order + 1)
+  (1 / 65536 : ENNReal) * weight order + (2049 / 4096 : ENNReal) * weight (order + 1)
 
 def MixedOrderDominated (moments : MixedMomentVector) (weight : Nat → ENNReal) : Prop :=
   (∀ power order, 15 ≤ order → moments power order = 0) ∧
@@ -72,24 +72,24 @@ theorem mixedSigningIncrement_dominated (q : Nat) (hq : q ≤ 2 ^ 127) (moments 
   refine ⟨fun p o ho => mixedSigningIncrement_order_zero _ _ moments h.1 p o ho, ?_⟩
   intro power order hpo ho
   have hp : power ≤ 14 := by omega
-  have hre : (signatureLimit : ENNReal) * digestReuseWeight q * (2 : ENNReal) ^ 91 ≤ (33 : ENNReal) / 128 := by
-    apply (mul_le_mul' (mul_le_mul' le_rfl (digestReuseWeight_le_coarse127 q hq)) le_rfl).trans
+  have hre : (signatureLimit : ENNReal) * digestReuseWeight q * (2 : ENNReal) ^ 91 ≤ (2049 : ENNReal) / 8192 := by
+    apply (mul_le_mul' (mul_le_mul' le_rfl (digestReuseWeight_le_precise127 q hq)) le_rfl).trans
     apply (ENNReal.toReal_le_toReal (by finiteness) (by finiteness)).mp
     norm_num [ENNReal.toReal_mul, ENNReal.toReal_div, signatureLimit]
   have hreuse : (signatureLimit : ENNReal) * digestReuseWeight q * moments (power + 1) (order + 1) ≤
-      ((2 : ENNReal) ^ 91) ^ power * ((33 / 128 : ENNReal) * weight (order + 1)) := by
+      ((2 : ENNReal) ^ 91) ^ power * ((2049 / 8192 : ENNReal) * weight (order + 1)) := by
     apply (mul_le_mul_right (h.bound (power + 1) (order + 1) (by omega)) _).trans
     rw [pow_succ']
     calc
       _ = ((signatureLimit : ENNReal) * digestReuseWeight q * (2 : ENNReal) ^ 91) *
           (((2 : ENNReal) ^ 91) ^ power * weight (order + 1)) := by ring
-      _ ≤ (33 / 128 : ENNReal) * (((2 : ENNReal) ^ 91) ^ power * weight (order + 1)) := mul_le_mul_left hre _
+      _ ≤ (2049 / 8192 : ENNReal) * (((2 : ENNReal) ^ 91) ^ power * weight (order + 1)) := mul_le_mul_left hre _
       _ = _ := by ring
   have hmain : (1 / 4 : ENNReal) * moments power (order + 1) ≤
       ((2 : ENNReal) ^ 91) ^ power * ((1 / 4 : ENNReal) * weight (order + 1)) := by
     apply (mul_le_mul_right (h.bound power (order + 1) (by omega)) _).trans_eq
     ring
-  have hcoeff : (1 / 4 : ENNReal) + 1 / 65536 + 33 / 128 ≤ 2081 / 4096 := by
+  have hcoeff : (1 / 4 : ENNReal) + 1 / 65536 + 2049 / 8192 ≤ 2049 / 4096 := by
     apply (ENNReal.toReal_le_toReal (by finiteness) (by finiteness)).mp
     rw [ENNReal.toReal_add (by finiteness) (by finiteness), ENNReal.toReal_add (by finiteness) (by finiteness)]
     norm_num [ENNReal.toReal_div]
@@ -99,7 +99,7 @@ theorem mixedSigningIncrement_dominated (q : Nat) (hq : q ≤ 2 ^ 127) (moments 
     (mixedPowerLower_quarter_le moments weight h power (order + 1) hp (by omega))) hreuse).trans
   calc
     _ = ((2 : ENNReal) ^ 91) ^ power * ((1 / 65536 : ENNReal) * weight order +
-        ((1 / 4 : ENNReal) + 1 / 65536 + 33 / 128) * weight (order + 1)) := by ring
+        ((1 / 4 : ENNReal) + 1 / 65536 + 2049 / 8192) * weight (order + 1)) := by ring
     _ ≤ _ := mul_le_mul_right (add_le_add le_rfl (mul_le_mul_left hcoeff _)) _
 
 theorem mixedSigningIncrement_iterate_dominated (q : Nat) (hq : q ≤ 2 ^ 127) (moments : MixedMomentVector)

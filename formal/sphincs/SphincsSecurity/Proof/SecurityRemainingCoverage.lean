@@ -60,4 +60,24 @@ theorem forgeAdvantage_add_doubleParentCredit_remainingCoverage_le_collisionEnve
   rw [add_assoc]
   exact add_le_add le_rfl (sampledLiveNonSecretResidual_add_remainingUnused_le_initial adversary q hq hqMax (q + 1))
 
+theorem sampledLiveNonSecretResidual_add_remainingUnused_le_sharp
+    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 127) (fuel : Nat) :
+    sampledLiveNonSecretResidual adversary q fuel + sampledRemainingUnusedCoverageCharge adversary q fuel ≤
+      (q : ENNReal) * ((27 / 64 : ENNReal) * ((2 ^ 127 : Nat) : ENNReal)⁻¹) :=
+  (sampledLiveNonSecretResidual_add_remainingUnused_le_initial adversary q hq hqMax fuel).trans
+    (mul_le_mul' le_rfl (initialRawIndexRate_le_127_sharp q hqMax))
+
+theorem forgeAdvantage_add_doubleParentCredit_remainingCoverage_le_sharpCollisionEnvelope
+    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 127) :
+    forgeAdvantage scheme adversary + sampledCollisionDoubleParentCredit adversary q (q + 1) +
+      (sampledSelectedJointQueryCharge MessageHashInput adversary q + sampledBeforeFailureHashCharge messageHashCharge adversary q (q + 1) +
+        sampledSigningNonEncodingReserve adversary q (q + 1) + sampledOuterEncodingReserve adversary q (q + 1)) * (Fintype.card Digest : ENNReal)⁻¹ +
+      sampledRemainingUnusedCoverageCharge adversary q (q + 1) ≤
+      (sampledBeforeFailureRestHashCharge adversary q (q + 1) + (q : ENNReal)) * (Fintype.card Digest : ENNReal)⁻¹ +
+      (q : ENNReal) / ((2 ^ 216 : Nat) : ENNReal) +
+      sampledBeforeFailureEncodingPairCharge adversary q (q + 1) * (Fintype.card Digest : ENNReal)⁻¹ +
+      (q : ENNReal) * ((27 / 64 : ENNReal) * ((2 ^ 127 : Nat) : ENNReal)⁻¹) :=
+  (forgeAdvantage_add_doubleParentCredit_remainingCoverage_le_collisionEnvelope adversary q hq hqMax).trans
+    (add_le_add le_rfl (mul_le_mul' le_rfl (initialRawIndexRate_le_127_sharp q hqMax)))
+
 end SphincsSecurity.Concrete.FtsProbeSimulation.JointOriginal

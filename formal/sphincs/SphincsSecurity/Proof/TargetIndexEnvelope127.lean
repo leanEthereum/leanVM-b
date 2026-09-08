@@ -32,6 +32,14 @@ theorem initialRawIndexRate_le_127 (q : Nat) (hq : q ≤ 2 ^ 127) :
   apply (ENNReal.toReal_eq_toReal_iff' hl hr).mp
   norm_num [ENNReal.toReal_mul, ENNReal.toReal_inv, ENNReal.toReal_div]
 
+theorem initialRawIndexRate_le_127_sharp (q : Nat) (hq : q ≤ 2 ^ 127) :
+    initialRawIndexRate q ≤ (27 / 64 : ENNReal) * ((2 ^ 127 : Nat) : ENNReal)⁻¹ := by
+  apply (mul_le_mul' (finiteInitialMixedEnvelope_le_127_sharp q hq) le_rfl).trans_eq
+  have hl : (27 : ENNReal) * 2 ^ 43 * ((2 ^ 176 : Nat) : ENNReal)⁻¹ ≠ ∞ := by finiteness
+  have hr : (27 / 64 : ENNReal) * ((2 ^ 127 : Nat) : ENNReal)⁻¹ ≠ ∞ := by finiteness
+  apply (ENNReal.toReal_eq_toReal_iff' hl hr).mp
+  norm_num [ENNReal.toReal_mul, ENNReal.toReal_inv, ENNReal.toReal_div]
+
 theorem cappedRawIndexCacheEnvelope_initial_scaled (key : SecretKey) (q : Nat) (cache : QueryCache HashSpec)
     (hnone : ∀ input, FtsProbeSimulation.MessageHashInput key.parameter input → cache input = none) :
     cappedRawIndexCacheEnvelope key q (cache, []) ∅ Finset.univ * ((2 ^ 176 : Nat) : ENNReal)⁻¹ = initialRawIndexRate q := by

@@ -10,6 +10,10 @@ theorem finiteInitialMixedEnvelope_le_127 (q : Nat) (hq : q ≤ 2 ^ 127) :
     finiteInitialMixedEnvelope q ≤ (29 : ENNReal) * 2 ^ 43 :=
   (finiteInitialMixedEnvelope_le_signingFactorial q hq).trans signingFactorialEnvelope_le
 
+theorem finiteInitialMixedEnvelope_le_127_sharp (q : Nat) (hq : q ≤ 2 ^ 127) :
+    finiteInitialMixedEnvelope q ≤ (27 : ENNReal) * 2 ^ 43 :=
+  (finiteInitialMixedEnvelope_le_signingFactorial q hq).trans signingFactorialEnvelope_le_sharp
+
 theorem expected_adaptive_validOccupancy_le_127 {α : Type} (key : SecretKey) (q : Nat) (hq : q ≤ 2 ^ 127)
     (computation : OracleComp (OracleWorld + SigningSpec) α) (cache : QueryCache HashSpec)
     (hnone : ∀ input, MessageHashInput key.parameter input → cache input = none)

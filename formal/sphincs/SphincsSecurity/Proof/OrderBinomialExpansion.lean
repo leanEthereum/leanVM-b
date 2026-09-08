@@ -46,8 +46,8 @@ theorem orderNumeratorStep_mul (factor scalar : ENNReal) (weight : Nat → ENNRe
   ring
 
 theorem signingOrderMajorant_eq_div (weight : Nat → ENNReal) :
-    signingOrderMajorant weight = fun o => (65536 : ENNReal)⁻¹ * orderNumeratorStep 33296 weight o := by
-  have hgamma : (2081 / 4096 : ENNReal) = (65536 : ENNReal)⁻¹ * 33296 := by
+    signingOrderMajorant weight = fun o => (65536 : ENNReal)⁻¹ * orderNumeratorStep 32784 weight o := by
+  have hgamma : (2049 / 4096 : ENNReal) = (65536 : ENNReal)⁻¹ * 32784 := by
     apply (ENNReal.toReal_eq_toReal_iff' (by finiteness) (by finiteness)).mp
     norm_num [ENNReal.toReal_div, ENNReal.toReal_inv, ENNReal.toReal_mul]
   funext order
@@ -55,7 +55,7 @@ theorem signingOrderMajorant_eq_div (weight : Nat → ENNReal) :
   ring
 
 theorem signingOrderMajorant_iterate_eq_div (weight : Nat → ENNReal) (steps : Nat) :
-    signingOrderMajorant^[steps] weight = fun o => (65536 : ENNReal)⁻¹ ^ steps * (orderNumeratorStep 33296)^[steps] weight o := by
+    signingOrderMajorant^[steps] weight = fun o => (65536 : ENNReal)⁻¹ ^ steps * (orderNumeratorStep 32784)^[steps] weight o := by
   induction steps with
   | zero => funext o; simp only [Function.iterate_zero, id_eq, pow_zero, one_mul]
   | succ steps ih =>
@@ -66,7 +66,7 @@ theorem signingOrderMajorant_iterate_eq_div (weight : Nat → ENNReal) (steps : 
 
 theorem signingOrderMajorant_iterate_eq_binomial (weight : Nat → ENNReal) (steps order : Nat) :
     signingOrderMajorant^[steps] weight order =
-      (∑ degree ∈ Finset.range (steps + 1), (steps.choose degree : ENNReal) * (33296 : ENNReal) ^ degree * weight (order + degree)) /
+      (∑ degree ∈ Finset.range (steps + 1), (steps.choose degree : ENNReal) * (32784 : ENNReal) ^ degree * weight (order + degree)) /
         (65536 : ENNReal) ^ steps := by
   rw [signingOrderMajorant_iterate_eq_div]
   dsimp only

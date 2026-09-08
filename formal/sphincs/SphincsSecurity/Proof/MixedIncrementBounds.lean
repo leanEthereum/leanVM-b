@@ -59,4 +59,14 @@ theorem digestReuseWeight_le_coarse127 (q : Nat) (hq : q ≤ 2 ^ 127) : digestRe
     norm_num) (by finiteness)]
   norm_num [ENNReal.toReal_mul, ENNReal.toReal_inv]
 
+theorem digestReuseWeight_le_precise127 (q : Nat) (hq : q ≤ 2 ^ 127) : digestReuseWeight q ≤ (2049 : ENNReal) / 2 ^ 128 := by
+  apply (digestReuseWeight_mono hq).trans
+  apply (ENNReal.toReal_le_toReal (digestReuseWeight_ne_top (2 ^ 127) le_rfl) (by finiteness)).mp
+  norm_num [digestReuseWeight, ENNReal.toReal_div, ENNReal.toReal_inv, ENNReal.toReal_mul,
+    randomnessBits, digestAttemptLimit, ftsTreeHeight]
+  rw [ENNReal.toReal_sub_of_le (by
+    rw [ENNReal.mul_inv_le_iff (by norm_num) (by finiteness)]
+    norm_num) (by finiteness)]
+  norm_num [ENNReal.toReal_mul, ENNReal.toReal_inv]
+
 end SphincsSecurity.Concrete
