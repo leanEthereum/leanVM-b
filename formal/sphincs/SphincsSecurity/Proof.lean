@@ -781,6 +781,7 @@ import SphincsSecurity.Proof.DirectParentReleaseBudget
 import SphincsSecurity.Proof.AdaptiveRemainingRawIndex
 import SphincsSecurity.Proof.SecurityRemainingCoverage
 import SphincsSecurity.Proof.CoverageStopHazard
+import SphincsSecurity.Proof.SecurityJointCollisionCoverage
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
