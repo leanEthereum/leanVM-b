@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.JointDigestSelectionGap
+import SphincsSecurity.Proof.MessageAdmissibleDeficit
 import SphincsSecurity.Proof.SampledSigningEnvelopeGap
 
 namespace SphincsSecurity.Concrete
@@ -129,7 +129,7 @@ noncomputable def rawIndexNormalizedSelectionRefund (key : SecretKey) (cap queri
       targetShapeEnvelope (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight cap)
         (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹)
         queries signings (targetFreshSigningIncrement (observedRawIndexShapeVector key state)) G R +
-    rawIndexNormalizedReuseRefund key cap queries signings state message G R
+    rawIndexMessageReuseRefund key cap queries signings state message G R
 
 theorem rawIndexNormalizedSelectionRefund_le_gaps
     (key : SecretKey) (cap queries signings : Nat) (hcap : cap ≤ 2 ^ 127)
@@ -146,16 +146,21 @@ theorem rawIndexNormalizedSelectionRefund_le_gaps
       rawIndexNonfreshSigningGap key cap queries signings state message groups remaining :=
     mul_le_mul' (mul_le_mul' (nonfreshSelection_ge_message_fraction key message state.1 cap hcap hcache) le_rfl) le_rfl
   exact (add_le_add hnonfresh
-    (rawIndexNormalizedReuseRefund_le_gaps key cap queries signings hcap state hcache message groups remaining hvalid)).trans_eq
+    (rawIndexMessageReuseRefund_le_gaps key cap queries signings hcap state hcache message groups remaining hvalid)).trans_eq
       (add_assoc _ _ _).symm
 
 theorem rawIndexNormalizedSelectionRefund_ge_previous
     (key : SecretKey) (cap queries signings : Nat) (hcap : cap ≤ 2 ^ 127)
     (state : CoverLogState) (hcache : QueryCache.enncard state.1 ≤ cap) (message : Message)
-    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) :
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
     cachedSelectionFraction key message state.1 * rawIndexSigningIncrementEnvelope key cap queries signings state groups remaining +
       rawIndexUnmatchedSelectionRefund key cap queries signings state message groups remaining ≤
       rawIndexNormalizedSelectionRefund key cap queries signings state message groups remaining := by
+  apply le_trans ?_ (add_le_add (le_refl (cachedSelectionFraction key message state.1 * (Fintype.card Index : ENNReal)⁻¹ *
+    targetShapeEnvelope (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight cap)
+      (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹)
+      queries signings (targetFreshSigningIncrement (observedRawIndexShapeVector key state)) groups remaining))
+    (rawIndexMessageReuseRefund_ge_normalized key cap queries signings hcap state hcache message groups remaining hvalid))
   let total := cachedMessageEntryCountWhere state.1 key.parameter key.root message (fun _ => True) * digestReuseWeight cap *
     targetShapeEnvelope (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight cap)
       (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹)
@@ -171,7 +176,7 @@ theorem rawIndexNormalizedSelectionRefund_ge_previous
   dsimp only [rawIndexNormalizedSelectionRefund, rawIndexSigningIncrementEnvelope, rawIndexUnmatchedSelectionRefund,
     rawIndexNormalizedReuseRefund, cachedSelectionFraction, total] at h ⊢
   simp only [div_eq_mul_inv] at h ⊢
-  convert h using 1 <;> first | rfl | ring
+  convert h using 1; first | rfl | ring
 
 theorem rawIndexNormalizedSelectionRefund_of_no_cached_selection
     (key : SecretKey) (cap queries signings : Nat) (state : CoverLogState) (message : Message)
@@ -182,7 +187,7 @@ theorem rawIndexNormalizedSelectionRefund_of_no_cached_selection
         (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹)
         queries signings (targetReuseStep (observedRawIndexShapeVector key state)) groups remaining := by
   simp only [rawIndexNormalizedSelectionRefund, cachedSelectionFraction, hcount, ENNReal.zero_div, zero_mul, zero_add]
-  exact rawIndexNormalizedReuseRefund_of_no_cached_selection key cap queries signings state message hcount groups remaining hvalid
+  exact rawIndexMessageReuseRefund_of_no_cached_selection key cap queries signings state message hcount groups remaining hvalid
 
 noncomputable def rawIndexSelectionRefund (key : SecretKey) (cap queries signings : Nat)
     (state : CoverLogState) (message : Message) : TargetShapeVector :=
