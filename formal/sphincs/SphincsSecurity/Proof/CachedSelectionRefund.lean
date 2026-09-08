@@ -1,5 +1,4 @@
-import SphincsSecurity.Proof.UnmatchedSelectionWeight
-import SphincsSecurity.Proof.MessageFreshSelectionScale
+import SphincsSecurity.Proof.NormalizedDigestReuse
 import SphincsSecurity.Proof.SampledSigningEnvelopeGap
 
 namespace SphincsSecurity.Concrete
@@ -124,12 +123,71 @@ theorem rawIndexSelectionGaps_ge_fraction_add_unmatched
   exact h.trans (add_le_add
     (rawIndexSelectionGaps_ge_nonfresh_increment key cap queries signings hcap state hcache message groups remaining) le_rfl)
 
+noncomputable def rawIndexNormalizedSelectionRefund (key : SecretKey) (cap queries signings : Nat)
+    (state : CoverLogState) (message : Message) : TargetShapeVector :=
+  fun G R => cachedSelectionFraction key message state.1 * (Fintype.card Index : ENNReal)⁻¹ *
+      targetShapeEnvelope (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight cap)
+        (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹)
+        queries signings (targetFreshSigningIncrement (observedRawIndexShapeVector key state)) G R +
+    rawIndexNormalizedReuseRefund key cap queries signings state message G R
+
+theorem rawIndexNormalizedSelectionRefund_le_gaps
+    (key : SecretKey) (cap queries signings : Nat) (hcap : cap ≤ 2 ^ 127)
+    (state : CoverLogState) (hcache : QueryCache.enncard state.1 ≤ cap) (message : Message)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    rawIndexNormalizedSelectionRefund key cap queries signings state message groups remaining ≤
+      rawIndexNonfreshSigningGap key cap queries signings state message groups remaining +
+        rawIndexReuseSigningGap key cap queries signings state message groups remaining +
+        rawIndexUnmatchedSigningGap key cap queries signings state message groups remaining := by
+  have hnonfresh : cachedSelectionFraction key message state.1 * (Fintype.card Index : ENNReal)⁻¹ *
+      targetShapeEnvelope (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight cap)
+        (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹)
+        queries signings (targetFreshSigningIncrement (observedRawIndexShapeVector key state)) groups remaining ≤
+      rawIndexNonfreshSigningGap key cap queries signings state message groups remaining :=
+    mul_le_mul' (mul_le_mul' (nonfreshSelection_ge_message_fraction key message state.1 cap hcap hcache) le_rfl) le_rfl
+  exact (add_le_add hnonfresh
+    (rawIndexNormalizedReuseRefund_le_gaps key cap queries signings hcap state hcache message groups remaining hvalid)).trans_eq
+      (add_assoc _ _ _).symm
+
+theorem rawIndexNormalizedSelectionRefund_ge_previous
+    (key : SecretKey) (cap queries signings : Nat) (hcap : cap ≤ 2 ^ 127)
+    (state : CoverLogState) (hcache : QueryCache.enncard state.1 ≤ cap) (message : Message)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) :
+    cachedSelectionFraction key message state.1 * rawIndexSigningIncrementEnvelope key cap queries signings state groups remaining +
+      rawIndexUnmatchedSelectionRefund key cap queries signings state message groups remaining ≤
+      rawIndexNormalizedSelectionRefund key cap queries signings state message groups remaining := by
+  let total := cachedMessageEntryCountWhere state.1 key.parameter key.root message (fun _ => True) * digestReuseWeight cap *
+    targetShapeEnvelope (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight cap)
+      (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹)
+      queries signings (targetReuseStep (observedRawIndexShapeVector key state)) groups remaining +
+    targetShapeEnvelope (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight cap)
+      (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹)
+      queries signings (unmatchedRawIndexShape key message state) groups remaining
+  have h := add_le_add (le_refl (cachedSelectionFraction key message state.1 * (Fintype.card Index : ENNReal)⁻¹ *
+    targetShapeEnvelope (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight cap)
+      (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹)
+      queries signings (targetFreshSigningIncrement (observedRawIndexShapeVector key state)) groups remaining))
+    (mul_le_mul' (inv_matchingCount_add_scale_le_normalized key message state.1 cap hcap hcache) (le_refl total))
+  dsimp only [rawIndexNormalizedSelectionRefund, rawIndexSigningIncrementEnvelope, rawIndexUnmatchedSelectionRefund,
+    rawIndexNormalizedReuseRefund, cachedSelectionFraction, total] at h ⊢
+  simp only [div_eq_mul_inv] at h ⊢
+  convert h using 1 <;> first | rfl | ring
+
+theorem rawIndexNormalizedSelectionRefund_of_no_cached_selection
+    (key : SecretKey) (cap queries signings : Nat) (state : CoverLogState) (message : Message)
+    (hcount : cachedMessageEntryCountWhere state.1 key.parameter key.root message (fun _ => True) = 0)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    rawIndexNormalizedSelectionRefund key cap queries signings state message groups remaining =
+      digestReuseWeight cap * targetShapeEnvelope (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight cap)
+        (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹)
+        queries signings (targetReuseStep (observedRawIndexShapeVector key state)) groups remaining := by
+  simp only [rawIndexNormalizedSelectionRefund, cachedSelectionFraction, hcount, ENNReal.zero_div, zero_mul, zero_add]
+  exact rawIndexNormalizedReuseRefund_of_no_cached_selection key cap queries signings state message hcount groups remaining hvalid
+
 noncomputable def cachedSelectionCoverageGap (key : SecretKey) (cap budget : Nat) (message : Message)
     (state : CoverLogState) : ENNReal :=
   if QueryCache.enncard state.1 ≤ cap ∧ ValidSigningStep state.2 (.inr message) then
-    (cachedSelectionFraction key message state.1 *
-      rawIndexSigningIncrementEnvelope key cap budget (signatureLimit - (state.2.length + 1)) state ∅ Finset.univ +
-      rawIndexUnmatchedSelectionRefund key cap budget (signatureLimit - (state.2.length + 1)) state message ∅ Finset.univ) *
+    rawIndexNormalizedSelectionRefund key cap budget (signatureLimit - (state.2.length + 1)) state message ∅ Finset.univ *
       (budget : ENNReal) * (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) *
       ((2 ^ 140 : Nat) : ENNReal)⁻¹
   else 0
@@ -140,7 +198,7 @@ theorem cachedSelectionCoverageGap_le_signingEnvelopeGap
   unfold cachedSelectionCoverageGap
   split_ifs with hactive
   · have hvalid : TargetShapeValid ∅ (Finset.univ : Finset FtsTree) := by constructor <;> simp
-    have h := rawIndexSelectionGaps_ge_fraction_add_unmatched key cap budget (signatureLimit - (state.2.length + 1))
+    have h := rawIndexNormalizedSelectionRefund_le_gaps key cap budget (signatureLimit - (state.2.length + 1))
       hcap state hactive.1 message ∅ Finset.univ hvalid
     unfold signingCoverageEnvelopeGap remainingRawIndexSigningGap
     rw [if_pos hactive.2]
