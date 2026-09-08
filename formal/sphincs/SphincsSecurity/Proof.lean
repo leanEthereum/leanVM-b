@@ -787,6 +787,7 @@ import SphincsSecurity.Proof.JointSigningCollisionCoverage
 import SphincsSecurity.Proof.JointEncodingExhaustionReserve
 import SphincsSecurity.Proof.SecurityJointCollisionCoverageBudget
 import SphincsSecurity.Proof.SecurityJointCollisionCoverageCompletion
+import SphincsSecurity.Proof.SecurityJointCollisionCoverageOverlap
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
