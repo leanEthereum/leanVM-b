@@ -792,6 +792,8 @@ import SphincsSecurity.Proof.SecurityOverlapParentRefund
 import SphincsSecurity.Proof.SecurityJointParentFunding
 import SphincsSecurity.Proof.SecurityParentCoverageProduct
 import SphincsSecurity.Proof.SecurityEncodingPairReserve
+import SphincsSecurity.Proof.EncodingFreshSearchBudget
+import SphincsSecurity.Proof.AuthenticationQueryCost
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 

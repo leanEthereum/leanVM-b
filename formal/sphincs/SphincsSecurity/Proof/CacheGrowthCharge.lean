@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.InterleavedMass
+import SphincsSecurity.Proof.FreshCacheCharge
 
 namespace SphincsSecurity.Concrete
 
@@ -20,9 +21,6 @@ theorem enncard_cacheQuery_of_fresh (cache : QueryCache HashSpec) (input : HashI
   unfold QueryCache.enncard
   rw [hset, Set.encard_insert_of_notMem hnot]
   simp
-
-noncomputable def freshCacheCharge (cache : QueryCache HashSpec) (input : HashInput) : ENNReal :=
-  if cache input = none then 1 else 0
 
 theorem romImpl_enncard_eq_add_freshCharge (input : OracleWorld.Domain) (cache : QueryCache HashSpec)
     (result : OracleWorld.Range input × QueryCache HashSpec)

@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.EncodingCount
+import SphincsSecurity.Proof.EncodingComplementCount
 
 namespace SphincsSecurity.TargetSum
 
@@ -492,5 +492,23 @@ theorem validDigests_card_ge_pow105 : 2 ^ 105 ≤ validDigests.card := by
   have hcount := digitSumCount_halves_le_validDigests
   rw [digitSumCount_21_95, digitSumCount_21_96] at hcount
   exact (by norm_num : 2 ^ 105 ≤ 43575625367327760 * 35593486730223380).trans hcount
+
+private theorem validDigests_card_ge_ten_halves :
+    (∑ index : Fin 10, row21.getD (47 + index.val) 0 * row21.getD (56 - index.val) 0) ≤ validDigests.card := by
+  have hcount := digitSumCount_ten_complement_halves_le_validDigests
+  have hrows : (∑ index : Fin 10, digitSumCount 21 (47 + index.val) * digitSumCount 21 (56 - index.val)) =
+      ∑ index : Fin 10, row21.getD (47 + index.val) 0 * row21.getD (56 - index.val) 0 := by
+    apply Finset.sum_congr rfl
+    intro index _
+    rw [row21_correct _ (by omega), row21_correct _ (by omega)]
+  rwa [hrows] at hcount
+
+theorem validDigests_card_ge_pow113 : 2 ^ 113 ≤ validDigests.card :=
+  (by decide : 2 ^ 113 ≤ ∑ index : Fin 10, row21.getD (47 + index.val) 0 * row21.getD (56 - index.val) 0).trans
+    validDigests_card_ge_ten_halves
+
+theorem pow128_le_24576_mul_validDigests_card : 2 ^ 128 ≤ 24576 * validDigests.card :=
+  (by decide : 2 ^ 128 ≤ 24576 * ∑ index : Fin 10, row21.getD (47 + index.val) 0 * row21.getD (56 - index.val) 0).trans
+    (Nat.mul_le_mul_left 24576 validDigests_card_ge_ten_halves)
 
 end SphincsSecurity.TargetSum
