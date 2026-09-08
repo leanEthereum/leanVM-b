@@ -794,6 +794,7 @@ import SphincsSecurity.Proof.SecurityParentCoverageProduct
 import SphincsSecurity.Proof.SecurityEncodingPairReserve
 import SphincsSecurity.Proof.EncodingFreshSearchBudget
 import SphincsSecurity.Proof.AuthenticationQueryCost
+import SphincsSecurity.Proof.SecuritySigningEncodingPayment
 import SphincsSecurity.Proof.JointNativeQueryCharge
 import SphincsSecurity.Proof.FewTimeParametricSignerRace
 
