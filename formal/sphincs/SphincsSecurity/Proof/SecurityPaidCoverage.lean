@@ -22,12 +22,18 @@ private theorem pay_coverage_from_reserve
   rw [← houter] at h
   convert h using 1 <;> ring
 
-theorem forgeAdvantage_add_doubleParentCredit_paidCoverage_le
-    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 127) :
+theorem forgeAdvantage_add_doubleParentCredit_coverageRefund_le
+    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 127)
+    (refund : ENNReal)
+    (hcoverage : sampledLiveNonSecretResidual adversary q (q + 1) + refund +
+      sampledSigningEncodingPairCharge adversary q (q + 1) * (Fintype.card Digest : ENNReal)⁻¹ ≤
+      (q : ENNReal) * initialRawIndexRate q +
+        sampledSigningNonEncodingReserve adversary q (q + 1) * (Fintype.card Digest : ENNReal)⁻¹ +
+        sampledPaidCoverageResidual adversary q (q + 1)) :
     forgeAdvantage scheme adversary + sampledCollisionDoubleParentCredit adversary q (q + 1) +
       (sampledSelectedJointQueryCharge MessageHashInput adversary q + sampledBeforeFailureHashCharge messageHashCharge adversary q (q + 1) +
         sampledOuterEncodingReserveAfterPairs adversary q (q + 1)) * (Fintype.card Digest : ENNReal)⁻¹ +
-      sampledPaidCoverageRefund adversary q (q + 1) ≤
+      refund ≤
       (sampledBeforeFailureRestHashCharge adversary q (q + 1) + (q : ENNReal)) * (Fintype.card Digest : ENNReal)⁻¹ +
         (q : ENNReal) / ((2 ^ 216 : Nat) : ENNReal) +
         (q : ENNReal) * initialRawIndexRate q + sampledPaidCoverageResidual adversary q (q + 1) := by
@@ -51,14 +57,27 @@ theorem forgeAdvantage_add_doubleParentCredit_paidCoverage_le
     (sampledOuterEncodingReserveAfterPairs adversary q (q + 1) * (Fintype.card Digest : ENNReal)⁻¹)
     (sampledOuterEncodingPairCharge adversary q (q + 1) * (Fintype.card Digest : ENNReal)⁻¹)
     (sampledSigningEncodingPairCharge adversary q (q + 1) * (Fintype.card Digest : ENNReal)⁻¹)
-    (sampledLiveNonSecretResidual adversary q (q + 1)) (sampledPaidCoverageRefund adversary q (q + 1))
+    (sampledLiveNonSecretResidual adversary q (q + 1)) (refund)
     ((sampledBeforeFailureRestHashCharge adversary q (q + 1) + (q : ENNReal)) * (Fintype.card Digest : ENNReal)⁻¹ +
       (q : ENNReal) / ((2 ^ 216 : Nat) : ENNReal))
     ((q : ENNReal) * initialRawIndexRate q) (sampledPaidCoverageResidual adversary q (q + 1))
     hsigning (sampledOuterEncodingPairCharge_scaled_ne_top adversary q hq hqMax (q + 1))
     (sampledSigningEncodingPairCharge_scaled_ne_top adversary q hq hqMax (q + 1)) houter
     (by simpa only [add_mul] using hbase)
-    (sampledLiveNonSecretResidual_pairs_refund_le_reserved_add_residual adversary q hq hqMax (q + 1))
+    hcoverage
   simpa only [add_mul] using h
+
+theorem forgeAdvantage_add_doubleParentCredit_paidCoverage_le
+    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 127) :
+    forgeAdvantage scheme adversary + sampledCollisionDoubleParentCredit adversary q (q + 1) +
+      (sampledSelectedJointQueryCharge MessageHashInput adversary q + sampledBeforeFailureHashCharge messageHashCharge adversary q (q + 1) +
+        sampledOuterEncodingReserveAfterPairs adversary q (q + 1)) * (Fintype.card Digest : ENNReal)⁻¹ +
+      sampledPaidCoverageRefund adversary q (q + 1) ≤
+      (sampledBeforeFailureRestHashCharge adversary q (q + 1) + (q : ENNReal)) * (Fintype.card Digest : ENNReal)⁻¹ +
+        (q : ENNReal) / ((2 ^ 216 : Nat) : ENNReal) +
+        (q : ENNReal) * initialRawIndexRate q + sampledPaidCoverageResidual adversary q (q + 1) := by
+  exact forgeAdvantage_add_doubleParentCredit_coverageRefund_le adversary q hq hqMax
+    (sampledPaidCoverageRefund adversary q (q + 1))
+    (sampledLiveNonSecretResidual_pairs_refund_le_reserved_add_residual adversary q hq hqMax (q + 1))
 
 end SphincsSecurity.Concrete.FtsProbeSimulation.JointOriginal
