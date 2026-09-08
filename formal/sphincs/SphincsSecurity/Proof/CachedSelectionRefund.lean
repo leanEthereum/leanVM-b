@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.UpperDigestSelection
+import SphincsSecurity.Proof.UnmatchedSelectionWeight
 import SphincsSecurity.Proof.SampledSigningEnvelopeGap
 
 namespace SphincsSecurity.Concrete
@@ -47,11 +47,70 @@ theorem rawIndexSelectionGaps_ge_cached_fraction
   (mul_le_mul' (nonfreshSelection_ge_cached_fraction key message state.1 cap hcache) le_rfl).trans
     (rawIndexSelectionGaps_ge_nonfresh_increment key cap queries signings hcap state hcache message groups remaining)
 
+noncomputable def rawIndexUnmatchedSelectionRefund (key : SecretKey) (cap queries signings : Nat)
+    (state : CoverLogState) (message : Message) : TargetShapeVector :=
+  fun G R => targetShapeEnvelope (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight cap)
+      (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹)
+      queries signings (unmatchedRawIndexShape key message state) G R /
+    (cachedMessageEntryCountWhere state.1 key.parameter key.root message (fun _ => True) + ((2 ^ 118 : Nat) : ENNReal))
+
+theorem rawIndexUnmatchedSelectionRefund_of_no_cached_selection
+    (key : SecretKey) (cap queries signings : Nat) (state : CoverLogState) (message : Message)
+    (hcount : cachedMessageEntryCountWhere state.1 key.parameter key.root message (fun _ => True) = 0)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    rawIndexUnmatchedSelectionRefund key cap queries signings state message groups remaining =
+      targetShapeEnvelope (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight cap)
+        (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹)
+        queries signings (targetReuseStep (observedRawIndexShapeVector key state)) groups remaining /
+        ((2 ^ 118 : Nat) : ENNReal) := by
+  rw [rawIndexUnmatchedSelectionRefund, hcount, zero_add]
+  exact congrArg (fun value => value / ((2 ^ 118 : Nat) : ENNReal))
+    (targetShapeEnvelope_congr _ _ _ queries signings
+      (fun G R hv => unmatchedRawIndexShape_eq_reuse_of_no_cached_selection key message state hcount G R hv)
+      groups remaining hvalid)
+
+theorem rawIndexSelectionGaps_ge_fraction_add_unmatched
+    (key : SecretKey) (cap queries signings : Nat) (hcap : cap ≤ 2 ^ 127)
+    (state : CoverLogState) (hcache : QueryCache.enncard state.1 ≤ cap) (message : Message)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    cachedSelectionFraction key message state.1 * rawIndexSigningIncrementEnvelope key cap queries signings state groups remaining +
+      rawIndexUnmatchedSelectionRefund key cap queries signings state message groups remaining ≤
+      rawIndexNonfreshSigningGap key cap queries signings state message groups remaining +
+        rawIndexReuseSigningGap key cap queries signings state message groups remaining +
+        rawIndexUnmatchedSigningGap key cap queries signings state message groups remaining := by
+  let unmatched := targetShapeEnvelope (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight cap)
+    (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹)
+    queries signings (unmatchedRawIndexShape key message state) groups remaining
+  have hcount : cachedMessageEntryCountWhere state.1 key.parameter key.root message (fun _ => True) ≠ ⊤ :=
+    ne_top_of_le_ne_top (by finiteness)
+      ((cachedMessageEntryCountWhere_le_enncard state.1 key.parameter key.root message (fun _ => True)).trans hcache)
+  have hdom : unmatched / ((2 ^ 118 : Nat) : ENNReal) ≤
+      rawIndexSigningIncrementEnvelope key cap queries signings state groups remaining := by
+    calc
+      _ = ((2 ^ 118 : Nat) : ENNReal)⁻¹ * unmatched := by rw [div_eq_mul_inv, mul_comm]
+      _ ≤ digestReuseWeight cap *
+          targetShapeEnvelope (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight cap)
+            (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹)
+            queries signings (targetReuseStep (observedRawIndexShapeVector key state)) groups remaining :=
+        mul_le_mul' (inv_pow118_le_digestReuseWeight cap)
+          (targetShapeEnvelope_mono _ _ _ queries signings
+            (fun G R hv => unmatchedRawIndexShape_le_reuse key message state G R hv) groups remaining hvalid)
+      _ ≤ _ := le_add_of_nonneg_left zero_le
+  have h := selection_fraction_unmatched_lower _ (freshDigestSelectionProbability key message state.1)
+    (exactDigestReuseWeight key message state.1) ((2 ^ 118 : Nat) : ENNReal)
+    (rawIndexSigningIncrementEnvelope key cap queries signings state groups remaining) unmatched hcount
+    (freshDigestSelectionProbability_le_one key message state.1)
+    (nonfreshSelection_ge_cached_fraction key message state.1 cap hcache) (by norm_num) (by finiteness)
+    (freshDigestSelectionProbability_le_exactReuse_mul_pow118 key message state.1) hdom
+  exact h.trans (add_le_add
+    (rawIndexSelectionGaps_ge_nonfresh_increment key cap queries signings hcap state hcache message groups remaining) le_rfl)
+
 noncomputable def cachedSelectionCoverageGap (key : SecretKey) (cap budget : Nat) (message : Message)
     (state : CoverLogState) : ENNReal :=
   if QueryCache.enncard state.1 ≤ cap ∧ ValidSigningStep state.2 (.inr message) then
-    cachedSelectionFraction key message state.1 *
-      rawIndexSigningIncrementEnvelope key cap budget (signatureLimit - (state.2.length + 1)) state ∅ Finset.univ *
+    (cachedSelectionFraction key message state.1 *
+      rawIndexSigningIncrementEnvelope key cap budget (signatureLimit - (state.2.length + 1)) state ∅ Finset.univ +
+      rawIndexUnmatchedSelectionRefund key cap budget (signatureLimit - (state.2.length + 1)) state message ∅ Finset.univ) *
       (budget : ENNReal) * (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) *
       ((2 ^ 140 : Nat) : ENNReal)⁻¹
   else 0
@@ -61,11 +120,12 @@ theorem cachedSelectionCoverageGap_le_signingEnvelopeGap
     cachedSelectionCoverageGap key cap budget message state ≤ signingCoverageEnvelopeGap key cap budget message state := by
   unfold cachedSelectionCoverageGap
   split_ifs with hactive
-  · have h := rawIndexSelectionGaps_ge_cached_fraction key cap budget (signatureLimit - (state.2.length + 1))
-      hcap state hactive.1 message ∅ Finset.univ
+  · have hvalid : TargetShapeValid ∅ (Finset.univ : Finset FtsTree) := by constructor <;> simp
+    have h := rawIndexSelectionGaps_ge_fraction_add_unmatched key cap budget (signatureLimit - (state.2.length + 1))
+      hcap state hactive.1 message ∅ Finset.univ hvalid
     unfold signingCoverageEnvelopeGap remainingRawIndexSigningGap
     rw [if_pos hactive.2]
-    exact mul_le_mul' (mul_le_mul' (mul_le_mul' ((h.trans le_self_add).trans le_self_add) le_rfl) le_rfl) le_rfl
+    exact mul_le_mul' (mul_le_mul' (mul_le_mul' (h.trans le_self_add) le_rfl) le_rfl) le_rfl
   · exact zero_le
 
 namespace FtsProbeSimulation.JointOriginal
