@@ -22,13 +22,15 @@ theorem targetIndexMoments_eq_frozen_add_growth (key : SecretKey) (before : Quer
   conv_lhs => rw [hweights]
   rw [add_mul]
 
-theorem expected_signWithView_targetIndexMoments_le_freshMass (key : SecretKey) (message : Message) (before : QueryCache HashSpec)
+theorem expected_signWithView_targetIndexMoments_le_of_reuseWeight (key : SecretKey) (message : Message) (before : QueryCache HashSpec)
     (log : QueryLog SigningSpec) (power degree : Nat) (hsigned : SigningDigestsCached key.parameter before key.root log)
-    (q : Nat) (hq : q ≤ 2 ^ 127) (hcache : QueryCache.enncard before ≤ q) :
+    (reuseWeight : ENNReal)
+    (hreuse : ∀ input, Pr[PrehitSuccessfulSignerView (onlyInputCache before input) key message (fun _ => True) |
+      (simulateQ romImpl (signWithView key message)).run before] ≤ reuseWeight) :
     (∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run before] *
       targetIndexMoments key result.2 (log ++ [⟨message, result.1.1⟩]) power degree) ≤
         targetIndexSigning (freshDigestSelectionProbability key message before *
-          (Fintype.card Index : ENNReal)⁻¹) (digestReuseWeight q) (targetIndexMoments key before log) power degree := by
+          (Fintype.card Index : ENNReal)⁻¹) (reuseWeight) (targetIndexMoments key before log) power degree := by
   have heq : (∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run before] *
       targetIndexMoments key result.2 (log ++ [⟨message, result.1.1⟩]) power degree) =
       (∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run before] *
@@ -47,12 +49,23 @@ theorem expected_signWithView_targetIndexMoments_le_freshMass (key : SecretKey) 
     · rw [probOutput_eq_zero_of_not_mem_support hresult]
       simp only [zero_mul, zero_add]
   rw [heq]
-  apply (add_le_add (expected_signWithView_frozenRawIndex_le_mass_mul key message before log power degree hsigned q hq hcache)
+  apply (add_le_add (expected_signWithView_frozenRawIndex_le_of_reuseWeight key message before log power degree hsigned reuseWeight hreuse)
     ((expected_signWithView_rawIndexGrowth_le_mass_mul_uniform key message before log power degree hsigned).trans_eq
       (congrArg (fun value => freshDigestSelectionProbability key message before * value)
         (expected_newRawIndexWeight key before log power degree)))).trans_eq
   unfold targetIndexSigning
   ring
+
+theorem expected_signWithView_targetIndexMoments_le_freshMass (key : SecretKey) (message : Message) (before : QueryCache HashSpec)
+    (log : QueryLog SigningSpec) (power degree : Nat) (hsigned : SigningDigestsCached key.parameter before key.root log)
+    (q : Nat) (hq : q ≤ 2 ^ 127) (hcache : QueryCache.enncard before ≤ q) :
+    (∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run before] *
+      targetIndexMoments key result.2 (log ++ [⟨message, result.1.1⟩]) power degree) ≤
+        targetIndexSigning (freshDigestSelectionProbability key message before *
+          (Fintype.card Index : ENNReal)⁻¹) (digestReuseWeight q) (targetIndexMoments key before log) power degree :=
+  expected_signWithView_targetIndexMoments_le_of_reuseWeight key message before log power degree hsigned
+    (digestReuseWeight q) (fun input =>
+      probEvent_signWithView_fixedPrehit_le_digestReuseWeight key message before input (fun _ => True) q hq hcache)
 
 theorem expected_signWithView_targetIndexMoments_le (key : SecretKey) (message : Message) (before : QueryCache HashSpec)
     (log : QueryLog SigningSpec) (power degree : Nat) (hsigned : SigningDigestsCached key.parameter before key.root log)

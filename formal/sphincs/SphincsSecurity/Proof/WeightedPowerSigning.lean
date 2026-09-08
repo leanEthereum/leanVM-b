@@ -72,10 +72,12 @@ theorem signWithView_weightedPower_eq (weights : Index → ENNReal) (key : Secre
       rw [observed_weightedPower_append_some _ _ _ _ _ _ _ hsource, hstable]
       simp only [successfulSignerViewWeight, hresponse, hview]
 
-theorem expected_signWithView_weightedPower_le_mass_mul (weights : Index → ENNReal) (key : SecretKey) (message : Message)
+theorem expected_signWithView_weightedPower_le_of_reuseWeight (weights : Index → ENNReal) (key : SecretKey) (message : Message)
     (before : QueryCache HashSpec) (log : QueryLog SigningSpec) (degree : Nat)
     (hsigned : SigningDigestsCached key.parameter before key.root log)
-    (q : Nat) (hq : q ≤ 2 ^ 127) (hcache : QueryCache.enncard before ≤ q) :
+    (reuseWeight : ENNReal)
+    (hreuse : ∀ input, Pr[PrehitSuccessfulSignerView (onlyInputCache before input) key message (fun _ => True) |
+      (simulateQ romImpl (signWithView key message)).run before] ≤ reuseWeight) :
     (∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run before] *
       observedWeightedPowerMoments weights key (result.2, log ++ [⟨message, result.1.1⟩]) degree) ≤
       observedWeightedPowerMoments weights key (before, log) degree +
@@ -83,7 +85,7 @@ theorem expected_signWithView_weightedPower_le_mass_mul (weights : Index → ENN
           ((∑ index : Index, weights index * cachePowerArrival degree ((signingSlotsAtIndex
             (observedOptionalSigningViews (messageAnswers key.parameter before) key.root log) index).card : ENNReal)) / (Fintype.card Index : ENNReal)) +
         cacheMessageWeight key.parameter (fun _ source => weights source.1 * cachePowerArrival degree ((signingSlotsAtIndex
-          (observedOptionalSigningViews (messageAnswers key.parameter before) key.root log) source.1).card : ENNReal)) before * digestReuseWeight q := by
+          (observedOptionalSigningViews (messageAnswers key.parameter before) key.root log) source.1).card : ENNReal)) before * reuseWeight := by
   let weight := fun source : FewTimeView => weights source.1 * cachePowerArrival degree ((signingSlotsAtIndex
     (observedOptionalSigningViews (messageAnswers key.parameter before) key.root log) source.1).card : ENNReal)
   have heq : (∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run before] *
@@ -97,13 +99,29 @@ theorem expected_signWithView_weightedPower_le_mass_mul (weights : Index → ENN
     · rw [probOutput_eq_zero_of_not_mem_support hresult, zero_mul, zero_mul]
   rw [heq]
   simp only [mul_add, ENNReal.tsum_add, ENNReal.tsum_mul_right]
-  have hsigner := expected_successfulSignerInputWeight_le_allMessage_mass_mul key message before
-    (fun _ source => weight source) weight (fun _ _ => le_rfl) q hq hcache
+  have hsigner := expected_successfulSignerInputWeight_le_allMessage_of_reuseWeight key message before
+    (fun _ source => weight source) weight (fun _ _ => le_rfl) reuseWeight hreuse
   simp only [successfulSignerInputWeight_const] at hsigner
   dsimp only [weight] at hsigner
   rw [uniform_view_index_weight_expectation (fun index => weights index * cachePowerArrival degree ((signingSlotsAtIndex
     (observedOptionalSigningViews (messageAnswers key.parameter before) key.root log) index).card : ENNReal))] at hsigner
   exact (add_le_add (mul_le_of_le_one_left' tsum_probOutput_le_one) hsigner).trans_eq (add_assoc _ _ _).symm
+
+theorem expected_signWithView_weightedPower_le_mass_mul (weights : Index → ENNReal) (key : SecretKey) (message : Message)
+    (before : QueryCache HashSpec) (log : QueryLog SigningSpec) (degree : Nat)
+    (hsigned : SigningDigestsCached key.parameter before key.root log)
+    (q : Nat) (hq : q ≤ 2 ^ 127) (hcache : QueryCache.enncard before ≤ q) :
+    (∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run before] *
+      observedWeightedPowerMoments weights key (result.2, log ++ [⟨message, result.1.1⟩]) degree) ≤
+      observedWeightedPowerMoments weights key (before, log) degree +
+        freshDigestSelectionProbability key message before *
+          ((∑ index : Index, weights index * cachePowerArrival degree ((signingSlotsAtIndex
+            (observedOptionalSigningViews (messageAnswers key.parameter before) key.root log) index).card : ENNReal)) / (Fintype.card Index : ENNReal)) +
+        cacheMessageWeight key.parameter (fun _ source => weights source.1 * cachePowerArrival degree ((signingSlotsAtIndex
+          (observedOptionalSigningViews (messageAnswers key.parameter before) key.root log) source.1).card : ENNReal)) before * digestReuseWeight q :=
+  expected_signWithView_weightedPower_le_of_reuseWeight weights key message before log degree hsigned
+    (digestReuseWeight q) (fun input =>
+      probEvent_signWithView_fixedPrehit_le_digestReuseWeight key message before input (fun _ => True) q hq hcache)
 
 theorem expected_signWithView_weightedPower_le (weights : Index → ENNReal) (key : SecretKey) (message : Message)
     (before : QueryCache HashSpec) (log : QueryLog SigningSpec) (degree : Nat)
