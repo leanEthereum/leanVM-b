@@ -69,6 +69,17 @@ theorem boundedUnionPotential_add_decrease (left before after : ENNReal) (h : mi
     _ = min 1 left + (1 - min 1 left) * (min 1 after + (min 1 before - min 1 after)) := by ring
     _ = _ := by rw [add_tsub_cancel_of_le h]
 
+theorem boundedUnionPotential_add_gap_le (left right before gap charge : ENNReal)
+    (hright : right ≤ 1) (hbefore : before ≤ 1) (hgap : right + gap ≤ before + charge) :
+    boundedUnionPotential left right + (1 - min 1 left) * gap ≤
+      boundedUnionPotential left before + (1 - min 1 left) * charge := by
+  rw [boundedUnionPotential_comm left right, boundedUnionPotential_comm left before]
+  simp only [boundedUnionPotential, min_eq_right hright, min_eq_right hbefore]
+  calc
+    _ = min 1 left + (1 - min 1 left) * (right + gap) := by ring
+    _ ≤ min 1 left + (1 - min 1 left) * (before + charge) := add_le_add le_rfl (mul_le_mul' le_rfl hgap)
+    _ = _ := by ring
+
 theorem expected_boundedUnionPotential_le (computation : SPMF α) (left : α → ENNReal) (right : ENNReal) :
     (∑' result, Pr[= result | computation] * boundedUnionPotential (left result) right) ≤
       min 1 right + (1 - min 1 right) * ∑' result, Pr[= result | computation] * left result := by
