@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.NormalizedDigestReuse
+import SphincsSecurity.Proof.JointDigestSelectionGap
 import SphincsSecurity.Proof.SampledSigningEnvelopeGap
 
 namespace SphincsSecurity.Concrete
@@ -184,10 +184,38 @@ theorem rawIndexNormalizedSelectionRefund_of_no_cached_selection
   simp only [rawIndexNormalizedSelectionRefund, cachedSelectionFraction, hcount, ENNReal.zero_div, zero_mul, zero_add]
   exact rawIndexNormalizedReuseRefund_of_no_cached_selection key cap queries signings state message hcount groups remaining hvalid
 
+noncomputable def rawIndexSelectionRefund (key : SecretKey) (cap queries signings : Nat)
+    (state : CoverLogState) (message : Message) : TargetShapeVector :=
+  fun G R => max (rawIndexNormalizedSelectionRefund key cap queries signings state message G R)
+    (rawIndexJointSelectionRefund key cap queries signings state message G R)
+
+theorem rawIndexSelectionRefund_le_gaps
+    (key : SecretKey) (cap queries signings : Nat) (hcap : cap ≤ 2 ^ 127)
+    (state : CoverLogState) (hcache : QueryCache.enncard state.1 ≤ cap) (message : Message)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    rawIndexSelectionRefund key cap queries signings state message groups remaining ≤
+      rawIndexNonfreshSigningGap key cap queries signings state message groups remaining +
+        rawIndexReuseSigningGap key cap queries signings state message groups remaining +
+        rawIndexUnmatchedSigningGap key cap queries signings state message groups remaining :=
+  max_le (rawIndexNormalizedSelectionRefund_le_gaps key cap queries signings hcap state hcache message groups remaining hvalid)
+    (rawIndexJointSelectionRefund_le_gaps key cap queries signings hcap state hcache message groups remaining)
+
+theorem rawIndexSelectionRefund_of_no_cached_selection
+    (key : SecretKey) (cap queries signings : Nat) (state : CoverLogState) (message : Message)
+    (hcount : cachedMessageEntryCountWhere state.1 key.parameter key.root message (fun _ => True) = 0)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    rawIndexSelectionRefund key cap queries signings state message groups remaining =
+      digestReuseWeight cap * targetShapeEnvelope (Fintype.card Index : ENNReal)⁻¹ (digestReuseWeight cap)
+        (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹)
+        queries signings (targetReuseStep (observedRawIndexShapeVector key state)) groups remaining := by
+  rw [rawIndexSelectionRefund,
+    rawIndexNormalizedSelectionRefund_of_no_cached_selection key cap queries signings state message hcount groups remaining hvalid,
+    rawIndexJointSelectionRefund_of_no_cached_selection key cap queries signings state message hcount groups remaining hvalid, max_self]
+
 noncomputable def cachedSelectionCoverageGap (key : SecretKey) (cap budget : Nat) (message : Message)
     (state : CoverLogState) : ENNReal :=
   if QueryCache.enncard state.1 ≤ cap ∧ ValidSigningStep state.2 (.inr message) then
-    rawIndexNormalizedSelectionRefund key cap budget (signatureLimit - (state.2.length + 1)) state message ∅ Finset.univ *
+    rawIndexSelectionRefund key cap budget (signatureLimit - (state.2.length + 1)) state message ∅ Finset.univ *
       (budget : ENNReal) * (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) *
       ((2 ^ 140 : Nat) : ENNReal)⁻¹
   else 0
@@ -198,7 +226,7 @@ theorem cachedSelectionCoverageGap_le_signingEnvelopeGap
   unfold cachedSelectionCoverageGap
   split_ifs with hactive
   · have hvalid : TargetShapeValid ∅ (Finset.univ : Finset FtsTree) := by constructor <;> simp
-    have h := rawIndexNormalizedSelectionRefund_le_gaps key cap budget (signatureLimit - (state.2.length + 1))
+    have h := rawIndexSelectionRefund_le_gaps key cap budget (signatureLimit - (state.2.length + 1))
       hcap state hactive.1 message ∅ Finset.univ hvalid
     unfold signingCoverageEnvelopeGap remainingRawIndexSigningGap
     rw [if_pos hactive.2]
