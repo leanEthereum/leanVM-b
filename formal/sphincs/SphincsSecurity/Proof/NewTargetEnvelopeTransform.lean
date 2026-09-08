@@ -32,6 +32,25 @@ theorem signWithView_newTargetEnvelopeCharge_transform_le_events (key : SecretKe
       (fun payload output hfresh hafter hadmissible => hnew ⟨payload, output, hfresh, hafter, hadmissible, trivial⟩), hzero]
     exact zero_le
 
+theorem expected_signWithView_newTargetEnvelopeCharge_transform_le_mass_mul (key : SecretKey) (message : Message)
+    (before : QueryCache HashSpec) (log : QueryLog SigningSpec)
+    (hsigned : SigningDigestsCached key.parameter before key.root log)
+    (reference : HashInput) (hreference : before (tweakableHashInput key.parameter .message reference) = none)
+    (uniform reuse arrival : ENNReal) (queries signings : Nat)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree)
+    (transform : ENNReal → ENNReal) (hzero : transform 0 = 0) :
+    (∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run before] *
+      transform (newTargetEnvelopeCharge key before result.2 (log ++ [⟨message, result.1.1⟩])
+        uniform reuse arrival queries signings groups remaining)) ≤
+      freshDigestSelectionProbability key message before *
+        ∑' source, Pr[= source | ($ᵗ FewTimeView : ProbComp FewTimeView)] *
+        transform (targetShapeEnvelope uniform reuse arrival queries signings
+          (targetShapeMoments key before log reference source) groups remaining) := by
+  exact expected_signWithView_newAdmissible_cost_le_mass_mul key message before _ _
+    (fun result hr => signWithView_newTargetEnvelopeCharge_transform_le_events key message before
+      log hsigned reference hreference uniform reuse arrival queries signings groups remaining
+      transform hzero result hr)
+
 theorem expected_signWithView_newTargetEnvelopeCharge_transform_le (key : SecretKey) (message : Message)
     (before : QueryCache HashSpec) (log : QueryLog SigningSpec)
     (hsigned : SigningDigestsCached key.parameter before key.root log)
@@ -44,27 +63,9 @@ theorem expected_signWithView_newTargetEnvelopeCharge_transform_le (key : Secret
         uniform reuse arrival queries signings groups remaining)) ≤
       ∑' source, Pr[= source | ($ᵗ FewTimeView : ProbComp FewTimeView)] *
         transform (targetShapeEnvelope uniform reuse arrival queries signings
-          (targetShapeMoments key before log reference source) groups remaining) := by
-  let weight := fun source => transform (targetShapeEnvelope uniform reuse arrival queries signings
-    (targetShapeMoments key before log reference source) groups remaining)
-  apply le_trans ?_ (expected_newAdmissibleSignerView_weight_le key message before weight)
-  calc
-    _ ≤ ∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run before] *
-        ∑' source, if NewAdmissibleSignerView before key (· = source) result then weight source else 0 := by
-      apply ENNReal.tsum_le_tsum
-      intro result
-      by_cases hresult : result ∈ support ((simulateQ romImpl (signWithView key message)).run before)
-      · exact mul_le_mul' le_rfl (signWithView_newTargetEnvelopeCharge_transform_le_events key message before log hsigned
-          reference hreference uniform reuse arrival queries signings groups remaining transform hzero result hresult)
-      · rw [probOutput_eq_zero_of_not_mem_support hresult, zero_mul, zero_mul]
-    _ = _ := by
-      simp only [← ENNReal.tsum_mul_left]
-      rw [ENNReal.tsum_comm]
-      apply tsum_congr
-      intro source
-      rw [probEvent_eq_tsum_ite, ← ENNReal.tsum_mul_right]
-      apply tsum_congr
-      intro result
-      split_ifs <;> simp
+          (targetShapeMoments key before log reference source) groups remaining) :=
+  (expected_signWithView_newTargetEnvelopeCharge_transform_le_mass_mul key message before log hsigned
+    reference hreference uniform reuse arrival queries signings groups remaining transform hzero).trans
+      (mul_le_of_le_one_left' (freshDigestSelectionProbability_le_one key message before))
 
 end SphincsSecurity.Concrete

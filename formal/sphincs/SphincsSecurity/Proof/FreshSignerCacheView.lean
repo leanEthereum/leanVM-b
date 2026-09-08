@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.SelectedDigestCache
+import SphincsSecurity.Proof.FewTimeFreshMass
 import SphincsSecurity.Proof.WeightedSigningMoments
 
 namespace SphincsSecurity.Concrete
@@ -28,14 +29,13 @@ theorem new_admissible_loop_freshSelected (attempts : Nat) (key : SecretKey) (me
   refine ⟨randomness, index, leaves, rfl, hpayload ▸ hbefore, ?_⟩
   rwa [hout, hview] at hP
 
-theorem probEvent_signWithView_newAdmissible_le_uniform (key : SecretKey) (message : Message)
+theorem probEvent_signWithView_newAdmissible_le_freshSelected (key : SecretKey) (message : Message)
     (before : QueryCache HashSpec) (P : FewTimeView → Prop) :
     Pr[NewAdmissibleSignerView before key P | (simulateQ romImpl (signWithView key message)).run before] ≤
-      Pr[P | ($ᵗ FewTimeView : ProbComp FewTimeView)] := by
+      Pr[FreshSelectedView before key message P |
+        (simulateQ romImpl (signDigestLoop digestAttemptLimit key message)).run before] := by
   rw [signWithView, simulateQ_bind, StateT.run_bind]
-  refine (probEvent_bind_le_probEvent (p := FreshSelectedView before key message P) ?_).trans
-    (probEvent_signDigestLoop_freshSelectedView_le_uniform digestAttemptLimit key message before before P
-      (onlyRejectedNewMessageEntries_self before key message))
+  refine probEvent_bind_le_probEvent (p := FreshSelectedView before key message P) ?_
   intro loopResult hloop hnotFresh
   obtain ⟨selected, loopCache⟩ := loopResult
   cases selected with
@@ -66,13 +66,68 @@ theorem probEvent_signWithView_newAdmissible_le_uniform (key : SecretKey) (messa
       exact hnotFresh (new_admissible_loop_freshSelected digestAttemptLimit key message before loopCache
         (some (randomness, index, leaves)) hloop P payload output hbefore hafter hadmissible hP)
 
+theorem probEvent_signWithView_newAdmissible_le_mass_mul_uniform
+    (key : SecretKey) (message : Message) (before : QueryCache HashSpec) (P : FewTimeView → Prop) :
+    Pr[NewAdmissibleSignerView before key P | (simulateQ romImpl (signWithView key message)).run before] ≤
+      freshDigestSelectionProbability key message before * Pr[P | ($ᵗ FewTimeView : ProbComp FewTimeView)] :=
+  (probEvent_signWithView_newAdmissible_le_freshSelected key message before P).trans_eq
+    (probEvent_signDigestLoop_freshSelected_eq_mass_mul_uniform digestAttemptLimit key message
+      before before P (onlyRejectedNewMessageEntries_self before key message))
+
+theorem expected_newAdmissibleSignerView_weight_le_mass_mul
+    (key : SecretKey) (message : Message) (before : QueryCache HashSpec) (weight : FewTimeView → ENNReal) :
+    (∑' source, Pr[NewAdmissibleSignerView before key (· = source) |
+      (simulateQ romImpl (signWithView key message)).run before] * weight source) ≤
+      freshDigestSelectionProbability key message before *
+        ∑' source, Pr[= source | ($ᵗ FewTimeView : ProbComp FewTimeView)] * weight source := by
+  rw [← ENNReal.tsum_mul_left]
+  apply ENNReal.tsum_le_tsum
+  intro source
+  rw [← mul_assoc]
+  apply mul_le_mul' _ le_rfl
+  simpa only [probEvent_eq_eq_probOutput] using
+    probEvent_signWithView_newAdmissible_le_mass_mul_uniform key message before (· = source)
+
+theorem expected_signWithView_newAdmissible_cost_le_mass_mul
+    (key : SecretKey) (message : Message) (before : QueryCache HashSpec)
+    (cost : ((Option Signature × Option FewTimeView) × QueryCache HashSpec) → ENNReal)
+    (weight : FewTimeView → ENNReal)
+    (hcost : ∀ result ∈ support ((simulateQ romImpl (signWithView key message)).run before),
+      cost result ≤ ∑' source, if NewAdmissibleSignerView before key (· = source) result then weight source else 0) :
+    (∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run before] * cost result) ≤
+      freshDigestSelectionProbability key message before *
+        ∑' source, Pr[= source | ($ᵗ FewTimeView : ProbComp FewTimeView)] * weight source := by
+  apply le_trans ?_ (expected_newAdmissibleSignerView_weight_le_mass_mul key message before weight)
+  calc
+    _ ≤ ∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run before] *
+        ∑' source, if NewAdmissibleSignerView before key (· = source) result then weight source else 0 := by
+      apply ENNReal.tsum_le_tsum
+      intro result
+      by_cases hr : result ∈ support ((simulateQ romImpl (signWithView key message)).run before)
+      · exact mul_le_mul' le_rfl (hcost result hr)
+      · rw [probOutput_eq_zero_of_not_mem_support hr, zero_mul, zero_mul]
+    _ = _ := by
+      simp only [← ENNReal.tsum_mul_left]
+      rw [ENNReal.tsum_comm]
+      apply tsum_congr
+      intro source
+      rw [probEvent_eq_tsum_ite, ← ENNReal.tsum_mul_right]
+      apply tsum_congr
+      intro result
+      split_ifs <;> simp
+
+theorem probEvent_signWithView_newAdmissible_le_uniform (key : SecretKey) (message : Message)
+    (before : QueryCache HashSpec) (P : FewTimeView → Prop) :
+    Pr[NewAdmissibleSignerView before key P | (simulateQ romImpl (signWithView key message)).run before] ≤
+      Pr[P | ($ᵗ FewTimeView : ProbComp FewTimeView)] :=
+  (probEvent_signWithView_newAdmissible_le_mass_mul_uniform key message before P).trans
+    (mul_le_of_le_one_left' (freshDigestSelectionProbability_le_one key message before))
+
 theorem expected_newAdmissibleSignerView_weight_le (key : SecretKey) (message : Message)
     (before : QueryCache HashSpec) (weight : FewTimeView → ENNReal) :
     (∑' source, Pr[NewAdmissibleSignerView before key (· = source) | (simulateQ romImpl (signWithView key message)).run before] * weight source) ≤
-      ∑' source, Pr[= source | ($ᵗ FewTimeView : ProbComp FewTimeView)] * weight source := by
-  apply ENNReal.tsum_le_tsum
-  intro source
-  apply mul_le_mul' _ le_rfl
-  simpa only [probEvent_eq_eq_probOutput] using probEvent_signWithView_newAdmissible_le_uniform key message before (· = source)
+      ∑' source, Pr[= source | ($ᵗ FewTimeView : ProbComp FewTimeView)] * weight source :=
+  (expected_newAdmissibleSignerView_weight_le_mass_mul key message before weight).trans
+    (mul_le_of_le_one_left' (freshDigestSelectionProbability_le_one key message before))
 
 end SphincsSecurity.Concrete
