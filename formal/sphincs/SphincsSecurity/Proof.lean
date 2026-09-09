@@ -820,6 +820,7 @@ import SphincsSecurity.Proof.NearUniformCoverageBound
 import SphincsSecurity.Proof.DeficitStoppingCost
 import SphincsSecurity.Proof.DeficitStructuralStep
 import SphincsSecurity.Proof.DeficitSecurityDecomposition
+import SphincsSecurity.Proof.UniformProposalMoments
 
 /-!
 The proof of `SphincsSecurityStatement`. The specification to review is `SphincsSecurity/Statement.lean`; the Lean kernel checks the proof against it.
