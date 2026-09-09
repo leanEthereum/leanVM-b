@@ -2,6 +2,8 @@
 
 This review concerns the unchanged scheme in `Statement.lean`, at `6b7f4d5f`. It adds no Lean code. The current public endpoint is 126 bits. The recommendation is to pursue the two-range argument below. Its closing inequalities work; its security conclusion still requires the concrete probability and execution correspondences specified here. Earlier notes contain superseded constants. This roadmap uses the unit-payment bounds throughout.
 
+The [minimal closing contract](minimal-closing-contract.md), reviewed at `69b56362`, gives a simpler sufficient small-range target: OTS costs at coefficient `7/4`, extra FTS risk at coefficient `1/8`, and the same coverage allowance. It also distinguishes the fixed-answer signer correspondence from the required random-oracle probability correspondence and lists the completion gates.
+
 ## The mathematical target
 
 Put N=2^128 and x=q/N. We need Pr[SUF win]<=2x for every admitted adversary. The budget counts every original hash call, including repeated calls, key generation, failed signing, successful signing and final verification. The cap remains 2^24 signing requests, and novelty is tested against the complete original signing log. At q>=N/2, probability at most one suffices.
