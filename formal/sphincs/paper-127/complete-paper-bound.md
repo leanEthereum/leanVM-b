@@ -1,60 +1,81 @@
 # Assembling the paper 127-bit bound
 
-This note assembles the preceding paper arguments for the unchanged concrete scheme. It does not assert that the Lean theorem has been proved. The new probability constructions, couplings, certificate counters, and their links to the original experiment still require formalization and review.
+This note assembles the current paper derivations for the unchanged concrete scheme. The detailed original-experiment transfers are now in small-budget-transfer.md and paid-probe-quadratic.md, with the certificate theorem in cached-target-forecast.md. This is an end-to-end paper argument, not a completed Lean theorem. Its mathematical audit and formalization must check the actual experiments and their hypotheses, rather than infer security from passing arithmetic scripts.
 
-Let N=2^128, x=q/N, x_0=3*2^-14, and
+Let N=2^128, x=q/N, x_0=2^-15, and
 
+    delta=2^-16,
     epsilon(q)=q/2^222+q/2^237+2^-700.
 
-The scheme uses independently sampled secrets and a classical random oracle with 256-bit outputs, with the specified low-bit truncations. Retain the actual signing cap, finite retry loops, Option failures, message/randomizer binding, and strong-forgery definition. Every invocation counted in q is an original hash call, including honest computation and final verification. The original game rejects logs longer than S; terminating with a losing result before request S+1 preserves winning probability. This is an analysis step, not a change to the actual signing oracle.
+The scheme uses independently sampled secrets and the original classical random oracle with 256-bit outputs and specified truncations. Retain the actual signing cap, finite retry loops, Option failures, message/randomizer binding, and strong-forgery definition. q counts every original hash call, including honest computation and final verification. The original verdict uses its complete signing log even after an analytical monitor stops.
 
-## Supporting arguments
+## Supporting arguments and one original law
 
-- reference-frontier-transfer.md supplies the exact conditional reference-encoding law, the transfer of canonical OTS prefixes to independent chain challenges, and the expected-cost bound for nonreference equal-code or different-code witnesses.
-- paid-probe-quadratic.md supplies an exact planted-graph exposure and a primitive bound that pays the message-query charge in one stopped execution.
-- cached-target-forecast.md supplies the degree-14 charged coverage bound and the degree-13 near-target certificate bound, including targets cached before signing. The exact rejection bridge in discrete-target-coupling.md gives one terminal Poisson family controlling all adaptive charging times. These notes also bound the exceptional conditions.
-- fts-useful-witness.md handles true FTS guesses that become useful before or after digest preparation, and distinguishes alternative preimages even when found before later secret disclosure. fts-guess-kernel.md supplies the explicit deferred-secret and forced-branch likelihood identities.
+- reference-frontier-transfer.md gives the exact conditional law of the reference counter and word at each fixed canonical message. small-budget-transfer.md extends its static-chain discussion to the complete adaptive original experiment, with the same allocated costs and an explicit cap on idealized auxiliary paths.
+- long-chain-inversion.md, multiple-chain-inversion.md and two-chain-hits.md give the partial-table likelihood and first-success charging calculations. The small-budget transfer retains their per-chain costs before summing and treats both orders of encoding preparation and inversion.
+- cached-target-forecast.md gives the full and near certificate inequalities for the stated message kernel, including targets cached before signing, own-input exclusion, failed responses, and actual costs. discrete-target-coupling.md gives the exact rejected-word bridge and common terminal proposal variable. The guards and numerical moments give epsilon(q).
+- paid-probe-quadratic.md gives the exact canonical graph law, the surviving hidden-label induction, the complete no-match SUF decomposition, and the joint primitive/message bound. Its primitive process needs no auxiliary coverage stops.
+- fts-guess-kernel.md gives the exact local deferred-secret and forced-first-guess identities. small-budget-transfer.md supplies their original-game induction, support and cost transfer, and application of coverage separately in each forced law.
 
-These arguments use changes of experiment only for analysis. They preserve the original marginal law where stated and never give extra interfaces or an internal success flag to the original adversary. The forced-first-guess games are explicitly compared by likelihood and used only for the uniform message-target estimate.
+The small branch uses the original graph execution augmented by independent pool and geometric lengths, stopped at the base coverage guards. The large branch uses that coverage monitor with an additional primitive stop, but analyzes its primitive probability on the original run stopped only at the first primitive match. Adding and erasing rejected values preserves each required projected law. No claim that secrets remain hidden in a fully revealed private cache is used.
 
-## Reduction of strong forgery
-
-On a nonexceptional run, an accepted strong forgery has at least one of the following: an OTS code or backward-witness event; a noncanonical structural output match; an actual FTS secret guessed before disclosure and still needed undisclosed at forgery; or a digest target fully covered by successful signing views at other inputs.
-
-The canonical graph fixes authentication values. With no noncanonical output match, accepted FTS leaf values are their true secrets. With no OTS deviation, the message, counter, and chain values of each OTS component are canonical. If the message-hash input equals one previously selected by a successful signing invocation, these canonical components give exactly the returned signature. Strong novelty therefore forces an earlier event or coverage by other inputs. Retry exhaustion cannot produce a canonical accepted counter where none exists.
-
-This decomposition is used with full execution costs in the small-q argument. The large-q argument instead stops at the first primitive equality match, which is allowed to precede a usable forgery, and applies the charged coverage estimate to that same stopped execution. Cache exceptions inside honest signing are acted upon at the macro boundary; all its message calls are counted, and no adversarial primitive probe occurs inside the honest macro.
+A monitor may stop before signing request S+1 because every original continuation then loses. Other exceptions are charged once in the original law. A signing invocation already in progress is completed and its certificates banked before stopping. Coverage bounds these banked counts without adding an exceptional allowance inside each forced experiment.
 
 ## Small budgets
 
-For 0<x<=x_0, the OTS, cheap structural, and ordinary coverage costs are at most (131/80)x. The remaining useful FTS events have probability at most
+For 0<x<=x_0, let Q, A_enc, A_str and A_msg be the disjoint actual charges defined in small-budget-transfer.md. They obey
 
-    557x^2/(1-x)+x^2/(2(1-x)^2)<(9/80)x.
+    Q+A_enc+A_str+A_msg <= q.
+
+The OTS estimate is
+
+    Pr[E_OTS] <= c_Q(x) E[Q]/N + c_enc(x) E[A_enc]/N,
+    c_Q(x)=((3/2)+4x+2x^2)/(1-x)+4x/(1-x)^2+82x/(1-x),
+    c_enc(x)=1+3444x/(1-x).
+
+It includes nonreference equal-code outputs and both neighbor and non-neighbor backward witnesses. The endpoint-dependent simulation preserves the original charges. Its idealized auxiliary paths are capped universally at q, without assuming that every ideal endpoint has a compatible original secret key.
+
+Fresh noncanonical structural output matches have probability at most E[A_str]/N, including FTS alternative preimages found before disclosure. The certificate theorem gives
+
+    E[C_full] <= (3/(2N)) E[A_msg]+delta*x,
+    E[C_near] <= 557x.
+
+A true guess of an undisclosed FTS secret has conditional hazard at most 1/(N-q). Two distinct true guesses cost at most x^2/(2(1-x)^2). For one guess together with a near certificate, force the first guess at slot j and compare by likelihood p_j product_(t<j)(1-p_t)<=1/(N-q). Each forced law preserves the original supported paths and fresh-message kernel. Apply its own near-certificate theorem and sum over j, obtaining 557x^2/(1-x). Certificates may occur before or after the guessed secret.
+
+In the absence of an OTS witness and a cheap structural match, backwards verification fixes every OTS component and every authentication value. Each supplied FTS leaf value is its true secret. A successful response at the same message/randomizer input would then contain this exact signature, contradicting strong novelty. The winning run therefore has a full certificate, a near certificate and a true guess, or two distinct true guesses. This is the exhaustive original-game reduction from the detailed transfer note.
 
 Consequently
 
-    P[forge] <=(7/4)x+2^-16 x+epsilon(q)<2x.
+    Pr[original SUF win]
+        <= c_Q(x) E[Q]/N+c_enc(x) E[A_enc]/N
+           +E[A_str]/N+(3/2)E[A_msg]/N
+           +delta*x+557x^2/(1-x)+x^2/(2(1-x)^2)+epsilon(q).
 
-All query classes share the same path budget; no event class is separately allocated q when its expected query cost is retained.
+For x<=x_0, the four linear coefficients are below 131/80, and the two quadratic FTS terms together are below (9/80)x. Use the shared path budget before adding those quadratic terms. This yields
+
+    Pr[original SUF win] <= (7/4)x+delta*x+epsilon(q) < 2x.
 
 ## Larger budgets
 
-For x_0<=x<=1/2, let B be the first primitive equality match and A_msg the message-call count before that match or exceptional stopping. The paid-probe bound gives
+For x_0<=x<=1/2, let B be the first external primitive equality match, and let A_B count message calls before B or original termination. The graph posterior and scalar calculation give
 
-    P[B]+(3/(2N))E[A_msg]<=2x-x^2/8.
+    Pr[B]+(3/(2N))E[A_B] <= U(x) <= 2x-(3/4)x^2,
+    U(x)=2x-x^2+max(x-1/4,0)^2.
 
-The coverage certificate estimate in the same stopped experiment gives the following unconditioned event bound. Write G for the event that no cache, deficit, or proposal exception occurs before termination:
+The coverage monitor may stop earlier at its own guards and also stops at B. Its count satisfies A_cov<=A_B pathwise on the same original run. This suffices to pay the coverage term; there is no requirement to expose its auxiliary stopping information to the primitive analysis. With no B or bounded exception, an original strong forgery supplies a banked full certificate. Thus
 
-    P[covered forgery and no B and G]<= (3/(2N))E[A_msg]+2^-16 x.
+    Pr[original SUF win]
+        <= Pr[B]+E[C_full]+epsilon(q)
+        <= 2x-(3/4)x^2+delta*x+epsilon(q).
 
-The expected charge is evaluated in the stopped experiment, without conditioning on G. Combining the two inequalities with the forgery decomposition and P[not G]<=epsilon(q) yields
+Since (3/4)x_0-delta=2^-17, the quadratic saving pays at least 2^-17*x throughout this range. For every q>=1,
 
-    P[forge]<=2x-x^2/8+2^-16 x+epsilon(q).
+    epsilon(q)/x <= 2^-94+2^-109+2^-572 < 2^-17.
 
-Since x_0/8-2^-16=2^-17, the negative term pays at least 2^-17 x throughout this range. For q>=1,
+This gives Pr[original SUF win]<=2x here too. For q>=N/2, use probability at most one. The cases cover every positive whole-experiment query bound q and give the paper inequality Pr[original SUF win]<=q/2^127.
 
-    epsilon(q)/x <=2^-94+2^-109+2^-572 <2^-17.
+## Remaining completion requirements
 
-Thus P[forge]<=2x here as well. When q>=N/2, use P[forge]<=1<=2q/N. These cases cover every positive whole-experiment query bound q.
+The paper now supplies the original-game constructions that the closing formulas need. Before treating them as established formal results, audit the endpoint-dependent OTS likelihood, the capped auxiliary query counts, the two information histories for encoding preparation, and the deferred-secret support argument. The original statement must remain the left side of every final transfer.
 
-The resulting paper inequality is P[forge]<=q/2^127. Completion of the requested task still requires translating this argument into Lean, connecting every new experiment and charge to Statement.lean, and checking the final theorem's assumptions and axioms. Passing the auxiliary arithmetic scripts is not a substitute for that work.
+Formal completion requires deriving the numerical full and near certificate theorems from the existing monitor; formalizing the exact graph and both primitive transfers; establishing the allocated small-budget and joint large-budget inequalities; assembling the public theorem; and checking its assumptions and axioms. No public 127-bit Lean theorem follows merely from the existence of this paper argument or its finite consistency checks.

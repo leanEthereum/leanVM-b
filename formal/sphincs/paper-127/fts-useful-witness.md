@@ -1,5 +1,7 @@
 # Useful FTS witnesses at small query budgets
 
+The complete current original-experiment transfer, shared cost definitions, and small-budget assembly are in [small-budget-transfer.md](small-budget-transfer.md). That note also handles auxiliary budget caps, the information histories for encoding preparation, and the inherited budget of forced FTS laws.
+
 This paper argument uses the near-target certificate bound in cached-target-forecast.md. Its purpose is to count a usable secret guess, rather than treating every hidden input guess as a complete forgery. Both chronological orders of digest preparation and secret guessing are included. The exact deferred-secret and forced-branch kernels are developed in fts-guess-kernel.md.
 
 ## Separate alternative preimages from true guesses
@@ -52,7 +54,7 @@ Hence, apart from cheap structural events and ordinary covered targets, the tota
 
 ## Shared budget and the small-query coefficient
 
-For x<=x_0=3*2^-14, the OTS estimate in reference-frontier-transfer.md has its prefix and encoding coefficients below 131/80. Fresh noncanonical structural queries, including every FTS leaf query that might produce an alternative preimage, have coefficient at most one. Ordinary coverage costs 3/(2N) per message query in expectation. These are disjoint query classes in the same execution; legitimate honest calls and unused budget only add slack.
+For x<=x_0=2^-15, the OTS estimate in reference-frontier-transfer.md has its prefix and encoding coefficients below 131/80. Fresh noncanonical structural queries, including every FTS leaf query that might produce an alternative preimage, have coefficient at most one. Ordinary coverage costs 3/(2N) per message query in expectation. These are disjoint query classes in the same execution; legitimate honest calls and unused budget only add slack.
 
 Thus the OTS and cheap structural events plus the ordinary coverage charge are at most (131/80)x. Exact rational arithmetic gives, throughout this range,
 

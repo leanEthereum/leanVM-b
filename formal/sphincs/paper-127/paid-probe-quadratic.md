@@ -149,4 +149,4 @@ For x>=2^-15, equivalently q>=2^113, the margin satisfies (3/4)x-delta>=2^-17. S
 
     epsilon(q)/x <= 2^-94+2^-109+2^-572 < 2^-17.
 
-This closes the paper large-budget range 2^113<=q<2^127 for the unchanged experiment. For q>=2^127, probability at most one suffices. The range below 2^113 still needs the allocated OTS witness transfer and the FTS first-guess comparison from [the plan](next-proof-plan.md). The local table and scalar checks in reference-and-paid-checks.py are finite consistency checks; they do not certify this adaptive argument or replace its future Lean proofs.
+This closes the paper large-budget range 2^113<=q<2^127 for the unchanged experiment. For q>=2^127, probability at most one suffices. The range below 2^113 is addressed by the allocated OTS witness transfer and FTS first-guess comparison in [small-budget-transfer.md](small-budget-transfer.md). The local table and scalar checks in reference-and-paid-checks.py are finite consistency checks; they do not certify this adaptive argument or replace its future Lean proofs.

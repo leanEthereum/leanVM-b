@@ -1,5 +1,7 @@
 # Canonical frontiers and the actual reference-encoding oracle
 
+The complete current original-experiment transfer, shared cost definitions, and small-budget assembly are in [small-budget-transfer.md](small-budget-transfer.md). That note also handles auxiliary budget caps, the information histories for encoding preparation, and the inherited budget of forced FTS laws.
+
 This is a paper change of experiment for the unchanged scheme. It justifies transferring the static chain bounds to a precisely defined backward-witness event in the actual execution. It also improves the OTS neighborhood preparation coefficient. It does not by itself bound every way to forge a signature.
 
 ## Sampling reference counters and words first

@@ -1,5 +1,7 @@
 # The exact hidden-secret kernel and forced first guesses
 
+The complete current original-experiment transfer, shared cost definitions, and small-budget assembly are in [small-budget-transfer.md](small-budget-transfer.md). That note also handles auxiliary budget caps, the information histories for encoding preparation, and the inherited budget of forced FTS laws.
+
 This note spells out the conditional kernels used in fts-useful-witness.md. It applies to the exposed canonical graph of paid-probe-quadratic.md, with independently sampled FTS secrets and their public leaf hashes. It does not assume that a publicly recognizable output match reveals whether a candidate was the actual secret.
 
 ## Deferred sampling invariant
