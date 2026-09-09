@@ -1,12 +1,14 @@
 # A minimal mathematical contract for the 127-bit proof
 
-This paper review concerns the unchanged game at `69b56362`. It adds no Lean code. The public statement currently stops at 126 bits. The purpose here is to specify sufficient intermediate results, explain why their combination works, and identify which correspondences must be proved before calling this a security proof. The detailed arguments and their current status are collected in [the roadmap](paper-first-roadmap.md).
+This paper review concerns the unchanged game through `282bf0f0`. It adds no Lean code. The public statement currently stops at 126 bits. The purpose here is to specify sufficient intermediate results, explain why their combination works, and identify which correspondences must be proved before calling this a security proof. This is the current plan; some earlier development notes use different constants and an independently uniform dummy word on encoding exhaustion.
 
 ## Conclusion of the review
 
 The two-range route has sufficient numerical room. Its completion depends on concrete adaptive probability arguments, rather than sharper numerical estimates. I recommend retaining the current split and simplifying the small-range target to the dyadic bounds below. This leaves room to weaken intermediate constants without changing the public security claim.
 
-The main mathematical risks are the exact random-oracle presentation with hidden private computations, the transfer of allocated OTS work through a change of measure, and coverage in the forced-FTS laws. A pointwise equality of signer outputs for fixed hash answers is useful evidence for the first correspondence, but it does not by itself prove equality of random-oracle distributions or either of the other two correspondences.
+The branch already has exact canonical graph sampling, full-table reference conditioning at a fixed address, and an original-game correspondence for signing with private prefix rows masked. These are substantive foundations. They do not yet prove the all-address conditional sampler, the projected adaptive OTS likelihood, or coverage in the forced-FTS laws. The last two are the main remaining mathematical risks. The original-game equality proved for a real frontier does not authorize inserting an independent endpoint into its place.
+
+The recommended next paper milestone is an exhaustive accepting-verifier argument together with explicit transition rules for these probability comparisons. The next security milestone should then be the large-budget interval of the original game. Do not spend the remaining margin on tighter occupancy estimates: the weaker bounds below suffice.
 
 ## The target and a sufficient closing calculation
 
@@ -37,13 +39,42 @@ These are desired conclusions with only the original hash-bound premise. They ar
 
 Use a finite canonical graph, with one structural node per valid serialized tweak. Sample the independent secret leaves and independent canonical outputs in topological order. At each domain, program its canonical child payload to that output; other rows are independent uniform values and are memoized when requested. Two labels at different coordinates may have the same numerical value. No distinct-label condition or global birthday exception is needed.
 
-For each OTS address, the canonical message is fixed by this non-encoding graph. The original finite encoding search therefore has an exact conditional-table presentation: its earlier canonical-message rows are invalid, its first valid row contains the reference word, and the remaining rows are uniform. Preserve exhaustion with its original probability. An independent valid dummy word on exhaustion is analytical data only. The 256-bit replies retain independently sampled high halves as well as their low 128-bit graph values.
+For each OTS address, the canonical message is fixed by this non-encoding graph. The original finite encoding search therefore has an exact conditional-table presentation: its earlier canonical-message rows are invalid, its first valid row contains the reference word, and the remaining rows are uniform. Preserve exhaustion with its original probability. A valid dummy word on exhaustion is analytical data only. The 256-bit replies retain independently sampled high halves as well as their low 128-bit graph values.
 
 Expose each OTS chain at its reference digit and above. Honest signing uses a private prefix only to reach this frontier or the full endpoint. Replace those private evaluations by their supplied result and the original number of cost markers. Reconstruct all roots, layer messages and authentication data consistently. Preserve the finite digest loop, every encoding search, all three layer computations even when a layer fails, and the selected FTS view when a later failure returns `None`.
 
 The probability correspondence should be proved by equality of finite transition kernels, extending the externally observed row table one query at a time. Each finite execution observes finitely many residual rows, so this argument does not require first sampling a uniform function on the infinite type of arbitrary byte strings. It must preserve full external replies, original responses, the message trace and original costs. Equality for each compatible fixed function is only the deterministic part of this argument.
 
 Classify external inputs by their bytes. An externally new row is new to the external history even if honest signing evaluated it privately. Neither hidden private inputs nor private cache-hit flags may enter the hidden-label history. Address separation limits a query to its own canonical target, including when its candidate value equals a label in another domain.
+
+### The complete reference family, with a simpler exhaustion convention
+
+The small-budget experiment conditions on all reference cuts at once. Independence of their marginal selected words is insufficient: retain the shared oracle table that answers every later query. Here is the required finite mass identity.
+
+Let \(m=|\mathcal C|\), \(v=m/N\), and \(T=2^{32}\). Choose a fixed valid word \(d_*\): 27 digits equal to 7, one equal to 2, and the other 14 equal to 0. Its sum is 191. At each address use
+
+\[
+\Pr[J=j,D=d]=(1-v)^j/N\quad(j<T,\ d\in\mathcal C),
+\qquad
+\Pr[J=\bot,D=d_*]=(1-v)^T.
+\]
+
+On success, condition earlier counter rows to be invalid and the selected row to encode \(d\). On exhaustion, condition every counter row to be invalid. All remaining rows are unrestricted. A full invalid reply has \(N(N-m)\) possible values; a full reply encoding one specified valid word has \(N\). Thus a particular full counter table with first valid row \(j\) has generated mass
+
+\[
+\frac{(1-m/N)^j}{N}\,[N(N-m)]^{-j}\,N^{-1}\,(N^2)^{-(T-j-1)}
+=N^{-2T}.
+\]
+
+A particular exhausted table has mass
+
+\[
+(1-m/N)^T[N(N-m)]^{-T}=N^{-2T}.
+\]
+
+Fix the entire non-encoding table and secrets first. Its canonical messages are now fixed, and different addresses use disjoint encoding domains, even when their messages coincide. Multiply the displayed identities over addresses and include the independent unrestricted rows. This recovers the uniform full encoding table for every fixed non-encoding environment. Integrating the environment proves the required joint equality for arbitrary adaptive continuations. In the reordered sampler the reference family is independent of the full non-encoding environment, not just of its graph labels.
+
+The fixed dummy avoids an unnecessary extra sampler and fits the existing arbitrary-dummy interface. It does mean that \(D\) need not be uniform independently of \(J\) on exhaustion. No following argument needs that assertion: it needs a valid word and independence of the reference family from non-encoding data. Neighbor counts hold for every valid word, and chain estimates hold for every fixed digit length. Exhausted addresses still have no legitimate reference counter; no signing response or accepting verifier is allowed to use the dummy as an actual encoding result. A verifier using an encoding at such an address is either rejected or uses a nonreference valid row, to which the usual equal-word or backward-witness classification applies.
 
 ## Large budgets: pay coverage inside the first-match bound
 
@@ -137,6 +168,16 @@ Both are increasing on \([0,1)\). Exact rational evaluation at \(x_*\) gives \(c
 
 Thus the existing proposed estimates are sufficient for these simpler contracts. This arithmetic verifies the closing allowance; it does not prove their applicability to the original law.
 
+There is also room to round the correction constants upward. For \(0\le x<1\), the proposed coefficients satisfy
+
+\[
+c_Q(x)\le\frac{3/2+100x}{(1-x)^2},\qquad
+c_{\rm enc}(x)\le1+\frac{4000x}{1-x},\qquad
+\frac{557x^2}{1-x}+\frac{x^2}{2(1-x)^2}\le\frac{600x^2}{(1-x)^2}.
+\]
+
+At the split the first two upper bounds are respectively \(407568384/268337161<7/4\) and \(28381/16381<7/4\); the third, divided by \(x_*\), is \(29491200/268337161<1/8\). These are exact rational comparisons. Use this allowance to simplify proofs while preserving their leading coefficients and shared cost accounting. Replacing an allocated query count by the whole budget before summing is not covered by this allowance.
+
 ## The two small-budget probability arguments
 
 For OTS, two distinct valid equal-sum digit vectors have positive total decrease. A decrease of one lowers one chain and raises one other, with at most \(42\cdot41\) possible neighboring words and at most \(41\) lowering a specified chain. A larger decrease requires a two-edge backward suffix in one chain or contacts in two chains, after excluding structural mergers above the reference frontiers. Charge completed witnesses, including preparation in either chronological order.
@@ -150,7 +191,11 @@ w(T)=\mathbb E[W\mid T]=\mathbf1^TP_0\cdots P_{d-1}e_Y
 
 The matrix \(P_j\) has a unit entry at the recorded answer of each queried input and a uniform row at each unqueried input. The number \(a_j\) counts distinct queried rows of that function, and \(Q_i=\sum_j a_j\). Independent completion of the remaining rows gives the equality; retaining only the uniform-row terms in the nonnegative matrix product gives the first inequality.
 
+The complete-table density has a short direct proof. For any prior mass \(\mu(H)\), the projected real mass at \((H,y)\) is \(\mu(H)W(H,y)/N\), whereas the ideal mass is \(\mu(H)/N\). Any auxiliary kernel depending only on \((H,y)\) preserves this full-table density. For the partial-table formula the stronger causal condition is essential: the kernel may depend on \(y\) and already observed prefix rows, but may not inspect an unqueried prefix cell. Under the ideal law a fixed transcript then imposes exactly its recorded row equalities; adaptive choices impose no further restrictions. This is the observation rule to prove for the actual simulator. The displayed matrices can equivalently be written as finite averaging operators; no enumeration of an \(N\)-element table is part of the algorithm.
+
 This converts each chain's allocated ideal cost to its real cost with factor at most \(1/(1-x)\). Transfer before summing over chains. The event, cost and stopping rule must all survive the projection. If the starting secret is retained, the density becomes \(N\mathbf1_{H(S)=Y}\), and this argument is invalid. An ideal endpoint may have no compatible starting secret, so cap every auxiliary execution explicitly at \(q\). Fixing independent auxiliary tables is permitted for the prefix likelihood calculation; fresh encoding probabilities need a history that has not exposed their unqueried rows.
+
+The adaptive witness calculation must include the costs of preparation before a target is selected. For two-edge suffixes, the last-unqueried-edge expansion of \(w\) counts each older queried input at most once; the baseline charge is \(3Q_i/2\), with the stated quadratic and cubic corrections. For a new one-edge contact after a real transcript \(T\), the restart charge is \(a_i(T)+2Q_i^+\), where \(a_i(T)\) counts old prefix rows and \(Q_i^+\) counts future rows through the first contact. Transfer that charge to the real law before summing over uncontacted chains. Their charges sum to at most \(Q_{\rm past}+2Q_{\rm future}\le2q\). This handles both a second contacted chain and an encoding marker that precedes its contact. The opposite order uses at most 41 neighboring words per contacted chain. The detailed restart derivation is in [Section 8 of the audit](mathematical-audit.md#8-a-conditional-ots-restart-with-an-explicit-shared-charge).
 
 For FTS, an active secret is uniform on its remaining candidates \(U\). A query at \(z\in U\) hits with probability \(1/|U|\). On a miss, remove \(z\) and return a uniform answer, allowing that answer to equal the public leaf hash. That alternative preimage remains distinct from guessing the true secret.
 
@@ -164,11 +209,19 @@ Force earlier eligible queries to miss and the eligible query at slot \(j\) to h
 
 Each modified branch has original support and preserves the original query budget. Prove that its fresh message kernel, finite signing loop and selected-view rules meet the coverage hypotheses, then attach that law's own proposal bridge. The near-certificate estimate in each \(R_j\) gives \(557x^2/(1-x)\) after summing over slots. The two-guess term is at most \(x^2/(2(1-x)^2)\). The original-law near estimate alone cannot justify this multiplication. Exceptions are paid once on the original execution, not once per forced law.
 
+## The coverage interface that must be transported
+
+The present certificate theorems quantify over adversaries in the original game. A forced-secret interpreter is not automatically another such adversary. Their use in a changed interpreter therefore needs a theorem derived from the local message and signing rules, rather than an application based only on similar type signatures.
+
+Its admissible environment can have arbitrary current non-message state and arbitrary causal non-message transitions. Conditional on that state, unqueried message rows must still be independent uniform full replies. Each signing request runs the original finite randomizer loop. Conditional on a fresh selection, the selected index and leaf tuple are uniform before the later failure decision; initially cached input selection has the deficit-controlled per-input bound. Post-selection computation may suppress disclosure by returning `None`, and successful responses disclose only their selected view. Every completed invocation pays at least 1024 original hash calls, and every execution retains the original signing and hash limits. All stops use the current history; completed certificates are retained when a subsequent guard stops the monitor.
+
+These are local assertions to establish, not an assumed global coverage inequality. The existing forecast and proposal arguments can then be transported from these assertions, with a separate record-first proposal construction for each law. A stop at a structural primitive match never inspects an unqueried message row. Likewise a forced FTS hit or miss uses only its current candidate set and queried input, not a future message answer. Those observations identify why the two required instantiations should satisfy the interface. The concrete records, stopping rules and cost identities still have to be checked. Conditioning globally on a future hit event would not satisfy the same argument.
+
 ## Completion gates
 
-1. Establish the exact random-oracle graph presentation and response/cost projection. The fixed-answer signer correspondence is a component of this gate, not the entire gate.
+1. Extend the established fixed-address full-table reference conditioning to the complete family and combine it with the established response/cost projection. Write down the retained state before any endpoint is idealized. The all-address finite mass calculation above gives this gate's paper proof strategy.
 2. Write the deterministic accepting-verifier trace against the concrete byte layout. It must account for every signature field, canonical encoding exhaustion, failed signing disclosures and the exclusion of the forgery's own input. Without a listed witness, an earlier successful response at that input must force equality of the entire signature.
-3. Establish coverage from its local transition rules in both presentations: the graph law stopped at the first match, and each forced-FTS law. Use separate analytical histories where required, while retaining the same original statistics in the final bounds.
+3. Establish the coverage interface just specified in both presentations: the graph law stopped at the first match, and each forced-FTS law. Use separate analytical histories where required, while retaining the same original statistics in the final bounds. Reuse the existing terminal moments and exception estimates.
 4. Complete the original-game large-range inequality. This is the first security milestone that directly reaches the 127-bit slope on a nontrivial interval.
 5. Complete the projected OTS likelihood and shared witness charging, and the forced-FTS comparison, to obtain the small-range inequality. Combine the intervals and probability at most one.
 

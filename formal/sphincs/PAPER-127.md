@@ -1,6 +1,14 @@
 # Paper route to 127-bit strong unforgeability
 
-Start with the [paper-first roadmap](paper-127/paper-first-roadmap.md) for the current target, both closing ranges, and the remaining concrete probability obligations. It uses the unit-payment constants and distinguishes the existing original-game coverage theorems from the transfers still needed for 127 bits. The development notes below include superseded bounds and historical status reports.
+Start with the [current mathematical plan](paper-127/minimal-closing-contract.md), reviewed against `282bf0f0`. The target is the unchanged original SUF game with probability at most `q / 2^127`. The public Lean endpoint remains 126 bits. This paper review adds no Lean code.
+
+Keep the split at `q = 3 * 2^114`. Above the split, a joint first-match and message-cost potential leaves a quadratic saving. Below it, completed OTS witnesses and FTS guesses must share the actual query allocations. The plan derives sufficient inequalities for both intervals, checks their exact arithmetic, and specifies the probability comparisons still needed. It also simplifies encoding exhaustion to a fixed valid analytical dummy word, preserving the full original failure distribution.
+
+The immediate paper gates are the complete reference-family sampling law, the exhaustive strong-forgery decomposition, and coverage from local message/signing rules in the two required alternative interpreters. Existing graph sampling and private-prefix masking are useful foundations; they do not yet establish the adaptive likelihood or the 127-bit theorem. The [mathematical audit](paper-127/mathematical-audit.md) contains the longer derivations and formal progress through the current branch.
+
+## Historical development notes
+
+The notes below record earlier routes and status reports. Their thresholds, error allowances and claims of what was then pending are historical. Use the current mathematical plan above for the recommended constants and completion criteria.
 
 The joint exception transfer is now checked in [CertificateJointExceptions.lean](SphincsSecurity/Proof/CertificateJointExceptions.lean). One augmented certificate execution retains a persistent flag for message-deficit and cached-index exceptions at query and signing boundaries. Erasing the flag preserves the complete certificate monitor and proposal word, and then the original verdict and cache. The original whole-experiment budget gives Pr[cache flag or proposal overflow] <= q/2^223 + q/2^170 + 2^-704. The existing full-coverage bound holds in this same game, and an original-forgery inequality separates its clean winning event from that allowance. This does not yet prove that every administrative first stop is harmless: the reachable cache-cardinality, digest-log, minimum-cost and signing-cap arguments still need assembly. The graph and cryptographic transfers remain open.
 
