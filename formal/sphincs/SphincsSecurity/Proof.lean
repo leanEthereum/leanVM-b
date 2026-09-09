@@ -823,6 +823,7 @@ import SphincsSecurity.Proof.DeficitSecurityDecomposition
 import SphincsSecurity.Proof.AdaptiveProposalWords
 import SphincsSecurity.Proof.SigningProposalRecord
 import SphincsSecurity.Proof.OriginalProposalExecution
+import SphincsSecurity.Proof.BankedProposalStep
 
 /-!
 The proof of `SphincsSecurityStatement`. The specification to review is `SphincsSecurity/Statement.lean`; the Lean kernel checks the proof against it.

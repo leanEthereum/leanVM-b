@@ -107,12 +107,13 @@ theorem expected_logTraced_world_reuseCachedTarget_le (key : SecretKey) (reuse :
       (logTracedMappedAdversaryImpl_cache_le key (.inl input) state result hr), mul_add]
   · rw [probOutput_eq_zero_of_not_mem_support hr, zero_mul, zero_mul, zero_mul, add_zero]
 
-theorem expected_logTraced_sign_reuseNewTarget_le (key : SecretKey) (reuse : ENNReal) (budget signatures : Nat)
+theorem expected_logTraced_sign_reuseNewTarget_le_mass_mul (key : SecretKey) (reuse : ENNReal) (budget signatures : Nat)
     (state : CoverLogState) (hsigned : SigningDigestsCached key.parameter state.1 key.root state.2) (message : Message)
     (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
     (∑' result, Pr[= result | (logTracedMappedAdversaryImpl key (.inr message)).run state] *
       reuseNewTargetEnvelope key reuse budget signatures state.1 result.2 groups remaining) ≤
-      (Fintype.card Index : ENNReal)⁻¹ * reuseRawEnvelope key reuse budget signatures state groups remaining := by
+      freshDigestSelectionProbability key message state.1 *
+        ((Fintype.card Index : ENNReal)⁻¹ * reuseRawEnvelope key reuse budget signatures state groups remaining) := by
   rw [logTracedMappedAdversaryImpl_run_map, tsum_probOutput_map_mul]
   have hrun : (unloggedMappedAdversaryImpl key (.inr message)).run state.1 =
       (fun result => (result.1.1, result.2)) <$> (simulateQ romImpl (signWithView key message)).run state.1 :=
@@ -121,12 +122,21 @@ theorem expected_logTraced_sign_reuseNewTarget_le (key : SecretKey) (reuse : ENN
     ∑' result, Pr[= result | computation] *
       reuseNewTargetEnvelope key reuse budget signatures state.1 (result.2, state.2 ++ [⟨message, result.1⟩]) groups remaining) hrun
   rw [tsum_probOutput_map_mul] at heq
-  have h := expected_signWithView_newTargetEnvelopeCharge_le key message state.1 state.2 hsigned
+  have h := expected_signWithView_newTargetEnvelopeCharge_le_mass_mul key message state.1 state.2 hsigned
     (Fintype.card Index : ENNReal)⁻¹ reuse
     (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) budget signatures groups remaining hvalid
   refine heq.le.trans (h.trans_eq ?_)
   unfold reuseRawEnvelope observedRawIndexShapeVector
   rw [targetShapeEnvelope_lift _ _ _ _ _ _ groups remaining hvalid]
+
+theorem expected_logTraced_sign_reuseNewTarget_le (key : SecretKey) (reuse : ENNReal) (budget signatures : Nat)
+    (state : CoverLogState) (hsigned : SigningDigestsCached key.parameter state.1 key.root state.2) (message : Message)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    (∑' result, Pr[= result | (logTracedMappedAdversaryImpl key (.inr message)).run state] *
+      reuseNewTargetEnvelope key reuse budget signatures state.1 result.2 groups remaining) ≤
+      (Fintype.card Index : ENNReal)⁻¹ * reuseRawEnvelope key reuse budget signatures state groups remaining :=
+  (expected_logTraced_sign_reuseNewTarget_le_mass_mul key reuse budget signatures state hsigned message groups remaining hvalid).trans
+    (mul_le_of_le_one_left' (freshDigestSelectionProbability_le_one key message state.1))
 
 theorem expected_logTraced_sign_reuseCachedTarget_le (key : SecretKey) (reuse : ENNReal) (budget signatures : Nat)
     (state : CoverLogState) (hsigned : SigningDigestsCached key.parameter state.1 key.root state.2)
