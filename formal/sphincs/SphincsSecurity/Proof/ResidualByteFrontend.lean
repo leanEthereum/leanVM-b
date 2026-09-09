@@ -11,11 +11,13 @@ set_option backward.isDefEq.respectTransparency false
 inductive Control (inputs : Finset HashInput) where
   | prepare (input : inputs)
   | random (input : unifSpec.Domain)
+  | account (cost : Nat)
   | stop
 
 abbrev ControlSpec (inputs : Finset HashInput) : OracleSpec (Control inputs)
   | .prepare _ => Action inputs
   | .random input => unifSpec.Range input
+  | .account _ => Unit
   | .stop => HashOutput
 
 abbrev World (inputs : Finset HashInput) := AdaptiveResidualLabels.World (ControlSpec inputs) CanonicalCoordinate inputs
@@ -49,6 +51,7 @@ noncomputable def environment : AdaptiveResidualLabels.Environment (ControlSpec 
         let prepared := prepare parameter inputs words disclosed known actions input state.memory
         PMF.pure (some prepared.1, prepared.2)
     | .random input => (PMF.uniformOfFintype (unifSpec.Range input)).map (fun answer => (some answer, state.memory))
+    | .account cost => PMF.pure (some (), { state.memory with hashCalls := state.memory.hashCalls + cost })
     | .stop => PMF.pure (none, state.memory)
   rowAnswer memory input answer := storeReply memory input.val answer
   probeAnswer memory input _ answer := storeReply memory input.val answer

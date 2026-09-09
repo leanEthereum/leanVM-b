@@ -149,6 +149,11 @@ theorem lazyImpl_rowsCovered (input : (World inputs).Domain) (state : State inpu
             SPMF.lift_pure, pure_bind, ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] at hresult
           subst result
           exact hcovered
+      | account cost =>
+          simp only [AdaptiveResidualLabels.lazyImpl, environment, OptionT.run_mk, StateT.run_mk,
+            SPMF.lift_pure, pure_bind, ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] at hresult
+          subst result
+          exact hcovered
   | inr input =>
       cases input with
       | read input =>
