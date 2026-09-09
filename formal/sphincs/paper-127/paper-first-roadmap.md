@@ -1,5 +1,7 @@
 # Paper-first roadmap for 127-bit strong unforgeability
 
+The [mathematical audit at `088bb5d9`](mathematical-audit.md) updates the branch status, gives the finite graph sampling mass identity, checks the two-range dependency order, and derives weaker sufficient correction constants of 100, 4,000 and 600. It distinguishes the remaining adaptive probability arguments from the closing arithmetic. No Lean code is added by that review.
+
 This review concerns the unchanged scheme in `Statement.lean`, at `6b7f4d5f`. It adds no Lean code. The current public endpoint is 126 bits. The recommendation is to pursue the two-range argument below. Its closing inequalities work; its security conclusion still requires the concrete probability and execution correspondences specified here. Earlier notes contain superseded constants. This roadmap uses the unit-payment bounds throughout.
 
 The [minimal closing contract](minimal-closing-contract.md), reviewed at `69b56362`, gives a simpler sufficient small-range target: OTS costs at coefficient `7/4`, extra FTS risk at coefficient `1/8`, and the same coverage allowance. It also distinguishes the fixed-answer signer correspondence from the required random-oracle probability correspondence and lists the completion gates.
