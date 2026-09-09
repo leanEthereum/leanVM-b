@@ -1,12 +1,12 @@
 # Revised paper plan for 127-bit SUF
 
-This paper review uses source commit b82a0533. It proposes a route for the unchanged experiment in Statement.lean, without adding Lean code. The public 126-bit theorem is established; the 127-bit theorem is not. The closing arithmetic and the abstract charging arguments below have enough slack. Their application to the complete original experiment remains a proof obligation. This note incorporates the two histories from two-filtration-audit.md, audits the local hidden-label transitions, and specifies the mathematical endpoints to establish before resuming formalization.
+This paper review uses source commit 106024f5. It proposes a route for the unchanged experiment in Statement.lean, without adding Lean code. The public 126-bit theorem is established; the 127-bit theorem is not. The closing arithmetic and the abstract charging arguments below have enough slack. Their application to the complete original experiment remains a proof obligation. This note incorporates the two histories from two-filtration-audit.md, audits the local hidden-label transitions, and specifies the mathematical endpoints to establish before resuming formalization. The additional results of this review are a single nonnegative potential that pays adaptive certificate creation directly from actual message calls and the original path budget, and a message-cache argument showing why the auxiliary rejected indices need not leak hidden secrets.
 
 Write N=2^128, I=2^26, L=1024, S=2^24 and x=q/N. Here q bounds actual hash calls on every execution path, including key generation, signing, adversarial calls and verification. The desired statement is Pr[SUF forgery] <= 2x. It suffices to handle 1 <= q < N/2: larger budgets follow from probability at most one, and the public definition requires positive q. Retain independent sampled secrets, all finite retries, Option signing failures, and the original signing log cap.
 
 The missing bit is a coefficient problem. Adding any positive coverage allowance to a primitive bound of 2q/N cannot establish the target. The plan gives large budgets a quadratic saving in a joint primitive-and-message bound, and gives small budgets a fixed saving by counting useful completed witnesses. Neither a terminal occupancy mean nor a count of individual secret guesses supplies both savings.
 
-The recommendation from this review is to keep this two-range route and finish its original-experiment arguments on paper. The next deliverable is the complete adaptive certificate theorem with the kernel contract below. The first security milestone should then be the large-budget branch, which avoids the additional OTS likelihood transfer and forced-guess argument. More numerical refinements or local projection lemmas alone do not complete either milestone.
+The recommendation from this review is to keep this two-range route and finish its original-experiment arguments on paper. The expanded [stopped coverage proof](cached-target-forecast.md) now derives the local shape transitions, fresh-target charges, and complete certificate inequality from the message kernel, and identifies its instantiation in the original signer. Its deferred-secret application still requires the separate exact graph simulation and inherited path budget. The committed Lean branch connects certificate accumulation and its pathwise and expected payments to the original whole game; the complete numerical coverage result is not yet formalized. Existing untracked terminal-word drafts are possible ingredients, not an established coverage or security endpoint. The next paper deliverable is the canonical-graph simulation and joint primitive/message bound, completing the large-budget branch before the additional small-budget witness transfer.
 
 ## 1. Define one experiment before combining estimates
 
@@ -50,7 +50,7 @@ Here is the required kernel contract for that last application. It is stronger t
 | Resources | The fixed root and parameter, cap of S invocations, whole-path hash budget q, and actual cost of at least L per completed invocation are retained. |
 | Stopping | Additional stops are adapted to the recorded execution; a stop during a macro takes effect after its costs and possible first completions have been recorded. |
 
-The local target-shape proof must be derived from these properties. A theorem only for the original fixed-key signer would leave a new theorem to prove in every forced-secret experiment. Conversely, this contract does not grant arbitrary secret disclosure when applying the forgery decomposition: the original and forced primitive experiments must separately justify their allowed disclosures.
+The expanded coverage note derives the local target-shape proof from these properties: product expansion gives the fresh-query and signing operators, and their positive commutator gives the continuation forecast. This is a paper derivation for the stated kernel, rather than an assumption of a global certificate bound. Its Lean translation must retain that scope; a theorem only for the original fixed-key signer would leave a new theorem to prove in every forced-secret experiment. Conversely, this contract does not grant arbitrary secret disclosure when applying the forgery decomposition: the original and forced primitive experiments must separately justify their allowed disclosures.
 
 The local invariant is a bank plus pending forecasts. For a required coordinate set D, let B_h contain targets already certified and let phi_h(z) be the target-shape forecast at remaining actual budgets q-t_h and S-s_h. Define
 
@@ -64,7 +64,7 @@ Key generation creates no message targets, so M_0=0. There are at most q charged
 
     E[C_D] <= N^-1 E[sum_h a_h W_D(h)].
 
-This is the mathematical role of the committed local banking lemmas. The endpoint still needs the actual adaptive execution, the cost identities below, and the shared terminal domination. It cannot be replaced by assuming the displayed global inequality.
+This is the mathematical role of the committed local banking lemmas. The expanded paper proof connects the actual adaptive execution, the cost identities below, and the shared terminal domination. The complete Lean endpoint still needs this assembly; it cannot be replaced by assuming the displayed global inequality.
 
 For a message m, let T_m be the number of digest attempts made by its actual finite signing loop. At a fixed pre-state, every cached admissible input for m is selected with probability E[T_m]/N. This is an equality: at each executed attempt the fresh randomizer draw hits that input with probability 1/N, and its admissibility ends the loop. Fresh selection has a uniform index conditional on occurring. On digest exhaustion only, add an independent uniform dummy index. Consequently the completed selected-index law satisfies
 
@@ -92,6 +92,26 @@ One construction runs the original signer first and independently adds a geometr
 
 Thus erasing rejected values preserves the original record together with an independent geometric length. This is the projection used in G. For F, the proposal-first construction supplies independent uniform proposals; release the completed record at acceptance, leaving its unused suffix independent. Induction through completed boundaries must establish these properties for adaptive records. Revealing the record, and hence its selected index, before exposing its accepted proposal would not justify calling that proposal uniform.
 
+For this particular signer, the bridge has an additional useful property: p_i is determined by the requested message, fixed parameter/root, and current message cache alone. To see this, condition on that cache and induct on the finite attempt counter. A randomizer is independent uniform; a cache hit has its recorded answer; a fresh cell has a uniform answer and extends only that cache. These rules determine the entire digest-loop distribution, including F, E, E[T_m], and the cached index counts in the formula for p_i. The subsequent OTS computations cannot alter the retained selected index. This argument also applies in a forced-secret law whenever its fresh message cells retain that same conditional kernel.
+
+Let G_h contain this message cache, and define r_i=(beta/I-p_i)/(beta-1). The rejected word is sampled with r(G_h), independently of the original record. For a geometric length g, a rejected word u of length g-1, an original projected record omega, and any remaining hidden data X, the augmented joint mass factors as
+
+    Pr[X,omega,g,u | G_h]
+      = Pr[X,omega | G_h] * beta^-1*(1-beta^-1)^(g-1)
+        * product_(a=1)^(g-1) r_(u_a)(G_h).
+
+This factor is independent of X and omega. The selected final letter is already recoverable from omega's message trace, with an independent dummy on digest exhaustion. Thus adding the rejected word and dummy does not further change the hidden-secret posterior conditional on the original projected record. In particular, the rejected values are not intrinsically secret-dependent leakage. This factorization may be derived after averaging over private keys and non-message caches with the same message projection; revealing those private objects is not required.
+
+The two histories remain a sufficient way to organize the proof. This extra observation is a concrete compatibility argument, and suggests stating the coverage kernel in terms of the message cache and successful views. It does not justify giving the primitive analyst the full private cache. Its use in the concrete proof requires showing that the recorded message trace reconstructs all relevant cached cells and that the selected index survives encoding failure. The forced-first-guess comparison can still be done before adding rejected values, avoiding any need to cancel their likelihood factors.
+
+There is a finite-kernel way to state precisely the needed induction. For a fixed terminal length J and a consumed word u, let K_J(u) be the distribution obtained by keeping the first J letters of u if |u|>=J, or appending J-|u| independent uniform letters otherwise. For each active signing macro with its entire original record omega and auxiliary block b, prove the identity
+
+    sum_(omega,b) Pr[omega,b | current state] K_J(u ++ b) = K_J(u).
+
+For |u|>=J both sides are the same point mass. Otherwise, the proposal-first factorization makes the next letter uniform. Induction on J-|u| proves the identity: rejection repeats the same record kernel, while acceptance releases its conditionally sampled record, whose probabilities sum to one, and leaves an independent suffix. The record may determine an arbitrary later continuation; repeat the same identity from that continuation's state. External steps and inactive monitoring append no letters, so their identity is immediate. This is also why an invocation that overruns J can finish unchanged: its first J letters already determine K_J, and no post-overrun domination is needed.
+
+The identity is stronger than an unconditional uniform marginal. At every completed boundary it identifies the conditional law of the eventual terminal word given the current private state and consumed word. It neither says that the whole terminal word is independent of the game nor allows unused letters into the conditioning history. For any nonnegative terminal payoff g, Phi_h=E[g(terminal word) | F_h] is therefore a martingale. Equivalently Phi_h is the explicit finite sum of g against K_J(u_h), so the argument can use kernel sums throughout.
+
 Independently choose J ~ Poisson((19/50)I). Complete the proposal sequence after termination with independent uniform values. The counts Z_i in its first J entries are independent Poisson(19/50) unconditionally. Stop initially if J < 25313293 and after a completed signing invocation if the number K_s of consumed proposals exceeds beta*s+131072. On every clean boundary, the unused length m satisfies
 
     m=J-K_s >= beta*(S-s)+13.
@@ -113,13 +133,33 @@ For pathwise payment, use total actual hashes instead. A signing multiplier is a
 
     sum_h a_h <= q,             E[sum_h a_h] <= E[A_msg].
 
-Set Z=(R_full-3/2)_+. From R_full <= 3/2+Z and the tower identity,
+The following potential packages the entire payment into one conditional step. It is the main simplification from this review. Put c=3/2, Z=(R_full-c)_+, and Phi_h=E[Z | F_h]. Let D_h=sum_(j<h) a_j be accumulated predictable creation mass and let A_h be accumulated actual message calls. The path budget gives 0<=D_h<=q and 0<=A_h<=q. Define
 
-    E[sum_h a_h W_full,h]
-        <= (3/2)E[sum_h a_h] + E[Z sum_h a_h]
-        <= (3/2)E[A_msg] + q*delta.
+    V_h = M_h + c*(q-A_h)/N + (q-D_h)*Phi_h/N.
 
-No independence between the charging times and R_full is used. Dividing by N and applying the banked-forecast inequality proves the full certificate estimate. The same argument with R_near gives the near certificate estimate. This complete result, with its precise filtration and A_msg, is the next substantial coverage milestone. The checked raw-moment and proposal-kernel lemmas are ingredients for it.
+Every term is nonnegative. At a live boundary, W_full,h<=c+Phi_h. Moreover D_(h+1)=D_h+a_h with a_h already determined by F_h, E[A_(h+1)-A_h | F_h]>=a_h, and E[Phi_(h+1) | F_h]=Phi_h. Consequently
+
+    E[V_(h+1) | F_h]
+      <= M_h + a_h*(c+Phi_h)/N
+         + c*(q-A_h-a_h)/N + (q-D_h-a_h)*Phi_h/N
+       = V_h.
+
+Banking completions and discarding pending forecasts at a stop can only decrease M. After stopping, set future a_h to zero and freeze the monitored A_h and D_h; completion of the terminal word still has the same kernel identity. Thus the same inequality holds through stopping. Collapse zero-hash computation between charged boundaries into its conditional kernel and pad after termination; at most q charged boundaries remain. Finite expectation telescoping needs no assertion of independence at an adversarial stopping time.
+
+Initially M_0=A_0=D_0=0. At termination M_T>=C_full and the last term of V_T is nonnegative, so
+
+    E[C_full] + c*(q-E[A_msg])/N
+      <= E[V_T] <= E[V_0] = c*q/N + (q/N)*E[Z].
+
+Cancel the finite c*q/N term to obtain
+
+    E[C_full] <= (3/(2N))*E[A_msg] + delta*x.
+
+All quantities in the cancellation are integrable: the resource counters are bounded by q, and the finite-degree Poisson moments bound the terminal payoffs. Pending forecasts are uniformly bounded by a finite function of q and S, since there are at most q cached message targets and all matching multiplicities are bounded by q and S. For near certificates, let M_h be the sum of the 14 ledgers, one for each omitted coordinate, and use Phi_h=E[R_near | F_h] and V_h=M_h+(q-D_h)*Phi_h/N. The aggregated price W_near already includes this factor of 14; D_h remains the single shared creation mass. The same step, with no message-credit term, gives E[C_near]<=x*E[R_near]<557x.
+
+This argument does not assume that creation mass and terminal occupancy are independent. Such a replacement would be false even in a toy process: if R is 2 with probability 1/4 and otherwise zero, and an informed process charges a=q only when R=2, then E[aR]=q/2 whereas E[a]E[R]=q/8. The conditional kernel identity and the remaining-mass term in V are exactly what handles that correlation.
+
+The one-potential argument is an abstract theorem under the displayed kernel contract and local forecast bounds. The expanded coverage note derives those local bounds and checks the original signer's message transitions, failure cases, and costs. It also explains why the same coverage argument applies to deferred-secret kernels once their exact graph simulation and original path budget are established. Its premises must be discharged in the corresponding Lean kernels, rather than added as assumptions to the final security claim.
 
 The total proposed exceptional allowance remains
 
@@ -128,6 +168,22 @@ The total proposed exceptional allowance remains
 The game rejects a log with more than S signing requests. Terminating with loss before request S+1 therefore discards no winning run; this termination requires no exceptional allowance. Proposal overflow and cache exceptions retain all calls of the invocation that encountered them.
 
 There are two useful consistency checks on these stops. Since every actual invocation costs at least L, requesting one with fewer than L actual hashes remaining is impossible on a path admitted by the original budget; the monitor's corresponding gate cannot silently discard a winning path. Also, on a clean boundary the terminal proposal pool dominates forecasts before the next macro, even if that macro overruns the pool and triggers a stop. Its first completions are paid by the pre-macro conditional inequality. No post-overrun domination or resampling of that completed macro is needed.
+
+The concrete coverage audit must check the following cases against the same V, not give each case a new budget or a different terminal word.
+
+| Transition or boundary | Required accounting |
+| --- | --- |
+| Fresh external message cell | Its answer is uniform before exposure; a_h=1, and the call is included in A_h. Its first certificate, if already covered, is banked immediately. |
+| Cached external message cell | No new target is charged; the actual repeat still counts as a message call. |
+| Fresh digest selection | Use the conditional multiplier L*f_h before the macro. Include all attempts, append the retained selected index, and exclude this input's own view when forecasting its new target. |
+| Cached digest selection | Create no new target on that outcome. The selected cached index still terminates the proposal block, and a successful response may complete old targets. The multiplier remains a conditional pre-macro quantity, not a flag chosen after seeing this outcome. |
+| Digest exhaustion | Retain every actual attempt and the failed response. Add only the independent analytical dummy index, with no successful signing view. |
+| Encoding failure after selection | Keep the selected index, all actual costs, and the failed response. Do not add a successful signing view or replace the index with a fresh sample. |
+| Cache, deficit, or proposal stop during a macro | Complete its actual record and bank first completions before dropping pending forecasts. Domination is needed at the clean pre-state only. |
+| Request S+1 | The original final log is invalid on every continuation. Monitoring may stop without charging this as a probabilistic exception. |
+| Verification | Its actual hash calls use the same message cache and costs. A newly queried forgery digest can itself complete a certificate. |
+
+Use two branch-specific stopping times. The base stop is termination, the signing cap, or a cache, deficit, or proposal exception. The large-budget stop additionally stops at the first primitive match B. Coverage must permit either stop. The forced-first-guess argument uses the base stop, since stopping at the first guessed secret would remove the later signatures whose near certificate it needs. The message count in each branch is the count for that branch's chosen stop; counts from the two branches are not combined.
 
 ## 3. Sharpen the primitive probability calculation
 
@@ -145,6 +201,12 @@ The following local induction makes the posterior claim precise. For each still-
 | Successful FTS disclosure | Choose the coordinate from the digest and exposed failure data, sample its value from its current U_v, reveal it, and retire it. The choice does not inspect that hidden value. |
 
 For example, after an input miss, a fresh off-canonical row is independent of both the hidden child and hidden parent. Conditional on its observed answer y and the parent miss, the only new constraint on the parent is X_v != y. These two constraints concern distinct coordinates, so their conditional law still factors. The coordinates may take equal numerical values; the argument uses independent sampling at distinct graph coordinates. This proves the local product update, including the case where the candidate and observed answer happen to be the same value.
+
+Explicitly, for a candidate z at hidden child u, an answer y, and a distinct hidden parent v, the surviving joint mass is proportional to
+
+    product_w [1_(x_w in U_w)/|U_w|] * 1_(x_u != z) * (1/N) * 1_(x_v != y).
+
+The two indicators restrict different factors. Normalization therefore gives independent uniforms on U_u without z and U_v without y, leaving every other factor unchanged. When the parent is public, the last indicator restricts only y. Independent high output bits add an unchanged factor. This is the precise local argument to instantiate for the serialized graph; a global claim that hidden values stay uniform is not a substitute for it.
 
 For actual signing, the cost and failure mask must satisfy this induction too. The digest path depends on message cells and randomizers. Every OTS counter search is determined by its exposed canonical message and reference counter; the tree and FTS recomputations have fixed shapes once the selected index is known. Successful responses add only exposed canonical data and the selected FTS secret coordinates. Therefore the intended conditional kernel has no extra secret-dependent branch to charge. The remaining original-experiment work is to carry these facts through the whole byte-level graph and query schedule, rather than assume the invariant as a hypothesis of a security endpoint.
 
@@ -247,7 +309,7 @@ The paper work should deliver three original-experiment statements: the stopped 
 | Small budgets | Pr[forge]<=(7/4)x+delta*x+epsilon(q) for q<=2^113 | Transfer the allocated OTS density argument and prove the projected first-guess likelihood, then apply coverage in each forced law. |
 | Public claim | Pr[forge]<=q/2^127 for every admitted q | Combine the two ranges with probability at most one for q>=2^127, without changing the scheme or its budget. |
 
-The next work should complete the first two rows on paper. For coverage, check a cached selection, a fresh selection, digest exhaustion, encoding failure after selection, an external query, and each stopping rule against the same invariant. For the graph, check the conditional distribution after an input miss, an output miss, a cache repeat, and an adaptively selected disclosure. Then finish the large-budget branch before the more elaborate small-budget transfer. These milestones measure completed security arguments, rather than the number of supporting modules.
+The next paper work should complete the exact graph simulation and exhaustive forgery decomposition, carrying the explicit product-mass calculation through input misses, output misses, cache repeats, and adaptively selected disclosures. Combine its joint primitive/message estimate with the written coverage derivation to finish the large-budget branch, then handle the more elaborate small-budget transfer. For coverage formalization, use the single potential V and the concrete kernel derivation, including a fresh bridge for every forced-secret law. These milestones measure completed security arguments, rather than the number of supporting modules. A useful stopping criterion for further infrastructure is that its next endpoint must discharge one of these concrete obligations for the original game.
 
 The end-to-end acceptance test is an inequality whose left side is the original forgeAdvantage, whose right side is a numerical function of the original q, and whose only adversary assumption is the original whole-experiment bound. An endpoint that assumes its own certificate bound, a global posterior invariant, a favorable future occupancy event, or a newly restricted signing oracle has not completed the corresponding row. Intermediate lemmas may have such explicit premises, but the paper must discharge them before claiming the row is established.
 
