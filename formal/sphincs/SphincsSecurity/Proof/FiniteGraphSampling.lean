@@ -116,6 +116,26 @@ theorem evalDist_plant_fst (input : Node → State → Cell)
       rw [bind_pure_comp]
       exact ih (advance node answer state)
 
+omit [_root_.Finite Cell] [_root_.Finite Answer] [Nonempty Answer] in
+theorem evalDist_plant_read {View Result : Type} (input : Node → State → Cell)
+    (advance : Node → Answer → State → State) (nodes : List Node) (state : State)
+    (view : State → (Cell → Answer) → View)
+    (hview : ∀ node before after table answer,
+      view after (Function.update table (input node before) answer) = view after table)
+    (next : State → View → ProbComp Result) :
+    𝒟[do let result ← plant input advance nodes state; next result.1 (view result.1 result.2)] =
+      𝒟[do
+        let result ← draw advance nodes state
+        let table ← ($ᵗ (Cell → Answer) : ProbComp _)
+        next result (view result table)] := by
+  induction nodes generalizing state with
+  | nil => simp only [plant, draw, bind_assoc, pure_bind]
+  | cons node nodes ih =>
+      simp only [plant, draw, bind_assoc, pure_bind, hview]
+      apply evalDist_bind_congr_left
+      intro answer
+      exact ih (advance node answer state)
+
 omit [_root_.Finite Cell] [_root_.Finite Answer] [Nonempty Answer]
   [SampleableType Answer] [SampleableType (Cell → Answer)] in
 theorem read_coordinate_table (table : Cell → Answer) (nodes : List Cell) (state : Cell → Answer) :

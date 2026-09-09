@@ -1,12 +1,13 @@
 import SphincsSecurity.Proof.CanonicalGraphSampling
 import SphincsSecurity.Proof.CanonicalGraphHonest
 import SphincsSecurity.Proof.FrontierRandomOracle
+import SphincsSecurity.Proof.EncodingInputs
 
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec OracleComp.DeferredSampling
 set_option backward.isDefEq.respectTransparency false
-attribute [local irreducible] canonicalGraphInputs canonicalPayloadInputs
+attribute [local irreducible] canonicalGraphInputs canonicalPayloadInputs canonicalEncodingInputs
 
 noncomputable def graphFrontierGameRest (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
@@ -90,7 +91,8 @@ theorem evalDist_boundaryGameCore_canonicalGraph (inputs : Finset HashInput)
     (evalDist_frontier_eq_canonicalGraph inputs hgraph dummy adversary)
 
 noncomputable def canonicalGraphGameInputs (adversary : Adversary) : Finset HashInput :=
-  hashInputs (boundaryGameCore adversary) ∪ Finset.univ.biUnion canonicalGraphInputs
+  (hashInputs (boundaryGameCore adversary) ∪ Finset.univ.biUnion canonicalGraphInputs) ∪
+    Finset.univ.biUnion canonicalEncodingInputs
 
 attribute [local irreducible] canonicalGraphGameInputs
 
@@ -98,6 +100,8 @@ theorem canonicalGraphInputs_subset_gameInputs (adversary : Adversary) (paramete
     canonicalGraphInputs parameter ⊆ canonicalGraphGameInputs adversary := by
   intro input hinput
   rw [canonicalGraphGameInputs, Finset.mem_union]
+  apply Or.inl
+  rw [Finset.mem_union]
   apply Or.inr
   rw [Finset.mem_biUnion]
   simp only [Finset.mem_univ, true_and]
@@ -106,7 +110,16 @@ theorem canonicalGraphInputs_subset_gameInputs (adversary : Adversary) (paramete
 theorem hashInputs_subset_canonicalGraphGameInputs (adversary : Adversary) :
     hashInputs (boundaryGameCore adversary) ⊆ canonicalGraphGameInputs adversary := by
   rw [canonicalGraphGameInputs]
-  exact Finset.subset_union_left
+  exact Finset.Subset.trans Finset.subset_union_left Finset.subset_union_left
+
+theorem canonicalEncodingInputs_subset_gameInputs (adversary : Adversary) (parameter : PublicParameter) :
+    canonicalEncodingInputs parameter ⊆ canonicalGraphGameInputs adversary := by
+  intro input hinput
+  rw [canonicalGraphGameInputs, Finset.mem_union]
+  apply Or.inr
+  rw [Finset.mem_biUnion]
+  simp only [Finset.mem_univ, true_and]
+  exact ⟨parameter, hinput⟩
 
 theorem forgeAdvantage_eq_canonicalGraph (dummy : OtsReferenceWords) (adversary : Adversary) :
     forgeAdvantage scheme adversary =

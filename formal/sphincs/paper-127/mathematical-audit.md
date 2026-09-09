@@ -1,10 +1,16 @@
 # Mathematical audit of the route to 127 bits
 
-This is a paper-only review of branch `sphincs-fv` at `088bb5d9`. No Lean code is added. The original public theorem is still 126 bits. The recommendation is to retain the two-range proof, with the explicit sampling argument, shared costs and completion gates below. The arithmetic closes with room to weaken several constants. Establishing the adaptive probability lemmas for the concrete experiment remains necessary; this review does not claim that the security theorem is proved.
+This is a paper-only review of branch `sphincs-fv` through `d6c38d16`. No Lean code is added by this review. The original public theorem is still 126 bits. The recommendation is to retain the two-range proof, with the explicit sampling argument, shared costs and completion gates below. The arithmetic closes with room to weaken several constants. Establishing the adaptive probability lemmas for the concrete experiment remains necessary; this review does not claim that the security theorem is proved.
 
-The current branch has progressed beyond the fixed-function correspondence described in some earlier notes. Its frontier game has the original SUF probability and inherits the original hash budget, using a finite uniform table sampled before the secrets. That is a useful foundation. An independent-label presentation of the canonical graph, its conditional hidden-label law, and the small-budget probability transfers are further obligations. The finite table may need enlargement to include canonical rows absent from the original computation's footprint; the existing correspondence permits such enlargement.
+The current branch has progressed beyond the fixed-function correspondence described in some earlier notes. Its frontier game has the original SUF probability and inherits the original hash budget, using a finite uniform table sampled before the secrets. The subsequent canonical-graph construction also preserves that joint law. The hidden-label posterior and the small-budget probability transfers are further obligations.
 
 Subsequent formalization implements the independent-label graph in [CanonicalGraphGame.lean](../SphincsSecurity/Proof/CanonicalGraphGame.lean) and its imports. The sampling identity retains the completed oracle table and supports arbitrary probabilistic continuations. The labels have the uniform function-table law for every fixed secret assignment, and agree with honest hash values at positions within the tree bounds. An explicit finite input envelope covers every canonical payload independently of the secrets. The graph game reads its root and OTS frontiers from the labels, preserves the original SUF probability and inherits its hash budget. This completes the structural sampling part of Section 2; the conditional reference-encoding law, hidden-label posterior and small-budget transfers remain to be formalized.
+
+[CanonicalEncodingSampling.lean](../SphincsSecurity/Proof/CanonicalEncodingSampling.lean) now proves that the full family of canonical counter tables is uniform independently of the structural graph labels. The original canonical searches, including their returned counters, words, exhaustion and exact costs, have the resulting joint distribution. Their finite input envelope is included in the existing original-game correspondence. [FirstSuccessTable.lean](../SphincsSecurity/Proof/FirstSuccessTable.lean) proves the exact joint decomposition into the selected result followed by a product of restricted row distributions, retaining the whole counter table; [ReferenceEncodingTable.lean](../SphincsSecurity/Proof/ReferenceEncodingTable.lean) specializes its masses to the concrete decoder. These results formalize the graph-label independence and finite counter-table identities in Section 2. The conditional counter sampler still needs integration with the remaining shared oracle state, including the accessible OTS prefix tables, before using it in the adaptive security arguments.
+
+The paper decision is to keep the original scheme and the split at \(q_*=3\cdot2^{114}\). Before resuming Lean, the next reviewable object should be an accepting-verifier decomposition and the concrete observation rules for the probability arguments below. The most consequential uncertainty is the adaptive transfer of allocated OTS work. A static chain inequality or a final coefficient calculation does not resolve that uncertainty.
+
+The proof uses several histories of the same execution. For the primitive posterior, retain the public cut, external replies, the signer's message trace, responses and costs, while hiding private prefix inputs. For the OTS likelihood, erase the selected chain's starting secret and private prefix data, and permit auxiliary information generated from its published endpoint. For fresh encoding probabilities, hide unqueried encoding rows. For coverage, hide unqueried message rows and unused proposal letters. These histories cannot be merged indiscriminately. The resulting bounds must be integrated back to statistics of the same original run before addition.
 
 ## 1. Fix the target and the source of difficulty
 
@@ -63,6 +69,23 @@ Reference encoding is another exact sampling change. Let \(\mathcal C\) be the v
 \]
 
 The second formula adds an independent valid dummy on exhaustion. These probabilities do not depend on the canonical message, so the pairs \((J,D)\) are independent of the non-encoding graph. Conditional on a pair, preceding canonical-message rows are independently invalid, the reference row encodes \(D\), and unrestricted rows are uniform. Multiplying these conditional masses recovers the original table law, also on exhaustion. High halves remain independent uniforms.
+
+Here is the multiplication explicitly, so that the argument covers the entire table used by subsequent adaptive queries. Write \(m=|\mathcal C|\). The code has a unique low digest for each valid word. A full invalid reply has \(N(N-m)\) possibilities, and a full reply encoding one fixed word has \(N\) possibilities. For any fixed counter table whose first valid word is \(d\) at \(j<T\), the proposed sampling probability is
+
+\[
+\frac{(1-m/N)^j}{N}\,
+[N(N-m)]^{-j}\,N^{-1}\,(N^2)^{-(T-j-1)}
+=N^{-2T}.
+\]
+
+For a table with no valid row, sum over its unobserved dummy word:
+
+\[
+\sum_{d\in\mathcal C}\frac{(1-m/N)^T}{m}
+[N(N-m)]^{-T}=N^{-2T}.
+\]
+
+Both are exactly the original uniform full-table mass. Rows outside the canonical counter block contribute the same independent factors on both sides. The canonical message may depend on the entire non-encoding graph: condition on that graph first, use distinct counter bytes within an address and distinct tweak bytes across addresses, then integrate. Equality of this joint table law proves equality for any subsequent adaptive continuation, including one that revisits rejected counters or inspects high output bits. It is stronger than equality of the selected word's marginal law.
 
 The existing frontier replacement must then be used with this law. Its response, failure and cost depend on the cut, reference counters, message trace and disclosed FTS values. A private prefix's starting secret, internal inputs and cache-hit flags are absent from the analytical observation. A failed invocation still pays for all three layer computations and discloses no returned FTS secrets. These are necessary properties of the retained history, not conveniences that may be changed during the probability proof.
 
@@ -196,6 +219,10 @@ Thus there is no need to formalize the sharper coefficients if the weaker estima
 
 The OTS argument compares one chain at a time with an independently uniform endpoint, while preserving the allocation to that chain. Forget its starting secret and private prefix evaluations before comparing laws. With full prefix tables \(H\), the real projected density is the number \(W(H,Y)\) of starting preimages of the endpoint. Retaining the starting secret would instead give \(N\mathbf1_{H(S)=Y}\), which cannot be substituted for \(W\).
 
+The causal simulator is the crucial paper interface. For fixed reference words, it receives the prefix endpoints and uses prefix tables only to answer externally requested prefix rows. Its other outputs are generated from the endpoints and independent auxiliary randomness. Every replacement of an endpoint must flow through all dependent roots, canonical messages, encoding tables and signing responses. Every omitted private hash still spends its original cost. In particular, the simulator must not evaluate the omitted prefix to decide whether its supplied endpoint is compatible with a secret.
+
+This interface gives the density calculation directly. For fixed full prefix tables \(H\) and endpoint \(Y\), the real projected probability has a factor \(W(H,Y)/N\), while the independent-endpoint experiment has a factor \(1/N\). The same endpoint-dependent auxiliary kernel multiplies both. After conditioning on an observed transcript, causal access to prefix rows leaves all unqueried rows independently uniform in the ideal experiment. Thus averaging the full-table density gives the matrix expression below. This is the concrete reason that changing roots consistently is allowed but reading hidden private prefix cells is not.
+
 At an adaptive transcript, let \(P_j\) have the recorded answer in each queried row and a uniform distribution in each unqueried row. If \(a_j\) counts queried rows at step \(j\), then
 
 \[
@@ -204,6 +231,15 @@ w(T)=\mathbb E[W\mid T]=\mathbf1^TP_0\cdots P_{d-1}e_Y
 \]
 
 The equality follows by independently completing the unqueried rows. The first inequality retains only their nonnegative uniform-row terms. This converts each nonnegative allocated ideal cost to its real cost with factor \(1/(1-x)\). Roots and canonical messages must be recomputed from the idealized endpoint; the simulator must not inspect an unqueried prefix cell through hidden honest work. Explicitly cap auxiliary runs at \(q\), because an independent endpoint may have no preimage in its completed tables.
+
+For a transcript-measurable nonnegative allocated cost \(Z_i\), the required transfer is exactly
+
+\[
+\mathbb E_R Z_i=\mathbb E_{I_i}[w_i(T)Z_i]
+\ge(1-x)\mathbb E_{I_i}Z_i.
+\]
+
+The cap makes this statement meaningful even on ideal paths with no compatible original secret; it changes no admitted original path. The eventual proof must instantiate this identity with the costs stopped at each chain's witness completion. Those costs are bounded pathwise by that chain's count in the common original monitor. Summing them therefore preserves the shared budget. Replacing each allocated count by \(q\) before summation would lose this property.
 
 For the completed two-edge event, expand the likelihood by the last unqueried transition. Before first completion only one-edge suffixes to the endpoint can already exist. Each old queried path contributes to at most one productive last-edge input. The baseline numerator is bounded by
 
