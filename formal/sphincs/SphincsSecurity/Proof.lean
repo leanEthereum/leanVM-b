@@ -835,12 +835,12 @@ import SphincsSecurity.Proof.CachedIndexExcessGame
 import SphincsSecurity.Proof.CertificateJointExceptions
 import SphincsSecurity.Proof.CertificateBankCompleteness
 import SphincsSecurity.Proof.CertificateFamilyClean
-import SphincsSecurity.Proof.FrontierSignerErasure
+import SphincsSecurity.Proof.FrontierRandomOracle
 
 /-!
 Proof modules for the public statements in `SphincsSecurity/Statement.lean`. The public 126-bit theorem uses the original strong-unforgeability experiment and whole-experiment hash budget.
 
 The 127-bit route remains incomplete. A single certificate game now carries the full bank and all 14 near banks on one original execution, with common cache, proposal word, counters, stopping state and exception flag. Every individual bank projects exactly to its existing certificate game. Its full count has expectation at most E[messageCalls]/2^128 + 11q/2^144, and its summed near count has expectation at most 557q/2^128. The joint cache and proposal-overflow event is bounded once by q/2^223 + q/2^170 + 2^-704. With only the proposal-prefix stop enabled, every valid original run outside this event remains live and retains the exact original signing log; terminal certificates on clean retained runs belong to their banks. The primitive-match hazard and its concrete stopping rule, coverage under forced-secret laws, and the cryptographic transfers needed to close the public 127-bit theorem remain to be proved.
 
-The frontier signer now reproduces every supported post-digest signing response and its complete boundary trace, given consistent reference words and frontier values. It retains the finite encoding searches, all three layer computations, failure responses and the exact original hash costs. Its cost debits the original continuation budget. The hash-tree reconstruction is invariant under changes to prefix-function rows below the supplied frontier. These are pointwise execution correspondences; the random-function sampling and adaptive likelihood transfers remain separate obligations.
+The reference words and frontier values are now constructed from the original hash answers. The randomized frontier signer preserves responses, failures, selected FTS views and original costs. Its adaptive game retains the complete signing log and original strong-novelty test, reconstructs the public root, and runs the original verifier. An exact finite-table presentation of the lazy random oracle samples the table before the secrets; the resulting frontier game has the same winning probability and inherits the original whole-experiment hash bound. The table may cover any finite superset of the original computation's possible inputs. The independent canonical-label sampling, hidden-label posterior and adaptive likelihood bounds remain separate obligations.
 -/
