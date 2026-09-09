@@ -829,9 +829,10 @@ import SphincsSecurity.Proof.PoissonCertificateGame
 import SphincsSecurity.Proof.TerminalProposalEnvelope
 import SphincsSecurity.Proof.CertificateProposalInvariant
 import SphincsSecurity.Proof.TerminalCertificateCharge
+import SphincsSecurity.Proof.FixedCertificateCoverage
 
 /-!
 Proof modules for the public statements in `SphincsSecurity/Statement.lean`. The public 126-bit theorem uses the original strong-unforgeability experiment and whole-experiment hash budget.
 
-The 127-bit route remains incomplete. Its stopped certificate bound now charges actual message calls and an independent terminal proposal-word excess. The numerical Poisson estimates and the cryptographic transfers needed to close the public 127-bit theorem remain to be proved.
+The 127-bit route remains incomplete. Its full and near stopped certificate bounds are now numerical theorems for the original signer, using a fixed terminal proposal word and mixed factorial moments. The exceptional probabilities, coverage extension to deferred-secret kernels, and cryptographic transfers needed to close the public 127-bit theorem remain to be proved.
 -/
