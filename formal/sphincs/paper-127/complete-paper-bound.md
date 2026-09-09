@@ -1,6 +1,6 @@
 # Assembling the paper 127-bit bound
 
-This note assembles the current paper derivations for the unchanged concrete scheme. The detailed original-experiment transfers are now in small-budget-transfer.md and paid-probe-quadratic.md, with the certificate theorem in cached-target-forecast.md. This is an end-to-end paper argument, not a completed Lean theorem. Its mathematical audit and formalization must check the actual experiments and their hypotheses, rather than infer security from passing arithmetic scripts.
+This note assembles the current paper derivations for the unchanged concrete scheme. The detailed original-experiment transfers are now in small-budget-transfer.md and paid-probe-quadratic.md, with the certificate theorem in cached-target-forecast.md. This is an end-to-end paper argument, not a completed Lean theorem. Its audit requires precise probability projections, described below, and its formalization must check the actual experiments and their hypotheses rather than infer security from passing arithmetic scripts.
 
 Let N=2^128, x=q/N, x_0=2^-15, and
 
@@ -74,8 +74,20 @@ Since (3/4)x_0-delta=2^-17, the quadratic saving pays at least 2^-17*x throughou
 
 This gives Pr[original SUF win]<=2x here too. For q>=N/2, use probability at most one. The cases cover every positive whole-experiment query bound q and give the paper inequality Pr[original SUF win]<=q/2^127.
 
+## Audit of the probability interfaces
+
+The OTS likelihood needed one explicit correction of scope: W_i is the density only after forgetting the hidden starting secret and private canonical prefix data. With the secret retained, the density is N times a consistency indicator. small-budget-transfer.md now defines the projection and checks that all charged costs, contacts, markers and stopping rules factor through it. The finite transfer checks include a counterexample to the unprojected W_i claim and verify its exact marginalization. The numerical bounds do not change.
+
+The other interface checks use separate information histories on the same law. Prefix likelihoods may condition on independent auxiliary randomness, including future encoding randomness, because the projected simulator never inspects unqueried prefix cells. Fresh-encoding estimates instead hide unrestricted unqueried encoding rows. Their costs are combined only after taking expectations in the original law. Similarly, coverage may reveal private state suitable for its message kernel; neither the OTS nor FTS secret posterior is claimed in that richer history.
+
+The forced FTS comparison is made in the deferred state, before completing its hidden secrets and before adding rejected proposal values. Each forced hit or miss is a positive conditional branch there. Completing its remaining secrets and private canonical rows then realizes an original supported execution with the same observations and hash costs. Coverage is instantiated separately in each forced law; no rejected-word density is canceled between different laws.
+
+Finally, the coverage monitor banks completions before post-record stopping, and its terminal-word law comes from the bridge kernel before revealing the accepted record. Its boundary potential pays adaptive creation through actual message calls and the remaining creation budget. Initial short-pool and later cache, deficit or proposal exceptions are charged once in the original law. In the large branch the pathwise A_cov<=A_B comparison avoids exposing those auxiliary stops to the primitive posterior. These are the interfaces the Lean statements must retain.
+
 ## Remaining completion requirements
 
-The paper now supplies the original-game constructions that the closing formulas need. Before treating them as established formal results, audit the endpoint-dependent OTS likelihood, the capped auxiliary query counts, the two information histories for encoding preparation, and the deferred-secret support argument. The original statement must remain the left side of every final transfer.
+The paper now supplies the original-game constructions that the closing formulas need. Before treating them as established formal results, prove the projected endpoint-dependent OTS likelihood, capped auxiliary query counts, encoding-history estimates, and deferred-secret support argument with their stated interfaces. The original statement must remain the left side of every final transfer.
 
-Formal completion requires deriving the numerical full and near certificate theorems from the existing monitor; formalizing the exact graph and both primitive transfers; establishing the allocated small-budget and joint large-budget inequalities; assembling the public theorem; and checking its assumptions and axioms. No public 127-bit Lean theorem follows merely from the existence of this paper argument or its finite consistency checks.
+The Lean endpoint expected_poissonCertificateGame_count_le_message_excess now bounds the original monitor's expected banked certificates by c times its expected actual message calls plus q times the independent terminal-price excess above c. It derives the actual count and prefix invariants and accumulates the adaptive charges, rather than assuming them. The Poisson expectations in that endpoint remain unevaluated in Lean, and its original-signer instantiation does not yet cover the forced FTS kernels.
+
+Formal completion requires the numerical full and near certificate estimates and exceptional probabilities; the coverage extension to deferred-secret kernels; the exact graph and both primitive transfers; the allocated small-budget and joint large-budget inequalities; assembly of the public theorem; and an audit of its assumptions and axioms. No public 127-bit Lean theorem follows merely from the existence of this paper argument or its finite consistency checks.

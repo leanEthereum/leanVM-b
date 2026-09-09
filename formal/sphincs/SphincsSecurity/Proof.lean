@@ -825,18 +825,13 @@ import SphincsSecurity.Proof.SigningProposalRecord
 import SphincsSecurity.Proof.OriginalProposalExecution
 import SphincsSecurity.Proof.BankedProposalStep
 import SphincsSecurity.Proof.CertificateGame
+import SphincsSecurity.Proof.PoissonCertificateGame
+import SphincsSecurity.Proof.TerminalProposalEnvelope
+import SphincsSecurity.Proof.CertificateProposalInvariant
+import SphincsSecurity.Proof.TerminalCertificateCharge
 
 /-!
-The proof of `SphincsSecurityStatement`. The specification to review is `SphincsSecurity/Statement.lean`; the Lean kernel checks the proof against it.
+Proof modules for the public statements in `SphincsSecurity/Statement.lean`. The public 126-bit theorem uses the original strong-unforgeability experiment and whole-experiment hash budget.
 
-What is proven so far is correctness: `Correctness.eval_verify` says `Ver` accepts a signature built
-from the secrets, under an arbitrary answer function rather than under the lazy oracle. That is the
-form the reduction needs, the random oracle's support being characterized by total answer functions,
-and it is what rules out the statement holding vacuously for want of an accepting run.
-
-`Bytes.tweakBytes_injective` is the other half of the foundation: a tweak names one structural
-position, so one query bears on one position and an inversion stays at `2^-n` per query with no
-multi-target factor. `Amortized.probEvent_bad_le_amortized` is what turns that into a bound on a
-run: it is the only probabilistic argument the reduction makes, and `README.md` explains the shape
-it imposes on everything else.
+The 127-bit route remains incomplete. Its stopped certificate bound now charges actual message calls and an independent terminal proposal-word excess. The numerical Poisson estimates and the cryptographic transfers needed to close the public 127-bit theorem remain to be proved.
 -/
