@@ -49,6 +49,8 @@ The probability correspondence should be proved by equality of finite transition
 
 Classify external inputs by their bytes. An externally new row is new to the external history even if honest signing evaluated it privately. Neither hidden private inputs nor private cache-hit flags may enter the hidden-label history. Address separation limits a query to its own canonical target, including when its candidate value equals a label in another domain.
 
+The byte router and cached external-query correspondence are now proved in [CanonicalProbeExecution.lean](../SphincsSecurity/Proof/CanonicalProbeExecution.lean) and its imports. The response kernel programs each canonical input with its graph reply and gives other fresh structural inputs a uniform full reply. Its direct first-match stop equals the public router's probe stop, including for malformed payloads. This equality composes through randomized adaptive external computations with fixed reference and disclosure data, preserves the cache and counters on stops, and counts repeated and stopping calls. The cache invariant remains valid when FTS disclosures grow. This is a correspondence for the specified row kernel: its residual-table sampling connection to the original planted graph, the native hidden-label frontend with private signing costs, and the full message/coverage state are still required.
+
 ### The complete reference family, with a simpler exhaustion convention
 
 The small-budget experiment conditions on all reference cuts at once. Independence of their marginal selected words is insufficient: retain the shared oracle table that answers every later query. Here is the required finite mass identity.
