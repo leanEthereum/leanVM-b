@@ -1,5 +1,7 @@
 # A paper audit and revised construction for 127 bits
 
+Update: [paid-probe-quadratic.md](paid-probe-quadratic.md) now simplifies the large-budget interface below. Run primitive analysis until its first match or original termination, while coverage may stop earlier at its own guards. The pathwise inequality A_cov<=A_B replaces the earlier requirement of identical stopped counts and removes proposal auxiliaries from the primitive history. The older construction below remains a possible stronger interface, but is unnecessary for that branch.
+
 This note audits the route at source commit f6ce6f58. It makes no changes to Lean code. The target is the original strong-unforgeability game, including independent secrets, finite retry failures, and its whole-experiment hash budget. The numerical closing argument in next-proof-plan.md is sufficient. Coverage and primitive analysis need the same stopped execution and cost variable, but do not need the same filtration. The certificate construction below spells out the next local invariant and its telescoping argument.
 
 The resulting plan is a candidate proof with explicit remaining original-game obligations. The conditional-expectation calculations below do not establish those obligations merely by stating them.

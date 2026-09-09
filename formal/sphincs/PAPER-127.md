@@ -1,12 +1,10 @@
 # Paper route to 127-bit strong unforgeability
 
-This is a proof strategy for the unchanged concrete scheme at source commit a743f717. The linked notes give a candidate paper argument through the final 127-bit inequality, including proposed solutions to cached-target charging and useful FTS guessing. This is not a completed Lean proof. The adaptive probability constructions and their exact connection to the original experiment are the main review and formalization risks. The raw envelope now has a checked comparison with the expected occupancy powers of a uniform proposal suffix, under the paper's explicit cache and prefix bounds. The algorithms and public security statements are unchanged.
+This is a proof strategy for the unchanged concrete scheme. The current [paper review and proof plan](paper-127/next-proof-plan.md) uses the Lean source at commit 106024f5 and the subsequent paper derivations. The public 126-bit theorem is established; no public 127-bit theorem is claimed. The algorithms, independent secrets, finite failures, signing cap, and whole-experiment hash budget are unchanged.
 
-The current [paper review and proof plan](paper-127/next-proof-plan.md), based on source commit 106024f5, uses the abstract paid primitive bound 2x-3x^2/4 by counting probe rounds separately from message queries. It permits a split at q=2^113 and gives one nonnegative potential that combines certificate forecasts, actual message costs, and the remaining creation budget. A transition table specifies the treatment of cached selections, both kinds of signing failure, and stopping. The older bounds below remain sufficient; the current note distinguishes the established abstract calculation from the concrete probability interfaces still to prove.
+The expanded [stopped coverage derivation](paper-127/cached-target-forecast.md) gives its local shape transitions, banked certificates, actual message payments, common terminal word, and numerical moments on paper. The expanded [canonical-graph argument](paper-127/paid-probe-quadratic.md) supplies the exact graph law, hidden-label induction, exhaustive strong-forgery implication, and a joint primitive/message estimate. Together they give the paper large-budget bound for q>=2^113. These new probability endpoints are not yet Lean theorems.
 
-The expanded [stopped coverage derivation](paper-127/cached-target-forecast.md) now proves its local shape transitions directly from the message kernel and assembles the bank, actual payments, common terminal word, and numerical moments on paper. It includes the original signer's initialization, failed responses, signature cap, and verification calls. Cache and deficit checks at completed boundaries suffice; the finite digest limit controls the interior of each invocation. The complete certificate bound is not yet a Lean theorem. The next paper step is the exact canonical-graph simulation and joint primitive/message bound; the forced-secret application also needs that simulation and its inherited original budget.
-
-The latest [two-filtration audit](paper-127/two-filtration-audit.md), based on source commit 86c5e4e8, simplifies that interface: coverage and primitive probabilities must refer to the same stopped execution and message costs, but may use different information histories. Erasing rejected proposal values preserves independent geometric lengths, which are sufficient for the shared stopping rules. The forced-guess likelihood can likewise be proved before adding rejected values, with a separate coverage coupling for each forced experiment. The note gives the transition obligations and revised work order; it does not claim a completed paper or Lean proof.
+The large-branch interface is simpler than the earlier [two-filtration audit](paper-127/two-filtration-audit.md): the primitive analysis stops only at its first match B or original termination. Coverage has additional guards, so its message count A_cov is pathwise at most the primitive count A_B on the same original run. No auxiliary coverage stops need to be exposed to the hidden-secret analysis. The remaining paper obligation is the small-budget completed-witness transfer, particularly the allocated multi-chain OTS likelihood bound and its combination with forced FTS guesses.
 
 ## Target and revised closing argument
 
@@ -16,9 +14,9 @@ The coarse reduction spends approximately two primitive chances per query before
 
 The new target is a two-regime argument, split at
 
-    x_0 = 3*2^-14,       q_0 = 3*2^114.
+    x_0 = 2^-15,       q_0 = 2^113.
 
-For x<=x_0, bound completed primitive forgery witnesses and ordinary coverage charges together by (7/4)x. For x>=x_0, use the paper primitive bound 2x-x^2/8, which already includes the same ordinary coverage charge. In either range, the proposed unpaid coverage excess is at most 2^-16 x plus smaller errors.
+For x<=x_0, the remaining transfer must bound completed primitive forgery witnesses and ordinary coverage charges together by (7/4)x. For x>=x_0, the graph argument gives the joint primitive/message bound 2x-3x^2/4. Its message count dominates the count in the coverage bound. In either range, the coverage excess is at most 2^-16 x plus smaller errors.
 
 The new arguments for the two previously open obligations are [cached-target-forecast.md](paper-127/cached-target-forecast.md) and [fts-useful-witness.md](paper-127/fts-useful-witness.md). The exact discrete couplings are developed in [discrete-target-coupling.md](paper-127/discrete-target-coupling.md) and [fts-guess-kernel.md](paper-127/fts-guess-kernel.md). Their assembly is in [complete-paper-bound.md](paper-127/complete-paper-bound.md). The arithmetic and finite examples have been checked exactly; those checks do not substitute for the written probability arguments or their formalization.
 
@@ -45,7 +43,7 @@ The fixed-message premise is essential. Allowing an adversary to choose the hone
 
 For the chain analysis, publish all canonical OTS frontiers Y at digits D. Conditional on D, each prefix is an independent random-function chain with an independent uniform starting secret. Everything above those frontiers, including the canonical messages, is generated from Y and independent remaining data. The conditional encoding table depends on that same information and independent randomness. It can be simulated without querying an unknown prefix cell.
 
-This gives an exact transfer of the static chain experiment to backward witnesses in the actual execution. Internal honest prefix evaluations only compute already supplied frontier and forward values, and do not disclose their intermediate values to the adversary. The simulator can omit those internal evaluations while routing adversarial and verification prefix queries to the real functions. Their number remains bounded by the original syntactic hash budget, including when the input was previously evaluated internally by an honest algorithm.
+This is the sampling construction for transferring the static chain experiment to backward witnesses in the actual execution. The allocated adaptive likelihood bound below still needs that transfer to be completed. Internal honest prefix evaluations only compute already supplied frontier and forward values, and do not disclose their intermediate values to the adversary. The simulator can omit those internal evaluations while routing adversarial and verification prefix queries to the real functions. Their number remains bounded by the original syntactic hash budget, including when the input was previously evaluated internally by an honest algorithm.
 
 Let Q count distinct externally evaluated OTS prefix inputs, and set
 
@@ -70,15 +68,16 @@ Before the first primitive match, an OTS prefix query has at most two equality p
 
 Honest secret-dependent computations read the programmed graph internally. They are not adversarial probes, and their calls still count toward q. Cache repeats and high output bits are handled by the same programmed tables. The original adversary ignores the extra advice, so its original output and cost laws are preserved.
 
-Let B be the first primitive match and A_msg the number of message-domain hash calls before B or earlier termination. The paper bound is
+Let B be the first primitive match and A_B the number of message-domain hash calls before B or original termination. The paper bound is
 
-    P[B] + (3/(2N)) E[A_msg] <= 2x-x^2/8.
+    P[B] + (3/(2N)) E[A_B] <= U(x) <= 2x-3x^2/4.
 
-The reward term is part of the same stopped experiment. After t rounds, the largest conditional two-probe hazard is at most h_t=1-((N-t-1)/(N-t))^2. A scalar decision problem either earns 3/(2N) for a message round or takes that hazard. Its optimal value is
+The reward term is part of this same primitive-stopped execution. Only previous probe rounds exclude candidates from hidden coordinates. After r probes, the conditional two-probe hazard is at most h_r=1-((N-r-1)/(N-r))^2. Paying all non-probe hash rounds at rate 3/(2N) gives an upper scalar process whose optimal schedule has a paid prefix. Its value is
 
-    max_(0<=a<=q) [3a/(2N)+1-((N-q)/(N-a))^2].
+    max_(0<=a<=q) [3a/(2N)+1-((N-q+a)/N)^2]
+        <= U(x)=2x-x^2+max(x-1/4,0)^2.
 
-An elementary polynomial inequality bounds this by 2x-x^2/8 for q<=N/2. Thus ordinary coverage can be paid without adding its whole cost after an already saturated primitive union bound.
+The continuation values are below one, justifying the upper-hazard replacement. Elementary maximization yields the stated quadratic bound. Coverage may stop earlier at its own guards: its A_cov<=A_B pathwise, so ordinary coverage is paid by the same estimate without changing the primitive history.
 
 With no primitive match, an accepted OTS component is canonical, every accepted FTS secret has already been disclosed, and authentication nodes are canonical. A different signature on the same message and randomizer would force a primitive match. Therefore a strong forgery with no B gives a digest target covered by successful signing views at other inputs. This retains target-input exclusion and the actual Option failure cases.
 
@@ -135,21 +134,22 @@ The proposed lemmas yield, for x<=x_0,
 
 For x_0<=x<=1/2, the paid primitive bound and charged coverage give
 
-    P[forge] <= 2x-x^2/8+2^-16 x+epsilon.
+    P[forge] <= 2x-3x^2/4+2^-16 x+epsilon.
 
-At x=x_0, x/8-2^-16=2^-17, and this difference increases with x. Thus the large-budget range leaves at least 2^-17 x for the remaining errors. For q>=1, epsilon(q)/x<=2^-94+2^-109+2^-572<2^-17. At q>=N/2 use the probability bound by one. Both nontrivial ranges therefore close numerically at P[forge]<=2x=q/2^127.
+At x=x_0, (3/4)x-2^-16=2^-17, and this difference increases with x. Thus the large-budget range leaves at least 2^-17 x for the remaining errors. For q>=1, epsilon(q)/x<=2^-94+2^-109+2^-572<2^-17. At q>=N/2 use the probability bound by one. Both nontrivial ranges therefore close numerically at P[forge]<=2x=q/2^127.
 
-The implementation order should follow the mathematical dependencies and produce useful endpoints:
+The next paper milestone is the original-game small-budget bound throughout q<=2^113. It must transfer the OTS likelihood estimates with disjoint actual query allocations, establish the forced-first-guess comparison, and apply near-certificate coverage in each forced law. The large-budget graph and coverage arguments are now written; another arithmetic optimization is not the priority.
 
-1. Review the exact planted-graph and reference-encoding experiments against the concrete byte domains and independently sampled secrets. Establish the SUF decomposition with Option failures and the rejection of overlong logs.
-2. Establish the degree-14 and degree-13 certificate bounds with one terminal domination, the same stopped execution costs, and no conditioning on future good events. This is the highest-risk new probability construction and should be the first new coverage endpoint.
-3. Establish the forced-first-guess comparison and combine it with degree-13 coverage. The resulting endpoint should prove the original-game bound throughout q<=3*2^114, using the OTS likelihood estimates and disjoint query costs.
-4. Establish the paid primitive inequality in the concrete augmented experiment and combine it with degree-14 coverage. This closes the remaining range up to q=N/2.
-5. Assemble the public 127-bit theorem for the unchanged statement and inspect its assumptions and axioms. This is completion; intermediate numerical endpoints are not completion.
+After the complete paper argument survives that audit, the formalization order should produce the following endpoints:
+
+1. Assemble the full and near certificate inequalities from the original monitor, common terminal word, and actual costs. Keep the theorem general enough for the deferred-secret kernels.
+2. Formalize the canonical graph, posterior, and strong-forgery decomposition, then combine the joint primitive bound with A_cov<=A_B to establish the original-game large-budget theorem.
+3. Formalize the allocated OTS witness and forced FTS guess transfers and derive the small-budget theorem.
+4. Assemble the public 127-bit theorem for the unchanged statement and inspect its assumptions and axioms. This is completion; intermediate numerical endpoints are not completion.
 
 The two coupling interfaces now have explicit paper kernels: a geometric rejection bridge with independent auxiliary randomness, and a deferred-secret kernel whose local hit and miss probabilities give the forced-guess likelihood exactly. The common terminal domination follows from finite-prefix independence and falling-factorial moments. Formalization must retain the recorded-history boundary: message queries, signing responses, and actual costs are recorded, while secret-dependent internal non-message inputs remain hidden. The plan does not depend on a further improvement of the final constants.
 
-The Python files under paper-127 contain exact rational checks of partial-table likelihoods, conditional reference-table laws, finite probe decision problems, moment bounds, and closing constants. In particular, coverage-closing-checks.py checks the new proposal, Poisson, and two-regime arithmetic; adaptive-kernel-checks.py checks the local planted-table kernel and rejection-bridge factorization on finite examples. They can each be run with Python 3 and use only its standard library. These checks support the written arguments; they neither implement the security experiment nor certify the full adaptive constructions or the final Lean theorem.
+The Python files under paper-127 contain exact rational checks of partial-table likelihoods, conditional reference-table laws, finite probe decision problems, moment bounds, and closing constants. In particular, reference-and-paid-checks.py checks the current split and scalar bound, the exact graph law, and surviving posteriors on finite examples; coverage-closing-checks.py checks proposal and Poisson constants and the older sufficient split; adaptive-kernel-checks.py checks the local planted-table kernel and rejection-bridge factorization. They can each be run with Python 3 and use only its standard library. These checks support the written arguments; they neither implement the security experiment nor certify the full adaptive constructions or the final Lean theorem.
 
 ## Formalization progress
 
@@ -197,4 +197,4 @@ The Python files under paper-127 contain exact rational checks of partial-table 
 
 [CertificateGame.lean](SphincsSecurity/Proof/CertificateGame.lean) attaches the monitor to actual key generation, the adversary, and final verification. Its erased verdict and final cache are exactly those of the original game, and its winning probability equals the original forgeAdvantage for every monitor stopping rule. The verifier verdict uses the complete original signing log even after monitoring stops. Under the original HasHashQueryBound assumption, `certificateGame_cost_le` proves both the monitored spent counter and accumulated creation mass are at most q on every supported outcome. The same whole-game law satisfies expected creation mass at most expected monitored message calls, and expected banked certificate count at most expected accumulated forecast cost. The latter theorem derives the empty initial message cache from actual key-generation support. None of these endpoints assumes a per-record payment or an independently supplied rest-of-game budget.
 
-The next missing coverage step is the common terminal proposal variable and its conditional domination at every active boundary. The pathwise and expected cost payments are now established for the complete original-game monitor. The monitor's guards must still be connected to the original signing-cap, cache, deficit, and budget facts so that no unaccounted winning execution is discarded. The two-filtration construction permits coverage to use more information than the primitive analysis, while the latter erases rejected values and retains lengths. Exact marginal erasure alone does not prove the hidden-label posterior or independent unused terminal suffix. Prefix exceptions and terminal Poisson estimates must be assembled with this same execution, and coverage must extend to the deferred-secret kernels used by the small-budget argument. No public 127-bit security theorem follows from these accumulated inequalities alone. The [paper plan](paper-127/next-proof-plan.md) and [two-filtration audit](paper-127/two-filtration-audit.md) give the current original-experiment obligations and work order.
+The next missing Lean coverage step is the common terminal proposal variable and its conditional domination at every active boundary. The pathwise and expected cost payments are now established for the complete original-game monitor. The monitor's guards must still be connected to the original signing-cap, cache, deficit, and budget facts so that no unaccounted winning execution is discarded. Coverage may use more information than the primitive analysis. For the large branch, the ordered-stop construction in paid-probe-quadratic.md permits the primitive history to omit all proposal auxiliaries. Exact marginal erasure alone does not prove the hidden-label posterior or independent unused terminal suffix. Prefix exceptions and terminal Poisson estimates must be assembled with this same execution, and coverage must extend to the deferred-secret kernels used by the small-budget argument. No public 127-bit security theorem follows from these accumulated inequalities alone. The [paper plan](paper-127/next-proof-plan.md) and [two-filtration audit](paper-127/two-filtration-audit.md) give the current original-experiment obligations and work order.
