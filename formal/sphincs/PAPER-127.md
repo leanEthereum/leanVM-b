@@ -2,6 +2,8 @@
 
 This is a proof strategy for the unchanged concrete scheme at source commit a743f717. The linked notes give a candidate paper argument through the final 127-bit inequality, including proposed solutions to cached-target charging and useful FTS guessing. This is not a completed Lean proof. The adaptive probability constructions and their exact connection to the original experiment are the main review and formalization risks. The raw envelope now has a checked comparison with the expected occupancy powers of a uniform proposal suffix, under the paper's explicit cache and prefix bounds. The algorithms and public security statements are unchanged.
 
+A subsequent [paper review and proof plan](paper-127/next-proof-plan.md), based on source commit 89d33041, sharpens the abstract paid primitive bound to 2x-3x^2/4 by counting probe rounds separately from message queries. It permits a split at q=2^113 and prioritizes the complete stopped certificate estimate and its original-game filtration. The older bounds below remain sufficient; the new note distinguishes the algebraic improvement from the concrete probability interfaces still to establish.
+
 ## Target and revised closing argument
 
 Write N=2^128 and x=q/N. The target is P[forge]<=2x for the original strong-unforgeability experiment, with independently sampled secrets, at most 2^24 signing requests, actual finite retry failures, and the original hash budget covering key generation, signing, adversarial queries, and verification. At q>=N/2 the probability bound by one suffices.
