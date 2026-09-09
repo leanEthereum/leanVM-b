@@ -1,8 +1,10 @@
 # Paper route to 127-bit strong unforgeability
 
-Start with the [current mathematical plan](paper-127/minimal-closing-contract.md), reviewed against `282bf0f0`. The target is the unchanged original SUF game with probability at most `q / 2^127`. The public Lean endpoint remains 126 bits. This paper review adds no Lean code.
+Start with the [current mathematical plan](paper-127/minimal-closing-contract.md), reviewed against `16cd91cb`. The target is the unchanged original SUF game with probability at most `q / 2^127`. The public Lean endpoint remains 126 bits. This paper review adds no Lean code.
 
 Keep the split at `q = 3 * 2^114`. Above the split, a joint first-match and message-cost potential leaves a quadratic saving. Below it, completed OTS witnesses and FTS guesses must share the actual query allocations. The plan derives sufficient inequalities for both intervals, checks their exact arithmetic, and specifies the probability comparisons still needed. It also simplifies encoding exhaustion to a fixed valid analytical dummy word, preserving the full original failure distribution.
+
+The paper plan now gives a concrete endpoint simulator: rebuild roots and canonical messages from the supplied frontiers, embed the conditional encoding blocks before execution, and replace private prefix work by its result and original cost. An adaptive transcript mass calculation derives the projected likelihood from this causal access rule. A backwards trace through `Statement.lean` accounts for every signature field and explains the full, near, and true-guess alternatives with own-input exclusion. These are paper derivations and concrete formalization obligations, not additional Lean security theorems.
 
 The complete reference-family sampling law is now formalized in [ReferenceFamilyGame.lean](SphincsSecurity/Proof/ReferenceFamilyGame.lean) and its imports, with the original SUF and hash-budget correspondence. The remaining gates include the exhaustive strong-forgery decomposition, projected adaptive likelihood, and coverage from local message/signing rules in the two required alternative interpreters. The [mathematical audit](paper-127/mathematical-audit.md) contains the longer derivations and formal progress through the current branch. The 127-bit theorem remains unproved.
 

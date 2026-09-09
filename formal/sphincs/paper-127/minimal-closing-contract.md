@@ -1,6 +1,6 @@
 # A minimal mathematical contract for the 127-bit proof
 
-This paper review concerns the unchanged game through `282bf0f0`. It adds no Lean code. The public statement currently stops at 126 bits. The purpose here is to specify sufficient intermediate results, explain why their combination works, and identify which correspondences must be proved before calling this a security proof. This is the current plan; some earlier development notes use different constants and an independently uniform dummy word on encoding exhaustion.
+This paper review concerns the unchanged game through `16cd91cb`. It adds no Lean code. The public statement currently stops at 126 bits. The purpose here is to specify sufficient intermediate results, explain why their combination works, and identify which correspondences must be proved before calling this a security proof. This is the current plan; some earlier development notes use different constants and an independently uniform dummy word on encoding exhaustion.
 
 ## Conclusion of the review
 
@@ -8,7 +8,9 @@ The two-range route has sufficient numerical room. Its completion depends on con
 
 The branch now has exact canonical graph sampling, simultaneous full-table reference conditioning across all addresses, and an original-game correspondence for signing with private prefix rows masked. [ReferenceFamilyGame.lean](../SphincsSecurity/Proof/ReferenceFamilyGame.lean) uses the sampled family directly to initialize its cuts and preserves the original SUF law and hash budget. These are substantive foundations. The projected adaptive OTS likelihood and coverage in the forced-FTS laws remain the main mathematical risks. The original-game equality proved for a real frontier does not authorize inserting an independent endpoint into its place.
 
-The recommended next paper milestone is an exhaustive accepting-verifier argument together with explicit transition rules for these probability comparisons. The next security milestone should then be the large-budget interval of the original game. Do not spend the remaining margin on tighter occupancy estimates: the weaker bounds below suffice.
+Use the accepting-verifier argument and the explicit probability transitions below to fix the events and retained state before more formalization. The next security milestone should be the large-budget interval of the original game. Do not spend the remaining margin on tighter occupancy estimates: the weaker bounds below suffice.
+
+The further paper derivations below specify an endpoint simulator, its adaptive transcript mass, and the accepting-verifier trace against `Statement.lean`. They explain why the proposed comparisons have a mathematical route for this particular signer. The coverage extension to changed transition laws and the concrete interpreter correspondences remain obligations. In particular, the arithmetic checks alone do not establish either original-game interval.
 
 ## The target and a sufficient closing calculation
 
@@ -75,6 +77,84 @@ A particular exhausted table has mass
 Fix the entire non-encoding table and secrets first. Its canonical messages are now fixed, and different addresses use disjoint encoding domains, even when their messages coincide. Multiply the displayed identities over addresses and include the independent unrestricted rows. This recovers the uniform full encoding table for every fixed non-encoding environment. Integrating the environment proves the required joint equality for arbitrary adaptive continuations. In the reordered sampler the reference family is independent of the full non-encoding environment, not just of its graph labels.
 
 The fixed dummy avoids an unnecessary extra sampler and fits the existing arbitrary-dummy interface. It does mean that \(D\) need not be uniform independently of \(J\) on exhaustion. No following argument needs that assertion: it needs a valid word and independence of the reference family from non-encoding data. Neighbor counts hold for every valid word, and chain estimates hold for every fixed digit length. Exhausted addresses still have no legitimate reference counter; no signing response or accepting verifier is allowed to use the dummy as an actual encoding result. A verifier using an encoding at such an address is either rejected or uses a nonreference valid row, to which the usual equal-word or backward-witness classification applies.
+
+### Constructing the endpoint simulator without reading its secret prefix
+
+Work inside a finite envelope containing the canonical inputs and every query of the capped simulator, over all its possible supplied frontiers and replies. Each prefix function below needs all \(N\) digest inputs; other residual rows may equivalently be generated lazily. This construction does not sample a uniform element of the function space on arbitrary byte strings.
+
+Fix the sampled reference family. For a chain \(i\) with reference digit \(d_i>0\), separate its low-output functions \(H_{i,0},\ldots,H_{i,d_i-1}\) from all other randomness. Sample its original uniform starting secret \(S_i\) and form \(Y_i=H_{i,d_i-1}\circ\cdots\circ H_{i,0}(S_i)\). A zero digit simply publishes its starting secret as \(Y_i\). Distinct chain-step tweaks give disjoint independent function families. Denote all remaining independent randomness by \(\omega\), including forward functions, other structural functions, FTS secrets, message rows, high output halves, conditional encoding-table seeds, adversary and signing coins, and the projected monitor's auxiliaries.
+
+For supplied \(Y\), compute every chain's remaining positions from \(Y_i\) using only steps \(d_i,\ldots,6\). These full endpoints determine every OTS leaf and hypertree node. The FTS secrets and functions in \(\omega\) determine the FTS keys. Consequently all canonical layer messages and the public root are functions of \((Y,\omega)\). The construction is acyclic: none of these structural computations reads an encoding or message row.
+
+The conditional encoding oracle can be constructed before the adversary starts. At each address, independently sample a counter table with the previously specified law conditional on \((J,D)\), and a uniform residual table for every encoding input. Embed the conditional table at the counter block of the now-computed canonical message; use the residual table elsewhere. This defines the entire oracle consistently even if an external query precedes signing. Changing an endpoint recomputes that canonical message and hence the block's location from the beginning. It does not overwrite a row after an adversary has observed it. The independent random seeds used to fill the two tables do not depend on the selected chain's prefix functions.
+
+The following replacements define the honest part of a simulator \(\Phi(Y,\omega;H)\). Its only access to a selected prefix function is through an external or verification query routed to that function.
+
+| Original subroutine | Value used by the simulator | Original work retained in the count |
+| --- | --- | --- |
+| A full OTS chain in key generation or tree recomputation | Supplied frontier followed by its forward steps | All seven chain calls, including the omitted prefix |
+| A successful canonical `otsSign` | The reference counter and the supplied frontiers | Its \(J+1\) encoding calls and all \(\sum_i d_i=191\) chain calls |
+| An exhausted canonical `otsSign` | `None` | All \(2^{32}\) encoding calls |
+| `treeRoot`, `treePath`, `ftsKey`, and `ftsOpen` | Values reconstructed from the frontier and \(\omega\) | Every call in the original fixed tree traversal |
+| `signDigestLoop` | The original finite randomizer loop on the reconstructed root | Every actual message call, including repeats and exhaustion |
+| The three `signLayer` invocations and final assembly | The original three results and `traverseOption` | All three invocations, including those after an earlier layer fails |
+
+The FTS secrets supplied in a successful signature come from \(\omega\). A later layer failure still retains the selected digest in the analytical record but returns no signature and discloses no FTS secret. All original message calls are retained individually. A private prefix's input, intermediate values, and cache-hit flags are erased; only its number of calls remains. Repeated private work still spends its full original count. If a budget cap falls inside omitted work, spend markers one at a time and halt at that cap. The simulator never decides whether a supplied endpoint has a compatible secret.
+
+On real frontiers, composition of the chain identity \(H_{6}\circ\cdots\circ H_0(S_i)=H_{6}\circ\cdots\circ H_{d_i}(Y_i)\) with the displayed subroutine replacements gives the original responses and costs. The fixed-width query classification and the projected monitor make the external prefix tables, contacts, encoding markers, message cache, selected views, and allocated counts functions of \(\Phi\)'s retained trace. This is the deterministic correspondence to establish compositionally in the concrete interpreter. A guard that inspects the private full cache must first be removed using its original reachability invariant; it cannot be included in this trace merely because it is analytical data.
+
+Define the ideal law for chain \(i\) by replacing only \(Y_i\) by an independent uniform value, leaving its prefix functions uniform and using this same \(\Phi\). Recompute every dependent root, message and encoding block. Cap all these executions at the original \(q\); this changes no admitted real execution and gives a bound on ideal executions with no compatible starting secret. Other chains keep their real laws. No product of all chains' likelihoods is needed.
+
+### The adaptive mass calculation
+
+Here is a direct finite proof of the observation rule. Fix \((J,D)\) and the independent auxiliary randomness for a single-chain comparison. Write \(H=(H_0,\ldots,H_{d-1})\), so there are \(dN\) low-output table cells. For a compatible finite retained transcript \(t\), let \(y_t\) be its published endpoint and \(A(t)\) its distinct observed prefix rows. Causality of \(\Phi\) gives
+
+\[
+\Pr_I[H=h,Y=y,T=t]
+=N^{-dN-1}\,\mathbf 1_{y=y_t}\,\kappa(t,y)
+\prod_{(j,a,b)\in A(t)}\mathbf 1_{h_j(a)=b}.
+\]
+
+With all auxiliary coins fixed, \(\kappa\) is a consistency indicator for the simulator's requests and stopping decision. If those coins are integrated out, it is their summed weight. In either presentation it is independent of unobserved prefix cells. To prove the formula, multiply the successive transition weights: an auxiliary step uses only the retained history; a fresh prefix query adds its row equality; a repeated query checks an equality already recorded. A stop at a contact, marker, or budget is another function of that history. This proves the formula for adaptive choices and the stopping times used by the argument, without assuming that the choices are independent of past replies.
+
+On the complete table, summing over the real uniform starting secret multiplies the displayed ideal mass by
+
+\[
+W(h,y)=\#\{s:H_{d-1}\circ\cdots\circ H_0(s)=y\}.
+\]
+
+After conditioning on \(t\), the ideal table is a uniform completion of exactly its recorded rows. Averaging \(W\) therefore gives the partial-table matrix formula and lower bound used below. The same \(\kappa\) occurs on both sides and cancels. If the starting secret or a private cache-hit flag is retained, this factorization fails: the complete-table density with the secret retained is \(N\mathbf 1_{H(S)=Y}\), and an extra flag can constrain an otherwise unobserved row. Thus erasure is a mathematical requirement, not a cosmetic change of the game state.
+
+The auxiliary randomness may be fixed for this prefix argument because its prior is independent of the selected prefix tables and starting secret. It must not be fixed when using a fresh-message or fresh-encoding probability. Those estimates use their own histories hiding the respective unqueried rows and return expectations on the same real law. An adaptive cost can then be transferred using its likelihood identity; no independence of the cost and that likelihood is asserted.
+
+### Backwards tracing of the concrete verifier
+
+The deterministic step needs no probability estimate. Fix one complete oracle, its canonical graph and reference family, and an accepting verification trace. At a structural domain with canonical payload \(a_*\) and canonical output \(v_*\), a query returning \(v_*\) either used \(a_*\), or is a noncanonical output match. Outside those matches, fixed-width payload injectivity recovers every child from a canonical parent. Apply that statement in the following order, backwards through the accepting computation.
+
+| Verification component | Consequence of its recovered parent being canonical |
+| --- | --- |
+| Top-layer `treeFold`, starting at the public root | Its OTS leaf and every supplied sibling are canonical |
+| `leafHash` on 42 recovered endpoints | Each recovered chain endpoint is canonical |
+| The chain suffix above its reference digit | Every traversed value at or above the reference frontier is canonical unless a forward structural output match occurred |
+| `encode` at that OTS address | Its word either differs from the reference, equals it at a nonreference input, or uses the exact reference message and counter |
+| The two remaining layers | The layer links identify the recovered message with the next canonical tree root, and finally the canonical FTS key |
+| `ftsRecover`, its roots hash, and each `ftsFold` | Every FTS sibling and leaf hash is canonical; a supplied secret is the true secret unless an FTS noncanonical output match occurred |
+
+For a verified word \(e\) and reference word \(d\), equal digit sums give \(b=\sum_j(d_j-e_j)_+\). If \(e\ne d\), then \(b\ge1\). When \(b=1\), exactly one coordinate falls by one and another rises by one. Acceptance supplies that encoding marker and a queried one-edge path to the lowered chain's reference frontier. When \(b\ge2\), either one decrease is at least two, supplying a complete queried two-edge suffix, or two distinct chains decrease, supplying two contacts. Earlier precomputation and verification's own queries are both included in these witnesses. A path through an alternative preimage below the frontier is allowed. A merger strictly above the frontier is instead the forward structural match already excluded.
+
+If \(e=d\), any encoding input except the canonical message and least valid counter is the equal-code event. An exhausted address has no reference input. Otherwise the entire verified OTS component is canonical: tracing its forward suffix fixes its supplied frontier, and when its digit is seven the recovered endpoint itself is the supplied value. This zero-length case must be included when proving signature equality.
+
+There are no unconstrained signature fields left: all 14 FTS secrets, all 140 FTS siblings, all three counters, all 126 chain values, and all 26 hypertree siblings have been accounted for. The path offsets in `Statement.lean` cover every entry. The randomizer is part of the final message-hash input. If a prior successful response selected that same input, fixed-width parsing fixes the same message and randomizer, oracle consistency fixes its index and leaf tuple, and the canonical component argument fixes the whole signature. It is then in the original signing log and cannot be a strong forgery. Hence the successful views used to cover a remaining forgery's target may exclude its own input. Failed responses contribute no disclosures.
+
+It follows that, outside the original monitoring exceptions, an accepted strong forgery lies in
+
+\[
+E_{\rm OTS}\ \cup\ E_{\rm str}\ \cup\ \{C_{\rm full}\ge1\}
+\ \cup\ \{\text{a true FTS guess and }C_{\rm near}\ge1\}
+\ \cup\ \{\text{two distinct true FTS guesses}\}.
+\]
+
+For the last two alternatives, classify the 14 required coordinates by whether a successful response disclosed them. Exactly one undisclosed coordinate leaves a near certificate and a true guess, while at least two leave two distinct true guesses. Verification supplies any missing true-secret query. Coordinates are distinct by their tweaks even if their numerical secrets coincide. In the large-budget argument, absence of the first primitive match rules out every backward path and still-undisclosed true secret, reducing the decomposition to a full certificate alone. The remaining concrete proof must implement this trace argument and establish that the monitor remains active on each otherwise clean winning run.
 
 ## Large budgets: pay coverage inside the first-match bound
 
