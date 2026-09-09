@@ -4,6 +4,8 @@ This is a paper-only review of branch `sphincs-fv` at `088bb5d9`. No Lean code i
 
 The current branch has progressed beyond the fixed-function correspondence described in some earlier notes. Its frontier game has the original SUF probability and inherits the original hash budget, using a finite uniform table sampled before the secrets. That is a useful foundation. An independent-label presentation of the canonical graph, its conditional hidden-label law, and the small-budget probability transfers are further obligations. The finite table may need enlargement to include canonical rows absent from the original computation's footprint; the existing correspondence permits such enlargement.
 
+Subsequent formalization implements the independent-label graph in [CanonicalGraphGame.lean](../SphincsSecurity/Proof/CanonicalGraphGame.lean) and its imports. The sampling identity retains the completed oracle table and supports arbitrary probabilistic continuations. The labels have the uniform function-table law for every fixed secret assignment, and agree with honest hash values at positions within the tree bounds. An explicit finite input envelope covers every canonical payload independently of the secrets. The graph game reads its root and OTS frontiers from the labels, preserves the original SUF probability and inherits its hash budget. This completes the structural sampling part of Section 2; the conditional reference-encoding law, hidden-label posterior and small-budget transfers remain to be formalized.
+
 ## 1. Fix the target and the source of difficulty
 
 Write
