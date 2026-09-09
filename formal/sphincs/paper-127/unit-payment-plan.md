@@ -264,6 +264,8 @@ There are three applications to establish explicitly: the original monitored law
 
 **The OTS transfer has a precise mathematical test.** Fix one chain and let \(\pi_i\) forget its starting secret and private prefix computations. An exact simulator must recover every charged event, stopping decision and count from the projected variables. It may depend on the chain's endpoint and observed prefix replies, but may not inspect an unqueried prefix row. Private honest computations are replaced by their original cost debits, determined by the reference data and tree shapes. Give idealized executions an explicit \(q\) cap, which never changes an admitted real execution.
 
+The [reference-frontier proof](reference-frontier-transfer.md) now audits every use of an OTS starting secret in the concrete honest algorithms and gives their exact cost formulas, including all three layers when signing fails. It proves a causal transcript factorization, the resulting stopped likelihood comparison, and the conditional restart used to retain shared costs. This makes the paper comparison explicit. Its implementation still has to establish the concrete interpreter correspondence in Lean.
+
 For a complete prefix table \(H_i\) and an independently uniform endpoint \(Y_i\), direct summation over the forgotten uniform secret gives
 
 \[
@@ -278,7 +280,7 @@ After this projection is justified, the adaptive chain calculation has a concret
 a+b+2\min(b,c)\le{3\over2}(a+b+c).
 \]
 
-Reverse-order attempts and multiple contacts contribute the stated terms involving \(x\). Transfer each chain's stopped allocated cost to its real cost before summing across chains. The result must use the single real \(Q\), with no factor for the number of addresses. The two unit-neighbor orders must likewise end in the real \(Q\) and \(A_{\rm enc}\) expectations. This is the critical paper lemma to audit before investing in its Lean translation.
+Reverse-order attempts and multiple contacts contribute the stated terms involving \(x\). Transfer each chain's stopped allocated cost to its real cost before summing across chains. The result must use the single real \(Q\), with no factor for the number of addresses. The two unit-neighbor orders must likewise end in the real \(Q\) and \(A_{\rm enc}\) expectations. The reference-frontier proof spells out these transfers; preserving their projected histories and cost allocations is critical in the Lean translation.
 
 **The forced-FTS transfer has a different test.** In the deferred representation, a candidate \(z\in U\) is the true secret with probability \(1/|U|\). On a miss, return a uniform low answer and delete \(z\) from \(U\), including when that answer happens to equal the public leaf hash. That latter event is an alternative preimage, not a true-secret disclosure. A true hit or a signing disclosure retires the coordinate and fixes its secret. These exact local kernels preserve a product of uniforms on the remaining candidate sets.
 

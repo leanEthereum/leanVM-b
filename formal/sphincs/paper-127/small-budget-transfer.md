@@ -2,7 +2,7 @@
 
 This note supplies the original-experiment transfer used by the small-budget branch. It combines the static chain calculations with the exact graph and reference construction, the deferred FTS kernels, and the stopped coverage theorem. The argument is on paper; it is not a Lean security theorem. It preserves the original algorithms, independent secrets, finite failures, own-input exclusion, and whole-experiment syntactic hash budget.
 
-Fix an original adversary admitted by HasHashQueryBound at 1<=q<=2^113. Write N=2^128, x=q/N, delta=2^-16, and epsilon(q)=q/2^222+q/2^237+2^-700. We derive
+Fix an original adversary admitted by HasHashQueryBound at 1<=q<=3*2^114. Write N=2^128, x=q/N, delta=11/65536, and epsilon(q)=q/2^222+q/2^170+2^-700. The intended bound is
 
     Pr[original SUF win] <= (7/4)x + delta*x + epsilon(q) < 2x.
 
@@ -10,11 +10,11 @@ The supporting probability and cost estimates below are derived in presentations
 
 ## The shared stopped law and its costs
 
-Use the exact reference counters J_p, words D_p, and canonical graph of paid-probe-quadratic.md. Add an independent terminal pool length J_pool and independent geometric block lengths with the laws in cached-target-forecast.md. Retain the original execution underneath the monitor. The base monitor stops at original termination, the signing cap, or its cache, deficit, short-pool, or geometric-prefix exception. An active signing invocation is completed and its certificates banked before applying post-record guards. It does not stop at a guessed secret or an OTS contact.
+Use the exact reference counters J_p, words D_p, and canonical graph of paid-probe-quadratic.md. Add independent geometric block lengths and use the fixed terminal word of length 25313293 from cached-target-forecast.md. Retain the original execution underneath the monitor. The base monitor stops at original termination, the signing cap, or its cache, deficit or geometric-prefix exception. Its cache and deficit guards use message cells and actual spent calls. An active signing invocation is completed and its certificates banked before applying post-record guards. It does not stop at a guessed secret or an OTS contact.
 
-The base stop uses the message cache, completed signing views, actual costs, J_pool, and geometric lengths. It needs no rejected proposal values. Denote this projected stopped law by R. Attaching rejected words using the exact record-first bridge preserves R; its full and near certificate counts, message count, and stopping rule depend only on the projected variables. Thus the coverage theorem gives directly in R
+The base stop uses the message cache, completed signing views, actual costs and geometric lengths. It needs no rejected proposal values. Denote this projected stopped law by R. Attaching rejected words using the exact record-first bridge preserves R; its full and near certificate counts, message count, and stopping rule depend only on the projected variables. The coverage theorem, once its concrete kernel conditions are discharged, gives in R
 
-    E_R[C_full] <= (3/(2N)) E_R[A_msg] + delta*x,
+    E_R[C_full] <= E_R[A_msg]/N + delta*x,
     E_R[C_near] <= 557*x.
 
 A coverage certificate includes the target input, not just its digest value. Successful views at that same input are excluded. The original exception allowance is at most epsilon(q). Stopping before request S+1 discards only original losing executions; the original final verdict still reads the complete log.
@@ -58,7 +58,7 @@ This projection matters. If I_i also carried an independent uniform S_i, then on
 
 not the preimage count W_i. Averaging this indicator density over the forgotten uniform S_i gives exactly W_i. For example, a one-edge identity function has W_i=1 at each endpoint, while the full-space density at a compatible secret is N. A theorem stated for an unprojected secret-key record with density W_i would therefore be false.
 
-Every event and cost used in the OTS bound factors through pi_i. The omitted honest computations have costs determined by D, J and fixed tree shapes; their returned OTS fields are Y_i. The remaining original responses and selected digest records are computed from retained auxiliary data and the external prefix replies. External row freshness, domain membership and reference classification determine Q and A_enc without S_i. Contacts, backward witnesses, markers, their first-occurrence stops, and the base monitor guards are likewise functions of this projection. An OTS correct-guess flag is not included in these histories. Thus taking this projection changes none of the R probabilities or expected costs appearing below.
+The subroutine and cost analysis in [reference-frontier-transfer.md](reference-frontier-transfer.md) gives the precise paper justification that the OTS events and costs factor through pi_i. An honest chain returns either its reference frontier or its full endpoint, and the exact signing cost depends on the message attempts, reference counters and fixed tree shapes. All three layer costs remain even when one layer fails. The remaining responses and selected digest records use retained auxiliary data and external prefix replies. External freshness, domain membership and reference classification determine Q and A_enc without S_i. Contacts, backward witnesses, markers, their first-occurrence stops and the projected base guards likewise use only those data. An OTS correct-guess flag and private cache-hit information are excluded. The concrete Lean interpreter must implement this correspondence.
 
 For a particular chain i, let I_i be the same capped projected simulator, with Y_i independently uniform instead of generated from its secret and prefix. All other challenges remain real. Use the same endpoint-dependent auxiliary kernel in both laws. If W_i is the number of starting values whose full prefix ends at Y_i, the complete-table density of the pushforward pi_i(R) relative to I_i is W_i. Expectations labeled R below concern statistics factoring through pi_i; they are the same expectations in the original stopped law.
 At an adaptive transcript T, let K_j contain the queried rows of prefix function j, let u_j indicate its unqueried rows, and put P_j=K_j+u_j*1^T/N. The unqueried cells in I_i remain independent uniforms even with adaptive auxiliary queries and the cap. Hence the transcript density is
@@ -115,7 +115,7 @@ If a chain's first contact precedes its marker, a fresh encoding query can produ
 
     82x/(1-x) * E_R[Q]/N.
 
-If the marker precedes first contact, fix its chain i and apply the first-contact likelihood calculation only after the marker. Pre-marker prefix work is allowed: every previously queried input can still enter a later productive path, but at most once. The total numerator is at most 2q times the indicator that the chain was marked before its first contact or termination. At this stopping time, w_i>=1-x converts that ideal indicator probability to its real probability. Sum over chains and apply the real expected marker count. This order is at most
+If the marker precedes first contact, condition on the real first-marker transcript for its chain i. The conditional first-contact likelihood calculation gives probability at most 2q/(N*w_i(T))<=2x/(1-x). Pre-marker prefix work is included: each old queried input can enter a later productive path at most once, and its cost plus twice future work is at most 2q. Average this conditional bound over the real marker history, sum over chains and apply the real expected marker count. This order is at most
 
     3444x/(1-x) * E_R[A_enc]/N.
 
@@ -170,7 +170,7 @@ The R_j paths on which j is eligible have density for the corresponding real fir
 
     L_j = p_j * product_(t<j)(1-p_t) <= 1/(N-q).
 
-This is an identity of kernels in the projected law before rejected values are added. Message cells, high bits, signing responses and disclosures, and the independent pool and geometric lengths all have the same kernels along corresponding paths. Therefore, for any nonnegative projected terminal statistic F,
+This is an identity of kernels in the projected law before rejected values are added. Message cells, high bits, signing responses and disclosures, and the independent geometric lengths all have the same kernels along corresponding paths. Therefore, for any nonnegative projected terminal statistic F,
 
     E_R[1_(first true guess at j)*F] = E_(R_j)[L_j*F].
 
@@ -191,12 +191,12 @@ The deterministic implication and all estimates refer to R's same projected cost
 
     Pr[original SUF win]
         <= c_Q(x) E_R[Q]/N + c_enc(x) E_R[A_enc]/N
-           + E_R[A_str]/N + (3/2) E_R[A_msg]/N
+           + E_R[A_str]/N + E_R[A_msg]/N
            + delta*x + 557x^2/(1-x) + x^2/(2(1-x)^2) + epsilon(q).
 
-For 0<x<=2^-15, monotonicity and exact rational endpoint evaluation show
+For 0<x<=3*2^-14, monotonicity and exact rational endpoint evaluation show
 
-    max(c_Q(x),c_enc(x),1,3/2) < 131/80,
+    max(c_Q(x),c_enc(x),1) < 131/80,
     557x/(1-x) + x/(2(1-x)^2) < 9/80.
 
 Use Q+A_enc+A_str+A_msg<=q before adding the two quadratic FTS terms. The resulting bound is
@@ -204,4 +204,4 @@ Use Q+A_enc+A_str+A_msg<=q before adding the two quadratic FTS terms. The result
     Pr[original SUF win] <= (131/80+9/80)x + delta*x + epsilon(q)
                          = (7/4)x + delta*x + epsilon(q) < 2x.
 
-The final strict inequality follows from epsilon(q)/x<=2^-94+2^-109+2^-572 and delta=2^-16. Together with the large-budget argument, this supplies an end-to-end paper derivation of the requested slope for the original experiment. Its mathematical transfers and subsequent Lean formalization still require scrutiny; arithmetic or finite-kernel checks alone do not certify this claim.
+The final strict inequality follows from epsilon(q)/x<=2^-94+2^-42+2^-572 and delta=11/65536. This is the closing calculation for the current paper route. The concrete graph correspondence, forced-secret support transfer, exhaustive SUF decomposition and subsequent Lean formalization must still be established; arithmetic and finite-model checks alone do not certify the original security theorem.
