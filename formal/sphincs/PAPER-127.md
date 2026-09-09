@@ -4,6 +4,8 @@ This is a proof strategy for the unchanged concrete scheme at source commit a743
 
 A subsequent [paper review and proof plan](paper-127/next-proof-plan.md), based on source commit 89d33041, sharpens the abstract paid primitive bound to 2x-3x^2/4 by counting probe rounds separately from message queries. It permits a split at q=2^113 and prioritizes the complete stopped certificate estimate and its original-game filtration. The older bounds below remain sufficient; the new note distinguishes the algebraic improvement from the concrete probability interfaces still to establish.
 
+The latest [two-filtration audit](paper-127/two-filtration-audit.md), based on source commit 86c5e4e8, simplifies that interface: coverage and primitive probabilities must refer to the same stopped execution and message costs, but may use different information histories. Erasing rejected proposal values preserves independent geometric lengths, which are sufficient for the shared stopping rules. The forced-guess likelihood can likewise be proved before adding rejected values, with a separate coverage coupling for each forced experiment. The note gives the transition obligations and revised work order; it does not claim a completed paper or Lean proof.
+
 ## Target and revised closing argument
 
 Write N=2^128 and x=q/N. The target is P[forge]<=2x for the original strong-unforgeability experiment, with independently sampled secrets, at most 2^24 signing requests, actual finite retry failures, and the original hash budget covering key generation, signing, adversarial queries, and verification. At q>=N/2 the probability bound by one suffices.
