@@ -1,8 +1,10 @@
 # Paper route to 127-bit strong unforgeability
 
-Start with the [current mathematical plan](paper-127/minimal-closing-contract.md), reviewed against `16cd91cb`. The target is the unchanged original SUF game with probability at most `q / 2^127`. The public Lean endpoint remains 126 bits. This paper review adds no Lean code.
+Start with the [current mathematical plan](paper-127/minimal-closing-contract.md), reviewed against `71718e2e`. The target is the unchanged original SUF game with probability at most `q / 2^127`. The public Lean endpoint remains 126 bits. This paper review adds no Lean code.
 
 Keep the split at `q = 3 * 2^114`. Above the split, a joint first-match and message-cost potential leaves a quadratic saving. Below it, completed OTS witnesses and FTS guesses must share the actual query allocations. The plan derives sufficient inequalities for both intervals, checks their exact arithmetic, and specifies the probability comparisons still needed. It also simplifies encoding exhaustion to a fixed valid analytical dummy word, preserving the full original failure distribution.
+
+The paper audit now derives the allocated two-edge coefficient directly from the partial-table likelihood and stopped hit-count moments. It explains why a one-edge target match costs about two units while a complete two-edge path costs three units for two queries, and proves the adaptive correction without assigning every chain a separate full budget. The recommended next security milestone is the large-range bound for the original game; it has no dependency on this endpoint comparison or the forced-FTS branch.
 
 The paper plan now gives a concrete endpoint simulator: rebuild roots and canonical messages from the supplied frontiers, embed the conditional encoding blocks before execution, and replace private prefix work by its result and original cost. An adaptive transcript mass calculation derives the projected likelihood from this causal access rule. A backwards trace through `Statement.lean` accounts for every signature field and explains the full, near, and true-guess alternatives with own-input exclusion. These are paper derivations and concrete formalization obligations, not additional Lean security theorems.
 

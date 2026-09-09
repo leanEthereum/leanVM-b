@@ -4,7 +4,7 @@ The [mathematical audit at `088bb5d9`](mathematical-audit.md) updates the branch
 
 This review concerns the unchanged scheme in `Statement.lean`, at `6b7f4d5f`. It adds no Lean code. The current public endpoint is 126 bits. The recommendation is to pursue the two-range argument below. Its closing inequalities work; its security conclusion still requires the concrete probability and execution correspondences specified here. Earlier notes contain superseded constants. This roadmap uses the unit-payment bounds throughout.
 
-The [minimal closing contract](minimal-closing-contract.md), reviewed at `69b56362`, gives a simpler sufficient small-range target: OTS costs at coefficient `7/4`, extra FTS risk at coefficient `1/8`, and the same coverage allowance. It also distinguishes the fixed-answer signer correspondence from the required random-oracle probability correspondence and lists the completion gates.
+The [minimal closing contract](minimal-closing-contract.md), reviewed through `71718e2e`, is the current plan. It gives a simpler sufficient small-range target: OTS costs at coefficient `7/4`, extra FTS risk at coefficient `1/8`, and the same coverage allowance. It also derives the allocated two-edge estimate, distinguishes the fixed-answer signer correspondence from the required random-oracle probability correspondence, and lists the completion gates.
 
 ## The mathematical target
 
@@ -40,7 +40,7 @@ A last-edge match can therefore have leading cost 2/N, while a complete two-edge
 
 Construct the finite canonical hash graph with a separate domain for each valid serialized tweak. Sample independent canonical node labels in topological order and program each domain at its one canonical child payload. Leave other rows uniform. Distinct node labels may coincide; there is no global distinctness condition or birthday loss.
 
-For each OTS address, its canonical message is determined by the non-encoding graph. Sample its first valid encoding counter J and valid digit vector D from their exact finite-search distribution, including exhaustion. Conditional encoding rows before J are invalid, the reference row encodes D, and unrestricted rows remain uniform. An independent dummy D on exhaustion is analysis data only. The digits of D need not be independent.
+For each OTS address, its canonical message is determined by the non-encoding graph. Sample its first valid encoding counter J and valid digit vector D from their exact finite-search distribution, including exhaustion. Conditional encoding rows before J are invalid, the reference row encodes D, and unrestricted rows remain uniform. Use a fixed valid dummy D on exhaustion as analysis data only. The digits of D need not be independent, and D need not be uniform on exhaustion.
 
 The retained public cut contains each OTS chain value at its reference digit and all values above it, plus the FTS leaf hashes and the higher structural graph. Private chain prefixes are accessed by the honest algorithms only to compute those reference values or full chain endpoints. They can be replaced by supplied values and the exact original number of cost markers. This requires preserving the message trace and every response, including `None`. All three `signLayer` computations run before the final failure decision. A failed request can have computed private values without disclosing them.
 

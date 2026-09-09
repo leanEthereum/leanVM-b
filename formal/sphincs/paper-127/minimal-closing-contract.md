@@ -1,6 +1,6 @@
 # A minimal mathematical contract for the 127-bit proof
 
-This paper review concerns the unchanged game through `16cd91cb`. It adds no Lean code. The public statement currently stops at 126 bits. The purpose here is to specify sufficient intermediate results, explain why their combination works, and identify which correspondences must be proved before calling this a security proof. This is the current plan; some earlier development notes use different constants and an independently uniform dummy word on encoding exhaustion.
+This paper review concerns the unchanged game through `71718e2e`. It adds no Lean code. The public statement currently stops at 126 bits. The purpose here is to specify sufficient intermediate results, explain why their combination works, and identify which correspondences must be proved before calling this a security proof. This is the current plan; some earlier development notes use different constants and an independently uniform dummy word on encoding exhaustion.
 
 ## Conclusion of the review
 
@@ -277,6 +277,66 @@ This converts each chain's allocated ideal cost to its real cost with factor at 
 
 The adaptive witness calculation must include the costs of preparation before a target is selected. For two-edge suffixes, the last-unqueried-edge expansion of \(w\) counts each older queried input at most once; the baseline charge is \(3Q_i/2\), with the stated quadratic and cubic corrections. For a new one-edge contact after a real transcript \(T\), the restart charge is \(a_i(T)+2Q_i^+\), where \(a_i(T)\) counts old prefix rows and \(Q_i^+\) counts future rows through the first contact. Transfer that charge to the real law before summing over uncontacted chains. Their charges sum to at most \(Q_{\rm past}+2Q_{\rm future}\le2q\). This handles both a second contacted chain and an encoding marker that precedes its contact. The opposite order uses at most 41 neighboring words per contacted chain. The detailed restart derivation is in [Section 8 of the audit](mathematical-audit.md#8-a-conditional-ots-restart-with-an-explicit-shared-charge).
 
+### Auditing the allocated two-edge bound directly
+
+The coefficient \(3/2\) has a concrete explanation. For independent uniform functions \(f,g\), a uniform secret \(S\), and a fixed candidate \(a\),
+
+\[
+\Pr[f(a)=f(S)]=1-(1-1/N)^2,
+\qquad
+\Pr[g(f(a))=g(f(S))]=1-(1-1/N)^3.
+\]
+
+To derive the first identity, split on \(S=a\); otherwise the two function cells are independent. For the second, split on \(f(a)=f(S)\); otherwise the two \(g\) cells are independent. Thus one edge has leading probability \(2/N\), whereas two queried edges have leading probability \(3/N\) for two calls. These are examples in the revealed-endpoint chain experiment. They explain the proposed coefficients without claiming an attack against the original signature game.
+
+Here is a derivation that retains the adaptive allocation. Fix one chain of depth \(d\ge2\) in its causal independent-endpoint experiment \(I_i\), and stop at its first fully queried two-edge suffix to \(Y_i\), the base stop, or the budget cap. Let \(Q_i\) count its fresh prefix rows through that stop. For each level \(r\), let \(C_r\) count fully queried suffix paths from that level to \(Y_i\). Set \(C_d=1\). The last-unqueried-edge expansion gives
+
+\[
+w=C_0+\sum_{j=0}^{d-1}\alpha_jC_{j+1},
+\qquad
+\alpha_j=\frac{\mathbf1^TP_0\cdots P_{j-1}u_j}{N}\in[0,1],
+\qquad
+w\le1+\sum_{r<d}C_r.
+\]
+
+Before the first two-edge completion all \(C_r\) with \(r\le d-2\) vanish. Write \(k=C_{d-1}\). A fresh last-edge query at \(z\) can complete a witness only if a queried penultimate row already reaches \(z\). If it does, its ideal chance is \(1/N\), and its resulting likelihood is at most \(2+k+\sum_{r<d-1}m_r(z)\), where \(m_r(z)\) counts queried paths from level \(r\) to \(z\). A fresh penultimate query at \(a\) completes a witness with ideal chance \(k/N\), and its resulting likelihood is at most \(k+2+M(a)\), where \(M(a)\) counts queried paths from earlier levels to \(a\). A repeated row or an earlier-level query cannot be the first completion.
+
+Let \(q_j\) be the stopped fresh-query count at level \(j\). Each older queried input contributes to \(m_r(z)\) at most once: its known forward path has one endpoint and each last-edge input has one first query. The number of productive last-edge queries is at most \(\min(q_{d-2},q_{d-1})\). Consequently the baseline likelihood numerators have the pathwise bound
+
+\[
+\sum_{j<d-1}q_j+2\min(q_{d-2},q_{d-1})
+\le\frac32\sum_{j<d}q_j=\frac32Q_i.
+\]
+
+The same uniqueness argument gives \(\sum_aM(a)\le Q_i\le q\). Let \(K\) be the final number of last-edge replies equal to \(Y_i\), including unproductive ones. A fresh last-edge answer has conditional hit probability \(1/N\) in \(I_i\). Summing its indicator increments and the increments of \(K(K-1)\) gives
+
+\[
+\mathbb E_{I_i}K\le\frac{\mathbb E_{I_i}Q_i}{N},
+\qquad
+\mathbb E_{I_i}[K(K-1)]\le\frac{2q\,\mathbb E_{I_i}Q_i}{N^2}.
+\]
+
+For the second bound, the factorial increment at a last-edge trial is twice its previous hit count divided by \(N\) in conditional expectation, and the sum of those previous counts is pathwise at most \(qK\). This argument permits adaptive allocation and stopping; no independent random query count is assumed.
+
+Across all last-edge and penultimate trials, their remaining \(k\) and \(k(k+2)\) numerators sum to at most \(qK(K+2)\). The earlier-path numerators sum to at most \(qK\). Applying the two moment bounds therefore bounds the nonbaseline contribution by
+
+\[
+\frac qN\mathbb E_{I_i}[K(K-1)+4K]
+\le(4x+2x^2)\frac{\mathbb E_{I_i}Q_i}{N}.
+\]
+
+The first-success decomposition weights each ideal successful transition by its resulting \(w\). The preceding estimates establish
+
+\[
+\Pr_R[E_{2,i}]
+\le(3/2+4x+2x^2)\frac{\mathbb E_{I_i}Q_i}{N}
+\le\frac{3/2+4x+2x^2}{1-x}\frac{\mathbb E_RQ_i}{N}.
+\]
+
+The final step uses the stopped density lower bound, rather than equating the real and ideal endpoint laws. On the common real execution each chain's individual stopping rule only shortens its allocated count, so \(\sum_iQ_i\le Q\). Summing the displayed bounds introduces no number-of-chains factor. This proves the proposed two-edge estimate under the specified causal simulator correspondence; that concrete correspondence remains a required step for SPHINCS.
+
+### FTS guesses and conditional coverage
+
 For FTS, an active secret is uniform on its remaining candidates \(U\). A query at \(z\in U\) hits with probability \(1/|U|\). On a miss, remove \(z\) and return a uniform answer, allowing that answer to equal the public leaf hash. That alternative preimage remains distinct from guessing the true secret.
 
 Force earlier eligible queries to miss and the eligible query at slot \(j\) to hit. If \(R_j\) is this conditional-kernel law, then for every nonnegative projected statistic \(Z\),
@@ -306,3 +366,5 @@ These are local assertions to establish, not an assumed global coverage inequali
 5. Complete the projected OTS likelihood and shared witness charging, and the forced-FTS comparison, to obtain the small-range inequality. Combine the intervals and probability at most one.
 
 A scalar bound, a supported-execution correspondence, or a theorem assuming the global cryptographic inequality is an intermediate result. Completion means deriving both interval bounds for the unchanged original SUF experiment from its existing whole-experiment query-bound premise.
+
+For the next milestone, prioritize the large-range original-game inequality in gate 4. Its dependencies are the canonical hidden-label invariant, the backwards verifier classification and coverage on that same law stopped at the first match. It does not depend on the independent-endpoint OTS comparison or forced-FTS coverage. The small-range chain and forced-secret arguments can then be assessed against a fixed, already useful security endpoint. Before translating each argument into Lean, its paper statement should specify the retained history, local transition law, stopping rule, original allocated cost and exact original-game conclusion.
