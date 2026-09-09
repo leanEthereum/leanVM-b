@@ -2,6 +2,8 @@
 
 This paper review uses the unchanged experiment on branch `sphincs-fv` at `09dbcf69`. It adds no Lean source. The current public theorem establishes 126 bits. The 127-bit conclusion below is conditional on the explicitly listed original-experiment transfers; those are mathematical obligations, not assumptions to add to the public statement.
 
+Subsequent formalization proves the unit payment in [UnitCertificateCoverage.lean](../SphincsSecurity/Proof/UnitCertificateCoverage.lean). [CertificateFamilyGame.lean](../SphincsSecurity/Proof/CertificateFamilyGame.lean) puts the full bank and all 14 near banks on a single execution with shared cache, proposal word, counters, stopping state and cache-exception flag. Each bank projects exactly to its original certificate game, and the verdict/cache projection is the original SUF experiment. [CertificateFamilyCoverage.lean](../SphincsSecurity/Proof/CertificateFamilyCoverage.lean) proves both coverage inequalities on this one law, while [CertificateFamilyClean.lean](../SphincsSecurity/Proof/CertificateFamilyClean.lean) pays the common exception event once and transfers the administrative-stop and terminal-certificate results. The shared stop may depend on the cache and common counters, but not on bank contents or their differing coverage prices. These results concern the original law; they do not establish the hidden-label hazard, the OTS likelihood projection, or coverage in forced-secret laws.
+
 The recommendation is to keep the fixed proposal word and the two budget ranges, but pay ordinary full coverage at one unit per message query, rather than three halves. The existing moment bounds already support this. It replaces the large-budget scalar maximization by a direct potential with two elementary transition inequalities. It preserves the existing split and the same final error margin. The difficult remaining work is the concrete graph and witness transfers.
 
 ## Target and constants
@@ -65,7 +67,7 @@ The generic baseline theorem `expected_fixedCertificateGame_count_le_message_exc
 \boxed{\mathbb E C_{\rm full}\le{\mathbb E A_{\rm cov}\over N}+\delta x.}
 \]
 
-Here \(C_{\rm full}\) counts banked full certificates and \(A_{\rm cov}\) counts actual monitored message calls. This new numerical specialization has not been added to Lean in this review. The near estimate stays \(\mathbb E C_{\rm near}\le557x\), subject to using a common stopping rule and, where needed, extending the coverage theorem to the forced-secret laws.
+Here \(C_{\rm full}\) counts banked full certificates and \(A_{\rm cov}\) counts actual monitored message calls. The subsequent Lean specialization and its transfer to the shared game are now proved. The near estimate \(\mathbb E C_{\rm near}\le557x\) holds on that same law with its common stopping rule; extending it to forced-secret laws remains necessary.
 
 The adaptive charging proof remains essential. If a creation multiplier \(a_j\) is predictable and the forecast is dominated by the conditional terminal price, then its excess is paid through \(\mathbb E[\sum_j a_j(R-1)_+]\le q\mathbb E(R-1)_+\), using the pathwise bound \(\sum_j a_j\le q\). The ordinary part uses \(\mathbb E\sum_j a_j\le\mathbb E A_{\rm cov}\). There is no factorization of an adaptively chosen occupancy and an adaptively chosen query count.
 
