@@ -17,6 +17,22 @@ noncomputable def referenceEncodingAuxiliarySample : PMF ReferenceEncodingAuxili
     (FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit decodeEncodingOutput_invalid_nonempty selections).map
       (fun rows => ⟨selections, Function.uncurry rows⟩))
 
+theorem referenceEncodingAuxiliarySample_select (auxiliary : ReferenceEncodingAuxiliary)
+    (hauxiliary : auxiliary ∈ referenceEncodingAuxiliarySample.support) (position : EncodingPosition) :
+    FirstSuccessTable.select decodeEncodingOutput (fun counter => auxiliary.rows (position, counter)) =
+      auxiliary.selections position := by
+  rw [referenceEncodingAuxiliarySample, PMF.mem_support_bind_iff] at hauxiliary
+  obtain ⟨selections, hselections, hauxiliary⟩ := hauxiliary
+  rw [PMF.mem_support_map_iff] at hauxiliary
+  obtain ⟨rows, hrows, rfl⟩ := hauxiliary
+  have hselected : FirstSuccessFamily.select decodeEncodingOutput encodingAttemptLimit rows = selections := by
+    by_contra hne
+    have hmass := FirstSuccessFamily.selected_mul_afterSelect decodeEncodingOutput encodingAttemptLimit
+      decodeEncodingOutput_invalid_nonempty selections rows
+    rw [if_neg hne] at hmass
+    exact mul_ne_zero ((PMF.mem_support_iff _ _).mp hselections) ((PMF.mem_support_iff _ _).mp hrows) hmass
+  exact congrFun hselected position
+
 theorem referenceAuxiliarySample_bind_seed {Result : Type} (inputs : Finset HashInput)
     (next : ReferenceAuxiliary inputs → SPMF Result) :
     (𝒟[referenceAuxiliarySample inputs] >>= next) =

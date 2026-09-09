@@ -7,29 +7,27 @@ attribute [local instance] Classical.propDecidable
 attribute [local irreducible] canonicalEncodingInputs canonicalGraphInputs instFintypePosition
 set_option backward.isDefEq.respectTransparency false
 
-variable (parameter : PublicParameter) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (words : OtsReferenceWords)
-    (disclosed : Index → FtsTree → FtsLeaf → Prop) (known : Labels) (publicReplies : CanonicalGraphLabels)
-    (rows : CanonicalEncodingRows)
+variable (parameter : PublicParameter) (inputs : Finset HashInput) (words : OtsReferenceWords)
+    (disclosed : Index → FtsTree → FtsLeaf → Prop) (known : Labels) (actions : inputs → Action inputs)
 
 noncomputable def executeResult (actual : Labels) (seed : inputs → HashOutput) (state : State inputs) :
     Action inputs → Option HashOutput × State inputs
   | .known answer => (some answer, state)
   | .read input => (some (seed input), AdaptiveResidualLabels.readState
-      (environment parameter inputs hencoding words disclosed known publicReplies rows) state input (seed input))
+      (environment parameter inputs words disclosed known actions) state input (seed input))
   | .probe input test =>
       match state.rows input with
       | some answer => (some answer, AdaptiveResidualLabels.readState
-          (environment parameter inputs hencoding words disclosed known publicReplies rows) state input answer)
+          (environment parameter inputs words disclosed known actions) state input answer)
       | none => if test.keep actual (seed input) then
           (some (seed input), AdaptiveResidualLabels.probeState
-            (environment parameter inputs hencoding words disclosed known publicReplies rows) state input test (seed input))
+            (environment parameter inputs words disclosed known actions) state input test (seed input))
         else (none, AdaptiveResidualLabels.stoppedState
-          (environment parameter inputs hencoding words disclosed known publicReplies rows) state input test)
+          (environment parameter inputs words disclosed known actions) state input test)
 
 theorem observedRun_execute (actual : Labels) (seed : inputs → HashOutput) (state : State inputs) (action : Action inputs) :
-    AdaptiveResidualLabels.observedRun (environment parameter inputs hencoding words disclosed known publicReplies rows) actual seed
-      (execute action) state = pure (executeResult parameter inputs hencoding words disclosed known publicReplies rows actual seed state action) := by
+    AdaptiveResidualLabels.observedRun (environment parameter inputs words disclosed known actions) actual seed
+      (execute action) state = pure (executeResult parameter inputs words disclosed known actions actual seed state action) := by
   cases action with
   | known answer =>
       simp only [execute, AdaptiveResidualLabels.observedRun, AdaptiveResidualLabels.runWith_pure, executeResult]
@@ -47,28 +45,28 @@ theorem observedRun_execute (actual : Labels) (seed : inputs → HashOutput) (st
 
 noncomputable def hashQueryResult (actual : Labels) (seed : inputs → HashOutput) (input : inputs) (state : State inputs) :
     Option HashOutput × State inputs :=
-  let prepared := prepare parameter inputs hencoding words disclosed known publicReplies rows input state.memory
-  executeResult parameter inputs hencoding words disclosed known publicReplies rows actual seed { state with memory := prepared.2 } prepared.1
+  let prepared := prepare parameter inputs words disclosed known actions input state.memory
+  executeResult parameter inputs words disclosed known actions actual seed { state with memory := prepared.2 } prepared.1
 
 theorem observedRun_hashQuery (actual : Labels) (seed : inputs → HashOutput) (input : inputs) (state : State inputs) :
-    AdaptiveResidualLabels.observedRun (environment parameter inputs hencoding words disclosed known publicReplies rows) actual seed
-      (hashQuery input) state = pure (hashQueryResult parameter inputs hencoding words disclosed known publicReplies rows actual seed input state) := by
+    AdaptiveResidualLabels.observedRun (environment parameter inputs words disclosed known actions) actual seed
+      (hashQuery input) state = pure (hashQueryResult parameter inputs words disclosed known actions actual seed input state) := by
   rw [hashQuery, observedRun_prepare_bind, observedRun_execute]
   rfl
 
-omit parameter hencoding words disclosed known publicReplies rows in
+omit parameter words disclosed known actions in
 noncomputable def delivered (input : inputs) (memory : ExternalMemory) (answer : Option HashOutput) : ExternalMemory :=
   answer.elim memory (fun answer => storeReply memory input.val answer)
 
 noncomputable def publicCachedReply (actual : Labels) (seed : inputs → HashOutput) (input : inputs) (memory : ExternalMemory) :
     Option HashOutput :=
   (memory.cache input.val).elim
-    (ResidualByteAction.eval actual seed (fresh parameter inputs hencoding words disclosed known publicReplies rows input)) some
+    (ResidualByteAction.eval actual seed (actions input)) some
 
 theorem hashQueryResult_project (actual : Labels) (seed : inputs → HashOutput) (input : inputs) (state : State inputs)
-    (hcovered : RowsCovered inputs state) :
-    let result := hashQueryResult parameter inputs hencoding words disclosed known publicReplies rows actual seed input state
-    let answer := publicCachedReply parameter inputs hencoding words disclosed known publicReplies rows actual seed input state.memory
+    (hcovered : RowsCovered inputs state) (hlocal : Local input (actions input)) :
+    let result := hashQueryResult parameter inputs words disclosed known actions actual seed input state
+    let answer := publicCachedReply inputs actions actual seed input state.memory
     (result.1, result.2.memory) = (answer, delivered inputs input
       (charge parameter words disclosed known input.val state.memory) answer) := by
   dsimp only
@@ -80,23 +78,25 @@ theorem hashQueryResult_project (actual : Labels) (seed : inputs → HashOutput)
       simp only [← hcache, Function.update_eq_self]
   | none =>
       have hrow := rowsCovered_fresh inputs state hcovered input hcache
-      simp only [hashQueryResult, prepare, hcache, publicCachedReply, Option.elim_none, fresh]
-      cases route parameter words disclosed known input.val with
-      | outside =>
-          cases knownEncodingRowAt parameter inputs hencoding known input <;>
-            simp only [Option.elim_none, Option.elim_some, executeResult, ResidualByteAction.eval, delivered,
-              AdaptiveResidualLabels.readState, environment]
-      | canonical position => rfl
-      | probe test =>
+      simp only [hashQueryResult, prepare, hcache, publicCachedReply, Option.elim_none]
+      cases haction : actions input with
+      | known answer => rfl
+      | read row =>
+          have heq : row = input := by simpa only [haction, Local] using hlocal
+          subst row
+          rfl
+      | probe row test =>
+          have heq : row = input := by simpa only [haction, Local] using hlocal
+          subst row
           simp only [executeResult, hrow, ResidualByteAction.eval]
           split <;> rfl
 
 theorem hashQueryResult_hashCalls (actual : Labels) (seed : inputs → HashOutput) (input : inputs) (state : State inputs) :
-    (hashQueryResult parameter inputs hencoding words disclosed known publicReplies rows actual seed input state).2.memory.hashCalls =
+    (hashQueryResult parameter inputs words disclosed known actions actual seed input state).2.memory.hashCalls =
       state.memory.hashCalls + 1 := by
-  have h := prepare_hashCalls parameter inputs hencoding words disclosed known publicReplies rows input state.memory
+  have h := prepare_hashCalls parameter inputs words disclosed known actions input state.memory
   unfold hashQueryResult
-  generalize hprepared : prepare parameter inputs hencoding words disclosed known publicReplies rows input state.memory = prepared at *
+  generalize hprepared : prepare parameter inputs words disclosed known actions input state.memory = prepared at *
   rcases prepared with ⟨action, memory⟩
   cases action with
   | known answer => exact h
@@ -111,7 +111,7 @@ theorem hashQueryResult_hashCalls (actual : Labels) (seed : inputs → HashOutpu
           dsimp only
           exact h
 
-omit parameter hencoding words disclosed known publicReplies rows in
+omit parameter words disclosed known actions in
 theorem rowsCovered_store (state : State inputs) (hcovered : RowsCovered inputs state)
     (candidates : CanonicalCoordinate → Finset Digest) (input : inputs) (answer : HashOutput) :
     RowsCovered inputs ⟨candidates, Function.update state.rows input (some answer), storeReply state.memory input.val answer⟩ := by
@@ -126,7 +126,7 @@ theorem rowsCovered_store (state : State inputs) (hcovered : RowsCovered inputs 
     rw [Function.update_of_ne heq] at hrow
     exact (Function.update_of_ne hval _ _).trans (hcovered other output hrow)
 
-omit parameter hencoding words disclosed known publicReplies rows in
+omit parameter words disclosed known actions in
 theorem rowsCovered_store_public (state : State inputs) (hcovered : RowsCovered inputs state)
     (input : inputs) (hfresh : state.rows input = none) (answer : HashOutput) :
     RowsCovered inputs { state with memory := storeReply state.memory input.val answer } := by
@@ -140,13 +140,13 @@ theorem rowsCovered_store_public (state : State inputs) (hcovered : RowsCovered 
 
 theorem prepare_rowsCovered (state : State inputs) (hcovered : RowsCovered inputs state) (input : inputs) :
     RowsCovered inputs { state with memory :=
-      (prepare parameter inputs hencoding words disclosed known publicReplies rows input state.memory).2 } := by
+      (prepare parameter inputs words disclosed known actions input state.memory).2 } := by
   unfold prepare
   cases hcache : state.memory.cache input.val with
   | some answer => exact hcovered
   | none =>
       have hrow := rowsCovered_fresh inputs state hcovered input hcache
-      cases fresh parameter inputs hencoding words disclosed known publicReplies rows input with
+      cases actions input with
       | known answer =>
           exact rowsCovered_store_public inputs
             { state with memory := charge parameter words disclosed known input.val state.memory } hcovered input hrow answer
@@ -156,7 +156,7 @@ theorem prepare_rowsCovered (state : State inputs) (hcovered : RowsCovered input
 theorem executeResult_rowsCovered (actual : Labels) (seed : inputs → HashOutput) (state : State inputs)
     (hcovered : RowsCovered inputs state) (action : Action inputs) :
     RowsCovered inputs
-      (executeResult parameter inputs hencoding words disclosed known publicReplies rows actual seed state action).2 := by
+      (executeResult parameter inputs words disclosed known actions actual seed state action).2 := by
   cases action with
   | known answer => exact hcovered
   | read input => exact rowsCovered_store inputs state hcovered state.candidates input (seed input)
@@ -173,8 +173,8 @@ theorem executeResult_rowsCovered (actual : Labels) (seed : inputs → HashOutpu
 theorem hashQueryResult_rowsCovered (actual : Labels) (seed : inputs → HashOutput) (state : State inputs)
     (hcovered : RowsCovered inputs state) (input : inputs) :
     RowsCovered inputs
-      (hashQueryResult parameter inputs hencoding words disclosed known publicReplies rows actual seed input state).2 :=
-  executeResult_rowsCovered parameter inputs hencoding words disclosed known publicReplies rows actual seed _
-    (prepare_rowsCovered parameter inputs hencoding words disclosed known publicReplies rows state hcovered input) _
+      (hashQueryResult parameter inputs words disclosed known actions actual seed input state).2 :=
+  executeResult_rowsCovered parameter inputs words disclosed known actions actual seed _
+    (prepare_rowsCovered parameter inputs words disclosed known actions state hcovered input) _
 
 end SphincsSecurity.Concrete.ResidualByteFrontend

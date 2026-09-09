@@ -72,18 +72,16 @@ theorem fixedExternalRun_hashCalls_le {Result : Type} (parameter : PublicParamet
   subst result
   exact ⟨trivial, fixedStep_hashCalls parameter words disclosed known actual oracle input memory⟩
 
-variable (parameter : PublicParameter) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (words : OtsReferenceWords)
-    (disclosed : Index → FtsTree → FtsLeaf → Prop) (known : Labels) (publicReplies : CanonicalGraphLabels)
-    (rows : CanonicalEncodingRows)
+variable (parameter : PublicParameter) (inputs : Finset HashInput) (words : OtsReferenceWords)
+    (disclosed : Index → FtsTree → FtsLeaf → Prop) (known : Labels) (actions : inputs → Action inputs)
 
 theorem publicCachedReply_eq_fixed (actual : Labels) (seed : inputs → HashOutput)
     (oracle : HashInput → HashOutput) (input : inputs) (memory : ExternalMemory)
     (hmatches : CacheMatches oracle memory.cache) (hclean : CacheClean parameter words disclosed actual memory.cache)
     (hfresh : ResidualByteAction.eval actual seed
-      (fresh parameter inputs hencoding words disclosed known publicReplies rows input) =
+      (actions input) =
         fixedAnswer parameter words disclosed actual oracle input.val) :
-    publicCachedReply parameter inputs hencoding words disclosed known publicReplies rows actual seed input memory =
+    publicCachedReply inputs actions actual seed input memory =
       fixedAnswer parameter words disclosed actual oracle input.val := by
   cases hcache : memory.cache input.val with
   | none => simpa only [publicCachedReply, hcache, Option.elim_none] using hfresh
@@ -95,20 +93,23 @@ theorem publicCachedReply_eq_fixed (actual : Labels) (seed : inputs → HashOutp
 
 theorem hashQueryResult_eq_fixed (actual : Labels) (seed : inputs → HashOutput)
     (oracle : HashInput → HashOutput) (input : inputs) (state : State inputs)
-    (hcovered : RowsCovered inputs state) (hmatches : CacheMatches oracle state.memory.cache)
+    (hcovered : RowsCovered inputs state) (hlocal : Local input (actions input)) (hmatches : CacheMatches oracle state.memory.cache)
     (hclean : CacheClean parameter words disclosed actual state.memory.cache)
     (hfresh : ResidualByteAction.eval actual seed
-      (fresh parameter inputs hencoding words disclosed known publicReplies rows input) =
+      (actions input) =
         fixedAnswer parameter words disclosed actual oracle input.val) :
-    let result := hashQueryResult parameter inputs hencoding words disclosed known publicReplies rows actual seed input state
+    let result := hashQueryResult parameter inputs words disclosed known actions actual seed input state
     (result.1, result.2.memory) = fixedStep parameter words disclosed known actual oracle input.val state.memory := by
   dsimp only
-  rw [hashQueryResult_project parameter inputs hencoding words disclosed known publicReplies rows actual seed input state hcovered,
-    publicCachedReply_eq_fixed parameter inputs hencoding words disclosed known publicReplies rows actual seed
+  rw [hashQueryResult_project parameter inputs words disclosed known actions actual seed input state hcovered hlocal,
+    publicCachedReply_eq_fixed parameter inputs words disclosed actions actual seed
       oracle input state.memory hmatches hclean hfresh]
   rfl
 
-theorem hashQueryResult_eq_original
+theorem hashQueryResult_eq_original (parameter : PublicParameter) (inputs : Finset HashInput)
+    (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (words : OtsReferenceWords)
+    (disclosed : Index → FtsTree → FtsLeaf → Prop) (known : Labels) (publicReplies : CanonicalGraphLabels)
+    (rows : CanonicalEncodingRows)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (replies : CanonicalGraphLabels)
     (hagrees : PublicAgreement words disclosed known (CanonicalCoordinate.value otsSecret ftsSecret replies))
@@ -120,12 +121,12 @@ theorem hashQueryResult_eq_original
     (hclean : CacheClean parameter words disclosed (CanonicalCoordinate.value otsSecret ftsSecret replies) state.memory.cache) :
     let oracle := programmedHash parameter otsSecret ftsSecret replies
       (finiteHashAnswer ∅ inputs (canonicalReferenceResidual parameter inputs hencoding replies rows seed))
-    let result := hashQueryResult parameter inputs hencoding words disclosed known publicReplies rows
+    let result := hashQueryResult parameter inputs words disclosed known (fresh parameter inputs hencoding words disclosed known publicReplies rows)
       (CanonicalCoordinate.value otsSecret ftsSecret replies) seed input state
     (result.1, result.2.memory) = fixedStep parameter words disclosed known
       (CanonicalCoordinate.value otsSecret ftsSecret replies) oracle input.val state.memory :=
-  hashQueryResult_eq_fixed parameter inputs hencoding words disclosed known publicReplies rows _ seed _ input state
-    hcovered hmatches hclean
+  hashQueryResult_eq_fixed parameter inputs words disclosed known (fresh parameter inputs hencoding words disclosed known publicReplies rows) _ seed _ input state
+    hcovered (fresh_local parameter inputs hencoding words disclosed known publicReplies rows input) hmatches hclean
     (fresh_eq_original parameter inputs hencoding words disclosed known otsSecret ftsSecret replies publicReplies
       hagrees hreplies rows seed input)
 

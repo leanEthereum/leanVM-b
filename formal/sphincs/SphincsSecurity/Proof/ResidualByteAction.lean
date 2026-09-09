@@ -14,6 +14,11 @@ inductive Action (inputs : Finset HashInput) where
   | read (input : inputs)
   | probe (input : inputs) (test : Probe CanonicalCoordinate)
 
+def Local {inputs : Finset HashInput} (input : inputs) : Action inputs → Prop
+  | .known _ => True
+  | .read row => row = input
+  | .probe row _ => row = input
+
 noncomputable def eval {inputs : Finset HashInput} (labels : Labels) (seed : inputs → HashOutput) : Action inputs → Option HashOutput
   | .known answer => some answer
   | .read input => some (seed input)
@@ -27,6 +32,17 @@ noncomputable def fresh (parameter : PublicParameter) (inputs : Finset HashInput
   | .outside => (knownEncodingRowAt parameter inputs hencoding known input).elim (.read input) (fun row => .known (rows row))
   | .canonical position => .known (publicReplies position)
   | .probe test => .probe input test
+
+theorem fresh_local (parameter : PublicParameter) (inputs : Finset HashInput)
+    (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (words : OtsReferenceWords)
+    (disclosed : Index → FtsTree → FtsLeaf → Prop) (known : Labels) (publicReplies : CanonicalGraphLabels)
+    (rows : CanonicalEncodingRows) (input : inputs) :
+    Local input (fresh parameter inputs hencoding words disclosed known publicReplies rows input) := by
+  unfold fresh
+  cases route parameter words disclosed known input.val with
+  | outside => cases knownEncodingRowAt parameter inputs hencoding known input <;> trivial
+  | canonical _ => trivial
+  | probe _ => rfl
 
 theorem fresh_eq_routed (parameter : PublicParameter) (inputs : Finset HashInput)
     (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (words : OtsReferenceWords)
