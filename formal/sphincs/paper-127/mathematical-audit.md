@@ -272,3 +272,61 @@ Apply the coverage kernel theorem separately in each \(R_j\), constructing its o
 5. Combine the small interval, the large interval and probability at most one for \(q\ge2^{127}\). Audit the final theorem against the unchanged original game and its original hash-bound premise.
 
 The common sampling and posterior construction has a direct local proof strategy. The OTS allocation and the forced-FTS coverage application are the highest-risk remaining steps because they compare different analytical laws. The next useful result must discharge one of those concrete correspondences or prove an original-game interval. Another endpoint that assumes its own global cryptographic inequality would leave the main question open.
+
+## 8. A conditional OTS restart with an explicit shared charge
+
+The conditional restart in the small-budget argument deserves a separate derivation. This section fills that paper step under the causal-simulator correspondence in Section 6. It does not establish that correspondence for the concrete game. Its purpose is to identify exactly which statistic must survive the projection and how to sum over many possible targets without a target-count factor.
+
+Fix a retained transcript \(T\) of positive real probability, and a chain \(i\) with positive reference digit that has not yet been contacted. A contact means that an externally queried last-prefix row outputs its published endpoint. Let \(a_i(T)\) count this chain's distinct prefix rows already queried. In the hybrid \(I_i\), only its endpoint is replaced by an independent uniform value, and the starting secret and private prefix evaluations are erased. Write \(w_i(T)\) for the projected real-to-hybrid transcript density. Both laws use the same endpoint-dependent auxiliary simulator, capped at \(q\).
+
+Stop at \(\tau_i\), the first later contact of this chain or the monitored execution's end, and let \(Q_i^+\) count its fresh prefix rows after \(T\) through that stop. For any nonnegative retained statistic \(Z\) at this stop, the conditional density identity is
+
+\[
+\mathbb E_R[Z\mid T]
+=\mathbb E_{I_i}\!\left[\frac{w_i(\tau_i)}{w_i(T)}Z\,\middle|\,T\right].
+\]
+
+The partial-table lower bound \(w_i(\tau_i)\ge1-x\) therefore gives
+
+\[
+\frac{\mathbb E_{I_i}[Z\mid T]}{w_i(T)}
+\le\frac{\mathbb E_R[Z\mid T]}{1-x}.
+\]
+
+Before the first contact, there are no known nonempty suffixes to the endpoint. Only a fresh last-prefix query can create that contact. If its input is \(z\), then its hybrid success probability is \(1/N\). On success the last-unqueried-transition expansion bounds the resulting density by \(2+\sum_r m_r(z)\), where \(m_r(z)\) counts already queried paths from earlier level \(r\) to \(z\). Each earlier queried input contributes to this sum for at most one fresh last-prefix input. This includes rows queried before \(T\). Consequently the total first-contact likelihood charge is bounded pathwise by
+
+\[
+B_i=a_i(T)+2Q_i^+,
+\]
+
+and the first-success decomposition gives
+
+\[
+\Pr_R[\text{later contact of }i\mid T]
+\le\frac{\mathbb E_{I_i}[B_i\mid T]}{Nw_i(T)}
+\le\frac{\mathbb E_R[B_i\mid T]}{N(1-x)}.
+\]
+
+This is the useful allocated form. It accounts for old prefix preparation and future work in one expression. Apply it separately to each chain uncontacted at \(T\), transferring its cost back to \(R\) before summation. Each individual stop only shortens that chain's future count. On every common real continuation,
+
+\[
+\sum_i B_i\le Q_{\rm past}+2Q_{\rm future}\le2q.
+\]
+
+Thus the conditional probability of any additional distinct contact is at most \(2x/(1-x)\). At the initial transcript, \(a_i=0\); summing the same allocated estimate gives
+
+\[
+\mathbb E_R[\text{number of contacted chains}]
+\le\frac{2\mathbb E_R Q}{N(1-x)}.
+\]
+
+Restarting at the first contact and using these two bounds proves the proposed two-contact contribution
+
+\[
+\Pr_R[\text{two distinct contacts}]
+\le\frac{4x}{(1-x)^2}\frac{\mathbb E_R Q}{N}.
+\]
+
+The same restart applies at a chain's first unit-neighbor marker, provided that chain has not been contacted. It gives probability at most \(2x/(1-x)\) of a later contact, including the effect of all pre-marker prefix queries. The expected number of marked chains is at most \(1722\mathbb E_R A_{\rm enc}/N\), so this chronological order costs at most \(3444x\mathbb E_R A_{\rm enc}/[N(1-x)]\). In the opposite order, a fresh encoding row has at most 41 suitable words per already contacted chain. Summing over at most \(q\) encoding slots and using the allocated contact expectation gives \(82x\mathbb E_R Q/[N(1-x)]\). The fresh-encoding estimate is proved in its own history hiding unqueried encoding rows; only its resulting real expectation is used here.
+
+The outstanding paper gate is now precise: construct the original-game simulator for which these density identities, contact events, marker times and allocated stopped counts are all measurable after erasing the selected starting secret. If that gate fails, the displayed estimates cannot be used for SPHINCS. If it holds, arbitrary earlier preparation and adaptive choice among chains do not require a separate full-budget charge for every chain.
