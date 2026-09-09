@@ -4,6 +4,8 @@ This is a paper derivation against `3bf4e874`. It changes no Lean code. The publ
 
 The initial sampling identities are now formalized in [CanonicalCoordinateSampling.lean](../SphincsSecurity/Proof/CanonicalCoordinateSampling.lean), [UniformPublicCoordinates.lean](../SphincsSecurity/Proof/UniformPublicCoordinates.lean) and [CanonicalPublicPrior.lean](../SphincsSecurity/Proof/CanonicalPublicPrior.lean). [ReferenceCoordinateGame.lean](../SphincsSecurity/Proof/ReferenceCoordinateGame.lean) transports them to the original SUF game with its hash bound, and [PublicSigningInitial.lean](../SphincsSecurity/Proof/PublicSigningInitial.lean) connects the concrete prior to the lazy signing record. The remaining composition checks below are still required.
 
+[AdaptiveResidualLabels.lean](../SphincsSecurity/Proof/AdaptiveResidualLabels.lean) and [AdaptiveResidualErasure.lean](../SphincsSecurity/Proof/AdaptiveResidualErasure.lean) now formalize joint completion through an adaptive residual-read, probe and disclosure interface, including retained auxiliary stops. [ReferenceJointPrior.lean](../SphincsSecurity/Proof/ReferenceJointPrior.lean) supplies the original game's matching initial joint sampler. The transition classification, private signing translation, original cost accounting and coverage correspondence below still have to connect the concrete SPHINCS execution to that interface.
+
 ## An exact finite reindexing
 
 Let \(D=\{0,\ldots,N-1\}\), where \(N=2^{128}\). Let \(A\) index the OTS starting secrets, \(F\) index the FTS secrets, and \(P\) index canonical graph positions. These are the finite index types already present in `Statement.lean` and `CanonicalHiddenCoordinates.lean`. Write their cardinalities as \(a,f,p\), and put \(C=A\sqcup F\sqcup P\).
