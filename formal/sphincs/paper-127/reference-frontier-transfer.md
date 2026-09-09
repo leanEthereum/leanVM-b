@@ -1,6 +1,6 @@
 # Canonical frontiers and the actual reference-encoding oracle
 
-The current paper assembly and shared costs are in [small-budget-transfer.md](small-budget-transfer.md). This note spells out the OTS simulator's dependence on the retained data and proves the likelihood comparison for its adaptive transcripts. The concrete Lean interpreter correspondence and the full strong-forgery reduction remain to be established.
+The current paper assembly and shared costs are in [small-budget-transfer.md](small-budget-transfer.md). This note spells out the OTS simulator's dependence on the retained data and proves the likelihood comparison for its adaptive transcripts. [FrontierSignerErasure.lean](../SphincsSecurity/Proof/FrontierSignerErasure.lean) now supplies the pointwise post-digest correspondence: consistent reference words and frontiers reconstruct every supported original response and its complete boundary trace, including encoding exhaustion and all three layer costs. The projected cost debits the original continuation budget. The random-function sampling correspondence, adaptive likelihood comparison and full strong-forgery reduction remain to be established in Lean.
 
 This is a paper change of experiment for the unchanged scheme. It justifies transferring the static chain bounds to a precisely defined backward-witness event in the actual execution. It also improves the OTS neighborhood preparation coefficient. It does not by itself bound every way to forge a signature.
 
