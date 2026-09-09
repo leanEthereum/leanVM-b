@@ -1,6 +1,6 @@
 # A paper audit and revised construction for 127 bits
 
-This note audits the route at source commit 86c5e4e8. It makes no changes to Lean code. The target is the original strong-unforgeability game, including independent secrets, finite retry failures, and its whole-experiment hash budget. The numerical closing argument in next-proof-plan.md is sufficient. The main improvement here is to separate the information histories used by coverage and by the primitive analysis. They need the same stopped execution and cost variable, but do not need the same filtration.
+This note audits the route at source commit f6ce6f58. It makes no changes to Lean code. The target is the original strong-unforgeability game, including independent secrets, finite retry failures, and its whole-experiment hash budget. The numerical closing argument in next-proof-plan.md is sufficient. Coverage and primitive analysis need the same stopped execution and cost variable, but do not need the same filtration. The certificate construction below spells out the next local invariant and its telescoping argument.
 
 The resulting plan is a candidate proof with explicit remaining original-game obligations. The conditional-expectation calculations below do not establish those obligations merely by stating them.
 
@@ -140,6 +140,62 @@ Put Z=(R_14-3/2)_+. Since a_h is predictable, the tower identity gives
       <= (3/2) E[A] + q E[Z].
 
 The terminal moment bounds E[Z]<2^-16 and E[R_near]<557 then prove the two certificate estimates. Existing exact rational checks support these constants. The remaining coverage work is the full transition and banking theorem with this exposure order, rather than another improvement to the constants.
+
+## A precise banked potential
+
+Here is the proposed invariant in a form that separates the elementary banking argument from the concrete sampling obligations. Fix a coordinate set D, either all 14 coordinates or the 13 coordinates complementary to one omitted coordinate. Identify a target by its entire message-hash input, not just its digest value. For a target z, its source log always deletes every successful response at input z. A later signing of z therefore cannot supply any of its own required coordinates. Different inputs with equal digest values remain different targets.
+
+At a live boundary h, let t_h be the actual hash cost already incurred and s_h the number of signing invocations. Put b_h=q-t_h and r_h=S-s_h. Let B_h be the set of already certified targets and P_h the admissible cached targets not in B_h. For a near certificate, maintain these sets separately for each omitted coordinate. Removing a target from P_h never deletes its real cache entry or its usefulness to other targets.
+
+Let phi_h(z) be the existing target-shape forecast with remaining budgets (b_h,r_h), coordinate set D, fixed reuse coefficient rho, and normalization L^(-|D|). The required deterministic properties are nonnegativity and
+
+    if all coordinates of z in D are covered, then phi_h(z)>=1.
+
+Indeed, the zero-future-work term is the product of the per-coordinate source counts; every count is at least one at coverage. The forecast includes that term with nonnegative remaining terms. This property must hold at exceptional post-states too. The cap is needed to bound transition expectations, not to define phi or to justify banking.
+
+Define the ledger
+
+    M_h = |B_h| + sum_(z in P_h) phi_h(z).
+
+One transition first produces its actual completed record, with all its original costs. Evaluate tentative post-step forecasts phi'_h at the resulting state, before testing whether to discard pending targets. Write N_h for newly cached admissible targets. Bank every first completion among P_h union N_h. Remove exactly these targets from the pending set. If a stopping rule fires, discard all remaining pending targets and retain the bank. Pointwise,
+
+    M_(h+1) <= |B_h|
+                 + sum_(z in P_h) phi'_h(z)
+                 + sum_(z in N_h) phi'_h(z).
+
+For each completion the right-hand side has a forecast at least one, which pays the one-unit increment of the bank. Discarding pending forecasts can only decrease the left-hand side. Previously banked targets are never charged again. This argument does not condition on the post-state being clean.
+
+There are two concrete conditional inequalities to establish at every live pre-state:
+
+    E[sum_(z in P_h) phi'_h(z) | F_h] <= sum_(z in P_h) phi_h(z),
+    E[sum_(z in N_h) phi'_h(z) | F_h] <= a_h W_D(h)/N.
+
+The first is the existing-target transition inequality, summed only over the predictable pending set. The second is the fresh-target creation inequality. Together they give
+
+    E[M_(h+1) | F_h] <= M_h + a_h W_D(h)/N.
+
+At key-generation completion there are no message-domain targets or signing views, so M_0=0; the hash cost of key generation is already included in t_0. At termination, discard any remaining forecasts. Index the transitions by external hash calls and completed signing invocations, folding intervening private sampling into their kernels. Each such transition costs at least one hash, so there are at most q of them; terminated runs may be padded with inert steps. Finite telescoping gives
+
+    E[C_D] <= (1/N) E[sum_h a_h W_D(h)].
+
+There is no optional-stopping assumption about an unbounded adversary runtime in this calculation, and no exceptional probability multiplied by the number of targets. For the near bound, sum this argument over the 14 choices of omitted coordinate.
+
+The concrete obligations behind the two conditional inequalities can now be checked individually:
+
+* An external hash call decreases b by one. The target query operator and its commutation inequality pay any changes to existing cache factors. A fresh relevant message cell has creation multiplier one; all other external calls create no target.
+* A signing invocation decreases r by one. Its random cost k leaves b-k; monotonicity permits replacing b-k by b when bounding its continuation forecast. Cached admissible selection uses the exact coefficient E[T_m]/N, bounded by rho from the clean pre-state. The cap need not hold after the invocation.
+* Before accepting, the digest loop can create only inadmissible fresh cells. A fresh accepted cell is therefore the only possible new target. Conditional on this case, its digest is uniform among admissible digests. Its own newly returned signing view is excluded from its forecast. These facts must give the multiplier L*F_m, not the coarser L.
+* Digest exhaustion creates no admissible target or successful view. Encoding failure after selection can create a target but gives no successful source view. The analytically retained selected index still belongs to the proposal bridge in both the successful and the latter failure case.
+
+The last distinction is especially important for the cost ledger. For attempt ell, let I_ell indicate that the attempt executes on a fresh cell, before its answer is sampled, and let V_ell indicate admissibility. Freshness gives E[I_ell V_ell | the preceding history]=I_ell/L. The finite digest loop satisfies sum_ell I_ell V_ell=1_(fresh selection). Hence
+
+    E[fresh message calls in the invocation | F_h] = L*F_m = a_h.
+
+This identity includes cached repeats, cached acceptance, and the finite attempt limit. Also a_h<=L, while every actual invocation costs at least L hashes. Consequently sum_h a_h<=q pathwise, even though a particular invocation can use fewer than a_h realized message calls. Taking expectations gives E[sum_h a_h]<=E[A]. These are the two different cost comparisons needed by the terminal-variable argument.
+
+The proposal construction must be exposed in the right order when proving this ledger. The local signing inequalities average over the entire macro kernel before exposing its auxiliary block. The independent-unused-suffix assertion is made at the completed boundary, after acceptance and record disclosure. It is not a claim that a fresh digest remains uniform after conditioning on its accepted proposal index. Cache and deficit exception probabilities may be proved in the projected original execution; their proofs do not need to expose proposal values inside the digest loop.
+
+This establishes the abstract banking implication on paper. To obtain the concrete certificate theorem, the two displayed conditional inequalities and the common terminal domination still have to be proved together for the actual macro kernels. The existing per-target and raw-moment results supply specific ingredients; they do not already state this endpoint.
 
 ## Large budgets: combine two bounds on the same stopped law
 
