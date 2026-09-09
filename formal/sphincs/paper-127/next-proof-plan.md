@@ -1,5 +1,7 @@
 # Paper derivation and formalization plan for 127-bit SUF
 
+CachedIndexExcessGame.lean now bounds the original sampled game's ever-raised cached-index exception flag by q/2^170. A second moment suffices: after normalization by x=q/2^128, its contribution is 2^-42, below the large-range margin of 2^-16. The joint exception transfers to the certificate monitor and the cryptographic reductions remain unfinished.
+
 The proposal-prefix probability is now checked at 2^-704 in CertificateProposalPrefixException.lean, and CertificateProposalPrefixPersistence.lean proves that a detected overflow cannot be lost during later supported execution. The cache and deficit exception transfers and the cryptographic reductions remain unfinished.
 
 The numerical milestone now uses the simpler [fixed-word variance route](variance-route.md): terminal length 25313293, coverage excess delta=2^-13, and split q=3*2^114. Its full and near stopped certificate bounds for the original signer are checked in FixedCertificateCoverage.lean, replacing the Poisson moment and sharp tail work below by finite mixed factorial moments and a variance inequality. The next obligations are the actual exception probabilities, the extension to deferred-secret kernels, and the cryptographic transfers.

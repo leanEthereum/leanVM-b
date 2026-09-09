@@ -831,9 +831,10 @@ import SphincsSecurity.Proof.CertificateProposalInvariant
 import SphincsSecurity.Proof.TerminalCertificateCharge
 import SphincsSecurity.Proof.FixedCertificateCoverage
 import SphincsSecurity.Proof.CertificateProposalPrefixPersistence
+import SphincsSecurity.Proof.CachedIndexExcessGame
 
 /-!
 Proof modules for the public statements in `SphincsSecurity/Statement.lean`. The public 126-bit theorem uses the original strong-unforgeability experiment and whole-experiment hash budget.
 
-The 127-bit route remains incomplete. Its full and near stopped certificate bounds are numerical theorems for the original signer, using a fixed terminal proposal word and mixed factorial moments. The proposal-prefix exception is bounded by 2^-704, and a detected overflow persists through every subsequent supported continuation. The cache and deficit exception transfers, coverage extension to deferred-secret kernels, and cryptographic transfers needed to close the public 127-bit theorem remain to be proved.
+The 127-bit route remains incomplete. Its full and near stopped certificate bounds are numerical theorems for the original signer, using a fixed terminal proposal word and mixed factorial moments. The proposal-prefix exception is bounded by 2^-704, and a detected overflow persists through every subsequent supported continuation. A second-moment reserve bounds the original game's cached-index exception by q/2^170. The joint exception transfers to the certificate monitor, coverage extension to deferred-secret kernels, and cryptographic transfers needed to close the public 127-bit theorem remain to be proved.
 -/

@@ -4,6 +4,8 @@ This review keeps the original scheme and works on paper. It separates the numer
 
 Subsequent formalization establishes the proposal-prefix bound of 2^-704 in [CertificateProposalPrefixException.lean](../SphincsSecurity/Proof/CertificateProposalPrefixException.lean), using the exact geometric moment and its conserved potential in the original certificate monitor. [CertificateProposalPrefixPersistence.lean](../SphincsSecurity/Proof/CertificateProposalPrefixPersistence.lean) connects the active stop rule to that terminal event: once detected, an overflow persists. The other exceptional-stop transfers and the cryptographic reductions below remain obligations.
 
+The cached-index component is now bounded in [CachedIndexExcessGame.lean](../SphincsSecurity/Proof/CachedIndexExcessGame.lean). A second-moment reserve proves q/2^170 for the original sampled game's ever-raised exception flag, with an exact projection to its original verdict. This suffices for the final arithmetic; the allowance below is updated accordingly. Its joint transfer with the other exceptions to the certificate monitor remains open.
+
 The recommended route remains the fixed-word, two-range argument. Its constants already suffice. The next substantial milestone should be a security inequality for the original game on an entire budget range, with the monitoring exceptions and experiment transfers discharged. More accurate occupancy constants are unnecessary.
 
 **1. Freeze the target and the accounting.** Put N=2^128, S=2^24, I=2^26, L=1024 and x=q/N. The target is Pr[original SUF win]<=2x for every admitted adversary and positive whole-experiment hash budget q. Key generation, failed and successful signing, adversarial hashing, and final verification all consume this same q. Uniform sampling does not. Preserve independent sampled secrets, finite retry exhaustion, Option failures, the original final signing log, and novelty of the entire message/signature pair. At q>=N/2, probability at most one proves the target.
@@ -14,7 +16,7 @@ For 1<=q<N/2, fix
     M = beta*S + 131072 + 13 = 25313293,
     delta = 2^-13,
     x_* = 3/2^14,                 q_* = 3*2^114,
-    epsilon(q) = q/2^222 + q/2^237 + 2^-700.
+    epsilon(q) = q/2^222 + q/2^170 + 2^-700.
 
 There are three principal inequalities to establish. Their costs and events must refer to specified presentations of the same original execution, rather than unrelated experiments with individually favorable estimates.
 
@@ -54,12 +56,12 @@ There is an additional interface requirement for the near estimate. The 14 omitt
 
 **3. All three numerical exceptions admit short paper bounds.** The argument needs an event that includes every exceptional first stop, not just a favorable final cache distribution.
 
-For the cached-index bound, let p=1/(LI)=2^-36. For each index separately, pad non-fresh-message hash slots with independent Bernoulli(p) trials. The resulting binomial counting process dominates its actual cached admissible count. Its centered fourth power is a nonnegative submartingale. The finite maximal inequality, followed by a union over I indices, gives
+For the cached-index bound, let p=1/(LI)=2^-36, let J be the cache's number of distinct inputs, and let C_i be its number of admissible message inputs at index i. Set X_i=C_i-p*J and U=sum_i max(X_i,0)^2. A fresh message input changes each X_i by Bernoulli(p)-p marginally. The elementary centered Bernoulli inequality gives E[U_after | history]<=U_before+I*p. A fresh non-message input decreases every X_i, and a repeated input leaves them unchanged. Both satisfy the same bound. Initially U=0. Stopping at the first exceptional cache and using the remaining-budget reserve U+(q-t)*I*p yields
 
-    Pr[exists i,t<=q: C_i(t)>p*t+2^80]
-      <= I*(3*(q*p)^2+q*p)/2^320
-       = 3*q^2/2^366 + q/2^330
-       < q/2^237                     when q<=2^127.
+    Pr[exists cached prefix and i: X_i>2^80]
+      <= I*q*p/2^160 = q/2^170.
+
+Because J<=t after t actual hash calls, an actual monitor violation C_i>p*t+2^80 implies X_i>2^80. This stronger cache event needs no extra counter in the exception monitor. The argument does not assume independence between different indices or adaptive query choices. A fourth moment can give the smaller q/2^237 paper allowance, but it is unnecessary for closing 127 bits.
 
 For message deficits, write D_m for the number of cached randomizers for message m minus L times their admissible count. A fresh proper message cell changes its one score by X=1-L*Bernoulli(1/L). Thus E[X]=0, E[X^2]<=L, |E[X^3]|<=L^2 and E[X^4]<=L^3. Using 4*L^2*|D|<=2*L*D^2+2*L^3, the expected increment of D^4 is at most 8*L*D^2+3*L^3. Since E[sum_m D_m^2]<=L*t,
 
@@ -119,7 +121,7 @@ At x>=x_*, the available margin per x is
 
     (3/4)*x-delta >= (3/4)*(3/2^14)-2^-13 = 2^-16.
 
-For every q>=1, epsilon(q)/x<=2^-94+2^-109+2^-572<2^-16. This closes the entire large-budget range.
+For every q>=1, epsilon(q)/x<=2^-94+2^-42+2^-572<2^-16. This closes the entire large-budget range.
 
 **5. Small budgets need completed witnesses and shared costs.** An individual hidden-value match is too broad an event here: its leading coefficient can already consume the full 2x. Use the target-sum constraint. A distinct valid OTS word either moves one unit between two chains, lowers one chain by at least two, or lowers two distinct chains. Count the queried paths that make these changes usable, together with the encoding preparation needed for the one-unit case.
 
