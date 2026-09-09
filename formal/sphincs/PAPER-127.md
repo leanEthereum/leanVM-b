@@ -1,5 +1,7 @@
 # Paper route to 127-bit strong unforgeability
 
+The focused [proof contract](paper-127/proof-contract.md) records the current two-range closure, the remaining experiment-transfer obligations, and elementary bounds for all three monitoring exceptions, including a rational proposal-prefix bound of 2^-704. It identifies the original-game large-budget theorem as the next substantial milestone. This review changes no Lean source and does not claim that the public 127-bit theorem is proved.
+
 The new [fixed-word variance route](paper-127/variance-route.md) simplifies the numerical coverage obligation: a deterministic terminal length of 25313293 and single-bin and two-bin factorial moments give a positive-part bound below 2^-13. Moving the split to q=3*2^114 still closes both security ranges. This removes Poissonization, its short-pool exception, and the sharp degree-14 occupancy tail analysis described below. The note gives the revised arithmetic and identifies the unchanged cryptographic transfer obligations. No Lean code is added by this paper step.
 
 This is a proof strategy for the unchanged concrete scheme. The current [paper review and proof plan](paper-127/next-proof-plan.md) starts from the concrete scheme audited at commit 106024f5 and the subsequent paper derivations. The public 126-bit theorem is established; no public 127-bit theorem is claimed. The algorithms, independent secrets, finite failures, signing cap, and whole-experiment hash budget are unchanged.
