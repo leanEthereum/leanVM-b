@@ -4,7 +4,7 @@ Start with the [current mathematical plan](paper-127/minimal-closing-contract.md
 
 Keep the split at `q = 3 * 2^114`. Above the split, a joint first-match and message-cost potential leaves a quadratic saving. Below it, completed OTS witnesses and FTS guesses must share the actual query allocations. The plan derives sufficient inequalities for both intervals, checks their exact arithmetic, and specifies the probability comparisons still needed. It also simplifies encoding exhaustion to a fixed valid analytical dummy word, preserving the full original failure distribution.
 
-The immediate paper gates are the complete reference-family sampling law, the exhaustive strong-forgery decomposition, and coverage from local message/signing rules in the two required alternative interpreters. Existing graph sampling and private-prefix masking are useful foundations; they do not yet establish the adaptive likelihood or the 127-bit theorem. The [mathematical audit](paper-127/mathematical-audit.md) contains the longer derivations and formal progress through the current branch.
+The complete reference-family sampling law is now formalized in [ReferenceFamilyGame.lean](SphincsSecurity/Proof/ReferenceFamilyGame.lean) and its imports, with the original SUF and hash-budget correspondence. The remaining gates include the exhaustive strong-forgery decomposition, projected adaptive likelihood, and coverage from local message/signing rules in the two required alternative interpreters. The [mathematical audit](paper-127/mathematical-audit.md) contains the longer derivations and formal progress through the current branch. The 127-bit theorem remains unproved.
 
 ## Historical development notes
 

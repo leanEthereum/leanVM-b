@@ -6,7 +6,7 @@ This paper review concerns the unchanged game through `282bf0f0`. It adds no Lea
 
 The two-range route has sufficient numerical room. Its completion depends on concrete adaptive probability arguments, rather than sharper numerical estimates. I recommend retaining the current split and simplifying the small-range target to the dyadic bounds below. This leaves room to weaken intermediate constants without changing the public security claim.
 
-The branch already has exact canonical graph sampling, full-table reference conditioning at a fixed address, and an original-game correspondence for signing with private prefix rows masked. These are substantive foundations. They do not yet prove the all-address conditional sampler, the projected adaptive OTS likelihood, or coverage in the forced-FTS laws. The last two are the main remaining mathematical risks. The original-game equality proved for a real frontier does not authorize inserting an independent endpoint into its place.
+The branch now has exact canonical graph sampling, simultaneous full-table reference conditioning across all addresses, and an original-game correspondence for signing with private prefix rows masked. [ReferenceFamilyGame.lean](../SphincsSecurity/Proof/ReferenceFamilyGame.lean) uses the sampled family directly to initialize its cuts and preserves the original SUF law and hash budget. These are substantive foundations. The projected adaptive OTS likelihood and coverage in the forced-FTS laws remain the main mathematical risks. The original-game equality proved for a real frontier does not authorize inserting an independent endpoint into its place.
 
 The recommended next paper milestone is an exhaustive accepting-verifier argument together with explicit transition rules for these probability comparisons. The next security milestone should then be the large-budget interval of the original game. Do not spend the remaining margin on tighter occupancy estimates: the weaker bounds below suffice.
 
@@ -219,7 +219,7 @@ These are local assertions to establish, not an assumed global coverage inequali
 
 ## Completion gates
 
-1. Extend the established fixed-address full-table reference conditioning to the complete family and combine it with the established response/cost projection. Write down the retained state before any endpoint is idealized. The all-address finite mass calculation above gives this gate's paper proof strategy.
+1. Use the established full-family reference conditioning and response/cost projection to specify the retained state before any endpoint is idealized. The all-address finite mass calculation above is now formalized; erasing a starting secret and deriving its projected likelihood remain separate steps.
 2. Write the deterministic accepting-verifier trace against the concrete byte layout. It must account for every signature field, canonical encoding exhaustion, failed signing disclosures and the exclusion of the forgery's own input. Without a listed witness, an earlier successful response at that input must force equality of the entire signature.
 3. Establish the coverage interface just specified in both presentations: the graph law stopped at the first match, and each forced-FTS law. Use separate analytical histories where required, while retaining the same original statistics in the final bounds. Reuse the existing terminal moments and exception estimates.
 4. Complete the original-game large-range inequality. This is the first security milestone that directly reaches the 127-bit slope on a nontrivial interval.
