@@ -1,6 +1,6 @@
 # A minimal mathematical contract for the 127-bit proof
 
-This paper review concerns the unchanged game through `71718e2e`. It adds no Lean code. The public statement currently stops at 126 bits. The purpose here is to specify sufficient intermediate results, explain why their combination works, and identify which correspondences must be proved before calling this a security proof. This is the current plan; some earlier development notes use different constants and an independently uniform dummy word on encoding exhaustion.
+This paper review concerns the unchanged game through `7a0816c9`. It adds no Lean code. The public statement currently stops at 126 bits. The purpose here is to specify sufficient intermediate results, explain why their combination works, and identify which correspondences must be proved before calling this a security proof. This is the current plan; some earlier development notes use different constants and an independently uniform dummy word on encoding exhaustion.
 
 ## Conclusion of the review
 
@@ -169,7 +169,35 @@ The invariant to establish is a product of uniform distributions for the remaini
 
 The coordinates \(u,v\) are distinct. Normalization gives exactly the updated product law, even if some numerical labels coincide. A signing disclosure retires a coordinate selected without inspecting its secret value. The graph and signer correspondence must show that other observable transitions preserve this invariant.
 
-After \(r\) probe rounds, every candidate set has size at least \(N-r\). Hence a next probe has hazard at most
+### Deriving the adaptive posterior from transcript masses
+
+The native posterior and stopped-execution erasure are now proved in [AdaptiveHiddenLabels.lean](../SphincsSecurity/Proof/AdaptiveHiddenLabels.lean), including retention of visible memory on matched runs. The following paper induction explains their sampling identity. Applying it to SPHINCS still requires its concrete execution to have the causal transition rules specified here. An arbitrary auxiliary transition cannot be allowed to inspect an undisclosed label merely because its result has an innocent-looking type.
+
+Condition on the public cut and reference family. Let \(V\) be the finite set of initially hidden coordinates, and let \(X\in[N]^V\) have its independent uniform prior. A retained history \(t\) contains the exposed cut, external inputs and full replies, observed message rows, disclosed coordinates and their values, original control stages and costs, and the fact that no primitive match has occurred. It excludes private prefix inputs, their intermediate values and private cache-hit flags. For each coordinate retain a candidate set \(U_v(t)\); a disclosure changes its set to the disclosed singleton.
+
+The useful induction statement is the unnormalized joint identity
+
+\[
+\Pr[X=z,\ T=t,\ \text{alive}]
+=\beta(t)N^{-|V|}\prod_{v\in V}\mathbf1_{z_v\in U_v(t)},
+\]
+
+where \(\beta(t)\ge0\) does not depend on \(z\). It holds initially with every candidate set equal to \([N]\). A surviving fresh noncanonical reply contributes its full-reply mass \(N^{-2}\), together with at most the two coordinate inequalities already displayed. A disclosure of value \(a\) contributes \(\mathbf1_{z_v=a}\). A public-target output test restricts the observed reply alone. A repeated external row checks only recorded data. Every other observable transition must have a kernel depending only on the retained history and fresh independent randomness; its probability then multiplies \(\beta\). These statements also cover adaptive selection of the next request, because that selection uses this same history.
+
+Summing the identity over \(z\) and normalizing at any positive-probability live history gives
+
+\[
+\Pr[X=z\mid T=t,\ \text{alive}]
+=\prod_{v\in V}\frac{\mathbf1_{z_v\in U_v(t)}}{|U_v(t)|}.
+\]
+
+Thus the posterior is a conclusion of the joint sampling law. In particular, numerical equality of labels at different coordinates does not impose an additional relation: the history contains only the displayed per-coordinate constraints. Disclosed singleton coordinates are omitted when asserting the lower bound on active candidate-set sizes.
+
+For this signer, the causal condition has a concrete justification. Once the cut, reference counters and message trace are fixed, all honest structural values returned outside the private prefixes, every encoding success or exhaustion, all three layer invocations, and the hash count are determined without reading a hidden prefix value. Successful signatures disclose their selected FTS coordinates; the selection and the failure decision use the message trace and exposed graph. Their secret values cannot affect which coordinates are selected. Private honest rows may have been materialized in the original cache, but the external row table and the retained control trace do not report that fact. Establishing these assertions for the concrete response and cost projection is the required original-game bridge.
+
+The sharper local hazard is actually at most \(1-(1-1/(N-r))(1-1/N)\): after an input miss the fresh output remains uniform on the entire output space. The square bound below deliberately weakens its second factor to simplify the potential. Sharpening it is unnecessary for the present split.
+
+After \(r\) probe rounds, every active candidate set has size at least \(N-r\). Hence a next probe has hazard at most
 
 \[
 h_r=1-\left(\frac{N-r-1}{N-r}\right)^2.
@@ -199,6 +227,14 @@ pay a primitive probe or a message call within the same potential. Since \(F<1\)
 \]
 
 where \(A_B\) counts message calls until the first match or termination.
+
+One must retain this message count on runs that hit \(B\), too. To make the induction explicit, pad a terminated execution with inert hash slots up to \(q\). After slot \(t\), let \(D_t\) be its message count before stopping, let \(B_t\) record whether a primitive match has happened, and let \(L_t\) say the monitored execution is still live. The potential with accumulated payment is
+
+\[
+M_t=\frac{D_t}{N}+\mathbf1_{B_t}+\mathbf1_{L_t}F(r_t,q-t).
+\]
+
+The two scalar transitions show \(\mathbb E[M_{t+1}\mid\mathcal G_t]\le M_t\). A primitive hit keeps all earlier payments and replaces the live potential by one. A message call increases \(D_t\) by one. Honest work and other unpaid calls only consume a slot. A free disclosure preserves the posterior and changes neither the payment nor the scalar parameters. Early termination discards nonnegative continuation potential. Consequently \(M_0=F(0,q)\) and \(M_q=\mathbf1_B+A_B/N\), proving the joint estimate. An equality concerning only surviving terminal outcomes would lose payments on matched runs and would not establish this inequality.
 
 Coverage must be instantiated on this same law with an additional stop at \(B\), giving \(\mathbb E C_{\rm full}\le\mathbb E A_{\rm cov}/N+\delta x\) and \(A_{\rm cov}\le A_B\) pathwise. Backwards tracing of an accepting verifier must show that a strong forgery without \(B\) or an exception supplies a full certificate. These facts give the large-range contract directly. Bounding the primitive event by \(2x\) first would discard the saving needed here.
 
