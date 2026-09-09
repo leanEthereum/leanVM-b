@@ -95,7 +95,7 @@ Choose
     delta = 2^-13,
     epsilon(q) = q/2^222 + q/2^170 + 2^-700.
 
-The cache allowance now uses the second-moment theorem in CachedIndexExcessGame.lean. Its q/2^170 bound is sufficient, so the sharper paper fourth-moment estimate q/2^237 is unnecessary for the current formal route. The proposal-prefix bound is checked at 2^-704. These marginal bounds still need their joint transfer to the certificate monitor. For every q>=1,
+The cache allowance uses the second-moment theorem in CachedIndexExcessGame.lean. Its q/2^170 bound is sufficient, so the sharper paper fourth-moment estimate q/2^237 is unnecessary for the current formal route. CertificateJointExceptions.lean now combines the cache and prefix exceptions on one certificate execution, with bound q/2^223 + q/2^170 + 2^-704. The allowance displayed here is a looser bound. The administrative first-stop invariants remain to be discharged. For every q>=1,
 
     epsilon(q)/x <= 2^-94 + 2^-42 + 2^-572 < 2^-16.
 
