@@ -24,7 +24,7 @@ implies
 
 If Q_i is the number of fresh queries to challenge i, this gives w_i >= 1-Q_i/N >= 1-x. This is a pointwise bound on the conditional likelihood at any adaptive stopping time. It uses only q<N.
 
-Let R be the real joint experiment. For a fixed i, define I_i by replacing just endpoint i by an independent uniform value, while keeping all the other challenges real. Since the different challenges were independent initially, the likelihood of the real joint transcript relative to I_i is precisely w_i. Auxiliary queries and queries to other challenges merely affect the adaptive choice of the next query to i. They do not reveal unqueried function cells of i.
+Let R be the real joint experiment. For a fixed i, define I_i by replacing just endpoint i by an independent uniform value, while keeping all the other challenges real. Forget challenge i's starting secret and private canonical prefix data before comparing the laws. The simulated transcript does not inspect them. Since the different challenges were independent initially, the likelihood of that real projected transcript relative to I_i is precisely w_i. Auxiliary queries and queries to other challenges merely affect the adaptive choice of the next query to i. They do not reveal unqueried function cells of i.
 
 Consequently, for every nonnegative transcript cost C,
 

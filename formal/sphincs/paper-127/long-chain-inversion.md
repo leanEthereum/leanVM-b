@@ -18,7 +18,7 @@ The falling-factorial terms are zero when fewer than two or three trials exist. 
 
 ## Conditional likelihood for a whole chain
 
-First use an ideal experiment in which Y is independently uniform. Write W for the number of starting values s whose full chain ends at Y. The real experiment has density W relative to the ideal one. Thus a transcript-measurable success event E has real probability E_ideal[1_E W].
+First use an ideal experiment in which Y is independently uniform. Write W for the number of starting values s whose full chain ends at Y. After forgetting the starting secret S, the real joint law of the functions and endpoint has density W relative to the ideal one. If S were retained, the density would instead be N times the indicator that its chain ends at Y; summing out S gives W. The transcript and success event below do not inspect S or private honest evaluations of it. Thus a transcript-measurable success event E has real probability E_ideal[1_E W].
 
 For a partial table of H_j, let K_j be the N by N matrix with a one in the known input's output column for each queried row and zeros in each unqueried row. Let u_j indicate the unqueried rows, and let
 

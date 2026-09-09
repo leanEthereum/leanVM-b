@@ -50,8 +50,17 @@ R_aux may be fixed when analyzing prefix likelihoods. Equivalently, use lazy aux
 
 ## Likelihoods and allocated chain estimates
 
-For a particular chain i, let I_i be the same capped simulator, with Y_i independently uniform instead of generated from its secret and prefix. All other challenges remain real. Use the same endpoint-dependent auxiliary kernel in both laws. If W_i is the number of starting values whose full prefix ends at Y_i, the complete-table density of R relative to I_i is W_i. The starting secret itself need not be exposed: the simulated original responses depend on it only through Y_i.
+The likelihood calculation uses an explicit projection pi_i. It forgets chain i's starting secret S_i, its canonical values strictly below Y_i, and the inputs and outputs of private honest evaluations of those values. It also forgets private cache entries that expose those inputs. It retains Y_i, the external transcript, actual hash counts, J and D, and the independent auxiliary data needed by the simulator. For the complete-table calculation it retains the prefix functions H_i; the observed transcript subsequently keeps only their externally queried rows.
 
+This projection matters. If I_i also carried an independent uniform S_i, then on the full space (S_i,H_i,Y_i) the real density would be
+
+    N * 1_(Y_i = H_(i,d_i-1)(...H_(i,0)(S_i))),
+
+not the preimage count W_i. Averaging this indicator density over the forgotten uniform S_i gives exactly W_i. For example, a one-edge identity function has W_i=1 at each endpoint, while the full-space density at a compatible secret is N. A theorem stated for an unprojected secret-key record with density W_i would therefore be false.
+
+Every event and cost used in the OTS bound factors through pi_i. The omitted honest computations have costs determined by D, J and fixed tree shapes; their returned OTS fields are Y_i. The remaining original responses and selected digest records are computed from retained auxiliary data and the external prefix replies. External row freshness, domain membership and reference classification determine Q and A_enc without S_i. Contacts, backward witnesses, markers, their first-occurrence stops, and the base monitor guards are likewise functions of this projection. An OTS correct-guess flag is not included in these histories. Thus taking this projection changes none of the R probabilities or expected costs appearing below.
+
+For a particular chain i, let I_i be the same capped projected simulator, with Y_i independently uniform instead of generated from its secret and prefix. All other challenges remain real. Use the same endpoint-dependent auxiliary kernel in both laws. If W_i is the number of starting values whose full prefix ends at Y_i, the complete-table density of the pushforward pi_i(R) relative to I_i is W_i. Expectations labeled R below concern statistics factoring through pi_i; they are the same expectations in the original stopped law.
 At an adaptive transcript T, let K_j contain the queried rows of prefix function j, let u_j indicate its unqueried rows, and put P_j=K_j+u_j*1^T/N. The unqueried cells in I_i remain independent uniforms even with adaptive auxiliary queries and the cap. Hence the transcript density is
 
     w_i(T) = E_(I_i)[W_i | T] = 1^T P_0 ... P_(d_i-1) e_(Y_i).

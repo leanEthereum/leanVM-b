@@ -20,7 +20,7 @@ This includes candidate paths chosen using earlier functions and arbitrary adapt
 
 ## Continuing after a contact
 
-The same argument can be restarted from a real transcript T. Restrict attention to chains with no contact yet. For each such chain i, the conditional real law of its unqueried function cells has density W_i/w_i(T) relative to independent uniform completion of its partial tables. Other challenges and the adversary's private state are retained with their conditional real laws. Conditional on the fixed transcript, the underlying challenge distributions factor: adaptive query choices impose no constraints beyond their observed replies. Independent auxiliary randomness can be included in that conditioning.
+The same argument can be restarted from a real transcript T. Restrict attention to chains with no contact yet. For each such chain i, after forgetting its starting secret and private canonical prefix evaluations, the conditional real law of its unqueried function cells has density W_i/w_i(T) relative to independent uniform completion of its partial tables. Other challenges and the adversary's private state are retained with their conditional real laws. Conditional on the fixed transcript, the underlying challenge distributions factor: adaptive query choices impose no constraints beyond their observed replies. Independent auxiliary randomness can be included in that conditioning.
 
 Let I_i^T be this conditional ideal continuation for just chain i. The conditional real transcript likelihood is w_i(final)/w_i(T). Because w_i(final) >= 1-x, every nonnegative continuation cost C satisfies
 

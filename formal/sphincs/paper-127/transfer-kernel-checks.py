@@ -8,6 +8,16 @@ values = tuple(range(n))
 tables = tuple(product(values, repeat=n))
 
 
+identity = tuple(range(n))
+assert sum(identity[identity[secret]] == 0 for secret in values) == 1
+assert n * int(identity[identity[0]] == 0) != 1
+for first, second, endpoint in product(tables, tables, values):
+    full_densities = tuple(n * int(second[first[secret]] == endpoint) for secret in values)
+    projected_density = sum(second[first[secret]] == endpoint for secret in values)
+    assert F(sum(full_densities), n) == projected_density
+print("The preimage density agrees only after marginalizing the hidden starting secret.")
+
+
 def transcript(first, second, other, endpoint, other_endpoint, seed):
     auxiliary = (endpoint * other_endpoint + seed) % n
     private_cost = int(other_endpoint == 0)
