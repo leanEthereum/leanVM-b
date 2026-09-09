@@ -63,6 +63,10 @@ The [initial-prior and composition note](initial-prior-and-composition.md) gives
 
 ### The complete reference family, with a simpler exhaustion convention
 
+The encoding-row sampling requirement above now has a concrete solution in [ReferencePrefixGame.lean](../SphincsSecurity/Proof/ReferencePrefixGame.lean). At a successful address, protect the counter rows through the first valid one and take every later row from the shared uniform seed. Protect every counter row on exhaustion. The conditional row-table density depends only on protected rows, so exchanging every unprotected row with its distinct seed cell preserves the joint distribution. The exchange retains all protected values and makes the full old overwrite equal to the new prefix overwrite. This is proved for the entire table and transferred to the original reference game, including its SUF probability and hash bound. The unused tail of the auxiliary row table is independent advice; it is no longer the oracle's tail.
+
+[ReferencePrefixSigning.lean](../SphincsSecurity/Proof/ReferencePrefixSigning.lean) also proves that prefix agreement preserves the canonical first-success selection and the original public signing record, including the failure cases and trace. Every protected row except the selected row decodes invalidly; the selected row is the excluded canonical encoding input. Unrestricted tails and noncanonical-message encodings can therefore use the shared residual completion law for their fresh replies. The current byte interpreter still uses the older whole-block lookup. It must be connected to the prefix lookup and the encoding-match stopping rule before this observation supplies an adaptive probability bound or closes either security interval.
+
 The small-budget experiment conditions on all reference cuts at once. Independence of their marginal selected words is insufficient: retain the shared oracle table that answers every later query. Here is the required finite mass identity.
 
 Let \(m=|\mathcal C|\), \(v=m/N\), and \(T=2^{32}\). Choose a fixed valid word \(d_*\): 27 digits equal to 7, one equal to 2, and the other 14 equal to 0. Its sum is 191. At each address use

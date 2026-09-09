@@ -89,6 +89,8 @@ Items 5 and 6 remain to be composed with this external interface. The structural
 
 ## The next security endpoint
 
+The new [prefix joint prior](../SphincsSecurity/Proof/ReferencePrefixGame.lean) resolves the encoding-tail sampling issue without exposing future oracle replies. Its auxiliary retains the conditioned prefix through the first valid counter, or the whole block on exhaustion. A proved row-swap bijection moves all unconditioned tails into the independent residual seed and preserves the complete oracle-table law. The prefix sampler inherits the original SUF probability and hash budget, and the [prefix signer correspondence](../SphincsSecurity/Proof/ReferencePrefixSigning.lean) preserves the original record. The byte interpreter still needs to use the new prefix lookup; its existing whole-block lookup and erasure theorem describe the earlier sampler. After that connection, unrestricted encoding tails share the residual history used for fresh structural and message rows.
+
 Keep the next target as the original-game large-budget interval from the [closing contract](minimal-closing-contract.md). Establish the full interpreter correspondence above, the accepting-verifier classification, and coverage under its causal first-match stopping rule. Then derive, with \(x=q/2^{128}\),
 
 \[
