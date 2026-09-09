@@ -15,6 +15,16 @@ def read (input : Node → State → Cell) (advance : Node → Answer → State 
 def Separated (input : Node → State → Cell) : Prop :=
   ∀ left right, left ≠ right → ∀ before after, input left before ≠ input right after
 
+omit [DecidableEq Cell] in
+theorem read_congr (input : Node → State → Cell) (advance : Node → Answer → State → State)
+    (left right : Cell → Answer) (hagrees : ∀ node state, left (input node state) = right (input node state))
+    (nodes : List Node) (state : State) : read input advance left nodes state = read input advance right nodes state := by
+  induction nodes generalizing state with
+  | nil => rfl
+  | cons node nodes ih =>
+      simp only [read, hagrees]
+      exact ih _
+
 theorem read_update_of_not_mem (input : Node → State → Cell)
     (advance : Node → Answer → State → State) (hsep : Separated input)
     (table : Cell → Answer) (nodes : List Node) (node : Node) (hnode : node ∉ nodes)
