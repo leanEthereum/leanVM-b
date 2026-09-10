@@ -860,6 +860,7 @@ import SphincsSecurity.Proof.DigestCompletionMonitor
 import SphincsSecurity.Proof.RetainedResidualTerminalCoverage
 import SphincsSecurity.Proof.RetainedResidualHazard
 import SphincsSecurity.Proof.RetainedResidualPrimitivePotential
+import SphincsSecurity.Proof.RetainedResidualGameTransfer
 
 /-!
 Proof modules for the public statements in `SphincsSecurity/Statement.lean`. The public 126-bit theorem uses the original strong-unforgeability experiment and whole-experiment hash budget. The 127-bit route remains incomplete.
@@ -867,6 +868,8 @@ Proof modules for the public statements in `SphincsSecurity/Statement.lean`. The
 `RetainedResidualPrimitivePotential.lean` composes the actual native query and signing inequalities through adaptive execution. With `x = q / 2^128`, its initialized bound is primitive-stop probability plus expected native message count divided by `2^128` at most `2x - x^2`. Candidate bounds, encoding cleanliness and the shared probe/message resource invariant are proved along the execution. The original `HasHashQueryBound` pays key generation, signing failures, repeated queries and final verification. Primitive stops retain the message count already incurred.
 
 `RetainedResidualTerminalCoverage.lean` bounds expected full-certificate count on the same execution by expected native message count divided by `2^128` plus `11q/2^144`. Combining the two results eliminates the message count. The resulting bound still needs the original SUF event transfer: every strong forgery must imply a primitive match, a retained full certificate or a paid original-game exception. Equality in the strong-novelty case must cover every signature field.
+
+`RetainedResidualGameTransfer.lean` now bounds the original SUF advantage by the retained source game's primitive-stop probability plus its live strong-forgery probability. The comparison preserves the full signing log and final verification. It uses the existing reference sampling law on the retained input envelope and derives initial compatibility from supported samples, with no additional cryptographic premise. The live forgery still needs to imply a retained certificate outside the paid original exceptions.
 
 The separate small-budget route still needs the concrete causal OTS endpoint and completed-witness comparisons, and near-certificate coverage under the forced-FTS kernels. Neither nontrivial original-game 127-bit budget interval is established. A conditional endpoint or a bound on retained auxiliary events is not the public security theorem.
 -/
