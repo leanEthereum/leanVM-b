@@ -855,6 +855,7 @@ import SphincsSecurity.Proof.RetainedResidualSigningTrace
 import SphincsSecurity.Proof.RetainedResidualBudget
 import SphincsSecurity.Proof.MessageCacheProjection
 import SphincsSecurity.Proof.MessageCertificateProjection
+import SphincsSecurity.Proof.DigestCompletionLogGrowth
 
 /-!
 Proof modules for the public statements in `SphincsSecurity/Statement.lean`. The public 126-bit theorem uses the original strong-unforgeability experiment and whole-experiment hash budget.

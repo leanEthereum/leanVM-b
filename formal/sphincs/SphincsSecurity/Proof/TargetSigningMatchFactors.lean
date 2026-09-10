@@ -56,6 +56,27 @@ theorem signWithView_eligibleView_of_view (key : SecretKey) (message : Message) 
       · exact Or.inl (by simp [eligibleSigningView?, hsame])
       · exact Or.inr (by simp [eligibleSigningView?, observedSigningView?, messageAnswers, hsame, houtput, heq])
 
+theorem normalizedTargetLogMatch_le_of_eligibleView (key : SecretKey) (before after : QueryCache HashSpec)
+    (log : QueryLog SigningSpec) (entry : SigningEntry) (payload : HashInput) (target source : FewTimeView) (tree : FtsTree)
+    (hcache : before ≤ after) (hsigned : SigningDigestsCached key.parameter before key.root log)
+    (hentry : eligibleSigningView? (messageAnswers key.parameter after) key.root payload entry = none ∨
+      eligibleSigningView? (messageAnswers key.parameter after) key.root payload entry = some source) :
+    normalizedTargetLogMatch key after (log ++ [entry]) payload target tree ≤
+      normalizedTargetLogMatch key before log payload target tree + normalizedSourceSubsetMatch target source {tree} := by
+  have hstable := eligibleSigningViews_cache_stable key before after log payload hcache hsigned
+  have hstep := targetTreeMatchCount_log_append_singleton log entry
+    (eligibleSigningView? (messageAnswers key.parameter after) key.root payload) target tree
+  change targetTreeMatchCount (eligibleSigningViews (messageAnswers key.parameter after) key.root payload (log ++ [entry])) target tree =
+    targetTreeMatchCount (eligibleSigningViews (messageAnswers key.parameter after) key.root payload log) target tree + _ at hstep
+  rw [hstable] at hstep
+  rw [normalizedTargetLogMatch, hstep, Nat.cast_add, mul_add, normalizedSourceSubsetMatch_singleton]
+  apply add_le_add le_rfl
+  apply mul_le_mul' le_rfl
+  apply Nat.cast_le.mpr
+  rcases hentry with hnone | hsome
+  · simp only [hnone, reduceCtorEq, false_and, exists_false, if_false, Nat.zero_le]
+  · simp only [hsome, Option.some.injEq, exists_eq_left', sourceTreeMatch, le_refl]
+
 theorem signWithView_normalizedTargetLogMatch_le (key : SecretKey) (message : Message) (before : QueryCache HashSpec)
     (log : QueryLog SigningSpec) (payload : HashInput) (target source : FewTimeView) (tree : FtsTree)
     (hsigned : SigningDigestsCached key.parameter before key.root log)
@@ -63,20 +84,9 @@ theorem signWithView_normalizedTargetLogMatch_le (key : SecretKey) (message : Me
     (hresult : result ∈ support ((simulateQ romImpl (signWithView key message)).run before)) (hview : result.1.2 = some source) :
     normalizedTargetLogMatch key result.2 (log ++ [⟨message, result.1.1⟩]) payload target tree ≤
       normalizedTargetLogMatch key before log payload target tree + normalizedSourceSubsetMatch target source {tree} := by
-  have hcache := simulateQ_romImpl_cache_le (signWithView key message) before result hresult
-  have hstable := eligibleSigningViews_cache_stable key before result.2 log payload hcache hsigned
-  have hstep := targetTreeMatchCount_log_append_singleton log ⟨message, result.1.1⟩
-    (eligibleSigningView? (messageAnswers key.parameter result.2) key.root payload) target tree
-  change targetTreeMatchCount (eligibleSigningViews (messageAnswers key.parameter result.2) key.root payload (log ++ [⟨message, result.1.1⟩])) target tree =
-    targetTreeMatchCount (eligibleSigningViews (messageAnswers key.parameter result.2) key.root payload log) target tree + _ at hstep
-  rw [hstable] at hstep
-  rw [normalizedTargetLogMatch, hstep, Nat.cast_add, mul_add, normalizedSourceSubsetMatch_singleton]
-  apply add_le_add le_rfl
-  apply mul_le_mul' le_rfl
-  apply Nat.cast_le.mpr
-  rcases signWithView_eligibleView_of_view key message before payload source result hresult hview with hnone | hsome
-  · simp only [hnone, reduceCtorEq, false_and, exists_false, if_false, Nat.zero_le]
-  · simp only [hsome, Option.some.injEq, exists_eq_left', sourceTreeMatch, le_refl]
+  exact normalizedTargetLogMatch_le_of_eligibleView key before result.2 log ⟨message, result.1.1⟩ payload target source tree
+    (simulateQ_romImpl_cache_le (signWithView key message) before result hresult) hsigned
+    (signWithView_eligibleView_of_view key message before payload source result hresult hview)
 
 theorem signWithView_normalizedCachedTargetSubsetMatch_of_new (key : SecretKey) (message : Message)
     (before after : QueryCache HashSpec) (signature : Option Signature) (view : Option FewTimeView)

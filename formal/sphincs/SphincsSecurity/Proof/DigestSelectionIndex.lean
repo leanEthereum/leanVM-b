@@ -1,16 +1,11 @@
 import SphincsSecurity.Proof.RawProposalMomentBound
+import SphincsSecurity.Proof.DigestLoopRecord
 
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal
 attribute [local instance] Classical.propDecidable
 attribute [local irreducible] signDigestLoop
-
-abbrev DigestLoopRecord :=
-  Option (Randomness × Index × (DigestTree → FtsLeaf)) × QueryCache HashSpec
-
-def selectedLoopView? (result : DigestLoopRecord) : Option FewTimeView :=
-  result.1.map (fun selected => selectedFewTimeView selected.2.1 selected.2.2)
 
 noncomputable def completeSelectedIndex (view : Option FewTimeView) : ProbComp Index :=
   view.elim ($ᵗ Index) (fun selected => pure selected.1)

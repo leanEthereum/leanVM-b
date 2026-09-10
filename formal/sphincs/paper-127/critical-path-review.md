@@ -22,6 +22,8 @@ The candidate saving is to retain the original certificate monitor and transfer 
 
 This approach still requires a legal stopping rule or a narrow extension of the existing monitor theorem. The current `CertificateStopRule` takes the original cache, monitor and execution record; it does not automatically provide the retained native routing state. Establish the needed projection or extension explicitly before applying the theorem. Avoid building a replacement monitor unless this route fails for a concrete reason.
 
+The local signing-log extension is now established in `DigestCompletionLogGrowth.lean`. It runs the unchanged digest loop followed by an arbitrary probabilistic continuation with an arbitrary result type. Each supported successful result must use the selected randomness and view, and the continuation must preserve message-domain answers. These support conditions imply the existing signing-log moment bound with the same constants; the original signer's bound is an instance through `originalDigestCompletion`. This does not yet extend the mixed cache-growth, target-creation or certificate-bank inequalities, and it does not establish the conditional digest-loop law in the deferred-secret executions. Those are the remaining connections before using the original monitor's coverage argument there.
+
 ## Audit the small-range risks before further infrastructure
 
 Closing the large interval does not imply the small interval. The following two paper gates determine whether the current complete route is viable:
