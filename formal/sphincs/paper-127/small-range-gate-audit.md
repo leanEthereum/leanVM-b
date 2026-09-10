@@ -44,7 +44,7 @@ Writing $q_j$ for the stopped fresh-query counts at each level, the baseline is 
 
 For a restart on an uncontacted chain, retain old prefix preparation. Its charge is $a_i(T)+2Q_i^+$, whose sum over uncontacted chains is at most $Q_{\rm past}+2Q_{\rm future}\le2q$. This also handles an encoding marker that precedes its contact. Encoding probabilities use a separate history hiding unqueried encoding rows. Fixing the encoding seed for the prefix-density argument does not authorize a fresh-encoding estimate in that richer history.
 
-These checks support the paper calculation under the specified causal projection. The concrete simulator, conditional restart and completed-witness estimates still need Lean proofs.
+These checks support the paper calculation under the specified causal projection. [OtsPrefixSimulation.lean](../SphincsSecurity/Proof/OtsPrefixSimulation.lean) now supplies the query interpreter and its exact fixed-oracle game reconstruction, including the original hash-cost trace. It also proves that replacing private prefix entries in the auxiliary oracle does not change the program. The endpoint-dependent sampling law, additional monitoring observations, ideal execution cap, conditional restart and completed-witness estimates still need Lean proofs.
 
 ## FTS: compare records and lengths, then attach proposal words
 
