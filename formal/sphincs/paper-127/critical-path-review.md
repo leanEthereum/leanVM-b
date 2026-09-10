@@ -1,6 +1,16 @@
 # Shortening the remaining 127-bit proof
 
-This review examines `966bf24b` and the uncommitted `RetainedResidualWorld`, `RetainedResidualRest`, `RetainedResidualInitial` and `RetainedResidualEnvelope` modules. The public theorem remains 126 bits. Neither nontrivial 127-bit budget interval is established. This note proposes a narrower implementation path; it does not establish the missing probability comparisons.
+This review applies to the committed development through `4cf1ed7f`. The public theorem remains 126 bits. Neither nontrivial 127-bit budget interval is established. This note proposes a narrower implementation path; it does not establish the missing probability comparisons.
+
+## Acceleration audit
+
+The next proposal connection needs the retained signer's completed selected-index distribution. Its full resulting memory need not have the original signer's distribution: the actual selected view already projects to the ordinary finite digest loop, including a selected view retained after a later signing failure. Complete only a missing view with an independent uniform index, prove the resulting index marginal, and reuse the existing capped proposal and terminal-word lemmas. Prove erasure of any attached analytical word to the current monitor. This narrows the required correspondence while preserving the full native result for execution and resource accounting.
+
+Two tempting numerical shortcuts do not remove the small-budget obligation with the current estimates. First, crediting the established honest-work debits is insufficient. At $q=2^{112}$, $x=2^{-16}$ and $\delta=11/2^{16}$, the unshifted excess $\delta x-x^2$ is $10/2^{32}$ before exceptions. Even replacing $x$ in the primitive term by $(q-K)/2^{128}$ with $K=1212415+2^{24}\cdot28504$ leaves excess greater than $9/2^{32}$. This calculation grants the minimum debit for every allowed signing request; it is a generous arithmetic check, not a valid uniform debit for executions making fewer requests. Reclaiming key generation alone also fails this check. A sharper bound tied to the actual adaptive allocation would need a new argument.
+
+Second, the existing terminal-price moments cannot justify replacing a correlated weighted price by its mean. For an abstract nonnegative price $P$ equal to $2$ with probability $10^{-4}$ and zero otherwise, $\mathbb E P\le1/5$ and $\operatorname{Var}(P)\le13/25000$. Taking a bounded charge $M=q\mathbf1_{P=2}$ nevertheless gives $\mathbb E[MP]=2\mathbb E[M]$. This is a counterexample to an inference from the moment bounds alone, not an attack on the scheme or a claim about its exact price distribution. The terminal-price excess term accounts for precisely this possible dependence; removing it requires more than an average-price estimate.
+
+The next security milestone remains a complete large-budget original-game inequality with only the original query-bound premise. Its remaining links are quantitative coverage on the retained execution, the primitive potential with the same stopped message count, and the exhaustive SUF event transfer. The separate small-budget OTS and forced-FTS comparisons remain necessary for the current route. Supporting lemmas should be scoped to one of these links, and a compiled conditional endpoint should remain explicitly conditional until every comparison premise is instantiated.
 
 ## What the present code already buys
 
