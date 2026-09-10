@@ -98,7 +98,7 @@ noncomputable def adversaryImpl (segment : OtsPrefix) (root : Digest) (high : se
       (frontierSigningRun segment.parameter root (maskOtsPrefixes segment.parameter words outside)
         ftsSecret words frontier message))
 
-private theorem adversaryImpl_signing (segment : OtsPrefix) (root : Digest) (high : segment.Query → High)
+theorem adversaryImpl_signing (segment : OtsPrefix) (root : Digest) (high : segment.Query → High)
     (outside : QueryImpl HashSpec Id) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
     (words : OtsReferenceWords) (frontier : OtsFrontierValues) (message : Message) :
     segment.adversaryImpl root high outside ftsSecret words frontier (.inr message) =

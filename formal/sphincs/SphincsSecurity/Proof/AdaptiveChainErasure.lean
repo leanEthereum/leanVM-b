@@ -40,4 +40,15 @@ theorem realRun_empty_forget {Result : Type} (auxiliary : State → QueryImpl au
   simp only [realRun, completeTables_empty, EndpointPreimageDensity.real, PMF.map_bind, PMF.bind_bind, PMF.bind_map,
     PMF.map_comp, Function.comp_def, observedRun_forget]
 
+theorem realRun_empty_result_mem {Result : Type} (auxiliary : State → QueryImpl auxSpec PMF)
+    (computation : State → OracleComp (auxSpec + PrefixSpec n State) Result)
+    (tables : Fin n → State → State) (secret : State) (result : Result)
+    (hresult : result ∈ (simulateQ (fixedImpl (auxiliary (evaluate tables secret)) tables)
+      (computation (evaluate tables secret))).support) :
+    result ∈ ((realRun auxiliary computation (fun _ _ => none)).map (fun result => result.2.1)).support := by
+  rw [realRun_empty_forget, PMF.mem_support_bind_iff]
+  refine ⟨tables, PMF.mem_support_uniformOfFintype tables, ?_⟩
+  rw [PMF.mem_support_bind_iff]
+  exact ⟨secret, PMF.mem_support_uniformOfFintype secret, hresult⟩
+
 end SphincsSecurity.Concrete.PartialChainEndpoint
