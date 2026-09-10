@@ -10,6 +10,14 @@ Two tempting numerical shortcuts do not remove the small-budget obligation with 
 
 Second, the existing terminal-price moments cannot justify replacing a correlated weighted price by its mean. For an abstract nonnegative price $P$ equal to $2$ with probability $10^{-4}$ and zero otherwise, $\mathbb E P\le1/5$ and $\operatorname{Var}(P)\le13/25000$. Taking a bounded charge $M=q\mathbf1_{P=2}$ nevertheless gives $\mathbb E[MP]=2\mathbb E[M]$. This is a counterexample to an inference from the moment bounds alone, not an attack on the scheme or a claim about its exact price distribution. The terminal-price excess term accounts for precisely this possible dependence; removing it requires more than an average-price estimate.
 
+Sharpening the exact terminal-price tail alone cannot eliminate the small-budget argument either. In the existing uniform proposal word, put $m=2^{26}$, $L=25313293$, and $P=2^{-48}\sum_i R_i^{14}$, where $R_i$ is the number of occurrences of index $i$. Let $A_i$ mean $R_i=12$. The binomial and multinomial formulas, followed by Bernoulli's inequality and the first two inclusion-exclusion terms, give
+
+\[
+\Pr\Bigl[\bigcup_i A_i\Bigr]\ge m\frac{(L-11)^{12}}{12!m^{12}}\left(1-\frac{L-12}{m}\right)-\binom m2\frac{L^{24}}{(12!)^2m^{24}}>2^{-21}.
+\]
+
+On this event $P\ge12^{14}/2^{48}>4$, so $\mathbb E[(P-2)_+]>2^{-20}$. The two strict numerical inequalities were checked with exact rational arithmetic; this is a paper calculation, not a new Lean theorem. Even allowing a baseline payment of $2$ instead of $1$ therefore leaves a positive excess in this terminal-price estimate. At $q=2^{100}$, its coefficient exceeds $x=2^{-28}$, so a bound of the form $2x-x^2+\eta x$ with this excess coefficient $\eta$ does not close. This concerns the analytical proposal envelope, not an attack or a lower bound on forgery probability. A sharper joint allocation argument could still improve the result; computing higher moments of this same envelope alone cannot remove the separate small-budget obligation.
+
 The next security milestone remains a complete large-budget original-game inequality with only the original query-bound premise. Quantitative coverage on the retained execution is now established. The remaining links are the primitive potential with the same stopped message count and the exhaustive SUF event transfer, including the original exceptional-event allowance. The separate small-budget OTS and forced-FTS comparisons remain necessary for the current route. Supporting lemmas should be scoped to one of these links, and a compiled conditional endpoint should remain explicitly conditional until every comparison premise is instantiated.
 
 ## What the present code already buys
