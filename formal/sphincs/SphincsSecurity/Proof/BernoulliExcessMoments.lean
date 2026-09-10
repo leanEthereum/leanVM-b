@@ -2,7 +2,7 @@ import SphincsSecurity.Proof.Prelude
 
 namespace SphincsSecurity
 
-private theorem positivePart_shift_even_le (score shift : ℝ) (power : Nat) (heven : Even power) :
+theorem positivePart_shift_even_le (score shift : ℝ) (power : Nat) (heven : Even power) :
     max (score + shift) 0 ^ power ≤ (max score 0 + shift) ^ power := by
   by_cases hnonneg : 0 ≤ score + shift
   · rw [max_eq_left hnonneg]

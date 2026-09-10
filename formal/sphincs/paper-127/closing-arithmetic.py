@@ -46,7 +46,9 @@ assert excess_bound < F(13, 80000) < delta
 x_split = F(3, 2**14)
 assert x_split * 2**128 == 3 * 2**114
 assert x_split - delta == F(1, 2**16)
-error_per_x = F(1, 2**94) + F(1, 2**42) + F(1, 2**572)
+cache_rate = F(1023, 2**186) + F(1, 2**170)
+assert cache_rate < F(1, 2**169)
+error_per_x = F(1, 2**41) + F(1, 2**572)
 assert error_per_x < F(1, 2**16)
 
 prefix = (

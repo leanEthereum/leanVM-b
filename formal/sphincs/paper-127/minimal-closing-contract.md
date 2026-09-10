@@ -9,13 +9,13 @@ Put
 \[
 N=2^{128},\qquad x=q/N,\qquad x_*=3/2^{14},\qquad
 \delta=11/2^{16},\qquad
-\epsilon(q)=q/2^{222}+q/2^{170}+2^{-700}.
+\epsilon(q)=q/2^{169}+2^{-700}.
 \]
 
 We need \(\Pr[\mathrm{SUF}]\le 2x\). Every original hash call consumes budget, including private honest work, repeated inputs, failures and verification. The signing cap and the strong novelty test retain the complete original log. For \(q\ge1\),
 
 \[
-e:=\epsilon(q)/x\le 2^{-94}+2^{-42}+2^{-572}<2^{-16}.
+e:=\epsilon(q)/x\le 2^{-41}+2^{-572}<2^{-16}.
 \]
 
 For \(x\ge1/2\), probability at most one proves the claim. The remaining two intervals have the following sufficient contracts.
@@ -251,6 +251,18 @@ Initially $W(0,0)=R^S z^{-2^{18}}$. The inequalities $\log R\le R-1$, $\log z\ge
 \]
 
 [ProposalPrefixExponential.lean](../SphincsSecurity/Proof/ProposalPrefixExponential.lean) proves these moment and weight bounds. [RetainedResidualProposalTail.lean](../SphincsSecurity/Proof/RetainedResidualProposalTail.lean) applies them to the actual adaptive native execution and proves `exceptionHistorySourceGame_prefix_le`, at most $2^{-700}$, including stopped runs. The remaining exceptional probability is the native cache-history event.
+
+## Cache exceptions with second moments
+
+For each message let $s_m$ be its cached-entry count minus 1024 times its admissible-entry count, and let $M_2=\sum_m(s_m)_+^2$. A fresh message hash changes at most one $s_m$: by $-1023$ with probability $1/1024$, and by $1$ otherwise. Thus $\mathbb E[M'_2]\le M_2+1023$. A message-deficit exception implies $M_2\ge2^{186}$. The cached-index second moment $I_2$ grows by at most $2^{-10}$ per fresh message hash, and its exceptional threshold is $2^{160}$. Consequently
+
+\[
+V=M_2/2^{186}+I_2/2^{160},\qquad
+\mathbb E[V']\le V+\rho,\qquad
+\rho=1023/2^{186}+2^{-170}<2^{-169}.
+\]
+
+The weight is initially zero and at least one on a cache exception. Non-message native queries leave the message entries unchanged and only increase the cache size used in the index score's negative drift; they cannot increase $V$. The native signing kernel preserves the random-oracle digest-loop cache law, so its expected increment is at most $\rho$ times its expected number of message calls, including failed invocations. These estimates are proved in [CertificateCacheExceptionGrowth.lean](../SphincsSecurity/Proof/CertificateCacheExceptionGrowth.lean) and [RetainedResidualCacheKernels.lean](../SphincsSecurity/Proof/RetainedResidualCacheKernels.lean). It remains to freeze the weight at one when the passive history flag is set, accumulate the native step charges, and bound their total expectation by $q$. This yields the required $q/2^{169}$ history bound once that native accumulation is established.
 
 ## Small budgets: sufficient bounds with simple constants
 

@@ -2,7 +2,7 @@
 
 The public theorem remains 126 bits. Neither nontrivial 127-bit interval is established. This is the status entry point; the other notes supply mathematical derivations rather than a chronological progress log.
 
-Put $N=2^{128}$, $x=q/N$, $\delta=11/65536$ and $\epsilon(q)=q/2^{222}+q/2^{170}+2^{-700}$. The [closing contract](minimal-closing-contract.md) targets $2x-x^2+\delta x+\epsilon(q)$ for $3\cdot2^{114}\le q<2^{127}$ and $(15/8+\delta)x+\epsilon(q)$ below that split. Both suffice for the 127-bit slope. Budgets at least $2^{127}$ use probability at most one.
+Put $N=2^{128}$, $x=q/N$, $\delta=11/65536$ and $\epsilon(q)=q/2^{169}+2^{-700}$. The [closing contract](minimal-closing-contract.md) targets $2x-x^2+\delta x+\epsilon(q)$ for $3\cdot2^{114}\le q<2^{127}$ and $(15/8+\delta)x+\epsilon(q)$ below that split. Both suffice for the 127-bit slope. Budgets at least $2^{127}$ use probability at most one.
 
 ## Established interfaces
 
@@ -26,12 +26,14 @@ Put $N=2^{128}$, $x=q/N$, $\delta=11/65536$ and $\epsilon(q)=q/2^{222}+q/2^{170}
 | [RetainedResidualExceptionGame](../SphincsSecurity/Proof/RetainedResidualExceptionGame.lean) | Passive cache and proposal-prefix history flags erase to the monitored source law. Every successful strong forgery with a stopped monitor lies in one of these history events, yielding an original SUF bound with their two explicit probabilities. |
 | [ProposalPrefixExponential](../SphincsSecurity/Proof/ProposalPrefixExponential.lean) | The geometric block-length moment, its exponential weight, threshold domination and initial weight at most $2^{-700}$ are proved with exact constants. |
 | [RetainedResidualProposalTail](../SphincsSecurity/Proof/RetainedResidualProposalTail.lean) | The exponential weight bounds the proposal-prefix history probability on the actual adaptive native law by $2^{-700}$. Consequently original SUF probability is at most $2x-x^2+\delta x+\Pr[E_{\rm cache}]+2^{-700}$ from the original query bound. |
+| [CertificateCacheExceptionGrowth](../SphincsSecurity/Proof/CertificateCacheExceptionGrowth.lean) | A second-moment cache weight dominates the exceptional predicate, starts at zero and grows by at most $1023/2^{186}+2^{-170}<2^{-169}$ per fresh random-oracle hash. It bounds the history event for an ordinary bounded random-oracle computation. |
+| [RetainedResidualCacheKernels](../SphincsSecurity/Proof/RetainedResidualCacheKernels.lean) | Native world queries and complete signing calls obey the cache-weight estimate, charging only message calls. Non-message queries preserve message answers and extend the cache, so they cannot increase the weight. These are step estimates; the native history bound still requires accumulation and the original budget. |
 | [AdaptiveChainEndpoint](../SphincsSecurity/Proof/AdaptiveChainEndpoint.lean) | Adaptive prefix likelihood and allocated cost comparison for the generic causal interface. |
 | [ProposalQueryProjection](../SphincsSecurity/Proof/ProposalQueryProjection.lean) | Adaptive erasure of rejected proposal values to signing records and independent block lengths. |
 
 ## Remaining work
 
-1. Bound the native cache-history event in `forgeAdvantage_le_native_bound_add_cache_history` by $q/2^{222}+q/2^{170}$. The whole-run monitor-stop classification and actual proposal-prefix history bound are proved. The cache history records exceptions before and after every native step, including after the certificate monitor stops. Its predicate need not persist as the cache grows, so a terminal-cache bound alone does not suffice. Use the actual native message kernels and hash budget to control the history event.
+1. Bound the native cache-history event in `forgeAdvantage_le_native_bound_add_cache_history` by $q/2^{169}$. Accumulate the proved native query and signing kernel estimates using a weight frozen at one after the passive cache-history flag is set. Bound the accumulated message charge by the actual native message count and then by the unchanged original hash budget. The cache history includes steps after the certificate monitor stops, so its charge cannot use the active-monitor guard. The exceptional predicate need not persist as the cache grows; a terminal-cache bound alone does not suffice.
 2. Instantiate the causal OTS prefix simulator with raw low tables and an independent high-output function observed only at external inputs. Prove completed-witness charges with one shared original-query allocation, including preparation in either chronological order and caps inside omitted private work.
 3. Establish fresh-message and signing kernels in each forced-FTS law. Use the record-and-length projection, attach that law's own proposal words, and bound one true guess with a near certificate plus two distinct guesses.
 4. Combine the small-range bound, large-range bound and probability at most one. Audit the resulting public theorem without additional cryptographic premises.

@@ -31,6 +31,7 @@ The cache command is needed on initial setup. The build includes [Audit.lean](Au
 | [RetainedResidualMonitorStops.lean](SphincsSecurity/Proof/RetainedResidualMonitorStops.lean) | Native accounting and cached-digest invariants rule out bookkeeping stops. A successful active step with no cache exception stops exactly at a proposal-prefix exception. |
 | [RetainedResidualExceptionGame.lean](SphincsSecurity/Proof/RetainedResidualExceptionGame.lean) | Whole-run monitor exceptions imply a recorded cache or proposal-prefix exception, with exact erasure of the passive history flags. |
 | [RetainedResidualProposalTail.lean](SphincsSecurity/Proof/RetainedResidualProposalTail.lean) | The actual adaptive proposal-prefix history has probability at most $2^{-700}$. Only the cache-history exception remains in the large-budget reduction. |
+| [RetainedResidualCacheKernels.lean](SphincsSecurity/Proof/RetainedResidualCacheKernels.lean) | A second-moment weight controls cache exceptions through native query and signing kernels. Accumulating these charges on the full native history remains open. |
 | [AdaptiveChainEndpoint.lean](SphincsSecurity/Proof/AdaptiveChainEndpoint.lean) and [OtsPrefixOracle.lean](SphincsSecurity/Proof/OtsPrefixOracle.lean) | Prefix-oracle likelihood machinery for the small-budget OTS comparison. |
 | [NearCertificateBound.lean](SphincsSecurity/Proof/NearCertificateBound.lean) | Near-certificate estimate needed by the forced-FTS comparison. |
 
