@@ -50,7 +50,7 @@ R_aux may be fixed when analyzing prefix likelihoods. Equivalently, use lazy aux
 
 ## Likelihoods and allocated chain estimates
 
-The likelihood calculation uses an explicit projection pi_i. It forgets chain i's starting secret S_i, its canonical values strictly below Y_i, and the inputs and outputs of private honest evaluations of those values. It also forgets private cache entries that expose those inputs. It retains Y_i, the external transcript, actual hash counts, J and D, and the independent auxiliary data needed by the simulator. For the complete-table calculation it retains the prefix functions H_i; the observed transcript subsequently keeps only their externally queried rows.
+The likelihood calculation uses an explicit projection pi_i. It forgets chain i's starting secret S_i, its canonical values strictly below Y_i, and the inputs and outputs of private honest evaluations of those values. It also forgets private cache entries that expose those inputs. It retains Y_i, the external transcript, actual hash counts, J and D, and the independent auxiliary data needed by the simulator. For the complete-table calculation it retains the prefix functions H_i; the observed transcript subsequently keeps only their externally queried rows. High halves are represented by an independent function on raw prefix inputs. A high half evaluated at a hidden canonical input is not independent auxiliary data and must be erased too; the [gate audit](small-range-gate-audit.md) gives a finite counterexample to retaining it.
 
 This projection matters. If I_i also carried an independent uniform S_i, then on the full space (S_i,H_i,Y_i) the real density would be
 
@@ -178,7 +178,7 @@ Every forced branch has positive original conditional probability: an eligible c
 
 The modified transitions inspect only the current U, candidate, public hash, and observed rows. Fresh message cells remain uniform, and the original finite digest loop and post-selection signing algorithm remain intact. Every completed invocation still costs at least L=1024, including digest exhaustion and later encoding failure. The coverage kernel's initialization, response, disclosure-view and cost conditions therefore hold in each R_j. Its current private environment is the deferred state, not a prematurely revealed final secret key.
 
-Now attach a fresh rejected-word bridge to each R_j using that law's current record kernel. Its erasure preserves R_j and its base stop; it need not have the same rejected-value probabilities as another law. The coverage theorem gives E_(R_j)[C_near]<=557x. Taking F=1_(C_near>=1) and summing the density identity over j yields
+Now attach a fresh rejected-word bridge to each R_j using that law's current record kernel. Its erasure preserves R_j and its base stop; it need not have the same rejected-value probabilities as another law. This use of a different bridge is valid because C_near and the stop depend only on records and independent geometric block lengths, which were already included in R_j. The rejected values are used only inside the terminal-word coverage proof. The exact record-and-length projection and its adaptive composition are proved in ProposalLengthProjection.lean and ProposalQueryProjection.lean. Once the local coverage hypotheses are established for the forced record kernel, the coverage theorem gives E_(R_j)[C_near]<=557x. Taking F=1_(C_near>=1) and summing the density identity over j yields
 
     Pr_R[some true guess and C_near>=1]
         <= q/(N-q) * 557x = 557x^2/(1-x).

@@ -1,0 +1,78 @@
+# Paper audit of the two small-budget comparisons
+
+This audit follows the [critical-path review](critical-path-review.md) at commit 966bf24b. It checks the proposed causal OTS and forced-FTS arguments against the concrete algorithms and existing monitor definitions. It identifies a smaller sufficient observation record and an invalid richer one. It does not prove either original-game security interval in Lean.
+
+## A smaller record is sufficient
+
+The comparisons need the fixed parameter and root, reference counters and words, exposed low frontier values, external hash requests and full replies, the complete signing log, selected views including later failures, original hash and message counts, externally queried prefix rows, and independent proposal block lengths. The certificate bank can be reconstructed from the message cache and signing log at each monitored boundary. Its own-input exclusion is already part of the eligible-signing-view definition.
+
+The record need not contain private non-message cache entries, private prefix evaluations, or rejected proposal values. In [BankedTargetEnvelope.lean](../SphincsSecurity/Proof/BankedTargetEnvelope.lean), the certificate predicate reads only proper message cells and the eligible views obtained from the log. In [PoissonCertificateGame.lean](../SphincsSecurity/Proof/PoissonCertificateGame.lean), the proposal-prefix stop reads the cumulative block length and log length. Neither reads rejected letters.
+
+The full-cache size and signing-digest consistency tests in the current monitor require care. Cache cardinality is at most the number of preceding original hash calls because each call inserts at most one row. Signing-digest consistency follows by induction: a successful record retains its selected message row before inserting its response into the log, and consistent later queries preserve that row. Remove these always-valid tests using their reachable-state invariants before projecting away private cache entries. Retain the genuine message-deficit and cached-index exceptions; these depend on the message projection. Do not evaluate the old full-cache guard on an invented replacement cache and assume equivalence.
+
+The existing [MessageCacheProjection.lean](../SphincsSecurity/Proof/MessageCacheProjection.lean) draft has been checked. It proves the digest-loop projection, dependence of the completed index distribution on public fields and message answers, message-deficit and index-multiplicity projection, and projection of the coverage forecast. Those results do not themselves project the complete monitor or instantiate its probability theorem in a changed law.
+
+## OTS: construct the simulator from raw tables
+
+Fix the reference family and a positive-depth chain. Partition the finite raw oracle into that chain's low-output prefix functions $H_0,\ldots,H_{d-1}$, its high-output table $G$, and the remaining tables. These are independent before the endpoint is generated. Include other chains' secrets and functions, FTS secrets and functions, conditional encoding seeds, message rows and independent coins in the auxiliary randomness. Do not include the selected chain's starting secret $S$ or its private evaluations. Its real endpoint is $Y=H_{d-1}\circ\cdots\circ H_0(S)$.
+
+For a supplied $Y$, reconstruct every forward suffix and structural low value. They determine the public root and canonical layer messages without reading the selected prefix. Put each conditioned encoding block at its reconstructed canonical message before execution begins. Its independent seed is auxiliary data; the block location may depend on $Y$. Changing $Y$ changes this initial oracle presentation, never an already answered row.
+
+The concrete signer is compatible with this construction. Key generation and tree recomputation need full endpoints. Canonical successful OTS signing needs reference frontiers and its counter. FTS openings use the auxiliary FTS secrets. The digest loop needs only the fixed root, parameter, message and message oracle. Structural and OTS subroutines discard high output halves. All three layer computations and their failure behavior must be retained. Replace omitted private calls by their original debit; impose an explicit cap on ideal executions, including a cap reached inside omitted work.
+
+An external or verification query in the selected prefix obtains its low reply through the prefix interface and its high reply from $G$ at the public query input. All other requests use the auxiliary oracle. Fixed-width parsing determines this routing, including adversarial byte aliases. Thus a finite adaptive transcript restricts the low prefix tables only at its recorded rows. With the secret erased, the real-to-ideal density is the mean preimage count. The existing adaptive endpoint theorem applies once this concrete routing and record projection are formalized.
+
+This is a different presentation from retaining all full canonical graph replies. In particular, a high half evaluated at a hidden prefix input cannot simply be included among the independent auxiliary values.
+
+### A finite counterexample to the richer projection
+
+Let the low space be $\{0,1\}$, let $f$ be a uniform one-edge function, let $S$ be uniform, and fix the independent high table $G(s)=s$. Suppose the record retains both $Y=f(S)$ and $Z=G(S)$. In a comparison that replaces $Y$ by an independent uniform value but keeps $Z$, make the fixed query $f(0)$. The query need not depend on the extra retained value.
+
+The transcript $Y=0,\ Z=0,\ f(0)=1$ has real probability zero and ideal probability $1/8$. Its density is zero after one query, contradicting the proposed lower bound $1-1/2$. If $Z$ is erased, the transcript $Y=0,\ f(0)=1$ has real probability $1/8$ and ideal probability $1/4$, giving the correct density $1/2$.
+
+This does not refute SPHINCS security or the narrower OTS simulator. It rules out silently importing secret-dependent canonical high values into that simulator's retained history. External full replies remain part of the transcript.
+
+### Adaptive witness charges
+
+The two-edge argument does not assume queries form independent attempts. Before the first completed two-edge suffix, only a fresh last-edge query with a prepared predecessor, or a fresh penultimate query reaching an already found last-edge preimage, can complete it. The last-unqueried-edge density expansion charges prepared paths to their originating queried rows. Each such row has one eventual endpoint, so it is charged at most once across fresh last-edge inputs.
+
+Writing $q_j$ for the stopped fresh-query counts at each level, the baseline is bounded by $\sum_{j<d-1}q_j+2\min(q_{d-2},q_{d-1})\le 3Q_i/2$. If $K$ counts last-edge replies equal to $Y$ in the ideal experiment, conditional uniformity gives $\mathbb E K\le\mathbb E Q_i/N$ and $\mathbb E[K(K-1)]\le2q\,\mathbb E Q_i/N^2$. These pay the remaining likelihood terms. Apply the density lower bound to the allocated cost before summing over chains.
+
+For a restart on an uncontacted chain, retain old prefix preparation. Its charge is $a_i(T)+2Q_i^+$, whose sum over uncontacted chains is at most $Q_{\rm past}+2Q_{\rm future}\le2q$. This also handles an encoding marker that precedes its contact. Encoding probabilities use a separate history hiding unqueried encoding rows. Fixing the encoding seed for the prefix-density argument does not authorize a fresh-encoding estimate in that richer history.
+
+These checks support the paper calculation under the specified causal projection. The concrete simulator, conditional restart and completed-witness estimates still need Lean proofs.
+
+## FTS: compare records and lengths, then attach proposal words
+
+For each active FTS secret, retain its nonexcluded candidates $U$. A fresh eligible query at $z\in U$ hits with probability $1/|U|$ and retires that coordinate. A miss removes $z$ and returns an independent full residual reply, even if its low half equals the public leaf hash. A successful signing record discloses its selected active coordinates; a failure discloses none. Selection and failure depend on the message trace and exposed graph, not the values being disclosed. These local kernels give the product posterior by multiplying their masses.
+
+Force eligible choices before slot $j$ to miss and the choice at $j$ to hit. Keep every other transition, including signing and proposal block lengths, unchanged. On reached eligible paths the real first-hit branch has density
+\[
+L_j=p_j\prod_{t<j}(1-p_t)\le (N-q)^{-1}.
+\]
+Use zero weight on unreached or ineligible paths. All forced choices have positive original conditional probability in the small interval. Thus their projected paths can be completed to supported original paths with the same original cost. This is the required reason the original budget transfers; mere similarity of the programs would not suffice.
+
+Here the rejected proposal letters can be omitted completely from the comparison. If $a$ is the fixed proposal acceptance probability, a block length $\ell\ge1$ has mass $a(1-a)^{\ell-1}$, independently of the completed signing record. For any rejected-letter law $r$,
+\[
+\Pr[\omega,\ell,u_1,\ldots,u_{\ell-1}]
+=K_h(\omega)\,a(1-a)^{\ell-1}\prod_{k<\ell}r_h(u_k).
+\]
+Summing over the letters gives $K_h(\omega)a(1-a)^{\ell-1}$. This is exactly the record-and-length law, even when the rejected-letter law depends on the current state.
+
+[ProposalLengthProjection.lean](../SphincsSecurity/Proof/ProposalLengthProjection.lean) proves this identity and its compatibility with record projection and mixtures. [ProposalQueryProjection.lean](../SphincsSecurity/Proof/ProposalQueryProjection.lean) lifts it through arbitrary adaptive computations. The coefficient $L_j$ and the near-certificate count belong to this smaller law. Therefore each forced law may use its own rejected-letter augmentation for the terminal-word coverage proof, provided its erasure is the same record-and-length law. No equality of rejected-letter probabilities between different laws is needed.
+
+The remaining coverage obligation is local: in each forced law, establish uniform fresh message replies, the unchanged finite randomizer loop, the original selected view and failure rules, the signing cap, and the original work debit. The current environment contains deferred secrets, not a fully revealed final secret key. The existing full-game coverage theorem does not automatically quantify over this environment.
+
+Once that local extension yields $\mathbb E_{R_j}C_{\rm near}\le557q/N$, the density identity on records and lengths gives
+\[
+\Pr_R[\text{a true guess and a near certificate}]
+\le\sum_{j=1}^q\mathbb E_{R_j}[L_j C_{\rm near}]
+\le \frac{557x^2}{1-x}.
+\]
+Retirement makes hit indicators count distinct coordinates. Their conditional rates are at most $(N-q)^{-1}$, so the second factorial moment gives the two-guess bound $x^2/[2(1-x)^2]$. Both counts stop with the original monitor and retain certificates already banked. Exception probabilities are charged once on the original law; no forced-law exception union is needed.
+
+## Consequence for the next formal work
+
+The record-and-length projection removes the need for a joint rejected-word and hidden-secret posterior theorem. The OTS comparison must start from raw prefix tables with the narrower projection, while the large-range hidden-label analysis may keep its established graph presentation. Neither comparison needs equality of all internal states.
+
+The first remaining coverage lemma should quantify over the concrete projected message and signing kernels with this record-and-length monitor. Its original, first-match-stopped and forced-FTS instances must discharge their local hypotheses. This is narrower than rebuilding proposal machinery in each native interpreter. The original-game verifier classification, the large-range primitive potential application and the small-range witness arguments remain necessary before the public 127-bit claim can be stated as proved.

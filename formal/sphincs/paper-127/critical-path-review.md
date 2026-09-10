@@ -1,0 +1,42 @@
+# Shortening the remaining 127-bit proof
+
+This review examines `966bf24b` and the uncommitted `RetainedResidualWorld`, `RetainedResidualRest`, `RetainedResidualInitial` and `RetainedResidualEnvelope` modules. The public theorem remains 126 bits. Neither nontrivial 127-bit budget interval is established. This note proposes a narrower implementation path; it does not establish the missing probability comparisons.
+
+## What the present code already buys
+
+The [closing contract](minimal-closing-contract.md) already supplies sufficient constants and a two-range calculation. `PrimitiveMessagePotential.lean` proves its scalar potential identities. `UnitCertificateCoverage.lean` proves the unit message-payment bound for the existing original-game certificate monitor. The retained execution modules prove substantial fixed-oracle correspondence and budget results. Reproving those components or sharpening their constants is not the next task.
+
+The missing work connects these results to the same original experiment and proves that they account for every strong forgery. An execution correspondence alone does not bound its stopping probability. A certificate inequality for one interpreter cannot be used in a different interpreter without proving that its hypotheses survive.
+
+## The smallest large-range conclusion
+
+Set $N=2^{128}$, $x=q/N$, $\delta=11/65536$, and $\epsilon(q)=q/2^{222}+q/2^{170}+2^{-700}$. On one coupling with the original execution, let $B$ be the first primitive match, $D_B$ the number of message calls through the monitored prefix, $C$ the number of full certificates retained by the coverage monitor, and $E$ its exceptions. The required assertions are:
+
+1. Every strong forgery belongs to $B$, $E$, or an execution with a full certificate. This must include final verification and equality of every signature field in the strong-novelty case.
+2. $\Pr[B]+\mathbb E[D_B]/N\le 2x-x^2$, including the message count on runs that stop at a match.
+3. $\mathbb E[C]\le\mathbb E[D_{\mathrm{cov}}]/N+\delta x$, with $D_{\mathrm{cov}}\le D_B$ pathwise and $\Pr[E]\le\epsilon(q)$.
+
+These give $\Pr[\mathrm{SUF}]\le 2x-x^2+\delta x+\epsilon(q)$, which closes $3\cdot2^{114}\le q<2^{127}$. Every premise must follow from the unchanged original `HasHashQueryBound`, sampling law and algorithms. Budgets at least $2^{127}$ use probability at most one.
+
+The candidate saving is to retain the original certificate monitor and transfer only the event, stopped message count, successful signing views and resource facts needed by these assertions. The primitive analysis and coverage analysis may use different histories on the same coupling. Equality of their complete internal states is unnecessary. The coverage history may be richer, but it must leave unused message rows and proposal values unobserved. Conditioning it on a future hit, or passing a fully sampled message oracle into a stop rule, would not justify the existing fresh-message argument.
+
+This approach still requires a legal stopping rule or a narrow extension of the existing monitor theorem. The current `CertificateStopRule` takes the original cache, monitor and execution record; it does not automatically provide the retained native routing state. Establish the needed projection or extension explicitly before applying the theorem. Avoid building a replacement monitor unless this route fails for a concrete reason.
+
+## Audit the small-range risks before further infrastructure
+
+Closing the large interval does not imply the small interval. The following two paper gates determine whether the current complete route is viable:
+
+| Gate | Required conclusion | Invalid shortcut to exclude |
+| --- | --- | --- |
+| Adaptive OTS comparison | A causal concrete simulator, with the starting secret and private cache observations erased, supports the endpoint likelihood and a single shared original-query allocation. The coarse target is $7/4$ times allocated OTS and encoding cost divided by $N$. | Charging the entire budget separately to every chain, counting first contacts as completed witnesses, or assuming an independent endpoint preserves the original game. |
+| Forced FTS comparison | The changed local transitions preserve the coverage kernel, and one guess with a near certificate plus two distinct guesses costs at most $x/8$ in total on the stated small interval. | Applying original-game coverage directly to a forced interpreter or conditioning on a future successful guess. |
+
+For each gate, write the observable history, transition kernel, stopping rule, likelihood or coupling, and allocated cost before adding Lean modules. Check both chronological orders of preparatory queries and include failed signatures and the forgery's own-input exclusion. An unresolved gate remains a mathematical obligation, regardless of how many surrounding definitions compile.
+
+## Work order
+
+The subsequent [small-range gate audit](small-range-gate-audit.md) identifies a concrete saving: use the existing projection to records and independent block lengths, so the OTS and forced-FTS comparisons need no rejected-word posterior. It also specifies the narrower OTS high-output projection and the remaining message-cache guard obligations.
+
+First audit these two small-range gates on paper. If either fails, revise that argument before extending its infrastructure. If they survive, close the large-range original-game inequality using the existing retained execution, scalar potential and certificate results, adding only the necessary connections. Then formalize the audited small-range comparisons and combine the ranges.
+
+Track progress by discharged mathematical gates and original-game inequalities. Keep the scheme, SUF game, signing cap and whole-experiment cost model fixed. A reliable completion estimate needs evidence that the paper gates work for the concrete experiment; the current state does not support a precise calendar forecast.
