@@ -21,6 +21,15 @@ terminal_length = beta * signatures + proposal_slack + 13
 assert terminal_length == 25313293
 assert terminal_length / indices < rate
 
+acceptance = 1 / beta
+prefix_base = F(257, 256)
+assert (1 - acceptance) * prefix_base**2 < 1
+prefix_ratio = acceptance / (prefix_base * (1 - (1 - acceptance) * prefix_base**2))
+assert prefix_ratio == F(17179869184, 17179343615) > 1
+prefix_log_upper = signatures * (prefix_ratio - 1) - 2 * proposal_slack * (F(1, 256) - F(1, 2 * 256**2))
+assert prefix_log_upper == -F(8739704538626, 17179343615)
+assert prefix_log_upper < -724 * F(7, 10)
+
 moment_bounds = [sum(F(coefficient) * rate**order for order, coefficient in enumerate(row)) for row in stirling]
 mean_bound = F(indices, 2**48) * moment_bounds[14]
 variance_bound = F(indices, 2**96) * moment_bounds[28]

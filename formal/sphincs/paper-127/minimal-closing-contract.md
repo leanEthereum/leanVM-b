@@ -228,6 +228,25 @@ The two scalar transitions show \(\mathbb E[M_{t+1}\mid\mathcal G_t]\le M_t\). A
 
 Coverage must be instantiated on this same law with an additional stop at \(B\), giving \(\mathbb E C_{\rm full}\le\mathbb E A_{\rm cov}/N+\delta x\) and \(A_{\rm cov}\le A_B\) pathwise. Backwards tracing of an accepting verifier must show that a strong forgery without \(B\) or an exception supplies a full certificate. These facts give the large-range contract directly. Bounding the primitive event by \(2x\) first would discard the saving needed here.
 
+### A proposal-prefix tail with rational constants
+
+An active signing step samples a block length $L\ge1$ with $\Pr[L=\ell]=p(1-p)^{\ell-1}$, where $p=1024/1537$. There are at most $S=2^{24}$ active signing steps because the monitor checks the signing cap before enabling a block. Put $z=257/256$ and
+
+\[
+R=\mathbb E[z^{2L-3}]=\frac{p}{z(1-(1-p)z^2)}=\frac{17179869184}{17179343615}>1.
+\]
+
+For independent such lengths and $1\le k\le S$, the actual prefix exception $\sum_{i=1}^kL_i>(1537/1024)k+131072$ implies $2\sum_{i=1}^kL_i-3k>2^{18}$. Markov's inequality and a union bound therefore give a probability at most $S R^S z^{-2^{18}}$. Using $\log(1+u)\le u$ and $\log(1+u)\ge u-u^2/2$ gives
+
+\[
+S\log R-2^{18}\log z
+\le S(R-1)-2^{18}\left(\frac1{256}-\frac1{2\cdot256^2}\right)
+=-\frac{8739704538626}{17179343615}
+<-724\cdot\frac7{10}<-724\log2.
+\]
+
+Hence the union probability is below $2^{-700}$. The rational inequalities are checked by `closing-arithmetic.py`. The remaining Lean connection is to expose an independent length at each enabled signing step and pad unused slots; enabling depends on the preceding state, and no later length is read. This must preserve the actual monitored law and its first prefix exception. The paper estimate alone does not prove the native event bound.
+
 ## Small budgets: sufficient bounds with simple constants
 
 Use one stopped original law with disjoint counts \(Q,A_{\rm enc},A_{\rm str},A_{\rm msg}\), where \(Q\) counts external OTS prefix queries and the other counts cover nonreference encodings, remaining structural queries and message calls. Require
