@@ -6,6 +6,5 @@ import SphincsSecurity.Proof.OtsPrefixOracle
 import SphincsSecurity.Proof.RetainedResidualCorrespondence
 import SphincsSecurity.Proof.RetainedResidualGameTransfer
 import SphincsSecurity.Proof.RetainedResidualPrimitivePotential
-import SphincsSecurity.Proof.RetainedResidualReplay
-import SphincsSecurity.Proof.RetainedResidualVerifySupport
+import SphincsSecurity.Proof.RetainedResidualStrongCoverage
 import SphincsSecurity.Proof.Security126Completion

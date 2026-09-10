@@ -2,7 +2,7 @@
 
 The 126-bit theorem is proved. The 127-bit theorem is not: neither nontrivial budget interval has its complete original-game inequality yet. Keep the original scheme, SUF game, signing cap and whole-experiment hash budget in [Statement.lean](SphincsSecurity/Statement.lean) fixed.
 
-The next milestone is the large-budget inequality. The primitive and certificate bounds already share one native execution and follow from the original query bound. Accepting verification recovers the complete canonical signature. What remains is to turn every surviving strong forgery into a certificate or an original exceptional event: relate disclosures to eligible signing-log entries, exclude the forgery's own input, prove bank completeness, and transfer the exceptional allowance.
+The next milestone is the large-budget inequality. The primitive and certificate bounds already share one native execution and follow from the original query bound. Every surviving strong forgery now yields a full target certificate: signing history ties disclosed secrets to successful log entries, and canonical replay excludes the forgery's own digest input. What remains is to put that certificate into the counted native bank and transfer the original exceptional allowance.
 
 The small-budget interval separately needs the concrete OTS prefix simulator and completed-witness charges, plus coverage under forced FTS transitions. The generic endpoint likelihood and record-and-length projection are available; their concrete comparisons remain obligations.
 

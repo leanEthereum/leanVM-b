@@ -14,16 +14,17 @@ Put $N=2^{128}$, $x=q/N$, $\delta=11/65536$ and $\epsilon(q)=q/2^{222}+q/2^{170}
 | [RetainedResidualGameTransfer](../SphincsSecurity/Proof/RetainedResidualGameTransfer.lean) | Original SUF success is bounded by a primitive stop or a live strong forgery, retaining the full signing log. |
 | [RetainedResidualVerifySupport](../SphincsSecurity/Proof/RetainedResidualVerifySupport.lean) | Supported accepting verification has honest openings at all layers and disclosure of every required FTS secret. |
 | [RetainedResidualReplay](../SphincsSecurity/Proof/RetainedResidualReplay.lean) | The recovered signature equals the original `signAfterDigest` result, including counters and every signature field. |
+| [RetainedResidualSigningHistory](../SphincsSecurity/Proof/RetainedResidualSigningHistory.lean) | Every successful log entry has its original signing computation and cached digest; every disclosed FTS leaf has a log witness. The invariant holds initially and is preserved through the source execution. |
+| [RetainedResidualStrongCoverage](../SphincsSecurity/Proof/RetainedResidualStrongCoverage.lean) | A supported, accepting strong forgery yields `TargetCertificateAt` for all FTS trees in the retained cache and log. Canonical replay excludes the forgery's own input from every signing witness. |
 | [AdaptiveChainEndpoint](../SphincsSecurity/Proof/AdaptiveChainEndpoint.lean) | Adaptive prefix likelihood and allocated cost comparison for the generic causal interface. |
 | [ProposalQueryProjection](../SphincsSecurity/Proof/ProposalQueryProjection.lean) | Adaptive erasure of rejected proposal values to signing records and independent block lengths. |
 
 ## Remaining work
 
-1. Connect native disclosures to successful signing-log entries. A response at the forgery's own input must equal its entire signature; strong novelty then excludes that response from its witnesses.
-2. Complete the certificate-bank and exception transfer. Derive the original large-range SUF inequality using the quantitative bounds above and the original exceptional allowance.
-3. Instantiate the causal OTS prefix simulator with raw low tables and an independent high-output function observed only at external inputs. Prove completed-witness charges with one shared original-query allocation, including preparation in either chronological order and caps inside omitted private work.
-4. Establish fresh-message and signing kernels in each forced-FTS law. Use the record-and-length projection, attach that law's own proposal words, and bound one true guess with a near certificate plus two distinct guesses.
-5. Combine the small-range bound, large-range bound and probability at most one. Audit the resulting public theorem without additional cryptographic premises.
+1. Complete the certificate-bank and exception transfer. `observedRun_rest_certificate` now supplies the full certificate in the native memory's cache and signing log. Prove that it is present in the bank counted by `initialMonitoredSource`, then derive the original large-range SUF inequality using the quantitative bounds above and the original exceptional allowance.
+2. Instantiate the causal OTS prefix simulator with raw low tables and an independent high-output function observed only at external inputs. Prove completed-witness charges with one shared original-query allocation, including preparation in either chronological order and caps inside omitted private work.
+3. Establish fresh-message and signing kernels in each forced-FTS law. Use the record-and-length projection, attach that law's own proposal words, and bound one true guess with a near certificate plus two distinct guesses.
+4. Combine the small-range bound, large-range bound and probability at most one. Audit the resulting public theorem without additional cryptographic premises.
 
 The [small-range gate audit](small-range-gate-audit.md) specifies why secret-dependent canonical high halves cannot enter the OTS history, and why the forced-FTS comparison needs no joint posterior for rejected proposal values. The full-cache exceptional flag is also excluded from that projected stopping rule: its probability is paid on the original law using the spent-call invariant.
 
