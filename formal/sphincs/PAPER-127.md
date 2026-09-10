@@ -16,7 +16,9 @@ The chosen starting secret is separated from the other secret coordinates by an 
 
 The bounded OTS interface is supplied by [OtsPrefixCappedSource.lean](SphincsSecurity/Proof/OtsPrefixCappedSource.lean). An analytical cap stops before the next prefix query would exceed $q$, returning an ordinary result rather than dropping probability mass. Its syntactic query bound is unconditional. The explicit prefix counter is bounded by the original hash-cost trace, so the cap erases exactly on every supported conditional real run. For $q<2^{128}$, the positive likelihood factor puts ideal support inside real support: the ideal cap never stops either, and its completed outputs obey the original whole-experiment hash budget. The concrete capped interface needs no additional prefix-query-bound premise.
 
-The next work is to retain the additional monitoring observations and prove completed-witness charges with one shared query allocation. The forced-FTS transitions also need their coverage estimates. The full 127-bit theorem must combine the resulting small-budget bound with the completed large-budget theorem and pass the axiom audit.
+The shared OTS-prefix allocation is proved in [ReferenceFamilyAllocation.lean](SphincsSecurity/Proof/ReferenceFamilyAllocation.lean). One recorded external-query program preserves the original SUF probability, and the sum of its counts over all OTS prefixes is at most the original budget, both for each supported execution and in expectation. [OtsPrefixAllocation.lean](SphincsSecurity/Proof/OtsPrefixAllocation.lean) identifies each fixed-oracle interpreter count with its charge in this common program. The analytical cap also preserves the original result jointly with its prefix-query count.
+
+The next work is to transport these counters through the conditioned seed mixture, reserve the other query classes, and retain the additional monitoring observations needed for completed-witness estimates. The forced-FTS transitions also need their coverage estimates. The full 127-bit theorem must combine the resulting small-budget bound with the completed large-budget theorem and pass the axiom audit.
 
 | Note | Use |
 | --- | --- |

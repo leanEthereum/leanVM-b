@@ -44,6 +44,24 @@ theorem realRun_cap_erased :
   exact QueryCap.run_erased IsPrefixQuery _ _ budget
     (fixed_counted_le auxiliary computation cost budget hcharge hreal tables secret)
 
+theorem realRun_cap_recover_count :
+    (realRun auxiliary (fun endpoint => QueryCap.run IsPrefixQuery (computation endpoint) budget) (fun _ _ => none)).map
+      (fun result => Option.map (fun finished => (finished.1, budget - finished.2)) result.2.1) =
+      (realRun auxiliary (fun endpoint => QueryCap.counted IsPrefixQuery (computation endpoint)) (fun _ _ => none)).map
+        (fun result => some result.2.1) := by
+  change (realRun auxiliary (fun endpoint => QueryCap.run IsPrefixQuery (computation endpoint) budget) (fun _ _ => none)).map
+    (Option.map (fun finished => (finished.1, budget - finished.2)) ∘ (fun result => result.2.1)) =
+    (realRun auxiliary (fun endpoint => QueryCap.counted IsPrefixQuery (computation endpoint)) (fun _ _ => none)).map
+      (some ∘ (fun result => result.2.1))
+  rw [← PMF.map_comp, ← PMF.map_comp, realRun_empty_forget, realRun_empty_forget]
+  simp only [PMF.map_bind]
+  apply congrArg (PMF.uniformOfFintype (Fin n → State → State)).bind
+  funext tables
+  apply congrArg (PMF.uniformOfFintype State).bind
+  funext secret
+  exact QueryCap.run_recover_count IsPrefixQuery _ _ budget
+    (fixed_counted_le auxiliary computation cost budget hcharge hreal tables secret)
+
 theorem realRun_cap_valid (result : State × (Option (Result × Nat) × (Fin n → State → Option State)))
     (hresult : result ∈ (realRun auxiliary (fun endpoint => QueryCap.run IsPrefixQuery (computation endpoint) budget)
       (fun _ _ => none)).support) :

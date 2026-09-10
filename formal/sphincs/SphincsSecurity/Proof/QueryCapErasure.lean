@@ -56,4 +56,15 @@ theorem run_erased (impl : QueryImpl spec PMF) (computation : OracleComp spec Re
   apply congrArg (PMF.map some)
   rw [← PMF.monad_map_eq_map, ← simulateQ_map, counted_forget]
 
+theorem run_recover_count (impl : QueryImpl spec PMF) (computation : OracleComp spec Result) (budget : Nat)
+    (hbound : ∀ result ∈ (simulateQ impl (counted selected computation)).support, result.2 ≤ budget) :
+    (simulateQ impl (run selected computation budget)).map (Option.map (fun result => (result.1, budget - result.2))) =
+      (simulateQ impl (counted selected computation)).map some := by
+  rw [run_eq_some_counted selected impl computation budget hbound, PMF.map_comp]
+  apply map_eq_on_support
+  intro result hresult
+  simp only [Function.comp_apply, Option.map_some]
+  congr 2
+  exact Nat.sub_sub_self (hbound result hresult)
+
 end SphincsSecurity.QueryCap

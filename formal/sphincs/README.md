@@ -37,5 +37,6 @@ The cache command is needed on initial setup. The build includes [Audit.lean](Au
 | [AdaptiveChainEndpoint.lean](SphincsSecurity/Proof/AdaptiveChainEndpoint.lean) and [OtsPrefixOracle.lean](SphincsSecurity/Proof/OtsPrefixOracle.lean) | Prefix-oracle likelihood machinery for the small-budget OTS comparison. |
 | [OtsPrefixObservedSource.lean](SphincsSecurity/Proof/OtsPrefixObservedSource.lean) and [OtsPrefixCappedSource.lean](SphincsSecurity/Proof/OtsPrefixCappedSource.lean) | Exact original-game representation by observed prefix runs. A bounded analytical cap preserves supported real runs, never stops in the ideal law below $2^{128}$, and transfers the original hash budget to ideal outputs. |
 | [NearCertificateBound.lean](SphincsSecurity/Proof/NearCertificateBound.lean) | Near-certificate estimate needed by the forced-FTS comparison. |
+| [ReferenceFamilyAllocation.lean](SphincsSecurity/Proof/ReferenceFamilyAllocation.lean) | A recorded game preserves original SUF probability and bounds the sum of all OTS-prefix query counts by the original budget, on supported runs and in expectation. |
 
 [The 127-bit guide](PAPER-127.md) identifies the remaining original-game connections and the mathematical contracts they must establish. Historical proof routes and superseded status reports are available in Git history.
