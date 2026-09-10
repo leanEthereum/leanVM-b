@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.DigestCompletionNewTarget
 
 namespace SphincsSecurity.Concrete
@@ -20,18 +21,5 @@ theorem expected_signWithView_newTargetEnvelopeCharge_le_mass_mul (key : SecretK
   exact expected_digestCompletion_newTargetEnvelopeCharge_le_mass_mul key message before
     (originalDigestCompletion key) id (fun loop _ result hr => originalDigestCompletion_preservesMessages key loop result hr)
     log hsigned uniform reuse arrival queries signings groups remaining hvalid
-
-theorem expected_signWithView_newTargetEnvelopeCharge_le (key : SecretKey) (message : Message)
-    (before : QueryCache HashSpec) (log : QueryLog SigningSpec)
-    (hsigned : SigningDigestsCached key.parameter before key.root log)
-    (uniform reuse arrival : ENNReal) (queries signings : Nat)
-    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
-    (∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run before] *
-      newTargetEnvelopeCharge key before result.2 (log ++ [⟨message, result.1.1⟩]) uniform reuse arrival queries signings groups remaining) ≤
-        (Fintype.card Index : ENNReal)⁻¹ *
-          targetIndexEnvelope uniform reuse arrival queries signings (targetIndexMoments key before log) groups.card remaining.card :=
-  (expected_signWithView_newTargetEnvelopeCharge_le_mass_mul key message before log hsigned
-    uniform reuse arrival queries signings groups remaining hvalid).trans
-      (mul_le_of_le_one_left' (freshDigestSelectionProbability_le_one key message before))
 
 end SphincsSecurity.Concrete

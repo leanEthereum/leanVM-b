@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeHistoryLiveRisk
 import SphincsSecurity.Proof.OtsProbePrivateValueProbeHistory
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation

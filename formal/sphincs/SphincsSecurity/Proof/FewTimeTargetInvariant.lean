@@ -1,5 +1,7 @@
-import SphincsSecurity.Proof.FewTimeTargetMonitor
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTimeOriginInvariant
 import SphincsSecurity.Proof.FewTimeTargetCompletion
+import SphincsSecurity.Proof.FewTimeTargetMonitor
 
 /-!
 # One-step invariant for one adaptive few-time target
@@ -25,23 +27,6 @@ noncomputable def OriginTargetMonitorState.afterDirect
       (decide (configuration.sourceAt? state.origin.directOrdinal = none))
       (hashOutputFewTimeView output)
   else advanced
-
-theorem OriginTargetMonitorState.targetScheduleCoherent_afterDirect
-    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
-    {configuration : OriginConfiguration pattern sources}
-    (targetOrdinal : Nat) (state : OriginTargetMonitorState configuration)
-    (input : HashInput) (output : HashOutput)
-    (hcoherent : state.TargetScheduleCoherent targetOrdinal) :
-    (state.afterDirect targetOrdinal input output).TargetScheduleCoherent
-      targetOrdinal := by
-  by_cases hfresh : state.origin.viewed.cache input = none
-  · simp only [OriginTargetMonitorState.afterDirect, hfresh, if_true]
-    exact OriginTargetMonitorState.targetScheduleCoherent_recordCandidate targetOrdinal
-      (state.advanceOrigin (state.origin.afterDirect input output)) _ _
-      (state.targetScheduleCoherent_advanceOrigin targetOrdinal _ hcoherent)
-  · simpa [OriginTargetMonitorState.afterDirect, hfresh] using
-      state.targetScheduleCoherent_advanceOrigin targetOrdinal
-        (state.origin.afterDirect input output) hcoherent
 
 theorem OriginTargetMonitorState.potential_afterDirect_of_ordinal_ne
     {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
@@ -128,34 +113,6 @@ noncomputable def OriginTargetMonitorState.afterSigner
         advanced.recordCandidate targetOrdinal
           (decide (pattern.selectedAt? state.origin.signerOrdinal = none)) view
       else advanced
-
-theorem OriginTargetMonitorState.targetScheduleCoherent_afterSigner
-    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
-    {configuration : OriginConfiguration pattern sources}
-    (targetOrdinal : Nat) (secretKey : SecretKey) (request : SignRequest)
-    (state : OriginTargetMonitorState configuration)
-    (targetRun : TargetSignerResult × QueryCache HashSpec)
-    (hcoherent : state.TargetScheduleCoherent targetOrdinal) :
-    (state.afterSigner targetOrdinal secretKey request targetRun).TargetScheduleCoherent
-      targetOrdinal := by
-  cases hselection : targetRun.1.2 with
-  | none =>
-      simpa [OriginTargetMonitorState.afterSigner, hselection] using
-        state.targetScheduleCoherent_advanceOrigin targetOrdinal
-          (state.origin.afterSigner secretKey request
-            (targetSignerResultView targetRun.1, targetRun.2)) hcoherent
-  | some selection =>
-      rcases selection with ⟨input, view⟩
-      by_cases hfresh : state.origin.viewed.cache input = none
-      · simp only [OriginTargetMonitorState.afterSigner, hselection, hfresh, if_true]
-        exact OriginTargetMonitorState.targetScheduleCoherent_recordCandidate targetOrdinal
-          (state.advanceOrigin (state.origin.afterSigner secretKey request
-            (targetSignerResultView targetRun.1, targetRun.2))) _ _
-          (state.targetScheduleCoherent_advanceOrigin targetOrdinal _ hcoherent)
-      · simpa [OriginTargetMonitorState.afterSigner, hselection, hfresh] using
-          state.targetScheduleCoherent_advanceOrigin targetOrdinal
-            (state.origin.afterSigner secretKey request
-              (targetSignerResultView targetRun.1, targetRun.2)) hcoherent
 
 theorem OriginTargetMonitorState.potential_afterSigner_of_ordinal_ne
     {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}

@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.EncodingPrehitComposition
 import SphincsSecurity.Proof.EncodingPrehitViewedTrace
 
 namespace SphincsSecurity.Concrete
@@ -98,30 +100,6 @@ theorem encodingPrehitViewedAdversaryImpl_log_projection
     (encodingPrehitViewedAdversaryImpl accountingKey secretKey)
     (encodingPrehitLoggedAdversaryImpl accountingKey secretKey) encodingPrehitViewedLogState
   exact encodingPrehitViewedAdversaryImpl_query_log_projection accountingKey secretKey
-
-theorem encodingPrehitViewedAdversaryImpl_support_monitor
-    (accountingKey secretKey : SecretKey)
-    (computation : OracleComp (OracleWorld + SigningSpec) α) (state : ViewedFullTraceState × Bool)
-    (result : α × (ViewedFullTraceState × Bool))
-    (hresult : result ∈ support
-      ((simulateQ (encodingPrehitViewedAdversaryImpl accountingKey secretKey) computation).run state)) :
-    ∃ log : QueryLog SigningSpec,
-      (((result.1, log), result.2.1.cache), result.2.2) ∈ support
-        (runEncodingPrehitMonitor accountingKey
-          ((simulateQ (forwardOracles + signingOracle scheme secretKey) computation).run) state.1.cache state.2) ∧
-      state.1.trace.signing.toSigningLog ++ log = result.2.1.trace.signing.toSigningLog := by
-  have hproject : Prod.map id encodingPrehitViewedLogState result ∈ support
-      ((fun result => (result.1.1.1,
-        ((result.1.2, result.2), state.1.trace.signing.toSigningLog ++ result.1.1.2))) <$>
-        runEncodingPrehitMonitor accountingKey
-          ((simulateQ (forwardOracles + signingOracle scheme secretKey) computation).run) state.1.cache state.2) := by
-    rw [← encodingPrehitViewedAdversaryImpl_log_projection, support_map]
-    exact ⟨result, hresult, rfl⟩
-  rw [support_map] at hproject
-  obtain ⟨⟨⟨⟨value, log⟩, cache⟩, hit⟩, hrun, heq⟩ := hproject
-  simp only [Prod.map, id_eq, encodingPrehitViewedLogState, Prod.mk.injEq] at heq
-  obtain ⟨rfl, ⟨rfl, rfl⟩, hlog⟩ := heq
-  exact ⟨log, hrun, hlog⟩
 
 theorem runEncodingPrehitMonitor_verifyWithView_fst (accountingKey : SecretKey)
     (publicKey : PublicKey) (message : Message) (signature : Signature)

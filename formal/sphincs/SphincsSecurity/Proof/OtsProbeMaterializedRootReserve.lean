@@ -1,6 +1,8 @@
-import SphincsSecurity.Proof.OtsProbeRootMaterializationChronological
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeMaterializedRootCharge
 import SphincsSecurity.Proof.OtsProbeNativeQueryTraceProjection
 import SphincsSecurity.Proof.OtsProbeNativeRootJointReserve
+import SphincsSecurity.Proof.OtsProbeRootMaterializationChronological
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -63,37 +65,5 @@ theorem chronological_liveProbe_add_materializedRoots_le_refinedReserve
   rw [expectedLiveMaterializedRootCharge_eq_known parameter root ftsSecret computation context fuel table cache hmat hcomputed]
   exact chronological_liveProbe_add_knownRoots_le_refinedReserve parameter root table ftsSecret computation context fuel cache actualCache
     hinvariant hvisible hpublished hcomputed
-
-noncomputable def initializedMaterializedRootChargeAfterTable
-    (targets : Finset Position) (adversary : Adversary) (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) : ENNReal :=
-  ∑' result, Pr[= result | runResolvedFromTable (ensuredInitialContext targets) fuel table (maskedPublishedTreeRoot.run emptySplitHashCache)] *
-    match result with
-    | none => 0
-    | some result => expectedLiveNativeContextCharge
-        (maskedChronologicalExpandedAdversaryImpl parameter result.value.1 ftsSecret) (materializedEncodingRootOuterCharge parameter)
-        (retainedGameRestComputation adversary ⟨result.value.1, parameter⟩)
-        result.context result.remaining table result.value.2
-
-theorem initializedMaterializedRootChargeAfterTable_eq_known
-    (targets : Finset Position) (adversary : Adversary) (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat) :
-    initializedMaterializedRootChargeAfterTable targets adversary parameter table ftsSecret fuel =
-      initializedKnownRootChargeAfterTable targets adversary parameter table ftsSecret fuel := by
-  unfold initializedMaterializedRootChargeAfterTable initializedKnownRootChargeAfterTable
-  apply tsum_congr
-  intro result
-  cases result with
-  | none => rfl
-  | some result =>
-      simp only
-      by_cases hresult : some result ∈ support
-          (runResolvedFromTable (ensuredInitialContext targets) fuel table (maskedPublishedTreeRoot.run emptySplitHashCache))
-      · have hmat := rootMaterializationPreserving_maskedPublishedTreeRoot (ensuredInitialContext targets) fuel table emptySplitHashCache result
-          (layerRootsMaterialized_ensuredInitialContext targets) (ensuredInitialContext_computed targets) hresult
-        have hclosed := (ensuredInitialContext_computed targets).of_mem_runResolved _ _ fuel table result hresult
-        rw [expectedLiveMaterializedRootCharge_eq_known parameter result.value.1 ftsSecret _ _ _ _ _ hmat hclosed]
-      · rw [probOutput_eq_zero_of_not_mem_support hresult]
-        simp
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

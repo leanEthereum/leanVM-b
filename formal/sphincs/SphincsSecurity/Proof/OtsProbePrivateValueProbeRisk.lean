@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbePrivateValueCompatibleRecords
 import SphincsSecurity.Proof.OtsProbePrivateValueHistoryRisk
 
@@ -68,7 +69,6 @@ theorem probEvent_samplePrivateProbeRecords_hit_le_occurrence
     exact probOutput_runPrivateProbeRecords_eq_zero_of_history_hit target computation context fuel table ordinal output hstate hhidden record hhit
   · intro output record hrecord
     exact (runPrivateProbeRecords_supported_history target computation context fuel table ordinal output hstate hhidden record hrecord).2.1.trans hcard
-
 
 noncomputable def privateProbeRecordCandidate (target : Position) (record : ResolvedRunResult (PrivateValueCut α)) : Option Digest :=
   (privatePositionAccessCandidate target (some record.value)).filter

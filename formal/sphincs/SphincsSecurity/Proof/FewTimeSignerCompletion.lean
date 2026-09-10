@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimeTargetView
 
 /-! A valid counter for every honest layer rules out failure after the signer has selected its message digest. The bounded search covers the entire counter type. -/

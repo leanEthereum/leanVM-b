@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.RetainedResidualMessageHistory
 import SphincsSecurity.Proof.RetainedResidualMonitoredStep
 
 namespace SphincsSecurity.Concrete.RetainedResidual

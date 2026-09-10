@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.InterleavedResidualDisclosure
+import SphincsSecurity.Proof.PrefixByteRun
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 

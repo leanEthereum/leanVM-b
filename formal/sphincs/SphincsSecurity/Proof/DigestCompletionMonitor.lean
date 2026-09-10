@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.DigestCompletionBank
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CertificateMonitor
+import SphincsSecurity.Proof.DigestCompletionBank
 
 namespace SphincsSecurity.Concrete
 

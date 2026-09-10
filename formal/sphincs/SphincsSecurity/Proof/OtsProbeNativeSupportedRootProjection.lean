@@ -1,5 +1,8 @@
-import SphincsSecurity.Proof.OtsProbeNativeSupportedAllowances
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeInitializedChargedRootRisk
+import SphincsSecurity.Proof.OtsProbeNativeRootFirstMatch
 import SphincsSecurity.Proof.OtsProbeNativeRootHitProjection
+import SphincsSecurity.Proof.OtsProbeNativeSupportedBudget
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

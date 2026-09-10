@@ -1,4 +1,8 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeNativeAfterRootAllowance
+import SphincsSecurity.Proof.OtsProbeNativeRiskAccumulation
+import SphincsSecurity.Proof.OtsProbeNativeSupportedAllowances
+import SphincsSecurity.Proof.OtsProbeRetainedGuessCharge
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -86,21 +90,5 @@ theorem expectedNativeTerminalRisk_afterRoot_le_missing_add_erasure_of_querySpac
     (expected_nativeRetainedGuessCharge_le_missing_add_erasure_of_querySpace Finset.univ adversary q hq hqSpace parameter hparameter table ftsSecret hfts)
   rw [expected_nativeMissingTraceCharges_eq_liveAllowances] at hbound
   exact hbound
-
-theorem expectedNativeTerminalRisk_afterRoot_le_missing_add_erasure
-    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 126)
-    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
-    (table : OtsSecretIndex → HashOutput) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (hfts : ftsSecret ∈ support sampleFtsSecrets) :
-    (∑' trace, Pr[= trace | nativeChainTraceAfterRoot Finset.univ parameter table ftsSecret (q + 1)
-      (fun root => retainedGameRestComputation adversary ⟨root, parameter⟩)] * resolvedOutcomeFailureRisk trace.1) ≤
-      liveStartProbeAllowance (nativeChronologicalRetainedComputation adversary parameter ftsSecret) (ensuredInitialContext Finset.univ) (q + 1) table +
-        (∑ target : Position, privateLiveMissingProbeAllowance target
-          (nativeChronologicalRetainedComputation adversary parameter ftsSecret) (ensuredInitialContext Finset.univ) (q + 1) table) +
-        (q : ENNReal) * ((2 ^ 216 : Nat) : ENNReal)⁻¹ := by
-  exact expectedNativeTerminalRisk_afterRoot_le_missing_add_erasure_of_querySpace adversary q hq
-    (by
-      have hspace : 2 ^ 126 + 1 < Fintype.card Digest := by norm_num [digestBits]
-      omega) parameter hparameter table ftsSecret hfts
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

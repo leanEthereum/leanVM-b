@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.EncodingExhaustionBound
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.EncodingExhaustionProbability
 import SphincsSecurity.Proof.NoMessage
 
 namespace SphincsSecurity.Concrete

@@ -1,5 +1,8 @@
-import SphincsSecurity.Proof.FtsProbeCacheCharge
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.AdaptiveRevealProbeCostBind
+import SphincsSecurity.Proof.FtsProbeCacheCharge
+import SphincsSecurity.Proof.FtsProbeSigner
+import SphincsSecurity.Proof.OtsProbeRealization
 
 namespace SphincsSecurity.Concrete.FtsProbeSimulation
 

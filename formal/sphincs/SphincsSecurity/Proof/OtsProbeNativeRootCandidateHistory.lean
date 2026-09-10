@@ -1,6 +1,6 @@
-import SphincsSecurity.Proof.OtsProbeNativeRootCandidate
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeNativeQueryTraceSelection
-import SphincsSecurity.Proof.OtsProbePrivateValueHistoryRisk
+import SphincsSecurity.Proof.OtsProbeNativeRootCandidate
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -84,20 +84,5 @@ theorem runNativeQueryTrace_root_history_card_le
     (nativeRootCandidateHistory parameter target result.2).card ≤ bound :=
   (nativeRootCandidateHistory_card_le_hash_length parameter target result.2).trans
     (runNativeQueryTrace_hash_length_le parameter root ftsSecret computation context fuel table cache bound hbound result hresult)
-
-theorem probEvent_uniform_avoids_native_root_history_ge_three_quarters
-    (parameter : PublicParameter) (root : Digest) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (target : Position) (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
-    (bound : Nat) (hbound : computation.IsQueryBoundP IsOuterHash bound)
-    (initialHistory : Finset Digest) (hbudget : initialHistory.card + bound ≤ 2 ^ 126)
-    (result : Option (ResolvedRunResult (α × SplitHashCache)) × List CanonicalQuerySelection)
-    (hresult : result ∈ support (runNativeQueryTrace parameter root ftsSecret computation context fuel table cache)) :
-    (3 / 4 : ENNReal) ≤ Pr[fun output => truncateHash output ∉
-      initialHistory ∪ nativeRootCandidateHistory parameter target result.2 | LazyRevealProbe.sampleHashOutput] := by
-  apply probEvent_uniform_avoids_private_history_ge_three_quarters
-  exact (Finset.card_union_le _ _).trans ((Nat.add_le_add_left
-    (runNativeQueryTrace_root_history_card_le parameter root ftsSecret target computation context fuel table cache bound hbound result hresult)
-    initialHistory.card).trans hbudget)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

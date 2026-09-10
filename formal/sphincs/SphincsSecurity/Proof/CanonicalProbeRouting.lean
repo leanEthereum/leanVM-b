@@ -1,6 +1,8 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CanonicalHiddenCoordinates
-import SphincsSecurity.Proof.AdaptiveHiddenHazard
-import SphincsSecurity.Proof.Charge
+import SphincsSecurity.Proof.EncodingPrehitGame
+import SphincsSecurity.Proof.HiddenLabelObservation
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassification
 
 namespace SphincsSecurity.Concrete.CanonicalProbeRouting
 

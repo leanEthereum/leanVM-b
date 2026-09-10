@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.MessageDeficitMomentGrowth
 
 namespace SphincsSecurity
@@ -38,33 +39,5 @@ theorem cachedMessageEntryCount_zero_of_no_inputs (parameter : PublicParameter) 
     rw [← hinput, hcached] at h
     cases h
   simp only [cachedMessageEntryCount, hempty, Set.encard_empty, ENat.toENNReal_zero]
-
-theorem probEvent_messageDeficitExceptional_le (key : SecretKey)
-    (computation : OracleComp OracleWorld α) (q : Nat)
-    (hbound : computation.IsQueryBoundP (· matches Sum.inr _) q) (hq : q ≤ 2 ^ 127)
-    (cache : QueryCache HashSpec) (hfinite : Finite cache)
-    (hnone : ∀ payload, cache (tweakableHashInput key.parameter .message payload) = none) :
-    Pr[fun result => result.2 = true |
-      runExceptionMonitor (cacheEntryException (MessageDeficitExceptional key)) computation cache false] ≤
-        (q : ENNReal) / 2 ^ 223 := by
-  apply probEvent_cacheEntryException_le_fourthMoment (MessageDeficitExceptional key)
-    (fun cache => messageDeficitMoment key.parameter key.root cache 2)
-    (fun cache => messageDeficitMoment key.parameter key.root cache 4)
-    (fun cache hfinite hbad => messageDeficitExceptional_fourthMoment_le key cache hfinite hbad)
-    (fun cache hfinite input hfresh => expected_messageDeficit_second_le key.parameter key.root cache hfinite input hfresh)
-    (fun cache hfinite input hfresh => expected_messageDeficit_fourth_le key.parameter key.root cache hfinite input hfresh)
-    computation q hbound hq cache hfinite
-  · exact messageDeficitMoment_zero_of_no_inputs key.parameter key.root cache
-      (cachedMessageEntryCount_zero_of_no_inputs key.parameter key.root cache hnone) 2 (by decide)
-  · exact messageDeficitMoment_zero_of_no_inputs key.parameter key.root cache
-      (cachedMessageEntryCount_zero_of_no_inputs key.parameter key.root cache hnone) 4 (by decide)
-
-theorem messageDeficitExceptional_not_of_no_inputs (key : SecretKey) (cache : QueryCache HashSpec)
-    (hnone : ∀ payload, cache (tweakableHashInput key.parameter .message payload) = none) :
-    ¬ MessageDeficitExceptional key cache := by
-  rintro ⟨message, hmessage⟩
-  have hzero := cachedMessageEntryCount_zero_of_no_inputs key.parameter key.root cache hnone message
-  simp only [Concrete.messageAdmissibleDeficit, hzero, zero_mul, zero_tsub] at hmessage
-  exact (not_lt_of_ge zero_le) hmessage
 
 end SphincsSecurity

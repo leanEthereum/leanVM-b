@@ -1,5 +1,5 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CertificateTerminalGame
-import Mathlib.Probability.Distributions.Poisson.Basic
 
 namespace SphincsSecurity.Concrete
 

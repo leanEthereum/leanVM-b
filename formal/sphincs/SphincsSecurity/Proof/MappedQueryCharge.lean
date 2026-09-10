@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.RomQueryChargeBind
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.DirectQueryBudget
+import SphincsSecurity.Proof.RomQueryChargeBind
 
 namespace SphincsSecurity.Concrete
 

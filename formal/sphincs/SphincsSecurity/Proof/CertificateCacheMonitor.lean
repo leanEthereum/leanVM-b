@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.OriginalCacheExceptionBound
-import SphincsSecurity.Proof.CertificateGame
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.CertificateCacheExceptionPotential
+import SphincsSecurity.Proof.CertificateMonitor
 
 namespace SphincsSecurity.Concrete
 
@@ -96,30 +97,5 @@ theorem simulateQ_certificateCacheProposalImpl_project {α : Type} (key : Secret
           (state.1, certificateCacheMonitorProject state.2) :=
   map_run_simulateQ_eq_of_query_map_eq _ _ (Prod.map id certificateCacheMonitorProject)
     (certificateCacheProposalImpl_project key budget required stopAfter) computation state
-
-theorem probEvent_certificateCacheLength_hit_le {α : Type} (key : SecretKey) (budget : Nat)
-    (required : Finset FtsTree) (stopAfter : CertificateStopRule)
-    (computation : OracleComp (OracleWorld + SigningSpec) α) (q : Nat)
-    (hbound : (simulateQ (expandedAdversaryImpl key) computation).IsQueryBoundP (· matches .inr _) q)
-    (state : CertificateCacheMonitorState) (hfinite : Finite state.1) :
-    Pr[fun result => result.2.2.2 = true |
-      (simulateQ (certificateCacheLengthImpl key budget required stopAfter) computation).run state] ≤
-        if state.2.2 then 1 else certificateCacheExceptionPotential key q state.1 :=
-  probEvent_originalLength_cacheException_le key _ _ _ Prod.snd (by intros; rfl)
-    computation q hbound state hfinite
-
-theorem probEvent_certificateCacheProposal_hit_le {α : Type} (key : SecretKey) (budget : Nat)
-    (required : Finset FtsTree) (stopAfter : CertificateStopRule)
-    (computation : OracleComp (OracleWorld + SigningSpec) α) (q : Nat)
-    (hbound : (simulateQ (expandedAdversaryImpl key) computation).IsQueryBoundP (· matches .inr _) q)
-    (state : List Index × CertificateCacheMonitorState) (hfinite : Finite state.2.1) :
-    Pr[fun result => result.2.2.2.2 = true |
-      (simulateQ (certificateCacheProposalImpl key budget required stopAfter) computation).run state] ≤
-        if state.2.2.2 then 1 else certificateCacheExceptionPotential key q state.2.1 := by
-  have h := congrArg (fun law : PMF (α × CertificateCacheMonitorState) =>
-    Pr[fun result => result.2.2.2 = true | law])
-    (simulateQ_certificateCacheProposalImpl_length key budget required stopAfter computation state)
-  rw [probEvent_map] at h
-  exact h.trans_le (probEvent_certificateCacheLength_hit_le key budget required stopAfter computation q hbound state.2 hfinite)
 
 end SphincsSecurity.Concrete

@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimeRawTargetCompletion
+import SphincsSecurity.Proof.FewTimeTargetTerminal
 
 namespace SphincsSecurity.Concrete
 

@@ -1,5 +1,7 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.CertificateMonitor
+import SphincsSecurity.Proof.DigestCompletionBank
 import SphincsSecurity.Proof.RetainedResidualSigningLaw
-import SphincsSecurity.Proof.DigestCompletionMonitor
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 

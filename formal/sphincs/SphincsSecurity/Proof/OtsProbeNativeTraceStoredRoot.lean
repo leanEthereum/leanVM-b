@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeChargedRootObservation
+import SphincsSecurity.Proof.OtsProbeNativeRootHistoryTraceSampling
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

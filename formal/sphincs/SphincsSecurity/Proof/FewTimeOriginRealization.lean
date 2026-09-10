@@ -1,4 +1,7 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.DirectQueryBudget
 import SphincsSecurity.Proof.FewTimeNumberedSources
+import SphincsSecurity.Proof.FewTimePadding
 
 /-!
 # Concrete realization of an origin configuration

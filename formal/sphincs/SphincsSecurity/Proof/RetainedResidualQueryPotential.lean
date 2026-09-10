@@ -1,5 +1,7 @@
-import SphincsSecurity.Proof.RetainedResidualProbeBudget
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.PrimitiveMessagePotential
+import SphincsSecurity.Proof.RetainedResidualHazard
+import SphincsSecurity.Proof.RetainedResidualProbeBudget
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 

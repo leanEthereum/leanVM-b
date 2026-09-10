@@ -13,10 +13,14 @@ theorem sphincs_has_126_bits_of_classical_security : SphincsSecurity126Statement
 
 /-- `125` bits of classical strong unforgeability in the random-oracle model for the concrete SPHINCS instance, at `2^24` signing requests per key pair. -/
 theorem sphincs_has_125_bits_of_classical_security : SphincsSecurity125Statement := by
-  exact Concrete.OtsProbeSimulation.Range125.security125_of_completed_joint_boundary
+  intro q hq adversary hbound
+  apply (sphincs_has_126_bits_of_classical_security q hq adversary hbound).trans
+  gcongr <;> norm_num [securityBits]
 
 /-- `120` bits of classical strong unforgeability in the random-oracle model for the concrete SPHINCS instance, at `2^24` signatures per key pair. -/
 theorem sphincs_has_120_bits_of_classical_security : SphincsSecurityStatement := by
-  exact Concrete.OtsProbeSimulation.security_of_completed_canonical_boundary
+  intro q hq adversary hbound
+  apply (sphincs_has_126_bits_of_classical_security q hq adversary hbound).trans
+  gcongr <;> norm_num [securityBits]
 
 end SphincsSecurity

@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.Settled
 import SphincsSecurity.Proof.Slot
 
@@ -28,10 +29,6 @@ variable (parameter : PublicParameter)
 /-- The input is hashed at the position's tweak. -/
 def AtPosition (input : HashInput) (p : Position) : Prop :=
   ∃ payload, input = tweakableHashInput parameter p.domain payload
-
-theorem atPosition_honestInput (f : QueryImpl HashSpec Id) (p : Position) :
-    AtPosition parameter (honestInput f parameter otsSecret ftsSecret p) p :=
-  ⟨_, rfl⟩
 
 theorem atPosition_cachedInput (cache : QueryCache HashSpec) (p : Position) :
     AtPosition parameter (cachedInput parameter otsSecret ftsSecret cache p) p :=
@@ -287,13 +284,6 @@ def Finite (cache : QueryCache HashSpec) : Prop := {input | cache input ≠ none
 
 theorem finite_empty : Finite (∅ : QueryCache HashSpec) := by
   simp [Finite]
-
-theorem Finite.of_le {cache cache' : QueryCache HashSpec}
-    (hfinite : Finite cache') (hle : cache ≤ cache') : Finite cache := by
-  apply hfinite.subset
-  intro input hcached
-  obtain ⟨answer, hanswer⟩ := Option.ne_none_iff_exists'.mp hcached
-  exact Option.ne_none_iff_exists'.mpr ⟨answer, hle hanswer⟩
 
 theorem Finite.of_enncard_le {cache : QueryCache HashSpec} {q : Nat}
     (hle : QueryCache.enncard cache ≤ (q : ℝ≥0∞)) : Finite cache := by
@@ -845,78 +835,6 @@ theorem clean_cacheQuery_of_settled_of_avoids {cache : QueryCache HashSpec}
       rwa [QueryCache.cacheQuery_of_ne _ _ hinputeq] at hinput
     apply hclean
     refine ⟨p, hsettled, input, ax, ay, hat, ?_, hinputOld, hhonest, heq⟩
-    rwa [hpinned] at hne
-
-/-- If a query settles its position and avoids the charged answers and parent slots, the cache stays
-clean. -/
-theorem clean_cacheQuery_of_settling_of_avoids {cache : QueryCache HashSpec}
-    (hfinite : Finite cache) {input₀ : HashInput} {answer : HashOutput} {p₀ : Position}
-    (hclean : ¬ Bad parameter otsSecret ftsSecret cache) (huncached : cache input₀ = none)
-    (hposition : AtPosition parameter input₀ p₀)
-    (hunsettled : ¬ Settled parameter otsSecret ftsSecret cache p₀)
-    (hsettled : Settled parameter otsSecret ftsSecret (cache.cacheQuery input₀ answer) p₀)
-    (havoid : truncateHash answer ∉ settlingTargets parameter cache hfinite p₀) :
-    ¬ Bad parameter otsSecret ftsSecret (cache.cacheQuery input₀ answer) := by
-  have hle : cache ≤ cache.cacheQuery input₀ answer := le_cacheQuery huncached
-  obtain ⟨hinput₀, hchildren⟩ := eq_cachedInput_and_children_of_settled_cacheQuery
-    parameter otsSecret ftsSecret huncached hposition hunsettled hsettled
-  have hvalues : ∀ c ∈ p₀.children,
-      honestValue (fromCache (cache.cacheQuery input₀ answer)) parameter otsSecret ftsSecret c
-        = honestValue (fromCache cache) parameter otsSecret ftsSecret c := fun c hc =>
-    honestValue_eq_of_settled (agreesWithFn_fromCache_of_le hle) (hchildren c hc)
-  have hpinned₀ : cachedInput parameter otsSecret ftsSecret (cache.cacheQuery input₀ answer) p₀
-      = cachedInput parameter otsSecret ftsSecret cache p₀ :=
-    honestInput_congr _ _ parameter otsSecret ftsSecret hsettled.valid hvalues
-  have hinputNew : cachedInput parameter otsSecret ftsSecret
-      (cache.cacheQuery input₀ answer) p₀ = input₀ := hpinned₀.trans hinput₀.symm
-  have hparentClean : ∀ q parent, some p₀ = some q → q.parentOf = some parent →
-      ¬ Settled parameter otsSecret ftsSecret (cache.cacheQuery input₀ answer) parent := by
-    intro q parent hq hparent
-    rw [Option.some.injEq] at hq
-    subst hq
-    have hmem : p₀ ∈ parent.children := Position.mem_children_iff.mpr hparent
-    have hslotAvoid : truncateHash answer ∉ slotTargets parameter cache hfinite p₀ parent := by
-      intro hmemTarget
-      apply havoid
-      simp [settlingTargets, hparent, hmemTarget]
-    exact not_settled_parent_of_avoids_slotTargets parameter otsSecret ftsSecret hfinite
-      huncached hposition hunsettled hsettled hmem hslotAvoid
-  rintro ⟨p, hsettled', input, ax, ay, hat, hne, hinput, hhonest, heq⟩
-  by_cases hp : p = p₀
-  · subst hp
-    have hinputne : input ≠ input₀ := by rwa [hinputNew] at hne
-    have hinputOld : cache input = some ax := by
-      rwa [QueryCache.cacheQuery_of_ne _ _ hinputne] at hinput
-    have hcachedAt : input ∈ cachedAt parameter cache p :=
-      ⟨by simp [hinputOld], hat⟩
-    have htarget : truncateHash ax ∈ answerTargets parameter cache hfinite p := by
-      simpa [hinputOld] using mem_answerTargets parameter hfinite hcachedAt
-    rw [hinputNew, QueryCache.cacheQuery_self] at hhonest
-    have hanswer : answer = ay := Option.some.inj hhonest
-    apply havoid
-    have heqAnswer : truncateHash answer = truncateHash ax := by rw [hanswer, ← heq]
-    rw [heqAnswer]
-    rw [settlingTargets]
-    split
-    · exact htarget
-    · exact Finset.mem_union_left _ htarget
-  · have hsettledOld : Settled parameter otsSecret ftsSecret cache p :=
-      settled_of_settled_cacheQuery parameter otsSecret ftsSecret huncached
-        (p₀ := some p₀) (fun q hq => by
-          rw [atPosition_unique parameter hposition hq]) hparentClean
-        (p.depth + 1) p (by omega) (by
-          intro heq
-          exact hp (Option.some.inj heq).symm) hsettled'
-    have hpinned := cachedInput_eq_of_settled hle hsettledOld
-    have hinputne : input ≠ input₀ := atPosition_ne parameter hat hposition hp
-    have hhonestne : cachedInput parameter otsSecret ftsSecret cache p ≠ input₀ :=
-      atPosition_ne parameter (atPosition_cachedInput parameter otsSecret ftsSecret cache p)
-        hposition hp
-    have hinputOld : cache input = some ax := by
-      rwa [QueryCache.cacheQuery_of_ne _ _ hinputne] at hinput
-    rw [hpinned, QueryCache.cacheQuery_of_ne _ _ hhonestne] at hhonest
-    apply hclean
-    refine ⟨p, hsettledOld, input, ax, ay, hat, ?_, hinputOld, hhonest, heq⟩
     rwa [hpinned] at hne
 
 /-- An input outside every structural domain neither creates a hit nor deposits potential. -/

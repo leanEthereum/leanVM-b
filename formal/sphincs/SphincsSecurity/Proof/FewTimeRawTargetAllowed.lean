@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTimeOriginTerminal
 import SphincsSecurity.Proof.FewTimeRawTargetTrace
 
 namespace SphincsSecurity.Concrete

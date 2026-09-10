@@ -1,4 +1,7 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.DigestCompletionCacheGrowth
+import SphincsSecurity.Proof.FreshTargetEnvelope
+import SphincsSecurity.Proof.FreshTargetPayload
 import SphincsSecurity.Proof.NewTargetEnvelopeCharge
 
 namespace SphincsSecurity.Concrete

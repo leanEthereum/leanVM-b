@@ -1,6 +1,5 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FiniteGraphSampling
-import SphincsSecurity.Proof.Honest
-import Mathlib.Data.List.Sort
 
 namespace SphincsSecurity.Concrete
 

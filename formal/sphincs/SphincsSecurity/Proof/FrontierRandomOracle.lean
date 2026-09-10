@@ -1,37 +1,12 @@
-import SphincsSecurity.Proof.FrontierGameProjection
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FiniteHashWorld
+import SphincsSecurity.Proof.FrontierGameProjection
 
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec OracleComp.DeferredSampling
 set_option backward.isDefEq.respectTransparency false
 attribute [local irreducible] hashInputs boundaryEval fixedBoundaryRun
-
-theorem evalDist_boundaryRun_eq_finiteHash {α : Type} (parameter : PublicParameter)
-    (computation : OracleComp OracleWorld α) (inputs : Finset HashInput)
-    (hinputs : hashInputs (boundaryComputation parameter computation) ⊆ inputs) (cache : QueryCache HashSpec) :
-    𝒟[Prod.fst <$> boundaryRun parameter computation cache] =
-      𝒟[do
-        let table ← sampleHashTable inputs
-        fixedBoundaryRun parameter (finiteHashAnswer cache inputs table) computation] := by
-  rw [boundaryRun_fst_eq_boundaryComputation, evalDist_romRun_eq_finiteHash _ inputs hinputs cache]
-  apply evalDist_bind_congr_left
-  intro table
-  rw [fixedBoundaryRun_eq_boundaryComputation]
-
-theorem evalDist_boundaryRun_signWithView_canonical (key : SecretKey) (message : Message)
-    (inputs : Finset HashInput) (hinputs : hashInputs (boundaryComputation key.parameter (signWithView key message)) ⊆ inputs)
-    (cache : QueryCache HashSpec) (dummy : OtsReferenceWords) :
-    𝒟[Prod.fst <$> boundaryRun key.parameter (signWithView key message) cache] =
-      𝒟[do
-        let table ← sampleHashTable inputs
-        let f := finiteHashAnswer cache inputs table
-        let words := canonicalReferenceWords key f dummy
-        frontierSigningRecord key.parameter key.root f key.ftsSecret words (canonicalFrontierValues key f words) message] := by
-  rw [evalDist_boundaryRun_eq_finiteHash key.parameter _ inputs hinputs cache]
-  apply evalDist_bind_congr_left
-  intro table
-  rw [fixedBoundaryRun_signWithView_canonical key _ dummy message]
 
 theorem simulateQ_fixedHashWorld_lift_prob {α : Type} (f : QueryImpl HashSpec Id) (computation : ProbComp α) :
     simulateQ (fixedHashWorld f) (liftM computation) = computation := by
@@ -110,14 +85,6 @@ theorem evalDist_gameCore_frontier (inputs : Finset HashInput) (dummy : OtsRefer
     (evalDist_boundaryGameCore_frontier inputs dummy adversary hinputs)
   simpa only [StateT.run'_eq, evalDist_map, ← LawfulFunctor.comp_map, Function.comp_def] using h
 
-theorem forgeAdvantage_eq_frontier (dummy : OtsReferenceWords) (adversary : Adversary) :
-    forgeAdvantage scheme adversary =
-      Pr[fun result => result.1 = true |
-        frontierOracleGame (hashInputs (boundaryGameCore adversary)) dummy adversary] := by
-  rw [forgeAdvantage]
-  have h := evalDist_gameCore_frontier (hashInputs (boundaryGameCore adversary)) dummy adversary (Finset.Subset.refl _)
-  rw [probOutput_congr rfl h, probOutput_map]
-
 theorem boundaryRun_hashCalls_le {α : Type} (parameter : PublicParameter)
     (computation : OracleComp OracleWorld α) (q : Nat) (hbound : computation.IsQueryBoundP (· matches .inr _) q)
     (cache : QueryCache HashSpec) (result : (α × SigningBoundaryTrace) × QueryCache HashSpec)
@@ -140,21 +107,5 @@ theorem boundaryGameCore_hashCalls_le (adversary : Adversary) (q : Nat)
   obtain ⟨record, hrecord, rfl⟩ := hresult
   exact boundaryRun_hashCalls_le parameter _ q
     (isQueryBoundP_gameAfterSecrets adversary q hbound hparameter hots hfts) ∅ record hrecord
-
-theorem frontierOracleGame_hashCalls_le_of_inputs (inputs : Finset HashInput) (dummy : OtsReferenceWords)
-    (adversary : Adversary) (hinputs : hashInputs (boundaryGameCore adversary) ⊆ inputs) (q : Nat)
-    (hbound : HasHashQueryBound scheme adversary q) (result : Bool × SigningBoundaryTrace)
-    (hresult : result ∈ support (frontierOracleGame inputs dummy adversary)) :
-    result.2.hashCalls ≤ q := by
-  apply boundaryGameCore_hashCalls_le adversary q hbound result
-  exact (mem_support_iff_of_evalDist_eq
-    (evalDist_boundaryGameCore_frontier inputs dummy adversary hinputs)
-    result).mpr hresult
-
-theorem frontierOracleGame_hashCalls_le (dummy : OtsReferenceWords) (adversary : Adversary) (q : Nat)
-    (hbound : HasHashQueryBound scheme adversary q) (result : Bool × SigningBoundaryTrace)
-    (hresult : result ∈ support (frontierOracleGame (hashInputs (boundaryGameCore adversary)) dummy adversary)) :
-    result.2.hashCalls ≤ q :=
-  frontierOracleGame_hashCalls_le_of_inputs _ dummy adversary (Finset.Subset.refl _) q hbound result hresult
 
 end SphincsSecurity.Concrete

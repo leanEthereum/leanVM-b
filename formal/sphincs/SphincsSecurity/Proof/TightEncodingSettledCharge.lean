@@ -1,6 +1,7 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.TightEncodingChildrenCharge
 import SphincsSecurity.Proof.TightEncodingQueryCharge
 import SphincsSecurity.Proof.TightEncodingStageCost
-import SphincsSecurity.Proof.TightEncodingChildrenCharge
 
 namespace SphincsSecurity.Concrete.TightEncoding
 

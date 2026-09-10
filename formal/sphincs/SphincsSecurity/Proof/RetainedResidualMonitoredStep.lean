@@ -1,5 +1,7 @@
-import SphincsSecurity.Proof.RetainedResidualWorldCoverage
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.RetainedResidualCoverageStep
 import SphincsSecurity.Proof.RetainedResidualSource
+import SphincsSecurity.Proof.RetainedResidualWorldCoverage
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 

@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeResolvedSampling
+import SphincsSecurity.Proof.OtsProbeTrace
 
 /-!
 # Chronological one-time terminal argument
@@ -57,7 +59,7 @@ def IsPublishQuery : (LazyRevealProbe.World Coordinate).Domain → Prop
   | .publish _ => True
   | _ => False
 
-noncomputable instance : DecidablePred IsPublishQuery := fun query => by
+noncomputable instance instDecidablePredDomainQueryCoordinateWorldIsPublishQuery : DecidablePred IsPublishQuery := fun query => by
   exact Classical.propDecidable _
 
 def ResolvedNoPublish
@@ -100,21 +102,6 @@ theorem resolvedNoPublish_simulateQ
       rw [simulateQ_query_bind, StateT.run_bind]
       exact (himpl query cache).bind_all fun result =>
         ih result.1 result.2
-
-theorem resolvedNoPublish_sequenceFin {n : Nat}
-    (computation : Fin n →
-      OracleComp (LazyRevealProbe.World Coordinate) alpha)
-    (hcomponent : ∀ index, ResolvedNoPublish (computation index)) :
-    ResolvedNoPublish (sequenceFin computation) := by
-  induction n with
-  | zero =>
-      simpa [sequenceFin] using resolvedNoPublish_pure Fin.elim0
-  | succ n ih =>
-      rw [sequenceFin]
-      exact (hcomponent 0).bind_all fun head =>
-        (ih (fun index : Fin n => computation index.succ)
-          (fun index => hcomponent index.succ)).bind_all fun tail =>
-            resolvedNoPublish_pure (Fin.cases head tail : Fin (n + 1) → alpha)
 
 def NoPublish
     (computation : StateT SplitHashCache
@@ -347,22 +334,6 @@ theorem resolvedPreservesChainPublication_sequenceFin
           (fun index => hcomponent index.succ)).bind fun tail =>
             ResolvedPreservesChainPublication.pure allowed
               (Fin.cases head tail : Fin (n + 1) → alpha)
-
-theorem resolvedPreservesChainPublication_simulateQ
-    {spec : OracleSpec ι} (allowed : Coordinate → Prop)
-    (impl : QueryImpl spec
-      (StateT SplitHashCache
-        (OracleComp (LazyRevealProbe.World Coordinate))))
-    (himpl : ∀ query, ResolvedPreservesChainPublication allowed (impl query))
-    (computation : OracleComp spec alpha) :
-    ResolvedPreservesChainPublication allowed (simulateQ impl computation) := by
-  induction computation using OracleComp.inductionOn with
-  | pure value =>
-      simp only [simulateQ_pure]
-      exact ResolvedPreservesChainPublication.pure allowed value
-  | query_bind query next ih =>
-      rw [simulateQ_query_bind]
-      exact (himpl query).bind fun output => ih output
 
 theorem resolvedPreservesChainPublication_publishCoordinate
     (allowed : Coordinate → Prop) (coordinate : Coordinate)
@@ -1120,20 +1091,6 @@ theorem resolvedChronologicalSignLayer_select_support
         resolvedRevealLayerValues_cache_mono parameter table index lay encoding
           selectedCache final values hvalues⟩
 
-theorem reachableResolvedCouples_maskedChronologicalSignLayers
-    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (index : Index) :
-    ReachableResolvedCouples parameter table
-      (maskedChronologicalSignLayers parameter ftsSecret index)
-      (sequenceFin fun lay =>
-        resolvedChronologicalSignLayer parameter table ftsSecret index lay) := by
-  unfold maskedChronologicalSignLayers
-  exact reachableResolvedCouples_sequenceFin
-    (fun lay => maskedChronologicalSignLayer parameter ftsSecret index lay)
-    (fun lay => resolvedChronologicalSignLayer parameter table ftsSecret index lay)
-    (fun lay => reachableResolvedCouples_maskedChronologicalSignLayer parameter table ftsSecret
-      index lay)
-
 theorem concreteSupport_of_mem_runResolved_maskedChronologicalSignLayer
     (parameter : PublicParameter)
     (table : OtsSecretIndex → HashOutput)
@@ -1409,51 +1366,6 @@ theorem resolvedPreservesChainPublication_publishChronologicalSignature
           chainValue := fun lay => (published lay).1
           authPath := flattenPaths fun lay => (published lay).2 }))
 
-theorem resolvedPreservesChainPublication_maskedPublishedChronologicalSignAfterDigest
-    (allowed : Coordinate → Prop) (parameter : PublicParameter)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf)
-    (hallowed : ∀ (layers : Layer → Option ChronologicalLayerPart)
-        (parts : Layer → ChronologicalLayerPart),
-      traverseOption layers = some parts → ∀ lay chainIdx,
-      allowed (chainValueCoordinate lay (treeIndexAt index lay)
-        (leafIndexAt index lay) chainIdx ((parts lay).encoding chainIdx))) :
-    ResolvedPreservesChainPublication allowed
-      (maskedPublishedChronologicalSignAfterDigest parameter ftsSecret randomness index leaves) := by
-  unfold maskedPublishedChronologicalSignAfterDigest
-  exact (ResolvedPreservesChainPublication.of_noPublish allowed _
-    (noPublish_simulateQ_ordinaryHashImpl
-      (ftsOpen parameter index leaves (ftsSecret index)))).bind fun ftsPath =>
-        (ResolvedPreservesChainPublication.of_noPublish allowed _
-          (noPublish_maskedChronologicalSignLayers parameter ftsSecret index)).bind fun layers =>
-            resolvedPreservesChainPublication_publishChronologicalSignature allowed ftsSecret
-              randomness index leaves ftsPath layers (hallowed layers)
-
-theorem resolvedPreservesChainPublication_maskedPublishedChronologicalSign
-    (allowed : Coordinate → Prop) (parameter : PublicParameter) (root : Digest)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message)
-    (hallowed : ∀ (randomness : Randomness) (index : Index)
-        (leaves : DigestTree → FtsLeaf)
-        (layers : Layer → Option ChronologicalLayerPart)
-        (parts : Layer → ChronologicalLayerPart),
-      traverseOption layers = some parts → ∀ lay chainIdx,
-        allowed (chainValueCoordinate lay (treeIndexAt index lay)
-          (leafIndexAt index lay) chainIdx ((parts lay).encoding chainIdx))) :
-    ResolvedPreservesChainPublication allowed
-      (maskedPublishedChronologicalSign parameter root ftsSecret message) := by
-  unfold maskedPublishedChronologicalSign
-  apply (ResolvedPreservesChainPublication.of_noPublish allowed _
-    (noPublish_simulateQ_ordinaryRomImpl
-      (signDigestLoop digestAttemptLimit
-        (⟨parameter, root, fun _ _ _ _ => 0, ftsSecret⟩ : SecretKey) message))).bind
-  intro selected
-  cases selected with
-  | none => exact ResolvedPreservesChainPublication.pure allowed none
-  | some selected =>
-      rcases selected with ⟨randomness, index, leaves⟩
-      exact resolvedPreservesChainPublication_maskedPublishedChronologicalSignAfterDigest
-        allowed parameter ftsSecret randomness index leaves (hallowed randomness index leaves)
-
 theorem resolvedPreservesChainPublication_probingRomImpl
     (allowed : Coordinate → Prop) (parameter : PublicParameter)
     (hforward : ChainForwardClosed allowed) (query : OracleWorld.Domain) :
@@ -1464,15 +1376,6 @@ theorem resolvedPreservesChainPublication_probingRomImpl
         (splitUniformImpl n) fun cache => resolvedNoPublish_splitUniformImpl n cache
   | inr input =>
       exact resolvedPreservesChainPublication_probingHashQuery allowed parameter input hforward
-
-theorem resolvedPreservesChainPublication_probingRom
-    (allowed : Coordinate → Prop) (parameter : PublicParameter)
-    (hforward : ChainForwardClosed allowed)
-    (computation : OracleComp OracleWorld alpha) :
-    ResolvedPreservesChainPublication allowed
-      (simulateQ (probingRomImpl parameter) computation) :=
-  resolvedPreservesChainPublication_simulateQ allowed (probingRomImpl parameter)
-    (resolvedPreservesChainPublication_probingRomImpl allowed parameter hforward) computation
 
 theorem DeferredCompletion.not_probeHits_of_probingHashQuery_chain
     {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
@@ -1647,18 +1550,6 @@ theorem ResolvedContextInvariant.concreteCache_agreesWith_tableAnswer_of_fallbac
     rw [hinput completion hcompletion,
       tableAnswer_tableInput parameter completion fallback position hots,
       hcompletion.eq_positionValue position output hvalue]
-
-theorem ResolvedContextInvariant.concreteCache_agreesWith_tableAnswer
-    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
-    {context : DeferredContext} {ordinaryCache concreteCache : QueryCache HashSpec}
-    (hinvariant : ResolvedContextInvariant parameter table context ordinaryCache concreteCache)
-    (completion : Coordinate → HashOutput)
-    (hcompletion : DeferredCompletion table context completion) :
-    concreteCache.AgreesWithFn
-      (tableAnswer parameter completion (fromCache ordinaryCache)) :=
-  hinvariant.concreteCache_agreesWith_tableAnswer_of_fallback completion hcompletion
-    (fromCache ordinaryCache)
-      (CacheAgreesWithFnOffTable.of_agrees (agreesWithFn_fromCache ordinaryCache))
 
 theorem CacheAgreesWithFnOffTable.of_reachableResolvedCouples
     {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
@@ -3127,78 +3018,6 @@ theorem not_verifyProbe_of_mem_runResolved_verifier
         hcompletion hfallback probe input lay (treeIndexAt (digestIndex digest) lay)
           (leafIndexAt (digestIndex digest) lay) chainIdx
             ⟨(codeword chainIdx).val, hdigit⟩ hmatches hposition hnotCovered hquery hhits'
-
-theorem not_uncoveredChainProbe_of_mem_runResolved_verifier
-    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (targetCache : QueryCache HashSpec) (root : Digest) (forgery : Forgery)
-    (signingLog : QueryLog SigningSpec)
-    (completion : Coordinate → HashOutput) (fallback : QueryImpl HashSpec Id)
-    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
-    (concreteCache : QueryCache HashSpec)
-    (result : ResolvedRunResult (Bool × SplitHashCache))
-    (hinvariant : ResolvedContextInvariant parameter table context
-      (ordinaryQueryCache cache) concreteCache)
-    (hclosed : VisibleResolvedComputationsCached parameter table context concreteCache)
-    (hpublished : PublishedValues context.state)
-    (hallowed : RevealedChainAllowed
-      (CoveredChainCoordinate
-        (tableAnswer parameter completion fallback) targetCache
-        (⟨parameter, root,
-          fun lay tree leafIdx chainIdx =>
-            truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩),
-          ftsSecret⟩ : SecretKey)
-        signingLog)
-      context.state)
-    (hresult : some result ∈ support
-      (runResolvedFromTable context fuel table
-        ((simulateQ (probingRomImpl parameter)
-          (scheme.verify ⟨root, parameter⟩ forgery.message forgery.signature)).run cache)))
-    (hcompletion : DeferredCompletion table result.context completion)
-    (hfallback : CacheAgreesWithFnOffTable parameter completion
-      (ordinaryQueryCache result.value.2) fallback)
-    (probe : Probe) (input : HashInput)
-    (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
-    (chainIdx : ChainIndex) (step : ChainStep)
-    (hmatches : probe.MatchesInput parameter input)
-    (hposition : decodePosition? parameter input =
-      some (.chain lay tree leafIdx chainIdx step))
-    (hnotCovered : ¬CoveredChainCoordinate
-      (tableAnswer parameter completion fallback) targetCache
-      (⟨parameter, root,
-        fun selectedLay selectedTree selectedLeaf selectedChain =>
-          truncateHash (table ⟨selectedLay, selectedTree, selectedLeaf, selectedChain⟩),
-        ftsSecret⟩ : SecretKey)
-      signingLog probe.coordinate)
-    (hquery : input ∈ queriedInputs (tableAnswer parameter completion fallback)
-      (verify ⟨root, parameter⟩ forgery.message forgery.signature))
-    (hhits : probe.Hits (tableAnswer parameter completion fallback)
-      parameter (tableOtsSecret completion) ftsSecret) : False := by
-  have hresult' : some result ∈ support
-      (runResolvedFromTable context fuel table
-        ((simulateQ (probingHashImpl parameter)
-          (verify ⟨root, parameter⟩ forgery.message forgery.signature)).run cache)) := by
-    rw [← simulateQ_probingRom_scheme_verify]
-    exact hresult
-  exact not_probeHits_of_mem_runResolved_probingHashImpl parameter table ftsSecret
-    (CoveredChainCoordinate
-      (tableAnswer parameter completion fallback) targetCache
-      (⟨parameter, root,
-        fun selectedLay selectedTree selectedLeaf selectedChain =>
-          truncateHash (table ⟨selectedLay, selectedTree, selectedLeaf, selectedChain⟩),
-        ftsSecret⟩ : SecretKey)
-      signingLog)
-    (coveredChainCoordinate_forwardClosed (tableAnswer parameter completion fallback)
-      targetCache
-      (⟨parameter, root,
-        fun selectedLay selectedTree selectedLeaf selectedChain =>
-          truncateHash (table ⟨selectedLay, selectedTree, selectedLeaf, selectedChain⟩),
-        ftsSecret⟩ : SecretKey)
-      signingLog)
-    completion fallback (verify ⟨root, parameter⟩ forgery.message forgery.signature)
-      context fuel cache concreteCache result hinvariant hclosed hpublished hallowed hresult'
-        hcompletion hfallback probe input lay tree leafIdx chainIdx step hmatches hposition
-          hnotCovered hquery hhits
 
 set_option maxHeartbeats 1000000 in
 theorem resolvedPreservesChainPublication_maskedPublishedTreeRoot

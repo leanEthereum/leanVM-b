@@ -1,5 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CanonicalGraphResidual
-import SphincsSecurity.Proof.CanonicalProbeKernel
+import SphincsSecurity.Proof.CanonicalProbeRouting
 
 namespace SphincsSecurity.Concrete
 
@@ -94,14 +95,6 @@ theorem finiteHashAnswer_program_eq (labels : CanonicalGraphLabels) (residual : 
     rw [finiteHashAnswer_program_other parameter otsSecret ftsSecret inputs hinputs labels residual input hne,
       programmedHash_other parameter otsSecret ftsSecret labels _ input hne]
 
-omit parameter otsSecret ftsSecret hinputs in
-theorem evalDist_residual_read (input : inputs) :
-    𝒟[do let residual ← sampleHashTable inputs; pure (residual input)] =
-      (liftM (PMF.uniformOfFintype HashOutput) : SPMF HashOutput) := by
-  rw [sampleHashTable, evalDist_finiteHashTable_extract inputs input (fun _ answer => pure answer)]
-  simp only [evalDist_bind, evalDist_pure, evalDist_uniformSample,
-    RetainedObservation.lift_bind_const, bind_pure]
-
 omit hinputs in
 theorem evalDist_programmedHash_residual_query {Result : Type} (labels : CanonicalGraphLabels) (input : inputs)
     (hne : ∀ position, input.val ≠ canonicalGraphInput parameter otsSecret ftsSecret position labels)
@@ -119,29 +112,5 @@ theorem evalDist_programmedHash_residual_query {Result : Type} (labels : Canonic
     finiteHashAnswer_none ∅ inputs residual input input.property (QueryCache.empty_apply _)
   simp_rw [hprogram, hread]
   exact evalDist_finiteHashTable_extract inputs input (fun residual answer => next answer residual)
-
-omit hinputs in
-theorem evalDist_programmedHash_fresh (labels : CanonicalGraphLabels) (input : inputs) :
-    𝒟[do
-      let residual ← sampleHashTable inputs
-      pure (programmedHash parameter otsSecret ftsSecret labels (finiteHashAnswer ∅ inputs residual) input)] =
-      (liftM (freshResponse parameter (CanonicalCoordinate.value otsSecret ftsSecret labels) labels input
-        (PMF.uniformOfFintype HashOutput)) : SPMF HashOutput) := by
-  have hread (residual : inputs → HashOutput) :=
-    finiteHashAnswer_none ∅ inputs residual input input.property (QueryCache.empty_apply _)
-  cases hdecode : decodePosition parameter input with
-  | none =>
-      simp only [programmedHash, hdecode, Option.elim_none, freshResponse]
-      simp_rw [hread]
-      exact evalDist_residual_read inputs input
-  | some position =>
-      simp only [programmedHash, hdecode, Option.elim_some, freshResponse, inputOf_canonical]
-      by_cases hcanonical : input.val = canonicalGraphInput parameter otsSecret ftsSecret position labels
-      · simp only [if_pos hcanonical]
-        rw [evalDist_bind_const_neverFails _ (by simp)]
-        simp only [evalDist_pure, SPMF.lift_pure]
-      · simp only [if_neg hcanonical]
-        simp_rw [hread]
-        exact evalDist_residual_read inputs input
 
 end SphincsSecurity.Concrete

@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.OtsProbeSampledJointRootRisk
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeChargedRootSelection
+import SphincsSecurity.Proof.OtsProbeKnownRootTraceSource
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

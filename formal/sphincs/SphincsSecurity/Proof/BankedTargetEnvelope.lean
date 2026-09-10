@@ -1,5 +1,7 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.BankedCacheWeight
 import SphincsSecurity.Proof.ReuseCachedTargets
+import SphincsSecurity.Proof.ReuseTargetEnvelope
 
 namespace SphincsSecurity.Concrete
 

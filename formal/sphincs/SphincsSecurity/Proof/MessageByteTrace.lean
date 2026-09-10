@@ -1,6 +1,6 @@
-import SphincsSecurity.Proof.PrefixEncodingRisk
-import SphincsSecurity.Proof.BoundarySimulation
-import SphincsSecurity.Proof.ReferencePrefixSigning
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.PrefixBytePrior
+import SphincsSecurity.Proof.ReferenceAuxiliarySigning
 
 namespace SphincsSecurity.Concrete.ResidualByteFrontend
 

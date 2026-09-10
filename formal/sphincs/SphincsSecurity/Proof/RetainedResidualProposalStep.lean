@@ -1,3 +1,7 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OriginalTerminalProposal
+import SphincsSecurity.Proof.RetainedResidualMonitoredPayment
+import SphincsSecurity.Proof.RetainedResidualProposalIndex
 import SphincsSecurity.Proof.RetainedResidualProposalWord
 
 namespace SphincsSecurity.Concrete.RetainedResidual

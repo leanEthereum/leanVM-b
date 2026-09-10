@@ -1,3 +1,6 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.RetainedResidualCandidateHistory
+import SphincsSecurity.Proof.RetainedResidualEncodingHistory
 import SphincsSecurity.Proof.RetainedResidualQueryPotential
 import SphincsSecurity.Proof.RetainedResidualTerminalCoverage
 

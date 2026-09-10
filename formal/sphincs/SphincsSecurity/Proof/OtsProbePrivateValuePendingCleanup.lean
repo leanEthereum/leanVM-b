@@ -1,4 +1,7 @@
-import SphincsSecurity.Proof.OtsProbePrivateValueLiveCut
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeHistoryLiveRisk
+import SphincsSecurity.Proof.OtsProbePrivateValueAdaptiveSampling
+import SphincsSecurity.Proof.OtsProbePrivateValueReplacement
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -129,45 +132,5 @@ theorem evalDist_runResolvedLiveValue_eq_retained_value
   | some result =>
       have hcore := resolvedCore_of_mem_runResolvedFromTable computation context fuel table result hconsistent hstarts hresult
       by_cases hcomplete : DeferredCompletable table result.context <;> simp [retainCompletableResult, hcore.1, hcomplete]
-
-def privateLiveCandidateProjection (target : Position) (pending : Finset Digest) :
-    Option (Nat × PrivateValueCut α) → Option Digest :=
-  fun result => (privatePositionAccessCandidate target (result.map Prod.snd)).filter (fun digest => digest ∉ pending)
-
-theorem evalDist_privatePositionFirstLiveCandidate_eq_projection
-    (target : Position) (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
-    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput) (output : HashOutput)
-    (hvalid : context.Valid) (hcomplete : DeferredCompletable table context)
-    (hstate : context.state.values (.position target) = none) :
-    evalDist (privatePositionFirstLiveCandidate target computation context fuel table output) =
-      evalDist (privateLiveCandidateProjection target (context.state.pendingAt (.position target)) <$>
-        runResolvedLiveValue table (replacePrivatePosition target output context) fuel (privatePositionAccessCut target computation)) := by
-  have hnewValid := hvalid.replacePrivatePosition target output hstate
-  have hstarts := startTableAgrees_of_deferredCompletable hcomplete
-  have hdist := evalDist_runResolvedLiveValue_eq_retained_value table (replacePrivatePosition target output context) fuel
-    (privatePositionAccessCut target computation) hnewValid.valuesConsistent hstarts
-  unfold privatePositionFirstLiveCandidate
-  rw [evalDist_map, evalDist_map, hdist, evalDist_map, Functor.map_map]
-  congr 1
-  funext result
-  unfold privateLiveCandidateProjection
-  cases retainCompletableResult result <;> rfl
-
-theorem evalDist_privatePositionFirstLiveCandidate_clearPending
-    (target : Position) (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
-    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput) (output : HashOutput)
-    (hvalid : context.Valid) (hcomplete : DeferredCompletable table context)
-    (hstate : context.state.values (.position target) = none) (hclean : ¬context.state.hitAt (.position target) output) :
-    evalDist (privatePositionFirstLiveCandidate target computation context fuel table output) =
-      evalDist (privateLiveCandidateProjection target (context.state.pendingAt (.position target)) <$>
-        runResolvedLiveValue table (completePrivatePosition target context output).toDeferredContext fuel
-          (privatePositionAccessCut target computation)) := by
-  rw [evalDist_privatePositionFirstLiveCandidate_eq_projection target computation context fuel table output hvalid hcomplete hstate,
-    evalDist_map, evalDist_map]
-  apply congrArg _
-  exact evalDist_runResolvedLiveValue_clearPending_known target output table (replacePrivatePosition target output context) fuel
-    (privatePositionAccessCut target computation) (hvalid.replacePrivatePosition target output hstate)
-    (hcomplete.replacePrivatePosition target output hstate hclean)
-    (by simp [replacePrivatePosition, DeferredContext.positionValue, hstate, DeferredStructuralValues.install])
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

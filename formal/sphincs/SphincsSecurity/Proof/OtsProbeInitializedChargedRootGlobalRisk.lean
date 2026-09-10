@@ -1,4 +1,7 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeChargedRootGlobalRisk
+import SphincsSecurity.Proof.OtsProbeChargedRootInitialization
+import SphincsSecurity.Proof.OtsProbeInitializedChargedRootRisk
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

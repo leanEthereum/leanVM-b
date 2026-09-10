@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.LayerCompare
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.SignSupport
 
 /-!
 # Signing-transcript coverage of few-time openings
@@ -57,25 +58,6 @@ def FewTimeLeak (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
     (secretKey : SecretKey) (signingLog : QueryLog SigningSpec) (index : Index)
     (leaves : DigestTree → FtsLeaf) : Prop :=
   ∀ tree, SignedFtsLeaf f cache secretKey signingLog index tree (leaves (ftsIndexOf tree))
-
-theorem signedFtsLeaves_of_signing_entry (f : QueryImpl HashSpec Id)
-    (secretKey : SecretKey) (computation : OracleComp (OracleWorld + SigningSpec) alpha)
-    (initialCache : QueryCache HashSpec) (value : alpha) (signingLog : QueryLog SigningSpec)
-    (adversaryCache finalCache : QueryCache HashSpec)
-    (hmem : ((value, signingLog), adversaryCache) ∈ support
-      ((simulateQ romImpl
-        ((simulateQ (forwardOracles + signingOracle scheme secretKey)
-          computation).run)).run initialCache))
-    (hle : adversaryCache ≤ finalCache) (hf : finalCache.AgreesWithFn f)
-    (entry : (request : SignRequest) × SigningSpec.Range request) (signature : Signature)
-    (hresponse : entry.2 = some signature) (hentry : entry ∈ signingLog) :
-    ∃ (index : Index) (leaves : DigestTree → FtsLeaf), ∀ tree,
-      SignedFtsLeaf f finalCache secretKey signingLog index tree (leaves (ftsIndexOf tree)) := by
-  have hrun := successfulSignRun_of_signing_entry f secretKey computation initialCache value
-    signingLog adversaryCache finalCache hmem hle hf entry signature hresponse hentry
-  obtain ⟨index, leaves, hfts⟩ := hrun.honest_fts_at
-  exact ⟨index, leaves, fun tree =>
-    ⟨entry, signature, leaves, hentry, hresponse, hrun, hfts, rfl⟩⟩
 
 theorem fewTimeLeak_or_uncovered (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
     (secretKey : SecretKey) (signingLog : QueryLog SigningSpec) (index : Index)

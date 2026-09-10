@@ -1,4 +1,7 @@
-import SphincsSecurity.Proof.OtsProbeNativePlannedReserve
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeLiveContextCharge
+import SphincsSecurity.Proof.OtsProbeLiveNativeComposition
+import SphincsSecurity.Proof.OtsProbeLiveNativeReserve
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -45,42 +48,5 @@ theorem simulateQ_expectedLiveQueryCharge_add_contextCharge_le_outer
           expectedLiveNativeContextCharge_eq_zero_of_not_completable _ _ _ context fuel table cache hcomplete,
           expectedLiveNativeOuterCharge_eq_zero_of_not_completable _ _ _ context fuel table cache hcomplete]
         simp
-
-theorem chronological_liveProbe_add_unused_le_liveOuterCharge
-    (parameter : PublicParameter) (root : Digest) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
-    (hconsistent : context.ValuesConsistent) (hstarts : StartTableAgrees context.state table) :
-    expectedLiveResolvedQueryCharge nativeProbeQueryCharge
-        ((simulateQ (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret) computation).run cache) context fuel table +
-      expectedLiveNativeContextCharge (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret)
-        (nativeUnusedProbeOuterCharge parameter) computation context fuel table cache ≤
-      expectedLiveNativeOuterCharge (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret)
-        (otsOuterQueryCharge parameter) computation context fuel table cache :=
-  simulateQ_expectedLiveQueryCharge_add_contextCharge_le_outer _ _ _ _
-    (chronologicalAdversaryImpl_probeCharge_add_unused_le_ots parameter root ftsSecret)
-    computation context fuel table cache hconsistent hstarts
-
-theorem chronological_liveProbe_add_unused_mul_le_directCharge
-    (parameter : PublicParameter) (root : Digest) (table : OtsSecretIndex → HashOutput)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache) (actualCache : QueryCache HashSpec)
-    (hinvariant : ResolvedContextInvariant parameter table context (ordinaryQueryCache cache) actualCache)
-    (hvisible : VisibleResolvedComputationsCached parameter table context actualCache)
-    (hpublished : PublishedValues context.state) :
-    (expectedLiveResolvedQueryCharge nativeProbeQueryCharge
-        ((simulateQ (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret) computation).run cache) context fuel table +
-      expectedLiveNativeContextCharge (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret)
-        (nativeUnusedProbeOuterCharge parameter) computation context fuel table cache) * (4 / 3 : ENNReal) ≤
-      expectedQueryCharge (directOtsQueryCharge parameter)
-        (simulateQ (expandedAdversaryImpl
-          (⟨parameter, root, fun lay tree leafIdx chainIdx => truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩), ftsSecret⟩ : SecretKey))
-          computation) actualCache := by
-  exact (mul_le_mul'
-    (chronological_liveProbe_add_unused_le_liveOuterCharge parameter root ftsSecret computation context fuel table cache
-      hinvariant.2.1.valuesConsistent hinvariant.2.2.1) le_rfl).trans
-    (expectedLiveChronologicalOtsCount_mul_le_directCharge parameter root table ftsSecret computation context fuel cache actualCache
-      hinvariant hvisible hpublished)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

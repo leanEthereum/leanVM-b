@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.ConcreteTargetShapeSigning
+import SphincsSecurity.Proof.TargetShapeEnvelope
 
 namespace SphincsSecurity.Concrete
 

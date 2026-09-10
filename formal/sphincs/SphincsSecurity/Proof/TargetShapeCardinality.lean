@@ -1,5 +1,6 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.TargetShapeOperators
 import SphincsSecurity.Proof.TargetShapeReindex
-import Mathlib.Data.Nat.Choose.Sum
 
 namespace SphincsSecurity.Concrete
 

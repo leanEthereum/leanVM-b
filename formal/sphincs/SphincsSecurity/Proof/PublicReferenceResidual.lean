@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.ReferenceResidualSampling
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.CanonicalResidualQuery
+import SphincsSecurity.Proof.EncodingFamilyOracleSplit
 import SphincsSecurity.Proof.UniformTableOverwrite
 
 namespace SphincsSecurity.Concrete

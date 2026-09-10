@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.UniformTableConditioning
 
 namespace SphincsSecurity.Concrete
@@ -7,12 +8,6 @@ attribute [local instance] Classical.propDecidable
 set_option backward.isDefEq.respectTransparency false
 
 variable {ι α : Type} [Fintype ι] [DecidableEq ι] [DecidableEq α]
-
-omit [DecidableEq α] in
-theorem uniformTable_support_iff (allowed : ι → Finset α)
-    (ha : ∀ coordinate, (allowed coordinate).Nonempty) (table : ι → α) :
-    table ∈ (uniformTable allowed ha).support ↔ ∀ coordinate, table coordinate ∈ allowed coordinate := by
-  simp only [uniformTable, PMF.mem_support_uniformOfFinset_iff, Fintype.mem_piFinset]
 
 omit [DecidableEq α] in
 theorem piFinset_update_card (allowed : ι → Finset α) (coordinate : ι) (values : Finset α) :

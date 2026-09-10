@@ -1,5 +1,6 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeLiveContextCharge
 import SphincsSecurity.Proof.OtsProbeStartAllowanceHash
-import SphincsSecurity.Proof.OtsProbeStartAllowanceCounting
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -67,70 +68,5 @@ theorem startAllowance_chronological_eq_nativeCharge
         · simp [probOutput_eq_zero_of_not_mem_support hoption]
       · rw [liveStartProbeAllowance_eq_zero_of_not_completable _ context fuel table hcomplete,
           expectedLiveNativeContextCharge_eq_zero_of_not_completable _ _ _ context fuel table cache hcomplete]
-
-theorem sampled_nativeStartCharge_ensuredInitial_le_chainStartCharge
-    (targets : Finset Position) (parameter : PublicParameter) (root : Digest)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (q fuel : Nat) (cache : SplitHashCache) (hq : q ≤ 2 ^ 126)
-    (hbound : ((simulateQ (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret) computation).run cache).IsQueryBoundP
-      LazyRevealProbe.IsProbe q) :
-    (∑' table, Pr[= table | sampleOtsHashTable] *
-      expectedLiveNativeContextCharge (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret)
-        (nativeStartCharge parameter table) computation (ensuredInitialContext targets) fuel table cache) ≤
-      (∑' table, Pr[= table | sampleOtsHashTable] * expectedLiveResolvedQueryCharge chainStartProbeQueryCharge
-        ((simulateQ (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret) computation).run cache)
-        (ensuredInitialContext targets) fuel table) * ((4 / 3 : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) := by
-  calc
-    _ = ∑' table, Pr[= table | sampleOtsHashTable] * liveStartProbeAllowance
-        ((simulateQ (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret) computation).run cache)
-        (ensuredInitialContext targets) fuel table := by
-      apply tsum_congr
-      intro table
-      rw [startAllowance_chronological_eq_nativeCharge parameter root ftsSecret computation
-        (ensuredInitialContext targets) fuel table cache (ensuredInitialContext_valid targets).valuesConsistent
-        (startTableAgrees_of_deferredCompletable (ensuredInitialContext_completable targets table))]
-    _ ≤ _ := sampledEnsuredLiveStartAllowance_le_chainStartCharge targets _ fuel q hq hbound
-
-theorem initializedNativeDirectRisk_eq_startAllowance_add_privateAllowance
-    (targets : Finset Position) (adversary : Adversary) (parameter : PublicParameter)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel q : Nat)
-    (hbound : (nativeChronologicalRetainedComputation adversary parameter ftsSecret).IsQueryBoundP
-      LazyRevealProbe.IsProbe q) :
-    initializedNativeDirectRisk targets adversary parameter ftsSecret fuel q =
-      ∑' table, Pr[= table | sampleOtsHashTable] *
-        (liveStartProbeAllowance (nativeChronologicalRetainedComputation adversary parameter ftsSecret)
-          (ensuredInitialContext targets) fuel table +
-          ∑ target ∈ targets, privateLiveProbeAllowance target
-            (nativeChronologicalRetainedComputation adversary parameter ftsSecret) (ensuredInitialContext targets) fuel table) := by
-  have hprivate : ∀ target ∈ targets,
-      (nativeChronologicalRetainedComputation adversary parameter ftsSecret).IsQueryBoundP
-        (IsPrivatePositionProbe target) q := by
-    intro target _
-    apply OracleComp.IsQueryBoundP.of_imp _ hbound
-    intro input hinput
-    cases input <;> simp_all [IsPrivatePositionProbe, LazyRevealProbe.IsProbe]
-  rw [initializedNativeDirectRisk_eq_startHits_add_privateAllowance targets adversary parameter ftsSecret fuel q hprivate,
-    sum_sampledEnsuredNativeProbeCut_startHits_eq_liveAllowance targets _ fuel q hbound]
-  simp only [mul_add, ENNReal.tsum_add]
-
-theorem sampled_nativeMissingAllowances_le_initializedNativeDirectRisk
-    (targets : Finset Position) (adversary : Adversary) (parameter : PublicParameter)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel q : Nat)
-    (hbound : (nativeChronologicalRetainedComputation adversary parameter ftsSecret).IsQueryBoundP
-      LazyRevealProbe.IsProbe q) :
-    (∑' table, Pr[= table | sampleOtsHashTable] *
-      (liveStartProbeAllowance (nativeChronologicalRetainedComputation adversary parameter ftsSecret)
-        (ensuredInitialContext targets) fuel table +
-        ∑ target ∈ targets, privateLiveMissingProbeAllowance target
-          (nativeChronologicalRetainedComputation adversary parameter ftsSecret) (ensuredInitialContext targets) fuel table)) ≤
-      initializedNativeDirectRisk targets adversary parameter ftsSecret fuel q := by
-  rw [initializedNativeDirectRisk_eq_startAllowance_add_privateAllowance targets adversary parameter ftsSecret fuel q hbound]
-  apply ENNReal.tsum_le_tsum
-  intro table
-  apply mul_le_mul_right
-  apply add_le_add le_rfl
-  apply Finset.sum_le_sum
-  intro target _
-  exact privateLiveMissingProbeAllowance_le_stoppedAllowance target _ (ensuredInitialContext targets) fuel table
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

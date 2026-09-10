@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeChargedRootCut
+import SphincsSecurity.Proof.OtsProbeNativeResolvedRootCutRisk
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

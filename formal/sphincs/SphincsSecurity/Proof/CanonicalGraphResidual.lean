@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.FiniteGraphReplay
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CanonicalGraphSampling
+import SphincsSecurity.Proof.FiniteGraphReplay
 
 namespace SphincsSecurity.Concrete
 
@@ -97,17 +98,6 @@ theorem evalDist_plantCanonicalGraph_eq_residual :
     canonicalGraphOrder canonicalGraphOrder_sorted _
     (fun position hposition => (hposition (mem_canonicalGraphOrder position)).elim)]
   rfl
-
-theorem evalDist_canonicalGraph_eq_residual :
-    𝒟[do
-      let table ← sampleHashTable inputs
-      pure (canonicalGraphLabels parameter otsSecret ftsSecret (finiteHashAnswer ∅ inputs table), table)] =
-      𝒟[do
-        let labels ← ($ᵗ CanonicalGraphLabels : ProbComp _)
-        let residual ← sampleHashTable inputs
-        pure (labels, programCanonicalGraph parameter otsSecret ftsSecret inputs hinputs labels residual)] :=
-  (evalDist_canonicalGraph_eq_plant parameter otsSecret ftsSecret inputs hinputs).trans
-    (evalDist_plantCanonicalGraph_eq_residual parameter otsSecret ftsSecret inputs hinputs)
 
 theorem evalDist_plantCanonicalGraph_bind_eq_residual {Result : Type}
     (next : CanonicalGraphLabels → (inputs → HashOutput) → ProbComp Result) :

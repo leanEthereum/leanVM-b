@@ -1,5 +1,5 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.ProposalLengthProjection
-import VCVio.OracleComp.SimSemantics.StateT.StateProjection
 
 namespace SphincsSecurity.Concrete
 

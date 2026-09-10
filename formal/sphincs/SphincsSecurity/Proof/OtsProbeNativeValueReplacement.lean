@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.OtsProbeNativeChronologicalRootSigner
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbePrivateValueReplacement
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

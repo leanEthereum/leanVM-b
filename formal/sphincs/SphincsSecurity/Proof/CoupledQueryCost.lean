@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.MarginalCoupling
+import SphincsSecurity.Proof.Prelude
 
 namespace SphincsSecurity
 

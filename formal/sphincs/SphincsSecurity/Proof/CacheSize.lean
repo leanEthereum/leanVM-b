@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.QueryBound
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Statement
 
 /-!
 # Random-oracle cache size

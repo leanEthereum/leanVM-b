@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.FrontierTreeEvaluation
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.BoundaryHashEvaluation
 
 namespace SphincsSecurity.Concrete
 
@@ -84,24 +85,5 @@ theorem boundaryEval_otsSignFrom_frontier (parameter : PublicParameter) (f : Que
           simp only [boundaryEval_pure, evalWithAnswerFn_sequenceFin, hv, mul_one,
             referenceEncodingSearch, hencode, Option.map_some, Option.isSome_some, ↓reduceIte]
           rw [← pow_succ']
-
-theorem boundaryRun_otsSignFrom_frontier (parameter : PublicParameter) (f : QueryImpl HashSpec Id)
-    (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex) (secret frontier : ChainIndex → Digest)
-    (message : Digest) (attempts counter : Nat)
-    (hfrontier : ∀ c word,
-      (referenceEncodingSearch parameter f lay tree leaf message attempts counter).1 = some (c, word) →
-      ∀ chainIdx, evalWithAnswerFn f
-        (chainWalk parameter lay tree leaf chainIdx 0 (word chainIdx).val (secret chainIdx)) = frontier chainIdx)
-    (cache : QueryCache HashSpec)
-    (result : (Option (Counter × (ChainIndex → Digest)) × SigningBoundaryTrace) × QueryCache HashSpec)
-    (hr : result ∈ support (boundaryRun parameter
-      (liftM (otsSignFrom parameter lay tree leaf secret message attempts counter : OracleComp HashSpec _)) cache))
-    (hf : result.2.AgreesWithFn f) :
-    result.1 = ((referenceEncodingSearch parameter f lay tree leaf message attempts counter).1.map
-        (fun selected => (selected.1, frontier)),
-      (FreeMonoid.of none) ^ ((referenceEncodingSearch parameter f lay tree leaf message attempts counter).2 +
-        if (referenceEncodingSearch parameter f lay tree leaf message attempts counter).1.isSome then 191 else 0)) := by
-  rw [← boundaryEval_of_boundaryRun parameter _ cache result hr f hf]
-  exact boundaryEval_otsSignFrom_frontier _ _ _ _ _ _ _ _ _ _ hfrontier
 
 end SphincsSecurity.Concrete

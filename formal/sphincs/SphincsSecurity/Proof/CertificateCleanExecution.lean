@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CertificateBoundaryInvariants
+import SphincsSecurity.Proof.CertificateProposalPrefixPersistence
 import SphincsSecurity.Proof.StoppedSigningLog
 
 namespace SphincsSecurity.Concrete

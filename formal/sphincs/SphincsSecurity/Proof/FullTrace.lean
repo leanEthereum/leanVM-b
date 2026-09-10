@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.TracedGame
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.RootCache
+import SphincsSecurity.Proof.TracedGame
 
 /-!
 # Signer intervals and direct adversary queries
@@ -255,7 +256,7 @@ def isDirectHashQuery : (OracleWorld + SigningSpec).Domain → Prop
   | .inl (.inr _) => True
   | _ => False
 
-instance : DecidablePred isDirectHashQuery := fun input => by
+instance instDecidablePredDomainSumNatHashInputSignRequestHAddOracleSpecOracleWorldSigningSpecIsDirectHashQuery : DecidablePred isDirectHashQuery := fun input => by
   cases input with
   | inl worldInput =>
       cases worldInput with

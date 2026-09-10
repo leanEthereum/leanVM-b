@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.ExactTargetLogSigning
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.DigestCompletionCacheGrowth
 import SphincsSecurity.Proof.WorldTargetShapeEnvelope
 
@@ -83,21 +83,6 @@ theorem expected_digestCompletion_normalizedTargetMixedMoment_le_of_exactReuse {
       log payload target groups required hsigned).trans
         (mul_le_of_le_one_left' (freshDigestSelectionProbability_le_one key message before))).trans_eq
     exact expected_targetMixedGrowthPolynomial _ _ groups required target hgroups hdisjoint hremaining
-
-theorem expected_signWithView_normalizedTargetMixedMoment_le_of_exactReuse (key : SecretKey) (message : Message) (before : QueryCache HashSpec)
-    (log : QueryLog SigningSpec) (payload : HashInput) (target : FewTimeView)
-    (groups : Fin m → Finset FtsTree) (required : Finset FtsTree)
-    (hgroups : ∀ slot, (groups slot).Nonempty) (hdisjoint : Pairwise (fun i j => Disjoint (groups i) (groups j)))
-    (hremaining : ∀ slot, Disjoint (groups slot) required)
-    (hsigned : SigningDigestsCached key.parameter before key.root log)
-    (reuse : ENNReal) (hreuse : exactDigestReuseWeight key message before ≤ reuse) :
-    (∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run before] *
-      normalizedTargetMixedMoment key result.2 (log ++ [⟨message, result.1.1⟩]) payload target groups required) ≤
-      reuseTargetMixedSigningEnvelope key before log payload target groups required reuse := by
-  rw [signWithView_run_eq_digestCompletion]
-  exact expected_digestCompletion_normalizedTargetMixedMoment_le_of_exactReuse key message before
-    (originalDigestCompletion key) id (fun loop _ result hr => originalDigestCompletion_preservesMessages key loop result hr)
-    log payload target groups required hgroups hdisjoint hremaining hsigned reuse hreuse
 
 theorem targetShapeSigning_eq_reuseIndexedEnvelope (key : SecretKey) (cache : QueryCache HashSpec)
     (log : QueryLog SigningSpec) (payload : HashInput) (target : FewTimeView)

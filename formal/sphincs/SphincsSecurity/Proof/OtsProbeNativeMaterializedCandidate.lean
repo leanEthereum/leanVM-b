@@ -1,5 +1,5 @@
-import SphincsSecurity.Proof.OtsProbePrivateAllowanceReserve
-import SphincsSecurity.Proof.OtsProbeSigningStartValues
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeFreshGuessRisk
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -47,20 +47,6 @@ theorem purePlan_materialized_candidate_is_chain
 
 def MaterializedChainsPublished (context : DeferredContext) : Prop :=
   ∀ coordinate, IsChainCoordinate coordinate → context.state.values coordinate ≠ none → coordinate ∈ context.state.revealed
-
-theorem MaterializedChainsPublished.starts
-    {context : DeferredContext} (hpublic : MaterializedChainsPublished context) : MaterializedStartsPublished context := by
-  intro start hknown
-  exact hpublic start.coordinate (by cases start; trivial) hknown
-
-theorem MaterializedChainsPublished.candidate_missing_of_hidden
-    {context : DeferredContext} (hpublic : MaterializedChainsPublished context)
-    (parameter : PublicParameter) (input : HashInput) (candidate : Probe)
-    (hplan : (purePlanProbingHashQuery parameter input context.state).candidate? = some candidate)
-    (hhidden : candidate.coordinate ∉ context.state.revealed) : context.state.values candidate.coordinate = none := by
-  by_contra hknown
-  exact hhidden (hpublic candidate.coordinate
-    (purePlan_materialized_candidate_is_chain parameter input context.state candidate hplan hknown) hknown)
 
 theorem MaterializedChainsPublished.candidate_allowance_eq_zero_of_known
     {context : DeferredContext} (hpublic : MaterializedChainsPublished context)

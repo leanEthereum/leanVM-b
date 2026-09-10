@@ -1,4 +1,8 @@
-import SphincsSecurity.Proof.OtsProbeNativeRootQueryCharge
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.CoupledQueryCost
+import SphincsSecurity.Proof.MappedQueryCharge
+import SphincsSecurity.Proof.OtsProbeCanonicalQuerySelection
+import SphincsSecurity.Proof.OtsProbeResolvedComputedExecution
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

@@ -1,4 +1,8 @@
-import SphincsSecurity.Proof.OtsProbeChargedRootOccurrence
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeCanonicalStopping
+import SphincsSecurity.Proof.OtsProbeNativeRootReserve
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootAdaptive
+import SphincsSecurity.Proof.OtsProbeRootMaterializationChronological
 import SphincsSecurity.Proof.OtsProbeSigningStartValues
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
@@ -97,25 +101,5 @@ theorem initializedNativeRoot_fresh_facts
   change ordinaryQueryCache result.value.2 input = none
   rw [hcache]
   rfl
-
-theorem probEvent_chargedRootCut_after_keygen_hit_le_trace_occurrence
-    (parameter : PublicParameter) (targets : Finset Position) (target : Position) (hmem : target ∈ targets)
-    (hroot : IsLayerRoot target) (hne : target ≠ layerRootPosition topLayer rootTree)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (computation : Digest → OracleComp (OracleWorld + SigningSpec) α)
-    (fuel : Nat) (table : OtsSecretIndex → HashOutput) (result : ResolvedRunResult (Digest × SplitHashCache))
-    (hresult : some result ∈ support (runResolvedFromTable (ensuredInitialContext targets) fuel table
-      (maskedPublishedTreeRoot.run emptySplitHashCache))) (ordinal : Nat) (hbudget : ordinal ≤ 2 ^ 126) :
-    Pr[fun b => b = false | originalChargedRootCutObservation parameter result.value.1 target ftsSecret
-      (computation result.value.1) result.context result.remaining table result.value.2 ∅ ordinal
-      (fun pair => pair.2 = some (truncateHash pair.1))] ≤
-    Pr[fun trace => chargedNativeRootTraceCutCandidate parameter target trace.1 ≠ none |
-      runNativeQueryTrace parameter result.value.1 ftsSecret (outerHashQueryCutAt (computation result.value.1) ordinal)
-        result.context result.remaining table result.value.2] *
-        ((4 / 3 : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) := by
-  obtain ⟨hvalid, hcomplete, hensured, hstate, hvalue, hpending, hcache⟩ :=
-    initializedNativeRoot_fresh_facts parameter targets target hmem hroot hne fuel table result hresult
-  exact probEvent_originalChargedRootCutObservation_hit_le_trace_occurrence parameter result.value.1 target hroot ftsSecret
-    (computation result.value.1) result.context result.remaining table result.value.2 ∅ hvalid hcomplete hensured hstate hvalue
-    (by rw [hpending]) (fun digest _ => hcache digest) ordinal (by simpa using hbudget)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

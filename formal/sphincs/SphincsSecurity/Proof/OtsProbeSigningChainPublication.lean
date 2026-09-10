@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeNativeMaterializedCandidate
 import SphincsSecurity.Proof.OtsProbeSigningChainValues
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
@@ -88,34 +90,5 @@ theorem materializedChainsPublished_of_mem_successful_signAfterDigest
       | some layers =>
           exact materializedChainsPublished_of_signLayers_and_publish parameter ftsSecret randomness index leaves
             path.value.1 path.context path.remaining path.table path.value.2 layers result hpathPublic hlayers hpublish hsuccess
-
-theorem materializedChainsPublished_of_mem_successful_sign
-    (parameter : PublicParameter) (root : Digest) (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message)
-    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
-    (result : ResolvedRunResult (Option Signature × SplitHashCache))
-    (hpublic : MaterializedChainsPublished context)
-    (hresult : some result ∈ support (runResolvedFromTable context fuel table
-      ((maskedPublishedChronologicalSign parameter root ftsSecret message).run cache)))
-    (hsuccess : result.value.1 ≠ none) : MaterializedChainsPublished result.context := by
-  rw [maskedPublishedChronologicalSign, StateT.run_bind, runResolvedFromTable_bind, mem_support_bind_iff] at hresult
-  obtain ⟨digestOption, hdigest, hrest⟩ := hresult
-  cases digestOption with
-  | none => simp at hrest
-  | some digest =>
-      cases hselected : digest.value.1 with
-      | none =>
-          simp [hselected, runResolvedFromTable] at hrest
-          subst result
-          exact False.elim (hsuccess rfl)
-      | some selected =>
-          rcases selected with ⟨randomness, index, leaves⟩
-          have hdigestPublic : MaterializedChainsPublished digest.context := by
-            intro coordinate hchain hvalue
-            have hpreserved := resolvedPreservesCoordinate_simulateQ_ordinaryRomImpl coordinate _
-              context fuel table cache digest hdigest
-            exact hpreserved.2.mpr (hpublic coordinate hchain (by rwa [hpreserved.1] at hvalue))
-          apply materializedChainsPublished_of_mem_successful_signAfterDigest parameter ftsSecret randomness index leaves
-            digest.context digest.remaining digest.table digest.value.2 result hdigestPublic _ hsuccess
-          simpa only [hselected] using hrest
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

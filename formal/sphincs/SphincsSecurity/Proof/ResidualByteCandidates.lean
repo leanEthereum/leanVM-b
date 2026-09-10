@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.PrefixEncodingRisk
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.PrefixByteAction
+import SphincsSecurity.Proof.ResidualByteExecution
 
 namespace SphincsSecurity.Concrete.CanonicalProbeRouting
 

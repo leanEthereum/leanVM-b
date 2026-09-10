@@ -1,5 +1,7 @@
-import SphincsSecurity.Proof.RawProposalMomentBound
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.DigestLoopRecord
+import SphincsSecurity.Proof.RawProposalMomentBound
+import SphincsSecurity.Proof.WeightedBinomialOccupancy
 
 namespace SphincsSecurity.Concrete
 

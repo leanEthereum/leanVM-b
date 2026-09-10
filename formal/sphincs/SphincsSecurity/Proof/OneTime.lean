@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.Chain
 import SphincsSecurity.Proof.Eval
 
 /-!
@@ -50,19 +52,5 @@ theorem eval_oneTimePublicKey (secret : ChainIndex → Digest) :
       = fun chainIdx => evalWithAnswerFn f
           (chainWalk parameter lay tree leaf chainIdx 0 (chainLength - 1) (secret chainIdx)) := by
   simp [oneTimePublicKey]
-
-/-- **One-time correctness.** Given a counter that encodes the message to `codeword`, the chain
-values the signer reveals recover the leaf key generation built. -/
-theorem eval_otsLeaf (secret : ChainIndex → Digest) (message : Digest) (counter : Counter)
-    (codeword : Encoding)
-    (hencode : evalWithAnswerFn f (encode parameter lay tree leaf message counter) = some codeword) :
-    evalWithAnswerFn f (otsLeaf parameter lay tree leaf message counter
-        (fun chainIdx => evalWithAnswerFn f
-          (chainWalk parameter lay tree leaf chainIdx 0 (codeword chainIdx).val (secret chainIdx))))
-      = some (evalWithAnswerFn f (do
-          let endpoints ← oneTimePublicKey parameter lay tree leaf secret
-          leafHash parameter lay tree leaf endpoints)) := by
-  simp only [otsLeaf, evalWithAnswerFn_bind, evalWithAnswerFn_pure, hencode,
-    evalWithAnswerFn_sequenceFin, eval_recoverChain, eval_oneTimePublicKey]
 
 end SphincsSecurity.Concrete

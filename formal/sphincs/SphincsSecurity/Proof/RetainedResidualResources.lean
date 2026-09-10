@@ -1,3 +1,6 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.RetainedResidualBoundaryCost
+import SphincsSecurity.Proof.RetainedResidualMonitoredErasure
 import SphincsSecurity.Proof.RetainedResidualWorkCost
 
 namespace SphincsSecurity.Concrete.RetainedResidual
@@ -137,35 +140,5 @@ theorem monitoredRun_resources {Result : Type} (computation : OracleComp (Oracle
           exact ih answer after
             (monitoredStep_valid key inputs hencoding words publicReplies selections rows budget required stopAfter input state hvalid (some answer, after) hstep)
             ((sourceInputs_next_subset key input next answer).trans hinputs) hafter result hresult
-
-theorem monitoredRun_creationMass_le_hashCalls {Result : Type} (computation : OracleComp (OracleWorld + SigningSpec) Result)
-    (state : State inputs) (spent : Nat) (stopped : Bool) (hspent : spent ≤ state.memory.external.hashCalls)
-    (ha : ∀ coordinate, (state.candidates coordinate).Nonempty)
-    (hcovered : ResidualByteFrontend.RowsCovered inputs (project state)) (hinputs : sourceInputs key computation ⊆ inputs)
-    (result : Option Result × MonitoredState inputs)
-    (hresult : monitoredRun key inputs hencoding words publicReplies selections rows budget required stopAfter computation
-      (state, initialCertificateMonitor spent stopped) result ≠ 0) :
-    result.2.2.creationMass ≤ (result.2.1.memory.external.hashCalls : ENNReal) :=
-  (monitoredRun_resources key inputs hencoding words publicReplies selections rows budget required stopAfter computation
-    (state, initialCertificateMonitor spent stopped) ⟨ha, hcovered⟩ hinputs
-    ⟨hspent, bot_le, Nat.zero_le _⟩ result hresult).2.1
-
-theorem expected_monitoredRun_messageCalls_le_native {Result : Type} (computation : OracleComp (OracleWorld + SigningSpec) Result)
-    (state : MonitoredState inputs) (hvalid : MonitoredValid inputs state)
-    (hinputs : sourceInputs key computation ⊆ inputs) (hresources : MonitorResources state.2 state.1.memory) :
-    (∑' result, Pr[= result | monitoredRun key inputs hencoding words publicReplies selections rows budget required stopAfter computation state] *
-      result.2.2.messageCalls) ≤
-      ∑' result, Pr[= result | lazyRun (environment key.parameter inputs hencoding words publicReplies selections rows)
-        (simulateQ (adversaryImpl inputs key.parameter key.root words selections) computation) state.1] * result.2.memory.messageCalls.length := by
-  rw [← monitoredRun_erasure key inputs hencoding words publicReplies selections rows budget required stopAfter computation state,
-    tsum_probOutput_map_mul]
-  apply ENNReal.tsum_le_tsum
-  intro result
-  by_cases hr : Pr[= result | monitoredRun key inputs hencoding words publicReplies selections rows budget required stopAfter computation state] = 0
-  · simp only [hr, zero_mul, le_refl]
-  · rw [SPMF.probOutput_eq_apply] at hr
-    exact mul_le_mul' le_rfl (Nat.cast_le.mpr
-      (monitoredRun_resources key inputs hencoding words publicReplies selections rows budget required stopAfter computation state hvalid hinputs
-        hresources result hr).2.2)
 
 end SphincsSecurity.Concrete.RetainedResidual

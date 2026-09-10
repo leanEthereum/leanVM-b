@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FrontierSigningEvaluation
+import SphincsSecurity.Proof.FrontierTreeEvaluation
 
 namespace SphincsSecurity.Concrete
 
@@ -146,55 +148,5 @@ theorem boundaryEval_signAfterDigest_frontier (key : SecretKey) (f : QueryImpl H
       (frontierSignLayer key.parameter f key.ftsSecret words frontier index lay).1) with
   | none => simp only [boundaryEval_pure, Option.map_none, mul_one, pow_add]
   | some parts => simp only [boundaryEval_pure, Option.map_some, mul_one, pow_add]
-
-theorem boundaryRun_signAfterDigest_frontier (key : SecretKey) (f : QueryImpl HashSpec Id)
-    (words : OtsReferenceWords) (frontier : OtsFrontierValues)
-    (hfrontier : IsSigningFrontier key f words frontier) (randomness : Randomness) (index : Index)
-    (leaves : DigestTree → FtsLeaf)
-    (hwords : ∀ lay, FrontierReferenceWord key.parameter f key.ftsSecret words frontier index lay)
-    (cache : QueryCache HashSpec)
-    (result : (Option Signature × SigningBoundaryTrace) × QueryCache HashSpec)
-    (hr : result ∈ support (boundaryRun key.parameter (liftM (signAfterDigest key randomness index leaves)) cache))
-    (hf : result.2.AgreesWithFn f) :
-    result.1 =
-      ((frontierSignAfterDigest key.parameter f key.ftsSecret words frontier randomness index leaves).1,
-        (FreeMonoid.of none) ^
-          (frontierSignAfterDigest key.parameter f key.ftsSecret words frontier randomness index leaves).2) := by
-  rw [← boundaryEval_of_boundaryRun key.parameter _ cache result hr f hf]
-  exact boundaryEval_signAfterDigest_frontier key f words frontier hfrontier randomness index leaves hwords
-
-theorem boundaryEval_signAfterDigest_eq_of_common_frontier (left right : SecretKey)
-    (f : QueryImpl HashSpec Id) (words : OtsReferenceWords) (frontier : OtsFrontierValues)
-    (hparameter : left.parameter = right.parameter) (hfts : left.ftsSecret = right.ftsSecret)
-    (hleft : IsSigningFrontier left f words frontier) (hright : IsSigningFrontier right f words frontier)
-    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf)
-    (hwords : ∀ lay, FrontierReferenceWord left.parameter f left.ftsSecret words frontier index lay) :
-    boundaryEval left.parameter f (signAfterDigest left randomness index leaves) =
-      boundaryEval right.parameter f (signAfterDigest right randomness index leaves) := by
-  have hwords' : ∀ lay, FrontierReferenceWord right.parameter f right.ftsSecret words frontier index lay := by
-    simpa only [← hparameter, ← hfts] using hwords
-  rw [boundaryEval_signAfterDigest_frontier left f words frontier hleft randomness index leaves hwords,
-    boundaryEval_signAfterDigest_frontier right f words frontier hright randomness index leaves hwords',
-    ← hparameter, ← hfts]
-
-theorem boundaryRun_signAfterDigest_frontier_budget {α : Type}
-    (key : SecretKey) (f : QueryImpl HashSpec Id) (words : OtsReferenceWords) (frontier : OtsFrontierValues)
-    (hfrontier : IsSigningFrontier key f words frontier) (randomness : Randomness) (index : Index)
-    (leaves : DigestTree → FtsLeaf)
-    (hwords : ∀ lay, FrontierReferenceWord key.parameter f key.ftsSecret words frontier index lay)
-    (next : Option Signature → OracleComp OracleWorld α) (q : Nat)
-    (hbound : ((liftM (signAfterDigest key randomness index leaves) : OracleComp OracleWorld _) >>= next).IsQueryBoundP
-      (· matches .inr _) q)
-    (cache : QueryCache HashSpec)
-    (result : (Option Signature × SigningBoundaryTrace) × QueryCache HashSpec)
-    (hr : result ∈ support (boundaryRun key.parameter (liftM (signAfterDigest key randomness index leaves)) cache))
-    (hf : result.2.AgreesWithFn f) :
-    let projected := frontierSignAfterDigest key.parameter f key.ftsSecret words frontier randomness index leaves
-    projected.2 ≤ q ∧ (next projected.1).IsQueryBoundP (· matches .inr _) (q - projected.2) := by
-  have hbudget := boundaryRun_bind_query_bound key.parameter
-    (liftM (signAfterDigest key randomness index leaves)) next q hbound cache result hr
-  rw [boundaryRun_signAfterDigest_frontier key f words frontier hfrontier randomness index leaves hwords cache result hr hf,
-    SigningBoundaryTrace.hashCalls_pow_none] at hbudget
-  exact hbudget
 
 end SphincsSecurity.Concrete

@@ -1,4 +1,7 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeHistoryCandidateSampling
+import SphincsSecurity.Proof.OtsProbeHistoryCompletionInterpreter
+import SphincsSecurity.Proof.OtsProbeResolvedAdaptiveClean
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -250,65 +253,5 @@ theorem evalDist_history_filtered_runResolved_eq_adaptive_observe
                       (fun entry : Coordinate × Digest => entry.1 ≠ .position position) context.state.pending)
                     exact lt_of_le_of_lt (Nat.add_le_add_right hle bound) hcard
                   · simpa [LazyRevealProbe.IsProbe] using hbound.2 resolved.output
-
-theorem evalDist_history_filtered_runResolved_eq_adaptive_finished
-    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
-    (context : DeferredContext) (fuel bound : Nat) (history : List Probe)
-    (hconsistent : context.ValuesConsistent) (hcovered : PendingCoveredBy history context)
-    (hcard : context.state.pending.card + bound < Fintype.card Digest)
-    (hbound : computation.IsQueryBoundP LazyRevealProbe.IsProbe bound) :
-    evalDist ((do
-      let base ← sampleOtsHashTable
-      if ChainStartHistoryHit context history base then pure none
-      else runResolvedFromTable context fuel (completedStartTable context.state base) computation) >>= finishResolvedRun) =
-    evalDist (runResolvedHistoryAdaptive computation context fuel history >>= finishResolvedRun) := by
-  apply evalDist_history_filtered_runResolved_eq_adaptive_observe computation context fuel bound history finishResolvedRun
-  · intro result _hvalues _hstarts hdoomed
-    simp [finishResolvedRun, hdoomed]
-  · exact hconsistent
-  · exact hcovered
-  · exact hcard
-  · exact hbound
-
-theorem evalDist_history_filtered_runResolved_eq_adaptive_failure
-    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
-    (context : DeferredContext) (fuel bound : Nat) (history : List Probe)
-    (hconsistent : context.ValuesConsistent) (hcovered : PendingCoveredBy history context)
-    (hcard : context.state.pending.card + bound < Fintype.card Digest)
-    (hbound : computation.IsQueryBoundP LazyRevealProbe.IsProbe bound) :
-    evalDist ((do
-      let base ← sampleOtsHashTable
-      if ChainStartHistoryHit context history base then pure none
-      else runResolvedFromTable context fuel (completedStartTable context.state base) computation) >>= finishResolvedRunIsNone) =
-    evalDist (runResolvedHistoryAdaptive computation context fuel history >>= finishResolvedRunIsNone) := by
-  apply evalDist_history_filtered_runResolved_eq_adaptive_observe computation context fuel bound history finishResolvedRunIsNone
-  · intro result _hvalues _hstarts hdoomed
-    simp [finishResolvedRunIsNone, finishResolvedRun, hdoomed]
-  · exact hconsistent
-  · exact hcovered
-  · exact hcard
-  · exact hbound
-
-theorem evalDist_sampled_runResolved_empty_eq_adaptive_finished
-    (computation : OracleComp (LazyRevealProbe.World Coordinate) α) (fuel bound : Nat)
-    (hcard : bound < Fintype.card Digest)
-    (hbound : computation.IsQueryBoundP LazyRevealProbe.IsProbe bound) :
-    evalDist ((do
-      let table ← sampleOtsHashTable
-      runResolvedFromTable { state := LazyRevealProbe.State.empty, values := emptyDeferredStructuralValues }
-        fuel table computation) >>= finishResolvedRun) =
-    evalDist (runResolvedHistoryAdaptive computation
-      { state := LazyRevealProbe.State.empty, values := emptyDeferredStructuralValues }
-      fuel [] >>= finishResolvedRun) := by
-  have heq := evalDist_history_filtered_runResolved_eq_adaptive_finished computation
-    { state := LazyRevealProbe.State.empty, values := emptyDeferredStructuralValues }
-    fuel bound [] DeferredContext.valid_empty.valuesConsistent pendingCoveredBy_empty
-    (by simpa [LazyRevealProbe.State.empty] using hcard) hbound
-  have htable : ∀ base, completedStartTable LazyRevealProbe.State.empty base = base := by
-    intro base
-    funext index
-    rfl
-  simpa only [ChainStartHistoryHit, List.not_mem_nil, false_and, exists_false, ↓reduceIte,
-    htable] using heq
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

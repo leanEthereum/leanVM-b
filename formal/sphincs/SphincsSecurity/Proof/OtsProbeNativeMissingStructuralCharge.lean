@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeLiveContextCharge
 import SphincsSecurity.Proof.OtsProbePrivateMissingHash
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
@@ -66,28 +68,5 @@ theorem privateMissingAllowance_chronological_eq_nativeCharge
         · simp [probOutput_eq_zero_of_not_mem_support hoption]
       · rw [privateLiveMissingProbeAllowance_eq_zero_of_not_completable target _ context fuel table hcomplete,
           expectedLiveNativeContextCharge_eq_zero_of_not_completable _ _ _ context fuel table cache hcomplete]
-
-theorem sum_nativeMissingStructuralCharge_ensuredInitial_le_structuralCharge
-    (targets : Finset Position) (parameter : PublicParameter) (root : Digest)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (q fuel : Nat) (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) (hq : q ≤ 2 ^ 126)
-    (hbound : ∀ target ∈ targets,
-      ((simulateQ (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret) computation).run cache).IsQueryBoundP
-        (IsPrivatePositionProbe target) q) :
-    (∑ target ∈ targets, expectedLiveNativeContextCharge (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret)
-      (nativeMissingStructuralCharge target parameter table) computation (ensuredInitialContext targets) fuel table cache) ≤
-      expectedLiveResolvedQueryCharge structuralProbeQueryCharge
-        ((simulateQ (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret) computation).run cache)
-        (ensuredInitialContext targets) fuel table * ((4 / 3 : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) := by
-  calc
-    _ = ∑ target ∈ targets, privateLiveMissingProbeAllowance target
-        ((simulateQ (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret) computation).run cache)
-        (ensuredInitialContext targets) fuel table := by
-      apply Finset.sum_congr rfl
-      intro target _
-      exact (privateMissingAllowance_chronological_eq_nativeCharge target parameter root ftsSecret computation
-        (ensuredInitialContext targets) fuel table cache (ensuredInitialContext_valid targets).valuesConsistent
-        (startTableAgrees_of_deferredCompletable (ensuredInitialContext_completable targets table))).symm
-    _ ≤ _ := sum_privateLiveMissingProbeAllowance_ensuredInitial_le_structuralCharge targets _ q fuel table hq hbound
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

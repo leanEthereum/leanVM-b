@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeNativeRootCompatibleTrace
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootSelectionSigner
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.CertificateTerminalGame
-import SphincsSecurity.Proof.UniformProposalMoments
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.CertificateMonitor
+import SphincsSecurity.Proof.OriginalTerminalProposal
 
 namespace SphincsSecurity.Concrete
 
@@ -104,14 +105,5 @@ theorem certificateMonitorCharge_le_terminalPrice (key : SecretKey) (budget tota
       state.2.log.length total (certificateMonitorCoverState state) required consumed (by omega)
       hcompleted hactive.2.1.2.1.index_le hcounts htotal hprefix
   · simp only [certificateMonitorCharge, certificateMonitorMass, if_neg hactive, zero_mul, le_refl]
-
-theorem expected_certificateProposalImpl_terminalPrice (key : SecretKey) (budget : Nat)
-    (required : Finset FtsTree) (stopAfter : CertificateStopRule) (total : Nat)
-    (input : (OracleWorld + SigningSpec).Domain) (state : List Index × CertificateMonitorState) :
-    (∑' result, Pr[= result | (certificateProposalImpl key budget required stopAfter input).run state] *
-        terminalProposalPotential (PMF.uniformOfFintype Index) total (terminalCertificatePrice required) result.2.1) =
-      terminalProposalPotential (PMF.uniformOfFintype Index) total (terminalCertificatePrice required) state.1 :=
-  expected_certificateProposalImpl_terminalPotential key budget required stopAfter total
-    (terminalCertificatePrice required) input state
 
 end SphincsSecurity.Concrete

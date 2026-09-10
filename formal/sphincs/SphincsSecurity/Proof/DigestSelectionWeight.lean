@@ -1,6 +1,8 @@
-import SphincsSecurity.Proof.DigestLoopRecord
-import SphincsSecurity.Proof.ExactSignerReuse
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CacheMessageSignerWeight
+import SphincsSecurity.Proof.CachedDigestRate
+import SphincsSecurity.Proof.DigestLoopRecord
+import SphincsSecurity.Proof.FewTimeFixedPrehit
 
 namespace SphincsSecurity.Concrete
 

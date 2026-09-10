@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.RetainedResidualBoundaryCost
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.RetainedResidualSigningLaw
 import SphincsSecurity.Proof.SigningBoundaryHashCost
 
 namespace SphincsSecurity.Concrete.RetainedResidual
@@ -7,7 +8,7 @@ open _root_.OracleComp OracleSpec ENNReal CanonicalProbeRouting
 open AdaptiveResidualLabels hiding World State Environment
 open InterleavedResidual (Routing SigningRecord)
 attribute [local instance] Classical.propDecidable
-attribute [local irreducible] canonicalEncodingInputs canonicalGraphInputs instFintypePosition hashInputs sourceInputs
+attribute [local irreducible] canonicalEncodingInputs canonicalGraphInputs instFintypePosition hashInputs
   signDigestLoop publicSignPlan
 set_option backward.isDefEq.respectTransparency false
 

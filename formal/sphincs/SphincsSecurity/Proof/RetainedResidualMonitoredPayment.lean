@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.RetainedResidualMonitoredCoverage
 
 namespace SphincsSecurity.Concrete.RetainedResidual

@@ -1,5 +1,8 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.ExactTargetShapeSigning
-import SphincsSecurity.Proof.ReuseRawEnvelope
+import SphincsSecurity.Proof.SigningExecutionBudget
+import SphincsSecurity.Proof.TargetShapeContinuation
+import SphincsSecurity.Proof.TargetShapeExpectation
 
 namespace SphincsSecurity.Concrete
 

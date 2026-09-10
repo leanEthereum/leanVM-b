@@ -1,6 +1,7 @@
-import SphincsSecurity.Proof.Position
-import SphincsSecurity.Proof.ExtractOts
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.ExtractFts
+import SphincsSecurity.Proof.ExtractOts
+import SphincsSecurity.Proof.Position
 
 /-!
 # The honest key at a position
@@ -256,14 +257,6 @@ theorem honestPayload_eq_slots {p : Position} (hvalid : p.Valid) :
       rw [honestValue_ftsNode]
       rfl
 
-set_option linter.unnecessarySeqFocus false in
-/-- The slot list has the same length whatever the answer function: it is the children, or one
-secret. -/
-theorem slots_length (p : Position) :
-    (slots f parameter otsSecret ftsSecret p).length
-      = (slots g parameter otsSecret ftsSecret p).length := by
-  cases p <;> simp only [slots, childValues, List.length_map] <;> (try split_ifs) <;> simp
-
 theorem slots_congr {p : Position}
     (hchildren : ∀ c ∈ p.children, honestValue f parameter otsSecret ftsSecret c
       = honestValue g parameter otsSecret ftsSecret c) :
@@ -283,16 +276,6 @@ theorem honestPayload_congr {p : Position} (hvalid : p.Valid)
   rw [honestPayload_eq_slots f parameter otsSecret ftsSecret hvalid,
     honestPayload_eq_slots g parameter otsSecret ftsSecret hvalid,
     slots_congr f g parameter otsSecret ftsSecret hchildren]
-
-/-- **The payload determines the values below it.** -/
-theorem slots_injective {p : Position} (hvalid : p.Valid)
-    (h : honestPayload f parameter otsSecret ftsSecret p
-      = honestPayload g parameter otsSecret ftsSecret p) :
-    slots f parameter otsSecret ftsSecret p = slots g parameter otsSecret ftsSecret p := by
-  rw [honestPayload_eq_slots f parameter otsSecret ftsSecret hvalid,
-    honestPayload_eq_slots g parameter otsSecret ftsSecret hvalid] at h
-  exact TargetSum.flatMap_injective Concrete.digestBytes 16 digestBytes_length
-    (fun _ _ => digestBytes_injective) (slots_length f g parameter otsSecret ftsSecret p) h
 
 theorem honestInput_congr {p : Position} (hvalid : p.Valid)
     (hchildren : ∀ c ∈ p.children, honestValue f parameter otsSecret ftsSecret c

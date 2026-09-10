@@ -1,6 +1,8 @@
-import SphincsSecurity.Proof.OtsProbeNativeTerminalExperiment
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeCanonicalRetainedTrace
 import SphincsSecurity.Proof.OtsProbeChronologicalProbability
 import SphincsSecurity.Proof.OtsProbeEnsuredExecution
+import SphincsSecurity.Proof.OtsProbeNativeTerminalExperiment
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

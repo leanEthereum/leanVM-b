@@ -1,4 +1,7 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeEnsuredInitialization
 import SphincsSecurity.Proof.OtsProbeNativeMaterializedCandidate
+import SphincsSecurity.Proof.OtsProbePublicHashValues
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -13,11 +16,6 @@ theorem MaterializedChainsPublished.of_public
   intro coordinate _ hknown
   obtain ⟨output, houtput⟩ := Option.ne_none_iff_exists'.mp hknown
   exact hpublic coordinate output houtput
-
-theorem materializedChainsPublished_ensuredInitial (targets : Finset Position) :
-    MaterializedChainsPublished (ensuredInitialContext targets) := by
-  intro coordinate _ hknown
-  simp [ensuredInitialContext, LazyRevealProbe.State.empty] at hknown
 
 theorem materializedChainsPublished_of_mem_initializedRoot
     (targets : Finset Position) (fuel : Nat) (table : OtsSecretIndex → HashOutput)

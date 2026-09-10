@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.OtsProbeNativeMissingStructuralCharge
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeHistoryLiveRisk
+import SphincsSecurity.Proof.OtsProbeLiveStartCut
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

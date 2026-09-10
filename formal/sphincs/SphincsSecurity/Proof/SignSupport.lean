@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.Descent
 import SphincsSecurity.Proof.SigningReplay
 
 /-!
@@ -351,18 +353,6 @@ theorem successfulSignRun_of_signing_entry (f : QueryImpl HashSpec Id)
   exact successfulSignRun_of_mem_support f secretKey entry.1 signature beforeCache afterCache
     finalCache (by simpa only [scheme] using hsign') hafter hf
 
-theorem SuccessfulSignRun.layer {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec}
-    {secretKey : SecretKey} {message : Message} {signature : Signature}
-    (hrun : SuccessfulSignRun f cache secretKey message signature) (lay : Layer) :
-    ∃ (index : Index) (parts : Layer → LayerPart),
-      signature.counter = (fun lay => (parts lay).1)
-      ∧ signature.chainValue = (fun lay => (parts lay).2.1)
-      ∧ signature.authPath = flattenPaths (fun lay => (parts lay).2.2)
-      ∧ SuccessfulLayerRun f cache secretKey index lay (parts lay) := by
-  obtain ⟨index, leaves, parts, _, _, _, hcounter, hvalues, hpath, _, heval, hcached⟩ := hrun
-  exact ⟨index, parts, hcounter, hvalues, hpath,
-    successfulLayerRun_of_eval f cache secretKey index lay (parts lay) (heval lay) (hcached lay)⟩
-
 theorem SuccessfulSignRun.indexed {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec}
     {secretKey : SecretKey} {message : Message} {signature : Signature}
     (hrun : SuccessfulSignRun f cache secretKey message signature) :
@@ -384,13 +374,6 @@ theorem SuccessfulSignRun.indexed {f : QueryImpl HashSpec Id} {cache : QueryCach
     fun lay => successfulLayerRun_of_eval f cache secretKey index lay (parts lay)
       (heval lay) (hcached lay)⟩
 
-theorem SuccessfulLayerRun.message_cached {f : QueryImpl HashSpec Id}
-    {cache : QueryCache HashSpec} {secretKey : SecretKey} {index : Index} {lay : Layer}
-    {part : LayerPart} (hrun : SuccessfulLayerRun f cache secretKey index lay part) :
-    CachedRun cache f (layerMessage secretKey index lay) := by
-  obtain ⟨_, _, _, _, _, hmessage, _, _⟩ := hrun
-  exact hmessage
-
 theorem SuccessfulLayerRun.otsSign_eval_cached {f : QueryImpl HashSpec Id}
     {cache : QueryCache HashSpec} {secretKey : SecretKey} {index : Index} {lay : Layer}
     {part : LayerPart} (hrun : SuccessfulLayerRun f cache secretKey index lay part) :
@@ -404,56 +387,6 @@ theorem SuccessfulLayerRun.otsSign_eval_cached {f : QueryImpl HashSpec Id}
           (evalWithAnswerFn f (layerMessage secretKey index lay))) := by
   obtain ⟨_, _, _, _, heval, _, hcached, _⟩ := hrun
   exact ⟨heval, hcached⟩
-
-theorem SuccessfulSignRun.honest_openings {f : QueryImpl HashSpec Id}
-    {cache : QueryCache HashSpec} {secretKey : SecretKey} {message : Message}
-    {signature : Signature} (hrun : SuccessfulSignRun f cache secretKey message signature) :
-    ∃ index, ∀ lay, HonestLayerOpening f secretKey.parameter secretKey.otsSecret lay
-      (treeIndexAt index lay) (leafIndexAt index lay)
-      (evalWithAnswerFn f (layerMessage secretKey index lay)) (signature.counter lay)
-      (signature.chainValue lay) (signaturePath signature lay) := by
-  obtain ⟨index, _, parts, _, _, _, hcounter, hvalues, hauth, _, hlayers⟩ := hrun.indexed
-  refine ⟨index, fun lay => ?_⟩
-  obtain ⟨codeword, hencode, hchains, hpath, _, _, _, _⟩ := hlayers lay
-  refine ⟨codeword, ?_, ?_, ?_⟩
-  · simpa only [congrFun hcounter lay] using hencode
-  · intro chainIdx
-    rw [congrFun hvalues lay]
-    exact hchains chainIdx
-  · intro level hlevel
-    let levelFin : Fin maxLayerHeight :=
-      ⟨level, lt_of_lt_of_le hlevel (layerHeight_le lay)⟩
-    rw [show level = levelFin.val from rfl]
-    rw [signaturePath_flattenPaths signature (fun lay => (parts lay).2.2) hauth lay levelFin
-      hlevel]
-    have hlevelFin : levelFin.val < layerHeight lay := hlevel
-    simpa only [if_pos hlevelFin] using hpath levelFin
-
-theorem SuccessfulSignRun.honest_layer_at {f : QueryImpl HashSpec Id}
-    {cache : QueryCache HashSpec} {secretKey : SecretKey} {message : Message}
-    {signature : Signature} (hrun : SuccessfulSignRun f cache secretKey message signature)
-    (lay : Layer) :
-    ∃ index,
-      CachedRun cache f (layerMessage secretKey index lay)
-        ∧ HonestLayerOpening f secretKey.parameter secretKey.otsSecret lay
-          (treeIndexAt index lay) (leafIndexAt index lay)
-          (evalWithAnswerFn f (layerMessage secretKey index lay)) (signature.counter lay)
-          (signature.chainValue lay) (signaturePath signature lay) := by
-  obtain ⟨index, _, parts, _, _, _, hcounter, hvalues, hauth, _, hlayers⟩ := hrun.indexed
-  obtain ⟨codeword, hencode, hchains, hpath, _, hmessage, _, _⟩ := hlayers lay
-  refine ⟨index, hmessage, codeword, ?_, ?_, ?_⟩
-  · simpa only [congrFun hcounter lay] using hencode
-  · intro chainIdx
-    rw [congrFun hvalues lay]
-    exact hchains chainIdx
-  · intro level hlevel
-    let levelFin : Fin maxLayerHeight :=
-      ⟨level, lt_of_lt_of_le hlevel (layerHeight_le lay)⟩
-    rw [show level = levelFin.val from rfl]
-    rw [signaturePath_flattenPaths signature (fun lay => (parts lay).2.2) hauth lay levelFin
-      hlevel]
-    have hlevelFin : levelFin.val < layerHeight lay := hlevel
-    simpa only [if_pos hlevelFin] using hpath levelFin
 
 theorem SuccessfulSignRun.honest_layer_at_of_digest {f : QueryImpl HashSpec Id}
     {cache : QueryCache HashSpec} {secretKey : SecretKey} {message : Message}
@@ -523,34 +456,6 @@ theorem SuccessfulSignRun.layerRun_of_digest {f : QueryImpl HashSpec Id}
   refine ⟨parts lay, congrFun hcounter lay, congrFun hvalues lay, ?_⟩
   simpa only [hindex] using hlayers lay
 
-theorem SuccessfulSignRun.signLayer_cached_of_digest {f : QueryImpl HashSpec Id}
-    {cache : QueryCache HashSpec} {secretKey : SecretKey} {message : Message}
-    {signature : Signature} (hrun : SuccessfulSignRun f cache secretKey message signature)
-    {index : Index} {leaves : DigestTree → FtsLeaf}
-    (hdigest : SuccessfulDigestRun f cache secretKey message signature.randomness index leaves)
-    (lay : Layer) : CachedRun cache f (signLayer secretKey index lay) := by
-  obtain ⟨runIndex, _, _, hrunDigest, _, _, _, _, _, _, _, hcached⟩ := hrun
-  obtain ⟨_, digest, hrunEval, _, hrunIndex, _, _⟩ := hrunDigest.extract
-  obtain ⟨_, digest', hdigestEval, _, hdigestIndex, _, _⟩ := hdigest.extract
-  have hdigests : digest = digest' := by rw [← hrunEval, ← hdigestEval]
-  have hindex : runIndex = index := by rw [hrunIndex, hdigestIndex, hdigests]
-  simpa only [hindex] using hcached lay
-
-theorem SuccessfulSignRun.honest_fts_opening {f : QueryImpl HashSpec Id}
-    {cache : QueryCache HashSpec} {secretKey : SecretKey} {message : Message}
-    {signature : Signature} (hrun : SuccessfulSignRun f cache secretKey message signature) :
-    ∃ (index : Index) (leaves : DigestTree → FtsLeaf),
-      signature.ftsSecret =
-          (fun tree => secretKey.ftsSecret index tree (leaves (ftsIndexOf tree)))
-        ∧ signature.ftsPath = fun tree level =>
-          honestFtsNode f secretKey.parameter index tree (secretKey.ftsSecret index tree)
-            level.val (Nat.xor ((leaves (ftsIndexOf tree)).val / 2 ^ level.val) 1) := by
-  obtain ⟨index, leaves, _, _, hsecret, hpath, _, _, _, _, _⟩ := hrun.indexed
-  refine ⟨index, leaves, hsecret, hpath.trans ?_⟩
-  funext tree level
-  simp only [ftsOpen, evalWithAnswerFn_sequenceFin]
-  rfl
-
 def HonestFtsSignAt (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
     (secretKey : SecretKey) (message : Message) (signature : Signature) (index : Index)
     (leaves : DigestTree → FtsLeaf) : Prop :=
@@ -570,47 +475,6 @@ theorem SuccessfulSignRun.honest_fts_at {f : QueryImpl HashSpec Id}
   funext tree level
   simp only [ftsOpen, evalWithAnswerFn_sequenceFin]
   rfl
-
-theorem SuccessfulSignRun.middle_root_settled {f : QueryImpl HashSpec Id}
-    {cache : QueryCache HashSpec} {secretKey : SecretKey} {message : Message}
-    {signature : Signature} (hf : cache.AgreesWithFn f)
-    (hrun : SuccessfulSignRun f cache secretKey message signature) :
-    ∃ index, Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache
-      (.node middleLayer (treeIndexAt index middleLayer)
-        ⟨layerHeight middleLayer - 1, by decide⟩ ⟨0, by positivity⟩) := by
-  obtain ⟨index, _, _, _, _, _, _, _, _, _, hlayer⟩ := hrun.indexed
-  have hcached := (hlayer topLayer).message_cached
-  rw [layerMessage_of_lt secretKey index topLayer (by decide)] at hcached
-  refine ⟨index, ?_⟩
-  simpa only [show (⟨topLayer.val + 1, by decide⟩ : Layer) = middleLayer from rfl] using
-    settled_treeRoot_of_cachedRun (ftsSecret := secretKey.ftsSecret) hf middleLayer
-      (treeIndexAt index middleLayer) hcached
-
-theorem SuccessfulSignRun.bottom_root_settled {f : QueryImpl HashSpec Id}
-    {cache : QueryCache HashSpec} {secretKey : SecretKey} {message : Message}
-    {signature : Signature} (hf : cache.AgreesWithFn f)
-    (hrun : SuccessfulSignRun f cache secretKey message signature) :
-    ∃ index, Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache
-      (.node bottomLayer (treeIndexAt index bottomLayer)
-        ⟨layerHeight bottomLayer - 1, by decide⟩ ⟨0, by positivity⟩) := by
-  obtain ⟨index, _, _, _, _, _, _, _, _, _, hlayer⟩ := hrun.indexed
-  have hcached := (hlayer middleLayer).message_cached
-  rw [layerMessage_of_lt secretKey index middleLayer (by decide)] at hcached
-  refine ⟨index, ?_⟩
-  simpa only [show (⟨middleLayer.val + 1, by decide⟩ : Layer) = bottomLayer from rfl] using
-    settled_treeRoot_of_cachedRun (ftsSecret := secretKey.ftsSecret) hf bottomLayer
-      (treeIndexAt index bottomLayer) hcached
-
-theorem SuccessfulSignRun.fts_roots_settled {f : QueryImpl HashSpec Id}
-    {cache : QueryCache HashSpec} {secretKey : SecretKey} {message : Message}
-    {signature : Signature} (hf : cache.AgreesWithFn f)
-    (hrun : SuccessfulSignRun f cache secretKey message signature) :
-    ∃ index, Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache
-      (.ftsRoots index) := by
-  obtain ⟨index, _, _, _, _, _, _, _, _, _, hlayer⟩ := hrun.indexed
-  have hcached := (hlayer bottomLayer).message_cached
-  rw [layerMessage_bottomLayer secretKey index] at hcached
-  exact ⟨index, settled_ftsRoots_of_cachedRun (otsSecret := secretKey.otsSecret) hf index hcached⟩
 
 theorem index_eq_of_bottom_position_eq {left right : Index}
     (htree : treeIndexAt left bottomLayer = treeIndexAt right bottomLayer)

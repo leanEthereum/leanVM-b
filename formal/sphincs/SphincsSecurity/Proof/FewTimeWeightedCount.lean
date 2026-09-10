@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.FewTimeOrigins
-import Mathlib.Algebra.BigOperators.Ring.Finset
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTimePrehitArith
+import SphincsSecurity.Proof.FewTimeProbability
 
 /-!
 # Weighted count of fresh and prehit origins
@@ -15,7 +16,7 @@ open ENNReal
 abbrev InjectiveSources (Selected : Type) (sources : Nat) :=
   {source : Selected → Fin sources // Function.Injective source}
 
-noncomputable instance (Selected : Type) [Fintype Selected] (sources : Nat) :
+noncomputable instance instFintypeInjectiveSources (Selected : Type) [Fintype Selected] (sources : Nat) :
     Fintype (InjectiveSources Selected sources) :=
   Fintype.ofFinite _
 

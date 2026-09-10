@@ -1,4 +1,4 @@
-import SphincsSecurity.Statement
+import SphincsSecurity.Proof.Prelude
 
 /-!
 # The few-time leak, arithmetically
@@ -29,27 +29,6 @@ theorem factorial_mul_choose_le_pow (n d : Nat) :
     Nat.factorial d * Nat.choose n d ≤ n ^ d := by
   rw [← Nat.descFactorial_eq_factorial_mul_choose]
   exact Nat.descFactorial_le_pow n d
-
-/-- The leak's union bound, with `14!` and the powers of two cleared through it. The multipliers are
-`14! / d!`, written out so that nothing has to evaluate a factorial. The right side retains two
-bits of the true `2^-122.9` bound for the final union with the structural event. -/
-theorem leak_union_bound_scaled :
-    87178291200 * 2 ^ (24 * 1) * 1 ^ 14 * 2 ^ (26 * 13)
-      + 43589145600 * 2 ^ (24 * 2) * 2 ^ 14 * 2 ^ (26 * 12)
-      + 14529715200 * 2 ^ (24 * 3) * 3 ^ 14 * 2 ^ (26 * 11)
-      + 3632428800 * 2 ^ (24 * 4) * 4 ^ 14 * 2 ^ (26 * 10)
-      + 726485760 * 2 ^ (24 * 5) * 5 ^ 14 * 2 ^ (26 * 9)
-      + 121080960 * 2 ^ (24 * 6) * 6 ^ 14 * 2 ^ (26 * 8)
-      + 17297280 * 2 ^ (24 * 7) * 7 ^ 14 * 2 ^ (26 * 7)
-      + 2162160 * 2 ^ (24 * 8) * 8 ^ 14 * 2 ^ (26 * 6)
-      + 240240 * 2 ^ (24 * 9) * 9 ^ 14 * 2 ^ (26 * 5)
-      + 24024 * 2 ^ (24 * 10) * 10 ^ 14 * 2 ^ (26 * 4)
-      + 2184 * 2 ^ (24 * 11) * 11 ^ 14 * 2 ^ (26 * 3)
-      + 182 * 2 ^ (24 * 12) * 12 ^ 14 * 2 ^ (26 * 2)
-      + 14 * 2 ^ (24 * 13) * 13 ^ 14 * 2 ^ 26
-      + 1 * 2 ^ (24 * 14) * 14 ^ 14
-    ≤ 87178291200 * 2 ^ 382 := by
-  decide
 
 theorem leak_union_bound_scaled_sum :
     ∑ d ∈ Finset.Icc 1 14,

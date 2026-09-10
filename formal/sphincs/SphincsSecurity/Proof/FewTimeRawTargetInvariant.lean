@@ -1,5 +1,5 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimeTargetInvariant
-import SphincsSecurity.Proof.FewTime125Count
 
 namespace SphincsSecurity.Concrete
 
@@ -128,40 +128,5 @@ theorem OriginTargetMonitorState.expected_rawPotential_afterRawDirect_le
     intro target
     exact state.origin.expected_potential_afterDirect_le input
       (fun views => event (views, target)) horigin
-
-theorem OriginTargetMonitorState.expected_rawPotential_afterSigner_le
-    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
-    {configuration : OriginConfiguration pattern sources}
-    (state : OriginTargetMonitorState configuration)
-    (secretKey : SecretKey) (request : SignRequest)
-    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
-    (q : Nat) (hq : q ≤ 2 ^ 126)
-    (hcache : QueryCache.enncard state.origin.viewed.cache ≤ q)
-    (hcoherent : state.origin.ScheduleCoherent) :
-    (∑' result, Pr[= result |
-      (simulateQ romImpl (signWithView secretKey request)).run state.origin.viewed.cache] *
-        (state.advanceOrigin (state.origin.afterSigner secretKey request result)).rawPotential event) ≤
-      state.rawPotential event := by
-  apply state.expected_rawPotential_advanceOrigin_le
-  intro target
-  exact state.origin.expected_potential_afterSigner_le secretKey request
-    (fun views => event (views, target)) q hq hcache hcoherent
-
-theorem OriginTargetMonitorState.targetScheduleCoherent_afterRawDirect
-    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
-    {configuration : OriginConfiguration pattern sources}
-    (targetOrdinal : Nat) (state : OriginTargetMonitorState configuration)
-    (input : HashInput) (output : HashOutput)
-    (hcoherent : state.TargetScheduleCoherent targetOrdinal) :
-    (state.afterRawDirect targetOrdinal input output).TargetScheduleCoherent targetOrdinal := by
-  by_cases hfresh : state.origin.viewed.cache input = none
-  · simp only [afterRawDirect, hfresh, if_true]
-    exact OriginTargetMonitorState.targetScheduleCoherent_recordCandidate targetOrdinal
-      (state.advanceOrigin (state.origin.afterDirect input output)) _ _
-      (state.targetScheduleCoherent_advanceOrigin targetOrdinal _ hcoherent)
-  · simpa [afterRawDirect, hfresh] using
-      state.targetScheduleCoherent_advanceOrigin targetOrdinal
-        (state.origin.afterDirect input output) hcoherent
-
 
 end SphincsSecurity.Concrete

@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.OtsProbePrivateValueHistoryRisk
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbePrivateValueCut
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -42,23 +43,6 @@ theorem privatePositionProbeCutAt_query_bind
       else (liftM (OracleSpec.query input) : OracleComp (LazyRevealProbe.World Coordinate) _) >>=
         fun output => privatePositionProbeCutAt target (next output) ordinal) := rfl
 
-theorem privatePositionProbeCutAt_resume
-    (target : Position) (computation : OracleComp (LazyRevealProbe.World Coordinate) α) (ordinal : Nat) :
-    privatePositionProbeCutAt target computation ordinal >>= PrivateValueCut.resume = computation := by
-  induction computation using OracleComp.inductionOn generalizing ordinal with
-  | pure value => rfl
-  | query_bind input next ih =>
-      rw [privatePositionProbeCutAt_query_bind]
-      split_ifs
-      · rfl
-      · cases ordinal with
-        | zero => rfl
-        | succ ordinal =>
-            rw [bind_assoc]
-            exact bind_congr fun output => ih output ordinal
-      · rw [bind_assoc]
-        exact bind_congr fun output => ih output ordinal
-
 theorem privatePositionProbeCutAt_no_disclosure
     (target : Position) (computation : OracleComp (LazyRevealProbe.World Coordinate) α) (ordinal : Nat) :
     (privatePositionProbeCutAt target computation ordinal).IsQueryBoundP (IsPrivatePositionDisclosure target) 0 := by
@@ -92,23 +76,5 @@ theorem privatePositionProbeCutAt_probe_bound
             exact ⟨Or.inr (by omega), fun output => by simpa only [if_pos hprobe, Nat.add_sub_cancel] using ih output ordinal⟩
       · rw [OracleComp.isQueryBoundP_query_bind_iff]
         exact ⟨Or.inl hprobe, fun output => by simpa only [if_neg hprobe] using ih output ordinal⟩
-
-theorem privatePositionProbeCutAt_zero
-    (target : Position) (computation : OracleComp (LazyRevealProbe.World Coordinate) α) :
-    privatePositionProbeCutAt target computation 0 = privatePositionAccessCut target computation := by
-  induction computation using OracleComp.inductionOn with
-  | pure value => rfl
-  | query_bind input next ih =>
-      rw [privatePositionProbeCutAt_query_bind, privatePositionAccessCut_query_bind]
-      have haccess : IsPrivatePositionAccess target input ↔
-          IsPrivatePositionDisclosure target input ∨ IsPrivatePositionProbe target input := by
-        cases input <;> simp [IsPrivatePositionAccess, IsPrivatePositionDisclosure, IsPrivatePositionProbe]
-      rw [propext haccess]
-      by_cases hdisclose : IsPrivatePositionDisclosure target input
-      · simp [hdisclose]
-      · by_cases hprobe : IsPrivatePositionProbe target input
-        · simp [hdisclose, hprobe]
-        · simp only [if_neg hdisclose, if_neg hprobe, if_neg (not_or.mpr ⟨hdisclose, hprobe⟩)]
-          exact bind_congr ih
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

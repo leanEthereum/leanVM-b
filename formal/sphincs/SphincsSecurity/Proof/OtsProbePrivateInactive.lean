@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.OtsProbeNativeChainBound
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbePrivateValueProbeCut
+import SphincsSecurity.Proof.OtsProbeStartHistorySupport
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

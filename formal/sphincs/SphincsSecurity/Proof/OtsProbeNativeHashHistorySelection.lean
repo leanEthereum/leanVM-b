@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.OtsProbeNativeRootFirstMatch
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeNativeRootCandidateHistory
+import SphincsSecurity.Proof.OuterHashQueryCut
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.FiniteHashWorld
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.AdaptiveRevealProbe
+import SphincsSecurity.Proof.LazyRevealProbe
 
 namespace SphincsSecurity.Concrete.FiniteGraphSampling
 
@@ -91,95 +93,5 @@ theorem evalDist_read_eq_plant (input : Node → State → Cell)
         distribution >>= fun result => pure (result.1, Function.update result.2 (input node state) answer))
         (ih hnodes (advance node answer state))
       simpa only [evalDist_bind, evalDist_pure, bind_assoc, pure_bind] using h
-
-theorem evalDist_read_bind_eq_plant {Result : Type} (input : Node → State → Cell)
-    (advance : Node → Answer → State → State) (hsep : Separated input)
-    (nodes : List Node) (hnodes : nodes.Nodup) (state : State)
-    (next : State → (Cell → Answer) → ProbComp Result) :
-    𝒟[do
-      let table ← ($ᵗ (Cell → Answer) : ProbComp _)
-      next (read input advance table nodes state) table] =
-      𝒟[do let result ← plant input advance nodes state; next result.1 result.2] := by
-  have h := congrArg (fun distribution : SPMF (State × (Cell → Answer)) =>
-    distribution >>= fun result => 𝒟[next result.1 result.2])
-    (evalDist_read_eq_plant input advance hsep nodes hnodes state)
-  simpa only [evalDist_bind, evalDist_pure, bind_assoc, pure_bind] using h
-
-noncomputable def draw (advance : Node → Answer → State → State) : List Node → State → ProbComp State
-  | [], state => pure state
-  | node :: nodes, state => do
-      let answer ← $ᵗ Answer
-      draw advance nodes (advance node answer state)
-
-omit [_root_.Finite Cell] [_root_.Finite Answer] [Nonempty Answer] in
-theorem evalDist_plant_fst (input : Node → State → Cell)
-    (advance : Node → Answer → State → State) (nodes : List Node) (state : State) :
-    𝒟[Prod.fst <$> plant input advance nodes state] = 𝒟[draw advance nodes state] := by
-  induction nodes generalizing state with
-  | nil =>
-      simp only [plant, draw, map_bind, map_pure]
-      exact evalDist_bind_const_neverFails _ (by simp) _
-  | cons node nodes ih =>
-      simp only [plant, draw, map_bind, map_pure]
-      apply evalDist_bind_congr_left
-      intro answer
-      rw [bind_pure_comp]
-      exact ih (advance node answer state)
-
-omit [_root_.Finite Cell] [_root_.Finite Answer] [Nonempty Answer] in
-theorem evalDist_plant_read {View Result : Type} (input : Node → State → Cell)
-    (advance : Node → Answer → State → State) (nodes : List Node) (state : State)
-    (view : State → (Cell → Answer) → View)
-    (hview : ∀ node before after table answer,
-      view after (Function.update table (input node before) answer) = view after table)
-    (next : State → View → ProbComp Result) :
-    𝒟[do let result ← plant input advance nodes state; next result.1 (view result.1 result.2)] =
-      𝒟[do
-        let result ← draw advance nodes state
-        let table ← ($ᵗ (Cell → Answer) : ProbComp _)
-        next result (view result table)] := by
-  induction nodes generalizing state with
-  | nil => simp only [plant, draw, bind_assoc, pure_bind]
-  | cons node nodes ih =>
-      simp only [plant, draw, bind_assoc, pure_bind, hview]
-      apply evalDist_bind_congr_left
-      intro answer
-      exact ih (advance node answer state)
-
-omit [_root_.Finite Cell] [_root_.Finite Answer] [Nonempty Answer]
-  [SampleableType Answer] [SampleableType (Cell → Answer)] in
-theorem read_coordinate_table (table : Cell → Answer) (nodes : List Cell) (state : Cell → Answer) :
-    read (fun node (_ : Cell → Answer) => node) (fun node output values => Function.update values node output)
-      table nodes state = fun node => if node ∈ nodes then table node else state node := by
-  induction nodes generalizing state with
-  | nil => simp [read]
-  | cons first rest ih =>
-      rw [read, ih]
-      funext node
-      by_cases hrest : node ∈ rest <;> by_cases hfirst : node = first <;>
-        simp [hrest, hfirst]
-
-theorem evalDist_draw_coordinates (nodes : List Cell) (hnodup : nodes.Nodup)
-    (hfull : ∀ node : Cell, node ∈ nodes) (state : Cell → Answer) :
-    𝒟[draw (fun node output values => Function.update values node output) nodes state] =
-      𝒟[($ᵗ (Cell → Answer) : ProbComp _)] := by
-  let input := fun (node : Cell) (_ : Cell → Answer) => node
-  let advance := fun (node : Cell) (output : Answer) (values : Cell → Answer) => Function.update values node output
-  have h := congrArg (fun distribution : SPMF ((Cell → Answer) × (Cell → Answer)) =>
-    Prod.fst <$> distribution)
-    (evalDist_read_eq_plant input advance (fun _ _ h _ _ => h) nodes hnodup state)
-  have hread : ∀ table : Cell → Answer, read input advance table nodes state = table := by
-    intro table
-    rw [read_coordinate_table]
-    funext node
-    rw [if_pos (hfull node)]
-  have hmap :
-      𝒟[Prod.fst <$> (do
-        let table ← ($ᵗ (Cell → Answer) : ProbComp _)
-        pure (read input advance table nodes state, table))] =
-        𝒟[Prod.fst <$> plant input advance nodes state] := by
-    simpa only [evalDist_map] using h
-  rw [evalDist_plant_fst] at hmap
-  simpa only [map_bind, map_pure, hread, bind_pure] using hmap.symm
 
 end SphincsSecurity.Concrete.FiniteGraphSampling

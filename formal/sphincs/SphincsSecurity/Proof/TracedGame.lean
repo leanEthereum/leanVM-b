@@ -1,5 +1,6 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.Secrets
 import SphincsSecurity.Proof.SigningTrace
-import SphincsSecurity.Proof.OneTimeEvents
 
 /-!
 # The game with signer cache intervals retained
@@ -61,31 +62,6 @@ theorem gameRestWithSigningTrace_projection (adversary : Adversary)
       simp [gameRest, mappedRun, mappedAdversaryImpl, finish, bind_map_left,
         QueryImpl.simulateQ_writerTMapBase_run]
 
-theorem gameRestWithSigningTrace_support_invariants (adversary : Adversary)
-    (publicKey : PublicKey) (secretKey : SecretKey) (initialCache : QueryCache HashSpec)
-    (result : (Forgery × Bool) × (QueryCache HashSpec × SigningCacheTrace))
-    (hmem : result ∈ support
-      (gameRestWithSigningTrace adversary publicKey secretKey initialCache)) :
-    result.2.2.ValidRuns secretKey ∧ result.2.2.CachesLe result.2.1
-      ∧ result.2.2.Chronological := by
-  rw [gameRestWithSigningTrace, mem_support_bind_iff] at hmem
-  obtain ⟨⟨forgery, adversaryCache, trace⟩, hadversary, hfinish⟩ := hmem
-  rw [mem_support_bind_iff] at hfinish
-  obtain ⟨⟨verified, finalCache⟩, hverify, hpure⟩ := hfinish
-  simp only [support_pure, Set.mem_singleton_iff] at hpure
-  subst result
-  have hvalid := cacheTracedMappedAdversaryImpl_validRuns secretKey
-    (adversary.main publicKey) initialCache [] (forgery, adversaryCache, trace)
-    (by simp [SigningCacheTrace.ValidRuns]) hadversary
-  have hcachesChronological := cacheTracedMappedAdversaryImpl_cachesLe_chronological secretKey
-    (adversary.main publicKey) initialCache [] (forgery, adversaryCache, trace)
-    (by simp [SigningCacheTrace.CachesLe]) (by simp [SigningCacheTrace.Chronological]) hadversary
-  exact ⟨hvalid, hcachesChronological.1.mono
-      (simulateQ_romImpl_cache_le
-        (Concrete.scheme.verify publicKey forgery.message forgery.signature)
-        adversaryCache (verified, finalCache) hverify),
-    hcachesChronological.2⟩
-
 namespace Concrete
 
 noncomputable def gameAfterSecretsWithSigningTrace (adversary : Adversary)
@@ -116,26 +92,6 @@ theorem gameAfterSecretsWithSigningTrace_projection (adversary : Adversary)
     (⟨rootResult.1, parameter⟩ : PublicKey)
     (⟨parameter, rootResult.1, otsSecret, ftsSecret⟩ : SecretKey) rootResult.2]
   simp
-
-theorem gameAfterSecretsWithSigningTrace_support_invariants (adversary : Adversary)
-    (parameter : PublicParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (result : (Digest × Forgery × Bool) × (QueryCache HashSpec × SigningCacheTrace))
-    (hmem : result ∈ support
-      (gameAfterSecretsWithSigningTrace adversary parameter otsSecret ftsSecret)) :
-    let secretKey : SecretKey := ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
-    result.2.2.ValidRuns secretKey ∧ result.2.2.CachesLe result.2.1
-      ∧ result.2.2.Chronological := by
-  rw [gameAfterSecretsWithSigningTrace, mem_support_bind_iff] at hmem
-  obtain ⟨⟨root, rootCache⟩, _, hrest⟩ := hmem
-  rw [mem_support_bind_iff] at hrest
-  obtain ⟨restResult, hrest, hpure⟩ := hrest
-  simp only [support_pure, Set.mem_singleton_iff] at hpure
-  subst result
-  simpa using gameRestWithSigningTrace_support_invariants adversary
-    (⟨root, parameter⟩ : PublicKey)
-    (⟨parameter, root, otsSecret, ftsSecret⟩ : SecretKey) rootCache restResult hrest
 
 end Concrete
 

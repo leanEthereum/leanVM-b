@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.UniformTableRestriction
 
 namespace SphincsSecurity.Concrete
@@ -38,29 +39,5 @@ theorem uniformTable_disclose_mass (allowed : ι → Finset α)
     · rw [if_pos hlabels, uniformTable_apply,
         if_neg (fun h => hvalue (hlabels ▸ h coordinate))]
     · rw [if_neg hlabels]
-
-theorem uniformTable_bind_disclose {Result : Type} (allowed : ι → Finset α)
-    (ha : ∀ coordinate, (allowed coordinate).Nonempty) (coordinate : ι)
-    (next : α → (ι → α) → PMF Result) :
-    (uniformTable allowed ha).bind (fun labels => next (labels coordinate) labels) =
-      (PMF.uniformOfFinset (allowed coordinate) (ha coordinate)).bind (fun value =>
-        (uniformTable (discloseTableValue allowed coordinate value)
-          (discloseTableValue_nonempty allowed ha coordinate value)).bind (next value)) := by
-  classical
-  apply PMF.ext
-  intro result
-  simp only [PMF.bind_apply, ← ENNReal.tsum_mul_left, ← mul_assoc, uniformTable_disclose_mass,
-    ite_mul, zero_mul]
-  rw [ENNReal.tsum_comm]
-  simp
-
-omit [Fintype ι] [DecidableEq α] in
-theorem discloseTableValue_card_unrevealed (allowed : ι → Finset α) (active : Finset ι)
-    (coordinate : ι) (value : α) (minimum : Nat)
-    (hmin : ∀ other ∈ active, minimum ≤ (allowed other).card) :
-    ∀ other ∈ active.erase coordinate, minimum ≤ (discloseTableValue allowed coordinate value other).card := by
-  intro other hother
-  rw [discloseTableValue, Function.update_of_ne (Finset.mem_erase.mp hother).1]
-  exact hmin other (Finset.mem_erase.mp hother).2
 
 end SphincsSecurity.Concrete

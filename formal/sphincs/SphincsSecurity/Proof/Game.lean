@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.QueryBound
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Statement
 
 /-!
 # Splitting the game at key generation
@@ -24,18 +25,5 @@ noncomputable def gameRest (scheme : Scheme) (adversary : Adversary) (pk : Publi
 theorem gameCore_eq (scheme : Scheme) (adversary : Adversary) :
     gameCore scheme adversary
       = scheme.keygen >>= fun keys => gameRest scheme adversary keys.1 keys.2 := rfl
-
-/-- **The reduction's frame.** If the rest of the game wins with probability at most `c` from every
-cache key generation can leave, the adversary's advantage is at most `c`. -/
-theorem forgeAdvantage_le (scheme : Scheme) (adversary : Adversary) (c : ℝ≥0∞)
-    (h : ∀ keys : (PublicKey × SecretKey), ∀ cache : QueryCache HashSpec,
-      (keys, cache) ∈ support ((simulateQ romImpl scheme.keygen).run ∅) →
-      Pr[fun result => result.1 = true
-        | (simulateQ romImpl (gameRest scheme adversary keys.1 keys.2)).run cache] ≤ c) :
-    forgeAdvantage scheme adversary ≤ c := by
-  rw [forgeAdvantage, gameCore_eq, StateT.run'_eq, probOutput_map, simulateQ_bind,
-    StateT.run_bind]
-  refine probEvent_bind_le_of_forall_le fun keysCache hmem => ?_
-  exact h keysCache.1 keysCache.2 hmem
 
 end SphincsSecurity

@@ -1,12 +1,11 @@
-import SphincsSecurity.Proof.RetainedResidualGameTransfer
-import SphincsSecurity.Proof.Descent
-import SphincsSecurity.Proof.EncodingCached
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.RetainedResidualContext
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting
 attribute [local instance] Classical.propDecidable
-attribute [local irreducible] hashInputs sourceInputs canonicalEncodingInputs canonicalGraphInputs instFintypePosition
+attribute [local irreducible] hashInputs canonicalEncodingInputs canonicalGraphInputs instFintypePosition
   signDigestLoop signAfterDigest sequenceFin chainWalk
 set_option backward.isDefEq.respectTransparency false
 

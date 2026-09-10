@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Statement
 
 /-!
@@ -13,7 +14,7 @@ namespace SphincsSecurity.Concrete
 
 attribute [local semireducible] treeNode ftsNode verify sign sampleRandomness
 
-noncomputable local instance : SampleableType Randomness :=
+noncomputable local instance instSampleableTypeRandomness_1 : SampleableType Randomness :=
   SampleableType.ofFintype Randomness
 
 variable {m : Type → Type} [Monad m] [HasQuery HashSpec m]

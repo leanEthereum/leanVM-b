@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.OtsProbeNativeRootSwapOrdinaryCache
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeCanonicalPending
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootSelectionMaterialized
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

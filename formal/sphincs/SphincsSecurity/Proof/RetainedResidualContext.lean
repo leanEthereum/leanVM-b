@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.RetainedResidualHistory
 import SphincsSecurity.Proof.RetainedResidualTraceValidity
 
 namespace SphincsSecurity.Concrete.RetainedResidual

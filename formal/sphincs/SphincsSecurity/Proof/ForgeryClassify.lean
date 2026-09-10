@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimeCompare
+import SphincsSecurity.Proof.LayerCompare
 
 /-!
 # Classifying an accepted forgery
@@ -10,16 +12,6 @@ exactly by the signing transcript, or at an honest few-time opening.
 namespace SphincsSecurity.Concrete
 
 open OracleComp OracleSpec
-
-def LayerObstacle (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
-    (secretKey : SecretKey) (signingLog : QueryLog SigningSpec) : Prop :=
-  ∃ (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (message : Digest)
-      (counter : Counter) (values : ChainIndex → Digest) (path : Nat → Digest),
-    HonestLayerOpening f secretKey.parameter secretKey.otsSecret lay tree leafIdx message counter
-        values path
-      ∧ CachedRun cache f (otsLeaf secretKey.parameter lay tree leafIdx message counter values)
-      ∧ (¬ SignedLayerAt f cache secretKey signingLog lay tree leafIdx
-        ∨ LayerComparisonFailure f cache secretKey signingLog lay tree leafIdx message counter)
 
 def VerifierLayerMessage (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
     (index : Index) (leaves : DigestTree → FtsLeaf) (signature : Signature)
@@ -85,26 +77,6 @@ def SettledForgedLayerObstacle (f : QueryImpl HashSpec Id)
           (treeIndexAt index lay) (leafIndexAt index lay)
         ∨ LayerComparisonFailure f cache secretKey signingLog lay
           (treeIndexAt index lay) (leafIndexAt index lay) message (signature.counter lay))
-
-theorem SettledForgedLayerObstacle.toForgedLayerObstacle
-    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec}
-    {secretKey : SecretKey} {signingLog : QueryLog SigningSpec} {index : Index}
-    {leaves : DigestTree → FtsLeaf} {signature : Signature}
-    (hobstacle : SettledForgedLayerObstacle f cache secretKey signingLog index leaves signature) :
-    ForgedLayerObstacle f cache secretKey signingLog index leaves signature := by
-  obtain ⟨lay, message, _, hverifier, hopening, hcached, hfailure⟩ := hobstacle
-  exact ⟨lay, message, hverifier, hopening, hcached, hfailure⟩
-
-theorem ForgedLayerObstacle.toLayerObstacle
-    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec}
-    {secretKey : SecretKey} {signingLog : QueryLog SigningSpec} {index : Index}
-    {leaves : DigestTree → FtsLeaf} {signature : Signature}
-    (hobstacle : ForgedLayerObstacle f cache secretKey signingLog index leaves signature) :
-    LayerObstacle f cache secretKey signingLog := by
-  obtain ⟨lay, message, _, hopening, hcached, hfailure⟩ := hobstacle
-  exact ⟨lay, treeIndexAt index lay, leafIndexAt index lay, message,
-    signature.counter lay, signature.chainValue lay, signaturePath signature lay,
-    hopening, hcached, hfailure⟩
 
 def UncoveredFtsSecret (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
     (secretKey : SecretKey) (signingLog : QueryLog SigningSpec) (index : Index)
@@ -393,59 +365,5 @@ theorem accepted_forgery_classify (f : QueryImpl HashSpec Id) (cache : QueryCach
         htopRun, Or.inr hfailure⟩)
   · exact Or.inr (Or.inl ⟨topLayer, topMessage, htopSettled, hverifierTop, htopOpening,
       htopRun, Or.inl hsignedTop⟩)
-
-theorem winning_support_classify (adversary : Adversary) (parameter : PublicParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (finalCache : QueryCache HashSpec)
-    (hwin : (true, finalCache) ∈ support ((simulateQ romImpl
-      (gameAfterSecrets adversary parameter otsSecret ftsSecret)).run ∅)) :
-    Bad parameter otsSecret ftsSecret finalCache
-      ∨ ∃ root forgery signingLog f digest,
-        let secretKey : SecretKey := ⟨parameter, root, otsSecret, ftsSecret⟩
-        finalCache.AgreesWithFn f
-          ∧ SigningTranscript.Valid signingLog
-          ∧ ¬ SigningTranscript.Contains signingLog forgery
-          ∧ evalWithAnswerFn f
-              (messageDigest parameter root forgery.message forgery.signature.randomness) = digest
-          ∧ Admissible digest
-          ∧ (LayerObstacle f finalCache secretKey signingLog
-            ∨ FewTimeLeak f finalCache secretKey signingLog (digestIndex digest)
-                (digestLeaves digest)
-            ∨ UncoveredFtsSecret f finalCache secretKey signingLog (digestIndex digest)
-                (digestLeaves digest) forgery.signature.ftsSecret) := by
-  obtain ⟨root, _, forgery, signingLog, _, _, _, _, hvalid, hnotContains, f, hf, _, _, _, _,
-      hrootSettled,
-      digest, hdigest, _, hadmissible, hftsRun, hresult⟩ :=
-    winning_support_extract adversary parameter otsSecret ftsSecret finalCache hwin
-  rcases hresult with hbad | htop
-  · exact Or.inl hbad
-  ·
-    let index := digestIndex digest
-    let leaves := digestLeaves digest
-    let ftsPublicKey := evalWithAnswerFn f
-      (ftsRecover parameter index leaves forgery.signature.ftsSecret forgery.signature.ftsPath)
-    have hclassified := accepted_forgery_classify f finalCache
-      (⟨parameter, root, otsSecret, ftsSecret⟩ : SecretKey) signingLog index forgery.signature leaves
-      ftsPublicKey root hf rfl htop (by
-        have htree : treeIndexAt index topLayer = rootTree := by
-          apply Fin.ext
-          exact treeIndexAt_topLayer index
-        unfold LayerRootSettled
-        rw [htree]
-        simpa using hrootSettled) hftsRun
-    rcases hclassified with hbad | hobstacle | hfts
-    · exact Or.inl hbad
-    · exact Or.inr ⟨root, forgery, signingLog, f, digest, hf, hvalid, hnotContains, hdigest,
-        hadmissible, Or.inl hobstacle.toForgedLayerObstacle.toLayerObstacle⟩
-    · rcases fewTimeLeak_or_uncovered f finalCache
-          (⟨parameter, root, otsSecret, ftsSecret⟩ : SecretKey) signingLog index leaves with
-        hleak | ⟨tree, huncovered⟩
-      · exact Or.inr ⟨root, forgery, signingLog, f, digest, hf, hvalid, hnotContains, hdigest,
-          hadmissible, Or.inr (Or.inl hleak)⟩
-      · exact Or.inr ⟨root, forgery, signingLog, f, digest, hf, hvalid, hnotContains, hdigest,
-          hadmissible, Or.inr (Or.inr ⟨tree, huncovered, (hfts.1.2.1 tree).1, by
-            apply hftsRun
-            exact ftsRecover_leaf_query_mem f parameter index leaves forgery.signature.ftsSecret
-              forgery.signature.ftsPath tree⟩)⟩
 
 end SphincsSecurity.Concrete

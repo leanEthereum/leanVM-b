@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.BoundaryHashEvaluation
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.Extract
+import SphincsSecurity.Proof.OneTime
 
 namespace SphincsSecurity.Concrete
 
@@ -72,33 +74,6 @@ theorem eval_frontierTreePath (parameter : PublicParameter) (f : QueryImpl HashS
   split_ifs
   · exact eval_frontierTreeNode _ _ _ _ _ _ _ hfrontier _ _
   · rfl
-
-theorem boundaryRun_treeNode_frontier (parameter : PublicParameter) (f : QueryImpl HashSpec Id)
-    (lay : Layer) (tree : TreeIndex) (secret : LeafIndex → ChainIndex → Digest)
-    (digits : LeafIndex → Encoding) (frontier : LeafIndex → ChainIndex → Digest)
-    (hfrontier : IsOtsFrontier parameter f lay tree secret digits frontier) (level nodeIdx : Nat)
-    (cache : QueryCache HashSpec) (result : (Digest × SigningBoundaryTrace) × QueryCache HashSpec)
-    (hr : result ∈ support (boundaryRun parameter
-      (liftM (treeNode parameter lay tree secret level nodeIdx : OracleComp HashSpec Digest)) cache))
-    (hf : result.2.AgreesWithFn f) :
-    result.1 = (evalWithAnswerFn f (frontierTreeNode parameter lay tree digits frontier level nodeIdx),
-      (FreeMonoid.of none) ^ (296 * 2 ^ level - 1)) := by
-  rw [← boundaryEval_of_boundaryRun parameter _ cache result hr f hf, boundaryEval_treeNode,
-    ← eval_frontierTreeNode _ _ _ _ _ _ _ hfrontier]
-
-theorem boundaryRun_treePath_frontier (parameter : PublicParameter) (f : QueryImpl HashSpec Id)
-    (lay : Layer) (tree : TreeIndex) (secret : LeafIndex → ChainIndex → Digest)
-    (digits : LeafIndex → Encoding) (frontier : LeafIndex → ChainIndex → Digest)
-    (hfrontier : IsOtsFrontier parameter f lay tree secret digits frontier) (leaf : LeafIndex)
-    (cache : QueryCache HashSpec)
-    (result : ((Fin maxLayerHeight → Digest) × SigningBoundaryTrace) × QueryCache HashSpec)
-    (hr : result ∈ support (boundaryRun parameter
-      (liftM (treePath parameter lay tree secret leaf : OracleComp HashSpec _)) cache))
-    (hf : result.2.AgreesWithFn f) :
-    result.1 = (evalWithAnswerFn f (frontierTreePath parameter lay tree digits frontier leaf),
-      (FreeMonoid.of none) ^ authenticationHashCost lay) := by
-  rw [← boundaryEval_of_boundaryRun parameter _ cache result hr f hf, boundaryEval_treePath,
-    ← eval_frontierTreePath _ _ _ _ _ _ _ hfrontier]
 
 theorem eval_chainWalk_congr_tail (parameter : PublicParameter) (f g : QueryImpl HashSpec Id)
     (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex) (chainIdx : ChainIndex)

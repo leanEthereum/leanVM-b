@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CheckedByteExecution
+import SphincsSecurity.Proof.PrefixByteAction
 import SphincsSecurity.Proof.PublicEncodingMatch
 
 namespace SphincsSecurity.Concrete.ResidualByteFrontend

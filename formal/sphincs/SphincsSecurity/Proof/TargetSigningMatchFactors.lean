@@ -1,10 +1,12 @@
-import SphincsSecurity.Proof.NormalizedTargetCacheQuery
-import SphincsSecurity.Proof.SingleMessageCacheGrowth
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.CachedSigningViews
+import SphincsSecurity.Proof.NormalizedTargetMatches
+import SphincsSecurity.Proof.TargetAssignmentReuse
 
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal
-open FtsProbeSimulation (messageAnswers MessageHashInput)
+open FtsProbeSimulation (messageAnswers)
 attribute [local instance] Classical.propDecidable
 set_option backward.isDefEq.respectTransparency false
 
@@ -38,24 +40,6 @@ theorem eligibleSigningViews_cache_stable (key : SecretKey) (before after : Quer
   exact eligibleSigningView?_cache_stable key.parameter key.root before after hcache payload (log.get slot)
     (hsigned _ (List.get_mem _ _))
 
-theorem signWithView_eligibleView_of_view (key : SecretKey) (message : Message) (before : QueryCache HashSpec)
-    (payload : HashInput) (source : FewTimeView) (result : (Option Signature × Option FewTimeView) × QueryCache HashSpec)
-    (hresult : result ∈ support ((simulateQ romImpl (signWithView key message)).run before)) (hview : result.1.2 = some source) :
-    eligibleSigningView? (messageAnswers key.parameter result.2) key.root payload ⟨message, result.1.1⟩ = none ∨
-      eligibleSigningView? (messageAnswers key.parameter result.2) key.root payload ⟨message, result.1.1⟩ = some source := by
-  cases hresponse : result.1.1 with
-  | none => exact Or.inl (by simp [eligibleSigningView?])
-  | some signature =>
-      have hresult' : ((some signature, result.1.2), result.2) ∈ support
-          ((simulateQ romImpl (signWithView key message)).run before) := by
-        have heq : result = ((some signature, result.1.2), result.2) := Prod.ext (Prod.ext hresponse rfl) rfl
-        rwa [heq] at hresult
-      obtain ⟨output, houtput, _, houtview⟩ := signWithView_successful_cached_output key message before result.2 signature result.1.2 hresult'
-      have heq : hashOutputFewTimeView output = source := Option.some.inj (houtview.symm.trans hview)
-      by_cases hsame : messageDigestPayload key.root message signature.randomness = payload
-      · exact Or.inl (by simp [eligibleSigningView?, hsame])
-      · exact Or.inr (by simp [eligibleSigningView?, observedSigningView?, messageAnswers, hsame, houtput, heq])
-
 theorem normalizedTargetLogMatch_le_of_eligibleView (key : SecretKey) (before after : QueryCache HashSpec)
     (log : QueryLog SigningSpec) (entry : SigningEntry) (payload : HashInput) (target source : FewTimeView) (tree : FtsTree)
     (hcache : before ≤ after) (hsigned : SigningDigestsCached key.parameter before key.root log)
@@ -76,37 +60,5 @@ theorem normalizedTargetLogMatch_le_of_eligibleView (key : SecretKey) (before af
   rcases hentry with hnone | hsome
   · simp only [hnone, reduceCtorEq, false_and, exists_false, if_false, Nat.zero_le]
   · simp only [hsome, Option.some.injEq, exists_eq_left', sourceTreeMatch, le_refl]
-
-theorem signWithView_normalizedTargetLogMatch_le (key : SecretKey) (message : Message) (before : QueryCache HashSpec)
-    (log : QueryLog SigningSpec) (payload : HashInput) (target source : FewTimeView) (tree : FtsTree)
-    (hsigned : SigningDigestsCached key.parameter before key.root log)
-    (result : (Option Signature × Option FewTimeView) × QueryCache HashSpec)
-    (hresult : result ∈ support ((simulateQ romImpl (signWithView key message)).run before)) (hview : result.1.2 = some source) :
-    normalizedTargetLogMatch key result.2 (log ++ [⟨message, result.1.1⟩]) payload target tree ≤
-      normalizedTargetLogMatch key before log payload target tree + normalizedSourceSubsetMatch target source {tree} := by
-  exact normalizedTargetLogMatch_le_of_eligibleView key before result.2 log ⟨message, result.1.1⟩ payload target source tree
-    (simulateQ_romImpl_cache_le (signWithView key message) before result hresult) hsigned
-    (signWithView_eligibleView_of_view key message before payload source result hresult hview)
-
-theorem signWithView_normalizedCachedTargetSubsetMatch_of_new (key : SecretKey) (message : Message)
-    (before after : QueryCache HashSpec) (signature : Option Signature) (view : Option FewTimeView)
-    (hresult : ((signature, view), after) ∈ support ((simulateQ romImpl (signWithView key message)).run before))
-    (targetInput payload : HashInput) (target : FewTimeView) (required : Finset FtsTree) (output : HashOutput)
-    (hfresh : before (tweakableHashInput key.parameter .message payload) = none)
-    (hafter : after (tweakableHashInput key.parameter .message payload) = some output)
-    (hadmissible : Admissible (truncateMessageDigest output)) :
-    normalizedCachedTargetSubsetMatch key.parameter after targetInput target required =
-      normalizedCachedTargetSubsetMatch key.parameter before targetInput target required +
-        if tweakableHashInput key.parameter .message payload = targetInput then 0 else normalizedSourceSubsetMatch target (hashOutputFewTimeView output) required := by
-  simp only [normalizedCachedTargetSubsetMatch_eq_weight]
-  exact signWithView_cacheMessageWeight_of_new key message before after signature view hresult _ payload output hfresh hafter hadmissible
-
-theorem normalizedCachedTargetSubsetMatch_mono (parameter : PublicParameter) (before after : QueryCache HashSpec)
-    (targetInput : HashInput) (target : FewTimeView) (required : Finset FtsTree) (hcache : before ≤ after) :
-    normalizedCachedTargetSubsetMatch parameter before targetInput target required ≤
-      normalizedCachedTargetSubsetMatch parameter after targetInput target required := by
-  simp only [normalizedCachedTargetSubsetMatch_eq_weight]
-  rw [cacheMessageWeight_of_le parameter _ before after hcache]
-  exact le_self_add
 
 end SphincsSecurity.Concrete

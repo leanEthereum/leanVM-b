@@ -1,4 +1,10 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeCanonicalQueryTrace
 import SphincsSecurity.Proof.OtsProbeNativeCandidateComponents
+import SphincsSecurity.Proof.OtsProbeNativeMissingStructuralCharge
+import SphincsSecurity.Proof.OtsProbeNativeQueryTraceSelection
+import SphincsSecurity.Proof.OtsProbeNativeStartCharge
+import SphincsSecurity.Proof.OtsProbeRiskAccumulation
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -62,51 +68,6 @@ theorem nativeMaterializedTraceCharge_eq_zero_of_chainsPublished
       simpa only [canonicalTraceCharge, CanonicalQuerySelection.charge] using
         ih (fun selection hselection => hpublic selection (by simp [hselection]))
 
-theorem nativeChainTraceAfterRoot_hash_length_le
-    (targets : Finset Position) (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel q : Nat)
-    (continuation : Digest → OracleComp (OracleWorld + SigningSpec) α)
-    (hbound : ∀ root, (continuation root).IsQueryBoundP IsOuterHash q)
-    (trace : Option (ResolvedRunResult (α × SplitHashCache)) × List CanonicalQuerySelection)
-    (htrace : trace ∈ support (nativeChainTraceAfterRoot targets parameter table ftsSecret fuel continuation)) :
-    (nativeHashQueryHistory trace.2).length ≤ q := by
-  rw [nativeChainTraceAfterRoot, mem_support_bind_iff] at htrace
-  obtain ⟨root, _, htrace⟩ := htrace
-  cases root with
-  | none =>
-      simp only [mem_support_pure_iff] at htrace
-      subst trace
-      simp [nativeHashQueryHistory]
-  | some root =>
-      exact runNativeQueryTrace_hash_length_le parameter root.value.1 ftsSecret (continuation root.value.1)
-        root.context root.remaining root.table root.value.2 q (hbound root.value.1) trace htrace
-
-theorem expected_nativeMaterializedTraceCharge_afterRoot_le
-    (targets : Finset Position) (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel q : Nat)
-    (continuation : Digest → OracleComp (OracleWorld + SigningSpec) α)
-    (hbound : ∀ root, (continuation root).IsQueryBoundP IsOuterHash q) :
-    (∑' trace, Pr[= trace | nativeChainTraceAfterRoot targets parameter table ftsSecret fuel continuation] *
-      canonicalTraceCharge (nativeMaterializedCharge parameter table) trace.2) ≤
-      (q : ENNReal) * ((2 ^ 216 : Nat) : ENNReal)⁻¹ := by
-  calc
-    _ ≤ (q : ENNReal) * Pr[fun trace => ¬NativeChainsPublished trace |
-        nativeChainTraceAfterRoot targets parameter table ftsSecret fuel continuation] := by
-      rw [probEvent_eq_tsum_ite, ← ENNReal.tsum_mul_left]
-      apply ENNReal.tsum_le_tsum
-      intro trace
-      by_cases htrace : trace ∈ support (nativeChainTraceAfterRoot targets parameter table ftsSecret fuel continuation)
-      · by_cases hpublic : NativeChainsPublished trace
-        · rw [nativeMaterializedTraceCharge_eq_zero_of_chainsPublished parameter table trace.2 hpublic.2]
-          simp [hpublic]
-        · simp only [hpublic, not_false_eq_true, ite_true]
-          rw [mul_comm (q : ENNReal)]
-          apply mul_le_mul_right
-          exact (nativeMaterializedTraceCharge_le_hashLength parameter table trace.2).trans
-            (by exact_mod_cast nativeChainTraceAfterRoot_hash_length_le targets parameter table ftsSecret fuel q continuation hbound trace htrace)
-      · simp [probOutput_eq_zero_of_not_mem_support htrace]
-    _ ≤ _ := mul_le_mul_right (probEvent_nativeChainTraceAfterRoot_failure_le_inv216 targets parameter table ftsSecret fuel continuation) _
-
 theorem canonicalGuessCharge_eq_native_components_of_safe
     (targets : Finset Position) (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
     (input : (OracleWorld + SigningSpec).Domain) (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
@@ -124,27 +85,5 @@ theorem canonicalGuessCharge_eq_native_components_of_safe
       | inl n => simp [nativeStartCharge, nativeMissingStructuralCharge, nativeMaterializedCharge]
       | inr input => exact candidateFailureAllowance_eq_native_components targets table context _ (hcoverage input rfl)
   | inr message => simp [nativeStartCharge, nativeMissingStructuralCharge, nativeMaterializedCharge]
-
-theorem expected_nativeMaterializedCharge_afterRoot_le
-    (targets : Finset Position) (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel q : Nat)
-    (continuation : Digest → OracleComp (OracleWorld + SigningSpec) α)
-    (hbound : ∀ root, (continuation root).IsQueryBoundP IsOuterHash q) :
-    (∑' root, Pr[= root | runResolvedFromTable (ensuredInitialContext targets) fuel table
-      (maskedPublishedTreeRoot.run emptySplitHashCache)] *
-      match root with
-      | none => 0
-      | some root => expectedLiveNativeContextCharge (maskedChronologicalExpandedAdversaryImpl parameter root.value.1 ftsSecret)
-          (nativeMaterializedCharge parameter table) (continuation root.value.1)
-          root.context root.remaining root.table root.value.2) ≤
-      (q : ENNReal) * ((2 ^ 216 : Nat) : ENNReal)⁻¹ := by
-  have hbound := expected_nativeMaterializedTraceCharge_afterRoot_le targets parameter table ftsSecret fuel q continuation hbound
-  rw [nativeChainTraceAfterRoot, tsum_probOutput_bind_mul] at hbound
-  convert hbound using 1
-  apply tsum_congr
-  intro root
-  cases root with
-  | none => simp [canonicalTraceCharge]
-  | some root => rw [expectedNativeTraceCharge_eq]
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

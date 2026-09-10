@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FtsProbeLift
 
 namespace SphincsSecurity.Concrete.FtsProbeSimulation
@@ -8,7 +9,7 @@ def NonOrdinaryInput (parameter : PublicParameter) (table : Coordinate → Diges
     HashInput → Prop :=
   fun input => ¬IsOrdinaryInput parameter table input
 
-noncomputable instance (parameter : PublicParameter) (table : Coordinate → Digest) :
+noncomputable instance instDecidablePredHashInputNonOrdinaryInput (parameter : PublicParameter) (table : Coordinate → Digest) :
     DecidablePred (NonOrdinaryInput parameter table) :=
   fun _input => Classical.propDecidable _
 
@@ -428,14 +429,6 @@ theorem CachePreserving.bind
   obtain ⟨middle, hmiddle, hfinal⟩ := hresult
   exact (hleft initial middle hmiddle).trans
     (hnext middle.1 middle.2 result hfinal)
-
-theorem CachePreserving.map
-    {computation : StateT SplitHashCache
-      (OracleComp (AdaptiveRevealProbe.World Coordinate)) alpha}
-    (hcomputation : CachePreserving computation) (transform : alpha → beta) :
-    CachePreserving (transform <$> computation) := by
-  rw [map_eq_bind_pure_comp]
-  exact hcomputation.bind fun value => CachePreserving.pure (transform value)
 
 theorem splitHashQuery_cachePreserving (key : SplitHashKey) :
     CachePreserving (splitHashQuery key) := by

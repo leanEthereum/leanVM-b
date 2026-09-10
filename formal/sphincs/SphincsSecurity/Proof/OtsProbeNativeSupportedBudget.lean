@@ -1,5 +1,8 @@
-import SphincsSecurity.Proof.OtsProbeNativeMaterializedAllowance
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeNativeChainBound
 import SphincsSecurity.Proof.OtsProbeNativeQueryTraceCoupling
+import SphincsSecurity.Proof.OtsProbeNativeQueryTraceSelection
+import SphincsSecurity.Proof.OtsProbePrivateInactive
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

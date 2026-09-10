@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbePrivateValueLiveCut
 import SphincsSecurity.Proof.OtsProbePrivateValueProbeRecords
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation

@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.ReferencePrefixResidual
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.ReferenceJointPrior
+import SphincsSecurity.Proof.ReferencePrefixResidual
 
 namespace SphincsSecurity.Concrete
 

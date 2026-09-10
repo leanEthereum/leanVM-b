@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.OtsProbeNativeRootOuterCutStop
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeNativeRootHashAction
 import SphincsSecurity.Proof.OtsProbeNativeStoredRootStructuralCharge
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
@@ -48,29 +49,5 @@ theorem nativeRootActionSafe_failure_exposure_or_structuralCharge
             rw [hparent] at hmatchRight ⊢
             exact purePeekTableInput_node_some_atPosition parameter right.state lay tree level nodeIdx input hmatchRight
         exact Or.inr ⟨parent, target, hat, hroot, hmem, hhidden, by rw [hleft]; simp⟩
-
-theorem nativeRootHashSafe_failure_exposure_or_charged_query
-    (parameter : PublicParameter) (target : Position) (hroot : IsLayerRoot target) (before after : HashOutput)
-    (input : HashInput) (context : DeferredContext) (h : NativePositionReplaceable target before after context)
-    (hhidden : .position target ∉ context.state.revealed)
-    (hunsafe : ¬NativeRootHashSafe parameter target before after input context) :
-    (EncodingInputGuessesRoot parameter target (truncateHash before) input ∨
-      EncodingInputGuessesRoot parameter target (truncateHash after) input) ∨
-    (∃ candidate, (purePlanProbingHashQuery parameter input context.state).candidate? = some candidate ∧
-      IsPrivateValueExposure target before after (.probe candidate.coordinate candidate.candidate)) ∨
-    (purePlanProbingHashQuery parameter input context.state).action = .resolve (.position target) ∨
-      KnownHiddenStructuralRootQuery parameter input context := by
-  have hfailure := nativeRootHashSafe_failure_classify parameter target before after input context hunsafe
-  rw [h.replace_self] at hfailure
-  rcases hfailure with hencoding | hprobe | haction
-  · apply Or.inl
-    by_cases hleft : EncodingInputGuessesRoot parameter target (truncateHash before) input
-    · exact Or.inl hleft
-    · apply Or.inr
-      by_contra hright
-      exact hencoding ⟨hleft, hright⟩
-  · exact Or.inr (Or.inl hprobe)
-  · exact Or.inr (Or.inr (nativeRootActionSafe_failure_exposure_or_structuralCharge parameter target hroot before after input _
-      context (replaceNativePosition target after context) ⟨h, rfl⟩ hhidden haction))
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

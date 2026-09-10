@@ -1,7 +1,8 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.Amortized
-import SphincsSecurity.Proof.TightChargePotential
 import SphincsSecurity.Proof.Guess
 import SphincsSecurity.Proof.Secrets
+import SphincsSecurity.Proof.TightChargePotential
 
 namespace SphincsSecurity
 

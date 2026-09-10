@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.ResidualByteRun
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.ReferenceJointPrior
+import SphincsSecurity.Proof.ResidualByteRun
 
 namespace SphincsSecurity.Concrete.ResidualByteFrontend
 

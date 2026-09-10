@@ -1,4 +1,7 @@
-import SphincsSecurity.Proof.TerminalSampling
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTimeTargetSource
+import SphincsSecurity.Proof.FewTimeTargetTerminal
+import SphincsSecurity.Proof.TerminalView
 
 /-!
 # Message-digest collision witnesses
@@ -154,15 +157,6 @@ theorem probEvent_exists_singletonOriginConfiguration_fixedOrdinal_viewedEvent_l
       FixedOriginTargetViewedTerminal secretKey computation initialCache q
         configuration candidate.val result
 
-noncomputable instance
-    (secretKey : SecretKey) (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (initialCache : QueryCache HashSpec) (signatures sources q candidates : Nat) :
-    DecidablePred (SomeFixedSingletonOriginTargetViewedTerminal secretKey computation
-      initialCache signatures sources q candidates) :=
-  fun result => Classical.propDecidable
-    (SomeFixedSingletonOriginTargetViewedTerminal secretKey computation initialCache
-      signatures sources q candidates result)
-
 theorem probEvent_someFixedSingletonOriginTargetViewedTerminal_le
     (secretKey : SecretKey) (computation : OracleComp (OracleWorld + SigningSpec) α)
     (initialCache : QueryCache HashSpec) (signatures sources q : Nat)
@@ -194,15 +188,6 @@ theorem probEvent_someFixedSingletonOriginTargetViewedTerminal_le
     ∃ candidate : Fin candidates,
       FixedOriginTargetViewedTerminal secretKey computation initialCache q
         configuration candidate.val result
-
-noncomputable instance
-    (secretKey : SecretKey) (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (initialCache : QueryCache HashSpec) (signatures sources q candidates : Nat) :
-    DecidablePred (SomeFixedOneOriginTargetViewedTerminal secretKey computation
-      initialCache signatures sources q candidates) :=
-  fun result => Classical.propDecidable
-    (SomeFixedOneOriginTargetViewedTerminal secretKey computation initialCache
-      signatures sources q candidates result)
 
 theorem someFixedOneOriginTargetViewedTerminal_iff
     (secretKey : SecretKey) (computation : OracleComp (OracleWorld + SigningSpec) α)
@@ -906,58 +891,6 @@ theorem gameAfterSecretsWithViewTrace_singletonCover_target_classified_at_advers
       hcandidate hsourceView hallowed targetOrdinal rfl rootCache monitored hmonitored
       htrace' hviews'
 
-theorem gameAfterSecretsWithViewTrace_singletonCover_target_classified
-    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
-    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (hots : otsSecret ∈ support sampleOtsSecrets)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (hfts : ftsSecret ∈ support sampleFtsSecrets)
-    (result : (Digest × Forgery × Bool) × ViewedFullTraceState)
-    (hresult : result ∈ support
-      (gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret))
-    (f : QueryImpl HashSpec Id) (hf : result.2.cache.AgreesWithFn f)
-    (digest : MessageDigest)
-    (hdigest : evalWithAnswerFn f
-      (messageDigest parameter result.1.1 result.1.2.1.message
-        result.1.2.1.signature.randomness) = digest)
-    (hadmissible : Admissible digest)
-    (cover : FewTimeCover f result.2.cache
-      ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
-      result.2.trace.signing.toSigningLog (digestIndex digest) (digestLeaves digest))
-    (hcard : cover.entries.card = 1)
-    (hne : ∀ entry : cover.entries,
-      tweakableHashInput parameter .message
-          (messageDigestPayload result.1.1 result.1.2.1.message
-            result.1.2.1.signature.randomness) ≠
-        cover.entryDigestInput entry)
-    (hle : result.2.trace.signing.toSigningLog.length ≤ signatureLimit) :
-    let secretKey : SecretKey := ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
-    VerifierFreshTarget parameter result ∨
-      ∃ (rootCache : QueryCache HashSpec) (state : ViewedFullTraceState)
-          (distinct : Nat), distinct = 1 ∧
-      ∃ (pattern : FewTimePattern signatureLimit distinct)
-          (configuration : OriginConfiguration pattern q) (candidate : Fin q),
-        (result.1.2.1, state) ∈ support
-          ((simulateQ (viewedFullTracedMappedAdversaryImpl secretKey)
-            (adversary.main ⟨result.1.1, parameter⟩)).run
-              ⟨rootCache, ⟨[], [], []⟩, [], none⟩) ∧
-        FixedOriginTargetViewedTerminal secretKey
-          (adversary.main ⟨result.1.1, parameter⟩) rootCache q
-            configuration candidate.val (result.1.2.1, state) := by
-  obtain ⟨rootCache, state, _, hadversary, htrace, hviews, hstateCache⟩ :=
-    gameAfterSecretsWithViewTrace_support_adversary_state adversary parameter otsSecret
-      ftsSecret result hresult
-  rcases gameAfterSecretsWithViewTrace_singletonCover_target_classified_at_adversary_state
-      adversary q hq parameter hparameter otsSecret hots ftsSecret hfts result hresult
-      f hf digest hdigest hadmissible cover hcard hne hle rootCache state htrace
-      hviews hstateCache with hfresh | hclassified
-  · exact Or.inl hfresh
-  · obtain ⟨distinct, hdistinct, pattern, configuration, candidate, hterminal⟩ :=
-      hclassified
-    exact Or.inr ⟨rootCache, state, distinct, hdistinct, pattern, configuration,
-      candidate, hadversary, hterminal⟩
-
 theorem probEvent_gameRestWithViewTrace_nonfresh_messageCollision_le
     (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
     (hqMax : q ≤ 2 ^ 120)
@@ -1455,52 +1388,5 @@ theorem probEvent_gameAfterSecretsWithViewTrace_messageCollision_le_inv
       simp only [ENNReal.toReal_mul, ENNReal.toReal_inv, ENNReal.toReal_natCast]
       norm_num
       ring
-
-theorem probEvent_sampled_cleanMessage_le
-    (adversary : Adversary) (q : Nat) (hqPos : 1 ≤ q)
-    (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 120) :
-    Pr[SampledViewedEvent cleanMessageEvent | sampledViewedGame adversary] ≤
-      (q : ℝ≥0∞) * ((2 ^ 139 : Nat) : ℝ≥0∞)⁻¹ := by
-  rw [probEvent_sampledViewedGame_eq_weighted]
-  calc
-    (∑' secrets : SampledSecrets, Pr[= secrets | sampleSecrets] *
-        Pr[cleanMessageEvent secrets.parameter secrets.otsSecret secrets.ftsSecret |
-          gameAfterSecretsWithViewTrace adversary secrets.parameter secrets.otsSecret
-            secrets.ftsSecret]) ≤
-        ∑' secrets : SampledSecrets, Pr[= secrets | sampleSecrets] *
-          ((q : ℝ≥0∞) * ((2 ^ 139 : Nat) : ℝ≥0∞)⁻¹) := by
-      apply ENNReal.tsum_le_tsum
-      intro secrets
-      by_cases hsecrets : secrets ∈ support sampleSecrets
-      · obtain ⟨hparameter, hots, hfts⟩ := secrets.support_components hsecrets
-        have hrisk :
-            Pr[cleanMessageEvent secrets.parameter secrets.otsSecret secrets.ftsSecret |
-                gameAfterSecretsWithViewTrace adversary secrets.parameter secrets.otsSecret
-                  secrets.ftsSecret] ≤
-              (q : ℝ≥0∞) * ((2 ^ 139 : Nat) : ℝ≥0∞)⁻¹ := by
-          apply le_trans (probEvent_mono fun _ _ event => event.2)
-          exact probEvent_gameAfterSecretsWithViewTrace_messageCollision_le_inv adversary q
-            hqPos hq hqMax secrets.parameter hparameter secrets.otsSecret hots
-              secrets.ftsSecret hfts
-        calc
-          Pr[= secrets | sampleSecrets] *
-              Pr[cleanMessageEvent secrets.parameter secrets.otsSecret secrets.ftsSecret |
-                gameAfterSecretsWithViewTrace adversary secrets.parameter secrets.otsSecret
-                  secrets.ftsSecret] =
-              Pr[cleanMessageEvent secrets.parameter secrets.otsSecret secrets.ftsSecret |
-                gameAfterSecretsWithViewTrace adversary secrets.parameter secrets.otsSecret
-                  secrets.ftsSecret] * Pr[= secrets | sampleSecrets] := mul_comm _ _
-          _ ≤ ((q : ℝ≥0∞) * ((2 ^ 139 : Nat) : ℝ≥0∞)⁻¹) *
-              Pr[= secrets | sampleSecrets] :=
-            mul_le_mul_left hrisk _
-          _ = Pr[= secrets | sampleSecrets] *
-              ((q : ℝ≥0∞) * ((2 ^ 139 : Nat) : ℝ≥0∞)⁻¹) := mul_comm _ _
-      · rw [probOutput_eq_zero_of_not_mem_support hsecrets, zero_mul, zero_mul]
-    _ = (∑' secrets : SampledSecrets, Pr[= secrets | sampleSecrets]) *
-        ((q : ℝ≥0∞) * ((2 ^ 139 : Nat) : ℝ≥0∞)⁻¹) := by
-      rw [ENNReal.tsum_mul_right]
-    _ ≤ 1 * ((q : ℝ≥0∞) * ((2 ^ 139 : Nat) : ℝ≥0∞)⁻¹) :=
-      mul_le_mul_left tsum_probOutput_le_one _
-    _ = (q : ℝ≥0∞) * ((2 ^ 139 : Nat) : ℝ≥0∞)⁻¹ := one_mul _
 
 end SphincsSecurity.Concrete

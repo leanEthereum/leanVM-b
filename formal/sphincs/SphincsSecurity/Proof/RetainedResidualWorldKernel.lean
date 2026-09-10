@@ -1,4 +1,7 @@
-import SphincsSecurity.Proof.RetainedResidualCoverageStep
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.RetainedResidualCheckedTrace
+import SphincsSecurity.Proof.RetainedResidualDigestLaw
+import SphincsSecurity.Proof.RetainedResidualProgram
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 

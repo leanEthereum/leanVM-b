@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.Code
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimeUniform
 
 /-!

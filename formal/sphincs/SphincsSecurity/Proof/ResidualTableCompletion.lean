@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.UniformTableCompletion
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.RetainedObservation
 
 namespace SphincsSecurity.Concrete.ResidualTableCompletion
@@ -69,11 +69,6 @@ theorem bind_fresh {Result : Type} (cache : Cache Cell) (input : Cell) (hfresh :
       ((liftM (PMF.uniformOfFintype HashOutput) : SPMF _) >>= fun answer =>
         completeRows (Function.update cache input (some answer)) >>= next answer) := by
   rw [bind_read, reply, hfresh]
-
-theorem bind_cached {Result : Type} (cache : Cache Cell) (input : Cell) (answer : HashOutput)
-    (hcached : cache input = some answer) (next : HashOutput → (Cell → HashOutput) → SPMF Result) :
-    (completeRows cache >>= fun table => next (table input) table) = (completeRows cache >>= next answer) := by
-  rw [bind_read, reply, hcached, pure_bind, ← hcached, Function.update_eq_self]
 
 theorem completeRows_bind_const {Result : Type} (cache : Cache Cell) (next : SPMF Result) :
     (completeRows cache >>= fun _ => next) = next := by

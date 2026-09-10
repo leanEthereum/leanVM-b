@@ -1,4 +1,7 @@
-import SphincsSecurity.Proof.OtsProbeNativeComputedRootMaterialization
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeLiveKnownRootCharge
+import SphincsSecurity.Proof.OtsProbeNativeRootCandidateNormalization
+import SphincsSecurity.Proof.OtsProbeNativeRootMaterialization
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -49,24 +52,6 @@ noncomputable def materializedEncodingRootOuterCharge (parameter : PublicParamet
   | .inl (.inr input) => if MaterializedHiddenEncodingRootQuery parameter input context then 4 / 3 else 0
   | _ => 0
 
-theorem materializedEncodingRootOuterCharge_le_known
-    (parameter : PublicParameter) (input : (OracleWorld + SigningSpec).Domain)
-    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache) :
-    materializedEncodingRootOuterCharge parameter input context fuel cache ≤
-      knownEncodingRootOuterCharge parameter input context fuel cache := by
-  cases input with
-  | inl query =>
-      cases query with
-      | inl n => rfl
-      | inr input =>
-          simp only [materializedEncodingRootOuterCharge, knownEncodingRootOuterCharge]
-          split_ifs with hmat hknown hknown
-          · rfl
-          · exact False.elim (hknown hmat.known)
-          · exact zero_le
-          · rfl
-  | inr message => rfl
-
 theorem materializedEncodingRootOuterCharge_eq_known
     (parameter : PublicParameter) (input : (OracleWorld + SigningSpec).Domain)
     (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache) (hmat : LayerRootsMaterialized context) :
@@ -78,18 +63,6 @@ theorem materializedEncodingRootOuterCharge_eq_known
       | inl n => rfl
       | inr input => simp only [materializedEncodingRootOuterCharge, knownEncodingRootOuterCharge,
           materializedHiddenEncodingRootQuery_iff_known parameter input context hmat]
-  | inr message => rfl
-
-theorem materializedEncodingRootOuterCharge_replaceNativePosition
-    (parameter : PublicParameter) (input : (OracleWorld + SigningSpec).Domain)
-    (target : Position) (output : HashOutput) (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache) :
-    materializedEncodingRootOuterCharge parameter input (replaceNativePosition target output context) fuel cache =
-      materializedEncodingRootOuterCharge parameter input context fuel cache := by
-  cases input with
-  | inl query =>
-      cases query with
-      | inl n => rfl
-      | inr input => simp only [materializedEncodingRootOuterCharge, materializedHiddenEncodingRootQuery_replaceNativePosition]
   | inr message => rfl
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

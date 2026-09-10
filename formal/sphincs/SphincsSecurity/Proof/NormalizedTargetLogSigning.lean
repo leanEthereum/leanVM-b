@@ -1,4 +1,7 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.NormalizedTargetCacheQuery
 import SphincsSecurity.Proof.TargetMixedGrowthPolynomial
+import SphincsSecurity.Proof.TargetSigningMatchFactors
 
 namespace SphincsSecurity.Concrete
 
@@ -36,38 +39,6 @@ theorem normalizedTargetLogProduct_append_none (key : SecretKey) (before after :
     eligibleSigningViews_cache_stable key before after log payload hcache hsigned] at hstep
   exact congrArg (fun count : Nat => (Fintype.card FtsLeaf : ENNReal) * (count : ENNReal)) hstep
 
-theorem signWithView_normalizedTargetLogProduct_le_input (key : SecretKey) (message : Message) (before : QueryCache HashSpec)
-    (log : QueryLog SigningSpec) (payload : HashInput) (target : FewTimeView) (required : Finset FtsTree)
-    (hsigned : SigningDigestsCached key.parameter before key.root log)
-    (result : (Option Signature × Option FewTimeView) × QueryCache HashSpec)
-    (hresult : result ∈ support ((simulateQ romImpl (signWithView key message)).run before)) :
-    normalizedTargetLogProduct key result.2 (log ++ [⟨message, result.1.1⟩]) payload target required ≤
-      normalizedTargetLogProduct key before log payload target required +
-        successfulSignerInputWeight key message (fun input source =>
-          if input = tweakableHashInput key.parameter .message payload then 0 else normalizedTargetLogIncrement key before log payload target required source) result := by
-  have hcache := simulateQ_romImpl_cache_le (signWithView key message) before result hresult
-  cases hresponse : result.1.1 with
-  | none =>
-      rw [normalizedTargetLogProduct_append_none key before result.2 log _ payload target required hcache hsigned (by simp [eligibleSigningView?])]
-      simp only [successfulSignerInputWeight, hresponse, add_zero, le_refl]
-  | some signature =>
-      have hresult' : ((some signature, result.1.2), result.2) ∈ support ((simulateQ romImpl (signWithView key message)).run before) := by
-        have heq : result = ((some signature, result.1.2), result.2) := Prod.ext (Prod.ext hresponse rfl) rfl
-        rwa [heq] at hresult
-      obtain ⟨output, _, _, hview⟩ := signWithView_successful_cached_output key message before result.2 signature result.1.2 hresult'
-      by_cases hsame : messageDigestPayload key.root message signature.randomness = payload
-      · rw [normalizedTargetLogProduct_append_none key before result.2 log _ payload target required hcache hsigned (by simp [eligibleSigningView?, hsame])]
-        exact le_self_add
-      · have hinput : tweakableHashInput key.parameter .message (messageDigestPayload key.root message signature.randomness) ≠
-            tweakableHashInput key.parameter .message payload := by
-          intro heq
-          exact hsame (tweakableHashInput_injective key.parameter (by trivial) (by trivial) heq).2
-        simp only [successfulSignerInputWeight, hresponse, hview, if_neg hinput]
-        rw [normalizedTargetLogProduct_add_increment]
-        apply Finset.prod_le_prod'
-        intro tree _
-        simpa only [hresponse] using signWithView_normalizedTargetLogMatch_le key message before log payload target _ tree hsigned result hresult hview
-
 theorem expected_normalizedTargetLogIncrement (key : SecretKey) (cache : QueryCache HashSpec)
     (log : QueryLog SigningSpec) (payload : HashInput) (target : FewTimeView) (required : Finset FtsTree) :
     (∑' source, Pr[= source | ($ᵗ FewTimeView : ProbComp FewTimeView)] * normalizedTargetLogIncrement key cache log payload target required source) =
@@ -96,37 +67,5 @@ theorem cached_normalizedTargetLogIncrement (key : SecretKey) (cache : QueryCach
     unfold normalizedTargetLogIncrement
     split_ifs <;> simp only [zero_mul, Finset.sum_const_zero]
   simp only [hpoint, cacheMessageWeight_sum, cacheMessageWeight_mul_right, normalizedCachedTargetSubsetMatch_eq_weight]
-
-theorem expected_signWithView_normalizedTargetLogProduct_le (key : SecretKey) (message : Message) (before : QueryCache HashSpec)
-    (log : QueryLog SigningSpec) (payload : HashInput) (target : FewTimeView) (required : Finset FtsTree)
-    (hsigned : SigningDigestsCached key.parameter before key.root log) (q : Nat) (hq : q ≤ 2 ^ 127) (hcache : QueryCache.enncard before ≤ q) :
-    (∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run before] *
-      normalizedTargetLogProduct key result.2 (log ++ [⟨message, result.1.1⟩]) payload target required) ≤
-      normalizedTargetLogProduct key before log payload target required +
-        (Fintype.card Index : ENNReal)⁻¹ * (∑ selected ∈ required.powerset.erase ∅, normalizedTargetLogProduct key before log payload target (required \ selected)) +
-        (∑ selected ∈ required.powerset.erase ∅,
-          normalizedCachedTargetSubsetMatch key.parameter before (tweakableHashInput key.parameter .message payload) target selected *
-            normalizedTargetLogProduct key before log payload target (required \ selected)) * digestReuseWeight q := by
-  let weight := fun input source => if input = tweakableHashInput key.parameter .message payload then 0
-    else normalizedTargetLogIncrement key before log payload target required source
-  have hweight (input : HashInput) (source : FewTimeView) : weight input source ≤ normalizedTargetLogIncrement key before log payload target required source := by
-    unfold weight
-    split_ifs; exact bot_le; exact le_rfl
-  calc
-    _ ≤ ∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run before] *
-        (normalizedTargetLogProduct key before log payload target required + successfulSignerInputWeight key message weight result) := by
-      apply ENNReal.tsum_le_tsum
-      intro result
-      by_cases hresult : result ∈ support ((simulateQ romImpl (signWithView key message)).run before)
-      · exact mul_le_mul' le_rfl (signWithView_normalizedTargetLogProduct_le_input key message before log payload target required hsigned result hresult)
-      · rw [probOutput_eq_zero_of_not_mem_support hresult, zero_mul, zero_mul]
-    _ ≤ normalizedTargetLogProduct key before log payload target required +
-        (∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run before] * successfulSignerInputWeight key message weight result) := by
-      simp only [mul_add, ENNReal.tsum_add, ENNReal.tsum_mul_right]
-      exact add_le_add (mul_le_of_le_one_left' tsum_probOutput_le_one) le_rfl
-    _ ≤ _ := by
-      have hbound := expected_successfulSignerInputWeight_le_allMessage key message before weight _ hweight q hq hcache
-      simp only [weight, expected_normalizedTargetLogIncrement, cached_normalizedTargetLogIncrement] at hbound
-      simpa only [add_assoc, weight] using add_le_add (le_refl (normalizedTargetLogProduct key before log payload target required)) hbound
 
 end SphincsSecurity.Concrete

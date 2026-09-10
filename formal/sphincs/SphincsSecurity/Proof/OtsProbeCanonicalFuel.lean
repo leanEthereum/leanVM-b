@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.OtsProbeRetainedPrehitProjection
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeQueryCutPrehit
+import SphincsSecurity.Proof.OtsProbeQueryTraceCoupling
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -79,84 +81,11 @@ theorem maskedChronologicalExpandedAdversaryImpl_probeBound
       | inr input => exact probingHashQuery_run_isProbeBound parameter input cache
   | inr message => exact maskedPublishedChronologicalSign_probeFree parameter root ftsSecret message cache
 
-theorem fuel_bounds_of_mem_canonicalChronologicalQuery
-    (parameter : PublicParameter) (root : Digest) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (input : (OracleWorld + SigningSpec).Domain) (context : DeferredContext) (fuel : Nat)
-    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
-    (result : ResolvedRunResult ((OracleWorld + SigningSpec).Range input × SplitHashCache))
-    (hresult : some result ∈ support
-      (canonicalChronologicalAdversaryImpl parameter root table ftsSecret input context fuel table cache)) :
-    result.remaining ≤ fuel ∧ fuel ≤ result.remaining + outerHashQueryCount input := by
-  rw [canonicalChronologicalAdversaryImpl_eq_raw_then_canonicalize, mem_support_bind_iff] at hresult
-  obtain ⟨rawOption, hraw, hcanonical⟩ := hresult
-  cases rawOption with
-  | none => simp [canonicalizeResolvedRun] at hcanonical
-  | some raw =>
-      simp only [canonicalizeResolvedRun, mem_support_pure_iff, Option.some.injEq] at hcanonical
-      subst result
-      exact fuel_bounds_of_mem_runResolvedFromTable _ context fuel (outerHashQueryCount input) table raw
-        (maskedChronologicalExpandedAdversaryImpl_probeBound parameter root ftsSecret input cache) hraw
-
-theorem remaining_eq_fuel_of_mem_resolved_maskedPublishedTreeRoot
-    (table : OtsSecretIndex → HashOutput) (fuel : Nat) (result : ResolvedRunResult (Digest × SplitHashCache))
-    (hresult : some result ∈ support (runResolvedFromTable
-      { state := LazyRevealProbe.State.empty, values := emptyDeferredStructuralValues }
-      fuel table (maskedPublishedTreeRoot.run emptySplitHashCache))) :
-    result.remaining = fuel := by
-  have hbounds := fuel_bounds_of_mem_runResolvedFromTable _ _ fuel 0 table result
-    (maskedPublishedTreeRoot_probeFree emptySplitHashCache) hresult
-  omega
-
 def canonicalTraceHashCount (history : List CanonicalQuerySelection) : Nat :=
   (history.map fun entry => outerHashQueryCount entry.input).sum
 
 def prehitTraceHashCount (history : List PrehitQuerySnapshot) : Nat :=
   (history.map fun entry => outerHashQueryCount entry.input).sum
-
-set_option maxRecDepth 100000 in
-theorem fuel_le_entry_add_hashCount_of_canonicalQueryTrace
-    (parameter : PublicParameter) (root : Digest) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
-    (result : Option (ResolvedRunResult (α × SplitHashCache)) × List CanonicalQuerySelection)
-    (hrun : result ∈ support (runCanonicalQueryTrace parameter root ftsSecret computation context fuel table cache)) :
-    ∀ entry ∈ result.2, fuel ≤ entry.fuel + canonicalTraceHashCount result.2 := by
-  induction computation using OracleComp.inductionOn generalizing context fuel table cache result with
-  | pure value =>
-      simp only [runCanonicalQueryTrace, OracleComp.construct_pure] at hrun
-      split_ifs at hrun <;> simp only [mem_support_pure_iff] at hrun <;> subst result <;> simp
-  | query_bind input next ih =>
-      rw [runCanonicalQueryTrace_query_bind] at hrun
-      split_ifs at hrun with hcomplete
-      · rw [mem_support_bind_iff] at hrun
-        obtain ⟨step, hstep, hrun⟩ := hrun
-        cases step with
-        | none =>
-            simp only [pure_bind, mem_support_pure_iff] at hrun
-            subst result
-            intro entry hentry
-            simp only [List.mem_singleton] at hentry
-            subst entry
-            exact Nat.le_add_right _ _
-        | some step =>
-            rw [mem_support_bind_iff] at hrun
-            obtain ⟨tail, htail, hpure⟩ := hrun
-            simp only [mem_support_pure_iff] at hpure
-            subst result
-            intro entry hentry
-            rcases List.mem_cons.mp hentry with heq | htailEntry
-            · subst entry
-              exact Nat.le_add_right _ _
-            · have htailFuel := ih step.value.1 step.context step.remaining step.table step.value.2 tail htail
-                entry htailEntry
-              have hstepFuel := fuel_bounds_of_mem_canonicalChronologicalQuery parameter root ftsSecret
-                input context fuel table cache step hstep
-              simp only [canonicalTraceHashCount, List.map_cons, List.sum_cons]
-              unfold canonicalTraceHashCount at htailFuel
-              omega
-      · simp only [mem_support_pure_iff] at hrun
-        subst result
-        simp
 
 set_option maxRecDepth 100000 in
 theorem prehitTraceHashCount_le_of_expanded
@@ -224,87 +153,5 @@ theorem CanonicalQueryTraceRel.hashCount_le
   have heq := hsum _ _ hrelation.2
   rw [heq]
   exact ((List.take_sublist _ _).map _).sum_le_sum (fun _ _ => Nat.zero_le _)
-
-theorem fuel_le_entry_add_hashCount_of_canonicalRetainedQueryTrace
-    (adversary : Adversary) (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat)
-    (result : Option (ResolvedRunResult (RetainedGameResult × SplitHashCache)) × List CanonicalQuerySelection)
-    (hrun : result ∈ support (canonicalRetainedQueryTrace adversary parameter table ftsSecret fuel)) :
-    ∀ entry ∈ result.2, fuel ≤ entry.fuel + canonicalTraceHashCount result.2 := by
-  rw [canonicalRetainedQueryTrace, mem_support_bind_iff] at hrun
-  obtain ⟨rootOption, hroot, hrun⟩ := hrun
-  cases rootOption with
-  | none =>
-      simp only [mem_support_pure_iff] at hrun
-      subst result
-      simp
-  | some root =>
-      rw [mem_support_bind_iff] at hrun
-      obtain ⟨rest, hrest, hpure⟩ := hrun
-      simp only [mem_support_pure_iff] at hpure
-      subst result
-      have hfuel := remaining_eq_fuel_of_mem_resolved_maskedPublishedTreeRoot table fuel root hroot
-      simpa only [← hfuel] using fuel_le_entry_add_hashCount_of_canonicalQueryTrace parameter root.value.1 ftsSecret
-        (retainedGameRestComputation adversary ⟨root.value.1, parameter⟩)
-        root.context root.remaining root.table root.value.2 rest hrest
-
-theorem prehitRetainedTraceHashCount_le
-    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
-    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
-    (table : OtsSecretIndex → HashOutput) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (hfts : ftsSecret ∈ support sampleFtsSecrets)
-    (result : (RetainedGameResult × (ViewedFullTraceState × Bool)) × List PrehitQuerySnapshot)
-    (hrun : result ∈ support (prehitRetainedQueryTrace adversary parameter table ftsSecret)) :
-    prehitTraceHashCount result.2 ≤ q := by
-  rw [prehitRetainedQueryTrace, mem_support_bind_iff] at hrun
-  obtain ⟨root, _hroot, hrun⟩ := hrun
-  rw [mem_support_bind_iff] at hrun
-  obtain ⟨rest, hrest, hpure⟩ := hrun
-  simp only [mem_support_pure_iff] at hpure
-  subst result
-  exact prehitTraceHashCount_le_of_expanded _ _ _ q
-    (isQueryBoundP_expandedRetained_all_tables_roots adversary q hq parameter hparameter table ftsSecret hfts root.1.1)
-    _ rest hrest
-
-theorem positive_fuel_of_coupled_canonicalRetainedTrace
-    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
-    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
-    (table : OtsSecretIndex → HashOutput) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (hfts : ftsSecret ∈ support sampleFtsSecrets)
-    (left : Option (ResolvedRunResult (RetainedGameResult × SplitHashCache)) × List CanonicalQuerySelection)
-    (right : (RetainedGameResult × (ViewedFullTraceState × Bool)) × List PrehitQuerySnapshot)
-    (hleft : left ∈ support (canonicalRetainedQueryTrace adversary parameter table ftsSecret (q + 1)))
-    (hright : right ∈ support (prehitRetainedQueryTrace adversary parameter table ftsSecret))
-    (hrelation : CanonicalQueryTraceRel parameter table left right) :
-    ∀ entry ∈ left.2, 0 < entry.fuel := by
-  intro entry hentry
-  have hfuel := fuel_le_entry_add_hashCount_of_canonicalRetainedQueryTrace adversary parameter table ftsSecret
-    (q + 1) left hleft entry hentry
-  have hsource := hrelation.hashCount_le
-  have hbudget := prehitRetainedTraceHashCount_le adversary q hq parameter hparameter table ftsSecret hfts right hright
-  omega
-
-open OracleComp.ProgramLogic.Relational in
-theorem relTriple_canonicalRetainedQueryTrace_prehit_witness_positive_fuel
-    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
-    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
-    (table : OtsSecretIndex → HashOutput) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (hfts : ftsSecret ∈ support sampleFtsSecrets) :
-    RelTriple (canonicalRetainedQueryTrace adversary parameter table ftsSecret (q + 1))
-      (prehitRetainedQueryTrace adversary parameter table ftsSecret)
-      (fun left right => CanonicalQueryTraceRel parameter table left right ∧
-        (WinningRetainedVerifyProbeWitness parameter (extendStartTable table) ftsSecret
-          (right.1.1, right.1.2.1.cache) → left.1 = none) ∧
-        ∀ entry ∈ left.2, 0 < entry.fuel) := by
-  have hbase := relTriple_canonicalRetainedQueryTrace_prehit_witness adversary parameter table ftsSecret (q + 1)
-  have hleft := FtsProbeSimulation.relTriple_and_left_support hbase
-    (fun left => left ∈ support (canonicalRetainedQueryTrace adversary parameter table ftsSecret (q + 1)))
-    (fun _ hsupport => hsupport)
-  have hboth := FtsProbeSimulation.relTriple_and_right_support hleft
-  apply relTriple_post_mono hboth
-  intro left right hrelation
-  exact ⟨hrelation.1.1.1, hrelation.1.1.2,
-    positive_fuel_of_coupled_canonicalRetainedTrace adversary q hq parameter hparameter table ftsSecret hfts
-      left right hrelation.1.2 hrelation.2 hrelation.1.1.1⟩
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

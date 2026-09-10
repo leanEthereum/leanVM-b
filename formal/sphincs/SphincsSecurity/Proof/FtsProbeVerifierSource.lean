@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.FtsProbeVerifierPrefix
-import SphincsSecurity.Proof.RetainedSigningTrace
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FtsProbeAdversary
+import SphincsSecurity.Proof.FtsProbeStablePrefixQueries
 
 namespace SphincsSecurity.Concrete.FtsProbeSimulation
 

@@ -1,5 +1,8 @@
-import SphincsSecurity.Proof.FtsProbeSampling
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.AdaptiveRevealProbeCharge
+import SphincsSecurity.Proof.FewTimeTargetTerminal
+import SphincsSecurity.Proof.FtsProbeSampling
+import SphincsSecurity.Proof.TerminalSampling
 
 namespace SphincsSecurity.Concrete.FtsProbeSimulation
 
@@ -67,7 +70,6 @@ theorem probEvent_sampledActualRetainedFts_uncovered_le_probeCharge
           ⟨0, by norm_num [ftsTreeHeight]⟩)⟩
       exact AdaptiveRevealProbe.experiment_empty_probability_le_expectedProbeCharge q maskedRun
 
-
 theorem probEvent_sampledFtsViewedGame_uncovered_le_probeCharge
     (adversary : Adversary) (parameter : PublicParameter)
     (hparameter : parameter ∈ support sampleParameter)
@@ -98,7 +100,6 @@ theorem probEvent_sampledFtsViewedGame_uncovered_le_probeCharge
     _ ≤ maskedFtsProbeCharge adversary parameter otsSecret q * (Fintype.card Digest : ℝ≥0∞)⁻¹ :=
       probEvent_sampledActualRetainedFts_uncovered_le_probeCharge adversary parameter hparameter
         otsSecret hots q hq
-
 
 noncomputable def sampledMaskedFtsProbeCharge (adversary : Adversary) (q : Nat) : ℝ≥0∞ :=
   ∑' parameter : PublicParameter, Pr[= parameter | sampleParameter] *

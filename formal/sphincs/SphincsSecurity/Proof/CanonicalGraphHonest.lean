@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CanonicalGraph
+import SphincsSecurity.Proof.CanonicalSigningFrontier
 
 namespace SphincsSecurity
 
@@ -105,19 +107,6 @@ theorem canonicalGraphLabels_chain (f : QueryImpl HashSpec Id) (lay : Layer) (tr
       honestChain f parameter lay tree leaf chain (otsSecret lay tree leaf chain) (step.val + 1) := by
   rw [canonicalGraphLabels_eq_honest parameter otsSecret ftsSecret f _ (by trivial)]
   exact honestValue_chain f parameter otsSecret ftsSecret lay tree leaf chain step
-
-theorem canonicalGraphLabels_ftsLeaf (f : QueryImpl HashSpec Id) (index : Index)
-    (tree : FtsTree) (leaf : FtsLeaf) :
-    truncateHash (canonicalGraphLabels parameter otsSecret ftsSecret f (.ftsLeaf index tree leaf)) =
-      honestFtsNode f parameter index tree (ftsSecret index tree) 0 leaf.val := by
-  rw [canonicalGraphLabels_eq_honest parameter otsSecret ftsSecret f _ (by trivial)]
-  exact honestValue_ftsLeaf f parameter otsSecret ftsSecret index tree leaf
-
-theorem canonicalGraphLabels_ftsRoots (f : QueryImpl HashSpec Id) (index : Index) :
-    truncateHash (canonicalGraphLabels parameter otsSecret ftsSecret f (.ftsRoots index)) =
-      evalWithAnswerFn f (ftsKey parameter index (ftsSecret index)) := by
-  rw [canonicalGraphLabels_eq_honest parameter otsSecret ftsSecret f _ (by trivial)]
-  exact honestValue_ftsRoots f parameter otsSecret ftsSecret index
 
 def canonicalGraphRoot (labels : CanonicalGraphLabels) : Digest :=
   truncateHash (labels (.node topLayer rootTree ⟨maxLayerHeight - 1, by decide⟩ ⟨0, by positivity⟩))

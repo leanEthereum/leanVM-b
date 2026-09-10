@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeLiveJointCharge
 import SphincsSecurity.Proof.OtsProbeLiveStartCut
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
@@ -137,35 +139,5 @@ theorem historyUnresolvedStartCharge_le_liveNativeCutCharge
   cases hresult : retainCompletableResult result with
   | none => simp [historyUnresolvedStartCharge]
   | some result => exact unresolvedStartCandidateCharge_nativeCut_le result.context result.value
-
-theorem sum_sampledNativeProbeCut_unresolvedStart_le_expectedChainStartCharge
-    (computation : OracleComp (LazyRevealProbe.World Coordinate) α) (fuel q : Nat) (hq : q ≤ 2 ^ 126) :
-    (∑ ordinal ∈ Finset.range q,
-      Pr[LiveUnresolvedStartHit nativeCutCandidate | sampledNativeProbeCut computation fuel ordinal]) ≤
-      (∑' table, Pr[= table | sampleOtsHashTable] *
-        expectedLiveResolvedQueryCharge chainStartProbeQueryCharge computation
-          { state := LazyRevealProbe.State.empty, values := emptyDeferredStructuralValues } fuel table) *
-        ((4 / 3 : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) := by
-  apply (sum_sampledNativeProbeCut_unresolvedStart_le computation fuel q hq).trans
-  apply mul_le_mul' _ le_rfl
-  calc
-    _ ≤ ∑ ordinal ∈ Finset.range q, ∑' result,
-        Pr[= result | sampledNativeProbeCut computation fuel ordinal] * liveNativeCutCharge chainStartProbeQueryCharge result := by
-      apply Finset.sum_le_sum
-      intro ordinal _
-      exact ENNReal.tsum_le_tsum fun result => mul_le_mul' le_rfl (historyUnresolvedStartCharge_le_liveNativeCutCharge result)
-    _ = ∑' table, Pr[= table | sampleOtsHashTable] *
-        ∑ ordinal ∈ Finset.range q, expectedLiveNativeCutCharge chainStartProbeQueryCharge
-          (nativeProbeCutAt computation ordinal)
-          { state := LazyRevealProbe.State.empty, values := emptyDeferredStructuralValues } fuel table := by
-      simp only [sampledNativeProbeCut, tsum_probOutput_bind_mul]
-      rw [← Summable.tsum_finsetSum (fun _ _ => ENNReal.summable)]
-      simp only [← Finset.mul_sum, expectedLiveNativeCutCharge]
-    _ ≤ _ := by
-      apply ENNReal.tsum_le_tsum
-      intro table
-      exact mul_le_mul' le_rfl (sum_expectedLiveNativeProbeCutCharge_le_expectedCharge chainStartProbeQueryCharge computation q
-        { state := LazyRevealProbe.State.empty, values := emptyDeferredStructuralValues } fuel table
-        DeferredContext.valid_empty.valuesConsistent (startTableAgrees_empty table))
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

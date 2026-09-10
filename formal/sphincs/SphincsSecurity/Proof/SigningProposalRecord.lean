@@ -1,6 +1,7 @@
-import SphincsSecurity.Proof.DigestSelectionIndex
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.AdaptiveProposalWords
-import Mathlib.Algebra.FreeMonoid.Basic
+import SphincsSecurity.Proof.DigestSelectionIndex
+import SphincsSecurity.Proof.ProposalBridgeKernel
 
 namespace SphincsSecurity.Concrete
 
@@ -143,9 +144,6 @@ def SigningBoundaryTrace.hashCalls (trace : SigningBoundaryTrace) : Nat := trace
 def SigningBoundaryTrace.messageCalls (trace : SigningBoundaryTrace) : List (HashInput × HashOutput) :=
   trace.toList.filterMap id
 
-theorem signingBoundaryTrace_hashCalls (parameter : PublicParameter) (input : HashInput) (output : HashOutput) :
-    (signingBoundaryTrace parameter (.inr input) output).hashCalls = 1 := rfl
-
 theorem signingBoundaryTrace_nonmessage (parameter : PublicParameter) (input : HashInput) (output : HashOutput)
     (hinput : ¬ FtsProbeSimulation.MessageHashInput parameter input) :
     signingBoundaryTrace parameter (.inr input) output = FreeMonoid.of none := by
@@ -175,92 +173,5 @@ noncomputable def signingProposalBridge {ω : Type} [Monoid ω]
   cappedRecordProposalBridge (PMF.uniformOfFintype Index) (completedSigningRecord trace key message cache)
     Prod.snd targetProposalAcceptance targetProposalAcceptance_ne_zero targetProposalAcceptance_lt_one
     (completedSigningRecord_acceptance_cap trace key message cache spent hbound)
-
-noncomputable def signingProposalStep {ω : Type} [Monoid ω]
-    (trace : (input : OracleWorld.Domain) → OracleWorld.Range input → ω)
-    (key : SecretKey) (message : Message) (cache : QueryCache HashSpec) (spent : Nat)
-    (hbound : ProposalCacheBound key cache spent) : PMF (Index ⊕ (TracedSigningRecord ω × Index)) :=
-  proposalRecordStep (PMF.uniformOfFintype Index) (completedSigningRecord trace key message cache)
-    Prod.snd targetProposalAcceptance targetProposalAcceptance_lt_one
-    (completedSigningRecord_acceptance_cap trace key message cache spent hbound)
-
-theorem signingProposalStep_index {ω : Type} [Monoid ω]
-    (trace : (input : OracleWorld.Domain) → OracleWorld.Range input → ω)
-    (key : SecretKey) (message : Message) (cache : QueryCache HashSpec) (spent : Nat)
-    (hbound : ProposalCacheBound key cache spent) :
-    (signingProposalStep trace key message cache spent hbound).map (Sum.elim id Prod.snd) =
-      PMF.uniformOfFintype Index :=
-  proposalRecordStep_label _ _ _ _ _ _
-
-theorem signingProposalBridge_step {ω : Type} [Monoid ω]
-    (trace : (input : OracleWorld.Domain) → OracleWorld.Range input → ω)
-    (key : SecretKey) (message : Message) (cache : QueryCache HashSpec) (spent : Nat)
-    (hbound : ProposalCacheBound key cache spent) :
-    signingProposalBridge trace key message cache spent hbound =
-      (signingProposalStep trace key message cache spent hbound).bind
-        (proposalBridgeContinuation (signingProposalBridge trace key message cache spent hbound)) :=
-  cappedRecordProposalBridge_step _ _ _ _ _ _ _
-
-theorem signingProposalBridge_completed_record {ω : Type} [Monoid ω]
-    (trace : (input : OracleWorld.Domain) → OracleWorld.Range input → ω)
-    (key : SecretKey) (message : Message) (cache : QueryCache HashSpec) (spent : Nat)
-    (hbound : ProposalCacheBound key cache spent) :
-    (signingProposalBridge trace key message cache spent hbound).map Prod.snd =
-      completedSigningRecord trace key message cache :=
-  cappedRecordProposalBridge_record _ _ _ _ _ _ _
-
-theorem signingProposalBridge_record {ω : Type} [Monoid ω]
-    (trace : (input : OracleWorld.Domain) → OracleWorld.Range input → ω)
-    (key : SecretKey) (message : Message) (cache : QueryCache HashSpec) (spent : Nat)
-    (hbound : ProposalCacheBound key cache spent) :
-    (signingProposalBridge trace key message cache spent hbound).map (fun result => result.2.1) =
-      (liftM (tracedSigningRun trace key message cache) : PMF (TracedSigningRecord ω)) := by
-  calc
-    _ = ((signingProposalBridge trace key message cache spent hbound).map Prod.snd).map Prod.fst :=
-      (PMF.map_comp _ _ _).symm
-    _ = _ := by rw [signingProposalBridge_completed_record, completedSigningRecord_forget]
-
-theorem signingProposalBridge_original_record {ω : Type} [Monoid ω]
-    (trace : (input : OracleWorld.Domain) → OracleWorld.Range input → ω)
-    (key : SecretKey) (message : Message) (cache : QueryCache HashSpec) (spent : Nat)
-    (hbound : ProposalCacheBound key cache spent) :
-    (signingProposalBridge trace key message cache spent hbound).map
-      (fun result => signingRecordResponse result.2.1) =
-      (liftM (((simulateQ (romImpl.withTrace trace) (sign key message)).run).run cache) :
-        PMF ((Option Signature × ω) × QueryCache HashSpec)) := by
-  calc
-    _ = ((signingProposalBridge trace key message cache spent hbound).map
-        (fun result => result.2.1)).map signingRecordResponse := (PMF.map_comp _ _ _).symm
-    _ = (liftM (tracedSigningRun trace key message cache) : PMF (TracedSigningRecord ω)).map signingRecordResponse := by
-      rw [signingProposalBridge_record]
-    _ = (liftM (signingRecordResponse <$> tracedSigningRun trace key message cache) :
-        PMF ((Option Signature × ω) × QueryCache HashSpec)) :=
-      (liftM_map (m := ProbComp) (n := PMF) _ _).symm
-    _ = _ := by rw [tracedSigningRun_signature]
-
-theorem signingProposalBridge_boundary_record
-    (key : SecretKey) (message : Message) (cache : QueryCache HashSpec) (spent : Nat)
-    (hbound : ProposalCacheBound key cache spent) :
-    (signingProposalBridge (signingBoundaryTrace key.parameter) key message cache spent hbound).map
-      (fun result => (signingRecordResponse result.2.1).1) =
-      (liftM (((simulateQ (romImpl.withTrace (signingBoundaryTrace key.parameter))
-        (sign key message)).run).run cache) :
-          PMF ((Option Signature × SigningBoundaryTrace) × QueryCache HashSpec)).map Prod.fst := by
-  calc
-    _ = ((signingProposalBridge (signingBoundaryTrace key.parameter) key message cache spent hbound).map
-        (fun result => signingRecordResponse result.2.1)).map Prod.fst := (PMF.map_comp _ _ _).symm
-    _ = _ := by rw [signingProposalBridge_original_record]
-
-theorem signingProposalBridge_selected_index {ω : Type} [Monoid ω]
-    (trace : (input : OracleWorld.Domain) → OracleWorld.Range input → ω)
-    (key : SecretKey) (message : Message) (cache : QueryCache HashSpec) (spent : Nat)
-    (hbound : ProposalCacheBound key cache spent)
-    (result : List Index × (TracedSigningRecord ω × Index)) (view : FewTimeView)
-    (hr : result ∈ (signingProposalBridge trace key message cache spent hbound).support)
-    (hview : result.2.1.1.1.2 = some view) : result.2.2 = view.1 := by
-  have hmapped : result.2 ∈ ((signingProposalBridge trace key message cache spent hbound).map Prod.snd).support :=
-    (PMF.mem_support_map_iff _ _ _).mpr ⟨result, hr, rfl⟩
-  rw [signingProposalBridge_completed_record] at hmapped
-  exact completedSigningRecord_selected_index trace key message cache result.2.1 result.2.2 view hmapped hview
 
 end SphincsSecurity.Concrete

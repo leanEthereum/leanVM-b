@@ -1,5 +1,5 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FullTrace
-import SphincsSecurity.Proof.Secrets
 
 /-!
 # Direct adversary queries within the complete query budget

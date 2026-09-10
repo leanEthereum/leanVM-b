@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.OtsOpeningQueryReserve
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeSimulation
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -40,21 +41,5 @@ theorem probingHashQuery_eq_split_of_not_atOtsPosition (parameter : PublicParame
       | ftsLeaf => rfl
       | ftsNode => rfl
       | ftsRoots => rfl
-
-theorem probingHashQuery_expectedCharge_le_queryReserve (secretKey : SecretKey)
-    (actualCache : QueryCache HashSpec) (input : HashInput)
-    (state : LazyRevealProbe.State Coordinate) (cache : SplitHashCache) (fuel : Nat) :
-    LazyRevealProbe.expectedProbeCharge ((probingHashQuery secretKey.parameter input).run cache) state fuel ≤
-      otsOpeningQueryReserve secretKey actualCache input := by
-  classical
-  by_cases hots : ∃ position : Position, IsOtsPosition position ∧ AtPosition secretKey.parameter input position
-  · obtain ⟨position, hposition, hat⟩ := hots
-    have hcost := LazyRevealProbe.expectedProbeCharge_le_queryBound _ state fuel 1
-      (probingHashQuery_run_isProbeBound secretKey.parameter input cache)
-    rw [Nat.cast_one] at hcost
-    exact hcost.trans (otsOpeningQueryReserve_ge_one_of_atOtsPosition secretKey actualCache input position hat hposition)
-  · rw [probingHashQuery_eq_split_of_not_atOtsPosition secretKey.parameter input hots]
-    rw [LazyRevealProbe.expectedProbeCharge_eq_zero_of_probeFree _ state fuel (splitHashQuery_probeFree _ cache)]
-    exact bot_le
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

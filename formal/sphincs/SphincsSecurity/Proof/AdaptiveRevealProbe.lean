@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.SecretProbe
-import VCVio.OracleComp.QueryTracking.RandomOracle.DeferredSampling
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.Honest
+import SphincsSecurity.Proof.Sampling
 
 /-!
 # Adaptive probes with selective reveals
@@ -356,14 +357,14 @@ def IsStateful : (World Coordinate).Domain → Prop
   | .probe _ _ => True
   | .reveal _ => True
 
-noncomputable instance : DecidablePred (IsProbe (Coordinate := Coordinate)) :=
+noncomputable instance instDecidablePredDomainQueryWorldIsProbe : DecidablePred (IsProbe (Coordinate := Coordinate)) :=
   fun input => match input with
   | .uniform _ => isFalse (by simp [IsProbe])
   | .hashOutput => isFalse (by simp [IsProbe])
   | .probe _ _ => isTrue (by simp [IsProbe])
   | .reveal _ => isFalse (by simp [IsProbe])
 
-noncomputable instance : DecidablePred (IsStateful (Coordinate := Coordinate)) :=
+noncomputable instance instDecidablePredDomainQueryWorldIsStateful : DecidablePred (IsStateful (Coordinate := Coordinate)) :=
   fun input => match input with
   | .uniform _ => isFalse (by simp [IsStateful])
   | .hashOutput => isFalse (by simp [IsStateful])
@@ -385,27 +386,6 @@ def probeQuery (coordinate : Coordinate) (candidate : Digest) :
 
 def revealQuery (coordinate : Coordinate) : OracleComp (World Coordinate) Digest :=
   liftM ((World Coordinate).query (.reveal coordinate))
-
-def uniformForwardImpl : QueryImpl unifSpec (OracleComp (World Coordinate)) :=
-  fun n => uniformQuery n
-
-def liftProbComp (computation : ProbComp alpha) : OracleComp (World Coordinate) alpha :=
-  simulateQ uniformForwardImpl computation
-
-omit [Fintype Coordinate] [DecidableEq Coordinate] in
-theorem liftProbComp_isProbeBound (computation : ProbComp alpha) (fuel : Nat) :
-    (liftProbComp (Coordinate := Coordinate) computation).IsQueryBoundP IsProbe fuel := by
-  induction computation using OracleComp.inductionOn with
-  | pure result => trivial
-  | query_bind n next ih =>
-      rw [liftProbComp, simulateQ_query_bind]
-      change (uniformQuery n >>= fun output =>
-        liftProbComp (next output)).IsQueryBoundP IsProbe fuel
-      rw [uniformQuery, OracleComp.isQueryBoundP_query_bind_iff]
-      constructor
-      · simp [IsProbe]
-      · intro output
-        simpa [IsProbe] using ih output
 
 omit [Fintype Coordinate] [DecidableEq Coordinate] in
 theorem probeQuery_isProbeBound (coordinate : Coordinate) (candidate : Digest) :
@@ -461,10 +441,6 @@ inductive DetailedResult (Coordinate : Type) (alpha : Type) where
 def DetailedResult.hit : DetailedResult Coordinate alpha → Bool
   | .stopped hit => hit
   | .done hit _ _ => hit
-
-def DetailedResult.value? : DetailedResult Coordinate alpha → Option alpha
-  | .stopped _ => none
-  | .done _ _ value => some value
 
 inductive RawResult (Coordinate : Type) (alpha : Type) where
   | stopped (hit : Bool)
@@ -826,50 +802,6 @@ theorem runDetailed_hit_eq_run (table : Coordinate → Digest)
               · simp only [hhit, ↓reduceIte]
                 exact ih (table coordinate) (state.install coordinate (table coordinate)) fuel
 
-theorem stopped_false_not_mem_support_runDetailed
-    (table : Coordinate → Digest) (state : State Coordinate) (fuel : Nat)
-    (computation : OracleComp (World Coordinate) alpha)
-    (hbound : computation.IsQueryBoundP IsProbe fuel) :
-    DetailedResult.stopped false ∉ support (runDetailed table state fuel computation) := by
-  induction computation using OracleComp.inductionOn generalizing state fuel with
-  | pure result =>
-      simp [runDetailed]
-  | query_bind input next ih =>
-      rw [isQueryBoundP_query_bind_iff] at hbound
-      cases input with
-      | uniform n =>
-          rw [runDetailed_uniform_query_bind, mem_support_bind_iff]
-          rintro ⟨output, houtput, hrest⟩
-          exact ih output state fuel (hbound.2 output) hrest
-      | hashOutput =>
-          rw [runDetailed_hashOutput_query_bind, mem_support_bind_iff]
-          rintro ⟨output, houtput, hrest⟩
-          exact ih output state fuel (hbound.2 output) hrest
-      | probe coordinate candidate =>
-          have hpositive : 0 < fuel := by
-            simpa [IsProbe] using hbound.1
-          cases fuel with
-          | zero => omega
-          | succ remaining =>
-              rw [runDetailed_probe_query_bind]
-              cases hrevealed : state.revealed coordinate with
-              | none =>
-                  exact ih () (state.addPending coordinate candidate) remaining
-                    (by simpa [IsProbe] using hbound.2 ())
-              | some value =>
-                  exact ih () state remaining (by simpa [IsProbe] using hbound.2 ())
-      | reveal coordinate =>
-          rw [runDetailed_reveal_query_bind]
-          cases hrevealed : state.revealed coordinate with
-          | some value =>
-              exact ih value state fuel (by simpa [IsProbe] using hbound.2 value)
-          | none =>
-              by_cases hhit : table coordinate ∈ state.pending coordinate
-              · simp [hhit]
-              · simp only [hhit, ↓reduceIte]
-                exact ih (table coordinate) (state.install coordinate (table coordinate)) fuel
-                  (by simpa [IsProbe] using hbound.2 (table coordinate))
-
 theorem mem_support_of_mem_runDetailed_done
     (table : Coordinate → Digest) (state finalState : State Coordinate) (fuel : Nat)
     (computation : OracleComp (World Coordinate) alpha) (hit : Bool) (value : alpha)
@@ -1126,47 +1058,6 @@ noncomputable def applyReveal (state : State Coordinate) (coordinate : Coordinat
   if value ∈ state.pending coordinate then pure true
   else resume value (state.install coordinate value)
 
-theorem applyReveal_probability_le (state : State Coordinate) (coordinate : Coordinate)
-    (resume : Digest → State Coordinate → ProbComp Bool) (fuel : Nat)
-    (hresume : ∀ value,
-      Pr[fun hit : Bool => hit = true | resume value (state.install coordinate value)] ≤
-        ((fuel + (state.install coordinate value).pendingCount : Nat) : ℝ≥0∞) *
-          ((Fintype.card Digest : Nat) : ℝ≥0∞)⁻¹) :
-    Pr[fun hit : Bool => hit = true | applyReveal state coordinate resume] ≤
-      ((fuel + state.pendingCount : Nat) : ℝ≥0∞) *
-        ((Fintype.card Digest : Nat) : ℝ≥0∞)⁻¹ := by
-  let installedCount := (state.install coordinate 0).pendingCount
-  refine (probEvent_bind_le_probEvent_add
-    (mx := ($ᵗ Digest : ProbComp Digest))
-    (my := fun value =>
-      if value ∈ state.pending coordinate then pure true
-      else resume value (state.install coordinate value))
-    (q := fun hit : Bool => hit = true)
-    (p := fun value : Digest => value ∈ state.pending coordinate)
-    (ε := ((fuel + installedCount : Nat) : ℝ≥0∞) *
-      ((Fintype.card Digest : Nat) : ℝ≥0∞)⁻¹) ?_).trans ?_
-  · intro value _ hmiss
-    simp only [hmiss, ↓reduceIte]
-    have hcount : (state.install coordinate value).pendingCount = installedCount := rfl
-    simpa [hcount] using hresume value
-  · refine add_le_add (uniformDigest_mem_finset_le (state.pending coordinate)) le_rfl |>.trans ?_
-    have hconserve := state.pendingCount_install_add coordinate 0
-    calc
-      ((state.pending coordinate).card : ℝ≥0∞) *
-            ((Fintype.card Digest : Nat) : ℝ≥0∞)⁻¹ +
-          ((fuel + installedCount : Nat) : ℝ≥0∞) *
-            ((Fintype.card Digest : Nat) : ℝ≥0∞)⁻¹ =
-        (((state.pending coordinate).card + fuel + installedCount : Nat) : ℝ≥0∞) *
-          ((Fintype.card Digest : Nat) : ℝ≥0∞)⁻¹ := by
-        push_cast
-        ring
-      _ = ((fuel + state.pendingCount : Nat) : ℝ≥0∞) *
-          ((Fintype.card Digest : Nat) : ℝ≥0∞)⁻¹ := by
-        rw [show (state.pending coordinate).card + fuel + installedCount =
-          fuel + state.pendingCount by omega]
-      _ ≤ ((fuel + state.pendingCount : Nat) : ℝ≥0∞) *
-          ((Fintype.card Digest : Nat) : ℝ≥0∞)⁻¹ := le_rfl
-
 theorem evalDist_sample_applyReveal (state : State Coordinate) (coordinate : Coordinate)
     (hhidden : state.revealed coordinate = none)
     (resume : (Coordinate → Digest) → Digest → State Coordinate → ProbComp Bool) :
@@ -1283,140 +1174,5 @@ theorem experiment_reveal_query_bind (state : State Coordinate) (fuel : Nat)
   apply bind_congr
   intro base
   exact run_reveal_query_bind _ _ _ _ _
-
-set_option maxRecDepth 100000 in
-theorem experiment_probability_le_unbounded [Nonempty Coordinate]
-    (state : State Coordinate) (hvalid : state.Valid)
-    (fuel : Nat) (computation : OracleComp (World Coordinate) alpha) :
-    Pr[fun hit : Bool => hit = true | experiment state fuel computation] ≤
-      ((fuel + state.pendingCount : Nat) : ℝ≥0∞) *
-        ((Fintype.card Digest : Nat) : ℝ≥0∞)⁻¹ := by
-  induction computation using OracleComp.inductionOn generalizing state fuel with
-  | pure result =>
-      change Pr[fun hit : Bool => hit = true |
-        (fun base : Coordinate → Digest => tableHits state (extendTable state base)) <$>
-          sampleTable] ≤ _
-      refine (finalize_probability_le state hvalid).trans ?_
-      apply mul_le_mul_left
-      exact_mod_cast Nat.le_add_left state.pendingCount fuel
-  | query_bind input next ih =>
-      cases input with
-      | uniform n =>
-          have hdist :
-              evalDist (experiment state fuel
-                ((liftM (OracleSpec.query (spec := World Coordinate) (.uniform n)) :
-                  OracleComp (World Coordinate) _) >>= next)) =
-              evalDist ((liftM (unifSpec.query n) : ProbComp _) >>= fun output =>
-                experiment state fuel (next output)) := by
-            rw [experiment_uniform_query_bind]
-            exact OracleComp.DeferredSampling.evalDist_bind_comm _ _ _
-          refine (probEvent_congr' (oa' :=
-            (liftM (unifSpec.query n) : ProbComp _) >>= fun output =>
-              experiment state fuel (next output)) (fun _ _ => Iff.rfl) hdist).le.trans ?_
-          exact probEvent_bind_le_of_forall_le fun output _ =>
-            ih output state hvalid fuel
-      | hashOutput =>
-          have hdist :
-              evalDist (experiment state fuel
-                ((liftM (OracleSpec.query (spec := World Coordinate) .hashOutput) :
-                  OracleComp (World Coordinate) HashOutput) >>= next)) =
-              evalDist (sampleHashOutput >>= fun output =>
-                experiment state fuel (next output)) := by
-            rw [experiment_hashOutput_query_bind]
-            exact OracleComp.DeferredSampling.evalDist_bind_comm _ _ _
-          refine (probEvent_congr' (oa' :=
-            sampleHashOutput >>= fun output =>
-              experiment state fuel (next output)) (fun _ _ => Iff.rfl) hdist).le.trans ?_
-          exact probEvent_bind_le_of_forall_le fun output _ =>
-            ih output state hvalid fuel
-      | probe coordinate candidate =>
-          cases fuel with
-          | zero =>
-              rw [experiment_probe_query_bind]
-              change Pr[fun hit : Bool => hit = true |
-                (fun base : Coordinate → Digest =>
-                  tableHits state (extendTable state base)) <$> sampleTable] ≤ _
-              simpa using finalize_probability_le state hvalid
-          | succ remaining =>
-              cases hrevealed : state.revealed coordinate with
-              | some value =>
-                  rw [experiment_probe_query_bind]
-                  simp only [hrevealed]
-                  change Pr[fun hit : Bool => hit = true |
-                    experiment state remaining (next ())] ≤ _
-                  refine (ih () state hvalid remaining).trans ?_
-                  apply mul_le_mul_left
-                  have hnat : remaining + state.pendingCount ≤
-                      remaining + 1 + state.pendingCount := by omega
-                  exact_mod_cast hnat
-              | none =>
-                  rw [experiment_probe_query_bind]
-                  simp only [hrevealed]
-                  change Pr[fun hit : Bool => hit = true |
-                    experiment (state.addPending coordinate candidate) remaining
-                      (next ())] ≤ _
-                  refine (ih () (state.addPending coordinate candidate)
-                    (hvalid.addPending coordinate candidate hrevealed) remaining).trans ?_
-                  apply mul_le_mul_left
-                  exact_mod_cast (show remaining +
-                      (state.addPending coordinate candidate).pendingCount ≤
-                    remaining + 1 + state.pendingCount by
-                      have := state.pendingCount_addPending_le coordinate candidate
-                      omega)
-      | reveal coordinate =>
-          cases hrevealed : state.revealed coordinate with
-          | some value =>
-              rw [experiment_reveal_query_bind]
-              simp only [hrevealed]
-              change Pr[fun hit : Bool => hit = true |
-                experiment state fuel (next value)] ≤ _
-              exact ih value state hvalid fuel
-          | none =>
-              let resume := fun value nextState => experiment nextState fuel (next value)
-              have hdist :
-                  evalDist (experiment state fuel
-                    ((liftM (OracleSpec.query (spec := World Coordinate) (.reveal coordinate)) :
-                      OracleComp (World Coordinate) _) >>= next)) =
-                  evalDist (applyReveal state coordinate resume) := by
-                rw [experiment_reveal_query_bind]
-                simp only [hrevealed]
-                simpa [resume, experiment] using
-                  evalDist_sample_applyReveal state coordinate hrevealed
-                    fun table value nextState =>
-                      run table nextState fuel (next value)
-              refine (probEvent_congr' (oa' := applyReveal state coordinate resume)
-                (fun _ _ => Iff.rfl) hdist).le.trans ?_
-              apply applyReveal_probability_le state coordinate resume fuel
-              intro value
-              exact ih value (state.install coordinate value)
-                (hvalid.install coordinate value) fuel
-
-theorem experiment_probability_le [Nonempty Coordinate]
-    (state : State Coordinate) (hvalid : state.Valid)
-    (fuel : Nat) (computation : OracleComp (World Coordinate) alpha)
-    (_hbound : computation.IsQueryBoundP IsProbe fuel) :
-    Pr[fun hit : Bool => hit = true | experiment state fuel computation] ≤
-      ((fuel + state.pendingCount : Nat) : ℝ≥0∞) *
-        ((Fintype.card Digest : Nat) : ℝ≥0∞)⁻¹ :=
-  experiment_probability_le_unbounded state hvalid fuel computation
-
-theorem experiment_empty_probability_le_unbounded [Nonempty Coordinate] (fuel : Nat)
-    (computation : OracleComp (World Coordinate) alpha) :
-    Pr[fun hit : Bool => hit = true |
-        experiment (State.empty : State Coordinate) fuel computation] ≤
-      (fuel : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
-  simpa [show Fintype.card Digest = 2 ^ digestBits by simp] using
-    experiment_probability_le_unbounded
-      (State.empty : State Coordinate) State.valid_empty fuel computation
-
-theorem experiment_empty_probability_le [Nonempty Coordinate] (fuel : Nat)
-    (computation : OracleComp (World Coordinate) alpha)
-    (hbound : computation.IsQueryBoundP IsProbe fuel) :
-    Pr[fun hit : Bool => hit = true |
-        experiment (State.empty : State Coordinate) fuel computation] ≤
-      (fuel : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
-  simpa [show Fintype.card Digest = 2 ^ digestBits by simp] using
-    experiment_probability_le (State.empty : State Coordinate) State.valid_empty
-      fuel computation hbound
 
 end SphincsSecurity.AdaptiveRevealProbe

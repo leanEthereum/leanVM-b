@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.UniformProposalMixedMoments
 
 namespace SphincsSecurity.Concrete
@@ -31,18 +32,6 @@ theorem stirlingPowerMoment_full_variance_le :
   apply (ENNReal.toReal_le_toReal (by finiteness) (by finiteness)).mp
   simp only [ENNReal.toReal_mul, ENNReal.toReal_inv, ENNReal.toReal_pow, ENNReal.toReal_div,
     ENNReal.toReal_ofNat]
-  unfold stirlingPowerMoment
-  rw [ENNReal.toReal_sum (fun order _ => by finiteness)]
-  simp only [ENNReal.toReal_mul, ENNReal.toReal_pow, ENNReal.toReal_div, ENNReal.toReal_ofNat,
-    ENNReal.toReal_natCast]
-  norm_num [Finset.sum_range_succ, Nat.stirlingSecond]
-
-set_option maxHeartbeats 5000000 in
-theorem stirlingPowerMoment_near_mean_le :
-    (14 * 2 ^ 26 : ENNReal) * (2 ^ 38 : ENNReal)⁻¹ * stirlingPowerMoment (19 / 50) 13 ≤ 557 := by
-  have hm := stirlingPowerMoment_ne_top (19 / 50) (by finiteness) 13
-  apply (ENNReal.toReal_le_toReal (by finiteness) (by finiteness)).mp
-  simp only [ENNReal.toReal_mul, ENNReal.toReal_inv, ENNReal.toReal_pow, ENNReal.toReal_ofNat]
   unfold stirlingPowerMoment
   rw [ENNReal.toReal_sum (fun order _ => by finiteness)]
   simp only [ENNReal.toReal_mul, ENNReal.toReal_pow, ENNReal.toReal_div, ENNReal.toReal_ofNat,

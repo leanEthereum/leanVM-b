@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.OtsProbeCanonicalJointCharge
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsOpeningRefinedReserve
+import SphincsSecurity.Proof.RomQueryChargeBind
 
 namespace SphincsSecurity
 

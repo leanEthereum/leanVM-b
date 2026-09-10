@@ -1,13 +1,12 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FixedHashBoundary
-import VCVio.OracleComp.QueryTracking.RandomOracle.EagerTable
-import VCVio.OracleComp.QueryTracking.RandomOracle.DeferredSampling
 
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec OracleComp.DeferredSampling
 set_option backward.isDefEq.respectTransparency false
 
-noncomputable local instance (inputs : Finset HashInput) : SampleableType (inputs → HashOutput) :=
+noncomputable local instance instSampleableTypeForallSubtypeHashInputMemFinsetHashOutput (inputs : Finset HashInput) : SampleableType (inputs → HashOutput) :=
   SampleableType.ofFintype (inputs → HashOutput)
 
 noncomputable def sampleHashTable (inputs : Finset HashInput) : ProbComp (inputs → HashOutput) :=
@@ -149,13 +148,5 @@ theorem evalDist_romRun_eq_finiteHash {α : Type} (computation : OracleComp Orac
                 intro table
                 simp only [simulateQ_bind, simulateQ_spec_query, fixedHashWorld,
                   finiteHashAnswer_none cache inputs table input hin hcache, pure_bind]
-
-theorem evalDist_romRun_eq_hashInputs {α : Type} (computation : OracleComp OracleWorld α)
-    (cache : QueryCache HashSpec) :
-    𝒟[(simulateQ romImpl computation).run' cache] =
-      𝒟[do
-        let table ← ($ᵗ (hashInputs computation → HashOutput) : ProbComp _)
-        simulateQ (fixedHashWorld (finiteHashAnswer cache (hashInputs computation) table)) computation] :=
-  evalDist_romRun_eq_finiteHash computation _ (Finset.Subset.refl _) cache
 
 end SphincsSecurity.Concrete

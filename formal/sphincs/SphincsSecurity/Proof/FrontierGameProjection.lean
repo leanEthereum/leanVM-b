@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.BoundarySimulation
 import SphincsSecurity.Proof.DirectQueryBudget
 
@@ -59,15 +60,6 @@ theorem fixedBoundaryRun_adversary_frontier {α : Type} (key : SecretKey) (f : Q
   intro input
   simp only [QueryImpl.withTraceAppend_apply]
   simp [simulateQ_expandedAdversaryImpl_frontier key f words frontier hfrontier hwords input]
-
-theorem fixedBoundaryRun_adversary_canonical {α : Type} (key : SecretKey) (f : QueryImpl HashSpec Id)
-    (dummy : OtsReferenceWords) (computation : OracleComp (OracleWorld + SigningSpec) α) :
-    fixedBoundaryRun key.parameter f
-        (simulateQ (forwardOracles + signingOracle scheme key) computation).run =
-      frontierAdversaryRun key.parameter key.root f key.ftsSecret (canonicalReferenceWords key f dummy)
-        (canonicalFrontierValues key f (canonicalReferenceWords key f dummy)) computation :=
-  fixedBoundaryRun_adversary_frontier key f _ _ (isSigningFrontier_canonical key f _)
-    (frontierReferenceWord_canonical key f dummy) computation
 
 noncomputable def frontierGameRest (parameter : PublicParameter) (root : Digest)
     (f : QueryImpl HashSpec Id) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)

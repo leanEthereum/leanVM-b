@@ -1,5 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeProbeFreeRisk
-import SphincsSecurity.Proof.OtsProbeEnsuredInitialization
+import SphincsSecurity.Proof.OtsProbeResolvedAdaptiveBridge
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

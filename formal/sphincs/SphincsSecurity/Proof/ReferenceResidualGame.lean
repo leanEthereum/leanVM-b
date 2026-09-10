@@ -1,4 +1,7 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.ReferenceFamilyGame
 import SphincsSecurity.Proof.ReferenceResidualSampling
+import SphincsSecurity.Proof.ResidualGraphGame
 
 namespace SphincsSecurity.Concrete
 

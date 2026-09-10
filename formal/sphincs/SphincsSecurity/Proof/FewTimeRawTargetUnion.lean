@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimeRawTargetBound
 
 namespace SphincsSecurity.Concrete
@@ -197,18 +198,6 @@ def FixedRawTargetViewedTerminal
           FixedFewTimePatternHit pattern.assignment
             (monitored.2.origin.observation.views, target)
 
-noncomputable instance
-    (secretKey : SecretKey) (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (initialCache : QueryCache HashSpec) (q : Nat)
-    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
-    (configuration : OriginConfiguration pattern sources) (candidate : Nat) :
-    DecidablePred
-      (FixedRawTargetViewedTerminal secretKey computation initialCache q
-        configuration candidate) :=
-  fun result => Classical.propDecidable
-    (FixedRawTargetViewedTerminal secretKey computation initialCache q
-      configuration candidate result)
-
 @[irreducible] def SomeFixedRawTargetViewedTerminal
     (secretKey : SecretKey) (computation : OracleComp (OracleWorld + SigningSpec) α)
     (initialCache : QueryCache HashSpec) (signatures sources q candidates : Nat)
@@ -219,15 +208,6 @@ noncomputable instance
     ∃ candidate : Fin candidates,
       FixedRawTargetViewedTerminal secretKey computation initialCache q
         configuration candidate.val result
-
-noncomputable instance
-    (secretKey : SecretKey) (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (initialCache : QueryCache HashSpec) (signatures sources q candidates : Nat) :
-    DecidablePred (SomeFixedRawTargetViewedTerminal secretKey computation
-      initialCache signatures sources q candidates) :=
-  fun result => Classical.propDecidable
-    (SomeFixedRawTargetViewedTerminal secretKey computation initialCache
-      signatures sources q candidates result)
 
 theorem probEvent_exists_fixedRawTargetViewedTerminal_le_idealOrigin_of_candidates
     (secretKey : SecretKey) (computation : OracleComp (OracleWorld + SigningSpec) α)
@@ -251,19 +231,5 @@ theorem probEvent_exists_fixedRawTargetViewedTerminal_le_idealOrigin_of_candidat
       (result.1, result.2.origin.viewed) := rfl
   obtain ⟨hcomplete, hhit⟩ := hterminal result hresult hprojection
   exact ⟨hcomplete, hhit, hcacheFinal⟩
-
-theorem probEvent_exists_fixedRawTargetViewedTerminal_le_mul_inv131
-    (secretKey : SecretKey) (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (initialCache : QueryCache HashSpec) (signatures q candidates : Nat)
-    (hsignatures : signatures ≤ signatureLimit)
-    (hq : q ≤ 2 ^ 125) (hcache : QueryCache.enncard initialCache ≤ q) :
-    Pr[SomeFixedRawTargetViewedTerminal secretKey computation initialCache
-        signatures q q candidates |
-      (simulateQ (viewedFullTracedMappedAdversaryImpl secretKey)
-        computation).run ⟨initialCache, ⟨[], [], []⟩, [], none⟩] ≤
-      candidates * ((2 ^ 131 : Nat) : ℝ≥0∞)⁻¹ := by
-  exact (probEvent_exists_fixedRawTargetViewedTerminal_le_idealOrigin_of_candidates
-    secretKey computation initialCache signatures q q (hq.trans (by norm_num)) hcache candidates).trans
-      (mul_le_mul' le_rfl (rawTargetOriginUnionBound_le_inv131 hsignatures hq))
 
 end SphincsSecurity.Concrete

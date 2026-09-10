@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.ResidualSigningProgram
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.CanonicalProbeCache
+import SphincsSecurity.Proof.PublicSigningRecord
 
 namespace SphincsSecurity.Concrete.InterleavedResidual
 
@@ -23,19 +25,11 @@ noncomputable def Routing.afterSigning (routing : Routing) (record : SigningReco
   | some signature, some view => routing.disclose view signature.ftsSecret
   | _, _ => routing
 
-theorem Routing.disclose_mono (routing : Routing) (view : FewTimeView) (secrets : FtsTree → Digest)
-    (index : Index) (tree : FtsTree) (leaf : FtsLeaf) :
-    routing.disclosed index tree leaf → (routing.disclose view secrets).disclosed index tree leaf := Or.inl
-
 theorem Routing.afterSigning_mono (routing : Routing) (record : SigningRecord)
     (index : Index) (tree : FtsTree) (leaf : FtsLeaf) :
     routing.disclosed index tree leaf → (routing.afterSigning record).disclosed index tree leaf := by
   rcases record with ⟨⟨signature, view⟩, trace⟩
   cases signature <;> cases view <;> first | exact id | exact Or.inl
-
-theorem Routing.afterSigning_failed (routing : Routing) (record : SigningRecord) (hfailed : record.1.1 = none) :
-    routing.afterSigning record = routing := by
-  rw [Routing.afterSigning, hfailed]
 
 theorem hidden_graph_disclosed (words : OtsReferenceWords)
     (before after : Index → FtsTree → FtsLeaf → Prop) (position : Position) :

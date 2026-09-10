@@ -1,4 +1,7 @@
-import SphincsSecurity.Proof.RetainedResidualProposalIndex
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.ProposalLengthProjection
+import SphincsSecurity.Proof.RetainedObservation
+import SphincsSecurity.Proof.TerminalProposalWord
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 
@@ -26,12 +29,6 @@ theorem attachRejectedWord_record {Result : Type} (law : SPMF Result) (rejected 
   rw [attachRejectedWord, map_bind]
   simp only [map_eq_bind_pure_comp, Function.comp_def, bind_assoc, pure_bind,
     RetainedObservation.lift_bind_const, bind_pure]
-
-theorem attachRejectedWord_map {Result Other : Type} (law : SPMF Result) (rejected : PMF Index)
-    (f : Result → Other) :
-    Prod.map id f <$> attachRejectedWord law rejected = attachRejectedWord (f <$> law) rejected := by
-  simp only [attachRejectedWord, map_bind, Functor.map_map, bind_map_left]
-  rfl
 
 theorem attachRejectedWord_lift {Result : Type} (law : PMF Result) (rejected : PMF Index) :
     attachRejectedWord (liftM law) rejected =

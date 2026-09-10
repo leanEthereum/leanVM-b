@@ -1,5 +1,5 @@
-import SphincsSecurity.Proof.OtsProbeNativeRootReserve
-import SphincsSecurity.Proof.OtsProbeKnownRootTraceSource
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeCanonicalQuerySelection
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

@@ -1,6 +1,8 @@
-import SphincsSecurity.Proof.SettledPath
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.Cached
 import SphincsSecurity.Proof.HitBad
 import SphincsSecurity.Proof.Hypertree
+import SphincsSecurity.Proof.SettledPath
 
 /-!
 # Deterministic forgery descent

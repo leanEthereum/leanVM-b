@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.EncodingFamilyOracleSplit
 
 namespace SphincsSecurity.Concrete
@@ -68,12 +69,6 @@ theorem uniform_joint_eq_referenceFamilyOracleSample (key : SecretKey) (inputs :
   rw [PMF.bind_comm] at h
   exact h
 
-theorem referenceFamilyOracleSample_table (key : SecretKey) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs) (hgraph : canonicalGraphInputs key.parameter ⊆ inputs) :
-    (referenceFamilyOracleSample key inputs hencoding).map Prod.snd = PMF.uniformOfFintype (inputs → HashOutput) := by
-  rw [← uniform_joint_eq_referenceFamilyOracleSample key inputs hencoding hgraph, PMF.map_comp]
-  exact PMF.map_id _
-
 theorem referenceFamilyOracleSample_selections (key : SecretKey) (inputs : Finset HashInput)
     (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs) (hgraph : canonicalGraphInputs key.parameter ⊆ inputs)
     (result : ReferenceFamily × (inputs → HashOutput))
@@ -83,22 +78,8 @@ theorem referenceFamilyOracleSample_selections (key : SecretKey) (inputs : Finse
   obtain ⟨table, _, rfl⟩ := hresult
   rfl
 
-theorem referenceFamilyOracleSample_search (key : SecretKey) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs) (hgraph : canonicalGraphInputs key.parameter ⊆ inputs)
-    (result : ReferenceFamily × (inputs → HashOutput))
-    (hresult : result ∈ (referenceFamilyOracleSample key inputs hencoding).support) (position : EncodingPosition) :
-    referenceSelectionResult (result.1 position) =
-      canonicalEncodingSearch key (finiteHashAnswer ∅ inputs result.2) position.lay position.tree position.leafIdx := by
-  rw [referenceFamilyOracleSample_selections key inputs hencoding hgraph result hresult,
-    referenceSelectionResult_eq_search]
-
-noncomputable local instance (inputs : Finset HashInput) : SampleableType (inputs → HashOutput) :=
+noncomputable local instance instSampleableTypeForallSubtypeHashInputMemFinsetHashOutput_4 (inputs : Finset HashInput) : SampleableType (inputs → HashOutput) :=
   SampleableType.ofFintype (inputs → HashOutput)
-
-theorem evalDist_referenceFamilyOracleSample_table (key : SecretKey) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs) (hgraph : canonicalGraphInputs key.parameter ⊆ inputs) :
-    𝒟[(referenceFamilyOracleSample key inputs hencoding).map Prod.snd] = 𝒟[sampleHashTable inputs] := by
-  rw [referenceFamilyOracleSample_table key inputs hencoding hgraph, sampleHashTable, evalDist_uniformSample]
 
 theorem referenceFamilyOracleSample_bind_selected {Result : Type} (key : SecretKey) (inputs : Finset HashInput)
     (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs) (hgraph : canonicalGraphInputs key.parameter ⊆ inputs)
@@ -110,15 +91,5 @@ theorem referenceFamilyOracleSample_bind_selected {Result : Type} (key : SecretK
   rw [← uniform_joint_eq_referenceFamilyOracleSample key inputs hencoding hgraph]
   simp only [← PMF.monad_map_eq_map, map_eq_bind_pure_comp, bind_assoc, pure_bind,
     evalDist_bind, evalDist_pure, Function.comp_apply, sampleHashTable, evalDist_uniformSample]
-
-theorem referenceFamilyOracleSample_bind {Result : Type} (key : SecretKey) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs) (hgraph : canonicalGraphInputs key.parameter ⊆ inputs)
-    (next : (inputs → HashOutput) → ProbComp Result) :
-    (𝒟[referenceFamilyOracleSample key inputs hencoding] >>= fun result => 𝒟[next result.2]) =
-      𝒟[do let table ← sampleHashTable inputs; next table] := by
-  have h := congrArg (fun distribution : SPMF (inputs → HashOutput) => distribution >>= fun table => 𝒟[next table])
-    (evalDist_referenceFamilyOracleSample_table key inputs hencoding hgraph)
-  simpa only [← PMF.monad_map_eq_map, evalDist_map, map_eq_bind_pure_comp, bind_assoc, pure_bind,
-    evalDist_bind, Function.comp_apply, evalDist_pure] using h
 
 end SphincsSecurity.Concrete

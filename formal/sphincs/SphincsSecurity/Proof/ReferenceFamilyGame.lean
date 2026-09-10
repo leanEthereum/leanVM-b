@@ -1,5 +1,7 @@
-import SphincsSecurity.Proof.ReferenceFamilyConditioning
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.CanonicalGraphGame
 import SphincsSecurity.Proof.CausalFrontierGame
+import SphincsSecurity.Proof.ReferenceFamilyConditioning
 
 namespace SphincsSecurity.Concrete
 

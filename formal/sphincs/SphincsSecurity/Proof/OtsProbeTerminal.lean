@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeOrigin
+import SphincsSecurity.Proof.OtsProbeRetained
 
 /-!
 # Winning one-time probe witnesses
@@ -91,52 +93,6 @@ theorem winningRetainedVerifyProbe_imp_executed
   exact ⟨hverdict, f, digest, hf, hvalid, hnotContains, hdigest, hadmissible, heval,
     hbad, hprobe, hrun⟩
 
-theorem probEvent_winningRetainedVerifyProbe_le_executed
-    (adversary : Adversary) (parameter : PublicParameter)
-    (table : Coordinate → HashOutput)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
-    Pr[WinningRetainedVerifyProbeWitness parameter table ftsSecret |
-        actualRetainedGameAfterTable adversary parameter ftsSecret table] ≤
-      Pr[WinningRetainedExecutedVerifyProbeWitness parameter table ftsSecret |
-        actualRetainedGameAfterTable adversary parameter ftsSecret table] :=
-  probEvent_mono fun result hresult hwitness =>
-    winningRetainedVerifyProbe_imp_executed adversary parameter table ftsSecret result hresult
-      hwitness
-
-def RawCachesVerifierTrace (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
-    (root : Digest) (forgery : Forgery) (cache : SplitHashCache) : Prop :=
-  ∀ input, input ∈ queriedInputs f
-      (verify ⟨root, parameter⟩ forgery.message forgery.signature) →
-    cache (.ordinary input) ≠ none
-
-theorem ChainInvariant.not_finalized_false_of_verifyProbe
-    {f : QueryImpl HashSpec Id} {parameter : PublicParameter}
-    {table : Coordinate → HashOutput}
-    {ftsSecret : Index → FtsTree → FtsLeaf → Digest}
-    {targetCache : QueryCache HashSpec}
-    {rawState completedState : LazyRevealProbe.State Coordinate}
-    {rawCache : SplitHashCache} {root : Digest} {forgery : Forgery}
-    {signingLog : QueryLog SigningSpec}
-    (hinvariant : ChainInvariant parameter
-      (CoveredChainCoordinate f targetCache
-        (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey) signingLog)
-      rawState rawCache)
-    (hcompletedTable : ∀ coordinate output,
-      completedState.values coordinate = some output → output = table coordinate)
-    (hrealizes : ∀ position : Position, IsOtsPosition position →
-      f (tableInput parameter table (.position position)) = table (.position position))
-    (hfinalize : (false, completedState) ∈ support
-      (LazyRevealProbe.finalizeDetailed rawState))
-    (hqueries : RawCachesVerifierTrace f parameter root forgery rawCache)
-    (hprobe : VerifyProbeWitness f targetCache
-      (⟨parameter, root, tableOtsSecret table, ftsSecret⟩ : SecretKey)
-      signingLog forgery.message forgery.signature) : False := by
-  obtain ⟨lay, digest, layerMessage, codeword, chainIdx, hdigit, probe, input,
-    hinput, hdigest, hadmissible, hencode, hverifierMessage, hhits, hmatches, hquery,
-    _, hnotCovered, _hsourceSettled⟩ := hprobe
-  exact hinvariant.not_finalized_false_of_uncovered_probe probe input hhits hmatches
-    (hqueries input hquery) hnotCovered (hcompletedTable probe.coordinate) hrealizes hfinalize
-
 theorem winningRetainedFresh_imp_verifyProbe
     (parameter : PublicParameter) (table : Coordinate → HashOutput)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
@@ -158,27 +114,5 @@ theorem winningRetainedBackward_imp_verifyProbe
     hadmissible, heval, hbad, hbackward⟩
   exact ⟨hverdict, f, digest, hf, hvalid, hnotContains, hdigest, hadmissible, heval,
     hbad, SettledForgedBackwardChainOpening.toVerifyProbeWitness hdigest hadmissible hbackward⟩
-
-theorem probEvent_winningRetainedFresh_le_verifyProbe
-    (adversary : Adversary) (parameter : PublicParameter)
-    (table : Coordinate → HashOutput)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
-    Pr[WinningRetainedFreshLayerOpeningWitness parameter table ftsSecret |
-        actualRetainedGameAfterTable adversary parameter ftsSecret table] ≤
-      Pr[WinningRetainedVerifyProbeWitness parameter table ftsSecret |
-        actualRetainedGameAfterTable adversary parameter ftsSecret table] :=
-  probEvent_mono fun result _ => winningRetainedFresh_imp_verifyProbe
-    parameter table ftsSecret result
-
-theorem probEvent_winningRetainedBackward_le_verifyProbe
-    (adversary : Adversary) (parameter : PublicParameter)
-    (table : Coordinate → HashOutput)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
-    Pr[WinningRetainedBackwardChainOpeningWitness parameter table ftsSecret |
-        actualRetainedGameAfterTable adversary parameter ftsSecret table] ≤
-      Pr[WinningRetainedVerifyProbeWitness parameter table ftsSecret |
-        actualRetainedGameAfterTable adversary parameter ftsSecret table] :=
-  probEvent_mono fun result _ => winningRetainedBackward_imp_verifyProbe
-    parameter table ftsSecret result
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

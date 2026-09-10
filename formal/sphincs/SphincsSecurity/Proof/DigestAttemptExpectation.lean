@@ -1,11 +1,11 @@
-import SphincsSecurity.Proof.FewTimeFreshMass
-import SphincsSecurity.Proof.FewTimeWeightedOriginRace
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTimeRace
 
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal
 attribute [local instance] Classical.propDecidable
-noncomputable local instance : SampleableType Randomness := SampleableType.ofFintype Randomness
+noncomputable local instance instSampleableTypeRandomness_2 : SampleableType Randomness := SampleableType.ofFintype Randomness
 attribute [local irreducible] signAttempt signDigestAttemptPrefix
 
 abbrev DigestAttemptResult := Randomness × (Option (Index × (DigestTree → FtsLeaf)) × QueryCache HashSpec)
@@ -21,29 +21,6 @@ noncomputable def digestAttemptExpectation : Nat → SecretKey → Message → Q
   | attempts + 1, key, message, cache => 1 +
       ∑' result, Pr[= result | signDigestAttemptPrefix key message cache] *
         if result.2.1 = none then digestAttemptExpectation attempts key message result.2.2 else 0
-
-theorem digestAttemptExpectation_le (attempts : Nat) (key : SecretKey) (message : Message) (cache : QueryCache HashSpec) :
-    digestAttemptExpectation attempts key message cache ≤ (attempts : ENNReal) := by
-  induction attempts generalizing cache with
-  | zero => simp only [digestAttemptExpectation, Nat.cast_zero, le_refl]
-  | succ attempts ih =>
-      rw [digestAttemptExpectation]
-      have h : (∑' result, Pr[= result | signDigestAttemptPrefix key message cache] *
-          if result.2.1 = none then digestAttemptExpectation attempts key message result.2.2 else 0) ≤
-          ∑' result, Pr[= result | signDigestAttemptPrefix key message cache] * (attempts : ENNReal) := by
-        apply ENNReal.tsum_le_tsum
-        intro result
-        apply mul_le_mul' le_rfl
-        split_ifs
-        · exact ih result.2.2
-        · exact zero_le
-      rw [ENNReal.tsum_mul_right] at h
-      have hmass := h.trans (mul_le_of_le_one_left' tsum_probOutput_le_one)
-      exact (add_le_add le_rfl hmass).trans_eq (by rw [Nat.cast_add, Nat.cast_one, add_comm])
-
-theorem digestAttemptExpectation_ne_top (attempts : Nat) (key : SecretKey) (message : Message) (cache : QueryCache HashSpec) :
-    digestAttemptExpectation attempts key message cache ≠ ⊤ :=
-  ne_top_of_le_ne_top (by finiteness) (digestAttemptExpectation_le attempts key message cache)
 
 theorem signDigestAttemptPrefix_support_attempt (key : SecretKey) (message : Message)
     (cache : QueryCache HashSpec) (result : DigestAttemptResult)

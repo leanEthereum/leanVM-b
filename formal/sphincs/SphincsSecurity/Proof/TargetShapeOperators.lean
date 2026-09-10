@@ -1,5 +1,5 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.TargetMomentShapes
-import Mathlib.Algebra.BigOperators.Group.Finset.Powerset
 
 namespace SphincsSecurity.Concrete
 

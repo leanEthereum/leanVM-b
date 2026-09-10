@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeHistoryPrefixRisk
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
@@ -227,30 +228,6 @@ theorem expected_live_sampledHistoryFilteredRun_unresolvedStart_le
       (historyUnresolvedStartCharge candidate) hconsistent hcovered hbound hbudget]
   exact expected_live_historyAdaptive_unresolvedStart_le computation context fuel bound history candidate
     hconsistent hcovered hbound hbudget
-
-theorem expected_live_sampled_runResolved_empty_unresolvedStart_le
-    (computation : OracleComp (LazyRevealProbe.World Coordinate) α) (fuel bound : Nat)
-    (candidate : DeferredContext → α → Option Probe)
-    (hbound : computation.IsQueryBoundP LazyRevealProbe.IsProbe bound) (hbudget : bound ≤ 2 ^ 126) :
-    (∑' result, Pr[= result | do
-        let table ← sampleOtsHashTable
-        runResolvedFromTable { state := LazyRevealProbe.State.empty, values := emptyDeferredStructuralValues }
-          fuel table computation] * historyUnresolvedStartAllowance candidate (retainCompletableResult result)) ≤
-    (∑' result, Pr[= result | do
-        let table ← sampleOtsHashTable
-        runResolvedFromTable { state := LazyRevealProbe.State.empty, values := emptyDeferredStructuralValues }
-          fuel table computation] * historyUnresolvedStartCharge candidate (retainCompletableResult result)) *
-      ((4 / 3 : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹) := by
-  have hnative := expected_live_sampledHistoryFilteredRun_unresolvedStart_le computation
-    { state := LazyRevealProbe.State.empty, values := emptyDeferredStructuralValues }
-    fuel bound [] candidate DeferredContext.valid_empty.valuesConsistent pendingCoveredBy_empty hbound
-    (by simpa only [List.length_nil, Nat.zero_add] using hbudget)
-  have htable : ∀ base, completedStartTable LazyRevealProbe.State.empty base = base := by
-    intro base
-    funext index
-    rfl
-  simpa only [sampledHistoryFilteredRun, ChainStartHistoryHit, List.not_mem_nil, false_and, exists_false, ↓reduceIte,
-    htable] using hnative
 
 def UnresolvedStartProbeHit (table : OtsSecretIndex → HashOutput) (context : DeferredContext) : Option Probe → Prop
   | some ⟨.chainStart lay tree leafIdx chainIdx, digest⟩ =>

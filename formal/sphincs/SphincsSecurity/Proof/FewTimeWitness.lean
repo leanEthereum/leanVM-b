@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.OneTimeEvents
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.Replay
 
 /-!
 # Finite witnesses for the few-time leak
@@ -99,36 +100,6 @@ theorem FewTimeCover.entries_card_le_trees {f : QueryImpl HashSpec Id}
     cover.entries.card ≤ (Finset.univ : Finset FtsTree).card := Finset.card_image_le
     _ = ftsTrees - 1 := Fintype.card_fin _
 
-theorem FewTimeCover.entries_card_le_log_length {f : QueryImpl HashSpec Id}
-    {cache : QueryCache HashSpec} {secretKey : SecretKey}
-    {signingLog : QueryLog SigningSpec} {index : Index}
-    {targetLeaves : DigestTree → FtsLeaf}
-    (cover : FewTimeCover f cache secretKey signingLog index targetLeaves) :
-    cover.entries.card ≤ signingLog.length := by
-  classical
-  calc
-    cover.entries.card ≤ (signingLog.map SigningEntry.flat).toFinset.card :=
-      Finset.card_le_card cover.entries_subset_log
-    _ ≤ (signingLog.map SigningEntry.flat).length :=
-      List.toFinset_card_le (signingLog.map SigningEntry.flat)
-    _ = signingLog.length := List.length_map SigningEntry.flat
-
-theorem FewTimeCover.entries_card_le_signatureLimit {f : QueryImpl HashSpec Id}
-    {cache : QueryCache HashSpec} {secretKey : SecretKey}
-    {signingLog : QueryLog SigningSpec} {index : Index}
-    {targetLeaves : DigestTree → FtsLeaf}
-    (cover : FewTimeCover f cache secretKey signingLog index targetLeaves)
-    (hvalid : SigningTranscript.Valid signingLog) :
-    cover.entries.card ≤ signatureLimit :=
-  cover.entries_card_le_log_length.trans hvalid
-
-theorem flatSigningEntry_has_log_index (signingLog : QueryLog SigningSpec)
-    (entry : FlatSigningEntry) (hentry : entry ∈ signingLog.map SigningEntry.flat) :
-    ∃ position : Fin signingLog.length, SigningEntry.flat (signingLog.get position) = entry := by
-  obtain ⟨original, horiginal, rfl⟩ := List.mem_map.1 hentry
-  obtain ⟨position, hposition⟩ := List.mem_iff_get.1 horiginal
-  exact ⟨position, congrArg SigningEntry.flat hposition⟩
-
 theorem List.get_ne_of_lt_idxOf [BEq α] [LawfulBEq α] (list : List α) (value : α)
     (position : Fin list.length) (hlt : position.val < list.idxOf value) :
     list.get position ≠ value := by
@@ -186,23 +157,6 @@ theorem FewTimeCover.logIndex_spec {f : QueryImpl HashSpec Id}
     have hmap : (signingLog.map SigningEntry.flat).get ⟨i, by simpa only [i] using hlt⟩ =
         SigningEntry.flat (signingLog.get ⟨i, hi⟩) := by simp
     simpa only [FewTimeCover.logIndex, i] using hmap.symm.trans hget
-
-theorem FewTimeCover.logIndex_first {f : QueryImpl HashSpec Id}
-    {cache : QueryCache HashSpec} {secretKey : SecretKey}
-    {signingLog : QueryLog SigningSpec} {index : Index}
-    {targetLeaves : DigestTree → FtsLeaf}
-    (cover : FewTimeCover f cache secretKey signingLog index targetLeaves)
-    (entry : cover.entries) (position : Fin signingLog.length)
-    (hposition : position.val < (cover.logIndex entry).val) :
-    SigningEntry.flat (signingLog.get position) ≠ entry.1 := by
-  classical
-  let mappedPosition : Fin (signingLog.map SigningEntry.flat).length :=
-    ⟨position.val, by simpa only [List.length_map] using position.isLt⟩
-  have hlt : mappedPosition.val < (signingLog.map SigningEntry.flat).idxOf entry.1 := by
-    simpa only [mappedPosition, FewTimeCover.logIndex] using hposition
-  have hne := List.get_ne_of_lt_idxOf
-    (signingLog.map SigningEntry.flat) entry.1 mappedPosition hlt
-  simpa only [mappedPosition, List.get_eq_getElem, List.getElem_map] using hne
 
 theorem FewTimeCover.logIndex_injective {f : QueryImpl HashSpec Id}
     {cache : QueryCache HashSpec} {secretKey : SecretKey}
@@ -303,16 +257,6 @@ theorem FewTimeCover.entryDigest_index {f : QueryImpl HashSpec Id}
     (entry : cover.entries) : digestIndex (cover.entryDigest entry) = index :=
   (cover.entryDigest_spec entry).2.2.1.symm
 
-theorem honestFtsSignAt_index_leaves_unique {f : QueryImpl HashSpec Id}
-    {cache : QueryCache HashSpec} {secretKey : SecretKey} {message : Message}
-    {signature : Signature} {leftIndex rightIndex : Index}
-    {leftLeaves rightLeaves : DigestTree → FtsLeaf}
-    (hleft : HonestFtsSignAt f cache secretKey message signature leftIndex leftLeaves)
-    (hright : HonestFtsSignAt f cache secretKey message signature rightIndex rightLeaves) :
-    leftIndex = rightIndex ∧ leftLeaves = rightLeaves := by
-  have heq := hleft.1.2.1.symm.trans hright.1.2.1
-  exact Prod.mk.inj (Option.some.inj heq)
-
 theorem successfulSignRun_signature_eq {f : QueryImpl HashSpec Id}
     {cache : QueryCache HashSpec} {secretKey : SecretKey}
     {leftMessage rightMessage : Message} {leftSignature rightSignature : Signature}
@@ -376,22 +320,6 @@ theorem FtsCoverAt.signedLeaves_eq_of_flat_entry_eq {f : QueryImpl HashSpec Id}
   have hpairs := Option.some.inj (heval.symm.trans right.honest.1.2.1)
   exact (Prod.mk.inj hpairs).2
 
-theorem FtsCoverAt.bottom_ots_eq {f : QueryImpl HashSpec Id}
-    {cache : QueryCache HashSpec} {secretKey : SecretKey}
-    {signingLog : QueryLog SigningSpec} {index : Index}
-    {targetLeaves : DigestTree → FtsLeaf} {leftTree rightTree : FtsTree}
-    (left : FtsCoverAt f cache secretKey signingLog index targetLeaves leftTree)
-    (right : FtsCoverAt f cache secretKey signingLog index targetLeaves rightTree) :
-    left.signature.counter bottomLayer = right.signature.counter bottomLayer
-      ∧ left.signature.chainValue bottomLayer = right.signature.chainValue bottomLayer := by
-  obtain ⟨leftPart, hleftEval, hleftCounter, hleftValues⟩ :=
-    left.successful.signature_part_of_digest left.honest.1 bottomLayer
-  obtain ⟨rightPart, hrightEval, hrightCounter, hrightValues⟩ :=
-    right.successful.signature_part_of_digest right.honest.1 bottomLayer
-  have hpart : leftPart = rightPart := Option.some.inj (hleftEval.symm.trans hrightEval)
-  subst rightPart
-  exact ⟨hleftCounter.trans hrightCounter.symm, hleftValues.trans hrightValues.symm⟩
-
 theorem FtsCoverAt.flat_entry_eq_of_digest_input_eq {f : QueryImpl HashSpec Id}
     {cache : QueryCache HashSpec} {secretKey : SecretKey}
     {signingLog : QueryLog SigningSpec} {index : Index}
@@ -412,20 +340,6 @@ theorem FtsCoverAt.flat_entry_eq_of_digest_input_eq {f : QueryImpl HashSpec Id}
   · exact hmessage
   · simpa only [SigningEntry.flat] using left.response_eq.trans
       ((congrArg some hsignature).trans right.response_eq.symm)
-
-theorem FtsCoverAt.digest_input_ne_of_flat_entry_ne {f : QueryImpl HashSpec Id}
-    {cache : QueryCache HashSpec} {secretKey : SecretKey}
-    {signingLog : QueryLog SigningSpec} {index : Index}
-    {targetLeaves : DigestTree → FtsLeaf} {leftTree rightTree : FtsTree}
-    (left : FtsCoverAt f cache secretKey signingLog index targetLeaves leftTree)
-    (right : FtsCoverAt f cache secretKey signingLog index targetLeaves rightTree)
-    (hentry : left.entry.flat ≠ right.entry.flat) :
-    tweakableHashInput secretKey.parameter .message
-        (messageDigestPayload secretKey.root left.entry.1 left.signature.randomness)
-      ≠ tweakableHashInput secretKey.parameter .message
-        (messageDigestPayload secretKey.root right.entry.1 right.signature.randomness) := by
-  intro hinput
-  exact hentry (left.flat_entry_eq_of_digest_input_eq right hinput)
 
 theorem FewTimeCover.entryDigest_assigned_leaf {f : QueryImpl HashSpec Id}
     {cache : QueryCache HashSpec} {secretKey : SecretKey}
@@ -472,14 +386,6 @@ theorem digestTree_eq_ftsIndexOf_or_last (tree : DigestTree) :
     change tree.val < 15 at hlt
     omega
 
-theorem HonestFtsSignAt.last_leaf_eq_zero {f : QueryImpl HashSpec Id}
-    {cache : QueryCache HashSpec} {secretKey : SecretKey} {message : Message}
-    {signature : Signature} {index : Index} {leaves : DigestTree → FtsLeaf}
-    (hhonest : HonestFtsSignAt f cache secretKey message signature index leaves) :
-    leaves lastDigestTree = 0 := by
-  obtain ⟨_, digest, _, hadmissible, _, hleaves, _⟩ := hhonest.1.extract
-  rw [hleaves, hadmissible]
-
 theorem ProperFewTimeLeak.forged_digest_input_ne_entryDigestInput
     {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec}
     {secretKey : SecretKey} {signingLog : QueryLog SigningSpec} {index : Index}
@@ -513,39 +419,5 @@ theorem ProperFewTimeLeak.forged_digest_input_ne_entryDigestInput
   apply hproper.2 selected.entry selected.signature selected.entry_mem selected.response_eq
     selected.successful
   simpa only [hsignedLeaves] using selected.honest
-
-theorem ProperFewTimeLeak.two_le_cover_entries_card {f : QueryImpl HashSpec Id}
-    {cache : QueryCache HashSpec} {secretKey : SecretKey}
-    {signingLog : QueryLog SigningSpec} {index : Index}
-    {targetLeaves : DigestTree → FtsLeaf}
-    (hproper : ProperFewTimeLeak f cache secretKey signingLog index targetLeaves)
-    (htargetLast : targetLeaves lastDigestTree = 0) :
-    2 ≤ hproper.1.cover.entries.card := by
-  classical
-  let cover := hproper.1.cover
-  change 2 ≤ cover.entries.card
-  by_contra hcard
-  have hcardOne : cover.entries.card = 1 := by
-    have hpos := cover.entries_card_pos
-    omega
-  let baseTree : FtsTree := ⟨0, by decide⟩
-  let base := cover.select baseTree
-  have hentryEq : ∀ tree, (cover.select tree).entry.flat = base.entry.flat := by
-    intro tree
-    apply Finset.card_le_one_iff.1 (Nat.le_of_eq hcardOne)
-    · exact cover.entry_mem_entries tree
-    · exact cover.entry_mem_entries baseTree
-  have hleaves : base.signedLeaves = targetLeaves := by
-    funext digestTree
-    rcases digestTree_eq_ftsIndexOf_or_last digestTree with ⟨tree, rfl⟩ | rfl
-    · have hselected :=
-        (cover.select tree).signedLeaves_eq_of_flat_entry_eq base (hentryEq tree)
-      rw [← (cover.select tree).leaf_eq]
-      exact congrFun hselected (ftsIndexOf tree) |>.symm
-    · exact base.honest.last_leaf_eq_zero.trans htargetLast.symm
-  have hhonest : HonestFtsSignAt f cache secretKey base.entry.1 base.signature index
-      targetLeaves := by
-    simpa only [hleaves] using base.honest
-  exact hproper.2 base.entry base.signature base.entry_mem base.response_eq base.successful hhonest
 
 end SphincsSecurity.Concrete

@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeResolvedComputedResolver
+import SphincsSecurity.Proof.OtsProbeRootCacheTransport
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -21,12 +23,6 @@ theorem deferredComputationsClosed_empty :
       { state := LazyRevealProbe.State.empty, values := emptyDeferredStructuralValues } := by
   intro position _ hknown
   simp [DeferredContext.positionValue, LazyRevealProbe.State.empty, emptyDeferredStructuralValues] at hknown
-
-theorem DeferredComputationsClosed.canonicalize
-    {table : OtsSecretIndex → HashOutput} {context : DeferredContext}
-    (hclosed : DeferredComputationsClosed context) (hconsistent : context.ValuesConsistent) :
-    DeferredComputationsClosed (canonicalizeMaterializedValues table context) :=
-  hclosed.of_positionValue_eq (canonicalizeMaterializedValues_positionValue table context hconsistent)
 
 theorem DeferredComputationsClosed.of_resolvePositionValue
     (position : Position) (context : DeferredContext) (result : DeferredResolution)

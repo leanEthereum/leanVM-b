@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.OtsProbeCandidateRiskComponents
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FtsProbeCacheCharge
+import SphincsSecurity.Proof.OtsProbeResolvedSampling
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -252,72 +254,5 @@ theorem evalDist_resolveDeferredReveal_replacePrivatePosition
   split_ifs
   · exact evalDist_resolveDeferredPosition_replacePrivatePosition target position before after table context h
   · exact congrArg evalDist (resolveDeferredPositionValue_replacePrivatePosition target position before after context h)
-
-theorem replacePrivatePosition_materialized_value_none_iff
-    (target : Position) (after : HashOutput) (context : DeferredContext)
-    (hknown : context.positionValue target ≠ none) (coordinate : Coordinate) :
-    (materializedDeferredState (replacePrivatePosition target after context)).values coordinate = none ↔
-      (materializedDeferredState context).values coordinate = none := by
-  cases coordinate with
-  | chainStart => rfl
-  | position position =>
-      by_cases heq : position = target
-      · subst position
-        cases hstate : context.state.values (.position target) <;>
-          simp_all [materializedDeferredState, replacePrivatePosition, DeferredContext.positionValue,
-            DeferredStructuralValues.install]
-      · simp [materializedDeferredState, replacePrivatePosition, DeferredContext.positionValue,
-          DeferredStructuralValues.install, heq]
-
-theorem candidateCharges_replacePrivatePosition
-    (target : Position) (after : HashOutput) (context : DeferredContext)
-    (hknown : context.positionValue target ≠ none) (candidate : Option Probe) :
-    (unmaterializedCandidateCharge (materializedDeferredState (replacePrivatePosition target after context)) candidate,
-      materializedCandidateCharge (materializedDeferredState (replacePrivatePosition target after context)) candidate) =
-    (unmaterializedCandidateCharge (materializedDeferredState context) candidate,
-      materializedCandidateCharge (materializedDeferredState context) candidate) := by
-  cases candidate with
-  | none => rfl
-  | some candidate =>
-      simp only [unmaterializedCandidateCharge, materializedCandidateCharge, LazyRevealProbe.pendingProbeCharge,
-        ne_eq, replacePrivatePosition_materialized_value_none_iff target after context hknown]
-      rfl
-
-theorem canonicalWeightedHashCharge_replacePrivatePosition
-    (target : Position) (after : HashOutput) (context : DeferredContext)
-    (hknown : context.positionValue target ≠ none) (parameter : PublicParameter) (input : HashInput) :
-    canonicalWeightedHashCharge parameter input (replacePrivatePosition target after context) =
-      canonicalWeightedHashCharge parameter input context := by
-  have hunmaterialized := congrArg Prod.fst (candidateCharges_replacePrivatePosition target after context hknown
-    (purePlanProbingHashQuery parameter input context.state).candidate?)
-  have hmaterialized := congrArg Prod.snd (candidateCharges_replacePrivatePosition target after context hknown
-    (rootAwarePlannedCandidate? parameter input context.state))
-  dsimp only at hunmaterialized hmaterialized
-  unfold canonicalWeightedHashCharge
-  change ((unmaterializedCandidateCharge (materializedDeferredState (replacePrivatePosition target after context))
-      (purePlanProbingHashQuery parameter input context.state).candidate? : ENNReal) * (4 / 3) +
-    (materializedCandidateCharge (materializedDeferredState (replacePrivatePosition target after context))
-      (rootAwarePlannedCandidate? parameter input context.state) : ENNReal) * (4 / 3)) = _
-  rw [hunmaterialized, hmaterialized]
-
-theorem canonicalizeMaterializedValues_replacePrivatePosition
-    (target : Position) (after : HashOutput) (table : OtsSecretIndex → HashOutput)
-    (context : DeferredContext) (hhidden : Coordinate.position target ∉ context.state.revealed) :
-    canonicalizeMaterializedValues table (replacePrivatePosition target after context) =
-      replacePrivatePosition target after (canonicalizeMaterializedValues table context) := by
-  have hpublic : publicMaterializedValues table (replacePrivatePosition target after context) =
-      publicMaterializedValues table context := by
-    funext coordinate
-    cases coordinate with
-    | chainStart => rfl
-    | position position =>
-        by_cases heq : position = target
-        · subst position
-          simp [publicMaterializedValues, replacePrivatePosition, hhidden]
-        · simp [publicMaterializedValues, replacePrivatePosition, resolvedCompletionValue,
-            DeferredContext.positionValue, DeferredStructuralValues.install, heq]
-  unfold canonicalizeMaterializedValues
-  rw [hpublic]
-  rfl
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

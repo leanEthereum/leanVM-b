@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.RetainedResidualWorldKernel
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.MessageCertificateProjection
+import SphincsSecurity.Proof.RetainedResidualWorldKernel
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 

@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.HiddenLabelProbe
+import SphincsSecurity.Proof.Prelude
 
 namespace SphincsSecurity.Concrete.PrimitiveMessagePotential
 

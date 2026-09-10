@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.OtsProbeRootMaterializationHash
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeRootMaterializationExecution
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

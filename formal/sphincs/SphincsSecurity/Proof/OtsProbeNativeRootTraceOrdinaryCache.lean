@@ -1,4 +1,7 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeNativeOrdinaryCacheHash
 import SphincsSecurity.Proof.OtsProbeNativeRootRecordLikelihood
+import SphincsSecurity.Proof.OtsProbeNativeRootSwapOrdinaryCache
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

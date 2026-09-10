@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.OtsProbePrivateValueFirstAccessCharge
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeResolvedPrivateObserver
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation

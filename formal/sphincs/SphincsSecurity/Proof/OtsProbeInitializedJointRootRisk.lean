@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeInitializedChargedRootReserve
+import SphincsSecurity.Proof.OtsProbeInitializedGameCharge
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

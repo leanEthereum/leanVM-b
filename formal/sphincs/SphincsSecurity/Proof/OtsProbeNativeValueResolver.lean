@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.OtsProbeNativeValueCompletion
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeNativeValueReplacement
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

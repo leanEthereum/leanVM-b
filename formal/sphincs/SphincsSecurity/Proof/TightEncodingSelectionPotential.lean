@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.EncodingMessagePrehit
+import SphincsSecurity.Proof.EncodingSelectionPotential
 import SphincsSecurity.Proof.TightChargeStep
 
 namespace SphincsSecurity.Concrete.TightEncoding
@@ -523,41 +525,6 @@ theorem uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settles_stopped
                     encodingSelectionPotential cache hfinite secretKey := by ring
               _ = _ := by rw [← Nat.cast_add, hcredit]
       _ = encodingSelectionTotalPotential cache hfinite secretKey := hbefore.symm
-
-theorem uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settles
-    {cache : QueryCache HashSpec} (hfinite : Finite cache)
-    {secretKey : SecretKey} {input : HashInput} {queriedPosition : Position}
-    (hclean : ¬ Bad secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache)
-    (huncached : cache input = none)
-    (hqueried : AtPosition secretKey.parameter input queriedPosition)
-    (hsafe : ∀ answer : HashOutput,
-      truncateHash answer ∉ tightSettlingTargets secretKey.parameter secretKey.otsSecret
-        secretKey.ftsSecret cache hfinite queriedPosition →
-      ¬Bad secretKey.parameter secretKey.otsSecret secretKey.ftsSecret (cache.cacheQuery input answer))
-    (messageTargets : Finset Digest)
-    (hdirectTargets : ∀ (position : EncodingPosition) (index : Index),
-      treeIndexAt index position.lay = position.tree →
-      leafIndexAt index position.lay = position.leafIdx →
-      layerMessagePosition index position.lay = queriedPosition →
-      encodingMessageTargets secretKey.parameter cache hfinite position ⊆ messageTargets)
-    (hdrop : ∀ answer : HashOutput,
-      encodingStructuralPotential (cache.cacheQuery input answer) secretKey +
-          (messageTargets ∪
-            tightSettlingTargets secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache hfinite queriedPosition).card ≤
-        encodingStructuralPotential cache secretKey) :
-    (∑' answer : HashOutput,
-      Pr[= answer | ($ᵗ HashOutput : ProbComp HashOutput)] *
-        encodingSelectionTotalPotential (cache.cacheQuery input answer)
-          (finite_cacheQuery hfinite input answer) secretKey) ≤
-      encodingSelectionTotalPotential cache hfinite secretKey := by
-  apply le_trans _ (uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settles_stopped
-    hfinite hclean huncached hqueried hsafe messageTargets hdirectTargets hdrop)
-  apply ENNReal.tsum_le_tsum
-  intro answer
-  apply mul_le_mul' le_rfl
-  split_ifs
-  · exact encodingSelectionTotalPotential_le_one _ secretKey
-  · exact le_rfl
 
 theorem uniform_encodingSelectionTotalPotential_cacheQuery_le_of_settles_prehit
     {cache : QueryCache HashSpec} (hfinite : Finite cache)

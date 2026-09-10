@@ -1,5 +1,5 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimeViewTrace
-import Batteries.Data.Fin.Coding
 
 /-!
 # Cache origin of the verifier target view
@@ -21,17 +21,13 @@ def isTargetCandidateInterval (entry : AdversaryCacheEntry) : Prop :=
   | .inr _ => True
   | .inl (.inl _) => False
 
-instance : DecidablePred isTargetCandidateInterval := fun entry => by
+instance instDecidablePredAdversaryCacheEntryIsTargetCandidateInterval : DecidablePred isTargetCandidateInterval := fun entry => by
   rcases entry with ⟨input, output, initialCache, finalCache⟩
   rcases input with worldInput | request
   · rcases worldInput with uniformInput | hashInput
     · exact isFalse id
     · exact isTrue trivial
   · exact isTrue trivial
-
-abbrev TargetCandidateIntervals (trace : FullAdversaryTrace) :=
-  {position : Fin trace.intervals.length //
-    isTargetCandidateInterval (trace.intervals.get position)}
 
 def targetCandidateIntervalCount (trace : FullAdversaryTrace) : Nat :=
   Fin.countP fun position : Fin trace.intervals.length =>

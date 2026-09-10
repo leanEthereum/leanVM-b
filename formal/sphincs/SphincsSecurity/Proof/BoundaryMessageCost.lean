@@ -1,6 +1,6 @@
-import SphincsSecurity.Proof.SigningProposalRecord
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.JointProbeMessageHashBudget
-import SphincsSecurity.Proof.RomQueryChargeComparison
+import SphincsSecurity.Proof.SigningProposalRecord
 
 namespace SphincsSecurity.Concrete
 

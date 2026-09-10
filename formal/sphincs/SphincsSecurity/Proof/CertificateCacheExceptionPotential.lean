@@ -1,5 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CachedIndexExcessConcentration
-import SphincsSecurity.Proof.MessageDeficitConcentration
+import SphincsSecurity.Proof.FourthMomentExceptionBound
 
 namespace SphincsSecurity.Concrete
 
@@ -31,37 +32,6 @@ theorem certificateCacheExceptionPotential_bad (key : SecretKey) (remaining : Na
       1 = (2 ^ 160 : ENNReal) / 2 ^ 160 := (ENNReal.div_self (by positivity) (by finiteness)).symm
       _ ≤ _ := ENNReal.div_le_div_right
         ((cachedIndexExcessExceptional_moment_ge key.parameter cache hindex).trans le_self_add) _
-
-theorem certificateCacheExceptionPotential_mono (key : SecretKey) (remaining : Nat)
-    (cache : QueryCache HashSpec) :
-    certificateCacheExceptionPotential key remaining cache ≤
-      certificateCacheExceptionPotential key (remaining + 1) cache := by
-  apply add_le_add (ENNReal.div_le_div_right (fourthMomentBudget_mono remaining _ _) _)
-  apply ENNReal.div_le_div_right
-  simp only [Nat.cast_add, Nat.cast_one, add_mul, one_mul, ← add_assoc]
-  exact le_self_add
-
-theorem expected_certificateCacheExceptionPotential_fresh_le (key : SecretKey) (remaining : Nat)
-    (cache : QueryCache HashSpec) (hfinite : Finite cache) (input : HashInput) (hfresh : cache input = none) :
-    (∑' answer, Pr[= answer | ($ᵗ HashOutput : ProbComp HashOutput)] *
-      certificateCacheExceptionPotential key remaining (cache.cacheQuery input answer)) ≤
-        certificateCacheExceptionPotential key (remaining + 1) cache := by
-  simp only [certificateCacheExceptionPotential, mul_add, ENNReal.tsum_add]
-  apply add_le_add
-  · simp_rw [div_eq_mul_inv, ← mul_assoc, ENNReal.tsum_mul_right]
-    exact mul_le_mul' (expected_fourthMomentBudget_fresh_le
-      (fun current => messageDeficitMoment key.parameter key.root current 2)
-      (fun current => messageDeficitMoment key.parameter key.root current 4) remaining cache input
-      (expected_messageDeficit_second_le key.parameter key.root cache hfinite input hfresh)
-      (expected_messageDeficit_fourth_le key.parameter key.root cache hfinite input hfresh)) le_rfl
-  · simp only [div_eq_mul_inv, mul_add, ← mul_assoc, ENNReal.tsum_add, ENNReal.tsum_mul_right,
-      tsum_probOutput_of_liftM_PMF, one_mul]
-    have hstep := expected_cachedIndexExcessMoment_le key.parameter cache hfinite input hfresh
-    calc
-      _ ≤ (cachedIndexExcessMoment key.parameter cache + (2 ^ 10 : ENNReal)⁻¹ +
-          (remaining : ENNReal) * (2 ^ 10 : ENNReal)⁻¹) * (2 ^ 160 : ENNReal)⁻¹ :=
-        mul_le_mul' (add_le_add hstep le_rfl) le_rfl
-      _ = _ := by push_cast; ring
 
 theorem certificateCacheExceptionPotential_initial_le (key : SecretKey) (q : Nat) (hq : q ≤ 2 ^ 127)
     (cache : QueryCache HashSpec)

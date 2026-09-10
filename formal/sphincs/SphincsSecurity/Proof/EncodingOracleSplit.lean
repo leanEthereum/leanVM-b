@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CanonicalEncodingSampling
+import SphincsSecurity.Proof.CanonicalGraphSampling
 import SphincsSecurity.Proof.UniformTableSplit
 
 namespace SphincsSecurity.Concrete
@@ -87,27 +89,5 @@ noncomputable def outsideGraphMessage (key : SecretKey) (inputs : Finset HashInp
     (position : EncodingPosition) : Digest :=
   canonicalGraphMessage (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret
     (nonencodingAnswer key.parameter inputs hencoding outside)) position
-
-noncomputable def referenceOracleTable (key : SecretKey) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs) (outside : NonencodingRows key.parameter inputs hencoding)
-    (position : EncodingPosition) (rows : Fin encodingAttemptLimit → HashOutput)
-    (remaining : UniformTableSplit.Outside
-      (referenceCounterCell key.parameter position (outsideGraphMessage key inputs hencoding outside position)) → HashOutput) :
-    inputs → HashOutput :=
-  joinEncodingTable key.parameter inputs hencoding
-    (UniformTableSplit.join
-      (referenceCounterCell key.parameter position (outsideGraphMessage key inputs hencoding outside position))
-      (referenceCounterCell_injective key.parameter position (outsideGraphMessage key inputs hencoding outside position))
-      rows remaining) outside
-
-theorem referenceOracleTable_nonencoding (key : SecretKey) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs) (outside : NonencodingRows key.parameter inputs hencoding)
-    (position : EncodingPosition) (rows : Fin encodingAttemptLimit → HashOutput)
-    (remaining : UniformTableSplit.Outside
-      (referenceCounterCell key.parameter position (outsideGraphMessage key inputs hencoding outside position)) → HashOutput) :
-    (fun cell : UniformTableSplit.Outside (encodingInputCell key.parameter inputs hencoding) =>
-      referenceOracleTable key inputs hencoding outside position rows remaining cell.val) = outside := by
-  funext cell
-  exact UniformTableSplit.join_outside _ _ _ outside cell
 
 end SphincsSecurity.Concrete

@@ -1,4 +1,7 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.RetainedResidualContext
+import SphincsSecurity.Proof.RetainedResidualRows
+import SphincsSecurity.Proof.RetainedResidualSigningTrace
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 
@@ -19,7 +22,7 @@ noncomputable instance signatureFintype : Fintype Signature := by
       left_inv := fun _ => rfl
       right_inv := fun _ => rfl }
 
-noncomputable local instance (input : (OracleWorld + SigningSpec).Domain) :
+noncomputable local instance instFintypeRangeSumNatHashInputSignRequestHAddOracleSpecOracleWorldSigningSpec (input : (OracleWorld + SigningSpec).Domain) :
     Fintype ((OracleWorld + SigningSpec).Range input) := by
   cases input <;> infer_instance
 

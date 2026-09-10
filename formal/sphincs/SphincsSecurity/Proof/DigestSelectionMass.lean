@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CachedDigestSelection
+import SphincsSecurity.Proof.FewTimeFreshMass
 
 namespace SphincsSecurity.Concrete
 

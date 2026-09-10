@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.OtsProbePrivateValueFirstAccessTransport
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.EncodingProbability
+import SphincsSecurity.Proof.OtsProbeCompletionSampling
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -174,19 +176,6 @@ theorem probEvent_samplePrivateHistoryGuess_hit_le_of_compatible
       simpa only [reference, truncateHash_hashOutputOfDigest] using hmiss record)
   · rw [if_neg hclean]
     exact hreject output record (not_not.mp hclean)
-
-theorem privateValue_history_row_hit_eq_zero_of_mem
-    (history : Finset Digest) (weight : ENNReal) (likelihood : HashOutput → ENNReal) (candidate : Digest)
-    (hrow : ∀ output, likelihood output = if truncateHash output ∉ history then weight else 0)
-    (hmem : candidate ∈ history) :
-    (∑' output, if truncateHash output = candidate then
-      Pr[= output | LazyRevealProbe.sampleHashOutput] * likelihood output else 0) = 0 := by
-  apply ENNReal.tsum_eq_zero.mpr
-  intro output
-  by_cases heq : truncateHash output = candidate
-  · rw [if_pos heq, hrow]
-    simp [heq, hmem]
-  · simp [heq]
 
 theorem probEvent_samplePrivateHistoryGuess_hit_le_of_supported_compatible
     (run : HashOutput → ProbComp (Option α)) (candidate : α → Option Digest) (history : α → Finset Digest)

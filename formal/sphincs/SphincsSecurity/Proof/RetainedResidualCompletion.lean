@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.ResidualSigningDisclosure
 import SphincsSecurity.Proof.RetainedResidualMessageTrace
 
 namespace SphincsSecurity.Concrete.RetainedResidual

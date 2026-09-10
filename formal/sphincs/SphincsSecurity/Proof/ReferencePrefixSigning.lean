@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.ReferencePrefixGame
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.ReferenceAuxiliarySigning
+import SphincsSecurity.Proof.ReferencePrefixResidual
 
 namespace SphincsSecurity.Concrete
 

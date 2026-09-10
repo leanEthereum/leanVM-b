@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.RetainedResidualHazard
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.RetainedResidualOriginalBudget
+import SphincsSecurity.Proof.RetainedResidualSigningCandidates
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 
@@ -187,117 +189,8 @@ theorem referenceEncodingAuxiliary_select (encoding : ReferenceEncodingAuxiliary
   referenceAuxiliarySample_select ∅ ⟨encoding.selections, encoding.rows, fun _ => 0⟩
     (referenceEncodingAuxiliary_support_seed ∅ encoding hencoding (fun _ => 0)) position
 
-theorem observedInitialSource_encodingClean {Result : Type} (parameter : PublicParameter) (inputs : Finset HashInput)
-    (hcanonical : canonicalEncodingInputs parameter ⊆ inputs) (encoding : ReferenceEncodingAuxiliary)
-    (hencoding : encoding ∈ referenceEncodingAuxiliarySample.support) (seed : inputs → HashOutput)
-    (dummy : OtsReferenceWords) (exposed : InitialPublicLabels (referenceFamilyWords encoding.selections dummy))
-    (high : CanonicalGraphHighHalves) (labels : Labels)
-    (hlabels : complete (initialAllowed (referenceFamilyWords encoding.selections dummy) exposed) labels ≠ 0)
-    (source : PublicKey → OracleComp (OracleWorld + SigningSpec) Result)
-    (hinputs : ∀ key : SecretKey, sourceInputs key (source ⟨key.root, key.parameter⟩) ⊆ inputs)
-    (value : Result) (after : State inputs)
-    (hresult : observedRun
-      (environment parameter inputs hcanonical (referenceFamilyWords encoding.selections dummy)
-        (coordinateGraphLabels (initialKnown (referenceFamilyWords encoding.selections dummy) exposed) high) encoding.selections encoding.rows)
-      labels seed
-      (simulateQ (adversaryImpl inputs parameter (knownRoot (initialKnown (referenceFamilyWords encoding.selections dummy) exposed))
-        (referenceFamilyWords encoding.selections dummy) encoding.selections)
-        (source ⟨knownRoot (initialKnown (referenceFamilyWords encoding.selections dummy) exposed), parameter⟩))
-      (initialState inputs (referenceFamilyWords encoding.selections dummy) exposed) (some value, after) ≠ 0) :
-    ResidualByteFrontend.ReplyClean
-      (PublicEncodingMatch.Match parameter (knownEncodingMessage after.memory.routing.known)
-        (referenceFamilyWords encoding.selections dummy) encoding.selections) after.memory.external.cache := by
-  let auxiliary : ReferenceAuxiliary inputs := ⟨encoding.selections, encoding.rows, seed⟩
-  have hauxiliary := referenceEncodingAuxiliary_support_seed inputs encoding hencoding seed
-  let context := initialContext parameter inputs hcanonical auxiliary hauxiliary dummy exposed high labels
-  have hinitial : Compatible context (initialState inputs (referenceFamilyWords encoding.selections dummy) exposed).memory := by
-    refine ⟨?_, ?_, ?_, ?_, ?_⟩
-    · simpa only [context, auxiliary, Context.words, Context.actual, initialContext, coordinateGraphLabels_value, initialState, initialMemory] using
-        initialKnown_agrees (referenceFamilyWords encoding.selections dummy) exposed labels hlabels
-    · exact initialKnown_graphReplies (referenceFamilyWords encoding.selections dummy) exposed labels hlabels high
-    · intro input answer hanswer; cases hanswer
-    · intro input answer hanswer; cases hanswer
-    · intro input answer hanswer; cases hanswer
-  have hrun : observedRun context.environment context.actual context.auxiliary.seed
-      (simulateQ (adversaryImpl inputs context.key.parameter context.key.root context.words context.auxiliary.selections)
-        (source ⟨context.key.root, context.key.parameter⟩))
-      (initialState inputs (referenceFamilyWords encoding.selections dummy) exposed) (some value, after) ≠ 0 := by
-    simpa only [context, auxiliary, Context.environment, Context.actual, Context.words, initialContext, coordinateGraphLabels_value] using hresult
-  have hcompatible := observedRun_source_compatible context
-    (source ⟨context.key.root, context.key.parameter⟩) (hinputs context.key)
-    (initialState inputs (referenceFamilyWords encoding.selections dummy) exposed) (initialState_rowsCovered _ _ exposed)
-    hinitial value after hrun
-  have hclean := hcompatible.encoding
-  rw [← context.encodingMatch_known after.memory hcompatible] at hclean
-  exact hclean
-
-private theorem initialCandidateCompletion (inputs : Finset HashInput) (words : OtsReferenceWords)
-    (exposed : InitialPublicLabels words) :
-    complete (initialState inputs words exposed).candidates = complete (initialAllowed words exposed) := rfl
-
-theorem lazyInitialSource_encodingClean {Result : Type} (parameter : PublicParameter) (inputs : Finset HashInput)
-    (hcanonical : canonicalEncodingInputs parameter ⊆ inputs) (source : PublicKey → OracleComp (OracleWorld + SigningSpec) Result)
-    (hinputs : ∀ key : SecretKey, sourceInputs key (source ⟨key.root, key.parameter⟩) ⊆ inputs)
-    (encoding : ReferenceEncodingAuxiliary) (hencoding : encoding ∈ referenceEncodingAuxiliarySample.support)
-    (dummy : OtsReferenceWords) (exposed : InitialPublicLabels (referenceFamilyWords encoding.selections dummy))
-    (high : CanonicalGraphHighHalves) (value : Result) (after : State inputs)
-    (hresult : lazyRun
-      (environment parameter inputs hcanonical (referenceFamilyWords encoding.selections dummy)
-        (coordinateGraphLabels (initialKnown (referenceFamilyWords encoding.selections dummy) exposed) high) encoding.selections encoding.rows)
-      (simulateQ (adversaryImpl inputs parameter (knownRoot (initialKnown (referenceFamilyWords encoding.selections dummy) exposed))
-        (referenceFamilyWords encoding.selections dummy) encoding.selections)
-        (source ⟨knownRoot (initialKnown (referenceFamilyWords encoding.selections dummy) exposed), parameter⟩))
-      (initialState inputs (referenceFamilyWords encoding.selections dummy) exposed) (some value, after) ≠ 0) :
-    ResidualByteFrontend.ReplyClean
-      (PublicEncodingMatch.Match parameter (knownEncodingMessage after.memory.routing.known)
-        (referenceFamilyWords encoding.selections dummy) encoding.selections) after.memory.external.cache := by
-  rw [← run_erasure _ _ _ (initialAllowed_nonempty _ exposed), RetainedObservation.bind_nonzero] at hresult
-  obtain ⟨labels, hlabels, hresult⟩ := hresult
-  rw [RetainedObservation.bind_nonzero] at hresult
-  obtain ⟨seed, _, hresult⟩ := hresult
-  rw [initialCandidateCompletion] at hlabels
-  exact observedInitialSource_encodingClean parameter inputs hcanonical encoding hencoding seed dummy exposed high labels hlabels
-    source hinputs value after hresult
-
 variable (key : SecretKey) (adversary : Adversary) (encoding : ReferenceEncodingAuxiliary) (dummy : OtsReferenceWords)
   (exposed : InitialPublicLabels (referenceFamilyWords encoding.selections dummy)) (high : CanonicalGraphHighHalves)
   (q : Nat) (required : Finset FtsTree) (stopAfter : CertificateStopRule) (stopped : Bool)
-
-theorem initialMonitoredSource_encodingClean (hencoding : encoding ∈ referenceEncodingAuxiliarySample.support)
-    (hroot : key.root = knownRoot (initialKnown (referenceFamilyWords encoding.selections dummy) exposed))
-    (value : Forgery × Bool) (after : MonitoredState (gameInputs adversary))
-    (hresult : initialMonitoredSource key adversary encoding dummy exposed high q required stopAfter stopped (some value, after) ≠ 0) :
-    ResidualByteFrontend.ReplyClean
-      (PublicEncodingMatch.Match key.parameter (knownEncodingMessage after.1.memory.routing.known)
-        (referenceFamilyWords encoding.selections dummy) encoding.selections) after.1.memory.external.cache := by
-  unfold initialMonitoredSource at hresult
-  have hnative := map_nonzero _ (fun result => (result.1, result.2.1)) (some value, after) hresult
-  rw [monitoredRun_erasure, hroot] at hnative
-  exact lazyInitialSource_encodingClean key.parameter (gameInputs adversary)
-    (canonicalEncodingInputs_subset_retainedGameInputs adversary key.parameter) (unloggedRetainedRestComputation adversary)
-    (sourceInputs_unlogged_subset_gameInputs adversary) encoding hencoding dummy exposed high value after.1 hnative
-
-theorem prob_next_checkedStop_after_initialMonitoredSource_le (hencoding : encoding ∈ referenceEncodingAuxiliarySample.support)
-    (hroot : key.root = knownRoot (initialKnown (referenceFamilyWords encoding.selections dummy) exposed))
-    (value : Forgery × Bool) (after : MonitoredState (gameInputs adversary))
-    (hresult : initialMonitoredSource key adversary encoding dummy exposed high q required stopAfter stopped (some value, after) ≠ 0)
-    (input : gameInputs adversary) :
-    Pr[fun next => next.1 = none |
-      lazyRun
-        (environment key.parameter (gameInputs adversary) (canonicalEncodingInputs_subset_retainedGameInputs adversary key.parameter)
-          (referenceFamilyWords encoding.selections dummy)
-          (coordinateGraphLabels (initialKnown (referenceFamilyWords encoding.selections dummy) exposed) high)
-          encoding.selections encoding.rows)
-        (simulateQ (embed (gameInputs adversary) after.1.memory.routing)
-          (ResidualByteFrontend.checkedHashQuery
-            (PublicEncodingMatch.Match key.parameter (knownEncodingMessage after.1.memory.routing.known)
-              (referenceFamilyWords encoding.selections dummy) encoding.selections) input)) after.1] ≤
-      ResidualByteFrontend.probeHazard after.1.memory.external.probes := by
-  have h := initialMonitoredSource_hiddenCandidateBound key adversary encoding dummy exposed high q required stopAfter stopped
-    (some value, after) hresult
-  exact prob_checkedHashQuery_stop_le key.parameter (gameInputs adversary) _ (referenceFamilyWords encoding.selections dummy)
-    (coordinateGraphLabels (initialKnown (referenceFamilyWords encoding.selections dummy) exposed) high) encoding.selections encoding.rows
-    after.1.memory.routing input after.1 (referenceEncodingAuxiliary_select encoding hencoding) h.1.1 h.1.2 h.2
-    (initialMonitoredSource_encodingClean key adversary encoding dummy exposed high q required stopAfter stopped hencoding hroot value after hresult)
 
 end SphincsSecurity.Concrete.RetainedResidual

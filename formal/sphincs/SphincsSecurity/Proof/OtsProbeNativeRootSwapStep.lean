@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeNativeRootSwapHash
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
@@ -72,26 +73,6 @@ def NativeRootOuterSafe (parameter : PublicParameter) (target : Position) (befor
     (OracleWorld + SigningSpec).Domain → DeferredContext → Prop
   | .inl (.inr input), context => NativeRootHashSafe parameter target before after input context
   | _, _ => True
-
-theorem nativeRootOuterSafe_replace_iff
-    (parameter : PublicParameter) (target : Position) (before after output : HashOutput)
-    (input : (OracleWorld + SigningSpec).Domain) (context : DeferredContext) :
-    NativeRootOuterSafe parameter target before after input (replaceNativePosition target output context) ↔
-      NativeRootOuterSafe parameter target before after input context := by
-  cases input with
-  | inl input =>
-      cases input with
-      | inl n => rfl
-      | inr input => simp only [NativeRootOuterSafe, NativeRootHashSafe, replaceNativePosition_idem]
-  | inr message => rfl
-
-theorem NativeRootContextRel.outerSafe_iff
-    {target : Position} {before after : HashOutput} {left right : DeferredContext}
-    (h : NativeRootContextRel target before after left right) (parameter : PublicParameter)
-    (input : (OracleWorld + SigningSpec).Domain) :
-    NativeRootOuterSafe parameter target before after input left ↔ NativeRootOuterSafe parameter target before after input right := by
-  rw [h.right_eq]
-  exact (nativeRootOuterSafe_replace_iff parameter target before after after input left).symm
 
 theorem relTriple_nativeRootSwap_outerQuery_of_safe
     (parameter : PublicParameter) (root : Digest) (target : Position) (hroot : IsLayerRoot target)

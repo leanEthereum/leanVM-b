@@ -1,3 +1,6 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FutureCoverageBound
+import SphincsSecurity.Proof.SubsetTargetExpectation
 import SphincsSecurity.Proof.TargetCacheProductQuery
 
 namespace SphincsSecurity.Concrete

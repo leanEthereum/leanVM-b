@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.CertificateMonitor
 import SphincsSecurity.Proof.OriginalProposalBudget
 
 namespace SphincsSecurity.Concrete
@@ -84,17 +86,5 @@ theorem certificateProposal_run_cost_le {α : Type} (key : SecretKey) (budget : 
   have hm := (PMF.mem_support_map_iff (Prod.map id Prod.snd) _ _).mpr ⟨result, hr, rfl⟩
   rw [← PMF.monad_map_eq_map, hprojection] at hm
   exact certificateLength_run_cost_le key budget required stopAfter computation q hbound state.2 _ hm
-
-theorem certificateProposal_creationMass_le_budget {α : Type} (key : SecretKey) (budget spent q : Nat)
-    (required : Finset FtsTree) (stopAfter : CertificateStopRule)
-    (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (hbound : (simulateQ (expandedAdversaryImpl key) computation).IsQueryBoundP (· matches .inr _) q)
-    (cache : QueryCache HashSpec) (stopped : Bool) (result : α × (List Index × CertificateMonitorState))
-    (hr : result ∈ ((simulateQ (certificateProposalImpl key budget required stopAfter) computation).run
-      ([], cache, initialCertificateMonitor spent stopped)).support) :
-    result.2.2.2.creationMass ≤ q := by
-  have h := (certificateProposal_run_cost_le key budget required stopAfter computation q hbound
-    ([], cache, initialCertificateMonitor spent stopped) result hr).2
-  simpa only [initialCertificateMonitor, zero_add] using h
 
 end SphincsSecurity.Concrete

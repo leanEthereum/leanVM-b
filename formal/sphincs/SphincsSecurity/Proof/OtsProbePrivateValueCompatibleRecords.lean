@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbePrivateValueRecordReplacement
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
@@ -238,7 +239,6 @@ theorem evalDist_runPrivateCompatibleRecords_eq_exposure_cut
                     have hvalue := privateValue_preserved_by_resolveDeferredReveal target position output table context middle h.1 h.2.1 hresolve
                     exact ih middle.output _ fuel pending bound (h.materialize_other _ middle.output middle.values hquery hvalue)
                       (hnext middle.output) (hbound middle.output)
-
 
 theorem evalDist_runPrivateCompatibleRecords_preload_eq
     (target : Position) (before after : HashOutput)

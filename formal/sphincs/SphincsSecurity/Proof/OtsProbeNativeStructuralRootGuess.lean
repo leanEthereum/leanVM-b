@@ -1,5 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeNativeRootExposure
-import SphincsSecurity.Proof.Slot
+import SphincsSecurity.Proof.OtsProbeNativeRootOuterCutStop
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

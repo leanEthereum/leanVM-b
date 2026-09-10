@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.FreshTargetEnvelope
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.CachedTargetIncrement
+import SphincsSecurity.Proof.ConcreteTargetShapeSigning
 
 namespace SphincsSecurity.Concrete
 

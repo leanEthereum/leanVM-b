@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.TargetBlockExpectation
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.NormalizedTargetMatches
+import SphincsSecurity.Proof.TargetBlockExpectation
 
 namespace SphincsSecurity.Concrete
 

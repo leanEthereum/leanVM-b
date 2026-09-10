@@ -1,5 +1,5 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.JointSecretOpeningQueryBudget
-import SphincsSecurity.Proof.OtsProbeQueryCharge
 
 namespace SphincsSecurity.Concrete
 
@@ -42,15 +42,5 @@ theorem otsOpeningQueryReserve_ge_one_of_atOtsPosition
   have hone : (3 : ℝ≥0∞) - 2 = 1 :=
     (ENNReal.eq_sub_of_add_eq' (by norm_num) (show (1 : ℝ≥0∞) + 2 = 3 by norm_num)).symm
   simpa only [hone, residualPrimitiveQueryCharge] using hbound
-
-theorem otsOpeningQueryReserve_ge_two_of_children_settled
-    (secretKey : SecretKey) (cache : QueryCache HashSpec) (input : HashInput) (position : Position)
-    (hat : AtPosition secretKey.parameter input position) (hots : OtsProbeSimulation.IsOtsPosition position)
-    (hchildren : ∀ child ∈ position.children,
-      Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache child) :
-    2 ≤ otsOpeningQueryReserve secretKey cache input := by
-  rw [otsOpeningQueryReserve, ftsOpeningQueryReserve_eq_zero_of_atOtsPosition secretKey cache input position hat hots,
-    tsub_zero]
-  exact residualPrimitiveQueryCharge_ge_two_of_children_settled secretKey cache input position hat hchildren
 
 end SphincsSecurity.Concrete

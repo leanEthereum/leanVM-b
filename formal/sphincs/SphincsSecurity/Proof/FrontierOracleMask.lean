@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.FrontierGameProjection
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FrontierSignerErasure
 
 namespace SphincsSecurity.Concrete
 
@@ -63,11 +64,6 @@ theorem maskOtsPrefixes_agrees (parameter : PublicParameter) (words : OtsReferen
     (f : QueryImpl HashSpec Id) : AgreeOutsideOtsPrefixes parameter words f (maskOtsPrefixes parameter words f) := by
   intro input hinput
   simp only [maskOtsPrefixes, if_neg hinput]
-
-theorem maskOtsPrefixes_private (parameter : PublicParameter) (words : OtsReferenceWords)
-    (f : QueryImpl HashSpec Id) (input : HashInput) (hinput : PrivateOtsPrefixInput parameter words input) :
-    maskOtsPrefixes parameter words f input = 0 := by
-  simp only [maskOtsPrefixes, if_pos hinput]
 
 theorem maskOtsPrefixes_congr {parameter : PublicParameter} {words : OtsReferenceWords}
     {f g : QueryImpl HashSpec Id} (h : AgreeOutsideOtsPrefixes parameter words f g) :

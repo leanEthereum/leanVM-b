@@ -1,6 +1,7 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.AuthenticationQueryCost
 import SphincsSecurity.Proof.BoundaryHashCost
 import SphincsSecurity.Proof.FtsSigningReserve
-import SphincsSecurity.Proof.AuthenticationQueryCost
 
 namespace SphincsSecurity.Concrete
 
@@ -93,17 +94,6 @@ theorem boundaryEval_chainWalk (parameter : PublicParameter) (f : QueryImpl Hash
       have hstep : start + steps < chainLength - 1 := by omega
       rw [chainWalk, boundaryEval_bind, dif_pos hstep,
         boundaryEval_tweakableHash _ _ _ _ (by simp [hashDomainFields]), ih (by omega), pow_succ]
-
-theorem boundaryEval_chainWalk_frontier (parameter : PublicParameter) (f : QueryImpl HashSpec Id)
-    (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex) (chainIdx : ChainIndex)
-    (secret frontier : Digest) (digit : Digit)
-    (hfrontier : evalWithAnswerFn f
-      (chainWalk parameter lay tree leaf chainIdx 0 digit.val secret) = frontier) :
-    boundaryEval parameter f (chainWalk parameter lay tree leaf chainIdx 0 (chainLength - 1) secret) =
-      (evalWithAnswerFn f (recoverChain parameter lay tree leaf chainIdx digit frontier),
-        (FreeMonoid.of none) ^ (chainLength - 1)) := by
-  rw [boundaryEval_chainWalk _ _ _ _ _ _ _ _ _ (by omega)]
-  rw [← hfrontier, eval_recoverChain]
 
 theorem boundaryEval_oneTimePublicKey (parameter : PublicParameter) (f : QueryImpl HashSpec Id)
     (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex) (secret : ChainIndex → Digest) :
@@ -212,68 +202,8 @@ theorem boundaryEval_layerMessage (key : SecretKey) (f : QueryImpl HashSpec Id) 
     exact boundaryEval_treeNode _ _ _ _ _ _ _
   · exact boundaryEval_ftsKey _ _ _ _
 
-theorem boundaryRun_cache_le {α : Type} (parameter : PublicParameter)
-    (computation : OracleComp OracleWorld α) (cache : QueryCache HashSpec)
-    (result : (α × SigningBoundaryTrace) × QueryCache HashSpec)
-    (hr : result ∈ support (boundaryRun parameter computation cache)) : cache ≤ result.2 := by
-  apply simulateQ_romImpl_cache_le computation cache (result.1.1, result.2)
-  rw [← boundaryRun_forget parameter computation cache, support_map]
-  exact ⟨result, hr, rfl⟩
-
 theorem boundaryEval_hash_query (parameter : PublicParameter) (f : QueryImpl HashSpec Id) (input : HashInput) :
     boundaryEval parameter f (liftM (HashSpec.query input)) =
       (f input, signingBoundaryTrace parameter (.inr input) (f input)) := rfl
-
-theorem boundaryRun_lift_hash_query (parameter : PublicParameter) (input : HashInput) (cache : QueryCache HashSpec) :
-    boundaryRun parameter (liftM (liftM (HashSpec.query input) : OracleComp HashSpec HashOutput)) cache =
-      (fun result => ((result.1, signingBoundaryTrace parameter (.inr input) result.1), result.2)) <$>
-        (randomOracle (spec := HashSpec) input).run cache :=
-  boundaryRun_query parameter (.inr input) cache
-
-theorem boundaryEval_of_boundaryRun {α : Type} (parameter : PublicParameter)
-    (computation : OracleComp HashSpec α) (cache : QueryCache HashSpec)
-    (result : (α × SigningBoundaryTrace) × QueryCache HashSpec)
-    (hr : result ∈ support (boundaryRun parameter (liftM computation) cache))
-    (f : QueryImpl HashSpec Id) (hf : result.2.AgreesWithFn f) :
-    boundaryEval parameter f computation = result.1 := by
-  induction computation using OracleComp.inductionOn generalizing cache result with
-  | pure value =>
-      simp only [liftM_pure, boundaryRun, simulateQ_pure, WriterT.run_pure, StateT.run_pure,
-        support_pure, Set.mem_singleton_iff] at hr
-      subst result
-      rfl
-  | query_bind input next ih =>
-      rw [liftM_bind, boundaryRun_bind, boundaryRun_lift_hash_query, mem_support_bind_iff] at hr
-      obtain ⟨middle, hmiddle, hr⟩ := hr
-      rw [support_map] at hmiddle
-      obtain ⟨source, hsource, rfl⟩ := hmiddle
-      rw [support_map] at hr
-      obtain ⟨last, hlast, rfl⟩ := hr
-      have hle := boundaryRun_cache_le parameter (liftM (next source.1)) source.2 last hlast
-      have hagree : source.2.AgreesWithFn f := fun _ _ hcached => hf (hle hcached)
-      have hquery : (source.1, source.2) ∈ support
-          ((simulateQ (randomOracle : QueryImpl HashSpec _) (liftM (HashSpec.query input))).run cache) := by
-        simpa only [simulateQ_spec_query] using hsource
-      have hanswer := (replay_of_mem_support (liftM (HashSpec.query input)) cache source.1 source.2
-        hquery f hagree).2.1
-      change f input = source.1 at hanswer
-      rw [boundaryEval_bind, boundaryEval_hash_query,
-        show evalWithAnswerFn f (liftM (HashSpec.query input)) = f input from rfl,
-        hanswer, ih source.1 source.2 last hlast hf]
-
-theorem boundaryRun_chainWalk_frontier (parameter : PublicParameter) (f : QueryImpl HashSpec Id)
-    (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex) (chainIdx : ChainIndex)
-    (secret frontier : Digest) (digit : Digit)
-    (hfrontier : evalWithAnswerFn f
-      (chainWalk parameter lay tree leaf chainIdx 0 digit.val secret) = frontier)
-    (cache : QueryCache HashSpec) (result : (Digest × SigningBoundaryTrace) × QueryCache HashSpec)
-    (hr : result ∈ support (boundaryRun parameter
-      (liftM (chainWalk parameter lay tree leaf chainIdx 0 (chainLength - 1) secret :
-        OracleComp HashSpec Digest)) cache))
-    (hf : result.2.AgreesWithFn f) :
-    result.1 = (evalWithAnswerFn f (recoverChain parameter lay tree leaf chainIdx digit frontier),
-      (FreeMonoid.of none) ^ (chainLength - 1)) := by
-  rw [← boundaryEval_of_boundaryRun parameter _ cache result hr f hf]
-  exact boundaryEval_chainWalk_frontier _ _ _ _ _ _ _ _ _ hfrontier
 
 end SphincsSecurity.Concrete

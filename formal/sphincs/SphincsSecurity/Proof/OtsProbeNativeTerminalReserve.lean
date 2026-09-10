@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeNativeAfterRootRisk
+import SphincsSecurity.Proof.OtsProbeNativeLiveAllowanceReserve
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

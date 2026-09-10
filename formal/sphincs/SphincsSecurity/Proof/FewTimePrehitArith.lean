@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.FewTimeSourceCount
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Statement
 
 /-!
 # Arithmetic for cached few-time views
@@ -21,24 +22,6 @@ theorem prehit_race_source_weight :
   apply (ENNReal.toReal_eq_toReal_iff' (by finiteness) (by finiteness)).mp
   simp only [ENNReal.toReal_mul, ENNReal.toReal_inv, ENNReal.toReal_natCast]
   norm_num [ftsTreeHeight]
-
-theorem prehit_effective_slots_le {q : Nat} (hq : q ≤ 2 ^ 120) :
-    (signatureLimit : ℝ≥0∞) *
-        (1 + q * ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹) ≤
-      (signatureLimit : ℝ≥0∞) * (129 / 128) := by
-  have hq' : (q : ℝ≥0∞) ≤ ((2 ^ 120 : Nat) : ℝ≥0∞) := by
-    exact_mod_cast hq
-  gcongr
-  calc
-    1 + (q : ℝ≥0∞) * ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹ ≤
-        1 + ((2 ^ 120 : Nat) : ℝ≥0∞) *
-          ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹ := by gcongr
-    _ = 129 / 128 := by
-      apply (ENNReal.toReal_eq_toReal_iff' (by finiteness) (by finiteness)).mp
-      rw [ENNReal.toReal_add (by finiteness) (by finiteness)]
-      simp only [ENNReal.toReal_mul, ENNReal.toReal_inv, ENNReal.toReal_div,
-        ENNReal.toReal_natCast, ENNReal.toReal_one]
-      norm_num
 
 theorem prehit_effective_slots_inflation_pow :
     ((129 / 128 : ℝ≥0∞) ^ 14) ≤ 2 := by
@@ -101,21 +84,5 @@ theorem prehit_origin_inflation_pow_le_nine_eighths {q distinct : Nat}
       exact pow_le_pow_right₀ ((by simp : (1 : ℝ≥0∞) ≤
         1 + q * ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹).trans hbase) hdistinct
     _ ≤ 9 / 8 := prehit_effective_slots_inflation_pow_le_nine_eighths
-
-theorem prehit_effective_slots_pow_le {q : Nat} (hq : q ≤ 2 ^ 120) :
-    ((signatureLimit : ℝ≥0∞) *
-        (1 + q * ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹)) ^ 14 ≤
-      2 * (signatureLimit : ℝ≥0∞) ^ 14 := by
-  calc
-    ((signatureLimit : ℝ≥0∞) *
-          (1 + q * ((2 ^ 127 : Nat) : ℝ≥0∞)⁻¹)) ^ 14 ≤
-        ((signatureLimit : ℝ≥0∞) * (129 / 128)) ^ 14 := by
-      exact ENNReal.pow_le_pow_left (prehit_effective_slots_le hq)
-    _ = (signatureLimit : ℝ≥0∞) ^ 14 * (129 / 128) ^ 14 := by
-      rw [mul_pow]
-    _ ≤ (signatureLimit : ℝ≥0∞) ^ 14 * 2 := by
-      gcongr
-      exact prehit_effective_slots_inflation_pow
-    _ = 2 * (signatureLimit : ℝ≥0∞) ^ 14 := by rw [mul_comm]
 
 end SphincsSecurity.Concrete

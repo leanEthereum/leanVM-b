@@ -1,3 +1,6 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeNativeComputedRootMaterialization
+import SphincsSecurity.Proof.OtsProbeNativeRootHashAction
 import SphincsSecurity.Proof.OtsProbeRootMaterializationExecution
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation

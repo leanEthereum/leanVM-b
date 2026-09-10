@@ -1,5 +1,7 @@
-import SphincsSecurity.Proof.TerminalView
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimeSignerCompletion
+import SphincsSecurity.Proof.FewTimeTargetTerminal
+import SphincsSecurity.Proof.TerminalView
 
 namespace SphincsSecurity.Concrete
 

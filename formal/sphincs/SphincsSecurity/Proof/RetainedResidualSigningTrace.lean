@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.RetainedResidualCompletion
+import SphincsSecurity.Proof.RetainedResidualProgram
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 

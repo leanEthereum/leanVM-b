@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.RetainedResidualMonitoredPayment
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CertificateMessagePayment
+import SphincsSecurity.Proof.RetainedResidualMonitoredPayment
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 

@@ -1,4 +1,8 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTimeRawTargetExtraction
 import SphincsSecurity.Proof.FewTimeRawTargetSource
+import SphincsSecurity.Proof.FewTimeRawTargetUnion
+import SphincsSecurity.Proof.FewTimeTargetSource
 import SphincsSecurity.Proof.FewTimeUsedPatterns
 
 namespace SphincsSecurity.Concrete

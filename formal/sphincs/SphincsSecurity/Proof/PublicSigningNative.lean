@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.ReferenceAuxiliarySigning
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.PublicSigningDisclosure
+import SphincsSecurity.Proof.ReferenceAuxiliarySigning
 
 namespace SphincsSecurity.Concrete
 

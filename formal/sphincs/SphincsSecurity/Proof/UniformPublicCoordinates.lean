@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.UniformTableCompletion
 
 namespace SphincsSecurity.Concrete.UniformPublicCoordinates
@@ -65,14 +66,6 @@ theorem completion_mass (exposed : Coordinate → Prop) (known : Public exposed 
   · simp only [h, if_true, PMF.uniformOfFintype_apply]
     rw [← ENNReal.mul_inv (by simp) (by simp), ← Nat.cast_mul, allowed_card_product]
   · simp only [h, if_false, mul_zero]
-
-omit [Nonempty Value] in
-theorem completion_restrict (exposed : Coordinate → Prop) (known : Public exposed → Value)
-    (labels : Coordinate → Value) (hlabels : complete (allowed exposed known) labels ≠ 0) :
-    restrict exposed labels = known := by
-  by_contra h
-  simp only [complete_apply, mem_allowed_iff, if_neg h] at hlabels
-  exact hlabels rfl
 
 omit [Fintype Value] [Nonempty Value] in
 theorem completion_member (candidates : Coordinate → Finset Value) (labels : Coordinate → Value)

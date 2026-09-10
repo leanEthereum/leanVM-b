@@ -1,5 +1,7 @@
-import SphincsSecurity.Proof.ResidualByteAction
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.AdaptiveResidualLabels
 import SphincsSecurity.Proof.CanonicalProbeCache
+import SphincsSecurity.Proof.ResidualByteAction
 
 namespace SphincsSecurity.Concrete.ResidualByteFrontend
 

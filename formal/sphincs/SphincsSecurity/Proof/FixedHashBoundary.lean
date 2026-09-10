@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CanonicalSigningFrontier
 
 namespace SphincsSecurity.Concrete
@@ -136,13 +137,5 @@ theorem fixedBoundaryRun_sign_frontier (key : SecretKey) (f : QueryImpl HashSpec
       frontierSigningRun key.parameter key.root f key.ftsSecret words frontier message := by
   rw [← signWithView_fst, fixedBoundaryRun_map, fixedBoundaryRun_signWithView_frontier key f words frontier hfrontier hwords]
   rfl
-
-theorem fixedBoundaryRun_sign_canonical (key : SecretKey) (f : QueryImpl HashSpec Id)
-    (dummy : OtsReferenceWords) (message : Message) :
-    fixedBoundaryRun key.parameter f (sign key message) =
-      frontierSigningRun key.parameter key.root f key.ftsSecret (canonicalReferenceWords key f dummy)
-        (canonicalFrontierValues key f (canonicalReferenceWords key f dummy)) message :=
-  fixedBoundaryRun_sign_frontier key f _ _ (isSigningFrontier_canonical key f _)
-    (frontierReferenceWord_canonical key f dummy) message
 
 end SphincsSecurity.Concrete

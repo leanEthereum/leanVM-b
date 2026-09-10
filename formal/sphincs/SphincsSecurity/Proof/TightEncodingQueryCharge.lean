@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.TightEncodingSelectionLift
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.TightEncodingSelectionPotential
 
 namespace SphincsSecurity.Concrete.TightEncoding
 
@@ -86,7 +87,6 @@ theorem uniform_encodingSelectionTotalPotential_cacheQuery_not_encoding_sum_le
           hafter.of_cacheQuery_of_not_atPosition huncached
             (fun position hposition => hstructural ⟨position, hposition⟩))
     exact hbound
-
 
 theorem encodingSelectionTotalPotential_cacheQuery_le_of_unrelated
     {cache : QueryCache HashSpec} (hfinite : Finite cache)

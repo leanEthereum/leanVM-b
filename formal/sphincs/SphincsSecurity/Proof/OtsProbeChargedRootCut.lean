@@ -1,4 +1,7 @@
-import SphincsSecurity.Proof.OtsProbeNativeRootHistoryTraceSampling
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeMaterializedRootCharge
+import SphincsSecurity.Proof.OtsProbeNativeRootHistoryObserver
+import SphincsSecurity.Proof.OtsProbeNativeStoredRootCutRisk
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -67,13 +70,5 @@ theorem chargedNativeRootCutCandidate_resolvePositionValue
     (resolveDeferredPositionValue_preserves_state_values position context result hresult)
   rw [resolveDeferredPositionValue_state_eq_clearPending position context result hresult]
   rfl
-
-theorem chargedNativeRootCutCandidate_some
-    (parameter : PublicParameter) (target : Position) (context : DeferredContext) (cut : OuterQueryCut α) (guess : Digest)
-    (hguess : chargedNativeRootCutCandidate parameter target context cut = some guess) :
-    ChargedNativeRootCut parameter context cut ∧ nativeRootCutCandidate parameter target context cut = some guess := by
-  unfold chargedNativeRootCutCandidate at hguess
-  split_ifs at hguess with hcharged
-  exact ⟨hcharged, hguess⟩
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

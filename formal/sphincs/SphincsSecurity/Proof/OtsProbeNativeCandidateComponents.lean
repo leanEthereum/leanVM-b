@@ -1,4 +1,7 @@
-import SphincsSecurity.Proof.OtsProbeNativeStartCharge
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeHistoryPrefixRisk
+import SphincsSecurity.Proof.OtsProbeNativeMaterializedCandidate
+import SphincsSecurity.Proof.OtsProbePrivateMissingHash
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

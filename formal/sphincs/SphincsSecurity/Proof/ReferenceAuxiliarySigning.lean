@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.ReferenceResidualSeeds
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.PublicSigningRecord
+import SphincsSecurity.Proof.ReferenceResidualSeeds
 
 namespace SphincsSecurity.Concrete
 

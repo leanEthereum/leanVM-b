@@ -1,4 +1,7 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeNativeRootInputObservation
 import SphincsSecurity.Proof.OtsProbeNativeRootMaterialization
+import SphincsSecurity.Proof.OtsProbeResolvedComputedInvariant
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

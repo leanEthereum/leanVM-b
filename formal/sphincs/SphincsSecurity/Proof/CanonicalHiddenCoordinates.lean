@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.CanonicalGraphHonest
-import SphincsSecurity.Proof.HiddenLabelProbe
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.CanonicalGraph
+import SphincsSecurity.Proof.FrontierSignerErasure
 
 namespace SphincsSecurity.Concrete
 
@@ -125,61 +126,6 @@ theorem hidden_slot_unary (words : OtsReferenceWords) (disclosed : Index → Fts
       simp only [slots, Position.children, List.map_ofFn, List.mem_ofFn] at hcoordinate
       obtain ⟨tree, rfl⟩ := hcoordinate
       exact hhidden.elim
-
-theorem canonical_input_of_unary (parameter : PublicParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (labels : CanonicalGraphLabels)
-    (position : Position) (coordinate : CanonicalCoordinate) (hslot : slots position = [coordinate]) :
-    canonicalGraphInput parameter otsSecret ftsSecret position labels =
-      tweakableHashInput parameter position.domain (digestBytes (value otsSecret ftsSecret labels coordinate)) := by
-  rw [canonicalGraphInput, ← values_slots, hslot]
-  simp only [List.map_cons, List.map_nil, List.flatMap_cons, List.flatMap_nil, List.append_nil]
-
-theorem input_eq_canonical_iff (parameter : PublicParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (labels : CanonicalGraphLabels)
-    (position : Position) (coordinate : CanonicalCoordinate) (hslot : slots position = [coordinate])
-    (candidate : Digest) :
-    tweakableHashInput parameter position.domain (digestBytes candidate) =
-        canonicalGraphInput parameter otsSecret ftsSecret position labels ↔
-      candidate = value otsSecret ftsSecret labels coordinate := by
-  rw [canonical_input_of_unary parameter otsSecret ftsSecret labels position coordinate hslot]
-  constructor
-  · intro heq
-    exact digestBytes_injective
-      (tweakableHashInput_injective parameter position.domain_inRange position.domain_inRange heq).2
-  · rintro rfl
-    rfl
-
-theorem hidden_probe_match_iff (parameter : PublicParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (labels : CanonicalGraphLabels)
-    (position : Position) (coordinate : CanonicalCoordinate) (hslot : slots position = [coordinate])
-    (candidate : Digest) (answer : HashOutput) :
-    HiddenLabelProbe.Match coordinate (.graph position) candidate (value otsSecret ftsSecret labels, answer) ↔
-      tweakableHashInput parameter position.domain (digestBytes candidate) =
-          canonicalGraphInput parameter otsSecret ftsSecret position labels ∨
-        truncateHash answer = truncateHash (labels position) := by
-  rw [input_eq_canonical_iff parameter otsSecret ftsSecret labels position coordinate hslot]
-  simp only [HiddenLabelProbe.Match, value, eq_comm]
-
-theorem chain_probe_distinct (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex) (chain : ChainIndex)
-    (step : ChainStep) : chainChild lay tree leaf chain step ≠ .graph (.chain lay tree leaf chain step) := by
-  apply slots_ne_parent
-  rw [slots_chain]
-  exact List.mem_singleton_self _
-
-theorem prob_hidden_chain_match_le (words : OtsReferenceWords)
-    (disclosed : Index → FtsTree → FtsLeaf → Prop) (allowed : CanonicalCoordinate → Finset Digest)
-    (ha : ∀ coordinate, (allowed coordinate).Nonempty) (rounds : Nat)
-    (hmin : ∀ coordinate, Hidden words disclosed coordinate → 2 ^ digestBits - rounds ≤ (allowed coordinate).card)
-    (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex) (chain : ChainIndex) (step : ChainStep)
-    (hstep : step.val < (words lay tree leaf chain).val) (candidate : Digest) :
-    Pr[HiddenLabelProbe.Match (chainChild lay tree leaf chain step) (.graph (.chain lay tree leaf chain step)) candidate |
-        HiddenLabelProbe.law allowed ha] ≤
-      1 - (1 - ((2 ^ digestBits - rounds : Nat) : ENNReal)⁻¹) ^ 2 := by
-  apply HiddenLabelProbe.prob_match_le_rounds
-  exact hmin _ ((hidden_chain_child_iff words disclosed lay tree leaf chain step).mpr hstep)
 
 end CanonicalCoordinate
 

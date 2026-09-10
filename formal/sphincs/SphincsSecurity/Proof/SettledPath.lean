@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.Cached
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.Settled
 
 /-!
 # Settled authentication paths

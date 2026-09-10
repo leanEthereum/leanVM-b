@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.ResidualByteRun
 
 namespace SphincsSecurity.Concrete.ResidualByteFrontend

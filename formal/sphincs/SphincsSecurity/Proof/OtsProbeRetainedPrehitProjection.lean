@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.OtsProbeRetainedPrehitTrace
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.EncodingPrehitViewedProjection
+import SphincsSecurity.Proof.OtsProbePrehitQueryTrace
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -37,47 +39,5 @@ theorem runPrehitQueryTrace_monitor_projection
 
 def retainedRestVerdict (result : RetainedRestResult) : Bool :=
   decide (SigningTranscript.Valid result.1.2 ∧ ¬SigningTranscript.Contains result.1.2 result.1.1) && result.2
-
-def retainedPrehitVerdictProjection
-    (result : (RetainedGameResult × (ViewedFullTraceState × Bool)) × List PrehitQuerySnapshot) :
-    (Bool × QueryCache HashSpec) × Bool :=
-  ((retainedRestVerdict result.1.1.2, result.1.2.1.cache), result.1.2.2)
-
-theorem prehitRetainedQueryTrace_monitor_projection
-    (adversary : Adversary) (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
-    retainedPrehitVerdictProjection <$> prehitRetainedQueryTrace adversary parameter table ftsSecret =
-      runEncodingPrehitMonitor (primitiveAccountingKey parameter
-        (fun lay tree leafIdx chainIdx => truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩)) ftsSecret)
-        (gameAfterSecrets adversary parameter
-          (fun lay tree leafIdx chainIdx => truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩)) ftsSecret) ∅ false := by
-  unfold prehitRetainedQueryTrace gameAfterSecrets
-  rw [runEncodingPrehitMonitor_bind, map_bind]
-  apply bind_congr
-  intro root
-  simp only [map_bind, map_pure, retainedPrehitVerdictProjection]
-  rw [gameRest_eq_map_retained, runEncodingPrehitMonitor_map,
-    ← runPrehitQueryTrace_monitor_projection _ _ _ (⟨root.1.2, ⟨[], [], []⟩, [], none⟩, root.2), Functor.map_map]
-  rfl
-
-theorem probEvent_prehitRetainedQueryTrace_jointBad_le_queryCharge
-    (adversary : Adversary) (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
-    let otsSecret := fun lay tree leafIdx chainIdx => truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩)
-    let accountingKey := primitiveAccountingKey parameter otsSecret ftsSecret
-    Pr[fun result => result.1.2.2 = true ∨
-      SphincsSecurity.Bad parameter otsSecret ftsSecret result.1.2.1.cache ∨
-      EncodingBad result.1.2.1.cache accountingKey |
-        prehitRetainedQueryTrace adversary parameter table ftsSecret] ≤
-      expectedQueryCharge (refinedStructuralEncodingQueryCharge accountingKey) (gameAfterSecrets adversary parameter otsSecret ftsSecret) ∅ *
-        (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
-  dsimp only
-  have hbound := probEvent_prehit_or_bad_or_encodingBad_le_queryCharge
-    (primitiveAccountingKey parameter
-      (fun lay tree leafIdx chainIdx => truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩)) ftsSecret)
-    (gameAfterSecrets adversary parameter
-      (fun lay tree leafIdx chainIdx => truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩)) ftsSecret)
-  rw [← prehitRetainedQueryTrace_monitor_projection, probEvent_map] at hbound
-  exact hbound
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

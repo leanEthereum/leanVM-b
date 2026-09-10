@@ -1,6 +1,5 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimeOriginMonitor
-import SphincsSecurity.Proof.FewTimeOriginWP
-import VCVio.OracleComp.QueryTracking.RandomOracle.EagerTable
 
 /-!
 # Partial-observation potential for a few-time origin configuration
@@ -726,18 +725,6 @@ theorem OriginMonitorState.selectedAt_fresh_not_seenView {signatures distinct so
   · have heq := (pattern.selectedAt?_eq_some_iff state.signerOrdinal selected).mp hselected
     omega
   · exact hnotPrehit hprehit
-
-theorem OriginMonitorState.selectedAt_prehit_seenView {signatures distinct sources : Nat}
-    {pattern : FewTimePattern signatures distinct}
-    {configuration : OriginConfiguration pattern sources}
-    (state : OriginMonitorState configuration) (selected : pattern.selected)
-    (hcoherent : state.ScheduleCoherent) (hvalid : state.valid = true)
-    (hprehit : selected ∈ configuration.prehit)
-    (hseen : (⟨selected, hprehit⟩ : ↑configuration.prehit) ∈
-      state.observation.seenSources) :
-    selected ∈ state.observation.seenViews := by
-  apply (hcoherent hvalid).2.1 selected |>.mpr
-  exact Or.inr ⟨hprehit, (hcoherent hvalid).1 ⟨selected, hprehit⟩ |>.mp hseen⟩
 
 end Concrete
 

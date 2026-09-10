@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CanonicalGraphGame
 import SphincsSecurity.Proof.CanonicalResidualQuery
 
@@ -53,14 +54,5 @@ theorem forgeAdvantage_eq_residualGraph (dummy : OtsReferenceWords) (adversary :
   exact probEvent_congr' (fun _ _ => Iff.rfl)
     (evalDist_canonicalGraph_eq_residualGraph (canonicalGraphGameInputs adversary)
       (canonicalGraphInputs_subset_gameInputs adversary) dummy adversary)
-
-theorem residualGraphOracleGame_hashCalls_le (dummy : OtsReferenceWords) (adversary : Adversary)
-    (q : Nat) (hbound : HasHashQueryBound scheme adversary q) (result : Bool × SigningBoundaryTrace)
-    (hresult : result ∈ support (residualGraphOracleGame (canonicalGraphGameInputs adversary) dummy adversary)) :
-    result.2.hashCalls ≤ q := by
-  apply canonicalGraphOracleGame_hashCalls_le dummy adversary q hbound result
-  exact (mem_support_iff_of_evalDist_eq
-    (evalDist_canonicalGraph_eq_residualGraph (canonicalGraphGameInputs adversary)
-      (canonicalGraphInputs_subset_gameInputs adversary) dummy adversary) result).mpr hresult
 
 end SphincsSecurity.Concrete

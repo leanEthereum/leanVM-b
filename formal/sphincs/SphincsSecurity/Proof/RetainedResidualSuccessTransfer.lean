@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.RetainedResidualPrimitivePotential
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.RetainedResidualComposition
+import SphincsSecurity.Proof.RetainedSigningTrace
 import SphincsSecurity.Proof.StoppedSigningLog
 
 namespace SphincsSecurity.Concrete.RetainedResidual

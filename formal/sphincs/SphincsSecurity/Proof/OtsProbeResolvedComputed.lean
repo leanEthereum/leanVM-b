@@ -1,4 +1,7 @@
-import SphincsSecurity.Proof.OtsProbeRootCacheTransport
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsOpeningRefinedReserve
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateRootCandidate
+import SphincsSecurity.Proof.OtsProbeResolvedSampling
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -82,12 +85,6 @@ theorem DeferredPositionComputed.settled_value
         rw [hinput, hquery]
         simp
       · rw [honestValue, hinput, hanswer, tableValue, hcompletion.eq_positionValue position output houtput]
-
-theorem DeferredPositionComputed.canonicalize
-    {table : OtsSecretIndex → HashOutput} {context : DeferredContext} {position : Position}
-    (hcomputed : DeferredPositionComputed context position) (hconsistent : context.ValuesConsistent) :
-    DeferredPositionComputed (canonicalizeMaterializedValues table context) position :=
-  hcomputed.of_positionValue_eq (canonicalizeMaterializedValues_positionValue table context hconsistent)
 
 set_option maxRecDepth 100000 in
 theorem DeferredPositionComputed.refinedReserve_of_encoding_candidate

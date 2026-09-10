@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTimeFresh
 import SphincsSecurity.Proof.FewTimeTargetSigner
 
 /-!

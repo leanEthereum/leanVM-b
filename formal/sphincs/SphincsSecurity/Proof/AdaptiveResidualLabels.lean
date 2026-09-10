@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.ResidualProbeCompletion
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.AdaptiveHiddenLabels
+import SphincsSecurity.Proof.ResidualProbeCompletion
 
 namespace SphincsSecurity.Concrete.AdaptiveResidualLabels
 

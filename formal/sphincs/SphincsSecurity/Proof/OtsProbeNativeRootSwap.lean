@@ -1,4 +1,8 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.MarginalCoupling
 import SphincsSecurity.Proof.OtsProbeNativeRootStateChronological
+import SphincsSecurity.Proof.OtsProbeNativeValueCompletion
+import SphincsSecurity.Proof.OtsProbeNativeValueObservation
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -22,15 +26,6 @@ def NativeRootSwapSameRel (parameter : PublicParameter) (target : Position) (bef
         NativeRootSwapCacheRel parameter target before after left.value.2 right.value.2
   | none, none => True
   | _, _ => False
-
-theorem nativeRootSwapCacheRel_fullSwap
-    (parameter : PublicParameter) (target : Position) (before after : HashOutput)
-    (cache : SplitHashCache) (hcache : cache (.hidden (.position target)) = some before) :
-    NativeRootSwapCacheRel parameter target before after cache
-      (fullSwapRootCache parameter target (truncateHash before) (truncateHash after) after cache) :=
-  ⟨swapCanonicalRootEncodingCache parameter target (truncateHash before) (truncateHash after) cache,
-    rootEncodingCacheRel_swapCanonical parameter target (truncateHash before) (truncateHash after) cache,
-    rootHiddenCacheRel_fullSwapRootCache parameter target before after cache hcache⟩
 
 theorem relTriple_nativeRootSwap_chronologicalSign
     (parameter : PublicParameter) (root : Digest) (target : Position) (hroot : IsLayerRoot target)
@@ -77,12 +72,6 @@ def normalizeNativeRootResult (target : Position) (result : Option (ResolvedRunR
     Option (ResolvedRunResult α) :=
   result.map fun result => ⟨replaceNativePosition target 0 result.context, result.remaining, result.value.1, result.table⟩
 
-noncomputable def normalizeLiveNativeRootResult (target : Position) :
-    Option (ResolvedRunResult (α × SplitHashCache)) → Option (ResolvedRunResult α)
-  | none => none
-  | some result =>
-      if DeferredCompletable result.table result.context then normalizeNativeRootResult target (some result) else none
-
 theorem NativeRootContextRel.completable_iff
     {target : Position} {before after : HashOutput} {left right : DeferredContext}
     (h : NativeRootContextRel target before after left right) (table : OtsSecretIndex → HashOutput) :
@@ -107,45 +96,5 @@ theorem NativeRootSwapSameRel.normalize
           rcases h with ⟨hcontext, hfuel, htable, hvalue, _⟩
           simp only [normalizeNativeRootResult, Option.map_some, hcontext.right_eq,
             replaceNativePosition_idem, hfuel, htable, hvalue]
-
-theorem NativeRootSwapSameRel.normalizeLive
-    {parameter : PublicParameter} {target : Position} {before after : HashOutput}
-    {left right : Option (ResolvedRunResult (α × SplitHashCache))}
-    (h : NativeRootSwapSameRel parameter target before after left right) :
-    normalizeLiveNativeRootResult target left = normalizeLiveNativeRootResult target right := by
-  cases left with
-  | none =>
-      cases right with
-      | none => rfl
-      | some right => contradiction
-  | some left =>
-      cases right with
-      | none => contradiction
-      | some right =>
-          have hnormalize := h.normalize
-          rcases h with ⟨hcontext, _, htable, _, _⟩
-          simp only [normalizeLiveNativeRootResult, ← htable, hcontext.completable_iff,
-            hnormalize]
-
-theorem evalDist_nativeRootSwap_chronologicalSign_live
-    (parameter : PublicParameter) (root : Digest) (target : Position) (hroot : IsLayerRoot target)
-    (before after : HashOutput) (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message)
-    (context : DeferredContext) (h : NativePositionReplaceable target before after context)
-    (fuel : Nat) (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
-    (hcache : cache (.hidden (.position target)) = some before) :
-    evalDist (normalizeLiveNativeRootResult target <$>
-      runResolvedFromTable context fuel table ((maskedPublishedChronologicalSign parameter root ftsSecret message).run cache)) =
-    evalDist (normalizeLiveNativeRootResult target <$>
-      runResolvedFromTable (replaceNativePosition target after context) fuel table
-        ((maskedPublishedChronologicalSign parameter root ftsSecret message).run
-          (fullSwapRootCache parameter target (truncateHash before) (truncateHash after) after cache))) := by
-  apply evalDist_map_eq_of_relTriple
-  apply relTriple_post_mono
-    (relTriple_nativeRootSwap_chronologicalSign parameter root target hroot before after ftsSecret message
-      context (replaceNativePosition target after context) ⟨h, rfl⟩ fuel table cache
-      (fullSwapRootCache parameter target (truncateHash before) (truncateHash after) after cache)
-      (nativeRootSwapCacheRel_fullSwap parameter target before after cache hcache))
-  intro left right hrel
-  exact hrel.normalizeLive
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

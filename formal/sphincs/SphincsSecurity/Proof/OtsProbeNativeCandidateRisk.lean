@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.OtsProbeNativeRiskAccumulation
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbePrivateValueLiveProbeCut
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

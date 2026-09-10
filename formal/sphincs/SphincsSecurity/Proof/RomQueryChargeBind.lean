@@ -1,5 +1,5 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.RomQueryCharge
-import SphincsSecurity.Proof.AdaptiveRevealProbeCharge
 
 namespace SphincsSecurity
 

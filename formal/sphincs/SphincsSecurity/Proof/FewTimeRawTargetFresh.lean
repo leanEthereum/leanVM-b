@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTimeRawTargetNonfresh
 import SphincsSecurity.Proof.FewTimeRawVerifierTarget
 
 namespace SphincsSecurity.Concrete

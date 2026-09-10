@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.OtsProbeNativeRootEncodingHash
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeNativeRootHashInput
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootSelectionDeferred
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

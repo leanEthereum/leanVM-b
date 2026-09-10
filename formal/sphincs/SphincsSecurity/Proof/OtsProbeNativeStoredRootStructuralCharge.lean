@@ -1,4 +1,7 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeNativePlannedReserve
 import SphincsSecurity.Proof.OtsProbeNativePlannedReserveComposition
+import SphincsSecurity.Proof.OtsProbeNativeRootInputObservation
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

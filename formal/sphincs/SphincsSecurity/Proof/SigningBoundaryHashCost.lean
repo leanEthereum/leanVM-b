@@ -1,5 +1,5 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.BoundaryHashCost
-import SphincsSecurity.Proof.SigningQueryCost
 
 namespace SphincsSecurity.Concrete
 

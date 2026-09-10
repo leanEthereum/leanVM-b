@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.ResidualSigningProgram
 import SphincsSecurity.Proof.RetainedResidualExecution
 
 namespace SphincsSecurity.Concrete.RetainedResidual

@@ -1,5 +1,5 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeNativeRootTraceCoupling
-import SphincsSecurity.Proof.OtsProbePrivateValueProbeRisk
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

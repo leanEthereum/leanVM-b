@@ -1,5 +1,5 @@
-import SphincsSecurity.Proof.TargetShapeEnvelope
-import Mathlib.Data.Fintype.EquivFin
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Statement
 
 namespace SphincsSecurity.Concrete
 

@@ -1,4 +1,7 @@
-import SphincsSecurity.Proof.OtsProbeNativeRootHashInput
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeNativePeekInput
+import SphincsSecurity.Proof.OtsProbeNativeRootCache
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootAdaptive
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.PublicReferenceResidual
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.CanonicalResidualQuery
 
 namespace SphincsSecurity.Concrete.CanonicalProbeRouting
 

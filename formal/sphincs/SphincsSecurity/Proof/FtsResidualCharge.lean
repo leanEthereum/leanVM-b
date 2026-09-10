@@ -1,5 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.JointPrimitiveQueryBudget
-import SphincsSecurity.Proof.FtsProbeQueryCharge
+import SphincsSecurity.Proof.SecretProbe
 
 namespace SphincsSecurity.Concrete
 

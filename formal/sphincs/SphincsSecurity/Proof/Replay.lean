@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.EncodingCached
 import SphincsSecurity.Proof.ForgeryClassify
 
 /-!

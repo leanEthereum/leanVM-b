@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.OtsProbeNativeSupportedRootReserve
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeResolvedSampling
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -49,25 +50,6 @@ theorem LiveResolvedQueryBound.mono
       refine ⟨fun hinput => (hbound.1 hinput).trans_le hle, ?_⟩
       intro result hresult
       exact ih result.value (hbound.2 result hresult) (by split_ifs <;> omega)
-
-theorem liveResolvedQueryBound_of_syntactic
-    (predicate : LazyRevealProbe.Query Coordinate → Prop) [DecidablePred predicate] (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
-    (q : Nat) (hbound : computation.IsQueryBoundP predicate q)
-    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
-    LiveResolvedQueryBound predicate computation q context fuel table := by
-  induction computation using OracleComp.inductionOn generalizing q context fuel table with
-  | pure value => trivial
-  | query_bind input next ih =>
-      rw [OracleComp.isQueryBoundP_query_bind_iff] at hbound
-      rw [liveResolvedQueryBound_query_bind]
-      intro _
-      refine ⟨fun hinput => hbound.1.resolve_left (not_not.mpr hinput), ?_⟩
-      intro result _
-      by_cases hinput : predicate input
-      · simp only [if_pos hinput] at hbound ⊢
-        exact ih result.value _ (hbound.2 result.value) result.context result.remaining result.table
-      · simp only [if_neg hinput] at hbound ⊢
-        exact ih result.value _ (hbound.2 result.value) result.context result.remaining result.table
 
 theorem liveResolvedQueryBound_bind_of_syntactic_prefix
     (predicate : LazyRevealProbe.Query Coordinate → Prop) [DecidablePred predicate]

@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.FewTimeOriginPadding
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTimeOriginSampler
 
 /-!
 # Ordinal schedule for a padded origin configuration
@@ -106,81 +107,5 @@ noncomputable def OriginObservation.recordFresh {signatures distinct sources : N
   classical
   exact ⟨Function.update observation.views selected view, observation.sourceInputs,
     insert selected observation.seenViews, observation.seenSources⟩
-
-theorem OriginObservation.recordSource_view {signatures distinct sources : Nat}
-    {pattern : FewTimePattern signatures distinct}
-    {configuration : OriginConfiguration pattern sources}
-    (observation : OriginObservation configuration)
-    (selected : ↑configuration.prehit) (input : HashInput) (view : FewTimeView) :
-    (observation.recordSource selected input view).views selected.1 = view := by
-  classical
-  simp [OriginObservation.recordSource]
-
-theorem OriginObservation.recordSource_input {signatures distinct sources : Nat}
-    {pattern : FewTimePattern signatures distinct}
-    {configuration : OriginConfiguration pattern sources}
-    (observation : OriginObservation configuration)
-    (selected : ↑configuration.prehit) (input : HashInput) (view : FewTimeView) :
-    (observation.recordSource selected input view).sourceInputs selected = input := by
-  classical
-  simp [OriginObservation.recordSource]
-
-theorem OriginObservation.recordSource_view_of_ne {signatures distinct sources : Nat}
-    {pattern : FewTimePattern signatures distinct}
-    {configuration : OriginConfiguration pattern sources}
-    (observation : OriginObservation configuration)
-    (selected : ↑configuration.prehit) (input : HashInput) (view : FewTimeView)
-    (other : pattern.selected) (hne : other ≠ selected.1) :
-    (observation.recordSource selected input view).views other = observation.views other := by
-  classical
-  simp [OriginObservation.recordSource, hne]
-
-theorem OriginObservation.recordSource_input_of_ne {signatures distinct sources : Nat}
-    {pattern : FewTimePattern signatures distinct}
-    {configuration : OriginConfiguration pattern sources}
-    (observation : OriginObservation configuration)
-    (selected : ↑configuration.prehit) (input : HashInput) (view : FewTimeView)
-    (other : ↑configuration.prehit) (hne : other ≠ selected) :
-    (observation.recordSource selected input view).sourceInputs other =
-      observation.sourceInputs other := by
-  classical
-  simp [OriginObservation.recordSource, hne]
-
-theorem OriginObservation.recordSource_seen {signatures distinct sources : Nat}
-    {pattern : FewTimePattern signatures distinct}
-    {configuration : OriginConfiguration pattern sources}
-    (observation : OriginObservation configuration)
-    (selected : ↑configuration.prehit) (input : HashInput) (view : FewTimeView) :
-    selected.1 ∈ (observation.recordSource selected input view).seenViews ∧
-      selected ∈ (observation.recordSource selected input view).seenSources := by
-  classical
-  simp [OriginObservation.recordSource]
-
-theorem OriginObservation.recordFresh_view {signatures distinct sources : Nat}
-    {pattern : FewTimePattern signatures distinct}
-    {configuration : OriginConfiguration pattern sources}
-    (observation : OriginObservation configuration)
-    (selected : pattern.selected) (view : FewTimeView) :
-    (observation.recordFresh selected view).views selected = view := by
-  classical
-  simp [OriginObservation.recordFresh]
-
-theorem OriginObservation.recordFresh_view_of_ne {signatures distinct sources : Nat}
-    {pattern : FewTimePattern signatures distinct}
-    {configuration : OriginConfiguration pattern sources}
-    (observation : OriginObservation configuration)
-    (selected other : pattern.selected) (view : FewTimeView) (hne : other ≠ selected) :
-    (observation.recordFresh selected view).views other = observation.views other := by
-  classical
-  simp [OriginObservation.recordFresh, hne]
-
-theorem OriginObservation.recordFresh_seen {signatures distinct sources : Nat}
-    {pattern : FewTimePattern signatures distinct}
-    {configuration : OriginConfiguration pattern sources}
-    (observation : OriginObservation configuration)
-    (selected : pattern.selected) (view : FewTimeView) :
-    selected ∈ (observation.recordFresh selected view).seenViews := by
-  classical
-  simp [OriginObservation.recordFresh]
 
 end SphincsSecurity.Concrete

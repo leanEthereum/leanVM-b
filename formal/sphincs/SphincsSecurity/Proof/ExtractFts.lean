@@ -1,6 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.Extract
 import SphincsSecurity.Proof.FewTime
-import SphincsSecurity.Proof.Code
 
 /-!
 # Extracting a few-time opening

@@ -1,5 +1,8 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.AdaptiveRevealProbeCharge
+import SphincsSecurity.Proof.FtsProbeSimulation
 import SphincsSecurity.Proof.FtsResidualCharge
-import SphincsSecurity.Proof.AdaptiveRevealProbeCostExpectation
+import SphincsSecurity.Proof.OtsProbeSimulation
 
 namespace SphincsSecurity.Concrete.FtsProbeSimulation
 
@@ -38,26 +41,6 @@ theorem ProbeCacheCovered.install {parameter : PublicParameter}
   · left
     simp only [AdaptiveRevealProbe.State.install, heq, Function.update_self, ne_eq, reduceCtorEq, not_false_eq_true]
   · simpa only [AdaptiveRevealProbe.State.install, Function.update_of_ne heq] using hcovered probe hcached
-
-theorem ProbeCacheCovered.update_hidden {parameter : PublicParameter}
-    {state : AdaptiveRevealProbe.State Coordinate} {cache : SplitHashCache}
-    (hcovered : ProbeCacheCovered parameter state cache) (coordinate : Coordinate) (answer : HashOutput) :
-    ProbeCacheCovered parameter state (Function.update cache (.hiddenLeaf coordinate) (some answer)) := by
-  intro probe hcached
-  apply hcovered probe
-  simpa only [Function.update_of_ne (by simp : SplitHashKey.ordinary (probe.input parameter) ≠
-    SplitHashKey.hiddenLeaf coordinate)] using hcached
-
-theorem ProbeCacheCovered.update_nonprobe {parameter : PublicParameter}
-    {state : AdaptiveRevealProbe.State Coordinate} {cache : SplitHashCache}
-    (hcovered : ProbeCacheCovered parameter state cache) (input : HashInput) (answer : HashOutput)
-    (hinput : ∀ probe : FtsSecretProbe, probe.input parameter ≠ input) :
-    ProbeCacheCovered parameter state (Function.update cache (.ordinary input) (some answer)) := by
-  intro probe hcached
-  apply hcovered probe
-  have hne : SplitHashKey.ordinary (probe.input parameter) ≠ .ordinary input :=
-    fun heq => hinput probe (SplitHashKey.ordinary.inj heq)
-  simpa only [Function.update_of_ne hne] using hcached
 
 theorem ProbeCacheCovered.update_probed {parameter : PublicParameter}
     {state : AdaptiveRevealProbe.State Coordinate} {cache : SplitHashCache}
@@ -111,10 +94,6 @@ theorem ProbeCacheCovered.ordinary_probe_cached_merged {parameter : PublicParame
 def probeCachedInputs (parameter : PublicParameter) (cache : QueryCache HashSpec) : Set HashInput :=
   {input | cache input ≠ none ∧ ∃ probe : FtsSecretProbe, probe.input parameter = input}
 
-theorem probeCachedInputs_finite (parameter : PublicParameter) {cache : QueryCache HashSpec}
-    (hfinite : Finite cache) : (probeCachedInputs parameter cache).Finite :=
-  hfinite.subset (fun _ h => h.1)
-
 theorem ProbeCacheCovered.probeCachedInputs_subset_merged {parameter : PublicParameter}
     {table : Coordinate → Digest} {state : AdaptiveRevealProbe.State Coordinate} {cache : SplitHashCache}
     (hcovered : ProbeCacheCovered parameter state cache)
@@ -124,17 +103,6 @@ theorem ProbeCacheCovered.probeCachedInputs_subset_merged {parameter : PublicPar
       probeCachedInputs parameter (mergedCache parameter table cache) := by
   rintro input ⟨hcached, probe, rfl⟩
   exact ⟨hcovered.ordinary_probe_cached_merged hclean hsynced probe hcached, probe, rfl⟩
-
-theorem ProbeCacheCovered.probeCachedInputs_ncard_le_merged {parameter : PublicParameter}
-    {table : Coordinate → Digest} {state : AdaptiveRevealProbe.State Coordinate} {cache : SplitHashCache}
-    (hcovered : ProbeCacheCovered parameter state cache)
-    (hclean : AdaptiveRevealProbe.tableHits state table = false)
-    (hsynced : RevealedSynced parameter table state cache)
-    (hfinite : Finite (mergedCache parameter table cache)) :
-    (probeCachedInputs parameter (fun input => cache (.ordinary input))).ncard ≤
-      (probeCachedInputs parameter (mergedCache parameter table cache)).ncard :=
-  Set.ncard_le_ncard (hcovered.probeCachedInputs_subset_merged hclean hsynced)
-    (probeCachedInputs_finite parameter hfinite)
 
 theorem probeCachedInputs_cacheQuery_probe (parameter : PublicParameter)
     (cache : QueryCache HashSpec) (probe : FtsSecretProbe) (answer : HashOutput) :

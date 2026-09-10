@@ -1,5 +1,7 @@
-import SphincsSecurity.Proof.Merkle
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.Arith
 import SphincsSecurity.Proof.Bytes
+import SphincsSecurity.Proof.StatementLemmas
 
 /-!
 # Extracting the first divergence

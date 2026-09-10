@@ -1,5 +1,5 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimeRawTargetAllowed
-import SphincsSecurity.Proof.FewTimeHonestLeakTerminal
 
 namespace SphincsSecurity.Concrete
 

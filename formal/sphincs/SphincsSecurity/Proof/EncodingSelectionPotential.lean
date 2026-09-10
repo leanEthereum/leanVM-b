@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.EncodingSelectionCache
 import SphincsSecurity.Proof.EncodingStageCharge
 
@@ -391,13 +392,6 @@ theorem latentEncodingBadAt_of_newlySettled_of_encodingSelection_hasCachedHit
     (finite_cacheQuery hfinite input answer) htree hleaf hposition
     (encodingSettledMessage_eq_of_witness htree hleaf hposition) hhit
 
-theorem encodingConditionalRiskAtMessage_le_one
-    {parameter : PublicParameter} {cache : QueryCache HashSpec}
-    (hfinite : Finite cache) {position : EncodingPosition} {message : Digest} :
-    encodingConditionalRiskAtMessage parameter cache hfinite position message ≤ 1 := by
-  rw [encodingConditionalRiskAtMessage]
-  exact probEvent_le_one
-
 theorem encodingSelection_hasCachedHit_mem_messageTargets_of_newlySettled
     {cache : QueryCache HashSpec} (hfinite : Finite cache)
     {secretKey : SecretKey} {input : HashInput} {answer : HashOutput}
@@ -467,194 +461,6 @@ theorem encodingSelection_hasCachedHit_mem_settlingTargets_of_prematureSettlemen
   have heq : candidate = queriedPosition :=
     atPosition_unique secretKey.parameter hcandidate hqueried
   simpa only [heq] using hmem
-
-theorem encodingSelectionContribution_cacheQuery_le_add_messageBonus
-    {cache : QueryCache HashSpec} (hfinite : Finite cache)
-    {secretKey : SecretKey} {input : HashInput} {answer : HashOutput}
-    {position : EncodingPosition} {index : Index}
-    (huncached : cache input = none)
-    (htree : treeIndexAt index position.lay = position.tree)
-    (hleaf : leafIndexAt index position.lay = position.leafIdx)
-    (hunsettled : ¬ Settled secretKey.parameter secretKey.otsSecret
-      secretKey.ftsSecret cache (layerMessagePosition index position.lay))
-    (hposition : AtPosition secretKey.parameter input
-      (layerMessagePosition index position.lay)) :
-    encodingSelectionContribution (cache.cacheQuery input answer)
-        (finite_cacheQuery hfinite input answer) secretKey position ≤
-      encodingSelectionContribution cache hfinite secretKey position +
-        if truncateHash answer ∈
-          encodingMessageTargets secretKey.parameter cache hfinite position then 1 else 0 := by
-  have hnotAt : ¬ AtEncodingPosition secretKey.parameter input position :=
-    fun hencoding => hencoding.not_atPosition
-      (layerMessagePosition index position.lay) hposition
-  have hmessageUnsettled : ¬ EncodingMessageSettledAt cache secretKey position := by
-    rintro ⟨candidate, hcandidateTree, hcandidateLeaf, hcandidateSettled⟩
-    have hpositionEq := layerMessagePosition_eq_of_position_eq index candidate
-      position.lay (htree.trans hcandidateTree.symm)
-      (hleaf.trans hcandidateLeaf.symm)
-    apply hunsettled
-    rwa [hpositionEq]
-  by_cases hmessageSettled : EncodingMessageSettledAt
-      (cache.cacheQuery input answer) secretKey position
-  · by_cases hhit : EncodingSelection.HasCachedHit
-        (encodingRetrySchedule secretKey.parameter (cache.cacheQuery input answer)
-          position (encodingSettledMessage (cache.cacheQuery input answer) secretKey position))
-        (encodingSelectionCandidates secretKey.parameter (cache.cacheQuery input answer)
-          (finite_cacheQuery hfinite input answer) position)
-    · obtain ⟨candidate, hcandidateTree, hcandidateLeaf, hcandidateSettled⟩ :=
-        (show EncodingMessageSettledAt
-          (cache.cacheQuery input answer) secretKey position from hmessageSettled)
-      have hpositionEq := layerMessagePosition_eq_of_position_eq index candidate
-        position.lay (htree.trans hcandidateTree.symm)
-        (hleaf.trans hcandidateLeaf.symm)
-      have hsettled : Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret
-          (cache.cacheQuery input answer) (layerMessagePosition index position.lay) := by
-        rwa [hpositionEq]
-      have hmem := encodingSelection_hasCachedHit_mem_messageTargets_of_newlySettled
-        hfinite huncached htree hleaf hunsettled hsettled hposition hhit
-      rw [if_pos hmem, encodingSelectionContribution_eq_conditional _ hmessageSettled]
-      exact (encodingConditionalRiskAtMessage_le_one _).trans (le_add_left le_rfl)
-    · exact (encodingSelectionContribution_cacheQuery_le_of_newlySettled_of_not_hasCachedHit
-        hfinite hmessageUnsettled hmessageSettled hnotAt hhit).trans
-          (le_add_right le_rfl)
-  · exact
-      (encodingSelectionContribution_cacheQuery_le_of_unsettled_of_stillUnsettled_of_not_atPosition
-        hfinite huncached hmessageUnsettled hmessageSettled hnotAt).trans
-          (le_add_right le_rfl)
-
-theorem uniform_encodingSelectionContribution_cacheQuery_add_messageTargets_sum_le
-    {cache : QueryCache HashSpec} (hfinite : Finite cache)
-    {secretKey : SecretKey} {input : HashInput}
-    {position : EncodingPosition} {index : Index}
-    (huncached : cache input = none)
-    (htree : treeIndexAt index position.lay = position.tree)
-    (hleaf : leafIndexAt index position.lay = position.leafIdx)
-    (hunsettled : ¬ Settled secretKey.parameter secretKey.otsSecret
-      secretKey.ftsSecret cache (layerMessagePosition index position.lay))
-    (hposition : AtPosition secretKey.parameter input
-      (layerMessagePosition index position.lay)) :
-    (∑' answer : HashOutput,
-      Pr[= answer | ($ᵗ HashOutput : ProbComp HashOutput)] *
-        encodingSelectionContribution (cache.cacheQuery input answer)
-          (finite_cacheQuery hfinite input answer) secretKey position) ≤
-      encodingSelectionContribution cache hfinite secretKey position +
-        (encodingMessageTargets secretKey.parameter cache hfinite position).card *
-          (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
-  calc
-    _ ≤ ∑' answer : HashOutput,
-        Pr[= answer | ($ᵗ HashOutput : ProbComp HashOutput)] *
-          (encodingSelectionContribution cache hfinite secretKey position +
-            if truncateHash answer ∈
-              encodingMessageTargets secretKey.parameter cache hfinite position then 1 else 0) := by
-        apply ENNReal.tsum_le_tsum
-        intro answer
-        exact mul_le_mul_right
-          (encodingSelectionContribution_cacheQuery_le_add_messageBonus hfinite
-            huncached htree hleaf hunsettled hposition) _
-    _ = encodingSelectionContribution cache hfinite secretKey position +
-        ∑' answer : HashOutput,
-          Pr[= answer | ($ᵗ HashOutput : ProbComp HashOutput)] *
-            (if truncateHash answer ∈
-              encodingMessageTargets secretKey.parameter cache hfinite position then 1 else 0) := by
-        simp_rw [mul_add]
-        rw [ENNReal.tsum_add, ENNReal.tsum_mul_right,
-          tsum_probOutput_of_liftM_PMF, one_mul]
-    _ = _ := by rw [uniformHashOutput_mem_bonus_sum_eq]
-
-theorem encodingSelectionContribution_cacheQuery_le_add_settlingBonus
-    {cache : QueryCache HashSpec} (hfinite : Finite cache)
-    {secretKey : SecretKey} {input : HashInput} {answer : HashOutput}
-    {position : EncodingPosition} {index : Index} {queriedPosition : Position}
-    (huncached : cache input = none)
-    (htree : treeIndexAt index position.lay = position.tree)
-    (hleaf : leafIndexAt index position.lay = position.leafIdx)
-    (hunsettled : ¬ Settled secretKey.parameter secretKey.otsSecret
-      secretKey.ftsSecret cache (layerMessagePosition index position.lay))
-    (hnotMessage : ¬ AtPosition secretKey.parameter input
-      (layerMessagePosition index position.lay))
-    (hqueried : AtPosition secretKey.parameter input queriedPosition) :
-    encodingSelectionContribution (cache.cacheQuery input answer)
-        (finite_cacheQuery hfinite input answer) secretKey position ≤
-      encodingSelectionContribution cache hfinite secretKey position +
-        if truncateHash answer ∈
-          settlingTargets secretKey.parameter cache hfinite queriedPosition then 1 else 0 := by
-  have hnotAt : ¬ AtEncodingPosition secretKey.parameter input position :=
-    fun hencoding => hencoding.not_atPosition queriedPosition hqueried
-  have hmessageUnsettled : ¬ EncodingMessageSettledAt cache secretKey position := by
-    rintro ⟨candidate, hcandidateTree, hcandidateLeaf, hcandidateSettled⟩
-    have hpositionEq := layerMessagePosition_eq_of_position_eq index candidate
-      position.lay (htree.trans hcandidateTree.symm)
-      (hleaf.trans hcandidateLeaf.symm)
-    apply hunsettled
-    rwa [hpositionEq]
-  by_cases hmessageSettled : EncodingMessageSettledAt
-      (cache.cacheQuery input answer) secretKey position
-  · by_cases hhit : EncodingSelection.HasCachedHit
-        (encodingRetrySchedule secretKey.parameter (cache.cacheQuery input answer)
-          position (encodingSettledMessage (cache.cacheQuery input answer) secretKey position))
-        (encodingSelectionCandidates secretKey.parameter (cache.cacheQuery input answer)
-          (finite_cacheQuery hfinite input answer) position)
-    · obtain ⟨candidate, hcandidateTree, hcandidateLeaf, hcandidateSettled⟩ :=
-        (show EncodingMessageSettledAt
-          (cache.cacheQuery input answer) secretKey position from hmessageSettled)
-      have hpositionEq := layerMessagePosition_eq_of_position_eq index candidate
-        position.lay (htree.trans hcandidateTree.symm)
-        (hleaf.trans hcandidateLeaf.symm)
-      have hsettled : Settled secretKey.parameter secretKey.otsSecret secretKey.ftsSecret
-          (cache.cacheQuery input answer) (layerMessagePosition index position.lay) := by
-        rwa [hpositionEq]
-      have hmem :=
-        encodingSelection_hasCachedHit_mem_settlingTargets_of_prematureSettlement
-          hfinite huncached htree hleaf hunsettled hsettled hnotMessage hqueried hhit
-      rw [if_pos hmem, encodingSelectionContribution_eq_conditional _ hmessageSettled]
-      exact (encodingConditionalRiskAtMessage_le_one _).trans (le_add_left le_rfl)
-    · exact (encodingSelectionContribution_cacheQuery_le_of_newlySettled_of_not_hasCachedHit
-        hfinite hmessageUnsettled hmessageSettled hnotAt hhit).trans
-          (le_add_right le_rfl)
-  · exact
-      (encodingSelectionContribution_cacheQuery_le_of_unsettled_of_stillUnsettled_of_not_atPosition
-        hfinite huncached hmessageUnsettled hmessageSettled hnotAt).trans
-          (le_add_right le_rfl)
-
-theorem uniform_encodingSelectionContribution_cacheQuery_add_settlingTargets_sum_le
-    {cache : QueryCache HashSpec} (hfinite : Finite cache)
-    {secretKey : SecretKey} {input : HashInput}
-    {position : EncodingPosition} {index : Index} {queriedPosition : Position}
-    (huncached : cache input = none)
-    (htree : treeIndexAt index position.lay = position.tree)
-    (hleaf : leafIndexAt index position.lay = position.leafIdx)
-    (hunsettled : ¬ Settled secretKey.parameter secretKey.otsSecret
-      secretKey.ftsSecret cache (layerMessagePosition index position.lay))
-    (hnotMessage : ¬ AtPosition secretKey.parameter input
-      (layerMessagePosition index position.lay))
-    (hqueried : AtPosition secretKey.parameter input queriedPosition) :
-    (∑' answer : HashOutput,
-      Pr[= answer | ($ᵗ HashOutput : ProbComp HashOutput)] *
-        encodingSelectionContribution (cache.cacheQuery input answer)
-          (finite_cacheQuery hfinite input answer) secretKey position) ≤
-      encodingSelectionContribution cache hfinite secretKey position +
-        (settlingTargets secretKey.parameter cache hfinite queriedPosition).card *
-          (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
-  calc
-    _ ≤ ∑' answer : HashOutput,
-        Pr[= answer | ($ᵗ HashOutput : ProbComp HashOutput)] *
-          (encodingSelectionContribution cache hfinite secretKey position +
-            if truncateHash answer ∈
-              settlingTargets secretKey.parameter cache hfinite queriedPosition then 1 else 0) := by
-        apply ENNReal.tsum_le_tsum
-        intro answer
-        exact mul_le_mul_right
-          (encodingSelectionContribution_cacheQuery_le_add_settlingBonus hfinite
-            huncached htree hleaf hunsettled hnotMessage hqueried) _
-    _ = encodingSelectionContribution cache hfinite secretKey position +
-        ∑' answer : HashOutput,
-          Pr[= answer | ($ᵗ HashOutput : ProbComp HashOutput)] *
-            (if truncateHash answer ∈
-              settlingTargets secretKey.parameter cache hfinite queriedPosition then 1 else 0) := by
-        simp_rw [mul_add]
-        rw [ENNReal.tsum_add, ENNReal.tsum_mul_right,
-          tsum_probOutput_of_liftM_PMF, one_mul]
-    _ = _ := by rw [uniformHashOutput_mem_bonus_sum_eq]
 
 theorem encodingSelectionPotential_cacheQuery_le_of_avoids_settlementTargets
     {cache : QueryCache HashSpec} (hfinite : Finite cache)
@@ -1034,21 +840,6 @@ theorem encodingSelectionTotalPotential_cacheQuery_le_of_bad
       (finite_cacheQuery hfinite input answer) secretKey = 0 := by
     rw [encodingSelectionTotalPotential, if_pos hbadAfter]
   rw [hbefore, hafter]
-
-theorem encodingSelectionTotalPotential_cacheQuery_le_of_one_le_uncapped
-    {cache : QueryCache HashSpec} (hfinite : Finite cache)
-    {secretKey : SecretKey} {input : HashInput} {answer : HashOutput}
-    (hclean : ¬ Bad secretKey.parameter secretKey.otsSecret secretKey.ftsSecret cache)
-    (hone : 1 ≤ (encodingStructuralPotential cache secretKey : ℝ≥0∞) *
-        (Fintype.card Digest : ℝ≥0∞)⁻¹ +
-      encodingSelectionPotential cache hfinite secretKey) :
-    encodingSelectionTotalPotential (cache.cacheQuery input answer)
-        (finite_cacheQuery hfinite input answer) secretKey ≤
-      encodingSelectionTotalPotential cache hfinite secretKey := by
-  have hbefore : encodingSelectionTotalPotential cache hfinite secretKey = 1 := by
-    rw [encodingSelectionTotalPotential, if_neg hclean, min_eq_left hone]
-  rw [hbefore]
-  exact encodingSelectionTotalPotential_le_one _ secretKey
 
 theorem uniform_encodingSelectionTotalPotential_cacheQuery_atPosition_sum_le
     {cache : QueryCache HashSpec} (hfinite : Finite cache)

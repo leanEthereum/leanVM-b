@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.RetainedResidualSigningTrace
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.PrefixEncodingRisk
+import SphincsSecurity.Proof.RetainedResidualExecution
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 

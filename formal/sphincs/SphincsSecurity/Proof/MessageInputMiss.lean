@@ -1,10 +1,11 @@
-import SphincsSecurity.Proof.CachedDigestRate
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.MessagePrehit
 
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal
 attribute [local instance] Classical.propDecidable
-noncomputable local instance : SampleableType Randomness := SampleableType.ofFintype Randomness
+noncomputable local instance instSampleableTypeRandomness_4 : SampleableType Randomness := SampleableType.ofFintype Randomness
 
 theorem uniform_randomness_messageInput_cacheHit_eq_count
     (key : SecretKey) (message : Message) (cache : QueryCache HashSpec) :
@@ -63,8 +64,5 @@ theorem messageInputMissProbability_eq_count (key : SecretKey) (message : Messag
   have heq := ENNReal.eq_sub_of_add_eq probEvent_ne_top h
   rw [hnot] at heq
   exact heq
-
-theorem messageInputMissProbability_le_one (key : SecretKey) (message : Message) (cache : QueryCache HashSpec) :
-    messageInputMissProbability key message cache ≤ 1 := probEvent_le_one
 
 end SphincsSecurity.Concrete

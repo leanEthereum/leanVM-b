@@ -1,4 +1,7 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTimeTargetTerminal
 import SphincsSecurity.Proof.OtsProbeChronologicalTerminal
+import SphincsSecurity.Proof.OtsProbeTerminal
 
 /-!
 # Probability boundary for chronological one-time probes

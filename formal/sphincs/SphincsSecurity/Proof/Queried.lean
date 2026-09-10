@@ -1,6 +1,8 @@
-import SphincsSecurity.Proof.Support
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.Eval
+import SphincsSecurity.Proof.ExtractChain
 import SphincsSecurity.Proof.ExtractFts
-import SphincsSecurity.Proof.ExtractOts
+import SphincsSecurity.Proof.Support
 
 /-!
 # Queries made by verification

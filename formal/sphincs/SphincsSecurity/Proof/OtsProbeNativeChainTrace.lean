@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeNativeChainQuery
+import SphincsSecurity.Proof.OtsProbeNativeQueryTrace
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -97,21 +99,5 @@ theorem relTriple_nativeTrace_chainPublication
               simp only [pure_bind, mem_support_pure_iff] at htrace
               subst trace
               exact ⟨by simp, by simpa using hchain⟩
-
-theorem probEvent_nativeTrace_chainFailure_le_exhaustion
-    (parameter : PublicParameter) (root : Digest) (table : OtsSecretIndex → HashOutput)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache) (concreteCache : QueryCache HashSpec)
-    (hinvariant : ResolvedContextInvariant parameter table context (ordinaryQueryCache cache) concreteCache)
-    (hvisible : VisibleResolvedComputationsCached parameter table context concreteCache)
-    (hpublished : PublishedValues context.state) (hchain : MaterializedChainsPublished context) :
-    Pr[fun trace => ¬NativeChainsPublished trace | runNativeQueryTrace parameter root ftsSecret computation context fuel table cache] ≤
-      Pr[fun result => AnyEncodingInputsExhausted result.2 | (simulateQ (unloggedMappedAdversaryImpl
-        ⟨parameter, root, fun lay tree leafIdx chainIdx => truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩), ftsSecret⟩)
-        computation).run concreteCache] := by
-  apply probEvent_le_of_relTriple (relTriple_nativeTrace_chainPublication parameter root table ftsSecret computation
-    context fuel cache concreteCache hinvariant hvisible hpublished hchain)
-  intro trace result hrel hfailure
-  exact hrel.resolve_left hfailure
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeHashRisk
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateSafe
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -169,18 +171,5 @@ theorem probEvent_canonicalHashQuery_finished_le_initial_add_allowance
   change Pr[= true | _] = Pr[= true | _] at hprob
   rw [← probEvent_eq_eq_probOutput, ← probEvent_eq_eq_probOutput] at hprob
   exact hprob.trans_le (resolvedContextFailureRisk_afterCandidate_le table context _ hconsistent hstarts hcard)
-
-theorem canonicalHashQueryRejectionRisk_le_initial_add_allowance
-    (parameter : PublicParameter) (root : Digest) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (entry : CanonicalQuerySelection) (input : HashInput) (hinput : entry.input = .inl (.inr input))
-    (hfuel : 0 < entry.fuel)
-    (hconsistent : entry.context.ValuesConsistent) (hstarts : StartTableAgrees entry.context.state entry.table)
-    (hcard : entry.context.state.pending.card + 1 < Fintype.card Digest) :
-    canonicalQueryRejectionRisk parameter root ftsSecret entry ≤
-      resolvedContextFailureRisk entry.table entry.context + candidateFailureAllowance entry.table entry.context
-        (purePlanProbingHashQuery parameter input entry.context.state).candidate? :=
-  (canonicalHashQueryRejectionRisk_le_afterCandidate parameter root ftsSecret entry input hinput hfuel
-    hconsistent hstarts hcard).trans
-      (resolvedContextFailureRisk_afterCandidate_le entry.table entry.context _ hconsistent hstarts hcard)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

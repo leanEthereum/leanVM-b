@@ -1,6 +1,6 @@
-import SphincsSecurity.Proof.PairedHiddenMiss
-import SphincsSecurity.Proof.EndpointPreimageDensity
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.EncodingProbability
+import SphincsSecurity.Proof.UniformTableRestriction
 
 namespace SphincsSecurity.Concrete.HiddenLabelProbe
 
@@ -18,34 +18,6 @@ noncomputable def law (allowed : Coordinate → Finset Digest)
 def Match (child parent : Coordinate) (candidate : Digest)
     (result : (Coordinate → Digest) × HashOutput) : Prop :=
   result.1 child = candidate ∨ truncateHash result.2 = result.1 parent
-
-theorem law_apply (allowed : Coordinate → Finset Digest)
-    (ha : ∀ coordinate, (allowed coordinate).Nonempty) (labels : Coordinate → Digest) (answer : HashOutput) :
-    law allowed ha (labels, answer) = uniformTable allowed ha labels * PMF.uniformOfFintype HashOutput answer := by
-  exact EndpointPreimageDensity.bind_pair_apply _ _ _ _
-
-theorem surviving_mass (allowed : Coordinate → Finset Digest)
-    (ha : ∀ coordinate, (allowed coordinate).Nonempty) (child parent : Coordinate) (hne : child ≠ parent)
-    (candidate : Digest) (answer : HashOutput)
-    (hc : ((allowed child).erase candidate).Nonempty)
-    (hp : ((allowed parent).erase (truncateHash answer)).Nonempty) (labels : Coordinate → Digest) :
-    (if ¬Match child parent candidate (labels, answer) then law allowed ha (labels, answer) else 0) =
-      PMF.uniformOfFintype HashOutput answer *
-        (((((allowed child).erase candidate).card : ENNReal) / (allowed child).card *
-          (((allowed parent).erase (truncateHash answer)).card : ENNReal) / (allowed parent).card) *
-          uniformTable (pairedMissAllowed allowed child candidate parent (truncateHash answer))
-            (pairedMissAllowed_nonempty allowed ha child parent hne candidate (truncateHash answer) hc hp) labels) := by
-  rw [law_apply]
-  have hcondition : ¬Match child parent candidate (labels, answer) ↔
-      labels child ≠ candidate ∧ labels parent ≠ truncateHash answer := by
-    simp only [Match, not_or, ne_comm]
-  simp only [hcondition]
-  rw [show (if labels child ≠ candidate ∧ labels parent ≠ truncateHash answer then
-      uniformTable allowed ha labels * PMF.uniformOfFintype HashOutput answer else 0) =
-      PMF.uniformOfFintype HashOutput answer *
-        (if labels child ≠ candidate ∧ labels parent ≠ truncateHash answer then uniformTable allowed ha labels else 0) by
-    split <;> simp only [zero_mul, mul_comm]]
-  rw [uniformTable_paired_miss_mass allowed ha child parent hne candidate (truncateHash answer) hc hp]
 
 theorem prob_truncate_eq (target : Digest) :
     Pr[fun answer => truncateHash answer = target | PMF.uniformOfFintype HashOutput] =

@@ -1,4 +1,7 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.BankedProposalStep
+import SphincsSecurity.Proof.SigningMacroBudget
+import SphincsSecurity.Proof.ValidInterleavedCover
 
 namespace SphincsSecurity.Concrete
 
@@ -145,15 +148,6 @@ theorem certificateMonitorUpdate_messageCalls (key : SecretKey) (budget : Nat)
     (hactive : CertificateMonitorActive key budget input state) :
     (certificateMonitorUpdate key budget required stopAfter input state length record).messageCalls =
       state.2.messageCalls + record.trace.messageCalls.length := by
-  simp only [certificateMonitorUpdate, if_pos hactive]
-
-theorem certificateMonitorUpdate_bank (key : SecretKey) (budget : Nat)
-    (required : Finset FtsTree) (stopAfter : CertificateStopRule)
-    (input : (OracleWorld + SigningSpec).Domain) (state : CertificateMonitorState)
-    (length : Nat) (record : ProposalExecutionRecord input)
-    (hactive : CertificateMonitorActive key budget input state) :
-    (certificateMonitorUpdate key budget required stopAfter input state length record).bank =
-      completedTargetBank key required (proposalRecordLogState input state.2.log record) state.2.bank := by
   simp only [certificateMonitorUpdate, if_pos hactive]
 
 theorem certificateMonitorPotential_advance_active (key : SecretKey) (budget : Nat)

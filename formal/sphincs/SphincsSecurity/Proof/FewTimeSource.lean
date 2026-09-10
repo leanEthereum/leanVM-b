@@ -1,9 +1,7 @@
-import SphincsSecurity.Proof.FullTrace
-import SphincsSecurity.Proof.FewTimeTrace
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimeLoop
-import SphincsSecurity.Proof.SignerDigestSource
-import SphincsSecurity.Proof.FewTimeProbability
-import Batteries.Data.Fin.Coding
+import SphincsSecurity.Proof.FewTimeTrace
+import SphincsSecurity.Proof.FullTrace
 
 /-!
 # Sources of previously cached selected digests
@@ -74,52 +72,6 @@ theorem SuccessfulSignRun.cached_digest_source {f : QueryImpl HashSpec Id}
   refine ⟨index, leaves, ?_, hafter⟩
   simp only [signAttemptResultOfOutput, ← hdigest, if_pos hadmissible]
   rw [hindex, hleaves]
-
-theorem FewTimeCover.precached_entry_has_earlier_source
-    (adversary : Adversary) (parameter : PublicParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (result : (Digest × Forgery × Bool) × (QueryCache HashSpec × FullAdversaryTrace))
-    (hresult : result ∈ support
-      (gameAfterSecretsWithFullTrace adversary parameter otsSecret ftsSecret))
-    (f : QueryImpl HashSpec Id) (index : Index) (targetLeaves : DigestTree → FtsLeaf)
-    (cover : FewTimeCover f result.2.1
-      ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
-      result.2.2.signing.toSigningLog index targetLeaves)
-    (entry : cover.entries)
-    (hprecached : cover.EntryDigestPrecached result.2.2.signing rfl entry) :
-    ∃ (source selected : Fin result.2.2.intervals.length),
-      source.val < selected.val
-        ∧ AdversaryCacheEntry.signingEntry? (result.2.2.intervals.get selected) =
-          some (cover.cacheEntry result.2.2.signing rfl entry)
-        ∧ (result.2.2.intervals.get source).initialCache
-            (cover.entryDigestInput entry) = none
-        ∧ (result.2.2.intervals.get source).finalCache
-            (cover.entryDigestInput entry) ≠ none
-        ∧ ((result.2.2.intervals.get source).input =
-              .inl (.inr (cover.entryDigestInput entry))
-          ∨ ∃ request, (result.2.2.intervals.get source).input = .inr request) := by
-  have hintervals := gameAfterSecretsWithFullTrace_support_interval_invariants
-    adversary parameter otsSecret ftsSecret result hresult
-  have hvalid := gameAfterSecretsWithFullTrace_support_validIntervals
-    adversary parameter otsSecret ftsSecret result hresult
-  obtain ⟨rootCache, adversaryCache, hrootNone, _, hchain, _⟩ :=
-    gameAfterSecretsWithFullTrace_support_cacheChain
-      adversary parameter otsSecret ftsSecret result hresult
-  have hstart : rootCache (cover.entryDigestInput entry) = none := by
-    simpa only [FewTimeCover.entryDigestInput] using hrootNone
-      (messageDigestPayload result.1.1
-        (cover.select (cover.representativeTree entry)).entry.1
-        (cover.select (cover.representativeTree entry)).signature.randomness)
-  obtain ⟨source, selected, hlt, hselected, hmiss, hhit⟩ :=
-    hchain.source_before_signingEntry hintervals.1
-      (cover.cacheEntry result.2.2.signing rfl entry)
-      (cover.cacheEntry_mem result.2.2.signing rfl entry)
-      (cover.entryDigestInput entry) hstart hprecached
-  have hkind := FullAdversaryTrace.transition_source_kind hvalid
-    (result.2.2.intervals.get source) (List.get_mem _ source)
-    (cover.entryDigestInput entry) hmiss hhit
-  exact ⟨source, selected, hlt, hselected, hmiss, hhit, hkind⟩
 
 theorem FewTimeCover.precached_entry_has_earlier_exact_source
     (adversary : Adversary) (parameter : PublicParameter)
@@ -554,121 +506,5 @@ theorem FewTimeCover.precached_entries_have_injective_fresh_direct_view_sources
   have hright := (hsource right).2.2.2.1
   rw [heq] at hleft
   simpa only [Sum.inl.injEq, Sum.inr.injEq] using hleft.symm.trans hright
-
-theorem FewTimeCover.precachedEntries_card_le_hashQueries_length
-    (adversary : Adversary) (parameter : PublicParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (result : (Digest × Forgery × Bool) × (QueryCache HashSpec × FullAdversaryTrace))
-    (hresult : result ∈ support
-      (gameAfterSecretsWithFullTrace adversary parameter otsSecret ftsSecret))
-    (f : QueryImpl HashSpec Id) (hf : result.2.1.AgreesWithFn f)
-    (index : Index) (targetLeaves : DigestTree → FtsLeaf)
-    (cover : FewTimeCover f result.2.1
-      ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
-      result.2.2.signing.toSigningLog index targetLeaves) :
-    (cover.precachedEntryFinset result.2.2.signing rfl).card ≤
-      result.2.2.hashQueries.length := by
-  classical
-  obtain ⟨source, _selected, _output, hsourceInjective, hsource⟩ :=
-    cover.precached_entries_have_injective_fresh_direct_view_sources adversary parameter
-      otsSecret ftsSecret result hresult f hf index targetLeaves
-  let precached := cover.precachedEntryFinset result.2.2.signing rfl
-  let asPrecached : ↑precached → cover.PrecachedEntries result.2.2.signing rfl :=
-    fun entry => ⟨entry.1, by
-      have hmem : entry.1 ∈ cover.precachedEntryFinset result.2.2.signing rfl := by
-        simpa only [precached] using entry.2
-      exact (Finset.mem_filter.mp hmem).2⟩
-  let directSource : ↑precached →
-      {position : Fin result.2.2.intervals.length //
-        isDirectHashQuery (result.2.2.intervals.get position).input} :=
-    fun entry => ⟨source (asPrecached entry), by
-      rw [(hsource (asPrecached entry)).2.2.2.1]
-      trivial⟩
-  have hdirectSourceInjective : Function.Injective directSource := by
-    intro left right heq
-    have hasPrecached : asPrecached left = asPrecached right :=
-      hsourceInjective (congrArg Subtype.val heq)
-    apply Subtype.ext
-    change (asPrecached left).1 = (asPrecached right).1
-    exact congrArg Subtype.val hasPrecached
-  let encodedSource : ↑precached →
-      Fin (Fin.countP fun position =>
-        isDirectHashQuery (result.2.2.intervals.get position).input) :=
-    fun entry => Fin.encodeSubtype _ (directSource entry)
-  have hencodedSourceInjective : Function.Injective encodedSource := by
-    apply Function.Injective.comp
-    · exact Function.LeftInverse.injective (Fin.decodeSubtype_encodeSubtype _)
-    · exact hdirectSourceInjective
-  have hcard := Fintype.card_le_of_injective encodedSource hencodedSourceInjective
-  have hconsistent := (gameAfterSecretsWithFullTrace_support_interval_invariants adversary
-    parameter otsSecret ftsSecret result hresult).1
-  have hcount : Fin.countP (fun position =>
-      isDirectHashQuery (result.2.2.intervals.get position).input) =
-      result.2.2.hashQueries.length := by
-    rw [FullAdversaryTrace.hashQueries, ← hconsistent.1]
-    exact adversaryIntervals_directHashCount result.2.2.intervals
-  simpa only [Fintype.card_coe, Fintype.card_fin, hcount, precached] using hcard
-
-theorem FewTimeCover.precached_entry_has_earlier_sample_source
-    (adversary : Adversary) (parameter : PublicParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (result : (Digest × Forgery × Bool) × (QueryCache HashSpec × FullAdversaryTrace))
-    (hresult : result ∈ support
-      (gameAfterSecretsWithFullTrace adversary parameter otsSecret ftsSecret))
-    (f : QueryImpl HashSpec Id) (index : Index) (targetLeaves : DigestTree → FtsLeaf)
-    (cover : FewTimeCover f result.2.1
-      ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
-      result.2.2.signing.toSigningLog index targetLeaves)
-    (entry : cover.entries)
-    (hprecached : cover.EntryDigestPrecached result.2.2.signing rfl entry) :
-    (∃ source : Fin result.2.2.intervals.length,
-        (result.2.2.intervals.get source).input =
-          .inl (.inr (cover.entryDigestInput entry)))
-      ∨ ∃ (earlier : Fin result.2.2.signing.length) (attemptIndex : Nat)
-          (randomness : Randomness),
-          earlier.val < (cover.logIndex entry).val
-            ∧ attemptIndex < digestAttemptLimit
-            ∧ randomness ∈ support sampleRandomness
-            ∧ cover.entryDigestInput entry =
-              tweakableHashInput parameter .message
-                (messageDigestPayload result.1.1
-                  (result.2.2.signing.get earlier).request randomness) := by
-  obtain ⟨source, selected, hlt, hselected, _hselectedRank, hmiss, hhit, hkind⟩ :=
-    cover.precached_entry_has_earlier_exact_source adversary parameter otsSecret ftsSecret
-      result hresult f index targetLeaves entry hprecached
-  rcases hkind with hdirect | ⟨earlier, hearlier, hsourceEntry⟩
-  · exact Or.inl ⟨source, hdirect⟩
-  · right
-    let secretKey : SecretKey := ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
-    let sourceSigningEntry := result.2.2.signing.get earlier
-    have hinvariants := gameAfterSecretsWithFullTrace_support_invariants
-      adversary parameter otsSecret ftsSecret result hresult
-    have hvalid : sourceSigningEntry.ValidRun secretKey :=
-      hinvariants.1 sourceSigningEntry (List.get_mem _ earlier)
-    let targetPayload := messageDigestPayload result.1.1
-      (cover.select (cover.representativeTree entry)).entry.1
-      (cover.select (cover.representativeTree entry)).signature.randomness
-    have htarget : cover.entryDigestInput entry =
-        tweakableHashInput parameter .message targetPayload := by
-      rfl
-    have hbefore : sourceSigningEntry.initialCache
-        (tweakableHashInput parameter .message targetPayload) = none := by
-      have hcacheEq := AdversaryCacheEntry.initialCache_eq_of_signingEntry?_eq_some
-        (interval := result.2.2.intervals.get source) hsourceEntry
-      rw [← htarget, ← hcacheEq]
-      exact hmiss
-    have hafter : sourceSigningEntry.finalCache
-        (tweakableHashInput parameter .message targetPayload) ≠ none := by
-      have hcacheEq := AdversaryCacheEntry.finalCache_eq_of_signingEntry?_eq_some
-        (interval := result.2.2.intervals.get source) hsourceEntry
-      rw [← htarget, ← hcacheEq]
-      exact hhit
-    obtain ⟨attemptIndex, randomness, hattemptIndex, hrandomness, hpayload⟩ :=
-      sign_message_source secretKey sourceSigningEntry.request sourceSigningEntry.initialCache
-        sourceSigningEntry.finalCache sourceSigningEntry.signature hvalid targetPayload hbefore hafter
-    exact ⟨earlier, attemptIndex, randomness, hearlier, hattemptIndex, hrandomness,
-      by rw [htarget, hpayload]⟩
 
 end SphincsSecurity.Concrete

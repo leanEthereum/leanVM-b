@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeNativeValueReplacement
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
@@ -69,23 +70,5 @@ theorem NativePositionReplaceable.reverse
     NativePositionReplaceable target after before (replaceNativePosition target after context) :=
   ⟨replaceNativePosition_positionValue target after context,
     h.consistent.of_replaceNativePosition target after, h.afterMiss, h.beforeMiss⟩
-
-theorem DeferredContext.Valid.of_replaceNativePosition
-    {context : DeferredContext} (h : context.Valid) (target : Position) (output : HashOutput)
-    (hclean : ¬context.state.hitAt (.position target) output) :
-    (replaceNativePosition target output context).Valid := by
-  refine ⟨h.valuesConsistent.of_replaceNativePosition target output, ?_⟩
-  intro coordinate value hvalue
-  change Function.update context.state.values (.position target)
-    ((context.state.values (.position target)).map fun _ => output) coordinate = some value at hvalue
-  change ¬context.state.hitAt coordinate value
-  by_cases heq : coordinate = .position target
-  · subst coordinate
-    rw [Function.update_self] at hvalue
-    have hsame : output = value := by
-      cases hstate : context.state.values (.position target) <;> simp_all
-    exact hsame ▸ hclean
-  · rw [Function.update_of_ne heq] at hvalue
-    exact h.2 coordinate value hvalue
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

@@ -1,6 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimeWitness
 import SphincsSecurity.Proof.LeakArith
-import Mathlib.Data.Fintype.Powerset
 
 /-!
 # Counting few-time coverage patterns
@@ -27,7 +27,7 @@ def fewTimePatternEquiv (signatures distinct : Nat) :
   left_inv pattern := by cases pattern; rfl
   right_inv pattern := by cases pattern with | mk selected assignment => cases selected; rfl
 
-noncomputable instance (signatures distinct : Nat) : Fintype (FewTimePattern signatures distinct) :=
+noncomputable instance instFintypeFewTimePattern (signatures distinct : Nat) : Fintype (FewTimePattern signatures distinct) :=
   Fintype.ofEquiv _ (fewTimePatternEquiv signatures distinct).symm
 
 theorem fewTimePattern_card (signatures distinct : Nat) :

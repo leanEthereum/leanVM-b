@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.UniformTableDisclosure
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.PairedHiddenMiss
+import SphincsSecurity.Proof.UniformTableDisclosure
 
 namespace SphincsSecurity.Concrete.UniformTableCompletion
 

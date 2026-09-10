@@ -1,5 +1,5 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.Bytes
-import Mathlib.Tactic.DeriveFintype
 
 /-!
 # The positions of the honest key

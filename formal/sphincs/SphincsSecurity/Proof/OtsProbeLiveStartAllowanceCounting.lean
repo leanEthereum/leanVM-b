@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.OtsProbeNativeLiveBudget
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeLiveResolvedBudget
+import SphincsSecurity.Proof.OtsProbeStartAllowance
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

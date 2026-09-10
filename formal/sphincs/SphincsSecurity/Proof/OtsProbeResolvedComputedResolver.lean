@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeResolvedComputed
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
@@ -171,34 +172,5 @@ theorem deferredPositionComputed_treeNode
               exact DeferredPositionComputed.treeNode_succ lay tree level nodeIdx hlevel hspan
                 result.toDeferredContext ⟨result.output, hknown⟩
                 (hleftInRight.mono hpreserves) (hrightComputed.mono hpreserves)
-
-set_option maxRecDepth 100000 in
-theorem deferredPositionComputed_resolvePosition
-    (table : OtsSecretIndex → HashOutput) (position : Position)
-    (hresolvable : ResolvableOtsPosition position)
-    (context : DeferredContext) (result : DeferredResolution)
-    (hresult : some result ∈ support (resolveDeferredPosition table position context)) :
-    DeferredPositionComputed result.toDeferredContext position := by
-  cases position with
-  | chain lay tree leafIdx chainIdx step =>
-      exact deferredPositionComputed_chainPrefix table lay tree leafIdx chainIdx
-        (step.val + 1) (by have := step.isLt; omega) context result hresult step (by omega)
-  | leaf lay tree leafIdx =>
-      exact deferredPositionComputed_otsLeaf table lay tree leafIdx context result hresult
-  | node lay tree level nodeIdx =>
-      simpa only [deferredTreePosition, leafOfNat_val] using
-        deferredPositionComputed_treeNode table lay tree (level.val + 1) nodeIdx.val
-          (by have := level.isLt; omega) hresolvable context result hresult
-  | ftsLeaf | ftsNode | ftsRoots => contradiction
-
-set_option maxRecDepth 100000 in
-theorem deferredPositionComputed_resolveReveal
-    (table : OtsSecretIndex → HashOutput) (position : Position)
-    (hresolvable : ResolvableOtsPosition position)
-    (context : DeferredContext) (result : DeferredResolution)
-    (hresult : some result ∈ support (resolveDeferredReveal table position context)) :
-    DeferredPositionComputed result.toDeferredContext position :=
-  deferredPositionComputed_resolvePosition table position hresolvable context result
-    (by simpa only [resolveDeferredReveal, if_pos hresolvable] using hresult)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

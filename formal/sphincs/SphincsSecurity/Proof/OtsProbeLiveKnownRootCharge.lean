@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeLiveContextCharge
+import SphincsSecurity.Proof.OtsProbeNativeRootQueryCharge
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -67,57 +69,5 @@ theorem expectedLiveKnownRootCharge_le_actualRootCharge
       (knownEncodingRootOuterCharge_le_actualRootCharge secretKey table rfl)
       computation context fuel cache actualCache hinvariant hvisible hpublished hcomputed
   exact hbound.trans (expectedOuterQueryCharge_le_expanded secretKey (rootEncodingQueryCharge secretKey) computation actualCache)
-
-def KnownHiddenEncodingRootSelection (parameter : PublicParameter) : Option CanonicalQuerySelection → Prop
-  | none => False
-  | some selection => match selection.input with
-      | .inl (.inr input) => KnownHiddenEncodingRootQuery parameter input selection.context
-      | _ => False
-
-theorem knownEncodingRootSelection_charge_eq_indicator
-    (parameter : PublicParameter) (selection : Option CanonicalQuerySelection) :
-    CanonicalQuerySelection.charge (knownEncodingRootOuterCharge parameter) selection =
-      if KnownHiddenEncodingRootSelection parameter selection then (4 / 3 : ENNReal) else 0 := by
-  cases selection with
-  | none => simp [CanonicalQuerySelection.charge, KnownHiddenEncodingRootSelection]
-  | some selection =>
-      rcases selection with ⟨input, context, fuel, table, cache⟩
-      cases input with
-      | inl query => cases query <;> simp [CanonicalQuerySelection.charge, knownEncodingRootOuterCharge, KnownHiddenEncodingRootSelection]
-      | inr message => simp [CanonicalQuerySelection.charge, knownEncodingRootOuterCharge, KnownHiddenEncodingRootSelection]
-
-theorem expected_knownEncodingRootSelection_charge_eq_probability
-    (parameter : PublicParameter) (run : ProbComp (Option CanonicalQuerySelection)) :
-    (∑' selection, Pr[= selection | run] * CanonicalQuerySelection.charge (knownEncodingRootOuterCharge parameter) selection) =
-      Pr[KnownHiddenEncodingRootSelection parameter | run] * (4 / 3 : ENNReal) := by
-  rw [probEvent_eq_tsum_ite, ← ENNReal.tsum_mul_right]
-  apply tsum_congr
-  intro selection
-  rw [knownEncodingRootSelection_charge_eq_indicator]
-  split_ifs <;> simp
-
-theorem tsum_knownEncodingRootSelection_probability_eq_charge
-    (parameter : PublicParameter)
-    (impl : QueryImpl (OracleWorld + SigningSpec) (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))))
-    (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
-    (∑' ordinal, Pr[KnownHiddenEncodingRootSelection parameter |
-      liveNativeQuerySelection impl computation ordinal context fuel table cache]) * (4 / 3 : ENNReal) =
-      expectedLiveNativeContextCharge impl (knownEncodingRootOuterCharge parameter) computation context fuel table cache := by
-  rw [← tsum_liveNativeQuerySelection_charge, ← ENNReal.tsum_mul_right]
-  apply tsum_congr
-  intro ordinal
-  exact (expected_knownEncodingRootSelection_charge_eq_probability parameter _).symm
-
-theorem sum_knownEncodingRootSelection_probability_le_charge
-    (parameter : PublicParameter)
-    (impl : QueryImpl (OracleWorld + SigningSpec) (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))))
-    (computation : OracleComp (OracleWorld + SigningSpec) α) (q : Nat)
-    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
-    (∑ ordinal ∈ Finset.range q, Pr[KnownHiddenEncodingRootSelection parameter |
-      liveNativeQuerySelection impl computation ordinal context fuel table cache]) * (4 / 3 : ENNReal) ≤
-      expectedLiveNativeContextCharge impl (knownEncodingRootOuterCharge parameter) computation context fuel table cache := by
-  rw [← tsum_knownEncodingRootSelection_probability_eq_charge]
-  exact mul_le_mul' (ENNReal.sum_le_tsum (Finset.range q)) le_rfl
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

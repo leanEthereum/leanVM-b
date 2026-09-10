@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.EncodingProbability
 import SphincsSecurity.Proof.EncodingRetry
 
 /-!
@@ -55,40 +57,6 @@ theorem digest_mem_targetDigests_of_selectedHits
   obtain ⟨candidate, hcandidate, _, hdigest⟩ := hhit
   rw [targetDigests, Finset.mem_image]
   exact ⟨candidate, hcandidate, hdigest⟩
-
-theorem selectFirst_support_some_valid {ι : Type} [DecidableEq ι]
-    {schedule : List (ι × Option Digest)} {identifier : ι} {digest : Digest}
-    (hmem : some (identifier, digest) ∈ support (selectFirst schedule)) :
-    TargetSum.ValidDigest digest := by
-  induction schedule with
-  | nil => simp [selectFirst] at hmem
-  | cons head rest ih =>
-      obtain ⟨headIdentifier, headDigest⟩ := head
-      cases headDigest with
-      | none =>
-          rw [selectFirst, mem_support_bind_iff] at hmem
-          obtain ⟨output, _houtput, hmem⟩ := hmem
-          by_cases hvalid : TargetSum.ValidDigest (truncateHash output)
-          · have heq : (identifier, digest) =
-                (headIdentifier, truncateHash output) := by
-              simpa [hvalid] using hmem
-            have hdigest : digest = truncateHash output := by
-              simpa using congrArg Prod.snd heq
-            rw [hdigest]
-            exact hvalid
-          · simp only [hvalid] at hmem
-            exact ih hmem
-      | some cachedDigest =>
-          rw [selectFirst] at hmem
-          by_cases hvalid : TargetSum.ValidDigest cachedDigest
-          · have heq : (identifier, digest) = (headIdentifier, cachedDigest) := by
-              simpa [hvalid] using hmem
-            have hdigest : digest = cachedDigest := by
-              simpa using congrArg Prod.snd heq
-            rw [hdigest]
-            exact hvalid
-          · simp only [hvalid] at hmem
-            exact ih hmem
 
 @[simp] theorem selectionRisk_nil {ι : Type} [DecidableEq ι]
     (targets : Finset (ι × Digest)) :
@@ -190,51 +158,6 @@ theorem AllMissing.selectionRisk_le_pendingRisk
         _ ≤ EncodingRetry.pendingRisk (targetDigests targets) := by
           exact SphincsSecurity.uniformHashOutput_select_bonus_sum_le
             (targetDigests targets)
-
-theorem uniform_reveal_append_sum_eq {ι : Type} [DecidableEq ι]
-    (initial : List (ι × Option Digest)) (identifier : ι)
-    (rest : List (ι × Option Digest)) (targets : Finset (ι × Digest)) :
-    (∑' output : HashOutput,
-      Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
-        selectionRisk
-          (initial ++ (identifier, some (truncateHash output)) :: rest) targets) =
-      selectionRisk (initial ++ (identifier, none) :: rest) targets := by
-  induction initial with
-  | nil =>
-      exact (selectionRisk_cons_none_eq identifier rest targets).symm
-  | cons head initial ih =>
-      obtain ⟨headIdentifier, headDigest⟩ := head
-      cases headDigest with
-      | some digest =>
-          by_cases hvalid : TargetSum.ValidDigest digest
-          · by_cases hhit : selectedHits targets (some (headIdentifier, digest))
-            · simp_rw [List.cons_append,
-                selectionRisk_cons_some_of_valid_of_hit _ _ _ _ hvalid hhit]
-              rw [ENNReal.tsum_mul_right, tsum_probOutput_of_liftM_PMF, one_mul]
-            · simp_rw [List.cons_append,
-                selectionRisk_cons_some_of_valid_of_miss _ _ _ _ hvalid hhit]
-              simp
-          · simp_rw [List.cons_append,
-              selectionRisk_cons_some_of_invalid _ _ _ _ hvalid]
-            exact ih
-      | none =>
-          simp_rw [List.cons_append, selectionRisk_cons_none_eq]
-          simp_rw [← ENNReal.tsum_mul_left]
-          rw [ENNReal.tsum_comm]
-          apply tsum_congr
-          intro headOutput
-          simp_rw [mul_left_comm]
-          rw [ENNReal.tsum_mul_left]
-          congr 1
-          by_cases hvalid : TargetSum.ValidDigest (truncateHash headOutput)
-          · by_cases hhit : selectedHits targets
-                (some (headIdentifier, truncateHash headOutput))
-            · simp_rw [selectionRisk_cons_some_of_valid_of_hit _ _ _ _ hvalid hhit]
-              rw [ENNReal.tsum_mul_right, tsum_probOutput_of_liftM_PMF, one_mul]
-            · simp_rw [selectionRisk_cons_some_of_valid_of_miss _ _ _ _ hvalid hhit]
-              simp
-          · simp_rw [selectionRisk_cons_some_of_invalid _ _ _ _ hvalid]
-            exact ih
 
 inductive FirstValid {ι : Type} [DecidableEq ι] :
     List (ι × Option Digest) → ι → Digest → Prop where

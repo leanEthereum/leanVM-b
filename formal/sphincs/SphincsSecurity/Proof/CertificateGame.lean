@@ -1,5 +1,8 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.CertificateMessagePayment
 import SphincsSecurity.Proof.CertificatePathBudget
 import SphincsSecurity.Proof.OtsProbeCanonicalChargeGame
+import SphincsSecurity.Proof.OtsProbeStartErasureBound
 
 namespace SphincsSecurity.Concrete
 
@@ -7,9 +10,6 @@ open _root_.OracleComp OracleSpec ENNReal
 open FtsProbeSimulation (RetainedRestResult retainedGameRestComputation)
 attribute [local instance] Classical.propDecidable
 set_option backward.isDefEq.respectTransparency false
-
-private theorem probCompLift_probEvent {α : Type} (computation : ProbComp α) (event : α → Prop) :
-    Pr[event | (liftM computation : PMF α)] = Pr[event | computation] := rfl
 
 private theorem simulateQ_romImpl_sampling_bind_run {α β : Type} (computation : ProbComp α)
     (next : α → OracleComp OracleWorld β) (cache : QueryCache HashSpec) :
@@ -84,16 +84,6 @@ theorem certificateGame_original (adversary : Adversary) (budget : Nat) (require
   congr 1
   rw [gameCore_eq, simulateQ_bind, StateT.run_bind,
     ← boundaryRun_forget 0 scheme.keygen ∅, bind_map_left]
-
-theorem forgeAdvantage_eq_certificateGame (adversary : Adversary) (budget : Nat) (required : Finset FtsTree)
-    (stopAfter : SecretKey → CertificateStopRule) (stopped : Bool) :
-    forgeAdvantage scheme adversary =
-      Pr[fun result => certificateGameVerdict result.1 = true | certificateGame adversary budget required stopAfter stopped] := by
-  rw [forgeAdvantage, StateT.run'_eq, probOutput_map]
-  have h := congrArg (fun law : PMF (Bool × QueryCache HashSpec) => Pr[fun result => result.1 = true | law])
-    (certificateGame_original adversary budget required stopAfter stopped)
-  rw [probEvent_map, probCompLift_probEvent] at h
-  exact h.symm
 
 theorem certificateGame_cost_le (adversary : Adversary) (q : Nat) (required : Finset FtsTree)
     (stopAfter : SecretKey → CertificateStopRule) (stopped : Bool)

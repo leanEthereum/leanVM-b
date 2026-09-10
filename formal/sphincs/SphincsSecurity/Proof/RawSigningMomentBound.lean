@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.RawQueryMomentBound
 
 namespace SphincsSecurity.Concrete
@@ -189,16 +190,5 @@ theorem targetIndexSigning_iterate_power_le_binomialAverage {uniform reuse rate 
   simp only [indexPowerVector, pow_zero, one_mul]
   exact indexSigningAverage_le_binomialAverage hrate steps hprob (fun s => s ^ degree)
     (fun _ _ h => pow_le_pow_left' h degree) signings
-
-theorem targetIndexEnvelope_power_le_binomialAverage {arrival uniform reuse rate cache : ENNReal}
-    (harrival : arrival ≤ 1) (hrate : rate ≤ 1) (queries signatures bound degree : Nat)
-    (hdegree : degree ≤ bound)
-    (hprob : uniform + reuse * (cache + queries * arrival + bound + signatures) ≤ rate)
-    (signings : ENNReal) :
-    targetIndexEnvelope uniform reuse arrival queries signatures (indexPowerVector cache signings) 0 degree ≤
-      binomialAverage rate signatures (fun count => (signings + count) ^ degree) :=
-  (targetIndexEnvelope_power_query_shift_le harrival uniform reuse cache signings queries signatures bound 0 degree
-    (by simpa only [Nat.zero_add] using hdegree)).trans
-    (targetIndexSigning_iterate_power_le_binomialAverage hrate signatures hprob signings degree)
 
 end SphincsSecurity.Concrete

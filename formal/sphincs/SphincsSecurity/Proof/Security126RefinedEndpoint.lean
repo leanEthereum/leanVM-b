@@ -1,21 +1,11 @@
-import SphincsSecurity.Proof.Security126Endpoint
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTime126Bound
+import SphincsSecurity.Proof.JointPrimitiveTerminal
+import SphincsSecurity.Proof.MessageCollision125
 
 namespace SphincsSecurity.Concrete
 
 open OracleComp OracleSpec ENNReal
-
-theorem concrete126_ten_thirds_budget (q : Nat) :
-    ((10 / 3 : ℝ≥0∞) * q) * ((2 ^ 128 : Nat) : ℝ≥0∞)⁻¹ +
-      ((q : ℝ≥0∞) * ((2 ^ 139 : Nat) : ℝ≥0∞)⁻¹ +
-        ((19 * q : Nat) : ℝ≥0∞) * ((2 ^ 133 : Nat) : ℝ≥0∞)⁻¹) ≤
-      (q : ℝ≥0∞) / ((2 ^ 126 : Nat) : ℝ≥0∞) := by
-  apply (ENNReal.toReal_le_toReal (by finiteness) (by finiteness)).mp
-  repeat rw [ENNReal.toReal_add (by finiteness) (by finiteness)]
-  simp only [ENNReal.toReal_mul, ENNReal.toReal_div, ENNReal.toReal_inv, ENNReal.toReal_natCast,
-    Nat.cast_mul, Nat.cast_ofNat, ENNReal.toReal_ofNat]
-  norm_num
-  have hq : (0 : ℝ) ≤ (q : ℝ) := Nat.cast_nonneg q
-  linarith
 
 theorem forgeAdvantage_le_sampled_jointPrimitive_add_refined_remaining126
     (adversary : Adversary) (q : Nat) (hqPos : 1 ≤ q)
@@ -56,64 +46,6 @@ theorem forgeAdvantage_le_sampled_jointPrimitive_add_refined_remaining126
     _ = _ := by
       rw [probEvent_sampledViewedGame_eq_weighted]
       exact add_comm _ _
-
-/-- Conditional assembly: the joint primitive bound is still required. -/
-theorem security126_of_sampled_jointPrimitive_le_ten_thirds_mul
-    (hprimitive : ∀ (q : Nat), 1 ≤ q → ∀ adversary : Adversary,
-      HasHashQueryBound scheme adversary q → q ≤ 2 ^ 126 →
-        Pr[SampledViewedEvent jointPrimitiveEvent | sampledViewedGame adversary] ≤
-          ((10 / 3 : ℝ≥0∞) * q) * ((2 ^ 128 : Nat) : ℝ≥0∞)⁻¹) :
-    HasClassicalSecurityBits scheme 126 := by
-  intro q hqPos adversary hq
-  by_cases hqMax : q ≤ 2 ^ 126
-  · exact (forgeAdvantage_le_sampled_jointPrimitive_add_refined_remaining126 adversary q hqPos hq hqMax).trans
-      ((add_le_add (hprimitive q hqPos adversary hq hqMax) le_rfl).trans (concrete126_ten_thirds_budget q))
-  · apply probOutput_le_one.trans
-    rw [div_eq_mul_inv]
-    have hcast : ((2 ^ 126 : Nat) : ℝ≥0∞) ≤ (q : ℝ≥0∞) := by
-      exact_mod_cast (show 2 ^ 126 ≤ q by omega)
-    calc
-      (1 : ℝ≥0∞) = ((2 ^ 126 : Nat) : ℝ≥0∞) * ((2 ^ 126 : Nat) : ℝ≥0∞)⁻¹ := by
-        rw [ENNReal.mul_inv_cancel]
-        · norm_num
-        · finiteness
-      _ ≤ _ := mul_le_mul' hcast le_rfl
-
-
-theorem concrete126_ten_thirds_budget_add_erasure (q : Nat) (hq : 1 ≤ q) :
-    (((10 / 3 : ℝ≥0∞) * q) * ((2 ^ 128 : Nat) : ℝ≥0∞)⁻¹ + ((2 ^ 216 : Nat) : ℝ≥0∞)⁻¹) +
-      ((q : ℝ≥0∞) * ((2 ^ 139 : Nat) : ℝ≥0∞)⁻¹ +
-        ((19 * q : Nat) : ℝ≥0∞) * ((2 ^ 133 : Nat) : ℝ≥0∞)⁻¹) ≤
-      (q : ℝ≥0∞) / ((2 ^ 126 : Nat) : ℝ≥0∞) := by
-  apply (ENNReal.toReal_le_toReal (by finiteness) (by finiteness)).mp
-  repeat rw [ENNReal.toReal_add (by finiteness) (by finiteness)]
-  simp only [ENNReal.toReal_mul, ENNReal.toReal_div, ENNReal.toReal_inv, ENNReal.toReal_natCast,
-    Nat.cast_mul, Nat.cast_ofNat, ENNReal.toReal_ofNat]
-  norm_num
-  have hqReal : (1 : ℝ) ≤ (q : ℝ) := by exact_mod_cast hq
-  linarith
-
-/-- Conditional assembly allowing the globally bounded erasure event. The joint primitive bound remains a premise. -/
-theorem security126_of_sampled_jointPrimitive_le_ten_thirds_mul_add_erasure
-    (hprimitive : ∀ (q : Nat), 1 ≤ q → ∀ adversary : Adversary,
-      HasHashQueryBound scheme adversary q → q ≤ 2 ^ 126 →
-        Pr[SampledViewedEvent jointPrimitiveEvent | sampledViewedGame adversary] ≤
-          ((10 / 3 : ℝ≥0∞) * q) * ((2 ^ 128 : Nat) : ℝ≥0∞)⁻¹ + ((2 ^ 216 : Nat) : ℝ≥0∞)⁻¹) :
-    HasClassicalSecurityBits scheme 126 := by
-  intro q hqPos adversary hq
-  by_cases hqMax : q ≤ 2 ^ 126
-  · exact (forgeAdvantage_le_sampled_jointPrimitive_add_refined_remaining126 adversary q hqPos hq hqMax).trans
-      ((add_le_add (hprimitive q hqPos adversary hq hqMax) le_rfl).trans (concrete126_ten_thirds_budget_add_erasure q hqPos))
-  · apply probOutput_le_one.trans
-    rw [div_eq_mul_inv]
-    have hcast : ((2 ^ 126 : Nat) : ℝ≥0∞) ≤ (q : ℝ≥0∞) := by
-      exact_mod_cast (show 2 ^ 126 ≤ q by omega)
-    calc
-      (1 : ℝ≥0∞) = ((2 ^ 126 : Nat) : ℝ≥0∞) * ((2 ^ 126 : Nat) : ℝ≥0∞)⁻¹ := by
-        rw [ENNReal.mul_inv_cancel]
-        · norm_num
-        · finiteness
-      _ ≤ _ := mul_le_mul' hcast le_rfl
 
 theorem concrete126_ten_thirds_budget_add_query_erasure (q : Nat) :
     (((10 / 3 : ℝ≥0∞) * q) * ((2 ^ 128 : Nat) : ℝ≥0∞)⁻¹ +

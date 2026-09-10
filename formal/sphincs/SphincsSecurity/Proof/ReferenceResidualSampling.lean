@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.ResidualGraphGame
-import SphincsSecurity.Proof.ReferenceFamilyGame
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.CanonicalResidualQuery
+import SphincsSecurity.Proof.EncodingFamilyOracleSplit
 
 namespace SphincsSecurity.Concrete
 
@@ -89,22 +90,6 @@ theorem uniform_joint_graphReference (key : SecretKey) (inputs : Finset HashInpu
   funext labels
   rw [← uniform_joint_residualReference key inputs hencoding labels, PMF.map_comp]
   rfl
-
-theorem graphReferenceSample_marginal (parameter : PublicParameter) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs parameter ⊆ inputs) :
-    (graphReferenceSample parameter inputs hencoding).map (fun result => (result.1, result.2.1)) =
-      (FirstSuccessFamily.selected decodeEncodingOutput encodingAttemptLimit).bind (fun selections =>
-        (PMF.uniformOfFintype CanonicalGraphLabels).map (fun labels => (selections, labels))) := by
-  simp only [graphReferenceSample, PMF.map_bind, PMF.map_comp, Function.comp_def, PMF.bind_const]
-  apply congrArg (FirstSuccessFamily.selected decodeEncodingOutput encodingAttemptLimit).bind
-  funext selections
-  change (PMF.uniformOfFintype CanonicalGraphLabels).bind (fun labels =>
-      (PMF.uniformOfFintype (UniformTableSplit.Outside (canonicalEncodingCell parameter inputs hencoding labels) → HashOutput)).map
-        (fun _ => (selections, labels))) =
-    (PMF.uniformOfFintype CanonicalGraphLabels).bind (fun labels => PMF.pure (selections, labels))
-  apply congrArg (PMF.uniformOfFintype CanonicalGraphLabels).bind
-  funext labels
-  exact PMF.map_const _ _
 
 noncomputable local instance referenceResidualLabelsSampleable : SampleableType CanonicalGraphLabels := SampleableType.ofFintype CanonicalGraphLabels
 noncomputable local instance referenceResidualTableSampleable (inputs : Finset HashInput) : SampleableType (inputs → HashOutput) :=

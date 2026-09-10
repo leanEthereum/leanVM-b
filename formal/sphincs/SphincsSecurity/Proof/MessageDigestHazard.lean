@@ -1,11 +1,15 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.CachedDigestRate
+import SphincsSecurity.Proof.FewTimeWeightedOriginRace
+import SphincsSecurity.Proof.FreshDigestHazard
 import SphincsSecurity.Proof.MessageCacheCountGrowth
-import SphincsSecurity.Proof.MessageFreshSelectionScale
+import SphincsSecurity.Proof.MessageInputMiss
 
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal
 attribute [local instance] Classical.propDecidable
-noncomputable local instance : SampleableType Randomness := SampleableType.ofFintype Randomness
+noncomputable local instance instSampleableTypeRandomness_6 : SampleableType Randomness := SampleableType.ofFintype Randomness
 attribute [local irreducible] signAttempt signDigestAttemptPrefix signDigestLoop
 
 theorem probEvent_signDigestAttemptPrefix_fresh_ge_messageMiss

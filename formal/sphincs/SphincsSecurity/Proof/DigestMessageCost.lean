@@ -1,13 +1,16 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.BoundaryMessageCost
-import SphincsSecurity.Proof.UpperDigestSelection
 import SphincsSecurity.Proof.OriginalProposalExecution
+import SphincsSecurity.Proof.RomQueryChargeBind
+import SphincsSecurity.Proof.RomQueryChargeComparison
+import SphincsSecurity.Proof.UpperDigestSelection
 
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal
 open FtsProbeSimulation (messageHashCharge)
 attribute [local instance] Classical.propDecidable
-noncomputable local instance : SampleableType Randomness := SampleableType.ofFintype Randomness
+noncomputable local instance instSampleableTypeRandomness_7 : SampleableType Randomness := SampleableType.ofFintype Randomness
 attribute [local irreducible] signDigestLoop signAttempt signWithView signAfterDigest
 set_option backward.isDefEq.respectTransparency false
 

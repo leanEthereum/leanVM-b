@@ -1,8 +1,8 @@
 # Transferring the small-budget witnesses to the original game
 
-This note supplies the original-experiment transfer used by the small-budget branch. It combines the static chain calculations with the exact graph and reference construction, the deferred FTS kernels, and the stopped coverage theorem. The argument is on paper; it is not a Lean security theorem. It preserves the original algorithms, independent secrets, finite failures, own-input exclusion, and whole-experiment syntactic hash budget.
+This note derives the proposed original-experiment transfer for the small-budget branch under its specified causal comparisons. It combines the static chain calculations with the exact graph and reference construction, the deferred FTS kernels, and the stopped coverage theorem. The argument is on paper; it is not a Lean security theorem. It preserves the original algorithms, independent secrets, finite failures, own-input exclusion, and whole-experiment syntactic hash budget.
 
-Fix an original adversary admitted by HasHashQueryBound at 1<=q<=3*2^114. Write N=2^128, x=q/N, delta=11/65536, and epsilon(q)=q/2^222+q/2^170+2^-700. The intended bound is
+Fix an original adversary admitted by HasHashQueryBound at 1<=q<=3*2^114. Write N=2^128, x=q/N, delta=11/65536, and epsilon(q)=q/2^222+q/2^170+2^-700. The sharper coefficients below target the following bound; the current closing contract only requires the weaker coefficient 15/8:
 
     Pr[original SUF win] <= (7/4)x + delta*x + epsilon(q) < 2x.
 
@@ -10,7 +10,7 @@ The supporting probability and cost estimates below are derived in presentations
 
 ## The shared stopped law and its costs
 
-Use the exact reference counters J_p, words D_p, and canonical graph of paid-probe-quadratic.md. Add independent geometric block lengths and use the fixed terminal word of length 25313293 from cached-target-forecast.md. Retain the original execution underneath the monitor. The base monitor stops at original termination, the signing cap, failed projected readiness, or its geometric-prefix exception. The genuine readiness guards use the message deficit and index multiplicities centered at actual spent calls. The stronger original cached-index exception, centered at full cache size, is retained only for the final original-law exceptional probability bound; it must not stop the projected OTS comparison. Its complement implies the spent-centered index bound because full cache cardinality is at most spent calls. An active signing invocation is completed and its certificates banked before applying post-record guards. It does not stop at a guessed secret or an OTS contact.
+Use the exact reference counters J_p, words D_p, and canonical graph of minimal-closing-contract.md. Add independent geometric block lengths and use the fixed terminal word of length 25313293 from minimal-closing-contract.md. Retain the original execution underneath the monitor. The base monitor stops at original termination, the signing cap, failed projected readiness, or its geometric-prefix exception. The genuine readiness guards use the message deficit and index multiplicities centered at actual spent calls. The stronger original cached-index exception, centered at full cache size, is retained only for the final original-law exceptional probability bound; it must not stop the projected OTS comparison. Its complement implies the spent-centered index bound because full cache cardinality is at most spent calls. An active signing invocation is completed and its certificates banked before applying post-record guards. It does not stop at a guessed secret or an OTS contact.
 
 The base stop uses the message cache, completed signing views, actual costs and geometric lengths. It needs no rejected proposal values. Denote this projected stopped law by R. Attaching rejected words using the exact record-first bridge preserves R; its full and near certificate counts, message count, and stopping rule depend only on the projected variables. The coverage theorem, once its concrete kernel conditions are discharged, gives in R
 
@@ -75,7 +75,7 @@ where a_j counts the queried rows of function j. Thus for every nonnegative stop
 
 This inequality concerns the actual allocated cost of chain i. It does not replace that cost by q before summing over chains. Conditional on all published endpoints and auxiliary randomness, different prefix-table constraints factor; adaptive query choices add no constraints beyond the recorded replies. This also justifies the conditional restart used for a second distinct contact.
 
-For completeness, the charging calculation from long-chain-inversion.md and multiple-chain-inversion.md retains the following numerators. Stop at the first fully queried two-edge suffix reaching Y_i. Expand the likelihood according to its last unqueried edge. If C_r counts queried suffixes from level r to Y_i, then w_i<=1+sum_r C_r. Before the stop only the one-edge suffix count k can be nonzero. A fresh productive last-edge query contributes at most
+For completeness, the charging calculation from minimal-closing-contract.md and minimal-closing-contract.md retains the following numerators. Stop at the first fully queried two-edge suffix reaching Y_i. Expand the likelihood according to its last unqueried edge. If C_r counts queried suffixes from level r to Y_i, then w_i<=1+sum_r C_r. Before the stop only the one-edge suffix count k can be nonzero. A fresh productive last-edge query contributes at most
 
     (2+k+sum_r m_r)/N,
 
@@ -147,7 +147,7 @@ If all 14 required leaves were disclosed by successful responses, the run has a 
 
 ## Deferred FTS simulation after arbitrary earlier guesses
 
-For this analysis, expose the canonical graph cut and, if desired, all OTS secrets and function data. Keep FTS secrets and unobserved FTS leaf rows deferred. Conditional on the public FTS leaf hashes, all other graph data can be generated without inspecting these secrets. Later OTS events may occur; this analysis does not stop at them. Signer control, failure masks, and selected disclosure coordinates still depend only on the message trace and exposed graph, as checked in paid-probe-quadratic.md.
+For this analysis, expose the canonical graph cut and, if desired, all OTS secrets and function data. Keep FTS secrets and unobserved FTS leaf rows deferred. Conditional on the public FTS leaf hashes, all other graph data can be generated without inspecting these secrets. Later OTS events may occur; this analysis does not stop at them. Signer control, failure masks, and selected disclosure coordinates still depend only on the message trace and exposed graph, as checked in minimal-closing-contract.md.
 
 An active FTS coordinate has a secret uniform on its unqueried digest candidates U. A fresh candidate z in U has the exact kernel
 

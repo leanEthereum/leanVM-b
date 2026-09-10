@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeNativeRootCache
 import SphincsSecurity.Proof.OtsProbeNativeStoredRoot
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation

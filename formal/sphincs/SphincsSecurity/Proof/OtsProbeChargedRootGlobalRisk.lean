@@ -1,4 +1,8 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeChargedRootCounting
+import SphincsSecurity.Proof.OtsProbeChargedRootOccurrence
+import SphincsSecurity.Proof.OtsProbeChargedRootSelectionProjection
+import SphincsSecurity.Proof.OtsProbeMaterializedRootReserve
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

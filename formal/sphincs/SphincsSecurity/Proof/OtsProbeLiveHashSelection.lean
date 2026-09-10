@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.OtsProbeLiveKnownRootCharge
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeLiveContextCharge
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -95,27 +96,5 @@ theorem tsum_liveNativeHashQuerySelection_charge
           | some result => exact ih result.value.1 result.context result.remaining result.table result.value.2
       · simp only [liveNativeHashQuerySelection_query_bind, hcomplete, ↓reduceIte,
           tsum_probOutput_pure_mul, CanonicalQuerySelection.charge, tsum_zero]
-
-theorem knownEncodingRootOuterCharge_eq_zero_of_not_hash
-    (parameter : PublicParameter) (input : (OracleWorld + SigningSpec).Domain)
-    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache) (hnot : ¬IsOuterHash input) :
-    knownEncodingRootOuterCharge parameter input context fuel cache = 0 := by
-  cases input with
-  | inl input => cases input <;> simp_all [IsOuterHash, knownEncodingRootOuterCharge]
-  | inr message => rfl
-
-theorem tsum_knownEncodingRootHashSelection_probability_eq_charge
-    (parameter : PublicParameter)
-    (impl : QueryImpl (OracleWorld + SigningSpec) (StateT SplitHashCache (OracleComp (LazyRevealProbe.World Coordinate))))
-    (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache) :
-    (∑' ordinal, Pr[KnownHiddenEncodingRootSelection parameter |
-      liveNativeHashQuerySelection impl computation ordinal context fuel table cache]) * (4 / 3 : ENNReal) =
-      expectedLiveNativeContextCharge impl (knownEncodingRootOuterCharge parameter) computation context fuel table cache := by
-  rw [← tsum_liveNativeHashQuerySelection_charge impl _ (knownEncodingRootOuterCharge_eq_zero_of_not_hash parameter),
-    ← ENNReal.tsum_mul_right]
-  apply tsum_congr
-  intro ordinal
-  exact (expected_knownEncodingRootSelection_charge_eq_probability parameter _).symm
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

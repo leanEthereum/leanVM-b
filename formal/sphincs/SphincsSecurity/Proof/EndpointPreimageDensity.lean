@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.UniformTableConditioning
+import SphincsSecurity.Proof.Prelude
 
 namespace SphincsSecurity.Concrete.EndpointPreimageDensity
 
@@ -72,16 +72,6 @@ theorem real_density (prior : PMF Table) (evaluate : Table → State → State) 
     real prior evaluate (table, endpoint) = (preimages evaluate table endpoint : ENNReal) * ideal prior (table, endpoint) := by
   rw [real_apply, ideal_apply]
   simp only [div_eq_mul_inv]
-  ring
-
-theorem real_bind_apply {Result : Type} (prior : PMF Table) (evaluate : Table → State → State)
-    (next : Table × State → PMF Result) (output : Result) :
-    (real prior evaluate).bind next output =
-      ∑' result : Table × State, ideal prior result * (preimages evaluate result.1 result.2 : ENNReal) * next result output := by
-  rw [PMF.bind_apply]
-  apply tsum_congr
-  rintro ⟨table, endpoint⟩
-  rw [real_density]
   ring
 
 theorem real_payoff (prior : PMF Table) (evaluate : Table → State → State) (payoff : Table × State → ENNReal) :

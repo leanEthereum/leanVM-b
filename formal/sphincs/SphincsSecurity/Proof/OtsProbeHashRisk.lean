@@ -1,4 +1,10 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeCanonicalPending
 import SphincsSecurity.Proof.OtsProbeProbeFreeRisk
+import SphincsSecurity.Proof.OtsProbeResolvedAdaptiveBridge
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryOrdinaryRefinement
+import SphincsSecurity.Proof.OtsProbeResolvedDirectRecursive
+import SphincsSecurity.Proof.OtsProbeResolvedPrivateSelection
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -181,26 +187,6 @@ theorem resolvedContextFailureRisk_of_not_completable
 
 theorem resolvedContextFailureRisk_le_one (table : OtsSecretIndex → HashOutput) (context : DeferredContext) :
     resolvedContextFailureRisk table context ≤ 1 := probEvent_le_one
-
-theorem canonicalHashQueryRejectionRisk_le_afterCandidate
-    (parameter : PublicParameter) (root : Digest) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (entry : CanonicalQuerySelection) (input : HashInput) (hinput : entry.input = .inl (.inr input))
-    (hfuel : 0 < entry.fuel)
-    (hconsistent : entry.context.ValuesConsistent) (hstarts : StartTableAgrees entry.context.state entry.table)
-    (hcard : entry.context.state.pending.card + 1 < Fintype.card Digest) :
-    canonicalQueryRejectionRisk parameter root ftsSecret entry ≤
-      resolvedContextFailureRisk entry.table
-        (afterCandidateContext entry.context (purePlanProbingHashQuery parameter input entry.context.state).candidate?) := by
-  unfold canonicalQueryRejectionRisk
-  rw [hinput]
-  apply (probEvent_resolvedQueryRejected_le_finished _).trans_eq
-  obtain ⟨fuel, heq⟩ := Nat.exists_eq_succ_of_ne_zero (Nat.ne_zero_of_lt hfuel)
-  have hdist := evalDist_canonicalHashQuery_finished_eq_candidate parameter root entry.table ftsSecret input
-    entry.context fuel entry.cache hconsistent hstarts hcard
-  have hprob := congrArg (fun distribution : SPMF Bool => distribution true) hdist
-  change Pr[= true | _] = Pr[= true | _] at hprob
-  rw [← probEvent_eq_eq_probOutput, ← probEvent_eq_eq_probOutput] at hprob
-  simpa only [heq, resolvedContextFailureRisk] using hprob
 
 theorem resolvedContextFailureRisk_addPending_hit
     (table : OtsSecretIndex → HashOutput) (context : DeferredContext)

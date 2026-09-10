@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeRecursiveRejectionRisk
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryDirect
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -189,48 +191,5 @@ theorem evalDist_finish_canonicalizeResolvedRun
   · have hcanonical := doomedResolvedContext_canonicalizeMaterializedValues
       (show DoomedResolvedContext result.table result.context from ⟨hvalid.valuesConsistent, hstarts, hcomplete⟩)
     simp [canonicalizeResolvedRun, finishResolvedRunIsNone, finishResolvedRun, hcomplete, hcanonical.2.2]
-
-theorem evalDist_canonicalQuery_finished_of_no_hash
-    (parameter : PublicParameter) (root : Digest) (table : OtsSecretIndex → HashOutput)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (input : (OracleWorld + SigningSpec).Domain) (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
-    (hnoHash : outerHashQueryCount input = 0)
-    (hvalid : context.Valid) (hstarts : StartTableAgrees context.state table)
-    (hcard : context.state.pending.card < Fintype.card Digest) :
-    evalDist (canonicalChronologicalAdversaryImpl parameter root table ftsSecret input context fuel table cache >>=
-      finishResolvedRunIsNone) =
-      evalDist (Option.isNone <$> finalizeResolvedCoordinates context.state.coordinates.toList context table) := by
-  have hbound : ((maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret input).run cache).IsQueryBoundP
-      LazyRevealProbe.IsProbe 0 := by
-    simpa only [hnoHash] using maskedChronologicalExpandedAdversaryImpl_probeBound parameter root ftsSecret input cache
-  apply Eq.trans ?_ (evalDist_runResolvedFinishIsNone_of_probeFree _ context fuel table hbound hvalid hstarts hcard)
-  rw [canonicalChronologicalAdversaryImpl_eq_raw_then_canonicalize, bind_assoc]
-  unfold runResolvedFinishIsNone
-  apply evalDist_bind_congr
-  intro option hoption
-  simp only [pure_bind]
-  cases option with
-  | none => rfl
-  | some result =>
-      have hcore := resolvedCore_of_mem_runResolvedFromTable _ context fuel table result
-        hvalid.valuesConsistent hstarts hoption
-      have hnextValid := (valid_pendingCovered_of_mem_runResolvedFromTable_of_probeFree _ context fuel table result
-        context.state.coordinates.toList hbound hvalid (pendingCovered_coordinates_toList context) hoption).1
-      have heq := evalDist_finish_canonicalizeResolvedRun result hnextValid (hcore.1 ▸ hcore.2.2)
-      simpa only [hcore.1] using heq
-
-theorem canonicalQueryRejectionRisk_le_pendingFailureRisk_of_no_hash
-    (parameter : PublicParameter) (root : Digest) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (entry : CanonicalQuerySelection) (hnoHash : outerHashQueryCount entry.input = 0)
-    (hvalid : entry.context.Valid) (hstarts : StartTableAgrees entry.context.state entry.table)
-    (hcard : entry.context.state.pending.card < Fintype.card Digest) :
-    canonicalQueryRejectionRisk parameter root ftsSecret entry ≤ resolvedPendingFailureRisk entry.table entry.context := by
-  apply (probEvent_resolvedQueryRejected_le_finished _).trans_eq
-  have heq := congrArg (fun distribution : SPMF Bool => distribution true)
-    (evalDist_canonicalQuery_finished_of_no_hash parameter root entry.table ftsSecret entry.input entry.context
-      entry.fuel entry.cache hnoHash hvalid hstarts hcard)
-  change Pr[= true | _] = Pr[= true | _] at heq
-  rw [← probEvent_eq_eq_probOutput, ← probEvent_eq_eq_probOutput, probEvent_map] at heq
-  simpa only [Function.comp_def, Option.isNone_iff_eq_none, resolvedPendingFailureRisk] using heq
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

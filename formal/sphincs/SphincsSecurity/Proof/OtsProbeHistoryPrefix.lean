@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeHistoryAdaptiveInterpreter
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
@@ -211,16 +212,5 @@ theorem historyPrefix_invariant_of_mem
                     { state := context.state.materialize (.position position) resolved.output, values := resolved.values }
                     fuel bound history (hcovered.of_subset (Finset.filter_subset _ _))
                     (by simpa [LazyRevealProbe.IsProbe] using hbound.2 resolved.output) htail
-
-theorem historyPrefix_history_clean_mass_ge_three_quarters
-    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
-    (context : DeferredContext) (fuel bound : Nat) (history : List Probe) (result : HistoryResolvedPrefix α)
-    (hcovered : PendingCoveredBy history context)
-    (hbound : computation.IsQueryBoundP LazyRevealProbe.IsProbe bound)
-    (hbudget : history.length + bound ≤ 2 ^ 126)
-    (hresult : some result ∈ support (runResolvedHistoryPrefix computation context fuel history)) :
-    (3 / 4 : ℝ≥0∞) ≤ Pr[fun base => ¬ChainStartHistoryHit result.context result.history base | sampleOtsHashTable] :=
-  probEvent_no_chainStartHistoryHit_ge_three_quarters result.context result.history
-    ((historyPrefix_invariant_of_mem computation context fuel bound history result hcovered hbound hresult).2.trans hbudget)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

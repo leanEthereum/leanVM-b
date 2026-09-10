@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.MessageCacheProjection
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CertificateBoundaryInvariants
+import SphincsSecurity.Proof.MessageCacheProjection
 
 namespace SphincsSecurity.Concrete
 
@@ -182,7 +183,6 @@ theorem certificateMonitorUpdate_messageOnlyCache_of_originalRecord (key : Secre
   simpa only [Nat.cast_add] using (originalProposalRecord_enncard_le key input cache record hrecord).trans
     (add_le_add hcache le_rfl)
 
-
 theorem observedTargetShapeVector_messageOnlyCache (key : SecretKey) (payload : HashInput) (target : FewTimeView)
     (cache : QueryCache HashSpec) (log : QueryLog SigningSpec) :
     observedTargetShapeVector key payload target (messageOnlyCache key.parameter cache, log) =
@@ -272,7 +272,6 @@ theorem expected_world_bankedProposalRecord_le_of_messageHistory {α : Type}
       · exact mul_le_mul' le_rfl (bankedProposalRecordValue_world_le_of_messageHistory key reuse budget signatures
           required state bank input (record result) (stopped result) (hcache result hr))
     _ = _ := by rw [ENNReal.tsum_mul_right, PMF.tsum_coe, one_mul]
-
 
 theorem expected_certificateMonitor_world_le_of_messageHistory {α : Type}
     (key : SecretKey) (budget : Nat) (required : Finset FtsTree) (stopAfter : CertificateStopRule)

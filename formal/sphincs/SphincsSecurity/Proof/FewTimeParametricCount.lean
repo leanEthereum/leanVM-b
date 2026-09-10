@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.FewTime125Count
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTimeWeightedCount
 
 namespace SphincsSecurity.Concrete
 

@@ -1,5 +1,5 @@
-import SphincsSecurity.Proof.OtsProbeInitializedChargedRootRisk
-import SphincsSecurity.Proof.OtsProbeLiveHashCut
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeChargedRootCut
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -7,14 +7,6 @@ open _root_.OracleComp OracleSpec ENNReal
 
 attribute [local instance] Classical.propDecidable
 set_option backward.isDefEq.respectTransparency false
-
-theorem ChargedNativeRootQuery.no_native_candidate
-    {parameter : PublicParameter} {input : HashInput} {context : DeferredContext}
-    (h : ChargedNativeRootQuery parameter input context) :
-    (purePlanProbingHashQuery parameter input context.state).candidate? = none := by
-  rcases h with h | ⟨candidate, target, hcandidate, _⟩
-  · exact h.no_candidate
-  · exact hcandidate.no_native_candidate context.state
 
 theorem NativeRootCandidateAt.direct_or_charged_or_unknown_encoding
     {parameter : PublicParameter} {input : HashInput} {context : DeferredContext} {candidate : Probe}
@@ -62,12 +54,6 @@ theorem chargedNativeRootCutCandidate_eq_query
           | inl n => simp [chargedNativeRootQueryCandidate]
           | inr input => simp [chargedNativeRootQueryCandidate]
       | inr message => simp [chargedNativeRootQueryCandidate]
-
-theorem chargedNativeRootQueryCandidate_eq_none_of_native_candidate
-    (parameter : PublicParameter) (target : Position) (input : HashInput) (context : DeferredContext)
-    (hprobe : (purePlanProbingHashQuery parameter input context.state).candidate? ≠ none) :
-    chargedNativeRootQueryCandidate parameter target (.inl (.inr input)) context = none := by
-  exact if_neg (fun h => hprobe h.no_native_candidate)
 
 theorem sum_targets_chargedRootQueryCandidate_le_charge
     (targets : Finset Position) (parameter : PublicParameter)

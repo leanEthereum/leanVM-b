@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.PoissonCertificateGame
 import SphincsSecurity.Proof.TerminalProposalEnvelope
 
@@ -232,25 +233,6 @@ theorem certificateProposalImpl_invariant (key : SecretKey) (budget total : Nat)
         obtain ⟨record, _, rfl⟩ := hr
         intro hpost
         simp only [originalProposalAdvance, certificateMonitorUpdate, if_neg hactive, Bool.true_eq_false] at hpost
-
-theorem simulateQ_certificateProposalImpl_invariant {α : Type} (key : SecretKey) (budget total : Nat)
-    (required : Finset FtsTree) (stopAfter : CertificateStopRule)
-    (computation : OracleComp (OracleWorld + SigningSpec) α) (state : List Index × CertificateMonitorState)
-    (hinv : CertificateProposalInvariant key total state) (result : α × (List Index × CertificateMonitorState))
-    (hr : result ∈ ((simulateQ (certificateProposalImpl key budget required
-      (fun input state length record => proposalPrefixStop input state length record || stopAfter input state length record))
-      computation).run state).support) : CertificateProposalInvariant key total result.2 := by
-  induction computation using OracleComp.inductionOn generalizing state result with
-  | pure value =>
-      simp only [simulateQ_pure, StateT.run_pure, PMF.monad_pure_eq_pure, PMF.mem_support_pure_iff] at hr
-      subst result
-      exact hinv
-  | query_bind input next ih =>
-      rw [simulateQ_bind, simulateQ_spec_query, StateT.run_bind, PMF.monad_bind_eq_bind,
-        PMF.mem_support_bind_iff] at hr
-      obtain ⟨middle, hmiddle, hr⟩ := hr
-      exact ih middle.1 middle.2
-        (certificateProposalImpl_invariant key budget total required stopAfter input state hinv middle hmiddle) result hr
 
 theorem certificateMonitorCharge_le_terminalPrice_of_invariant (key : SecretKey) (budget total : Nat)
     (required : Finset FtsTree) (input : (OracleWorld + SigningSpec).Domain)

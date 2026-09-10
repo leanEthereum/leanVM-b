@@ -1,3 +1,6 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbePrivateValueFirstAccessTransport
+import SphincsSecurity.Proof.OtsProbePrivateValueProbeRisk
 import SphincsSecurity.Proof.OtsProbePrivateValueProbeTransport
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
@@ -157,7 +160,6 @@ theorem probEvent_privateResolvedRawCandidate_hit_le_charge
   rw [hprob, probEvent_samplePrivateProbeRecords_raw_hit_eq_fresh_hit target computation context fuel table ordinal hstate hhidden]
   exact probEvent_samplePrivateProbeRecords_hit_le_charge target computation context fuel table ordinal hstate hhidden hcard
 
-
 theorem sampledPrivateProbeCharge_le_raw_occurrence
     (target : Position) (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
     (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput) (ordinal : Nat)
@@ -200,50 +202,5 @@ theorem sampledPrivateProbeCharge_le_raw_occurrence
 
 def PrivateProbeCutReached (target : Position) (result : Option (ResolvedRunResult (PrivateValueCut α))) : Prop :=
   (privatePositionAccessCandidate target (result.map ResolvedRunResult.value)) ≠ none
-
-theorem probEvent_privateResolvedRawCandidate_occurrence_le_cut_reached
-    (target : Position) (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
-    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput) (ordinal : Nat) :
-    Pr[fun pair => pair ≠ none | privateResolvedSelectedCandidate target (privateRawCutCandidate target) <$>
-      runPrivateResolvedView target table context fuel (privatePositionProbeCutAt target computation ordinal)] ≤
-      Pr[PrivateProbeCutReached target | runResolvedFromTable context fuel table (privatePositionProbeCutAt target computation ordinal)] := by
-  unfold runPrivateResolvedView
-  rw [map_bind]
-  apply probEvent_bind_le_probEvent
-  intro result _ hresult
-  cases result with
-  | none => simp [privateResolvedSelectedCandidate]
-  | some result =>
-      have hnone : privateRawCutCandidate target result.remaining result.value = none := by
-        simpa only [PrivateProbeCutReached, Option.map_some, privateRawCutCandidate, not_not] using hresult
-      unfold privateResolutionResult
-      rw [map_bind, probEvent_bind_eq_tsum]
-      apply ENNReal.tsum_eq_zero.mpr
-      intro resolved
-      cases resolved with
-      | none => simp [privateResolvedSelectedCandidate]
-      | some resolved =>
-          by_cases hcomplete : DeferredCompletable table resolved.toDeferredContext
-          · simp only [if_pos hcomplete, map_pure, privateResolvedSelectedCandidate, hnone]
-            cases resolved.toDeferredContext.positionValue target <;> simp
-          · simp [hcomplete, privateResolvedSelectedCandidate]
-
-theorem probEvent_privateResolvedRawCandidate_hit_le_cut_reached
-    (target : Position) (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
-    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput) (ordinal : Nat)
-    (hvalid : context.Valid) (hcomplete : DeferredCompletable table context)
-    (hensured : .position target ∈ context.state.ensured)
-    (hstate : context.state.values (.position target) = none) (hvalue : context.values target = none)
-    (hhidden : .position target ∉ context.state.revealed)
-    (hcard : (context.state.pendingAt (.position target)).card + ordinal ≤ 2 ^ 126) :
-    Pr[PrivateCandidatePairHit | privateResolvedSelectedCandidate target (privateRawCutCandidate target) <$>
-      runPrivateResolvedView target table context fuel (privatePositionProbeCutAt target computation ordinal)] ≤
-      Pr[PrivateProbeCutReached target | runResolvedFromTable context fuel table (privatePositionProbeCutAt target computation ordinal)] *
-        ((4 / 3 : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) := by
-  apply (probEvent_privateResolvedRawCandidate_hit_le_charge target computation context fuel table ordinal
-    hvalid hcomplete hensured hstate hvalue hhidden hcard).trans
-  exact mul_le_mul' ((sampledPrivateProbeCharge_le_raw_occurrence target computation context fuel table ordinal
-    hvalid hcomplete hensured hstate hvalue hhidden).trans
-      (probEvent_privateResolvedRawCandidate_occurrence_le_cut_reached target computation context fuel table ordinal)) le_rfl
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

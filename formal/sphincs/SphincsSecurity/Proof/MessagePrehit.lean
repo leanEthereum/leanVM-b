@@ -1,7 +1,6 @@
-import SphincsSecurity.Proof.Replay
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.NoMessage
-import SphincsSecurity.Proof.StatementLemmas
-import Mathlib.Data.Set.Card.Arithmetic
+import SphincsSecurity.Proof.Replay
 
 /-!
 # Cached message inputs
@@ -15,7 +14,7 @@ open OracleComp OracleSpec ENNReal
 
 namespace SphincsSecurity
 
-noncomputable local instance : SampleableType Randomness :=
+noncomputable local instance instSampleableTypeRandomness : SampleableType Randomness :=
   SampleableType.ofFintype Randomness
 
 def cachedMessageInputSet (cache : QueryCache HashSpec) (parameter : PublicParameter)
@@ -133,73 +132,6 @@ theorem uniform_randomness_messageInput_cacheHit_le_cachedMessageEntryCount
       ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ ≤ _
   exact mul_le_mul' hcard le_rfl
 
-set_option linter.constructorNameAsVariable false in
-theorem Concrete.signDigestLoop_messageInput_referenceCache_hit_le_cachedCount
-    (attempts : Nat) (secretKey : SecretKey) (message : Message)
-    (referenceCache workingCache : QueryCache HashSpec) :
-    Pr[fun result : Option (Randomness × Index × (DigestTree → FtsLeaf)) ×
-        QueryCache HashSpec =>
-      ∃ randomness index leaves, result.1 = some (randomness, index, leaves) ∧
-        ∃ output, referenceCache
-          (tweakableHashInput secretKey.parameter .message
-            (Concrete.messageDigestPayload secretKey.root message randomness)) = some output |
-      (simulateQ romImpl
-        (Concrete.signDigestLoop attempts secretKey message)).run workingCache] ≤
-      (attempts : ℝ≥0∞) *
-        cachedMessageEntryCount referenceCache secretKey.parameter secretKey.root message *
-        ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ := by
-  induction attempts generalizing workingCache with
-  | zero =>
-      simp [Concrete.signDigestLoop]
-  | succ attempts ih =>
-      rw [Concrete.signDigestLoop_run_succ_eq]
-      refine (probEvent_bind_le_probEvent_add
-        (p := fun randomness : Randomness => ∃ output,
-          referenceCache
-            (tweakableHashInput secretKey.parameter .message
-              (Concrete.messageDigestPayload secretKey.root message randomness)) = some output)
-        (ε := (attempts : ℝ≥0∞) *
-          cachedMessageEntryCount referenceCache secretKey.parameter secretKey.root message *
-          ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹) ?_).trans ?_
-      · intro randomness _hrandomness hmiss
-        refine probEvent_bind_le_of_forall_le fun attemptResult _hattempt => ?_
-        cases hresult : attemptResult.1 with
-        | none =>
-            simpa [Concrete.signDigestLoopContinuation, hresult] using
-              ih attemptResult.2
-        | some selected =>
-            rcases selected with ⟨selectedIndex, selectedLeaves⟩
-            refine le_of_eq_of_le (probEvent_eq_zero ?_) zero_le
-            intro result hsupport hevent
-            have hsupport' : result ∈ support
-                (pure (some (randomness, selectedIndex, selectedLeaves), attemptResult.2) :
-                  ProbComp (Option (Randomness × Index × (DigestTree → FtsLeaf)) ×
-                    QueryCache HashSpec)) := by
-              simpa [Concrete.signDigestLoopContinuation, hresult] using hsupport
-            obtain ⟨foundRandomness, foundIndex, foundLeaves, hfound, output, hhit⟩ := hevent
-            have hreturned : result.1 =
-                some (randomness, selectedIndex, selectedLeaves) := by
-              simpa only [support_pure, Set.mem_singleton_iff] using
-                congrArg Prod.fst hsupport'
-            have hrandomness : randomness = foundRandomness := congrArg Prod.fst <|
-              Option.some.inj (hreturned.symm.trans hfound)
-            apply hmiss
-            refine ⟨output, ?_⟩
-            rw [hrandomness]
-            exact hhit
-      · calc
-          _ ≤ cachedMessageEntryCount referenceCache secretKey.parameter secretKey.root message *
-                ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ +
-              (attempts : ℝ≥0∞) *
-                cachedMessageEntryCount referenceCache secretKey.parameter secretKey.root message *
-                ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ :=
-            add_le_add
-              (uniform_randomness_messageInput_cacheHit_le_cachedMessageEntryCount
-                secretKey.parameter secretKey.root message referenceCache) le_rfl
-          _ = _ := by
-            push_cast
-            ring
-
 theorem Concrete.signAfterDigest_some_randomness (f : QueryImpl HashSpec Id)
     (secretKey : SecretKey) (randomness : Randomness) (index : Index)
     (leaves : DigestTree → FtsLeaf) (signature : Signature)
@@ -227,58 +159,5 @@ theorem Concrete.signAfterDigest_support_some_randomness
       beforeCache (some signature) afterCache hmem
   exact Concrete.signAfterDigest_some_randomness answerFn secretKey randomness index leaves
     signature heval
-
-set_option linter.constructorNameAsVariable false in
-theorem Concrete.sign_messageInput_initialCache_hit_le_cachedCount
-    (secretKey : SecretKey) (message : Message) (cache : QueryCache HashSpec) :
-    Pr[fun result : Option Signature × QueryCache HashSpec =>
-      ∃ signature, result.1 = some signature ∧ ∃ output,
-        cache (tweakableHashInput secretKey.parameter .message
-          (Concrete.messageDigestPayload secretKey.root message signature.randomness)) =
-            some output |
-      (simulateQ romImpl (Concrete.sign secretKey message)).run cache] ≤
-      (digestAttemptLimit : ℝ≥0∞) *
-        cachedMessageEntryCount cache secretKey.parameter secretKey.root message *
-        ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ := by
-  rw [Concrete.sign_eq_digestLoop_afterDigest, simulateQ_bind, StateT.run_bind]
-  refine (probEvent_bind_le_probEvent
-    (p := fun loopResult : Option (Randomness × Index × (DigestTree → FtsLeaf)) ×
-        QueryCache HashSpec =>
-      ∃ randomness index leaves, loopResult.1 = some (randomness, index, leaves) ∧
-        ∃ output, cache
-          (tweakableHashInput secretKey.parameter .message
-            (Concrete.messageDigestPayload secretKey.root message randomness)) = some output)
-    ?_).trans
-      (Concrete.signDigestLoop_messageInput_referenceCache_hit_le_cachedCount
-        digestAttemptLimit secretKey message cache cache)
-  intro loopResult _hloop hmiss
-  refine probEvent_eq_zero ?_
-  intro result hresult hevent
-  cases hloopResult : loopResult.1 with
-  | none =>
-      have hresult' : result ∈ support
-          (pure (none, loopResult.2) :
-            ProbComp (Option Signature × QueryCache HashSpec)) := by
-        simpa [hloopResult] using hresult
-      obtain ⟨signature, hsignature, _⟩ := hevent
-      have hnone : result.1 = none := by
-        simpa only [support_pure, Set.mem_singleton_iff] using
-          congrArg Prod.fst hresult'
-      simp [hnone] at hsignature
-  | some selected =>
-      rcases selected with ⟨randomness, index, leaves⟩
-      obtain ⟨signature, hsignature, output, hhit⟩ := hevent
-      have hresult' : (some signature, result.2) ∈ support
-          ((simulateQ (randomOracle : QueryImpl HashSpec _)
-            (Concrete.signAfterDigest secretKey randomness index leaves)).run loopResult.2) := by
-        have hpair : result = (some signature, result.2) := Prod.ext hsignature rfl
-        rw [← hpair]
-        simpa only [hloopResult, simulateQ_romImpl_liftM] using hresult
-      have hrandomness := Concrete.signAfterDigest_support_some_randomness secretKey randomness
-        index leaves loopResult.2 result.2 signature hresult'
-      apply hmiss
-      refine ⟨randomness, index, leaves, hloopResult, output, ?_⟩
-      rw [← hrandomness]
-      exact hhit
 
 end SphincsSecurity

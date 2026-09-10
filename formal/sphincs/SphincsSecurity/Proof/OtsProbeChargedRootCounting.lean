@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.OtsProbeChargedRootSelectionProjection
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeChargedRootSelection
+import SphincsSecurity.Proof.OtsProbeLiveHashSelection
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

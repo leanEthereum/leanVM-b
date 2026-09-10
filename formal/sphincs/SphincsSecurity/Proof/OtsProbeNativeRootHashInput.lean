@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.OtsProbeNativeRootProbe
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeNativePeekInput
+import SphincsSecurity.Proof.OtsProbeNativeRootStateCoupling
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -6,29 +8,6 @@ open _root_.OracleComp OracleSpec ENNReal
 open OracleComp.ProgramLogic.Relational
 
 set_option backward.isDefEq.respectTransparency false
-
-theorem relTriple_nativeRoot_peekTableInput_of_eq
-    (parameter : PublicParameter) (target : Position) (before after : HashOutput) (coordinate : Coordinate)
-    (left right : DeferredContext) (hcontext : NativeRootContextRel target before after left right)
-    (fuel : Nat) (table : OtsSecretIndex → HashOutput) (leftCache rightCache : SplitHashCache)
-    (hcache : RootHiddenCacheRel target before after leftCache rightCache)
-    (hinput : purePeekTableInput parameter left.state coordinate = purePeekTableInput parameter right.state coordinate) :
-    RelTriple
-      (runResolvedFromTable left fuel table ((peekTableInput parameter coordinate).run leftCache))
-      (runResolvedFromTable right fuel table ((peekTableInput parameter coordinate).run rightCache))
-      (NativeRootSameRel target before after) := by
-  rw [runResolvedFromTable_peekTableInput_eq_pure, runResolvedFromTable_peekTableInput_eq_pure]
-  exact relTriple_pure_pure ⟨hcontext, rfl, rfl, hinput, hcache⟩
-
-theorem nativeRootRelates_peekTableInput_of_not_mem_children
-    (parameter : PublicParameter) (target : Position) (before after : HashOutput)
-    (position : Position) (hnot : target ∉ position.children) :
-    NativeRootRelates target before after
-      (peekTableInput parameter (.position position)) (peekTableInput parameter (.position position)) := by
-  intro left right hcontext fuel table leftCache rightCache hcache
-  exact relTriple_nativeRoot_peekTableInput_of_eq parameter target before after (.position position)
-    left right hcontext fuel table leftCache rightCache hcache
-    (hcontext.purePeekTableInput_eq_of_not_mem_children parameter position hnot)
 
 theorem nativeRootRelates_revealCoordinateOutput_of_ne
     (target : Position) (before after : HashOutput) (coordinate : Coordinate)
@@ -59,32 +38,6 @@ theorem nativeRootRelates_modifyOrdinary
   intro left right hcontext fuel table leftCache rightCache hcache
   simp only [StateT.run_modify, runResolvedFromTable, OracleComp.construct_pure]
   exact relTriple_pure_pure ⟨hcontext, rfl, rfl, rfl, hcache.update_same_ordinary input output⟩
-
-theorem nativeRootRelates_resolveKnownInput_of_not_mem_children
-    (parameter : PublicParameter) (target : Position) (before after : HashOutput)
-    (position : Position) (hnot : target ∉ position.children) (hne : position ≠ target) (input : HashInput) :
-    NativeRootRelates target before after
-      (resolveKnownInput parameter (.position position) input) (resolveKnownInput parameter (.position position) input) := by
-  unfold resolveKnownInput
-  apply (nativeRootRelates_peekTableInput_of_not_mem_children parameter target before after position hnot).bind
-  intro left right heq
-  subst right
-  cases left with
-  | none => exact nativeRootRelates_splitHashQuery_ordinary target before after input
-  | some knownInput =>
-      simp only
-      by_cases hmatch : knownInput = input
-      · rw [if_pos hmatch]
-        apply (nativeRootRelates_revealCoordinateOutput_of_ne target before after (.position position) (by simpa using hne)).bind
-        intro leftOutput rightOutput heq
-        subst rightOutput
-        apply (nativeRootRelates_publishCoordinate target before after (.position position)).bind
-        intro _ _ _
-        apply (nativeRootRelates_modifyOrdinary target before after input leftOutput).bind
-        intro _ _ _
-        exact nativeRootRelates_pure target before after leftOutput
-      · rw [if_neg hmatch]
-        exact nativeRootRelates_splitHashQuery_ordinary target before after input
 
 theorem runResolvedFromTable_resolveKnownInput_of_miss
     (parameter : PublicParameter) (coordinate : Coordinate) (input : HashInput)

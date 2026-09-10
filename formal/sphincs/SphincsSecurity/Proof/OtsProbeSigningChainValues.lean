@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.OtsProbeNativeChainMaterialization
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeSigningStartValues
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

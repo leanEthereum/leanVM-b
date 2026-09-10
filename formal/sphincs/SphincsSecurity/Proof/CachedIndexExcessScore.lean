@@ -1,6 +1,6 @@
-import SphincsSecurity.Proof.CacheIndexMultiplicity
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CacheGrowthCharge
-import SphincsSecurity.Proof.BernoulliExcessMoments
+import SphincsSecurity.Proof.CacheIndexMultiplicity
 
 namespace SphincsSecurity.Concrete
 

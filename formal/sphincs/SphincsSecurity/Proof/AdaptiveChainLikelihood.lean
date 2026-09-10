@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.AdaptiveChainObservation
+import SphincsSecurity.Proof.PartialChainLikelihoodLower
 
 namespace SphincsSecurity.Concrete.PartialChainEndpoint
 

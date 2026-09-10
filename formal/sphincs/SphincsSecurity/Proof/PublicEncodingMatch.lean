@@ -1,4 +1,8 @@
-import SphincsSecurity.Proof.PrefixByteAction
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FirstSuccessPrefix
+import SphincsSecurity.Proof.HiddenLabelProbe
+import SphincsSecurity.Proof.OtsProbeNativeRootCandidate
+import SphincsSecurity.Proof.PublicReferenceResidual
 
 namespace SphincsSecurity.Concrete.PublicEncodingMatch
 

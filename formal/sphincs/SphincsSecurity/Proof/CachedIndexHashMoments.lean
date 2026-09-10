@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.BernoulliExcessMoments
 import SphincsSecurity.Proof.CachedIndexExcessScore
 import SphincsSecurity.Proof.DigestSelectionIndex
 

@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.ReferencePrefixSigning
 import SphincsSecurity.Proof.ResidualSigningDisclosure
 
 namespace SphincsSecurity.Concrete.ResidualByteFrontend

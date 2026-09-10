@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.CausalPublicSigning
 import SphincsSecurity.Proof.RetainedResidualMessageKernel
 
 namespace SphincsSecurity.Concrete.RetainedResidual

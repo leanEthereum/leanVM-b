@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.AdaptiveChainObservation
+import SphincsSecurity.Proof.PartialChainLikelihoodLower
 
 namespace SphincsSecurity.Concrete.PartialChainEndpoint
 
@@ -42,7 +44,7 @@ def IsPrefixQuery : AuxIndex ⊕ (Fin n × State) → Prop
   | .inl _ => False
   | .inr _ => True
 
-instance (input : AuxIndex ⊕ (Fin n × State)) : Decidable (IsPrefixQuery input) := by
+instance instDecidableIsPrefixQuery (input : AuxIndex ⊕ (Fin n × State)) : Decidable (IsPrefixQuery input) := by
   cases input <;> unfold IsPrefixQuery <;> infer_instance
 
 theorem lazyRun_queryCount_le {Result : Type} (auxiliary : QueryImpl auxSpec PMF)

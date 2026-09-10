@@ -1,7 +1,8 @@
-import SphincsSecurity.Proof.CanonicalGraphSampling
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CanonicalGraphHonest
-import SphincsSecurity.Proof.FrontierRandomOracle
+import SphincsSecurity.Proof.CanonicalGraphSampling
 import SphincsSecurity.Proof.EncodingInputs
+import SphincsSecurity.Proof.FrontierRandomOracle
 
 namespace SphincsSecurity.Concrete
 
@@ -132,16 +133,5 @@ theorem forgeAdvantage_eq_canonicalGraph (dummy : OtsReferenceWords) (adversary 
   rw [probOutput_congr rfl h, probOutput_map]
   exact probEvent_congr' (fun _ _ => Iff.rfl) (evalDist_frontier_eq_canonicalGraph (canonicalGraphGameInputs adversary)
     (canonicalGraphInputs_subset_gameInputs adversary) dummy adversary)
-
-theorem canonicalGraphOracleGame_hashCalls_le (dummy : OtsReferenceWords) (adversary : Adversary)
-    (q : Nat) (hbound : HasHashQueryBound scheme adversary q) (result : Bool × SigningBoundaryTrace)
-    (hresult : result ∈ support (canonicalGraphOracleGame (canonicalGraphGameInputs adversary)
-      (canonicalGraphInputs_subset_gameInputs adversary) dummy adversary)) :
-    result.2.hashCalls ≤ q := by
-  apply boundaryGameCore_hashCalls_le adversary q hbound result
-  exact (mem_support_iff_of_evalDist_eq
-    (evalDist_boundaryGameCore_canonicalGraph (canonicalGraphGameInputs adversary)
-      (canonicalGraphInputs_subset_gameInputs adversary) dummy adversary
-      (hashInputs_subset_canonicalGraphGameInputs adversary)) result).mpr hresult
 
 end SphincsSecurity.Concrete

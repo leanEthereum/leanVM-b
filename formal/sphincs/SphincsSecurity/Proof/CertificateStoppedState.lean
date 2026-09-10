@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.CertificateGame
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.CertificatePathBudget
 
 namespace SphincsSecurity.Concrete
 
@@ -43,16 +44,5 @@ theorem certificateLength_run_stopped {α : Type} (key : SecretKey) (budget : Na
         simpa only [originalProposalAdvance, heq] using hstop
       have htail := ih record.output _ hnext result hr
       simpa only [originalProposalAdvance, heq] using htail
-
-theorem certificateProposal_run_stopped {α : Type} (key : SecretKey) (budget : Nat)
-    (required : Finset FtsTree) (stopAfter : CertificateStopRule)
-    (computation : OracleComp (OracleWorld + SigningSpec) α) (state : List Index × CertificateMonitorState)
-    (hstop : state.2.2.stopped = true) (result : α × (List Index × CertificateMonitorState))
-    (hr : result ∈ ((simulateQ (certificateProposalImpl key budget required stopAfter) computation).run state).support) :
-    result.2.2.2 = state.2.2 := by
-  have hprojection := simulateQ_certificateProposalImpl_length key budget required stopAfter computation state
-  have hm := (PMF.mem_support_map_iff (Prod.map id Prod.snd) _ _).mpr ⟨result, hr, rfl⟩
-  rw [← PMF.monad_map_eq_map, hprojection] at hm
-  exact certificateLength_run_stopped key budget required stopAfter computation state.2 hstop _ hm
 
 end SphincsSecurity.Concrete

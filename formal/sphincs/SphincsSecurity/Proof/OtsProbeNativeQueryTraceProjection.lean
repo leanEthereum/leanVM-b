@@ -1,5 +1,7 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeCanonicalQueryTrace
+import SphincsSecurity.Proof.OtsProbeHistoryLiveRisk
 import SphincsSecurity.Proof.OtsProbeNativeQueryTraceSelection
-import SphincsSecurity.Proof.OtsProbeHistoryCandidateSampling
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

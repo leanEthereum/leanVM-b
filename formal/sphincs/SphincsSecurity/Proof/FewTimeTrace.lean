@@ -1,6 +1,6 @@
-import SphincsSecurity.Proof.TracedGame
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimeWitness
-import SphincsSecurity.Proof.TerminalCache
+import SphincsSecurity.Proof.SigningTrace
 
 /-!
 # Few-time witnesses in the signing cache trace
@@ -22,12 +22,6 @@ theorem signingCacheTraceFlatLog_eq (trace : SigningCacheTrace) :
   | nil => rfl
   | cons entry rest _ => simp [signingCacheTraceFlatLog,
       SigningCacheTrace.toSigningLog, SigningEntry.flat]
-
-theorem exists_signingCacheEntry_of_flat_mem (trace : SigningCacheTrace)
-    (entry : FlatSigningEntry) (hentry : entry ∈ signingCacheTraceFlatLog trace) :
-    ∃ tracedEntry ∈ trace,
-      (tracedEntry.request, tracedEntry.signature) = entry := by
-  simpa only [signingCacheTraceFlatLog, List.mem_map] using hentry
 
 noncomputable def FewTimeCover.cacheEntry {f : QueryImpl HashSpec Id}
     {cache : QueryCache HashSpec} {secretKey : SecretKey}
@@ -116,35 +110,6 @@ theorem FewTimeCover.cacheEntry_first_flat {f : QueryImpl HashSpec Id}
   simpa only [flatEarlier, signingCacheTraceFlatLog, List.get_eq_getElem,
     List.getElem_map] using hne
 
-theorem FewTimeCover.earlier_finalCache_le_cacheEntry_initialCache
-    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
-    {signingLog : QueryLog SigningSpec} {index : Index}
-    {targetLeaves : DigestTree → FtsLeaf}
-    (cover : FewTimeCover f cache secretKey signingLog index targetLeaves)
-    (trace : SigningCacheTrace) (hlog : trace.toSigningLog = signingLog)
-    (hchronological : trace.Chronological) (entry : cover.entries)
-    (earlier : Fin trace.length) (hearlier : earlier.val < (cover.logIndex entry).val) :
-    (trace.get earlier).finalCache ≤ (cover.cacheEntry trace hlog entry).initialCache := by
-  let selectedPosition : Fin trace.length := ⟨(cover.logIndex entry).val, by
-    have hlength := congrArg List.length hlog
-    simpa only [SigningCacheTrace.toSigningLog, List.length_map] using
-      (show (cover.logIndex entry).val < trace.toSigningLog.length by
-        rw [hlength]
-        exact (cover.logIndex entry).isLt)⟩
-  have hle := hchronological.get_finalCache_le_initialCache earlier selectedPosition hearlier
-  simpa only [selectedPosition, FewTimeCover.cacheEntry] using hle
-
-theorem FewTimeCover.cacheEntry_injective {f : QueryImpl HashSpec Id}
-    {cache : QueryCache HashSpec} {secretKey : SecretKey}
-    {signingLog : QueryLog SigningSpec} {index : Index}
-    {targetLeaves : DigestTree → FtsLeaf}
-    (cover : FewTimeCover f cache secretKey signingLog index targetLeaves)
-    (trace : SigningCacheTrace) (hlog : trace.toSigningLog = signingLog) :
-    Function.Injective (cover.cacheEntry trace hlog) := by
-  intro left right heq
-  apply Subtype.ext
-  rw [← cover.cacheEntry_flat trace hlog left, ← cover.cacheEntry_flat trace hlog right, heq]
-
 theorem FewTimeCover.cacheEntry_validRun {f : QueryImpl HashSpec Id}
     {cache : QueryCache HashSpec} {secretKey : SecretKey}
     {signingLog : QueryLog SigningSpec} {index : Index}
@@ -201,30 +166,6 @@ theorem FewTimeCover.cacheEntry_successfulSignRun {f : QueryImpl HashSpec Id}
     (cover.cacheEntry_cachesLe trace hlog hcaches entry).2 hf
   simpa only [hfields.1] using hrun
 
-theorem FewTimeCover.cacheEntry_digest_cached {f : QueryImpl HashSpec Id}
-    {cache finalCache : QueryCache HashSpec} {secretKey : SecretKey}
-    {signingLog : QueryLog SigningSpec} {index : Index}
-    {targetLeaves : DigestTree → FtsLeaf}
-    (cover : FewTimeCover f cache secretKey signingLog index targetLeaves)
-    (trace : SigningCacheTrace) (hlog : trace.toSigningLog = signingLog)
-    (hvalid : trace.ValidRuns secretKey) (hcaches : trace.CachesLe finalCache)
-    (hf : finalCache.AgreesWithFn f) (entry : cover.entries) :
-    (cover.cacheEntry trace hlog entry).finalCache (cover.entryDigestInput entry) ≠ none := by
-  let tracedEntry := cover.cacheEntry trace hlog entry
-  let selected := cover.select (cover.representativeTree entry)
-  have hfields := cover.cacheEntry_request_signature trace hlog entry
-  have hentryLe := (cover.cacheEntry_cachesLe trace hlog hcaches entry).2
-  have hentryAgree : tracedEntry.finalCache.AgreesWithFn f :=
-    fun _ _ hcached => hf (hentryLe hcached)
-  have hrun := SigningCacheEntry.successfulSignRun
-    (cover.cacheEntry_validRun trace hlog hvalid entry) hfields.2 le_rfl hentryAgree
-  have hrun' : SuccessfulSignRun f tracedEntry.finalCache secretKey
-      selected.entry.1 selected.signature := by
-    simpa only [tracedEntry, selected, hfields.1] using hrun
-  obtain ⟨_, _, _, hdigest, _, _, _, _, _, _, _⟩ := hrun'.indexed
-  have hcached := CachedRun.messageDigest_cached hdigest.extract.2.choose_spec.2.2.2.2
-  simpa only [FewTimeCover.entryDigestInput, selected, tracedEntry] using hcached
-
 def FewTimeCover.EntryDigestPrecached {f : QueryImpl HashSpec Id}
     {cache : QueryCache HashSpec} {secretKey : SecretKey}
     {signingLog : QueryLog SigningSpec} {index : Index}
@@ -233,20 +174,6 @@ def FewTimeCover.EntryDigestPrecached {f : QueryImpl HashSpec Id}
     (trace : SigningCacheTrace) (hlog : trace.toSigningLog = signingLog)
     (entry : cover.entries) : Prop :=
   (cover.cacheEntry trace hlog entry).initialCache (cover.entryDigestInput entry) ≠ none
-
-theorem FewTimeCover.entryDigest_cache_miss_then_hit {f : QueryImpl HashSpec Id}
-    {cache finalCache : QueryCache HashSpec} {secretKey : SecretKey}
-    {signingLog : QueryLog SigningSpec} {index : Index}
-    {targetLeaves : DigestTree → FtsLeaf}
-    (cover : FewTimeCover f cache secretKey signingLog index targetLeaves)
-    (trace : SigningCacheTrace) (hlog : trace.toSigningLog = signingLog)
-    (hvalid : trace.ValidRuns secretKey) (hcaches : trace.CachesLe finalCache)
-    (hf : finalCache.AgreesWithFn f) (entry : cover.entries)
-    (hfresh : ¬ cover.EntryDigestPrecached trace hlog entry) :
-    (cover.cacheEntry trace hlog entry).initialCache (cover.entryDigestInput entry) = none
-      ∧ (cover.cacheEntry trace hlog entry).finalCache (cover.entryDigestInput entry) ≠ none := by
-  exact ⟨not_ne_iff.mp hfresh,
-    cover.cacheEntry_digest_cached trace hlog hvalid hcaches hf entry⟩
 
 theorem FewTimeCover.earlier_successful_digest_input_ne
     {f : QueryImpl HashSpec Id} {cache finalCache : QueryCache HashSpec}

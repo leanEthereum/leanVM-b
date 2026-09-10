@@ -1,6 +1,7 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.ResidualByteCandidates
+import SphincsSecurity.Proof.RetainedResidualDigestLaw
 import SphincsSecurity.Proof.RetainedResidualInitial
-import SphincsSecurity.Proof.RetainedResidualMessageHistory
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 

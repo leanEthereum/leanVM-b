@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.PublicReferenceResidual
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.CanonicalGraphHonest
+import SphincsSecurity.Proof.CanonicalProbeRouting
 import SphincsSecurity.Proof.FtsProbeGame
 
 namespace SphincsSecurity.Concrete

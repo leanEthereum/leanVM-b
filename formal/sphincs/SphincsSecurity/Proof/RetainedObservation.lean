@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.HiddenLabelObservation
 
 namespace SphincsSecurity.Concrete.RetainedObservation

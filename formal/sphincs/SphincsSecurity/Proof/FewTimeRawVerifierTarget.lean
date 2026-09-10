@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.FewTimeRawTargetNonfresh
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTimeRawTargetCompletion
+import SphincsSecurity.Proof.FewTimeRawTargetUnion
 
 namespace SphincsSecurity.Concrete
 

@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimeProbability
 import SphincsSecurity.Proof.Guess
 
@@ -273,11 +274,6 @@ theorem digestCoordinates_bijective : Function.Bijective digestCoordinates :=
 
 noncomputable def digestCoordinatesEquiv : MessageDigest ≃ FewTimeView × FtsLeaf :=
   Equiv.ofBijective digestCoordinates digestCoordinates_bijective
-
-theorem hashOutput_digestCoordinates (output : HashOutput) :
-    digestCoordinates (truncateMessageDigest output) =
-      (hashOutputFewTimeView output,
-        digestLeaves (truncateMessageDigest output) lastDigestTree) := rfl
 
 set_option maxRecDepth 100000 in
 theorem evalDist_hashOutput_digestCoordinates_uniform :

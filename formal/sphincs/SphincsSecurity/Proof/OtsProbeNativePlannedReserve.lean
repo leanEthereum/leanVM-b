@@ -1,4 +1,7 @@
-import SphincsSecurity.Proof.OtsProbeNativeRootInputObservation
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeLiveJointCharge
+import SphincsSecurity.Proof.OtsProbeLiveNativeComposition
+import SphincsSecurity.Proof.OtsProbeNativeQueryCharge
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -102,19 +105,5 @@ theorem chronologicalAdversaryImpl_probeCharge_add_unused_le_ots
   apply (add_le_add ((expectedLiveResolvedQueryCharge_le_raw nativeProbeQueryCharge _ context fuel table).trans
     (chronologicalAdversaryImpl_expectedResolvedProbeCharge_le_planned parameter root ftsSecret input cache context fuel table)) le_rfl).trans_eq
   exact nativePlanned_add_unusedProbeOuterCharge parameter input context fuel cache
-
-theorem nativeUnusedProbeOuterCharge_replace_root
-    {target : Position} {before after : HashOutput} {left right : DeferredContext}
-    (h : NativeRootContextRel target before after left right) (parameter : PublicParameter)
-    (input : (OracleWorld + SigningSpec).Domain) (leftFuel rightFuel : Nat) (leftCache rightCache : SplitHashCache) :
-    nativeUnusedProbeOuterCharge parameter input left leftFuel leftCache =
-      nativeUnusedProbeOuterCharge parameter input right rightFuel rightCache := by
-  cases input with
-  | inl input =>
-      cases input with
-      | inl n => rfl
-      | inr input =>
-          simp only [nativeUnusedProbeOuterCharge, purePlanProbingHashQuery_eq_of_nativeRootContextRel h]
-  | inr message => rfl
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

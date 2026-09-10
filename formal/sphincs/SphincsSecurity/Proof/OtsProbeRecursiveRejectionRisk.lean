@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeCanonicalPendingHit
+import SphincsSecurity.Proof.OtsProbeResolvedPrivateSampling
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -162,37 +164,6 @@ theorem evalDist_resolveDeferredReveal_then_finalize_materialized
       rw [← evalDist_map, Functor.map_map]
       simp only [projectDeferredState, Option.isNone_map, coordinates]
 
-noncomputable def resolvedPendingFailureRisk
-    (table : OtsSecretIndex → HashOutput) (context : DeferredContext) : ℝ≥0∞ :=
-  Pr[fun result => result = none |
-    finalizeResolvedCoordinates context.state.coordinates.toList context table]
-
-theorem resolvedPendingFailureRisk_eq_resolveDeferredReveal
-    (table : OtsSecretIndex → HashOutput) (position : Position) (context : DeferredContext)
-    (hvalid : context.Valid) (hstarts : StartTableAgrees context.state table)
-    (hcard : context.state.pending.card < Fintype.card Digest) :
-    resolvedPendingFailureRisk table context =
-      ∑' option, Pr[= option | resolveDeferredReveal table position context] *
-        match option with
-        | none => 1
-        | some result => resolvedPendingFailureRisk table (materializeResolvedPosition context position result) := by
-  have hdist := evalDist_resolveDeferredReveal_then_finalize_materialized table position context hvalid hstarts hcard
-  have hprob := congrArg (fun distribution : SPMF Bool => distribution true) hdist
-  change Pr[= true | _] = Pr[= true | _] at hprob
-  rw [← probEvent_eq_eq_probOutput, ← probEvent_eq_eq_probOutput,
-    probEvent_bind_eq_tsum, probEvent_map] at hprob
-  simp only [Function.comp_def] at hprob
-  have hevent : (fun result : Option DeferredContext => result.isNone = true) = (fun result => result = none) := by
-    funext result; simp
-  rw [hevent] at hprob
-  change _ = resolvedPendingFailureRisk table context at hprob
-  rw [← hprob]
-  apply tsum_congr
-  intro option
-  cases option with
-  | none => simp
-  | some result => simp only [resolvedPendingFailureRisk, probEvent_map, Function.comp_def, hevent]
-
 theorem evalDist_finishResolvedRunIsNone_eq_finalize
     (result : ResolvedRunResult α) (hvalid : result.context.Valid)
     (hstarts : StartTableAgrees result.context.state result.table)
@@ -207,59 +178,5 @@ theorem evalDist_finishResolvedRunIsNone_eq_finalize
     rw [evalDist_finalizeResolvedCoordinates_eq_none_of_not_completable
         result.table _ result.context hvalid hstarts (pendingCovered_coordinates_toList _) hcard hcomplete]
     simp
-
-theorem evalDist_runResolvedFinishIsNone_revealPosition
-    (table : OtsSecretIndex → HashOutput) (position : Position) (context : DeferredContext)
-    (fuel : Nat) (cache : SplitHashCache)
-    (hvalid : context.Valid) (hstarts : StartTableAgrees context.state table)
-    (hcard : context.state.pending.card < Fintype.card Digest) :
-    evalDist (runResolvedFinishIsNone context fuel table ((revealCoordinate (.position position)).run cache)) =
-      evalDist (Option.isNone <$> finalizeResolvedCoordinates context.state.coordinates.toList context table) := by
-  apply Eq.trans ?_ (evalDist_resolveDeferredReveal_then_finalize_materialized table position context hvalid hstarts hcard)
-  rw [runResolvedFinishIsNone, runResolvedFromTable_revealCoordinate, bind_assoc]
-  apply evalDist_bind_congr
-  intro option hoption
-  cases option with
-  | none => simp [finishResolvedRunIsNone, finishResolvedRun]
-  | some result =>
-      simp only [pure_bind]
-      have hresolvedValid := hvalid.of_resolveDeferredReveal table position result hoption
-      have hvalues := resolveDeferredReveal_preserves_state_values table position context result hoption
-      have hresolved := resolveDeferredReveal_resolves table position context result hoption
-      apply evalDist_finishResolvedRunIsNone_eq_finalize
-      · exact hvalid.materializeResolvedPosition_of position result hresolvedValid hvalues hresolved
-      · exact hstarts.materialize_position position result.output
-      · exact (Finset.card_le_card (Finset.filter_subset _ _)).trans_lt hcard
-
-theorem probEvent_resolvedQueryRejected_le_finished (computation : ProbComp (Option (ResolvedRunResult α))) :
-    Pr[ResolvedQueryRejected | computation] ≤
-      Pr[fun verdict => verdict = true | computation >>= finishResolvedRunIsNone] := by
-  classical
-  rw [probEvent_eq_tsum_ite, probEvent_bind_eq_tsum]
-  apply ENNReal.tsum_le_tsum
-  intro option
-  by_cases hreject : ResolvedQueryRejected option
-  · rw [if_pos hreject]
-    cases option with
-    | none => simp [finishResolvedRunIsNone, finishResolvedRun]
-    | some result =>
-        simp only [ResolvedQueryRejected] at hreject
-        simp [finishResolvedRunIsNone, finishResolvedRun_of_not_deferredCompletable result hreject]
-  · rw [if_neg hreject]
-    exact bot_le
-
-theorem probEvent_revealPosition_rejected_le_pendingFailureRisk
-    (table : OtsSecretIndex → HashOutput) (position : Position) (context : DeferredContext)
-    (fuel : Nat) (cache : SplitHashCache)
-    (hvalid : context.Valid) (hstarts : StartTableAgrees context.state table)
-    (hcard : context.state.pending.card < Fintype.card Digest) :
-    Pr[ResolvedQueryRejected | runResolvedFromTable context fuel table
-      ((revealCoordinate (.position position)).run cache)] ≤ resolvedPendingFailureRisk table context := by
-  apply (probEvent_resolvedQueryRejected_le_finished _).trans_eq
-  have heq := congrArg (fun distribution : SPMF Bool => distribution true)
-    (evalDist_runResolvedFinishIsNone_revealPosition table position context fuel cache hvalid hstarts hcard)
-  change Pr[= true | _] = Pr[= true | _] at heq
-  rw [← probEvent_eq_eq_probOutput, ← probEvent_eq_eq_probOutput, probEvent_map] at heq
-  simpa only [runResolvedFinishIsNone, Function.comp_def, Option.isNone_iff_eq_none, resolvedPendingFailureRisk] using heq
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

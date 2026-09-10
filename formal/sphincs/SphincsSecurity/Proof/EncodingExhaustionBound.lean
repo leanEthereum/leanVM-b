@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.EncodingCountCertificate
 import SphincsSecurity.Proof.EncodingExhaustionProbability
 
@@ -84,11 +85,5 @@ theorem probEvent_anyEncodingInputsExhausted_le_inv216
     Pr[fun result => AnyEncodingInputsExhausted result.2 | (simulateQ romImpl computation).run ∅] ≤
       ((2 ^ 216 : Nat) : ℝ≥0∞)⁻¹ :=
   (probEvent_anyEncodingInputsExhausted_le computation).trans encoding_exhaustion_global_bound_le_inv216
-
-theorem probEvent_cachedOtsEncodingFailure_le_inv216
-    (computation : OracleComp OracleWorld α) :
-    Pr[fun result => CachedOtsEncodingFailure result.2 | (simulateQ romImpl computation).run ∅] ≤
-      ((2 ^ 216 : Nat) : ℝ≥0∞)⁻¹ :=
-  (probEvent_cachedOtsEncodingFailure_le computation).trans encoding_exhaustion_global_bound_le_inv216
 
 end SphincsSecurity.Concrete

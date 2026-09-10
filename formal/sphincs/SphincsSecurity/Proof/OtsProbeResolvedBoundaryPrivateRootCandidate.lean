@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.EncodingTarget
-import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivatePlanExecution
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.EncodingCharge
+import SphincsSecurity.Proof.OtsProbeSimulation
 
 /-!
 # Root-aware planned candidates
@@ -12,11 +13,6 @@ guess as a proof-only candidate without changing execution of the concrete hash 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
 open OracleComp OracleSpec
-
-def Probe.HasStructuralParent (candidate : Probe) : Prop :=
-  match candidate.coordinate with
-  | .chainStart _ _ _ _ => True
-  | .position position => ∃ parent, Position.parentOf position = some parent
 
 def layerRootPosition (lay : Layer) (tree : TreeIndex) : Position :=
   .node lay tree
@@ -34,17 +30,6 @@ def IsLayerRoot (position : Position) : Prop :=
 def Probe.IsLayerRoot (candidate : Probe) : Prop :=
   ∃ position, candidate.coordinate = .position position ∧
     SphincsSecurity.Concrete.OtsProbeSimulation.IsLayerRoot position
-
-theorem isShortLayerRoot_of_isLayerRoot_of_parent
-    {position parent : Position} (hroot : IsLayerRoot position)
-    (hparent : Position.parentOf position = some parent) :
-    ∃ lay tree, lay ≠ topLayer ∧ position = layerRootPosition lay tree := by
-  obtain ⟨lay, tree, rfl⟩ := hroot
-  fin_cases lay
-  · simp [layerRootPosition, Position.parentOf, layerHeight,
-      maxLayerHeight] at hparent
-  · exact ⟨middleLayer, tree, by decide, rfl⟩
-  · exact ⟨bottomLayer, tree, by decide, rfl⟩
 
 def EncodingLayerRootCandidateAt (parameter : PublicParameter) (input : HashInput)
     (candidate : Probe) : Prop :=
@@ -115,42 +100,5 @@ theorem encodingLayerRootCandidateAt_isLayerRoot
       treeIndexAt index bottomLayer, ?_⟩
     simp [layerRootPosition]
   · exact False.elim (hnotBottom rfl)
-
-theorem decodeEncodingLayerRootCandidate?_some_isLayerRoot
-    {parameter : PublicParameter} {input : HashInput} {candidate : Probe}
-    (hdecode : decodeEncodingLayerRootCandidate? parameter input = some candidate) :
-    candidate.IsLayerRoot :=
-  encodingLayerRootCandidateAt_isLayerRoot
-    ((decodeEncodingLayerRootCandidate?_eq_some_iff parameter input candidate).mp hdecode)
-
-theorem encodingLayerRootCandidateAt_hasStructuralParent
-    {parameter : PublicParameter} {input : HashInput} {candidate : Probe}
-    (hcandidate : EncodingLayerRootCandidateAt parameter input candidate) :
-    candidate.HasStructuralParent := by
-  obtain ⟨position, index, _hat, _htree, _hleaf, hnotBottom, rfl⟩ := hcandidate
-  rcases position with ⟨lay, tree, leafIdx⟩
-  fin_cases lay
-  · change ∃ parent, Position.parentOf (layerMessagePosition index topLayer) = some parent
-    rw [layerMessagePosition_top]
-    simp [Position.parentOf, layerHeight, middleLayer, maxLayerHeight]
-  · change ∃ parent, Position.parentOf (layerMessagePosition index middleLayer) = some parent
-    rw [layerMessagePosition_middle]
-    simp [Position.parentOf, layerHeight, bottomLayer, maxLayerHeight, numLayers]
-  · exact False.elim (hnotBottom rfl)
-
-noncomputable def rootAwarePlannedCandidate?
-    (parameter : PublicParameter) (input : HashInput)
-    (state : LazyRevealProbe.State Coordinate) : Option Probe :=
-  let planned := (purePlanProbingHashQuery parameter input state).candidate?
-  match planned with
-  | some candidate => some candidate
-  | none => decodeEncodingLayerRootCandidate? parameter input
-
-theorem rootAwarePlannedCandidate?_eq_of_plan_some
-    {parameter : PublicParameter} {input : HashInput}
-    {state : LazyRevealProbe.State Coordinate} {candidate : Probe}
-    (hplan : (purePlanProbingHashQuery parameter input state).candidate? = some candidate) :
-    rootAwarePlannedCandidate? parameter input state = some candidate := by
-  simp [rootAwarePlannedCandidate?, hplan]
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

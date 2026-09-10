@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.FewTimeLoop
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTimeUniform
+import SphincsSecurity.Proof.NoMessage
 
 /-!
 # Signer digest views

@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.FewTimeRawTargetExtraction
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTimeHonestLeakTerminal
+import SphincsSecurity.Proof.FewTimeRawTargetCompletion
 
 namespace SphincsSecurity.Concrete
 

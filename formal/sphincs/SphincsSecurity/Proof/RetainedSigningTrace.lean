@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FtsProbeSampling
 
 namespace SphincsSecurity.Concrete.FtsProbeSimulation
@@ -25,13 +26,6 @@ theorem signingTraceComputation_bind
       apply bind_congr
       intro right
       simp only [List.append_assoc, Function.comp_apply]
-
-theorem signingTraceComputation_map
-    (computation : OracleComp (OracleWorld + SigningSpec) α) (project : α → β) :
-    signingTraceComputation (project <$> computation) =
-      (fun result => (project result.1, result.2)) <$> signingTraceComputation computation := by
-  rw [map_eq_bind_pure_comp, signingTraceComputation_bind]
-  simp [signingTraceComputation, List.append_nil, bind_pure_comp]
 
 theorem signingTraceComputation_liftOracleWorldLeft
     (computation : OracleComp OracleWorld α) :

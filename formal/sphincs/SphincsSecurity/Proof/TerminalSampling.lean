@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.TerminalBudget
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.TerminalView
 
 /-!
 # Lifting residual terminal events across secret sampling
@@ -121,13 +122,6 @@ def cleanFreshEvent (parameter : PublicParameter)
   (¬Bad parameter otsSecret ftsSecret result.2.cache ∧ result.1.2.2 = true) ∧
     ViewedWinningFreshLayerOpeningWitness parameter otsSecret ftsSecret result
 
-def cleanEncodingEvent (parameter : PublicParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (result : (Digest × Forgery × Bool) × ViewedFullTraceState) : Prop :=
-  ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
-    ViewedEncodingCollisionWitness parameter otsSecret ftsSecret result
-
 def cleanBackwardEvent (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
@@ -148,84 +142,5 @@ def cleanUncoveredEvent (parameter : PublicParameter)
     (result : (Digest × Forgery × Bool) × ViewedFullTraceState) : Prop :=
   ¬Bad parameter otsSecret ftsSecret result.2.cache ∧
     ViewedUncoveredFtsSecretWitness parameter otsSecret ftsSecret result
-
-noncomputable def remainingRisk (adversary : Adversary) (secrets : SampledSecrets) : ℝ≥0∞ :=
-  let run := gameAfterSecretsWithViewTrace adversary secrets.parameter secrets.otsSecret
-    secrets.ftsSecret
-  Pr[cleanFreshEvent secrets.parameter secrets.otsSecret secrets.ftsSecret | run] +
-    (Pr[cleanEncodingEvent secrets.parameter secrets.otsSecret secrets.ftsSecret | run] +
-    (Pr[cleanBackwardEvent secrets.parameter secrets.otsSecret secrets.ftsSecret | run] +
-    (Pr[cleanMessageEvent secrets.parameter secrets.otsSecret secrets.ftsSecret | run] +
-      Pr[cleanUncoveredEvent secrets.parameter secrets.otsSecret secrets.ftsSecret | run])))
-
-theorem weighted_remainingRisk_eq (adversary : Adversary) :
-    (∑' secrets : SampledSecrets,
-      Pr[= secrets | sampleSecrets] * remainingRisk adversary secrets) =
-      Pr[SampledViewedEvent cleanFreshEvent | sampledViewedGame adversary] +
-      (Pr[SampledViewedEvent cleanEncodingEvent | sampledViewedGame adversary] +
-      (Pr[SampledViewedEvent cleanBackwardEvent | sampledViewedGame adversary] +
-      (Pr[SampledViewedEvent cleanMessageEvent | sampledViewedGame adversary] +
-        Pr[SampledViewedEvent cleanUncoveredEvent | sampledViewedGame adversary]))) := by
-  simp only [remainingRisk, mul_add, ENNReal.tsum_add]
-  rw [← probEvent_sampledViewedGame_eq_weighted adversary cleanFreshEvent,
-    ← probEvent_sampledViewedGame_eq_weighted adversary cleanEncodingEvent,
-    ← probEvent_sampledViewedGame_eq_weighted adversary cleanBackwardEvent,
-    ← probEvent_sampledViewedGame_eq_weighted adversary cleanMessageEvent,
-    ← probEvent_sampledViewedGame_eq_weighted adversary cleanUncoveredEvent]
-
-theorem forgeAdvantage_le_reserved_add_sampled_remaining
-    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
-    (hqMax : q ≤ 2 ^ 120) :
-    forgeAdvantage scheme adversary ≤
-      ((24 * q : Nat) : ℝ≥0∞) * ((2 ^ 125 : Nat) : ℝ≥0∞)⁻¹ +
-      (Pr[SampledViewedEvent cleanFreshEvent | sampledViewedGame adversary] +
-      (Pr[SampledViewedEvent cleanEncodingEvent | sampledViewedGame adversary] +
-      (Pr[SampledViewedEvent cleanBackwardEvent | sampledViewedGame adversary] +
-      (Pr[SampledViewedEvent cleanMessageEvent | sampledViewedGame adversary] +
-        Pr[SampledViewedEvent cleanUncoveredEvent | sampledViewedGame adversary])))) := by
-  rw [forgeAdvantage_eq_sampledGame, sampledGame]
-  calc
-    _ ≤ ((24 * q : Nat) : ℝ≥0∞) * ((2 ^ 125 : Nat) : ℝ≥0∞)⁻¹ +
-        ∑' secrets : SampledSecrets,
-          Pr[= secrets | sampleSecrets] * remainingRisk adversary secrets := by
-      rw [← probEvent_eq_eq_probOutput]
-      apply probEvent_bind_le_const_add_weighted
-        (oa := sampleSecrets)
-        (run := fun secrets => (simulateQ romImpl
-          (gameAfterSecrets adversary secrets.parameter secrets.otsSecret
-            secrets.ftsSecret)).run' ∅)
-        (event := fun verdict => verdict = true)
-        (cost := ((24 * q : Nat) : ℝ≥0∞) * ((2 ^ 125 : Nat) : ℝ≥0∞)⁻¹)
-        (remainingRisk adversary)
-      intro secrets hsecrets
-      obtain ⟨hparameter, hots, hfts⟩ := secrets.support_components hsecrets
-      have hrisk : remainingRisk adversary secrets =
-          let run := gameAfterSecretsWithViewTrace adversary secrets.parameter secrets.otsSecret
-            secrets.ftsSecret
-          Pr[fun result =>
-              (¬Bad secrets.parameter secrets.otsSecret secrets.ftsSecret result.2.cache ∧
-                result.1.2.2 = true) ∧
-              ViewedWinningFreshLayerOpeningWitness secrets.parameter secrets.otsSecret
-                secrets.ftsSecret result | run] +
-          (Pr[fun result => ¬Bad secrets.parameter secrets.otsSecret secrets.ftsSecret
-              result.2.cache ∧ ViewedEncodingCollisionWitness secrets.parameter
-                secrets.otsSecret secrets.ftsSecret result | run] +
-          (Pr[fun result =>
-              (¬Bad secrets.parameter secrets.otsSecret secrets.ftsSecret result.2.cache ∧
-                result.1.2.2 = true) ∧
-              ViewedWinningBackwardChainOpeningWitness secrets.parameter secrets.otsSecret
-                secrets.ftsSecret result | run] +
-          (Pr[fun result => ¬Bad secrets.parameter secrets.otsSecret secrets.ftsSecret
-              result.2.cache ∧ ViewedMessageDigestCollisionWitness secrets.parameter
-                secrets.otsSecret secrets.ftsSecret result | run] +
-          Pr[fun result => ¬Bad secrets.parameter secrets.otsSecret secrets.ftsSecret
-              result.2.cache ∧ ViewedUncoveredFtsSecretWitness secrets.parameter
-                secrets.otsSecret secrets.ftsSecret result | run]))) := by
-        rfl
-      rw [hrisk]
-      rw [probEvent_eq_eq_probOutput]
-      exact probEvent_win_le_reserved_add_remaining adversary q hq hqMax
-        secrets.parameter hparameter secrets.otsSecret hots secrets.ftsSecret hfts
-    _ = _ := by rw [weighted_remainingRisk_eq]
 
 end SphincsSecurity.Concrete

@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FrontierSignerErasure
 
 namespace SphincsSecurity.Concrete
@@ -96,17 +97,5 @@ theorem boundaryEval_signAfterDigest_canonical (key : SecretKey) (f : QueryImpl 
       (projected.1, (FreeMonoid.of none) ^ projected.2) :=
   boundaryEval_signAfterDigest_frontier key f _ _ (isSigningFrontier_canonical key f _) randomness index leaves
     (frontierReferenceWord_canonical key f dummy index)
-
-theorem boundaryRun_signAfterDigest_canonical (key : SecretKey) (f : QueryImpl HashSpec Id)
-    (dummy : OtsReferenceWords) (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf)
-    (cache : QueryCache HashSpec) (result : (Option Signature × SigningBoundaryTrace) × QueryCache HashSpec)
-    (hr : result ∈ support (boundaryRun key.parameter (liftM (signAfterDigest key randomness index leaves)) cache))
-    (hf : result.2.AgreesWithFn f) :
-    let words := canonicalReferenceWords key f dummy
-    let frontier := canonicalFrontierValues key f words
-    let projected := frontierSignAfterDigest key.parameter f key.ftsSecret words frontier randomness index leaves
-    result.1 = (projected.1, (FreeMonoid.of none) ^ projected.2) := by
-  rw [← boundaryEval_of_boundaryRun key.parameter _ cache result hr f hf]
-  exact boundaryEval_signAfterDigest_canonical key f dummy randomness index leaves
 
 end SphincsSecurity.Concrete

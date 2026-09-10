@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.TargetShapeOperators
 
 namespace SphincsSecurity.Concrete
@@ -81,25 +82,5 @@ theorem targetShapeSigning_iterate_mono (uniform reuse : ENNReal) (signings : Na
   | succ signings ih =>
       simp only [Function.iterate_succ_apply']
       exact targetShapeSigning_mono uniform reuse ih
-
-theorem targetShapeQuery_signing_iterate_le (uniform reuse arrival : ENNReal) (signings : Nat) (f : TargetShapeVector) :
-    TargetShapeLE (targetShapeQuery arrival ((targetShapeSigning uniform reuse)^[signings] f))
-      ((targetShapeSigning uniform reuse)^[signings] (targetShapeQuery arrival f)) := by
-  induction signings with
-  | zero => exact TargetShapeLE.refl _
-  | succ signings ih =>
-      simp only [Function.iterate_succ_apply']
-      exact (targetShapeQuery_signing_le uniform reuse arrival _).trans (targetShapeSigning_mono uniform reuse ih)
-
-theorem targetShapeQuery_envelope_le (uniform reuse arrival : ENNReal) (queries signings : Nat) (f : TargetShapeVector) :
-    TargetShapeLE (targetShapeQuery arrival (targetShapeEnvelope uniform reuse arrival queries signings f))
-      (targetShapeEnvelope uniform reuse arrival (queries + 1) signings f) := by
-  simpa only [targetShapeEnvelope, Function.iterate_succ_apply'] using
-    targetShapeQuery_signing_iterate_le uniform reuse arrival signings ((targetShapeQuery arrival)^[queries] f)
-
-theorem targetShapeSigning_envelope (uniform reuse arrival : ENNReal) (queries signings : Nat) (f : TargetShapeVector) :
-    targetShapeSigning uniform reuse (targetShapeEnvelope uniform reuse arrival queries signings f) =
-      targetShapeEnvelope uniform reuse arrival queries (signings + 1) f := by
-  simp only [targetShapeEnvelope, Function.iterate_succ_apply']
 
 end SphincsSecurity.Concrete

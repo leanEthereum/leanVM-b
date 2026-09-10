@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.OtsProbeNativeResolvedRootCutRisk
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateRootCandidate
+import SphincsSecurity.Proof.OtsProbeResolvedSampling
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

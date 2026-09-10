@@ -1,10 +1,6 @@
-# Initial hidden-coordinate sampling and the next composition gate
+# Initial hidden-coordinate sampling
 
-This is a paper derivation against `3bf4e874`. It changes no Lean code. The public security theorem remains 126 bits. The result derived here is the initial product prior required by `publicSigningRun_posterior` in [PublicSigningNative.lean](../SphincsSecurity/Proof/PublicSigningNative.lean); the adaptive original-game correspondence and the 127-bit probability bounds remain formalization obligations.
-
-The initial sampling identities are now formalized in [CanonicalCoordinateSampling.lean](../SphincsSecurity/Proof/CanonicalCoordinateSampling.lean), [UniformPublicCoordinates.lean](../SphincsSecurity/Proof/UniformPublicCoordinates.lean) and [CanonicalPublicPrior.lean](../SphincsSecurity/Proof/CanonicalPublicPrior.lean). [ReferenceCoordinateGame.lean](../SphincsSecurity/Proof/ReferenceCoordinateGame.lean) transports them to the original SUF game with its hash bound, and [PublicSigningInitial.lean](../SphincsSecurity/Proof/PublicSigningInitial.lean) connects the concrete prior to the lazy signing record. The remaining composition checks below are still required.
-
-[AdaptiveResidualLabels.lean](../SphincsSecurity/Proof/AdaptiveResidualLabels.lean) and [AdaptiveResidualErasure.lean](../SphincsSecurity/Proof/AdaptiveResidualErasure.lean) now formalize joint completion through an adaptive residual-read, probe and disclosure interface, including retained auxiliary stops. [ReferenceJointPrior.lean](../SphincsSecurity/Proof/ReferenceJointPrior.lean) supplies the original game's matching initial joint sampler. The transition classification, private signing translation, original cost accounting and coverage correspondence below still have to connect the concrete SPHINCS execution to that interface.
+This note derives the initial product prior and specifies the observation rules for its adaptive use. The initial identities are formalized in [CanonicalPublicPrior.lean](../SphincsSecurity/Proof/CanonicalPublicPrior.lean) and transported to the original game by [ReferenceCoordinateGame.lean](../SphincsSecurity/Proof/ReferenceCoordinateGame.lean). See [current status](critical-path-review.md) for the completed composition results and remaining original-game classification.
 
 ## An exact finite reindexing
 
@@ -83,20 +79,4 @@ For each supported live history, the desired induction invariant retains both th
 5. A signing request runs the original finite message loop and forms its public plan. A successful plan discloses the selected FTS coordinates by the conditional disclosure kernel. A failed plan discloses none and retains its selected view if selection preceded failure. Both outcomes retain the original cost trace and the complete original signing log.
 6. Budget guards and coverage updates use this same retained execution. An invocation that stops partway through must retain the work and records reached so far. The existing completed-signing equality does not by itself prove this partial-execution property.
 
-The external cases in items 1 through 4 are now connected to the joint prior in [ResidualBytePrior.lean](../SphincsSecurity/Proof/ResidualBytePrior.lean), using the original programmed fixed table and an empty initial external cache. [ResidualByteRun.lean](../SphincsSecurity/Proof/ResidualByteRun.lean) proves the fixed-table correspondence through arbitrary randomized adaptive external computations with fixed reference and disclosure data and a finite envelope containing all their possible queries. Cache invariants ensure a residual structural probe cannot silently skip its test because of an earlier unrecorded external read. Public canonical and conditioned encoding replies use their separate lookups. The projected stopped law, surviving posterior and source hash bound all transfer to the lazy interface.
-
-Items 5 and 6 remain to be composed with this external interface. The structural stopping rule also does not yet include nonreference equal-code encodings. Their probability estimate must hide unqueried encoding rows in its own history or extend the joint completion state to those rows. Conditioning on the full encoding auxiliary, as the structural posterior permits, would make a fixed encoding reply deterministic. None of these component correspondences establishes either original-game security interval.
-
-## The next security endpoint
-
-The new [prefix joint prior](../SphincsSecurity/Proof/ReferencePrefixGame.lean) resolves the encoding-tail sampling issue without exposing future oracle replies. Its auxiliary retains the conditioned prefix through the first valid counter, or the whole block on exhaustion. A proved row-swap bijection moves all unconditioned tails into the independent residual seed and preserves the complete oracle-table law. The prefix sampler inherits the original SUF probability and hash budget, and the [prefix signer correspondence](../SphincsSecurity/Proof/ReferencePrefixSigning.lean) preserves the original record. The byte interpreter still needs to use the new prefix lookup; its existing whole-block lookup and erasure theorem describe the earlier sampler. After that connection, unrestricted encoding tails share the residual history used for fresh structural and message rows.
-
-Keep the next target as the original-game large-budget interval from the [closing contract](minimal-closing-contract.md). Establish the full interpreter correspondence above, the accepting-verifier classification, and coverage under its causal first-match stopping rule. Then derive, with \(x=q/2^{128}\),
-
-\[
-\Pr[\mathrm{SUF}]
-\le 2x-x^2+\frac{11}{2^{16}}x+\epsilon(q),
-\qquad 3/2^{14}\le x<1/2.
-\]
-
-This would be an original-game security result on a nontrivial interval. The small-budget endpoint would still require the concrete causal OTS comparison, shared witness charges and coverage in each forced-FTS law. Those remain sources of mathematical uncertainty when estimating completion, even after the large-budget correspondence is finished.
+The current prefix sampler in [ReferencePrefixGame.lean](../SphincsSecurity/Proof/ReferencePrefixGame.lean) protects encoding rows through first success, or the entire block on exhaustion, and moves unrestricted tails into the shared residual seed. This preserves the full oracle law without revealing future replies. The observation distinction above continues to apply after composing the retained interpreter.

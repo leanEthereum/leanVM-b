@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.OtsProbeLiveJointCharge
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeLiveNativeReserve
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -28,20 +29,6 @@ theorem remainingOtsQueryReserve_eq_refined_of_not_ots
     (hnot : ¬∃ position : Position, IsOtsPosition position ∧ AtPosition secretKey.parameter input position) :
     remainingOtsQueryReserve secretKey cache input = otsOpeningRefinedQueryReserve secretKey cache input := by
   simp [remainingOtsQueryReserve, directOtsQueryCharge, otsHashInputCharge, hnot]
-
-theorem expected_direct_add_remaining_otsQueryReserve
-    (secretKey : SecretKey) (computation : OracleComp OracleWorld α) (cache : QueryCache HashSpec) :
-    expectedQueryCharge (directOtsQueryCharge secretKey.parameter) computation cache +
-      expectedQueryCharge (remainingOtsQueryReserve secretKey) computation cache =
-      expectedQueryCharge (otsOpeningRefinedQueryReserve secretKey) computation cache := by
-  rw [← expectedQueryCharge_add]
-  simp only [direct_add_remaining_otsQueryReserve]
-
-theorem sampled_direct_add_remaining_otsQueryReserve (adversary : Adversary) :
-    sampledQueryCharge (fun secretKey => directOtsQueryCharge secretKey.parameter) adversary +
-      sampledQueryCharge remainingOtsQueryReserve adversary = sampledQueryCharge otsOpeningRefinedQueryReserve adversary := by
-  rw [← sampledQueryCharge_add]
-  simp only [direct_add_remaining_otsQueryReserve]
 
 theorem otsOuterQueryCharge_hash (parameter : PublicParameter) (input : HashInput) :
     otsOuterQueryCharge parameter (.inl (.inr input)) = otsHashInputCharge parameter input := rfl
@@ -106,49 +93,5 @@ theorem expectedLiveChronologicalOtsCount_mul_le_directCharge
   rw [← expectedLiveNativeOuterCharge_mul]
   exact expectedLiveChronologicalOtsCharge_le_directCharge parameter root table ftsSecret computation context fuel cache actualCache
     hinvariant hvisible hpublished
-
-theorem liveChainStartCharge_add_structuralHits_le_directCharge
-    (targets : Finset Position) (parameter : PublicParameter) (root : Digest) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (q : Nat) (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput)
-    (cache : SplitHashCache) (actualCache : QueryCache HashSpec)
-    (hinvariant : ResolvedContextInvariant parameter table context (ordinaryQueryCache cache) actualCache)
-    (hvisible : VisibleResolvedComputationsCached parameter table context actualCache)
-    (hpublished : PublishedValues context.state)
-    (hensured : ∀ target ∈ targets, .position target ∈ context.state.ensured)
-    (hstate : ∀ target ∈ targets, context.state.values (.position target) = none)
-    (hvalue : ∀ target ∈ targets, context.values target = none)
-    (hhidden : ∀ target ∈ targets, .position target ∉ context.state.revealed)
-    (hcard : ∀ target ∈ targets, (context.state.pendingAt (.position target)).card + q ≤ 2 ^ 126) :
-    expectedLiveResolvedQueryCharge chainStartProbeQueryCharge
-        ((simulateQ (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret) computation).run cache) context fuel table *
-        ((4 / 3 : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) +
-      (∑ target ∈ targets, ∑ ordinal ∈ Finset.range q,
-        Pr[PrivateCandidatePairHit | privateResolvedSelectedCandidate target (privateRawCutCandidate target) <$>
-          runPrivateResolvedView target table context fuel (privatePositionProbeCutAt target
-            ((simulateQ (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret) computation).run cache) ordinal)]) ≤
-      expectedQueryCharge (directOtsQueryCharge parameter)
-        (simulateQ (expandedAdversaryImpl
-          (⟨parameter, root, fun lay tree leafIdx chainIdx => truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩), ftsSecret⟩ : SecretKey)) computation)
-        actualCache * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
-  let native := ((simulateQ (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret) computation).run cache)
-  let count := expectedLiveNativeOuterCharge (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret)
-    (otsOuterQueryCharge parameter) computation context fuel table cache
-  calc
-    _ ≤ expectedLiveResolvedQueryCharge chainStartProbeQueryCharge native context fuel table *
-        ((4 / 3 : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) +
-        expectedLiveResolvedQueryCharge structuralProbeQueryCharge native context fuel table *
-        ((4 / 3 : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) :=
-      add_le_add le_rfl (sum_targets_privateResolvedRawCandidate_hit_le_expectedLiveStructuralCharge targets native q context fuel table
-        hinvariant.2.1 hinvariant.2.2.2.1 hensured hstate hvalue hhidden hcard)
-    _ = (expectedLiveResolvedQueryCharge chainStartProbeQueryCharge native context fuel table +
-        expectedLiveResolvedQueryCharge structuralProbeQueryCharge native context fuel table) *
-        ((4 / 3 : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) := (add_mul _ _ _).symm
-    _ ≤ count * ((4 / 3 : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) :=
-      mul_le_mul' (chronological_liveChainStart_add_structural_le_liveOuterCharge parameter root ftsSecret computation context fuel table cache
-        hinvariant.2.1.valuesConsistent hinvariant.2.2.1) le_rfl
-    _ = (count * (4 / 3 : ENNReal)) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := (mul_assoc _ _ _).symm
-    _ ≤ _ := mul_le_mul' (expectedLiveChronologicalOtsCount_mul_le_directCharge parameter root table ftsSecret computation
-      context fuel cache actualCache hinvariant hvisible hpublished) le_rfl
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

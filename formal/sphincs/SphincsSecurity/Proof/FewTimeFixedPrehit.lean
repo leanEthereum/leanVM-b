@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.FewTimeNumberedSources
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTimeRace
 
 /-!
 # Reusing one fixed cached message entry

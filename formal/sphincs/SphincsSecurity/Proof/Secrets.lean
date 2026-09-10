@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.Game
+import SphincsSecurity.Proof.QueryBound
 
 /-!
 # Splitting the game at the secrets
@@ -53,24 +55,6 @@ theorem simulateQ_romImpl_liftM_bind_run' {α β : Type} (oa : ProbComp α)
       = simulateQ (unifFwdImpl HashSpec) oa from QueryImpl.simulateQ_add_liftM_left _ _ oa,
     unifFwdImpl.simulateQ_run]
   simp [map_eq_bind_pure_comp, bind_assoc, StateT.run'_eq]
-
-/-- **The reduction's frame.** A bound on the game after the secrets are sampled, uniform in them,
-is a bound on the advantage. -/
-theorem forgeAdvantage_le_secrets (adversary : Adversary) (c : ℝ≥0∞)
-    (h : ∀ parameter ∈ support sampleParameter, ∀ otsSecret ∈ support sampleOtsSecrets,
-      ∀ ftsSecret ∈ support sampleFtsSecrets,
-      Pr[= true | (simulateQ romImpl
-          (gameAfterSecrets adversary parameter otsSecret ftsSecret)).run' ∅] ≤ c) :
-    forgeAdvantage scheme adversary ≤ c := by
-  rw [forgeAdvantage, gameCore_eq_secrets, simulateQ_romImpl_liftM_bind_run',
-    ← probEvent_eq_eq_probOutput]
-  refine probEvent_bind_le_of_forall_le fun parameter hparameter => ?_
-  rw [probEvent_eq_eq_probOutput, simulateQ_romImpl_liftM_bind_run', ← probEvent_eq_eq_probOutput]
-  refine probEvent_bind_le_of_forall_le fun otsSecret hots => ?_
-  rw [probEvent_eq_eq_probOutput, simulateQ_romImpl_liftM_bind_run', ← probEvent_eq_eq_probOutput]
-  refine probEvent_bind_le_of_forall_le fun ftsSecret hfts => ?_
-  rw [probEvent_eq_eq_probOutput]
-  exact h parameter hparameter otsSecret hots ftsSecret hfts
 
 /-- The query bound survives the split: what bounds the whole experiment bounds what follows the
 secrets. -/

@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.TargetSigningMatchFactors
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.NormalizedTargetMatches
 
 namespace SphincsSecurity.Concrete
 

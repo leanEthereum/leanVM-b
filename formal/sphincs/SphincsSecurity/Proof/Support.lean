@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.Logged
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.Extract
 
 /-!
@@ -251,27 +251,6 @@ theorem simulateQ_romImpl_liftM {α : Type} (oa : OracleComp HashSpec α) :
     simulateQ romImpl (liftM oa : OracleComp OracleWorld α)
       = simulateQ (randomOracle : QueryImpl HashSpec _) oa :=
   QueryImpl.simulateQ_add_liftM_right _ _ oa
-
-/-- **The bridge.** If verification accepts in the run, some answer function agreeing with the cache
-accepts too, and every extraction lemma applies to that function. -/
-theorem exists_answerFn_of_verify (publicKey : PublicKey) (message : Message)
-    (signature : Signature) (cache cache' : QueryCache HashSpec)
-    (hmem : (true, cache')
-      ∈ support ((simulateQ (randomOracle : QueryImpl HashSpec _)
-          (Concrete.verify publicKey message signature)).run cache)) :
-    ∃ f : QueryImpl HashSpec Id, cache.AgreesWithFn f
-      ∧ evalWithAnswerFn f (Concrete.verify publicKey message signature) = true :=
-  (exists_agreesWithFn_evalWithAnswerFn_eq_iff_mem_support
-    (Concrete.verify publicKey message signature) cache true).mpr ⟨cache', hmem⟩
-
-theorem exists_answerFn_agrees_final_of_verify (publicKey : PublicKey) (message : Message)
-    (signature : Signature) (cache cache' : QueryCache HashSpec)
-    (hmem : (true, cache')
-      ∈ support ((simulateQ (randomOracle : QueryImpl HashSpec _)
-          (Concrete.verify publicKey message signature)).run cache)) :
-    ∃ f : QueryImpl HashSpec Id, cache'.AgreesWithFn f
-      ∧ evalWithAnswerFn f (Concrete.verify publicKey message signature) = true :=
-  (exists_answerFn_agrees_final_of_mem_support _ cache true cache' hmem).2
 
 /-! ### One layer of the walk, unpeeled
 

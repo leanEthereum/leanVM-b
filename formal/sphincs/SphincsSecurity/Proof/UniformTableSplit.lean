@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.FirstSuccessTable
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Statement
 
 namespace SphincsSecurity.Concrete.UniformTableSplit
 
@@ -106,29 +107,5 @@ theorem uniform_bind_split {Result : Type} (embed : Index → Cell) (hinj : Func
         (PMF.uniformOfFintype (Outside embed → Answer)).bind (fun outside => next (join embed hinj rows outside))) := by
   conv_lhs => rw [uniform_join embed hinj]
   simp only [PMF.bind_bind, PMF.bind_map, Function.comp_def]
-
-theorem uniform_bind_firstSuccess {Value Result : Type} {n : Nat}
-    (embed : Fin n → Cell) (hinj : Function.Injective embed) (decode : Answer → Option Value)
-    (hinvalid : (FirstSuccessTable.invalid decode).Nonempty)
-    (next : Option (Fin n × Value) → (Cell → Answer) → PMF Result) :
-    (PMF.uniformOfFintype (Cell → Answer)).bind
-        (fun table => next (FirstSuccessTable.select decode (table ∘ embed)) table) =
-      (FirstSuccessTable.selected decode n).bind (fun result =>
-        (FirstSuccessTable.afterSelect decode n hinvalid result).bind (fun rows =>
-          (PMF.uniformOfFintype (Outside embed → Answer)).bind
-            (fun outside => next result (join embed hinj rows outside)))) := by
-  letI : DecidableEq Answer := Classical.decEq Answer
-  rw [uniform_bind_split embed hinj]
-  have hrows : ∀ (rows : Fin n → Answer) (outside : Outside embed → Answer),
-      join embed hinj rows outside ∘ embed = rows := by
-    intro rows outside
-    funext index
-    exact join_embed embed hinj rows outside index
-  simp only [hrows]
-  have h := FirstSuccessTable.full_bind_eq_selected decode n hinvalid
-    (fun result rows => (PMF.uniformOfFintype (Outside embed → Answer)).bind
-      (fun outside => next result (join embed hinj rows outside)))
-  rw [FirstSuccessTable.full_eq_uniform] at h
-  exact h
 
 end SphincsSecurity.Concrete.UniformTableSplit

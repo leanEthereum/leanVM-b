@@ -1,3 +1,6 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.CertificateProposalInvariant
+import SphincsSecurity.Proof.RetainedResidualProposalStep
 import SphincsSecurity.Proof.RetainedResidualProposalSupport
 
 namespace SphincsSecurity.Concrete.RetainedResidual
@@ -128,32 +131,5 @@ theorem proposalStep_invariant (input : (OracleWorld + SigningSpec).Domain) (sta
               (monitorView state.2) annotation.1
               (proposalOfSigningRecord message record after.memory.external.cache (record.1.2.elim annotation.2 Prod.fst))).stopped = false at hpost
             simp only [certificateMonitorUpdate, if_neg hactive, Bool.true_eq_false] at hpost
-
-theorem proposalRun_invariant {Result : Type} (computation : OracleComp (OracleWorld + SigningSpec) Result)
-    (state : ProposalState inputs) (hvalid : MonitoredValid inputs state.2)
-    (hinputs : sourceInputs key computation ⊆ inputs) (hinv : ProposalInvariant key total state)
-    (result : Option Result × ProposalState inputs)
-    (hresult : proposalRun key inputs hencoding words publicReplies selections rows budget required (proposalStop stopAfter) computation state result ≠ 0) :
-    ProposalInvariant key total result.2 := by
-  induction computation using OracleComp.inductionOn generalizing state result with
-  | pure value =>
-      rw [proposalRun_pure] at hresult
-      simp only [ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] at hresult
-      subst result
-      exact hinv
-  | query_bind input next ih =>
-      rw [proposalRun_query_bind, RetainedObservation.bind_nonzero] at hresult
-      obtain ⟨middle, hmiddle, hresult⟩ := hresult
-      have hvalid' := proposalStep_valid key inputs hencoding words publicReplies selections rows budget required (proposalStop stopAfter)
-        input state hvalid middle hmiddle
-      have hinv' := proposalStep_invariant key inputs hencoding words publicReplies selections rows budget total required stopAfter
-        input state ((requestInputs_subset key input next).trans hinputs) hvalid hinv middle hmiddle
-      rcases middle with ⟨answer, after⟩
-      cases answer with
-      | none =>
-          simp only [Option.elim_none, ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] at hresult
-          subst result
-          exact hinv'
-      | some answer => exact ih answer after hvalid' ((sourceInputs_next_subset key input next answer).trans hinputs) hinv' result hresult
 
 end SphincsSecurity.Concrete.RetainedResidual

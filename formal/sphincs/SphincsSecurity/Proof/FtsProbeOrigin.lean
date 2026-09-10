@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FtsProbeAdversary
 
 namespace SphincsSecurity.AdaptiveRevealProbe
@@ -186,7 +187,6 @@ theorem peel_signingTrace_tail
   subst sourceValue
   exact ⟨tailLog, hlog.symm, htail⟩
 
-
 theorem revealedOnlyFrom_revealFtsSecret
     (parameter : PublicParameter) (table : Coordinate → Digest)
     (state finalState : AdaptiveRevealProbe.State Coordinate) (fuel : Nat)
@@ -223,19 +223,6 @@ theorem revealedOnlyFrom_revealFtsSecret
       subst finalState
       intro other otherValue hother
       exact Or.inl hother
-
-theorem RevealedOnlyFrom.trans
-    {initial middle final : AdaptiveRevealProbe.State Coordinate}
-    {left right : Coordinate → Prop}
-    (hleft : RevealedOnlyFrom initial middle left)
-    (hright : RevealedOnlyFrom middle final right) :
-    RevealedOnlyFrom initial final (fun coordinate => left coordinate ∨ right coordinate) := by
-  intro coordinate value hrevealed
-  rcases hright coordinate value hrevealed with hmiddle | hright
-  · rcases hleft coordinate value hmiddle with hinitial | hleft
-    · exact Or.inl hinitial
-    · exact Or.inr (Or.inl hleft)
-  · exact Or.inr (Or.inr hright)
 
 theorem hiddenLeaf_eq_of_mem_runDetailed_revealFtsSecret
     (parameter : PublicParameter) (table : Coordinate → Digest)
@@ -1059,40 +1046,6 @@ theorem CoveredByLog.signedFtsLeaf
   exact signedFtsLeaf_of_signing_entry_selected f secretKey computation initialCache value
     signingLog adversaryCache finalCache hmem hle hf message signature index leaves coordinate
     hentry hdigest hselected
-
-set_option maxRecDepth 20000 in
-theorem signedFtsLeaf_of_revealed_signingTraceComputation
-    (secretKey : SecretKey) (table : Coordinate → Digest)
-    (computation : OracleComp (OracleWorld + SigningSpec) alpha)
-    (fuel : Nat) (initialCache finalCache : SplitHashCache)
-    (finalState : AdaptiveRevealProbe.State Coordinate)
-    (value : alpha) (log : QueryLog SigningSpec)
-    (hsynced : RevealedSynced secretKey.parameter table
-      AdaptiveRevealProbe.State.empty initialCache)
-    (f : QueryImpl HashSpec Id)
-    (hf : (mergedCache secretKey.parameter table finalCache).AgreesWithFn f)
-    (hresult : .done false finalState ((value, log), finalCache) ∈ support
-      (AdaptiveRevealProbe.runDetailed table AdaptiveRevealProbe.State.empty fuel
-        ((simulateQ (maskedExpandedAdversaryImpl secretKey.parameter secretKey)
-          (signingTraceComputation computation)).run initialCache)))
-    (coordinate : Coordinate) (revealedValue : Digest)
-    (hrevealed : finalState.revealed coordinate = some revealedValue) :
-    SignedFtsLeaf f (mergedCache secretKey.parameter table finalCache)
-      (secretKeyWithFtsTable secretKey table) log coordinate.1 coordinate.2.1
-      coordinate.2.2 := by
-  have hinitialClean : AdaptiveRevealProbe.tableHits
-      (AdaptiveRevealProbe.State.empty : AdaptiveRevealProbe.State Coordinate) table = false := by
-    simp [AdaptiveRevealProbe.tableHits, AdaptiveRevealProbe.State.empty]
-  have horigin := revealedOnlyFrom_signingTraceComputation secretKey table computation
-    AdaptiveRevealProbe.State.empty finalState fuel initialCache finalCache value log
-    hinitialClean hsynced f hf hresult
-  rcases horigin coordinate revealedValue hrevealed with hinitial | hcovered
-  · simp [AdaptiveRevealProbe.State.empty] at hinitial
-  · have hactual := simulateQ_maskedExpandedAdversaryImpl_done_false secretKey table
-      (signingTraceComputation computation) AdaptiveRevealProbe.State.empty finalState fuel
-      initialCache finalCache (value, log) hinitialClean hsynced hresult
-    rw [simulateQ_unloggedMapped_signingTraceComputation] at hactual
-    exact hcovered.signedFtsLeaf hactual.1 le_rfl hf
 
 set_option maxRecDepth 20000 in
 theorem signedFtsLeaf_of_revealed_signingTraceComputation_at_reference

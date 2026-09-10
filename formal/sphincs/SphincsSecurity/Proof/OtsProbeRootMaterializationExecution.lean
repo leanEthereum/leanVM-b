@@ -1,4 +1,7 @@
-import SphincsSecurity.Proof.OtsProbeMaterializedRootCharge
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeCanonicalPending
+import SphincsSecurity.Proof.OtsProbeNativeRootMaterialization
+import SphincsSecurity.Proof.OtsProbeResolvedComputedExecution
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -45,10 +48,6 @@ theorem RootMaterializationPreserving.of_administrative
   simp only [mem_support_pure_iff, Option.some.injEq] at hresult
   subst result
   exact hmat.of_values_eq hstate hvalues
-
-theorem rootMaterializationPreserving_ensureCoordinate (coordinate : Coordinate) :
-    RootMaterializationPreserving (ensureCoordinate coordinate) :=
-  .of_administrative (resolvedAdministrative_ensureCoordinate coordinate)
 
 theorem rootMaterializationPreserving_publishCoordinate (coordinate : Coordinate) :
     RootMaterializationPreserving (publishCoordinate coordinate) :=

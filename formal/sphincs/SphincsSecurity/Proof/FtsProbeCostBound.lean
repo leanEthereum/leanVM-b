@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FtsProbeActualQueryCost
+import SphincsSecurity.Proof.OtsProbeRootBudget
 
 namespace SphincsSecurity.Concrete.FtsProbeSimulation
 

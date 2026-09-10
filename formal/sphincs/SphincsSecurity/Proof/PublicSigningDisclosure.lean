@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.AdaptiveHiddenLabels
 import SphincsSecurity.Proof.PublicSigningRecord
 
 namespace SphincsSecurity.Concrete
@@ -74,9 +76,5 @@ theorem observedRun_nativeCompleteSigningRecord
   all_goals first
     | exact runWith_pure (observedImpl environment labels) _ _
     | rw [observedRun_disclosureSequence_bind]; exact runWith_pure (observedImpl environment labels) _ _
-
-theorem nativeCompleteSigningRecord_failed (record : PublicSigningRecord) (hfailed : record.1.1 = none) :
-    nativeCompleteSigningRecord (auxSpec := auxSpec) record = pure ((none, record.1.2), record.2) := by
-  rw [nativeCompleteSigningRecord, hfailed]
 
 end SphincsSecurity.Concrete

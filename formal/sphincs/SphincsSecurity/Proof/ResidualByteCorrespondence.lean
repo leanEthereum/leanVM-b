@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.ResidualByteExecution
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CanonicalProbeExecution
+import SphincsSecurity.Proof.ResidualByteExecution
 
 namespace SphincsSecurity.Concrete.ResidualByteFrontend
 
@@ -105,29 +106,5 @@ theorem hashQueryResult_eq_fixed (actual : Labels) (seed : inputs → HashOutput
     publicCachedReply_eq_fixed parameter inputs words disclosed actions actual seed
       oracle input state.memory hmatches hclean hfresh]
   rfl
-
-theorem hashQueryResult_eq_original (parameter : PublicParameter) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (words : OtsReferenceWords)
-    (disclosed : Index → FtsTree → FtsLeaf → Prop) (known : Labels) (publicReplies : CanonicalGraphLabels)
-    (rows : CanonicalEncodingRows)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (replies : CanonicalGraphLabels)
-    (hagrees : PublicAgreement words disclosed known (CanonicalCoordinate.value otsSecret ftsSecret replies))
-    (hreplies : ∀ position, ¬CanonicalCoordinate.Hidden words disclosed (.graph position) → publicReplies position = replies position)
-    (seed : inputs → HashOutput) (input : inputs) (state : State inputs)
-    (hcovered : RowsCovered inputs state)
-    (hmatches : CacheMatches (programmedHash parameter otsSecret ftsSecret replies
-      (finiteHashAnswer ∅ inputs (canonicalReferenceResidual parameter inputs hencoding replies rows seed))) state.memory.cache)
-    (hclean : CacheClean parameter words disclosed (CanonicalCoordinate.value otsSecret ftsSecret replies) state.memory.cache) :
-    let oracle := programmedHash parameter otsSecret ftsSecret replies
-      (finiteHashAnswer ∅ inputs (canonicalReferenceResidual parameter inputs hencoding replies rows seed))
-    let result := hashQueryResult parameter inputs words disclosed known (fresh parameter inputs hencoding words disclosed known publicReplies rows)
-      (CanonicalCoordinate.value otsSecret ftsSecret replies) seed input state
-    (result.1, result.2.memory) = fixedStep parameter words disclosed known
-      (CanonicalCoordinate.value otsSecret ftsSecret replies) oracle input.val state.memory :=
-  hashQueryResult_eq_fixed parameter inputs words disclosed known (fresh parameter inputs hencoding words disclosed known publicReplies rows) _ seed _ input state
-    hcovered (fresh_local parameter inputs hencoding words disclosed known publicReplies rows input) hmatches hclean
-    (fresh_eq_original parameter inputs hencoding words disclosed known otsSecret ftsSecret replies publicReplies
-      hagrees hreplies rows seed input)
 
 end SphincsSecurity.Concrete.ResidualByteFrontend

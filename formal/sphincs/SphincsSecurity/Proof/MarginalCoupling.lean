@@ -1,4 +1,4 @@
-import VCVio.ProgramLogic.Relational.Basic
+import SphincsSecurity.Proof.Prelude
 
 open OracleComp OracleSpec ENNReal
 open OracleComp.ProgramLogic.Relational
@@ -448,17 +448,6 @@ theorem generalMarginalCoupling_support_marginals
     rw [mem_support_iff_evalDist_apply_ne_zero]
     exact (SPMF.mem_support_iff _ _).mp hmapped
 
-theorem relTriple_of_evalDist_map_eq_general
-    (oa : OracleComp spec₁ α) (ob : OracleComp spec₂ β)
-    (f : α → γ) (g : β → γ)
-    (hmap : 𝒟[f <$> oa] = 𝒟[g <$> ob]) :
-    RelTriple oa ob (fun left right => f left = g right) := by
-  rw [relTriple_iff_relWP]
-  refine ⟨⟨generalMarginalCoupling oa ob f g hmap,
-    generalMarginalCoupling_isCoupling oa ob f g hmap⟩, ?_⟩
-  intro pair hpair
-  exact generalMarginalCoupling_support_eq oa ob f g hmap pair hpair
-
 theorem relTriple_of_evalDist_map_eq_with_support_general
     (oa : OracleComp spec₁ α) (ob : OracleComp spec₂ β)
     (f : α → γ) (g : β → γ)
@@ -573,6 +562,5 @@ theorem relTriple_trans_exists
     exact ⟨z.1.2, hleft, heq ▸ hright⟩
 
 end GeneralRelTriple
-
 
 end SphincsSecurity

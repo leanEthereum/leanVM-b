@@ -1,3 +1,7 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeEnsuredInitialization
+import SphincsSecurity.Proof.OtsProbeNativeQueryTrace
+import SphincsSecurity.Proof.OtsProbeRootMaterializationHash
 import SphincsSecurity.Proof.OtsProbeRootMaterializationSigner
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
@@ -18,12 +22,6 @@ theorem rootMaterializationPreserving_chronologicalQuery
       | inr input => exact rootMaterializationPreserving_probingHashQuery parameter input
   | inr message => exact rootMaterializationPreserving_chronologicalSign parameter root ftsSecret message
 
-theorem rootMaterializationPreserving_chronologicalRun
-    (parameter : PublicParameter) (root : Digest) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (computation : OracleComp (OracleWorld + SigningSpec) α) :
-    RootMaterializationPreserving (simulateQ (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret) computation) :=
-  rootMaterializationPreserving_simulateQ _ (rootMaterializationPreserving_chronologicalQuery parameter root ftsSecret) computation
-
 theorem rootMaterializationPreserving_maskedPublishedTreeRoot :
     RootMaterializationPreserving maskedPublishedTreeRoot := by
   rw [maskedPublishedTreeRoot_eq]
@@ -31,40 +29,12 @@ theorem rootMaterializationPreserving_maskedPublishedTreeRoot :
   intro value
   exact (rootMaterializationPreserving_publishCoordinate _).bind (fun _ => .pure value)
 
-theorem rootMaterializationPreserving_chronologicalRetainedGame
-    (adversary : Adversary) (parameter : PublicParameter) (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
-    RootMaterializationPreserving (maskedChronologicalRetainedGameAfterFtsSecrets adversary parameter ftsSecret) := by
-  unfold maskedChronologicalRetainedGameAfterFtsSecrets
-  have hprefix : RootMaterializationPreserving (maskedChronologicalRetainedPrefixAfterFtsSecrets adversary parameter ftsSecret) :=
-    rootMaterializationPreserving_maskedPublishedTreeRoot.bind (fun root =>
-      (rootMaterializationPreserving_chronologicalRun parameter root ftsSecret _).bind (fun _ => .pure _))
-  apply hprefix.bind
-  rintro ⟨root, forgery, log⟩
-  apply (rootMaterializationPreserving_simulateQ (probingRomImpl parameter) ?_ _).bind
-  · intro _
-    exact .pure _
-  · intro input
-    cases input with
-    | inl n => exact rootMaterializationPreserving_splitUniformImpl n
-    | inr input => exact rootMaterializationPreserving_probingHashQuery parameter input
-
 theorem layerRootsMaterialized_ensuredInitialContext (targets : Finset Position) :
     LayerRootsMaterialized (ensuredInitialContext targets) := by
   intro target _ hknown
   exact False.elim (hknown rfl)
 
 attribute [local irreducible] maskedChronologicalRetainedGameAfterFtsSecrets maskedPublishedTreeRoot
-
-theorem layerRootsMaterialized_chronologicalRetainedGame_from_initial
-    (adversary : Adversary) (parameter : PublicParameter) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (targets : Finset Position) (fuel : Nat) (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
-    (result : ResolvedRunResult (RetainedGameResult × SplitHashCache))
-    (hresult : some result ∈ support (runResolvedFromTable (ensuredInitialContext targets) fuel table
-      ((maskedChronologicalRetainedGameAfterFtsSecrets adversary parameter ftsSecret).run cache))) :
-    LayerRootsMaterialized result.context := by
-  have hpreserves := rootMaterializationPreserving_chronologicalRetainedGame adversary parameter ftsSecret
-  exact hpreserves (ensuredInitialContext targets) fuel table cache result
-    (layerRootsMaterialized_ensuredInitialContext targets) (ensuredInitialContext_computed targets) hresult
 
 theorem layerRootsMaterialized_runNativeQueryTrace
     (parameter : PublicParameter) (root : Digest) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)

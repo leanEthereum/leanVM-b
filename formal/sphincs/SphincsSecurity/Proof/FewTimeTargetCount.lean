@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.FewTimeTargetSource
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimePrehit
+import SphincsSecurity.Proof.FewTimeViewTrace
 
 /-!
 # Counting fresh target-view candidates
@@ -30,7 +31,7 @@ def FreshTargetCandidate (secretKey : SecretKey)
       ∧ entry.initialCache input = none
       ∧ entry.finalCache input = some output
 
-noncomputable instance (secretKey : SecretKey) :
+noncomputable instance instDecidablePredAdversaryCacheEntryFreshTargetCandidate (secretKey : SecretKey) :
     DecidablePred (FreshTargetCandidate secretKey) :=
   fun entry => Classical.propDecidable (FreshTargetCandidate secretKey entry)
 
@@ -248,20 +249,6 @@ theorem freshTargetCandidateCount_eq_card
     left_inv := fun position => rfl
     right_inv := fun position => rfl }
   exact (Fintype.card_congr subtypeEquiv).trans (Fintype.card_coe positions)
-
-theorem freshTargetCandidateCount_update
-    (secretKey : SecretKey) (input : (OracleWorld + SigningSpec).Domain)
-    (initialCache : QueryCache HashSpec)
-    (output : (OracleWorld + SigningSpec).Range input)
-    (finalCache : QueryCache HashSpec) (trace : FullAdversaryTrace) :
-    freshTargetCandidateCount secretKey
-        (fullAdversaryTraceUpdate input initialCache output finalCache trace) =
-      freshTargetCandidateCount secretKey trace +
-        if FreshTargetCandidate secretKey
-          ⟨input, output, initialCache, finalCache⟩ then 1 else 0 := by
-  classical
-  simp [freshTargetCandidateCount, fullAdversaryTraceUpdate,
-    List.countP_append, List.countP_cons]
 
 theorem freshTargetCandidatePositions_card_le_enncard
     (secretKey : SecretKey) (trace : FullAdversaryTrace)

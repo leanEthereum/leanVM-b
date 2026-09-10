@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.SignSupport
 
 /-!
@@ -59,32 +60,6 @@ theorem SigningCacheTrace.Chronological.append_singleton
           exact hle head (by simp)
       · exact ih hchronological.2 (fun earlier hearlier =>
           hle earlier (List.mem_cons_of_mem head hearlier))
-
-theorem SigningCacheTrace.Chronological.get_finalCache_le_initialCache
-    {trace : SigningCacheTrace} (hchronological : trace.Chronological)
-    (earlier later : Fin trace.length) (hlt : earlier.val < later.val) :
-    (trace.get earlier).finalCache ≤ (trace.get later).initialCache := by
-  induction trace with
-  | nil => exact Fin.elim0 earlier
-  | cons head rest ih =>
-      obtain ⟨earlier, hearlier⟩ := earlier
-      obtain ⟨later, hlater⟩ := later
-      cases earlier with
-      | zero =>
-        cases later with
-        | zero => simp at hlt
-        | succ later =>
-          apply hchronological.1
-          exact List.get_mem rest ⟨later, by simpa using hlater⟩
-      | succ earlier =>
-        cases later with
-        | zero => simp at hlt
-        | succ later =>
-          have hlt' : earlier < later := by
-            change Nat.succ earlier < Nat.succ later at hlt
-            exact Nat.lt_of_succ_lt_succ hlt
-          exact ih hchronological.2
-            ⟨earlier, by simpa using hearlier⟩ ⟨later, by simpa using hlater⟩ hlt'
 
 theorem SigningCacheEntry.successfulSignRun {f : QueryImpl HashSpec Id}
     {secretKey : SecretKey} {entry : SigningCacheEntry} {signature : Signature}
@@ -270,25 +245,6 @@ theorem cacheTracedMappedAdversaryImpl_query_chronological
       intro earlier hearlier
       exact (hcaches earlier hearlier).2
 
-theorem cacheTracedMappedAdversaryImpl_cachesLe
-    (secretKey : SecretKey)
-    (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (initialCache : QueryCache HashSpec) (initialTrace : SigningCacheTrace)
-    (result : α × (QueryCache HashSpec × SigningCacheTrace))
-    (htrace : initialTrace.CachesLe initialCache)
-    (hmem : result ∈ support
-      ((simulateQ (cacheTracedMappedAdversaryImpl secretKey)
-        computation).run (initialCache, initialTrace))) :
-    result.2.2.CachesLe result.2.1 := by
-  exact OracleComp.simulateQ_run_preservesInv
-    (cacheTracedMappedAdversaryImpl secretKey)
-    (fun state => state.2.CachesLe state.1)
-    (by
-      intro input state hstate queryResult hquery
-      exact cacheTracedMappedAdversaryImpl_query_cachesLe secretKey input state.1 state.2
-        queryResult hstate hquery)
-    computation (initialCache, initialTrace) htrace result hmem
-
 theorem cacheTracedMappedAdversaryImpl_validRuns
     (secretKey : SecretKey)
     (computation : OracleComp (OracleWorld + SigningSpec) α)
@@ -375,19 +331,6 @@ theorem selectivelyLoggedMappedAdversaryImpl_eq_mapped (secretKey : SecretKey) :
   | inr request =>
       rw [selectivelyLoggedMappedAdversaryImpl_apply_inr,
         mappedAdversaryImpl_apply_inr]
-
-theorem cacheTracedMappedAdversaryImpl_cache_projection
-    (secretKey : SecretKey)
-    (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (initialCache : QueryCache HashSpec) (initialTrace : SigningCacheTrace) :
-    Prod.map id Prod.fst <$>
-        (simulateQ (cacheTracedMappedAdversaryImpl secretKey)
-          computation).run (initialCache, initialTrace) =
-      (simulateQ (unloggedMappedAdversaryImpl secretKey)
-        computation).run initialCache := by
-  exact OracleComp.extendState_run_proj_eq
-    (unloggedMappedAdversaryImpl secretKey) signingCacheTraceUpdate
-    computation initialCache initialTrace
 
 theorem cacheTracedMappedAdversaryImpl_log_projection
     (secretKey : SecretKey)

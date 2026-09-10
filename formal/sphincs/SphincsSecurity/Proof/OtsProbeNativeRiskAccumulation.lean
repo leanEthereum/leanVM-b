@@ -1,4 +1,7 @@
-import SphincsSecurity.Proof.OtsProbeNativeRejectionProbability
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeLiveContextCharge
+import SphincsSecurity.Proof.OtsProbeNativeQueryTrace
+import SphincsSecurity.Proof.OtsProbeRiskAccumulation
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -109,22 +112,5 @@ theorem expectedNativeTerminalRisk_le_initial_add_guessCharge
             context fuel table cache hcomplete,
           resolvedContextFailureRisk_of_not_completable table context hcomplete]
         simp only [resolvedOutcomeFailureRisk, add_zero, le_refl]
-
-theorem probEvent_nativeTrace_none_le_initial_add_guessCharge
-    (parameter : PublicParameter) (root : Digest) (table : OtsSecretIndex → HashOutput)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache)
-    (hconsistent : context.ValuesConsistent) (hstarts : StartTableAgrees context.state table) :
-    Pr[fun result => result.1 = none |
-      runNativeQueryTrace parameter root ftsSecret computation context fuel table cache] ≤
-      resolvedContextFailureRisk table context + expectedLiveNativeContextCharge (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret)
-        (canonicalGuessCharge parameter table) computation context fuel table cache := by
-  apply le_trans ?_ (expectedNativeTerminalRisk_le_initial_add_guessCharge parameter root table ftsSecret
-    computation context fuel cache hconsistent hstarts)
-  rw [probEvent_eq_tsum_ite, expectedNativeTerminalRisk]
-  apply ENNReal.tsum_le_tsum
-  intro result
-  cases result.1 <;> simp [resolvedOutcomeFailureRisk]
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.ReferenceCoordinateGame
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.AdaptiveResidualErasure
+import SphincsSecurity.Proof.ReferenceCoordinateGame
 
 namespace SphincsSecurity.Concrete
 

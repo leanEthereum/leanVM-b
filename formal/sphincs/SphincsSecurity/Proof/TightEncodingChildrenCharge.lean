@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.TightEncodingQueryCharge
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.TightEncodingSelectionPotential
 
 namespace SphincsSecurity
 

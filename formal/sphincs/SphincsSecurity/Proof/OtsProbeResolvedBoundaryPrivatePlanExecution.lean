@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivatePlan
 import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivatePreparationInterpreter
 
 /-!
@@ -33,46 +35,6 @@ noncomputable def purePlanProbingHashQuery (parameter : PublicParameter)
               (position.children.map Coordinate.position),
             .resolve (.position position)⟩
       | _ => ⟨none, .ordinary⟩
-
-set_option maxRecDepth 100000 in
-theorem runDirectResolvedDetailed_planProbingHashQuery
-    (parameter : PublicParameter) (input : HashInput)
-    (state : LazyRevealProbe.State Coordinate) (context : DeferredContext) (fuel : Nat)
-    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
-    (hstate : context.state = state) :
-    runDirectResolvedDetailedFromTable context fuel table
-        ((planProbingHashQuery parameter input).run cache) =
-      pure (.done ⟨context, fuel,
-        (purePlanProbingHashQuery parameter input state, cache), table⟩) := by
-  unfold planProbingHashQuery purePlanProbingHashQuery
-  cases hprobe : decodeProbe? parameter input with
-  | some candidate =>
-      cases hposition : decodePosition? parameter input with
-      | none => simp [runDirectResolvedDetailedFromTable_pure]
-      | some position =>
-          cases position with
-          | leaf lay tree leafIdx =>
-              rw [StateT.run_bind,
-                runDirectResolvedDetailedFromTable_bind,
-                runDirectResolvedDetailed_planLeafInputProbe state input candidate lay tree
-                  leafIdx context fuel table cache hstate]
-              simp [runDirectResolvedDetailedFromTable_pure]
-          | chain | node | ftsLeaf | ftsNode | ftsRoots =>
-              simp [runDirectResolvedDetailedFromTable_pure]
-  | none =>
-      cases hposition : decodePosition? parameter input with
-      | none => simp [runDirectResolvedDetailedFromTable_pure]
-      | some position =>
-          cases position with
-          | node lay tree level nodeIdx =>
-              rw [StateT.run_bind,
-                runDirectResolvedDetailedFromTable_bind,
-                runDirectResolvedDetailed_planFirstMissingInputCoordinate state input 0
-                  ((Position.node lay tree level nodeIdx).children.map Coordinate.position)
-                  context fuel table cache hstate]
-              simp [runDirectResolvedDetailedFromTable_pure]
-          | chain | leaf | ftsLeaf | ftsNode | ftsRoots =>
-              simp [runDirectResolvedDetailedFromTable_pure]
 
 noncomputable def probingHashQueryAfterPlan
     (parameter : PublicParameter) (input : HashInput) (plan : PlannedHashQuery) :
@@ -175,67 +137,5 @@ theorem probingHashQueryAfterPlan_probeBound
         exact OracleComp.IsQueryBoundP.of_imp
           (isUncoveredProbe_imp_isProbe candidates)
           (resolveKnownInput_probeFree parameter coordinate input result.2)
-
-set_option maxRecDepth 100000 in
-theorem evalDist_runDirectDetailedPrivateObserve_probingHashQuery_eq_afterPlan
-    (parameter : PublicParameter) (input : HashInput)
-    (context : DeferredContext) (fuel : Nat)
-    (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
-    (observe : DeferredContext → Nat → (HashOutput × SplitHashCache) → ProbComp Bool)
-    (hfactor : probingHashQuery parameter input = (do
-      let plan ← planProbingHashQuery parameter input
-      probingHashQueryAfterPlan parameter input plan)) :
-    evalDist (runDirectDetailedPrivateObserve observe context fuel table
-        ((probingHashQuery parameter input).run cache)) =
-      evalDist (runDirectDetailedPrivateObserve observe context fuel table
-        ((probingHashQueryAfterPlan parameter input
-          (purePlanProbingHashQuery parameter input context.state)).run cache)) := by
-  rw [hfactor]
-  unfold runDirectDetailedPrivateObserve
-  rw [StateT.run_bind, runDirectResolvedDetailedFromTable_bind]
-  rw [runDirectResolvedDetailed_planProbingHashQuery parameter input context.state context fuel
-    table cache rfl]
-  simp only [pure_bind]
-
-theorem preservesPublishedValues_probe (candidate : Probe) :
-    PreservesPublishedValues (probe candidate) := by
-  intro state cache fuel finalState remaining value finalCache hpublished hresult
-  change LazyRevealProbe.RawResult.done finalState remaining (value, finalCache) ∈ support
-    (LazyRevealProbe.runRaw state fuel
-      (LazyRevealProbe.probeQuery candidate.coordinate candidate.candidate >>= fun result =>
-        pure (result, cache))) at hresult
-  rw [LazyRevealProbe.probeQuery, LazyRevealProbe.runRaw_probe_query_bind] at hresult
-  cases fuel with
-  | zero => simp at hresult
-  | succ remainingFuel =>
-      by_cases hrevealed : candidate.coordinate ∈ state.revealed
-      · simp [hrevealed, LazyRevealProbe.runRaw] at hresult
-        rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
-        exact hpublished
-      · simp [hrevealed, LazyRevealProbe.runRaw] at hresult
-        rcases hresult with ⟨rfl, rfl, rfl, rfl⟩
-        simpa [PublishedValues, LazyRevealProbe.State.addPending] using hpublished
-
-theorem preservesPublishedValues_executeCandidate (planned : Option Probe) :
-    PreservesPublishedValues (executeCandidate? planned) := by
-  cases planned with
-  | none => exact PreservesPublishedValues.pure ()
-  | some candidate => exact preservesPublishedValues_probe candidate
-
-theorem preservesPublishedValues_splitHashQuery_ordinary (input : HashInput) :
-    PreservesPublishedValues (splitHashQuery (.ordinary input)) := by
-  have h := preservesPublishedValues_simulateQ_ordinaryHashImpl
-    (liftM (HashSpec.query input) : OracleComp HashSpec HashOutput)
-  simpa [simulateQ_query, ordinaryHashImpl] using h
-
-theorem preservesPublishedValues_probingHashQueryAfterPlan
-    (parameter : PublicParameter) (input : HashInput) (plan : PlannedHashQuery) :
-    PreservesPublishedValues (probingHashQueryAfterPlan parameter input plan) := by
-  unfold probingHashQueryAfterPlan executePlannedHashQuery
-  apply (preservesPublishedValues_executeCandidate plan.candidate?).bind
-  intro _
-  cases plan.action with
-  | ordinary => exact preservesPublishedValues_splitHashQuery_ordinary input
-  | resolve coordinate => exact preservesPublishedValues_resolveKnownInput parameter coordinate input
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

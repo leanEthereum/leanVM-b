@@ -1,4 +1,7 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.DigestCompletionLogGrowth
+import SphincsSecurity.Proof.SignerNewMessageUnique
+import SphincsSecurity.Proof.SingleMessageCacheGrowth
 import SphincsSecurity.Proof.TargetSigningCacheGrowth
 
 namespace SphincsSecurity.Concrete

@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeNativeOrdinaryCacheSigner
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
@@ -141,13 +142,5 @@ theorem ordinaryCacheNativeCouples_chronologicalOuterQuery
       | inl n => exact ordinaryCacheNativeCouples_splitUniformImpl n
       | inr input => exact ordinaryCacheNativeCouples_probingHashQuery parameter input
   | inr message => exact ordinaryCacheNativeCouples_chronologicalSign parameter root ftsSecret message
-
-theorem ordinaryCacheNativeCouples_chronologicalOuterComputation
-    (parameter : PublicParameter) (root : Digest) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (computation : OracleComp (OracleWorld + SigningSpec) α) :
-    OrdinaryCacheNativeCouples
-      (simulateQ (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret) computation) :=
-  ordinaryCacheNativeCouples_simulateQ _
-    (ordinaryCacheNativeCouples_chronologicalOuterQuery parameter root ftsSecret) computation
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

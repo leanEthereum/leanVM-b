@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FiniteGraphSampling
 
 namespace SphincsSecurity.Concrete.FiniteGraphSampling
@@ -38,15 +39,6 @@ theorem replay_update_of_not_mem (input : Node → State → Cell) (advance : No
     subst other
     exact hnode hother
   rw [Function.update_of_ne hne]
-
-omit [DecidableEq Node] in
-theorem replay_fst (input : Node → State → Cell) (advance : Node → Answer → State → State)
-    (answers : Node → Answer) (table : Cell → Answer) (nodes : List Node) (state : State) :
-    (replay input advance answers table nodes state).1 =
-      read (fun node (_ : State) => node) advance answers nodes state := by
-  induction nodes generalizing state with
-  | nil => rfl
-  | cons node nodes ih => exact ih (advance node (answers node) state)
 
 def patch (input : Node → Cell) (answers : Node → Answer) (table : Cell → Answer) : List Node → Cell → Answer
   | [] => table

@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.FewTimePrehitArith
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTimeFresh
+import SphincsSecurity.Proof.FewTimePrehit
 
 /-!
 # A weighted prefix split for the digest race
@@ -12,7 +14,7 @@ namespace SphincsSecurity
 
 open OracleComp OracleSpec ENNReal
 
-noncomputable local instance : SampleableType Randomness :=
+noncomputable local instance instSampleableTypeRandomness_2 : SampleableType Randomness :=
   SampleableType.ofFintype Randomness
 
 theorem cachedMessageEntryCount_le_enncard
@@ -95,55 +97,6 @@ theorem Concrete.signAttempt_enncard_le
       (messageDigestPayload secretKey.root message randomness))
     cache oracleResult horacle
 
-set_option maxRecDepth 100000 in
-theorem uniform_randomness_messageInput_cacheHit_le_two_neg_seven
-    (secretKey : SecretKey) (message : Message) (cache : QueryCache HashSpec)
-    (hcache : QueryCache.enncard cache ≤ ((2 ^ 121 : Nat) : ℝ≥0∞)) :
-    Pr[fun randomness : Randomness => ∃ output,
-      cache (tweakableHashInput secretKey.parameter .message
-        (Concrete.messageDigestPayload secretKey.root message randomness)) = some output |
-      $ᵗ Randomness] ≤ ((2 ^ 7 : Nat) : ℝ≥0∞)⁻¹ := by
-  calc
-    _ ≤ cachedMessageEntryCount cache secretKey.parameter secretKey.root message *
-        ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ :=
-      uniform_randomness_messageInput_cacheHit_le_cachedMessageEntryCount
-        secretKey.parameter secretKey.root message cache
-    _ ≤ ((2 ^ 121 : Nat) : ℝ≥0∞) *
-        ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ := by
-      gcongr
-      exact (cachedMessageEntryCount_le_enncard cache secretKey.parameter
-        secretKey.root message).trans hcache
-    _ = ((2 ^ 7 : Nat) : ℝ≥0∞)⁻¹ := by
-      apply (ENNReal.toReal_eq_toReal_iff' (by finiteness) (by finiteness)).mp
-      simp only [ENNReal.toReal_mul, ENNReal.toReal_inv, ENNReal.toReal_natCast]
-      norm_num [randomnessBits]
-
-set_option maxRecDepth 100000 in
-theorem uniform_randomness_messageInput_cacheMiss_ge_one_sub_two_neg_seven
-    (secretKey : SecretKey) (message : Message) (cache : QueryCache HashSpec)
-    (hcache : QueryCache.enncard cache ≤ ((2 ^ 121 : Nat) : ℝ≥0∞)) :
-    1 - ((2 ^ 7 : Nat) : ℝ≥0∞)⁻¹ ≤
-      Pr[fun randomness : Randomness =>
-        cache (tweakableHashInput secretKey.parameter .message
-          (Concrete.messageDigestPayload secretKey.root message randomness)) = none |
-        $ᵗ Randomness] := by
-  let miss : Randomness → Prop := fun randomness =>
-    cache (tweakableHashInput secretKey.parameter .message
-      (Concrete.messageDigestPayload secretKey.root message randomness)) = none
-  apply probEvent_one_sub_le_of_compl_le (by simp only [probFailure_of_liftM_PMF])
-  calc
-    Pr[fun randomness => ¬ miss randomness | $ᵗ Randomness] =
-        Pr[fun randomness : Randomness => ∃ output,
-          cache (tweakableHashInput secretKey.parameter .message
-            (Concrete.messageDigestPayload secretKey.root message randomness)) = some output |
-          $ᵗ Randomness] := by
-      apply probEvent_congr'
-      · intro randomness _
-        exact Option.ne_none_iff_exists'
-      · rfl
-    _ ≤ _ := uniform_randomness_messageInput_cacheHit_le_two_neg_seven
-      secretKey message cache hcache
-
 noncomputable def Concrete.signDigestAttemptPrefix
     (secretKey : SecretKey) (message : Message) (cache : QueryCache HashSpec) :
     ProbComp (Randomness ×
@@ -200,7 +153,6 @@ theorem uniform_randomness_messageInput_cacheMiss_ge_one_sub_one_half
       · rfl
     _ ≤ _ := uniform_randomness_messageInput_cacheHit_le_one_half
       secretKey message cache hcache
-
 
 set_option maxRecDepth 100000 in
 set_option linter.constructorNameAsVariable false in
@@ -561,57 +513,5 @@ theorem Concrete.probEvent_signWithView_prehitSuccessful_le_race_reference
       exact ⟨randomness, index, leaves, hloopResult, output, by
         rw [← hrandomness]
         exact hcached, hresultOutput, hP⟩
-
-theorem Concrete.probEvent_signWithView_prehitSuccessful_le_race
-    (secretKey : SecretKey) (message : Message) (initialCache : QueryCache HashSpec)
-    (P : FewTimeView → Prop)
-    (hbudget : QueryCache.enncard initialCache + (digestAttemptLimit : ℝ≥0∞) ≤
-      ((2 ^ 127 : Nat) : ℝ≥0∞)) :
-    Pr[PrehitSuccessfulSignerView initialCache secretKey message P |
-      (simulateQ romImpl (signWithView secretKey message)).run initialCache] ≤
-      cachedMessageEntryCountWhere initialCache secretKey.parameter secretKey.root message P *
-        ((2 ^ 117 : Nat) : ℝ≥0∞)⁻¹ := by
-  exact probEvent_signWithView_prehitSuccessful_le_race_reference secretKey message
-    initialCache initialCache P le_rfl hbudget
-
-theorem Concrete.probEvent_signWithView_prehitSuccessful_le_race_of_enncard_le
-    (secretKey : SecretKey) (message : Message) (initialCache : QueryCache HashSpec)
-    (P : FewTimeView → Prop) (q : Nat) (hq : q ≤ 2 ^ 120)
-    (hcache : QueryCache.enncard initialCache ≤ q) :
-    Pr[PrehitSuccessfulSignerView initialCache secretKey message P |
-      (simulateQ romImpl (signWithView secretKey message)).run initialCache] ≤
-      cachedMessageEntryCountWhere initialCache secretKey.parameter secretKey.root message P *
-        ((2 ^ 117 : Nat) : ℝ≥0∞)⁻¹ := by
-  apply probEvent_signWithView_prehitSuccessful_le_race
-  have hq' : (q : ℝ≥0∞) ≤ ((2 ^ 120 : Nat) : ℝ≥0∞) := by
-    exact_mod_cast hq
-  calc
-    QueryCache.enncard initialCache + (digestAttemptLimit : ℝ≥0∞) ≤
-        (q : ℝ≥0∞) + (digestAttemptLimit : ℝ≥0∞) :=
-      add_le_add hcache le_rfl
-    _ ≤ ((2 ^ 120 : Nat) : ℝ≥0∞) + (digestAttemptLimit : ℝ≥0∞) :=
-      add_le_add hq' le_rfl
-    _ ≤ ((2 ^ 127 : Nat) : ℝ≥0∞) := by
-      norm_num [digestAttemptLimit]
-
-theorem Concrete.probEvent_signWithView_prehitSuccessful_le_race_of_enncard_le125
-    (secretKey : SecretKey) (message : Message) (initialCache : QueryCache HashSpec)
-    (P : FewTimeView → Prop) (q : Nat) (hq : q ≤ 2 ^ 125)
-    (hcache : QueryCache.enncard initialCache ≤ q) :
-    Pr[PrehitSuccessfulSignerView initialCache secretKey message P |
-      (simulateQ romImpl (signWithView secretKey message)).run initialCache] ≤
-      cachedMessageEntryCountWhere initialCache secretKey.parameter secretKey.root message P *
-        ((2 ^ 117 : Nat) : ℝ≥0∞)⁻¹ := by
-  apply probEvent_signWithView_prehitSuccessful_le_race
-  have hq' : (q : ℝ≥0∞) ≤ ((2 ^ 125 : Nat) : ℝ≥0∞) := by
-    exact_mod_cast hq
-  calc
-    QueryCache.enncard initialCache + (digestAttemptLimit : ℝ≥0∞) ≤
-        (q : ℝ≥0∞) + (digestAttemptLimit : ℝ≥0∞) :=
-      add_le_add hcache le_rfl
-    _ ≤ ((2 ^ 125 : Nat) : ℝ≥0∞) + (digestAttemptLimit : ℝ≥0∞) :=
-      add_le_add hq' le_rfl
-    _ ≤ ((2 ^ 127 : Nat) : ℝ≥0∞) := by
-      norm_num [digestAttemptLimit]
 
 end SphincsSecurity

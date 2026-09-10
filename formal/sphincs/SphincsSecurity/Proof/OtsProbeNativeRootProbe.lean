@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.OtsProbeNativeRootInputObservation
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeNativeRootState
+import SphincsSecurity.Proof.OtsProbePrivateValueExecution
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -45,34 +47,5 @@ theorem NativeRootContextRel.revealed_eq
     (h : NativeRootContextRel target before after left right) : left.state.revealed = right.state.revealed := by
   rw [h.right_eq]
   rfl
-
-theorem nativeRootRelates_probe_of_safe
-    (target : Position) (before after : HashOutput) (candidate : Probe)
-    (hsafe : ¬IsPrivateValueExposure target before after (.probe candidate.coordinate candidate.candidate)) :
-    NativeRootRelates target before after (probe candidate) (probe candidate) := by
-  intro left right hcontext fuel table leftCache rightCache hcache
-  unfold probe
-  rw [StateT.run_liftM, StateT.run_liftM]
-  unfold LazyRevealProbe.probeQuery
-  rw [runResolvedFromTable_probe_query_bind, runResolvedFromTable_probe_query_bind]
-  cases fuel with
-  | zero => exact relTriple_pure_pure trivial
-  | succ fuel =>
-      simp only
-      rw [← hcontext.revealed_eq]
-      by_cases hrevealed : candidate.coordinate ∈ left.state.revealed
-      · rw [if_pos hrevealed, if_pos hrevealed]
-        exact relTriple_pure_pure ⟨hcontext, rfl, rfl, rfl, hcache⟩
-      · rw [if_neg hrevealed, if_neg hrevealed]
-        exact relTriple_pure_pure ⟨hcontext.addPending candidate.coordinate candidate.candidate hsafe, rfl, rfl, rfl, hcache⟩
-
-theorem nativeRootRelates_executeCandidate_of_safe
-    (target : Position) (before after : HashOutput) (candidate : Option Probe)
-    (hsafe : ∀ value, candidate = some value →
-      ¬IsPrivateValueExposure target before after (.probe value.coordinate value.candidate)) :
-    NativeRootRelates target before after (executeCandidate? candidate) (executeCandidate? candidate) := by
-  cases candidate with
-  | none => exact nativeRootRelates_pure target before after ()
-  | some candidate => exact nativeRootRelates_probe_of_safe target before after candidate (hsafe candidate rfl)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

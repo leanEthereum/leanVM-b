@@ -1,4 +1,7 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FrontierSigningOracleCongruence
 import SphincsSecurity.Proof.PublicGraphSigner
+import SphincsSecurity.Proof.RetainedObservation
 
 namespace SphincsSecurity.Concrete
 
@@ -76,26 +79,8 @@ theorem frontierSigningRecord_eq_public (key : SecretKey) (root : Digest) (f g :
       rw [map_pure, frontierSignAfterDigest_eq_publicPlan key f words disclosed known hagrees]
       rfl
 
-theorem fixedBoundaryRun_signWithView_public (key : SecretKey) (f g : QueryImpl HashSpec Id)
-    (dummy : OtsReferenceWords) (disclosed : Index → FtsTree → FtsLeaf → Prop) (known : Labels)
-    (hagrees : PublicAgreement (canonicalReferenceWords key f dummy) disclosed known
-      (CanonicalCoordinate.value key.otsSecret key.ftsSecret (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f)))
-    (message : Message)
-    (hmessage : ∀ randomness, f (tweakableHashInput key.parameter .message (messageDigestPayload key.root message randomness)) =
-      g (tweakableHashInput key.parameter .message (messageDigestPayload key.root message randomness))) :
-    fixedBoundaryRun key.parameter f (signWithView key message) =
-      completePublicSigningRecord key.ftsSecret <$>
-        publicSigningRecord key.parameter key.root g known (canonicalReferenceWords key f dummy) (referenceTableSelection key f) message := by
-  rw [fixedBoundaryRun_signWithView_canonical key f dummy]
-  rw [← canonicalGraphLabels_frontier key.parameter key.otsSecret key.ftsSecret f _ key.root]
-  exact frontierSigningRecord_eq_public key key.root f g _ disclosed known hagrees message hmessage
-
 theorem completePublicSigningRecord_trace (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (record : PublicSigningRecord) :
     (completePublicSigningRecord ftsSecret record).2 = record.2 := by
-  cases hview : record.1.2 <;> simp only [completePublicSigningRecord, hview]
-
-theorem completePublicSigningRecord_view (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (record : PublicSigningRecord) :
-    (completePublicSigningRecord ftsSecret record).1.2 = record.1.2 := by
   cases hview : record.1.2 <;> simp only [completePublicSigningRecord, hview]
 
 end SphincsSecurity.Concrete

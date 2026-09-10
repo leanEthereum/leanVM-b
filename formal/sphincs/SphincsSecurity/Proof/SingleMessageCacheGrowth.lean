@@ -1,5 +1,5 @@
-import SphincsSecurity.Proof.SignerNewMessageUnique
-import SphincsSecurity.Proof.CacheIndexMultiplicity
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.CacheMessageWeight
 
 namespace SphincsSecurity.Concrete
 
@@ -55,32 +55,5 @@ theorem cacheMessageWeight_of_single_new (parameter : PublicParameter) (weight :
           · exact (hne (hunique other answer hbefore hgood.1 hanswer hgood.2)).elim
           · simp only [hbefore, if_false]
         · simp only [hgood, if_false]
-
-theorem signWithView_cacheMessageWeight_of_new (key : SecretKey) (message : Message)
-    (before after : QueryCache HashSpec) (signature : Option Signature) (view : Option FewTimeView)
-    (hresult : ((signature, view), after) ∈ support ((simulateQ romImpl (signWithView key message)).run before))
-    (weight : HashInput → FewTimeView → ENNReal) (payload : HashInput) (output : HashOutput)
-    (hfresh : before (tweakableHashInput key.parameter .message payload) = none)
-    (hafter : after (tweakableHashInput key.parameter .message payload) = some output)
-    (hadmissible : Admissible (truncateMessageDigest output)) :
-    cacheMessageWeight key.parameter weight after = cacheMessageWeight key.parameter weight before +
-      weight (tweakableHashInput key.parameter .message payload) (hashOutputFewTimeView output) := by
-  apply cacheMessageWeight_of_single_new key.parameter weight before after
-    (simulateQ_romImpl_cache_le (signWithView key message) before ((signature, view), after) hresult)
-    _ output hfresh ⟨payload, rfl⟩ hafter hadmissible
-  intro other answer hbefore hmessage hanswer hgood
-  exact signWithView_new_admissible_input_unique key message before after signature view hresult other _ answer output
-    hbefore hmessage hanswer hgood hfresh ⟨payload, rfl⟩ hafter hadmissible
-
-theorem signWithView_cachedIndexMultiplicity_of_new (key : SecretKey) (message : Message)
-    (before after : QueryCache HashSpec) (signature : Option Signature) (view : Option FewTimeView)
-    (hresult : ((signature, view), after) ∈ support ((simulateQ romImpl (signWithView key message)).run before))
-    (payload : HashInput) (output : HashOutput)
-    (hfresh : before (tweakableHashInput key.parameter .message payload) = none)
-    (hafter : after (tweakableHashInput key.parameter .message payload) = some output)
-    (hadmissible : Admissible (truncateMessageDigest output)) (index : Index) :
-    cachedIndexMultiplicity key.parameter after index = cachedIndexMultiplicity key.parameter before index +
-      (if (hashOutputFewTimeView output).1 = index then 1 else 0) :=
-  signWithView_cacheMessageWeight_of_new key message before after signature view hresult _ payload output hfresh hafter hadmissible
 
 end SphincsSecurity.Concrete

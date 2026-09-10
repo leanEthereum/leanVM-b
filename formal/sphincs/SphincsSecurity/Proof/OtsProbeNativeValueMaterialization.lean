@@ -1,4 +1,7 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeNativeStoredRoot
 import SphincsSecurity.Proof.OtsProbeNativeValueResolver
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootState
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

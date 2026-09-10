@@ -1,4 +1,9 @@
-import SphincsSecurity.Proof.OtsProbeNativeLiveAllowanceReserve
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeLiveGameCharge
+import SphincsSecurity.Proof.OtsProbeNativeChainBound
+import SphincsSecurity.Proof.OtsProbeNativeMissingStructuralCharge
+import SphincsSecurity.Proof.OtsProbeNativeQueryTraceProjection
+import SphincsSecurity.Proof.OtsProbeNativeStartCharge
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

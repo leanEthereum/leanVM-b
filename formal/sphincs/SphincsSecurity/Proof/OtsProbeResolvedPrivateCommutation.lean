@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeResolvedPrivateSampling
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation

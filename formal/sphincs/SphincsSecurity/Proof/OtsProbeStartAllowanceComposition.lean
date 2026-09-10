@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.OtsProbeStartAllowanceCounting
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeStartAllowance
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

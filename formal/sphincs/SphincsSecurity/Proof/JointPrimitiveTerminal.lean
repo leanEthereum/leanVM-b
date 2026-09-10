@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimeHonestLeakBound
+import SphincsSecurity.Proof.OtsProbeGroupedTerminal
 
 namespace SphincsSecurity.Concrete
 

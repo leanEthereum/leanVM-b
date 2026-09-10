@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CachedIndexHashMoments
+import SphincsSecurity.Proof.ExceptionBudgetPotential
 
 namespace SphincsSecurity.Concrete
 

@@ -1,5 +1,8 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.ForgeryClassify
 import SphincsSecurity.Proof.LazyRevealProbe
-import SphincsSecurity.Proof.SecretProbeTerminal
+import SphincsSecurity.Proof.SecretProbe
+import SphincsSecurity.Proof.SigningTrace
 
 /-!
 # Opaque one-time chain values
@@ -151,21 +154,6 @@ noncomputable def Probe.outputCoordinate (probe : Probe) : Coordinate :=
         .position (.leaf lay tree leafIdx)
   | .position position => .position position
 
-theorem Probe.target_ftsSecret_irrel_of_matchesInput
-    (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (left right : Index → FtsTree → FtsLeaf → Digest)
-    (probe : Probe) (input : HashInput) (hmatch : probe.MatchesInput parameter input) :
-    probe.target f parameter otsSecret left =
-      probe.target f parameter otsSecret right := by
-  cases probe with
-  | mk coordinate candidate =>
-      cases coordinate with
-      | chainStart => rfl
-      | position position =>
-          cases position <;> simp only [Probe.MatchesInput] at hmatch
-          case chain => rfl
-
 theorem toProbe_matchesInput
     (parameter : PublicParameter) (probe : OtsValueProbe) (input : HashInput)
     (hmatch : probe.MatchesInput parameter input) :
@@ -219,72 +207,6 @@ theorem toProbe_matchesInput
     simp only [Probe.MatchesInput]
     rw [dif_neg hlast]
     exact ⟨hchain, payload, hinput, hslot⟩
-
-theorem FreshLayerOpening.exists_matching_probe
-    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
-    {signingLog : QueryLog SigningSpec}
-    (hfresh : FreshLayerOpening f cache secretKey signingLog) :
-    ∃ (probe : Probe) (input : HashInput),
-      probe.Hits f secretKey.parameter secretKey.otsSecret (fun _ _ _ => 0) ∧
-        probe.MatchesInput secretKey.parameter input ∧ cache input ≠ none := by
-  obtain ⟨valueProbe, input, hhit, hunsigned, hmatch, hcached⟩ :=
-    hfresh.exists_hit_probe_cached
-  exact ⟨toProbe valueProbe, input, toProbe_hits hhit,
-    toProbe_matchesInput secretKey.parameter valueProbe input hmatch, hcached⟩
-
-theorem BackwardChainOpening.exists_matching_probe
-    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
-    {signingLog : QueryLog SigningSpec}
-    (hbackward : BackwardChainOpening f cache secretKey signingLog) :
-    ∃ (probe : Probe) (input : HashInput),
-      probe.Hits f secretKey.parameter secretKey.otsSecret (fun _ _ _ => 0) ∧
-        probe.MatchesInput secretKey.parameter input ∧ cache input ≠ none := by
-  obtain ⟨valueProbe, signedDigit, input, hhit, hlt, hmatch, hcached⟩ :=
-    hbackward.exists_hit_probe_cached
-  exact ⟨toProbe valueProbe, input, toProbe_hits hhit,
-    toProbe_matchesInput secretKey.parameter valueProbe input hmatch, hcached⟩
-
-theorem cleanFreshEvent_exists_matching_probe
-    {parameter : PublicParameter}
-    {otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest}
-    {ftsSecret : Index → FtsTree → FtsLeaf → Digest}
-    {result : (Digest × Forgery × Bool) × ViewedFullTraceState}
-    (hevent : cleanFreshEvent parameter otsSecret ftsSecret result) :
-    ∃ (f : QueryImpl HashSpec Id) (probe : Probe) (input : HashInput),
-      result.2.cache.AgreesWithFn f ∧
-        probe.Hits f parameter otsSecret ftsSecret ∧
-        probe.MatchesInput parameter input ∧ result.2.cache input ≠ none := by
-  obtain ⟨f, digest, hf, hvalid, hnotContains, hdigest, hadmissible, hfresh⟩ :=
-    hevent.2.toViewed
-  obtain ⟨probe, input, hhit, hmatch, hcached⟩ :=
-    SphincsSecurity.Concrete.OtsProbeSimulation.FreshLayerOpening.exists_matching_probe
-      hfresh.toForged.toFreshLayerOpening
-  refine ⟨f, probe, input, hf, ?_, hmatch, hcached⟩
-  rw [Probe.Hits] at hhit ⊢
-  rw [← probe.target_ftsSecret_irrel_of_matchesInput f parameter otsSecret
-    (fun _ _ _ => 0) ftsSecret input hmatch]
-  exact hhit
-
-theorem cleanBackwardEvent_exists_matching_probe
-    {parameter : PublicParameter}
-    {otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest}
-    {ftsSecret : Index → FtsTree → FtsLeaf → Digest}
-    {result : (Digest × Forgery × Bool) × ViewedFullTraceState}
-    (hevent : cleanBackwardEvent parameter otsSecret ftsSecret result) :
-    ∃ (f : QueryImpl HashSpec Id) (probe : Probe) (input : HashInput),
-      result.2.cache.AgreesWithFn f ∧
-        probe.Hits f parameter otsSecret ftsSecret ∧
-        probe.MatchesInput parameter input ∧ result.2.cache input ≠ none := by
-  obtain ⟨f, digest, hf, hvalid, hnotContains, hdigest, hadmissible, hbackward⟩ :=
-    hevent.2.toViewed
-  obtain ⟨probe, input, hhit, hmatch, hcached⟩ :=
-    SphincsSecurity.Concrete.OtsProbeSimulation.BackwardChainOpening.exists_matching_probe
-      hbackward.toForged.toBackwardChainOpening
-  refine ⟨f, probe, input, hf, ?_, hmatch, hcached⟩
-  rw [Probe.Hits] at hhit ⊢
-  rw [← probe.target_ftsSecret_irrel_of_matchesInput f parameter otsSecret
-    (fun _ _ _ => 0) ftsSecret input hmatch]
-  exact hhit
 
 theorem chainProbeInput_eq_iff (parameter : PublicParameter)
     (leftLay rightLay : Layer) (leftTree rightTree : TreeIndex)
@@ -680,13 +602,6 @@ theorem revealCoordinate_run (coordinate : Coordinate) (cache : SplitHashCache) 
       pure (truncateHash output,
         Function.update cache (.hidden coordinate) (some output))) := by
   simp [revealCoordinate, revealCoordinateOutput, StateT.run_modify]
-
-theorem revealPosition_run (position : Position) (cache : SplitHashCache) :
-    (revealPosition position).run cache = (do
-      let output ← LazyRevealProbe.revealQuery (.position position)
-      pure (truncateHash output,
-        Function.update cache (.hidden (.position position)) (some output))) := by
-  rw [revealPosition, revealCoordinate_run]
 
 noncomputable def peekCoordinate (coordinate : Coordinate) :
     StateT SplitHashCache

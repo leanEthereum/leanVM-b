@@ -1,5 +1,5 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimeTarget125
-import SphincsSecurity.Proof.FewTime125Count
 import SphincsSecurity.Proof.MessageCollision
 
 namespace SphincsSecurity.Concrete.Range125
@@ -673,52 +673,5 @@ theorem probEvent_gameAfterSecretsWithViewTrace_messageCollision_le_inv
       simp only [ENNReal.toReal_mul, ENNReal.toReal_inv, ENNReal.toReal_natCast]
       norm_num
       ring
-
-theorem probEvent_sampled_cleanMessage_le
-    (adversary : Adversary) (q : Nat) (hqPos : 1 ≤ q)
-    (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 126) :
-    Pr[SampledViewedEvent cleanMessageEvent | sampledViewedGame adversary] ≤
-      (q : ℝ≥0∞) * ((2 ^ 139 : Nat) : ℝ≥0∞)⁻¹ := by
-  rw [probEvent_sampledViewedGame_eq_weighted]
-  calc
-    (∑' secrets : SampledSecrets, Pr[= secrets | sampleSecrets] *
-        Pr[cleanMessageEvent secrets.parameter secrets.otsSecret secrets.ftsSecret |
-          gameAfterSecretsWithViewTrace adversary secrets.parameter secrets.otsSecret
-            secrets.ftsSecret]) ≤
-        ∑' secrets : SampledSecrets, Pr[= secrets | sampleSecrets] *
-          ((q : ℝ≥0∞) * ((2 ^ 139 : Nat) : ℝ≥0∞)⁻¹) := by
-      apply ENNReal.tsum_le_tsum
-      intro secrets
-      by_cases hsecrets : secrets ∈ support sampleSecrets
-      · obtain ⟨hparameter, hots, hfts⟩ := secrets.support_components hsecrets
-        have hrisk :
-            Pr[cleanMessageEvent secrets.parameter secrets.otsSecret secrets.ftsSecret |
-                gameAfterSecretsWithViewTrace adversary secrets.parameter secrets.otsSecret
-                  secrets.ftsSecret] ≤
-              (q : ℝ≥0∞) * ((2 ^ 139 : Nat) : ℝ≥0∞)⁻¹ := by
-          apply le_trans (probEvent_mono fun _ _ event => event.2)
-          exact probEvent_gameAfterSecretsWithViewTrace_messageCollision_le_inv adversary q
-            hqPos hq hqMax secrets.parameter hparameter secrets.otsSecret hots
-              secrets.ftsSecret hfts
-        calc
-          Pr[= secrets | sampleSecrets] *
-              Pr[cleanMessageEvent secrets.parameter secrets.otsSecret secrets.ftsSecret |
-                gameAfterSecretsWithViewTrace adversary secrets.parameter secrets.otsSecret
-                  secrets.ftsSecret] =
-              Pr[cleanMessageEvent secrets.parameter secrets.otsSecret secrets.ftsSecret |
-                gameAfterSecretsWithViewTrace adversary secrets.parameter secrets.otsSecret
-                  secrets.ftsSecret] * Pr[= secrets | sampleSecrets] := mul_comm _ _
-          _ ≤ ((q : ℝ≥0∞) * ((2 ^ 139 : Nat) : ℝ≥0∞)⁻¹) *
-              Pr[= secrets | sampleSecrets] :=
-            mul_le_mul_left hrisk _
-          _ = Pr[= secrets | sampleSecrets] *
-              ((q : ℝ≥0∞) * ((2 ^ 139 : Nat) : ℝ≥0∞)⁻¹) := mul_comm _ _
-      · rw [probOutput_eq_zero_of_not_mem_support hsecrets, zero_mul, zero_mul]
-    _ = (∑' secrets : SampledSecrets, Pr[= secrets | sampleSecrets]) *
-        ((q : ℝ≥0∞) * ((2 ^ 139 : Nat) : ℝ≥0∞)⁻¹) := by
-      rw [ENNReal.tsum_mul_right]
-    _ ≤ 1 * ((q : ℝ≥0∞) * ((2 ^ 139 : Nat) : ℝ≥0∞)⁻¹) :=
-      mul_le_mul_left tsum_probOutput_le_one _
-    _ = (q : ℝ≥0∞) * ((2 ^ 139 : Nat) : ℝ≥0∞)⁻¹ := one_mul _
 
 end SphincsSecurity.Concrete.Range125

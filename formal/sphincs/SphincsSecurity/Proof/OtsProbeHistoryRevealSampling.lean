@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeStartHistorySampling
+import SphincsSecurity.Proof.OtsProbeStartTableInvariance
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

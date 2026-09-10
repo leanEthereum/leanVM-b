@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.OtsProbeMaterializedRootReserve
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeNativeRootCandidateNormalization
+import SphincsSecurity.Proof.OtsProbeNativeRootCompatibleTrace
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

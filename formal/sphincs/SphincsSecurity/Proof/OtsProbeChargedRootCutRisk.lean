@@ -1,4 +1,7 @@
-import SphincsSecurity.Proof.OtsProbeNativeTraceStoredRoot
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeChargedRootCut
+import SphincsSecurity.Proof.OtsProbeNativeStoredRootRisk
+import SphincsSecurity.Proof.OuterHashQueryCut
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeNativeRootSigner
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
@@ -156,57 +157,5 @@ theorem rootEncodingNativeRelatesStored_maskedPublishedChronologicalSign_targetC
   | some selected =>
       exact rootEncodingNativeRelatesStored_maskedPublishedChronologicalSignAfterDigest_targetComparison
         parameter target hroot leftRoot rightRoot ftsSecret selected.1 selected.2.1 selected.2.2
-
-def eraseNativeSplitCache (result : Option (ResolvedRunResult (α × SplitHashCache))) :
-    Option (ResolvedRunResult α) :=
-  result.map fun value => ⟨value.context, value.remaining, value.value.1, value.table⟩
-
-theorem RootEncodingNativeSameRel.eraseSplitCache
-    {parameter : PublicParameter} {target : Position} {leftRoot rightRoot : Digest}
-    {left right : Option (ResolvedRunResult (α × SplitHashCache))}
-    (hrel : RootEncodingNativeSameRel parameter target leftRoot rightRoot left right) :
-    eraseNativeSplitCache left = eraseNativeSplitCache right := by
-  cases left with
-  | none =>
-      cases right with
-      | none => rfl
-      | some right => contradiction
-  | some left =>
-      cases right with
-      | none => contradiction
-      | some right =>
-          rcases hrel with ⟨hcontext, hfuel, htable, hvalue, _⟩
-          simp only [eraseNativeSplitCache, Option.map_some, hcontext, hfuel, htable, hvalue]
-
-theorem evalDist_nativeChronologicalRootComparison_eraseCache
-    (parameter : PublicParameter) (root : Digest) (target : Position) (hroot : IsLayerRoot target)
-    (leftRoot rightRoot : Digest)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (message : Message)
-    (leftCache rightCache : SplitHashCache)
-    (hcache : RootEncodingCacheRel parameter target leftRoot rightRoot leftCache rightCache)
-    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput)
-    (hstored : StoredNativeLayerRoot context target leftRoot) :
-    evalDist (eraseNativeSplitCache <$>
-      runResolvedFromTable context fuel table
-        ((maskedPublishedChronologicalSign parameter root ftsSecret message).run leftCache)) =
-    evalDist (eraseNativeSplitCache <$>
-      runResolvedFromTable context fuel table
-        ((maskedPublishedChronologicalSignWithTargetComparison parameter root target rightRoot
-          ftsSecret message).run rightCache)) := by
-  apply evalDist_map_eq_of_relTriple
-  apply relTriple_post_mono
-    (rootEncodingNativeRelatesStored_maskedPublishedChronologicalSign_targetComparison
-      parameter root target hroot leftRoot rightRoot ftsSecret message
-      leftCache rightCache hcache context fuel table hstored)
-  intro left right hrel
-  cases left with
-  | none =>
-      cases right with
-      | none => rfl
-      | some right => contradiction
-  | some left =>
-      cases right with
-      | none => contradiction
-      | some right => exact hrel.1.eraseSplitCache
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

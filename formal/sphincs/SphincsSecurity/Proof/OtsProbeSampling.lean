@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.OtsProbeTerminal
-import VCVio.OracleComp.QueryTracking.RandomOracle.EagerTable
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FtsProbeSimulation
+import SphincsSecurity.Proof.OtsProbeSimulation
 
 /-!
 # One-time secret sampler transport
@@ -60,42 +61,6 @@ theorem splitOtsSecretTableEquiv_fst (table : OtsSecretIndex → HashOutput) :
     (splitOtsSecretTableEquiv table).1 = fun index => truncateHash (table index) := by
   rfl
 
-theorem tableOtsSecret_eq_otsSecretTable
-    (table : Coordinate → HashOutput) :
-    tableOtsSecret table = otsSecretTableEquiv.symm
-      (fun index => truncateHash (table index.coordinate)) := by
-  rfl
-
-set_option maxRecDepth 10000 in
-theorem relTriple_sampleHashOutput_sampleDigest :
-    RelTriple LazyRevealProbe.sampleHashOutput ($ᵗ Digest : ProbComp Digest)
-      fun output digest => truncateHash output = digest := by
-  let split := splitHashOutputEquiv digestBits (by decide)
-  let pairSample :=
-    ($ᵗ (Digest × BitVec (hashOutputBits - digestBits)) :
-      ProbComp (Digest × BitVec (hashOutputBits - digestBits)))
-  have hpair : RelTriple pairSample pairSample fun left right =>
-      truncateHash (split.symm left) = right.1 := by
-    apply relTriple_post_mono (relTriple_refl pairSample)
-    intro left right heq
-    subst right
-    change (split (split.symm left)).1 = left.1
-    rw [split.apply_symm_apply]
-  have hmapped :
-      RelTriple (split.symm <$> pairSample) (Prod.fst <$> pairSample)
-        (fun output digest => truncateHash output = digest) :=
-    relTriple_map
-      (R := fun output digest => truncateHash output = digest) hpair
-  have hleft :
-      𝒟[split.symm <$> pairSample] = 𝒟[LazyRevealProbe.sampleHashOutput] := by
-    rw [LazyRevealProbe.sampleHashOutput]
-    exact evalDist_map_bijective_uniform_cross _ split.symm split.symm.bijective
-  have hright :
-      𝒟[Prod.fst <$> pairSample] = 𝒟[($ᵗ Digest : ProbComp Digest)] :=
-    evalDist_map_fst_uniformSample_prod
-  exact relTriple_of_evalDist_eq_right hright
-    (relTriple_of_evalDist_eq_left hleft.symm hmapped)
-
 noncomputable local instance sampleableOtsSecretTable :
     SampleableType (OtsSecretIndex → Digest) :=
   SampleableType.ofFintype (OtsSecretIndex → Digest)
@@ -120,41 +85,6 @@ noncomputable local instance sampleableOtsSecrets :
   otsSecretsSampleableType
 
 attribute [local semireducible] sampleOtsSecrets
-
-theorem evalDist_sampleOtsSecrets_uncurry :
-    𝒟[otsSecretTableEquiv <$> sampleOtsSecrets] =
-      𝒟[($ᵗ (OtsSecretIndex → Digest) : ProbComp (OtsSecretIndex → Digest))] := by
-  rw [show sampleOtsSecrets =
-      ($ᵗ (Layer → TreeIndex → LeafIndex → ChainIndex → Digest) :
-        ProbComp (Layer → TreeIndex → LeafIndex → ChainIndex → Digest)) by rfl]
-  exact evalDist_map_bijective_uniform_cross _ otsSecretTableEquiv
-    otsSecretTableEquiv.bijective
-
-set_option maxRecDepth 10000 in
-theorem evalDist_lazyOtsSecrets_eq_sampled
-    (computation : OracleComp (OtsSecretIndex →ₒ Digest) alpha) :
-    𝒟[(simulateQ
-        (randomOracle : QueryImpl (OtsSecretIndex →ₒ Digest)
-          (StateT (QueryCache (OtsSecretIndex →ₒ Digest)) ProbComp))
-        computation).run' (∅ : QueryCache (OtsSecretIndex →ₒ Digest))] =
-      𝒟[do
-        let secret ← sampleOtsSecrets
-        pure (evalWithAnswerFn
-          (QueryImpl.ofFn (spec := OtsSecretIndex →ₒ Digest)
-            (otsSecretTableEquiv secret)) computation)] := by
-  let evaluate := fun table : OtsSecretIndex → Digest =>
-    evalWithAnswerFn (QueryImpl.ofFn (spec := OtsSecretIndex →ₒ Digest) table)
-      computation
-  calc
-    _ = 𝒟[evaluate <$>
-        ($ᵗ (OtsSecretIndex → Digest) : ProbComp (OtsSecretIndex → Digest))] := by
-      simpa [evaluate, bind_pure_comp] using
-        (OracleComp.evalDist_simulateQ_randomOracle_run'_empty_eq_uniformTable computation)
-    _ = 𝒟[evaluate <$> (otsSecretTableEquiv <$> sampleOtsSecrets)] := by
-      rw [evalDist_map, evalDist_map]
-      exact congrArg (Functor.map evaluate) evalDist_sampleOtsSecrets_uncurry.symm
-    _ = _ := by
-      simp [evaluate, Functor.map_map]
 
 set_option maxRecDepth 10000 in
 theorem evalDist_uniformOtsHashTable_truncate :

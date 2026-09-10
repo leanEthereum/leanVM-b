@@ -1,5 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbePrivateValueLiveProbeCut
-import SphincsSecurity.Proof.OtsProbeLiveNativeReserve
+import SphincsSecurity.Proof.OtsProbePrivateValueProbeCounting
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -135,7 +136,6 @@ theorem probEvent_livePrivateProbeCutReached_eq_ordinalMass
       · rw [probEvent_livePrivateProbeCutReached_eq_zero_of_not_completable target _ context fuel table ordinal hconsistent hstarts hcomplete,
           privateLiveProbeOrdinalMass_query_bind, if_neg hcomplete]
 
-
 theorem sum_privateLiveProbeOrdinalMass_le_expectedCharge
     (target : Position) (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
     (q : Nat) (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput) :
@@ -181,7 +181,6 @@ theorem sum_privateLiveProbeOrdinalMass_le_expectedCharge
               privatePositionProbeQueryCharge, zero_add]
             exact htail q
       · simp [privateLiveProbeOrdinalMass_query_bind, hcomplete]
-
 
 theorem expectedLiveResolvedQueryCharge_mono
     (left right : LazyRevealProbe.Query Coordinate → ENNReal) (hle : ∀ input, left input ≤ right input)
@@ -238,7 +237,6 @@ theorem sum_targets_livePrivateProbeCutReached_le_expectedStructuralCharge
     _ = expectedLiveResolvedQueryCharge (fun input => ∑ target ∈ targets, privatePositionProbeQueryCharge target input) computation context fuel table :=
       (expectedLiveResolvedQueryCharge_finset_sum targets privatePositionProbeQueryCharge computation context fuel table).symm
     _ ≤ _ := expectedLiveResolvedQueryCharge_mono _ _ (sum_privatePositionProbeQueryCharge_le_structural targets) computation context fuel table
-
 
 theorem sum_targets_privateResolvedRawCandidate_hit_le_expectedLiveStructuralCharge
     (targets : Finset Position) (computation : OracleComp (LazyRevealProbe.World Coordinate) α)

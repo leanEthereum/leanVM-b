@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CacheSize
 import SphincsSecurity.Proof.Charge
 
@@ -76,7 +77,6 @@ theorem expectedQueryCharge_add {α : Type}
       simp only [expectedQueryCharge_query_bind, ih, mul_add, ENNReal.tsum_add]
       cases query <;> simp only [hashQueryCharge, Sum.elim_inl, Sum.elim_inr] <;> ac_rfl
 
-
 theorem expected_potential_simulateQ_le_queryCharge {α : Type}
     (potential : QueryCache HashSpec → ℝ≥0∞)
     (charge : QueryCache HashSpec → HashInput → ℝ≥0∞)
@@ -149,7 +149,6 @@ theorem expectedQueryCharge_le_queryBound {α : Type}
             _ = cap + cap * remaining := by
               rw [ENNReal.tsum_mul_right, romImpl_query_mass, one_mul]
             _ = _ := by push_cast; ring
-
 
 theorem expectedQueryCharge_mul {α : Type}
     (charge : QueryCache HashSpec → HashInput → ℝ≥0∞) (factor : ℝ≥0∞)

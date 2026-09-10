@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.ReferenceOracleConditioning
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FirstSuccessFamily
+import SphincsSecurity.Proof.ReferenceOracleConditioning
 
 namespace SphincsSecurity.Concrete
 
@@ -70,19 +71,5 @@ theorem referenceFamilyOracleTable_nonencoding (key : SecretKey) (inputs : Finse
       referenceFamilyOracleTable key inputs hencoding outside rows remaining cell.val) = outside := by
   funext cell
   exact UniformTableSplit.join_outside _ _ _ outside cell
-
-theorem referenceTableSelection_referenceFamilyOracleTable (key : SecretKey) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs) (hgraph : canonicalGraphInputs key.parameter ⊆ inputs)
-    (outside : NonencodingRows key.parameter inputs hencoding)
-    (rows : EncodingPosition → Fin encodingAttemptLimit → HashOutput)
-    (remaining : UniformTableSplit.Outside
-      (referenceFamilyCell key.parameter (outsideGraphMessage key inputs hencoding outside)) → HashOutput)
-    (position : EncodingPosition) :
-    referenceTableSelection key (finiteHashAnswer ∅ inputs (referenceFamilyOracleTable key inputs hencoding outside rows remaining))
-      position = FirstSuccessTable.select decodeEncodingOutput (rows position) := by
-  rw [referenceFamilyOracleTable, referenceTableSelection_joinEncodingTable key inputs hencoding hgraph]
-  apply congrArg (FirstSuccessTable.select decodeEncodingOutput)
-  funext counter
-  exact UniformTableSplit.join_embed _ _ (Function.uncurry rows) remaining (position, counter)
 
 end SphincsSecurity.Concrete

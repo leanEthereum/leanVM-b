@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbePrivateValueFirstAccessCharge
 import SphincsSecurity.Proof.OtsProbePrivateValueProbeCut
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
@@ -122,19 +124,5 @@ theorem privatePositionProbeCutAt_history_bound
       (result.context.state.pendingAt (.position target)).card ≤ pending.card + ordinal :=
   h.history_of_mem_runResolved (privatePositionProbeCutAt target computation ordinal) context fuel table pending ordinal result
     (privatePositionProbeCutAt_no_disclosure target computation ordinal) (privatePositionProbeCutAt_probe_bound target computation ordinal) hresult
-
-theorem privatePositionProbeCutAt_live_history_avoids_output
-    (target : Position) (output : HashOutput) (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
-    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput) (pending : Finset Digest) (ordinal : Nat)
-    (h : PrivateTargetState target output pending context) (result : ResolvedRunResult (PrivateValueCut α))
-    (hresult : some result ∈ support (runResolvedFromTable context fuel table (privatePositionProbeCutAt target computation ordinal)))
-    (hcomplete : DeferredCompletable table result.context) :
-    truncateHash output ∉ result.context.state.pendingAt (.position target) := by
-  have hfinal := (privatePositionProbeCutAt_history_bound target output computation context fuel table pending ordinal h result hresult).1
-  obtain ⟨completion, hcompletion⟩ := hcomplete
-  have houtput := hcompletion.2.1 target output hfinal.2.1
-  intro hmem
-  have hpending := (LazyRevealProbe.State.mem_pendingAt_iff result.context.state (.position target) (truncateHash output)).mp hmem
-  exact hcompletion.2.2.1 (.position target) (truncateHash output) hpending (by rw [houtput])
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

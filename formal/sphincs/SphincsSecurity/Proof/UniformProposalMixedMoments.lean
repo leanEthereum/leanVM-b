@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.UniformProposalMoments
 
 namespace SphincsSecurity.Concrete
@@ -166,12 +167,6 @@ theorem uniformWordAverage_mono {α : Type} [SampleableType α]
     (steps : Nat) {first second : List α → ENNReal} (hle : ∀ word, first word ≤ second word) :
     uniformWordAverage steps first ≤ uniformWordAverage steps second :=
   ENNReal.tsum_le_tsum fun word => mul_le_mul' le_rfl (hle word)
-
-theorem uniformWordAverage_mul_right {α : Type} [SampleableType α]
-    (steps : Nat) (factor : ENNReal) (payoff : List α → ENNReal) :
-    uniformWordAverage steps (fun word => payoff word * factor) =
-      uniformWordAverage steps payoff * factor := by
-  simpa only [mul_comm] using uniformWordAverage_mul_left steps factor payoff
 
 theorem uniformWordAverage_mixed_power_le_product {α : Type} [SampleableType α]
     [Fintype α] [DecidableEq α] (first second : α) (hdistinct : first ≠ second)

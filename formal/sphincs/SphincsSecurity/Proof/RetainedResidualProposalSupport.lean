@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.RetainedResidualProposalRun
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.RetainedResidualProposalIndex
+import SphincsSecurity.Proof.RetainedResidualWorldKernel
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 
@@ -7,7 +9,7 @@ open AdaptiveResidualLabels hiding World State Environment
 open InterleavedResidual (SigningRecord)
 open FtsProbeSimulation (messageAnswers MessageHashInput)
 attribute [local instance] Classical.propDecidable
-attribute [local irreducible] hashInputs sourceInputs canonicalEncodingInputs canonicalGraphInputs instFintypePosition
+attribute [local irreducible] hashInputs canonicalEncodingInputs canonicalGraphInputs instFintypePosition
   lazyRun environment signDigestLoop ResidualByteFrontend.jointSigningProgram
 set_option backward.isDefEq.respectTransparency false
 

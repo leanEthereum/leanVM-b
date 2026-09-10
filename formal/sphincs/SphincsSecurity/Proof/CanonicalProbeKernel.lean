@@ -1,8 +1,9 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CanonicalProbeRouting
 
 namespace SphincsSecurity.Concrete.CanonicalProbeRouting
 
-open _root_.OracleComp HiddenLabelObservation RetainedObservation
+open _root_.OracleComp HiddenLabelObservation
 attribute [local instance] Classical.propDecidable
 set_option backward.isDefEq.respectTransparency false
 
@@ -98,16 +99,5 @@ theorem stoppedResponse_route (parameter : PublicParameter) (words : OtsReferenc
       routedResponse outside publicReplies actual (route parameter words disclosed known input) :=
   stoppedResponse_eq_routed parameter words disclosed actual replies publicReplies hreplies input outside _
     (route_spec parameter words disclosed known actual hagrees input)
-
-theorem observe_stoppedResponse_route {Result : Type} (parameter : PublicParameter) (words : OtsReferenceWords)
-    (disclosed : Index → FtsTree → FtsLeaf → Prop) (known actual : Labels)
-    (hagrees : PublicAgreement words disclosed known actual)
-    (replies publicReplies : CanonicalGraphLabels)
-    (hreplies : ∀ position, ¬CanonicalCoordinate.Hidden words disclosed (.graph position) →
-      publicReplies position = replies position)
-    (input : HashInput) (outside : PMF HashOutput) (stopped : SPMF Result) (next : HashOutput → SPMF Result) :
-    observe (stoppedResponse parameter words disclosed actual replies input outside) stopped next =
-      observe (routedResponse outside publicReplies actual (route parameter words disclosed known input)) stopped next := by
-  rw [stoppedResponse_route parameter words disclosed known actual hagrees replies publicReplies hreplies input outside]
 
 end SphincsSecurity.Concrete.CanonicalProbeRouting

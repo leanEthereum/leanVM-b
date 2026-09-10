@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeCoupling
 import SphincsSecurity.Proof.OuterQueryCut
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
@@ -28,21 +30,6 @@ theorem outerHashQueryCutAt_query_bind
       else (liftM (OracleSpec.query input) : OracleComp (OracleWorld + SigningSpec) _) >>= fun output => outerHashQueryCutAt (next output) ordinal) := by
   rfl
 
-theorem outerHashQueryCutAt_resume (computation : OracleComp (OracleWorld + SigningSpec) α) (ordinal : Nat) :
-    outerHashQueryCutAt computation ordinal >>= OuterQueryCut.resume = computation := by
-  induction computation using OracleComp.inductionOn generalizing ordinal with
-  | pure value => rfl
-  | query_bind input next ih =>
-      rw [outerHashQueryCutAt_query_bind]
-      split_ifs
-      · cases ordinal with
-        | zero => rfl
-        | succ ordinal =>
-            rw [bind_assoc]
-            exact bind_congr fun output => ih output ordinal
-      · rw [bind_assoc]
-        exact bind_congr fun output => ih output ordinal
-
 theorem outerHashQueryCutAt_hashBound (computation : OracleComp (OracleWorld + SigningSpec) α) (ordinal : Nat) :
     (outerHashQueryCutAt computation ordinal).IsQueryBoundP IsOuterHash ordinal := by
   induction computation using OracleComp.inductionOn generalizing ordinal with
@@ -58,11 +45,5 @@ theorem outerHashQueryCutAt_hashBound (computation : OracleComp (OracleWorld + S
             exact ⟨Or.inr (by omega), fun output => by simpa only [if_pos hhash, Nat.add_sub_cancel] using ih output ordinal⟩
       · rw [if_neg hhash, OracleComp.isQueryBoundP_query_bind_iff]
         exact ⟨Or.inl hhash, fun output => by simpa only [if_neg hhash] using ih output ordinal⟩
-
-noncomputable def hashCutCandidate (parameter : PublicParameter) (context : DeferredContext)
-    (result : OuterQueryCut α × SplitHashCache) : Option Probe :=
-  match result.1.input? with
-  | some (.inl (.inr input)) => (purePlanProbingHashQuery parameter input context.state).candidate?
-  | _ => none
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

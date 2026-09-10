@@ -1,12 +1,14 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.AdaptiveChainEndpoint
-import SphincsSecurity.Proof.ReferenceFamilyGame
+import SphincsSecurity.Proof.Extract
+import SphincsSecurity.Proof.OneTime
 
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal
 set_option backward.isDefEq.respectTransparency false
 attribute [local irreducible] chainWalk
-noncomputable local instance : DecidableEq (QueryImpl HashSpec Id) := Classical.decEq _
+noncomputable local instance instDecidableEqQueryImplHashInputHashSpecId : DecidableEq (QueryImpl HashSpec Id) := Classical.decEq _
 
 noncomputable def otsChainFunctions (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex)
     (leaf : LeafIndex) (chainIdx : ChainIndex) (start steps : Nat) (f : QueryImpl HashSpec Id) :

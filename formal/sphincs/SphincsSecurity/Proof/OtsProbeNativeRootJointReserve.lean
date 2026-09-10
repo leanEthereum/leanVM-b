@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.OtsProbeNativeStoredRootStructuralCharge
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeLiveKnownRootCharge
+import SphincsSecurity.Proof.OtsProbeNativeStoredRootStructuralCharge
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

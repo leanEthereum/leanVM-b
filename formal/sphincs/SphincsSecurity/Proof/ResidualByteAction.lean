@@ -1,6 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CanonicalResidualRouting
 import SphincsSecurity.Proof.PublicResidualLookup
-import SphincsSecurity.Proof.AdaptiveResidualErasure
 
 namespace SphincsSecurity.Concrete.ResidualByteAction
 

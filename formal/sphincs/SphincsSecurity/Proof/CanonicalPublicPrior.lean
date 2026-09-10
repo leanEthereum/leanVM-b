@@ -1,6 +1,8 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CanonicalCoordinateSampling
+import SphincsSecurity.Proof.CanonicalProbeRouting
+import SphincsSecurity.Proof.RetainedObservation
 import SphincsSecurity.Proof.UniformPublicCoordinates
-import SphincsSecurity.Proof.PublicGraphOpenings
 
 namespace SphincsSecurity.Concrete
 

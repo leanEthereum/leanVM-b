@@ -1,5 +1,4 @@
-import SphincsSecurity.Proof.EncodingProbability
-import SphincsSecurity.Proof.RomQueryCharge
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.EncodingSelectionCache
 
 namespace SphincsSecurity.Concrete
@@ -252,14 +251,6 @@ theorem anyEncodingInputsExhausted_of_cachedOtsEncodingFailure
   exact ⟨parameter, position, message, encodingInputsExhausted_of_otsSign_none f cache parameter position.lay position.tree
     position.leafIdx secret message hagrees hrun hfailed⟩
 
-theorem probEvent_cachedOtsEncodingFailure_le
-    (computation : OracleComp OracleWorld α) :
-    Pr[fun result => CachedOtsEncodingFailure result.2 | (simulateQ romImpl computation).run ∅] ≤
-      ((3 * 2 ^ 294 : Nat) : ℝ≥0∞) *
-        (1 - (TargetSum.validDigests.card : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞)) ^ encodingAttemptLimit :=
-  (probEvent_mono fun result _ hfailed => anyEncodingInputsExhausted_of_cachedOtsEncodingFailure result.2 hfailed).trans
-    (probEvent_anyEncodingInputsExhausted_le computation)
-
 theorem EncodingInputsExhausted.mono
     {inputs : Finset HashInput} {before after : QueryCache HashSpec}
     (hexhausted : EncodingInputsExhausted inputs before) (hle : before ≤ after) :
@@ -273,10 +264,5 @@ theorem AnyEncodingInputsExhausted.mono
     AnyEncodingInputsExhausted after := by
   obtain ⟨parameter, position, message, hexhausted⟩ := hexhausted
   exact ⟨parameter, position, message, hexhausted.mono hle⟩
-
-theorem anyEncodingInputsExhausted_of_earlier_cachedOtsEncodingFailure
-    {before after : QueryCache HashSpec} (hfailed : CachedOtsEncodingFailure before) (hle : before ≤ after) :
-    AnyEncodingInputsExhausted after :=
-  (anyEncodingInputsExhausted_of_cachedOtsEncodingFailure before hfailed).mono hle
 
 end SphincsSecurity.Concrete

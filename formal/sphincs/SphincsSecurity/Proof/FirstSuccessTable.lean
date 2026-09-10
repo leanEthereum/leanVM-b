@@ -1,6 +1,5 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.UniformTableConditioning
-import Mathlib.Data.Fin.Tuple.Basic
-import Mathlib.Order.Interval.Finset.Fin
 
 namespace SphincsSecurity.Concrete.FirstSuccessTable
 
@@ -156,34 +155,6 @@ theorem probEvent_full_success [Nonempty Answer] (decode : Answer → Option Val
   simp only [probEvent_eq_tsum_ite, PMF.probOutput_eq_apply,
     full_success_mass decode index value hinvalid hvalue, ENNReal.tsum_mul_left, PMF.tsum_coe, mul_one]
 
-omit [DecidableEq Answer] in
-theorem successMass_eq [Nonempty Answer] (decode : Answer → Option Value) {n : Nat}
-    (index : Fin n) (value : Value) :
-    successMass decode index value =
-      ((invalid decode).card / (Fintype.card Answer : ENNReal)) ^ index.val *
-        ((fiber decode value).card / (Fintype.card Answer : ENNReal)) := by
-  have hcard : (Fintype.card Answer : ENNReal) ≠ 0 := by exact_mod_cast Fintype.card_ne_zero
-  have hfactor : ∀ coordinate : Fin n,
-      (allowed decode index value coordinate).card / (Fintype.card Answer : ENNReal) =
-        (if coordinate ∈ Finset.Iio index then (invalid decode).card / (Fintype.card Answer : ENNReal) else 1) *
-          (if coordinate = index then (fiber decode value).card / (Fintype.card Answer : ENNReal) else 1) := by
-    intro coordinate
-    by_cases hlt : coordinate < index
-    · have hne : coordinate ≠ index := ne_of_lt hlt
-      simp [allowed, hlt, hne]
-    · by_cases heq : coordinate = index
-      · subst coordinate
-        simp [allowed]
-      · simp [allowed, hlt, heq, ENNReal.div_self hcard (by finiteness)]
-  unfold successMass
-  rw [Nat.cast_prod, Nat.cast_prod,
-    ← ENNReal.prod_div_distrib_of_ne_top (fun _ _ => ENNReal.natCast_ne_top _)]
-  simp_rw [hfactor]
-  rw [Finset.prod_mul_distrib, Finset.prod_ite_mem_eq, Finset.prod_const, Fin.card_Iio]
-  congr 1
-  rw [Finset.prod_eq_single index (fun coordinate _ hne => by simp [hne]) (by simp)]
-  simp
-
 noncomputable def exhausted (decode : Answer → Option Value) (n : Nat)
     (hinvalid : (invalid decode).Nonempty) : PMF (Fin n → Answer) :=
   uniformTable (fun _ => invalid decode) (fun _ => hinvalid)
@@ -212,33 +183,6 @@ theorem probEvent_full_exhaustion [Nonempty Answer] (decode : Answer → Option 
       ((invalid decode).card / (Fintype.card Answer : ENNReal)) ^ n := by
   simp only [probEvent_eq_tsum_ite, PMF.probOutput_eq_apply,
     full_exhaustion_mass decode n hinvalid, ENNReal.tsum_mul_left, PMF.tsum_coe, mul_one]
-
-theorem full_filter_success [Nonempty Answer] (decode : Answer → Option Value) {n : Nat}
-    (index : Fin n) (value : Value) (hinvalid : (invalid decode).Nonempty)
-    (hvalue : (fiber decode value).Nonempty)
-    (hfilter : ∃ table, select decode table = some (index, value) ∧ table ∈ (full (Answer := Answer) n).support) :
-    (full (Answer := Answer) n).filter {table | select decode table = some (index, value)} hfilter =
-      conditional decode index value hinvalid hvalue := by
-  have hmass : (∑' table, (if select decode table = some (index, value) then full n table else 0)) =
-      successMass decode index value := by
-    simpa only [probEvent_eq_tsum_ite, PMF.probOutput_eq_apply] using
-      probEvent_full_success decode index value hinvalid hvalue
-  have hzero : successMass decode index value ≠ 0 := by
-    rw [successMass_eq]
-    apply mul_ne_zero
-    · apply pow_ne_zero
-      exact ENNReal.div_ne_zero.mpr ⟨by exact_mod_cast Nat.ne_of_gt hinvalid.card_pos, by finiteness⟩
-    · exact ENNReal.div_ne_zero.mpr ⟨by exact_mod_cast Nat.ne_of_gt hvalue.card_pos, by finiteness⟩
-  have hfinite : successMass decode index value ≠ ⊤ := by
-    rw [successMass_eq]
-    have hcard : (Fintype.card Answer : ENNReal) ≠ 0 := by exact_mod_cast Fintype.card_ne_zero
-    finiteness
-  apply PMF.ext
-  intro table
-  rw [PMF.filter_apply]
-  simp only [Set.indicator_apply, Set.mem_setOf_eq]
-  rw [hmass, full_success_mass decode index value hinvalid hvalue]
-  rw [mul_right_comm, ENNReal.mul_inv_cancel hzero hfinite, one_mul]
 
 noncomputable def selected [Nonempty Answer] (decode : Answer → Option Value) (n : Nat) :
     PMF (Option (Fin n × Value)) := (full n).map (select decode)
@@ -279,22 +223,5 @@ theorem selected_mul_afterSelect [Nonempty Answer] (decode : Answer → Option V
           intro table h
           exact hvalue ⟨table index, (mem_fiber _ _ _).mpr ((select_some_iff _ _ _ _).mp h).1⟩
         simp only [selected_apply, probEvent_eq_tsum_ite, hselected, if_false, tsum_zero, zero_mul]
-
-theorem full_bind_eq_selected [Nonempty Answer] {Result : Type} (decode : Answer → Option Value) (n : Nat)
-    (hinvalid : (invalid decode).Nonempty) (next : Option (Fin n × Value) → (Fin n → Answer) → PMF Result) :
-    (full n).bind (fun table => next (select decode table) table) =
-      (selected decode n).bind (fun result => (afterSelect decode n hinvalid result).bind (next result)) := by
-  apply PMF.ext
-  intro output
-  simp only [PMF.bind_apply, ← ENNReal.tsum_mul_left, ← mul_assoc, selected_mul_afterSelect,
-    ite_mul, zero_mul]
-  rw [ENNReal.tsum_comm]
-  simp
-
-theorem full_joint_eq_selected [Nonempty Answer] (decode : Answer → Option Value) (n : Nat)
-    (hinvalid : (invalid decode).Nonempty) :
-    (full n).map (fun table => (select decode table, table)) =
-      (selected decode n).bind (fun result => (afterSelect decode n hinvalid result).map (fun table => (result, table))) := by
-  exact full_bind_eq_selected decode n hinvalid (fun result table => PMF.pure (result, table))
 
 end SphincsSecurity.Concrete.FirstSuccessTable

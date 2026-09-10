@@ -1,6 +1,8 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.Code
 import SphincsSecurity.Proof.ExtractChain
 import SphincsSecurity.Proof.Layer
-import SphincsSecurity.Proof.Code
+import SphincsSecurity.Proof.OneTime
 
 /-!
 # Extracting a one-time signature

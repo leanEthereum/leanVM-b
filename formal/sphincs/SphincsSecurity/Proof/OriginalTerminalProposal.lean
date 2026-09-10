@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.TerminalProposalWord
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OriginalProposalExecution
+import SphincsSecurity.Proof.TerminalProposalWord
 
 namespace SphincsSecurity.Concrete
 
@@ -65,20 +66,6 @@ theorem expected_originalProposalImpl_terminalPotential {μ : Type} (key : Secre
       terminalProposalPotential (PMF.uniformOfFintype Index) total payoff state.1 := by
   have h := congrArg (fun law : PMF (List Index) => ∑' word, Pr[= word | law] * payoff word)
     (originalProposalImpl_complete key spent enabled update total input state)
-  rw [← PMF.monad_bind_eq_bind, tsum_probOutput_bind_mul] at h
-  exact h
-
-theorem expected_originalProposal_terminalPotential {μ α : Type} (key : SecretKey)
-    (spent : QueryCache HashSpec × μ → Nat) (enabled : Message → QueryCache HashSpec × μ → Bool)
-    (update : (input : (OracleWorld + SigningSpec).Domain) → QueryCache HashSpec × μ →
-      Nat → ProposalExecutionRecord input → μ)
-    (total : Nat) (payoff : List Index → ENNReal) (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (state : List Index × (QueryCache HashSpec × μ)) :
-    (∑' result, Pr[= result | (simulateQ (originalProposalImpl key spent enabled update) computation).run state] *
-        terminalProposalPotential (PMF.uniformOfFintype Index) total payoff result.2.1) =
-      terminalProposalPotential (PMF.uniformOfFintype Index) total payoff state.1 := by
-  have h := congrArg (fun law : PMF (List Index) => ∑' word, Pr[= word | law] * payoff word)
-    (simulateQ_originalProposalImpl_complete key spent enabled update total computation state)
   rw [← PMF.monad_bind_eq_bind, tsum_probOutput_bind_mul] at h
   exact h
 

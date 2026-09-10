@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CertificateCacheMonitor
 
 namespace SphincsSecurity.Concrete
@@ -59,42 +60,11 @@ theorem certificateCacheLength_run_hit {α : Type} (key : SecretKey) (budget : N
         certificateCacheLengthImpl_support key budget required stopAfter input state middle hmiddle
       exact ih record.output _ (certificateCacheMonitorUpdate_hit key budget required stopAfter input state length record hhit) result hr
 
-theorem certificateCacheProposal_run_hit {α : Type} (key : SecretKey) (budget : Nat)
-    (required : Finset FtsTree) (stopAfter : CertificateStopRule)
-    (computation : OracleComp (OracleWorld + SigningSpec) α) (state : List Index × CertificateCacheMonitorState)
-    (hhit : state.2.2.2 = true) (result : α × (List Index × CertificateCacheMonitorState))
-    (hr : result ∈ ((simulateQ (certificateCacheProposalImpl key budget required stopAfter) computation).run state).support) :
-    result.2.2.2.2 = true := by
-  have hm := (PMF.mem_support_map_iff (Prod.map id Prod.snd) _ _).mpr ⟨result, hr, rfl⟩
-  rw [← PMF.monad_map_eq_map, simulateQ_certificateCacheProposalImpl_length] at hm
-  exact certificateCacheLength_run_hit key budget required stopAfter computation state.2 hhit _ hm
-
-theorem certificateCacheLength_run_after_bad {α : Type} (key : SecretKey) (budget : Nat)
-    (required : Finset FtsTree) (stopAfter : CertificateStopRule)
-    (input : (OracleWorld + SigningSpec).Domain) (state : CertificateCacheMonitorState)
-    (length : Nat) (record : ProposalExecutionRecord input)
-    (hbad : CertificateCacheExceptional key record.cache)
-    (computation : OracleComp (OracleWorld + SigningSpec) α) (result : α × CertificateCacheMonitorState)
-    (hr : result ∈ ((simulateQ (certificateCacheLengthImpl key budget required stopAfter) computation).run
-      (originalProposalAdvance (certificateCacheMonitorUpdate key budget required stopAfter)
-        input state length record)).support) : result.2.2.2 = true :=
-  certificateCacheLength_run_hit key budget required stopAfter computation _
-    (certificateCacheMonitorUpdate_bad_after key budget required stopAfter input state length record hbad) result hr
-
 theorem proposalCacheBound_of_no_cache_exception (key : SecretKey) (cache : QueryCache HashSpec)
     (hfinite : Finite cache) (spent : Nat) (hspent : spent ≤ 2 ^ 127)
     (hcache : QueryCache.enncard cache ≤ spent) (hclean : ¬ CertificateCacheExceptional key cache) :
     ProposalCacheBound key cache spent :=
   ⟨hspent, hcache, fun h => hclean (Or.inl h),
     cachedIndex_bound_of_no_excess key.parameter cache hfinite spent hcache (fun h => hclean (Or.inr h))⟩
-
-theorem certificateCacheExceptional_of_not_ready (key : SecretKey) (budget : Nat)
-    (state : CertificateMonitorState) (hfinite : Finite state.1) (hbudget : budget ≤ 2 ^ 127)
-    (hspent : state.2.spent ≤ budget) (hcache : QueryCache.enncard state.1 ≤ state.2.spent)
-    (hsigned : SigningDigestsCached key.parameter state.1 key.root state.2.log)
-    (hnot : ¬ CertificateMonitorReady key budget state) : CertificateCacheExceptional key state.1 := by
-  by_contra hclean
-  exact hnot ⟨hsigned, proposalCacheBound_of_no_cache_exception key state.1 hfinite state.2.spent
-    (hspent.trans hbudget) hcache hclean, hspent⟩
 
 end SphincsSecurity.Concrete

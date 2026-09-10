@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.OtsProbeGuardedTraceRisk
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryOrdinary
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

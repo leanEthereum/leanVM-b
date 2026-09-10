@@ -1,6 +1,8 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimeSignerView
 import SphincsSecurity.Proof.FewTimeTrace
 import SphincsSecurity.Proof.FullTrace
+import SphincsSecurity.Proof.MessagePrehit
 
 /-!
 # Full adversary trace with signer views
@@ -78,30 +80,6 @@ noncomputable def ViewedFullTraceState.ValidViews.signingOptionViews {secretKey 
   fun position =>
     state.views.get ⟨position.val, by rw [← hvalid.length_eq]; exact position.isLt⟩
 
-noncomputable def ViewedFullTraceState.ValidViews.signingViewsForLog
-    {secretKey : SecretKey} {state : ViewedFullTraceState}
-    (hvalid : state.ValidViews secretKey) {signingLog : QueryLog SigningSpec}
-    (hlog : state.trace.signing.toSigningLog = signingLog) :
-    Fin signingLog.length → Concrete.FewTimeView :=
-  fun position => hvalid.signingViews ⟨position.val, by
-    have hlength := congrArg List.length hlog
-    simpa only [SigningCacheTrace.toSigningLog, List.length_map] using
-      (show position.val < state.trace.signing.toSigningLog.length by
-        rw [hlength]
-        exact position.isLt)⟩
-
-noncomputable def ViewedFullTraceState.ValidViews.signingOptionViewsForLog
-    {secretKey : SecretKey} {state : ViewedFullTraceState}
-    (hvalid : state.ValidViews secretKey) {signingLog : QueryLog SigningSpec}
-    (hlog : state.trace.signing.toSigningLog = signingLog) :
-    Fin signingLog.length → Option Concrete.FewTimeView :=
-  fun position => hvalid.signingOptionViews ⟨position.val, by
-    have hlength := congrArg List.length hlog
-    simpa only [SigningCacheTrace.toSigningLog, List.length_map] using
-      (show position.val < state.trace.signing.toSigningLog.length by
-        rw [hlength]
-        exact position.isLt)⟩
-
 theorem ViewedFullTraceState.ValidViews.successful_get {secretKey : SecretKey}
     {state : ViewedFullTraceState} (hvalid : state.ValidViews secretKey)
     (position : Fin state.trace.signing.length) (signature : Signature)
@@ -136,49 +114,6 @@ theorem ViewedFullTraceState.ValidViews.successful_get {secretKey : SecretKey}
       (state.views.get viewPosition) hviewRun
   exact ⟨viewPosition, randomness, index, leaves, loopCache, rfl,
     hloop, hfinish, hview⟩
-
-theorem ViewedFullTraceState.ValidViews.successful_get_fresh_attempt
-    {secretKey : SecretKey} {state : ViewedFullTraceState}
-    (hvalid : state.ValidViews secretKey)
-    (position : Fin state.trace.signing.length) (signature : Signature)
-    (hresponse : (state.trace.signing.get position).signature = some signature)
-    (hmiss : (state.trace.signing.get position).initialCache
-      (tweakableHashInput secretKey.parameter .message
-        (Concrete.messageDigestPayload secretKey.root
-          (state.trace.signing.get position).request signature.randomness)) = none) :
-    ∃ (viewPosition : Fin state.views.length) (randomness : Randomness) (index : Index)
-        (leaves : DigestTree → FtsLeaf) (attemptIndex : Nat)
-        (attemptCache : QueryCache HashSpec) (output : HashOutput),
-      viewPosition.val = position.val
-        ∧ randomness = signature.randomness
-        ∧ attemptIndex < digestAttemptLimit
-        ∧ attemptCache (tweakableHashInput secretKey.parameter .message
-            (Concrete.messageDigestPayload secretKey.root
-              (state.trace.signing.get position).request randomness)) = none
-        ∧ Concrete.signAttemptResultOfOutput output = some (index, leaves)
-        ∧ state.views.get viewPosition =
-          some (Concrete.hashOutputFewTimeView output) := by
-  obtain ⟨viewPosition, randomness, index, leaves, loopCache, hposition,
-      hloop, hfinish, hview⟩ := hvalid.successful_get position signature hresponse
-  have hrandomness : signature.randomness = randomness :=
-    Concrete.signAfterDigest_support_some_randomness secretKey randomness index leaves
-      loopCache (state.trace.signing.get position).finalCache signature hfinish
-  have hmiss' : (state.trace.signing.get position).initialCache
-      (tweakableHashInput secretKey.parameter .message
-        (Concrete.messageDigestPayload secretKey.root
-          (state.trace.signing.get position).request randomness)) = none := by
-    rw [← hrandomness]
-    exact hmiss
-  obtain ⟨attemptIndex, hattemptIndex, attemptCache, output, hattemptMiss,
-      hattemptResult, _⟩ := Concrete.signDigestLoop_fresh_selected_attempt
-        digestAttemptLimit secretKey (state.trace.signing.get position).request
-        randomness index leaves (state.trace.signing.get position).initialCache loopCache
-        hmiss' hloop
-  have houtputView := Concrete.signAttemptResultOfOutput_view output index leaves hattemptResult
-  refine ⟨viewPosition, randomness, index, leaves, attemptIndex, attemptCache, output,
-    hposition, hrandomness.symm, hattemptIndex, hattemptMiss, hattemptResult, ?_⟩
-  rw [← houtputView]
-  exact hview
 
 theorem ViewedFullTraceState.ValidViews.successful_get_eq_honest_view
     {f : QueryImpl HashSpec Id} {secretKey : SecretKey} {state : ViewedFullTraceState}
@@ -221,26 +156,6 @@ theorem ViewedFullTraceState.ValidViews.successful_get_eq_honest_view
     Option.some.inj (hdigest.2.1.symm.trans hhonest.1.2.1)
   obtain ⟨rfl, rfl⟩ := Prod.mk.inj hpairs
   exact ⟨viewPosition, hposition, hview⟩
-
-theorem ViewedFullTraceState.ValidViews.signingViews_eq_honest_view
-    {f : QueryImpl HashSpec Id} {secretKey : SecretKey} {state : ViewedFullTraceState}
-    {finalCache : QueryCache HashSpec} (hvalid : state.ValidViews secretKey)
-    (position : Fin state.trace.signing.length) (signature : Signature)
-    (hresponse : (state.trace.signing.get position).signature = some signature)
-    (hle : (state.trace.signing.get position).finalCache ≤ finalCache)
-    (hf : finalCache.AgreesWithFn f) (index : Index) (leaves : DigestTree → FtsLeaf)
-    (hhonest : Concrete.HonestFtsSignAt f finalCache secretKey
-      (state.trace.signing.get position).request signature index leaves) :
-    hvalid.signingViews position = Concrete.selectedFewTimeView index leaves := by
-  obtain ⟨viewPosition, hposition, hview⟩ :=
-    hvalid.successful_get_eq_honest_view position signature hresponse hle hf index leaves hhonest
-  unfold ViewedFullTraceState.ValidViews.signingViews
-  let canonical : Fin state.views.length :=
-    ⟨position.val, by rw [← hvalid.length_eq]; exact position.isLt⟩
-  have heq : canonical = viewPosition := Fin.ext hposition.symm
-  rw [show (⟨position.val, by rw [← hvalid.length_eq]; exact position.isLt⟩ :
-      Fin state.views.length) = viewPosition from heq, hview]
-  rfl
 
 theorem ViewedFullTraceState.ValidViews.signingOptionViews_eq_honest_view
     {f : QueryImpl HashSpec Id} {secretKey : SecretKey} {state : ViewedFullTraceState}
@@ -425,35 +340,6 @@ theorem gameRestWithViewTrace_support_validViews (adversary : Adversary)
     (adversary.main publicKey) ⟨initialCache, ⟨[], [], []⟩, [], none⟩
     (forgery, state) (by simp [ViewedFullTraceState.ValidViews]) hadversary
 
-theorem gameRestWithViewTrace_support_targetView (adversary : Adversary)
-    (publicKey : PublicKey) (secretKey : SecretKey) (initialCache : QueryCache HashSpec)
-    (result : (Forgery × Bool) × ViewedFullTraceState)
-    (hmem : result ∈ support
-      (gameRestWithViewTrace adversary publicKey secretKey initialCache)) :
-    ∃ (adversaryCache : QueryCache HashSpec) (output : HashOutput)
-        (digestCache : QueryCache HashSpec),
-      (output, digestCache) ∈ support
-        ((simulateQ (randomOracle : QueryImpl HashSpec _)
-          (Concrete.oracleHash (tweakableHashInput publicKey.parameter .message
-            (Concrete.messageDigestPayload publicKey.root result.1.1.message
-              result.1.1.signature.randomness)))).run adversaryCache)
-        ∧ digestCache ≤ result.2.cache
-        ∧ result.2.targetView = some (Concrete.hashOutputFewTimeView output) := by
-  rw [gameRestWithViewTrace, mem_support_bind_iff] at hmem
-  obtain ⟨⟨forgery, state⟩, _, hfinish⟩ := hmem
-  rw [mem_support_bind_iff] at hfinish
-  obtain ⟨⟨⟨verified, targetView⟩, finalCache⟩, hverify, hpure⟩ := hfinish
-  simp only [support_pure, Set.mem_singleton_iff] at hpure
-  subst result
-  have hverify' : ((verified, targetView), finalCache) ∈ support
-      ((simulateQ (randomOracle : QueryImpl HashSpec _)
-        (Concrete.verifyWithView publicKey forgery.message forgery.signature)).run state.cache) := by
-    simpa only [simulateQ_romImpl_liftM] using hverify
-  obtain ⟨output, digestCache, houtput, hle, hview⟩ :=
-    Concrete.verifyWithView_support_view publicKey forgery.message forgery.signature
-      state.cache finalCache verified targetView hverify'
-  exact ⟨state.cache, output, digestCache, houtput, hle, congrArg some hview⟩
-
 theorem gameRestWithViewTrace_projection (adversary : Adversary)
     (publicKey : PublicKey) (secretKey : SecretKey) (initialCache : QueryCache HashSpec) :
     (fun result => (result.1, result.2.base)) <$>
@@ -520,44 +406,6 @@ theorem FewTimeCover.get_traceIndex {f : QueryImpl HashSpec Id}
     trace.get (cover.traceIndex trace hlog entry) = cover.cacheEntry trace hlog entry := by
   rfl
 
-theorem FewTimeCover.signingViews_traceIndex_eq_entryView
-    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
-    {signingLog : QueryLog SigningSpec} {index : Index}
-    {targetLeaves : DigestTree → FtsLeaf}
-    (cover : FewTimeCover f cache secretKey signingLog index targetLeaves)
-    (state : ViewedFullTraceState) (hlog : state.trace.signing.toSigningLog = signingLog)
-    (hvalid : state.ValidViews secretKey)
-    (hcaches : state.trace.signing.CachesLe cache) (hf : cache.AgreesWithFn f)
-    (entry : cover.entries) :
-    hvalid.signingViews (cover.traceIndex state.trace.signing hlog entry) =
-      cover.entryView entry := by
-  let selected := cover.select (cover.representativeTree entry)
-  let position := cover.traceIndex state.trace.signing hlog entry
-  have hget : state.trace.signing.get position = cover.cacheEntry state.trace.signing hlog entry :=
-    cover.get_traceIndex state.trace.signing hlog entry
-  have hfields := cover.cacheEntry_request_signature state.trace.signing hlog entry
-  have hresponse : (state.trace.signing.get position).signature = some selected.signature := by
-    rw [hget]
-    exact hfields.2
-  have hrequest : (state.trace.signing.get position).request = selected.entry.1 := by
-    rw [hget]
-    exact hfields.1
-  have hle : (state.trace.signing.get position).finalCache ≤ cache := by
-    rw [hget]
-    exact (cover.cacheEntry_cachesLe state.trace.signing hlog hcaches entry).2
-  have hhonest : HonestFtsSignAt f cache secretKey
-      (state.trace.signing.get position).request selected.signature index
-        selected.signedLeaves := by
-    rw [hrequest]
-    exact selected.honest
-  rw [hvalid.signingViews_eq_honest_view position selected.signature hresponse hle hf
-    index selected.signedLeaves hhonest]
-  apply Prod.ext
-  · exact (cover.entryDigest_spec entry).2.2.1
-  · funext tree
-    have hleaves := cover.entryDigest_spec entry
-    exact congrFun hleaves.2.2.2 (ftsIndexOf tree)
-
 theorem FewTimeCover.signingOptionViews_traceIndex_eq_entryView
     {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
     {signingLog : QueryLog SigningSpec} {index : Index}
@@ -595,56 +443,6 @@ theorem FewTimeCover.signingOptionViews_traceIndex_eq_entryView
   · exact (cover.entryDigest_spec entry).2.2.1
   · funext tree
     exact congrFun (cover.entryDigest_spec entry).2.2.2 (ftsIndexOf tree)
-
-theorem FewTimeCover.viewedPatternHit
-    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
-    {signingLog : QueryLog SigningSpec} {index : Index}
-    {targetLeaves : DigestTree → FtsLeaf}
-    (cover : FewTimeCover f cache secretKey signingLog index targetLeaves)
-    (state : ViewedFullTraceState) (hlog : state.trace.signing.toSigningLog = signingLog)
-    (hvalid : state.ValidViews secretKey)
-    (hcaches : state.trace.signing.CachesLe cache) (hf : cache.AgreesWithFn f) :
-    cover.pattern.Hit
-      (hvalid.signingViewsForLog hlog, fewTimeTargetView index targetLeaves) := by
-  constructor
-  · intro selected
-    obtain ⟨entry, _, hentry⟩ := Finset.mem_image.1 selected.2
-    have hview : hvalid.signingViewsForLog hlog (cover.logIndex entry) =
-        cover.entryView entry := by
-      change hvalid.signingViews (cover.traceIndex state.trace.signing hlog entry) =
-        cover.entryView entry
-      exact cover.signingViews_traceIndex_eq_entryView state hlog hvalid hcaches hf entry
-    change (hvalid.signingViewsForLog hlog selected.1).1 = index
-    rw [← hentry, hview]
-    exact cover.entryDigest_index entry
-  · intro tree
-    have hview : hvalid.signingViewsForLog hlog
-        (cover.logIndex (cover.entryAssignment tree)) =
-          cover.entryView (cover.entryAssignment tree) := by
-      change hvalid.signingViews
-          (cover.traceIndex state.trace.signing hlog (cover.entryAssignment tree)) =
-        cover.entryView (cover.entryAssignment tree)
-      exact cover.signingViews_traceIndex_eq_entryView state hlog hvalid hcaches hf
-        (cover.entryAssignment tree)
-    change targetLeaves (ftsIndexOf tree) =
-      (hvalid.signingViewsForLog hlog
-        (cover.logIndex (cover.entryAssignment tree))).2 tree
-    rw [hview]
-    exact (cover.entryDigest_assigned_leaf tree).symm
-
-theorem FewTimeCover.viewedSomePatternHit
-    {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec} {secretKey : SecretKey}
-    {signingLog : QueryLog SigningSpec} {index : Index}
-    {targetLeaves : DigestTree → FtsLeaf}
-    (cover : FewTimeCover f cache secretKey signingLog index targetLeaves)
-    (state : ViewedFullTraceState) (hlog : state.trace.signing.toSigningLog = signingLog)
-    (hvalid : state.ValidViews secretKey)
-    (hcaches : state.trace.signing.CachesLe cache) (hf : cache.AgreesWithFn f) :
-    SomeFewTimePatternHit signingLog.length
-      (hvalid.signingViewsForLog hlog, fewTimeTargetView index targetLeaves) := by
-  refine ⟨cover.entries.card, Finset.mem_Icc.2
-    ⟨cover.entries_card_pos, cover.entries_card_le_trees⟩, cover.pattern, ?_⟩
-  exact cover.viewedPatternHit state hlog hvalid hcaches hf
 
 noncomputable def gameAfterSecretsWithViewTrace (adversary : Adversary)
     (parameter : PublicParameter)
@@ -692,125 +490,6 @@ theorem gameAfterSecretsWithViewTrace_support_validViews (adversary : Adversary)
   simpa using gameRestWithViewTrace_support_validViews adversary
     (⟨root, parameter⟩ : PublicKey)
     (⟨parameter, root, otsSecret, ftsSecret⟩ : SecretKey) rootCache restResult hrest
-
-theorem gameAfterSecretsWithViewTrace_support_targetView (adversary : Adversary)
-    (parameter : PublicParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (result : (Digest × Forgery × Bool) × ViewedFullTraceState)
-    (hmem : result ∈ support
-      (gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret)) :
-    ∃ (adversaryCache : QueryCache HashSpec) (output : HashOutput)
-        (digestCache : QueryCache HashSpec),
-      (output, digestCache) ∈ support
-        ((simulateQ (randomOracle : QueryImpl HashSpec _)
-          (oracleHash (tweakableHashInput parameter .message
-            (messageDigestPayload result.1.1 result.1.2.1.message
-              result.1.2.1.signature.randomness)))).run adversaryCache)
-        ∧ digestCache ≤ result.2.cache
-        ∧ result.2.targetView = some (hashOutputFewTimeView output) := by
-  rw [gameAfterSecretsWithViewTrace, mem_support_bind_iff] at hmem
-  obtain ⟨⟨root, rootCache⟩, _, hrest⟩ := hmem
-  rw [mem_support_bind_iff] at hrest
-  obtain ⟨restResult, hrest, hpure⟩ := hrest
-  simp only [support_pure, Set.mem_singleton_iff] at hpure
-  subst result
-  simpa using gameRestWithViewTrace_support_targetView adversary
-    (⟨root, parameter⟩ : PublicKey)
-    (⟨parameter, root, otsSecret, ftsSecret⟩ : SecretKey) rootCache restResult hrest
-
-theorem gameAfterSecretsWithViewTrace_targetView_eq
-    (adversary : Adversary) (parameter : PublicParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (result : (Digest × Forgery × Bool) × ViewedFullTraceState)
-    (hmem : result ∈ support
-      (gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret))
-    (f : QueryImpl HashSpec Id) (hf : result.2.cache.AgreesWithFn f)
-    (digest : MessageDigest)
-    (hdigest : evalWithAnswerFn f
-      (messageDigest parameter result.1.1 result.1.2.1.message
-        result.1.2.1.signature.randomness) = digest) :
-    result.2.targetView =
-      some (fewTimeTargetView (digestIndex digest) (digestLeaves digest)) := by
-  obtain ⟨_, output, digestCache, houtput, hle, htarget⟩ :=
-    gameAfterSecretsWithViewTrace_support_targetView adversary parameter otsSecret ftsSecret
-      result hmem
-  let input := tweakableHashInput parameter .message
-    (messageDigestPayload result.1.1 result.1.2.1.message
-      result.1.2.1.signature.randomness)
-  have hcached : result.2.cache input = some output :=
-    hle (randomOracle_output_cached input _ digestCache output (by simpa [input] using houtput))
-  have hanswer : f input = output := hf hcached
-  have hdigest' : truncateMessageDigest output = digest := by
-    simpa only [messageDigest, oracleHash, evalWithAnswerFn_bind, evalWithAnswerFn_query,
-      evalWithAnswerFn_pure, input, hanswer] using hdigest
-  rw [htarget]
-  congr 1
-  apply Prod.ext
-  · change digestIndex (truncateMessageDigest output) = digestIndex digest
-    rw [hdigest']
-  · funext tree
-    change digestLeaves (truncateMessageDigest output) (ftsIndexOf tree) =
-      digestLeaves digest (ftsIndexOf tree)
-    rw [hdigest']
-
-theorem gameAfterSecretsWithViewTrace_fewTimeLeak_patternHit
-    (adversary : Adversary) (parameter : PublicParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (result : (Digest × Forgery × Bool) × ViewedFullTraceState)
-    (hmem : result ∈ support
-      (gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret))
-    (f : QueryImpl HashSpec Id) (hf : result.2.cache.AgreesWithFn f)
-    (digest : MessageDigest)
-    (hdigest : evalWithAnswerFn f
-      (messageDigest parameter result.1.1 result.1.2.1.message
-        result.1.2.1.signature.randomness) = digest)
-    (hleak : FewTimeLeak f result.2.cache
-      (⟨parameter, result.1.1, otsSecret, ftsSecret⟩ : SecretKey)
-      result.2.trace.signing.toSigningLog (digestIndex digest) (digestLeaves digest)) :
-    SomeFewTimePatternHit result.2.trace.signing.toSigningLog.length
-      ((gameAfterSecretsWithViewTrace_support_validViews adversary parameter otsSecret ftsSecret
-          result hmem).signingViewsForLog rfl,
-        result.2.targetView.getD default) := by
-  let secretKey : SecretKey := ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
-  have hbase : (result.1, result.2.base) ∈ support
-      (gameAfterSecretsWithFullTrace adversary parameter otsSecret ftsSecret) := by
-    rw [← gameAfterSecretsWithViewTrace_projection adversary parameter otsSecret ftsSecret,
-      support_map]
-    exact ⟨result, hmem, rfl⟩
-  have hinvariants := gameAfterSecretsWithFullTrace_support_invariants adversary parameter
-    otsSecret ftsSecret (result.1, result.2.base) hbase
-  have hvalid := gameAfterSecretsWithViewTrace_support_validViews adversary parameter
-    otsSecret ftsSecret result hmem
-  have htarget := gameAfterSecretsWithViewTrace_targetView_eq adversary parameter otsSecret
-    ftsSecret result hmem f hf digest hdigest
-  have hpattern := hleak.cover.viewedSomePatternHit result.2 rfl hvalid
-    hinvariants.2.1 hf
-  simpa only [htarget, Option.getD_some] using hpattern
-
-theorem gameAfterSecretsWithViewTrace_properLeak_patternHit
-    (adversary : Adversary) (parameter : PublicParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (result : (Digest × Forgery × Bool) × ViewedFullTraceState)
-    (hmem : result ∈ support
-      (gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret))
-    (f : QueryImpl HashSpec Id) (hf : result.2.cache.AgreesWithFn f)
-    (digest : MessageDigest)
-    (hdigest : evalWithAnswerFn f
-      (messageDigest parameter result.1.1 result.1.2.1.message
-        result.1.2.1.signature.randomness) = digest)
-    (hproper : ProperFewTimeLeak f result.2.cache
-      (⟨parameter, result.1.1, otsSecret, ftsSecret⟩ : SecretKey)
-      result.2.trace.signing.toSigningLog (digestIndex digest) (digestLeaves digest)) :
-    SomeFewTimePatternHit result.2.trace.signing.toSigningLog.length
-      ((gameAfterSecretsWithViewTrace_support_validViews adversary parameter otsSecret ftsSecret
-          result hmem).signingViewsForLog rfl,
-        result.2.targetView.getD default) := by
-  exact gameAfterSecretsWithViewTrace_fewTimeLeak_patternHit adversary parameter otsSecret
-    ftsSecret result hmem f hf digest hdigest hproper.1
 
 end Concrete
 

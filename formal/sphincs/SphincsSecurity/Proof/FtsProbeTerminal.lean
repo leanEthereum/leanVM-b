@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTimeSource
 import SphincsSecurity.Proof.FtsProbeOrigin
 
 namespace SphincsSecurity.Concrete.FtsProbeSimulation
@@ -32,41 +34,6 @@ theorem simulateQ_probingHashImpl_cachePreserving
   | query_bind input next ih =>
       rw [simulateQ_query_bind]
       exact (probingHashQuery_cachePreserving parameter input).bind fun output => ih output
-
-theorem probingHashQuery_done_false_hit_revealed
-    (parameter : PublicParameter) (table : Coordinate → Digest)
-    (state finalState : AdaptiveRevealProbe.State Coordinate) (fuel : Nat)
-    (cache finalCache : SplitHashCache) (input : HashInput) (output : HashOutput)
-    (probe : FtsSecretProbe)
-    (hdecode : decodeProbe? parameter input = some probe)
-    (hhit : probe.Hits (fun index tree leafIdx => table (index, tree, leafIdx)))
-    (hresult : .done false finalState (output, finalCache) ∈ support
-      (AdaptiveRevealProbe.runDetailed table state fuel
-        ((probingHashQuery parameter input).run cache))) :
-    ∃ value, state.revealed (probe.index, probe.tree, probe.leafIdx) = some value := by
-  cases fuel with
-  | zero =>
-      rw [probingHashQuery_run_eq, hdecode] at hresult
-      change .done false finalState (output, finalCache) ∈ support
-        (AdaptiveRevealProbe.runDetailed table state 0
-          ((liftM (OracleSpec.query
-            (spec := AdaptiveRevealProbe.World Coordinate)
-            (.probe (probe.index, probe.tree, probe.leafIdx) probe.candidate)) :
-              OracleComp (AdaptiveRevealProbe.World Coordinate) Unit) >>= fun _ =>
-            (splitHashQuery (.ordinary input)).run cache)) at hresult
-      rw [AdaptiveRevealProbe.runDetailed_probe_query_bind] at hresult
-      simp at hresult
-  | succ remaining =>
-      cases hrevealed : state.revealed (probe.index, probe.tree, probe.leafIdx) with
-      | some value => exact ⟨value, rfl⟩
-      | none =>
-          have hcandidate : table (probe.index, probe.tree, probe.leafIdx) = probe.candidate :=
-            hhit
-          have hforced := runDetailed_probingHashQuery_hidden_hit parameter table state remaining
-            cache input probe hdecode hrevealed hcandidate
-            (.done false finalState (output, finalCache)) hresult
-          change false = true at hforced
-          simp at hforced
 
 def HiddenHitsRevealed (parameter : PublicParameter) (table : Coordinate → Digest)
     (f : QueryImpl HashSpec Id) (state : AdaptiveRevealProbe.State Coordinate)

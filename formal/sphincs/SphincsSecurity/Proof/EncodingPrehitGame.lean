@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.EncodingPrehitMonitor
 import SphincsSecurity.Proof.JointPrimitiveQueryBudget
 
@@ -22,18 +23,6 @@ noncomputable def sampledEncodingPrehitGame (adversary : Adversary) : ProbComp E
     TightEncoding.runEncodingPrehitMonitor
       (primitiveAccountingKey secrets.parameter secrets.otsSecret secrets.ftsSecret)
       (gameAfterSecrets adversary secrets.parameter secrets.otsSecret secrets.ftsSecret) ∅ false
-
-theorem sampledEncodingPrehitGame_verdict_projection (adversary : Adversary) :
-    EncodingPrehitGameResult.verdict <$> sampledEncodingPrehitGame adversary = sampledGame adversary := by
-  unfold sampledEncodingPrehitGame sampledGame
-  rw [map_bind]
-  apply bind_congr
-  intro secrets
-  rw [Functor.map_map, StateT.run'_eq]
-  rw [← TightEncoding.runEncodingPrehitMonitor_project
-    (primitiveAccountingKey secrets.parameter secrets.otsSecret secrets.ftsSecret)
-    (gameAfterSecrets adversary secrets.parameter secrets.otsSecret secrets.ftsSecret) ∅ false,
-    Functor.map_map]
 
 theorem probEvent_sampledEncodingPrehitGame_bad_le_queryCharge (adversary : Adversary) :
     Pr[EncodingPrehitGameResult.Bad | sampledEncodingPrehitGame adversary] ≤

@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.EncodingExhaustionBound
 import SphincsSecurity.Proof.OtsProbeNativeChainTrace
 import SphincsSecurity.Proof.OtsProbeStartErasureBound
 
@@ -77,52 +79,5 @@ theorem probEvent_nativeChainTraceAfterRoot_failure_le_inv216
       (probEvent_anyEncodingInputsExhausted_le_inv216 (concreteAfterRootComputation parameter table ftsSecret continuation))
   intro trace result hrel hfailure
   exact hrel.resolve_left hfailure
-
-def NativeMaterializedCandidateRisk (parameter : PublicParameter)
-    (trace : Option (ResolvedRunResult (α × SplitHashCache)) × List CanonicalQuerySelection) : Prop :=
-  ∃ selection ∈ trace.2, ∃ input candidate,
-    selection.input = .inl (.inr input) ∧
-    (purePlanProbingHashQuery parameter input selection.context.state).candidate? = some candidate ∧
-    selection.context.state.values candidate.coordinate ≠ none ∧
-    candidateFailureAllowance selection.table selection.context (some candidate) ≠ 0
-
-theorem NativeMaterializedCandidateRisk.not_chainsPublished
-    {parameter : PublicParameter}
-    {trace : Option (ResolvedRunResult (α × SplitHashCache)) × List CanonicalQuerySelection}
-    (hrisk : NativeMaterializedCandidateRisk parameter trace) : ¬NativeChainsPublished trace := by
-  obtain ⟨selection, hselection, input, candidate, _, hplan, hknown, hnonzero⟩ := hrisk
-  intro hpublic
-  exact hnonzero ((hpublic.2 selection hselection).candidate_allowance_eq_zero_of_known
-    parameter input candidate selection.table hplan hknown)
-
-theorem probEvent_nativeMaterializedCandidateRisk_afterRoot_le_inv216
-    (targets : Finset Position) (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (fuel : Nat)
-    (continuation : Digest → OracleComp (OracleWorld + SigningSpec) α) :
-    Pr[NativeMaterializedCandidateRisk parameter | nativeChainTraceAfterRoot targets parameter table ftsSecret fuel continuation] ≤
-      ((2 ^ 216 : Nat) : ENNReal)⁻¹ := by
-  apply (probEvent_mono fun _ _ hrisk => hrisk.not_chainsPublished).trans
-    (probEvent_nativeChainTraceAfterRoot_failure_le_inv216 targets parameter table ftsSecret fuel continuation)
-
-noncomputable def sampledNativeChainTrace (targets : Finset Position) (adversary : Adversary) (fuel : Nat) :
-    ProbComp (Option (ResolvedRunResult (RetainedGameResult × SplitHashCache)) × List CanonicalQuerySelection) := do
-  let parameter ← sampleParameter
-  let table ← sampleOtsHashTable
-  let ftsSecret ← sampleFtsSecrets
-  nativeChainTraceAfterRoot targets parameter table ftsSecret fuel fun root =>
-    (fun rest => (root, rest)) <$> retainedGameRestComputation adversary ⟨root, parameter⟩
-
-theorem probEvent_sampledNativeChainTrace_failure_le_inv216
-    (targets : Finset Position) (adversary : Adversary) (fuel : Nat) :
-    Pr[fun trace => ¬NativeChainsPublished trace | sampledNativeChainTrace targets adversary fuel] ≤
-      ((2 ^ 216 : Nat) : ENNReal)⁻¹ := by
-  unfold sampledNativeChainTrace
-  apply probEvent_bind_le_of_forall_le
-  intro parameter _
-  apply probEvent_bind_le_of_forall_le
-  intro table _
-  apply probEvent_bind_le_of_forall_le
-  intro ftsSecret _
-  exact probEvent_nativeChainTraceAfterRoot_failure_le_inv216 targets parameter table ftsSecret fuel _
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

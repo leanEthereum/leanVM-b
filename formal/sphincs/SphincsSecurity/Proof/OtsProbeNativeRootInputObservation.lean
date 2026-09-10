@@ -1,4 +1,7 @@
-import SphincsSecurity.Proof.OtsProbeNativePeekInput
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeNativeRootState
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivatePlanExecution
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootSelectionMaterialized
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.BankedTargetEnvelope
 import SphincsSecurity.Proof.OriginalProposalExecution
 
@@ -156,21 +157,6 @@ theorem expected_lengthBridge_sign_banked_le (key : SecretKey) (reuse : ENNReal)
         targetCreationMultiplier key state.1 (.inr message) * targetCreationPrice key reuse budget (signatures + 1) required state :=
   expected_coupled_bankedProposalRecord_le key reuse budget signatures required state bank (.inr message)
     _ Prod.snd stopped _ (recordLengthBridge_record _ _ _ _)
-    (expected_originalProposalRecord_sign_banked_le key reuse budget signatures required state bank message
-      (fun _ => false) hsigned hreuse)
-
-theorem expected_proposalBridge_sign_banked_le (key : SecretKey) (reuse : ENNReal) (budget signatures : Nat)
-    (required : Finset FtsTree) (state : CoverLogState) (bank : HashInput → Bool) (message : Message)
-    (rejected : PMF Index) (stopped : List Index × ProposalExecutionRecord (.inr message) → Bool)
-    (hsigned : SigningDigestsCached key.parameter state.1 key.root state.2)
-    (hreuse : exactDigestReuseWeight key message state.1 ≤ reuse) :
-    (∑' result, Pr[= result | recordProposalBridge (originalProposalRecord key (.inr message) state.1) rejected
-        targetProposalAcceptance targetProposalAcceptance_ne_zero targetProposalAcceptance_lt_one.le] *
-      bankedProposalRecordValue key reuse budget signatures required state bank (.inr message) result.2 (stopped result)) ≤
-      bankedTargetEnvelope key reuse budget (signatures + 1) required state bank false +
-        targetCreationMultiplier key state.1 (.inr message) * targetCreationPrice key reuse budget (signatures + 1) required state :=
-  expected_coupled_bankedProposalRecord_le key reuse budget signatures required state bank (.inr message)
-    _ Prod.snd stopped _ (recordProposalBridge_record _ _ _ _ _)
     (expected_originalProposalRecord_sign_banked_le key reuse budget signatures required state bank message
       (fun _ => false) hsigned hreuse)
 

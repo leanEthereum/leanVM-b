@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimeTargetCompletion
 
 namespace SphincsSecurity.Concrete
@@ -94,22 +95,6 @@ theorem completeFreshSelectedLoopView_eq_elim
   unfold completeFreshSelectedLoopView
   cases freshSelectedLoopView? referenceCache key message result <;> rfl
 
-theorem probEvent_signDigestLoop_freshSelected_add_nonfresh_le_uniform
-    (attempts : Nat) (key : SecretKey) (message : Message)
-    (referenceCache workingCache : QueryCache HashSpec) (P : FewTimeView → Prop)
-    (hinvariant : OnlyRejectedNewMessageEntries referenceCache workingCache key message) :
-    Pr[FreshSelectedView referenceCache key message P |
-      (simulateQ romImpl (signDigestLoop attempts key message)).run workingCache] +
-      Pr[fun result => freshSelectedLoopView? referenceCache key message result = none |
-        (simulateQ romImpl (signDigestLoop attempts key message)).run workingCache] *
-          Pr[P | ($ᵗ FewTimeView : ProbComp FewTimeView)] ≤
-      Pr[P | ($ᵗ FewTimeView : ProbComp FewTimeView)] := by
-  have h := probEvent_completeFreshSelectedLoopView_le_uniform attempts key message
-    referenceCache workingCache P hinvariant
-  simp only [funext (completeFreshSelectedLoopView_eq_elim referenceCache key message),
-    probEvent_completeOption_eq, freshSelectedLoopView?_satisfies_iff] at h
-  exact h
-
 theorem probEvent_signDigestLoop_freshSelected_eq_mass_mul_uniform
     (attempts : Nat) (key : SecretKey) (message : Message)
     (referenceCache workingCache : QueryCache HashSpec) (P : FewTimeView → Prop)
@@ -137,16 +122,5 @@ noncomputable def freshDigestSelectionProbability
 theorem freshDigestSelectionProbability_le_one
     (key : SecretKey) (message : Message) (cache : QueryCache HashSpec) :
     freshDigestSelectionProbability key message cache ≤ 1 := probEvent_le_one
-
-theorem probEvent_signWithView_freshSuccessful_le_mass_mul_uniform
-    (key : SecretKey) (message : Message) (cache : QueryCache HashSpec)
-    (P : FewTimeView → Prop) :
-    Pr[FreshSuccessfulSignerView cache key message P |
-      (simulateQ romImpl (signWithView key message)).run cache] ≤
-      freshDigestSelectionProbability key message cache *
-        Pr[P | ($ᵗ FewTimeView : ProbComp FewTimeView)] :=
-  (probEvent_signWithView_freshSuccessful_le_freshSelected key message cache P).trans_eq
-    (probEvent_signDigestLoop_freshSelected_eq_mass_mul_uniform digestAttemptLimit
-      key message cache cache P (onlyRejectedNewMessageEntries_self cache key message))
 
 end SphincsSecurity.Concrete

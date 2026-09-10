@@ -1,5 +1,8 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.BinomialMoments
 import SphincsSecurity.Proof.ReuseRawEnvelope
+import SphincsSecurity.Proof.TargetIndexEnvelope
+import SphincsSecurity.Proof.TargetShapeExpectation
 
 namespace SphincsSecurity.Concrete
 

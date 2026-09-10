@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimeRawTargetClassify
 
 namespace SphincsSecurity.Concrete
@@ -11,12 +12,6 @@ def ViewedHonestProperFewTimeLeakWitness (parameter : PublicParameter)
     fun f cache secretKey signingLog forgery index leaves =>
       ProperFewTimeLeak f cache secretKey signingLog index leaves ∧
         FullyHonestOpening f cache secretKey index leaves forgery.signature
-
-noncomputable instance (parameter : PublicParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) :
-    DecidablePred (ViewedHonestProperFewTimeLeakWitness parameter otsSecret ftsSecret) :=
-  fun _ => Classical.propDecidable _
 
 theorem probEvent_exists_fixedRawTargetViewedTerminal_le_idealOrigin
     (secretKey : SecretKey) (computation : OracleComp (OracleWorld + SigningSpec) α)
@@ -192,22 +187,5 @@ theorem probEvent_gameAfterSecretsWithViewTrace_nonfresh_honest_leak_le
   rw [probEvent_bind_pure_comp]
   exact probEvent_gameRestWithViewTrace_nonfresh_honest_leak_le adversary q hq hqMax
     parameter hparameter otsSecret hots ftsSecret hfts root rootCache hroot
-
-theorem probEvent_gameAfterSecretsWithViewTrace_nonfresh_honest_leak_le_mul_inv131
-    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
-    (hqMax : q ≤ 2 ^ 125)
-    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (hots : otsSecret ∈ support sampleOtsSecrets)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (hfts : ftsSecret ∈ support sampleFtsSecrets) :
-    Pr[fun result =>
-        ViewedHonestProperFewTimeLeakWitness parameter otsSecret ftsSecret result
-          ∧ ¬VerifierFreshTarget parameter result |
-      gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret] ≤
-      q * ((2 ^ 131 : Nat) : ℝ≥0∞)⁻¹ := by
-  exact (probEvent_gameAfterSecretsWithViewTrace_nonfresh_honest_leak_le adversary q hq (hqMax.trans (by norm_num))
-    parameter hparameter otsSecret hots ftsSecret hfts).trans
-      (mul_le_mul' le_rfl (rawTargetOriginUnionBound_le_inv131 le_rfl hqMax))
 
 end SphincsSecurity.Concrete

@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.TightEncodingRefinedBound
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.TightEncodingSettledCharge
 
 namespace SphincsSecurity.Concrete.TightEncoding
 

@@ -1,5 +1,8 @@
-import SphincsSecurity.Proof.FewTimePrehit
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTimeSignerView
+import SphincsSecurity.Proof.MessagePrehit
 import SphincsSecurity.Proof.SignerDigestSource
+import SphincsSecurity.Proof.TerminalCache
 
 namespace SphincsSecurity.Concrete
 
@@ -85,39 +88,5 @@ theorem signDigestLoop_new_admissible_selected (attempts : Nat) (key : SecretKey
             have hcache : after = attemptCache := congrArg Prod.snd heq
             rw [hcache, hnone] at hafter
             exact False.elim (by simp only [reduceCtorEq] at hafter)
-
-theorem signWithView_admissible_message_cached_before (key : SecretKey) (message : Message)
-    (before after : QueryCache HashSpec) (signature : Signature) (view : Option FewTimeView)
-    (hresult : ((some signature, view), after) ∈ support ((simulateQ romImpl (signWithView key message)).run before))
-    (payload : HashInput) (output : HashOutput)
-    (hne : payload ≠ messageDigestPayload key.root message signature.randomness)
-    (hafter : after (tweakableHashInput key.parameter .message payload) = some output)
-    (hadmissible : Admissible (truncateMessageDigest output)) :
-    before (tweakableHashInput key.parameter .message payload) = some output := by
-  have hle := simulateQ_romImpl_cache_le (signWithView key message) before ((some signature, view), after) hresult
-  cases hbefore : before (tweakableHashInput key.parameter .message payload) with
-  | some prior =>
-      exact (hle hbefore).symm.trans hafter
-  | none =>
-      obtain ⟨randomness, index, leaves, loopCache, hloop, hfinish, _⟩ :=
-        signWithView_support_some key message before after signature view hresult
-      have hrandomness := signAfterDigest_support_some_randomness key randomness index leaves loopCache after signature hfinish
-      have hloopCached : loopCache (tweakableHashInput key.parameter .message payload) ≠ none := by
-        intro hnone
-        have hnone' := signAfterDigest_cache_message_none key randomness index leaves loopCache after (some signature) hfinish payload hnone
-        rw [hnone'] at hafter
-        contradiction
-      obtain ⟨loopOutput, hloopOutput⟩ := Option.ne_none_iff_exists'.mp hloopCached
-      have hloopLe : loopCache ≤ after :=
-        (replay_of_mem_support (signAfterDigest key randomness index leaves) loopCache (some signature) after hfinish
-          (fromCache after) (agreesWithFn_fromCache after)).1
-      have hout : loopOutput = output := Option.some.inj ((hloopLe hloopOutput).symm.trans hafter)
-      rw [hout] at hloopOutput
-      obtain ⟨selected, selectedIndex, selectedLeaves, hselected, hpayload⟩ :=
-        signDigestLoop_new_admissible_selected digestAttemptLimit key message before loopCache
-          (some (randomness, index, leaves)) hloop payload output hbefore hloopOutput hadmissible
-      have hselectedRandomness : randomness = selected := congrArg Prod.fst (Option.some.inj hselected)
-      exact (hne (hpayload.trans (congrArg (messageDigestPayload key.root message)
-        (hselectedRandomness.symm.trans hrandomness.symm)))).elim
 
 end SphincsSecurity.Concrete

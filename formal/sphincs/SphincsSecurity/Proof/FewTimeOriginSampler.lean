@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimeWeightedCount
 
 /-!
@@ -26,7 +27,7 @@ def originConfigurationEquiv {signatures distinct : Nat}
   left_inv configuration := by cases configuration; rfl
   right_inv configuration := by cases configuration; rfl
 
-noncomputable instance {signatures distinct : Nat}
+noncomputable instance instFintypeOriginConfiguration {signatures distinct : Nat}
     (pattern : FewTimePattern signatures distinct) (sources : Nat) :
     Fintype (OriginConfiguration pattern sources) :=
   Fintype.ofEquiv _ (originConfigurationEquiv pattern sources).symm
@@ -44,7 +45,7 @@ def OriginConfiguration.Hit {signatures distinct : Nat}
   FixedFewTimePatternHit pattern.assignment sample.1
     ∧ sample.2 = 0
 
-noncomputable instance {signatures distinct : Nat}
+noncomputable instance instDecidablePredSampleHit {signatures distinct : Nat}
     {pattern : FewTimePattern signatures distinct} {sources : Nat}
     (configuration : OriginConfiguration pattern sources) :
     DecidablePred configuration.Hit :=

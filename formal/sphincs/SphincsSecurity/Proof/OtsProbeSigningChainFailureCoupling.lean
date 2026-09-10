@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeSigningChainPublication
 import SphincsSecurity.Proof.OtsProbeSigningFailureCoupling
 
@@ -202,15 +203,5 @@ theorem relTriple_sign_chainFailure_concrete
   rw [← resolvedImmediateSign_eq_concrete]
   exact relTriple_sign_chainFailure parameter root table ftsSecret message context fuel cache concreteCache
     hinvariant hvisible hpublished hstarts
-
-theorem SigningChainFailureRunRel.materializedChainsPublished_of_no_exhaustion
-    {parameter : PublicParameter} {table : OtsSecretIndex → HashOutput}
-    {result : ResolvedRunResult (α × SplitHashCache)} {right : α × QueryCache HashSpec}
-    (hrel : SigningChainFailureRunRel parameter table (some result) right)
-    (hcomplete : DeferredCompletable table result.context)
-    (hnoExhaustion : ¬AnyEncodingInputsExhausted right.2) : MaterializedChainsPublished result.context := by
-  rcases hrel.2 result rfl hcomplete with hpublic | hfailed
-  · exact hpublic
-  · exact False.elim (hnoExhaustion (anyEncodingInputsExhausted_of_cachedOtsEncodingFailure right.2 hfailed))
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

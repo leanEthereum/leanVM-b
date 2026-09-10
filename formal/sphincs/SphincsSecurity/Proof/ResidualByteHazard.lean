@@ -1,3 +1,6 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.AdaptiveHiddenHazard
+import SphincsSecurity.Proof.PrefixEncodingRisk
 import SphincsSecurity.Proof.ResidualByteCandidates
 
 namespace SphincsSecurity.Concrete.ResidualByteFrontend

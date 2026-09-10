@@ -1,4 +1,7 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeCanonicalChargeGame
 import SphincsSecurity.Proof.OtsProbeInitializedChargedRootGlobalRisk
+import SphincsSecurity.Proof.OtsProbeLiveGameCharge
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

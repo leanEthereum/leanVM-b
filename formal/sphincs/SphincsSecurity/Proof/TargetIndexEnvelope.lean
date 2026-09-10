@@ -1,5 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.TargetShapeCardinality
-import SphincsSecurity.Proof.TargetShapeExpectation
+import SphincsSecurity.Proof.TargetShapeContinuation
 
 namespace SphincsSecurity.Concrete
 

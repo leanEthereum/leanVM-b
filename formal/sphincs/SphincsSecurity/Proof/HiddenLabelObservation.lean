@@ -1,5 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.UniformTableCompletion
-import SphincsSecurity.Proof.HiddenLabelProbe
+import SphincsSecurity.Statement
 
 namespace SphincsSecurity.Concrete.HiddenLabelObservation
 
@@ -94,15 +95,6 @@ theorem posterior_mass (allowed : Coordinate → Finset Digest) (probe : Probe C
       complete allowed labels * response labels probe answer := by
   rw [lazyResponse_apply, mul_assoc, ← Probe.mass, response_apply]
   split <;> simp only [mul_comm, zero_mul]
-
-theorem bind_response {Result : Type} (allowed : Coordinate → Finset Digest) (probe : Probe Coordinate)
-    (next : HashOutput → (Coordinate → Digest) → SPMF Result) :
-    (complete allowed >>= fun labels => response labels probe >>= fun answer => next answer labels) =
-      (lazyResponse allowed probe >>= fun answer => complete (probe.restrict allowed answer) >>= next answer) := by
-  apply SPMF.ext
-  intro result
-  simp only [SPMF.bind_apply_eq_tsum, ← ENNReal.tsum_mul_left, ← mul_assoc, posterior_mass]
-  rw [ENNReal.tsum_comm]
 
 theorem lazyResponse_nonempty (allowed : Coordinate → Finset Digest) (probe : Probe Coordinate)
     (answer : HashOutput) (h : lazyResponse allowed probe answer ≠ 0) :

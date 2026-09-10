@@ -1,5 +1,8 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.ConcreteTargetShapeQuery
 import SphincsSecurity.Proof.FreshTargetShapeAverage
 import SphincsSecurity.Proof.TargetIndexEnvelope
+import SphincsSecurity.Proof.TargetShapeExpectation
 
 namespace SphincsSecurity.Concrete
 

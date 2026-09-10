@@ -1,5 +1,5 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.RetainedResidualCandidates
-import SphincsSecurity.Proof.RetainedResidualSigningLaw
 import SphincsSecurity.Proof.RetainedResidualMonitoredErasure
 
 namespace SphincsSecurity.Concrete.ResidualByteFrontend

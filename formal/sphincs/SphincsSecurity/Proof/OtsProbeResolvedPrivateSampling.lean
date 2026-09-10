@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.OtsProbeResolvedAdaptiveSigner
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeResolvedSignerFinalization
 
 /-!
 # Private structural sample deferral
@@ -388,46 +389,5 @@ theorem resolveDeferredPositionValue_then_addPending_self_resolve
               simp [hstate, holdHit, hnewHit, hitAt_addPending_self_iff, hcandidate,
                 clearPending_addPending_clearPending_self,
                 DeferredStructuralValues.install, not_hitAt_clearPending_self]
-
-theorem evalDist_resolveDeferredPositionValue_then_run_eq_true_of_not_completable
-    (position : Position) (context : DeferredContext) (fuel : Nat)
-    (table : OtsSecretIndex → HashOutput)
-    (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
-    (hconsistent : context.ValuesConsistent)
-    (hstarts : StartTableAgrees context.state table)
-    (hdoomed : ¬DeferredCompletable table context) :
-    evalDist (do
-      let resolved ← resolveDeferredPositionValue position context
-      match resolved with
-      | none => pure true
-      | some resolved =>
-          runResolvedFromTable resolved.toDeferredContext fuel table computation >>=
-            finishResolvedRunIsNone) = evalDist (pure true : ProbComp Bool) := by
-  calc
-    _ = evalDist (resolveDeferredPositionValue position context >>= fun _ => pure true) := by
-      apply evalDist_bind_congr
-      intro resolved hresolved
-      cases resolved with
-      | none => rfl
-      | some resolved =>
-          have hresolvedNotCompletable :
-              ¬DeferredCompletable table resolved.toDeferredContext := by
-            intro hresolvedCompletable
-            obtain ⟨completion, hcompletion⟩ := hresolvedCompletable
-            have hback :=
-              (deferredCompletion_resolveDeferredPositionValue_iff position resolved
-                hconsistent hresolved completion).mp hcompletion
-            exact hdoomed ⟨completion, hback.1⟩
-          exact evalDist_runResolvedFinishIsNone_eq_true_of_not_completable
-            resolved.toDeferredContext fuel table computation
-            (hconsistent.of_resolveDeferredPositionValue position resolved hresolved)
-            (hstarts.of_state_values_eq
-              (resolveDeferredPositionValue_preserves_state_values position context resolved
-                hresolved))
-            hresolvedNotCompletable
-    _ = _ := OracleComp.DeferredSampling.evalDist_bind_const_neverFails
-      (resolveDeferredPositionValue position context) (by
-        simp [resolveDeferredPositionValue, LazyRevealProbe.sampleHashOutput])
-      (pure true)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

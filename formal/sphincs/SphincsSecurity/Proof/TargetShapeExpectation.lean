@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.TargetShapeContinuation
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.TargetShapeEnvelope
 
 namespace SphincsSecurity.Concrete
 

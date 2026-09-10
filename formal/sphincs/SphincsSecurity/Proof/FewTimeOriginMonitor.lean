@@ -1,4 +1,7 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTimeOriginProbability
 import SphincsSecurity.Proof.FewTimeOriginSchedule
+import SphincsSecurity.Proof.FewTimeViewTrace
 
 /-!
 # Monitoring one padded origin configuration
@@ -137,47 +140,6 @@ theorem originMonitoredAdversaryImpl_projection {signatures distinct sources : N
     OriginMonitorState.viewed
   intro input state
   exact originMonitoredAdversaryImpl_query_projection configuration secretKey input state
-
-theorem probEvent_originMonitoredAdversaryImpl_projection
-    {signatures distinct sources : Nat}
-    {pattern : FewTimePattern signatures distinct}
-    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
-    (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (initialState : OriginMonitorState configuration)
-    (event : α × ViewedFullTraceState → Prop) :
-    Pr[event |
-      (simulateQ (viewedFullTracedMappedAdversaryImpl secretKey)
-        computation).run initialState.viewed] =
-      Pr[fun result : α × OriginMonitorState configuration =>
-          event (result.1, result.2.viewed) |
-        (simulateQ (originMonitoredAdversaryImpl configuration secretKey)
-          computation).run initialState] := by
-  rw [← originMonitoredAdversaryImpl_projection configuration secretKey computation
-    initialState, probEvent_map]
-  rfl
-
-theorem probEvent_viewed_le_originMonitoredAdversaryImpl
-    {signatures distinct sources : Nat}
-    {pattern : FewTimePattern signatures distinct}
-    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
-    (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (initialState : OriginMonitorState configuration)
-    (viewedEvent : α × ViewedFullTraceState → Prop)
-    (monitoredEvent : α × OriginMonitorState configuration → Prop)
-    (himp : ∀ result ∈ support
-      ((simulateQ (originMonitoredAdversaryImpl configuration secretKey)
-        computation).run initialState),
-      viewedEvent (result.1, result.2.viewed) → monitoredEvent result) :
-    Pr[viewedEvent |
-      (simulateQ (viewedFullTracedMappedAdversaryImpl secretKey)
-        computation).run initialState.viewed] ≤
-      Pr[monitoredEvent |
-        (simulateQ (originMonitoredAdversaryImpl configuration secretKey)
-          computation).run initialState] := by
-  classical
-  rw [probEvent_originMonitoredAdversaryImpl_projection configuration secretKey
-    computation initialState viewedEvent]
-  exact probEvent_mono himp
 
 end Concrete
 

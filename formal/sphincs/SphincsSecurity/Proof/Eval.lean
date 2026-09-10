@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.Chain
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Statement
 
 /-!
 # Evaluating against a fixed answer function

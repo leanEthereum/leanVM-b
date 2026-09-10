@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FrontierGameProjection
 import SphincsSecurity.Proof.FrontierOracleMask
 
 namespace SphincsSecurity.Concrete

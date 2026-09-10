@@ -1,5 +1,5 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CanonicalHiddenCoordinates
-import SphincsSecurity.Proof.FewTimeUniform
 import SphincsSecurity.Proof.UniformTableSplit
 
 namespace SphincsSecurity.Concrete

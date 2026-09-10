@@ -1,4 +1,7 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FtsProbeProbability
+import SphincsSecurity.Proof.FtsProbeTerminal
+import SphincsSecurity.Proof.TerminalView
 
 namespace SphincsSecurity
 
@@ -837,56 +840,6 @@ theorem mem_support_sampleFtsSecrets
       ftsSecretsSampleableType)
   exact ftsSecretsSampleableType.mem_support_selectElem ftsSecret
 
-set_option maxRecDepth 30000 in
-set_option linter.constructorNameAsVariable false in
-theorem probEvent_sampledActualRetainedFts_uncovered_le
-    (adversary : Adversary) (parameter : PublicParameter)
-    (hparameter : parameter ∈ support sampleParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (hots : otsSecret ∈ support sampleOtsSecrets) (q : Nat)
-    (hq : HasHashQueryBound scheme adversary q) :
-    Pr[SampledRetainedUncoveredFtsSecretWitness parameter otsSecret |
-        sampledActualRetainedFts adversary parameter otsSecret] ≤
-      (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
-  let maskedRun :=
-    (maskedRetainedGameAfterSecrets adversary parameter otsSecret).run emptySplitHashCache
-  calc
-    Pr[SampledRetainedUncoveredFtsSecretWitness parameter otsSecret |
-        sampledActualRetainedFts adversary parameter otsSecret] ≤
-      Pr[fun result : (Coordinate → Digest) ×
-          AdaptiveRevealProbe.DetailedResult Coordinate
-            (RetainedGameResult × SplitHashCache) => result.2.hit = true |
-        AdaptiveRevealProbe.detailedExperiment AdaptiveRevealProbe.State.empty q
-          maskedRun] := by
-      unfold sampledActualRetainedFts AdaptiveRevealProbe.detailedExperiment
-      apply probEvent_bind_le_bind_of_forall_le
-      intro table _htable
-      have hextend : AdaptiveRevealProbe.extendTable
-          (AdaptiveRevealProbe.State.empty : AdaptiveRevealProbe.State Coordinate) table =
-          table := by
-        funext coordinate
-        simp [AdaptiveRevealProbe.extendTable, AdaptiveRevealProbe.State.empty]
-      rw [hextend]
-      have hfts := mem_support_sampleFtsSecrets
-        (fun index tree leafIdx => table (index, tree, leafIdx))
-      have hbound := isQueryBoundP_gameAfterSecrets adversary q hq hparameter hots hfts
-      simpa [SampledRetainedUncoveredFtsSecretWitness,
-        AdaptiveRevealProbe.extendTable, AdaptiveRevealProbe.State.empty,
-        probEvent_map, Function.comp_def, maskedRun] using
-        (probEvent_actualRetained_uncovered_le_detailed_hit adversary parameter
-          otsSecret table q hbound)
-    _ = Pr[fun hit : Bool => hit = true |
-        AdaptiveRevealProbe.experiment AdaptiveRevealProbe.State.empty q maskedRun] := by
-      rw [← AdaptiveRevealProbe.detailedExperiment_hit_eq_experiment]
-      rw [probEvent_map]
-      rfl
-    _ ≤ (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
-      letI : Nonempty Coordinate :=
-        ⟨(⟨0, by norm_num [totalHeight]⟩,
-          ⟨0, by norm_num [ftsTrees]⟩,
-          ⟨0, by norm_num [ftsTreeHeight]⟩)⟩
-      exact AdaptiveRevealProbe.experiment_empty_probability_le_unbounded q maskedRun
-
 noncomputable def curryFtsTableEquiv :
     (Index → FtsTree → FtsLeaf → Digest) ≃ (Coordinate → Digest) where
   toFun table coordinate := table coordinate.1 coordinate.2.1 coordinate.2.2
@@ -953,62 +906,6 @@ def SampledFtsViewedUncoveredWitness (parameter : PublicParameter)
     (result : (Index → FtsTree → FtsLeaf → Digest) ×
       ((Digest × Forgery × Bool) × ViewedFullTraceState)) : Prop :=
   ViewedUncoveredFtsSecretWitness parameter otsSecret result.1 result.2
-
-theorem probEvent_sampledFtsViewedGame_uncovered_le
-    (adversary : Adversary) (parameter : PublicParameter)
-    (hparameter : parameter ∈ support sampleParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (hots : otsSecret ∈ support sampleOtsSecrets) (q : Nat)
-    (hq : HasHashQueryBound scheme adversary q) :
-    Pr[SampledFtsViewedUncoveredWitness parameter otsSecret |
-        sampledFtsViewedGame adversary parameter otsSecret] ≤
-      (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
-  calc
-    Pr[SampledFtsViewedUncoveredWitness parameter otsSecret |
-        sampledFtsViewedGame adversary parameter otsSecret] ≤
-      Pr[SampledRetainedUncoveredFtsSecretWitness parameter otsSecret |
-        sampledConcreteActualRetainedFts adversary parameter otsSecret] := by
-      unfold sampledFtsViewedGame sampledConcreteActualRetainedFts
-      apply probEvent_bind_le_bind_of_forall_le
-      intro ftsSecret _hfts
-      let table := curryFtsTableEquiv ftsSecret
-      simpa [SampledFtsViewedUncoveredWitness,
-        SampledRetainedUncoveredFtsSecretWitness, table, curryFtsTableEquiv,
-        probEvent_map, Function.comp_def] using
-        (probEvent_gameAfterSecretsWithViewTrace_uncovered_le_actualRetained
-          adversary parameter otsSecret table)
-    _ = Pr[SampledRetainedUncoveredFtsSecretWitness parameter otsSecret |
-        sampledActualRetainedFts adversary parameter otsSecret] := by
-      apply probEvent_congr' (fun _ _ => Iff.rfl)
-      exact evalDist_sampledConcreteActualRetainedFts_eq adversary parameter otsSecret
-    _ ≤ (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ :=
-      probEvent_sampledActualRetainedFts_uncovered_le adversary parameter hparameter
-        otsSecret hots q hq
-
-set_option maxRecDepth 30000 in
-theorem probEvent_sampledViewedGame_cleanUncovered_le
-    (adversary : Adversary) (q : Nat)
-    (hq : HasHashQueryBound scheme adversary q) :
-    Pr[SampledViewedEvent cleanUncoveredEvent | sampledViewedGame adversary] ≤
-      (q : ℝ≥0∞) * ((2 ^ digestBits : Nat) : ℝ≥0∞)⁻¹ := by
-  rw [sampledViewedGame, sampleSecrets]
-  simp only [bind_assoc, pure_bind]
-  apply probEvent_bind_le_of_forall_le
-  intro parameter hparameter
-  apply probEvent_bind_le_of_forall_le
-  intro otsSecret hots
-  let pack : ((Index → FtsTree → FtsLeaf → Digest) ×
-      ((Digest × Forgery × Bool) × ViewedFullTraceState)) → SampledViewedResult :=
-    fun result => ⟨⟨parameter, otsSecret, result.1⟩, result.2⟩
-  have hrun : (sampleFtsSecrets >>= fun ftsSecret =>
-      gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret >>= fun result =>
-        pure (⟨⟨parameter, otsSecret, ftsSecret⟩, result⟩ : SampledViewedResult)) =
-      pack <$> sampledFtsViewedGame adversary parameter otsSecret := by
-    simp [sampledFtsViewedGame, pack]
-  rw [hrun, probEvent_map]
-  apply le_trans (probEvent_mono fun result _hresult hevent => hevent.2)
-  exact probEvent_sampledFtsViewedGame_uncovered_le adversary parameter hparameter
-    otsSecret hots q hq
 
 end Concrete.FtsProbeSimulation
 

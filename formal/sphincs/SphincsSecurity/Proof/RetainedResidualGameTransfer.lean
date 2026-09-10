@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.RetainedResidualOriginalBudget
 import SphincsSecurity.Proof.RetainedResidualSuccessTransfer
 
 namespace SphincsSecurity.Concrete.RetainedResidual

@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FirstSuccessTable
+import SphincsSecurity.Statement
 
 namespace SphincsSecurity.Concrete
 
@@ -76,12 +78,6 @@ theorem uniform_bind_eq_selected {Result : Type} (decode : Answer → Option Val
     ite_mul, zero_mul]
   rw [ENNReal.tsum_comm]
   simp
-
-theorem uniform_joint_eq_selected (decode : Answer → Option Value) (n : Nat)
-    (hinvalid : (FirstSuccessTable.invalid decode).Nonempty) :
-    (PMF.uniformOfFintype (Index → Fin n → Answer)).map (fun tables => (select decode n tables, tables)) =
-      (selected decode n).bind (fun results => (afterSelect decode n hinvalid results).map (fun tables => (results, tables))) := by
-  exact uniform_bind_eq_selected decode n hinvalid (fun results tables => PMF.pure (results, tables))
 
 end FirstSuccessFamily
 

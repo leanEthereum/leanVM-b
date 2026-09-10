@@ -1,5 +1,10 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.EncodingPrehitGame
 import SphincsSecurity.Proof.EncodingPrehitViewedProjection
+import SphincsSecurity.Proof.EncodingTerminalView
+import SphincsSecurity.Proof.FtsProbeQueryBudget126
 import SphincsSecurity.Proof.OtsOpeningRefinedReserve
+import SphincsSecurity.Proof.Security126RefinedEndpoint
 
 namespace SphincsSecurity.Concrete
 
@@ -77,26 +82,6 @@ theorem probEvent_sampled_jointPrimitive_le_prehit_charge_add_openings (adversar
   have hopenings := probEvent_or_le (sampledEncodingPrehitViewedGame adversary)
     prehitFreeResidualOtsOpeningEvent (fun result => SampledViewedEvent cleanUncoveredEvent result.1)
   simpa only [probEvent_map, Function.comp_def] using hopenings
-
-theorem security126_of_sampled_prehitFree_otsOpening_le_refinedQueryReserve
-    (hots : ∀ (q : Nat), 1 ≤ q → ∀ adversary : Adversary,
-      HasHashQueryBound scheme adversary q → q ≤ 2 ^ 126 →
-        Pr[prehitFreeResidualOtsOpeningEvent | sampledEncodingPrehitViewedGame adversary] ≤
-          sampledQueryCharge otsOpeningRefinedQueryReserve adversary * (Fintype.card Digest : ℝ≥0∞)⁻¹) :
-    HasClassicalSecurityBits scheme 126 := by
-  apply security126_of_sampled_jointPrimitive_le_ten_thirds_mul
-  intro q hqPos adversary hq hqMax
-  have hfts := FtsProbeSimulation.probEvent_sampledViewedGame_cleanUncovered_le_queryCharge126 adversary q hq hqMax
-  rw [← sampled_ftsOpeningQueryReserve_eq] at hfts
-  apply (probEvent_sampled_jointPrimitive_le_prehit_charge_add_openings adversary).trans
-  apply (add_le_add le_rfl (add_le_add (hots q hqPos adversary hq hqMax) hfts)).trans
-  calc
-    _ = ((sampledQueryCharge refinedStructuralEncodingQueryCharge adversary +
-        sampledQueryCharge ftsOpeningQueryReserve adversary) +
-        sampledQueryCharge otsOpeningRefinedQueryReserve adversary) * (Fintype.card Digest : ℝ≥0∞)⁻¹ := by ring
-    _ ≤ ((10 / 3 : ℝ≥0∞) * q) * (Fintype.card Digest : ℝ≥0∞)⁻¹ :=
-      mul_le_mul' (sampled_structural_add_refined_openingQueryReserve_le adversary q hq) le_rfl
-    _ = _ := by simp [digestBits]
 
 theorem security126_of_sampled_prehitFree_otsOpening_le_refinedQueryReserve_add_query_erasure
     (hots : ∀ (q : Nat), 1 ≤ q → ∀ adversary : Adversary,

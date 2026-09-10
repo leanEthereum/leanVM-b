@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.EncodingPrehitMonitor
 
 namespace SphincsSecurity.Concrete.TightEncoding
@@ -27,15 +28,6 @@ theorem runEncodingPrehitMonitor_map (secretKey : SecretKey)
       (fun result => ((f result.1.1, result.1.2), result.2)) <$>
         runEncodingPrehitMonitor secretKey computation cache hit := by
   rw [map_eq_bind_pure_comp, runEncodingPrehitMonitor_bind]
-  rfl
-
-theorem runEncodingPrehitMonitor_query (secretKey : SecretKey)
-    (query : OracleWorld.Domain) (cache : QueryCache HashSpec) (hit : Bool) :
-    runEncodingPrehitMonitor secretKey (OracleWorld.query query) cache hit =
-      (fun result => (result, hit || encodingPrehitQuery secretKey cache query result.1)) <$>
-        (romImpl query).run cache := by
-  rw [← bind_pure (liftM (OracleWorld.query query) : OracleComp OracleWorld _)]
-  rw [runEncodingPrehitMonitor, OracleComp.construct_query_bind]
   rfl
 
 noncomputable def encodingPrehitImpl (secretKey : SecretKey) :

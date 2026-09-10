@@ -1,5 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FtsProbeCostExecution
-import SphincsSecurity.Proof.CoupledQueryCost
+import SphincsSecurity.Proof.MarginalCoupling
 
 namespace SphincsSecurity.Concrete.FtsProbeSimulation
 

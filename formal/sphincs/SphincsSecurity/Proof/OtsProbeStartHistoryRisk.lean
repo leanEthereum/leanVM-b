@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.OtsProbeStartTableInvariance
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeSampledGuessRisk
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -81,16 +82,6 @@ theorem no_missingChainStartHit_of_history_clean
   rw [hcoordinate, hdigest]
   rcases index with ⟨lay, tree, leafIdx, chainIdx⟩
   rfl
-
-theorem evalDist_resolveDeferredReveal_eq_of_history_clean
-    (left right : OtsSecretIndex → HashOutput) (position : Position)
-    (context : DeferredContext) (history : List Probe) (hcovered : PendingCoveredBy history context)
-    (hleft : ¬ChainStartHistoryHit context history left) (hright : ¬ChainStartHistoryHit context history right) :
-    evalDist (resolveDeferredReveal (completedStartTable context.state left) position context) =
-      evalDist (resolveDeferredReveal (completedStartTable context.state right) position context) :=
-  evalDist_resolveDeferredReveal_eq_of_no_missingChainStartHit _ _ position context
-    (no_missingChainStartHit_of_history_clean context history left hcovered hleft)
-    (no_missingChainStartHit_of_history_clean context history right hcovered hright)
 
 theorem expected_history_guarded_chainStart_allowance_le_four_thirds
     (context : DeferredContext) (history : List Probe) (hlength : history.length ≤ 2 ^ 126)

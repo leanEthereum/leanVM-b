@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimeUniform
 import SphincsSecurity.Proof.MessagePrehit
 import SphincsSecurity.Proof.SignerDigestSource

@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeNativeRootStateCoupling
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootStateSigner
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -366,20 +368,6 @@ theorem nativeRootRelates_maskedSignLayerWithTargetComparison_actual
   · rw [if_neg htarget]
     exact nativeRootRelates_maskedSignLayer_of_ne parameter ftsSecret target leftOutput
       rightOutput index lay htarget
-
-theorem nativeRootRelates_maskedSignLayersWithTargetComparison_actual
-    (parameter : PublicParameter)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (target : Position) (hroot : IsLayerRoot target)
-    (leftOutput rightOutput : HashOutput) (index : Index) :
-    NativeRootRelates target leftOutput rightOutput
-      (maskedSignLayersWithTargetComparison parameter target (truncateHash rightOutput)
-        ftsSecret index)
-      (sequenceFin fun lay => maskedSignLayer parameter ftsSecret index lay) := by
-  unfold maskedSignLayersWithTargetComparison
-  exact nativeRootRelates_sequenceFin target leftOutput rightOutput _ _ fun lay =>
-    nativeRootRelates_maskedSignLayerWithTargetComparison_actual parameter ftsSecret target
-      hroot leftOutput rightOutput index lay
 
 theorem nativeRootRelates_revealLayerValues
     (target : Position) (hroot : IsLayerRoot target)

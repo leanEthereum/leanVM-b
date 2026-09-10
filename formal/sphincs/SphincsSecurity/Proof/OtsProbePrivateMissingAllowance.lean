@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbePrivateAllowanceCounting
 import SphincsSecurity.Proof.OtsProbePrivateInactive
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
@@ -116,16 +118,5 @@ theorem privateLiveMissingProbeAllowance_le_stoppedAllowance
           | none => exact le_rfl
           | some result => exact ih result.value result.context result.remaining result.table
       · rw [if_neg hcomplete, if_neg hcomplete]
-
-theorem sum_privateLiveMissingProbeAllowance_ensuredInitial_le_structuralCharge
-    (targets : Finset Position) (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
-    (q fuel : Nat) (table : OtsSecretIndex → HashOutput) (hq : q ≤ 2 ^ 126)
-    (hbound : ∀ target ∈ targets, computation.IsQueryBoundP (IsPrivatePositionProbe target) q) :
-    (∑ target ∈ targets, privateLiveMissingProbeAllowance target computation (ensuredInitialContext targets) fuel table) ≤
-      expectedLiveResolvedQueryCharge structuralProbeQueryCharge computation (ensuredInitialContext targets) fuel table *
-        ((4 / 3 : ENNReal) * ((2 ^ digestBits : Nat) : ENNReal)⁻¹) := by
-  apply (Finset.sum_le_sum fun target _ => privateLiveMissingProbeAllowance_le_stoppedAllowance
-    target computation (ensuredInitialContext targets) fuel table).trans
-    (sum_privateLiveProbeAllowance_ensuredInitial_le_structuralCharge targets computation q fuel table hq hbound)
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

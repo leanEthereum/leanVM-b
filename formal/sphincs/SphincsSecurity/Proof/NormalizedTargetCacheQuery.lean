@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.CachedTargetSubsetMatch
 import SphincsSecurity.Proof.NormalizedTargetMatches
 
 namespace SphincsSecurity.Concrete
@@ -23,20 +25,6 @@ theorem normalizedCachedTargetSubsetMatch_eq_weight (parameter : PublicParameter
   congr 1
   funext input source
   split_ifs <;> simp only [normalizedSourceSubsetMatch, zero_mul, mul_comm]
-
-theorem expected_successfulSignerInput_normalizedSubsetMatch_le (key : SecretKey) (message : Message)
-    (before : QueryCache HashSpec) (targetInput : HashInput) (target : FewTimeView) (required : Finset FtsTree)
-    (hne : required.Nonempty) (q : Nat) (hq : q ≤ 2 ^ 127) (hcache : QueryCache.enncard before ≤ q) :
-    (∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run before] *
-      successfulSignerInputWeight key message
-        (fun input source => if input = targetInput then 0 else normalizedSourceSubsetMatch target source required) result) ≤
-      (Fintype.card Index : ENNReal)⁻¹ +
-        normalizedCachedTargetSubsetMatch key.parameter before targetInput target required * digestReuseWeight q := by
-  have hweight (input : HashInput) (source : FewTimeView) :
-      (if input = targetInput then 0 else normalizedSourceSubsetMatch target source required) ≤
-        normalizedSourceSubsetMatch target source required := by split_ifs; exact bot_le; exact le_rfl
-  simpa only [expected_normalizedSourceSubsetMatch target required hne, normalizedCachedTargetSubsetMatch_eq_weight] using
-    expected_successfulSignerInputWeight_le_allMessage key message before _ _ hweight q hq hcache
 
 theorem normalizedCachedTargetSubsetMatch_cacheQuery (parameter : PublicParameter) (before : QueryCache HashSpec)
     (targetInput : HashInput) (target : FewTimeView) (required : Finset FtsTree) (input : HashInput) (output : HashOutput)
@@ -98,13 +86,5 @@ theorem expected_normalizedTargetCacheProduct_cacheQuery (parameter : PublicPara
   exact expected_hash_normalizedSourceSubsetMatch_prod target groups selected
     (Finset.nonempty_iff_ne_empty.mpr (Finset.mem_erase.mp hselected).1)
     (fun slot _ => hgroups slot) (fun i _ j _ hij => hdisjoint hij)
-
-theorem normalizedTargetCacheProduct_cacheQuery_self (parameter : PublicParameter) (before : QueryCache HashSpec)
-    (targetInput : HashInput) (target : FewTimeView) (groups : Fin m → Finset FtsTree) (output : HashOutput)
-    (hfresh : before targetInput = none) :
-    normalizedTargetCacheProduct parameter (before.cacheQuery targetInput output) targetInput target groups =
-      normalizedTargetCacheProduct parameter before targetInput target groups := by
-  simp only [normalizedTargetCacheProduct, normalizedCachedTargetSubsetMatch,
-    cachedTargetSubsetMatch_cacheQuery_self parameter before targetInput target _ output hfresh]
 
 end SphincsSecurity.Concrete

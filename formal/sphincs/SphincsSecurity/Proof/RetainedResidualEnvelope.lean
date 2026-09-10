@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.RetainedResidualInitial
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.ReferencePrefixGame
+import SphincsSecurity.Proof.RetainedResidualSource
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 
@@ -62,27 +64,5 @@ theorem boundaryGameCore_eq_retainedPrefixPrior (dummy : OtsReferenceWords) (adv
   exact evalDist_boundaryGameCore_referenceResidual (gameInputs adversary)
     (canonicalEncodingInputs_subset_retainedGameInputs adversary) (canonicalGraphInputs_subset_retainedGameInputs adversary)
     dummy adversary (boundaryInputs_subset_retainedGameInputs adversary)
-
-theorem observedInitialGame_hashCalls_le (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter) (adversary : Adversary)
-    (auxiliary : ReferenceAuxiliary (gameInputs adversary))
-    (hauxiliary : auxiliary ∈ (referenceAuxiliarySample (gameInputs adversary)).support) (dummy : OtsReferenceWords)
-    (exposedValues : InitialPublicLabels (referenceFamilyWords auxiliary.selections dummy))
-    (high : CanonicalGraphHighHalves) (labels : CanonicalProbeRouting.Labels)
-    (hlabels : UniformTableCompletion.complete (initialAllowed (referenceFamilyWords auxiliary.selections dummy) exposedValues) labels ≠ 0)
-    (q : Nat) (hq : HasHashQueryBound scheme adversary q) (result : Option Bool × State (gameInputs adversary))
-    (hresult : AdaptiveResidualLabels.observedRun
-      (environment parameter (gameInputs adversary) (canonicalEncodingInputs_subset_retainedGameInputs adversary parameter)
-        (referenceFamilyWords auxiliary.selections dummy)
-        (coordinateGraphLabels (initialKnown (referenceFamilyWords auxiliary.selections dummy) exposedValues) high) auxiliary.selections auxiliary.rows)
-      labels auxiliary.seed
-      (restProgram (gameInputs adversary) parameter (knownRoot (initialKnown (referenceFamilyWords auxiliary.selections dummy) exposedValues))
-        (referenceFamilyWords auxiliary.selections dummy) auxiliary.selections adversary)
-      (initialState (gameInputs adversary) (referenceFamilyWords auxiliary.selections dummy) exposedValues) result ≠ 0) :
-    result.2.memory.external.hashCalls ≤ q := by
-  let key := (initialContext parameter (gameInputs adversary)
-    (canonicalEncodingInputs_subset_retainedGameInputs adversary parameter) auxiliary hauxiliary dummy exposedValues high labels).key
-  exact observedInitialRest_hashCalls_le parameter hparameter (gameInputs adversary)
-    (canonicalEncodingInputs_subset_retainedGameInputs adversary parameter) auxiliary hauxiliary dummy exposedValues high labels hlabels
-    adversary (sourceInputs_subset_gameInputs adversary key) (verifyInputs_subset_gameInputs adversary key) q hq result hresult
 
 end SphincsSecurity.Concrete.RetainedResidual

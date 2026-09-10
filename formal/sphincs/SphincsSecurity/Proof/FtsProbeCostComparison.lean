@@ -1,5 +1,8 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.AdaptiveRevealProbeCostExpectation
+import SphincsSecurity.Proof.CoupledQueryCost
 import SphincsSecurity.Proof.FtsProbeCostCoupling
-import SphincsSecurity.Proof.OtsProbeRootBudget
+import SphincsSecurity.Proof.FtsProbeQueryCharge
 
 namespace SphincsSecurity.Concrete.FtsProbeSimulation
 

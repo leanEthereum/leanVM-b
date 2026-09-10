@@ -1,5 +1,5 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.Bytes
-import Mathlib.Data.BitVec
 
 /-!
 # The target-sum code
@@ -120,7 +120,7 @@ theorem eq_of_le_of_valid {x y : Encoding} (hx : Valid x) (hy : Valid y)
 def ValidDigest (digest : Digest) : Prop :=
   ∃ encoding, decodeDigest digest = some encoding
 
-noncomputable instance : DecidablePred ValidDigest :=
+noncomputable instance instDecidablePredDigestValidDigest : DecidablePred ValidDigest :=
   Classical.decPred _
 
 noncomputable def validDigests : Finset Digest :=

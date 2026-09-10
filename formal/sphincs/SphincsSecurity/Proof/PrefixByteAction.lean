@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.ResidualByteAction
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.ReferencePrefixResidual
+import SphincsSecurity.Proof.ResidualByteAction
 
 namespace SphincsSecurity.Concrete.ResidualByteAction
 

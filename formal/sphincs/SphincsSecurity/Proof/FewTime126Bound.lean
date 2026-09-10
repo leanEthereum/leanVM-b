@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTime126Count
 import SphincsSecurity.Proof.FewTimeHonestLeakBound
 import SphincsSecurity.Proof.MandatoryQueries
@@ -5,31 +6,6 @@ import SphincsSecurity.Proof.MandatoryQueries
 namespace SphincsSecurity.Concrete
 
 open OracleComp OracleSpec ENNReal
-
-theorem probEvent_gameAfterSecretsWithViewTrace_honest_leak_le_twenty_seven_mul_inv133
-    (adversary : Adversary) (q : Nat) (hqPos : 1 ≤ q)
-    (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 126)
-    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (hots : otsSecret ∈ support sampleOtsSecrets)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (hfts : ftsSecret ∈ support sampleFtsSecrets) :
-    Pr[ViewedHonestProperFewTimeLeakWitness parameter otsSecret ftsSecret |
-      gameAfterSecretsWithViewTrace adversary parameter otsSecret ftsSecret] ≤
-      ((27 * q : Nat) : ℝ≥0∞) * ((2 ^ 133 : Nat) : ℝ≥0∞)⁻¹ := by
-  calc
-    _ ≤ q * rawTargetOriginUnionBound signatureLimit q +
-        ((q + 1 : Nat) : ℝ≥0∞) * rawTargetOriginUnionBound signatureLimit q :=
-      probEvent_gameAfterSecretsWithViewTrace_honest_leak_le adversary q hq hqMax
-        parameter hparameter otsSecret hots ftsSecret hfts
-    _ = ((2 * q + 1 : Nat) : ℝ≥0∞) * rawTargetOriginUnionBound signatureLimit q := by
-      push_cast
-      ring
-    _ ≤ ((3 * q : Nat) : ℝ≥0∞) * (9 * ((2 ^ 133 : Nat) : ℝ≥0∞)⁻¹) := by
-      apply mul_le_mul'
-      · exact_mod_cast (show 2 * q + 1 ≤ 3 * q by omega)
-      · exact rawTargetOriginUnionBound_le_nine_mul_inv133 le_rfl hqMax
-    _ = _ := by push_cast; ring
 
 theorem probEvent_gameAfterSecretsWithViewTrace_honest_leak_le_nineteen_mul_inv133
     (adversary : Adversary) (q : Nat)

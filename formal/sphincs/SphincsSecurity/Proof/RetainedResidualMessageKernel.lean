@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.RetainedResidualMessageTrace
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.PrefixEncodingRisk
+import SphincsSecurity.Proof.RetainedResidualHashTrace
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 

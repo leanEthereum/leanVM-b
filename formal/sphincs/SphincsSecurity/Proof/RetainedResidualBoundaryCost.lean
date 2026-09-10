@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.RetainedResidualMessagePayment
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.ResidualSigningProgram
+import SphincsSecurity.Proof.RetainedResidualSigningKernel
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 
@@ -6,7 +8,7 @@ open _root_.OracleComp OracleSpec CanonicalProbeRouting
 open AdaptiveResidualLabels hiding World State Environment
 open InterleavedResidual (Routing SigningRecord)
 attribute [local instance] Classical.propDecidable
-attribute [local irreducible] canonicalEncodingInputs canonicalGraphInputs instFintypePosition hashInputs sourceInputs
+attribute [local irreducible] canonicalEncodingInputs canonicalGraphInputs instFintypePosition hashInputs
 set_option backward.isDefEq.respectTransparency false
 
 theorem messageState_memory (parameter : PublicParameter) {inputs : Finset HashInput} (state : State inputs)

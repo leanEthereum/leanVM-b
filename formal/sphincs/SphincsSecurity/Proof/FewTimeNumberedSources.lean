@@ -1,5 +1,7 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimeOriginSampler
-import SphincsSecurity.Proof.DirectQueryBudget
+import SphincsSecurity.Proof.FewTimeOrigins
+import SphincsSecurity.Proof.FewTimeSource
 
 /-!
 # Numbering direct few-time sources
@@ -112,20 +114,6 @@ theorem FewTimeCover.originConfiguration_source_apply {f : QueryImpl HashSpec Id
     (cover.originConfiguration trace hlog sources source hsource).source.1 selected =
       source (cover.precachedOfPatternSelected trace hlog selected) := rfl
 
-theorem FewTimeCover.originConfiguration_prehit_card {f : QueryImpl HashSpec Id}
-    {cache : QueryCache HashSpec} {secretKey : SecretKey}
-    {signingLog : QueryLog SigningSpec} {index : Index}
-    {targetLeaves : DigestTree → FtsLeaf}
-    (cover : FewTimeCover f cache secretKey signingLog index targetLeaves)
-    (trace : SigningCacheTrace) (hlog : trace.toSigningLog = signingLog)
-    (sources : Nat)
-    (source : cover.PrecachedEntries trace hlog → Fin sources)
-    (hsource : Function.Injective source) :
-    (cover.originConfiguration trace hlog sources source hsource).prehit.card =
-      (cover.precachedEntryFinset trace hlog).card := by
-  classical
-  simp [FewTimeCover.originConfiguration, FewTimeCover.precachedPatternSelected]
-
 theorem FewTimeCover.precached_entries_have_injective_numbered_sources
     (adversary : Adversary) (parameter : PublicParameter)
     (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
@@ -203,175 +191,5 @@ theorem FewTimeCover.precached_entries_have_injective_numbered_sources
     hintervalInjective, ?_⟩
   intro entry
   refine ⟨(directSource entry).2, rfl, hinterval entry⟩
-
-private theorem AdversaryCacheEntry.queryEntry_eq_of_direct_hash_runs
-    (secretKey : SecretKey) (entry : AdversaryCacheEntry) (target : HashInput)
-    (output : HashOutput) (hinput : entry.input = .inl (.inr target))
-    (hvalid : (entry.output, entry.finalCache) ∈ support
-      ((unloggedMappedAdversaryImpl secretKey entry.input).run entry.initialCache))
-    (hrun : (output, entry.finalCache) ∈ support
-      ((randomOracle target).run entry.initialCache)) :
-    entry.queryEntry =
-      (⟨.inl (.inr target), output⟩ :
-        (query : (OracleWorld + SigningSpec).Domain) ×
-          (OracleWorld + SigningSpec).Range query) := by
-  rcases entry with ⟨input, entryOutput, initialCache, finalCache⟩
-  cases input with
-  | inr request => simp at hinput
-  | inl worldInput =>
-      cases worldInput with
-      | inl uniformInput => simp at hinput
-      | inr hashInput =>
-          simp only [Sum.inl.injEq, Sum.inr.injEq] at hinput
-          subst hashInput
-          change (entryOutput, finalCache) ∈ support
-            ((randomOracle target).run initialCache) at hvalid
-          have hcachedEntry := randomOracle_run_output_cached target initialCache finalCache
-            entryOutput hvalid
-          have hcachedOutput := randomOracle_run_output_cached target initialCache finalCache
-            output hrun
-          have heq : entryOutput = output :=
-            Option.some.inj (hcachedEntry.symm.trans hcachedOutput)
-          subst output
-          rfl
-
-theorem FewTimeCover.precached_entries_have_numbered_source_entries
-    (adversary : Adversary) (parameter : PublicParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (result : (Digest × Forgery × Bool) × (QueryCache HashSpec × FullAdversaryTrace))
-    (hresult : result ∈ support
-      (gameAfterSecretsWithFullTrace adversary parameter otsSecret ftsSecret))
-    (f : QueryImpl HashSpec Id) (hf : result.2.1.AgreesWithFn f)
-    (index : Index) (targetLeaves : DigestTree → FtsLeaf)
-    (cover : FewTimeCover f result.2.1
-      ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
-      result.2.2.signing.toSigningLog index targetLeaves) :
-    ∃ (source : cover.PrecachedEntries result.2.2.signing rfl →
-          Fin result.2.2.hashQueries.length)
-        (intervalSource : cover.PrecachedEntries result.2.2.signing rfl →
-          Fin result.2.2.intervals.length)
-        (output : cover.PrecachedEntries result.2.2.signing rfl → HashOutput),
-      Function.Injective source
-        ∧ Function.Injective intervalSource
-        ∧ ∀ entry,
-          result.2.2.hashQueries.get (source entry) =
-              (cover.entryDigestInput entry.1, output entry)
-            ∧ (result.2.2.intervals.get (intervalSource entry)).input =
-              .inl (.inr (cover.entryDigestInput entry.1))
-            ∧ (result.2.2.intervals.get (intervalSource entry)).initialCache
-              (cover.entryDigestInput entry.1) = none
-            ∧ (output entry,
-                (result.2.2.intervals.get (intervalSource entry)).finalCache) ∈ support
-              ((randomOracle (cover.entryDigestInput entry.1)).run
-                (result.2.2.intervals.get (intervalSource entry)).initialCache)
-            ∧ signAttemptResultOfOutput (output entry) ≠ none
-            ∧ hashOutputFewTimeView (output entry) = cover.entryView entry.1 := by
-  classical
-  obtain ⟨_numberedSource, intervalSource, _selectedInterval, output, _hnumberedInjective,
-      hintervalInjective, hnumbered⟩ :=
-    cover.precached_entries_have_injective_numbered_sources adversary parameter otsSecret
-      ftsSecret result hresult f hf index targetLeaves
-  have hinterval : ∀ entry,
-      (result.2.2.intervals.get (intervalSource entry)).input =
-          .inl (.inr (cover.entryDigestInput entry.1))
-        ∧ (result.2.2.intervals.get (intervalSource entry)).initialCache
-          (cover.entryDigestInput entry.1) = none
-        ∧ (output entry,
-            (result.2.2.intervals.get (intervalSource entry)).finalCache) ∈ support
-          ((randomOracle (cover.entryDigestInput entry.1)).run
-            (result.2.2.intervals.get (intervalSource entry)).initialCache)
-        ∧ signAttemptResultOfOutput (output entry) ≠ none
-        ∧ hashOutputFewTimeView (output entry) = cover.entryView entry.1 := by
-    intro entry
-    exact (hnumbered entry).choose_spec.2.2.2.2
-  have hvalid := gameAfterSecretsWithFullTrace_support_validIntervals adversary parameter
-    otsSecret ftsSecret result hresult
-  have hconsistent := (gameAfterSecretsWithFullTrace_support_interval_invariants adversary
-    parameter otsSecret ftsSecret result hresult).1
-  let pair : cover.PrecachedEntries result.2.2.signing rfl → HashInput × HashOutput :=
-    fun entry => (cover.entryDigestInput entry.1, output entry)
-  have hpairMem : ∀ entry, pair entry ∈ result.2.2.hashQueries := by
-    intro entry
-    let interval := result.2.2.intervals.get (intervalSource entry)
-    have hqueryEntry := AdversaryCacheEntry.queryEntry_eq_of_direct_hash_runs
-      (⟨parameter, result.1.1, otsSecret, ftsSecret⟩ : SecretKey) interval
-      (cover.entryDigestInput entry.1) (output entry) (hinterval entry).1
-      (hvalid interval (List.get_mem _ _)) (hinterval entry).2.2.1
-    rw [FullAdversaryTrace.hashQueries, mem_directHashQueries_iff]
-    rw [← hconsistent.1]
-    apply List.mem_map.2
-    exact ⟨interval, List.get_mem _ _, hqueryEntry⟩
-  let source : cover.PrecachedEntries result.2.2.signing rfl →
-      Fin result.2.2.hashQueries.length := fun entry =>
-    ⟨result.2.2.hashQueries.idxOf (pair entry),
-      List.idxOf_lt_length_of_mem (hpairMem entry)⟩
-  have hsourceGet : ∀ entry,
-      result.2.2.hashQueries.get (source entry) = pair entry := by
-    intro entry
-    exact List.idxOf_get _
-  have hsourceInjective : Function.Injective source := by
-    intro left right heq
-    apply Subtype.ext
-    apply cover.entryDigestInput_injective
-    have hpairs : pair left = pair right := by
-      rw [← hsourceGet left, heq, hsourceGet right]
-    exact congrArg Prod.fst hpairs
-  exact ⟨source, intervalSource, output, hsourceInjective, hintervalInjective,
-    fun entry => ⟨hsourceGet entry, hinterval entry⟩⟩
-
-theorem FewTimeCover.has_originConfiguration_of_hashQueries_length_le
-    (adversary : Adversary) (parameter : PublicParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (result : (Digest × Forgery × Bool) × (QueryCache HashSpec × FullAdversaryTrace))
-    (hresult : result ∈ support
-      (gameAfterSecretsWithFullTrace adversary parameter otsSecret ftsSecret))
-    (f : QueryImpl HashSpec Id) (hf : result.2.1.AgreesWithFn f)
-    (index : Index) (targetLeaves : DigestTree → FtsLeaf)
-    (cover : FewTimeCover f result.2.1
-      ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
-      result.2.2.signing.toSigningLog index targetLeaves)
-    (q : Nat) (hqueries : result.2.2.hashQueries.length ≤ q) :
-    ∃ configuration : OriginConfiguration cover.pattern q,
-      configuration.prehit.card =
-        (cover.precachedEntryFinset result.2.2.signing rfl).card := by
-  classical
-  obtain ⟨numberedSource, _intervalSource, _selectedInterval, _output,
-      hnumberedInjective, _, _⟩ :=
-    cover.precached_entries_have_injective_numbered_sources adversary parameter otsSecret
-      ftsSecret result hresult f hf index targetLeaves
-  let source : cover.PrecachedEntries result.2.2.signing rfl → Fin q :=
-    fun entry => Fin.castLE hqueries (numberedSource entry)
-  have hsourceInjective : Function.Injective source := by
-    exact Function.Injective.comp (finCastLEEmbedding hqueries).injective hnumberedInjective
-  let configuration := cover.originConfiguration result.2.2.signing rfl q source
-    hsourceInjective
-  exact ⟨configuration,
-    cover.originConfiguration_prehit_card result.2.2.signing rfl q source hsourceInjective⟩
-
-theorem FewTimeCover.has_originConfiguration_of_queryBudget
-    (adversary : Adversary) (q : Nat)
-    (hq : HasHashQueryBound scheme adversary q)
-    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (hots : otsSecret ∈ support sampleOtsSecrets)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (hfts : ftsSecret ∈ support sampleFtsSecrets)
-    (result : (Digest × Forgery × Bool) × (QueryCache HashSpec × FullAdversaryTrace))
-    (hresult : result ∈ support
-      (gameAfterSecretsWithFullTrace adversary parameter otsSecret ftsSecret))
-    (f : QueryImpl HashSpec Id) (hf : result.2.1.AgreesWithFn f)
-    (index : Index) (targetLeaves : DigestTree → FtsLeaf)
-    (cover : FewTimeCover f result.2.1
-      ⟨parameter, result.1.1, otsSecret, ftsSecret⟩
-      result.2.2.signing.toSigningLog index targetLeaves) :
-    ∃ configuration : OriginConfiguration cover.pattern q,
-      configuration.prehit.card =
-        (cover.precachedEntryFinset result.2.2.signing rfl).card := by
-  exact cover.has_originConfiguration_of_hashQueries_length_le adversary parameter otsSecret
-    ftsSecret result hresult f hf index targetLeaves q
-    (gameAfterSecretsWithFullTrace_hashQueries_length_le adversary q hq parameter hparameter
-      otsSecret hots ftsSecret hfts result hresult)
 
 end SphincsSecurity.Concrete

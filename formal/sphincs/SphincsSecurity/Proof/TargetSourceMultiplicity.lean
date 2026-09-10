@@ -1,4 +1,7 @@
-import SphincsSecurity.Proof.ConcreteTargetShapeSigning
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTimeConditionalCoverage
+import SphincsSecurity.Proof.NormalizedTargetCacheQuery
+import SphincsSecurity.Proof.TargetSigningMatchFactors
 
 namespace SphincsSecurity.Concrete
 

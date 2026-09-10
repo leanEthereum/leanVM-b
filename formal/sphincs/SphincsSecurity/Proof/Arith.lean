@@ -1,4 +1,4 @@
-import SphincsSecurity.Statement
+import SphincsSecurity.Proof.Prelude
 
 /-!
 # Index arithmetic

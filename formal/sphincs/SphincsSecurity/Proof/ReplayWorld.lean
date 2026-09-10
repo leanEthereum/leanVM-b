@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.Cached
 import SphincsSecurity.Proof.Execution
 
 /-!

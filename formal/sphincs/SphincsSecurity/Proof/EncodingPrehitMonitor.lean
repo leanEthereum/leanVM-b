@@ -1,4 +1,9 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.EncodingSelectionLift
+import SphincsSecurity.Proof.FirstBad
+import SphincsSecurity.Proof.RomQueryCharge
 import SphincsSecurity.Proof.TightEncodingPrehitCharge
+import SphincsSecurity.Proof.TightEncodingSelectionLift
 
 namespace SphincsSecurity.Concrete.TightEncoding
 

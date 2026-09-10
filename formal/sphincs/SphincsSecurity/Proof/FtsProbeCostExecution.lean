@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FtsProbeCostSigning
+import SphincsSecurity.Proof.FtsProbeSampling
 
 namespace SphincsSecurity.Concrete.FtsProbeSimulation
 

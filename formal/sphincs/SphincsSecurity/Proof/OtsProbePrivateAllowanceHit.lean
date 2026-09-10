@@ -1,3 +1,5 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeNativeCandidateRisk
 import SphincsSecurity.Proof.OtsProbePrivateAllowanceCut
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
@@ -83,18 +85,5 @@ theorem probEvent_privateProbeCut_hit_eq_ordinalAllowance
         have hcore := resolvedCore_of_mem_runResolvedFromTable _ context fuel table result hconsistent hstarts hoption
         simp [privateProbeCutAllowance, hcore.1]
   · simp [probOutput_eq_zero_of_not_mem_support hoption]
-
-theorem sum_privateProbeCut_hits_eq_liveAllowance
-    (target : Position) (computation : OracleComp (LazyRevealProbe.World Coordinate) α)
-    (q : Nat) (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput)
-    (hconsistent : context.ValuesConsistent) (hstarts : StartTableAgrees context.state table)
-    (hhidden : .position target ∉ context.state.revealed)
-    (hbound : computation.IsQueryBoundP (IsPrivatePositionProbe target) q) :
-    (∑ ordinal ∈ Finset.range q,
-      Pr[PrivateCandidatePairHit | privateResolvedSelectedCandidate target (privateRawCutCandidate target) <$>
-        runPrivateResolvedView target table context fuel (privatePositionProbeCutAt target computation ordinal)]) =
-      privateLiveProbeAllowance target computation context fuel table := by
-  simp_rw [probEvent_privateProbeCut_hit_eq_ordinalAllowance target computation _ context fuel table hconsistent hstarts hhidden]
-  exact sum_privateLiveProbeOrdinalAllowance_eq target computation q context fuel table hbound
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

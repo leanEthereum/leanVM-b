@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.Security126RefinedEndpoint
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsOpeningQueryReserve
 import SphincsSecurity.Proof.OtsProbeRootQueryReserve
 
 namespace SphincsSecurity.Concrete
@@ -57,27 +58,6 @@ theorem sampled_structural_add_refined_openingQueryReserve_le
     (fun secretKey cache input => (structural_add_refined_openingQueryReserve secretKey cache input).le)
     adversary q hq
 
-theorem security126_of_sampled_otsOpening_le_refinedQueryReserve
-    (hots : ∀ (q : Nat), 1 ≤ q → ∀ adversary : Adversary,
-      HasHashQueryBound scheme adversary q → q ≤ 2 ^ 126 →
-        Pr[SampledViewedEvent residualOtsOpeningEvent | sampledViewedGame adversary] ≤
-          sampledQueryCharge otsOpeningRefinedQueryReserve adversary * (Fintype.card Digest : ℝ≥0∞)⁻¹) :
-    HasClassicalSecurityBits scheme 126 := by
-  apply security126_of_sampled_jointPrimitive_le_ten_thirds_mul
-  intro q hqPos adversary hq hqMax
-  have hfts := FtsProbeSimulation.probEvent_sampledViewedGame_cleanUncovered_le_queryCharge126 adversary q hq hqMax
-  rw [← sampled_ftsOpeningQueryReserve_eq] at hfts
-  apply (probEvent_sampled_jointPrimitive_le_charge_add_residual adversary).trans
-  apply (add_le_add le_rfl ((probEvent_sampled_residual_le_ots_add_fts adversary).trans
-    (add_le_add (hots q hqPos adversary hq hqMax) hfts))).trans
-  calc
-    _ = ((sampledQueryCharge TightEncoding.refinedStructuralEncodingQueryCharge adversary +
-        sampledQueryCharge ftsOpeningQueryReserve adversary) +
-        sampledQueryCharge otsOpeningRefinedQueryReserve adversary) * (Fintype.card Digest : ℝ≥0∞)⁻¹ := by ring
-    _ ≤ ((10 / 3 : ℝ≥0∞) * q) * (Fintype.card Digest : ℝ≥0∞)⁻¹ :=
-      mul_le_mul' (sampled_structural_add_refined_openingQueryReserve_le adversary q hq) le_rfl
-    _ = _ := by simp [digestBits]
-
 theorem otsOpeningRefinedQueryReserve_ge_four_thirds_of_one_le
     (secretKey : SecretKey) (cache : QueryCache HashSpec) (input : HashInput)
     (hreserve : 1 ≤ otsOpeningQueryReserve secretKey cache input) :
@@ -105,37 +85,5 @@ theorem otsOpeningRefinedQueryReserve_ge_four_thirds_of_encodingMessageSettled
   rw [otsOpeningQueryReserve_atEncodingPosition secretKey cache input position hat]
   simp only [hsettled, if_true]
   split_ifs <;> norm_num
-
-namespace OtsProbeSimulation
-
-theorem probingHashQueryAfterRootAwarePublicPlan_weightedCharge_le_refinedReserve_atOtsPosition
-    (secretKey : SecretKey) (actualCache : QueryCache HashSpec) (input : HashInput) (position : Position)
-    (hat : AtPosition secretKey.parameter input position) (hots : IsOtsPosition position)
-    (publicState : LazyRevealProbe.State Coordinate) (plan : PlannedHashQuery)
-    (cache : SplitHashCache) (context : DeferredContext) (fuel : Nat) :
-    ordinaryContinuationCharge (fun _ _ _ => 0)
-        ((probingHashQueryAfterRootAwarePublicPlan secretKey.parameter input publicState plan).run cache) context fuel +
-      (materializedCandidateCharge context.state (rootAwareCandidateForPlan? secretKey.parameter input plan) : ℝ≥0∞) *
-        (4 / 3) ≤ otsOpeningRefinedQueryReserve secretKey actualCache input :=
-  (probingHashQueryAfterRootAwarePublicPlan_weightedCharge_le_four_thirds
-    secretKey.parameter input publicState plan cache context fuel).trans
-      (otsOpeningRefinedQueryReserve_ge_four_thirds_of_atOtsPosition secretKey actualCache input position hat hots)
-
-theorem probingHashQueryAfterRootAwarePublicPlan_weightedCharge_le_refinedReserve_of_encodingMessageSettled
-    (secretKey : SecretKey) (actualCache : QueryCache HashSpec) (input : HashInput) (position : EncodingPosition)
-    (hat : AtEncodingPosition secretKey.parameter input position)
-    (hsettled : EncodingMessageSettledAt actualCache secretKey position)
-    (publicState : LazyRevealProbe.State Coordinate) (plan : PlannedHashQuery)
-    (cache : SplitHashCache) (context : DeferredContext) (fuel : Nat) :
-    ordinaryContinuationCharge (fun _ _ _ => 0)
-        ((probingHashQueryAfterRootAwarePublicPlan secretKey.parameter input publicState plan).run cache) context fuel +
-      (materializedCandidateCharge context.state (rootAwareCandidateForPlan? secretKey.parameter input plan) : ℝ≥0∞) *
-        (4 / 3) ≤ otsOpeningRefinedQueryReserve secretKey actualCache input :=
-  (probingHashQueryAfterRootAwarePublicPlan_weightedCharge_le_four_thirds
-    secretKey.parameter input publicState plan cache context fuel).trans
-      (otsOpeningRefinedQueryReserve_ge_four_thirds_of_encodingMessageSettled
-        secretKey actualCache input position hat hsettled)
-
-end OtsProbeSimulation
 
 end SphincsSecurity.Concrete

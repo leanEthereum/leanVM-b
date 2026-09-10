@@ -1,5 +1,5 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FtsProbeGame
-import VCVio.OracleComp.QueryTracking.SubSpec
 
 namespace SphincsSecurity.Concrete.FtsProbeSimulation
 

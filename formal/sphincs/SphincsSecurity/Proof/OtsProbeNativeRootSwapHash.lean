@@ -1,5 +1,7 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeNativeRootEncodingHash
 import SphincsSecurity.Proof.OtsProbeNativeRootHashPlan
-import SphincsSecurity.Proof.OtsProbeNativeOrdinaryCacheHash
+import SphincsSecurity.Proof.OtsProbeNativeRootSwap
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -51,51 +53,5 @@ theorem relTriple_nativeRootSwap_probingHashQuery
                 middleResult.value.2, hcache₁, hcache₂⟩
               rw [hcontextEq]
               exact hcontext₂
-theorem evalDist_nativeRootSwap_hashQuery_live_of_stored
-    (parameter : PublicParameter) (target : Position) (before after : HashOutput) (input : HashInput)
-    (context : DeferredContext) (h : NativePositionReplaceable target before after context)
-    (fuel : Nat) (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
-    (havoid : RootInputAvoids parameter target (truncateHash before) (truncateHash after) input)
-    (hprobe : ∀ candidate, (purePlanProbingHashQuery parameter input context.state).candidate? = some candidate →
-      ¬IsPrivateValueExposure target before after (.probe candidate.coordinate candidate.candidate))
-    (haction : NativeRootActionSafe parameter target input context (replaceNativePosition target after context)
-      (purePlanProbingHashQuery parameter input context.state).action) :
-    evalDist (normalizeLiveNativeRootResult target <$>
-      runResolvedFromTable context fuel table ((probingHashQuery parameter input).run cache)) =
-    evalDist (normalizeLiveNativeRootResult target <$>
-      runResolvedFromTable (replaceNativePosition target after context) fuel table
-        ((probingHashQuery parameter input).run
-          (fullSwapRootCache parameter target (truncateHash before) (truncateHash after) after cache))) := by
-  have hpadding :
-      evalDist (normalizeLiveNativeRootResult target <$>
-        runResolvedFromTable context fuel table ((probingHashQuery parameter input).run cache)) =
-      evalDist (normalizeLiveNativeRootResult target <$>
-        runResolvedFromTable context fuel table ((probingHashQuery parameter input).run
-          (replaceHiddenRootCache target before cache))) := by
-    apply evalDist_map_eq_of_relTriple
-    apply relTriple_post_mono
-      (ordinaryCacheNativeCouples_probingHashQuery parameter input cache (replaceHiddenRootCache target before cache)
-        (ordinarySplitCacheEq_replaceHiddenRootCache target before cache) context fuel table)
-    intro left right hrel
-    exact hrel.normalizeLive target
-  have hswap :
-      evalDist (normalizeLiveNativeRootResult target <$>
-        runResolvedFromTable context fuel table ((probingHashQuery parameter input).run
-          (replaceHiddenRootCache target before cache))) =
-      evalDist (normalizeLiveNativeRootResult target <$>
-        runResolvedFromTable (replaceNativePosition target after context) fuel table
-          ((probingHashQuery parameter input).run
-            (fullSwapRootCache parameter target (truncateHash before) (truncateHash after) after
-              (replaceHiddenRootCache target before cache)))) := by
-    apply evalDist_map_eq_of_relTriple
-    apply relTriple_post_mono
-      (relTriple_nativeRootSwap_probingHashQuery parameter target before after input context
-        (replaceNativePosition target after context) ⟨h, rfl⟩ fuel table (replaceHiddenRootCache target before cache) _
-        (nativeRootSwapCacheRel_fullSwap parameter target before after (replaceHiddenRootCache target before cache)
-          (by simp [replaceHiddenRootCache])) havoid hprobe haction)
-    intro left right hrel
-    exact hrel.normalizeLive
-  rw [fullSwapRootCache_replaceHiddenRootCache] at hswap
-  exact hpadding.trans hswap
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

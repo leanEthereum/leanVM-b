@@ -1,8 +1,8 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CacheSize
 import SphincsSecurity.Proof.Cached
 import SphincsSecurity.Proof.Secrets
 import SphincsSecurity.Proof.SettledPath
-import SphincsSecurity.Proof.Support
 
 /-!
 # Mandatory hash queries
@@ -15,30 +15,6 @@ hash-query bound is at least 42, which absorbs the constant terms in the final s
 namespace SphincsSecurity
 
 open OracleComp OracleSpec ENNReal
-
-theorem QueryCache.two_le_enncard_of_cached_of_ne
-    {cache : QueryCache HashSpec} {left right : HashInput}
-    (hleft : cache left ≠ none) (hright : cache right ≠ none) (hne : left ≠ right) :
-    (2 : ℝ≥0∞) ≤ QueryCache.enncard cache := by
-  obtain ⟨leftAnswer, hleftAnswer⟩ := Option.ne_none_iff_exists'.mp hleft
-  obtain ⟨rightAnswer, hrightAnswer⟩ := Option.ne_none_iff_exists'.mp hright
-  let leftEntry : (input : HashInput) × HashOutput := ⟨left, leftAnswer⟩
-  let rightEntry : (input : HashInput) × HashOutput := ⟨right, rightAnswer⟩
-  have hentryNe : leftEntry ≠ rightEntry := by
-    intro heq
-    exact hne (congrArg Sigma.fst heq)
-  have hsubset : ({leftEntry, rightEntry} : Set ((input : HashInput) × HashOutput)) ⊆
-      cache.toSet := by
-    intro entry hentry
-    rcases hentry with hentry | hentry
-    · subst entry
-      exact hleftAnswer
-    · have hentryEq : entry = rightEntry := by simpa using hentry
-      subst entry
-      exact hrightAnswer
-  have hcard := Set.encard_le_encard hsubset
-  rw [Set.encard_pair hentryNe] at hcard
-  simpa only [QueryCache.enncard, ENat.toENNReal_ofNat] using ENat.toENNReal_mono hcard
 
 theorem cachedInput_ne_of_position_ne
     (parameter : PublicParameter)
@@ -128,29 +104,6 @@ theorem numChains_le_of_root_queryBound
       (liftM rootComputation : OracleComp OracleWorld Digest) q hbound
       (evalWithAnswerFn answerFn rootComputation, rootCache) hrootLifted
   exact_mod_cast hcacheLower.trans hcacheUpper
-
-theorem two_le_of_root_queryBound
-    (parameter : PublicParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest) (q : Nat)
-    (hbound : (liftM
-      (treeRoot parameter topLayer rootTree (otsSecret topLayer rootTree) :
-        OracleComp HashSpec Digest) : OracleComp OracleWorld Digest).IsQueryBoundP
-          (· matches Sum.inr _) q) :
-    2 ≤ q := by
-  exact (show 2 ≤ numChains by norm_num [numChains]).trans
-    (numChains_le_of_root_queryBound parameter otsSecret q hbound)
-
-theorem two_le_of_hasHashQueryBound
-    (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)
-    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (hots : otsSecret ∈ support sampleOtsSecrets)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (hfts : ftsSecret ∈ support sampleFtsSecrets) :
-    2 ≤ q := by
-  have hgame := isQueryBoundP_gameAfterSecrets adversary q hq hparameter hots hfts
-  rw [gameAfterSecrets] at hgame
-  exact two_le_of_root_queryBound parameter otsSecret q (IsQueryBoundP.of_bind_left hgame)
 
 theorem numChains_le_of_hasHashQueryBound
     (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q)

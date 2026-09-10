@@ -1,4 +1,6 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeNativeTraceCompletion
+import SphincsSecurity.Proof.OtsProbeRootMaterializationChronological
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

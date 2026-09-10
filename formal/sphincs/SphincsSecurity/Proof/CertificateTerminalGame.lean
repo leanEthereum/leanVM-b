@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.OriginalTerminalProposal
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CertificateGame
+import SphincsSecurity.Proof.OriginalTerminalProposal
 
 namespace SphincsSecurity.Concrete
 

@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.OtsProbeNativeRootCache
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootSigner
+import SphincsSecurity.Proof.OtsProbeResolvedSampling
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -169,7 +171,6 @@ theorem maskedTreeRoot_eq_of_stored_native
         storedNativeLayerRoot_of_mem_runResolved
           ((maskedTreeRoot lay tree).run cache) state fuel table result
           (layerRootPosition lay tree) root hroot horiginal⟩
-
 
 theorem maskedLayerMessage_eq_of_stored_native_of_eq
     (parameter : PublicParameter)

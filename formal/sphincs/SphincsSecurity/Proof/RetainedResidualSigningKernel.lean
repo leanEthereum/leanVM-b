@@ -1,6 +1,8 @@
-import SphincsSecurity.Proof.RetainedResidualMessageHistory
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.DigestSelectionWeight
 import SphincsSecurity.Proof.RetainedResidualCompletion
-import SphincsSecurity.Proof.DigestSigningCompletion
+import SphincsSecurity.Proof.RetainedResidualDigestLaw
+import SphincsSecurity.Proof.RetainedResidualRows
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 
@@ -27,15 +29,6 @@ theorem publicSigningWork_eq_digestWork (parameter : PublicParameter) (root : Di
   apply bind_congr
   rintro ⟨selected, trace⟩
   cases selected <;> rfl
-
-theorem jointSigningProgram_eq_digestCompletion (parameter : PublicParameter) (inputs : Finset HashInput) (root : Digest)
-    (known : Labels) (words : OtsReferenceWords) (selections : ReferenceFamily) (message : Message) :
-    ResidualByteFrontend.jointSigningProgram inputs parameter root known words selections message =
-      (simulateQ (ResidualByteFrontend.checkedTranslate inputs
-        (PublicEncodingMatch.Match parameter (knownEncodingMessage known) words selections))
-        (boundaryComputation parameter (publicDigestLoop parameter root message digestAttemptLimit)) >>= fun selected =>
-          ResidualByteFrontend.jointCompleteSigningWork (digestWork known words selections selected)) := by
-  rw [ResidualByteFrontend.jointSigningProgram, publicSigningWork_eq_digestWork, simulateQ_map, bind_map_left]
 
 theorem completePublicSigningRecord_digestWork_consistent (known : Labels) (words : OtsReferenceWords)
     (selections : ReferenceFamily) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
@@ -101,21 +94,5 @@ theorem lazyRun_completeWork_support (routing : Routing) (work : PublicSigningRe
   obtain ⟨actual, _, hfinish⟩ := (RetainedObservation.bind_nonzero _ _ _).mp hmap
   simp only [ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] at hfinish
   exact ⟨actual, congrArg Prod.fst hfinish, congrArg Prod.snd hfinish⟩
-
-theorem lazyRun_digestCompletion_preservesMessages (routing : Routing) (key : SecretKey) (loop : DigestLoopRecord)
-    (trace : SigningBoundaryTrace) (state : State inputs) (hcache : state.memory.external.cache = loop.2)
-    (ha : ∀ coordinate, (state.candidates coordinate).Nonempty)
-    (record : SigningRecord) (after : State inputs)
-    (hresult : lazyRun (environment parameter inputs hencoding words publicReplies selections rows)
-      (simulateQ (embed inputs routing) (ResidualByteFrontend.jointCompleteSigningWork
-        (digestWork routing.known words selections (loop.1, trace)))) state (some record, after) ≠ 0) :
-    DigestCompletionPreservesMessages key loop (record.1, after.memory.external.cache) := by
-  obtain ⟨actual, hrecord, hmemory⟩ := lazyRun_completeWork_support parameter inputs hencoding words publicReplies selections rows
-    routing (digestWork routing.known words selections (loop.1, trace)) state ha (some record, after) hresult
-  have hrecord' := Option.some.inj hrecord
-  rw [hrecord', hmemory]
-  change DigestCompletionPreservesMessages key loop (_, state.memory.external.cache)
-  rw [hcache]
-  exact ⟨completePublicSigningRecord_digestWork_consistent routing.known words selections _ loop trace, rfl⟩
 
 end SphincsSecurity.Concrete.RetainedResidual

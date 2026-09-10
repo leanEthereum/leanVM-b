@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.AdmissibleHashMoments
+import SphincsSecurity.Proof.Prelude
 
 namespace SphincsSecurity
 

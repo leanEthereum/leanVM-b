@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.AdaptiveHiddenCandidates
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.HiddenLabelProbe
+import SphincsSecurity.Proof.RetainedObservation
 
 namespace SphincsSecurity.Concrete.HiddenLabelObservation
 
@@ -65,20 +67,5 @@ end SphincsSecurity.Concrete.HiddenLabelObservation
 namespace SphincsSecurity.Concrete.AdaptiveHiddenLabels
 
 open _root_.OracleComp OracleSpec ENNReal HiddenLabelObservation
-
-theorem pair_failure_le_at_supported_state {Coordinate Memory AuxIndex Result : Type}
-    {auxSpec : OracleSpec AuxIndex} [Fintype Coordinate] [DecidableEq Coordinate]
-    (environment : Environment auxSpec Coordinate Memory) (computation : OracleComp (World auxSpec Coordinate) Result)
-    (state : ObservationState Coordinate (ProbeMemory Coordinate Memory))
-    (ha : ∀ coordinate, (state.allowed coordinate).Nonempty) (hmin : CandidateBound (2 ^ digestBits) state)
-    (result : Option Result × ObservationState Coordinate (ProbeMemory Coordinate Memory))
-    (hresult : lazyRun (countedEnvironment environment) computation state result ≠ 0)
-    (child parent : Coordinate) (hne : child ≠ parent) (candidate : Digest)
-    (hactive : child ∈ result.2.memory.active) :
-    (lazyResponse result.2.allowed (.pair child parent hne candidate)).toPMF none ≤
-      1 - (1 - ((2 ^ digestBits - result.2.memory.probes : Nat) : ENNReal)⁻¹) ^ 2 := by
-  apply lazyResponse_pair_failure_le_rounds
-  · exact lazyRun_nonempty (countedEnvironment environment) computation state ha result hresult
-  · exact lazyRun_candidateBound environment (2 ^ digestBits) computation state hmin result hresult child hactive
 
 end SphincsSecurity.Concrete.AdaptiveHiddenLabels

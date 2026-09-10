@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.RetainedResidualCorrespondence
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.MessageByteTrace
+import SphincsSecurity.Proof.RetainedResidualExecution
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 

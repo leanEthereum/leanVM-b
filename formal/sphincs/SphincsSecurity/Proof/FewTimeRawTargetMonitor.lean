@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimeRawTargetInvariant
 
 namespace SphincsSecurity.Concrete
@@ -90,7 +91,6 @@ theorem rawTargetMonitoredAdversaryImpl_expected_rawPotential_le
       exact originMonitoredAdversaryImpl_expected_potential_le configuration secretKey
         (.inr request) state.origin (fun views => event (views, target))
           q hq hcache horigin
-
 
 theorem rawTargetMonitoredAdversaryImpl_query_projection
     {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
@@ -230,47 +230,6 @@ theorem rawTargetMonitoredAdversaryImpl_projection
   exact rawTargetMonitoredAdversaryImpl_query_projection configuration secretKey
     targetOrdinal input state
 
-theorem probEvent_rawTargetMonitoredAdversaryImpl_projection
-    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
-    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
-    (targetOrdinal : Nat) (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (initialState : OriginTargetMonitorState configuration)
-    (event : α × OriginMonitorState configuration → Prop) :
-    Pr[event |
-      (simulateQ (originMonitoredAdversaryImpl configuration secretKey)
-        computation).run initialState.origin] =
-      Pr[fun result : α × OriginTargetMonitorState configuration =>
-          event (result.1, result.2.origin) |
-        (simulateQ
-          (rawTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal)
-          computation).run initialState] := by
-  rw [← rawTargetMonitoredAdversaryImpl_projection configuration secretKey
-    targetOrdinal computation initialState, probEvent_map]
-  rfl
-
-theorem probEvent_originMonitored_le_rawTargetMonitored
-    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
-    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
-    (targetOrdinal : Nat) (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (initialState : OriginTargetMonitorState configuration)
-    (originEvent : α × OriginMonitorState configuration → Prop)
-    (targetEvent : α × OriginTargetMonitorState configuration → Prop)
-    (himp : ∀ result ∈ support
-      ((simulateQ
-        (rawTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal)
-        computation).run initialState),
-      originEvent (result.1, result.2.origin) → targetEvent result) :
-    Pr[originEvent |
-      (simulateQ (originMonitoredAdversaryImpl configuration secretKey)
-        computation).run initialState.origin] ≤
-      Pr[targetEvent |
-        (simulateQ
-          (rawTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal)
-          computation).run initialState] := by
-  classical
-  rw [probEvent_rawTargetMonitoredAdversaryImpl_projection configuration secretKey
-    targetOrdinal computation initialState originEvent]
-  exact probEvent_mono himp
 theorem rawTargetMonitoredAdversaryImpl_viewed_projection
     {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
     (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
@@ -298,26 +257,6 @@ theorem rawTargetMonitoredAdversaryImpl_viewed_projection
       rw [rawTargetMonitoredAdversaryImpl_projection]
     _ = _ := originMonitoredAdversaryImpl_projection configuration secretKey
       computation initialState.origin
-
-theorem exists_rawTargetMonitored_of_viewed_support
-    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
-    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
-    (targetOrdinal : Nat) (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (initialState : OriginTargetMonitorState configuration)
-    (result : α × ViewedFullTraceState)
-    (hmem : result ∈ support
-      ((simulateQ (viewedFullTracedMappedAdversaryImpl secretKey)
-        computation).run initialState.origin.viewed)) :
-    ∃ monitored ∈ support
-        ((simulateQ
-          (rawTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal)
-          computation).run initialState),
-      monitored.1 = result.1 ∧ monitored.2.origin.viewed = result.2 := by
-  rw [← rawTargetMonitoredAdversaryImpl_viewed_projection configuration secretKey
-    targetOrdinal computation initialState, support_map] at hmem
-  obtain ⟨monitored, hmonitored, heq⟩ := hmem
-  refine ⟨monitored, hmonitored, ?_⟩
-  exact Prod.mk.inj heq
 
 theorem probEvent_viewed_le_rawTargetMonitoredAdversaryImpl
     {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}

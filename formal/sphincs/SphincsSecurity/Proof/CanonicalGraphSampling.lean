@@ -1,14 +1,16 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CanonicalGraph
+import SphincsSecurity.Proof.FiniteHashWorld
 
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec OracleComp.DeferredSampling
 set_option backward.isDefEq.respectTransparency false
 
-noncomputable local instance (inputs : Finset HashInput) : SampleableType (inputs → HashOutput) :=
+noncomputable local instance instSampleableTypeForallSubtypeHashInputMemFinsetHashOutput_1 (inputs : Finset HashInput) : SampleableType (inputs → HashOutput) :=
   SampleableType.ofFintype (inputs → HashOutput)
 
-noncomputable local instance : SampleableType CanonicalGraphLabels :=
+noncomputable local instance instSampleableTypeCanonicalGraphLabels : SampleableType CanonicalGraphLabels :=
   SampleableType.ofFintype CanonicalGraphLabels
 
 noncomputable def canonicalPayloadInputs : Finset HashInput :=
@@ -113,54 +115,5 @@ theorem evalDist_canonicalGraph_bind_eq_plant {Result : Type} (inputs : Finset H
     distribution >>= fun result => 𝒟[next result.1 result.2])
     (evalDist_canonicalGraph_eq_plant parameter otsSecret ftsSecret inputs hinputs)
   simpa only [evalDist_bind, evalDist_pure, bind_assoc, pure_bind] using h
-
-theorem evalDist_plantCanonicalGraph_labels (inputs : Finset HashInput)
-    (hinputs : canonicalGraphInputs parameter ⊆ inputs) :
-    𝒟[Prod.fst <$> plantCanonicalGraph parameter otsSecret ftsSecret inputs hinputs] =
-      𝒟[($ᵗ CanonicalGraphLabels : ProbComp _)] := by
-  rw [plantCanonicalGraph, FiniteGraphSampling.evalDist_plant_fst]
-  exact FiniteGraphSampling.evalDist_draw_coordinates canonicalGraphOrder canonicalGraphOrder_nodup
-    mem_canonicalGraphOrder (fun _ => 0)
-
-theorem evalDist_canonicalGraphLabels_uniform (inputs : Finset HashInput)
-    (hinputs : canonicalGraphInputs parameter ⊆ inputs) :
-    𝒟[do
-      let table ← sampleHashTable inputs
-      pure (canonicalGraphLabels parameter otsSecret ftsSecret (finiteHashAnswer ∅ inputs table))] =
-        𝒟[($ᵗ CanonicalGraphLabels : ProbComp _)] := by
-  have h := congrArg (fun distribution : SPMF (CanonicalGraphLabels × (inputs → HashOutput)) =>
-    Prod.fst <$> distribution)
-    (evalDist_canonicalGraph_eq_plant parameter otsSecret ftsSecret inputs hinputs)
-  have hmap :
-      𝒟[Prod.fst <$> (do
-        let table ← sampleHashTable inputs
-        pure (canonicalGraphLabels parameter otsSecret ftsSecret (finiteHashAnswer ∅ inputs table), table))] =
-        𝒟[Prod.fst <$> plantCanonicalGraph parameter otsSecret ftsSecret inputs hinputs] := by
-    simpa only [evalDist_map] using h
-  rw [evalDist_plantCanonicalGraph_labels] at hmap
-  simpa only [map_bind, map_pure] using hmap
-
-theorem plantCanonicalGraph_labels_eq (inputs : Finset HashInput)
-    (hinputs : canonicalGraphInputs parameter ⊆ inputs)
-    (result : CanonicalGraphLabels × (inputs → HashOutput))
-    (hresult : result ∈ support (plantCanonicalGraph parameter otsSecret ftsSecret inputs hinputs)) :
-    result.1 = canonicalGraphLabels parameter otsSecret ftsSecret (finiteHashAnswer ∅ inputs result.2) := by
-  have h := (mem_support_iff_of_evalDist_eq
-    (evalDist_canonicalGraph_eq_plant parameter otsSecret ftsSecret inputs hinputs) result).mpr hresult
-  rw [mem_support_bind_iff] at h
-  obtain ⟨table, _, h⟩ := h
-  simp only [mem_support_pure_iff] at h
-  subst result
-  rfl
-
-theorem plantCanonicalGraph_consistent (inputs : Finset HashInput)
-    (hinputs : canonicalGraphInputs parameter ⊆ inputs)
-    (result : CanonicalGraphLabels × (inputs → HashOutput))
-    (hresult : result ∈ support (plantCanonicalGraph parameter otsSecret ftsSecret inputs hinputs))
-    (position : Position) :
-    result.1 position = finiteHashAnswer ∅ inputs result.2
-      (canonicalGraphInput parameter otsSecret ftsSecret position result.1) := by
-  rw [plantCanonicalGraph_labels_eq parameter otsSecret ftsSecret inputs hinputs result hresult]
-  exact canonicalGraphLabels_consistent parameter otsSecret ftsSecret _ position
 
 end SphincsSecurity.Concrete

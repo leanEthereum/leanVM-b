@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.OtsProbeInitializedRootSelection
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootCache
+import SphincsSecurity.Proof.OtsProbeResolvedSampling
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -77,7 +79,6 @@ theorem rootEncodingNativeCouples_ensureCoordinate
   simp only [runResolvedFromTable, OracleComp.construct_pure]
   exact relTriple_pure_pure ⟨rfl, rfl, rfl, rfl, hcache⟩
 
-
 theorem RootEncodingNativeCouples.bind
     {parameter : PublicParameter} {target : Position}
     {leftRoot rightRoot : Digest}
@@ -108,7 +109,6 @@ theorem RootEncodingNativeCouples.bind
           rw [← hstate, ← hremaining, ← htable, ← hvalue]
           exact hnext leftResult.value.1 leftResult.value.2 rightResult.value.2 hnextCache
             leftResult.context leftResult.remaining leftResult.table
-
 
 theorem RootEncodingNativeRelates.bind
     {parameter : PublicParameter} {target : Position}
@@ -166,30 +166,6 @@ theorem rootEncodingNativeCouples_sequenceFin
           (fun index => hcomponent index.succ)).bind fun _ =>
             rootEncodingNativeCouples_pure parameter target leftRoot rightRoot _
 
-theorem rootEncodingNativeRelates_sequenceFin
-    (parameter : PublicParameter) (target : Position)
-    (leftRoot rightRoot : Digest) {n : Nat}
-    (left right : Fin n → StateT SplitHashCache
-      (OracleComp (LazyRevealProbe.World Coordinate)) α)
-    (hcomponent : ∀ index,
-      RootEncodingNativeRelates parameter target leftRoot rightRoot
-        (left index) (right index)) :
-    RootEncodingNativeRelates parameter target leftRoot rightRoot
-      (sequenceFin left) (sequenceFin right) := by
-  induction n with
-  | zero =>
-      simp only [sequenceFin]
-      exact (rootEncodingNativeCouples_pure parameter target leftRoot rightRoot Fin.elim0).relates
-  | succ n ih =>
-      rw [sequenceFin, sequenceFin]
-      exact (hcomponent 0).bind fun leftHead rightHead hhead =>
-        (ih (fun index : Fin n => left index.succ) (fun index : Fin n => right index.succ)
-          (fun index => hcomponent index.succ)).bind fun leftTail rightTail htail => by
-            subst rightHead
-            subst rightTail
-            exact (rootEncodingNativeCouples_pure parameter target leftRoot rightRoot
-              (Fin.cases leftHead leftTail : Fin (n + 1) → α)).relates
-
 theorem rootEncodingNativeCouples_ensureChainPrefix
     (parameter : PublicParameter) (target : Position)
     (leftRoot rightRoot : Digest) (lay : Layer) (tree : TreeIndex)
@@ -205,7 +181,6 @@ theorem rootEncodingNativeCouples_ensureChainPrefix
       · rw [if_neg hstep]
         exact rootEncodingNativeCouples_pure parameter target leftRoot rightRoot ()).bind fun _ =>
           rootEncodingNativeCouples_pure parameter target leftRoot rightRoot ()
-
 
 theorem relTriple_native_splitHashQuery_encodingRetryInput
     (parameter : PublicParameter) (target : Position)
@@ -249,7 +224,6 @@ theorem relTriple_native_splitHashQuery_encodingRetryInput
       simp only [runResolvedFromTable, OracleComp.construct_pure]
       exact relTriple_pure_pure ⟨rfl, rfl, rfl, rfl,
         hcache.update_retry position counter hposition leftOutput⟩
-
 
 def RootEncodingNativeAttemptRel
     (parameter : PublicParameter) (target : Position)
@@ -373,6 +347,5 @@ theorem rootEncodingNativeRelates_maskedOtsSign
       (maskedOtsSign parameter lay tree leafIdx rightRoot) :=
   rootEncodingNativeRelates_maskedOtsSignFrom parameter target leftRoot rightRoot lay tree leafIdx
     hposition encodingAttemptLimit 0
-
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

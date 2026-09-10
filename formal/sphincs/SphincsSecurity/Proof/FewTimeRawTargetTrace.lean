@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.FewTimeRawTargetUnion
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTimeRawTargetMonitor
 
 namespace SphincsSecurity.Concrete
 

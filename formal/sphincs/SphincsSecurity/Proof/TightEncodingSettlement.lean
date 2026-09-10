@@ -1,5 +1,6 @@
-import SphincsSecurity.Proof.TightChargePotential
-import SphincsSecurity.Proof.EncodingSelectionPotential
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.EncodingLatent
+import SphincsSecurity.Proof.TightCharge
 
 namespace SphincsSecurity.Concrete
 
@@ -110,6 +111,5 @@ theorem PrematureLayerMessageSettlement.mem_tightSettlingTargets
   simp only [tightSettlingTargets, hparent]
   rw [if_pos hother]
   exact Finset.mem_union_right _ hslot
-
 
 end SphincsSecurity.Concrete

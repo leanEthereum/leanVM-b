@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.RetainedResidualOriginalBudget
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OriginalProposalExecution
+import SphincsSecurity.Proof.RetainedResidualSigningLaw
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 
@@ -6,7 +8,7 @@ open _root_.OracleComp OracleSpec ENNReal CanonicalProbeRouting
 open AdaptiveResidualLabels hiding World State Environment
 open InterleavedResidual (SigningRecord)
 attribute [local instance] Classical.propDecidable
-attribute [local irreducible] hashInputs sourceInputs canonicalEncodingInputs canonicalGraphInputs instFintypePosition
+attribute [local irreducible] hashInputs canonicalEncodingInputs canonicalGraphInputs instFintypePosition
   lazyRun environment signDigestLoop ResidualByteFrontend.jointSigningProgram
 set_option backward.isDefEq.respectTransparency false
 
@@ -135,17 +137,5 @@ theorem completedNativeSigning_index
   rw [completedNativeSigning, completeRecordIndex_index,
     lazySigning_selectedView key inputs hencoding words publicReplies selections rows message state hinputs ha hcovered,
     originalProposalRecord_index_loop]
-
-theorem completedNativeSigning_index_cap
-    (hinputs : hashInputs (signDigestLoop digestAttemptLimit key message) ⊆ inputs)
-    (ha : ∀ coordinate, (state.candidates coordinate).Nonempty)
-    (hcovered : ResidualByteFrontend.RowsCovered inputs (project state))
-    (spent : Nat) (hbound : ProposalCacheBound key state.memory.external.cache spent) (index : Index) :
-    targetProposalAcceptance * Pr[= index |
-      Prod.snd <$> completedNativeSigning key inputs hencoding words publicReplies selections rows message state] ≤
-      PMF.uniformOfFintype Index index := by
-  rw [completedNativeSigning_index key inputs hencoding words publicReplies selections rows message state hinputs ha hcovered,
-    SPMF.probOutput_eq_apply, SPMF.liftM_apply]
-  exact originalProposalRecord_cap key message state.memory.external.cache spent hbound index
 
 end SphincsSecurity.Concrete.RetainedResidual

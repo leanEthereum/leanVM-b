@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.FewTimeOriginInvariant
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTimeOriginPotential
 import SphincsSecurity.Proof.FewTimeTargetSigner
 
 /-!
@@ -72,34 +73,6 @@ theorem tsum_probOutput_randomOracle_fresh_view_mul_le_expected
       · rfl
     _ = _ := probEvent_randomOracle_fresh_view input cache hcache
       (fun value => value = view))
-
-theorem tsum_probOutput_signWithTargetView_fresh_mul_le_expected
-    (secretKey : SecretKey) (message : Message)
-    (initialCache : QueryCache HashSpec)
-    (cost : (TargetSignerResult × QueryCache HashSpec) → ℝ≥0∞)
-    (risk : FewTimeView → ℝ≥0∞)
-    (hoff : ∀ signerResult ∈ support
-        ((simulateQ romImpl (signWithTargetView secretKey message)).run initialCache),
-      freshTargetSignerView? initialCache signerResult = none → cost signerResult = 0)
-    (hon : ∀ signerResult ∈ support
-        ((simulateQ romImpl (signWithTargetView secretKey message)).run initialCache),
-      ∀ view, freshTargetSignerView? initialCache signerResult = some view →
-        cost signerResult ≤ risk view) :
-    (∑' signerResult,
-      Pr[= signerResult |
-        (simulateQ romImpl (signWithTargetView secretKey message)).run initialCache] *
-          cost signerResult) ≤
-      ∑ view, Pr[fun value : FewTimeView => value = view |
-        ($ᵗ FewTimeView : ProbComp FewTimeView)] * risk view := by
-  have hbound := tsum_probOutput_mul_le_classifiedRisk
-    ((simulateQ romImpl (signWithTargetView secretKey message)).run initialCache)
-    (freshTargetSignerView? initialCache) risk cost hoff hon
-  refine hbound.trans ?_
-  apply Finset.sum_le_sum
-  intro view _
-  exact mul_le_mul'
-    (probEvent_freshTargetSignerView?_eq_some_le_uniform secretKey message initialCache view)
-    le_rfl
 
 structure OriginTargetMonitorState {signatures distinct sources : Nat}
     {pattern : FewTimePattern signatures distinct}
@@ -327,22 +300,6 @@ theorem OriginTargetMonitorState.potential_eq_zero_of_invalid
     (hinvalid : state.valid = false) : state.potential event = 0 := by
   simp [OriginTargetMonitorState.potential, hinvalid]
 
-theorem OriginTargetMonitorState.potential_advanceOrigin
-    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
-    {configuration : OriginConfiguration pattern sources}
-    (state : OriginTargetMonitorState configuration)
-    (origin : OriginMonitorState configuration)
-    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop) :
-    (state.advanceOrigin origin).potential event =
-      if state.valid then
-        match state.targetView with
-        | some target => origin.potential fun views => event (views, target)
-        | none => ∑ target, Pr[fun value : FewTimeView => value = target |
-            ($ᵗ FewTimeView : ProbComp FewTimeView)] *
-              origin.potential (fun views => event (views, target))
-      else 0 := by
-  rfl
-
 theorem OriginTargetMonitorState.potential_recordCandidate_of_ordinal_ne
     {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
     {configuration : OriginConfiguration pattern sources}
@@ -353,18 +310,6 @@ theorem OriginTargetMonitorState.potential_recordCandidate_of_ordinal_ne
     (state.recordCandidate targetOrdinal allowed view).potential event =
       state.potential event := by
   simp [OriginTargetMonitorState.recordCandidate, OriginTargetMonitorState.potential, hne]
-
-theorem OriginTargetMonitorState.potential_recordCandidate_eq_of_allowed
-    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
-    {configuration : OriginConfiguration pattern sources}
-    (targetOrdinal : Nat) (state : OriginTargetMonitorState configuration)
-    (view : FewTimeView)
-    (event : (pattern.selected → FewTimeView) × FewTimeView → Prop)
-    (heq : state.candidateOrdinal = targetOrdinal) (hvalid : state.valid = true) :
-    (state.recordCandidate targetOrdinal true view).potential event =
-      state.origin.potential (fun views => event (views, view)) := by
-  simp [OriginTargetMonitorState.recordCandidate, OriginTargetMonitorState.potential,
-    heq, hvalid]
 
 theorem OriginTargetMonitorState.potential_recordCandidate_eq_of_disallowed
     {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
@@ -504,48 +449,6 @@ theorem originTargetMonitoredAdversaryImpl_projection
   intro input state
   exact originTargetMonitoredAdversaryImpl_query_projection configuration secretKey
     targetOrdinal input state
-
-theorem probEvent_originTargetMonitoredAdversaryImpl_projection
-    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
-    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
-    (targetOrdinal : Nat) (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (initialState : OriginTargetMonitorState configuration)
-    (event : α × OriginMonitorState configuration → Prop) :
-    Pr[event |
-      (simulateQ (originMonitoredAdversaryImpl configuration secretKey)
-        computation).run initialState.origin] =
-      Pr[fun result : α × OriginTargetMonitorState configuration =>
-          event (result.1, result.2.origin) |
-        (simulateQ
-          (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal)
-          computation).run initialState] := by
-  rw [← originTargetMonitoredAdversaryImpl_projection configuration secretKey
-    targetOrdinal computation initialState, probEvent_map]
-  rfl
-
-theorem probEvent_originMonitored_le_originTargetMonitored
-    {signatures distinct sources : Nat} {pattern : FewTimePattern signatures distinct}
-    (configuration : OriginConfiguration pattern sources) (secretKey : SecretKey)
-    (targetOrdinal : Nat) (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (initialState : OriginTargetMonitorState configuration)
-    (originEvent : α × OriginMonitorState configuration → Prop)
-    (targetEvent : α × OriginTargetMonitorState configuration → Prop)
-    (himp : ∀ result ∈ support
-      ((simulateQ
-        (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal)
-        computation).run initialState),
-      originEvent (result.1, result.2.origin) → targetEvent result) :
-    Pr[originEvent |
-      (simulateQ (originMonitoredAdversaryImpl configuration secretKey)
-        computation).run initialState.origin] ≤
-      Pr[targetEvent |
-        (simulateQ
-          (originTargetMonitoredAdversaryImpl configuration secretKey targetOrdinal)
-          computation).run initialState] := by
-  classical
-  rw [probEvent_originTargetMonitoredAdversaryImpl_projection configuration secretKey
-    targetOrdinal computation initialState originEvent]
-  exact probEvent_mono himp
 
 end Concrete
 

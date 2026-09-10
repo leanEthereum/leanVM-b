@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.FewTimeOriginProbability
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTimeOriginRealization
 
 /-!
 # Padding few-time origin configurations
@@ -61,13 +62,6 @@ theorem OriginConfiguration.mem_pad_prehit_iff {small large distinct sources : N
     (hle : small ≤ large) (selected : pattern.selected) :
     pattern.padSelectedEquiv hle selected ∈ (configuration.pad hle).prehit ↔
       selected ∈ configuration.prehit := by
-  classical
-  simp [OriginConfiguration.pad]
-
-theorem OriginConfiguration.pad_prehit_card {small large distinct sources : Nat}
-    {pattern : FewTimePattern small distinct} (configuration : OriginConfiguration pattern sources)
-    (hle : small ≤ large) :
-    (configuration.pad hle).prehit.card = configuration.prehit.card := by
   classical
   simp [OriginConfiguration.pad]
 

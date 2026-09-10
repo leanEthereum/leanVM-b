@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.OtsProbeNativeSupportedBudget
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
@@ -200,39 +201,5 @@ theorem nativeRetainedTraceAfterRoot_entry_safe_of_querySpace
   intro entry hentry
   have hentry := hresources entry hentry
   constructor <;> omega
-
-theorem nativeRetainedTraceAfterRoot_entry_safe
-    (targets : Finset Position) (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 126)
-    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
-    (table : OtsSecretIndex → HashOutput) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (hfts : ftsSecret ∈ support sampleFtsSecrets)
-    (trace : Option (ResolvedRunResult (RetainedRestResult × SplitHashCache)) × List CanonicalQuerySelection)
-    (htrace : trace ∈ support (nativeChainTraceAfterRoot targets parameter table ftsSecret (q + 1)
-      (fun root => retainedGameRestComputation adversary ⟨root, parameter⟩))) :
-    ∀ entry ∈ trace.2, 0 < entry.fuel ∧ entry.context.state.pending.card + 1 < Fintype.card Digest := by
-  exact nativeRetainedTraceAfterRoot_entry_safe_of_querySpace targets adversary q hq
-    (by
-      have hspace : 2 ^ 126 + 1 < Fintype.card Digest := by norm_num [digestBits]
-      omega) parameter hparameter table ftsSecret hfts trace htrace
-
-theorem canonicalGuessCharge_of_nativeRetainedTraceAfterRoot
-    (targets : Finset Position) (adversary : Adversary) (q : Nat) (hq : HasHashQueryBound scheme adversary q) (hqMax : q ≤ 2 ^ 126)
-    (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
-    (table : OtsSecretIndex → HashOutput) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (hfts : ftsSecret ∈ support sampleFtsSecrets)
-    (trace : Option (ResolvedRunResult (RetainedRestResult × SplitHashCache)) × List CanonicalQuerySelection)
-    (htrace : trace ∈ support (nativeChainTraceAfterRoot targets parameter table ftsSecret (q + 1)
-      (fun root => retainedGameRestComputation adversary ⟨root, parameter⟩)))
-    (entry : CanonicalQuerySelection) (hentry : entry ∈ trace.2) :
-    canonicalGuessCharge parameter table entry.input entry.context entry.fuel entry.cache =
-      match entry.input with
-      | .inl (.inr input) => candidateFailureAllowance table entry.context
-          (purePlanProbingHashQuery parameter input entry.context.state).candidate?
-      | _ => 0 := by
-  have hsafe := nativeRetainedTraceAfterRoot_entry_safe targets adversary q hq hqMax parameter hparameter table ftsSecret hfts trace htrace entry hentry
-  simp only [canonicalGuessCharge, if_pos hsafe]
-  cases entry.input with
-  | inl input => cases input <;> rfl
-  | inr message => rfl
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

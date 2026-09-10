@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.EncodingCharge
 import SphincsSecurity.Proof.EncodingRetry
 
@@ -148,13 +149,6 @@ noncomputable def encodingRetryPotential (cache : QueryCache HashSpec)
     (secretKey : SecretKey) : ℝ≥0∞ :=
   ∑ position : EncodingPosition, encodingRetryContribution cache secretKey position
 
-theorem encodingRetryContribution_eq_zero_of_target
-    {cache : QueryCache HashSpec} {secretKey : SecretKey} {position : EncodingPosition}
-    (htarget : HasEncodingTarget cache secretKey position) :
-    encodingRetryContribution cache secretKey position = 0 := by
-  classical
-  rw [encodingRetryContribution, if_pos htarget]
-
 theorem encodingRetryContribution_eq_pendingRisk
     {cache : QueryCache HashSpec} (hfinite : Finite cache)
     {secretKey : SecretKey} {position : EncodingPosition}
@@ -221,156 +215,6 @@ theorem encodingRetryContribution_cacheQuery_le
                 rw [add_mul, one_mul]
       · rw [if_neg hvalid, add_zero,
           encodingValidAnswers_cacheQuery_eq_of_invalid huncached position hvalid]
-
-theorem encodingRetryPotential_cacheQuery_le
-    {cache : QueryCache HashSpec} (hfinite : Finite cache) {secretKey : SecretKey}
-    {input : HashInput} {answer : HashOutput} (huncached : cache input = none) :
-    encodingRetryPotential (cache.cacheQuery input answer) secretKey ≤
-      encodingRetryPotential cache secretKey +
-        if TargetSum.ValidDigest (truncateHash answer) then
-          (TargetSum.validDigests.card : ℝ≥0∞)⁻¹ else 0 := by
-  classical
-  by_cases hat : ∃ position, AtEncodingPosition secretKey.parameter input position
-  · obtain ⟨queriedPosition, hqueried⟩ := hat
-    rw [encodingRetryPotential, encodingRetryPotential]
-    calc
-      ∑ position : EncodingPosition,
-          encodingRetryContribution (cache.cacheQuery input answer) secretKey position ≤
-        ∑ position : EncodingPosition,
-          (encodingRetryContribution cache secretKey position +
-            if position = queriedPosition then
-              (if TargetSum.ValidDigest (truncateHash answer) then
-                (TargetSum.validDigests.card : ℝ≥0∞)⁻¹ else 0) else 0) := by
-          apply Finset.sum_le_sum
-          intro position _
-          by_cases heq : position = queriedPosition
-          · rw [if_pos heq]
-            exact encodingRetryContribution_cacheQuery_le hfinite huncached position
-          · rw [if_neg heq, add_zero]
-            apply encodingRetryContribution_cacheQuery_le_of_not_atPosition huncached position
-            intro hposition
-            exact heq (atEncodingPosition_unique hposition hqueried)
-      _ = (∑ position : EncodingPosition,
-          encodingRetryContribution cache secretKey position) +
-            if TargetSum.ValidDigest (truncateHash answer) then
-              (TargetSum.validDigests.card : ℝ≥0∞)⁻¹ else 0 := by
-          rw [Finset.sum_add_distrib, Fintype.sum_ite_eq']
-  · rw [encodingRetryPotential, encodingRetryPotential]
-    calc
-      ∑ position : EncodingPosition,
-          encodingRetryContribution (cache.cacheQuery input answer) secretKey position ≤
-        ∑ position : EncodingPosition,
-          encodingRetryContribution cache secretKey position := by
-            apply Finset.sum_le_sum
-            intro position _
-            exact encodingRetryContribution_cacheQuery_le_of_not_atPosition huncached position
-              (fun hposition => hat ⟨position, hposition⟩)
-      _ ≤ _ := le_add_right le_rfl
-
-theorem encodingRetryPotential_add_contribution_le_of_new_target
-    {cache : QueryCache HashSpec} {secretKey : SecretKey}
-    {input : HashInput} {answer : HashOutput} {position : EncodingPosition}
-    (huncached : cache input = none)
-    (hnotTarget : ¬ HasEncodingTarget cache secretKey position)
-    (htarget : HasEncodingTarget (cache.cacheQuery input answer) secretKey position) :
-    encodingRetryPotential (cache.cacheQuery input answer) secretKey +
-        encodingRetryContribution cache secretKey position ≤
-      encodingRetryPotential cache secretKey := by
-  classical
-  have hother : ∀ otherPosition : EncodingPosition, otherPosition ≠ position →
-      encodingRetryContribution (cache.cacheQuery input answer) secretKey otherPosition ≤
-        encodingRetryContribution cache secretKey otherPosition := by
-    intro otherPosition hne
-    apply encodingRetryContribution_cacheQuery_le_of_not_atPosition huncached otherPosition
-    intro hinput
-    have htargetOld := htarget.of_cacheQuery_of_other_encodingPosition huncached hinput
-      hne
-    exact hnotTarget htargetOld
-  rw [encodingRetryPotential, encodingRetryPotential]
-  calc
-    (∑ otherPosition : EncodingPosition,
-        encodingRetryContribution (cache.cacheQuery input answer) secretKey otherPosition) +
-        encodingRetryContribution cache secretKey position =
-      ∑ otherPosition : EncodingPosition,
-        (encodingRetryContribution (cache.cacheQuery input answer) secretKey otherPosition +
-          if otherPosition = position then
-            encodingRetryContribution cache secretKey position else 0) := by
-      rw [Finset.sum_add_distrib, Fintype.sum_ite_eq']
-    _ ≤ ∑ otherPosition : EncodingPosition,
-        encodingRetryContribution cache secretKey otherPosition := by
-      apply Finset.sum_le_sum
-      intro otherPosition _
-      by_cases heq : otherPosition = position
-      · have htargetOther :
-            HasEncodingTarget (cache.cacheQuery input answer) secretKey otherPosition :=
-          heq.symm ▸ htarget
-        have hzero := encodingRetryContribution_eq_zero_of_target htargetOther
-        exact le_of_eq <| calc
-          encodingRetryContribution (cache.cacheQuery input answer) secretKey otherPosition +
-              (if otherPosition = position then
-                encodingRetryContribution cache secretKey position else 0) =
-            encodingRetryContribution (cache.cacheQuery input answer) secretKey otherPosition +
-              encodingRetryContribution cache secretKey position := by
-                exact congrArg _ (if_pos heq)
-          _ = 0 + encodingRetryContribution cache secretKey position :=
-            congrArg (fun value => value + encodingRetryContribution cache secretKey position)
-              hzero
-          _ = encodingRetryContribution cache secretKey position := zero_add _
-          _ = encodingRetryContribution cache secretKey otherPosition :=
-            congrArg (fun selectedPosition =>
-              encodingRetryContribution cache secretKey selectedPosition) heq.symm
-      · calc
-          encodingRetryContribution (cache.cacheQuery input answer) secretKey otherPosition +
-              (if otherPosition = position then
-                encodingRetryContribution cache secretKey position else 0) =
-            encodingRetryContribution (cache.cacheQuery input answer) secretKey otherPosition +
-              0 := congrArg _ (if_neg heq)
-          _ = encodingRetryContribution (cache.cacheQuery input answer) secretKey otherPosition :=
-            add_zero _
-          _ ≤ encodingRetryContribution cache secretKey otherPosition :=
-            hother otherPosition heq
-
-theorem encodingRetryPotential_add_pendingRisk_le_of_new_target
-    {cache : QueryCache HashSpec} (hfinite : Finite cache) {secretKey : SecretKey}
-    {input : HashInput} {answer : HashOutput} {position : EncodingPosition}
-    (huncached : cache input = none)
-    (hnotTarget : ¬ HasEncodingTarget cache secretKey position)
-    (htarget : HasEncodingTarget (cache.cacheQuery input answer) secretKey position) :
-    encodingRetryPotential (cache.cacheQuery input answer) secretKey +
-        EncodingRetry.pendingRisk
-          (encodingValidAnswerTargets secretKey.parameter cache hfinite position) ≤
-      encodingRetryPotential cache secretKey := by
-  rw [← encodingRetryContribution_eq_pendingRisk hfinite hnotTarget]
-  exact encodingRetryPotential_add_contribution_le_of_new_target huncached hnotTarget htarget
-
-theorem uniformHashOutput_retryPotential_cacheQuery_sum_le
-    {cache : QueryCache HashSpec} (hfinite : Finite cache) {secretKey : SecretKey}
-    {input : HashInput} (huncached : cache input = none) :
-    ∑' answer : HashOutput,
-        Pr[= answer | ($ᵗ HashOutput : ProbComp HashOutput)] *
-          encodingRetryPotential (cache.cacheQuery input answer) secretKey ≤
-      encodingRetryPotential cache secretKey +
-        (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
-  calc
-    _ ≤ ∑' answer : HashOutput,
-        Pr[= answer | ($ᵗ HashOutput : ProbComp HashOutput)] *
-          (encodingRetryPotential cache secretKey +
-            if TargetSum.ValidDigest (truncateHash answer) then
-              (TargetSum.validDigests.card : ℝ≥0∞)⁻¹ else 0) := by
-      apply ENNReal.tsum_le_tsum
-      intro answer
-      gcongr
-      exact encodingRetryPotential_cacheQuery_le hfinite huncached
-    _ = encodingRetryPotential cache secretKey +
-        ∑' answer : HashOutput,
-          Pr[= answer | ($ᵗ HashOutput : ProbComp HashOutput)] *
-            (if TargetSum.ValidDigest (truncateHash answer) then
-              (TargetSum.validDigests.card : ℝ≥0∞)⁻¹ else 0) := by
-      simp_rw [mul_add]
-      rw [ENNReal.tsum_add, ENNReal.tsum_mul_right,
-        tsum_probOutput_of_liftM_PMF, one_mul]
-    _ = _ := by
-      rw [uniformHashOutput_valid_bonus_sum_eq]
 
 @[simp] theorem encodingValidAnswers_empty (parameter : PublicParameter)
     (position : EncodingPosition) : encodingValidAnswers parameter ∅ position = ∅ := by

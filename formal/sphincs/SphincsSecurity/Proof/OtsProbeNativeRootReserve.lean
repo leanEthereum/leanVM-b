@@ -1,5 +1,9 @@
-import SphincsSecurity.Proof.OtsProbeInitializedGameCharge
-import SphincsSecurity.Proof.OtsProbeSelectedRootPrehit
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.MarginalCoupling
+import SphincsSecurity.Proof.OtsProbeEnsuredInitialization
+import SphincsSecurity.Proof.OtsProbeLiveJointReserve
+import SphincsSecurity.Proof.OtsProbeResolvedComputedCoupling
+import SphincsSecurity.Proof.OtsProbeResolvedComputedExecution
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -79,55 +83,5 @@ theorem relTriple_nativeChronological_computed_prehit
   apply relTriple_post_mono (relTriple_trans_exists hsupported hmonitor)
   rintro left right ⟨actual, hrelation, heq, _hactual, hsupport⟩
   exact ⟨heq ▸ hrelation.1, hrelation.2, hsupport⟩
-
-def LiveNativeStoredRootMatch (lay : Layer) (tree : TreeIndex) (candidate : Digest) :
-    Option (ResolvedRunResult α) → Prop
-  | none => False
-  | some result => DeferredCompletable result.table result.context ∧
-      ∃ output, result.context.positionValue (layerRootPosition lay tree) = some output ∧ truncateHash output = candidate
-
-theorem probEvent_nativeStoredRootMatch_le_prehit_of_insufficientRemainingReserve
-    (parameter : PublicParameter) (root : Digest) (table : OtsSecretIndex → HashOutput)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (input : HashInput) (candidate : Probe) (lay : Layer) (tree : TreeIndex)
-    (hcandidate : EncodingLayerRootCandidateAt parameter input candidate)
-    (hposition : candidate.coordinate = .position (layerRootPosition lay tree))
-    (next : HashOutput → OracleComp (OracleWorld + SigningSpec) α)
-    (context : DeferredContext) (fuel : Nat) (cache : SplitHashCache) (state : ViewedFullTraceState)
-    (hinvariant : ResolvedContextInvariant parameter table context (ordinaryQueryCache cache) state.cache)
-    (hvisible : VisibleResolvedComputationsCached parameter table context state.cache)
-    (hpublished : PublishedValues context.state) (hcomputed : DeferredComputationsClosed context) :
-    let secretKey : SecretKey := ⟨parameter, root,
-      fun lay tree leafIdx chainIdx => truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩), ftsSecret⟩
-    remainingOtsQueryReserve secretKey state.cache input < (4 / 3 : ENNReal) →
-      Pr[LiveNativeStoredRootMatch lay tree candidate.candidate | runResolvedFromTable context fuel table
-        ((simulateQ (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret)
-          ((OracleWorld + SigningSpec).query (.inl (.inr input)) >>= next)).run cache)] ≤
-      Pr[fun result => result.2.2 = true |
-        (simulateQ (encodingPrehitViewedAdversaryImpl secretKey secretKey)
-          ((OracleWorld + SigningSpec).query (.inl (.inr input)) >>= next)).run (state, false)] := by
-  let secretKey : SecretKey := ⟨parameter, root,
-    fun lay tree leafIdx chainIdx => truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩), ftsSecret⟩
-  dsimp only
-  intro hreserve
-  have hcoupling := relTriple_nativeChronological_computed_prehit parameter root table ftsSecret secretKey
-    ((OracleWorld + SigningSpec).query (.inl (.inr input)) >>= next) context fuel cache (state, false)
-    hinvariant hvisible hpublished hcomputed
-  apply probEvent_le_of_relTriple hcoupling
-  rintro result ⟨value, finalState, hit⟩ hrelation hmatch
-  cases hit with
-  | true => rfl
-  | false =>
-      cases result with
-      | none => exact False.elim hmatch
-      | some result =>
-          obtain ⟨hcomplete, output, hvalue, hmatch⟩ := hmatch
-          rcases hrelation.1 with hclean | hdoomed
-          · have hroot := (hrelation.2.1 result rfl).root_settled_value hclean.2.2.1 ftsSecret lay tree output hvalue
-            have hallowance := hcandidate.refinedReserve_of_prehitFree_viewed_matching_query secretKey
-              (accountingKey := secretKey) hposition hroot.1 (hmatch.symm.trans hroot.2.symm) next value hrelation.2.2
-            rw [← hcandidate.remainingReserve_eq_refined (secretKey := secretKey) state.cache] at hallowance
-            exact False.elim ((not_le_of_gt hreserve) hallowance)
-          · exact False.elim (hdoomed.2.2.2 (hdoomed.1 ▸ hcomplete))
 
 end SphincsSecurity.Concrete.OtsProbeSimulation

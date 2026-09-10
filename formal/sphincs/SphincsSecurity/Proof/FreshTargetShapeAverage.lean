@@ -1,7 +1,7 @@
-import SphincsSecurity.Proof.TargetShapeBlocks
-import SphincsSecurity.Proof.ConcreteTargetShapeQuery
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CacheIndexMultiplicity
 import SphincsSecurity.Proof.CachedTargetIncrement
+import SphincsSecurity.Proof.TargetShapeBlocks
 
 namespace SphincsSecurity.Concrete
 
@@ -34,20 +34,5 @@ theorem expected_fresh_targetShapeMoments (key : SecretKey) (cache : QueryCache 
   rw [expected_targetShapeMoments key cache log payload groups remaining hvalid]
   simp only [excludedCacheIndexCount_fresh key.parameter cache _ hfresh,
     eligibleSigningViews_fresh_eq_observed key.parameter key.root cache log payload hfresh hsigned, targetIndexMoments]
-
-theorem expected_cacheQuery_freshTargetShape (key : SecretKey) (before : QueryCache HashSpec) (log : QueryLog SigningSpec)
-    (payload : HashInput) (hfresh : before (tweakableHashInput key.parameter .message payload) = none)
-    (hsigned : SigningDigestsCached key.parameter before key.root log)
-    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
-    (∑' output, Pr[= output | ($ᵗ HashOutput : ProbComp HashOutput)] *
-      (if Admissible (truncateMessageDigest output) then
-        targetShapeMoments key (before.cacheQuery (tweakableHashInput key.parameter .message payload) output) log payload
-          (hashOutputFewTimeView output) groups remaining else 0)) =
-      (((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) *
-        targetIndexMoments key before log groups.card remaining.card := by
-  simp only [targetShapeMoments_cacheQuery_unchanged key before log payload _ groups remaining _ _ hfresh hsigned (Or.inr rfl)]
-  rw [expected_uniformHashOutput_admissible_weight (fun target => targetShapeMoments key before log payload target groups remaining),
-    expected_fresh_targetShapeMoments key before log payload hfresh hsigned groups remaining hvalid]
-  exact (mul_assoc _ _ _).symm
 
 end SphincsSecurity.Concrete

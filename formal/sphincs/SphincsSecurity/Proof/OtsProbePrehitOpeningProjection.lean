@@ -1,5 +1,7 @@
-import SphincsSecurity.Proof.OtsProbeCanonicalRejectionProbability
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.EncodingPrehitViewedBound
+import SphincsSecurity.Proof.OtsProbeRetainedPrehitProjection
+import SphincsSecurity.Proof.OtsProbeRetainedPrehitTrace
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 

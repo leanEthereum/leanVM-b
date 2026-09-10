@@ -1,4 +1,7 @@
-import SphincsSecurity.Proof.SignerAdmissibleMessage
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.FewTimeSignerView
+import SphincsSecurity.Proof.SignerDigestSource
+import SphincsSecurity.Proof.TerminalCache
 
 namespace SphincsSecurity.Concrete
 
@@ -36,61 +39,5 @@ theorem signAfterDigest_message_cache_eq (key : SecretKey) (randomness : Randomn
         (replay_of_mem_support (signAfterDigest key randomness index leaves) before signature after hfinish
           (fromCache after) (agreesWithFn_fromCache after)).1
       exact hcache hbefore
-
-theorem signWithView_support_decomposition (key : SecretKey) (message : Message) (before after : QueryCache HashSpec)
-    (signature : Option Signature) (view : Option FewTimeView)
-    (hresult : ((signature, view), after) ∈ support ((simulateQ romImpl (signWithView key message)).run before)) :
-    (signature = none ∧ view = none ∧ (none, after) ∈ support ((simulateQ romImpl (signDigestLoop digestAttemptLimit key message)).run before)) ∨
-      ∃ randomness index leaves loopCache,
-        (some (randomness, index, leaves), loopCache) ∈ support ((simulateQ romImpl (signDigestLoop digestAttemptLimit key message)).run before) ∧
-        (signature, after) ∈ support ((simulateQ (randomOracle : QueryImpl HashSpec _) (signAfterDigest key randomness index leaves)).run loopCache) ∧
-        view = some (selectedFewTimeView index leaves) := by
-  rw [signWithView, simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hresult
-  obtain ⟨⟨loopResult, loopCache⟩, hloop, hfinish⟩ := hresult
-  cases loopResult with
-  | none =>
-      have heq : ((signature, view), after) = ((none, none), loopCache) := by
-        simpa only [simulateQ_pure, StateT.run_pure, support_pure, Set.mem_singleton_iff] using hfinish
-      refine Or.inl ⟨congrArg (fun result => result.1.1) heq, congrArg (fun result => result.1.2) heq, ?_⟩
-      have hcache : after = loopCache := congrArg Prod.snd heq
-      rwa [hcache]
-  | some selected =>
-      obtain ⟨randomness, index, leaves⟩ := selected
-      rw [simulateQ_bind, StateT.run_bind, mem_support_bind_iff] at hfinish
-      obtain ⟨⟨signatureResult, signatureCache⟩, hsignature, hpure⟩ := hfinish
-      have heq : ((signature, view), after) = ((signatureResult, some (selectedFewTimeView index leaves)), signatureCache) := by
-        simpa only [simulateQ_pure, StateT.run_pure, support_pure, Set.mem_singleton_iff] using hpure
-      refine Or.inr ⟨randomness, index, leaves, loopCache, hloop, ?_, congrArg (fun result => result.1.2) heq⟩
-      have hresponse : signature = signatureResult := congrArg (fun result => result.1.1) heq
-      have hcache : after = signatureCache := congrArg Prod.snd heq
-      rw [hresponse, hcache]
-      simpa only [simulateQ_romImpl_liftM] using hsignature
-
-theorem signWithView_new_admissible_selected (key : SecretKey) (message : Message)
-    (before after : QueryCache HashSpec) (signature : Option Signature) (view : Option FewTimeView)
-    (hresult : ((signature, view), after) ∈ support ((simulateQ romImpl (signWithView key message)).run before))
-    (payload : HashInput) (output : HashOutput)
-    (hbefore : before (tweakableHashInput key.parameter .message payload) = none)
-    (hafter : after (tweakableHashInput key.parameter .message payload) = some output)
-    (hadmissible : Admissible (truncateMessageDigest output)) :
-    ∃ randomness index leaves loopCache,
-      (some (randomness, index, leaves), loopCache) ∈ support ((simulateQ romImpl (signDigestLoop digestAttemptLimit key message)).run before) ∧
-      payload = messageDigestPayload key.root message randomness ∧
-      view = some (hashOutputFewTimeView output) ∧ hashOutputFewTimeView output = selectedFewTimeView index leaves := by
-  rcases signWithView_support_decomposition key message before after signature view hresult with hnone | hsome
-  · obtain ⟨randomness, index, leaves, hselected, _⟩ := signDigestLoop_new_admissible_selected digestAttemptLimit key message
-      before after none hnone.2.2 payload output hbefore hafter hadmissible
-    contradiction
-  · obtain ⟨randomness, index, leaves, loopCache, hloop, hfinish, hview⟩ := hsome
-    rw [signAfterDigest_message_cache_eq key randomness index leaves loopCache after signature hfinish payload] at hafter
-    obtain ⟨selected, selectedIndex, selectedLeaves, hselected, hpayload⟩ := signDigestLoop_new_admissible_selected digestAttemptLimit key message
-      before loopCache (some (randomness, index, leaves)) hloop payload output hbefore hafter hadmissible
-    have hrandomness : randomness = selected := congrArg Prod.fst (Option.some.inj hselected)
-    have hpayload' : payload = messageDigestPayload key.root message randomness := hpayload.trans (congrArg _ hrandomness.symm)
-    obtain ⟨selectedOutput, houtput, _, houtputView⟩ := signDigestLoop_selected_cached_output digestAttemptLimit key message before loopCache randomness index leaves hloop
-    have hout : output = selectedOutput := Option.some.inj ((hpayload' ▸ hafter).symm.trans houtput)
-    refine ⟨randomness, index, leaves, loopCache, hloop, hpayload', ?_, hout ▸ houtputView⟩
-    rw [hout, houtputView]
-    exact hview
 
 end SphincsSecurity.Concrete

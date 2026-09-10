@@ -1,5 +1,5 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.SubsetTargetAssignment
-import SphincsSecurity.Proof.TargetAssignmentExpectation
 
 namespace SphincsSecurity.Concrete
 
@@ -20,19 +20,6 @@ theorem sum_leaf_partial_product (required : Finset FtsTree) (weight : FtsTree �
   rw [← Finset.prod_sdiff (Finset.subset_univ required)]
   rw [Finset.prod_ite_of_true (fun tree ht => ht), Finset.prod_ite_of_false (fun tree ht => (Finset.mem_sdiff.mp ht).2)]
   simp only [Finset.prod_const, Finset.card_sdiff_of_subset (Finset.subset_univ required), Finset.card_univ]
-
-theorem sum_partialTargetAssignmentCount (views : Fin n → Option FewTimeView) (required : Finset FtsTree) :
-    (∑ target : FewTimeView, partialTargetAssignmentCount views target required) =
-      Fintype.card FtsLeaf ^ (Fintype.card FtsTree - required.card) *
-        ∑ index : Index, (signingSlotsAtIndex views index).card ^ required.card := by
-  rw [Fintype.sum_prod_type, Finset.mul_sum]
-  apply Finset.sum_congr rfl
-  intro index _
-  have hpoint (leaves : FtsTree → FtsLeaf) : partialTargetAssignmentCount views (index, leaves) required =
-      ∏ tree ∈ required, targetTreeMatchCount views (index, fun _ => leaves tree) tree := rfl
-  simp only [hpoint]
-  rw [sum_leaf_partial_product required (fun tree leaf => targetTreeMatchCount views (index, fun _ => leaf) tree)]
-  simp only [sum_targetTreeMatchCount_leaf, Finset.prod_const]
 
 theorem sourceSubsetMatch_index (target : FewTimeView) (required : Finset FtsTree) (hne : required.Nonempty)
     (index : Index) (leaves : FtsTree → FtsLeaf) :

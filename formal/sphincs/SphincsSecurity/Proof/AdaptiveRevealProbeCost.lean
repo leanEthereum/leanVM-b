@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.AdaptiveRevealProbeCharge
 
 namespace SphincsSecurity.AdaptiveRevealProbe
@@ -171,7 +172,6 @@ theorem evalDist_sample_applyReveal_result {β : Type} (stopped : β) (state : S
           (by simp [sampleTable]) (pure stopped)
       · simp [hhit]
 
-
 noncomputable def chargedExperiment {α : Type} (state : State Coordinate) (fuel : Nat)
     (computation : OracleComp (World Coordinate) α) : ProbComp (DetailedResult Coordinate α × Nat) := do
   let base ← sampleTable
@@ -196,13 +196,5 @@ theorem chargedExperiment_hit_eq {α : Type} (state : State Coordinate) (fuel : 
     _ = (fun result : DetailedResult Coordinate α => result.hit) <$>
         (Prod.fst <$> chargedExperiment state fuel computation) := by rw [Functor.map_map]
     _ = _ := by rw [chargedExperiment_result_eq, Functor.map_map, detailedExperiment_hit_eq_experiment]
-
-theorem chargedExperiment_cost_le_fuel {α : Type} (state : State Coordinate) (fuel : Nat)
-    (computation : OracleComp (World Coordinate) α) :
-    ∀ result ∈ support (chargedExperiment state fuel computation), result.2 ≤ fuel := by
-  intro result hresult
-  rw [chargedExperiment, mem_support_bind_iff] at hresult
-  obtain ⟨base, _, hrun⟩ := hresult
-  exact runCharged_cost_le_fuel _ _ _ _ result hrun
 
 end SphincsSecurity.AdaptiveRevealProbe

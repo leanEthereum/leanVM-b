@@ -1,5 +1,5 @@
-import SphincsSecurity.Proof.RetainedResidualRest
-import SphincsSecurity.Proof.PublicSigningInitial
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.RetainedResidualBudget
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 
@@ -34,39 +34,6 @@ theorem initialState_rowsCovered (inputs : Finset HashInput) (words : OtsReferen
     (exposedValues : InitialPublicLabels words) : ResidualByteFrontend.RowsCovered inputs (project (initialState inputs words exposedValues)) := by
   intro input answer hanswer
   cases hanswer
-
-theorem initialContext_actual (parameter : PublicParameter) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (auxiliary : ReferenceAuxiliary inputs)
-    (hauxiliary : auxiliary ∈ (referenceAuxiliarySample inputs).support) (dummy : OtsReferenceWords)
-    (exposedValues : InitialPublicLabels (referenceFamilyWords auxiliary.selections dummy))
-    (high : CanonicalGraphHighHalves) (labels : Labels) :
-    (initialContext parameter inputs hencoding auxiliary hauxiliary dummy exposedValues high labels).actual = labels :=
-  coordinateGraphLabels_value labels high
-
-theorem initialContext_compatible (parameter : PublicParameter) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (auxiliary : ReferenceAuxiliary inputs)
-    (hauxiliary : auxiliary ∈ (referenceAuxiliarySample inputs).support) (dummy : OtsReferenceWords)
-    (exposedValues : InitialPublicLabels (referenceFamilyWords auxiliary.selections dummy))
-    (high : CanonicalGraphHighHalves) (labels : Labels)
-    (hlabels : complete (initialAllowed (referenceFamilyWords auxiliary.selections dummy) exposedValues) labels ≠ 0) :
-    Compatible (initialContext parameter inputs hencoding auxiliary hauxiliary dummy exposedValues high labels)
-      (initialMemory (referenceFamilyWords auxiliary.selections dummy) exposedValues) := by
-  refine ⟨?_, ?_, ?_, ?_, ?_⟩
-  · simpa only [initialContext, Context.words, Context.actual, initialMemory, coordinateGraphLabels_value] using initialKnown_agrees _ exposedValues labels hlabels
-  · exact initialKnown_graphReplies _ exposedValues labels hlabels high
-  · intro input answer hanswer; cases hanswer
-  · intro input answer hanswer; cases hanswer
-  · intro input answer hanswer; cases hanswer
-
-theorem initialContext_root (parameter : PublicParameter) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (auxiliary : ReferenceAuxiliary inputs)
-    (hauxiliary : auxiliary ∈ (referenceAuxiliarySample inputs).support) (dummy : OtsReferenceWords)
-    (exposedValues : InitialPublicLabels (referenceFamilyWords auxiliary.selections dummy))
-    (high : CanonicalGraphHighHalves) (labels : Labels)
-    (hlabels : complete (initialAllowed (referenceFamilyWords auxiliary.selections dummy) exposedValues) labels ≠ 0) :
-    (initialContext parameter inputs hencoding auxiliary hauxiliary dummy exposedValues high labels).key.root =
-      canonicalGraphRoot (coordinateGraphLabels labels high) :=
-  initialKnown_root _ exposedValues labels hlabels high
 
 theorem Context.keygen_record {inputs : Finset HashInput} (context : Context inputs)
     (hroot : context.key.root = canonicalGraphRoot context.graph) :
@@ -111,36 +78,5 @@ theorem Context.rest_queryBound {inputs : Finset HashInput} (context : Context i
     rfl
   simp only [SigningBoundaryTrace.hashCalls_pow_none, hkey] at h
   exact h
-
-theorem observedInitialRest_hashCalls_le (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
-    (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (auxiliary : ReferenceAuxiliary inputs)
-    (hauxiliary : auxiliary ∈ (referenceAuxiliarySample inputs).support) (dummy : OtsReferenceWords)
-    (exposedValues : InitialPublicLabels (referenceFamilyWords auxiliary.selections dummy))
-    (high : CanonicalGraphHighHalves) (labels : Labels)
-    (hlabels : complete (initialAllowed (referenceFamilyWords auxiliary.selections dummy) exposedValues) labels ≠ 0)
-    (adversary : Adversary)
-    (hinputs : sourceInputs (initialContext parameter inputs hencoding auxiliary hauxiliary dummy exposedValues high labels).key
-      (adversary.main ⟨knownRoot (initialKnown (referenceFamilyWords auxiliary.selections dummy) exposedValues), parameter⟩) ⊆ inputs)
-    (hverify : ∀ forgery : Forgery, hashInputs (scheme.verify
-      ⟨knownRoot (initialKnown (referenceFamilyWords auxiliary.selections dummy) exposedValues), parameter⟩ forgery.message forgery.signature) ⊆ inputs)
-    (q : Nat) (hq : HasHashQueryBound scheme adversary q) (result : Option Bool × State inputs)
-    (hresult : observedRun (environment parameter inputs hencoding (referenceFamilyWords auxiliary.selections dummy)
-      (coordinateGraphLabels (initialKnown (referenceFamilyWords auxiliary.selections dummy) exposedValues) high) auxiliary.selections auxiliary.rows)
-        labels auxiliary.seed
-        (restProgram inputs parameter (knownRoot (initialKnown (referenceFamilyWords auxiliary.selections dummy) exposedValues))
-          (referenceFamilyWords auxiliary.selections dummy) auxiliary.selections adversary)
-        (initialState inputs (referenceFamilyWords auxiliary.selections dummy) exposedValues) result ≠ 0) :
-    result.2.memory.external.hashCalls ≤ q := by
-  let context := initialContext parameter inputs hencoding auxiliary hauxiliary dummy exposedValues high labels
-  have hroot := initialContext_root parameter inputs hencoding auxiliary hauxiliary dummy exposedValues high labels hlabels
-  obtain ⟨hcost, hbound⟩ := context.rest_queryBound hroot hparameter adversary q hq
-  have hcompatible := initialContext_compatible parameter inputs hencoding auxiliary hauxiliary dummy exposedValues high labels hlabels
-  have h := observedRun_rest_hashCalls_le context adversary hinputs hverify (q - 1212415) hbound
-    (initialState inputs (referenceFamilyWords auxiliary.selections dummy) exposedValues)
-    (initialState_rowsCovered inputs _ exposedValues) hcompatible result
-    (by simpa only [context, Context.environment, Context.actual, Context.words, initialContext, coordinateGraphLabels_value] using hresult)
-  change result.2.memory.external.hashCalls ≤ 1212415 + (q - 1212415) at h
-  omega
 
 end SphincsSecurity.Concrete.RetainedResidual

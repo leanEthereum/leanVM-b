@@ -1,4 +1,9 @@
+import SphincsSecurity.Proof.Prelude
+import SphincsSecurity.Proof.OtsProbeChargedRootAdaptiveRisk
+import SphincsSecurity.Proof.OtsProbeChargedRootSelection
+import SphincsSecurity.Proof.OtsProbeKnownRootTraceSource
 import SphincsSecurity.Proof.OtsProbeNativeHashHistorySelection
+import SphincsSecurity.Proof.OtsProbeNativeQueryTraceProjection
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -40,47 +45,6 @@ def NativeRootHistorySelectionHit (parameter : PublicParameter) (target : Positi
     truncateHash output ∉ nativeRootCandidateHistory parameter target prior ∧
     chargedNativeRootQueryCandidate parameter target selection.input selection.context = some (truncateHash output)
 
-theorem nativeTrace_rootHistoryMatch_selectedHit
-    (parameter : PublicParameter) (root : Digest) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
-    (result : ResolvedRunResult (α × SplitHashCache)) (history : List CanonicalQuerySelection)
-    (hconsistent : context.ValuesConsistent) (hstarts : StartTableAgrees context.state table)
-    (hmat : LayerRootsMaterialized context) (hclosed : DeferredComputationsClosed context)
-    (hresult : (some result, history) ∈ support (runNativeQueryTrace parameter root ftsSecret computation context fuel table cache))
-    (hsource : ¬UnknownSourceFinalRootMatch parameter (some result, history))
-    (lay : Layer) (tree : TreeIndex) (output : HashOutput)
-    (hvalue : result.context.positionValue (layerRootPosition lay tree) = some output)
-    (hhidden : .position (layerRootPosition lay tree) ∉ result.context.state.revealed)
-    (hmatch : truncateHash output ∈ nativeRootCandidateHistory parameter (layerRootPosition lay tree) history)
-    (q : Nat) (hbound : computation.IsQueryBoundP IsOuterHash q) :
-    ∃ ordinal ∈ Finset.range q,
-      NativeRootHistorySelectionHit parameter (layerRootPosition lay tree) (nativeHashHistorySelection history ordinal) := by
-  obtain ⟨completion, hcompletion⟩ := (nativeTrace_finalCore parameter root ftsSecret computation context fuel table cache result history
-    hconsistent hstarts hresult).2.2
-  obtain ⟨prior, selection, suffix, hhistory, hprior, hstored, hhidden, hcandidate⟩ :=
-    nativeTrace_rootHistoryMatch_firstCharged parameter root ftsSecret computation context fuel table cache result history completion
-      hconsistent hstarts hmat hclosed hresult hcompletion hsource lay tree output hvalue hhidden hmatch
-  have hhash : IsOuterHash selection.input := by
-    cases hinput : selection.input with
-    | inl query =>
-        cases query with
-        | inl n => simp [chargedNativeRootQueryCandidate, hinput] at hcandidate
-        | inr input => trivial
-    | inr message => simp [chargedNativeRootQueryCandidate, hinput] at hcandidate
-  have hlength := runNativeQueryTrace_hash_length_le parameter root ftsSecret computation context fuel table cache q hbound
-    (some result, history) hresult
-  have hpriorLength : (nativeHashQueryHistory prior).length < q := by
-    rw [hhistory] at hlength
-    simp only [nativeHashQueryHistory, List.filter_append, List.filter_cons, hhash, decide_true, ↓reduceIte,
-      List.length_append, List.length_cons] at hlength ⊢
-    omega
-  refine ⟨(nativeHashQueryHistory prior).length, Finset.mem_range.mpr hpriorLength,
-    nativeHashQueryHistory prior, selection, output, ?_, hstored, hhidden, ?_, hcandidate⟩
-  · rw [hhistory]
-    exact nativeHashHistorySelection_append_hash prior selection suffix hhash
-  · simpa only [nativeRootCandidateHistory_hashHistory] using hprior
-
 theorem nativeTraceHashCutHistory_hit_finishes_false
     (parameter : PublicParameter) (root : Digest) (target : Position) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
     (computation : OracleComp (OracleWorld + SigningSpec) (OuterQueryCut α))
@@ -112,7 +76,6 @@ theorem nativeTraceHashCutHistory_hit_finishes_false
           simp only [nativeRootCandidateHistory_hashHistory] at hprior
           simp [hhidden, hcut, hprior]
 
-
 theorem probEvent_nativeHistorySelectionHit_le_originalChargedRootCut
     (parameter : PublicParameter) (root : Digest) (target : Position) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
     (computation : OracleComp (OracleWorld + SigningSpec) α) (ordinal : Nat)
@@ -142,63 +105,5 @@ def NativeFinalRootHistoryMatch (parameter : PublicParameter) (target : Position
     .position target ∉ result.context.state.revealed ∧
     truncateHash output ∈ nativeRootCandidateHistory parameter target trace.2 ∧
     ¬UnknownSourceFinalRootMatch parameter trace
-
-theorem probEvent_nativeFinalRootHistoryMatch_le_cutHitSum
-    (parameter : PublicParameter) (root : Digest) (lay : Layer) (tree : TreeIndex) (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
-    (hconsistent : context.ValuesConsistent) (hstarts : StartTableAgrees context.state table)
-    (hmat : LayerRootsMaterialized context) (hclosed : DeferredComputationsClosed context)
-    (q : Nat) (hbound : computation.IsQueryBoundP IsOuterHash q) :
-    Pr[NativeFinalRootHistoryMatch parameter (layerRootPosition lay tree) |
-      runNativeQueryTrace parameter root ftsSecret computation context fuel table cache] ≤
-      ∑ ordinal ∈ Finset.range q,
-        Pr[fun b => b = false | originalChargedRootCutObservation parameter root (layerRootPosition lay tree) ftsSecret computation
-          context fuel table cache ∅ ordinal (fun pair => pair.2 = some (truncateHash pair.1))] := by
-  calc
-    _ ≤ Pr[fun trace => ∃ ordinal ∈ Finset.range q,
-        NativeRootHistorySelectionHit parameter (layerRootPosition lay tree) (nativeHashHistorySelection trace.2 ordinal) |
-        runNativeQueryTrace parameter root ftsSecret computation context fuel table cache] := by
-      apply probEvent_mono
-      rintro ⟨option, history⟩ htrace ⟨result, output, heq, hvalue, hhidden, hmatch, hsource⟩
-      dsimp only at heq
-      subst option
-      exact nativeTrace_rootHistoryMatch_selectedHit parameter root ftsSecret computation context fuel table cache result history
-        hconsistent hstarts hmat hclosed htrace hsource lay tree output hvalue hhidden hmatch q hbound
-    _ ≤ ∑ ordinal ∈ Finset.range q,
-        Pr[fun trace => NativeRootHistorySelectionHit parameter (layerRootPosition lay tree) (nativeHashHistorySelection trace.2 ordinal) |
-          runNativeQueryTrace parameter root ftsSecret computation context fuel table cache] :=
-      probEvent_exists_finset_le_sum (Finset.range q) _ _
-    _ ≤ _ := by
-      apply Finset.sum_le_sum
-      intro ordinal _
-      exact probEvent_nativeHistorySelectionHit_le_originalChargedRootCut parameter root (layerRootPosition lay tree) ftsSecret computation ordinal
-        context fuel table cache hconsistent hstarts
-
-theorem probEvent_exists_nativeFinalRootHistoryMatch_le_charge
-    (targets : Finset Position) (parameter : PublicParameter) (root : Digest)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (computation : OracleComp (OracleWorld + SigningSpec) α)
-    (q : Nat) (hq : q ≤ 2 ^ 126) (hbound : computation.IsQueryBoundP IsOuterHash q)
-    (context : DeferredContext) (fuel : Nat) (table : OtsSecretIndex → HashOutput) (cache : SplitHashCache)
-    (hvalid : context.Valid) (hcomplete : DeferredCompletable table context)
-    (hmat : LayerRootsMaterialized context) (hclosed : DeferredComputationsClosed context)
-    (hroot : ∀ target ∈ targets, IsLayerRoot target)
-    (hensured : ∀ target ∈ targets, .position target ∈ context.state.ensured)
-    (hstate : ∀ target ∈ targets, context.state.values (.position target) = none)
-    (hvalue : ∀ target ∈ targets, context.values target = none)
-    (hpending : ∀ target ∈ targets, context.state.pendingAt (.position target) = ∅)
-    (hcache : ∀ target ∈ targets, ∀ digest, NoEncodingRootGuessCached parameter target digest cache) :
-    Pr[fun trace => ∃ target ∈ targets, NativeFinalRootHistoryMatch parameter target trace |
-      runNativeQueryTrace parameter root ftsSecret computation context fuel table cache] ≤
-      expectedLiveNativeContextCharge (maskedChronologicalExpandedAdversaryImpl parameter root ftsSecret)
-        (chargedRootOuterCharge parameter) computation context fuel table cache * ((2 ^ digestBits : Nat) : ENNReal)⁻¹ := by
-  apply (probEvent_exists_finset_le_sum targets _ _).trans
-  apply le_trans _ (sum_targets_originalChargedRootCut_hits_le_charge targets parameter root ftsSecret computation q hq context fuel table cache
-    hvalid hcomplete hroot hensured hstate hvalue hpending hcache)
-  apply Finset.sum_le_sum
-  intro target htarget
-  obtain ⟨lay, tree, rfl⟩ := hroot target htarget
-  exact probEvent_nativeFinalRootHistoryMatch_le_cutHitSum parameter root lay tree ftsSecret computation context fuel table cache
-    hvalid.valuesConsistent (startTableAgrees_of_deferredCompletable hcomplete) hmat hclosed q hbound
 
 end SphincsSecurity.Concrete.OtsProbeSimulation
