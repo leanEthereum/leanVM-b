@@ -25,7 +25,7 @@ For \(x\ge1/2\), probability at most one proves the claim. The remaining two int
 | \(x_*\le x<1/2\) | \(\Pr[\mathrm{SUF}]\le2x-x^2+\delta x+\epsilon(q)\) | \(x-\delta\ge2^{-16}>e\) |
 | \(0<x\le x_*\) | \(\Pr[\mathrm{SUF}]\le(15/8+\delta)x+\epsilon(q)\) | \(15/8+\delta+e<30723/16384<2\) |
 
-These are desired conclusions with only the original hash-bound premise. They are not new assumptions for the public theorem.
+Both contracts use only the original hash-bound premise. [Security127LargeBudget.lean](../SphincsSecurity/Proof/Security127LargeBudget.lean) proves the large-budget contract and its closing inequality, including the range handled by probability at most one. The small-budget contract remains an obligation rather than a new assumption for the public theorem.
 
 ## Common foundation: the exact graph and signer
 
@@ -144,7 +144,7 @@ E_{\rm OTS}\ \cup\ E_{\rm str}\ \cup\ \{C_{\rm full}\ge1\}
 \ \cup\ \{\text{two distinct true FTS guesses}\}.
 \]
 
-For the last two alternatives, classify the 14 required coordinates by whether a successful response disclosed them. Exactly one undisclosed coordinate leaves a near certificate and a true guess, while at least two leave two distinct true guesses. Verification supplies any missing true-secret query. Coordinates are distinct by their tweaks even if their numerical secrets coincide. In the large-budget argument, absence of the first primitive match rules out every backward path and still-undisclosed true secret, reducing the decomposition to a full certificate alone. The remaining concrete proof must implement this trace argument and establish that the monitor remains active on each otherwise clean winning run.
+For the last two alternatives, classify the 14 required coordinates by whether a successful response disclosed them. Exactly one undisclosed coordinate leaves a near certificate and a true guess, while at least two leave two distinct true guesses. Verification supplies any missing true-secret query. Coordinates are distinct by their tweaks even if their numerical secrets coincide. In the large-budget argument, absence of the first primitive match rules out every backward path and still-undisclosed true secret, reducing the decomposition to a full certificate alone. The full-certificate trace and native monitor-readiness argument are proved. The separate small-budget OTS and forced-FTS comparisons remain to be instantiated.
 
 ## Large budgets: pay coverage inside the first-match bound
 
@@ -161,7 +161,7 @@ The coordinates \(u,v\) are distinct. Normalization gives exactly the updated pr
 
 ### Deriving the adaptive posterior from transcript masses
 
-The native posterior and stopped-execution erasure are now proved in [AdaptiveHiddenLabels.lean](../SphincsSecurity/Proof/AdaptiveHiddenLabels.lean), including retention of visible memory on matched runs. The following paper induction explains their sampling identity. Applying it to SPHINCS still requires its concrete execution to have the causal transition rules specified here. An arbitrary auxiliary transition cannot be allowed to inspect an undisclosed label merely because its result has an innocent-looking type.
+The native posterior and stopped-execution erasure are now proved in [AdaptiveHiddenLabels.lean](../SphincsSecurity/Proof/AdaptiveHiddenLabels.lean), including retention of visible memory on matched runs. The following paper induction explains their sampling identity. The native retained execution supplies these transition rules for the completed large-budget proof. The separate OTS prefix simulator still needs its own concrete causal comparison. An arbitrary auxiliary transition cannot be allowed to inspect an undisclosed label merely because its result has an innocent-looking type.
 
 Condition on the public cut and reference family. Let \(V\) be the finite set of initially hidden coordinates, and let \(X\in[N]^V\) have its independent uniform prior. A retained history \(t\) contains the exposed cut, external inputs and full replies, observed message rows, disclosed coordinates and their values, original control stages and costs, and the fact that no primitive match has occurred. It excludes private prefix inputs, their intermediate values and private cache-hit flags. For each coordinate retain a candidate set \(U_v(t)\); a disclosure changes its set to the disclosed singleton.
 
@@ -250,7 +250,7 @@ Initially $W(0,0)=R^S z^{-2^{18}}$. The inequalities $\log R\le R-1$, $\log z\ge
 \log W(0,0)\le S(R-1)-2^{18}(1-z^{-1})<-700\cdot\frac7{10}<-700\log2.
 \]
 
-[ProposalPrefixExponential.lean](../SphincsSecurity/Proof/ProposalPrefixExponential.lean) proves these moment and weight bounds. [RetainedResidualProposalTail.lean](../SphincsSecurity/Proof/RetainedResidualProposalTail.lean) applies them to the actual adaptive native execution and proves `exceptionHistorySourceGame_prefix_le`, at most $2^{-700}$, including stopped runs. The remaining exceptional probability is the native cache-history event.
+[ProposalPrefixExponential.lean](../SphincsSecurity/Proof/ProposalPrefixExponential.lean) proves these moment and weight bounds. [RetainedResidualProposalTail.lean](../SphincsSecurity/Proof/RetainedResidualProposalTail.lean) applies them to the actual adaptive native execution and proves `exceptionHistorySourceGame_prefix_le`, at most $2^{-700}$, including stopped runs. The cache-history bound below supplies the other exceptional probability.
 
 ## Cache exceptions with second moments
 
@@ -262,7 +262,7 @@ V=M_2/2^{186}+I_2/2^{160},\qquad
 \rho=1023/2^{186}+2^{-170}<2^{-169}.
 \]
 
-The weight is initially zero and at least one on a cache exception. Non-message native queries leave the message entries unchanged and only increase the cache size used in the index score's negative drift; they cannot increase $V$. The native signing kernel preserves the random-oracle digest-loop cache law, so its expected increment is at most $\rho$ times its expected number of message calls, including failed invocations. These estimates are proved in [CertificateCacheExceptionGrowth.lean](../SphincsSecurity/Proof/CertificateCacheExceptionGrowth.lean) and [RetainedResidualCacheKernels.lean](../SphincsSecurity/Proof/RetainedResidualCacheKernels.lean). It remains to freeze the weight at one when the passive history flag is set, accumulate the native step charges, and bound their total expectation by $q$. This yields the required $q/2^{169}$ history bound once that native accumulation is established.
+The weight is initially zero and at least one on a cache exception. Non-message native queries leave the message entries unchanged and only increase the cache size used in the index score's negative drift; they cannot increase $V$. The native signing kernel preserves the random-oracle digest-loop cache law, so its expected increment is at most $\rho$ times its expected number of message calls, including failed invocations. These estimates are proved in [CertificateCacheExceptionGrowth.lean](../SphincsSecurity/Proof/CertificateCacheExceptionGrowth.lean) and [RetainedResidualCacheKernels.lean](../SphincsSecurity/Proof/RetainedResidualCacheKernels.lean). [RetainedResidualCacheHistory.lean](../SphincsSecurity/Proof/RetainedResidualCacheHistory.lean) freezes the weight at one when the passive history flag is set and accumulates the native step charges. [RetainedResidualPaymentBudget.lean](../SphincsSecurity/Proof/RetainedResidualPaymentBudget.lean) bounds those charges by native hash-call growth, including failed invocations and steps after the certificate monitor stops. The unchanged original query bound then yields the $q/2^{169}$ history bound in [RetainedResidualCacheTail.lean](../SphincsSecurity/Proof/RetainedResidualCacheTail.lean).
 
 ## Small budgets: sufficient bounds with simple constants
 

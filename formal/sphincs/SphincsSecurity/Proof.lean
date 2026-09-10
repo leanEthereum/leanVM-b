@@ -3,6 +3,5 @@ import SphincsSecurity.Proof.DigestCompletionMonitor
 import SphincsSecurity.Proof.NearCertificateBound
 import SphincsSecurity.Proof.OtsPrefixOracle
 import SphincsSecurity.Proof.RetainedResidualCorrespondence
-import SphincsSecurity.Proof.RetainedResidualCacheKernels
-import SphincsSecurity.Proof.RetainedResidualProposalTail
 import SphincsSecurity.Proof.Security126Completion
+import SphincsSecurity.Proof.Security127LargeBudget

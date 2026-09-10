@@ -1,6 +1,6 @@
 # SPHINCS security in Lean 4
 
-The public theorem proves **126 bits of classical strong unforgeability in the random-oracle model**, with at most `2^24` signing requests per key pair. **127 bits remains unfinished.**
+The public theorem proves **126 bits of classical strong unforgeability in the random-oracle model**, with at most `2^24` signing requests per key pair. **127 bits remains unfinished.** The bound $q/2^{127}$ is proved for budgets $q\ge3\cdot2^{114}$; smaller positive budgets remain open.
 
 [Statement.lean](SphincsSecurity/Statement.lean) defines the concrete parameters, serialized hash inputs, algorithms, original SUF game and security statements. The claim uses independently sampled secret leaves and a random oracle; instantiating that oracle with BLAKE2s or deriving all secrets from a seed is outside this theorem. The whole-experiment query budget includes key generation, signing failures, repeated calls and final verification.
 
@@ -27,11 +27,13 @@ The cache command is needed on initial setup. The build includes [Audit.lean](Au
 | [RetainedResidualGameTransfer.lean](SphincsSecurity/Proof/RetainedResidualGameTransfer.lean) | Original success implies a native stop or a surviving strong forgery. |
 | [RetainedResidualReplay.lean](SphincsSecurity/Proof/RetainedResidualReplay.lean) | Accepting verification recovers the complete canonical signature. |
 | [RetainedResidualStrongCoverage.lean](SphincsSecurity/Proof/RetainedResidualStrongCoverage.lean) | A surviving strong forgery has a full certificate using eligible signing-log witnesses. |
-| [RetainedResidualMonitoredGame.lean](SphincsSecurity/Proof/RetainedResidualMonitoredGame.lean) | Original SUF probability is at most the joint primitive and certificate bound plus an explicit monitor-stop exception. Bounding this exception is still required. |
+| [RetainedResidualMonitoredGame.lean](SphincsSecurity/Proof/RetainedResidualMonitoredGame.lean) | Original SUF probability is at most the joint primitive and certificate bound plus an explicit monitor-stop exception. The later cache and proposal-history bounds discharge this exception. |
 | [RetainedResidualMonitorStops.lean](SphincsSecurity/Proof/RetainedResidualMonitorStops.lean) | Native accounting and cached-digest invariants rule out bookkeeping stops. A successful active step with no cache exception stops exactly at a proposal-prefix exception. |
 | [RetainedResidualExceptionGame.lean](SphincsSecurity/Proof/RetainedResidualExceptionGame.lean) | Whole-run monitor exceptions imply a recorded cache or proposal-prefix exception, with exact erasure of the passive history flags. |
-| [RetainedResidualProposalTail.lean](SphincsSecurity/Proof/RetainedResidualProposalTail.lean) | The actual adaptive proposal-prefix history has probability at most $2^{-700}$. Only the cache-history exception remains in the large-budget reduction. |
-| [RetainedResidualCacheKernels.lean](SphincsSecurity/Proof/RetainedResidualCacheKernels.lean) | A second-moment weight controls cache exceptions through native query and signing kernels. Accumulating these charges on the full native history remains open. |
+| [RetainedResidualProposalTail.lean](SphincsSecurity/Proof/RetainedResidualProposalTail.lean) | The actual adaptive proposal-prefix history has probability at most $2^{-700}$. |
+| [RetainedResidualCacheKernels.lean](SphincsSecurity/Proof/RetainedResidualCacheKernels.lean) | A second-moment weight controls cache exceptions through native query and signing kernels. The charge continues after the certificate monitor stops. |
+| [RetainedResidualCacheTail.lean](SphincsSecurity/Proof/RetainedResidualCacheTail.lean) | The actual native cache-history probability is at most $q/2^{169}$ under the unchanged original hash bound. |
+| [Security127LargeBudget.lean](SphincsSecurity/Proof/Security127LargeBudget.lean) | Original SUF probability is at most $q/2^{127}$ for every $q\ge3\cdot2^{114}$, with no additional cryptographic premises. |
 | [AdaptiveChainEndpoint.lean](SphincsSecurity/Proof/AdaptiveChainEndpoint.lean) and [OtsPrefixOracle.lean](SphincsSecurity/Proof/OtsPrefixOracle.lean) | Prefix-oracle likelihood machinery for the small-budget OTS comparison. |
 | [NearCertificateBound.lean](SphincsSecurity/Proof/NearCertificateBound.lean) | Near-certificate estimate needed by the forced-FTS comparison. |
 
