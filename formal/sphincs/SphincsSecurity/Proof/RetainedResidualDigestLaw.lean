@@ -94,6 +94,38 @@ theorem lazyByteRun_message_rom {Result : Type} (routing : Routing)
           obtain ⟨hcache, hrows⟩ := randomOracle_messageState parameter inputs state hcovered ⟨input, hin⟩ result hs
           rw [ih result.1 (hnext result.1) (hmnext result.1) _ hrows, hcache]
 
+theorem lazyByteRun_message_support {Result : Type} (routing : Routing)
+    (computation : OracleComp OracleWorld Result) (hinputs : hashInputs computation ⊆ inputs)
+    (hmessage : ResidualByteFrontend.MessageOnly parameter computation) (state : State inputs)
+    (hcovered : ResidualByteFrontend.RowsCovered inputs (project state)) (result : Option Result × State inputs)
+    (hresult : lazyByteRun parameter inputs hencoding words publicReplies selections rows routing computation state result ≠ 0) :
+    (∃ value, result.1 = some value) ∧ result.2.candidates = state.candidates := by
+  induction computation using OracleComp.inductionOn generalizing state result with
+  | pure value =>
+      simp only [lazyByteRun_pure, ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] at hresult
+      subst result
+      exact ⟨⟨value, rfl⟩, rfl⟩
+  | query_bind input next ih =>
+      have hnext : ∀ answer, hashInputs (next answer) ⊆ inputs :=
+        fun answer => (hashInputs_next_subset input next answer).trans hinputs
+      have hmnext : ∀ answer, ResidualByteFrontend.MessageOnly parameter (next answer) :=
+        fun answer row hrow => hmessage row ((hashInputs_next_subset input next answer) hrow)
+      cases input with
+      | inl input =>
+          rw [lazyByteRun_random_bind, RetainedObservation.bind_nonzero] at hresult
+          obtain ⟨answer, _, hresult⟩ := hresult
+          exact ih answer (hnext answer) (hmnext answer) state hcovered result hresult
+      | inr input =>
+          change HashOutput → OracleComp OracleWorld Result at next
+          have hin := hinputs (mem_hashInputs_hash_bind input next)
+          have hm := hmessage input (mem_hashInputs_hash_bind input next)
+          rw [lazyByteRun_message_bind parameter inputs hencoding words publicReplies selections rows routing input hin hm next state hcovered,
+            RetainedObservation.bind_nonzero] at hresult
+          obtain ⟨reply, hreply, hresult⟩ := hresult
+          obtain ⟨_, hrows⟩ := randomOracle_messageState parameter inputs state hcovered ⟨input, hin⟩ reply
+            ((mem_support_iff _ _).mpr hreply)
+          exact ih reply.1 (hnext reply.1) (hmnext reply.1) _ hrows result hresult
+
 theorem lazyByteRun_publicDigestLoop_rom (routing : Routing) (key : SecretKey)
     (hparameter : key.parameter = parameter) (message : Message) (attempts : Nat)
     (hinputs : hashInputs (signDigestLoop attempts key message) ⊆ inputs) (state : State inputs)

@@ -73,6 +73,20 @@ theorem lazyRun_completeWork_memory (routing : Routing) (work : PublicSigningRec
   simp only [map_bind, observedRun_completeWork_memory parameter inputs hencoding words publicReplies selections rows routing,
     ResidualTableCompletion.completeRows_bind_const]
 
+theorem lazyRun_completeWork_cache (routing : Routing) (work : PublicSigningRecord × Nat) (state : State inputs)
+    (ha : ∀ coordinate, (state.candidates coordinate).Nonempty) :
+    cacheResult <$> lazyRun (environment parameter inputs hencoding words publicReplies selections rows)
+      (simulateQ (embed inputs routing) (ResidualByteFrontend.jointCompleteSigningWork work)) state =
+      (UniformTableCompletion.complete state.candidates >>= fun actual =>
+        pure (some (completePublicSigningRecord (fun index tree leaf => actual (.ftsStart index tree leaf)) work.1),
+          state.memory.external.cache)) := by
+  have h := congrArg (fun law : SPMF (Option SigningRecord × Memory) =>
+    (fun result => (result.1, result.2.external.cache)) <$> law)
+      (lazyRun_completeWork_memory parameter inputs hencoding words publicReplies selections rows routing work state ha)
+  unfold cacheResult
+  simpa only [Functor.map_map, Function.comp_def, forgetState, cacheResult, map_bind, map_pure,
+    Memory.accountWork, ResidualByteFrontend.accountWork] using h
+
 theorem lazyRun_completeWork_support (routing : Routing) (work : PublicSigningRecord × Nat) (state : State inputs)
     (ha : ∀ coordinate, (state.candidates coordinate).Nonempty) (result : Option SigningRecord × State inputs)
     (hresult : lazyRun (environment parameter inputs hencoding words publicReplies selections rows)
