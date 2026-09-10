@@ -236,16 +236,21 @@ An active signing step samples a block length $L\ge1$ with $\Pr[L=\ell]=p(1-p)^{
 R=\mathbb E[z^{2L-3}]=\frac{p}{z(1-(1-p)z^2)}=\frac{17179869184}{17179343615}>1.
 \]
 
-For independent such lengths and $1\le k\le S$, the actual prefix exception $\sum_{i=1}^kL_i>(1537/1024)k+131072$ implies $2\sum_{i=1}^kL_i-3k>2^{18}$. Markov's inequality and a union bound therefore give a probability at most $S R^S z^{-2^{18}}$. Using $\log(1+u)\le u$ and $\log(1+u)\ge u-u^2/2$ gives
+The native bound is proved directly by an exponential weight, without padding an independent sequence. Put $g=\mathbb E[z^{2L}]=67634176/66845695=z^3R$. For a monitor with $A$ proposals and $k\le S$ completed signing requests, use
 
 \[
-S\log R-2^{18}\log z
-\le S(R-1)-2^{18}\left(\frac1{256}-\frac1{2\cdot256^2}\right)
-=-\frac{8739704538626}{17179343615}
-<-724\cdot\frac7{10}<-724\log2.
+W(A,k)=\frac{z^{2A}g^{S-k}}{z^{3S+2^{18}}}.
 \]
 
-Hence the union probability is below $2^{-700}$. The rational inequalities are checked by `closing-arithmetic.py`. The remaining Lean connection is to expose an independent length at each enabled signing step and pad unused slots; enabling depends on the preceding state, and no later length is read. This must preserve the actual monitored law and its first prefix exception. The paper estimate alone does not prove the native event bound.
+An enabled signing step has $\mathbb E[W(A+L,k+1)]=W(A,k)$. World queries and inactive steps preserve the proposal and signing counters. The native signing record exists even when signing returns no signature, so the same calculation includes those failures. A prefix exception $A>(1537/1024)k+131072$ implies $2A\ge3k+2^{18}$; since $g\ge z^3$, it implies $W(A,k)\ge1$. Replace the weight by one once the passive prefix-history flag is set. Its expectation cannot increase at a step and dominates that flag's probability at termination.
+
+Initially $W(0,0)=R^S z^{-2^{18}}$. The inequalities $\log R\le R-1$, $\log z\ge1-z^{-1}$ and $\log2<7/10$ give
+
+\[
+\log W(0,0)\le S(R-1)-2^{18}(1-z^{-1})<-700\cdot\frac7{10}<-700\log2.
+\]
+
+[ProposalPrefixExponential.lean](../SphincsSecurity/Proof/ProposalPrefixExponential.lean) proves these moment and weight bounds. [RetainedResidualProposalTail.lean](../SphincsSecurity/Proof/RetainedResidualProposalTail.lean) applies them to the actual adaptive native execution and proves `exceptionHistorySourceGame_prefix_le`, at most $2^{-700}$, including stopped runs. The remaining exceptional probability is the native cache-history event.
 
 ## Small budgets: sufficient bounds with simple constants
 
