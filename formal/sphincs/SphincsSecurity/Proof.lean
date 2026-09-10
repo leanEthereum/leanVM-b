@@ -861,6 +861,7 @@ import SphincsSecurity.Proof.RetainedResidualTerminalCoverage
 import SphincsSecurity.Proof.RetainedResidualHazard
 import SphincsSecurity.Proof.RetainedResidualPrimitivePotential
 import SphincsSecurity.Proof.RetainedResidualGameTransfer
+import SphincsSecurity.Proof.RetainedResidualReplay
 
 /-!
 Proof modules for the public statements in `SphincsSecurity/Statement.lean`. The public 126-bit theorem uses the original strong-unforgeability experiment and whole-experiment hash budget. The 127-bit route remains incomplete.
@@ -870,6 +871,8 @@ Proof modules for the public statements in `SphincsSecurity/Statement.lean`. The
 `RetainedResidualTerminalCoverage.lean` bounds expected full-certificate count on the same execution by expected native message count divided by `2^128` plus `11q/2^144`. Combining the two results eliminates the message count. The resulting bound still needs the original SUF event transfer: every strong forgery must imply a primitive match, a retained full certificate or a paid original-game exception. Equality in the strong-novelty case must cover every signature field.
 
 `RetainedResidualGameTransfer.lean` now bounds the original SUF advantage by the retained source game's primitive-stop probability plus its live strong-forgery probability. The comparison preserves the full signing log and final verification. It uses the existing reference sampling law on the retained input envelope and derives initial compatibility from supported samples, with no additional cryptographic premise. The live forgery still needs to imply a retained certificate outside the paid original exceptions.
+
+`RetainedResidualVerifySupport.lean` recovers fully honest openings and disclosure of every required FTS secret from supported accepting executions of the retained source. The proof derives the final verifier's cached-query premise and reuses the existing extraction lemmas directly, without global cache settlement. `RetainedResidualReplay.lean` proves that such an opening, including its reference counters and every signature field, equals the original `signAfterDigest` result. The remaining certificate connection must derive eligible signing-log witnesses from the disclosure state, exclude the forgery's own input using this equality, and establish bank completeness outside the paid original exceptions.
 
 The separate small-budget route still needs the concrete causal OTS endpoint and completed-witness comparisons, and near-certificate coverage under the forced-FTS kernels. Neither nontrivial original-game 127-bit budget interval is established. A conditional endpoint or a bound on retained auxiliary events is not the public security theorem.
 -/
