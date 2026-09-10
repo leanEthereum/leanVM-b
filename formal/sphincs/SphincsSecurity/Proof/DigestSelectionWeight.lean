@@ -125,6 +125,24 @@ theorem expected_selectedLoopInputWeight_le_exactReuse
           (probEvent_signDigestLoop_fixedPrehit_le_exactWeight key message before input (fun _ => True)) le_rfl)
     _ = _ := by simp only [mul_assoc, ENNReal.tsum_mul_left]; rw [mul_comm (exactDigestReuseWeight key message before)]
 
+theorem expected_freshSelectedLoopInputWeight_le (key : SecretKey) (message : Message) (before : QueryCache HashSpec)
+    (weight : FewTimeView → ENNReal) :
+    (∑' loop, Pr[= loop | (simulateQ romImpl (signDigestLoop digestAttemptLimit key message)).run before] *
+      selectedLoopInputWeight key message (fun input source => if before input = none then weight source else 0) loop) ≤
+      freshDigestSelectionProbability key message before *
+        ∑' source, Pr[= source | ($ᵗ FewTimeView : ProbComp FewTimeView)] * weight source := by
+  have hzero (input : HashInput) : cachedSignerInputWeight key message before
+      (fun input source => if before input = none then weight source else 0) input = 0 := by
+    unfold cachedSignerInputWeight
+    cases hc : before input with
+    | none => rfl
+    | some output => simp only [hc, reduceCtorEq, if_false, ite_self]
+  have hbound := expected_selectedLoopInputWeight_le_exactReuse key message before
+    (fun input source => if before input = none then weight source else 0) weight (by
+      intro input source
+      split_ifs; exact le_rfl; exact bot_le)
+  simpa only [hzero, tsum_zero, zero_mul, add_zero] using hbound
+
 def DigestCompletionConsistent (loop : DigestLoopRecord)
     (result : (Option Signature × Option FewTimeView) × QueryCache HashSpec) : Prop :=
   result.1.2 = selectedLoopView? loop ∧
@@ -143,15 +161,13 @@ theorem successfulSignerInputWeight_le_selectedLoopInputWeight
       simp only [successfulSignerInputWeight, hs, hconsistent.1, selectedLoopView?, hloop,
         Option.map_some, selectedLoopInputWeight, le_refl]
 
-theorem expected_digestCompletion_successfulInputWeight_le_selected {α : Type}
+theorem expected_digestCompletion_cost_le_selected {α : Type}
     (key : SecretKey) (message : Message) (before : QueryCache HashSpec)
-    (finish : DigestLoopRecord → ProbComp α)
-    (record : α → (Option Signature × Option FewTimeView) × QueryCache HashSpec)
-    (hconsistent : ∀ loop ∈ support ((simulateQ romImpl (signDigestLoop digestAttemptLimit key message)).run before),
-      ∀ result ∈ support (finish loop), DigestCompletionConsistent loop (record result))
-    (weight : HashInput → FewTimeView → ENNReal) :
-    (∑' result, Pr[= result | (simulateQ romImpl (signDigestLoop digestAttemptLimit key message)).run before >>= finish] *
-      successfulSignerInputWeight key message weight (record result)) ≤
+    (finish : DigestLoopRecord → ProbComp α) (cost : α → ENNReal)
+    (weight : HashInput → FewTimeView → ENNReal)
+    (hcost : ∀ loop ∈ support ((simulateQ romImpl (signDigestLoop digestAttemptLimit key message)).run before),
+      ∀ result ∈ support (finish loop), cost result ≤ selectedLoopInputWeight key message weight loop) :
+    (∑' result, Pr[= result | (simulateQ romImpl (signDigestLoop digestAttemptLimit key message)).run before >>= finish] * cost result) ≤
       ∑' loop, Pr[= loop | (simulateQ romImpl (signDigestLoop digestAttemptLimit key message)).run before] *
         selectedLoopInputWeight key message weight loop := by
   rw [tsum_probOutput_bind_mul]
@@ -164,11 +180,38 @@ theorem expected_digestCompletion_successfulInputWeight_le_selected {α : Type}
         apply ENNReal.tsum_le_tsum
         intro result
         by_cases hr : result ∈ support (finish loop)
-        · exact mul_le_mul' le_rfl (successfulSignerInputWeight_le_selectedLoopInputWeight
-            key message weight loop (record result) (hconsistent loop hl result hr))
+        · exact mul_le_mul' le_rfl (hcost loop hl result hr)
         · rw [probOutput_eq_zero_of_not_mem_support hr, zero_mul, zero_mul]
       _ ≤ _ := by rw [ENNReal.tsum_mul_right]; exact mul_le_of_le_one_left' tsum_probOutput_le_one
   · rw [probOutput_eq_zero_of_not_mem_support hl, zero_mul, zero_mul]
+
+theorem expected_digestCompletion_successfulInputWeight_le_selected {α : Type}
+    (key : SecretKey) (message : Message) (before : QueryCache HashSpec)
+    (finish : DigestLoopRecord → ProbComp α)
+    (record : α → (Option Signature × Option FewTimeView) × QueryCache HashSpec)
+    (hconsistent : ∀ loop ∈ support ((simulateQ romImpl (signDigestLoop digestAttemptLimit key message)).run before),
+      ∀ result ∈ support (finish loop), DigestCompletionConsistent loop (record result))
+    (weight : HashInput → FewTimeView → ENNReal) :
+    (∑' result, Pr[= result | (simulateQ romImpl (signDigestLoop digestAttemptLimit key message)).run before >>= finish] *
+      successfulSignerInputWeight key message weight (record result)) ≤
+      ∑' loop, Pr[= loop | (simulateQ romImpl (signDigestLoop digestAttemptLimit key message)).run before] *
+        selectedLoopInputWeight key message weight loop :=
+  expected_digestCompletion_cost_le_selected key message before finish
+    (fun result => successfulSignerInputWeight key message weight (record result)) weight
+    (fun loop hl result hr => successfulSignerInputWeight_le_selectedLoopInputWeight
+      key message weight loop (record result) (hconsistent loop hl result hr))
+
+theorem expected_digestCompletion_freshCost_le {α : Type}
+    (key : SecretKey) (message : Message) (before : QueryCache HashSpec)
+    (finish : DigestLoopRecord → ProbComp α) (cost : α → ENNReal) (weight : FewTimeView → ENNReal)
+    (hcost : ∀ loop ∈ support ((simulateQ romImpl (signDigestLoop digestAttemptLimit key message)).run before),
+      ∀ result ∈ support (finish loop), cost result ≤
+        selectedLoopInputWeight key message (fun input source => if before input = none then weight source else 0) loop) :
+    (∑' result, Pr[= result | (simulateQ romImpl (signDigestLoop digestAttemptLimit key message)).run before >>= finish] * cost result) ≤
+      freshDigestSelectionProbability key message before *
+        ∑' source, Pr[= source | ($ᵗ FewTimeView : ProbComp FewTimeView)] * weight source :=
+  (expected_digestCompletion_cost_le_selected key message before finish cost _ hcost).trans
+    (expected_freshSelectedLoopInputWeight_le key message before weight)
 
 theorem expected_digestCompletion_successfulInputWeight_le_exactReuse {α : Type}
     (key : SecretKey) (message : Message) (before : QueryCache HashSpec)

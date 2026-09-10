@@ -8,20 +8,6 @@ open FtsProbeSimulation (messageAnswers MessageHashInput)
 attribute [local instance] Classical.propDecidable
 set_option backward.isDefEq.respectTransparency false
 
-theorem cacheMessageWeight_messageAnswers_congr (parameter : PublicParameter)
-    (before after : QueryCache HashSpec) (hanswers : messageAnswers parameter before = messageAnswers parameter after)
-    (weight : HashInput → FewTimeView → ENNReal) :
-    cacheMessageWeight parameter weight before = cacheMessageWeight parameter weight after := by
-  apply tsum_congr
-  intro input
-  by_cases hm : MessageHashInput parameter input
-  · obtain ⟨payload, rfl⟩ := hm
-    have heq := congrFun hanswers payload
-    change before (tweakableHashInput parameter .message payload) = after (tweakableHashInput parameter .message payload) at heq
-    simp only [cacheMessageEntryWeight, heq]
-  · unfold cacheMessageEntryWeight
-    cases before input <;> cases after input <;> simp [hm]
-
 theorem targetIndexMoments_messageAnswers_congr (key : SecretKey) (before after : QueryCache HashSpec)
     (hanswers : messageAnswers key.parameter before = messageAnswers key.parameter after) (log : QueryLog SigningSpec) :
     targetIndexMoments key before log = targetIndexMoments key after log := by

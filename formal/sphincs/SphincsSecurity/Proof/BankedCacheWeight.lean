@@ -87,12 +87,14 @@ theorem bankedCacheWeight_bank_le (parameter : PublicParameter)
   · cases stopped <;> simp
   · exact hcompleted input hcomplete
 
-theorem expected_bankedCacheWeight_step_le {α : Type} (parameter : PublicParameter)
+theorem expected_bankedCacheWeight_step_le_of_split {α : Type} (parameter : PublicParameter)
     (computation : ProbComp α) (before : QueryCache HashSpec) (after : α → QueryCache HashSpec)
     (weight : α → HashInput → FewTimeView → ENNReal)
     (initial : HashInput → FewTimeView → ENNReal) (bank : HashInput → Bool)
     (completed : α → HashInput → Bool) (stopped : α → Bool) (charge : ENNReal)
-    (hcache : ∀ result ∈ support computation, before ≤ after result)
+    (hsplit : ∀ result ∈ support computation, ∀ value : HashInput → FewTimeView → ENNReal,
+      cacheMessageWeight parameter value (after result) = cacheMessageWeight parameter value before +
+        cacheMessageWeight parameter (fun input target => if before input = none then value input target else 0) (after result))
     (hcompleted : ∀ result ∈ support computation, ∀ input, completed result input = true →
       1 ≤ cacheMessageEntryWeight parameter (weight result) (after result) input)
     (hold : ∀ input target, (∑' result, Pr[= result | computation] * weight result input target) ≤ initial input target)
@@ -111,7 +113,7 @@ theorem expected_bankedCacheWeight_step_le {α : Type} (parameter : PublicParame
           (after result) := by
     apply (bankedCacheWeight_bank_le parameter (weight result) bank (completed result) (stopped result)
       (after result) (hcompleted result hr)).trans
-    rw [bankedCacheWeight_live, cacheMessageWeight_of_le parameter (pending result) before (after result) (hcache result hr), ← add_assoc]
+    rw [bankedCacheWeight_live, hsplit result hr (pending result), ← add_assoc]
     apply add_le_add le_rfl
     apply cacheMessageWeight_mono
     intro input target
@@ -146,5 +148,24 @@ theorem expected_bankedCacheWeight_step_le {α : Type} (parameter : PublicParame
         cacheMessageWeight parameter (fun input target => if bank input then 0 else initial input target) before + charge :=
       add_le_add (add_le_add (mul_le_of_le_one_left' tsum_probOutput_le_one) hold') hnew
     _ = _ := by rw [bankedCacheWeight_live]
+
+theorem expected_bankedCacheWeight_step_le {α : Type} (parameter : PublicParameter)
+    (computation : ProbComp α) (before : QueryCache HashSpec) (after : α → QueryCache HashSpec)
+    (weight : α → HashInput → FewTimeView → ENNReal)
+    (initial : HashInput → FewTimeView → ENNReal) (bank : HashInput → Bool)
+    (completed : α → HashInput → Bool) (stopped : α → Bool) (charge : ENNReal)
+    (hcache : ∀ result ∈ support computation, before ≤ after result)
+    (hcompleted : ∀ result ∈ support computation, ∀ input, completed result input = true →
+      1 ≤ cacheMessageEntryWeight parameter (weight result) (after result) input)
+    (hold : ∀ input target, (∑' result, Pr[= result | computation] * weight result input target) ≤ initial input target)
+    (hnew : (∑' result, Pr[= result | computation] *
+      cacheMessageWeight parameter (fun input target => if before input = none then weight result input target else 0)
+        (after result)) ≤ charge) :
+    (∑' result, Pr[= result | computation] *
+      bankedCacheWeight parameter (weight result) (fun input => bank input || completed result input)
+        (stopped result) (after result)) ≤ bankedCacheWeight parameter initial bank false before + charge :=
+  expected_bankedCacheWeight_step_le_of_split parameter computation before after weight initial bank completed stopped charge
+    (fun result hr value => cacheMessageWeight_of_le parameter value before (after result) (hcache result hr))
+    hcompleted hold hnew
 
 end SphincsSecurity.Concrete

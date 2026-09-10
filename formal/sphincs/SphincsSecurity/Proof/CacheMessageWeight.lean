@@ -4,7 +4,7 @@ import SphincsSecurity.Proof.ObservedFutureCoverage
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal
-open FtsProbeSimulation (MessageHashInput)
+open FtsProbeSimulation (MessageHashInput messageAnswers)
 attribute [local instance] Classical.propDecidable
 set_option backward.isDefEq.respectTransparency false
 
@@ -18,6 +18,20 @@ noncomputable def cacheMessageEntryWeight (parameter : PublicParameter)
 noncomputable def cacheMessageWeight (parameter : PublicParameter)
     (weight : HashInput → FewTimeView → ENNReal) (cache : QueryCache HashSpec) : ENNReal :=
   ∑' input, cacheMessageEntryWeight parameter weight cache input
+
+theorem cacheMessageWeight_messageAnswers_congr (parameter : PublicParameter)
+    (before after : QueryCache HashSpec) (hanswers : messageAnswers parameter before = messageAnswers parameter after)
+    (weight : HashInput → FewTimeView → ENNReal) :
+    cacheMessageWeight parameter weight before = cacheMessageWeight parameter weight after := by
+  apply tsum_congr
+  intro input
+  by_cases hm : MessageHashInput parameter input
+  · obtain ⟨payload, rfl⟩ := hm
+    have heq := congrFun hanswers payload
+    change before (tweakableHashInput parameter .message payload) = after (tweakableHashInput parameter .message payload) at heq
+    simp only [cacheMessageEntryWeight, heq]
+  · unfold cacheMessageEntryWeight
+    cases before input <;> cases after input <;> simp [hm]
 
 theorem cacheMessageWeight_mono (parameter : PublicParameter)
     (first second : HashInput → FewTimeView → ENNReal) (cache : QueryCache HashSpec)

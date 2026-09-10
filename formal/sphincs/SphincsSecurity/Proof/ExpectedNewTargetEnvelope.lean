@@ -1,4 +1,4 @@
-import SphincsSecurity.Proof.NewTargetEnvelopeCharge
+import SphincsSecurity.Proof.DigestCompletionNewTarget
 
 namespace SphincsSecurity.Concrete
 
@@ -16,22 +16,10 @@ theorem expected_signWithView_newTargetEnvelopeCharge_le_mass_mul (key : SecretK
         freshDigestSelectionProbability key message before *
           ((Fintype.card Index : ENNReal)⁻¹ *
             targetIndexEnvelope uniform reuse arrival queries signings (targetIndexMoments key before log) groups.card remaining.card) := by
-  by_cases hexists : ∃ payload, before (tweakableHashInput key.parameter .message payload) = none
-  · obtain ⟨reference, hreference⟩ := hexists
-    let weight := fun source => targetShapeEnvelope uniform reuse arrival queries signings
-      (targetShapeMoments key before log reference source) groups remaining
-    have hbound := expected_signWithView_newAdmissible_cost_le_mass_mul key message before _ weight
-      (fun result hr => signWithView_newTargetEnvelopeCharge_le_events key message before log hsigned
-        reference hreference uniform reuse arrival queries signings groups remaining result hr)
-    apply hbound.trans_eq
-    exact congrArg (fun value => freshDigestSelectionProbability key message before * value)
-      (expected_fresh_targetShapeEnvelope key before log reference hreference hsigned
-        uniform reuse arrival queries signings groups remaining hvalid)
-  · have hzero (result : (Option Signature × Option FewTimeView) × QueryCache HashSpec) :
-        newTargetEnvelopeCharge key before result.2 (log ++ [⟨message, result.1.1⟩]) uniform reuse arrival queries signings groups remaining = 0 :=
-      newTargetEnvelopeCharge_of_no_new key before result.2 _ uniform reuse arrival queries signings groups remaining
-        (fun payload _ hfresh _ _ => hexists ⟨payload, hfresh⟩)
-    simp only [hzero, mul_zero, tsum_zero, zero_le]
+  rw [signWithView_run_eq_digestCompletion]
+  exact expected_digestCompletion_newTargetEnvelopeCharge_le_mass_mul key message before
+    (originalDigestCompletion key) id (fun loop _ result hr => originalDigestCompletion_preservesMessages key loop result hr)
+    log hsigned uniform reuse arrival queries signings groups remaining hvalid
 
 theorem expected_signWithView_newTargetEnvelopeCharge_le (key : SecretKey) (message : Message)
     (before : QueryCache HashSpec) (log : QueryLog SigningSpec)
