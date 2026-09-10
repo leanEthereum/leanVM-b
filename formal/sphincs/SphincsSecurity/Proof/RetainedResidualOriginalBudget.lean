@@ -131,7 +131,7 @@ private theorem lazyRun_observed_support {Result : Type} (inputs : Finset HashIn
   obtain ⟨seed, _, hresult⟩ := hresult
   exact ⟨labels, seed, hlabels, hresult⟩
 
-private theorem initialState_completion (inputs : Finset HashInput) (words : OtsReferenceWords)
+theorem initialState_completion (inputs : Finset HashInput) (words : OtsReferenceWords)
     (exposed : InitialPublicLabels words) :
     UniformTableCompletion.complete (initialState inputs words exposed).candidates =
       UniformTableCompletion.complete (initialAllowed words exposed) := rfl

@@ -27,6 +27,7 @@ The cache command is needed on initial setup. The build includes [Audit.lean](Au
 | [RetainedResidualGameTransfer.lean](SphincsSecurity/Proof/RetainedResidualGameTransfer.lean) | Original success implies a native stop or a surviving strong forgery. |
 | [RetainedResidualReplay.lean](SphincsSecurity/Proof/RetainedResidualReplay.lean) | Accepting verification recovers the complete canonical signature. |
 | [RetainedResidualStrongCoverage.lean](SphincsSecurity/Proof/RetainedResidualStrongCoverage.lean) | A surviving strong forgery has a full certificate using eligible signing-log witnesses. |
+| [RetainedResidualMonitoredGame.lean](SphincsSecurity/Proof/RetainedResidualMonitoredGame.lean) | Original SUF probability is at most the joint primitive and certificate bound plus an explicit monitor-stop exception. Bounding this exception is still required. |
 | [AdaptiveChainEndpoint.lean](SphincsSecurity/Proof/AdaptiveChainEndpoint.lean) and [OtsPrefixOracle.lean](SphincsSecurity/Proof/OtsPrefixOracle.lean) | Prefix-oracle likelihood machinery for the small-budget OTS comparison. |
 | [NearCertificateBound.lean](SphincsSecurity/Proof/NearCertificateBound.lean) | Near-certificate estimate needed by the forced-FTS comparison. |
 
