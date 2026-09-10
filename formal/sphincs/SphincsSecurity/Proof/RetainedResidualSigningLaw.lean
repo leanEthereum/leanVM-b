@@ -105,4 +105,21 @@ theorem lazyRun_jointSigningProgram_digestLaw (routing : Routing) (key : SecretK
   rcases result with ⟨⟨selected, trace⟩, cache⟩
   cases selected <;> rfl
 
+theorem lazyRun_jointSigningProgram_some (routing : Routing) (root : Digest) (message : Message)
+    (hinputs : hashInputs (publicDigestLoop parameter root message digestAttemptLimit) ⊆ inputs) (state : State inputs)
+    (ha : ∀ coordinate, (state.candidates coordinate).Nonempty)
+    (hcovered : ResidualByteFrontend.RowsCovered inputs (project state)) (result : Option SigningRecord × State inputs)
+    (hresult : lazyRun (environment parameter inputs hencoding words publicReplies selections rows)
+      (simulateQ (embed inputs routing)
+        (ResidualByteFrontend.jointSigningProgram inputs parameter root routing.known words selections message)) state result ≠ 0) :
+    ∃ record, result.1 = some record := by
+  have h := map_nonzero _ cacheResult result hresult
+  rw [lazyRun_jointSigningProgram_cache parameter inputs hencoding words publicReplies selections rows routing root message
+    hinputs state ha hcovered, RetainedObservation.bind_nonzero] at h
+  obtain ⟨actual, _, h⟩ := h
+  rw [map_eq_bind_pure_comp, RetainedObservation.bind_nonzero] at h
+  obtain ⟨work, _, h⟩ := h
+  simp only [Function.comp_def, ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] at h
+  exact ⟨_, congrArg Prod.fst h⟩
+
 end SphincsSecurity.Concrete.RetainedResidual
