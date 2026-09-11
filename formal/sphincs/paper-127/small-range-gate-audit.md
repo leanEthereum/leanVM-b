@@ -50,11 +50,11 @@ These checks support the paper calculation under the specified causal projection
 
 For each active FTS secret, retain its nonexcluded candidates $U$. A fresh eligible query at $z\in U$ hits with probability $1/|U|$ and retires that coordinate. A miss removes $z$ and returns an independent full residual reply, even if its low half equals the public leaf hash. A successful signing record discloses its selected active coordinates; a failure discloses none. Selection and failure depend on the message trace and exposed graph, not the values being disclosed. These local kernels give the product posterior by multiplying their masses.
 
-Force eligible choices before slot $j$ to miss and the choice at $j$ to hit. Keep every other transition, including signing and proposal block lengths, unchanged. On reached eligible paths the real first-hit branch has density
+Force the eligible choice at slot $j$ to hit. Keep earlier tests and every other transition, including signing and proposal block lengths, unchanged. On reached eligible paths the real branch that hits at $j$ has density
 \[
-L_j=p_j\prod_{t<j}(1-p_t)\le (N-q)^{-1}.
+L_j=p_j\le (N-q)^{-1}.
 \]
-Use zero weight on unreached or ineligible paths. All forced choices have positive original conditional probability in the small interval. Thus their projected paths can be completed to supported original paths with the same original cost. This is the required reason the original budget transfers; mere similarity of the programs would not suffice.
+Use zero weight on unreached or ineligible paths. Summing over all test positions covers any true guess, including executions with multiple guesses. [SecretGuessForced.lean](../SphincsSecurity/Proof/SecretGuessForced.lean) proves that every supported forced result is supported by the original lazy execution with its full state retained. [FtsGuessForcedBudget.lean](../SphincsSecurity/Proof/FtsGuessForcedBudget.lean) transfers the original work budget. [SecretGuessForceLikelihood.lean](../SphincsSecurity/Proof/SecretGuessForceLikelihood.lean) proves the selected-hit likelihood identity, and [SecretGuessForceBound.lean](../SphincsSecurity/Proof/SecretGuessForceBound.lean) bounds every nonnegative terminal payoff by $(N-q)^{-1}$ times its forced-law expectation. The retained event's sum over test positions and forced-law coverage estimate remain to be proved.
 
 Here the rejected proposal letters can be omitted completely from the comparison. If $a$ is the fixed proposal acceptance probability, a block length $\ell\ge1$ has mass $a(1-a)^{\ell-1}$, independently of the completed signing record. For any rejected-letter law $r$,
 \[

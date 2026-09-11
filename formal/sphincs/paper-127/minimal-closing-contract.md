@@ -401,15 +401,15 @@ The final step uses the stopped density lower bound, rather than equating the re
 
 For FTS, an active secret is uniform on its remaining candidates \(U\). A query at \(z\in U\) hits with probability \(1/|U|\). On a miss, remove \(z\) and return a uniform answer, allowing that answer to equal the public leaf hash. That alternative preimage remains distinct from guessing the true secret.
 
-Force earlier eligible queries to miss and the eligible query at slot \(j\) to hit. If \(R_j\) is this conditional-kernel law, then for every nonnegative projected statistic \(Z\),
+Force the eligible query at slot \(j\) to hit, keeping earlier queries and all other transitions unchanged. If \(R_j\) is this conditional-kernel law, then for every nonnegative projected statistic \(Z\),
 
 \[
-\mathbb E_R[\mathbf1_{\{\text{first true hit at }j\}}Z]
-=\mathbb E_{R_j}\left[p_j\prod_{t<j}(1-p_t)Z\right],
-\qquad p_j\prod_{t<j}(1-p_t)\le\frac1{N-q}.
+\mathbb E_R[\mathbf1_{\{\text{eligible true hit at }j\}}Z]
+=\mathbb E_{R_j}[L_j Z],
+\qquad L_j=p_j\mathbf1_{\{\text{reached and eligible}\}}\le\frac1{N-q}.
 \]
 
-Each modified branch has original support and preserves the original query budget. Prove that its fresh message kernel, finite signing loop and selected-view rules meet the coverage hypotheses, then attach that law's own proposal bridge. The near-certificate estimate in each \(R_j\) gives \(557x^2/(1-x)\) after summing over slots. The two-guess term is at most \(x^2/(2(1-x)^2)\). The original-law near estimate alone cannot justify this multiplication. Exceptions are paid once on the original execution, not once per forced law.
+A union over test positions covers every execution with a true guess, even when an earlier query already guessed a different coordinate. [SecretGuessForced.lean](../SphincsSecurity/Proof/SecretGuessForced.lean) and [FtsGuessForcedBudget.lean](../SphincsSecurity/Proof/FtsGuessForcedBudget.lean) prove support containment and the original budget for the forced law. The selected-hit likelihood and weighted payoff bound are proved in [SecretGuessForceLikelihood.lean](../SphincsSecurity/Proof/SecretGuessForceLikelihood.lean) and [SecretGuessForceBound.lean](../SphincsSecurity/Proof/SecretGuessForceBound.lean). Prove that each forced law's fresh message kernel, finite signing loop and selected-view rules meet the coverage hypotheses, then attach that law's own proposal bridge and connect the retained event to the sum over positions. The near-certificate estimate in each \(R_j\) then gives \(557x^2/(1-x)\). The two-guess term is already bounded by \(x^2/(2(1-x)^2)\). The original-law near estimate alone cannot justify this multiplication. Exceptions are paid once on the original execution, not once per forced law.
 
 ## The coverage interface that must be transported
 
