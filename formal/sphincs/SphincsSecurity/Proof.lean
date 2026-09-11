@@ -1,7 +1,7 @@
 import SphincsSecurity.Proof.AdaptiveChainPause
 import SphincsSecurity.Proof.CachedIndexExcessGame
 import SphincsSecurity.Proof.DigestCompletionMonitor
-import SphincsSecurity.Proof.FtsGuessSigning
+import SphincsSecurity.Proof.FtsGuessReference
 import SphincsSecurity.Proof.NearCertificateBound
 import SphincsSecurity.Proof.ReferenceCertificateCoverage
 import SphincsSecurity.Proof.RetainedResidualCorrespondence
