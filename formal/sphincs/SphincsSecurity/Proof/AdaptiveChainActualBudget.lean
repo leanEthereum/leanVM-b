@@ -36,7 +36,7 @@ theorem lazyRun_counted_le_of_real (endpoint : State) (result : (Result × Nat) 
   rw [hfinished]
   exact Option.some_ne_none finished
 
-theorem lazyRun_pause_budget_of_real (endpoint : State) (stop : Memory → Prop)
+theorem lazyRun_pause_budget_of_real (endpoint : State) (stop : Memory → Prop) [DecidablePred stop]
     (step : (input : (auxSpec + PrefixSpec n State).Domain) → (auxSpec + PrefixSpec n State).Range input → Memory → Memory)
     (memory : Memory)
     (middle : ((Memory × OracleComp (auxSpec + PrefixSpec n State) Result) × Nat) × (Fin n → State → Option State))

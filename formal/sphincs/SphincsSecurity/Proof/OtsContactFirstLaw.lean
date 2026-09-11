@@ -27,7 +27,7 @@ theorem instrumentedContact_seen (result : Digest × ContactResult × (Fin segme
   rw [← segment.contactCheckpointRun_project inputs hencoding hgraph auxiliary secrets ftsSecret words adversary,
     PMF.mem_support_map_iff] at hresult
   obtain ⟨checkpoint, hcheckpoint, rfl⟩ := hresult
-  exact (segment.contactCheckpointRun_observation inputs hencoding hgraph auxiliary secrets ftsSecret words adversary checkpoint hcheckpoint).2.1
+  exact (segment.traceCheckpointRun_observation OtsContactTrace.Stopped inputs hencoding hgraph auxiliary secrets ftsSecret words adversary checkpoint hcheckpoint).2.1
 
 theorem instrumentedContact_forget (endpoint : Digest) :
     ContactResult.output <$> segment.instrumentedSeedGame contactObserver inputs hencoding hgraph auxiliary secrets ftsSecret words endpoint adversary =
