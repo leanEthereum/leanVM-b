@@ -1,8 +1,8 @@
-import SphincsSecurity.Proof.AdaptiveChainContact
+import SphincsSecurity.Proof.AdaptiveChainRestart
 import SphincsSecurity.Proof.CachedIndexExcessGame
 import SphincsSecurity.Proof.DigestCompletionMonitor
 import SphincsSecurity.Proof.NearCertificateBound
-import SphincsSecurity.Proof.ReferenceQueryAllocation
+import SphincsSecurity.Proof.OtsPrefixContactProbability
 import SphincsSecurity.Proof.RetainedResidualCorrespondence
 import SphincsSecurity.Proof.Security126Completion
 import SphincsSecurity.Proof.Security127LargeBudget

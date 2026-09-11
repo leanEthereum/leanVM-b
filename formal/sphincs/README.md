@@ -41,5 +41,7 @@ The cache command is needed on initial setup. The build includes [Audit.lean](Au
 | [OtsPrefixIdealAllocation.lean](SphincsSecurity/Proof/OtsPrefixIdealAllocation.lean) | Transports the shared prefix budget through conditional sampling and proves $(1-q/2^{128})\sum_c\mathbb E Q_c^{\rm ideal}\le q$ for the capped ideal comparisons. |
 | [ReferenceQueryAllocation.lean](SphincsSecurity/Proof/ReferenceQueryAllocation.lean) | Preserves encoding, other non-message and all native message charges alongside the conditional OTS costs in one original hash budget. |
 | [AdaptiveChainContact.lean](SphincsSecurity/Proof/AdaptiveChainContact.lean) | Proves the generic first-contact probability bound using actual expected prefix-query cost and a potential that accounts for previously prepared paths. |
+| [OtsPrefixContactProbability.lean](SphincsSecurity/Proof/OtsPrefixContactProbability.lean) | Connects first-contact probabilities to the shared conditional budget, preserving observed rows through cap erasure and reserving other query classes. |
+| [AdaptiveChainRestart.lean](SphincsSecurity/Proof/AdaptiveChainRestart.lean) | Charges a later first contact to old prefix preparation and future queries in the fixed-endpoint partial-table law. |
 
 [The 127-bit guide](PAPER-127.md) identifies the remaining original-game connections and the mathematical contracts they must establish. Historical proof routes and superseded status reports are available in Git history.
