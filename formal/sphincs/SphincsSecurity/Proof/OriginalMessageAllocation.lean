@@ -1,5 +1,5 @@
 import SphincsSecurity.Proof.OriginalCertificateBound
-import SphincsSecurity.Proof.ReferencePrimitiveBound
+import SphincsSecurity.Proof.ReferenceQueryAllocation
 
 namespace SphincsSecurity.Concrete
 
@@ -95,50 +95,5 @@ theorem originalCertificateMessageCost_le_referenceRecorded (dummy : OtsReferenc
         (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] * (result.messageCalls : ENNReal) :=
   (originalCertificateMessageCost_le_boundaryGameCore adversary).trans_eq
     (boundaryGameCore_messageCalls_eq_referenceRecorded dummy adversary)
-
-theorem originalCertificateSource_full_le_reference_message_add_exception (dummy : OtsReferenceWords)
-    (adversary : Adversary) (q : Nat) (hbudget : q ≤ 2 ^ 127) (hbound : HasHashQueryBound scheme adversary q) :
-    Pr[OriginalFullCertificate | originalCertificateSource adversary] ≤
-      (2 ^ 128 : ENNReal)⁻¹ *
-        (∑' result, Pr[= result | referenceRecordedGame (canonicalGraphGameInputs adversary)
-          (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] * (result.messageCalls : ENNReal)) +
-      (q : ENNReal) * (11 / 2 ^ 144 : ENNReal) +
-      Pr[fun result => CertificateGameExceptional result.2 |
-        certificateContextGame adversary q Finset.univ (fun _ => proposalPrefixStop) false] :=
-  (originalCertificateSource_full_le_original_message_add_exception adversary q hbudget hbound).trans
-    (add_le_add (add_le_add (mul_le_mul' le_rfl
-      (originalCertificateMessageCost_le_referenceRecorded dummy adversary)) le_rfl) le_rfl)
-
-theorem original_primitive_add_full_certificate_small_budget (dummy : OtsReferenceWords)
-    (adversary : Adversary) (q : Nat) (hbound : HasHashQueryBound scheme adversary q)
-    (hsmall : q ≤ 3 * 2 ^ 114) :
-    Pr[GraphPrimitiveEvent dummy | referenceGraphContextGame contactObserver (canonicalGraphGameInputs adversary)
-      (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] +
-      Pr[OriginalFullCertificate | originalCertificateSource adversary] ≤
-      (7 / 4 : ENNReal) * ((q : ENNReal) / 2 ^ 128) + (q : ENNReal) * (11 / 2 ^ 144 : ENNReal) +
-      Pr[fun result => CertificateGameExceptional result.2 |
-        certificateContextGame adversary q Finset.univ (fun _ => proposalPrefixStop) false] := by
-  have hbudget : q ≤ 2 ^ 127 := hsmall.trans (by norm_num)
-  have hcard : Fintype.card Digest = 2 ^ 128 := by simp [digestBits]
-  have hp := referenceGraphContextGame_primitive_small_budget dummy adversary q hbound hsmall
-  rw [hcard] at hp
-  simp only [Nat.cast_pow, Nat.cast_ofNat] at hp
-  have hc := originalCertificateSource_full_le_reference_message_add_exception dummy adversary q hbudget hbound
-  have hrate : (2 ^ 128 : ENNReal)⁻¹ ≤ (7 / 4 : ENNReal) / 2 ^ 128 := by
-    apply (ENNReal.toReal_le_toReal (by finiteness) (by finiteness)).mp
-    norm_num [ENNReal.toReal_inv, ENNReal.toReal_div]
-  have hc' := hc.trans (add_le_add (add_le_add (mul_le_mul' hrate le_rfl) le_rfl) le_rfl)
-  calc
-    _ ≤ Pr[GraphPrimitiveEvent dummy | referenceGraphContextGame contactObserver (canonicalGraphGameInputs adversary)
-          (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] +
-        (((7 / 4 : ENNReal) / 2 ^ 128) *
-          (∑' result, Pr[= result | referenceRecordedGame (canonicalGraphGameInputs adversary)
-            (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] * (result.messageCalls : ENNReal)) +
-          (q : ENNReal) * (11 / 2 ^ 144 : ENNReal) +
-          Pr[fun result => CertificateGameExceptional result.2 |
-            certificateContextGame adversary q Finset.univ (fun _ => proposalPrefixStop) false]) := add_le_add le_rfl hc'
-    _ ≤ _ := by
-      rw [← add_assoc, ← add_assoc]
-      exact add_le_add (add_le_add hp le_rfl) le_rfl
 
 end SphincsSecurity.Concrete
