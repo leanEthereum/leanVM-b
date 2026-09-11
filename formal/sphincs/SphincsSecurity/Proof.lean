@@ -1,12 +1,9 @@
 import SphincsSecurity.Proof.AdaptiveChainPause
 import SphincsSecurity.Proof.CachedIndexExcessGame
 import SphincsSecurity.Proof.DigestCompletionMonitor
-import SphincsSecurity.Proof.EncodingMatchBound
 import SphincsSecurity.Proof.NearCertificateBound
 import SphincsSecurity.Proof.ReferenceForgeryCoverage
-import SphincsSecurity.Proof.OtsDistinctContactBound
-import SphincsSecurity.Proof.OtsMarkerContactProbability
+import SphincsSecurity.Proof.ReferencePrimitiveBound
 import SphincsSecurity.Proof.RetainedResidualCorrespondence
 import SphincsSecurity.Proof.Security126Completion
 import SphincsSecurity.Proof.Security127LargeBudget
-import SphincsSecurity.Proof.StructuralMatchBound
