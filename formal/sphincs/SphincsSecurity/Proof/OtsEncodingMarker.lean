@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.EncodingFreshRow
+import SphincsSecurity.Proof.EncodingInputs
 import SphincsSecurity.Proof.EncodingBackwardWitness
 import SphincsSecurity.Proof.OtsContactTrace
 import SphincsSecurity.Proof.QueryClassAllocation
@@ -8,13 +9,28 @@ namespace SphincsSecurity.Concrete.OtsEncodingMarker
 open _root_.OracleComp OracleSpec
 set_option backward.isDefEq.respectTransparency false
 attribute [local instance] Classical.propDecidable
-attribute [local irreducible] Finset.univ OtsContactTrace.contacts
+attribute [local irreducible] Finset.univ OtsContactTrace.contacts canonicalEncodingInputs
 
 def EntryMarker (parameter : PublicParameter) (words : OtsReferenceWords) (address : OtsPrefix.ChainAddress)
     (entry : HashInput × HashOutput) : Prop :=
   AtEncodingPosition parameter entry.1 ⟨address.1, address.2.1, address.2.2.1⟩ ∧
+    entry.1 ∈ canonicalEncodingInputs parameter ∧
     ∃ candidate, decodeEncodingOutput entry.2 = some candidate ∧
       TargetSum.UnitNeighborAt (words address.1 address.2.1 address.2.2.1) candidate address.2.2.2
+
+theorem entryMarker_encoding_iff (parameter : PublicParameter) (words : OtsReferenceWords) (address : OtsPrefix.ChainAddress)
+    (message : Digest) (counter : Counter) (output : HashOutput) :
+    EntryMarker parameter words address
+      (tweakableHashInput parameter (.encoding address.1 address.2.1 address.2.2.1)
+        (digestBytes message ++ counterBytes counter), output) ↔
+      ∃ candidate, decodeEncodingOutput output = some candidate ∧
+        TargetSum.UnitNeighborAt (words address.1 address.2.1 address.2.2.1) candidate address.2.2.2 := by
+  have hcounter : counter.toNat < encodingAttemptLimit := by
+    simpa only [encodingAttemptLimit, counterBits] using counter.isLt
+  have hin := encodingRetryInput_mem_canonicalEncodingInputs parameter
+    ⟨address.1, address.2.1, address.2.2.1⟩ message ⟨counter.toNat, hcounter⟩
+  simp only [encodingRetryInput, BitVec.ofNat_toNat] at hin
+  exact and_iff_right ⟨_, rfl⟩ |>.trans (and_iff_right hin)
 
 def Seen (parameter : PublicParameter) (words : OtsReferenceWords) (address : OtsPrefix.ChainAddress)
     (trace : OtsContactTrace.Trace) : Prop := ∃ entry ∈ trace.toList, EntryMarker parameter words address entry
@@ -24,8 +40,8 @@ theorem entryMarker_unique (parameter : PublicParameter) (words : OtsReferenceWo
     left = right := by
   rcases left with ⟨leftLay, leftTree, leftLeaf, leftChain⟩
   rcases right with ⟨rightLay, rightTree, rightLeaf, rightChain⟩
-  obtain ⟨hl, leftWord, hdecodeLeft, hneighborLeft⟩ := hleft
-  obtain ⟨hr, rightWord, hdecodeRight, hneighborRight⟩ := hright
+  obtain ⟨hl, _, leftWord, hdecodeLeft, hneighborLeft⟩ := hleft
+  obtain ⟨hr, _, rightWord, hdecodeRight, hneighborRight⟩ := hright
   have hp := atEncodingPosition_unique hl hr
   simp only [EncodingPosition.mk.injEq] at hp
   obtain ⟨rfl, rfl, rfl⟩ := hp
@@ -83,7 +99,7 @@ theorem entryMarker_uniform_le (parameter : PublicParameter) (words : OtsReferen
   refine (_root_.probEvent_mono (mx := ($ᵗ HashOutput : ProbComp HashOutput)) ?_).trans
     (TargetSum.unitNeighbors_uniform_le (words address.1 address.2.1 address.2.2.1) address.2.2.2)
   intro output _ hm
-  obtain ⟨_, candidate, hd, hn⟩ := hm
+  obtain ⟨_, _, candidate, hd, hn⟩ := hm
   exact TargetSum.mem_decodingDigests.mpr ⟨candidate, TargetSum.mem_unitNeighbors.mpr hn, hd⟩
 
 theorem entryMarker_subset_uniform_le (parameter : PublicParameter) (words : OtsReferenceWords)
@@ -103,7 +119,7 @@ theorem entryMarker_any_uniform_le (parameter : PublicParameter) (words : OtsRef
     refine (_root_.probEvent_mono (mx := ($ᵗ HashOutput : ProbComp HashOutput)) ?_).trans
       (TargetSum.allUnitNeighbors_uniform_le (words position.lay position.tree position.leafIdx))
     intro output _ hm
-    obtain ⟨⟨lay, tree, leaf, chain⟩, hposition, candidate, hd, hn⟩ := hm
+    obtain ⟨⟨lay, tree, leaf, chain⟩, hposition, _, candidate, hd, hn⟩ := hm
     have he := atEncodingPosition_unique hposition hp
     subst position
     exact TargetSum.mem_decodingDigests.mpr ⟨candidate, TargetSum.mem_allUnitNeighbors.mpr ⟨chain, hn⟩, hd⟩
