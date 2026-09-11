@@ -34,6 +34,14 @@ theorem checkpointObserver_trace (parameter : PublicParameter) (words : OtsRefer
     exact id_map _
   simpa only [checkpointObserver, checkpointSplitRun, Functor.map_map, map_bind, map_pure] using h.trans he
 
+theorem checkpointObserver_frontier_trace (parameter : PublicParameter) (words : OtsReferenceWords) (frontier : OtsFrontierValues)
+    (computation : OracleComp OracleWorld (Bool × SigningBoundaryTrace)) :
+    (fun result : ContactResult => (result.frontier, result.output, result.before * result.after)) <$>
+      checkpointObserver stop parameter words frontier computation =
+        (fun result => (frontier, result)) <$> QueryPause.traced hashObservationTrace computation := by
+  simpa only [checkpointObserver, Functor.map_map] using
+    congrArg (Functor.map (fun result => (frontier, result))) (checkpointObserver_trace stop parameter words frontier computation)
+
 theorem checkpointObserver_forget (parameter : PublicParameter) (words : OtsReferenceWords) (frontier : OtsFrontierValues)
     (computation : OracleComp OracleWorld (Bool × SigningBoundaryTrace)) :
     ContactResult.output <$> checkpointObserver stop parameter words frontier computation = computation := by

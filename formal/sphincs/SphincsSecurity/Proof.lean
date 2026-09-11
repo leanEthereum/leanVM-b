@@ -4,8 +4,7 @@ import SphincsSecurity.Proof.DigestCompletionMonitor
 import SphincsSecurity.Proof.NearCertificateBound
 import SphincsSecurity.Proof.OtsPrefixTwoEdgeProbability
 import SphincsSecurity.Proof.OtsDistinctContactBound
-import SphincsSecurity.Proof.OtsMarkerContactBound
-import SphincsSecurity.Proof.OtsContactMarkerBound
+import SphincsSecurity.Proof.OtsMarkerContactProbability
 import SphincsSecurity.Proof.RetainedResidualCorrespondence
 import SphincsSecurity.Proof.Security126Completion
 import SphincsSecurity.Proof.Security127LargeBudget

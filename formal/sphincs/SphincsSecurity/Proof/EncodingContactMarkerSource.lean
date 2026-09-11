@@ -7,14 +7,6 @@ open _root_.OracleComp OracleSpec OtsEncodingMarker
 set_option backward.isDefEq.respectTransparency false
 attribute [local irreducible] canonicalGraphLabels canonicalGraphInputs canonicalEncodingInputs Finset.univ OtsContactTrace.contacts
 
-theorem contactObserver_frontier_trace (parameter : PublicParameter) (words : OtsReferenceWords) (frontier : OtsFrontierValues)
-    (computation : OracleComp OracleWorld (Bool × SigningBoundaryTrace)) :
-    (fun result : ContactResult => (result.frontier, result.output, result.before * result.after)) <$>
-      contactObserver parameter words frontier computation =
-        (fun result => (frontier, result)) <$> QueryPause.traced hashObservationTrace computation := by
-  simpa only [contactObserver, Functor.map_map] using
-    congrArg (Functor.map (fun result => (frontier, result))) (OtsContactTrace.splitRun_trace parameter words frontier computation)
-
 theorem referenceEncodingLazyRest_frontier_statistic (key : SecretKey) (inputs : Finset HashInput)
     (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs) (outside : NonencodingRows key.parameter inputs hencoding)
     (selections : ReferenceFamily) (dummy : OtsReferenceWords) (adversary : Adversary)

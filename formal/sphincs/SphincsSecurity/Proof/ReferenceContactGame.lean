@@ -17,6 +17,14 @@ structure ContactResult where
 noncomputable def contactObserver : FrontierObserver ContactResult := fun parameter words frontier computation =>
   (fun result => ⟨frontier, result.1, result.2.1, result.2.2⟩) <$> OtsContactTrace.splitRun parameter words frontier computation
 
+theorem contactObserver_frontier_trace (parameter : PublicParameter) (words : OtsReferenceWords) (frontier : OtsFrontierValues)
+    (computation : OracleComp OracleWorld (Bool × SigningBoundaryTrace)) :
+    (fun result : ContactResult => (result.frontier, result.output, result.before * result.after)) <$>
+      contactObserver parameter words frontier computation =
+        (fun result => (frontier, result)) <$> QueryPause.traced hashObservationTrace computation := by
+  simpa only [contactObserver, Functor.map_map] using
+    congrArg (Functor.map (fun result => (frontier, result))) (OtsContactTrace.splitRun_trace parameter words frontier computation)
+
 theorem contactObserver_forget (parameter : PublicParameter) (words : OtsReferenceWords) (frontier : OtsFrontierValues)
     (computation : OracleComp OracleWorld (Bool × SigningBoundaryTrace)) :
     ContactResult.output <$> contactObserver parameter words frontier computation = computation := by
