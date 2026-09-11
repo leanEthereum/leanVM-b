@@ -9,3 +9,4 @@ import SphincsSecurity.Proof.OtsMarkerContactProbability
 import SphincsSecurity.Proof.RetainedResidualCorrespondence
 import SphincsSecurity.Proof.Security126Completion
 import SphincsSecurity.Proof.Security127LargeBudget
+import SphincsSecurity.Proof.StructuralOracleObservation
