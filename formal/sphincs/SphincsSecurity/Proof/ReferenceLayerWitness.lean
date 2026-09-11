@@ -47,7 +47,7 @@ theorem layer_reference_classification (lay : Layer) (tree : TreeIndex) (secret 
     (hotsRun : ContainsRun f trace (otsLeaf parameter lay tree leaf message counter values))
     (hfoldRun : ContainsRun f trace (treeFold parameter lay tree leaf path (layerHeight lay) leafValue)) :
     (∃ selected, selections ⟨lay, tree, leaf⟩ = some selected ∧ message = messages ⟨lay, tree, leaf⟩ ∧
-      counter = BitVec.ofNat counterBits selected.1.val ∧
+      counter = BitVec.ofNat counterBits selected.1.val ∧ candidate = words lay tree leaf ∧
       (∀ index, values index = frontier f parameter words lay tree leaf (secret leaf) index) ∧
       ∀ level, level < layerHeight lay → path level = honestNode f parameter lay tree secret level (Nat.xor (leaf.val / 2 ^ level) 1)) ∨
       TreeOutputMatch f parameter lay tree secret trace ∨ LeafOutputMatch f parameter lay tree leaf (secret leaf) trace ∨
@@ -57,7 +57,7 @@ theorem layer_reference_classification (lay : Layer) (tree : TreeIndex) (secret 
   · rw [hword] at hencode
     rcases equal_word_reference f parameter words messages selections lay tree leaf message counter values trace hencode hotsRun
       with ⟨selected, hs, hm, hc⟩ | he
-    · exact Or.inl ⟨selected, hs, hm, hc, hvalues, hpath⟩
+    · exact Or.inl ⟨selected, hs, hm, hc, hword, hvalues, hpath⟩
     · exact Or.inr (Or.inr (Or.inr (Or.inr he)))
   · exact Or.inr (Or.inl ht)
   · exact Or.inr (Or.inr (Or.inl hl))
