@@ -24,18 +24,10 @@ import Mathlib.Probability.ProbabilityMassFunction.Constructions
 import Mathlib.RingTheory.Polynomial.Pochhammer
 import Mathlib.Tactic.DeriveFintype
 import Mathlib.Topology.Algebra.InfiniteSum.NatInt
-import VCVio.EvalDist.Defs.Instances
-import VCVio.OracleComp.Constructions.SampleableType
-import VCVio.OracleComp.EvalDist
 import VCVio.OracleComp.QueryTracking.LoggingOracle
-import VCVio.OracleComp.QueryTracking.ProgrammingOracle
-import VCVio.OracleComp.QueryTracking.QueryBound
 import VCVio.OracleComp.QueryTracking.RandomOracle.DeferredSampling
 import VCVio.OracleComp.QueryTracking.RandomOracle.EagerTable
-import VCVio.OracleComp.QueryTracking.RandomOracle.Simulation
 import VCVio.OracleComp.QueryTracking.SubSpec
-import VCVio.OracleComp.SimSemantics.StateT.StateProjection
-import VCVio.ProgramLogic.Relational.Basic
 import VCVio.ProgramLogic.Relational.ProgrammingOracle
 import VCVio.ProgramLogic.Relational.Quantitative
 

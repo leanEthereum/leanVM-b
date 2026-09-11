@@ -1,8 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FewTimeLoop
-import SphincsSecurity.Proof.Fts.FewTimeWitness
 import SphincsSecurity.Proof.Reference.SigningTrace
-import SphincsSecurity.Proof.Hypertree.RootCache
 import SphincsSecurity.Proof.Scheme.Secrets
 
 /-!

@@ -1,6 +1,4 @@
 import SphincsSecurity.Proof.Forced.FtsGuessCachedForced
-import SphincsSecurity.Proof.Fts.CertificateBoundaryInvariants
-import SphincsSecurity.Proof.Residual.RetainedResidualSigningKernel
 
 namespace SphincsSecurity.Concrete.FtsGuessHash
 

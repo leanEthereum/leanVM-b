@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Hypertree.StructuralTraceCache
-import SphincsSecurity.Proof.Base.QueryTracePotential
 
 namespace SphincsSecurity.Concrete.StructuralObservation
 

@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Ots.OtsTwoEdgeTrace
-import SphincsSecurity.Proof.Scheme.Queried
 
 namespace SphincsSecurity.Concrete
 

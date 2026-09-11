@@ -1,4 +1,3 @@
-import SphincsSecurity.Proof.Base.BernoulliExcessMoments
 import SphincsSecurity.Proof.Fts.CachedIndexHashMoments
 
 namespace SphincsSecurity

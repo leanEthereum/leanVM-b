@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Reference.VerifierTraceSource
-import SphincsSecurity.Proof.Reference.CausalFrontierProgram
 
 namespace SphincsSecurity.Concrete.OtsContactTrace
 

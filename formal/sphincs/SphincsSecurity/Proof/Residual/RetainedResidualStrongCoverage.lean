@@ -1,6 +1,4 @@
 import SphincsSecurity.Proof.Residual.RetainedResidualSigningHistory
-import SphincsSecurity.Proof.Fts.ObservedAdaptiveCoverBound
-import SphincsSecurity.Proof.Fts.FewTimeConditionalCoverage
 import SphincsSecurity.Proof.Fts.BankedTargetEnvelope
 
 namespace SphincsSecurity.Concrete.RetainedResidual

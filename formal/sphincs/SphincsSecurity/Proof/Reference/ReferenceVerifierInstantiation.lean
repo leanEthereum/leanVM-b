@@ -1,5 +1,3 @@
-import SphincsSecurity.Proof.Reference.CausalVerifierTrace
-import SphincsSecurity.Proof.Reference.VerifierWitnessClassification
 import SphincsSecurity.Proof.Ots.EncodingMarkerBound
 import SphincsSecurity.Proof.Hypertree.FrontierSigningOrigin
 import SphincsSecurity.Proof.Reference.ReferenceSigningReplay

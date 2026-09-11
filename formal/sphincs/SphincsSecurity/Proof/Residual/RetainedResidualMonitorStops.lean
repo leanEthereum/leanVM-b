@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Residual.RetainedResidualMonitorReadiness
 import SphincsSecurity.Proof.Residual.RetainedResidualProposalInvariant
-import SphincsSecurity.Proof.Fts.CertificateProposalPrefixException
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 

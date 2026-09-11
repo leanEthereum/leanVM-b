@@ -1,6 +1,4 @@
 import SphincsSecurity.Proof.Forced.FtsGuessCachedSigning
-import SphincsSecurity.Proof.Ots.OtsProbeCanonicalChargeGame
-import SphincsSecurity.Proof.Ots.OtsProbeCompletionSampling
 
 namespace SphincsSecurity.Concrete.FtsGuessHash
 

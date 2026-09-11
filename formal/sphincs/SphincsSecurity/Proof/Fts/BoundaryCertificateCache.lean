@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Fts.OriginalCertificateBound
-import SphincsSecurity.Proof.Fts.TargetAssignmentCount
 
 namespace SphincsSecurity.Concrete
 

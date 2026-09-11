@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Fts.CertificateCacheExceptionKernels
 import SphincsSecurity.Proof.Residual.RetainedResidualCacheAccounting
-import SphincsSecurity.Proof.Residual.RetainedResidualMessagePayment
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 

@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Ots.OtsChainBackward
-import SphincsSecurity.Proof.Hypertree.Descent
 
 namespace SphincsSecurity.Concrete.OtsContactTrace
 

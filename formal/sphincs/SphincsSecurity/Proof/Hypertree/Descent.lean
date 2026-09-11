@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Scheme.Cached
 import SphincsSecurity.Proof.Scheme.Charge
 import SphincsSecurity.Proof.Hypertree.Hypertree
-import SphincsSecurity.Proof.Hypertree.Settled
 
 /-!
 # Deterministic forgery descent

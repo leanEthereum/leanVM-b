@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Fts.MessageDeficitMomentGrowth
-import SphincsSecurity.Proof.Fts.MessageCacheCountGrowth
 
 namespace SphincsSecurity
 

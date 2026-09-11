@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Forced.SecretGuessObservation
-import SphincsSecurity.Proof.Fts.PublicSigningRecord
 import SphincsSecurity.Proof.Reference.ReferenceAuxiliarySigning
 import SphincsSecurity.Proof.Base.UniformTableProducts
 

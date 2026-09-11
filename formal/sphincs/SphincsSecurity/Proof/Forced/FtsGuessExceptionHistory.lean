@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Forced.FtsGuessMonitoredAccounting
 import SphincsSecurity.Proof.Residual.RetainedResidualCacheKernels
-import SphincsSecurity.Proof.Fts.ProposalPrefixExponential
 
 namespace SphincsSecurity.Concrete.FtsGuessHash
 

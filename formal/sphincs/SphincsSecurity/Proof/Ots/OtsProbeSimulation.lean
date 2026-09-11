@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Scheme.ForgeryClassify
-import SphincsSecurity.Proof.Hypertree.Honest
 import SphincsSecurity.Proof.Ots.SecretProbe
 import SphincsSecurity.Proof.Reference.SigningTrace
 

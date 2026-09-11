@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Forced.FtsGuessExceptionWeights
-import SphincsSecurity.Proof.Fts.CertificateProposalPrefixException
 
 namespace SphincsSecurity.Concrete.FtsGuessHash
 

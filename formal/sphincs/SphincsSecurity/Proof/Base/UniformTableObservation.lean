@@ -1,4 +1,3 @@
-import SphincsSecurity.Proof.Base.UniformTableCompletion
 import SphincsSecurity.Proof.Residual.RetainedObservation
 
 namespace SphincsSecurity.Concrete.UniformTableObservation

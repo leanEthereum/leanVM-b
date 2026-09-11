@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.ReferenceLayerWitness
 import SphincsSecurity.Proof.Reference.VerifierTraceDescent
-import SphincsSecurity.Proof.Scheme.ForgeryClassify
 
 namespace SphincsSecurity.Concrete.OtsVerifierWitness
 

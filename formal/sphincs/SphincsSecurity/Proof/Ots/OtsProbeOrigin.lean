@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FtsProbeOrigin
-import SphincsSecurity.Proof.Scheme.ForgeryClassify
 import SphincsSecurity.Proof.Ots.OtsProbeSimulation
 
 /-!

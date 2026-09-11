@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Hypertree.StructuralMatchAccumulation
-import SphincsSecurity.Proof.Ots.EncodingMarkerAllocation
 
 namespace SphincsSecurity.Concrete
 

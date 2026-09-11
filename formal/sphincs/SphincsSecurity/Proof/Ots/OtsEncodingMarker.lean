@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Ots.EncodingFreshRow
-import SphincsSecurity.Proof.Ots.EncodingInputs
 import SphincsSecurity.Proof.Ots.EncodingBackwardWitness
 import SphincsSecurity.Proof.Ots.OtsContactTrace
 import SphincsSecurity.Proof.Reference.QueryClassAllocation

@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Forced.FtsGuessWork
-import SphincsSecurity.Proof.Fts.ReferenceFtsCoverage
 
 namespace SphincsSecurity.Concrete.FtsGuessHash
 

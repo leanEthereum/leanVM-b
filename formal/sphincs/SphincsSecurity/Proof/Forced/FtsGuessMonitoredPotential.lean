@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Forced.FtsGuessMonitoredValid
-import SphincsSecurity.Proof.Forced.FtsGuessSigningDigest
 
 namespace SphincsSecurity.Concrete.FtsGuessHash
 

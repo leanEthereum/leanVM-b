@@ -2,13 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FtsProbeProbability
 import SphincsSecurity.Proof.Fts.FewTimeSource
 import SphincsSecurity.Proof.Fts.FtsProbeOrigin
-import SphincsSecurity.Proof.Fts.FewTimeSignerView
-import SphincsSecurity.Proof.Fts.FewTimeWitness
-import SphincsSecurity.Proof.Reference.SigningTrace
-import SphincsSecurity.Proof.Hypertree.RootCache
-import SphincsSecurity.Proof.Scheme.Secrets
-import SphincsSecurity.Proof.Fts.MessagePrehit
-import SphincsSecurity.Proof.Scheme.ForgeryClassify
 
 namespace SphincsSecurity
 

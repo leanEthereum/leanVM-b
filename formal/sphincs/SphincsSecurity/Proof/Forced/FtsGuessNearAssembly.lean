@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Forced.FtsGuessExceptionClassification
 import SphincsSecurity.Proof.Fts.PoissonPoolTail
 import SphincsSecurity.Proof.Fts.NearCertificateBound
-import SphincsSecurity.Proof.Forced.FtsGuessNearSource
 import SphincsSecurity.Proof.Forced.Security127SmallBudgetArithmetic
 
 /-!

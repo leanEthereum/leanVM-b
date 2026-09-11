@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Hypertree.StructuralOracleObservation
-import SphincsSecurity.Proof.Base.UniformTableObservationMass
 
 namespace SphincsSecurity.Concrete.StructuralObservation
 

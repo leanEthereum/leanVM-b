@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.OtsPrefixOracle
 import SphincsSecurity.Proof.Reference.CausalFrontierGame
-import SphincsSecurity.Proof.Ots.AdaptiveChainEndpoint
 
 namespace SphincsSecurity.Concrete.OtsPrefix
 

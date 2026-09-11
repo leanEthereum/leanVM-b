@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Base.Prelude
-import SphincsSecurity.Proof.Residual.RetainedObservation
 import SphincsSecurity.Proof.Residual.ResidualProbeCompletion
 
 namespace SphincsSecurity.Concrete.AdaptiveResidualLabels

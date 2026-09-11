@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Ots.EncodingOracleObservation
 import SphincsSecurity.Proof.Ots.OtsEncodingMarker
 import SphincsSecurity.Proof.Base.QueryTraceInvariant
-import SphincsSecurity.Proof.Residual.RetainedObservation
 
 namespace SphincsSecurity.Concrete.EncodingObservation
 

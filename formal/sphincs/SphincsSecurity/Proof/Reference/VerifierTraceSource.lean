@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Reference.VerifierTraceDescent
-import SphincsSecurity.Proof.Reference.BoundarySimulation
 
 namespace SphincsSecurity.Concrete.OtsContactTrace
 

@@ -1,4 +1,3 @@
-import SphincsSecurity.Proof.Ots.AdaptiveChainObservation
 import SphincsSecurity.Proof.Ots.AdaptiveChainEndpoint
 
 namespace SphincsSecurity.Concrete.PartialChainEndpoint

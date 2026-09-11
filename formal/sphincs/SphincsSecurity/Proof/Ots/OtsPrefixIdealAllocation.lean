@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Ots.AdaptiveChainCapCost
-import SphincsSecurity.Proof.Ots.AdaptiveChainCap
 import SphincsSecurity.Proof.Ots.OtsPrefixAccounting
 import SphincsSecurity.Proof.Ots.OtsPrefixObservedBudget
 import SphincsSecurity.Proof.Ots.OtsPrefixObservedAllocation

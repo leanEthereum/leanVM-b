@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Reference.ReferenceCertificateTrace
-import SphincsSecurity.Proof.Residual.RetainedResidualTraceValidity
 import SphincsSecurity.Proof.Fts.OriginalProposalPrefixBound
 
 namespace SphincsSecurity.Concrete

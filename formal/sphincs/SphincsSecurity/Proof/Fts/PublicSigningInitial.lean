@@ -1,7 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Hypertree.CanonicalPublicPrior
-import SphincsSecurity.Proof.Residual.RetainedObservation
-import SphincsSecurity.Proof.Fts.PublicSigningRecord
 import SphincsSecurity.Proof.Reference.ReferenceAuxiliarySigning
 
 namespace SphincsSecurity.Concrete

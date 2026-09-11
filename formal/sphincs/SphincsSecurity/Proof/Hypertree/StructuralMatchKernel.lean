@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Hypertree.ReferenceGraphContext
 import SphincsSecurity.Proof.Reference.ReferencePrimitiveWitness
-import SphincsSecurity.Proof.Fts.HiddenLabelProbe
 
 namespace SphincsSecurity.Concrete.ReferenceStructuralMatch
 

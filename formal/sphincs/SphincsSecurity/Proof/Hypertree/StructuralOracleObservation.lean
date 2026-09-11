@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Hypertree.StructuralMatchKernel
-import SphincsSecurity.Proof.Base.UniformTableObservationErasure
 
 namespace SphincsSecurity.Concrete.StructuralObservation
 

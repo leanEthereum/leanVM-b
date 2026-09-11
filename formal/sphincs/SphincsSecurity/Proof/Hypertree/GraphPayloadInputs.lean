@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Hypertree.CanonicalGraphSampling
-import SphincsSecurity.Proof.Hypertree.Extract
 
 namespace SphincsSecurity.Concrete
 

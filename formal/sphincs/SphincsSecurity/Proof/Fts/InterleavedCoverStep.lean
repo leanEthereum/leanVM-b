@@ -3,10 +3,7 @@ import SphincsSecurity.Proof.Fts.CachedSigningViews
 import SphincsSecurity.Proof.Fts.FewTimeConditionalCoverage
 import SphincsSecurity.Proof.Fts.JointProbeMessageReserve
 import SphincsSecurity.Proof.Fts.FewTimePrehit
-import SphincsSecurity.Proof.Fts.FewTimeSignerView
 import SphincsSecurity.Proof.Fts.FewTimeWeightedOriginRace
-import SphincsSecurity.Proof.Fts.ObservedAdaptiveCoverBound
-import SphincsSecurity.Proof.Fts.FewTimeUniform
 import SphincsSecurity.Proof.Base.RomQueryCharge
 
 namespace SphincsSecurity.Concrete

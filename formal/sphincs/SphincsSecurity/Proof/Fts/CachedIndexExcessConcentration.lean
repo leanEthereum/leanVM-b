@@ -1,7 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.CachedIndexHashMoments
-import SphincsSecurity.Statement
-import SphincsSecurity.Proof.Base.RomQueryCharge
 
 namespace SphincsSecurity.Concrete
 

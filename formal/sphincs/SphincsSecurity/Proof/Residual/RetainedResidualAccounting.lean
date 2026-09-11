@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Residual.RetainedResidualBankCompleteness
-import SphincsSecurity.Proof.Residual.RetainedResidualResources
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 

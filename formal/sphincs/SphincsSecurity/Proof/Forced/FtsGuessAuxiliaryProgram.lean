@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Forced.FtsGuessNearSource
-import SphincsSecurity.Proof.Base.QueryPauseTrace
 
 namespace SphincsSecurity.Concrete.FtsGuessHash
 

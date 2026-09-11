@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Forced.FtsGuessAuxiliaryProgram
 import SphincsSecurity.Proof.Forced.SecretGuessForcedProgram
-import SphincsSecurity.Proof.Base.UniformTableObservationErasure
 
 namespace SphincsSecurity.Concrete.FtsGuessHash
 

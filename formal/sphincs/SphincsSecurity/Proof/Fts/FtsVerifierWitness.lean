@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Reference.VerifierTraceDescent
-import SphincsSecurity.Proof.Hypertree.CanonicalGraphHonest
 import SphincsSecurity.Proof.Hypertree.TreeFoldBound
 import SphincsSecurity.Proof.Hypertree.GraphPayloadInputs
 

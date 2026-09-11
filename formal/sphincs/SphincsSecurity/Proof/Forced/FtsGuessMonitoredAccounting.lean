@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Forced.FtsGuessProposalCompleted
-import SphincsSecurity.Proof.Fts.CertificateBankCompleteness
 import SphincsSecurity.Proof.Residual.RetainedResidualMessagePayment
 import SphincsSecurity.Proof.Residual.RetainedResidualWorkCost
 

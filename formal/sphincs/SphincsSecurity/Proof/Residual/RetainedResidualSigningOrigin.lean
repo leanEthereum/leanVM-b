@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Reference.FixedHashBoundary
 import SphincsSecurity.Proof.Residual.RetainedObservation
-import SphincsSecurity.Proof.Fts.MessagePrehit
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 

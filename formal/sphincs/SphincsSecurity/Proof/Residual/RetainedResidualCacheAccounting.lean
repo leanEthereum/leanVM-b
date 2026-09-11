@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Residual.RetainedResidualAccounting
-import SphincsSecurity.Proof.Fts.CertificateCachePersistence
 
 namespace SphincsSecurity.Concrete.RetainedResidual
 

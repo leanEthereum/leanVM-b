@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Reference.BoundaryChargePartition
 import SphincsSecurity.Proof.Ots.OtsPrefixAllocation
-import SphincsSecurity.Proof.Ots.EncodingCharge
 
 namespace SphincsSecurity.Concrete.QueryClass
 

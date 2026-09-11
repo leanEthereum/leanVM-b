@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Reference.CausalFrontierProgram
 import SphincsSecurity.Proof.Reference.QueryAllocation
-import SphincsSecurity.Proof.Reference.BoundaryHashCost
 
 namespace SphincsSecurity.Concrete.CausalFrontierProgram
 

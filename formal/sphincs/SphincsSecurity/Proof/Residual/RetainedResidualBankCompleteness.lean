@@ -1,7 +1,4 @@
 import SphincsSecurity.Proof.Fts.CertificateBankCompleteness
-import SphincsSecurity.Proof.Residual.RetainedResidualMonitoredErasure
-import SphincsSecurity.Proof.Residual.RetainedResidualHistory
-import SphincsSecurity.Proof.Residual.RetainedResidualInitial
 import SphincsSecurity.Proof.Residual.RetainedResidualOriginalBudget
 
 namespace SphincsSecurity.Concrete.RetainedResidual

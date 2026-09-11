@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Base.Prelude
-import SphincsSecurity.Proof.Scheme.SignSupport
 import SphincsSecurity.Proof.Ots.LayerCompare
 
 /-!

@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Base.Prelude
-import SphincsSecurity.Proof.Hypertree.CanonicalProbeCache
 import SphincsSecurity.Proof.Residual.ResidualByteExecution
 
 namespace SphincsSecurity.Concrete.ResidualByteFrontend

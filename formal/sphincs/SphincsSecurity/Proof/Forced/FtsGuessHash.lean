@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Forced.FtsGuessSigning
 import SphincsSecurity.Proof.Forced.SecretGuessErasure
-import SphincsSecurity.Proof.Residual.CanonicalResidualQuery
 
 namespace SphincsSecurity.Concrete.FtsGuessHash
 

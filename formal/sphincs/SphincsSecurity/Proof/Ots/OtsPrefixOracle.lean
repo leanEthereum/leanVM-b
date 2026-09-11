@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Base.Prelude
-import SphincsSecurity.Proof.Hypertree.Honest
 import SphincsSecurity.Proof.Hypertree.FrontierOracleMask
 import SphincsSecurity.Proof.Ots.OtsEndpointLikelihood
 import SphincsSecurity.Proof.Ots.SecretProbe
