@@ -77,26 +77,8 @@ theorem forcedImpl_probes (environment : Environment auxSpec Coordinate Value Me
     (state : State Coordinate Value Memory) (input : (World auxSpec Coordinate Value).Domain)
     (result : (World auxSpec Coordinate Value).Range input × State Coordinate Value Memory)
     (hr : (forcedImpl environment slot input).run state result ≠ 0) :
-    result.2.probes = state.probes + (match input with | .inr (.inl _) => 1 | _ => 0) := by
-  cases input with
-  | inl input =>
-      simp only [forcedImpl, lazyImpl, StateT.run_mk, map_eq_bind_pure_comp, RetainedObservation.bind_nonzero,
-        Function.comp_def, ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] at hr
-      obtain ⟨answer, _, rfl⟩ := hr
-      exact (Nat.add_zero _).symm
-  | inr input =>
-      cases input with
-      | inl probe =>
-          rcases probe with ⟨coordinate, candidate⟩
-          simp only [forcedImpl, StateT.run_mk, map_eq_bind_pure_comp, RetainedObservation.bind_nonzero,
-            Function.comp_def, ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] at hr
-          obtain ⟨hit, _, rfl⟩ := hr
-          rfl
-      | inr coordinate =>
-          simp only [forcedImpl, lazyImpl, StateT.run_mk, map_eq_bind_pure_comp, RetainedObservation.bind_nonzero,
-            Function.comp_def, ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] at hr
-          obtain ⟨value, _, rfl⟩ := hr
-          exact (Nat.add_zero _).symm
+    result.2.probes = state.probes + probeStep input :=
+  lazyImpl_probes environment state input result (forcedImpl_nonzero environment slot state input result hr)
 
 theorem forcedRun_nonempty {Result : Type} (environment : Environment auxSpec Coordinate Value Memory) (slot : Nat)
     (computation : OracleComp (World auxSpec Coordinate Value) Result) (state : State Coordinate Value Memory)

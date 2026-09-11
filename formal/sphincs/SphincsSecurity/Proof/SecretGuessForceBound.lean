@@ -42,7 +42,7 @@ theorem forceFactor_weight_bound (environment : Environment auxSpec Coordinate V
   · exact hm.trans (hlate hb)
   have hp := forcedImpl_probes environment slot state input result hr
   cases input with
-  | inl input => simp only [Nat.add_zero] at hp; omega
+  | inl input => simp only [probeStep, Nat.add_zero] at hp; omega
   | inr input =>
       cases input with
       | inl probe =>
@@ -55,7 +55,7 @@ theorem forceFactor_weight_bound (environment : Environment auxSpec Coordinate V
             exact (mul_le_of_le_one_left' hw).trans
               (trial_true_le size budget state hs ha (he ▸ hslot) coordinate hc candidate)
           next hc => simp only [mul_zero]; exact bot_le
-      | inr coordinate => simp only [Nat.add_zero] at hp; omega
+      | inr coordinate => simp only [probeStep, Nat.add_zero] at hp; omega
 
 theorem weightedForcedRun_weight_bound [Fintype Value] [Nonempty Value] {Result : Type}
     (environment : Environment auxSpec Coordinate Value Memory) (budget slot : Nat) (hslot : slot ≤ budget)
