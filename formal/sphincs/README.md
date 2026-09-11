@@ -50,5 +50,6 @@ The cache command is needed on initial setup. The build includes [Audit.lean](Au
 | [AdaptiveChainContactMoments.lean](SphincsSecurity/Proof/AdaptiveChainContactMoments.lean) | Proves the adaptive last-edge hit moments and the correction term for the two-edge estimate. |
 | [PartialChainRowCharge.lean](SphincsSecurity/Proof/PartialChainRowCharge.lean) | Bounds weighted two-edge completion at one query in both chronological orders, including earlier path preparation. |
 | [OtsTwoEdgeProbability.lean](SphincsSecurity/Proof/OtsTwoEdgeProbability.lean) | Identifies the two-edge event on the original full hash trace with the selected-prefix table event and bounds it using the shared original prefix allocation, retaining the joint budget reservation. |
+| [ReferenceLayerWitness.lean](SphincsSecurity/Proof/ReferenceLayerWitness.lean) | Extracts the canonical reference opening or a structural, equal-encoding or OTS witness from a layer recovering its canonical root; full-game integration remains unfinished. |
 
 [The 127-bit guide](PAPER-127.md) identifies the remaining original-game connections and the mathematical contracts they must establish. Historical proof routes and superseded status reports are available in Git history.
