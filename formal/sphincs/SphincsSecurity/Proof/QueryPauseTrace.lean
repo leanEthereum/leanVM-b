@@ -14,6 +14,9 @@ noncomputable def traced (computation : OracleComp spec Result) : OracleComp spe
 theorem traced_pure (result : Result) : traced observation (pure result : OracleComp spec Result) = pure (result, 1) := by
   simp only [traced, simulateQ_pure, WriterT.run_pure]
 
+theorem traced_forget (computation : OracleComp spec Result) : Prod.fst <$> traced observation computation = computation := by
+  rw [traced, QueryImpl.fst_map_run_withTrace, simulateQ_id']
+
 theorem traced_query_bind (input : spec.Domain) (next : spec.Range input → OracleComp spec Result) :
     traced observation (liftM (spec.query input) >>= next) =
       liftM (spec.query input) >>= fun answer => (fun tail => (tail.1, observation input answer * tail.2)) <$> traced observation (next answer) := by

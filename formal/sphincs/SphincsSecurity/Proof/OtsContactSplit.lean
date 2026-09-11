@@ -26,6 +26,11 @@ theorem splitRun_trace {Result : Type} (computation : OracleComp OracleWorld Res
     exact id_map _
   simpa only [splitRun, pause, map_bind, map_pure] using h.trans hmap
 
+theorem splitRun_forget {Result : Type} (computation : OracleComp OracleWorld Result) :
+    (fun result => result.2.1) <$> splitRun parameter words frontier computation = computation := by
+  have h := congrArg (Functor.map Prod.fst) (splitRun_trace parameter words frontier computation)
+  simpa only [Functor.map_map, QueryPause.traced_forget] using h
+
 theorem splitRun_two_contacts {Result : Type} (computation : OracleComp OracleWorld Result)
     (result : Trace × (Result × Trace)) (hresult : result ∈ support (splitRun parameter words frontier computation))
     (htwo : 2 ≤ (contacts parameter words frontier (result.1 * result.2.2)).card) :

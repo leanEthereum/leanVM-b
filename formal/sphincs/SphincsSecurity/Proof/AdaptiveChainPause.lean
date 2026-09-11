@@ -1,6 +1,6 @@
 import SphincsSecurity.Proof.AdaptiveChainCheckpointContact
 import SphincsSecurity.Proof.AdaptiveChainCapObservation
-import SphincsSecurity.Proof.QueryPause
+import SphincsSecurity.Proof.AdaptiveChainActualBudget
 
 namespace SphincsSecurity.Concrete.PartialChainEndpoint
 
@@ -104,5 +104,32 @@ theorem pausedRun_newContact_le
     have hs := realCheckpointRun_support auxiliary before after (fun _ _ => none) result hresult
     exact (lazyRun_pause_budget (auxiliary result.1) (stop result.1) (step result.1) (computation result.1) (memory result.1)
       budget (hbound result.1) result.2.1 hs.1 result.2.2 hs.2).1
+
+
+theorem pausedRun_newContact_charge_of_real
+    (marked : State → (((Memory × OracleComp (auxSpec + PrefixSpec n State) Result) × Nat) × (Fin n → State → Option State)) → Prop)
+    (cost : Result → Nat) (budget : Nat)
+    (hcharge : ∀ endpoint result, result ∈ support (QueryCap.counted IsPrefixQuery (computation endpoint)) → result.2 ≤ cost result.1)
+    (hreal : ∀ result ∈ (realRun auxiliary computation (fun _ _ => none)).support, cost result.2.1 ≤ budget)
+    (hsmall : budget < Fintype.card State) :
+    (1 - (budget : ENNReal) / Fintype.card State) * ((Fintype.card State : ENNReal) *
+      Pr[fun result => (marked result.1 result.2.1 ∧ ¬Contact result.2.1.2 result.1) ∧ Contact result.2.2.2 result.1 |
+        pausedRun auxiliary stop step computation memory]) ≤
+      ∑' result, pausedRun auxiliary stop step computation memory result *
+        (((queryCount result.2.1.2 + 2 * result.2.2.1.2 : Nat) : ENNReal) *
+          if marked result.1 result.2.1 ∧ ¬Contact result.2.1.2 result.1 then 1 else 0) := by
+  have h := realCheckpointRun_contact_charge auxiliary
+    (fun endpoint => QueryCap.counted IsPrefixQuery (QueryPause.run (stop endpoint) (step endpoint) (computation endpoint) (memory endpoint)))
+    (fun _ middle => middle.1.1.2) (fun _ _ => none)
+    (fun endpoint middle => marked endpoint middle ∧ ¬Contact middle.2 endpoint) budget (fun _ _ h => h.2)
+    (fun endpoint middle hmiddle _ result hresult =>
+      (lazyRun_pause_budget_of_real auxiliary computation cost budget hcharge hreal hsmall endpoint
+        (stop endpoint) (step endpoint) (memory endpoint) middle hmiddle result hresult).2)
+  apply h.trans_eq
+  apply tsum_congr
+  intro result
+  by_cases hm : marked result.1 result.2.1 ∧ ¬Contact result.2.1.2 result.1
+  · simp only [pausedRun, if_pos hm]
+  · simp only [pausedRun, if_neg hm]
 
 end SphincsSecurity.Concrete.PartialChainEndpoint
