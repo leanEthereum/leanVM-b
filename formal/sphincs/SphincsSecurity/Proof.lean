@@ -2,10 +2,8 @@ import SphincsSecurity.Proof.AdaptiveChainPause
 import SphincsSecurity.Proof.CachedIndexExcessGame
 import SphincsSecurity.Proof.DigestCompletionMonitor
 import SphincsSecurity.Proof.NearCertificateBound
-import SphincsSecurity.Proof.OtsPrefixContactProbability
 import SphincsSecurity.Proof.OtsPrefixTwoEdgeProbability
-import SphincsSecurity.Proof.OtsContactCheckpointLaw
-import SphincsSecurity.Proof.OtsContactSourceAllocation
+import SphincsSecurity.Proof.OtsDistinctContactBound
 import SphincsSecurity.Proof.RetainedResidualCorrespondence
 import SphincsSecurity.Proof.Security126Completion
 import SphincsSecurity.Proof.Security127LargeBudget
