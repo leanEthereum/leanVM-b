@@ -12,7 +12,7 @@ variable (f : QueryImpl HashSpec Id) (parameter : PublicParameter) (words : OtsR
   (messages : EncodingPosition → Digest) (selections : ReferenceFamily)
 
 def EncodingOutputMatch (trace : Trace) : Prop :=
-  ∃ entry ∈ trace.toList, PublicEncodingMatch.Match parameter messages words selections entry.1 entry.2
+  ∃ entry ∈ trace.toList, entry.1 ∈ canonicalEncodingInputs parameter ∧ PublicEncodingMatch.Match parameter messages words selections entry.1 entry.2
 
 theorem equal_word_reference (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
     (message : Digest) (counter : Counter) (values : ChainIndex → Digest) (trace : Trace)
@@ -31,10 +31,14 @@ theorem equal_word_reference (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
         have hpayload := (tweakableHashInput_injective parameter (by trivial) (by trivial) hinput).2
         obtain ⟨hm, hc⟩ := List.append_inj hpayload (by simp [digestBytes_length])
         exact Or.inl ⟨selected, rfl, (digestBytes_injective hm).symm, (bytesLE_injective hc).symm⟩
-  · refine Or.inr ⟨(input, f input), ?_, position, ⟨_, rfl⟩, hreference, ?_⟩
+  · refine Or.inr ⟨(input, f input), ?_, ?_, position, ⟨_, rfl⟩, hreference, ?_⟩
     · apply hrun.bind_left
       simp only [encode, queriedInputs_bind, queriedInputs_tweakableHash, queriedInputs_pure,
         List.append_nil, List.mem_singleton, input, position, EncodingPosition.domain]
+    · have hcounter : counter.toNat < encodingAttemptLimit := by
+        simpa only [encodingAttemptLimit, counterBits] using counter.isLt
+      have hin := encodingRetryInput_mem_canonicalEncodingInputs parameter position message ⟨counter.toNat, hcounter⟩
+      simpa only [encodingRetryInput, BitVec.ofNat_toNat, BitVec.setWidth_eq, input] using hin
     · exact decode_of_eval_encode_eq_some f parameter lay tree leaf message counter (words lay tree leaf) hencode
 
 theorem layer_reference_classification (lay : Layer) (tree : TreeIndex) (secret : LeafIndex → ChainIndex → Digest)
