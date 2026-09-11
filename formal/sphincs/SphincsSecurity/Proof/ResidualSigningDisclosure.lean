@@ -78,10 +78,6 @@ theorem observedRun_jointCompleteSigningRecord
     | exact runWith_pure (observedImpl environment labels seed) _ _
     | rw [observedRun_jointDisclosureSequence_bind]; exact runWith_pure (observedImpl environment labels seed) _ _
 
-theorem jointCompleteSigningRecord_failed (record : PublicSigningRecord) (hfailed : record.1.1 = none) :
-    jointCompleteSigningRecord (inputs := inputs) record = pure ((none, record.1.2), record.2) := by
-  rw [jointCompleteSigningRecord, hfailed]
-
 variable (parameter : PublicParameter) (words : OtsReferenceWords)
     (disclosed : Index → FtsTree → FtsLeaf → Prop) (known : Labels)
     (actions : inputs → ResidualByteAction.Action inputs)
@@ -98,12 +94,6 @@ theorem jointDisclosureSequenceState_memory (actual : Labels) {n : Nat} (coordin
         (disclosedState (environment parameter inputs words disclosed known actions) state (coordinates 0) (actual (coordinates 0)))).memory = _
       rw [ih]
       rfl
-
-theorem jointCompletedSigningState_memory (actual : Labels) (record : PublicSigningRecord) (state : State inputs) :
-    (jointCompletedSigningState (environment parameter inputs words disclosed known actions) actual record state).memory = state.memory := by
-  obtain ⟨⟨plan, view⟩, trace⟩ := record
-  cases plan <;> cases view <;> simp only [jointCompletedSigningState]
-  all_goals exact jointDisclosureSequenceState_memory parameter words disclosed known actions actual _ state
 
 theorem observedRun_account_bind {Result : Type} (actual : Labels) (seed : inputs → HashOutput) (cost : Nat)
     (next : Unit → OracleComp (World inputs) Result) (state : State inputs) :
@@ -128,12 +118,5 @@ theorem observedRun_jointCompleteSigningWork (actual : Labels) (seed : inputs �
         jointCompletedSigningState (environment parameter inputs words disclosed known actions) actual work.1
           { state with memory := accountWork state.memory work.2 }) := by
   rw [jointCompleteSigningWork, observedRun_account_bind, observedRun_jointCompleteSigningRecord]
-
-theorem observedRun_jointCompleteSigningWork_memory (actual : Labels) (seed : inputs → HashOutput)
-    (work : PublicSigningRecord × Nat) (state : State inputs) :
-    forget <$> observedRun (environment parameter inputs words disclosed known actions) actual seed (jointCompleteSigningWork work) state =
-      pure (some (completePublicSigningRecord (fun index tree leaf => actual (.ftsStart index tree leaf)) work.1),
-        accountWork state.memory work.2) := by
-  rw [observedRun_jointCompleteSigningWork, map_pure, forget, jointCompletedSigningState_memory]
 
 end SphincsSecurity.Concrete.ResidualByteFrontend

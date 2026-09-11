@@ -62,17 +62,6 @@ theorem certificateTerminalGame_word (adversary : Adversary) (budget : Nat) (req
   simp only [PMF.map_id]
   exact certificateGame_complete adversary budget required stopAfter stopped total
 
-theorem certificateTerminalGame_original (adversary : Adversary) (budget : Nat) (required : Finset FtsTree)
-    (stopAfter : SecretKey → CertificateStopRule) (stopped : Bool) (total : Nat) :
-    (certificateTerminalGame adversary budget required stopAfter stopped total).map
-        (fun result => (certificateGameVerdict result.1.1, result.1.2.2.1)) =
-      (liftM ((simulateQ romImpl (gameCore scheme adversary)).run ∅) : PMF _) := by
-  calc
-    _ = ((certificateTerminalGame adversary budget required stopAfter stopped total).map Prod.fst).map
-        (fun result => (certificateGameVerdict result.1, result.2.2.1)) := (PMF.map_comp _ _ _).symm
-    _ = _ := by
-      rw [certificateTerminalGame_game, ← PMF.monad_map_eq_map, certificateGame_original]
-
 theorem certificateTerminalGame_cost_le (adversary : Adversary) (q : Nat) (required : Finset FtsTree)
     (stopAfter : SecretKey → CertificateStopRule) (stopped : Bool) (total : Nat)
     (hbound : HasHashQueryBound scheme adversary q) (result : CertificateGameResult × List Index)

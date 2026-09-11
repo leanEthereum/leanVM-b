@@ -49,22 +49,6 @@ theorem evalDist_boundaryGameCore_referenceResidual (inputs : Finset HashInput)
   rw [referenceResidualGame_erased]
   exact evalDist_boundaryGameCore_residualGraph inputs hgraph dummy adversary hinputs
 
-private theorem probEvent_projected_spmf {α β : Type} (computation : ProbComp β) (law : SPMF α)
-    (project : α → β) (h : project <$> law = 𝒟[computation]) (event : β → Prop) :
-    Pr[event | computation] = Pr[event ∘ project | law] := by
-  have hp := congrArg (fun distribution : SPMF β => Pr[event | distribution]) h
-  rw [probEvent_map] at hp
-  exact hp.symm
-
-theorem forgeAdvantage_eq_referenceResidual (dummy : OtsReferenceWords) (adversary : Adversary) :
-    forgeAdvantage scheme adversary =
-      Pr[fun result => result.2.1 = true | referenceResidualGame (canonicalGraphGameInputs adversary)
-        (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] := by
-  rw [forgeAdvantage_eq_residualGraph dummy adversary]
-  have h := referenceResidualGame_erased (canonicalGraphGameInputs adversary)
-    (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary
-  exact probEvent_projected_spmf _ _ Prod.snd h (fun result => result.1 = true)
-
 theorem referenceResidualGame_hashCalls_le (dummy : OtsReferenceWords) (adversary : Adversary)
     (q : Nat) (hbound : HasHashQueryBound scheme adversary q) (result : ReferenceFamily × (Bool × SigningBoundaryTrace))
     (hresult : result ∈ support (referenceResidualGame (canonicalGraphGameInputs adversary)

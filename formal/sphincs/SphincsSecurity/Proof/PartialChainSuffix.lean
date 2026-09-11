@@ -126,8 +126,4 @@ theorem suffixCount_le_one_of_no_contact {n : Nat} (observed : Fin n → State �
       rw [knownCount_eq_zero_of_no_contact observed endpoint h, properSuffixCount, Nat.zero_add]
       exact ih (Fin.tail observed) (fun htail => h (contact_tail observed endpoint htail))
 
-theorem meanPreimages_le_one_of_no_contact {n : Nat} (observed : Fin n → State → Option State) (endpoint : State)
-    (h : ¬Contact observed endpoint) : meanPreimages observed endpoint ≤ 1 :=
-  (meanPreimages_le_suffixCount observed endpoint).trans (by exact_mod_cast suffixCount_le_one_of_no_contact observed endpoint h)
-
 end SphincsSecurity.Concrete.PartialChainEndpoint

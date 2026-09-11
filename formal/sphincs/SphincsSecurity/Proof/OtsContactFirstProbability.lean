@@ -114,17 +114,4 @@ theorem referenceContactGame_marked_cost_le (dummy : OtsReferenceWords) (adversa
   rw [referenceContactGame_sum_contact_probability] at h
   exact h.trans (referenceContactGame_contacts_cost_le dummy adversary q hbound hsmall)
 
-theorem referenceContactGame_marked_joint_budget (dummy : OtsReferenceWords) (adversary : Adversary) (q : Nat)
-    (hbound : HasHashQueryBound scheme adversary q) (hsmall : q < Fintype.card Digest) :
-    (1 - (q : ENNReal) / Fintype.card Digest) *
-      Pr[fun result => result.2.2.Marked result.1 (referenceFamilyWords result.2.1 dummy) |
-        referenceContactGame (canonicalGraphGameInputs adversary) (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] +
-      (2 / Fintype.card Digest) *
-        (∑' result : ReferenceRecordedResult, Pr[= result | referenceRecordedGame (canonicalGraphGameInputs adversary)
-          (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] * (result.remainingCalls dummy : ENNReal)) ≤
-      (2 / Fintype.card Digest) * (q : ENNReal) := by
-  exact (_root_.add_le_add (mul_le_mul' le_rfl (referenceContactGame_marked_le_sum _ _
-    (canonicalGraphInputs_subset_gameInputs adversary) dummy adversary)) le_rfl).trans
-    (prefixContactGame_joint_budget dummy adversary q hbound hsmall)
-
 end SphincsSecurity.Concrete

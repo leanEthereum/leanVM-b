@@ -95,16 +95,4 @@ theorem forcedRun_seed_marginal (parameter : PublicParameter) (root : Digest)
   rw [complete_of_nonempty _ (fun _ => Finset.univ_nonempty), uniformTable_univ] at h
   simpa only [forcedSeedProgram_fixed, deferredForcedRun] using h
 
-theorem deferred_seed_query (inputs : Finset HashInput) (allowed : inputs → Finset HashOutput)
-    (input : inputs) :
-    (UniformTableObservation.lazyImpl forcedSeedAuxiliary (.inr input)).run allowed =
-      ((fun answer => (answer, discloseTableValue allowed input answer)) <$> cell (allowed input)) := rfl
-
-theorem deferred_seed_query_fresh (inputs : Finset HashInput) (allowed : inputs → Finset HashOutput)
-    (input : inputs) (hfresh : allowed input = Finset.univ) :
-    (UniformTableObservation.lazyImpl forcedSeedAuxiliary (.inr input)).run allowed =
-      ((fun answer => (answer, discloseTableValue allowed input answer)) <$> 𝒟[PMF.uniformOfFintype HashOutput]) := by
-  rw [deferred_seed_query, hfresh, cell, dif_pos Finset.univ_nonempty]
-  rfl
-
 end SphincsSecurity.Concrete.FtsGuessHash

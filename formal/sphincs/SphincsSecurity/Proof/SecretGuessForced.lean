@@ -25,15 +25,6 @@ theorem forcedTrial_nonzero (slot : Nat) (state : State Coordinate Value Memory)
     exact he.2.2
   · simpa only [forcedTrial, if_neg he] using hhit
 
-theorem eligibleAt_iff (slot : Nat) (state : State Coordinate Value Memory)
-    (ha : ∀ coordinate, (state.allowed coordinate).Nonempty) (coordinate : Coordinate) (candidate : Value) :
-    EligibleAt slot state coordinate candidate ↔
-      state.probes = slot ∧ coordinate ∉ state.retired ∧ candidate ∈ state.allowed coordinate := by
-  rw [EligibleAt, trial_true state.allowed ha]
-  by_cases hc : candidate ∈ state.allowed coordinate
-  · simp [hc]
-  · simp [hc]
-
 noncomputable def forcedImpl (environment : Environment auxSpec Coordinate Value Memory) (slot : Nat) :
     QueryImpl (World auxSpec Coordinate Value) (StateT (State Coordinate Value Memory) SPMF)
   | .inl input => lazyImpl environment (.inl input)
@@ -85,11 +76,5 @@ theorem forcedRun_nonempty {Result : Type} (environment : Environment auxSpec Co
     (ha : ∀ coordinate, (state.allowed coordinate).Nonempty) (result : Result × State Coordinate Value Memory)
     (hr : forcedRun environment slot computation state result ≠ 0) : ∀ coordinate, (result.2.allowed coordinate).Nonempty :=
   lazyRun_nonempty environment computation state ha result (forcedRun_nonzero environment slot computation state result hr)
-
-theorem forcedRun_invariant {Result : Type} (environment : Environment auxSpec Coordinate Value Memory) (slot size : Nat)
-    (computation : OracleComp (World auxSpec Coordinate Value) Result) (state : State Coordinate Value Memory)
-    (hs : Invariant size state) (result : Result × State Coordinate Value Memory)
-    (hr : forcedRun environment slot computation state result ≠ 0) : Invariant size result.2 :=
-  lazyRun_invariant environment size computation state hs result (forcedRun_nonzero environment slot computation state result hr)
 
 end SphincsSecurity.Concrete.SecretGuessObservation

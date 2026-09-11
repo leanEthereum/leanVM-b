@@ -13,7 +13,4 @@ def CoveredFewTimeView {n : Nat} (views : Fin n → Option FewTimeView) (target 
 noncomputable def signingSlotsAtIndex {n : Nat} (views : Fin n → Option FewTimeView) (index : Index) : Finset (Fin n) :=
   Finset.univ.filter (fun slot => ∃ view, views slot = some view ∧ view.1 = index)
 
-noncomputable def coverageOccupancyMoment {n : Nat} (views : Fin n → Option FewTimeView) : Nat :=
-  ∑ index : Index, (signingSlotsAtIndex views index).card ^ (ftsTrees - 1)
-
 end SphincsSecurity.Concrete

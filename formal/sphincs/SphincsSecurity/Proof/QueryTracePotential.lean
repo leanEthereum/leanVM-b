@@ -1,4 +1,5 @@
-import SphincsSecurity.Proof.QueryTraceSpmfInvariant
+import SphincsSecurity.Proof.QueryTraceInvariant
+import SphincsSecurity.Proof.RetainedObservation
 
 namespace SphincsSecurity.QueryPause
 

@@ -25,12 +25,6 @@ theorem prefixCalls_step (segment : OtsPrefix) (input : OracleWorld.Domain) (ans
       simp only [prefixCalls, hashObservationTrace, FreeMonoid.toList_mul, FreeMonoid.toList_of, List.singleton_append,
         List.map_cons, QueryCap.calls_cons]
 
-theorem traced_prefix_counted (segment : OtsPrefix) {Result : Type} (computation : OracleComp OracleWorld Result) :
-    (fun result => (result.1, prefixCalls segment result.2)) <$> QueryPause.traced hashObservationTrace computation =
-      QueryCap.counted segment.Selects computation :=
-  QueryPause.traced_counted hashObservationTrace segment.Selects (prefixCalls segment)
-    (prefixCalls_one segment) (prefixCalls_step segment) computation
-
 theorem traced_hash_counted {Result : Type} (computation : OracleComp OracleWorld Result) :
     (fun result => (result.1, result.2.toList.length)) <$> QueryPause.traced hashObservationTrace computation =
       QueryCap.counted CausalFrontierProgram.IsHash computation := by

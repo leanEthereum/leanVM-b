@@ -39,8 +39,4 @@ theorem pause_new_contact {Result : Type} (computation : OracleComp OracleWorld 
   new_contact_of_two parameter words frontier result.1 after
     (pause_card_le_one parameter words frontier computation result hresult) htwo
 
-theorem pause_resume {Result : Type} (computation : OracleComp OracleWorld Result) :
-    (pause parameter words frontier computation >>= fun result => result.2) = computation :=
-  QueryPause.resume (Stopped parameter words frontier) _ computation 1
-
 end SphincsSecurity.Concrete.OtsContactTrace

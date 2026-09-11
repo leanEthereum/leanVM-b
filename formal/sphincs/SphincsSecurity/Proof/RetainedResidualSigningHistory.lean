@@ -205,16 +205,4 @@ theorem signingHistory_initial (key : SecretKey) (oracle : QueryImpl HashSpec Id
   · intro index tree leaf hdisclose
     cases hdisclose
 
-theorem observedRun_source_signingHistory {Result : Type} {inputs : Finset HashInput} (context : Context inputs)
-    (computation : OracleComp (OracleWorld + SigningSpec) Result) (hinputs : sourceInputs context.key computation ⊆ inputs)
-    (state : State inputs) (hcovered : ResidualByteFrontend.RowsCovered inputs (project state))
-    (hcompatible : Compatible context state.memory) (hhistory : SigningHistory context.key context.oracle state.memory)
-    (value : Result) (after : State inputs)
-    (hresult : observedRun context.environment context.actual context.auxiliary.seed
-      (simulateQ (adversaryImpl inputs context.key.parameter context.key.root context.words context.auxiliary.selections) computation)
-        state (some value, after) ≠ 0) : SigningHistory context.key context.oracle after.memory := by
-  have h := map_nonzero _ forgetState (some value, after) hresult
-  rw [observedRun_source_memory context computation hinputs state hcovered hcompatible] at h
-  exact fixedSourceRun_signingHistory context computation state.memory hhistory value after.memory h
-
 end SphincsSecurity.Concrete.RetainedResidual

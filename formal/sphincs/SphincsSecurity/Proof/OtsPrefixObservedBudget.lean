@@ -53,28 +53,4 @@ theorem prefixObservedRun_hashCalls_le (parameter : PublicParameter) (hparameter
     exact ⟨result, hresult, rfl⟩
   · exact (mem_support_pure_iff _ _).mpr rfl
 
-theorem prefixIdealRun_hashCalls_le (parameter : PublicParameter) (hparameter : parameter ∈ support sampleParameter)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex) (chainIdx : ChainIndex)
-    (dummy : OtsReferenceWords) (adversary : Adversary) (selections : ReferenceFamily)
-    (hselections : selections ∈ (FirstSuccessFamily.selected decodeEncodingOutput encodingAttemptLimit).support)
-    (q : Nat) (hbound : HasHashQueryBound scheme adversary q) (hsmall : q < Fintype.card Digest) :
-    let words := referenceFamilyWords selections dummy
-    let segment : OtsPrefix := ⟨parameter, lay, tree, leaf, chainIdx, words lay tree leaf chainIdx⟩
-    let inputs := canonicalGraphGameInputs adversary
-    let hencoding := canonicalEncodingInputs_subset_gameInputs adversary parameter
-    let hgraph := canonicalGraphInputs_subset_gameInputs adversary parameter
-    ∀ (other : segment.ErasedSecrets) (auxiliary : segment.ReferenceAuxSeed inputs hencoding hgraph),
-      auxiliary ∈ (segment.referenceAuxSeedLaw inputs hencoding hgraph selections).support →
-      (∀ endpoint, (segment.seedGame inputs hencoding hgraph auxiliary other.val ftsSecret words endpoint adversary).IsQueryBoundP
-        PartialChainEndpoint.IsPrefixQuery q) →
-      ∀ result ∈ (PartialChainEndpoint.idealRun (fun _ => OtsPrefix.uniformImpl)
-        (fun endpoint => segment.seedGame inputs hencoding hgraph auxiliary other.val ftsSecret words endpoint adversary)
-        (fun _ _ => none)).support, result.2.1.2.hashCalls ≤ q := by
-  dsimp only
-  intro other auxiliary hauxiliary hprefix result hresult
-  apply prefixObservedRun_hashCalls_le parameter hparameter ftsSecret lay tree leaf chainIdx dummy adversary
-    selections hselections q hbound other auxiliary hauxiliary result
-  exact PartialChainEndpoint.idealRun_empty_support_subset _ _ q hprefix hsmall hresult
-
 end SphincsSecurity.Concrete

@@ -43,23 +43,6 @@ noncomputable def referenceFamilyOracleSample (key : SecretKey) (inputs : Finset
           (referenceFamilyCell key.parameter (outsideGraphMessage key inputs hencoding outside)) → HashOutput)).map
             (fun remaining => (results, referenceFamilyOracleTable key inputs hencoding outside rows remaining)))))
 
-theorem referenceFamilyOracleSample_nonencoding (key : SecretKey) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs) :
-    (referenceFamilyOracleSample key inputs hencoding).map (fun result =>
-      (result.1, fun cell : UniformTableSplit.Outside (encodingInputCell key.parameter inputs hencoding) =>
-        result.2 cell.val)) =
-      (FirstSuccessFamily.selected decodeEncodingOutput encodingAttemptLimit).bind (fun results =>
-        (PMF.uniformOfFintype (NonencodingRows key.parameter inputs hencoding)).map (fun outside => (results, outside))) := by
-  rw [referenceFamilyOracleSample, PMF.map_bind]
-  apply congrArg (FirstSuccessFamily.selected decodeEncodingOutput encodingAttemptLimit).bind
-  funext results
-  rw [PMF.map_bind]
-  apply congrArg (PMF.uniformOfFintype (NonencodingRows key.parameter inputs hencoding)).bind
-  funext outside
-  simp only [PMF.map_bind, PMF.map_comp, Function.comp_def, referenceFamilyOracleTable_nonencoding,
-    PMF.bind_const]
-  exact PMF.map_const _ _
-
 theorem uniform_joint_eq_referenceFamilyOracleSample (key : SecretKey) (inputs : Finset HashInput)
     (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs) (hgraph : canonicalGraphInputs key.parameter ⊆ inputs) :
     (PMF.uniformOfFintype (inputs → HashOutput)).map

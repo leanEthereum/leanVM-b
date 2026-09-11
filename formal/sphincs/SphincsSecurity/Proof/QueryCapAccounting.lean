@@ -21,11 +21,6 @@ theorem simulate_mem_support (impl : QueryImpl spec PMF) (computation : OracleCo
 
 variable (selected : Index → Prop) [DecidablePred selected]
 
-theorem counted_result_mem (computation : OracleComp spec Result) (result : Result × Nat)
-    (hresult : result ∈ support (counted selected computation)) : result.1 ∈ support computation := by
-  rw [← counted_forget selected computation, support_map]
-  exact ⟨result, hresult, rfl⟩
-
 theorem counted_le_of_queryBound (computation : OracleComp spec Result) (budget : Nat)
     (hbound : computation.IsQueryBoundP selected budget) (result : Result × Nat)
     (hresult : result ∈ support (counted selected computation)) : result.2 ≤ budget := by

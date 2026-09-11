@@ -42,34 +42,4 @@ theorem counted_resume (computation : OracleComp spec Result) (memory : Memory) 
       pure (result.1, paused.2 + result.2)) = QueryCap.counted selected computation := by
   rw [← QueryCap.counted_bind, resume]
 
-theorem counted_bound (computation : OracleComp spec Result) (memory : Memory) (budget : Nat)
-    (hbound : computation.IsQueryBoundP selected budget)
-    (result : (Memory × OracleComp spec Result) × Nat)
-    (hresult : result ∈ support (QueryCap.counted selected (run stop step computation memory))) :
-    result.2 ≤ budget ∧ result.1.2.IsQueryBoundP selected (budget - result.2) := by
-  induction computation using OracleComp.inductionOn generalizing memory budget result with
-  | pure value =>
-      rw [run_pure, QueryCap.counted_pure, mem_support_pure_iff] at hresult
-      subst result
-      exact ⟨Nat.zero_le _, isQueryBoundP_pure selected value _⟩
-  | query_bind input next ih =>
-      rw [run_query_bind] at hresult
-      by_cases hs : stop memory
-      · rw [if_pos hs, QueryCap.counted_pure, mem_support_pure_iff] at hresult
-        subst result
-        exact ⟨Nat.zero_le _, by simpa only [Nat.sub_zero] using hbound⟩
-      · rw [if_neg hs, QueryCap.counted_query_bind, mem_support_bind_iff] at hresult
-        obtain ⟨answer, _, hresult⟩ := hresult
-        rw [mem_support_bind_iff] at hresult
-        obtain ⟨tail, htail, hresult⟩ := hresult
-        rw [mem_support_pure_iff] at hresult
-        subst result
-        rw [isQueryBoundP_query_bind_iff] at hbound
-        have ht := ih answer (step input answer memory) _ (hbound.2 answer) tail htail
-        by_cases hselected : selected input
-        · have hpos : 0 < budget := by simpa only [hselected, not_true_eq_false, false_or] using hbound.1
-          simp only [if_pos hselected] at ht ⊢
-          exact ⟨by omega, by convert ht.2 using 1; omega⟩
-        · simpa only [if_neg hselected, Nat.zero_add] using ht
-
 end SphincsSecurity.QueryPause

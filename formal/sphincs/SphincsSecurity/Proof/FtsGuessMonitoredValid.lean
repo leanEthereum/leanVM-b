@@ -122,22 +122,6 @@ theorem tsum_cachedForcedRun_eq_one {Result : Type} (computation : OracleComp Wo
 
 /-! ### Cached-state forms of the forced-run lemmas -/
 
-theorem cachedForcedRun_nonempty' {Result : Type} (computation : OracleComp World Result) (state : CachedState)
-    (ha : ∀ coordinate, (state.2.allowed coordinate).Nonempty) (result : Result × CachedState)
-    (hr : cachedForcedRun parameter root otsSecret labels inputs hencoding selections rows dummy slot computation state result ≠ 0) :
-    ∀ coordinate, (result.2.2.allowed coordinate).Nonempty := by
-  rcases state with ⟨cache, guess⟩
-  exact cachedForcedRun_nonempty parameter root otsSecret labels inputs hencoding selections rows dummy slot computation cache guess ha
-    result hr
-
-theorem cachedForcedRun_allowed_subset' {Result : Type} (computation : OracleComp World Result) (state : CachedState)
-    (result : Result × CachedState)
-    (hr : cachedForcedRun parameter root otsSecret labels inputs hencoding selections rows dummy slot computation state result ≠ 0) :
-    ∀ coordinate, result.2.2.allowed coordinate ⊆ state.2.allowed coordinate := by
-  rcases state with ⟨cache, guess⟩
-  exact cachedForcedRun_allowed_subset parameter root otsSecret labels inputs hencoding selections rows dummy slot computation cache guess
-    result hr
-
 theorem cachedSigning_mem_support_sign' (message : Message) (state : CachedState)
     (ha : ∀ coordinate, (state.2.allowed coordinate).Nonempty)
     (hauxiliary : ∀ seed : inputs → HashOutput,

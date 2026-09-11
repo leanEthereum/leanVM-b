@@ -105,34 +105,6 @@ theorem monitoredStep_digestsCached (input : (OracleWorld + SigningSpec).Domain)
       change SigningDigestsCached key.parameter raw.2.memory.external.cache key.root (raw.2.memory.log ++ [⟨message, record.1.1⟩])
       rwa [hlog]
 
-theorem monitoredRun_digestsCached {Result : Type} (computation : OracleComp (OracleWorld + SigningSpec) Result)
-    (state : MonitoredState inputs) (hvalid : MonitoredValid inputs state)
-    (hinputs : sourceInputs key computation ⊆ inputs)
-    (hsigned : SigningDigestsCached key.parameter state.1.memory.external.cache key.root state.1.memory.log)
-    (result : Option Result × MonitoredState inputs)
-    (hresult : monitoredRun key inputs hencoding words publicReplies selections rows budget required stopAfter computation state result ≠ 0) :
-    SigningDigestsCached key.parameter result.2.1.memory.external.cache key.root result.2.1.memory.log := by
-  induction computation using OracleComp.inductionOn generalizing state with
-  | pure value =>
-      rw [monitoredRun_pure] at hresult
-      simp only [ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] at hresult
-      subst result
-      exact hsigned
-  | query_bind input next ih =>
-      rw [monitoredRun_query_bind, RetainedObservation.bind_nonzero] at hresult
-      obtain ⟨⟨answer, after⟩, hstep, hresult⟩ := hresult
-      have hsigned' := monitoredStep_digestsCached key inputs hencoding words publicReplies selections rows budget required stopAfter
-        input state hvalid ((requestInputs_subset key input next).trans hinputs) hsigned (answer, after) hstep
-      cases answer with
-      | none =>
-          simp only [Option.elim_none, ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] at hresult
-          subst result
-          exact hsigned'
-      | some answer =>
-          exact ih answer after
-            (monitoredStep_valid key inputs hencoding words publicReplies selections rows budget required stopAfter input state hvalid (some answer, after) hstep)
-            ((sourceInputs_next_subset key input next answer).trans hinputs) hsigned' hresult
-
 theorem monitoredRun_query_active {Result : Type} (input : (OracleWorld + SigningSpec).Domain)
     (next : (OracleWorld + SigningSpec).Range input → OracleComp (OracleWorld + SigningSpec) Result)
     (state : MonitoredState inputs) (hvalid : MonitoredValid inputs state)
@@ -156,20 +128,5 @@ theorem monitoredRun_query_active {Result : Type} (input : (OracleWorld + Signin
   refine ⟨halive, ⟨?_, hcache, htotal⟩, hvalidStep, hmacro⟩
   change SigningDigestsCached key.parameter state.1.memory.external.cache key.root state.2.log
   rwa [(hbank halive).1]
-
-theorem initialMonitoredSource_digestsCached (adversary : Adversary) (encoding : ReferenceEncodingAuxiliary)
-    (dummy : OtsReferenceWords) (exposed : InitialPublicLabels (referenceFamilyWords encoding.selections dummy))
-    (high : CanonicalGraphHighHalves) (stopped : Bool)
-    (result : Option (Forgery × Bool) × MonitoredState (gameInputs adversary))
-    (hresult : initialMonitoredSource key adversary encoding dummy exposed high budget required stopAfter stopped result ≠ 0) :
-    SigningDigestsCached key.parameter result.2.1.memory.external.cache key.root result.2.1.memory.log := by
-  apply monitoredRun_digestsCached key (gameInputs adversary) (canonicalEncodingInputs_subset_retainedGameInputs adversary key.parameter)
-    (referenceFamilyWords encoding.selections dummy)
-    (coordinateGraphLabels (initialKnown (referenceFamilyWords encoding.selections dummy) exposed) high)
-    encoding.selections encoding.rows budget required stopAfter _ _
-    ⟨initialAllowed_nonempty _ exposed, initialState_rowsCovered _ _ exposed⟩
-    (sourceInputs_unlogged_subset_gameInputs adversary key) _ result hresult
-  intro entry hentry
-  cases hentry
 
 end SphincsSecurity.Concrete.RetainedResidual

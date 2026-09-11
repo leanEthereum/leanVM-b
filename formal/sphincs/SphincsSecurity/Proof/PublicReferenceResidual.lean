@@ -75,13 +75,6 @@ theorem canonicalReferenceResidual_eq_known (parameter : PublicParameter) (input
   congr 1
   exact canonicalEncodingCell_eq_known parameter inputs hencoding words disclosed known otsSecret ftsSecret labels hagrees
 
-theorem knownReferenceResidual_at (parameter : PublicParameter) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (known : Labels)
-    (rows : CanonicalEncodingRows) (seed : inputs → HashOutput) (row : EncodingRow) :
-    knownReferenceResidual parameter inputs hencoding known rows seed
-      (knownEncodingCell parameter inputs hencoding known row) = rows row :=
-  UniformTableSplit.overwrite_embed _ _ rows seed row
-
 theorem knownEncodingCell_not_structural (parameter : PublicParameter) (inputs : Finset HashInput)
     (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (known : Labels)
     (input : inputs) (position : Position) (hat : AtPosition parameter input.val position) :
@@ -91,18 +84,6 @@ theorem knownEncodingCell_not_structural (parameter : PublicParameter) (inputs :
       (knownEncodingCell parameter inputs hencoding known row).val row.1 := ⟨_, rfl⟩
   rw [heq] at hencoding
   exact hencoding.not_atPosition position hat
-
-theorem knownReferenceResidual_structural (parameter : PublicParameter) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (known : Labels)
-    (rows : CanonicalEncodingRows) (seed : inputs → HashOutput)
-    (input : HashInput) (position : Position) (hat : AtPosition parameter input position) :
-    finiteHashAnswer ∅ inputs (knownReferenceResidual parameter inputs hencoding known rows seed) input =
-      finiteHashAnswer ∅ inputs seed input := by
-  by_cases hinput : input ∈ inputs
-  · rw [finiteHashAnswer_none ∅ inputs _ input hinput (by simp), finiteHashAnswer_none ∅ inputs seed input hinput (by simp)]
-    exact UniformTableSplit.overwrite_outside _ _ rows seed ⟨input, hinput⟩
-      (knownEncodingCell_not_structural parameter inputs hencoding known ⟨input, hinput⟩ position hat)
-  · simp only [finiteHashAnswer, show (∅ : Cache) input = none from rfl, dif_neg hinput]
 
 theorem programmedReferenceResidual_outside (parameter : PublicParameter) (inputs : Finset HashInput)
     (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (words : OtsReferenceWords)
@@ -117,48 +98,5 @@ theorem programmedReferenceResidual_outside (parameter : PublicParameter) (input
       finiteHashAnswer ∅ inputs (knownReferenceResidual parameter inputs hencoding known rows seed) input := by
   rw [canonicalReferenceResidual_eq_known parameter inputs hencoding words disclosed known otsSecret ftsSecret labels hagrees]
   simp only [programmedHash, houtside, Option.elim_none]
-
-theorem programmedReferenceResidual_structural (parameter : PublicParameter) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (words : OtsReferenceWords)
-    (disclosed : Index → FtsTree → FtsLeaf → Prop) (known : Labels)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (labels : CanonicalGraphLabels)
-    (hagrees : PublicAgreement words disclosed known (CanonicalCoordinate.value otsSecret ftsSecret labels))
-    (rows : CanonicalEncodingRows) (seed : inputs → HashOutput) (input : HashInput)
-    (position : Position) (hat : AtPosition parameter input position) :
-    programmedHash parameter otsSecret ftsSecret labels
-        (finiteHashAnswer ∅ inputs (canonicalReferenceResidual parameter inputs hencoding labels rows seed)) input =
-      programmedHash parameter otsSecret ftsSecret labels (finiteHashAnswer ∅ inputs seed) input := by
-  rw [canonicalReferenceResidual_eq_known parameter inputs hencoding words disclosed known otsSecret ftsSecret labels hagrees]
-  simp only [programmedHash, (decodePosition_some_iff parameter input position).mpr hat, Option.elim_some]
-  split_ifs
-  · rfl
-  · exact knownReferenceResidual_structural parameter inputs hencoding known rows seed input position hat
-
-theorem evalDist_programmedReference_residual_query {Result : Type}
-    (parameter : PublicParameter) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (words : OtsReferenceWords)
-    (disclosed : Index → FtsTree → FtsLeaf → Prop) (known : Labels)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (labels : CanonicalGraphLabels)
-    (hagrees : PublicAgreement words disclosed known (CanonicalCoordinate.value otsSecret ftsSecret labels))
-    (rows : CanonicalEncodingRows) (input : inputs) (position : Position)
-    (hat : AtPosition parameter input.val position)
-    (hne : input.val ≠ canonicalGraphInput parameter otsSecret ftsSecret position labels)
-    (next : HashOutput → (inputs → HashOutput) → ProbComp Result) :
-    𝒟[do
-      let seed ← sampleHashTable inputs
-      next (programmedHash parameter otsSecret ftsSecret labels
-        (finiteHashAnswer ∅ inputs (canonicalReferenceResidual parameter inputs hencoding labels rows seed)) input.val) seed] =
-      𝒟[do
-        let answer ← ($ᵗ HashOutput : ProbComp _)
-        let seed ← sampleHashTable inputs
-        next answer (Function.update seed input answer)] := by
-  have hread (seed : inputs → HashOutput) :=
-    programmedReferenceResidual_structural parameter inputs hencoding words disclosed known otsSecret ftsSecret labels hagrees
-      rows seed input.val position hat
-  simp_rw [hread]
-  exact evalDist_programmedHash_residual_query parameter otsSecret ftsSecret inputs labels input
-    (noncanonical_at parameter otsSecret ftsSecret labels input.val position hat hne) next
 
 end SphincsSecurity.Concrete

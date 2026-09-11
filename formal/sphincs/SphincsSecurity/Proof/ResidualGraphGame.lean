@@ -47,12 +47,4 @@ theorem evalDist_boundaryGameCore_residualGraph (inputs : Finset HashInput)
   (evalDist_boundaryGameCore_canonicalGraph inputs hgraph dummy adversary hinputs).trans
     (evalDist_canonicalGraph_eq_residualGraph inputs hgraph dummy adversary)
 
-theorem forgeAdvantage_eq_residualGraph (dummy : OtsReferenceWords) (adversary : Adversary) :
-    forgeAdvantage scheme adversary =
-      Pr[fun result => result.1 = true | residualGraphOracleGame (canonicalGraphGameInputs adversary) dummy adversary] := by
-  rw [forgeAdvantage_eq_canonicalGraph dummy adversary]
-  exact probEvent_congr' (fun _ _ => Iff.rfl)
-    (evalDist_canonicalGraph_eq_residualGraph (canonicalGraphGameInputs adversary)
-      (canonicalGraphInputs_subset_gameInputs adversary) dummy adversary)
-
 end SphincsSecurity.Concrete

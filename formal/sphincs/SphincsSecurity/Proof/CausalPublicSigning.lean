@@ -140,15 +140,6 @@ theorem hashInputs_publicSigningWork_subset_signWithView (key : SecretKey) (know
   rw [hashInputs_publicSigningWork, publicDigestLoop_eq, signWithView]
   exact hashInputs_left_subset _ _
 
-theorem publicSigningWork_fixed_record (parameter : PublicParameter) (root : Digest) (oracle : QueryImpl HashSpec Id)
-    (known : Labels) (words : OtsReferenceWords) (selections : ReferenceFamily) (message : Message) :
-    Prod.fst <$> simulateQ (fixedHashWorld oracle) (publicSigningWork parameter root known words selections message) =
-      publicSigningRecord parameter root oracle known words selections message := by
-  rw [publicSigningWork, publicSigningRecord, simulateQ_bind, ← fixedBoundaryRun_eq_boundaryComputation, map_bind]
-  apply bind_congr
-  rintro ⟨selected, trace⟩
-  cases selected <;> simp only [simulateQ_pure, map_pure]
-
 def accountWork (memory : ExternalMemory) (cost : Nat) : ExternalMemory :=
   { memory with hashCalls := memory.hashCalls + cost }
 
@@ -156,44 +147,5 @@ theorem applyBoundary_pow_none (memory : ExternalMemory) (cost : Nat) :
     applyBoundary memory ((FreeMonoid.of none : SigningBoundaryTrace) ^ cost) = accountWork memory cost := by
   simp only [applyBoundary, SigningBoundaryTrace.messageCalls_pow_none, SigningBoundaryTrace.hashCalls_pow_none, List.foldl_nil]
   rfl
-
-theorem publicSigningWork_fixed_memory (parameter : PublicParameter) (root : Digest) (oracle : QueryImpl HashSpec Id)
-    (known : Labels) (words : OtsReferenceWords) (selections : ReferenceFamily) (message : Message) (memory : ExternalMemory) :
-    (fun result => (result.1.1, accountWork (applyBoundary memory result.2) result.1.2)) <$>
-        fixedBoundaryRun parameter oracle (publicSigningWork parameter root known words selections message) =
-      (fun record => (record, applyBoundary memory record.2)) <$>
-        publicSigningRecord parameter root oracle known words selections message := by
-  rw [publicSigningWork, fixedBoundaryRun_bind, fixedBoundaryRun_boundaryComputation,
-    publicSigningRecord, map_bind, bind_map_left, map_bind]
-  apply bind_congr
-  rintro ⟨selected, trace⟩
-  cases selected with
-  | none =>
-      simp only [fixedBoundaryRun_pure, map_pure, mul_one]
-      rfl
-  | some selected =>
-      simp only [fixedBoundaryRun_pure, map_pure, mul_one]
-      rw [applyBoundary_mul, applyBoundary_pow_none]
-
-def accountSigningResult (result : Option (PublicSigningRecord × Nat) × ExternalMemory) :
-    Option PublicSigningRecord × ExternalMemory :=
-  (result.1.map Prod.fst, result.1.elim result.2 (fun work => accountWork result.2 work.2))
-
-theorem checkedPublicSigningWork_record (parameter : PublicParameter) (root : Digest)
-    (words : OtsReferenceWords) (disclosed : Index → FtsTree → FtsLeaf → Prop) (known actual : Labels)
-    (messages : EncodingPosition → Digest) (selections : ReferenceFamily) (oracle : QueryImpl HashSpec Id)
-    (message : Message) (memory : ExternalMemory) :
-    accountSigningResult <$> externalRun (fun input memory => pure (checkedResult
-      (PublicEncodingMatch.Match parameter messages words selections) input
-      (fixedStep parameter words disclosed known actual oracle input memory)))
-      (publicSigningWork parameter root known words selections message) memory =
-    (fun record => (some record, applyBoundary memory record.2)) <$>
-      𝒟[publicSigningRecord parameter root oracle known words selections message] := by
-  rw [checkedExternalRun_message_trace parameter words disclosed known actual messages selections oracle _
-    (publicSigningWork_messageOnly parameter root known words selections message) memory]
-  have h := congrArg (fun computation => 𝒟[(Prod.map some id) <$> computation])
-    (publicSigningWork_fixed_memory parameter root oracle known words selections message memory)
-  simpa only [evalDist_map, Functor.map_map, Function.comp_def, Prod.map_apply, accountSigningResult,
-    Option.map_some, Option.elim_some, id_eq] using h
 
 end SphincsSecurity.Concrete.ResidualByteFrontend

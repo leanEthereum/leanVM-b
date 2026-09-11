@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Prelude
-import SphincsSecurity.Proof.AdaptiveRevealProbe
-import SphincsSecurity.Proof.LazyRevealProbe
+import SphincsSecurity.Proof.Honest
 
 namespace SphincsSecurity.Concrete.FiniteGraphSampling
 

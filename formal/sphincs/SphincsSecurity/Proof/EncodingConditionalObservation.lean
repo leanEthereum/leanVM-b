@@ -53,16 +53,4 @@ theorem encoding_afterSelect_complete (selection : ReferenceSelection) :
       · simp only [FirstSuccessTable.afterSelect, dif_neg hfiber, encodingSelectionAllowed, if_neg hfiber]
         rfl
 
-theorem encoding_afterSelect_posterior {AuxIndex Result : Type} {auxSpec : OracleSpec AuxIndex}
-    (auxiliary : QueryImpl auxSpec SPMF)
-    (computation : OracleComp (auxSpec + UniformTableObservation.TableSpec (Fin encodingAttemptLimit) HashOutput) Result)
-    (selection : ReferenceSelection) :
-    (𝒟[FirstSuccessTable.afterSelect decodeEncodingOutput encodingAttemptLimit decodeEncodingOutput_invalid_nonempty selection] >>=
-      fun table => (fun result => (table, result)) <$>
-        UniformTableObservation.observedRun auxiliary table computation (encodingSelectionAllowed selection)) =
-      (UniformTableObservation.lazyRun auxiliary computation (encodingSelectionAllowed selection) >>= fun result =>
-        (fun table => (table, result)) <$> complete result.2) := by
-  rw [encoding_afterSelect_complete]
-  exact UniformTableObservation.run_posterior auxiliary computation (encodingSelectionAllowed selection)
-
 end SphincsSecurity.Concrete

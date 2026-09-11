@@ -40,14 +40,4 @@ theorem decodingDigests_uniform_le (words : Finset Encoding) :
   rw [probEvent_uniform_truncateHash_mem]
   exact ENNReal.div_le_div_right (Nat.cast_le.mpr (decodingDigests_card_le words)) _
 
-theorem unitNeighbors_uniform_le (reference : Encoding) (lowered : ChainIndex) :
-    Pr[fun output : HashOutput => truncateHash output ∈ decodingDigests (unitNeighbors reference lowered) |
-      ($ᵗ HashOutput : ProbComp HashOutput)] ≤ 41 / (Fintype.card Digest : ENNReal) := by
-  exact (decodingDigests_uniform_le _).trans (ENNReal.div_le_div_right (Nat.cast_le.mpr (unitNeighbors_card_le reference lowered)) _)
-
-theorem allUnitNeighbors_uniform_le (reference : Encoding) :
-    Pr[fun output : HashOutput => truncateHash output ∈ decodingDigests (allUnitNeighbors reference) |
-      ($ᵗ HashOutput : ProbComp HashOutput)] ≤ 1722 / (Fintype.card Digest : ENNReal) := by
-  exact (decodingDigests_uniform_le _).trans (ENNReal.div_le_div_right (Nat.cast_le.mpr (allUnitNeighbors_card_le reference)) _)
-
 end SphincsSecurity.TargetSum

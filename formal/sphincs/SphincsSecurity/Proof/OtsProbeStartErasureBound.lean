@@ -1,6 +1,7 @@
 import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.DirectQueryBudget
-import SphincsSecurity.Proof.OtsProbeSampling
+import SphincsSecurity.Proof.FtsProbeSimulation
+import SphincsSecurity.Proof.OtsProbeSimulation
 
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
@@ -8,16 +9,6 @@ open OracleComp OracleSpec OracleComp.ProgramLogic.Relational
 
 set_option backward.isDefEq.respectTransparency false
 set_option maxRecDepth 4000
-
-noncomputable def concreteAfterRootComputation
-    (parameter : PublicParameter) (table : OtsSecretIndex → HashOutput)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (continuation : Digest → OracleComp (OracleWorld + SigningSpec) α) : OracleComp OracleWorld α := do
-  let root ← liftM (treeRoot parameter topLayer rootTree
-    (fun leafIdx chainIdx => truncateHash (table ⟨topLayer, rootTree, leafIdx, chainIdx⟩)) : OracleComp HashSpec Digest)
-  simulateQ (expandedAdversaryImpl
-    ⟨parameter, root, fun lay tree leafIdx chainIdx => truncateHash (table ⟨lay, tree, leafIdx, chainIdx⟩), ftsSecret⟩)
-    (continuation root)
 
 theorem simulateQ_unloggedMapped_eq_expanded (secretKey : SecretKey)
     (computation : OracleComp (OracleWorld + SigningSpec) α) :

@@ -69,12 +69,4 @@ theorem fixedRun_projection {Result : Type} (auxiliary : QueryImpl auxSpec ProbC
       rw [bind_map_left] at h
       exact h
 
-theorem lazyRun_projection {Result : Type} (auxiliary : QueryImpl auxSpec ProbComp)
-    (computation : OracleComp (World auxSpec Coordinate Value) Result) (state : State Coordinate Value PUnit)
-    (ha : ∀ coordinate, (state.allowed coordinate).Nonempty) :
-    (complete state.allowed >>= fun labels => 𝒟[simulateQ (fixedAnswers auxiliary labels) computation]) =
-      Prod.fst <$> lazyRun (environment auxiliary) computation state := by
-  have h := congrArg (Functor.map Prod.fst) (run_erasure (environment auxiliary) computation state ha)
-  simpa only [map_bind, fixedRun_projection] using h
-
 end SphincsSecurity.Concrete.SecretGuessObservation

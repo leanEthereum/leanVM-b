@@ -42,17 +42,6 @@ theorem checkpointObserver_frontier_trace (parameter : PublicParameter) (words :
   simpa only [checkpointObserver, Functor.map_map] using
     congrArg (Functor.map (fun result => (frontier, result))) (checkpointObserver_trace stop parameter words frontier computation)
 
-theorem checkpointObserver_forget (parameter : PublicParameter) (words : OtsReferenceWords) (frontier : OtsFrontierValues)
-    (computation : OracleComp OracleWorld (Bool × SigningBoundaryTrace)) :
-    ContactResult.output <$> checkpointObserver stop parameter words frontier computation = computation := by
-  have h := congrArg (Functor.map Prod.fst) (checkpointObserver_trace stop parameter words frontier computation)
-  simpa only [Functor.map_map, QueryPause.traced_forget] using h
-
-theorem checkpointSplitRun_contact {Result : Type} (parameter : PublicParameter) (words : OtsReferenceWords)
-    (frontier : OtsFrontierValues) (computation : OracleComp OracleWorld Result) :
-    checkpointSplitRun OtsContactTrace.Stopped parameter words frontier computation =
-      OtsContactTrace.splitRun parameter words frontier computation := rfl
-
 theorem checkpointObserver_contact : checkpointObserver OtsContactTrace.Stopped = contactObserver := rfl
 
 end SphincsSecurity.Concrete

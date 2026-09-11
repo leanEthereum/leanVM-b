@@ -58,14 +58,6 @@ theorem bankedTargetEnvelope_stopped (key : SecretKey) (reuse : ENNReal) (budget
     bankedTargetEnvelope key reuse budget signatures required state bank true = certificateBankCount bank :=
   bankedCacheWeight_stopped _ _ _ _
 
-theorem one_le_bankedTargetEnvelope_of_certificate (key : SecretKey) (reuse : ENNReal) (budget signatures : Nat)
-    (required : Finset FtsTree) (state : CoverLogState) (bank : HashInput → Bool) (stopped : Bool)
-    (input : HashInput) (hcertificate : TargetCertificateAt key required state input) :
-    1 ≤ bankedTargetEnvelope key reuse budget signatures required state
-      (completedTargetBank key required state bank) stopped := by
-  apply (one_le_certificateBankCount _ input ?_).trans (certificateBankCount_le_bankedCacheWeight _ _ _ _ _)
-  simp only [completedTargetBank, hcertificate, decide_true, Bool.or_true]
-
 theorem targetCreationMultiplier_sign_mul_price (key : SecretKey) (reuse : ENNReal) (budget signatures : Nat)
     (required : Finset FtsTree) (state : CoverLogState) (message : Message) :
     targetCreationMultiplier key state.1 (.inr message) * targetCreationPrice key reuse budget signatures required state =
@@ -81,16 +73,6 @@ theorem targetCreationMultiplier_sign_mul_price (key : SecretKey) (reuse : ENNRe
           ((Fintype.card Index : ENNReal)⁻¹ * reuseRawEnvelope key reuse budget signatures state ∅ required) *
             targetCertificateScale required) := by ring
     _ = _ := by rw [hcancel, one_mul]
-
-theorem targetCoveredOn_full_iff (key : SecretKey) (state : CoverLogState) (payload : HashInput) (target : FewTimeView) :
-    TargetCoveredOn key Finset.univ state payload target ↔
-      CoveredFewTimeView (eligibleSigningViews (messageAnswers key.parameter state.1) key.root payload state.2) target := by
-  simp only [TargetCoveredOn, Finset.mem_univ, forall_true_left, targetTreeMatchCount_pos_iff, CoveredFewTimeView]
-
-theorem completedTargetBank_retains (key : SecretKey) (required : Finset FtsTree)
-    (state : CoverLogState) (bank : HashInput → Bool) (input : HashInput) (hbank : bank input = true) :
-    completedTargetBank key required state bank input = true := by
-  simp only [completedTargetBank, hbank, Bool.true_or]
 
 theorem completedTargetBank_of_certificate (key : SecretKey) (required : Finset FtsTree)
     (state : CoverLogState) (bank : HashInput → Bool) (input : HashInput)

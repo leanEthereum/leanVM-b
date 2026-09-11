@@ -8,6 +8,7 @@ set_option backward.isDefEq.respectTransparency false
 attribute [local irreducible] canonicalEncodingInputs canonicalGraphInputs instFintypePosition Finset.univ
 
 noncomputable local instance (inputs : Finset HashInput) : SampleableType (inputs → HashOutput) := SampleableType.ofFintype _
+
 noncomputable local instance : SampleableType CanonicalGraphLabels := SampleableType.ofFintype _
 
 theorem referenceFamilyOracleSample_graph_bind {Result : Type} (key : SecretKey) (inputs : Finset HashInput)

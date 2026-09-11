@@ -37,10 +37,4 @@ theorem visibleInstrumentedSeedGame_real :
       (segment.seedOracle inputs hencoding hgraph auxiliary secrets ftsSecret words)
       (segment.visibleInstrumentedSeedGame observer inputs hencoding hgraph auxiliary secrets ftsSecret words adversary) (fun _ _ => none)).symm
 
-theorem visibleInstrumentedSeedGame_replaceSecret (endpoint replacement : Digest) :
-    segment.visibleInstrumentedSeedGame observer inputs hencoding hgraph auxiliary (segment.replaceChain secrets replacement)
-      ftsSecret words adversary endpoint =
-    segment.visibleInstrumentedSeedGame observer inputs hencoding hgraph auxiliary secrets ftsSecret words adversary endpoint := by
-  simp only [visibleInstrumentedSeedGame, seedOracle_replaceSecret, seedFrontier_replaceSecret]
-
 end SphincsSecurity.Concrete.OtsPrefix

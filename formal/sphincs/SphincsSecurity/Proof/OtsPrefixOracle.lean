@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Prelude
-import SphincsSecurity.Proof.AdaptiveRevealProbe
+import SphincsSecurity.Proof.Honest
 import SphincsSecurity.Proof.FrontierOracleMask
-import SphincsSecurity.Proof.LazyRevealProbe
 import SphincsSecurity.Proof.OtsEndpointLikelihood
 import SphincsSecurity.Proof.SecretProbe
 

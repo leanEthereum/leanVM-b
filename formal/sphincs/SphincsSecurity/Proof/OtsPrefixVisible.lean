@@ -53,11 +53,6 @@ noncomputable def visibleSeedGame (endpoint : Digest) : OracleComp segment.Visib
   segment.visibleGame auxiliary.high (segment.seedOracle inputs hencoding hgraph auxiliary secrets ftsSecret words endpoint)
     ftsSecret words (segment.seedFrontier inputs hencoding hgraph auxiliary secrets words endpoint) adversary
 
-theorem visibleSeedGame_replaceSecret (endpoint replacement : Digest) :
-    segment.visibleSeedGame inputs hencoding hgraph auxiliary (segment.replaceChain secrets replacement) ftsSecret words adversary endpoint =
-      segment.visibleSeedGame inputs hencoding hgraph auxiliary secrets ftsSecret words adversary endpoint := by
-  rw [visibleSeedGame, visibleSeedGame, seedOracle_replaceSecret, seedFrontier_replaceSecret]
-
 theorem erase_visibleSeedGame (endpoint : Digest) :
     simulateQ (PartialChainEndpoint.eraseAux (segment.seedOracle inputs hencoding hgraph auxiliary secrets ftsSecret words endpoint))
       (segment.visibleSeedGame inputs hencoding hgraph auxiliary secrets ftsSecret words adversary endpoint) =
@@ -75,47 +70,5 @@ theorem visibleSeedGame_real :
     (PartialChainEndpoint.realRun_eraseAux (fun _ => uniformImpl)
       (segment.seedOracle inputs hencoding hgraph auxiliary secrets ftsSecret words)
       (segment.visibleSeedGame inputs hencoding hgraph auxiliary secrets ftsSecret words adversary) (fun _ _ => none)).symm
-
-theorem visibleSeedGame_counted_real :
-    PartialChainEndpoint.realRun (fun endpoint => PartialChainEndpoint.extendAux uniformImpl
-      (segment.seedOracle inputs hencoding hgraph auxiliary secrets ftsSecret words endpoint))
-      (fun endpoint => QueryCap.counted PartialChainEndpoint.IsPrefixQuery
-        (segment.visibleSeedGame inputs hencoding hgraph auxiliary secrets ftsSecret words adversary endpoint)) (fun _ _ => none) =
-    PartialChainEndpoint.realRun (fun _ => uniformImpl)
-      (fun endpoint => QueryCap.counted PartialChainEndpoint.IsPrefixQuery
-        (segment.seedGame inputs hencoding hgraph auxiliary secrets ftsSecret words endpoint adversary)) (fun _ _ => none) := by
-  simpa only [PartialChainEndpoint.counted_eraseAux, erase_visibleSeedGame] using
-    (PartialChainEndpoint.realRun_eraseAux (fun _ => uniformImpl)
-      (segment.seedOracle inputs hencoding hgraph auxiliary secrets ftsSecret words)
-      (fun endpoint => QueryCap.counted PartialChainEndpoint.IsPrefixQuery
-        (segment.visibleSeedGame inputs hencoding hgraph auxiliary secrets ftsSecret words adversary endpoint)) (fun _ _ => none)).symm
-
-theorem visibleSeedGame_cap_real (budget : Nat) :
-    PartialChainEndpoint.realRun (fun endpoint => PartialChainEndpoint.extendAux uniformImpl
-      (segment.seedOracle inputs hencoding hgraph auxiliary secrets ftsSecret words endpoint))
-      (fun endpoint => QueryCap.run PartialChainEndpoint.IsPrefixQuery
-        (segment.visibleSeedGame inputs hencoding hgraph auxiliary secrets ftsSecret words adversary endpoint) budget) (fun _ _ => none) =
-    PartialChainEndpoint.realRun (fun _ => uniformImpl)
-      (fun endpoint => QueryCap.run PartialChainEndpoint.IsPrefixQuery
-        (segment.seedGame inputs hencoding hgraph auxiliary secrets ftsSecret words endpoint adversary) budget) (fun _ _ => none) := by
-  simpa only [PartialChainEndpoint.cap_eraseAux, erase_visibleSeedGame] using
-    (PartialChainEndpoint.realRun_eraseAux (fun _ => uniformImpl)
-      (segment.seedOracle inputs hencoding hgraph auxiliary secrets ftsSecret words)
-      (fun endpoint => QueryCap.run PartialChainEndpoint.IsPrefixQuery
-        (segment.visibleSeedGame inputs hencoding hgraph auxiliary secrets ftsSecret words adversary endpoint) budget) (fun _ _ => none)).symm
-
-theorem visibleSeedGame_cap_ideal (budget : Nat) :
-    PartialChainEndpoint.idealRun (fun endpoint => PartialChainEndpoint.extendAux uniformImpl
-      (segment.seedOracle inputs hencoding hgraph auxiliary secrets ftsSecret words endpoint))
-      (fun endpoint => QueryCap.run PartialChainEndpoint.IsPrefixQuery
-        (segment.visibleSeedGame inputs hencoding hgraph auxiliary secrets ftsSecret words adversary endpoint) budget) (fun _ _ => none) =
-    PartialChainEndpoint.idealRun (fun _ => uniformImpl)
-      (fun endpoint => QueryCap.run PartialChainEndpoint.IsPrefixQuery
-        (segment.seedGame inputs hencoding hgraph auxiliary secrets ftsSecret words endpoint adversary) budget) (fun _ _ => none) := by
-  simpa only [PartialChainEndpoint.cap_eraseAux, erase_visibleSeedGame] using
-    (PartialChainEndpoint.idealRun_eraseAux (fun _ => uniformImpl)
-      (segment.seedOracle inputs hencoding hgraph auxiliary secrets ftsSecret words)
-      (fun endpoint => QueryCap.run PartialChainEndpoint.IsPrefixQuery
-        (segment.visibleSeedGame inputs hencoding hgraph auxiliary secrets ftsSecret words adversary endpoint) budget) (fun _ _ => none)).symm
 
 end SphincsSecurity.Concrete.OtsPrefix

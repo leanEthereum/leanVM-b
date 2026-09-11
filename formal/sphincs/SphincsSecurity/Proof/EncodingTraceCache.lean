@@ -1,6 +1,7 @@
 import SphincsSecurity.Proof.EncodingOracleObservation
 import SphincsSecurity.Proof.OtsEncodingMarker
-import SphincsSecurity.Proof.QueryTraceSpmfInvariant
+import SphincsSecurity.Proof.QueryTraceInvariant
+import SphincsSecurity.Proof.RetainedObservation
 
 namespace SphincsSecurity.Concrete.EncodingObservation
 
@@ -122,20 +123,6 @@ theorem lazyWorldImpl_traceConsistent (parameter : PublicParameter) (inputs : Fi
         simp only [ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] at heq
         subst result
         exact h.outside input hc answer
-
-theorem lazyRun_traceConsistent {Result : Type} (parameter : PublicParameter) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (outside : NonencodingRows parameter inputs hencoding)
-    (computation : OracleComp OracleWorld Result) (initial allowed : canonicalEncodingInputs parameter → Finset HashOutput)
-    (history : OtsContactTrace.Trace) (h : TraceConsistent parameter initial history allowed)
-    (result : (Result × OtsContactTrace.Trace) × (canonicalEncodingInputs parameter → Finset HashOutput))
-    (hr : lazyRun parameter inputs hencoding outside (QueryPause.traced hashObservationTrace computation) allowed result ≠ 0) :
-    TraceConsistent parameter initial (history * result.1.2) result.2 := by
-  rw [lazyRun_eq_simulate] at hr
-  exact QueryPause.traced_spmf_invariant hashObservationTrace (lazyWorldImpl parameter inputs hencoding outside)
-    (TraceConsistent parameter initial)
-    (fun history allowed h input result hr =>
-      lazyWorldImpl_traceConsistent parameter inputs hencoding outside initial allowed history h input result hr)
-    computation history allowed h result hr
 
 theorem TraceConsistent.cached_reply {parameter : PublicParameter}
     {initial allowed : canonicalEncodingInputs parameter → Finset HashOutput} {trace : OtsContactTrace.Trace}

@@ -108,31 +108,4 @@ theorem lazy_reference_completedRun_tracking (key : SecretKey) (inputs : Finset 
   fixed_reference_completedRun_tracking key inputs hencoding labels auxiliary hauxiliary dummy adversary state result
     (fixedRun_nonzero_of_lazy_posterior _ _ state result _ hr hsecrets)
 
-theorem lazy_reference_remainingFts (key : SecretKey) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs) (labels : CanonicalGraphLabels)
-    (auxiliary : ReferenceAuxiliary inputs) (hauxiliary : auxiliary ∈ (referenceAuxiliarySample inputs).support)
-    (dummy : OtsReferenceWords) (adversary : Adversary) (result : Completed × State Coordinate Digest PUnit)
-    (hr : lazyRun
-      (SecretGuessObservation.environment (referenceAnswers key.parameter key.root key.otsSecret labels inputs hencoding auxiliary dummy))
-      (completedRun key.parameter key.root labels adversary) (initialState PUnit.unit) result ≠ 0)
-    (hsecrets : UniformTableCompletion.complete result.2.allowed (FtsGuessSigning.secretTable key.ftsSecret) ≠ 0) :
-    let f := programmedHash key.parameter key.otsSecret key.ftsSecret labels
-      (finiteHashAnswer ∅ inputs (canonicalReferenceResidual key.parameter inputs hencoding labels auxiliary.rows auxiliary.seed))
-    let before := result.1.1
-    let trace := before.2 * result.1.2.2
-    let target := RetainedResidual.signingView key f before.1.1.1.message before.1.1.1.signature
-    (ReferenceFtsCoverage.NearGuess key f before.1.1.2 before.1.2 trace before.1.1.1 ∨
-      ReferenceFtsCoverage.TwoGuesses key f before.1.1.2 trace before.1.1.1) →
-    (∃ omitted, TargetCertificateAt key (Finset.univ.erase omitted)
-      (ReferenceFtsCoverage.transcriptCache f before.1.2 trace, before.1.1.2)
-      (RetainedResidual.signingInput key before.1.1.1.message before.1.1.1.signature) ∧
-      (target.1, omitted, target.2 omitted) ∈ result.2.guesses) ∨ 2 ≤ result.2.guesses.card := by
-  dsimp only
-  intro h
-  have tracking := lazy_reference_completedRun_tracking key inputs hencoding labels auxiliary hauxiliary dummy
-    adversary (initialState PUnit.unit) result hr hsecrets
-  rcases h with h | h
-  · exact Or.inl (tracking.near_guess rfl _ _ h)
-  · exact Or.inr (tracking.two_guesses rfl _ h)
-
 end SphincsSecurity.Concrete.FtsGuessHash

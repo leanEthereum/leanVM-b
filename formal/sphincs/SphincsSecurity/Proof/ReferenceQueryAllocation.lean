@@ -60,46 +60,4 @@ theorem referenceRecordedGame_joint_budget (dummy : OtsReferenceWords) (adversar
     ReferenceRecordedResult.encodingCalls, ReferenceRecordedResult.otherCalls, ReferenceRecordedResult.messageCalls]
   omega
 
-theorem referenceRecordedGame_expected_joint_budget (dummy : OtsReferenceWords) (adversary : Adversary) (q : Nat)
-    (hbound : HasHashQueryBound scheme adversary q) :
-    (∑ address : OtsPrefix.ChainAddress, ∑' result : ReferenceRecordedResult,
-      Pr[= result | referenceRecordedGame (canonicalGraphGameInputs adversary)
-        (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] *
-      (QueryCap.calls (OtsPrefix.atAddress result.1 (referenceFamilyWords result.2.1 dummy) address).Selects
-        result.2.2.2 : ENNReal)) +
-      (∑' result : ReferenceRecordedResult, Pr[= result | referenceRecordedGame (canonicalGraphGameInputs adversary)
-        (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] * (result.remainingCalls dummy : ENNReal)) ≤ q := by
-  let law := referenceRecordedGame (canonicalGraphGameInputs adversary)
-    (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary
-  calc
-    _ = ∑' result : ReferenceRecordedResult, Pr[= result | law] *
-        ((result.prefixCalls dummy + result.remainingCalls dummy : Nat) : ENNReal) := by
-      rw [← tsum_fintype (L := SummationFilter.unconditional OtsPrefix.ChainAddress), ENNReal.tsum_comm, ← ENNReal.tsum_add]
-      simp only [tsum_fintype, ReferenceRecordedResult.prefixCalls, Nat.cast_add, Nat.cast_sum, Finset.mul_sum, mul_add, law]
-    _ ≤ ∑' result : ReferenceRecordedResult, Pr[= result | law] * (q : ENNReal) := by
-      apply ENNReal.tsum_le_tsum
-      intro result
-      by_cases hresult : result ∈ support law
-      · exact mul_le_mul' le_rfl (Nat.cast_le.mpr (referenceRecordedGame_joint_budget dummy adversary q hbound result hresult))
-      · rw [probOutput_eq_zero_of_not_mem_support hresult, zero_mul, zero_mul]
-    _ ≤ q := by
-      rw [ENNReal.tsum_mul_right]
-      exact mul_le_of_le_one_left' tsum_probOutput_le_one
-
-theorem prefixIdealCostGame_joint_budget (dummy : OtsReferenceWords) (adversary : Adversary) (q : Nat)
-    (hbound : HasHashQueryBound scheme adversary q) :
-    (1 - (q : ENNReal) / Fintype.card Digest) *
-        (∑ address : OtsPrefix.ChainAddress, ∑' count, Pr[= count | prefixIdealCostGame (canonicalGraphGameInputs adversary)
-          (canonicalEncodingInputs_subset_gameInputs adversary) (canonicalGraphInputs_subset_gameInputs adversary)
-          address dummy adversary q] * (count : ENNReal)) +
-      (∑' result : ReferenceRecordedResult, Pr[= result | referenceRecordedGame (canonicalGraphGameInputs adversary)
-        (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] * (result.remainingCalls dummy : ENNReal)) ≤ q := by
-  refine le_trans ?_ (referenceRecordedGame_expected_joint_budget dummy adversary q hbound)
-  refine add_le_add ?_ le_rfl
-  rw [Finset.mul_sum]
-  apply Finset.sum_le_sum
-  intro address _
-  have h := prefixIdealCostGame_lower address dummy adversary q hbound
-  simpa only [prefixCountedObservedGame_original, tsum_probOutput_map_mul, ReferenceRecordedResult.prefixCounted] using h
-
 end SphincsSecurity.Concrete

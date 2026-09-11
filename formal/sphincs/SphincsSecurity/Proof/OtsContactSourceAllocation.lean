@@ -55,15 +55,4 @@ theorem referenceContactGame_restart_allocation (dummy : OtsReferenceWords) (adv
       · simp only [if_pos hm, mul_comm, law]
       · simp only [if_neg hm, mul_zero]
 
-theorem prefixContactObservedGame_restart_allocation (dummy : OtsReferenceWords) (adversary : Adversary) (budget : Nat)
-    (hbound : HasHashQueryBound scheme adversary budget) :
-    (∑ address : OtsPrefix.ChainAddress, ∑' result : InstrumentedResult ContactResult,
-      Pr[= result | prefixContactObservedGame (canonicalGraphGameInputs adversary)
-        (canonicalEncodingInputs_subset_gameInputs adversary) (canonicalGraphInputs_subset_gameInputs adversary) address dummy adversary] *
-        (result.2.2.restartCharge result.1 (referenceFamilyWords result.2.1 dummy) address : ENNReal)) ≤
-      ((2 * budget : Nat) : ENNReal) * Pr[fun result => result.2.2.Marked result.1 (referenceFamilyWords result.2.1 dummy) |
-        referenceContactGame (canonicalGraphGameInputs adversary) (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] := by
-  simp only [prefixContactObservedGame_original]
-  exact referenceContactGame_restart_allocation dummy adversary budget hbound
-
 end SphincsSecurity.Concrete

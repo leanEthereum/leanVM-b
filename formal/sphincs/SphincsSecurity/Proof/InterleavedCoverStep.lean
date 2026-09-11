@@ -1,6 +1,13 @@
 import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CachedSigningViews
-import SphincsSecurity.Proof.ObservedSignerCoverStep
+import SphincsSecurity.Proof.FewTimeConditionalCoverage
+import SphincsSecurity.Proof.JointProbeMessageReserve
+import SphincsSecurity.Proof.FewTimePrehit
+import SphincsSecurity.Proof.FewTimeSignerView
+import SphincsSecurity.Proof.FewTimeWeightedOriginRace
+import SphincsSecurity.Proof.ObservedAdaptiveCoverBound
+import SphincsSecurity.Proof.FewTimeUniform
+import SphincsSecurity.Proof.RomQueryCharge
 
 namespace SphincsSecurity.Concrete
 
@@ -43,17 +50,5 @@ theorem logTracedMappedAdversaryImpl_signingDigestsCached (key : SecretKey)
       rw [← simulateQ_signWithView_fst_run, support_map] at hbase
       obtain ⟨viewed, hviewed, rfl⟩ := hbase
       exact SigningDigestsCached.after_signing key message state.1 viewed.2 state.2 hsigned viewed.1.1 viewed.1.2 hviewed
-
-noncomputable def worldCoverCharge (key : SecretKey) (state : CoverLogState) (input : OracleWorld.Domain) : ENNReal :=
-  hashQueryCharge (fun cache input => freshCoverageCharge key.parameter
-    (fixedSigningViews key.parameter state.1 key.root state.2) cache input * ((2 ^ 176 : Nat) : ENNReal)⁻¹) state.1 input
-
-noncomputable def interleavedCoverStepCharge (key : SecretKey) (q : Nat)
-    (state : CoverLogState) (input : (OracleWorld + SigningSpec).Domain) : ENNReal :=
-  if hcap : QueryCache.enncard state.1 ≤ q then
-    match input with
-    | .inl world => worldCoverCharge key state world
-    | .inr message => observedSignerCoverCharge key message state.1 (Finite.of_enncard_le hcap) state.2 q
-  else 0
 
 end SphincsSecurity.Concrete

@@ -38,17 +38,6 @@ theorem evalDist_independent_uniform_pair
     ENNReal.mul_inv (Or.inr (ENNReal.natCast_ne_top _))
       (Or.inl (ENNReal.natCast_ne_top _))]
 
-noncomputable def completeOptionViews :
-    List (Option FewTimeView) → ProbComp (List FewTimeView)
-  | [] => pure []
-  | none :: options => do
-      let view ← $ᵗ FewTimeView
-      let views ← completeOptionViews options
-      pure (view :: views)
-  | some view :: options => do
-      let views ← completeOptionViews options
-      pure (view :: views)
-
 def listToFunction (count : Nat) (values : List FewTimeView) : Fin count → FewTimeView :=
   fun position => values.getD position.val default
 
@@ -57,22 +46,5 @@ theorem listToFunction_ofFn (values : Fin count → FewTimeView) :
     listToFunction count (List.ofFn values) = values := by
   funext position
   simp [listToFunction, List.getD]
-
-def finCastLEEmbedding {small large : Nat} (hle : small ≤ large) : Fin small ↪ Fin large where
-  toFun := Fin.castLE hle
-  inj' := by
-    intro left right heq
-    apply Fin.ext
-    exact congrArg (fun position : Fin large => position.val) heq
-
-noncomputable def FewTimePattern.pad {small large distinct : Nat}
-    (pattern : FewTimePattern small distinct) (hle : small ≤ large) :
-    FewTimePattern large distinct where
-  selected := pattern.selected.map (finCastLEEmbedding hle)
-  card_selected := by rw [Finset.card_map, pattern.card_selected]
-  assignment := fun tree =>
-    ⟨finCastLEEmbedding hle (pattern.assignment tree).1,
-      Finset.mem_map.2 ⟨(pattern.assignment tree).1,
-        (pattern.assignment tree).2, rfl⟩⟩
 
 end SphincsSecurity.Concrete

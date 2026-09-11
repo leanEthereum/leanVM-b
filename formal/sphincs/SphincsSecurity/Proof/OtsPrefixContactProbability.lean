@@ -80,24 +80,4 @@ theorem prefixContactGame_le (address : OtsPrefix.ChainAddress) (dummy : OtsRefe
   simpa only [one_mul, mul_ite, mul_one, mul_zero, tsum_ite_eq,
     mul_left_comm _ (2 / (Fintype.card Digest : ENNReal)), ENNReal.tsum_mul_left] using h
 
-theorem prefixContactGame_joint_budget (dummy : OtsReferenceWords) (adversary : Adversary) (q : Nat)
-    (hbound : HasHashQueryBound scheme adversary q) (hsmall : q < Fintype.card Digest) :
-    (1 - (q : ENNReal) / Fintype.card Digest) *
-        (∑ address : OtsPrefix.ChainAddress, Pr[= true | prefixContactGame (canonicalGraphGameInputs adversary)
-          (canonicalEncodingInputs_subset_gameInputs adversary) (canonicalGraphInputs_subset_gameInputs adversary)
-          address dummy adversary]) +
-      (2 / Fintype.card Digest) *
-        (∑' result : ReferenceRecordedResult, Pr[= result | referenceRecordedGame (canonicalGraphGameInputs adversary)
-          (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] * (result.remainingCalls dummy : ENNReal)) ≤
-      (2 / Fintype.card Digest) * (q : ENNReal) := by
-  have hsum := Finset.sum_le_sum (s := (Finset.univ : Finset OtsPrefix.ChainAddress))
-    fun address _ => prefixContactGame_le address dummy adversary q hbound hsmall
-  rw [← Finset.mul_sum] at hsum
-  have hscaled := mul_le_mul' (le_refl (1 - (q : ENNReal) / Fintype.card Digest)) hsum
-  refine (_root_.add_le_add hscaled (le_refl _)).trans ?_
-  have hbudget := mul_le_mul' (le_refl (2 / (Fintype.card Digest : ENNReal)))
-    (prefixIdealCostGame_joint_budget dummy adversary q hbound)
-  convert hbudget using 1
-  ring
-
 end SphincsSecurity.Concrete

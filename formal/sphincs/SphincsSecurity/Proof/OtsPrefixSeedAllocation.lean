@@ -89,13 +89,4 @@ theorem prefixCountedSourceGame_eq (inputs : Finset HashInput)
       ReferenceRecordedResult.prefixCounted address dummy <$> referenceRecordedGame inputs hencoding dummy adversary := by
   simp only [prefixCountedSourceGame, referenceRecordedGame, prefixCountedSeedRest_eq, map_bind, map_pure]
 
-theorem prefixCountedSourceGame_expected_allocation_le (dummy : OtsReferenceWords) (adversary : Adversary) (q : Nat)
-    (hbound : HasHashQueryBound scheme adversary q) :
-    (∑ address : OtsPrefix.ChainAddress, ∑' result : PrefixCountedResult,
-      Pr[= result | prefixCountedSourceGame (canonicalGraphGameInputs adversary)
-        (canonicalEncodingInputs_subset_gameInputs adversary) (canonicalGraphInputs_subset_gameInputs adversary)
-        address dummy adversary] * (result.2.2.2 : ENNReal)) ≤ q := by
-  simp only [prefixCountedSourceGame_eq, tsum_probOutput_map_mul, ReferenceRecordedResult.prefixCounted]
-  exact referenceRecordedGame_expected_allocation_le dummy adversary q hbound
-
 end SphincsSecurity.Concrete

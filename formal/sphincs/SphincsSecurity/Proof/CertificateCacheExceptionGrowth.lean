@@ -64,19 +64,4 @@ theorem expected_certificateCacheExceptionWeight_le (key : SecretKey)
     (mul_le_mul' (expected_messageDeficitMoment_second_le key.parameter key.root cache hfinite input hfresh) le_rfl)
     (mul_le_mul' (expected_cachedIndexExcessMoment_le key.parameter cache hfinite input hfresh) le_rfl)).trans_eq (by ring)
 
-theorem probEvent_certificateCacheException_le (key : SecretKey) (computation : OracleComp OracleWorld α)
-    (q : Nat) (hq : computation.IsQueryBoundP (· matches Sum.inr _) q)
-    (cache : QueryCache HashSpec) (hfinite : Finite cache) :
-    Pr[fun result => result.2 = true |
-      runExceptionMonitor (cacheEntryException (CertificateCacheExceptional key)) computation cache false] ≤
-      certificateCacheExceptionWeight key cache + q * certificateCacheExceptionRate := by
-  apply probEvent_cacheEntryException_le_budgetPotential (CertificateCacheExceptional key)
-    (fun remaining current => certificateCacheExceptionWeight key current + remaining * certificateCacheExceptionRate)
-    (fun _ current hf hb => (certificateCacheExceptionWeight_bad key current hf hb).trans le_self_add)
-    (fun remaining _ _ => add_le_add le_rfl (mul_le_mul' (Nat.cast_le.mpr (Nat.le_succ remaining)) le_rfl))
-    ?_ computation q hq cache hfinite
-  intro remaining current hcurrent input hnew
-  simp only [mul_add, ENNReal.tsum_add, ENNReal.tsum_mul_right, tsum_probOutput_of_liftM_PMF, one_mul]
-  exact (add_le_add (expected_certificateCacheExceptionWeight_le key current hcurrent input hnew) le_rfl).trans_eq (by push_cast; ring)
-
 end SphincsSecurity.Concrete

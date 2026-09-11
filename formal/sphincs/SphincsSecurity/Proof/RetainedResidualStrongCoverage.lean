@@ -88,26 +88,6 @@ theorem fixedSourceRun_rest_strong_covered {inputs : Finset HashInput} (context 
   rw [hdigest'] at hadmissible hfull hdisclosed
   exact ⟨hadmissible, hhistory'.digestsCached, hhistory'.strong_covered hcompatible' hdummy forgery hnew hfull hdisclosed⟩
 
-theorem observedRun_rest_strong_covered {inputs : Finset HashInput} (context : Context inputs) (adversary : Adversary)
-    (hinputs : sourceInputs context.key
-      (FtsProbeSimulation.unloggedRetainedRestComputation adversary ⟨context.key.root, context.key.parameter⟩) ⊆ inputs)
-    (state : State inputs) (hcovered : ResidualByteFrontend.RowsCovered inputs (project state))
-    (hcompatible : Compatible context state.memory) (hhistory : SigningHistory context.key context.oracle state.memory)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (context.dummy lay tree leaf))
-    (hroot : context.key.root = canonicalGraphRoot context.graph) (forgery : Forgery) (after : State inputs)
-    (hresult : observedRun context.environment context.actual context.auxiliary.seed
-      (simulateQ (adversaryImpl inputs context.key.parameter context.key.root context.words context.auxiliary.selections)
-        (FtsProbeSimulation.unloggedRetainedRestComputation adversary ⟨context.key.root, context.key.parameter⟩))
-      state (some (forgery, true), after) ≠ 0)
-    (hnew : ¬ SigningTranscript.Contains after.memory.log forgery) :
-    Admissible (truncateMessageDigest (context.oracle (signingInput context.key forgery.message forgery.signature))) ∧
-      SigningDigestsCached context.key.parameter after.memory.external.cache context.key.root after.memory.log ∧
-      CoveredFewTimeView (fixedSigningViews context.key.parameter after.memory.external.cache context.key.root after.memory.log
-        (signingInput context.key forgery.message forgery.signature)) (signingView context.key context.oracle forgery.message forgery.signature) := by
-  have h := map_nonzero _ forgetState (some (forgery, true), after) hresult
-  rw [observedRun_source_memory context _ hinputs state hcovered hcompatible] at h
-  exact fixedSourceRun_rest_strong_covered context state.memory hcompatible hhistory hdummy hroot adversary forgery after.memory h hnew
-
 theorem fixedSourceRun_rest_certificate {inputs : Finset HashInput} (context : Context inputs)
     (memory : Memory) (hcompatible : Compatible context memory) (hhistory : SigningHistory context.key context.oracle memory)
     (hdummy : ∀ lay tree leaf, TargetSum.Valid (context.dummy lay tree leaf))

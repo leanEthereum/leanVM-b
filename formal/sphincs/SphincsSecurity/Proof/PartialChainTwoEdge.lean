@@ -11,12 +11,6 @@ def TwoEdge {n : Nat} (observed : Fin (n + 2) → State → Option State) (endpo
   ∃ start middle, observed (Fin.last n).castSucc start = some middle ∧ observed (Fin.last (n + 1)) middle = some endpoint
 
 omit [Fintype State] [DecidableEq State] in
-theorem twoEdge_contact {n : Nat} (observed : Fin (n + 2) → State → Option State) (endpoint : State)
-    (h : TwoEdge observed endpoint) : Contact observed endpoint := by
-  obtain ⟨_, middle, _, hlast⟩ := h
-  exact ⟨Fin.last (n + 1), rfl, middle, hlast⟩
-
-omit [Fintype State] [DecidableEq State] in
 theorem twoEdge_mono {n : Nat} {before after : Fin (n + 2) → State → Option State} (hextends : Extends before after)
     (endpoint : State) (h : TwoEdge before endpoint) : TwoEdge after endpoint := by
   obtain ⟨start, middle, hfirst, hlast⟩ := h

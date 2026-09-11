@@ -57,16 +57,4 @@ theorem splitRun_game_cost (external : QueryImpl HashSpec Id)
   rw [← splitRun_trace parameter words frontier, support_map]
   exact ⟨result, hresult, rfl⟩
 
-theorem splitRun_restartCharge (external : QueryImpl HashSpec Id)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (adversary : Adversary)
-    (result : Trace × ((Bool × SigningBoundaryTrace) × Trace))
-    (hresult : result ∈ support (splitRun parameter words frontier
-      (CausalFrontierProgram.game parameter external ftsSecret words frontier adversary)))
-    (budget : Nat) (hbudget : result.2.1.2.hashCalls ≤ budget) :
-    (∑ address ∈ (Finset.univ.filter fun address => address ∉ contacts parameter words frontier result.1),
-      (prefixCalls (OtsPrefix.atAddress parameter words address) result.1 +
-        2 * prefixCalls (OtsPrefix.atAddress parameter words address) result.2.2)) ≤ 2 * budget :=
-  restartCharge_le_budget parameter words _ result.1 result.2.2 budget
-    ((splitRun_game_cost parameter words frontier external ftsSecret adversary result hresult).trans hbudget)
-
 end SphincsSecurity.Concrete.OtsContactTrace

@@ -65,12 +65,6 @@ def RowsCovered (state : State inputs) : Prop :=
   ∀ input answer, state.rows input = some answer → state.memory.cache input.val = some answer
 
 omit parameter words disclosed known actions in
-theorem rowsCovered_empty (memory : ExternalMemory) (candidates : CanonicalCoordinate → Finset Digest) :
-    RowsCovered inputs ⟨candidates, fun _ => none, memory⟩ := by
-  intro input answer h
-  cases h
-
-omit parameter words disclosed known actions in
 theorem rowsCovered_fresh (state : State inputs) (hcovered : RowsCovered inputs state) (input : inputs)
     (hfresh : state.memory.cache input.val = none) : state.rows input = none := by
   cases hrow : state.rows input with
@@ -103,11 +97,5 @@ theorem observedRun_prepare_bind {Result : Type} (actual : Labels) (seed : input
   rw [AdaptiveResidualLabels.observedRun, AdaptiveResidualLabels.runWith_query_bind]
   simp only [AdaptiveResidualLabels.observedImpl, environment, OptionT.run_mk, StateT.run_mk,
     SPMF.lift_pure, pure_bind, Option.elim_some, AdaptiveResidualLabels.observedRun]
-
-noncomputable abbrev wholeEnvironment (parameter : PublicParameter) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (words : OtsReferenceWords)
-    (disclosed : Index → FtsTree → FtsLeaf → Prop) (known : Labels) (publicReplies : CanonicalGraphLabels)
-    (rows : CanonicalEncodingRows) :=
-  environment parameter inputs words disclosed known (fresh parameter inputs hencoding words disclosed known publicReplies rows)
 
 end SphincsSecurity.Concrete.ResidualByteFrontend

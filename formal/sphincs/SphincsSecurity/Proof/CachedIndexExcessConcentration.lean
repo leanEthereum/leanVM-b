@@ -1,6 +1,7 @@
 import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CachedIndexHashMoments
-import SphincsSecurity.Proof.ExceptionBudgetPotential
+import SphincsSecurity.Statement
+import SphincsSecurity.Proof.RomQueryCharge
 
 namespace SphincsSecurity.Concrete
 
@@ -52,42 +53,5 @@ theorem expected_cachedIndexExcessMoment_le (parameter : PublicParameter)
       rw [hcard]
       apply (ENNReal.toReal_eq_toReal_iff' (by finiteness) (by finiteness)).mp
       norm_num [ENNReal.toReal_mul, ENNReal.toReal_inv]
-
-theorem probEvent_cachedIndexExcessExceptional_le (parameter : PublicParameter)
-    (computation : OracleComp OracleWorld α) (q : Nat)
-    (hbound : computation.IsQueryBoundP (· matches Sum.inr _) q)
-    (cache : QueryCache HashSpec) (hfinite : Finite cache)
-    (hnone : ∀ input, FtsProbeSimulation.MessageHashInput parameter input → cache input = none) :
-    Pr[fun result => result.2 = true |
-      runExceptionMonitor (cacheEntryException (CachedIndexExcessExceptional parameter)) computation cache false] ≤
-        (q : ENNReal) / 2 ^ 170 := by
-  apply le_trans (b := (cachedIndexExcessMoment parameter cache + (q : ENNReal) * (2 ^ 10 : ENNReal)⁻¹) / 2 ^ 160)
-  · apply probEvent_cacheEntryException_le_budgetPotential (CachedIndexExcessExceptional parameter)
-      (fun remaining current =>
-        (cachedIndexExcessMoment parameter current + (remaining : ENNReal) * (2 ^ 10 : ENNReal)⁻¹) / 2 ^ 160)
-      ?_ ?_ ?_ computation q hbound cache hfinite
-    · intro remaining current _ hbad
-      calc
-        1 = (2 ^ 160 : ENNReal) / 2 ^ 160 := (ENNReal.div_self (by positivity) (by finiteness)).symm
-        _ ≤ _ := ENNReal.div_le_div_right
-          ((cachedIndexExcessExceptional_moment_ge parameter current hbad).trans le_self_add) _
-    · intro remaining current _
-      apply ENNReal.div_le_div_right
-      simp only [Nat.cast_add, Nat.cast_one, add_mul, one_mul, ← add_assoc]
-      exact le_self_add
-    · intro remaining current hcurrent input hnew
-      simp only [div_eq_mul_inv, mul_add, ← mul_assoc, ENNReal.tsum_add, ENNReal.tsum_mul_right,
-        tsum_probOutput_of_liftM_PMF, one_mul]
-      have hstep := expected_cachedIndexExcessMoment_le parameter current hcurrent input hnew
-      calc
-        _ ≤ (cachedIndexExcessMoment parameter current + (2 ^ 10 : ENNReal)⁻¹ +
-            (remaining : ENNReal) * (2 ^ 10 : ENNReal)⁻¹) * (2 ^ 160 : ENNReal)⁻¹ :=
-          mul_le_mul' (add_le_add hstep le_rfl) le_rfl
-        _ = _ := by push_cast; ring
-  · rw [cachedIndexExcessMoment_zero_of_no_message parameter cache hnone, zero_add]
-    apply le_of_eq
-    apply (ENNReal.toReal_eq_toReal_iff' (by finiteness) (by finiteness)).mp
-    norm_num [ENNReal.toReal_div, ENNReal.toReal_mul, ENNReal.toReal_inv]
-    ring
 
 end SphincsSecurity.Concrete

@@ -96,12 +96,6 @@ noncomputable def cappedRecordProposalBridge {α Ω : Type*} (base : PMF α) (re
     (hcap : ∀ index, accept * (record.map label) index ≤ base index) : PMF (List α × Ω) :=
   recordProposalBridge record (proposalResidualLaw base (record.map label) accept hlt hcap) accept hpos hlt.le
 
-theorem cappedRecordProposalBridge_record {α Ω : Type*} (base : PMF α) (record : PMF Ω) (label : Ω → α)
-    (accept : ENNReal) (hpos : accept ≠ 0) (hlt : accept < 1)
-    (hcap : ∀ index, accept * (record.map label) index ≤ base index) :
-    (cappedRecordProposalBridge base record label accept hpos hlt hcap).map Prod.snd = record :=
-  recordProposalBridge_record _ _ _ _ _
-
 theorem cappedRecordProposalBridge_nil {α Ω : Type*} (base : PMF α) (record : PMF Ω) (label : Ω → α)
     (accept : ENNReal) (hpos : accept ≠ 0) (hlt : accept < 1)
     (hcap : ∀ index, accept * (record.map label) index ≤ base index) (outcome : Ω) :
@@ -116,17 +110,6 @@ theorem cappedRecordProposalBridge_cons {α Ω : Type*} (base : PMF α) (record 
       proposalRecordStep base record label accept hlt hcap (.inl head) *
         cappedRecordProposalBridge base record label accept hpos hlt hcap (rest, outcome) := by
   rw [cappedRecordProposalBridge, recordProposalBridge_cons, proposalResidualLaw_scaled, proposalRecordStep_reject]
-
-theorem cappedRecordProposalBridge_density {α Ω : Type*} (base : PMF α) (record : PMF Ω) (label : Ω → α)
-    (accept : ENNReal) (hpos : accept ≠ 0) (hlt : accept < 1)
-    (hcap : ∀ index, accept * (record.map label) index ≤ base index) (word : List α) (outcome : Ω) :
-    cappedRecordProposalBridge base record label accept hpos hlt hcap (word, outcome) =
-      accept * record outcome * (word.map (fun index => base index - accept * (record.map label) index)).prod := by
-  induction word with
-  | nil => simp only [cappedRecordProposalBridge_nil, proposalRecordStep_accept, List.map_nil, List.prod_nil, mul_one]
-  | cons head rest ih =>
-      rw [cappedRecordProposalBridge_cons, proposalRecordStep_reject, ih, List.map_cons, List.prod_cons]
-      ring
 
 def prependProposalRecord {α Ω : Type*} (head : α) (result : List α × Ω) : List α × Ω :=
   (head :: result.1, result.2)

@@ -95,43 +95,6 @@ theorem Concrete.signDigestLoop_run_succ_eq
       rcases selected with ⟨index, leaves⟩
       simp [Concrete.signDigestLoopContinuation]
 
-set_option maxRecDepth 100000 in
-theorem uniform_randomness_messageInput_cacheHit_le_cachedMessageEntryCount
-    (parameter : PublicParameter) (root : Digest) (message : Message)
-    (cache : QueryCache HashSpec) :
-    Pr[fun randomness : Randomness => ∃ output,
-      cache (tweakableHashInput parameter .message
-        (Concrete.messageDigestPayload root message randomness)) = some output |
-      $ᵗ Randomness] ≤
-      cachedMessageEntryCount cache parameter root message *
-        ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ := by
-  classical
-  let hit : Randomness → Prop := fun randomness => ∃ output,
-    cache (tweakableHashInput parameter .message
-      (Concrete.messageDigestPayload root message randomness)) = some output
-  let targets : Finset Randomness := Finset.univ.filter hit
-  let fiber := cachedMessageInputSet cache parameter root message
-  have hcard : (targets.card : ℝ≥0∞) ≤
-      cachedMessageEntryCount cache parameter root message := by
-    let embedding : (targets : Set Randomness) ↪ fiber :=
-      ⟨fun randomness =>
-          ⟨⟨tweakableHashInput parameter .message
-                (Concrete.messageDigestPayload root message randomness.1),
-              Classical.choose (Finset.mem_filter.mp randomness.2).2⟩,
-            ⟨Classical.choose_spec (Finset.mem_filter.mp randomness.2).2,
-              ⟨randomness.1, rfl⟩⟩⟩,
-        fun left right heq => Subtype.ext <|
-          (Concrete.messageDigestPayload_injective root <|
-            (tweakableHashInput_injective parameter (by trivial) (by trivial) <|
-              congrArg (fun entry : fiber => entry.1.1) heq).2).2⟩
-    simpa only [cachedMessageEntryCount, fiber,
-      Set.encard_coe_eq_coe_finsetCard, ENat.toENNReal_coe] using
-      ENat.toENNReal_mono embedding.encard_le
-  rw [probEvent_uniformSample, card_randomness, div_eq_mul_inv]
-  change (targets.card : ℝ≥0∞) *
-      ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ ≤ _
-  exact mul_le_mul' hcard le_rfl
-
 theorem Concrete.signAfterDigest_some_randomness (f : QueryImpl HashSpec Id)
     (secretKey : SecretKey) (randomness : Randomness) (index : Index)
     (leaves : DigestTree → FtsLeaf) (signature : Signature)

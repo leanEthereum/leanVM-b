@@ -23,18 +23,4 @@ theorem lazyRun_rowsCovered {Result : Type} (computation : OracleComp (World inp
   obtain ⟨seed, _, hresult⟩ := hresult
   exact observedRun_rowsCovered parameter inputs hencoding words publicReplies selections rows actual seed computation state hcovered result hresult
 
-theorem lazyByteRun_digest_after_history {History : Type}
-    (history : OracleComp (World inputs) History) (initial : State inputs)
-    (ha : ∀ coordinate, (initial.candidates coordinate).Nonempty)
-    (hcovered : ResidualByteFrontend.RowsCovered inputs (project initial))
-    (reached : Option History × State inputs)
-    (hreached : lazyRun (environment parameter inputs hencoding words publicReplies selections rows) history initial reached ≠ 0)
-    (key : SecretKey) (hparameter : key.parameter = parameter) (message : Message) (attempts : Nat)
-    (hinputs : hashInputs (signDigestLoop attempts key message) ⊆ inputs) :
-    cacheResult <$> lazyByteRun parameter inputs hencoding words publicReplies selections rows reached.2.memory.routing
-      (boundaryComputation parameter (publicDigestLoop parameter key.root message attempts)) reached.2 =
-      Prod.map some id <$> 𝒟[boundaryRun parameter (signDigestLoop attempts key message) reached.2.memory.external.cache] :=
-  lazyByteRun_publicDigestBoundary_rom parameter inputs hencoding words publicReplies selections rows _ key hparameter message attempts
-    hinputs reached.2 (lazyRun_rowsCovered parameter inputs hencoding words publicReplies selections rows history initial ha hcovered reached hreached)
-
 end SphincsSecurity.Concrete.RetainedResidual

@@ -65,30 +65,4 @@ theorem referenceFamilyOracleSample_eq_prefixSeed (key : SecretKey) (inputs : Fi
     ⟨key.parameter, lay, tree, leaf, chainIdx, digit selections⟩ inputs hencoding hgraph selections]
   simp only [PMF.map_bind, PMF.map_comp, Function.comp_def, OtsPrefix.referenceSeed]
 
-theorem referenceFamilyPrefixSeed_rows (key : SecretKey) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs)
-    (hgraph : canonicalGraphInputs key.parameter ⊆ inputs)
-    (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex) (chainIdx : ChainIndex) (digit : Digit)
-    (selections : ReferenceFamily) (tables : Fin digit.val → Digest → Digest)
-    (auxiliary : (⟨key.parameter, lay, tree, leaf, chainIdx, digit⟩ : OtsPrefix).ReferenceAuxSeed inputs hencoding hgraph) :
-    let segment : OtsPrefix := ⟨key.parameter, lay, tree, leaf, chainIdx, digit⟩
-    let oracle := finiteHashAnswer ∅ inputs (referenceFamilySeedTable key inputs hencoding
-      (segment.referenceSeed inputs hencoding hgraph selections tables auxiliary))
-    (segment.lows oracle, segment.highs oracle) = (tables, auxiliary.high) := by
-  let segment : OtsPrefix := ⟨key.parameter, lay, tree, leaf, chainIdx, digit⟩
-  let seed := segment.referenceSeed inputs hencoding hgraph selections tables auxiliary
-  let oracle := finiteHashAnswer ∅ inputs (referenceFamilySeedTable key inputs hencoding seed)
-  have hquery (query : segment.Query) : oracle (segment.input query) =
-      OtsPrefix.combine (tables query.1 query.2) (auxiliary.high query) := by
-    exact (referenceFamilySeedTable_answer_nonencoding key inputs hencoding seed
-      (segment.nonencodingCell inputs hencoding hgraph query)).trans
-      (segment.joinNonencoding_prefix inputs hencoding hgraph tables auxiliary.high auxiliary.remaining query)
-  change (segment.lows oracle, segment.highs oracle) = (tables, auxiliary.high)
-  apply Prod.ext
-  · funext level input
-    exact congrArg truncateHash (hquery (level, input)) |>.trans (OtsPrefix.truncate_combine _ _)
-  · funext query
-    exact congrArg (fun output => (splitHashOutput digestBits output).2) (hquery query) |>.trans
-      (congrArg Prod.snd (OtsPrefix.split_combine _ _))
-
 end SphincsSecurity.Concrete

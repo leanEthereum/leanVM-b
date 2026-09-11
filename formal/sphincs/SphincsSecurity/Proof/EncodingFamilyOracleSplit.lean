@@ -62,14 +62,4 @@ noncomputable def referenceFamilyOracleTable (key : SecretKey) (inputs : Finset 
       (referenceFamilyCell_injective key.parameter (outsideGraphMessage key inputs hencoding outside))
       (Function.uncurry rows) remaining) outside
 
-theorem referenceFamilyOracleTable_nonencoding (key : SecretKey) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs) (outside : NonencodingRows key.parameter inputs hencoding)
-    (rows : EncodingPosition → Fin encodingAttemptLimit → HashOutput)
-    (remaining : UniformTableSplit.Outside
-      (referenceFamilyCell key.parameter (outsideGraphMessage key inputs hencoding outside)) → HashOutput) :
-    (fun cell : UniformTableSplit.Outside (encodingInputCell key.parameter inputs hencoding) =>
-      referenceFamilyOracleTable key inputs hencoding outside rows remaining cell.val) = outside := by
-  funext cell
-  exact UniformTableSplit.join_outside _ _ _ outside cell
-
 end SphincsSecurity.Concrete

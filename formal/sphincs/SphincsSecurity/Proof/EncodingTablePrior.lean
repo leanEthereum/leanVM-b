@@ -57,16 +57,4 @@ theorem referenceEncodingAllowed_fresh (parameter : PublicParameter) (messages :
       (⟨cell, hc⟩ : UniformTableSplit.Outside (referenceFamilyCell parameter messages))
     exact Or.inl hrow
 
-theorem referenceEncodingPrior_posterior {AuxIndex Result : Type} {auxSpec : OracleSpec AuxIndex}
-    (parameter : PublicParameter) (messages : EncodingPosition → Digest) (selections : ReferenceFamily)
-    (auxiliary : QueryImpl auxSpec SPMF)
-    (computation : OracleComp (auxSpec + UniformTableObservation.TableSpec (canonicalEncodingInputs parameter) HashOutput) Result) :
-    (𝒟[referenceEncodingPrior parameter messages selections] >>= fun table =>
-      (fun result => (table, result)) <$> UniformTableObservation.observedRun auxiliary table computation
-        (referenceEncodingAllowed parameter messages selections)) =
-      (UniformTableObservation.lazyRun auxiliary computation (referenceEncodingAllowed parameter messages selections) >>= fun result =>
-        (fun table => (table, result)) <$> complete result.2) := by
-  rw [referenceEncodingPrior_complete]
-  exact UniformTableObservation.run_posterior auxiliary computation (referenceEncodingAllowed parameter messages selections)
-
 end SphincsSecurity.Concrete

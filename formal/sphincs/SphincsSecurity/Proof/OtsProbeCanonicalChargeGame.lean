@@ -1,5 +1,24 @@
 import SphincsSecurity.Proof.Prelude
-import SphincsSecurity.Proof.OtsOpeningRefinedReserve
+import SphincsSecurity.Proof.Honest
+import SphincsSecurity.Proof.FtsProbeSimulation
+import SphincsSecurity.Proof.RomQueryCharge
+import SphincsSecurity.Proof.FewTimeSignerView
+import SphincsSecurity.Proof.FewTimeWitness
+import SphincsSecurity.Proof.SigningTrace
+import SphincsSecurity.Proof.RootCache
+import SphincsSecurity.Proof.Secrets
+import SphincsSecurity.Proof.MessagePrehit
+import SphincsSecurity.Proof.ForgeryClassify
+import SphincsSecurity.Statement
+import SphincsSecurity.Proof.EncodingCharge
+import SphincsSecurity.Proof.Charge
+import SphincsSecurity.Proof.EncodingSelectionCache
+import SphincsSecurity.Proof.QueryBound
+import SphincsSecurity.Proof.Guess
+import SphincsSecurity.Proof.SecretProbe
+import SphincsSecurity.Proof.OtsProbeSimulation
+import SphincsSecurity.Proof.OtsProbeOrigin
+import SphincsSecurity.Proof.FtsProbeSampling
 import SphincsSecurity.Proof.RomQueryChargeBind
 
 namespace SphincsSecurity
@@ -14,11 +33,6 @@ theorem expectedQueryCharge_map
   simp only [Function.comp_apply, expectedQueryCharge_pure, mul_zero, tsum_zero, add_zero]
 
 namespace Concrete.OtsProbeSimulation
-
-theorem otsOpeningRefinedQueryReserve_set_root
-    (secretKey : SecretKey) (root : Digest) :
-    otsOpeningRefinedQueryReserve { secretKey with root := root } = otsOpeningRefinedQueryReserve secretKey := by
-  rfl
 
 theorem gameRest_eq_map_retained
     (adversary : Adversary) (secretKey : SecretKey) (publicKey : PublicKey) :

@@ -52,14 +52,4 @@ theorem RowsObserved.twoEdge_iff {segment : OtsPrefix} {trace : Trace} {observed
   dsimp only [RowsObserved] at h
   simp only [SeenTwoEdge, h, PartialChainEndpoint.twoEdgeEvent_iff_rows]
 
-theorem seenTwoEdge_contact (segment : OtsPrefix) (endpoint : Digest) (trace : Trace)
-    (h : SeenTwoEdge segment endpoint trace) : Seen segment endpoint trace := by
-  obtain ⟨_, last, _, hl, _, entry, he, hp, hv⟩ := h
-  exact ⟨entry, he, last, hp, hl, hv⟩
-
-theorem SeenTwoEdge.mul_right {segment : OtsPrefix} {endpoint : Digest} {trace : Trace}
-    (h : SeenTwoEdge segment endpoint trace) (tail : Trace) : SeenTwoEdge segment endpoint (trace * tail) := by
-  obtain ⟨first, last, hf, hl, hfirst, hlast⟩ := h
-  exact ⟨first, last, hf, hl, (seenRow_mul _ _ _ _ _).mpr (Or.inl hfirst), (seenRow_mul _ _ _ _ _).mpr (Or.inl hlast)⟩
-
 end SphincsSecurity.Concrete.OtsContactTrace

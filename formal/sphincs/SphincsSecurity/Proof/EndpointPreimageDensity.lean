@@ -11,19 +11,11 @@ variable {Table State : Type} [Fintype State] [Nonempty State] [DecidableEq Stat
 noncomputable def preimages (evaluate : Table → State → State) (table : Table) (endpoint : State) : Nat :=
   (Finset.univ.filter (fun secret => evaluate table secret = endpoint)).card
 
-noncomputable def withSecret (prior : PMF Table) (evaluate : Table → State → State) : PMF (Table × State × State) :=
-  prior.bind (fun table => (PMF.uniformOfFintype State).map (fun secret => (table, secret, evaluate table secret)))
-
 noncomputable def real (prior : PMF Table) (evaluate : Table → State → State) : PMF (Table × State) :=
   prior.bind (fun table => ((PMF.uniformOfFintype State).map (evaluate table)).map (fun endpoint => (table, endpoint)))
 
 noncomputable def ideal (prior : PMF Table) : PMF (Table × State) :=
   prior.bind (fun table => (PMF.uniformOfFintype State).map (fun endpoint => (table, endpoint)))
-
-omit [DecidableEq State] [DecidableEq Table] in
-theorem withSecret_erased (prior : PMF Table) (evaluate : Table → State → State) :
-    (withSecret prior evaluate).map (fun result => (result.1, result.2.2)) = real prior evaluate := by
-  simp only [withSecret, real, PMF.map_bind, PMF.map_comp, Function.comp_def]
 
 theorem uniform_image_apply (evaluate : State → State) (endpoint : State) :
     (PMF.uniformOfFintype State).map evaluate endpoint =

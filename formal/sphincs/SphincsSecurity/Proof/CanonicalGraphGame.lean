@@ -122,16 +122,4 @@ theorem canonicalEncodingInputs_subset_gameInputs (adversary : Adversary) (param
   simp only [Finset.mem_univ, true_and]
   exact ⟨parameter, hinput⟩
 
-theorem forgeAdvantage_eq_canonicalGraph (dummy : OtsReferenceWords) (adversary : Adversary) :
-    forgeAdvantage scheme adversary =
-      Pr[fun result => result.1 = true |
-        canonicalGraphOracleGame (canonicalGraphGameInputs adversary)
-          (canonicalGraphInputs_subset_gameInputs adversary) dummy adversary] := by
-  rw [forgeAdvantage]
-  have h := evalDist_gameCore_frontier (canonicalGraphGameInputs adversary) dummy adversary
-    (hashInputs_subset_canonicalGraphGameInputs adversary)
-  rw [probOutput_congr rfl h, probOutput_map]
-  exact probEvent_congr' (fun _ _ => Iff.rfl) (evalDist_frontier_eq_canonicalGraph (canonicalGraphGameInputs adversary)
-    (canonicalGraphInputs_subset_gameInputs adversary) dummy adversary)
-
 end SphincsSecurity.Concrete

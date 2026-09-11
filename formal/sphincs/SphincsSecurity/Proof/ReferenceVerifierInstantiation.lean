@@ -1,4 +1,6 @@
-import SphincsSecurity.Proof.ReferenceVerifierSupport
+import SphincsSecurity.Proof.CausalVerifierTrace
+import SphincsSecurity.Proof.VerifierWitnessClassification
+import SphincsSecurity.Proof.EncodingMarkerBound
 import SphincsSecurity.Proof.FrontierSigningOrigin
 import SphincsSecurity.Proof.ReferenceSigningReplay
 
@@ -56,15 +58,6 @@ def SuccessWitnessFor (key : SecretKey) (f : QueryImpl HashSpec Id) (root : Dige
           messageDigestPayload actualKey.root before.1.1.1.message before.1.1.1.signature.randomness) ∨
       LayerException f actualKey words (canonicalGraphMessage labels) selections trace ∨ FtsVerifierWitness.Exception f actualKey (digestIndex digest) trace)
 
-def SuccessWitnessAtRoot (key : SecretKey) (f : QueryImpl HashSpec Id) (root : Digest) (words : OtsReferenceWords)
-    (selections : ReferenceFamily) (adversary : Adversary) (result : ContactResult) : Prop :=
-  ∃ before, SuccessWitnessFor key f root words selections adversary result before
-
-noncomputable abbrev SuccessWitness (key : SecretKey) (f : QueryImpl HashSpec Id) (words : OtsReferenceWords)
-    (selections : ReferenceFamily) (adversary : Adversary) (result : ContactResult) : Prop :=
-  SuccessWitnessAtRoot key f (honestNode f key.parameter topLayer rootTree (key.otsSecret topLayer rootTree) (layerHeight topLayer) 0)
-    words selections adversary result
-
 theorem run_success_atRoot (key : SecretKey) (f : QueryImpl HashSpec Id) (root : Digest)
     (hroot : root = honestNode f key.parameter topLayer rootTree (key.otsSecret topLayer rootTree) (layerHeight topLayer) 0)
     (selections : ReferenceFamily) (dummy : OtsReferenceWords) (adversary : Adversary) (result : ContactResult)
@@ -109,34 +102,5 @@ theorem run_success_atRoot (key : SecretKey) (f : QueryImpl HashSpec Id) (root :
     exact strong_signing_payload_ne { key with root := root } f dummy (recordedCache f (result.before * result.after))
       before.1.1.2 before.1.1.1 hf hfull href message signature hentry (horigin message signature hentry).2.2
   · exact Or.inr hbad
-
-theorem rest_success_atRoot (key : SecretKey) (f : QueryImpl HashSpec Id) (root : Digest)
-    (hroot : root = honestNode f key.parameter topLayer rootTree (key.otsSecret topLayer rootTree) (layerHeight topLayer) 0) (selections : ReferenceFamily)
-    (dummy : OtsReferenceWords) (adversary : Adversary) (result : ContactResult)
-    (hselected : selections = referenceTableSelection key f)
-    (hvalid : ∀ lay tree leaf, TargetSum.Valid (referenceFamilyWords selections dummy lay tree leaf))
-    (hr : result ∈ support (referenceInstrumentedRest contactObserver key f
-      (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f) selections dummy adversary))
-    (hsuccess : result.output.1 = true) : SuccessWitnessAtRoot key f root (referenceFamilyWords selections dummy) selections adversary result := by
-  have h := referenceInstrumentedRest_verify key f (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f) selections dummy adversary result hr hsuccess
-  dsimp only at h
-  rw [source_root] at h
-  have hrootEq : (rootedKey key f).root = root := hroot.symm
-  rw [hrootEq] at h
-  obtain ⟨before, hb, hv, hf, hverify, ht, _⟩ := h
-  exact ⟨before, run_success_atRoot key f root hroot selections dummy adversary result before hselected hvalid hb hv hf hverify
-    (referenceInstrumentedRest_frontier key f _ selections dummy adversary result hr) ht⟩
-
-theorem sample_success_witness (key : SecretKey) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs) (hgraph : canonicalGraphInputs key.parameter ⊆ inputs)
-    (reference : ReferenceFamily × (inputs → HashOutput)) (hreference : reference ∈ (referenceFamilyOracleSample key inputs hencoding).support)
-    (dummy : OtsReferenceWords) (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf)) (adversary : Adversary) (result : ContactResult)
-    (hr : result ∈ support (referenceInstrumentedRest contactObserver key (finiteHashAnswer ∅ inputs reference.2)
-      (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret (finiteHashAnswer ∅ inputs reference.2)) reference.1 dummy adversary))
-    (hsuccess : result.output.1 = true) :
-    SuccessWitness key (finiteHashAnswer ∅ inputs reference.2) (referenceFamilyWords reference.1 dummy) reference.1 adversary result :=
-  rest_success_atRoot key _ _ rfl reference.1 dummy adversary result
-    (referenceFamilyOracleSample_selections key inputs hencoding hgraph reference hreference)
-    (referenceFamilyOracleSample_words_valid key inputs hencoding hgraph reference hreference dummy hdummy) hr hsuccess
 
 end SphincsSecurity.Concrete.ReferenceVerifierWitness

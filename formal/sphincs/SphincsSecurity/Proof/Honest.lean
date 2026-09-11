@@ -156,17 +156,6 @@ noncomputable def slots : Position → List Digest
   | .ftsLeaf index tree leafIdx => [ftsSecret index tree leafIdx]
   | p => childValues f parameter otsSecret ftsSecret p
 
-theorem slots_eq_childValues_of_mem {p c : Position} (hc : c ∈ p.children) :
-    slots f parameter otsSecret ftsSecret p = childValues f parameter otsSecret ftsSecret p := by
-  cases p with
-  | chain lay tree leafIdx chainIdx step =>
-      simp only [slots]
-      rw [if_neg]
-      intro hstep
-      simp [Position.children, hstep] at hc
-  | ftsLeaf => simp [Position.children] at hc
-  | leaf | node | ftsNode | ftsRoots => rfl
-
 /-- **The payload is the values below it.** -/
 theorem honestPayload_eq_slots {p : Position} (hvalid : p.Valid) :
     honestPayload f parameter otsSecret ftsSecret p
@@ -256,31 +245,5 @@ theorem honestPayload_eq_slots {p : Position} (hvalid : p.Valid) :
       refine congrArg _ (congrArg _ (funext fun tree => ?_))
       rw [honestValue_ftsNode]
       rfl
-
-theorem slots_congr {p : Position}
-    (hchildren : ∀ c ∈ p.children, honestValue f parameter otsSecret ftsSecret c
-      = honestValue g parameter otsSecret ftsSecret c) :
-    slots f parameter otsSecret ftsSecret p = slots g parameter otsSecret ftsSecret p := by
-  have hmap : childValues f parameter otsSecret ftsSecret p
-      = childValues g parameter otsSecret ftsSecret p :=
-    List.map_congr_left hchildren
-  cases p <;> simp only [slots] <;> first | rfl | exact hmap | (split_ifs <;> simp [hmap])
-
-/-- **The payload is local.** Two answer functions agreeing on the values at a position's children
-agree on its payload, and so on its input. -/
-theorem honestPayload_congr {p : Position} (hvalid : p.Valid)
-    (hchildren : ∀ c ∈ p.children, honestValue f parameter otsSecret ftsSecret c
-      = honestValue g parameter otsSecret ftsSecret c) :
-    honestPayload f parameter otsSecret ftsSecret p
-      = honestPayload g parameter otsSecret ftsSecret p := by
-  rw [honestPayload_eq_slots f parameter otsSecret ftsSecret hvalid,
-    honestPayload_eq_slots g parameter otsSecret ftsSecret hvalid,
-    slots_congr f g parameter otsSecret ftsSecret hchildren]
-
-theorem honestInput_congr {p : Position} (hvalid : p.Valid)
-    (hchildren : ∀ c ∈ p.children, honestValue f parameter otsSecret ftsSecret c
-      = honestValue g parameter otsSecret ftsSecret c) :
-    honestInput f parameter otsSecret ftsSecret p = honestInput g parameter otsSecret ftsSecret p :=
-  congrArg _ (honestPayload_congr f g parameter otsSecret ftsSecret hvalid hchildren)
 
 end SphincsSecurity

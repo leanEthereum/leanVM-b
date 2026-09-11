@@ -38,9 +38,6 @@ theorem keygen_cache_message_none (generated : (PublicKey × SecretKey) × Query
   exact treeRoot_cache_message_none parameter topLayer rootTree (otsSecret topLayer rootTree)
     root.1 root.2 hroot payload
 
-def certificateGameVerdict (result : RetainedRestResult) : Bool :=
-  decide (SigningTranscript.Valid result.1.2 ∧ ¬ SigningTranscript.Contains result.1.2 result.1.1) && result.2
-
 abbrev CertificateGameResult := RetainedRestResult × (List Index × CertificateMonitorState)
 
 noncomputable def certificateGame (adversary : Adversary) (budget : Nat) (required : Finset FtsTree)
@@ -50,40 +47,6 @@ noncomputable def certificateGame (adversary : Adversary) (budget : Nat) (requir
   (simulateQ (certificateProposalImpl key budget required (stopAfter key))
     (retainedGameRestComputation adversary generated.1.1.1)).run
       ([], generated.2, initialCertificateMonitor generated.1.2.hashCalls stopped)
-
-theorem certificateProposal_rest_original (adversary : Adversary) (publicKey : PublicKey)
-    (key : SecretKey) (budget : Nat) (required : Finset FtsTree) (stopAfter : CertificateStopRule)
-    (state : List Index × CertificateMonitorState) :
-    (fun result : CertificateGameResult => (certificateGameVerdict result.1, result.2.2.1)) <$>
-        (simulateQ (certificateProposalImpl key budget required stopAfter)
-          (retainedGameRestComputation adversary publicKey)).run state =
-      (liftM ((simulateQ romImpl (gameRest scheme adversary publicKey key)).run state.2.1) : PMF _) := by
-  have hrest :
-      (fun result : RetainedRestResult × QueryCache HashSpec => (certificateGameVerdict result.1, result.2)) <$>
-          ((simulateQ (unloggedMappedAdversaryImpl key) (retainedGameRestComputation adversary publicKey)).run state.2.1) =
-        (simulateQ romImpl (gameRest scheme adversary publicKey key)).run state.2.1 := by
-    rw [OtsProbeSimulation.gameRest_eq_map_retained, simulateQ_map, StateT.run_map,
-      ← OtsProbeSimulation.simulateQ_unloggedMapped_eq_expanded]
-    rfl
-  calc
-    _ = (fun result : RetainedRestResult × QueryCache HashSpec => (certificateGameVerdict result.1, result.2)) <$>
-        ((fun result : CertificateGameResult => (result.1, result.2.2.1)) <$>
-          (simulateQ (certificateProposalImpl key budget required stopAfter)
-            (retainedGameRestComputation adversary publicKey)).run state) := by rw [Functor.map_map]
-    _ = _ := by
-      rw [simulateQ_certificateProposalImpl_original, ← liftM_map (m := ProbComp) (n := PMF), hrest]
-
-theorem certificateGame_original (adversary : Adversary) (budget : Nat) (required : Finset FtsTree)
-    (stopAfter : SecretKey → CertificateStopRule) (stopped : Bool) :
-    (fun result : CertificateGameResult => (certificateGameVerdict result.1, result.2.2.1)) <$>
-        certificateGame adversary budget required stopAfter stopped =
-      (liftM ((simulateQ romImpl (gameCore scheme adversary)).run ∅) : PMF _) := by
-  rw [certificateGame, map_bind]
-  simp_rw [certificateProposal_rest_original]
-  rw [← liftM_bind (m := ProbComp) (n := PMF)]
-  congr 1
-  rw [gameCore_eq, simulateQ_bind, StateT.run_bind,
-    ← boundaryRun_forget 0 scheme.keygen ∅, bind_map_left]
 
 theorem certificateGame_cost_le (adversary : Adversary) (q : Nat) (required : Finset FtsTree)
     (stopAfter : SecretKey → CertificateStopRule) (stopped : Bool)

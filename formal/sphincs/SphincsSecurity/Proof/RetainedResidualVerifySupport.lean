@@ -128,25 +128,4 @@ theorem fixedSourceRun_rest_honest {inputs : Finset HashInput} (context : Contex
           obtain ⟨⟨rfl, rfl⟩, rfl⟩ := hresult
           exact fixedSourceRun_verify_honest context middle hcompatible' hdummy hroot _ _ _ hchecked
 
-theorem observedRun_rest_honest {inputs : Finset HashInput} (context : Context inputs)
-    (adversary : Adversary)
-    (hinputs : sourceInputs context.key
-      (FtsProbeSimulation.unloggedRetainedRestComputation adversary ⟨context.key.root, context.key.parameter⟩) ⊆ inputs)
-    (state : State inputs) (hcovered : ResidualByteFrontend.RowsCovered inputs (project state))
-    (hcompatible : Compatible context state.memory)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (context.dummy lay tree leaf))
-    (hroot : context.key.root = canonicalGraphRoot context.graph) (forgery : Forgery) (after : State inputs)
-    (hresult : observedRun context.environment context.actual context.auxiliary.seed
-      (simulateQ (adversaryImpl inputs context.key.parameter context.key.root context.words context.auxiliary.selections)
-        (FtsProbeSimulation.unloggedRetainedRestComputation adversary ⟨context.key.root, context.key.parameter⟩))
-      state (some (forgery, true), after) ≠ 0) :
-    ∃ digest, evalWithAnswerFn context.oracle (messageDigest context.key.parameter context.key.root forgery.message forgery.signature.randomness) = digest ∧
-      CachedRun after.memory.external.cache context.oracle
-        (messageDigest context.key.parameter context.key.root forgery.message forgery.signature.randomness) ∧
-      Admissible digest ∧ FullyHonestOpening context.oracle after.memory.external.cache context.key (digestIndex digest) (digestLeaves digest) forgery.signature ∧
-      ∀ tree, after.memory.routing.disclosed (digestIndex digest) tree (digestLeaves digest (ftsIndexOf tree)) := by
-  have h := map_nonzero _ forgetState (some (forgery, true), after) hresult
-  rw [observedRun_source_memory context _ hinputs state hcovered hcompatible] at h
-  exact fixedSourceRun_rest_honest context state.memory hcompatible hdummy hroot adversary forgery after.memory h
-
 end SphincsSecurity.Concrete.RetainedResidual

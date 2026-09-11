@@ -39,13 +39,6 @@ theorem run_eq_some_counted (impl : QueryImpl spec PMF) (computation : OracleCom
   intro result hresult
   exact if_pos (hbound result hresult)
 
-theorem run_none_not_mem (impl : QueryImpl spec PMF) (computation : OracleComp spec Result) (budget : Nat)
-    (hbound : ∀ result ∈ (simulateQ impl (counted selected computation)).support, result.2 ≤ budget) :
-    none ∉ (simulateQ impl (run selected computation budget)).support := by
-  rw [run_eq_some_counted selected impl computation budget hbound, PMF.mem_support_map_iff]
-  rintro ⟨result, _, hresult⟩
-  cases hresult
-
 theorem run_erased (impl : QueryImpl spec PMF) (computation : OracleComp spec Result) (budget : Nat)
     (hbound : ∀ result ∈ (simulateQ impl (counted selected computation)).support, result.2 ≤ budget) :
     (simulateQ impl (run selected computation budget)).map (Option.map Prod.fst) =

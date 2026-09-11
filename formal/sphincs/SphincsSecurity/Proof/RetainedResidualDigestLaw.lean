@@ -128,47 +128,4 @@ theorem lazyByteRun_message_support {Result : Type} (routing : Routing)
             ((mem_support_iff _ _).mpr hreply)
           exact ih reply.1 (hnext reply.1) (hmnext reply.1) _ hrows result hresult
 
-theorem lazyByteRun_publicDigestLoop_rom (routing : Routing) (key : SecretKey)
-    (hparameter : key.parameter = parameter) (message : Message) (attempts : Nat)
-    (hinputs : hashInputs (signDigestLoop attempts key message) ⊆ inputs) (state : State inputs)
-    (hcovered : ResidualByteFrontend.RowsCovered inputs (project state)) :
-    cacheResult <$> lazyByteRun parameter inputs hencoding words publicReplies selections rows routing
-      (publicDigestLoop parameter key.root message attempts) state =
-      Prod.map some id <$> 𝒟[(simulateQ romImpl (signDigestLoop attempts key message)).run state.memory.external.cache] := by
-  have hloop : publicDigestLoop parameter key.root message attempts = signDigestLoop attempts key message := by
-    rw [← hparameter, publicDigestLoop_eq]
-  rw [← hloop] at hinputs ⊢
-  exact lazyByteRun_message_rom parameter inputs hencoding words publicReplies selections rows routing _ hinputs
-    (ResidualByteFrontend.messageOnly_publicDigestLoop parameter key.root message attempts) state hcovered
-
-theorem lazyByteRun_publicDigestBoundary_rom (routing : Routing) (key : SecretKey)
-    (hparameter : key.parameter = parameter) (message : Message) (attempts : Nat)
-    (hinputs : hashInputs (signDigestLoop attempts key message) ⊆ inputs) (state : State inputs)
-    (hcovered : ResidualByteFrontend.RowsCovered inputs (project state)) :
-    cacheResult <$> lazyByteRun parameter inputs hencoding words publicReplies selections rows routing
-      (boundaryComputation parameter (publicDigestLoop parameter key.root message attempts)) state =
-      Prod.map some id <$> 𝒟[boundaryRun parameter (signDigestLoop attempts key message) state.memory.external.cache] := by
-  have hloop : publicDigestLoop parameter key.root message attempts = signDigestLoop attempts key message := by
-    rw [← hparameter, publicDigestLoop_eq]
-  have hinputs' : hashInputs (boundaryComputation parameter (publicDigestLoop parameter key.root message attempts)) ⊆ inputs := by
-    rw [ResidualByteFrontend.hashInputs_boundary, hloop]
-    exact hinputs
-  rw [lazyByteRun_message_rom parameter inputs hencoding words publicReplies selections rows routing _ hinputs'
-    (ResidualByteFrontend.messageOnly_boundary parameter _
-      (ResidualByteFrontend.messageOnly_publicDigestLoop parameter key.root message attempts)) state hcovered,
-    hloop, simulateQ_boundaryComputation]
-  rfl
-
-theorem lazyByteRun_publicSigningWork_rom (routing : Routing) (root : Digest) (message : Message)
-    (hinputs : hashInputs (publicDigestLoop parameter root message digestAttemptLimit) ⊆ inputs) (state : State inputs)
-    (hcovered : ResidualByteFrontend.RowsCovered inputs (project state)) :
-    cacheResult <$> lazyByteRun parameter inputs hencoding words publicReplies selections rows routing
-      (ResidualByteFrontend.publicSigningWork parameter root routing.known words selections message) state =
-      Prod.map some id <$> 𝒟[(simulateQ romImpl
-        (ResidualByteFrontend.publicSigningWork parameter root routing.known words selections message)).run state.memory.external.cache] := by
-  apply lazyByteRun_message_rom parameter inputs hencoding words publicReplies selections rows routing
-  · rwa [ResidualByteFrontend.hashInputs_publicSigningWork]
-  · exact ResidualByteFrontend.publicSigningWork_messageOnly parameter root routing.known words selections message
-  · exact hcovered
-
 end SphincsSecurity.Concrete.RetainedResidual

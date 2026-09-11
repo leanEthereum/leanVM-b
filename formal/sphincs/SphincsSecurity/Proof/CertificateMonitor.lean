@@ -232,12 +232,4 @@ theorem simulateQ_certificateProposalImpl_length {α : Type} (key : SecretKey) (
       (simulateQ (certificateLengthImpl key budget required stopAfter) computation).run state.2 :=
   simulateQ_originalProposalImpl_length _ _ _ _ _ _
 
-theorem simulateQ_certificateProposalImpl_original {α : Type} (key : SecretKey) (budget : Nat)
-    (required : Finset FtsTree) (stopAfter : CertificateStopRule)
-    (computation : OracleComp (OracleWorld + SigningSpec) α) (state : List Index × CertificateMonitorState) :
-    (fun result => (result.1, result.2.2.1)) <$>
-      (simulateQ (certificateProposalImpl key budget required stopAfter) computation).run state =
-      (liftM ((simulateQ (unloggedMappedAdversaryImpl key) computation).run state.2.1) : PMF _) :=
-  simulateQ_originalProposalImpl_original _ _ _ _ _ _
-
 end SphincsSecurity.Concrete

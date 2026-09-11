@@ -51,38 +51,4 @@ variable (parameter : PublicParameter) (words : OtsReferenceWords) (frontier : O
   (high : (OtsPrefix.atAddress parameter words address).Query → OtsPrefix.High) (auxiliary : QueryImpl OracleWorld PMF)
   {Result : Type} (computation : OracleComp OracleWorld Result)
 
-theorem checkpoint_observation
-    (result : (Trace × OracleComp (OtsPrefix.atAddress parameter words address).VisibleWorld Result) ×
-      (Fin (OtsPrefix.atAddress parameter words address).digit.val → Digest → Option Digest))
-    (hresult : result ∈ (lazyRun auxiliary (QueryPause.run (Stopped parameter words frontier)
-      (fun input answer history => history * (OtsPrefix.atAddress parameter words address).visibleObservationTrace high input answer)
-      (simulateQ ((OtsPrefix.atAddress parameter words address).visibleWorldImpl high) computation) 1) (fun _ _ => none)).support) :
-    (address ∈ contacts parameter words frontier result.1.1 ↔
-      Contact result.2 (frontier address.1 address.2.1 address.2.2.1 address.2.2.2)) ∧
-      queryCount result.2 ≤ prefixCalls (OtsPrefix.atAddress parameter words address) result.1.1 := by
-  rw [mem_contacts]
-  apply OtsPrefix.lazyRun_visible_pause_observation _ high auxiliary (Stopped parameter words frontier) computation 1 (fun _ _ => none)
-    (frontier address.1 address.2.1 address.2.2.1 address.2.2.2) _ _ result hresult
-  · simp only [seen_one, Contact, reduceCtorEq, exists_false, and_false]
-  · simp only [queryCount_empty, prefixCalls_one, le_refl]
-
-
-theorem counted_checkpoint_observation
-    (result : ((Trace × OracleComp (OtsPrefix.atAddress parameter words address).VisibleWorld Result) × Nat) ×
-      (Fin (OtsPrefix.atAddress parameter words address).digit.val → Digest → Option Digest))
-    (hresult : result ∈ (lazyRun auxiliary (QueryCap.counted IsPrefixQuery (QueryPause.run (Stopped parameter words frontier)
-      (fun input answer history => history * (OtsPrefix.atAddress parameter words address).visibleObservationTrace high input answer)
-      (simulateQ ((OtsPrefix.atAddress parameter words address).visibleWorldImpl high) computation) 1)) (fun _ _ => none)).support) :
-    (address ∈ contacts parameter words frontier result.1.1.1 ↔
-      Contact result.2 (frontier address.1 address.2.1 address.2.2.1 address.2.2.2)) ∧
-      queryCount result.2 ≤ prefixCalls (OtsPrefix.atAddress parameter words address) result.1.1.1 := by
-  apply checkpoint_observation parameter words frontier address high auxiliary computation (result.1.1, result.2)
-  have hforget := congrArg (fun program => lazyRun auxiliary program (fun _ _ => none))
-    (QueryCap.counted_forget IsPrefixQuery (QueryPause.run (Stopped parameter words frontier)
-      (fun input answer history => history * (OtsPrefix.atAddress parameter words address).visibleObservationTrace high input answer)
-      (simulateQ ((OtsPrefix.atAddress parameter words address).visibleWorldImpl high) computation) 1))
-  rw [lazyRun_map] at hforget
-  rw [← hforget, PMF.mem_support_map_iff]
-  exact ⟨result, hresult, rfl⟩
-
 end SphincsSecurity.Concrete.OtsContactTrace

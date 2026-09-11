@@ -77,7 +77,9 @@ noncomputable local instance instSampleableTypeForallSubtypeHashInputMemFinsetHa
   SampleableType.ofFintype (inputs → HashOutput)
 
 noncomputable local instance instSampleableTypeCanonicalGraphLabels_1 : SampleableType CanonicalGraphLabels := SampleableType.ofFintype CanonicalGraphLabels
+
 noncomputable local instance instSampleableTypeCanonicalEncodingRows : SampleableType CanonicalEncodingRows := SampleableType.ofFintype CanonicalEncodingRows
+
 noncomputable local instance instSampleableTypeForallFinEncodingAttemptLimitHashOutput : SampleableType (Fin encodingAttemptLimit → HashOutput) :=
   SampleableType.ofFintype (Fin encodingAttemptLimit → HashOutput)
 

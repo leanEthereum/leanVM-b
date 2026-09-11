@@ -9,12 +9,12 @@ set_option backward.isDefEq.respectTransparency false
 attribute [local instance] Classical.propDecidable
 attribute [local irreducible] canonicalGraphInputs canonicalPayloadInputs canonicalGraphOrder instFintypePosition
 
-noncomputable local instance residualQueryTableSampleable (inputs : Finset HashInput) : SampleableType (inputs → HashOutput) :=
-  SampleableType.ofFintype (inputs → HashOutput)
-
 variable (parameter : PublicParameter)
   (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
   (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
+
+noncomputable local instance residualQueryTableSampleable (inputs : Finset HashInput) : SampleableType (inputs → HashOutput) :=
+  SampleableType.ofFintype (inputs → HashOutput)
 
 noncomputable def programmedHash (labels : CanonicalGraphLabels) (residual : QueryImpl HashSpec Id) : QueryImpl HashSpec Id :=
   fun input => (decodePosition parameter input).elim (residual input) fun position =>
@@ -94,23 +94,5 @@ theorem finiteHashAnswer_program_eq (labels : CanonicalGraphLabels) (residual : 
       fun position heq => hcanonical ⟨position, heq⟩
     rw [finiteHashAnswer_program_other parameter otsSecret ftsSecret inputs hinputs labels residual input hne,
       programmedHash_other parameter otsSecret ftsSecret labels _ input hne]
-
-omit hinputs in
-theorem evalDist_programmedHash_residual_query {Result : Type} (labels : CanonicalGraphLabels) (input : inputs)
-    (hne : ∀ position, input.val ≠ canonicalGraphInput parameter otsSecret ftsSecret position labels)
-    (next : HashOutput → (inputs → HashOutput) → ProbComp Result) :
-    𝒟[do
-      let residual ← sampleHashTable inputs
-      next (programmedHash parameter otsSecret ftsSecret labels (finiteHashAnswer ∅ inputs residual) input) residual] =
-      𝒟[do
-        let answer ← ($ᵗ HashOutput : ProbComp _)
-        let residual ← sampleHashTable inputs
-        next answer (Function.update residual input answer)] := by
-  have hprogram (residual : inputs → HashOutput) :=
-    programmedHash_other parameter otsSecret ftsSecret labels (finiteHashAnswer ∅ inputs residual) input hne
-  have hread (residual : inputs → HashOutput) :=
-    finiteHashAnswer_none ∅ inputs residual input input.property (QueryCache.empty_apply _)
-  simp_rw [hprogram, hread]
-  exact evalDist_finiteHashTable_extract inputs input (fun residual answer => next answer residual)
 
 end SphincsSecurity.Concrete

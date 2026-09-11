@@ -166,15 +166,6 @@ theorem exceptionWorldRun_erasure {Result : Type} (computation : OracleComp Orac
       funext step
       rw [Functor.map_map, ← ih step.1.1.1 step.2, Functor.map_map]
 
-theorem exceptionWorldRun_forced {Result : Type} (computation : OracleComp OracleWorld Result) (state : ExceptionState)
-    (result : ((Result × SigningBoundaryTrace) × Trace) × ExceptionState)
-    (hresult : exceptionWorldRun parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required stopAfter
-      computation state result ≠ 0) :
-    monitoredWorldRun parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required stopAfter computation state.1
-      (result.1, result.2.1) ≠ 0 := by
-  have h := map_nonzero_of _ (fun result => (result.1, result.2.1)) result hresult
-  rwa [exceptionWorldRun_erasure] at h
-
 theorem exceptionWorldRun_clean {Result : Type} (computation : OracleComp OracleWorld Result) (state : ExceptionState)
     (result : ((Result × SigningBoundaryTrace) × Trace) × ExceptionState)
     (hresult : exceptionWorldRun parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required stopAfter
@@ -212,14 +203,6 @@ theorem exceptionCompletedRun_erasure (adversary : Adversary) (state : Exception
   apply congrArg (_ >>= ·)
   funext before
   rw [Functor.map_map, ← exceptionWorldRun_erasure, Functor.map_map]
-
-theorem exceptionCompletedRun_forced (adversary : Adversary) (state : ExceptionState) (result : Completed × ExceptionState)
-    (hresult : exceptionCompletedRun parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required stopAfter
-      adversary state result ≠ 0) :
-    monitoredCompletedRun parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required stopAfter adversary state.1
-      (result.1, result.2.1) ≠ 0 := by
-  have h := map_nonzero_of _ (fun result => (result.1, result.2.1)) result hresult
-  rwa [exceptionCompletedRun_erasure] at h
 
 /-! ### Finite caches -/
 

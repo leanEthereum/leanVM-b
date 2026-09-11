@@ -26,39 +26,4 @@ theorem terminalProposalAverage_nearPrice (required : Finset FtsTree) (hdegree :
   norm_num [ftsTreeHeight, FtsLeaf, ENNReal.toReal_mul, ENNReal.toReal_inv,
     ENNReal.toReal_div, ENNReal.toReal_pow]
 
-theorem expected_poissonCertificateGame_near_subset_count_le (adversary : Adversary)
-    (q : Nat) (required : Finset FtsTree) (stopAfter : Nat → SecretKey → CertificateStopRule)
-    (hbudget : q ≤ 2 ^ 127) (hbound : HasHashQueryBound scheme adversary q) (hdegree : required.card = 13) :
-    (∑' result, Pr[= result | poissonCertificateGame adversary q required stopAfter] *
-      certificateBankCount result.2.1.2.2.2.bank) ≤
-        (q : ENNReal) * (((557 : ENNReal) / 14) / (2 ^ 128 : Nat)) := by
-  have h := expected_poissonCertificateGame_count_le_message_excess adversary q required stopAfter hbudget hbound 0
-  simp only [zero_mul, zero_add, tsub_zero] at h
-  exact h.trans (mul_le_mul' le_rfl (terminalProposalAverage_nearPrice required hdegree))
-
-theorem expected_poissonCertificateGame_near_count_le (adversary : Adversary)
-    (q : Nat) (stopAfter : Nat → SecretKey → CertificateStopRule)
-    (hbudget : q ≤ 2 ^ 127) (hbound : HasHashQueryBound scheme adversary q) :
-    (∑ omitted : FtsTree, ∑' result,
-      Pr[= result | poissonCertificateGame adversary q (Finset.univ.erase omitted) stopAfter] *
-        certificateBankCount result.2.1.2.2.2.bank) ≤
-          (557 : ENNReal) * (q : ENNReal) / (2 ^ 128 : Nat) := by
-  classical
-  calc
-    _ ≤ ∑ _ : FtsTree, (q : ENNReal) * (((557 : ENNReal) / 14) / (2 ^ 128 : Nat)) := by
-      apply Finset.sum_le_sum
-      intro omitted _
-      exact expected_poissonCertificateGame_near_subset_count_le adversary q (Finset.univ.erase omitted)
-        stopAfter hbudget hbound (by
-          rw [Finset.card_erase_of_mem (Finset.mem_univ _), Finset.card_univ]
-          have hcard : Fintype.card FtsTree = 14 := by decide
-          rw [hcard])
-    _ = _ := by
-      simp only [Finset.sum_const, Finset.card_univ, nsmul_eq_mul]
-      have hcard : Fintype.card FtsTree = 14 := by decide
-      rw [hcard]
-      apply (ENNReal.toReal_eq_toReal_iff' (by finiteness) (by finiteness)).mp
-      norm_num [ENNReal.toReal_mul, ENNReal.toReal_div]
-      ring
-
 end SphincsSecurity.Concrete

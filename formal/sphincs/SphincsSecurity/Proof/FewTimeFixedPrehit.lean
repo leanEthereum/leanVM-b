@@ -53,46 +53,4 @@ theorem cachedMessageEntryCountWhere_onlyInput_le_one
   simpa only [cachedMessageEntryCountWhere, ENat.toENNReal_one] using
     ENat.toENNReal_mono hencard
 
-theorem Concrete.probEvent_signWithView_fixedPrehit_le_race
-    (secretKey : SecretKey) (message : Message) (initialCache : QueryCache HashSpec)
-    (target : HashInput) (P : FewTimeView → Prop)
-    (hbudget : QueryCache.enncard initialCache + (digestAttemptLimit : ℝ≥0∞) ≤
-      ((2 ^ 127 : Nat) : ℝ≥0∞)) :
-    Pr[PrehitSuccessfulSignerView (onlyInputCache initialCache target) secretKey message P |
-      (simulateQ romImpl (signWithView secretKey message)).run initialCache] ≤
-      ((2 ^ 117 : Nat) : ℝ≥0∞)⁻¹ := by
-  calc
-    Pr[PrehitSuccessfulSignerView (onlyInputCache initialCache target) secretKey message P |
-        (simulateQ romImpl (signWithView secretKey message)).run initialCache] ≤
-        cachedMessageEntryCountWhere (onlyInputCache initialCache target)
-          secretKey.parameter secretKey.root message P *
-            ((2 ^ 117 : Nat) : ℝ≥0∞)⁻¹ :=
-      probEvent_signWithView_prehitSuccessful_le_race_reference secretKey message
-        (onlyInputCache initialCache target) initialCache P
-        (onlyInputCache_le initialCache target) hbudget
-    _ ≤ 1 * ((2 ^ 117 : Nat) : ℝ≥0∞)⁻¹ := by
-      gcongr
-      exact cachedMessageEntryCountWhere_onlyInput_le_one initialCache target
-        secretKey.parameter secretKey.root message P
-    _ = _ := one_mul _
-
-theorem Concrete.probEvent_signWithView_fixedPrehit_le_race_of_enncard_le
-    (secretKey : SecretKey) (message : Message) (initialCache : QueryCache HashSpec)
-    (target : HashInput) (P : FewTimeView → Prop)
-    (q : Nat) (hq : q ≤ 2 ^ 126) (hcache : QueryCache.enncard initialCache ≤ q) :
-    Pr[PrehitSuccessfulSignerView (onlyInputCache initialCache target) secretKey message P |
-      (simulateQ romImpl (signWithView secretKey message)).run initialCache] ≤
-      ((2 ^ 117 : Nat) : ℝ≥0∞)⁻¹ := by
-  apply probEvent_signWithView_fixedPrehit_le_race
-  have hq' : (q : ℝ≥0∞) ≤ ((2 ^ 126 : Nat) : ℝ≥0∞) := by
-    exact_mod_cast hq
-  calc
-    QueryCache.enncard initialCache + (digestAttemptLimit : ℝ≥0∞) ≤
-        (q : ℝ≥0∞) + (digestAttemptLimit : ℝ≥0∞) :=
-      add_le_add hcache le_rfl
-    _ ≤ ((2 ^ 126 : Nat) : ℝ≥0∞) + (digestAttemptLimit : ℝ≥0∞) :=
-      add_le_add hq' le_rfl
-    _ ≤ ((2 ^ 127 : Nat) : ℝ≥0∞) := by
-      norm_num [digestAttemptLimit]
-
 end SphincsSecurity

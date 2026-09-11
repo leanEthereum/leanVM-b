@@ -163,17 +163,4 @@ theorem monitoredRun_query_conditions {Result : Type} (input : (OracleWorld + Si
   · rw [hbefore halive]
     omega
 
-theorem initialMonitoredSource_spent_eq (adversary : Adversary) (encoding : ReferenceEncodingAuxiliary)
-    (dummy : OtsReferenceWords) (exposed : InitialPublicLabels (referenceFamilyWords encoding.selections dummy))
-    (high : CanonicalGraphHighHalves) (stopped : Bool)
-    (result : Option (Forgery × Bool) × MonitoredState (gameInputs adversary))
-    (hresult : initialMonitoredSource key adversary encoding dummy exposed high budget required stopAfter stopped result ≠ 0)
-    (halive : result.2.2.stopped = false) : result.2.2.spent = result.2.1.memory.external.hashCalls := by
-  exact (monitoredRun_accounting key (gameInputs adversary) (canonicalEncodingInputs_subset_retainedGameInputs adversary key.parameter)
-    (referenceFamilyWords encoding.selections dummy)
-    (coordinateGraphLabels (initialKnown (referenceFamilyWords encoding.selections dummy) exposed) high)
-    encoding.selections encoding.rows budget required stopAfter _ _
-    ⟨initialAllowed_nonempty _ exposed, initialState_rowsCovered _ _ exposed⟩
-    (sourceInputs_unlogged_subset_gameInputs adversary key) (fun _ => rfl) result hresult).1 halive
-
 end SphincsSecurity.Concrete.RetainedResidual

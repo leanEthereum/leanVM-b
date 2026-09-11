@@ -22,15 +22,6 @@ noncomputable def idealRun (auxiliary : State → QueryImpl auxSpec PMF)
   (PMF.uniformOfFintype State).bind (fun endpoint =>
     (lazyRun (auxiliary endpoint) (computation endpoint) observed).map (fun result => (endpoint, result)))
 
-theorem realRun_from_secret (auxiliary : State → QueryImpl auxSpec PMF)
-    (computation : State → OracleComp (auxSpec + PrefixSpec n State) Result)
-    (observed : Fin n → State → Option State) :
-    (EndpointPreimageDensity.withSecret (completeTables observed) evaluate).bind (fun source =>
-      (observedRun (auxiliary source.2.2) source.1 (computation source.2.2) observed).map
-        (fun result => (source.2.2, result))) = realRun auxiliary computation observed := by
-  rw [realRun, ← EndpointPreimageDensity.withSecret_erased, PMF.bind_map]
-  rfl
-
 theorem realRun_expectation (auxiliary : State → QueryImpl auxSpec PMF)
     (computation : State → OracleComp (auxSpec + PrefixSpec n State) Result)
     (observed : Fin n → State → Option State)

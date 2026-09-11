@@ -84,14 +84,6 @@ theorem prefixObservedSourceGame_eq (inputs : Finset HashInput)
   dsimp only [segment, words]
   simp only [OtsPrefix.seedGame_replaceSecret]
 
-theorem forgeAdvantage_eq_prefixObservedSource (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex) (chainIdx : ChainIndex)
-    (dummy : OtsReferenceWords) (adversary : Adversary) :
-    forgeAdvantage scheme adversary = Pr[fun result => result.2.1 = true |
-      prefixObservedSourceGame (canonicalGraphGameInputs adversary) (canonicalEncodingInputs_subset_gameInputs adversary)
-        (canonicalGraphInputs_subset_gameInputs adversary) lay tree leaf chainIdx dummy adversary] := by
-  rw [prefixObservedSourceGame_eq]
-  exact forgeAdvantage_eq_prefixSource lay tree leaf chainIdx dummy adversary
-
 theorem prefixObservedSourceGame_hashCalls_le (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex) (chainIdx : ChainIndex)
     (dummy : OtsReferenceWords) (adversary : Adversary) (q : Nat) (hbound : HasHashQueryBound scheme adversary q)
     (result : ReferenceFamily × (Bool × SigningBoundaryTrace))

@@ -33,22 +33,4 @@ theorem encoding_family_uniform (selections : ReferenceFamily) :
     PMF.uniformOfFinset (encodingSelectionAllowed (selections position) coordinate)
       (encodingSelectionAllowed_nonempty (selections position) coordinate))
 
-theorem encoding_family_complete (selections : ReferenceFamily) :
-    𝒟[(FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit
-      decodeEncodingOutput_invalid_nonempty selections).map Function.uncurry] = complete (encodingFamilyAllowed selections) := by
-  rw [encoding_family_uniform, complete_of_nonempty _ (encodingFamilyAllowed_nonempty selections)]
-
-theorem encoding_family_posterior {AuxIndex Result : Type} {auxSpec : OracleSpec AuxIndex}
-    (auxiliary : QueryImpl auxSpec SPMF)
-    (computation : OracleComp (auxSpec + UniformTableObservation.TableSpec EncodingRow HashOutput) Result)
-    (selections : ReferenceFamily) :
-    (𝒟[(FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit
-      decodeEncodingOutput_invalid_nonempty selections).map Function.uncurry] >>= fun table =>
-      (fun result => (table, result)) <$>
-        UniformTableObservation.observedRun auxiliary table computation (encodingFamilyAllowed selections)) =
-      (UniformTableObservation.lazyRun auxiliary computation (encodingFamilyAllowed selections) >>= fun result =>
-        (fun table => (table, result)) <$> complete result.2) := by
-  rw [encoding_family_complete]
-  exact UniformTableObservation.run_posterior auxiliary computation (encodingFamilyAllowed selections)
-
 end SphincsSecurity.Concrete

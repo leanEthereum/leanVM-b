@@ -88,21 +88,4 @@ theorem referenceContactGame_contactMarker_shared_bound (dummy : OtsReferenceWor
         ((Fintype.card Digest : ENNReal) * (Fintype.card Digest : ENNReal)⁻¹) := by ring
     _ = _ := by rw [hcancel, mul_one]
 
-theorem referenceContactGame_contactMarker_le (dummy : OtsReferenceWords) (adversary : Adversary) (budget : Nat)
-    (hbound : HasHashQueryBound scheme adversary budget) (hsmall : budget < Fintype.card Digest) :
-    Pr[fun result => ContactBeforeMarker result.1 (referenceFamilyWords result.2.1 dummy) result.2.2.frontier
-      (result.2.2.before * result.2.2.after) | referenceContactGame (canonicalGraphGameInputs adversary)
-        (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] ≤
-      ((82 * ((budget : ENNReal) / Fintype.card Digest)) * ∑' result,
-        Pr[= result | referenceRecordedGame (canonicalGraphGameInputs adversary) (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] *
-          (result.prefixCalls dummy : ENNReal)) /
-        ((1 - (budget : ENNReal) / Fintype.card Digest) * (Fintype.card Digest : ENNReal)) := by
-  have hcard : (Fintype.card Digest : ENNReal) ≠ 0 := by exact_mod_cast Fintype.card_ne_zero
-  have hpositive : 0 < 1 - (budget : ENNReal) / Fintype.card Digest := by
-    apply tsub_pos_iff_lt.mpr
-    rw [ENNReal.div_lt_iff (Or.inl hcard) (Or.inl (by finiteness)), one_mul]
-    exact_mod_cast hsmall
-  apply (ENNReal.le_div_iff_mul_le (Or.inl (mul_ne_zero (ne_of_gt hpositive) hcard)) (Or.inl (by finiteness))).mpr
-  simpa only [mul_comm] using referenceContactGame_contactMarker_shared_bound dummy adversary budget hbound hsmall
-
 end SphincsSecurity.Concrete

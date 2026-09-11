@@ -117,46 +117,8 @@ theorem eq_of_le_of_valid {x y : Encoding} (hx : Valid x) (hy : Valid y)
     (hle : ∀ i, (x i).val ≤ (y i).val) : x = y :=
   eq_of_le_of_sum_eq hle (hx.trans hy.symm)
 
-def ValidDigest (digest : Digest) : Prop :=
-  ∃ encoding, decodeDigest digest = some encoding
-
 noncomputable instance instDecidablePredDigestValidDigest : DecidablePred ValidDigest :=
   Classical.decPred _
-
-noncomputable def validDigests : Finset Digest :=
-  Finset.univ.filter ValidDigest
-
-theorem validDigest_iff_decodeDigest_ne_none {digest : Digest} :
-    ValidDigest digest ↔ decodeDigest digest ≠ none := by
-  constructor
-  · rintro ⟨encoding, hencoding⟩
-    rw [hencoding]
-    simp
-  · intro hdecode
-    obtain ⟨encoding, hencoding⟩ := Option.ne_none_iff_exists'.mp hdecode
-    exact ⟨encoding, hencoding⟩
-
-@[simp] theorem mem_validDigests {digest : Digest} :
-    digest ∈ validDigests ↔ ValidDigest digest := by
-  simp [validDigests]
-
-theorem ValidDigest.of_eq {left right : Digest} (hleft : ValidDigest left)
-    (heq : left = right) : ValidDigest right := by
-  rwa [← heq]
-
-def exampleValidDigest : Digest :=
-  BitVec.ofNat digestBits 0x00000000000bffff7fffffffffffffff
-
-theorem exampleValidDigest_valid : ValidDigest exampleValidDigest := by
-  refine ⟨digestEncoding exampleValidDigest, ?_⟩
-  decide
-
-theorem validDigests_nonempty : validDigests.Nonempty := by
-  exact ⟨exampleValidDigest, Finset.mem_filter.mpr
-    ⟨Finset.mem_univ _, exampleValidDigest_valid⟩⟩
-
-theorem validDigests_card_pos : 0 < validDigests.card :=
-  Finset.card_pos.mpr validDigests_nonempty
 
 /-- A concatenation of fixed-length blocks determines the blocks. -/
 theorem flatMap_ofFn_injective {α β : Type} (g : α → List β) (len : Nat)
@@ -176,24 +138,6 @@ theorem flatMap_ofFn_injective {α β : Type} (g : α → List β) (len : Nat)
       cases i using Fin.cases with
       | zero => exact hzero
       | succ j => exact congrFun hsucc j
-
-/-- The same, for lists: a concatenation of fixed-length blocks determines the blocks. -/
-theorem flatMap_injective {α β : Type} (g : α → List β) (len : Nat)
-    (hlen : ∀ a, (g a).length = len) (hinj : ∀ a b, g a = g b → a = b) :
-    ∀ {xs ys : List α}, xs.length = ys.length → xs.flatMap g = ys.flatMap g → xs = ys := by
-  intro xs
-  induction xs with
-  | nil =>
-      intro ys hlength _
-      exact (List.eq_nil_of_length_eq_zero hlength.symm).symm
-  | cons x xs ih =>
-      intro ys hlength h
-      cases ys with
-      | nil => simp at hlength
-      | cons y ys =>
-          simp only [List.flatMap_cons] at h
-          obtain ⟨hhead, htail⟩ := List.append_inj h (by rw [hlen, hlen])
-          exact congrArg₂ _ (hinj _ _ hhead) (ih (by simpa using hlength) htail)
 
 /-- A one-time signature's payload is its `v` endpoints, and the concatenation determines them. -/
 theorem leafPayload_injective {endpoints endpoints' : ChainIndex → Digest}

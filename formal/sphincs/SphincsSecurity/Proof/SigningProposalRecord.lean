@@ -166,12 +166,4 @@ theorem completedSigningRecord_acceptance_cap {ω : Type} [Monoid ω]
     (completedSigningRecord_index_le trace key message cache spent hbound.spent_le hbound.cache_le
       hbound.no_deficit hbound.index_le) index
 
-noncomputable def signingProposalBridge {ω : Type} [Monoid ω]
-    (trace : (input : OracleWorld.Domain) → OracleWorld.Range input → ω)
-    (key : SecretKey) (message : Message) (cache : QueryCache HashSpec) (spent : Nat)
-    (hbound : ProposalCacheBound key cache spent) : PMF (List Index × (TracedSigningRecord ω × Index)) :=
-  cappedRecordProposalBridge (PMF.uniformOfFintype Index) (completedSigningRecord trace key message cache)
-    Prod.snd targetProposalAcceptance targetProposalAcceptance_ne_zero targetProposalAcceptance_lt_one
-    (completedSigningRecord_acceptance_cap trace key message cache spent hbound)
-
 end SphincsSecurity.Concrete

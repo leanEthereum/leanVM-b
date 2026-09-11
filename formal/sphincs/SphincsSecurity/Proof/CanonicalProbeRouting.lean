@@ -1,8 +1,23 @@
 import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CanonicalHiddenCoordinates
-import SphincsSecurity.Proof.EncodingPrehitGame
+import SphincsSecurity.Proof.EncodingSelectionCache
+import SphincsSecurity.Proof.EncodingCharge
+import SphincsSecurity.Proof.FirstBad
+import SphincsSecurity.Proof.RomQueryCharge
+import SphincsSecurity.Proof.Charge
+import SphincsSecurity.Proof.QueryBound
+import SphincsSecurity.Proof.Guess
+import SphincsSecurity.Proof.Secrets
+import SphincsSecurity.Proof.FewTimeSignerView
+import SphincsSecurity.Proof.FewTimeWitness
+import SphincsSecurity.Proof.SigningTrace
+import SphincsSecurity.Proof.RootCache
+import SphincsSecurity.Proof.MessagePrehit
+import SphincsSecurity.Proof.ForgeryClassify
+import SphincsSecurity.Statement
 import SphincsSecurity.Proof.HiddenLabelObservation
-import SphincsSecurity.Proof.OtsProbeResolvedBoundaryPrivateWitnessOrdinalRootGlobalClassification
+import SphincsSecurity.Proof.FtsProbeSimulation
+import SphincsSecurity.Proof.OtsProbeSimulation
 
 namespace SphincsSecurity.Concrete.CanonicalProbeRouting
 

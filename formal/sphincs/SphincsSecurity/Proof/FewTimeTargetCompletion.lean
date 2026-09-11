@@ -1,6 +1,6 @@
 import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FewTimeFresh
-import SphincsSecurity.Proof.FewTimeTargetSigner
+import SphincsSecurity.Proof.FewTimeSignerView
 
 /-!
 # Completing an optional fresh signer target
@@ -46,7 +46,9 @@ theorem probEvent_completeFreshSelectedLoopView_le_uniform
       Pr[P | ($ᵗ FewTimeView : ProbComp FewTimeView)] := by
   induction attempts generalizing workingCache with
   | zero =>
-      simp [signDigestLoop, completeFreshSelectedLoopView, freshSelectedLoopView?]
+      simp only [signDigestLoop, simulateQ_pure, StateT.run_pure, pure_bind, completeFreshSelectedLoopView,
+        freshSelectedLoopView?]
+      exact le_rfl
   | succ attempts ih =>
       rw [signDigestLoop_run_succ_eq]
       rw [bind_assoc]
@@ -175,114 +177,8 @@ theorem probEvent_completeFreshSelectedLoopView_le_uniform
                 (tweakableHashInput secretKey.parameter .message
                   (messageDigestPayload secretKey.root message randomness)) ≠ none := by
               simpa only [input] using hreference
-            simp [signDigestLoopContinuation, hattemptResult,
-              completeFreshSelectedLoopView, freshSelectedLoopView?, hreference']
-
-noncomputable def completeFreshTargetSignerView
-    (initialCache : QueryCache HashSpec)
-    (result : TargetSignerResult × QueryCache HashSpec) : ProbComp FewTimeView :=
-  match freshTargetSignerView? initialCache result with
-  | some view => pure view
-  | none => $ᵗ FewTimeView
-
-set_option maxRecDepth 100000 in
-theorem probEvent_completeFreshTargetSignerView_le_uniform
-    (secretKey : SecretKey) (message : Message)
-    (initialCache : QueryCache HashSpec) (P : FewTimeView → Prop) :
-    Pr[P | (simulateQ romImpl (signWithTargetView secretKey message)).run initialCache >>=
-      completeFreshTargetSignerView initialCache] ≤
-      Pr[P | ($ᵗ FewTimeView : ProbComp FewTimeView)] := by
-  rw [signWithTargetView, simulateQ_bind, StateT.run_bind, bind_assoc]
-  calc
-    _ = Pr[P |
-        (simulateQ romImpl (signDigestLoop digestAttemptLimit secretKey message)).run
-          initialCache >>= completeFreshSelectedLoopView initialCache secretKey message] := by
-      apply probEvent_bind_congr
-      intro loopResult _hloop
-      cases hloopResult : loopResult.1 with
-      | none =>
-          simp [hloopResult, completeFreshTargetSignerView,
-            freshTargetSignerView?, completeFreshSelectedLoopView,
-            freshSelectedLoopView?]
-      | some selected =>
-          rcases selected with ⟨randomness, index, leaves⟩
-          simp only [simulateQ_bind, StateT.run_bind, bind_assoc,
-            simulateQ_pure, StateT.run_pure, pure_bind]
-          simp only [completeFreshTargetSignerView, freshTargetSignerView?]
-          rw [probEvent_bind_const]
-          rw [probFailure_eq_zero' inferInstance]
-          simp only [tsub_zero, one_mul]
-          by_cases hfresh : initialCache
-              (tweakableHashInput secretKey.parameter .message
-                (messageDigestPayload secretKey.root message randomness)) = none
-          · simp [completeFreshSelectedLoopView, freshSelectedLoopView?,
-              hloopResult, hfresh]
-          · simp [completeFreshSelectedLoopView, freshSelectedLoopView?,
-              hloopResult, hfresh]
-    _ ≤ _ := probEvent_completeFreshSelectedLoopView_le_uniform digestAttemptLimit
-      secretKey message initialCache initialCache P
-        (onlyRejectedNewMessageEntries_self initialCache secretKey message)
-
-theorem tsum_probOutput_signWithTargetView_completed_le_expected
-    (secretKey : SecretKey) (message : Message)
-    (initialCache : QueryCache HashSpec)
-    (cost : (TargetSignerResult × QueryCache HashSpec) → ℝ≥0∞)
-    (risk : FewTimeView → ℝ≥0∞)
-    (hnone : ∀ signerResult ∈ support
-        ((simulateQ romImpl (signWithTargetView secretKey message)).run initialCache),
-      freshTargetSignerView? initialCache signerResult = none →
-        cost signerResult ≤
-          ∑ view, Pr[fun value : FewTimeView => value = view |
-            ($ᵗ FewTimeView : ProbComp FewTimeView)] * risk view)
-    (hsome : ∀ signerResult ∈ support
-        ((simulateQ romImpl (signWithTargetView secretKey message)).run initialCache),
-      ∀ view, freshTargetSignerView? initialCache signerResult = some view →
-        cost signerResult ≤ risk view) :
-    (∑' signerResult,
-      Pr[= signerResult |
-        (simulateQ romImpl (signWithTargetView secretKey message)).run initialCache] *
-          cost signerResult) ≤
-      ∑ view, Pr[fun value : FewTimeView => value = view |
-        ($ᵗ FewTimeView : ProbComp FewTimeView)] * risk view := by
-  let signerComp :=
-    (simulateQ romImpl (signWithTargetView secretKey message)).run initialCache
-  let uniformRisk := ∑ view, Pr[fun value : FewTimeView => value = view |
-    ($ᵗ FewTimeView : ProbComp FewTimeView)] * risk view
-  calc
-    (∑' signerResult, Pr[= signerResult | signerComp] * cost signerResult) ≤
-        ∑' signerResult, Pr[= signerResult | signerComp] *
-          match freshTargetSignerView? initialCache signerResult with
-          | some view => risk view
-          | none => uniformRisk := by
-      apply ENNReal.tsum_le_tsum
-      intro signerResult
-      by_cases hsupport : signerResult ∈ support signerComp
-      · apply mul_le_mul' le_rfl
-        cases hview : freshTargetSignerView? initialCache signerResult with
-        | none => exact hnone signerResult hsupport hview
-        | some view => exact hsome signerResult hsupport view hview
-      · rw [probOutput_eq_zero_of_not_mem_support hsupport]
-        simp
-    _ = ∑' view,
-        Pr[= view | signerComp >>= completeFreshTargetSignerView initialCache] *
-          risk view := by
-      rw [tsum_probOutput_bind_mul]
-      apply tsum_congr
-      intro signerResult
-      congr 1
-      cases hview : freshTargetSignerView? initialCache signerResult with
-      | none =>
-          simp [completeFreshTargetSignerView, hview, uniformRisk,
-            probEvent_eq_eq_probOutput, tsum_fintype]
-      | some view =>
-          simp [completeFreshTargetSignerView, hview]
-    _ ≤ ∑' view, Pr[= view | ($ᵗ FewTimeView : ProbComp FewTimeView)] * risk view := by
-      apply ENNReal.tsum_le_tsum
-      intro view
-      apply mul_le_mul' _ le_rfl
-      rw [← probEvent_eq_eq_probOutput, ← probEvent_eq_eq_probOutput]
-      exact probEvent_completeFreshTargetSignerView_le_uniform secretKey message
-        initialCache (fun value => value = view)
-    _ = _ := by simp only [tsum_fintype, probEvent_eq_eq_probOutput]
+            simp only [signDigestLoopContinuation, hattemptResult, pure_bind, completeFreshSelectedLoopView,
+              freshSelectedLoopView?, if_neg hreference']
+            exact le_rfl
 
 end SphincsSecurity.Concrete

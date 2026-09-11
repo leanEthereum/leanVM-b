@@ -105,18 +105,6 @@ theorem nativeRun_original (environment : Environment auxSpec Coordinate Digest 
   rw [nativeRun_erasure,
     fixedBoundaryRun_signWithView_auxiliary_public key inputs hencoding labels auxiliary hauxiliary dummy disclosed known hagrees message]
 
-theorem signingRun_posterior (environment : Environment auxSpec Coordinate Digest Memory)
-    (state : State Coordinate Digest Memory) (parameter : PublicParameter) (root : Digest) (outside : QueryImpl HashSpec Id)
-    (known : Labels) (words : OtsReferenceWords) (selections : ReferenceFamily) (message : Message) :
-    (complete state.allowed >>= fun labels =>
-      (fun result => (labels, result)) <$> nativeRun environment labels state parameter root outside known words selections message) =
-      (lazySigningRun environment state parameter root outside known words selections message >>= fun result =>
-        (fun labels => (labels, result)) <$> complete result.2.allowed) := by
-  simp only [nativeRun, lazySigningRun, map_bind, bind_assoc]
-  rw [RetainedObservation.bind_comm]
-  exact congrArg (𝒟[publicSigningRecord parameter root outside known words selections message] >>= ·)
-    (funext fun record => run_posterior environment (completeRecord record) state)
-
 theorem signingRun_erasure (environment : Environment auxSpec Coordinate Digest Memory)
     (state : State Coordinate Digest Memory) (ha : ∀ coordinate, (state.allowed coordinate).Nonempty)
     (parameter : PublicParameter) (root : Digest) (outside : QueryImpl HashSpec Id)
@@ -127,28 +115,5 @@ theorem signingRun_erasure (environment : Environment auxSpec Coordinate Digest 
   rw [RetainedObservation.bind_comm]
   exact congrArg (𝒟[publicSigningRecord parameter root outside known words selections message] >>= ·)
     (funext fun record => run_erasure environment (completeRecord record) state ha)
-
-theorem nativeRun_counts (environment : Environment auxSpec Coordinate Digest Memory) (labels : Coordinate → Digest)
-    (state : State Coordinate Digest Memory) (parameter : PublicParameter) (root : Digest) (outside : QueryImpl HashSpec Id)
-    (known : Labels) (words : OtsReferenceWords) (selections : ReferenceFamily) (message : Message)
-    (result : ((Option Signature × Option FewTimeView) × SigningBoundaryTrace) × State Coordinate Digest Memory)
-    (hr : nativeRun environment labels state parameter root outside known words selections message result ≠ 0) :
-    (result.2.guesses, result.2.probes) = (state.guesses, state.probes) := by
-  simp only [nativeRun, fixedRun_completeRecord, RetainedObservation.bind_nonzero,
-    ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] at hr
-  obtain ⟨record, _, rfl⟩ := hr
-  exact completedState_counts environment labels record state
-
-theorem lazySigningRun_counts (environment : Environment auxSpec Coordinate Digest Memory)
-    (state : State Coordinate Digest Memory) (ha : ∀ coordinate, (state.allowed coordinate).Nonempty)
-    (parameter : PublicParameter) (root : Digest) (outside : QueryImpl HashSpec Id)
-    (known : Labels) (words : OtsReferenceWords) (selections : ReferenceFamily) (message : Message)
-    (result : ((Option Signature × Option FewTimeView) × SigningBoundaryTrace) × State Coordinate Digest Memory)
-    (hr : lazySigningRun environment state parameter root outside known words selections message result ≠ 0) :
-    (result.2.guesses, result.2.probes) = (state.guesses, state.probes) := by
-  rw [← signingRun_erasure environment state ha parameter root outside known words selections message,
-    RetainedObservation.bind_nonzero] at hr
-  obtain ⟨labels, _, hr⟩ := hr
-  exact nativeRun_counts environment labels state parameter root outside known words selections message result hr
 
 end SphincsSecurity.Concrete.FtsGuessSigning

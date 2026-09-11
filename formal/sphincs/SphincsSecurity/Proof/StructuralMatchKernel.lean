@@ -49,11 +49,6 @@ theorem Entry.noncanonical {key : SecretKey} {labels : CanonicalGraphLabels} {wo
   obtain ⟨_, position, _, _, hp, hn, _⟩ := h
   exact noncanonical_at key.parameter key.otsSecret key.ftsSecret labels input position hp hn
 
-theorem canonical_not_entry (key : SecretKey) (labels : CanonicalGraphLabels) (words : OtsReferenceWords)
-    (position : Position) (answer : HashOutput) :
-    ¬Entry key labels words (canonicalGraphInput key.parameter key.otsSecret key.ftsSecret position labels) answer :=
-  fun h => h.noncanonical position rfl
-
 theorem Entry.otherHash {key : SecretKey} {labels : CanonicalGraphLabels} {words : OtsReferenceWords}
     {input : HashInput} {answer : HashOutput} (h : Entry key labels words input answer) :
     QueryClass.OtherHash key.parameter words (.inr input) := by

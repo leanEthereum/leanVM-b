@@ -67,28 +67,6 @@ theorem contactCount_record_fresh {n : Nat} (observed : Fin n → State → Opti
       (Finset.mem_univ query)]
   simp only [hfresh, reduceCtorEq, and_false, if_false, Nat.zero_add, Nat.add_comm]
 
-theorem contactCount_le_queryCount {n : Nat} (observed : Fin n → State → Option State) (endpoint : State) :
-    contactCount observed endpoint ≤ queryCount observed := by
-  simp only [contactCount, queryCount, queriedCount_eq_sum, Fintype.sum_prod_type]
-  apply Finset.sum_le_sum
-  intro step _
-  apply Finset.sum_le_sum
-  intro input _
-  cases observed step input <;> simp
-  split <;> omega
-
-theorem contact_iff_count_pos {n : Nat} (observed : Fin n → State → Option State) (endpoint : State) :
-    Contact observed endpoint ↔ 0 < contactCount observed endpoint := by
-  rw [contactCount, Finset.sum_pos_iff]
-  constructor
-  · rintro ⟨step, hstep, input, hinput⟩
-    exact ⟨(step, input), Finset.mem_univ _, by simp only [hstep, hinput, and_self, if_true, Nat.zero_lt_one]⟩
-  · rintro ⟨⟨step, input⟩, _, h⟩
-    have hh : step.val + 1 = n ∧ observed step input = some endpoint := by
-      by_contra hh
-      simp only [if_neg hh, Nat.lt_irrefl] at h
-    exact ⟨step, hh.1, input, hh.2⟩
-
 theorem contactCount_observe_increment_le [Nonempty State] {n : Nat}
     (value increment : Nat → ENNReal) (hincrement : ∀ k, value (k + 1) = value k + increment k)
     (observed : Fin n → State → Option State) (query : Fin n × State) (endpoint : State) :

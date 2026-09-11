@@ -61,24 +61,6 @@ theorem monitoredRun_covered (computation : OracleComp (OracleWorld + SigningSpe
         (covered_step_next parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required stopAfter hauxiliary
           input next state hvalid hcovered step hstep) tail htail
 
-theorem monitoredWorldRun_valid {Result : Type} (computation : OracleComp OracleWorld Result) (state : MonitoredState)
-    (hvalid : Valid state) (result : ((Result × SigningBoundaryTrace) × Trace) × MonitoredState)
-    (hresult : monitoredWorldRun parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required stopAfter
-      computation state result ≠ 0) : Valid result.2 := by
-  induction computation using OracleComp.inductionOn generalizing state result with
-  | pure value =>
-      rw [monitoredWorldRun_pure] at hresult
-      simp only [ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] at hresult
-      subst result
-      exact hvalid
-  | query_bind input next ih =>
-      rw [monitoredWorldRun_query_bind, RetainedObservation.bind_nonzero] at hresult
-      obtain ⟨step, hstep, hresult⟩ := hresult
-      obtain ⟨tail, htail, rfl⟩ := map_nonzero_source' _ _ _ hresult
-      exact ih step.1.1.1 step.2
-        (monitoredStep_valid parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required stopAfter
-          (.inl input) state hvalid step hstep) tail htail
-
 theorem monitoredStep_inl (input : OracleWorld.Domain) (state : MonitoredState) :
     monitoredStep parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required stopAfter (.inl input) state =
       monitoredWorldStep parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required stopAfter input state := rfl
@@ -142,12 +124,6 @@ theorem expectedMonitoredPayment_query_bind (charge : (OracleWorld + SigningSpec
           stopAfter input state] *
           expectedMonitoredPayment parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required stopAfter charge
             (next result.1.1.1) result.2 := rfl
-
-theorem expectedMonitoredPayment_charge (computation : OracleComp (OracleWorld + SigningSpec) Forgery) (state : MonitoredState) :
-    expectedMonitoredPayment parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required stopAfter
-      (certificateMonitorCharge (monitorKey parameter root) budget required) computation state =
-      expectedMonitoredCharge parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required stopAfter
-        computation state := rfl
 
 theorem expected_monitoredRun_accumulator (counter : CertificateMonitor → ENNReal)
     (charge : (OracleWorld + SigningSpec).Domain → CertificateMonitorState → ENNReal)
@@ -215,12 +191,6 @@ theorem expectedWorldPayment_query_bind (charge : (OracleWorld + SigningSpec).Do
           stopAfter input state] *
           expectedWorldPayment parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required stopAfter charge
             (next result.1.1.1) result.2 := rfl
-
-theorem expectedWorldPayment_charge {Result : Type} (computation : OracleComp OracleWorld Result) (state : MonitoredState) :
-    expectedWorldPayment parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required stopAfter
-      (certificateMonitorCharge (monitorKey parameter root) budget required) computation state =
-      expectedWorldCharge parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required stopAfter
-        computation state := rfl
 
 theorem expected_monitoredWorldRun_accumulator (counter : CertificateMonitor → ENNReal)
     (charge : (OracleWorld + SigningSpec).Domain → CertificateMonitorState → ENNReal)

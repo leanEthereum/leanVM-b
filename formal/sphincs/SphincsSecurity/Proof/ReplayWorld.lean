@@ -21,29 +21,6 @@ noncomputable def replayHashImpl (f : QueryImpl HashSpec Id) :
     QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp) :=
   (f.liftTarget ProbComp).withCaching
 
-theorem simulateQ_replayRom_cache_le {alpha : Type} (f : QueryImpl HashSpec Id)
-    (oa : OracleComp OracleWorld alpha) (cache : QueryCache HashSpec)
-    (z : alpha × QueryCache HashSpec)
-    (hmem : z ∈ support ((simulateQ (replayRomImpl f) oa).run cache)) : cache ≤ z.2 := by
-  apply OracleComp.simulateQ_run_preservesInv (replayRomImpl f) (cache ≤ ·) _
-    oa cache le_rfl z hmem
-  intro input current hle result hresult
-  cases input with
-  | inl sample =>
-      change result ∈ support (((unifFwdImpl HashSpec) sample).run current) at hresult
-      have hrun := unifFwdImpl.simulateQ_run
-        (hashSpec := HashSpec) (liftM (unifSpec.query sample) : ProbComp _) current
-      simp only [simulateQ_spec_query] at hrun
-      rw [hrun, support_map] at hresult
-      obtain ⟨value, _, heq⟩ := hresult
-      rw [← (Prod.mk.inj heq).2]
-      exact hle
-  | inr hashInput =>
-      change result ∈ support
-        ((((f.liftTarget ProbComp).withCaching : QueryImpl HashSpec _) hashInput).run current)
-        at hresult
-      exact hle.trans (QueryImpl.withCaching_cache_le _ hashInput current result hresult)
-
 theorem replayRom_of_mem_support {alpha : Type} (oa : OracleComp OracleWorld alpha)
     (cache : QueryCache HashSpec) (a : alpha) (finalCache : QueryCache HashSpec)
     (hmem : (a, finalCache) ∈ support ((simulateQ romImpl oa).run cache))

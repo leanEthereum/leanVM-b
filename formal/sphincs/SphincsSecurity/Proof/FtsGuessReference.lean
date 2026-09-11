@@ -104,51 +104,6 @@ theorem reference_root (key : SecretKey) (labels : CanonicalGraphLabels) (residu
   rw [← frontierRoot_eq_of_agree key.parameter words _ _ (maskOtsPrefixes_agrees key.parameter words _)]
   exact frontierRoot_of_graph key _ labels words (canonicalGraphLabels_programmedHash _ _ _ _ _)
 
-theorem fixed_reference_forgeryRest (key : SecretKey) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs) (labels : CanonicalGraphLabels)
-    (auxiliary : ReferenceAuxiliary inputs) (hauxiliary : auxiliary ∈ (referenceAuxiliarySample inputs).support)
-    (dummy : OtsReferenceWords) (adversary : Adversary) :
-    simulateQ (fixedAnswers (referenceAnswers key.parameter (canonicalGraphRoot labels) key.otsSecret labels inputs hencoding auxiliary dummy)
-      (FtsGuessSigning.secretTable key.ftsSecret))
-      (adversaryRun key.parameter labels (adversary.main ⟨canonicalGraphRoot labels, key.parameter⟩)) =
-      referenceForgeryRest key
-        (programmedHash key.parameter key.otsSecret key.ftsSecret labels
-          (finiteHashAnswer ∅ inputs (canonicalReferenceResidual key.parameter inputs hencoding labels auxiliary.rows auxiliary.seed)))
-        labels auxiliary.selections dummy adversary := by
-  rw [referenceForgeryRest, reference_root]
-  exact fixed_reference_adversaryRun key (canonicalGraphRoot labels) inputs hencoding labels auxiliary hauxiliary dummy _
-
-theorem initialRun_projection {Result : Type} (auxiliary : QueryImpl Auxiliary ProbComp)
-    (computation : OracleComp World Result) :
-    (𝒟[sampleFtsSecrets] >>= fun ftsSecret =>
-      𝒟[simulateQ (fixedAnswers auxiliary (FtsGuessSigning.secretTable ftsSecret)) computation]) =
-      Prod.fst <$> SecretGuessObservation.lazyRun (SecretGuessObservation.environment auxiliary) computation
-        (SecretGuessObservation.initialState PUnit.unit) := by
-  have h := congrArg (· >>= fun secrets => 𝒟[simulateQ (fixedAnswers auxiliary secrets) computation])
-    FtsGuessSigning.sampleFtsSecrets_table
-  rw [bind_map_left] at h
-  exact h.trans (SecretGuessObservation.lazyRun_projection auxiliary computation
-    (SecretGuessObservation.initialState PUnit.unit) (fun _ => Finset.univ_nonempty))
-
-theorem referenceForgeryRest_lazy (parameter : PublicParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (labels : CanonicalGraphLabels)
-    (auxiliary : ReferenceAuxiliary inputs) (hauxiliary : auxiliary ∈ (referenceAuxiliarySample inputs).support)
-    (dummy : OtsReferenceWords) (adversary : Adversary) :
-    (𝒟[sampleFtsSecrets] >>= fun ftsSecret =>
-      𝒟[referenceForgeryRest ⟨parameter, 0, otsSecret, ftsSecret⟩
-        (programmedHash parameter otsSecret ftsSecret labels
-          (finiteHashAnswer ∅ inputs (canonicalReferenceResidual parameter inputs hencoding labels auxiliary.rows auxiliary.seed)))
-        labels auxiliary.selections dummy adversary]) =
-      Prod.fst <$> SecretGuessObservation.lazyRun
-        (SecretGuessObservation.environment (referenceAnswers parameter (canonicalGraphRoot labels) otsSecret labels inputs hencoding auxiliary dummy))
-        (adversaryRun parameter labels (adversary.main ⟨canonicalGraphRoot labels, parameter⟩))
-        (SecretGuessObservation.initialState PUnit.unit) := by
-  rw [← initialRun_projection]
-  apply congrArg (𝒟[sampleFtsSecrets] >>= ·)
-  funext ftsSecret
-  rw [fixed_reference_forgeryRest ⟨parameter, 0, otsSecret, ftsSecret⟩ inputs hencoding labels auxiliary hauxiliary dummy adversary]
-
 theorem fixed_reference_completedForgeryRest (key : SecretKey) (inputs : Finset HashInput)
     (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs) (labels : CanonicalGraphLabels)
     (auxiliary : ReferenceAuxiliary inputs) (hauxiliary : auxiliary ∈ (referenceAuxiliarySample inputs).support)

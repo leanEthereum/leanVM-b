@@ -11,6 +11,7 @@ open _root_.OracleComp OracleSpec ENNReal
 open FtsProbeSimulation (messageHashCharge)
 attribute [local instance] Classical.propDecidable
 noncomputable local instance instSampleableTypeRandomness_7 : SampleableType Randomness := SampleableType.ofFintype Randomness
+
 attribute [local irreducible] signDigestLoop signAttempt signWithView signAfterDigest
 set_option backward.isDefEq.respectTransparency false
 

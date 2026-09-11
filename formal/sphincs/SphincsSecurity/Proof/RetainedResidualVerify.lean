@@ -110,18 +110,6 @@ theorem Compatible.hypertree_honest {inputs : Finset HashInput} {context : Conte
     · rw [show (⟨2, by decide⟩ : Layer) = bottomLayer from rfl, ← hbottomOpening.1]
       exact hverifier _ _ (Or.inl ⟨rfl, rfl⟩)
 
-theorem Compatible.honest_counters {inputs : Finset HashInput} {context : Context inputs} {memory : Memory}
-    (hcompatible : Compatible context memory) (hdummy : ∀ lay tree leaf, TargetSum.Valid (context.dummy lay tree leaf))
-    (index : Index) (leaves : DigestTree → FtsLeaf) (signature : Signature)
-    (hfull : FullyHonestOpening context.oracle memory.external.cache context.key index leaves signature) :
-    ∀ lay, ∃ selected, context.auxiliary.selections ⟨lay, treeIndexAt index lay, leafIndexAt index lay⟩ = some selected ∧
-      signature.counter lay = BitVec.ofNat counterBits selected.1.val := by
-  intro lay
-  obtain ⟨selected, hselected, _, hcounter, _⟩ := hcompatible.layer_reference lay (treeIndexAt index lay) (leafIndexAt index lay)
-    (evalWithAnswerFn context.oracle (layerMessage context.key index lay)) (signature.counter lay)
-    (signature.chainValue lay) (signaturePath signature lay) (context.words_valid hdummy _ _ _) (hfull.1 lay).1 (hfull.1 lay).2
-  exact ⟨selected, hselected, hcounter⟩
-
 theorem Compatible.verify_honest {inputs : Finset HashInput} {context : Context inputs} {memory : Memory}
     (hcompatible : Compatible context memory) (hdummy : ∀ lay tree leaf, TargetSum.Valid (context.dummy lay tree leaf))
     (hroot : context.key.root = canonicalGraphRoot context.graph) (message : Message) (signature : Signature)

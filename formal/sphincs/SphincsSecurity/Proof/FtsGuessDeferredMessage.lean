@@ -65,31 +65,4 @@ theorem referenceProgram_message (parameter : PublicParameter) (root : Digest)
       liftM ((SeedSpec inputs).query (.inr input)) :=
   auxiliaryHashProgram_message parameter otsSecret labels inputs hencoding rows input hmessage
 
-theorem deferred_reference_message (parameter : PublicParameter) (root : Digest)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest) (labels : CanonicalGraphLabels)
-    (inputs : Finset HashInput) (hencoding : canonicalEncodingInputs parameter ⊆ inputs)
-    (selections : ReferenceFamily) (rows : CanonicalEncodingRows) (dummy : OtsReferenceWords)
-    (input : inputs) (hmessage : MessageHashInput parameter input.val) (allowed : inputs → Finset HashOutput) :
-    UniformTableObservation.lazyRun forcedSeedAuxiliary
-      (simulateQ (seedLift inputs)
-        (referenceProgram parameter root otsSecret labels inputs hencoding selections rows dummy (.inl (.inr input.val)))) allowed =
-      ((fun answer => (answer, discloseTableValue allowed input answer)) <$> cell (allowed input)) := by
-  rw [referenceProgram_message parameter root otsSecret labels inputs hencoding selections rows dummy input hmessage,
-    simulateQ_spec_query, seedLift, UniformTableObservation.lazyRun, simulateQ_spec_query]
-  rfl
-
-theorem deferred_reference_message_fresh (parameter : PublicParameter) (root : Digest)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest) (labels : CanonicalGraphLabels)
-    (inputs : Finset HashInput) (hencoding : canonicalEncodingInputs parameter ⊆ inputs)
-    (selections : ReferenceFamily) (rows : CanonicalEncodingRows) (dummy : OtsReferenceWords)
-    (input : inputs) (hmessage : MessageHashInput parameter input.val) (allowed : inputs → Finset HashOutput)
-    (hfresh : allowed input = Finset.univ) :
-    UniformTableObservation.lazyRun forcedSeedAuxiliary
-      (simulateQ (seedLift inputs)
-        (referenceProgram parameter root otsSecret labels inputs hencoding selections rows dummy (.inl (.inr input.val)))) allowed =
-      ((fun answer => (answer, discloseTableValue allowed input answer)) <$> 𝒟[PMF.uniformOfFintype HashOutput]) := by
-  rw [deferred_reference_message parameter root otsSecret labels inputs hencoding selections rows dummy input hmessage allowed,
-    hfresh, cell, dif_pos Finset.univ_nonempty]
-  rfl
-
 end SphincsSecurity.Concrete.FtsGuessHash

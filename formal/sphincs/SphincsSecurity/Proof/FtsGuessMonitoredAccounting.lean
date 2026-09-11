@@ -25,8 +25,6 @@ variable (parameter : PublicParameter) (root : Digest)
 
 theorem SigningBoundaryTrace.hashCalls_one : SigningBoundaryTrace.hashCalls (1 : SigningBoundaryTrace) = 0 := rfl
 
-theorem SigningBoundaryTrace.messageCalls_one : SigningBoundaryTrace.messageCalls (1 : SigningBoundaryTrace) = [] := rfl
-
 theorem SigningBoundaryTrace.hashCalls_of (entry : Option (HashInput × HashOutput)) :
     SigningBoundaryTrace.hashCalls (FreeMonoid.of entry : SigningBoundaryTrace) = 1 := rfl
 

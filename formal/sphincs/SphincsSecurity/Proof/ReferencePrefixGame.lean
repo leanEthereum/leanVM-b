@@ -126,19 +126,4 @@ theorem referencePrefixCoordinateGame_eq_jointPrior (inputs : Finset HashInput)
   rw [RetainedObservation.bind_comm (completeRows (fun _ : inputs => none))
     (complete (initialAllowed (referenceFamilyWords encoding.selections dummy) exposedValues))]
 
-theorem forgeAdvantage_eq_referencePrefixPrior (dummy : OtsReferenceWords) (adversary : Adversary) :
-    forgeAdvantage scheme adversary =
-      Pr[fun result => result.2.1 = true | referencePrefixJointPriorGame (canonicalGraphGameInputs adversary)
-        (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] := by
-  rw [← referencePrefixCoordinateGame_eq_jointPrior, ← referenceResidualGame_eq_prefixCoordinates]
-  exact forgeAdvantage_eq_referenceResidual dummy adversary
-
-theorem referencePrefixJointPriorGame_hashCalls_le (dummy : OtsReferenceWords) (adversary : Adversary)
-    (q : Nat) (hbound : HasHashQueryBound scheme adversary q) (result : ReferenceFamily × (Bool × SigningBoundaryTrace))
-    (hresult : result ∈ support (referencePrefixJointPriorGame (canonicalGraphGameInputs adversary)
-      (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary)) :
-    result.2.2.hashCalls ≤ q := by
-  rw [← referencePrefixCoordinateGame_eq_jointPrior, ← referenceResidualGame_eq_prefixCoordinates] at hresult
-  exact referenceResidualGame_hashCalls_le dummy adversary q hbound result hresult
-
 end SphincsSecurity.Concrete

@@ -340,19 +340,6 @@ theorem proposalRun_complete (computation : OracleComp (OracleWorld + SigningSpe
         _ = _ := proposalStep_complete parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required stopAfter
           input state hvalid (covered_step_digest parameter root otsSecret inputs input next state.2 hvalid hcovered) total
 
-include hauxiliary in
-theorem expected_proposalRun_terminalPotential (computation : OracleComp (OracleWorld + SigningSpec) Forgery) (state : ProposalState)
-    (hvalid : Valid state.2) (hcovered : CoveredRun parameter root otsSecret inputs computation state.2) (total : Nat)
-    (payoff : List Index → ENNReal) :
-    (∑' result, Pr[= result | proposalRun parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required stopAfter
-        computation state] * terminalProposalPotential (PMF.uniformOfFintype Index) total payoff result.2.1) =
-      terminalProposalPotential (PMF.uniformOfFintype Index) total payoff state.1 := by
-  have h := congrArg (fun law : SPMF (List Index) => ∑' word, Pr[= word | law] * payoff word)
-    (proposalRun_complete parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required stopAfter hauxiliary
-      computation state hvalid hcovered total)
-  rw [tsum_probOutput_bind_mul] at h
-  simpa only [terminalProposalPotential, SPMF.probOutput_liftM] using h
-
 /-! ### The completed proposal run -/
 
 theorem monitoredWorldRun_bind_const {Result Other : Type} (computation : OracleComp OracleWorld Result) (state : MonitoredState)

@@ -52,15 +52,4 @@ theorem observedRun_source_memory {Result : Type} {inputs : Finset HashInput} (c
           have hcompatible' := observedRun_request_compatible context input hhead state hcovered hcompatible answer after hafter
           exact ih answer (hnext answer) after hcovered' hcompatible'
 
-theorem observedRun_source_compatible {Result : Type} {inputs : Finset HashInput} (context : Context inputs)
-    (computation : OracleComp (OracleWorld + SigningSpec) Result) (hinputs : sourceInputs context.key computation ⊆ inputs)
-    (state : State inputs) (hcovered : ResidualByteFrontend.RowsCovered inputs (project state))
-    (hcompatible : Compatible context state.memory) (value : Result) (after : State inputs)
-    (hresult : observedRun context.environment context.actual context.auxiliary.seed
-      (simulateQ (adversaryImpl inputs context.key.parameter context.key.root context.words context.auxiliary.selections) computation)
-        state (some value, after) ≠ 0) : Compatible context after.memory := by
-  have h := map_nonzero _ forgetState (some value, after) hresult
-  rw [observedRun_source_memory context computation hinputs state hcovered hcompatible] at h
-  exact fixedSourceRun_compatible context computation state.memory hcompatible value after.memory h
-
 end SphincsSecurity.Concrete.RetainedResidual

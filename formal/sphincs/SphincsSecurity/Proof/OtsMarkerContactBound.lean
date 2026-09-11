@@ -44,21 +44,4 @@ theorem markerCheckpointGame_contact_shared_bound (dummy : OtsReferenceWords) (a
   simp only [Nat.cast_mul, Nat.cast_ofNat, div_eq_mul_inv]
   ring
 
-theorem markerCheckpointGame_contact_le (dummy : OtsReferenceWords) (adversary : Adversary) (budget : Nat)
-    (hbound : HasHashQueryBound scheme adversary budget) (hsmall : budget < Fintype.card Digest) :
-    (∑ address : OtsPrefix.ChainAddress,
-      Pr[fun result => result.2.2.ContactAfterStop (OtsEncodingMarker.stopAt address) result.1 (referenceFamilyWords result.2.1 dummy) address |
-        markerCheckpointGame address (canonicalGraphGameInputs adversary) (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary]) ≤
-      ((3444 * ((budget : ENNReal) / Fintype.card Digest)) * ∑' result,
-        Pr[= result | referenceRecordedGame (canonicalGraphGameInputs adversary) (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] *
-          (result.encodingCalls : ENNReal)) /
-        ((1 - (budget : ENNReal) / Fintype.card Digest) * (Fintype.card Digest : ENNReal)) := by
-  have hcard : (Fintype.card Digest : ENNReal) ≠ 0 := by exact_mod_cast Fintype.card_ne_zero
-  have hpositive : 0 < 1 - (budget : ENNReal) / Fintype.card Digest := by
-    apply tsub_pos_iff_lt.mpr
-    rw [ENNReal.div_lt_iff (Or.inl hcard) (Or.inl (by finiteness)), one_mul]
-    exact_mod_cast hsmall
-  apply (ENNReal.le_div_iff_mul_le (Or.inl (mul_ne_zero (ne_of_gt hpositive) hcard)) (Or.inl (by finiteness))).mpr
-  simpa only [mul_comm] using markerCheckpointGame_contact_shared_bound dummy adversary budget hbound hsmall
-
 end SphincsSecurity.Concrete

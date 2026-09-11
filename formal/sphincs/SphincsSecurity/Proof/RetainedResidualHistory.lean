@@ -96,31 +96,4 @@ theorem observedRun_embed_history {Result : Type} (routing : Routing) (actual : 
           exact hhistory
       | some answer => exact (ih answer after hresult).trans hhistory
 
-theorem observedRun_signingProgram_history (actual : Labels) (seed : inputs → HashOutput)
-    (root : Digest) (message : Message) (state : State inputs) (result : Option (Option Signature) × State inputs)
-    (hresult : observedRun (environment parameter inputs hencoding words publicReplies selections rows) actual seed
-      (signingProgram inputs parameter root words selections message) state result ≠ 0) :
-    ∃ record : Option SigningRecord,
-      result.1 = record.map (fun completed => completed.1.1) ∧
-      result.2.memory.history = record.elim state.memory.history (fun completed =>
-        (state.memory.recordSigning message completed).history) := by
-  rw [observedRun_signingProgram, RetainedObservation.bind_nonzero] at hresult
-  obtain ⟨⟨record, after⟩, hafter, hresult⟩ := hresult
-  have hhistory := observedRun_embed_history parameter inputs hencoding words publicReplies selections rows
-    state.memory.routing actual seed _ state (record, after) hafter
-  cases record with
-  | none =>
-      simp only [Option.elim_none, ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] at hresult
-      subst result
-      exact ⟨none, rfl, hhistory⟩
-  | some record =>
-      simp only [Option.elim_some, ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] at hresult
-      subst result
-      refine ⟨some record, rfl, ?_⟩
-      have hrouting := congrArg Prod.fst hhistory
-      have hlog := congrArg (Prod.fst ∘ Prod.snd) hhistory
-      have hrecords := congrArg (Prod.snd ∘ Prod.snd) hhistory
-      simp only [Memory.history, Function.comp_def] at hrouting hlog hrecords
-      simp only [Option.elim_some, Memory.recordSigning, Memory.history, hrouting, hlog, hrecords]
-
 end SphincsSecurity.Concrete.RetainedResidual

@@ -65,33 +65,4 @@ theorem referenceFamilyOracleSample_eq_seed (key : SecretKey) (inputs : Finset H
     (referenceFamilyCell_injective key.parameter (outsideGraphMessage key inputs hencoding nonencoding))]
   simp only [PMF.map_comp, Function.comp_def, referenceFamilySeedTable]
 
-theorem referenceFamilySeedTable_nonencoding (key : SecretKey) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs)
-    (seed : ReferenceFamilySeed key.parameter inputs hencoding) :
-    (fun cell : UniformTableSplit.Outside (encodingInputCell key.parameter inputs hencoding) =>
-      referenceFamilySeedTable key inputs hencoding seed cell.val) = seed.nonencoding :=
-  referenceFamilyOracleTable_nonencoding key inputs hencoding seed.nonencoding seed.selectedRows _
-
-theorem referenceFamilySeedTable_answer_nonencoding (key : SecretKey) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs)
-    (seed : ReferenceFamilySeed key.parameter inputs hencoding)
-    (cell : UniformTableSplit.Outside (encodingInputCell key.parameter inputs hencoding)) :
-    finiteHashAnswer ∅ inputs (referenceFamilySeedTable key inputs hencoding seed) cell.val.val = seed.nonencoding cell := by
-  rw [finiteHashAnswer_none ∅ inputs _ _ cell.val.property (by simp)]
-  exact congrFun (referenceFamilySeedTable_nonencoding key inputs hencoding seed) cell
-
-theorem referenceFamilySeedLaw_nonencoding (parameter : PublicParameter) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs parameter ⊆ inputs) :
-    (referenceFamilySeedLaw parameter inputs hencoding).map (fun seed => (seed.selections, seed.nonencoding)) =
-      (FirstSuccessFamily.selected decodeEncodingOutput encodingAttemptLimit).bind (fun selections =>
-        (PMF.uniformOfFintype (NonencodingRows parameter inputs hencoding)).map (fun nonencoding => (selections, nonencoding))) := by
-  rw [referenceFamilySeedLaw, PMF.map_bind]
-  apply congrArg (FirstSuccessFamily.selected decodeEncodingOutput encodingAttemptLimit).bind
-  funext selections
-  rw [referenceFamilySeedLawAt, PMF.map_bind]
-  apply congrArg (PMF.uniformOfFintype (NonencodingRows parameter inputs hencoding)).bind
-  funext nonencoding
-  simp only [PMF.map_bind, PMF.map_comp, Function.comp_def, PMF.bind_const]
-  exact PMF.map_const _ _
-
 end SphincsSecurity.Concrete

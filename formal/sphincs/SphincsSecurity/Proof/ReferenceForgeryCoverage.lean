@@ -24,10 +24,6 @@ def ForgeryWitnessFor (key : SecretKey) (f : QueryImpl HashSpec Id) (root : Dige
   (ReferenceFtsCoverage.Outcome actualKey f before.1.1.2 before.1.2 trace before.1.1.1 ∨
     ReferencePrimitiveWitness.Outcome actualKey f words (canonicalGraphMessage labels) selections result)
 
-def ForgeryWitnessAtRoot (key : SecretKey) (f : QueryImpl HashSpec Id) (root : Digest) (words : OtsReferenceWords)
-    (selections : ReferenceFamily) (adversary : Adversary) (result : ContactResult) : Prop :=
-  ∃ before, ForgeryWitnessFor key f root words selections adversary result before
-
 theorem SuccessWitnessFor.classification {key : SecretKey} {f : QueryImpl HashSpec Id} {root : Digest} {words : OtsReferenceWords}
     {selections : ReferenceFamily} {adversary : Adversary} {result : ContactResult} {before : AdversaryTrace}
     (h : SuccessWitnessFor key f root words selections adversary result before) : ForgeryWitnessFor key f root words selections adversary result before := by
@@ -46,22 +42,5 @@ theorem SuccessWitnessFor.classification {key : SecretKey} {f : QueryImpl HashSp
     rw [hfrontier, canonicalGraphLabels_frontier key.parameter key.otsSecret key.ftsSecret f words root]
     rfl
   · exact Or.inr (Or.inr (Or.inl (ReferencePrimitiveWitness.fts_exception { key with root := root } f words _ _ hfts)))
-
-theorem SuccessWitnessAtRoot.classification {key : SecretKey} {f : QueryImpl HashSpec Id} {root : Digest} {words : OtsReferenceWords}
-    {selections : ReferenceFamily} {adversary : Adversary} {result : ContactResult}
-    (h : SuccessWitnessAtRoot key f root words selections adversary result) : ForgeryWitnessAtRoot key f root words selections adversary result := by
-  obtain ⟨before, hbefore⟩ := h
-  exact ⟨before, hbefore.classification⟩
-
-theorem sample_success_classification (key : SecretKey) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs) (hgraph : canonicalGraphInputs key.parameter ⊆ inputs)
-    (reference : ReferenceFamily × (inputs → HashOutput)) (hreference : reference ∈ (referenceFamilyOracleSample key inputs hencoding).support)
-    (dummy : OtsReferenceWords) (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf)) (adversary : Adversary) (result : ContactResult)
-    (hr : result ∈ support (referenceInstrumentedRest contactObserver key (finiteHashAnswer ∅ inputs reference.2)
-      (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret (finiteHashAnswer ∅ inputs reference.2)) reference.1 dummy adversary))
-    (hsuccess : result.output.1 = true) :
-    ForgeryWitnessAtRoot key (finiteHashAnswer ∅ inputs reference.2) (rootedKey key (finiteHashAnswer ∅ inputs reference.2)).root
-      (referenceFamilyWords reference.1 dummy) reference.1 adversary result :=
-  (sample_success_witness key inputs hencoding hgraph reference hreference dummy hdummy adversary result hr hsuccess).classification
 
 end SphincsSecurity.Concrete.ReferenceVerifierWitness

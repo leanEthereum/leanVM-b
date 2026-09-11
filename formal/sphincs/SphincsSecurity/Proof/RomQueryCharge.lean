@@ -41,6 +41,10 @@ theorem romImpl_query_mass (query : OracleWorld.Domain) (cache : QueryCache Hash
   | inl input =>
       simp [romImpl, unifFwdImpl, QueryImpl.liftTarget, HasQuery.toQueryImpl,
         StateT.run_monadLift]
+      rw [ENNReal.tsum_prod']
+      simp only [tsum_ite_eq, tsum_fintype, Finset.sum_const, Finset.card_univ, nsmul_eq_mul]
+      simp [Fintype.card_fin]
+      exact ENNReal.mul_inv_cancel (by positivity) (by finiteness)
   | inr input =>
       change (∑' result, Pr[= result | (randomOracle input).run cache]) = 1
       by_cases hfresh : cache input = none
@@ -64,18 +68,6 @@ theorem finite_of_mem_support_romImpl {query : OracleWorld.Domain}
       push_cast
       rw [hfinite.cachedInputs_ncard_toENNReal_eq_enncard]
       exact romImpl_hash_query_enncard_le input cache result hresult
-
-theorem expectedQueryCharge_add {α : Type}
-    (first second : QueryCache HashSpec → HashInput → ℝ≥0∞)
-    (computation : OracleComp OracleWorld α) (cache : QueryCache HashSpec) :
-    expectedQueryCharge (fun cache input => first cache input + second cache input)
-        computation cache =
-      expectedQueryCharge first computation cache + expectedQueryCharge second computation cache := by
-  induction computation using OracleComp.inductionOn generalizing cache with
-  | pure value => simp
-  | query_bind query next ih =>
-      simp only [expectedQueryCharge_query_bind, ih, mul_add, ENNReal.tsum_add]
-      cases query <;> simp only [hashQueryCharge, Sum.elim_inl, Sum.elim_inr] <;> ac_rfl
 
 theorem expected_potential_simulateQ_le_queryCharge {α : Type}
     (potential : QueryCache HashSpec → ℝ≥0∞)
@@ -112,44 +104,6 @@ theorem expected_potential_simulateQ_le_queryCharge {α : Type}
           add_le_add (hstep query cache hfinite) le_rfl
         _ = _ := by rw [add_assoc]
 
-theorem expectedQueryCharge_le_queryBound {α : Type}
-    (charge : QueryCache HashSpec → HashInput → ℝ≥0∞) (cap : ℝ≥0∞)
-    (hcharge : ∀ cache input, charge cache input ≤ cap)
-    (computation : OracleComp OracleWorld α) :
-    ∀ q : Nat, computation.IsQueryBoundP (· matches Sum.inr _) q →
-      ∀ cache : QueryCache HashSpec, expectedQueryCharge charge computation cache ≤ cap * q := by
-  induction computation using OracleComp.inductionOn with
-  | pure value => intros; simp
-  | query_bind query next ih =>
-      intro q hq cache
-      rw [isQueryBoundP_query_bind_iff] at hq
-      obtain ⟨hcan, hcont⟩ := hq
-      rw [expectedQueryCharge_query_bind]
-      cases query with
-      | inl input =>
-          simp only [Bool.false_eq_true, if_false] at hcont
-          simp only [hashQueryCharge, Sum.elim_inl, zero_add]
-          calc
-            _ ≤ ∑' result, Pr[= result | (romImpl (.inl input)).run cache] * (cap * q) :=
-              ENNReal.tsum_le_tsum fun result => mul_le_mul' le_rfl
-                (ih result.1 q (hcont result.1) result.2)
-            _ = _ := by rw [ENNReal.tsum_mul_right, romImpl_query_mass, one_mul]
-      | inr input =>
-          simp only [hashQueryCharge, Sum.elim_inr]
-          simp only [if_true] at hcont
-          have hqPositive : 0 < q := by simpa using hcan
-          obtain ⟨remaining, rfl⟩ : ∃ remaining, q = remaining + 1 :=
-            ⟨q - 1, by omega⟩
-          simp only [Nat.add_sub_cancel] at hcont
-          calc
-            _ ≤ cap + ∑' result,
-                Pr[= result | (romImpl (.inr input)).run cache] * (cap * remaining) :=
-              add_le_add (hcharge cache input) (ENNReal.tsum_le_tsum fun result =>
-                mul_le_mul' le_rfl (ih result.1 remaining (hcont result.1) result.2))
-            _ = cap + cap * remaining := by
-              rw [ENNReal.tsum_mul_right, romImpl_query_mass, one_mul]
-            _ = _ := by push_cast; ring
-
 theorem expectedQueryCharge_mul {α : Type}
     (charge : QueryCache HashSpec → HashInput → ℝ≥0∞) (factor : ℝ≥0∞)
     (computation : OracleComp OracleWorld α) (cache : QueryCache HashSpec) :
@@ -176,6 +130,9 @@ theorem expected_potential_romImpl_le_charge
   | inl input =>
       simp [romImpl, unifFwdImpl, QueryImpl.liftTarget, HasQuery.toQueryImpl,
         StateT.run_monadLift, tsum_probOutput_map_mul, hashQueryCharge]
+      rw [ENNReal.tsum_prod']
+      simp only [tsum_ite_eq, tsum_fintype, Finset.sum_const, Finset.card_univ, nsmul_eq_mul]
+      simp [Fintype.card_fin]
       rw [← mul_assoc, ENNReal.mul_inv_cancel (by positivity) (by finiteness), one_mul]
   | inr input =>
       change (∑' result, Pr[= result | (randomOracle input).run cache] * potential result.2) ≤

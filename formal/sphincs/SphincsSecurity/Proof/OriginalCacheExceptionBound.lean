@@ -236,32 +236,6 @@ theorem certificateContextGame_cache_hit_le_original_message (adversary : Advers
             (simulateQ (expandedAdversaryImpl generated.1.2)
               (FtsProbeSimulation.retainedGameRestComputation adversary generated.1.1)) generated.2)
 
-theorem originalCertificateMessageCost_le_budget (adversary : Adversary) (q : Nat)
-    (hbound : HasHashQueryBound scheme adversary q) : originalCertificateMessageCost adversary ≤ q := by
-  let law := referenceRecordedGame (canonicalGraphGameInputs adversary)
-    (canonicalEncodingInputs_subset_gameInputs adversary) fixedReferenceDummy adversary
-  apply (originalCertificateMessageCost_le_referenceRecorded fixedReferenceDummy adversary).trans
-  calc
-    _ ≤ ∑' result, Pr[= result | law] * (q : ENNReal) := by
-      apply ENNReal.tsum_le_tsum
-      intro result
-      by_cases hr : result ∈ support law
-      · have h := referenceRecordedGame_joint_budget fixedReferenceDummy adversary q hbound result hr
-        dsimp only [ReferenceRecordedResult.remainingCalls] at h
-        exact mul_le_mul' le_rfl (Nat.cast_le.mpr (show result.messageCalls ≤ q by omega))
-      · rw [probOutput_eq_zero_of_not_mem_support hr, zero_mul, zero_mul]
-    _ ≤ q := by
-      rw [ENNReal.tsum_mul_right]
-      exact mul_le_of_le_one_left' tsum_probOutput_le_one
-
-theorem certificateContextGame_cache_hit_le_budget (adversary : Adversary) (q : Nat)
-    (required : Finset FtsTree) (stopAfter : SecretKey → CertificateStopRule) (stopped : Bool)
-    (hbound : HasHashQueryBound scheme adversary q) :
-    Pr[fun result => result.2.2.2.2.2 = true | certificateContextGame adversary q required stopAfter stopped] ≤
-      (q : ENNReal) * (2 ^ 169 : ENNReal)⁻¹ :=
-  (certificateContextGame_cache_hit_le_original_message adversary q required stopAfter stopped).trans
-    (mul_le_mul' (originalCertificateMessageCost_le_budget adversary q hbound) certificateCacheExceptionRate_le)
-
 theorem certificateContextGame_exception_le_cache_add_prefix (adversary : Adversary) (budget : Nat)
     (required : Finset FtsTree) (stopAfter : SecretKey → CertificateStopRule) (stopped : Bool) :
     Pr[fun result => CertificateGameExceptional result.2 | certificateContextGame adversary budget required stopAfter stopped] ≤

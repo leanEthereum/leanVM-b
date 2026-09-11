@@ -1,7 +1,9 @@
 import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.CacheSize
 import SphincsSecurity.Proof.FewTimeLoop
-import SphincsSecurity.Proof.FullTrace
+import SphincsSecurity.Proof.RootCache
+import SphincsSecurity.Proof.Secrets
+import SphincsSecurity.Proof.SigningTrace
 
 /-!
 # Cached signer views
@@ -39,72 +41,6 @@ theorem cachedMessageEntryCountWhere_le_enncard
     exact hentry.1.1
   simpa only [cachedMessageEntryCountWhere, QueryCache.enncard] using
     ENat.toENNReal_mono (Set.encard_le_encard hsubset)
-
-theorem Concrete.gameAfterSecretsWithFullTrace_support_enncard_le
-    (adversary : Adversary) (q : Nat)
-    (hq : HasHashQueryBound Concrete.scheme adversary q)
-    (parameter : PublicParameter) (hparameter : parameter ∈ support Concrete.sampleParameter)
-    (otsSecret : Layer → TreeIndex → LeafIndex → ChainIndex → Digest)
-    (hots : otsSecret ∈ support Concrete.sampleOtsSecrets)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (hfts : ftsSecret ∈ support Concrete.sampleFtsSecrets)
-    (result : (Digest × Forgery × Bool) × (QueryCache HashSpec × FullAdversaryTrace))
-    (hresult : result ∈ support
-      (Concrete.gameAfterSecretsWithFullTrace adversary parameter otsSecret ftsSecret)) :
-    QueryCache.enncard result.2.1 ≤ q := by
-  have hprojected : (result.1.2.2, result.2.1) ∈ support
-      ((fun traced => (traced.1.2.2, traced.2.1)) <$>
-        Concrete.gameAfterSecretsWithFullTrace adversary parameter otsSecret ftsSecret) := by
-    rw [support_map]
-    exact ⟨result, hresult, rfl⟩
-  rw [Concrete.gameAfterSecretsWithFullTrace_projection] at hprojected
-  exact simulateQ_romImpl_enncard_le_queryBound
-    (Concrete.gameAfterSecrets adversary parameter otsSecret ftsSecret) q
-    (Concrete.isQueryBoundP_gameAfterSecrets adversary q hq hparameter hots hfts)
-    (result.1.2.2, result.2.1) hprojected
-
-set_option maxRecDepth 100000 in
-theorem uniform_randomness_messageInput_cacheHitWhere_le_cachedCount
-    (parameter : PublicParameter) (root : Digest) (message : Message)
-    (cache : QueryCache HashSpec) (P : Concrete.FewTimeView → Prop) :
-    Pr[fun randomness : Randomness => ∃ output,
-      cache (tweakableHashInput parameter .message
-        (Concrete.messageDigestPayload root message randomness)) = some output
-        ∧ Concrete.signAttemptResultOfOutput output ≠ none
-        ∧ P (Concrete.hashOutputFewTimeView output) |
-      $ᵗ Randomness] ≤
-      cachedMessageEntryCountWhere cache parameter root message P *
-        ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ := by
-  classical
-  let hit : Randomness → Prop := fun randomness => ∃ output,
-    cache (tweakableHashInput parameter .message
-      (Concrete.messageDigestPayload root message randomness)) = some output
-      ∧ Concrete.signAttemptResultOfOutput output ≠ none
-      ∧ P (Concrete.hashOutputFewTimeView output)
-  let targets : Finset Randomness := Finset.univ.filter hit
-  let fiber := cachedMessageInputSetWhere cache parameter root message P
-  have hcard : (targets.card : ℝ≥0∞) ≤
-      cachedMessageEntryCountWhere cache parameter root message P := by
-    let embedding : (targets : Set Randomness) ↪ fiber :=
-      ⟨fun randomness =>
-          ⟨⟨tweakableHashInput parameter .message
-                (Concrete.messageDigestPayload root message randomness.1),
-              Classical.choose (Finset.mem_filter.mp randomness.2).2⟩,
-            ⟨⟨Classical.choose_spec (Finset.mem_filter.mp randomness.2).2 |>.1,
-                ⟨randomness.1, rfl⟩⟩,
-              ⟨Classical.choose_spec (Finset.mem_filter.mp randomness.2).2 |>.2.1,
-                Classical.choose_spec (Finset.mem_filter.mp randomness.2).2 |>.2.2⟩⟩⟩,
-        fun left right heq => Subtype.ext <|
-          (Concrete.messageDigestPayload_injective root <|
-            (tweakableHashInput_injective parameter (by trivial) (by trivial) <|
-              congrArg (fun entry : fiber => entry.1.1) heq).2).2⟩
-    simpa only [cachedMessageEntryCountWhere, fiber,
-      Set.encard_coe_eq_coe_finsetCard, ENat.toENNReal_coe] using
-      ENat.toENNReal_mono embedding.encard_le
-  rw [probEvent_uniformSample, card_randomness, div_eq_mul_inv]
-  change (targets.card : ℝ≥0∞) *
-      ((2 ^ randomnessBits : Nat) : ℝ≥0∞)⁻¹ ≤ _
-  exact mul_le_mul' hcard le_rfl
 
 def Concrete.PrehitSelectedView (referenceCache : QueryCache HashSpec)
     (secretKey : SecretKey) (message : Message) (P : Concrete.FewTimeView → Prop)
@@ -188,15 +124,5 @@ theorem Concrete.signDigestLoop_initial_cached_result
               attemptCache (some (selectedIndex, selectedLeaves)) output hcached'
               hattemptSelected).symm
           exact hselectedResult.trans (congrArg some (congrArg Prod.snd htuple).symm)
-
-def Concrete.PrehitSuccessfulSignerView (initialCache : QueryCache HashSpec)
-    (secretKey : SecretKey) (message : Message) (P : Concrete.FewTimeView → Prop)
-    (result : (Option Signature × Option Concrete.FewTimeView) × QueryCache HashSpec) : Prop :=
-  ∃ signature view,
-    result.1 = (some signature, some view)
-      ∧ ∃ output, initialCache
-        (tweakableHashInput secretKey.parameter .message
-          (Concrete.messageDigestPayload secretKey.root message signature.randomness)) = some output
-        ∧ P (Concrete.hashOutputFewTimeView output)
 
 end SphincsSecurity

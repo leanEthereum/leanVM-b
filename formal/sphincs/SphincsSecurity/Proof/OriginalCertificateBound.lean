@@ -23,28 +23,6 @@ noncomputable def OriginalCertificateResult.verdict (result : OriginalCertificat
   decide (SigningTranscript.Valid result.2.1.1.2 ∧
     ¬SigningTranscript.Contains result.2.1.1.2 result.2.1.1.1) && result.2.1.2
 
-theorem originalCertificateSource_verdict (adversary : Adversary) :
-    OriginalCertificateResult.verdict <$> originalCertificateSource adversary =
-      (simulateQ romImpl (gameCore scheme adversary)).run' ∅ := by
-  rw [originalCertificateSource, gameCore_eq, simulateQ_bind, StateT.run'_eq, StateT.run_bind]
-  simp only [map_bind, map_pure]
-  apply bind_congr
-  intro generated
-  rw [OtsProbeSimulation.gameRest_eq_map_retained, simulateQ_map, StateT.run_map]
-  have hretained : OtsProbeSimulation.retainedGameRestComputation adversary generated.1.1 =
-      retainedGameRestComputation adversary generated.1.1 := by
-    unfold OtsProbeSimulation.retainedGameRestComputation retainedGameRestComputation
-    rfl
-  rw [hretained, OtsProbeSimulation.simulateQ_unloggedMapped_eq_expanded]
-  simp only [Functor.map_map, OriginalCertificateResult.verdict, bind_pure_comp]
-
-theorem forgeAdvantage_eq_originalCertificateSource (adversary : Adversary) :
-    forgeAdvantage scheme adversary =
-      Pr[fun result => result.verdict = true | originalCertificateSource adversary] := by
-  rw [forgeAdvantage, ← originalCertificateSource_verdict]
-  rw [← probEvent_eq_eq_probOutput, probEvent_map]
-  rfl
-
 noncomputable def certificateContextGame (adversary : Adversary) (budget : Nat) (required : Finset FtsTree)
     (stopAfter : SecretKey → CertificateStopRule) (stopped : Bool) : PMF CertificateContextResult := do
   let generated ← (liftM (boundaryRun 0 scheme.keygen ∅) : PMF _)

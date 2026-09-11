@@ -46,21 +46,6 @@ theorem knownEncodingRowAt_none (parameter : PublicParameter) (inputs : Finset H
     | none => rfl
     | some row => exact (hout ⟨row, (knownEncodingRowAt_some parameter inputs hencoding known input row).mp h⟩).elim
 
-theorem knownReferenceResidual_lookup (parameter : PublicParameter) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (known : Labels)
-    (rows : CanonicalEncodingRows) (seed : inputs → HashOutput) (input : inputs) :
-    knownReferenceResidual parameter inputs hencoding known rows seed input =
-      (knownEncodingRowAt parameter inputs hencoding known input).elim (seed input) rows := by
-  cases h : knownEncodingRowAt parameter inputs hencoding known input with
-  | none =>
-      simp only [Option.elim_none]
-      exact UniformTableSplit.overwrite_outside _ _ rows seed input
-        ((knownEncodingRowAt_none parameter inputs hencoding known input).mp h)
-  | some row =>
-      simp only [Option.elim_some]
-      rw [← (knownEncodingRowAt_some parameter inputs hencoding known input row).mp h]
-      exact knownReferenceResidual_at parameter inputs hencoding known rows seed row
-
 theorem knownEncodingRowAt_structural (parameter : PublicParameter) (inputs : Finset HashInput)
     (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (known : Labels)
     (input : inputs) (position : Position) (hat : AtPosition parameter input.val position) :

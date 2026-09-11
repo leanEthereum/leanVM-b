@@ -123,24 +123,6 @@ theorem expectedProposalPayment_query_bind (charge : (OracleWorld + SigningSpec)
           expectedProposalPayment parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required stopAfter charge
             (next result.1.1.1) result.2 := rfl
 
-theorem expectedProposalPayment_erasure (charge : (OracleWorld + SigningSpec).Domain → CertificateMonitorState → ENNReal)
-    (computation : OracleComp (OracleWorld + SigningSpec) Forgery) (state : ProposalState) :
-    expectedProposalPayment parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required stopAfter
-      (fun input current => charge input (monitorView current.2)) computation state =
-      expectedMonitoredPayment parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required stopAfter charge
-        computation state.2 := by
-  induction computation using OracleComp.inductionOn generalizing state with
-  | pure value => rfl
-  | query_bind input next ih =>
-      rw [expectedProposalPayment_query_bind, expectedMonitoredPayment_query_bind,
-        ← proposalStep_erasure parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required stopAfter input state,
-        tsum_probOutput_map_mul]
-      apply congrArg (_ + ·)
-      apply tsum_congr
-      intro result
-      simp only [Prod.map_fst, Prod.map_snd, id_eq]
-      rw [ih result.1.1.1 result.2]
-
 include hauxiliary in
 theorem expected_proposalRun_accumulator (counter : ProposalState → ENNReal)
     (charge : (OracleWorld + SigningSpec).Domain → ProposalState → ENNReal)
@@ -278,29 +260,5 @@ theorem expected_proposalRun_creationCost (computation : OracleComp (OracleWorld
     (fun state => state.2.2.creationCost) _
     (fun input state hvalid _ => expected_proposalStep_creationCost parameter root otsSecret labels inputs hencoding selections rows dummy slot
       budget required stopAfter input state hvalid) computation state hvalid hcovered
-
-include hauxiliary in
-theorem expected_proposalRun_creationCost_le_mass_terminalPotential (total : Nat)
-    (computation : OracleComp (OracleWorld + SigningSpec) Forgery) (state : ProposalState) (hvalid : Valid state.2)
-    (hcovered : CoveredRun parameter root otsSecret inputs computation state.2) (hbudget : budget ≤ 2 ^ 127)
-    (hinv : ProposalInvariant parameter root total state) :
-    (∑' result, Pr[= result | proposalRun parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required
-        (proposalStop stopAfter) computation state] * result.2.2.2.creationCost) ≤
-      state.2.2.creationCost +
-        ∑' result, Pr[= result | proposalRun parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required
-          (proposalStop stopAfter) computation state] *
-          (result.2.2.2.creationMass * terminalProposalPotential (PMF.uniformOfFintype Index) total (terminalCertificatePrice required) result.2.1) := by
-  rw [expected_proposalRun_creationCost parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required
-      (proposalStop stopAfter) hauxiliary computation state hvalid hcovered,
-    expected_proposalRun_mass_terminalPotential parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required
-      (proposalStop stopAfter) hauxiliary total computation state hvalid hcovered]
-  calc
-    _ ≤ state.2.2.creationCost +
-        expectedProposalPayment parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required (proposalStop stopAfter)
-          (fun input current => certificateMonitorMass (monitorKey parameter root) budget input (monitorView current.2) *
-            terminalProposalPotential (PMF.uniformOfFintype Index) total (terminalCertificatePrice required) current.1) computation state :=
-      add_le_add le_rfl (expectedProposalPayment_charge_le_mass_terminalPotential parameter root otsSecret labels inputs hencoding selections rows
-        dummy slot budget required stopAfter hauxiliary total computation state hvalid hcovered hbudget hinv)
-    _ ≤ _ := add_le_add le_rfl le_add_self
 
 end SphincsSecurity.Concrete.FtsGuessHash

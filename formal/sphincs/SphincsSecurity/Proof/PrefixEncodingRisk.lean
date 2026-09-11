@@ -1,5 +1,7 @@
 import SphincsSecurity.Proof.Prelude
-import SphincsSecurity.Proof.PrefixBytePrior
+import SphincsSecurity.Proof.PrefixByteRun
+import SphincsSecurity.Proof.ReferenceJointPrior
+import SphincsSecurity.Proof.ResidualByteRun
 
 namespace SphincsSecurity.Concrete.ResidualByteFrontend
 
@@ -43,51 +45,6 @@ theorem checkedFixedStep_replyClean (parameter : PublicParameter) (words : OtsRe
       · contradiction
       · rename_i hsafe
         exact replyClean_store reject memory.cache hclean input output hsafe
-
-theorem externalRun_preserves_live {Result : Type} (step : HashStep) (property : ExternalMemory → Prop)
-    (hstep : ∀ input memory, property memory → ∀ result, step input memory result ≠ 0 → result.1 ≠ none → property result.2)
-    (computation : OracleComp OracleWorld Result) (memory : ExternalMemory) (hinitial : property memory)
-    (result : Option Result × ExternalMemory) (hresult : externalRun step computation memory result ≠ 0)
-    (hlive : result.1 ≠ none) : property result.2 := by
-  induction computation using OracleComp.inductionOn generalizing memory result with
-  | pure value =>
-      simp only [externalRun_pure, ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] at hresult
-      subst result
-      exact hinitial
-  | query_bind input next ih =>
-      rw [externalRun_query_bind] at hresult
-      cases input with
-      | inl input =>
-          simp only [externalImpl, OptionT.run_mk, StateT.run_mk, bind_assoc, pure_bind] at hresult
-          obtain ⟨answer, _, hnext⟩ := (RetainedObservation.bind_nonzero _ _ _).mp hresult
-          exact ih answer memory hinitial result hnext hlive
-      | inr input =>
-          simp only [externalImpl, OptionT.run_mk, StateT.run_mk] at hresult
-          obtain ⟨⟨answer, after⟩, hanswer, hnext⟩ := (RetainedObservation.bind_nonzero _ _ _).mp hresult
-          cases answer with
-          | none =>
-              simp only [ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] at hnext
-              subst result
-              exact False.elim (hlive rfl)
-          | some answer =>
-              exact ih answer after (hstep input memory hinitial (some answer, after) hanswer (by simp)) result hnext hlive
-
-theorem checkedExternalRun_replyClean {Result : Type} (parameter : PublicParameter) (words : OtsReferenceWords)
-    (disclosed : Index → FtsTree → FtsLeaf → Prop) (known actual : Labels)
-    (reject : HashInput → HashOutput → Prop) (oracle : HashInput → HashOutput)
-    (computation : OracleComp OracleWorld Result) (memory : ExternalMemory) (hclean : ReplyClean reject memory.cache)
-    (result : Option Result × ExternalMemory)
-    (hresult : externalRun (fun input memory => pure (checkedResult reject input
-      (fixedStep parameter words disclosed known actual oracle input memory))) computation memory result ≠ 0)
-    (hlive : result.1 ≠ none) : ReplyClean reject result.2.cache := by
-  apply externalRun_preserves_live _ (fun memory => ReplyClean reject memory.cache) _ computation memory hclean result hresult hlive
-  intro input memory hclean result hresult hlive
-  simp only [ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] at hresult
-  subst result
-  generalize hanswer : (checkedResult reject input (fixedStep parameter words disclosed known actual oracle input memory)).1 = answer at hlive
-  cases answer with
-  | none => exact False.elim (hlive rfl)
-  | some answer => exact checkedFixedStep_replyClean parameter words disclosed known actual reject oracle input memory hclean answer hanswer
 
 def ReturnedMatch {Memory : Type} (reject : HashInput → HashOutput → Prop) (input : HashInput)
     (result : Option HashOutput × Memory) : Prop :=
@@ -186,27 +143,6 @@ theorem lazyImpl_rowsCovered (input : (World inputs).Domain) (state : State inpu
           subst result
           exact hcovered
 
-theorem lazyRun_rowsCovered {Result : Type} (computation : OracleComp (World inputs) Result)
-    (state : State inputs) (hcovered : RowsCovered inputs state) (result : Option Result × State inputs)
-    (hresult : AdaptiveResidualLabels.lazyRun (environment parameter inputs words disclosed known actions) computation state result ≠ 0) :
-    RowsCovered inputs result.2 := by
-  induction computation using OracleComp.inductionOn generalizing state result with
-  | pure value =>
-      simp only [AdaptiveResidualLabels.lazyRun, AdaptiveResidualLabels.runWith_pure,
-        ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] at hresult
-      subst result
-      exact hcovered
-  | query_bind input next ih =>
-      rw [AdaptiveResidualLabels.lazyRun, AdaptiveResidualLabels.runWith_query_bind] at hresult
-      obtain ⟨⟨answer, after⟩, hanswer, hnext⟩ := (RetainedObservation.bind_nonzero _ _ _).mp hresult
-      have hafter := lazyImpl_rowsCovered parameter inputs words disclosed known actions input state hcovered (answer, after) hanswer
-      cases answer with
-      | none =>
-          simp only [Option.elim_none, ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] at hnext
-          subst result
-          exact hafter
-      | some answer => exact ih answer after hafter result hnext
-
 omit actions in
 theorem prefix_encoding_actions (hencoding : canonicalEncodingInputs parameter ⊆ inputs)
     (publicReplies : CanonicalGraphLabels) (selections : ReferenceFamily) (rows : CanonicalEncodingRows)
@@ -270,69 +206,5 @@ theorem prob_prefixHashQuery_encodingMatch_le (hencoding : canonicalEncodingInpu
       exact hexists ⟨position, hat⟩
     rw [hzero]
     exact bot_le
-
-omit disclosed known actions in
-theorem initialPrefixByteRun_replyClean {Result : Type}
-    (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (exposedValues : InitialPublicLabels words)
-    (high : CanonicalGraphHighHalves) (selections : ReferenceFamily) (rows : CanonicalEncodingRows)
-    (computation : OracleComp OracleWorld Result) (hinputs : hashInputs computation ⊆ inputs)
-    (result : Option Result × ExternalMemory)
-    (hresult : (forget <$> AdaptiveResidualLabels.lazyRun
-      (prefixEnvironment parameter inputs hencoding words (fun _ _ _ => False) (initialKnown words exposedValues)
-        (coordinateGraphLabels (initialKnown words exposedValues) high) selections rows)
-      (simulateQ (checkedTranslate inputs
-        (PublicEncodingMatch.Match parameter (knownEncodingMessage (initialKnown words exposedValues)) words selections)) computation)
-      (initialByteState inputs words exposedValues)) result ≠ 0)
-    (hlive : result.1 ≠ none) :
-    ReplyClean (PublicEncodingMatch.Match parameter (knownEncodingMessage (initialKnown words exposedValues)) words selections) result.2.cache := by
-  rw [← initialPrefixByteRun_erasure parameter inputs hencoding words exposedValues high selections rows computation hinputs] at hresult
-  obtain ⟨labels, hlabels, hresult⟩ := (RetainedObservation.bind_nonzero _ _ _).mp hresult
-  obtain ⟨seed, _, hresult⟩ := (RetainedObservation.bind_nonzero _ _ _).mp hresult
-  have hagrees := initialKnown_agrees words exposedValues labels hlabels
-  have heq := PublicEncodingMatch.known_eq_original parameter words (fun _ _ _ => False) (initialKnown words exposedValues)
-    (coordinateOtsSecrets labels) (coordinateFtsSecrets labels) (coordinateGraphLabels labels high)
-    (by simpa only [coordinateGraphLabels_value] using hagrees) selections
-  dsimp only at hresult
-  rw [← heq] at hresult
-  exact checkedExternalRun_replyClean parameter words (fun _ _ _ => False) (initialKnown words exposedValues) labels _ _
-    computation emptyMemory (replyClean_empty _) result hresult hlive
-
-omit disclosed known actions in
-theorem initialPrefixByteRun_next_encodingMatch_le {Result : Type}
-    (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (exposedValues : InitialPublicLabels words)
-    (high : CanonicalGraphHighHalves) (auxiliary : ReferenceEncodingAuxiliary)
-    (hauxiliary : auxiliary ∈ referenceEncodingAuxiliarySample.support)
-    (computation : OracleComp OracleWorld Result) (hinputs : hashInputs computation ⊆ inputs)
-    (result : Option Result × State inputs)
-    (hresult : AdaptiveResidualLabels.lazyRun
-      (prefixEnvironment parameter inputs hencoding words (fun _ _ _ => False) (initialKnown words exposedValues)
-        (coordinateGraphLabels (initialKnown words exposedValues) high) auxiliary.selections auxiliary.rows)
-      (simulateQ (checkedTranslate inputs
-        (PublicEncodingMatch.Match parameter (knownEncodingMessage (initialKnown words exposedValues)) words auxiliary.selections)) computation)
-      (initialByteState inputs words exposedValues) result ≠ 0)
-    (hlive : result.1 ≠ none) (input : inputs) :
-    Pr[ReturnedMatch (PublicEncodingMatch.Match parameter (knownEncodingMessage (initialKnown words exposedValues)) words auxiliary.selections) input.val |
-      AdaptiveResidualLabels.lazyRun
-        (prefixEnvironment parameter inputs hencoding words (fun _ _ _ => False) (initialKnown words exposedValues)
-          (coordinateGraphLabels (initialKnown words exposedValues) high) auxiliary.selections auxiliary.rows)
-        (hashQuery input) result.2] ≤ (Fintype.card Digest : ENNReal)⁻¹ := by
-  have hproject : (forget <$> AdaptiveResidualLabels.lazyRun
-      (prefixEnvironment parameter inputs hencoding words (fun _ _ _ => False) (initialKnown words exposedValues)
-        (coordinateGraphLabels (initialKnown words exposedValues) high) auxiliary.selections auxiliary.rows)
-      (simulateQ (checkedTranslate inputs
-        (PublicEncodingMatch.Match parameter (knownEncodingMessage (initialKnown words exposedValues)) words auxiliary.selections)) computation)
-      (initialByteState inputs words exposedValues)) (forget result) ≠ 0 := by
-    rw [map_eq_bind_pure_comp]
-    apply (RetainedObservation.bind_nonzero _ _ _).mpr
-    exact ⟨result, hresult, by simp [SPMF.pure_apply]⟩
-  have hclean := initialPrefixByteRun_replyClean parameter inputs words hencoding exposedValues high auxiliary.selections auxiliary.rows
-    computation hinputs (forget result) hproject hlive
-  have hcovered := lazyRun_rowsCovered parameter inputs words (fun _ _ _ => False) (initialKnown words exposedValues)
-    (freshPrefix parameter inputs hencoding words (fun _ _ _ => False) (initialKnown words exposedValues)
-      (coordinateGraphLabels (initialKnown words exposedValues) high) auxiliary.selections auxiliary.rows)
-    _ (initialByteState inputs words exposedValues) (rowsCovered_empty inputs emptyMemory (initialAllowed words exposedValues)) result hresult
-  exact prob_prefixHashQuery_encodingMatch_le parameter inputs words (fun _ _ _ => False) (initialKnown words exposedValues)
-    hencoding (coordinateGraphLabels (initialKnown words exposedValues) high) auxiliary.selections auxiliary.rows
-    (referenceEncodingAuxiliarySample_select auxiliary hauxiliary) input result.2 hcovered hclean
 
 end SphincsSecurity.Concrete.ResidualByteFrontend

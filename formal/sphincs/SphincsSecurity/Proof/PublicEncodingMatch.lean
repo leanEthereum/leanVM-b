@@ -1,7 +1,31 @@
 import SphincsSecurity.Proof.Prelude
 import SphincsSecurity.Proof.FirstSuccessPrefix
 import SphincsSecurity.Proof.HiddenLabelProbe
-import SphincsSecurity.Proof.OtsProbeNativeRootCandidate
+import SphincsSecurity.Proof.EncodingSelectionCache
+import SphincsSecurity.Proof.EncodingCharge
+import SphincsSecurity.Proof.FirstBad
+import SphincsSecurity.Proof.RomQueryCharge
+import SphincsSecurity.Proof.Charge
+import SphincsSecurity.Proof.QueryBound
+import SphincsSecurity.Proof.Guess
+import SphincsSecurity.Proof.Secrets
+import SphincsSecurity.Proof.FewTimeSignerView
+import SphincsSecurity.Proof.FewTimeWitness
+import SphincsSecurity.Proof.SigningTrace
+import SphincsSecurity.Proof.RootCache
+import SphincsSecurity.Proof.MessagePrehit
+import SphincsSecurity.Statement
+import SphincsSecurity.Proof.OtsProbeCompletionSampling
+import SphincsSecurity.Proof.OtsProbeOrigin
+import SphincsSecurity.Proof.FtsProbeSampling
+import SphincsSecurity.Proof.OtsProbeSimulation
+import SphincsSecurity.Proof.FtsProbeSimulation
+import SphincsSecurity.Proof.Honest
+import SphincsSecurity.Proof.ForgeryClassify
+import SphincsSecurity.Proof.SecretProbe
+import SphincsSecurity.Proof.EncodingProbability
+import SphincsSecurity.Proof.DirectQueryBudget
+import SphincsSecurity.Proof.RomQueryChargeBind
 import SphincsSecurity.Proof.PublicReferenceResidual
 
 namespace SphincsSecurity.Concrete.PublicEncodingMatch
@@ -30,13 +54,6 @@ theorem known_eq_original (parameter : PublicParameter) (words : OtsReferenceWor
     Match parameter (knownEncodingMessage known) words selections =
       Match parameter (canonicalGraphMessage labels) words selections := by
   rw [knownEncodingMessage_eq words disclosed known otsSecret ftsSecret labels hagrees]
-
-theorem not_structural (parameter : PublicParameter) (messages : EncodingPosition → Digest)
-    (words : OtsReferenceWords) (selections : ReferenceFamily) (input : HashInput) (answer : HashOutput)
-    (position : Position) (hat : AtPosition parameter input position) :
-    ¬Match parameter messages words selections input answer := by
-  rintro ⟨_, hencoding, _⟩
-  exact hencoding.not_atPosition position hat
 
 theorem protected_not_match (parameter : PublicParameter) (inputs : Finset HashInput)
     (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (known : Labels)

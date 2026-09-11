@@ -1,5 +1,7 @@
 import SphincsSecurity.Proof.AdaptiveChainCapCost
-import SphincsSecurity.Proof.OtsPrefixCappedSource
+import SphincsSecurity.Proof.AdaptiveChainCap
+import SphincsSecurity.Proof.OtsPrefixAccounting
+import SphincsSecurity.Proof.OtsPrefixObservedBudget
 import SphincsSecurity.Proof.OtsPrefixObservedAllocation
 
 namespace SphincsSecurity.Concrete
@@ -72,15 +74,5 @@ theorem prefixIdealCostGame_lower (address : OtsPrefix.ChainAddress) (dummy : Ot
   have h := PartialChainEndpoint.idealRun_cap_spent_lower (fun _ => OtsPrefix.uniformImpl) computation cost q hcharge hreal
   simpa only [tsum_probOutput_bind_mul, tsum_probOutput_pure_mul, ← PMF.monad_map_eq_map,
     evalDist_map, tsum_probOutput_map_mul, PMF.evalDist_eq, SPMF.probOutput_liftM, PMF.probOutput_eq_apply] using h
-
-theorem prefixIdealCostGame_shared_budget (dummy : OtsReferenceWords) (adversary : Adversary) (q : Nat)
-    (hbound : HasHashQueryBound scheme adversary q) :
-    (1 - (q : ENNReal) / Fintype.card Digest) *
-        (∑ address : OtsPrefix.ChainAddress, ∑' count, Pr[= count | prefixIdealCostGame (canonicalGraphGameInputs adversary)
-          (canonicalEncodingInputs_subset_gameInputs adversary) (canonicalGraphInputs_subset_gameInputs adversary)
-          address dummy adversary q] * (count : ENNReal)) ≤ q := by
-  rw [Finset.mul_sum]
-  exact (Finset.sum_le_sum fun address _ => prefixIdealCostGame_lower address dummy adversary q hbound).trans
-    (prefixCountedObservedGame_expected_allocation_le dummy adversary q hbound)
 
 end SphincsSecurity.Concrete

@@ -92,18 +92,6 @@ theorem observe_bind {Other : Type} (response : SPMF Answer) (stopped : SPMF Res
   funext answer
   cases answer <;> rfl
 
-theorem observe_const (response : SPMF Answer) (next : SPMF Result) :
-    observe response next (fun _ => next) = next := by
-  unfold observe
-  rw [show (fun answer : Option Answer => match answer with | none => next | some _ => next) =
-      (fun _ => next) by funext answer; cases answer <;> rfl]
-  exact lift_bind_const response.toPMF next
-
-theorem map_observe {Other : Type} (f : Result → Other) (response : SPMF Answer)
-    (stopped : SPMF Result) (next : Answer → SPMF Result) :
-    f <$> observe response stopped next = observe response (f <$> stopped) (fun answer => f <$> next answer) := by
-  simp only [← bind_pure_comp, observe_bind]
-
 theorem observe_congr (response : SPMF Answer) (stopped : SPMF Result)
     (f g : Answer → SPMF Result) (h : ∀ answer, response answer ≠ 0 → f answer = g answer) :
     observe response stopped f = observe response stopped g := by

@@ -35,20 +35,6 @@ theorem referenceFamilyOracleSample_words (key : SecretKey) (inputs : Finset Has
     referenceFamilyWords result.1 dummy = canonicalReferenceWords key (finiteHashAnswer ∅ inputs result.2) dummy := by
   rw [referenceFamilyOracleSample_selections key inputs hencoding hgraph result hresult, referenceFamilyWords_selected]
 
-theorem referenceFamilyOracleSample_words_nonencoding (key : SecretKey) (inputs : Finset HashInput)
-    (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs) (dummy : OtsReferenceWords) :
-    (referenceFamilyOracleSample key inputs hencoding).map (fun result =>
-      (referenceFamilyWords result.1 dummy,
-        fun cell : UniformTableSplit.Outside (encodingInputCell key.parameter inputs hencoding) => result.2 cell.val)) =
-      (FirstSuccessFamily.selected decodeEncodingOutput encodingAttemptLimit).bind (fun results =>
-        (PMF.uniformOfFintype (NonencodingRows key.parameter inputs hencoding)).map
-          (fun outside => (referenceFamilyWords results dummy, outside))) := by
-  have h := congrArg
-    (fun law : PMF (ReferenceFamily × NonencodingRows key.parameter inputs hencoding) =>
-      law.map (fun result => (referenceFamilyWords result.1 dummy, result.2)))
-    (referenceFamilyOracleSample_nonencoding key inputs hencoding)
-  simpa only [PMF.map_bind, PMF.map_comp, Function.comp_def] using h
-
 theorem referenceFamilyOracleSample_words_valid (key : SecretKey) (inputs : Finset HashInput)
     (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs) (hgraph : canonicalGraphInputs key.parameter ⊆ inputs)
     (result : ReferenceFamily × (inputs → HashOutput))

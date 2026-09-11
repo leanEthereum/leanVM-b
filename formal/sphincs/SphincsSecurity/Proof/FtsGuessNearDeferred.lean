@@ -39,14 +39,6 @@ theorem forcedNearGame_deferred (dummy : OtsReferenceWords) (adversary : Adversa
       (canonicalEncodingInputs_subset_gameInputs adversary parameter) selections (Function.uncurry rows) dummy slot adversary)
   simpa only [map_bind, Functor.map_map, originalAnswers] using h
 
-theorem referenceForgeryGame_near_guess_le_deferred (dummy : OtsReferenceWords) (adversary : Adversary) (budget : Nat)
-    (hbudget : HasHashQueryBound scheme adversary budget) :
-    Pr[ReferenceForgerySample.nearGuess dummy | referenceForgeryGame (canonicalGraphGameInputs adversary)
-      (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] ≤
-      ((2 ^ 128 - budget : Nat) : ENNReal)⁻¹ *
-        ∑ slot ∈ Finset.range budget, Pr[fun hit => hit = true | forcedNearDeferredGame dummy adversary slot] := by
-  simpa only [forcedNearGame_deferred] using referenceForgeryGame_near_guess_le_forced dummy adversary budget hbudget
-
 theorem referenceAuxiliary_seed_support (inputs : Finset HashInput) (auxiliary : ReferenceAuxiliary inputs)
     (hauxiliary : auxiliary ∈ (referenceAuxiliarySample inputs).support) (seed : inputs → HashOutput) :
     { auxiliary with seed := seed } ∈ (referenceAuxiliarySample inputs).support := by

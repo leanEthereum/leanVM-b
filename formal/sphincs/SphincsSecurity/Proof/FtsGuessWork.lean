@@ -181,14 +181,4 @@ theorem fixed_completedRun_probes (environment : Environment Auxiliary Coordinat
   simp only [completedWork]
   omega
 
-theorem lazy_completedRun_probes (environment : Environment Auxiliary Coordinate Digest Memory)
-    (parameter : PublicParameter) (root : Digest) (labels : CanonicalGraphLabels)
-    (adversary : Adversary) (state : State Coordinate Digest Memory)
-    (ha : ∀ coordinate, (state.allowed coordinate).Nonempty) (result : Completed × State Coordinate Digest Memory)
-    (hr : SecretGuessObservation.lazyRun environment (completedRun parameter root labels adversary) state result ≠ 0) :
-    result.2.probes ≤ state.probes + completedWork result.1 := by
-  rw [← SecretGuessObservation.run_erasure environment _ state ha, RetainedObservation.bind_nonzero] at hr
-  obtain ⟨secrets, _, hr⟩ := hr
-  exact fixed_completedRun_probes environment secrets parameter root labels adversary state result hr
-
 end SphincsSecurity.Concrete.FtsGuessHash

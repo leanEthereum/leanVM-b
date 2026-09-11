@@ -1,5 +1,5 @@
 import SphincsSecurity.Proof.Prelude
-import SphincsSecurity.Proof.CanonicalProbeExecution
+import SphincsSecurity.Proof.CanonicalProbeCache
 import SphincsSecurity.Proof.ResidualByteExecution
 
 namespace SphincsSecurity.Concrete.ResidualByteFrontend
@@ -11,10 +11,6 @@ set_option backward.isDefEq.respectTransparency false
 
 def CacheMatches (oracle : HashInput → HashOutput) (cache : ExternalCache) : Prop :=
   ∀ input answer, cache input = some answer → answer = oracle input
-
-theorem cacheMatches_empty (oracle : HashInput → HashOutput) : CacheMatches oracle (fun _ => none) := by
-  intro input answer hcache
-  cases hcache
 
 theorem cacheMatches_store (oracle : HashInput → HashOutput) (cache : ExternalCache)
     (hmatches : CacheMatches oracle cache) (input : HashInput) :
@@ -59,19 +55,6 @@ theorem fixedStep_hashCalls (parameter : PublicParameter) (words : OtsReferenceW
     (fixedStep parameter words disclosed known actual oracle input memory).2.hashCalls = memory.hashCalls + 1 := by
   unfold fixedStep
   cases fixedAnswer parameter words disclosed actual oracle input <;> rfl
-
-theorem fixedExternalRun_hashCalls_le {Result : Type} (parameter : PublicParameter) (words : OtsReferenceWords)
-    (disclosed : Index → FtsTree → FtsLeaf → Prop) (known actual : Labels)
-    (oracle : HashInput → HashOutput) (computation : OracleComp OracleWorld Result) (memory : ExternalMemory)
-    (budget : Nat) (hbound : computation.IsQueryBoundP IsHashQuery budget)
-    (result : Option Result × ExternalMemory)
-    (hresult : externalRun (fun input memory => pure (fixedStep parameter words disclosed known actual oracle input memory))
-      computation memory result ≠ 0) : result.2.hashCalls ≤ memory.hashCalls + budget := by
-  apply externalRun_hashCalls_le _ (fun _ => True) _ computation memory trivial budget hbound result hresult
-  intro input memory _ result hresult
-  simp only [ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] at hresult
-  subst result
-  exact ⟨trivial, fixedStep_hashCalls parameter words disclosed known actual oracle input memory⟩
 
 variable (parameter : PublicParameter) (inputs : Finset HashInput) (words : OtsReferenceWords)
     (disclosed : Index → FtsTree → FtsLeaf → Prop) (known : Labels) (actions : inputs → Action inputs)

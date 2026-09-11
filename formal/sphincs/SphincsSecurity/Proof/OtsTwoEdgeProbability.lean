@@ -40,7 +40,6 @@ theorem referenceContactGame_twoEdge_eq (inputs : Finset HashInput)
   rw [← referenceContactGame_twoEdge_law inputs hencoding hgraph address dummy adversary, ← probEvent_eq_eq_probOutput, probEvent_map]
   simp only [Function.comp_def, decide_eq_true_eq]
 
-
 def ContactResult.TwoEdge (parameter : PublicParameter) (words : OtsReferenceWords) (result : ContactResult) : Prop :=
   ∃ address, result.TwoEdgeAt parameter words address
 
@@ -105,18 +104,5 @@ theorem referenceContactGame_twoEdge_le (dummy : OtsReferenceWords) (adversary :
     exact_mod_cast hsmall
   apply (ENNReal.le_div_iff_mul_le (Or.inl (ne_of_gt hpositive)) (Or.inl (by finiteness))).mpr
   simpa only [mul_comm] using referenceContactGame_twoEdge_cost_le dummy adversary q hbound hsmall
-
-theorem referenceContactGame_twoEdge_joint_budget (dummy : OtsReferenceWords) (adversary : Adversary) (q : Nat)
-    (hbound : HasHashQueryBound scheme adversary q) (hsmall : q < Fintype.card Digest) :
-    (1 - (q : ENNReal) / Fintype.card Digest) *
-      Pr[fun result => result.2.2.TwoEdge result.1 (referenceFamilyWords result.2.1 dummy) |
-        referenceContactGame (canonicalGraphGameInputs adversary) (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] +
-      prefixTwoEdgeRate q * (∑' result : ReferenceRecordedResult, Pr[= result | referenceRecordedGame (canonicalGraphGameInputs adversary)
-        (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] * (result.remainingCalls dummy : ENNReal)) ≤
-      prefixTwoEdgeRate q * (q : ENNReal) := by
-  have hsum := referenceContactGame_twoEdge_le_sum (canonicalGraphGameInputs adversary)
-    (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary
-  simp only [referenceContactGame_twoEdge_eq _ _ (canonicalGraphInputs_subset_gameInputs adversary)] at hsum
-  exact (add_le_add (mul_le_mul' le_rfl hsum) le_rfl).trans (prefixTwoEdgeGame_joint_budget dummy adversary q hbound hsmall)
 
 end SphincsSecurity.Concrete

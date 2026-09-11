@@ -85,10 +85,4 @@ theorem probEvent_signDigestLoop_prehit_eq_rate_mul_attempts
         · simp only [if_neg hnone, mul_zero]
       · rw [probOutput_eq_zero_of_not_mem_support hr, zero_mul, zero_mul, mul_zero]
 
-theorem cachedDigestAttemptRate_le_count (key : SecretKey) (message : Message)
-    (cache : QueryCache HashSpec) (P : FewTimeView → Prop) :
-    cachedDigestAttemptRate key message cache P ≤
-      cachedMessageEntryCountWhere cache key.parameter key.root message P * ((2 ^ randomnessBits : Nat) : ENNReal)⁻¹ :=
-  uniform_randomness_messageInput_cacheHitWhere_le_cachedCount key.parameter key.root message cache P
-
 end SphincsSecurity.Concrete

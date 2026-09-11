@@ -21,17 +21,9 @@ variable (parameter : PublicParameter) (root : Digest)
 
 theorem monitorView_fst (state : MonitoredState) : (monitorView state).1 = state.1.1 := rfl
 
-theorem monitorView_snd (state : MonitoredState) : (monitorView state).2 = state.2 := rfl
-
 /-! ### World steps -/
 
-theorem monitoredWorldStep_potential (input : OracleWorld.Domain) (state : MonitoredState)
-    (result : OracleWorld.Range input × CachedState) :
-    certificateMonitorPotential (monitorKey parameter root) budget required
-      (monitorView (result.2, certificateMonitorUpdate (monitorKey parameter root) budget required stopAfter (.inl input)
-        (monitorView state) 0 (proposalOfWorldResult parameter input (result.1, result.2.1)))) =
-      worldMonitorValue (monitorKey parameter root) budget required stopAfter input (monitorView state) 0
-        (some result.1, result.2.1) := rfl
+theorem monitorView_snd (state : MonitoredState) : (monitorView state).2 = state.2 := rfl
 
 theorem expected_monitoredWorldStep_potential_le (input : OracleWorld.Domain) (state : MonitoredState)
     (hinputs : hashInputs (liftM (OracleWorld.query input)) ⊆ inputs) :
@@ -122,20 +114,6 @@ def secretLabels (secrets : Coordinate → Digest) : CanonicalProbeRouting.Label
   | .ftsStart index tree leaf => secrets (index, tree, leaf)
   | .otsStart _ _ _ _ => 0
   | .graph _ => 0
-
-theorem secretLabels_ftsStart (secrets : Coordinate → Digest) :
-    (fun index tree leaf => secretLabels secrets (.ftsStart index tree leaf)) = fun index tree leaf => secrets (index, tree, leaf) := rfl
-
-theorem monitoredSignStep_potential (message : Message) (annotation : Nat × Index) (state : MonitoredState)
-    (result : ((Option Signature × Option FewTimeView) × SigningBoundaryTrace) × CachedState) :
-    certificateMonitorPotential (monitorKey parameter root) budget required
-      (monitorView (result.2, certificateMonitorUpdate (monitorKey parameter root) budget required stopAfter (.inr message)
-        (monitorView state) annotation.1
-        (proposalOfSigningRecord message result.1 result.2.1 (result.1.1.2.elim annotation.2 Prod.fst)))) =
-      certificateMonitorPotential (monitorKey parameter root) budget required
-        (originalProposalAdvance (certificateMonitorUpdate (monitorKey parameter root) budget required stopAfter) (.inr message)
-          (monitorView state) annotation.1
-          (proposalOfSigningRecord message result.1 result.2.1 (result.1.1.2.elim annotation.2 Prod.fst))) := rfl
 
 theorem publicSigningWork_bank_digest (key : SecretKey) (known : CanonicalProbeRouting.Labels) (words : OtsReferenceWords)
     (selections : ReferenceFamily) (actual : CanonicalProbeRouting.Labels) (message : Message) (cache : QueryCache HashSpec) :

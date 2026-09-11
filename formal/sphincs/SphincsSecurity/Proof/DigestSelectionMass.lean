@@ -58,17 +58,4 @@ theorem freshSelection_add_cachedAttempts_add_exhaustion (key : SecretKey) (mess
   rw [probEvent_signDigestLoop_prehit_eq_rate_mul_attempts digestAttemptLimit key message cache cache le_rfl] at h
   exact h
 
-theorem nonfreshSelection_eq_cachedAttempts_add_exhaustion (key : SecretKey) (message : Message) (cache : QueryCache HashSpec) :
-    1 - freshDigestSelectionProbability key message cache =
-      cachedDigestAttemptRate key message cache (fun _ => True) * digestAttemptExpectation digestAttemptLimit key message cache +
-        digestExhaustionProbability key message cache := by
-  apply ENNReal.sub_eq_of_eq_add_rev' (by simp)
-  simpa only [add_assoc] using (freshSelection_add_cachedAttempts_add_exhaustion key message cache).symm
-
-theorem cachedAttempts_le_nonfreshSelection (key : SecretKey) (message : Message) (cache : QueryCache HashSpec) :
-    cachedDigestAttemptRate key message cache (fun _ => True) * digestAttemptExpectation digestAttemptLimit key message cache ≤
-      1 - freshDigestSelectionProbability key message cache := by
-  rw [nonfreshSelection_eq_cachedAttempts_add_exhaustion]
-  exact le_self_add
-
 end SphincsSecurity.Concrete

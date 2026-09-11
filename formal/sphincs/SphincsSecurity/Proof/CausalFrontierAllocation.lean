@@ -130,12 +130,4 @@ theorem game_counted_le (parameter : PublicParameter) (external : QueryImpl Hash
       (game parameter external ftsSecret words frontier adversary))) : result.2 ≤ result.1.2.hashCalls :=
   TraceCharge.game_counted_le (hashTraceCharge parameter) external ftsSecret words frontier adversary result hresult
 
-theorem game_recorded_le (parameter : PublicParameter) (external : QueryImpl HashSpec Id)
-    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (words : OtsReferenceWords) (frontier : OtsFrontierValues)
-    (adversary : Adversary) (result : (Bool × SigningBoundaryTrace) × List OracleWorld.Domain)
-    (hresult : result ∈ support (QueryCap.recorded (game parameter external ftsSecret words frontier adversary))) :
-    QueryCap.calls IsHash result.2 ≤ result.1.2.hashCalls :=
-  QueryCap.recorded_calls_le IsHash _ (fun result => result.2.hashCalls)
-    (game_counted_le parameter external ftsSecret words frontier adversary) result hresult
-
 end SphincsSecurity.Concrete.CausalFrontierProgram
