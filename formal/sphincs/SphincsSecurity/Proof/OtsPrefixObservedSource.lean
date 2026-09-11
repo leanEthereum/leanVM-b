@@ -8,7 +8,7 @@ open _root_.OracleComp OracleSpec
 set_option backward.isDefEq.respectTransparency false
 attribute [local irreducible] canonicalGraphLabels canonicalEncodingInputs canonicalGraphInputs instFintypePosition
 
-private theorem swap_samples {A B Result : Type} (first : SPMF A) (second : SPMF B)
+theorem swap_samples {A B Result : Type} (first : SPMF A) (second : SPMF B)
     (next : A → B → SPMF Result) :
     (do let a ← first; let b ← second; next a b) = (do let b ← second; let a ← first; next a b) := by
   apply SPMF.ext
@@ -23,7 +23,7 @@ private theorem swap_samples {A B Result : Type} (first : SPMF A) (second : SPMF
   intro a
   ring
 
-private theorem reverse_three_samples {A B C Result : Type} (first : SPMF A) (second : SPMF B) (third : SPMF C)
+theorem reverse_three_samples {A B C Result : Type} (first : SPMF A) (second : SPMF B) (third : SPMF C)
     (next : A → B → C → SPMF Result) :
     (do let a ← first; let b ← second; let c ← third; next a b c) =
       (do let c ← third; let b ← second; let a ← first; next a b c) := by

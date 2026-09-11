@@ -9,7 +9,7 @@ attribute [local irreducible] frontierSigningRun boundaryEval frontierRoot
 
 abbrev ChainAddress := Layer × TreeIndex × LeafIndex × ChainIndex
 
-def atAddress (parameter : PublicParameter) (words : OtsReferenceWords) (address : ChainAddress) : OtsPrefix :=
+abbrev atAddress (parameter : PublicParameter) (words : OtsReferenceWords) (address : ChainAddress) : OtsPrefix :=
   ⟨parameter, address.1, address.2.1, address.2.2.1, address.2.2.2,
     words address.1 address.2.1 address.2.2.1 address.2.2.2⟩
 
