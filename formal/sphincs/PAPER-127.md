@@ -26,7 +26,9 @@ The generic first-contact bound is proved in [AdaptiveChainContact.lean](Sphincs
 
 [AdaptiveChainRestart.lean](SphincsSecurity/Proof/AdaptiveChainRestart.lean) proves the fixed-endpoint restart charge for a partial table with no contact: old distinct prefix rows plus twice future queries bound the weighted contact probability, with the corresponding real weighted cost comparison. Applying this kernel at original transcript stops still requires the conditional observation law.
 
-The next work is that restart application and the remaining completed-witness estimates against the joint allocation, including two-edge witnesses, contacts with distinct chains and encoding markers in either order. The forced-FTS transitions also need their coverage estimates. The full 127-bit theorem must combine the resulting small-budget bound with the completed large-budget theorem and pass the axiom audit.
+The two-edge local estimates are proved in [PartialChainRowCharge.lean](SphincsSecurity/Proof/PartialChainRowCharge.lean): both completion orders include the endpoint likelihood and earlier-path preparation. [AdaptiveChainContactMoments.lean](SphincsSecurity/Proof/AdaptiveChainContactMoments.lean) proves the adaptive last-edge hit moments and their $(4x+2x^2)\mathbb E_I Q/N$ correction. Accumulating the preparation charges with leading coefficient $3/2$ remains open.
+
+The next work is that accumulation, the restart application and the remaining completed-witness estimates against the joint allocation, including contacts with distinct chains and encoding markers in either order. The forced-FTS transitions also need their coverage estimates. The full 127-bit theorem must combine the resulting small-budget bound with the completed large-budget theorem and pass the axiom audit.
 
 | Note | Use |
 | --- | --- |
