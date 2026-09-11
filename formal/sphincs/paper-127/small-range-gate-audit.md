@@ -73,7 +73,7 @@ Once that local extension yields $\mathbb E_{R_j}C_{\rm near}\le557q/N$, the den
 \le\sum_{j=1}^q\mathbb E_{R_j}[L_j C_{\rm near}]
 \le \frac{557x^2}{1-x}.
 \]
-Retirement makes hit indicators count distinct coordinates. Their conditional rates are at most $(N-q)^{-1}$, so the second factorial moment gives the two-guess bound $x^2/[2(1-x)^2]$. Both counts stop with the original monitor and retain certificates already banked. Exception probabilities are charged once on the original law; no forced-law exception union is needed.
+Retirement makes hit indicators count distinct coordinates. Their conditional rates are at most $(N-q)^{-1}$. [SecretGuessPairBound.lean](../SphincsSecurity/Proof/SecretGuessPairBound.lean) now proves the two-guess bound $x^2/[2(1-x)^2]$ using a potential for zero, one and at least two guesses. This argument uses the continuing execution and its supported terminal budget. [FtsGuessPairSource.lean](../SphincsSecurity/Proof/FtsGuessPairSource.lean) transports it to the actual retained forgery source. The near-certificate/guess estimate above remains open. Its certificate count must retain certificates already banked at the original monitor stop. Exception probabilities are charged once on the original law; no forced-law exception union is needed.
 
 ## Consequence for the next formal work
 
