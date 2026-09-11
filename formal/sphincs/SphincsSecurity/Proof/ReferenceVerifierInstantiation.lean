@@ -1,0 +1,117 @@
+import SphincsSecurity.Proof.ReferenceVerifierSupport
+import SphincsSecurity.Proof.FrontierSigningOrigin
+import SphincsSecurity.Proof.ReferenceSigningReplay
+
+namespace SphincsSecurity.Concrete.ReferenceVerifierWitness
+
+open _root_.OracleComp OracleSpec OtsContactTrace OtsVerifierWitness
+set_option backward.isDefEq.respectTransparency false
+attribute [local irreducible] frontierRoot canonicalGraphInputs canonicalEncodingInputs instFintypePosition chainWalk sequenceFin
+
+noncomputable abbrev rootedKey (key : SecretKey) (f : QueryImpl HashSpec Id) : SecretKey :=
+  { key with root := honestNode f key.parameter topLayer rootTree (key.otsSecret topLayer rootTree) (layerHeight topLayer) 0 }
+
+theorem source_root (key : SecretKey) (f : QueryImpl HashSpec Id) (words : OtsReferenceWords) :
+    frontierRoot key.parameter (maskOtsPrefixes key.parameter words f) words
+      (canonicalGraphFrontier key.otsSecret (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f) words) = (rootedKey key f).root := by
+  rw [← frontierRoot_eq_of_agree key.parameter words f (maskOtsPrefixes key.parameter words f) (maskOtsPrefixes_agrees key.parameter words f),
+    canonicalGraphLabels_frontier key.parameter key.otsSecret key.ftsSecret f words key.root,
+    frontierRoot_eq key f words _ (isSigningFrontier_canonical key f words)]
+  rfl
+
+theorem canonical_messages (key : SecretKey) (f : QueryImpl HashSpec Id) (root : Digest) (index : Index) (lay : Layer) :
+    canonicalGraphMessage (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f) ⟨lay, treeIndexAt index lay, leafIndexAt index lay⟩ =
+      evalWithAnswerFn f (layerMessage ({ key with root := root } : SecretKey) index lay) := by
+  change canonicalGraphMessage (canonicalGraphLabels ({ key with root := root } : SecretKey).parameter ({ key with root := root } : SecretKey).otsSecret ({ key with root := root } : SecretKey).ftsSecret f)
+    ⟨lay, treeIndexAt index lay, leafIndexAt index lay⟩ = _
+  rw [canonicalGraphMessage_eq ({ key with root := root } : SecretKey) f, layerMessage_referenceIndex]
+
+theorem referenceTableSelection_root (key : SecretKey) (f : QueryImpl HashSpec Id) (root : Digest) :
+    referenceTableSelection { key with root := root } f = referenceTableSelection key f := rfl
+
+theorem canonicalReferenceWords_root (key : SecretKey) (f : QueryImpl HashSpec Id) (root : Digest) (dummy : OtsReferenceWords) :
+    canonicalReferenceWords { key with root := root } f dummy = canonicalReferenceWords key f dummy := by
+  rw [← referenceFamilyWords_selected, referenceTableSelection_root, referenceFamilyWords_selected]
+
+def SuccessWitnessAtRoot (key : SecretKey) (f : QueryImpl HashSpec Id) (root : Digest) (words : OtsReferenceWords)
+    (selections : ReferenceFamily) (adversary : Adversary) (result : ContactResult) : Prop :=
+  let actualKey : SecretKey := { key with root := root }
+  let labels := canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f
+  let frontier := canonicalGraphFrontier key.otsSecret labels words
+  let trace := result.before * result.after
+  ∃ before : AdversaryTrace,
+    before ∈ support (fixedTrace f (CausalFrontierProgram.adversaryRun key.parameter actualKey.root f key.ftsSecret words frontier
+      (adversary.main ⟨actualKey.root, key.parameter⟩))) ∧
+    SigningTranscript.Valid before.1.1.2 ∧ ¬SigningTranscript.Contains before.1.1.2 before.1.1.1 ∧
+    (∀ message signature, (⟨message, some signature⟩ : SigningEntry) ∈ before.1.1.2 →
+      ReferenceSigningWitness.SignatureOrigin actualKey f message signature before.1.2) ∧
+    trace = before.2 * answerTrace f (verify ⟨actualKey.root, key.parameter⟩ before.1.1.1.message before.1.1.1.signature) ∧
+    ∃ digest, evalWithAnswerFn f (messageDigest key.parameter actualKey.root before.1.1.1.message before.1.1.1.signature.randomness) = digest ∧
+      ContainsRun f trace (messageDigest key.parameter actualKey.root before.1.1.1.message before.1.1.1.signature.randomness) ∧ Admissible digest ∧
+      ((FullyHonestOpening f (recordedCache f trace) actualKey (digestIndex digest) (digestLeaves digest) before.1.1.1.signature ∧
+        (∀ lay, ReferenceLayerOpening f actualKey words selections (digestIndex digest) before.1.1.1.signature lay) ∧
+        (∀ tree, FtsVerifierWitness.TrueSecretQuery f actualKey (digestIndex digest) tree (digestLeaves digest (ftsIndexOf tree)) trace) ∧
+        ∀ message signature, (⟨message, some signature⟩ : SigningEntry) ∈ before.1.1.2 →
+          messageDigestPayload actualKey.root message signature.randomness ≠
+            messageDigestPayload actualKey.root before.1.1.1.message before.1.1.1.signature.randomness) ∨
+        LayerException f actualKey words (canonicalGraphMessage labels) selections trace ∨ FtsVerifierWitness.Exception f actualKey (digestIndex digest) trace)
+
+noncomputable abbrev SuccessWitness (key : SecretKey) (f : QueryImpl HashSpec Id) (words : OtsReferenceWords)
+    (selections : ReferenceFamily) (adversary : Adversary) (result : ContactResult) : Prop :=
+  SuccessWitnessAtRoot key f (honestNode f key.parameter topLayer rootTree (key.otsSecret topLayer rootTree) (layerHeight topLayer) 0)
+    words selections adversary result
+
+theorem rest_success_atRoot (key : SecretKey) (f : QueryImpl HashSpec Id) (root : Digest)
+    (hroot : root = honestNode f key.parameter topLayer rootTree (key.otsSecret topLayer rootTree) (layerHeight topLayer) 0) (selections : ReferenceFamily)
+    (dummy : OtsReferenceWords) (adversary : Adversary) (result : ContactResult)
+    (hselected : selections = referenceTableSelection key f)
+    (hvalid : ∀ lay tree leaf, TargetSum.Valid (referenceFamilyWords selections dummy lay tree leaf))
+    (hr : result ∈ support (referenceInstrumentedRest contactObserver key f
+      (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f) selections dummy adversary))
+    (hsuccess : result.output.1 = true) : SuccessWitnessAtRoot key f root (referenceFamilyWords selections dummy) selections adversary result := by
+  have h := referenceInstrumentedRest_verify key f (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f) selections dummy adversary result hr hsuccess
+  dsimp only at h
+  rw [source_root] at h
+  have hrootEq : (rootedKey key f).root = root := hroot.symm
+  rw [hrootEq] at h
+  obtain ⟨before, hb, hv, hf, hverify, ht, hrun⟩ := h
+  have hw : referenceFamilyWords selections dummy = canonicalReferenceWords { key with root := root } f dummy := by
+    rw [hselected, referenceFamilyWords_selected]
+    exact (canonicalReferenceWords_root key f root dummy).symm
+  have hbc := hb
+  rw [canonicalGraphLabels_frontier key.parameter key.otsSecret key.ftsSecret f _ root, hw] at hbc
+  have horigin := ReferenceSigningWitness.fixedTrace_origin { key with root := root } f
+    (canonicalReferenceWords { key with root := root } f dummy) _
+    (isSigningFrontier_canonical { key with root := root } f _) (frontierReferenceWord_canonical { key with root := root } f dummy)
+    (adversary.main ⟨root, key.parameter⟩) before hbc
+  refine ⟨before, hb, hv, hf, horigin, ht, ?_⟩
+  obtain ⟨digest, hdigest, hdigestRun, hadmissible, hcases⟩ := verify_classification f { key with root := root } (referenceFamilyWords selections dummy)
+    (canonicalGraphMessage (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f)) selections before.1.1.1.message before.1.1.1.signature
+    (result.before * result.after) hvalid (canonical_messages key f root) hroot hverify hrun
+  refine ⟨digest, hdigest, hdigestRun, hadmissible, ?_⟩
+  rcases hcases with ⟨hfull, href, hqueries⟩ | hbad
+  · refine Or.inl ⟨hfull, href, hqueries, ?_⟩
+    intro message signature hentry
+    have heval : evalWithAnswerFn f (messageDigest key.parameter root before.1.1.1.message before.1.1.1.signature.randomness) =
+        truncateMessageDigest (f (tweakableHashInput key.parameter .message
+          (messageDigestPayload root before.1.1.1.message before.1.1.1.signature.randomness))) := rfl
+    have hd := hdigest.symm.trans heval
+    rw [hd] at hfull href
+    rw [hw, hselected, ← referenceTableSelection_root key f root] at href
+    exact strong_signing_payload_ne { key with root := root } f dummy (recordedCache f (result.before * result.after))
+      before.1.1.2 before.1.1.1 hf hfull href message signature hentry (horigin message signature hentry).2.2
+  · exact Or.inr hbad
+
+theorem sample_success_witness (key : SecretKey) (inputs : Finset HashInput)
+    (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs) (hgraph : canonicalGraphInputs key.parameter ⊆ inputs)
+    (reference : ReferenceFamily × (inputs → HashOutput)) (hreference : reference ∈ (referenceFamilyOracleSample key inputs hencoding).support)
+    (dummy : OtsReferenceWords) (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf)) (adversary : Adversary) (result : ContactResult)
+    (hr : result ∈ support (referenceInstrumentedRest contactObserver key (finiteHashAnswer ∅ inputs reference.2)
+      (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret (finiteHashAnswer ∅ inputs reference.2)) reference.1 dummy adversary))
+    (hsuccess : result.output.1 = true) :
+    SuccessWitness key (finiteHashAnswer ∅ inputs reference.2) (referenceFamilyWords reference.1 dummy) reference.1 adversary result :=
+  rest_success_atRoot key _ _ rfl reference.1 dummy adversary result
+    (referenceFamilyOracleSample_selections key inputs hencoding hgraph reference hreference)
+    (referenceFamilyOracleSample_words_valid key inputs hencoding hgraph reference hreference dummy hdummy) hr hsuccess
+
+end SphincsSecurity.Concrete.ReferenceVerifierWitness

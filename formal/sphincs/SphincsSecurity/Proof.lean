@@ -3,7 +3,7 @@ import SphincsSecurity.Proof.CachedIndexExcessGame
 import SphincsSecurity.Proof.DigestCompletionMonitor
 import SphincsSecurity.Proof.NearCertificateBound
 import SphincsSecurity.Proof.VerifierContactWitness
-import SphincsSecurity.Proof.ReferenceVerifierSupport
+import SphincsSecurity.Proof.ReferenceVerifierInstantiation
 import SphincsSecurity.Proof.OtsDistinctContactBound
 import SphincsSecurity.Proof.OtsMarkerContactProbability
 import SphincsSecurity.Proof.RetainedResidualCorrespondence

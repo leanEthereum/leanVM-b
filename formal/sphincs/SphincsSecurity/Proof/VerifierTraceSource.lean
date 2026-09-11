@@ -9,6 +9,10 @@ set_option backward.isDefEq.respectTransparency false
 noncomputable def fixedTrace {Result : Type} (f : QueryImpl HashSpec Id) (computation : OracleComp OracleWorld Result) : ProbComp (Result × Trace) :=
   simulateQ (fixedHashWorld f) (QueryPause.traced hashObservationTrace computation)
 
+theorem fixedTrace_forget {Result : Type} (f : QueryImpl HashSpec Id) (computation : OracleComp OracleWorld Result) :
+    Prod.fst <$> fixedTrace f computation = simulateQ (fixedHashWorld f) computation := by
+  rw [fixedTrace, ← simulateQ_map, QueryPause.traced_forget]
+
 theorem fixedTrace_pure {Result : Type} (f : QueryImpl HashSpec Id) (value : Result) :
     fixedTrace f (pure value) = pure (value, 1) := by
   simp only [fixedTrace, QueryPause.traced_pure, simulateQ_pure]

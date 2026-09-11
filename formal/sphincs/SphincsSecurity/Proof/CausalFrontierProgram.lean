@@ -109,4 +109,22 @@ theorem fixed_game (parameter : PublicParameter) (external : QueryImpl HashSpec 
     rw [QueryImpl.apply_compose, segment.fixedImpl_worldImpl, segment.answer_original]
   simpa only [himpl] using h
 
+theorem fixed_adversaryRun {Result : Type} (parameter : PublicParameter) (root : Digest) (external : QueryImpl HashSpec Id)
+    (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (words : OtsReferenceWords) (frontier : OtsFrontierValues)
+    (computation : OracleComp (OracleWorld + SigningSpec) Result) :
+    simulateQ (fixedHashWorld external) (adversaryRun parameter root external ftsSecret words frontier computation) =
+      frontierAdversaryRun parameter root external ftsSecret words frontier computation := by
+  let chain : ChainIndex := ⟨0, by decide⟩
+  let segment : OtsPrefix := ⟨parameter, topLayer, rootTree, 0, chain, words topLayer rootTree 0 chain⟩
+  have h := prefix_adversaryRun segment root (segment.highs external) external ftsSecret words frontier computation
+  apply_fun simulateQ (segment.fixedImpl (segment.lows external)) at h
+  rw [segment.fixedImpl_adversaryRun _ root _ external ftsSecret words (by rfl) frontier computation,
+    segment.answer_original, causalFrontierAdversaryRun_eq] at h
+  rw [← QueryImpl.simulateQ_compose] at h
+  have himpl : (segment.fixedImpl (segment.lows external)).compose
+      (segment.worldImpl (segment.highs external) external) = fixedHashWorld external := by
+    funext input
+    rw [QueryImpl.apply_compose, segment.fixedImpl_worldImpl, segment.answer_original]
+  simpa only [himpl] using h
+
 end SphincsSecurity.Concrete.CausalFrontierProgram
