@@ -1,3 +1,4 @@
+import SphincsSecurity.Proof.AdaptiveChainContact
 import SphincsSecurity.Proof.CachedIndexExcessGame
 import SphincsSecurity.Proof.DigestCompletionMonitor
 import SphincsSecurity.Proof.NearCertificateBound
