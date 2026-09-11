@@ -43,6 +43,7 @@ The cache command is needed on initial setup. The build includes [Audit.lean](Au
 | [AdaptiveChainContact.lean](SphincsSecurity/Proof/AdaptiveChainContact.lean) | Proves the generic first-contact probability bound using actual expected prefix-query cost and a potential that accounts for previously prepared paths. |
 | [OtsPrefixContactProbability.lean](SphincsSecurity/Proof/OtsPrefixContactProbability.lean) | Connects first-contact probabilities to the shared conditional budget, preserving observed rows through cap erasure and reserving other query classes. |
 | [AdaptiveChainRestart.lean](SphincsSecurity/Proof/AdaptiveChainRestart.lean) | Charges a later first contact to old prefix preparation and future queries in the fixed-endpoint partial-table law. |
+| [OtsContactCheckpoint.lean](SphincsSecurity/Proof/OtsContactCheckpoint.lean) and [OtsContactSplit.lean](SphincsSecurity/Proof/OtsContactSplit.lean) | Instantiate the first-contact stop, identify its partial-table observations and allocate restart charges on the common before-and-after trace. |
 | [AdaptiveChainContactMoments.lean](SphincsSecurity/Proof/AdaptiveChainContactMoments.lean) | Proves the adaptive last-edge hit moments and the correction term for the two-edge estimate. |
 | [PartialChainRowCharge.lean](SphincsSecurity/Proof/PartialChainRowCharge.lean) | Proves weighted two-edge completion risks in both chronological orders, including earlier path preparation. Their accumulation remains open. |
 
