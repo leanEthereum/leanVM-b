@@ -39,6 +39,21 @@ theorem observedRun_supported_completion (auxiliary : QueryImpl auxSpec PMF)
   rcases heq with ⟨rfl, rfl⟩
   exact ⟨hmiddle, hcompleted⟩
 
+theorem realRun_support_lazy (auxiliary : State → QueryImpl auxSpec PMF)
+    (computation : State → OracleComp (auxSpec + PrefixSpec n State) Result)
+    (observed : Fin n → State → Option State) (result : State × (Result × (Fin n → State → Option State)))
+    (hr : result ∈ (realRun auxiliary computation observed).support) :
+    result.2 ∈ (lazyRun (auxiliary result.1) (computation result.1) observed).support := by
+  rw [realRun, PMF.mem_support_bind_iff] at hr
+  obtain ⟨⟨tables, endpoint⟩, hsource, hr⟩ := hr
+  rw [PMF.mem_support_map_iff] at hr
+  obtain ⟨output, ho, rfl⟩ := hr
+  have ht : tables ∈ (completeTables observed).support := by
+    intro hz
+    apply hsource
+    simp only [EndpointPreimageDensity.real_apply, hz, zero_mul]
+  exact (observedRun_supported_completion (auxiliary endpoint) (computation endpoint) observed tables ht output ho).1
+
 noncomputable def checkpointObservedRun (auxiliary : QueryImpl auxSpec PMF) (tables : Fin n → State → State)
     (before : OracleComp (auxSpec + PrefixSpec n State) Checkpoint)
     (after : Checkpoint × (Fin n → State → Option State) → OracleComp (auxSpec + PrefixSpec n State) Result)
