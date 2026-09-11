@@ -30,7 +30,7 @@ theorem entryMarker_allowed_le (parameter : PublicParameter) (messages : Encodin
     rw [he]
     simp only [probEvent_eq_tsum_ite, if_false, tsum_zero, zero_le]
 
-private theorem encodingInput_position (parameter : PublicParameter) (input : HashInput)
+theorem encodingInput_position (parameter : PublicParameter) (input : HashInput)
     (hc : input ∈ canonicalEncodingInputs parameter) : ∃ position, AtEncodingPosition parameter input position := by
   rw [canonicalEncodingInputs] at hc
   simp only [Finset.mem_biUnion, Finset.mem_univ, true_and, Finset.mem_image] at hc

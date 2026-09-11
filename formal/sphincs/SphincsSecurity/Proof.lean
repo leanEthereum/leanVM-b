@@ -4,8 +4,7 @@ import SphincsSecurity.Proof.DigestCompletionMonitor
 import SphincsSecurity.Proof.NearCertificateBound
 import SphincsSecurity.Proof.OtsPrefixTwoEdgeProbability
 import SphincsSecurity.Proof.OtsDistinctContactBound
-import SphincsSecurity.Proof.EncodingMarkerKernel
-import SphincsSecurity.Proof.ReferenceEncodingLazySource
+import SphincsSecurity.Proof.EncodingMarkerAllocation
 import SphincsSecurity.Proof.RetainedResidualCorrespondence
 import SphincsSecurity.Proof.Security126Completion
 import SphincsSecurity.Proof.Security127LargeBudget
