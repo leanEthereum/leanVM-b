@@ -33,49 +33,56 @@ theorem canonicalReferenceWords_root (key : SecretKey) (f : QueryImpl HashSpec I
     canonicalReferenceWords { key with root := root } f dummy = canonicalReferenceWords key f dummy := by
   rw [← referenceFamilyWords_selected, referenceTableSelection_root, referenceFamilyWords_selected]
 
-def SuccessWitnessAtRoot (key : SecretKey) (f : QueryImpl HashSpec Id) (root : Digest) (words : OtsReferenceWords)
-    (selections : ReferenceFamily) (adversary : Adversary) (result : ContactResult) : Prop :=
+def SuccessWitnessFor (key : SecretKey) (f : QueryImpl HashSpec Id) (root : Digest) (words : OtsReferenceWords)
+    (selections : ReferenceFamily) (adversary : Adversary) (result : ContactResult) (before : AdversaryTrace) : Prop :=
   let actualKey : SecretKey := { key with root := root }
   let labels := canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f
   let frontier := canonicalGraphFrontier key.otsSecret labels words
   let trace := result.before * result.after
-  ∃ before : AdversaryTrace,
-    before ∈ support (fixedTrace f (CausalFrontierProgram.adversaryRun key.parameter actualKey.root f key.ftsSecret words frontier
-      (adversary.main ⟨actualKey.root, key.parameter⟩))) ∧
-    SigningTranscript.Valid before.1.1.2 ∧ ¬SigningTranscript.Contains before.1.1.2 before.1.1.1 ∧
-    (∀ message signature, (⟨message, some signature⟩ : SigningEntry) ∈ before.1.1.2 →
-      ReferenceSigningWitness.SignatureOrigin actualKey f message signature before.1.2) ∧
-    result.frontier = frontier ∧
-    trace = before.2 * answerTrace f (verify ⟨actualKey.root, key.parameter⟩ before.1.1.1.message before.1.1.1.signature) ∧
-    ∃ digest, evalWithAnswerFn f (messageDigest key.parameter actualKey.root before.1.1.1.message before.1.1.1.signature.randomness) = digest ∧
-      ContainsRun f trace (messageDigest key.parameter actualKey.root before.1.1.1.message before.1.1.1.signature.randomness) ∧ Admissible digest ∧
-      ((FullyHonestOpening f (recordedCache f trace) actualKey (digestIndex digest) (digestLeaves digest) before.1.1.1.signature ∧
-        (∀ lay, ReferenceLayerOpening f actualKey words selections (digestIndex digest) before.1.1.1.signature lay) ∧
-        (∀ tree, FtsVerifierWitness.TrueSecretQuery f actualKey (digestIndex digest) tree (digestLeaves digest (ftsIndexOf tree)) trace) ∧
-        ∀ message signature, (⟨message, some signature⟩ : SigningEntry) ∈ before.1.1.2 →
-          messageDigestPayload actualKey.root message signature.randomness ≠
-            messageDigestPayload actualKey.root before.1.1.1.message before.1.1.1.signature.randomness) ∨
-        LayerException f actualKey words (canonicalGraphMessage labels) selections trace ∨ FtsVerifierWitness.Exception f actualKey (digestIndex digest) trace)
+  before ∈ support (fixedTrace f (CausalFrontierProgram.adversaryRun key.parameter actualKey.root f key.ftsSecret words frontier
+    (adversary.main ⟨actualKey.root, key.parameter⟩))) ∧
+  SigningTranscript.Valid before.1.1.2 ∧ ¬SigningTranscript.Contains before.1.1.2 before.1.1.1 ∧
+  (∀ message signature, (⟨message, some signature⟩ : SigningEntry) ∈ before.1.1.2 →
+    ReferenceSigningWitness.SignatureOrigin actualKey f message signature before.1.2) ∧
+  result.frontier = frontier ∧
+  trace = before.2 * answerTrace f (verify ⟨actualKey.root, key.parameter⟩ before.1.1.1.message before.1.1.1.signature) ∧
+  ∃ digest, evalWithAnswerFn f (messageDigest key.parameter actualKey.root before.1.1.1.message before.1.1.1.signature.randomness) = digest ∧
+    ContainsRun f trace (messageDigest key.parameter actualKey.root before.1.1.1.message before.1.1.1.signature.randomness) ∧ Admissible digest ∧
+    ((FullyHonestOpening f (recordedCache f trace) actualKey (digestIndex digest) (digestLeaves digest) before.1.1.1.signature ∧
+      (∀ lay, ReferenceLayerOpening f actualKey words selections (digestIndex digest) before.1.1.1.signature lay) ∧
+      (∀ tree, FtsVerifierWitness.TrueSecretQuery f actualKey (digestIndex digest) tree (digestLeaves digest (ftsIndexOf tree)) trace) ∧
+      ∀ message signature, (⟨message, some signature⟩ : SigningEntry) ∈ before.1.1.2 →
+        messageDigestPayload actualKey.root message signature.randomness ≠
+          messageDigestPayload actualKey.root before.1.1.1.message before.1.1.1.signature.randomness) ∨
+      LayerException f actualKey words (canonicalGraphMessage labels) selections trace ∨ FtsVerifierWitness.Exception f actualKey (digestIndex digest) trace)
+
+def SuccessWitnessAtRoot (key : SecretKey) (f : QueryImpl HashSpec Id) (root : Digest) (words : OtsReferenceWords)
+    (selections : ReferenceFamily) (adversary : Adversary) (result : ContactResult) : Prop :=
+  ∃ before, SuccessWitnessFor key f root words selections adversary result before
 
 noncomputable abbrev SuccessWitness (key : SecretKey) (f : QueryImpl HashSpec Id) (words : OtsReferenceWords)
     (selections : ReferenceFamily) (adversary : Adversary) (result : ContactResult) : Prop :=
   SuccessWitnessAtRoot key f (honestNode f key.parameter topLayer rootTree (key.otsSecret topLayer rootTree) (layerHeight topLayer) 0)
     words selections adversary result
 
-theorem rest_success_atRoot (key : SecretKey) (f : QueryImpl HashSpec Id) (root : Digest)
-    (hroot : root = honestNode f key.parameter topLayer rootTree (key.otsSecret topLayer rootTree) (layerHeight topLayer) 0) (selections : ReferenceFamily)
-    (dummy : OtsReferenceWords) (adversary : Adversary) (result : ContactResult)
-    (hselected : selections = referenceTableSelection key f)
+theorem run_success_atRoot (key : SecretKey) (f : QueryImpl HashSpec Id) (root : Digest)
+    (hroot : root = honestNode f key.parameter topLayer rootTree (key.otsSecret topLayer rootTree) (layerHeight topLayer) 0)
+    (selections : ReferenceFamily) (dummy : OtsReferenceWords) (adversary : Adversary) (result : ContactResult)
+    (before : AdversaryTrace) (hselected : selections = referenceTableSelection key f)
     (hvalid : ∀ lay tree leaf, TargetSum.Valid (referenceFamilyWords selections dummy lay tree leaf))
-    (hr : result ∈ support (referenceInstrumentedRest contactObserver key f
-      (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f) selections dummy adversary))
-    (hsuccess : result.output.1 = true) : SuccessWitnessAtRoot key f root (referenceFamilyWords selections dummy) selections adversary result := by
-  have h := referenceInstrumentedRest_verify key f (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f) selections dummy adversary result hr hsuccess
-  dsimp only at h
-  rw [source_root] at h
-  have hrootEq : (rootedKey key f).root = root := hroot.symm
-  rw [hrootEq] at h
-  obtain ⟨before, hb, hv, hf, hverify, ht, hrun⟩ := h
+    (hb : before ∈ support (fixedTrace f (CausalFrontierProgram.adversaryRun key.parameter root f key.ftsSecret
+      (referenceFamilyWords selections dummy)
+      (canonicalGraphFrontier key.otsSecret (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f) (referenceFamilyWords selections dummy))
+      (adversary.main ⟨root, key.parameter⟩))))
+    (hv : SigningTranscript.Valid before.1.1.2) (hf : ¬SigningTranscript.Contains before.1.1.2 before.1.1.1)
+    (hverify : evalWithAnswerFn f (verify ⟨root, key.parameter⟩ before.1.1.1.message before.1.1.1.signature) = true)
+    (hfrontier : result.frontier = canonicalGraphFrontier key.otsSecret
+      (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f) (referenceFamilyWords selections dummy))
+    (ht : result.before * result.after = before.2 * answerTrace f (verify ⟨root, key.parameter⟩ before.1.1.1.message before.1.1.1.signature)) :
+    SuccessWitnessFor key f root (referenceFamilyWords selections dummy) selections adversary result before := by
+  have hrun : ContainsRun f (result.before * result.after) (verify ⟨root, key.parameter⟩ before.1.1.1.message before.1.1.1.signature) := by
+    rw [ht]
+    exact (containsRun_answerTrace f _).mul_left before.2
   have hw : referenceFamilyWords selections dummy = canonicalReferenceWords { key with root := root } f dummy := by
     rw [hselected, referenceFamilyWords_selected]
     exact (canonicalReferenceWords_root key f root dummy).symm
@@ -85,8 +92,7 @@ theorem rest_success_atRoot (key : SecretKey) (f : QueryImpl HashSpec Id) (root 
     (canonicalReferenceWords { key with root := root } f dummy) _
     (isSigningFrontier_canonical { key with root := root } f _) (frontierReferenceWord_canonical { key with root := root } f dummy)
     (adversary.main ⟨root, key.parameter⟩) before hbc
-  refine ⟨before, hb, hv, hf, horigin,
-    referenceInstrumentedRest_frontier key f _ selections dummy adversary result hr, ht, ?_⟩
+  refine ⟨hb, hv, hf, horigin, hfrontier, ht, ?_⟩
   obtain ⟨digest, hdigest, hdigestRun, hadmissible, hcases⟩ := verify_classification f { key with root := root } (referenceFamilyWords selections dummy)
     (canonicalGraphMessage (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f)) selections before.1.1.1.message before.1.1.1.signature
     (result.before * result.after) hvalid (canonical_messages key f root) hroot hverify hrun
@@ -103,6 +109,23 @@ theorem rest_success_atRoot (key : SecretKey) (f : QueryImpl HashSpec Id) (root 
     exact strong_signing_payload_ne { key with root := root } f dummy (recordedCache f (result.before * result.after))
       before.1.1.2 before.1.1.1 hf hfull href message signature hentry (horigin message signature hentry).2.2
   · exact Or.inr hbad
+
+theorem rest_success_atRoot (key : SecretKey) (f : QueryImpl HashSpec Id) (root : Digest)
+    (hroot : root = honestNode f key.parameter topLayer rootTree (key.otsSecret topLayer rootTree) (layerHeight topLayer) 0) (selections : ReferenceFamily)
+    (dummy : OtsReferenceWords) (adversary : Adversary) (result : ContactResult)
+    (hselected : selections = referenceTableSelection key f)
+    (hvalid : ∀ lay tree leaf, TargetSum.Valid (referenceFamilyWords selections dummy lay tree leaf))
+    (hr : result ∈ support (referenceInstrumentedRest contactObserver key f
+      (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f) selections dummy adversary))
+    (hsuccess : result.output.1 = true) : SuccessWitnessAtRoot key f root (referenceFamilyWords selections dummy) selections adversary result := by
+  have h := referenceInstrumentedRest_verify key f (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f) selections dummy adversary result hr hsuccess
+  dsimp only at h
+  rw [source_root] at h
+  have hrootEq : (rootedKey key f).root = root := hroot.symm
+  rw [hrootEq] at h
+  obtain ⟨before, hb, hv, hf, hverify, ht, _⟩ := h
+  exact ⟨before, run_success_atRoot key f root hroot selections dummy adversary result before hselected hvalid hb hv hf hverify
+    (referenceInstrumentedRest_frontier key f _ selections dummy adversary result hr) ht⟩
 
 theorem sample_success_witness (key : SecretKey) (inputs : Finset HashInput)
     (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs) (hgraph : canonicalGraphInputs key.parameter ⊆ inputs)
