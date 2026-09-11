@@ -8,6 +8,14 @@ open _root_.OracleComp OracleSpec OtsContactTrace
 set_option backward.isDefEq.respectTransparency false
 attribute [local irreducible] canonicalGraphInputs canonicalEncodingInputs frontierRoot
 
+theorem referenceInstrumentedRest_frontier (key : SecretKey) (f : QueryImpl HashSpec Id) (labels : CanonicalGraphLabels)
+    (selections : ReferenceFamily) (dummy : OtsReferenceWords) (adversary : Adversary) (result : ContactResult)
+    (hr : result ∈ support (referenceInstrumentedRest contactObserver key f labels selections dummy adversary)) :
+    result.frontier = canonicalGraphFrontier key.otsSecret labels (referenceFamilyWords selections dummy) := by
+  rw [referenceInstrumentedRest, contactObserver, simulateQ_map, support_map] at hr
+  obtain ⟨split, _, heq⟩ := hr
+  exact (congrArg ContactResult.frontier heq).symm
+
 theorem referenceInstrumentedRest_verify (key : SecretKey) (f : QueryImpl HashSpec Id) (labels : CanonicalGraphLabels)
     (selections : ReferenceFamily) (dummy : OtsReferenceWords) (adversary : Adversary) (result : ContactResult)
     (hr : result ∈ support (referenceInstrumentedRest contactObserver key f labels selections dummy adversary))

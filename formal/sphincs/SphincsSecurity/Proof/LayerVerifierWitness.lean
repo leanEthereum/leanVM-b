@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.OtsVerifierWitness
+import SphincsSecurity.Proof.TreeFoldBound
 
 namespace SphincsSecurity.Concrete.OtsVerifierWitness
 
@@ -12,6 +13,7 @@ variable (f : QueryImpl HashSpec Id) (parameter : PublicParameter) (words : OtsR
 
 def TreeOutputMatch (trace : Trace) : Prop :=
   ∃ (level nodeIdx : Nat) (payload : HashInput), level < layerHeight lay ∧ nodeIdx < 2 ^ maxLayerHeight ∧
+    2 ^ (level + 1) * (nodeIdx + 1) ≤ 2 ^ maxLayerHeight ∧
     (tweakableHashInput parameter (.node lay tree (level + 1) nodeIdx) payload,
       f (tweakableHashInput parameter (.node lay tree (level + 1) nodeIdx) payload)) ∈ trace.toList ∧
     NodeHit f parameter lay tree secret level nodeIdx payload
@@ -48,8 +50,9 @@ theorem layer_classification (leaf : LeafIndex) (hleafIndex : leaf.val < 2 ^ lay
     · exact Or.inl ⟨hword, hvalues, hpath⟩
     · exact Or.inr (Or.inr (Or.inl hleafMatch))
     · exact Or.inr (Or.inr (Or.inr hchains))
-  · refine Or.inr (Or.inl ⟨level, leaf.val / 2 ^ (level + 1), _, hl, ?_, ?_, hh⟩)
+  · refine Or.inr (Or.inl ⟨level, leaf.val / 2 ^ (level + 1), _, hl, ?_, ?_, ?_, hh⟩)
     · exact (Nat.div_le_self _ _).trans_lt leaf.isLt
+    · exact fold_node_bound maxLayerHeight level leaf.val (hl.trans_le (layerHeight_le lay)) leaf.isLt
     · exact hfoldRun _ (treeFold_query_mem f parameter lay tree leaf path leafValue (layerHeight lay) level hl)
 
 end SphincsSecurity.Concrete.OtsVerifierWitness

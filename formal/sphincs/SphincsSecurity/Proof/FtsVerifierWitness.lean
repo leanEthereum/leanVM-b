@@ -1,5 +1,6 @@
 import SphincsSecurity.Proof.VerifierTraceDescent
 import SphincsSecurity.Proof.CanonicalGraphHonest
+import SphincsSecurity.Proof.TreeFoldBound
 
 namespace SphincsSecurity.Concrete
 
@@ -12,15 +13,6 @@ def QueriedOutputMatch (f : QueryImpl HashSpec Id) (key : SecretKey) (position :
     (tweakableHashInput key.parameter position.domain payload, f (tweakableHashInput key.parameter position.domain payload)) ∈ trace.toList ∧
     payload ≠ honestPayload f key.parameter key.otsSecret key.ftsSecret position ∧
     truncateHash (f (tweakableHashInput key.parameter position.domain payload)) = honestValue f key.parameter key.otsSecret key.ftsSecret position
-
-theorem fold_node_bound (height level index : Nat) (hlevel : level < height) (hindex : index < 2 ^ height) :
-    2 ^ (level + 1) * (index / 2 ^ (level + 1) + 1) ≤ 2 ^ height := by
-  have hpow : (2 : Nat) ^ height = 2 ^ (level + 1) * 2 ^ (height - (level + 1)) := by
-    rw [← pow_add, Nat.add_sub_of_le (Nat.succ_le_of_lt hlevel)]
-  have hdiv : index / 2 ^ (level + 1) < 2 ^ (height - (level + 1)) := by
-    apply (Nat.div_lt_iff_lt_mul (by positivity)).mpr
-    simpa only [hpow, Nat.mul_comm] using hindex
-  exact (Nat.mul_le_mul_left _ (Nat.succ_le_of_lt hdiv)).trans_eq hpow.symm
 
 namespace FtsVerifierWitness
 
