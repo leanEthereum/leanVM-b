@@ -7,11 +7,11 @@ namespace SphincsSecurity.Concrete.ReferenceStructuralMatch
 open _root_.OracleComp OracleSpec CanonicalProbeRouting OtsContactTrace
 set_option backward.isDefEq.respectTransparency false
 attribute [local instance] Classical.propDecidable
-attribute [local irreducible] canonicalGraphInputs canonicalEncodingInputs instFintypePosition
+attribute [local irreducible] canonicalGraphInputs canonicalEncodingInputs canonicalPayloadInputs instFintypePosition
 
 def Entry (key : SecretKey) (labels : CanonicalGraphLabels) (words : OtsReferenceWords)
     (input : HashInput) (answer : HashOutput) : Prop :=
-  ∃ position, ReferencePrimitiveWitness.AboveFrontier words position ∧ position.TreeBound ∧
+  input ∈ canonicalGraphInputs key.parameter ∧ ∃ position, ReferencePrimitiveWitness.AboveFrontier words position ∧ position.TreeBound ∧
     AtPosition key.parameter input position ∧ input ≠ canonicalGraphInput key.parameter key.otsSecret key.ftsSecret position labels ∧
       truncateHash answer = truncateHash (labels position)
 
@@ -31,12 +31,12 @@ theorem seen_mul (key : SecretKey) (labels : CanonicalGraphLabels) (words : OtsR
 theorem source_match (key : SecretKey) (f : QueryImpl HashSpec Id) (words : OtsReferenceWords) (trace : Trace)
     (h : ReferencePrimitiveWitness.StructuralMatch key f words trace) :
     Seen key (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f) words trace := by
-  obtain ⟨position, habove, hbound, payload, hrow, hne, hvalue⟩ := h
+  obtain ⟨position, habove, hbound, payload, hpayload, hrow, hne, hvalue⟩ := h
   have hcanonical := canonicalGraphInput_eq_honest key.parameter key.otsSecret key.ftsSecret f position
     (hbound.valid position) (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f)
     (fun child hc => congrArg truncateHash
       (canonicalGraphLabels_eq_honest key.parameter key.otsSecret key.ftsSecret f child (hbound.child hc)))
-  refine ⟨_, hrow, position, habove, hbound, ⟨_, rfl⟩, ?_, ?_⟩
+  refine ⟨_, hrow, graphInput_mem_of_payload key.parameter position payload hpayload, position, habove, hbound, ⟨_, rfl⟩, ?_, ?_⟩
   · intro heq
     rw [hcanonical] at heq
     exact hne (tweakableHashInput_injective key.parameter position.domain_inRange position.domain_inRange heq).2
@@ -46,7 +46,7 @@ theorem source_match (key : SecretKey) (f : QueryImpl HashSpec Id) (words : OtsR
 theorem Entry.noncanonical {key : SecretKey} {labels : CanonicalGraphLabels} {words : OtsReferenceWords}
     {input : HashInput} {answer : HashOutput} (h : Entry key labels words input answer) :
     ∀ position, input ≠ canonicalGraphInput key.parameter key.otsSecret key.ftsSecret position labels := by
-  obtain ⟨position, _, _, hp, hn, _⟩ := h
+  obtain ⟨_, position, _, _, hp, hn, _⟩ := h
   exact noncanonical_at key.parameter key.otsSecret key.ftsSecret labels input position hp hn
 
 theorem canonical_not_entry (key : SecretKey) (labels : CanonicalGraphLabels) (words : OtsReferenceWords)
@@ -57,7 +57,7 @@ theorem canonical_not_entry (key : SecretKey) (labels : CanonicalGraphLabels) (w
 theorem Entry.otherHash {key : SecretKey} {labels : CanonicalGraphLabels} {words : OtsReferenceWords}
     {input : HashInput} {answer : HashOutput} (h : Entry key labels words input answer) :
     QueryClass.OtherHash key.parameter words (.inr input) := by
-  obtain ⟨position, habove, _, hp, _, _⟩ := h
+  obtain ⟨_, position, habove, _, hp, _, _⟩ := h
   refine ⟨?_, ?_, ?_⟩
   · rintro ⟨payload, heq⟩
     have hd := (decodePosition_some_iff key.parameter input position).mpr hp
@@ -84,13 +84,13 @@ theorem entry_uniform_le (key : SecretKey) (labels : CanonicalGraphLabels) (word
       _ ≤ Pr[fun answer => truncateHash answer = truncateHash (labels position) |
           (liftM (PMF.uniformOfFintype HashOutput) : SPMF HashOutput)] := by
         apply _root_.probEvent_mono
-        rintro answer _ ⟨other, _, _, ho, _, he⟩
+        rintro answer _ ⟨_, other, _, _, ho, _, he⟩
         obtain rfl := atPosition_unique key.parameter ho hp
         exact he
       _ = _ := HiddenLabelProbe.prob_truncate_eq _
   · have hz : Pr[Entry key labels words input | (liftM (PMF.uniformOfFintype HashOutput) : SPMF HashOutput)] = 0 := by
       apply probEvent_eq_zero
-      rintro answer _ ⟨position, _, _, hi, _⟩
+      rintro answer _ ⟨_, position, _, _, hi, _⟩
       exact hp ⟨position, hi⟩
     rw [hz]
     exact bot_le

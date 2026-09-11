@@ -1,15 +1,17 @@
 import SphincsSecurity.Proof.VerifierTraceDescent
 import SphincsSecurity.Proof.CanonicalGraphHonest
 import SphincsSecurity.Proof.TreeFoldBound
+import SphincsSecurity.Proof.GraphPayloadInputs
 
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec OtsContactTrace
 set_option backward.isDefEq.respectTransparency false
 attribute [local instance] Classical.propDecidable
+attribute [local irreducible] canonicalPayloadInputs
 
 def QueriedOutputMatch (f : QueryImpl HashSpec Id) (key : SecretKey) (position : Position) (trace : Trace) : Prop :=
-  position.TreeBound ∧ ∃ payload,
+  position.TreeBound ∧ ∃ payload, payload ∈ canonicalPayloadInputs ∧
     (tweakableHashInput key.parameter position.domain payload, f (tweakableHashInput key.parameter position.domain payload)) ∈ trace.toList ∧
     payload ≠ honestPayload f key.parameter key.otsSecret key.ftsSecret position ∧
     truncateHash (f (tweakableHashInput key.parameter position.domain payload)) = honestValue f key.parameter key.otsSecret key.ftsSecret position
@@ -53,7 +55,7 @@ theorem tree_reference (leaves : DigestTree → FtsLeaf) (secrets : FtsTree → 
       simpa only [ftsSibling, dif_pos hl, leaf] using hp level hl
     · apply False.elim
       apply hclean
-      refine ⟨.ftsLeaf index tree leaf, rfl, trivial, digestBytes (secrets tree),
+      refine ⟨.ftsLeaf index tree leaf, rfl, trivial, digestBytes (secrets tree), digestBytes_mem_canonicalPayloadInputs _,
         hrun _ (ftsRecover_leaf_query_mem f key.parameter index leaves secrets paths tree), ?_, ?_⟩
       · exact fun he => hh.1 (digestBytes_injective he)
       · simpa only [Position.domain, honestValue_ftsLeaf] using hh.2
@@ -61,7 +63,8 @@ theorem tree_reference (leaves : DigestTree → FtsLeaf) (secrets : FtsTree → 
     apply False.elim
     apply hclean
     refine ⟨.ftsNode index tree ⟨level, hl⟩ ⟨_, hn⟩, rfl,
-      fold_node_bound ftsTreeHeight level leaf.val hl leaf.isLt, _,
+      fold_node_bound ftsTreeHeight level leaf.val hl leaf.isLt, ftsFoldPayload f key.parameter index tree leaf (paths tree) value level,
+      orderedPayload_mem_canonicalPayloadInputs _ _ _,
       hrun _ (ftsRecover_fold_query_mem f key.parameter index leaves secrets paths tree level hl), hh.1, ?_⟩
     simpa only [Position.domain, honestValue_ftsNode] using hh.2
 
@@ -81,7 +84,7 @@ theorem recover_reference (leaves : DigestTree → FtsLeaf) (secrets : FtsTree �
     simpa only [roots, evalWithAnswerFn_bind, ftsLeafHash, eval_tweakableHash, ftsFoldValue] using congrFun hr tree
   · apply False.elim
     apply hclean
-    refine ⟨.ftsRoots index, rfl, trivial, ftsRootsPayload roots, ?_, hp, ?_⟩
+    refine ⟨.ftsRoots index, rfl, trivial, ftsRootsPayload roots, ftsRootsPayload_mem_canonicalPayloadInputs _, ?_, hp, ?_⟩
     · exact hrun _ (ftsRecover_roots_query_mem f key.parameter index leaves secrets paths)
     · rw [honestValue_ftsRoots]
       simp only [ftsRecover, evalWithAnswerFn_bind, evalWithAnswerFn_sequenceFin, eval_tweakableHash] at hrecover

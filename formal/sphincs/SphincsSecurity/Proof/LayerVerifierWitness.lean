@@ -6,13 +6,13 @@ namespace SphincsSecurity.Concrete.OtsVerifierWitness
 open _root_.OracleComp OracleSpec OtsContactTrace
 set_option backward.isDefEq.respectTransparency false
 attribute [local instance] Classical.propDecidable
-attribute [local irreducible] chainWalk
+attribute [local irreducible] chainWalk canonicalPayloadInputs
 
 variable (f : QueryImpl HashSpec Id) (parameter : PublicParameter) (words : OtsReferenceWords)
   (lay : Layer) (tree : TreeIndex) (secret : LeafIndex → ChainIndex → Digest)
 
 def TreeOutputMatch (trace : Trace) : Prop :=
-  ∃ (level nodeIdx : Nat) (payload : HashInput), level < layerHeight lay ∧ nodeIdx < 2 ^ maxLayerHeight ∧
+  ∃ (level nodeIdx : Nat) (payload : HashInput), payload ∈ canonicalPayloadInputs ∧ level < layerHeight lay ∧ nodeIdx < 2 ^ maxLayerHeight ∧
     2 ^ (level + 1) * (nodeIdx + 1) ≤ 2 ^ maxLayerHeight ∧
     (tweakableHashInput parameter (.node lay tree (level + 1) nodeIdx) payload,
       f (tweakableHashInput parameter (.node lay tree (level + 1) nodeIdx) payload)) ∈ trace.toList ∧
@@ -50,7 +50,7 @@ theorem layer_classification (leaf : LeafIndex) (hleafIndex : leaf.val < 2 ^ lay
     · exact Or.inl ⟨hword, hvalues, hpath⟩
     · exact Or.inr (Or.inr (Or.inl hleafMatch))
     · exact Or.inr (Or.inr (Or.inr hchains))
-  · refine Or.inr (Or.inl ⟨level, leaf.val / 2 ^ (level + 1), _, hl, ?_, ?_, ?_, hh⟩)
+  · refine Or.inr (Or.inl ⟨level, leaf.val / 2 ^ (level + 1), _, orderedPayload_mem_canonicalPayloadInputs _ _ _, hl, ?_, ?_, ?_, hh⟩)
     · exact (Nat.div_le_self _ _).trans_lt leaf.isLt
     · exact fold_node_bound maxLayerHeight level leaf.val (hl.trans_le (layerHeight_le lay)) leaf.isLt
     · exact hfoldRun _ (treeFold_query_mem f parameter lay tree leaf path leafValue (layerHeight lay) level hl)

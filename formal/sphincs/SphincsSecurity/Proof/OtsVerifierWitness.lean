@@ -1,12 +1,13 @@
 import SphincsSecurity.Proof.OtsChainBackward
 import SphincsSecurity.Proof.OtsEncodingMarker
+import SphincsSecurity.Proof.GraphPayloadInputs
 
 namespace SphincsSecurity.Concrete.OtsVerifierWitness
 
 open _root_.OracleComp OracleSpec OtsContactTrace
 set_option backward.isDefEq.respectTransparency false
 attribute [local instance] Classical.propDecidable
-attribute [local irreducible] chainWalk canonicalEncodingInputs
+attribute [local irreducible] chainWalk canonicalEncodingInputs canonicalPayloadInputs
 
 variable (f : QueryImpl HashSpec Id) (parameter : PublicParameter) (words : OtsReferenceWords)
   (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex) (secret : ChainIndex → Digest)
@@ -87,7 +88,7 @@ def canonicalLeaf : Digest := evalWithAnswerFn f (leafHash parameter lay tree le
   (fun index => honestChain f parameter lay tree leaf index (secret index) (chainLength - 1)))
 
 def LeafOutputMatch (trace : Trace) : Prop :=
-  ∃ payload, payload ≠ leafPayload (fun index => honestChain f parameter lay tree leaf index (secret index) (chainLength - 1)) ∧
+  ∃ payload, payload ∈ canonicalPayloadInputs ∧ payload ≠ leafPayload (fun index => honestChain f parameter lay tree leaf index (secret index) (chainLength - 1)) ∧
     (tweakableHashInput parameter (.leaf lay tree leaf) payload, f (tweakableHashInput parameter (.leaf lay tree leaf) payload)) ∈ trace.toList ∧
     truncateHash (f (tweakableHashInput parameter (.leaf lay tree leaf) payload)) = canonicalLeaf f parameter lay tree leaf secret
 
@@ -107,7 +108,7 @@ theorem otsLeaf_classification (message : Digest) (counter : Counter) (values : 
   · have hs := otsLeaf_chain_classification f parameter words lay tree leaf secret message counter values candidate trace hvalid hencode hrun
       (fun index => congrFun (TargetSum.leafPayload_injective hp) index)
     exact hs.imp_right Or.inr
-  · refine Or.inr (Or.inl ⟨leafPayload endpoints, hp, ?_, ?_⟩)
+  · refine Or.inr (Or.inl ⟨leafPayload endpoints, leafPayload_mem_canonicalPayloadInputs endpoints, hp, ?_, ?_⟩)
     · apply hrun
       exact otsLeaf_leaf_query_mem f parameter lay tree leaf message counter values candidate hencode
     · simpa only [leafHash, eval_tweakableHash] using heval
