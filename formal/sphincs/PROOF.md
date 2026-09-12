@@ -40,15 +40,15 @@ Throughout, $N=2^{128}$, $x=q/N$, $\delta=11/65536$ and $r_{\rm cache}=1023/2^{1
 
 | Directory | Modules | No component | Components without OTS | OTS transitively | OTS directly |
 | --- | --- | --- | --- | --- | --- |
-| [Base](SphincsSecurity/Proof/Base) | 36 | 36 | 0 | 0 | 0 |
+| [Base](SphincsSecurity/Proof/Base) | 33 | 33 | 0 | 0 | 0 |
 | [Chains](SphincsSecurity/Proof/Chains) | 39 | 39 | 0 | 0 | 0 |
-| [Scheme](SphincsSecurity/Proof/Scheme) | 21 | 7 | 1 | 6 | 7 |
+| [Scheme](SphincsSecurity/Proof/Scheme) | 20 | 7 | 1 | 5 | 7 |
 | [Hypertree](SphincsSecurity/Proof/Hypertree) | 41 | 4 | 0 | 15 | 22 |
-| [Ots](SphincsSecurity/Proof/Ots) | 128 | 3 | 1 | 20 | 104 |
-| [Fts](SphincsSecurity/Proof/Fts) | 200 | 26 | 37 | 132 | 5 |
-| [Reference](SphincsSecurity/Proof/Reference) | 42 | 6 | 2 | 18 | 16 |
-| [Residual](SphincsSecurity/Proof/Residual) | 101 | 5 | 1 | 70 | 25 |
-| [Forced](SphincsSecurity/Proof/Forced) | 52 | 12 | 0 | 32 | 8 |
+| [Ots](SphincsSecurity/Proof/Ots) | 125 | 3 | 0 | 19 | 103 |
+| [Fts](SphincsSecurity/Proof/Fts) | 172 | 23 | 26 | 118 | 5 |
+| [Reference](SphincsSecurity/Proof/Reference) | 38 | 4 | 0 | 18 | 16 |
+| [Residual](SphincsSecurity/Proof/Residual) | 99 | 5 | 1 | 68 | 25 |
+| [Forced](SphincsSecurity/Proof/Forced) | 50 | 12 | 0 | 30 | 8 |
 | [Security127Completion.lean](SphincsSecurity/Proof/Security127Completion.lean) | 1 | 0 | 0 | 1 | 0 |
 
 The modules outside [Ots](SphincsSecurity/Proof/Ots) that mention the one-time-signature definitions directly are the scheme basics that extract a signature's chain values, the canonical graph and frontier oracles that enumerate every honest hash input, the reference experiment's causal program, and the places where the residual monitor and the forced games replay a verified signature: `BoundaryHashEvaluation`, `Bytes`, `CanonicalCoordinateSampling`, `CanonicalGraphHonest`, `CanonicalGraphSampling`, `CanonicalGraph`, `CanonicalHiddenCoordinates`, `CanonicalProbeCache`, `CanonicalProbeRouting`, `CanonicalSigningFrontier`, `CausalFrontierProgram`, `Code`, `Descent`, `ForgeryClassify`, `FrontierEncodingCongruence`, `FrontierOracleCongruence`, `FrontierOracleMask`, `FrontierSignerErasure`, `FrontierSigningEvaluation`, `FrontierTreeEvaluation`, `FtsGuessBudget`, `FtsGuessCachedForced`, `FtsGuessDeferredMessage`, `FtsGuessHash`, `FtsGuessNearAssembly`, `FtsGuessNearDeferred`, `FtsGuessNearSource`, `FtsGuessRemaining`, `FtsVerifierWitness`, `GraphPayloadInputs`, `Honest`, `InterleavedResidualDisclosure`, `MessageByteTrace`, `NoMessage`, `Position`, `PublicGraphOpenings`, `PublicGraphSigner`, `PublicReferenceResidual`, `PublicResidualLookup`, `Queried`, `QueryClassAllocation`, `ReferenceAuxiliarySigning`, `ReferenceCertificateCoverage`, `ReferenceContactGame`, `ReferenceForgerySource`, `ReferenceHypertreeWitness`, `ReferenceJointPrior`, `ReferenceOracleConditioning`, `ReferencePrimitiveWitness`, `ReferenceQueryAllocation`, `ReferenceResidualSampling`, `ReferenceResidualSeeds`, `ReferenceSigningReplay`, `ReferenceVerifierInstantiation`, `ResidualByteCandidates`, `ResidualByteCheckedHazard`, `RetainedResidualCacheTail`, `RetainedResidualCertificateTransfer`, `RetainedResidualCheckedTrace`, `RetainedResidualEncodingHistory`, `RetainedResidualEnvelope`, `RetainedResidualExceptionGame`, `RetainedResidualHashTrace`, `RetainedResidualHazard`, `RetainedResidualMessageKernel`, `RetainedResidualMonitoredGame`, `RetainedResidualOriginalBudget`, `RetainedResidualPrimitivePotential`, `RetainedResidualProposalTail`, `RetainedResidualQueryPotential`, `RetainedResidualRecovery`, `RetainedResidualReplay`, `RetainedResidualSource`, `RetainedResidualStrongCoverage`, `RetainedResidualTraceValidity`, `RetainedResidualVerifySupport`, `RetainedResidualVerify`, `RootCache`, `StatementLemmas`, `StructuralMatchKernel`, `StructuralOracleSplit`, `Support`, `VerifierWitnessClassification`.
@@ -59,15 +59,15 @@ Write $x=q/2^{128}$. Every fresh oracle query in the experiment carries at most 
 
 The refined route recovers the last bit by showing that a single contact is not a forgery. A one-time forgery needs a two-edge completion, two distinct contacts, or a contact together with an encoding marker, and the first of these is the only first-order event, at $(3/2+4x+2x^2)/(1-x)$ per prefix query. That analysis is [Chains](SphincsSecurity/Proof/Chains) and most of [Ots](SphincsSecurity/Proof/Ots); the forced games of [Forced](SphincsSecurity/Proof/Forced) do the same for the few-time secret guess. Its second-order terms, $557x^2/(1-x)$ for a near certificate followed by a guess and $x^2/[2(1-x)^2]$ for two guesses, grow past the budget above $q\approx3\cdot2^{114}$, so the refined route cannot replace the crude one either. With the target $2x$ and this proof strategy, both routes are needed.
 
-Measured on the current tree, the crude route alone reaches 355 modules and 38k lines and proves 126 bits for every budget. The refined route adds 267 modules and 28k lines: 102 in `Ots`, 47 in `Forced`, 39 in `Chains`, and the rest spread over `Fts`, `Reference`, `Base` and `Hypertree`. The last bit costs about forty percent of the proof.
+Measured on the current tree, the crude route alone reaches 372 modules and 39k lines and proves 126 bits for every budget. The refined route adds 246 modules and 27k lines: 96 in `Ots`, 50 in `Forced`, 39 in `Chains`, and the rest spread over `Reference`, `Base`, `Hypertree` and `Fts`. The last bit costs about forty percent of the proof.
 
 ## What would simplify it
 
-- **Accept 126 bits.** Delete the refined route and close every budget with `forgeAdvantage_le_native_bound`, whose bound $2x-x^2+\delta x+q/2^{169}+2^{-700}$ is below $4x$ for every $q\ge1$. This removes 267 modules with no new proof work.
+- **Accept 126 bits.** Delete the refined route and close every budget with `forgeAdvantage_le_native_bound`, whose bound $2x-x^2+\delta x+q/2^{169}+2^{-700}$ is below $4x$ for every $q\ge1$. This removes 246 modules with no new proof work.
 - **Precompute the key, as `formal/xmss` does.** There, key generation computes every chain value and Merkle node through the oracle once and signing only reads tables and hashes the message and the encodings. The SPHINCS statement instead lets the signer recompute through the oracle, and the price of that faithfulness is the whole native accounting layer: spent counters, cache growth and its second-moment exceptions, message charges, macro budgets and proposal-prefix stops, most of `Residual` and a third of `Fts`. A precomputed key moves the honest hash cost to key generation, which only changes where the slope bound becomes vacuous, and would let the one-time and hypertree parts follow the XMSS proof, which already reaches 127 bits for those components.
 - **State the scheme over an abstract one-time signature.** The rest of the proof uses the OTS through two results, the layer witness and the primitive-event bound with its constant $7/4$. Making the OTS a structure in `Statement.lean` with those two results as its interface, and proving them for the target-sum instance in `Ots`, is what would make the OTS replaceable; today the boundary is a directory and a table in this guide.
 
-The first item is a decision about the claim. The other two are a redesign of the statement followed by a rewrite of the crude route, not a cleanup, and they are where the remaining complexity actually lives. Both routes now share one proposal model, the uniform word of length `fixedProposalLength`.
+The first item is a decision about the claim, and the requirement to keep 127 bits excludes it. The other two are a redesign of the statement followed by a rewrite of the crude route, not a cleanup, and they are where the remaining complexity actually lives; neither has been started. What has been done on the existing proof is the mechanical part: dead code pruned by proof-term reachability, subsumed imports and single-importer modules folded away, and both routes now share one proposal model, the uniform word of length `fixedProposalLength`.
 
 ## Changing the one-time signature
 

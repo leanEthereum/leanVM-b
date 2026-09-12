@@ -1,20 +1,27 @@
 import SphincsSecurity.Proof.Base.Prelude
-import SphincsSecurity.Proof.Scheme.Game
 import SphincsSecurity.Proof.Reference.QueryBound
 /-!
 # Splitting the game at the secrets
 
-The honest structure is a function of the sampled secrets and of the oracle's answers, so a bound
-that mentions it has to be stated after the secrets are fixed and before any hash query is made.
-Key generation samples them and then builds layer `0`'s tree, so the split is inside key generation
-rather than after it: what follows the split makes every hash query the experiment makes, and the
-accounting therefore starts from the empty cache, at potential `0`, and with nothing to prove about
-what key generation leaves behind.
+Key generation runs first and fixes every honest value, so the reduction reasons about what follows it against a cache it can treat as given: `gameRest` is everything the game does after key generation. The honest structure is a function of the sampled secrets and of the oracle's answers, so a bound that mentions it has to be stated after the secrets are fixed and before any hash query is made. Key generation samples them and then builds layer `0`'s tree, so the useful split is inside key generation: `gameAfterSecrets` makes every hash query the experiment makes, and the accounting therefore starts from the empty cache, at potential `0`, and with nothing to prove about what key generation leaves behind.
 -/
 
 namespace SphincsSecurity
 
 open OracleComp OracleSpec ENNReal
+
+/-- Everything the game does after key generation: run the adversary against the signing oracle,
+verify what it returns, and decide whether that counts as a forgery. -/
+noncomputable def gameRest (scheme : Scheme) (adversary : Adversary) (pk : PublicKey)
+    (sk : SecretKey) : OracleComp OracleWorld Bool := do
+  let ((forgery, log) : Forgery × QueryLog SigningSpec) ←
+    (simulateQ (forwardOracles + signingOracle scheme sk) (adversary.main pk)).run
+  let verified ← scheme.verify pk forgery.message forgery.signature
+  return decide (SigningTranscript.Valid log ∧ ¬SigningTranscript.Contains log forgery) && verified
+
+theorem gameCore_eq (scheme : Scheme) (adversary : Adversary) :
+    gameCore scheme adversary
+      = scheme.keygen >>= fun keys => gameRest scheme adversary keys.1 keys.2 := rfl
 
 namespace Concrete
 

@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Scheme.Code
 import SphincsSecurity.Proof.Ots.ExtractChain
-import SphincsSecurity.Proof.Ots.Layer
 import SphincsSecurity.Proof.Ots.OneTime
 /-!
 # Extracting a one-time signature
@@ -18,6 +17,10 @@ open OracleComp
 
 variable (f : QueryImpl HashSpec Id) (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex)
   (secret : LeafIndex → ChainIndex → Digest) (leaf : LeafIndex)
+
+theorem leafOfNat_val : leafOfNat leaf.val = leaf := by
+  ext
+  simp [leafOfNat, Nat.mod_eq_of_lt leaf.isLt]
 
 /-- The honest one-time public values at a leaf. -/
 def honestEndpoints (chainIdx : ChainIndex) : Digest :=

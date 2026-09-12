@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Hypertree.Extract
-import SphincsSecurity.Proof.Fts.FewTime
 /-!
 # Extracting a few-time opening
 
@@ -17,6 +16,10 @@ open OracleComp
 
 variable (f : QueryImpl HashSpec Id) (parameter : PublicParameter) (index : Index) (tree : FtsTree)
   (secret : FtsLeaf → Digest) (leaf : FtsLeaf) (path : Fin ftsTreeHeight → Digest)
+
+theorem ftsLeafOfNat_val : ftsLeafOfNat leaf.val = leaf := by
+  ext
+  simp [ftsLeafOfNat, Nat.mod_eq_of_lt leaf.isLt]
 
 /-- The value the honest few-time tree carries at a position. -/
 def honestFtsNode (level nodeIdx : Nat) : Digest :=
