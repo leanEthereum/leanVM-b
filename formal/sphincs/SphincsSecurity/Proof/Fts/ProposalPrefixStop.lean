@@ -6,9 +6,6 @@ open _root_.OracleComp OracleSpec ENNReal
 attribute [local instance] Classical.propDecidable
 set_option backward.isDefEq.respectTransparency false
 
-noncomputable def targetProposalPool : PMF Nat :=
-  (ProbabilityTheory.poissonMeasure ((19 / 50 : NNReal) * ((2 ^ totalHeight : Nat) : NNReal))).toPMF
-
 noncomputable def proposalPrefixStop : CertificateStopRule :=
   fun input state length record => decide (
     targetProposalOverhead * (state.2.log ++ signingLogFragment input record.output).length + 131072 <

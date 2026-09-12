@@ -1,5 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
-import SphincsSecurity.Proof.Fts.PoissonCertificateGame
+import SphincsSecurity.Proof.Fts.ProposalPrefixStop
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp ENNReal

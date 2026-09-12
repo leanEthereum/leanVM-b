@@ -1,9 +1,9 @@
 import SphincsSecurity.Proof.Forced.FtsGuessExceptionClassification
-import SphincsSecurity.Proof.Fts.PoissonPoolTail
+import SphincsSecurity.Proof.Residual.RetainedResidualTerminalCoverage
 import SphincsSecurity.Proof.Fts.NearCertificateBound
 import SphincsSecurity.Proof.Forced.Security127SmallBudgetArithmetic
 /-!
-The forced FTS near-certificate game is bounded slot by slot. One forced run is monitored by the certificate monitor of the retained residual chain, with the keygen debit, the sampled Poisson proposal pool and the prefix stop rule, exactly as the original certificate games were. A near certificate on an unstopped monitor is a banked certificate, so its probability is at most the expected creation cost, which the proposal-word martingale bounds by the budget times the terminal certificate price. A stopped monitor is a short pool, a cache exception or a prefix exception, each of which is rare. The bound `nearCertificateBound` sums the two over the fourteen omitted trees and averages over the pool.
+The forced FTS near-certificate game is bounded slot by slot. One forced run is monitored by the certificate monitor of the retained residual chain, with the keygen debit, the fixed-length proposal word and the prefix stop rule, exactly as the original certificate games were. A near certificate on an unstopped monitor is a banked certificate, so its probability is at most the expected creation cost, which the proposal-word martingale bounds by the budget times the average terminal certificate price. A stopped monitor is a cache exception or a prefix exception, each of which is rare. The bound `nearCertificateBound` sums the two over the fourteen omitted trees.
 -/
 
 namespace SphincsSecurity.Concrete.FtsGuessHash
@@ -292,52 +292,15 @@ theorem near_omitting_le (budget : Nat) (adversary : Adversary) (omitted : FtsTr
     Pr[fun result => NearCertificateOmitting parameter root omitted result.1 |
         nearLaw parameter root otsSecret labels inputs hencoding selections rows dummy slot adversary] ≤
       (budget : ENNReal) * (((557 : ENNReal) / 14) / (2 ^ 128 : Nat)) +
-        ((2 ^ 10 : ENNReal)⁻¹ + (budget : ENNReal) * certificateCacheExceptionRate + (2 ^ 700 : ENNReal)⁻¹) := by
+        ((budget : ENNReal) * certificateCacheExceptionRate + (2 ^ 700 : ENNReal)⁻¹) := by
   have hcard : (Finset.univ.erase omitted).card = 13 := by
     rw [Finset.card_erase_of_mem (Finset.mem_univ _), Finset.card_univ]
     have h : Fintype.card FtsTree = 14 := Fintype.card_fin _
     rw [h]
-  have hone : (∑' total, Pr[= total | targetProposalPool]) = 1 := by
-    simp only [PMF.probOutput_eq_apply]
-    exact PMF.tsum_coe _
-  have hterminal : (∑' total, Pr[= total | targetProposalPool] *
-      terminalProposalPotential (PMF.uniformOfFintype Index) total (terminalCertificatePrice (Finset.univ.erase omitted)) []) =
-      terminalProposalAverage (terminalCertificatePrice (Finset.univ.erase omitted)) := by
-    unfold terminalProposalAverage terminalProposalPotential
-    simp_rw [completeProposalWord_nil]
-  have hpool : (∑' total, Pr[= total | targetProposalPool] * (if total < 25313293 then 1 else 0)) =
-      Pr[fun total : Nat => total < 25313293 | targetProposalPool] := by
-    rw [probEvent_eq_tsum_ite]
-    apply tsum_congr
-    intro total
-    split_ifs <;> simp
-  calc
-    _ = ∑' total, Pr[= total | targetProposalPool] *
-        Pr[fun result => NearCertificateOmitting parameter root omitted result.1 |
-          nearLaw parameter root otsSecret labels inputs hencoding selections rows dummy slot adversary] := by
-      rw [ENNReal.tsum_mul_right, hone, one_mul]
-    _ ≤ ∑' total, Pr[= total | targetProposalPool] *
-        ((budget : ENNReal) *
-            terminalProposalPotential (PMF.uniformOfFintype Index) total (terminalCertificatePrice (Finset.univ.erase omitted)) [] +
-          ((if total < 25313293 then 1 else 0) + (budget : ENNReal) * certificateCacheExceptionRate + (2 ^ 700 : ENNReal)⁻¹)) := by
-      apply ENNReal.tsum_le_tsum
-      intro total
-      exact mul_le_mul' le_rfl (near_omitting_total_le parameter root otsSecret labels inputs hencoding selections rows dummy slot hauxiliary
-        budget adversary omitted total hbudget (hcovered _) hwork)
-    _ = (budget : ENNReal) * (∑' total, Pr[= total | targetProposalPool] *
-          terminalProposalPotential (PMF.uniformOfFintype Index) total (terminalCertificatePrice (Finset.univ.erase omitted)) []) +
-        ((∑' total, Pr[= total | targetProposalPool] * (if total < 25313293 then 1 else 0)) +
-          (∑' total, Pr[= total | targetProposalPool]) *
-            ((budget : ENNReal) * certificateCacheExceptionRate + (2 ^ 700 : ENNReal)⁻¹)) := by
-      rw [← ENNReal.tsum_mul_left, ← ENNReal.tsum_mul_right, ← ENNReal.tsum_add, ← ENNReal.tsum_add]
-      apply tsum_congr
-      intro total
-      ring
-    _ ≤ _ := by
-      rw [hone, one_mul, hterminal, hpool]
-      refine add_le_add (mul_le_mul' le_rfl (terminalProposalAverage_nearPrice _ hcard)) ?_
-      rw [← add_assoc]
-      exact add_le_add (add_le_add targetProposalPool_small_le le_rfl) le_rfl
+  have h := near_omitting_total_le parameter root otsSecret labels inputs hencoding selections rows dummy slot hauxiliary budget
+    adversary omitted fixedProposalLength hbudget (hcovered _) hwork
+  rw [if_neg (show ¬ (fixedProposalLength < 25313293) from Nat.lt_irrefl _), zero_add, RetainedResidual.terminalProposalPotential_empty] at h
+  exact h.trans (add_le_add (mul_le_mul' le_rfl (uniformWordAverage_nearPrice _ hcard)) le_rfl)
 
 include hauxiliary in
 theorem nearLaw_certificate_le (budget : Nat) (adversary : Adversary) (hbudget : budget ≤ 2 ^ 127)
@@ -361,7 +324,7 @@ theorem nearLaw_certificate_le (budget : Nat) (adversary : Adversary) (hbudget :
         rw [if_pos homitted]
       · exact zero_le
     _ ≤ ∑ _omitted : FtsTree, ((budget : ENNReal) * (((557 : ENNReal) / 14) / (2 ^ 128 : Nat)) +
-        ((2 ^ 10 : ENNReal)⁻¹ + (budget : ENNReal) * certificateCacheExceptionRate + (2 ^ 700 : ENNReal)⁻¹)) :=
+        ((budget : ENNReal) * certificateCacheExceptionRate + (2 ^ 700 : ENNReal)⁻¹)) :=
       Finset.sum_le_sum fun omitted _ => near_omitting_le parameter root otsSecret labels inputs hencoding selections rows dummy slot
         hauxiliary budget adversary omitted hbudget hcovered hwork
     _ = _ := by

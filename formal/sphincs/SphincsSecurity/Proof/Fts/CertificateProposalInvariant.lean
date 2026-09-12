@@ -1,5 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
-import SphincsSecurity.Proof.Fts.PoissonCertificateGame
+import SphincsSecurity.Proof.Fts.ProposalPrefixStop
 import SphincsSecurity.Proof.Fts.TerminalProposalEnvelope
 namespace SphincsSecurity.Concrete
 
