@@ -2,16 +2,13 @@ import SphincsSecurity
 import Lean
 
 /-!
-Reachability audit. `lake env lean Reach.lean` writes `reach.txt`, one line per local declaration with its module, source line range and whether the proof terms of the public theorems reach it. Declarations that reachability cannot see but the elaborator needs (rfl simp lemmas, instances, names used only in simp lists) must be kept when pruning by hand.
+Reachability audit. `lake env lean Reach.lean` writes `reach.txt`, one line per local declaration with its module, source line range and whether the proof terms of the public theorem reach it. Declarations that reachability cannot see but the elaborator needs (rfl simp lemmas, instances, names used only in simp lists) must be kept when pruning by hand.
 -/
 
 open Lean Elab Command in
 run_cmd do
   let env ← getEnv
-  let roots : Array Name := #[``SphincsSecurity.sphincs_has_127_bits_of_classical_security,
-    ``SphincsSecurity.sphincs_has_126_bits_of_classical_security,
-    ``SphincsSecurity.sphincs_has_125_bits_of_classical_security,
-    ``SphincsSecurity.sphincs_has_120_bits_of_classical_security]
+  let roots : Array Name := #[``SphincsSecurity.sphincs_has_127_bits_of_classical_security]
   let mut visited : NameSet := {}
   let mut stack : Array Name := roots
   while !stack.isEmpty do

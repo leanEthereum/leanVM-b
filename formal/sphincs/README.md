@@ -1,6 +1,6 @@
 # SPHINCS security in Lean 4
 
-The public theorem proves **127 bits of classical strong unforgeability in the random-oracle model** for the concrete SPHINCS instance of `doc/sphincs`, with at most `2^24` signing requests per key pair: every adversary whose whole experiment makes at most $q\ge1$ hash queries forges with probability at most $q/2^{127}$. The 126, 125 and 120 bit statements are corollaries.
+The public theorem proves **127 bits of classical strong unforgeability in the random-oracle model** for the concrete SPHINCS instance of `doc/sphincs`, with at most `2^24` signing requests per key pair: every adversary whose whole experiment makes at most $q\ge1$ hash queries forges with probability at most $q/2^{127}$.
 
 [Statement.lean](SphincsSecurity/Statement.lean) defines the concrete parameters, serialized hash inputs, algorithms, the SUF game and the security statements. The claim uses independently sampled secret leaves and a random oracle; instantiating that oracle with BLAKE2s or deriving all secrets from a seed is outside this theorem. The whole-experiment query budget includes key generation, signing failures, repeated calls and final verification.
 
@@ -14,7 +14,7 @@ lake exe cache get
 lake build
 ```
 
-The cache command is needed on initial setup. The build includes [Audit.lean](Audit.lean), which rejects any axiom used by a local declaration other than `propext`, `Classical.choice` and `Quot.sound`, and prints the axioms of the public theorems. Run `lake env lean Audit.lean` to repeat the audit directly. [Reach.lean](Reach.lean) is a maintenance script: `lake env lean Reach.lean` writes `reach.txt`, listing every local declaration with the line range of its source block and whether the proof terms of the public theorems reach it, which is how dead code is found before pruning.
+The cache command is needed on initial setup. The build includes [Audit.lean](Audit.lean), which rejects any axiom used by a local declaration other than `propext`, `Classical.choice` and `Quot.sound`, and prints the axioms of the public theorem. Run `lake env lean Audit.lean` to repeat the audit directly. [Reach.lean](Reach.lean) is a maintenance script: `lake env lean Reach.lean` writes `reach.txt`, listing every local declaration with the line range of its source block and whether the proof terms of the public theorem reach it, which is how dead code is found before pruning.
 
 ## Where to work
 
@@ -22,7 +22,7 @@ The cache command is needed on initial setup. The build includes [Audit.lean](Au
 
 | Entry | Purpose |
 | --- | --- |
-| [SphincsSecurity.lean](SphincsSecurity.lean) | The public theorems. |
+| [SphincsSecurity.lean](SphincsSecurity.lean) | The public theorem. |
 | [Proof/Security127Completion.lean](SphincsSecurity/Proof/Security127Completion.lean) | Combines the large-budget and small-budget bounds into `security127`. |
 | [Proof/Base](SphincsSecurity/Proof/Base) | Scheme-independent tooling: uniform tables and their exact adaptive posteriors, query caps, pauses and traces, oracle query charges, moment bounds. |
 | [Proof/Scheme](SphincsSecurity/Proof/Scheme) | The concrete game over a query cache, honest computation and witness extraction from an accepting signature. |

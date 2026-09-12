@@ -1,5 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Statement
+import SphincsSecurity.Proof.Scheme.StatementLemmas
 
 /-!
 # The hypertree

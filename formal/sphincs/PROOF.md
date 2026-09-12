@@ -1,6 +1,6 @@
 # The 127-bit proof
 
-`sphincs_has_127_bits_of_classical_security` in [SphincsSecurity.lean](SphincsSecurity.lean) proves `HasClassicalSecurityBits scheme 127` for the concrete SPHINCS instance of [Statement.lean](SphincsSecurity/Statement.lean): every adversary whose whole experiment, key generation and signing included, makes at most $q\ge1$ random-oracle queries produces a strong forgery with probability at most $q/2^{127}$. The proof uses only `propext`, `Classical.choice` and `Quot.sound`, which [Audit.lean](Audit.lean) checks on every build. The weaker 126, 125 and 120 bit statements are corollaries.
+`sphincs_has_127_bits_of_classical_security` in [SphincsSecurity.lean](SphincsSecurity.lean) proves `HasClassicalSecurityBits scheme 127` for the concrete SPHINCS instance of [Statement.lean](SphincsSecurity/Statement.lean): every adversary whose whole experiment, key generation and signing included, makes at most $q\ge1$ random-oracle queries produces a strong forgery with probability at most $q/2^{127}$. The proof uses only `propext`, `Classical.choice` and `Quot.sound`, which [Audit.lean](Audit.lean) checks on every build.
 
 Throughout, $N=2^{128}$, $x=q/N$, $\delta=11/65536$ and $r_{\rm cache}=1023/2^{186}+2^{-170}$. The proof splits the budget at $q_0=3\cdot2^{114}$: budgets at least $q_0$ are closed by the retained residual monitor, smaller positive budgets by the forced few-time-signature (FTS) games.
 

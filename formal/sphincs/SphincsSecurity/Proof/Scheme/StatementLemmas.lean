@@ -2,12 +2,9 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Statement
 
 /-!
-# Rewrite lemmas for the sealed definitions
+# Facts about the statement
 
-`Statement.lean` seals the two tree recursions against accidental unfolding, which also stops Lean
-from generating their equational theorems. Unsealing them locally makes the equations hold by `rfl`,
-so this module states them once as ordinary theorems and the rest of the development rewrites with
-those instead of unfolding anything.
+`Statement.lean` seals the two tree recursions against accidental unfolding, which also stops Lean from generating their equational theorems. Unsealing them locally makes the equations hold by `rfl`, so this module states them once as ordinary theorems and the rest of the development rewrites with those instead of unfolding anything. It also checks the arithmetic the concrete parameters fix: the layer heights, the index decomposition and the authentication path offsets.
 -/
 
 namespace SphincsSecurity.Concrete
@@ -151,5 +148,86 @@ theorem sign_eq (secretKey : SecretKey) (message : Message) :
 
 theorem sampleRandomness_eq :
     sampleRandomness = ($ᵗ Randomness : ProbComp Randomness) := rfl
+
+/-! ## Parameter arithmetic -/
+
+example : ∑ lay : Layer, layerHeight lay = totalHeight := by decide
+
+example : (layerHeight topLayer, layerHeight middleLayer, layerHeight bottomLayer) = (12, 7, 7) := by
+  decide
+
+example : (heightAbove topLayer, heightAbove middleLayer, heightAbove bottomLayer) = (0, 12, 19) := by
+  decide
+
+example : (heightBelow topLayer, heightBelow middleLayer, heightBelow bottomLayer) = (14, 7, 0) := by
+  decide
+
+/-- The digest is `h + k * a = 176` bits and has to fit in one oracle output. -/
+example : messageDigestBits = 176 ∧ messageDigestBits ≤ hashOutputBits := by decide
+
+theorem treeIndexAt_val (index : Index) (lay : Layer) :
+    (treeIndexAt index lay).val = index.val / 2 ^ (totalHeight - heightAbove lay) := rfl
+
+theorem leafIndexAt_val (index : Index) (lay : Layer) :
+    (leafIndexAt index lay).val = index.val / 2 ^ heightBelow lay % 2 ^ layerHeight lay := rfl
+
+/-- Layer `0` holds a single tree, the public key's. -/
+theorem treeIndexAt_topLayer (index : Index) : (treeIndexAt index topLayer).val = 0 := by
+  have hlt : index.val < 2 ^ 26 := index.isLt
+  have h0 : totalHeight - heightAbove topLayer = 26 := by decide
+  simp only [treeIndexAt_val, h0]
+  omega
+
+/-- The layers link: the tree used on a layer is the one whose root sits at leaf `e_(lay-1)` of the
+tree used on the layer above. -/
+theorem layers_link_top (index : Index) :
+    (treeIndexAt index middleLayer).val
+      = (treeIndexAt index topLayer).val * 2 ^ layerHeight topLayer
+        + (leafIndexAt index topLayer).val := by
+  have hlt : index.val < 2 ^ 26 := index.isLt
+  have h0 : totalHeight - heightAbove topLayer = 26 := by decide
+  have h1 : totalHeight - heightAbove middleLayer = 14 := by decide
+  have hb : heightBelow topLayer = 14 := by decide
+  have hh : layerHeight topLayer = 12 := by decide
+  simp only [treeIndexAt_val, leafIndexAt_val, h0, h1, hb, hh]
+  omega
+
+theorem layers_link_middle (index : Index) :
+    (treeIndexAt index bottomLayer).val
+      = (treeIndexAt index middleLayer).val * 2 ^ layerHeight middleLayer
+        + (leafIndexAt index middleLayer).val := by
+  have h1 : totalHeight - heightAbove middleLayer = 14 := by decide
+  have h2 : totalHeight - heightAbove bottomLayer = 7 := by decide
+  have hb : heightBelow middleLayer = 7 := by decide
+  have hh : layerHeight middleLayer = 7 := by decide
+  simp only [treeIndexAt_val, leafIndexAt_val, h1, h2, hb, hh]
+  omega
+
+/-- The bottom layer's leaves are the `2^h` indices themselves. -/
+theorem leafIndexAt_bottomLayer (index : Index) :
+    (leafIndexAt index bottomLayer).val = index.val % 2 ^ layerHeight bottomLayer := by
+  have hb : heightBelow bottomLayer = 0 := by decide
+  simp [leafIndexAt_val, hb]
+
+/-- An entry at a layer's own offset belongs to that layer. -/
+theorem layerOfPath_eq (lay : Layer) (level : Fin maxLayerHeight) (hlevel : level.val < layerHeight lay) :
+    layerOfPath (heightAbove lay + level.val) = lay := by
+  revert hlevel
+  revert level
+  revert lay
+  decide
+
+theorem flattenPaths_apply (paths : Layer → Fin maxLayerHeight → Digest) (lay : Layer)
+    (level : Fin maxLayerHeight) (hlevel : level.val < layerHeight lay) (position : PathIndex)
+    (hposition : position.val = heightAbove lay + level.val) :
+    flattenPaths paths position = paths lay level := by
+  simp only [flattenPaths, hposition, layerOfPath_eq lay level hlevel, Nat.add_sub_cancel_left,
+    dif_pos level.isLt, Fin.eta]
+
+/-- Every one of the `h` entries is read by some layer: the offsets partition `0..h-1` into the `d` layers, so the path carries no entry verification skips and none twice. This is arithmetic about the offsets, not a statement about `verifyLayers`. -/
+theorem authPath_exhausted (position : PathIndex) : ∃ lay : Layer, ∃ level : Fin maxLayerHeight,
+    level.val < layerHeight lay ∧ heightAbove lay + level.val = position.val := by
+  revert position
+  decide
 
 end SphincsSecurity.Concrete

@@ -5,13 +5,13 @@ import VCVio.OracleComp.QueryTracking.QueryBound
 /-!
 # Classical random-oracle security of the concrete SPHINCS instance
 
-This single module is the reviewer-facing statement of what has to be proven. It contains everything the statement depends on: the concrete parameters and types, the byte layout of every hash input, the three algorithms exactly as run in the security experiment, the strong-unforgeability experiment, and the security claims `SphincsSecurity127Statement`, `SphincsSecurity126Statement`, `SphincsSecurity125Statement` and `SphincsSecurityStatement`. Nothing here describes a reduction or an intermediate game, and nothing instantiates the hash: it is a random oracle throughout. What the concrete parameters fix about the layout is proven rather than asserted, each lemma sitting next to the definitions it concerns: the index decomposition of Section `The index`, and the authentication path next to `flattenPaths`.
+This module is the reviewer-facing statement of what is proven. It contains everything the statement depends on: the concrete parameters and types, the byte layout of every hash input, the three algorithms exactly as run in the security experiment, the strong-unforgeability experiment, and the claim `SphincsSecurityStatement`. Nothing here describes a reduction or an intermediate game, and nothing instantiates the hash: it is a random oracle throughout. The arithmetic the parameters fix about the layout, the index decomposition and the authentication path offsets, is checked in `Proof/Scheme/StatementLemmas.lean`.
 
 The instance is the one specified in `doc/sphincs/main.tex`: 32-byte messages, 128-bit digests truncated from a 256-bit random-oracle output, 42 Winternitz chains of length 8 at target sum 191, a hypertree of height 26 over 3 layers of heights 12, 7 and 7, and a few-time forest of 14 trees of `2^10` leaves selected by a 176-bit message digest. A key answers for all `2^26` indices and signs at most `2^24` messages.
 
 Three things differ from `formal/xmss`. The signer takes no epoch, this scheme being stateless, so a signing request is a message alone and what the game caps is the number of signing queries, at `signatureLimit`. Signing is randomized, a fresh `randomnessBits` string per digest attempt, so a message has many valid signatures and a second one on a signed message is a strong forgery. And the secret key holds the sampled secrets rather than precomputed tables, so signing recomputes through the random oracle whatever tree it reads, exactly as `Sig` is specified.
 
-The strengthened claim is `127` bits: every adversary with a whole-experiment hash-query bound `q ≥ 1` has forgery probability at most `q / 2^127`. The earlier `126`-bit, `125`-bit and `120`-bit statements are retained; `securityBits` names the original `120`-bit exponent for compatibility with the earlier proof. All four statements use exactly the same algorithms, strong-unforgeability game and query accounting. `HasHashQueryBound` bounds every execution path, including key generation, signing and verification, rather than only adversarial hash calls. The theorem is in the classical random-oracle model with independently sampled secrets; equivalence to seed-derived secrets and an instantiation with BLAKE2s are outside this model.
+The claim is `127` bits: every adversary with a whole-experiment hash-query bound `q ≥ 1` has forgery probability at most `q / 2^127`. `HasHashQueryBound` bounds every execution path, including key generation, signing and verification, rather than only adversarial hash calls. The theorem is in the classical random-oracle model with independently sampled secrets; equivalence to seed-derived secrets and an instantiation with BLAKE2s are outside this model.
 -/
 
 open OracleComp OracleSpec ENNReal
@@ -43,8 +43,6 @@ def signatureLimit : Nat := 2 ^ 24
 def digestAttemptLimit : Nat := 2 ^ 32
 /-- Encoding counters tried per layer, `C_max`. -/
 def encodingAttemptLimit : Nat := 2 ^ 32
-/-- The original security level, retained for the earlier statement and proof. -/
-def securityBits : Nat := 120
 
 abbrev Digest := BitVec digestBits
 abbrev HashOutput := BitVec hashOutputBits
@@ -82,17 +80,6 @@ def heightAbove (lay : Layer) : Nat := ∑ j : Layer, if j.val < lay.val then la
 /-- `sum_{j > lay} h_j`, the index bits below layer `lay`. -/
 def heightBelow (lay : Layer) : Nat := totalHeight - heightAbove lay - layerHeight lay
 
-example : ∑ lay : Layer, layerHeight lay = totalHeight := by decide
-
-example : (layerHeight topLayer, layerHeight middleLayer, layerHeight bottomLayer) = (12, 7, 7) := by
-  decide
-
-example : (heightAbove topLayer, heightAbove middleLayer, heightAbove bottomLayer) = (0, 12, 19) := by
-  decide
-
-example : (heightBelow topLayer, heightBelow middleLayer, heightBelow bottomLayer) = (14, 7, 0) := by
-  decide
-
 theorem layerHeight_le (lay : Layer) : layerHeight lay ≤ maxLayerHeight := by
   unfold layerHeight maxLayerHeight
   split <;> omega
@@ -105,9 +92,6 @@ def truncateHash (output : HashOutput) : Digest :=
 def messageDigestBits : Nat := totalHeight + ftsTrees * ftsTreeHeight
 
 abbrev MessageDigest := BitVec messageDigestBits
-
-/-- The digest is `h + k * a = 176` bits and has to fit in one oracle output. -/
-example : messageDigestBits = 176 ∧ messageDigestBits ≤ hashOutputBits := by decide
 
 def truncateMessageDigest (output : HashOutput) : MessageDigest :=
   output.extractLsb' 0 messageDigestBits
@@ -286,50 +270,6 @@ def leafIndexAt (index : Index) (lay : Layer) : LeafIndex :=
     have hpow : 2 ^ layerHeight lay ≤ 2 ^ maxLayerHeight :=
       Nat.pow_le_pow_right (by omega) (layerHeight_le lay)
     omega⟩
-
-theorem treeIndexAt_val (index : Index) (lay : Layer) :
-    (treeIndexAt index lay).val = index.val / 2 ^ (totalHeight - heightAbove lay) := rfl
-
-theorem leafIndexAt_val (index : Index) (lay : Layer) :
-    (leafIndexAt index lay).val = index.val / 2 ^ heightBelow lay % 2 ^ layerHeight lay := rfl
-
-/-- Layer `0` holds a single tree, the public key's. -/
-theorem treeIndexAt_topLayer (index : Index) : (treeIndexAt index topLayer).val = 0 := by
-  have hlt : index.val < 2 ^ 26 := index.isLt
-  have h0 : totalHeight - heightAbove topLayer = 26 := by decide
-  simp only [treeIndexAt_val, h0]
-  omega
-
-/-- The layers link: the tree used on a layer is the one whose root sits at leaf `e_(lay-1)` of the
-tree used on the layer above. -/
-theorem layers_link_top (index : Index) :
-    (treeIndexAt index middleLayer).val
-      = (treeIndexAt index topLayer).val * 2 ^ layerHeight topLayer
-        + (leafIndexAt index topLayer).val := by
-  have hlt : index.val < 2 ^ 26 := index.isLt
-  have h0 : totalHeight - heightAbove topLayer = 26 := by decide
-  have h1 : totalHeight - heightAbove middleLayer = 14 := by decide
-  have hb : heightBelow topLayer = 14 := by decide
-  have hh : layerHeight topLayer = 12 := by decide
-  simp only [treeIndexAt_val, leafIndexAt_val, h0, h1, hb, hh]
-  omega
-
-theorem layers_link_middle (index : Index) :
-    (treeIndexAt index bottomLayer).val
-      = (treeIndexAt index middleLayer).val * 2 ^ layerHeight middleLayer
-        + (leafIndexAt index middleLayer).val := by
-  have h1 : totalHeight - heightAbove middleLayer = 14 := by decide
-  have h2 : totalHeight - heightAbove bottomLayer = 7 := by decide
-  have hb : heightBelow middleLayer = 7 := by decide
-  have hh : layerHeight middleLayer = 7 := by decide
-  simp only [treeIndexAt_val, leafIndexAt_val, h1, h2, hb, hh]
-  omega
-
-/-- The bottom layer's leaves are the `2^h` indices themselves. -/
-theorem leafIndexAt_bottomLayer (index : Index) :
-    (leafIndexAt index bottomLayer).val = index.val % 2 ^ layerHeight bottomLayer := by
-  have hb : heightBelow bottomLayer = 0 := by decide
-  simp [leafIndexAt_val, hb]
 
 /-! ### The one-time signature -/
 
@@ -719,40 +659,6 @@ def flattenPaths (paths : Layer → Fin maxLayerHeight → Digest) : PathIndex �
     let level := position.val - heightAbove lay
     if hlevel : level < maxLayerHeight then paths lay ⟨level, hlevel⟩ else 0
 
-theorem heightAbove_add_layerHeight_le (lay : Layer) :
-    heightAbove lay + layerHeight lay ≤ totalHeight := by decide +revert
-
-/-- An entry at a layer's own offset belongs to that layer. -/
-theorem layerOfPath_eq (lay : Layer) (level : Fin maxLayerHeight) (hlevel : level.val < layerHeight lay) :
-    layerOfPath (heightAbove lay + level.val) = lay := by
-  revert hlevel
-  revert level
-  revert lay
-  decide
-
-theorem flattenPaths_apply (paths : Layer → Fin maxLayerHeight → Digest) (lay : Layer)
-    (level : Fin maxLayerHeight) (hlevel : level.val < layerHeight lay) (position : PathIndex)
-    (hposition : position.val = heightAbove lay + level.val) :
-    flattenPaths paths position = paths lay level := by
-  simp only [flattenPaths, hposition, layerOfPath_eq lay level hlevel, Nat.add_sub_cancel_left,
-    dif_pos level.isLt, Fin.eta]
-
-/-- The verifier reads a layer's path node exactly where the signer laid it, so the `h` entries of the authentication path are the `d` layers' paths and nothing else. -/
-theorem signaturePath_flattenPaths (signature : Signature)
-    (paths : Layer → Fin maxLayerHeight → Digest) (hpath : signature.authPath = flattenPaths paths)
-    (lay : Layer) (level : Fin maxLayerHeight) (hlevel : level.val < layerHeight lay) :
-    signaturePath signature lay level.val = paths lay level := by
-  have hlt : heightAbove lay + level.val < totalHeight :=
-    lt_of_lt_of_le (by omega) (heightAbove_add_layerHeight_le lay)
-  rw [signaturePath, dif_pos hlt, hpath]
-  exact flattenPaths_apply paths lay level hlevel _ rfl
-
-/-- Every one of the `h` entries is read by some layer: the offsets partition `0..h-1` into the `d` layers, so the path carries no entry verification skips and none twice. This is arithmetic about the offsets, not a statement about `verifyLayers`. -/
-theorem authPath_exhausted (position : PathIndex) : ∃ lay : Layer, ∃ level : Fin maxLayerHeight,
-    level.val < layerHeight lay ∧ heightAbove lay + level.val = position.val := by
-  revert position
-  decide
-
 /-- `Sig(sk, m)`: the digest loop, the few-time opening, one one-time signature per layer, and the assembled signature. -/
 noncomputable def sign (secretKey : SecretKey) (message : Message) :
     OracleComp OracleWorld (Option Signature) := do
@@ -869,20 +775,8 @@ noncomputable def Concrete.scheme : Scheme where
   verify := fun publicKey message signature =>
     liftM (Concrete.verify publicKey message signature : OracleComp HashSpec Bool)
 
-/-- The complete public security claim: `120` bits of classical strong unforgeability in the random-oracle model, at `2^24` signatures per key pair. -/
+/-- The security claim: `127` bits of classical strong unforgeability in the random-oracle model, at `2^24` signing requests per key pair. -/
 abbrev SphincsSecurityStatement : Prop :=
-  HasClassicalSecurityBits Concrete.scheme securityBits
-
-/-- The strengthened claim for the same scheme and SUF game: `125` classical random-oracle security bits, at `2^24` signing requests per key pair. -/
-abbrev SphincsSecurity125Statement : Prop :=
-  HasClassicalSecurityBits Concrete.scheme 125
-
-/-- The strengthened claim for the same scheme and SUF game: `126` classical random-oracle security bits, at `2^24` signing requests per key pair. -/
-abbrev SphincsSecurity126Statement : Prop :=
-  HasClassicalSecurityBits Concrete.scheme 126
-
-/-- The strengthened claim for the same scheme and SUF game: `127` classical random-oracle security bits, at `2^24` signing requests per key pair. -/
-abbrev SphincsSecurity127Statement : Prop :=
   HasClassicalSecurityBits Concrete.scheme 127
 
 end SphincsSecurity

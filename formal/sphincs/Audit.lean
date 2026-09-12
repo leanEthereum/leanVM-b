@@ -17,4 +17,3 @@ run_cmd do
   logInfo m!"Axiom audit passed for {checked} local declarations."
 
 #print axioms SphincsSecurity.sphincs_has_127_bits_of_classical_security
-#print axioms SphincsSecurity.sphincs_has_126_bits_of_classical_security
