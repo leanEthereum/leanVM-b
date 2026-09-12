@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Ots.OtsPrefixRawSampling
-
 namespace SphincsSecurity.Concrete.OtsPrefix
 
 open _root_.OracleComp OracleSpec

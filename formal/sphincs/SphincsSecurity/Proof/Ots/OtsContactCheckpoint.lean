@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Ots.OtsPrefixVisibleContact
 import SphincsSecurity.Proof.Ots.OtsContactSplit
-import SphincsSecurity.Proof.Ots.AdaptiveChainPotential
-
+import SphincsSecurity.Proof.Chains.AdaptiveChainPotential
 namespace SphincsSecurity.Concrete.OtsPrefix
 
 open _root_.OracleComp OracleSpec PartialChainEndpoint

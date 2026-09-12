@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Ots.EncodingMarkerBound
 import SphincsSecurity.Proof.Hypertree.FrontierSigningOrigin
 import SphincsSecurity.Proof.Reference.ReferenceSigningReplay
-
 namespace SphincsSecurity.Concrete.ReferenceVerifierWitness
 
 open _root_.OracleComp OracleSpec OtsContactTrace OtsVerifierWitness

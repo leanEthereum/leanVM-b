@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Hypertree.CanonicalGraphGame
 import SphincsSecurity.Proof.Residual.CanonicalResidualQuery
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec OracleComp.DeferredSampling

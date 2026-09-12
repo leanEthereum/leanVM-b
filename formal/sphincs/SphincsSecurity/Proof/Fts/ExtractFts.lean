@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Hypertree.Extract
 import SphincsSecurity.Proof.Fts.FewTime
-
 /-!
 # Extracting a few-time opening
 

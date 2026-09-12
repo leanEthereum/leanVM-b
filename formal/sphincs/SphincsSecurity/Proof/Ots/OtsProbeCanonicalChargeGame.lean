@@ -3,7 +3,6 @@ import SphincsSecurity.Proof.Ots.EncodingSelectionCache
 import SphincsSecurity.Proof.Ots.OtsProbeOrigin
 import SphincsSecurity.Proof.Fts.FtsProbeSampling
 import SphincsSecurity.Proof.Base.RomQueryChargeBind
-
 namespace SphincsSecurity
 
 open OracleComp OracleSpec ENNReal

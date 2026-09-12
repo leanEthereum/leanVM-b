@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Ots.OtsTraceCheckpointBudget
-import SphincsSecurity.Proof.Ots.AdaptiveChainCheckpointContact
+import SphincsSecurity.Proof.Chains.AdaptiveChainCheckpointContact
 import SphincsSecurity.Proof.Ots.OtsTraceCheckpointObservation
-
 namespace SphincsSecurity.Concrete.OtsPrefix
 
 open _root_.OracleComp OracleSpec PartialChainEndpoint

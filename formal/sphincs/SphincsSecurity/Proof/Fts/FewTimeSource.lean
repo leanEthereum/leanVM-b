@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FewTimeLoop
 import SphincsSecurity.Proof.Reference.SigningTrace
 import SphincsSecurity.Proof.Scheme.Secrets
-
 /-!
 # Sources of previously cached selected digests
 

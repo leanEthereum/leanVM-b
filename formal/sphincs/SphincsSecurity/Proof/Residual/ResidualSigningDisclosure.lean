@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Reference.CausalPublicSigning
-
 namespace SphincsSecurity.Concrete.ResidualByteFrontend
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting

@@ -1,6 +1,5 @@
-import SphincsSecurity.Proof.Ots.AdaptiveChainErasure
+import SphincsSecurity.Proof.Chains.AdaptiveChainErasure
 import SphincsSecurity.Proof.Ots.OtsPrefixSeedGame
-
 namespace SphincsSecurity.Concrete.OtsPrefix
 
 open _root_.OracleComp OracleSpec

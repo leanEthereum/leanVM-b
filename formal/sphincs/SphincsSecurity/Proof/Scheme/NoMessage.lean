@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Hypertree.RootCache
-
 /-!
 # Hash-only computations outside the digest loop make no message query
 

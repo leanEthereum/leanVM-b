@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.OtsPrefixVisibleContact
 import SphincsSecurity.Proof.Base.QueryTraceInvariant
-
 namespace SphincsSecurity.Concrete.OtsContactTrace
 
 open _root_.OracleComp OracleSpec PartialChainEndpoint

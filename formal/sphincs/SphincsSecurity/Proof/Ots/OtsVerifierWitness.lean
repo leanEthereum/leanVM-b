@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Ots.OtsChainBackward
 import SphincsSecurity.Proof.Ots.OtsEncodingMarker
 import SphincsSecurity.Proof.Hypertree.GraphPayloadInputs
-
 namespace SphincsSecurity.Concrete.OtsVerifierWitness
 
 open _root_.OracleComp OracleSpec OtsContactTrace

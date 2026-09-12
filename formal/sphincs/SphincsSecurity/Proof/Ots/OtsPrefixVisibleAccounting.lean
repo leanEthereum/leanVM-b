@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.OtsPrefixVisible
 import SphincsSecurity.Proof.Ots.OtsPrefixAllocation
-
 namespace SphincsSecurity.Concrete.OtsPrefix
 
 open _root_.OracleComp OracleSpec PartialChainEndpoint

@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Residual.RetainedObservation
-
 namespace SphincsSecurity.Concrete.UniformTableObservation
 
 open _root_.OracleComp OracleSpec UniformTableCompletion

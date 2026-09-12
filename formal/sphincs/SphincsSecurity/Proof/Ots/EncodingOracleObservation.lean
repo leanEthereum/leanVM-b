@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Ots.EncodingTablePrior
 import SphincsSecurity.Proof.Ots.ReferenceEncodingErasure
 import SphincsSecurity.Proof.Base.UniformTableObservationErasure
-
 namespace SphincsSecurity.Concrete.EncodingObservation
 
 open _root_.OracleComp OracleSpec UniformTableCompletion

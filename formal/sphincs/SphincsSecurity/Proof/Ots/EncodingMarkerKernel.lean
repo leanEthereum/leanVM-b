@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.EncodingTablePrior
 import SphincsSecurity.Proof.Ots.OtsEncodingMarker
-
 namespace SphincsSecurity.Concrete.OtsEncodingMarker
 
 open _root_.OracleComp OracleSpec

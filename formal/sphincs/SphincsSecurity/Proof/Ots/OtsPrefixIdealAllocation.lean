@@ -1,8 +1,7 @@
-import SphincsSecurity.Proof.Ots.AdaptiveChainCapCost
+import SphincsSecurity.Proof.Chains.AdaptiveChainCapCost
 import SphincsSecurity.Proof.Ots.OtsPrefixAccounting
 import SphincsSecurity.Proof.Ots.OtsPrefixObservedBudget
 import SphincsSecurity.Proof.Ots.OtsPrefixObservedAllocation
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

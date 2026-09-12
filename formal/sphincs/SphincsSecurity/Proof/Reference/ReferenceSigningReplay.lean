@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Reference.VerifierWitnessClassification
 import SphincsSecurity.Proof.Hypertree.PublicGraphSigner
-
 namespace SphincsSecurity.Concrete.OtsVerifierWitness
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting

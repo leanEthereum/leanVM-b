@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Residual.RetainedResidualMonitorReadiness
 import SphincsSecurity.Proof.Residual.RetainedResidualProposalInvariant
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting

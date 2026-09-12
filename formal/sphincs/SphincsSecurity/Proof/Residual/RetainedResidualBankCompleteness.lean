@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Fts.CertificateBankCompleteness
 import SphincsSecurity.Proof.Residual.RetainedResidualOriginalBudget
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting

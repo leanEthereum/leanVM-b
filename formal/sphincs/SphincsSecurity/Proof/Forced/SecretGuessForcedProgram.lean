@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Forced.SecretGuessForced
 import SphincsSecurity.Proof.Forced.SecretGuessErasure
-
 namespace SphincsSecurity.Concrete.SecretGuessObservation
 
 open _root_.OracleComp OracleSpec UniformTableCompletion

@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.OtsContactRestart
 import SphincsSecurity.Proof.Ots.OtsContactSourceAllocation
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec PartialChainEndpoint

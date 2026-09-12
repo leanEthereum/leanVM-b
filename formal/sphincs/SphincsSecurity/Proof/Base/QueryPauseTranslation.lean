@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Base.QueryPause
-
 namespace SphincsSecurity.QueryPause
 
 open _root_.OracleComp OracleSpec

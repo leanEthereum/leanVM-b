@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
-import SphincsSecurity.Proof.Base.RawQueryMomentBound
-
+import SphincsSecurity.Proof.Scheme.RawQueryMomentBound
 namespace SphincsSecurity.Concrete
 
 open ENNReal

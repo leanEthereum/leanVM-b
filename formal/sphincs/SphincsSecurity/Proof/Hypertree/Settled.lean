@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Hypertree.Honest
-
 /-!
 # Positions the cache has settled
 

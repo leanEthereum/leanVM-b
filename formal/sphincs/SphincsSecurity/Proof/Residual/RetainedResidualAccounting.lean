@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Residual.RetainedResidualBankCompleteness
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting

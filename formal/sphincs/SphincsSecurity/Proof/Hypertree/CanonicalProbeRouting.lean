@@ -5,7 +5,6 @@ import SphincsSecurity.Proof.Scheme.FirstBad
 import SphincsSecurity.Proof.Fts.HiddenLabelObservation
 import SphincsSecurity.Proof.Fts.FtsProbeSimulation
 import SphincsSecurity.Proof.Ots.OtsProbeSimulation
-
 namespace SphincsSecurity.Concrete.CanonicalProbeRouting
 
 open _root_.OracleComp OracleSpec HiddenLabelObservation

@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Scheme.Code
-
 namespace SphincsSecurity.TargetSum
 
 open scoped BigOperators

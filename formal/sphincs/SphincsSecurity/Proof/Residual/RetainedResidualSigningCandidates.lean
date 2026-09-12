@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Residual.RetainedResidualCandidates
 import SphincsSecurity.Proof.Residual.RetainedResidualMonitoredErasure
-
 namespace SphincsSecurity.Concrete.ResidualByteFrontend
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting UniformTableCompletion

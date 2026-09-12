@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Fts.CertificateBankCompleteness
 import SphincsSecurity.Proof.Fts.UnitCertificateCoverage
 import SphincsSecurity.Proof.Fts.CertificateOriginalMessageCost
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

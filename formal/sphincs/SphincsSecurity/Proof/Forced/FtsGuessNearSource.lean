@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Forced.FtsGuessNearEvent
-
 namespace SphincsSecurity.Concrete.FtsGuessHash
 
 open _root_.OracleComp OracleSpec OtsContactTrace ENNReal UniformTableCompletion

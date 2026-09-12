@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Hypertree.CanonicalProbeRouting
 import SphincsSecurity.Proof.Residual.RetainedObservation
-
 namespace SphincsSecurity.Concrete.CanonicalProbeRouting
 
 open _root_.OracleComp HiddenLabelObservation RetainedObservation

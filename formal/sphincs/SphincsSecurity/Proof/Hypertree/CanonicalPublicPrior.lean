@@ -3,7 +3,6 @@ import SphincsSecurity.Proof.Fts.CanonicalCoordinateSampling
 import SphincsSecurity.Proof.Hypertree.CanonicalProbeRouting
 import SphincsSecurity.Proof.Residual.RetainedObservation
 import SphincsSecurity.Proof.Fts.UniformPublicCoordinates
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting UniformTableCompletion

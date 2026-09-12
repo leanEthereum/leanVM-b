@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Ots.EncodingMatchKernel
 import SphincsSecurity.Proof.Ots.EncodingMarkerAccumulation
 import SphincsSecurity.Proof.Ots.ReferenceLayerWitness
-
 namespace SphincsSecurity.Concrete.OtsVerifierWitness
 
 open _root_.OracleComp OracleSpec UniformTableCompletion EncodingObservation

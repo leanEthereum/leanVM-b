@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Forced.FtsGuessReference
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec OtsContactTrace

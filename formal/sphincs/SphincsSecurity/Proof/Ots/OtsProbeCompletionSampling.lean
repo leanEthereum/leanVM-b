@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FtsProbeSimulation
 import SphincsSecurity.Proof.Ots.OtsProbeSimulation
-
 /-!
 # Finite boundary of one-time completion
 

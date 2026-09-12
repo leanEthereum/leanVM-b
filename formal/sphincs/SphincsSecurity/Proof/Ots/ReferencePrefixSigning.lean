@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Reference.ReferenceAuxiliarySigning
 import SphincsSecurity.Proof.Ots.ReferencePrefixResidual
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting

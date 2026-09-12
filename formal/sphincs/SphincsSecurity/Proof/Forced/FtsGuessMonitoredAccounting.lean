@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Forced.FtsGuessProposalCompleted
 import SphincsSecurity.Proof.Residual.RetainedResidualMessagePayment
 import SphincsSecurity.Proof.Residual.RetainedResidualWorkCost
-
 namespace SphincsSecurity.Concrete.FtsGuessHash
 
 open _root_.OracleComp OracleSpec UniformTableCompletion OtsContactTrace ENNReal

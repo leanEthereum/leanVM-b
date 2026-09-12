@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.ReferenceEncodingErasure
 import SphincsSecurity.Proof.Ots.EncodingConditionalObservation
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.BankedCacheWeight
 import SphincsSecurity.Proof.Fts.ReuseCachedTargets
 import SphincsSecurity.Proof.Fts.ReuseTargetEnvelope
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

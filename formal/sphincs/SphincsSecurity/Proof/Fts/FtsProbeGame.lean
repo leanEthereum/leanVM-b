@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FtsProbeSimulation
-
 namespace SphincsSecurity.Concrete.FtsProbeSimulation
 
 open OracleComp OracleSpec

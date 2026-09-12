@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Forced.FtsGuessProgram
-
 namespace SphincsSecurity.Concrete.FtsGuessHash
 
 open _root_.OracleComp OracleSpec OtsContactTrace CanonicalProbeRouting

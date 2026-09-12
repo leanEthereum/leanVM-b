@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Ots.Chain
 import SphincsSecurity.Proof.Scheme.Eval
-
 /-!
 # The one-time signature
 

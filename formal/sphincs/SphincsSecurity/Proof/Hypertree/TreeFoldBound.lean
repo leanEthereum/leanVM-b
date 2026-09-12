@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Base.Prelude
-
 namespace SphincsSecurity.Concrete
 
 theorem fold_node_bound (height level index : Nat) (hlevel : level < height) (hindex : index < 2 ^ height) :

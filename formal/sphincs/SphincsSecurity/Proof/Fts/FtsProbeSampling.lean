@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FtsProbeProbability
 import SphincsSecurity.Proof.Fts.FewTimeSource
 import SphincsSecurity.Proof.Fts.FtsProbeOrigin
-
 namespace SphincsSecurity
 
 open OracleComp OracleSpec ENNReal

@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Residual.CanonicalResidualRouting
 import SphincsSecurity.Proof.Residual.PublicResidualLookup
-
 namespace SphincsSecurity.Concrete.ResidualByteAction
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting HiddenLabelObservation

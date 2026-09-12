@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Forced.FtsGuessRemaining
 import SphincsSecurity.Proof.Forced.FtsGuessForcedBudget
 import SphincsSecurity.Proof.Forced.SecretGuessHitPayoff
-
 namespace SphincsSecurity.Concrete.FtsGuessHash
 
 open _root_.OracleComp OracleSpec OtsContactTrace UniformTableCompletion

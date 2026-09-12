@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.ProposalBridgeKernel
-
 namespace SphincsSecurity.Concrete
 
 open ENNReal

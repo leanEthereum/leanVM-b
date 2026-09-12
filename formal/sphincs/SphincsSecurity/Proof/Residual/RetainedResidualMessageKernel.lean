@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Ots.PrefixEncodingRisk
 import SphincsSecurity.Proof.Residual.RetainedResidualHashTrace
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting ResidualByteAction

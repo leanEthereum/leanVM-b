@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FtsProbeOrigin
 import SphincsSecurity.Proof.Ots.OtsProbeSimulation
-
 /-!
 # Origins of published one-time chain values
 

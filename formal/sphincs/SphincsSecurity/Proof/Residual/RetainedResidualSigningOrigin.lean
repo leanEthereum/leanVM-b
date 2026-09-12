@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Reference.FixedHashBoundary
 import SphincsSecurity.Proof.Residual.RetainedObservation
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec

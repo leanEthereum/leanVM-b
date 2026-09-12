@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Ots.EncodingTarget
-
 /-!
 # Amortized charge for encoding collisions
 

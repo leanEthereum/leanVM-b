@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Ots.EncodingProbability
 import SphincsSecurity.Proof.Base.UniformTableRestriction
-
 namespace SphincsSecurity.Concrete.HiddenLabelProbe
 
 open _root_.OracleComp OracleSpec ENNReal

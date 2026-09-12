@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Forced.FtsGuessAuxiliaryProgram
 import SphincsSecurity.Proof.Forced.SecretGuessForcedProgram
-
 namespace SphincsSecurity.Concrete.FtsGuessHash
 
 open _root_.OracleComp OracleSpec UniformTableCompletion

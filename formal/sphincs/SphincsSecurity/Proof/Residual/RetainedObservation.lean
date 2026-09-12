@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.HiddenLabelObservation
-
 namespace SphincsSecurity.Concrete.RetainedObservation
 
 open _root_.OracleComp ENNReal

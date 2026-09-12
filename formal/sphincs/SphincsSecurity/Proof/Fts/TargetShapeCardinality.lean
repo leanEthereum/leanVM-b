@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.TargetShapeOperators
 import SphincsSecurity.Proof.Fts.TargetShapeReindex
-
 namespace SphincsSecurity.Concrete
 
 open ENNReal

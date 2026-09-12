@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.CertificateCacheExceptionGame
 import SphincsSecurity.Proof.Fts.CertificateProposalPrefixException
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp ENNReal

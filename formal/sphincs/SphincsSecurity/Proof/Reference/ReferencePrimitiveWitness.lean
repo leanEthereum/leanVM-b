@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.VerifierContactWitness
 import SphincsSecurity.Proof.Reference.ReferenceVerifierInstantiation
-
 namespace SphincsSecurity.Concrete.ReferencePrimitiveWitness
 
 open _root_.OracleComp OracleSpec OtsContactTrace OtsVerifierWitness

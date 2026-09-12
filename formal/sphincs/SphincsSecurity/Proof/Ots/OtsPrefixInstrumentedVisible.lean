@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.OtsPrefixInstrumentedSeed
 import SphincsSecurity.Proof.Ots.OtsPrefixVisible
-
 namespace SphincsSecurity.Concrete.OtsPrefix
 
 open _root_.OracleComp OracleSpec

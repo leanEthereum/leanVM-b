@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Ots.LayerCompare
-
 /-!
 # Classifying an accepted forgery
 

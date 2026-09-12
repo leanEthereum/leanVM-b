@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Residual.RetainedResidualBankCompleteness
 import SphincsSecurity.Proof.Residual.RetainedResidualStrongCoverage
 import SphincsSecurity.Proof.Residual.RetainedResidualPrimitivePotential
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting

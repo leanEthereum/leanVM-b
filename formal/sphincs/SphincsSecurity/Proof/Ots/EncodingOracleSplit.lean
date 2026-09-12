@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Ots.CanonicalEncodingSampling
 import SphincsSecurity.Proof.Hypertree.CanonicalGraphSampling
 import SphincsSecurity.Proof.Base.UniformTableSplit
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

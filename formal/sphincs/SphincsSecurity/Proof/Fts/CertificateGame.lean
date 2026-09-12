@@ -3,7 +3,6 @@ import SphincsSecurity.Proof.Fts.CertificateMessagePayment
 import SphincsSecurity.Proof.Fts.CertificatePathBudget
 import SphincsSecurity.Proof.Ots.OtsProbeCanonicalChargeGame
 import SphincsSecurity.Proof.Ots.OtsProbeStartErasureBound
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

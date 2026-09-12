@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Residual.CanonicalResidualQuery
-
 namespace SphincsSecurity.Concrete.CanonicalProbeRouting
 
 open _root_.OracleComp HiddenLabelObservation

@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FtsProbeAdversary
 import SphincsSecurity.Proof.Fts.FtsProbeStablePrefixQueries
-
 namespace SphincsSecurity.Concrete.FtsProbeSimulation
 
 open _root_.OracleComp OracleSpec

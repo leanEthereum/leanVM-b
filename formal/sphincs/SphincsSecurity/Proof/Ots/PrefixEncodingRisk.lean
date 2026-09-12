@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Ots.PrefixByteRun
 import SphincsSecurity.Proof.Reference.ReferenceJointPrior
-
 namespace SphincsSecurity.Concrete.ResidualByteFrontend
 
 open _root_.OracleComp OracleSpec ENNReal CanonicalProbeRouting HiddenLabelObservation ResidualByteAction

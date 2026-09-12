@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Ots.EncodingMatchAccumulation
 import SphincsSecurity.Proof.Ots.ReferenceEncodingContext
 import SphincsSecurity.Proof.Ots.EncodingMarkerAllocation
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

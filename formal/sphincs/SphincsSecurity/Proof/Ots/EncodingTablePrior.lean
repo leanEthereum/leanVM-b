@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.EncodingFamilyObservation
 import SphincsSecurity.Proof.Base.UniformTableJoin
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec UniformTableCompletion

@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Fts.CertificateCacheExceptionGrowth
-
 namespace SphincsSecurity.Concrete
 
 open ENNReal

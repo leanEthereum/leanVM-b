@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Ots.EncodingOracleObservation
 import SphincsSecurity.Proof.Ots.OtsEncodingMarker
 import SphincsSecurity.Proof.Base.QueryTraceInvariant
-
 namespace SphincsSecurity.Concrete.EncodingObservation
 
 open _root_.OracleComp OracleSpec UniformTableCompletion RetainedObservation

@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Hypertree.StructuralTraceCache
-
 namespace SphincsSecurity.Concrete.StructuralObservation
 
 open _root_.OracleComp OracleSpec UniformTableCompletion ReferenceStructuralMatch

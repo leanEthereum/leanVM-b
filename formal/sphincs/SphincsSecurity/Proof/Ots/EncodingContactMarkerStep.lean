@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Ots.OtsContactMarkerTrace
-
 namespace SphincsSecurity.Concrete.OtsEncodingMarker
 
 open _root_.OracleComp OracleSpec UniformTableCompletion EncodingObservation RetainedObservation

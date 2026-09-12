@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FewTimeUniform
 import SphincsSecurity.Proof.Fts.MessagePrehit
-
 namespace SphincsSecurity
 
 open _root_.OracleComp OracleSpec ENNReal

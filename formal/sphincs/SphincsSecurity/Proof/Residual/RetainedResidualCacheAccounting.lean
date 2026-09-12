@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Residual.RetainedResidualAccounting
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting ResidualByteAction

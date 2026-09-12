@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Residual.AdaptiveResidualLabels
 import SphincsSecurity.Proof.Hypertree.CanonicalProbeCache
 import SphincsSecurity.Proof.Residual.ResidualByteAction
-
 namespace SphincsSecurity.Concrete.ResidualByteFrontend
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting HiddenLabelObservation ResidualByteAction

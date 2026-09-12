@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Ots.EncodingCharge
 import SphincsSecurity.Proof.Ots.EncodingProbability
-
 /-!
 # Cache-derived encoding selection risk
 

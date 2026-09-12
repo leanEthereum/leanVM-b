@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Scheme.Arith
 import SphincsSecurity.Proof.Scheme.Bytes
 import SphincsSecurity.Proof.Scheme.StatementLemmas
-
 /-!
 # Extracting the first divergence
 

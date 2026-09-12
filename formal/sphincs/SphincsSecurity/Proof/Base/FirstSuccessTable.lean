@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Base.UniformTableConditioning
-
 namespace SphincsSecurity.Concrete.FirstSuccessTable
 
 open _root_.OracleComp ENNReal

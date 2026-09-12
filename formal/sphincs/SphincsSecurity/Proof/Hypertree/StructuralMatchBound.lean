@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Hypertree.StructuralMatchAccumulation
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Ots.OtsMarkerContactSource
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.OtsContactEvents
 import SphincsSecurity.Proof.Ots.OtsPrefixContactProbability
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec PartialChainEndpoint

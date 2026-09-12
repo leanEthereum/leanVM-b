@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FewTimeUniform
 import SphincsSecurity.Proof.Fts.MessagePrehit
 import SphincsSecurity.Proof.Fts.SignerDigestSource
-
 /-!
 # Fresh successful digest attempts
 

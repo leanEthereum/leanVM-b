@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Reference.ReferenceInstrumentedGame
 import SphincsSecurity.Proof.Ots.OtsPrefixSeedGame
-
 namespace SphincsSecurity.Concrete.OtsPrefix
 
 open _root_.OracleComp OracleSpec

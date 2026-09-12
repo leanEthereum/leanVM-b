@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Hypertree.RootCache
 import SphincsSecurity.Proof.Scheme.Secrets
 import SphincsSecurity.Proof.Reference.SigningTrace
-
 /-!
 # Direct adversary queries within the complete query budget
 

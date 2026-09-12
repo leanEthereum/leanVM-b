@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Hypertree.Descent
 import SphincsSecurity.Proof.Scheme.ReplayWorld
-
 /-!
 # Successful signer executions
 

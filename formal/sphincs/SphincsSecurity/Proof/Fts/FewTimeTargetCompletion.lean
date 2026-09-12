@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FewTimeFresh
-
 /-!
 # Completing an optional fresh signer target
 

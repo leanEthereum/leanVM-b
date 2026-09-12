@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Ots.EncodingCached
 import SphincsSecurity.Proof.Scheme.ForgeryClassify
-
 /-!
 # Replay and message-digest collisions
 

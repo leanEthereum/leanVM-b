@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FewTimeLoop
 import SphincsSecurity.Proof.Fts.FewTimePadding
 import SphincsSecurity.Proof.Fts.FewTimeSignerView
-
 /-!
 # Fresh signer views
 

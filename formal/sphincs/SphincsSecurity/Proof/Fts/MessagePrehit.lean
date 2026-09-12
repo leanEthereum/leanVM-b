@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Scheme.NoMessage
 import SphincsSecurity.Proof.Scheme.Replay
-
 /-!
 # Cached message inputs
 

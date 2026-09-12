@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Base.UniformTableSplit
-
 namespace SphincsSecurity.Concrete.UniformTableSplit
 
 attribute [local instance] Classical.propDecidable

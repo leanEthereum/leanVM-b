@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.OtsPrefixFrontier
 import SphincsSecurity.Proof.Base.UniformTableSplit
-
 namespace SphincsSecurity.Concrete.OtsPrefix
 
 open _root_.OracleComp OracleSpec

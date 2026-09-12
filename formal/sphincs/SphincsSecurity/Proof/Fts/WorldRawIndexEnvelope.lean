@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FreshTargetShapeAverage
 import SphincsSecurity.Proof.Fts.InterleavedCoverStep
 import SphincsSecurity.Proof.Fts.TargetShapeCardinality
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

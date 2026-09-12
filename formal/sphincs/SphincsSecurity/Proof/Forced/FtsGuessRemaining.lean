@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Forced.FtsGuessPairSource
 import SphincsSecurity.Proof.Reference.ReferenceCertificateCoverage
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

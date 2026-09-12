@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.OtsPrefixSeedAllocation
 import SphincsSecurity.Proof.Ots.OtsPrefixObservedSource
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

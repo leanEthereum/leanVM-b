@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Reference.VerifierTraceDescent
 import SphincsSecurity.Proof.Hypertree.TreeFoldBound
 import SphincsSecurity.Proof.Hypertree.GraphPayloadInputs
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec OtsContactTrace

@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.CacheIndexMultiplicity
 import SphincsSecurity.Proof.Fts.CachedTargetIncrement
 import SphincsSecurity.Proof.Fts.TargetShapeBlocks
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

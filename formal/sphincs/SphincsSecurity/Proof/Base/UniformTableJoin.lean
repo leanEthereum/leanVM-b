@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.UniformTableProducts
 import SphincsSecurity.Proof.Base.UniformTableSplit
-
 namespace SphincsSecurity.Concrete.UniformTableSplit
 
 open _root_.OracleComp ENNReal

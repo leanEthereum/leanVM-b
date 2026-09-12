@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Reference.ReferenceContactGame
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

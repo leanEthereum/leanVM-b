@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.InitialTargetShape
 import SphincsSecurity.Proof.Fts.NearUniformRawStep
 import SphincsSecurity.Proof.Fts.RawSigningMomentBound
-
 namespace SphincsSecurity.Concrete
 
 open ENNReal

@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Ots.EncodingSelectionCache
-
 namespace SphincsSecurity.Concrete
 
 noncomputable def canonicalEncodingInputs (parameter : PublicParameter) : Finset HashInput :=

@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.AdaptiveHiddenHazard
 import SphincsSecurity.Proof.Ots.PrefixEncodingRisk
 import SphincsSecurity.Proof.Residual.ResidualByteCandidates
-
 namespace SphincsSecurity.Concrete.ResidualByteFrontend
 
 open _root_.OracleComp OracleSpec ENNReal CanonicalProbeRouting HiddenLabelObservation ResidualByteAction

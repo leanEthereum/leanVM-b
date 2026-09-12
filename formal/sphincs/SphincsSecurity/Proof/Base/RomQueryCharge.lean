@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.CacheSize
 import SphincsSecurity.Proof.Scheme.Charge
-
 namespace SphincsSecurity
 
 open OracleComp OracleSpec ENNReal

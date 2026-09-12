@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Ots.EncodingSelectionCache
 import SphincsSecurity.Proof.Base.FirstSuccessTable
 import SphincsSecurity.Proof.Hypertree.FrontierSigningEvaluation
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

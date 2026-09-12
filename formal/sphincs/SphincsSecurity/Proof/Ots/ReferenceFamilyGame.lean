@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Hypertree.CanonicalGraphGame
 import SphincsSecurity.Proof.Reference.CausalFrontierGame
 import SphincsSecurity.Proof.Ots.ReferenceFamilyConditioning
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec OracleComp.DeferredSampling

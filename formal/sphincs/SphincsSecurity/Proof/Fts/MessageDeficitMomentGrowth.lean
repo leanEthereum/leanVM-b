@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.AdmissibleHashMoments
 import SphincsSecurity.Proof.Fts.MessageDeficitScore
-
 namespace SphincsSecurity
 
 open OracleComp OracleSpec ENNReal

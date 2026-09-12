@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.UniformProposalMoments
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp ENNReal

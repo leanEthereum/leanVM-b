@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Forced.FtsGuessHash
 import SphincsSecurity.Proof.Reference.ReferenceForgerySource
-
 namespace SphincsSecurity.Concrete.FtsGuessHash
 
 open _root_.OracleComp OracleSpec OtsContactTrace

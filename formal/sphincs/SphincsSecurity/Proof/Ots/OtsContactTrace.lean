@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.OtsPrefixVisibleTrace
 import SphincsSecurity.Proof.Ots.OtsPrefixAllocation
-
 namespace SphincsSecurity.Concrete.OtsContactTrace
 
 open _root_.OracleComp OracleSpec

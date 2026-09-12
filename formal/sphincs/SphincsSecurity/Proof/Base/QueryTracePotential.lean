@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.QueryTraceInvariant
 import SphincsSecurity.Proof.Residual.RetainedObservation
-
 namespace SphincsSecurity.QueryPause
 
 open _root_.OracleComp OracleSpec

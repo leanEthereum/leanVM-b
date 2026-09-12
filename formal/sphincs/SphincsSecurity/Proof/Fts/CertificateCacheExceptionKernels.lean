@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Fts.CertificateCacheExceptionGrowth
 import SphincsSecurity.Proof.Fts.MessageCacheProjection
 import SphincsSecurity.Proof.Reference.BoundaryMessageCost
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

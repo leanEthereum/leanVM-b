@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.EncodingContactMarkerStep
 import SphincsSecurity.Proof.Ots.EncodingMarkerAccumulation
-
 namespace SphincsSecurity.Concrete.EncodingObservation
 
 open _root_.OracleComp OracleSpec OtsEncodingMarker

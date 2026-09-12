@@ -3,7 +3,6 @@ import SphincsSecurity.Proof.Residual.RetainedResidualCandidateHistory
 import SphincsSecurity.Proof.Residual.RetainedResidualEncodingHistory
 import SphincsSecurity.Proof.Residual.RetainedResidualQueryPotential
 import SphincsSecurity.Proof.Residual.RetainedResidualTerminalCoverage
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting

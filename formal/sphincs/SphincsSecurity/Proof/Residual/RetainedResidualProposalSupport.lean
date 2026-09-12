@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Residual.RetainedResidualProposalIndex
 import SphincsSecurity.Proof.Residual.RetainedResidualWorldKernel
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec ENNReal CanonicalProbeRouting

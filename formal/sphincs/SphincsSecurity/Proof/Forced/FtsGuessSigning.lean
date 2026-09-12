@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Forced.SecretGuessObservation
 import SphincsSecurity.Proof.Reference.ReferenceAuxiliarySigning
 import SphincsSecurity.Proof.Base.UniformTableProducts
-
 namespace SphincsSecurity.Concrete.FtsGuessSigning
 
 open _root_.OracleComp OracleSpec SecretGuessObservation CanonicalProbeRouting UniformTableCompletion

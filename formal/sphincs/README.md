@@ -18,7 +18,7 @@ The cache command is needed on initial setup. The build includes [Audit.lean](Au
 
 ## Where to work
 
-[PROOF.md](PROOF.md) explains the route, the constants and which modules must change if the one-time signature changes. The proof is split by component:
+[PROOF.md](PROOF.md) explains the route, the constants, the component dependencies of every directory and which modules must change if the one-time signature changes. The proof is split by component:
 
 | Entry | Purpose |
 | --- | --- |
@@ -27,7 +27,8 @@ The cache command is needed on initial setup. The build includes [Audit.lean](Au
 | [Proof/Base](SphincsSecurity/Proof/Base) | Scheme-independent tooling: uniform tables and their exact adaptive posteriors, query caps, pauses and traces, oracle query charges, moment bounds. |
 | [Proof/Scheme](SphincsSecurity/Proof/Scheme) | The concrete game over a query cache, honest computation and witness extraction from an accepting signature. |
 | [Proof/Hypertree](SphincsSecurity/Proof/Hypertree) | The canonical graph of honest hash inputs, frontier oracles, structural matches, layer and hypertree witnesses. |
-| [Proof/Ots](SphincsSecurity/Proof/Ots) | The one-time signature: chain likelihoods, contacts, two-edge completions, encoding neighbors, markers and matches, the OTS verifier witness. |
+| [Proof/Chains](SphincsSecurity/Proof/Chains) | Abstract chain tables and their adaptive query bounds, independent of the scheme. |
+| [Proof/Ots](SphincsSecurity/Proof/Ots) | The one-time signature: prefix simulation, contacts, encoding neighbors, markers and matches on the concrete chains, the OTS verifier witness. |
 | [Proof/Fts](SphincsSecurity/Proof/Fts) | The few-time signature and message digest: target certificates, the banked monitor, proposal words, the terminal certificate price, the Poisson pool, cache exceptions. |
 | [Proof/Reference](SphincsSecurity/Proof/Reference) | The reference experiment: sampled reference family, forgery source, verifier classification, primitive-event union, query allocation, certificate coverage. |
 | [Proof/Residual](SphincsSecurity/Proof/Residual) | The retained residual monitor on the original game and the large-budget theorem. |

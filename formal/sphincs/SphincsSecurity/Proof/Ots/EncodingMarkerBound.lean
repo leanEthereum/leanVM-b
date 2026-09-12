@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Ots.EncodingMarkerAccumulation
 import SphincsSecurity.Proof.Ots.ReferenceEncodingLazySource
 import SphincsSecurity.Proof.Reference.ReferenceContactGame
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

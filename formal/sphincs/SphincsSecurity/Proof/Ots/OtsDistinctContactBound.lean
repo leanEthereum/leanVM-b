@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.OtsDistinctContactProbability
 import SphincsSecurity.Proof.Ots.OtsContactFirstProbability
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

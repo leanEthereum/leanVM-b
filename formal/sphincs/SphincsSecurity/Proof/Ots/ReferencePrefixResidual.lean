@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Base.FirstSuccessPrefix
 import SphincsSecurity.Proof.Residual.PublicResidualLookup
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting

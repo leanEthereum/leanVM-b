@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Reference.AuthenticationQueryCost
 import SphincsSecurity.Proof.Reference.BoundaryHashCost
 import SphincsSecurity.Proof.Fts.FtsSigningReserve
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

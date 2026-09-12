@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Base.FirstSuccessFamily
 import SphincsSecurity.Proof.Reference.ReferenceOracleConditioning
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.OtsContactAllocation
-import SphincsSecurity.Proof.Ots.PartialChainLastRow
-
+import SphincsSecurity.Proof.Chains.PartialChainLastRow
 namespace SphincsSecurity.Concrete.OtsPrefix
 
 open _root_.OracleComp OracleSpec PartialChainEndpoint

@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Hypertree.ReferenceGraphProgram
 import SphincsSecurity.Proof.Reference.ReferenceAuxiliarySigning
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting

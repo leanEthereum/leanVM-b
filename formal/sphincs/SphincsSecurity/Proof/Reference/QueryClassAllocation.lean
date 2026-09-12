@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Reference.BoundaryChargePartition
 import SphincsSecurity.Proof.Ots.OtsPrefixAllocation
-
 namespace SphincsSecurity.Concrete.QueryClass
 
 open _root_.OracleComp OracleSpec

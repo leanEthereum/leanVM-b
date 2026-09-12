@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Reference.DirectQueryBudget
 import SphincsSecurity.Proof.Fts.FtsProbeSimulation
 import SphincsSecurity.Proof.Ots.OtsProbeSimulation
-
 namespace SphincsSecurity.Concrete.OtsProbeSimulation
 
 open OracleComp OracleSpec OracleComp.ProgramLogic.Relational

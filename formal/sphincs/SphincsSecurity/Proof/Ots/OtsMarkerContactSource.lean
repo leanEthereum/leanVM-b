@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.OtsTraceProbability
 import SphincsSecurity.Proof.Ots.EncodingMarkerAllocation
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.CertificateMonitor
 import SphincsSecurity.Proof.Fts.DigestCompletionBank
 import SphincsSecurity.Proof.Residual.RetainedResidualSigningLaw
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec ENNReal CanonicalProbeRouting

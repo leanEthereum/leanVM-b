@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Scheme.Game
 import SphincsSecurity.Proof.Reference.QueryBound
-
 /-!
 # Splitting the game at the secrets
 

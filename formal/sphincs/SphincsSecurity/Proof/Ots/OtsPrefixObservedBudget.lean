@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.OtsPrefixObservedSource
-import SphincsSecurity.Proof.Ots.AdaptiveChainSupport
-
+import SphincsSecurity.Proof.Chains.AdaptiveChainSupport
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

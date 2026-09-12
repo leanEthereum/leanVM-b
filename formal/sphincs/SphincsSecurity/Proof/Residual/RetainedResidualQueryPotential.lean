@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.PrimitiveMessagePotential
 import SphincsSecurity.Proof.Residual.RetainedResidualHazard
 import SphincsSecurity.Proof.Residual.RetainedResidualProbeBudget
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting

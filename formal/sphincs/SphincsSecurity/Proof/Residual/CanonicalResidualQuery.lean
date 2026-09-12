@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Hypertree.CanonicalGraphResidual
 import SphincsSecurity.Proof.Hypertree.CanonicalProbeRouting
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec OracleComp.DeferredSampling CanonicalProbeRouting

@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Residual.RetainedResidualSigningOrigin
 import SphincsSecurity.Proof.Residual.RetainedResidualVerifySupport
 import SphincsSecurity.Proof.Residual.RetainedResidualReplay
 import SphincsSecurity.Proof.Residual.RetainedResidualInitial
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting

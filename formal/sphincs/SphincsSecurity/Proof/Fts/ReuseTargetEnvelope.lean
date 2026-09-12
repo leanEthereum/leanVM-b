@@ -3,7 +3,6 @@ import SphincsSecurity.Proof.Fts.ExactTargetShapeSigning
 import SphincsSecurity.Proof.Reference.SigningExecutionBudget
 import SphincsSecurity.Proof.Fts.TargetShapeContinuation
 import SphincsSecurity.Proof.Fts.TargetShapeExpectation
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

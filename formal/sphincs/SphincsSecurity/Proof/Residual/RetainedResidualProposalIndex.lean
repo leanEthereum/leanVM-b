@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.OriginalProposalExecution
 import SphincsSecurity.Proof.Residual.RetainedResidualSigningLaw
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec ENNReal CanonicalProbeRouting

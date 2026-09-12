@@ -3,7 +3,6 @@ import SphincsSecurity.Proof.Fts.DigestCompletionLogGrowth
 import SphincsSecurity.Proof.Fts.SignerNewMessageUnique
 import SphincsSecurity.Proof.Fts.SingleMessageCacheGrowth
 import SphincsSecurity.Proof.Fts.TargetSigningCacheGrowth
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

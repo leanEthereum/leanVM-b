@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Hypertree.StructuralOracleObservation
-
 namespace SphincsSecurity.Concrete.StructuralObservation
 
 open _root_.OracleComp OracleSpec UniformTableCompletion RetainedObservation

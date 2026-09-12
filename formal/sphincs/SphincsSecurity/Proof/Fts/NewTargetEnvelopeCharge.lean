@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.ConcreteTargetShapeSigning
 import SphincsSecurity.Proof.Fts.TargetShapeEnvelope
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

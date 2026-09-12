@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.OtsContactTrace
 import SphincsSecurity.Proof.Base.QueryPauseInvariant
-
 namespace SphincsSecurity.Concrete.OtsContactTrace
 
 open _root_.OracleComp OracleSpec

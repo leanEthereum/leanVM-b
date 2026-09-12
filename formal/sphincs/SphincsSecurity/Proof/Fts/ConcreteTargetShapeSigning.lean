@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.ClosedTargetMixedSigning
 import SphincsSecurity.Proof.Fts.TargetShapeOperators
 import SphincsSecurity.Proof.Fts.TargetShapeReindex
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

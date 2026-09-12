@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FewTimeUniform
 import SphincsSecurity.Proof.Fts.JointProbeMessageAnswers
 import SphincsSecurity.Proof.Fts.JointProbeMessageReserve
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

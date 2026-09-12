@@ -3,7 +3,6 @@ import SphincsSecurity.Proof.Fts.CacheMessageSignerWeight
 import SphincsSecurity.Proof.Fts.CachedDigestRate
 import SphincsSecurity.Proof.Fts.DigestLoopRecord
 import SphincsSecurity.Proof.Fts.FewTimeFixedPrehit
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

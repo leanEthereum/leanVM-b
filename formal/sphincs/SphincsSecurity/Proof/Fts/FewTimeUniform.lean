@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FewTimeProbability
 import SphincsSecurity.Proof.Scheme.Guess
-
 /-!
 # Uniform few-time views
 

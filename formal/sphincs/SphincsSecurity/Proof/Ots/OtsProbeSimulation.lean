@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Scheme.ForgeryClassify
 import SphincsSecurity.Proof.Ots.SecretProbe
 import SphincsSecurity.Proof.Reference.SigningTrace
-
 /-!
 # Opaque one-time chain values
 

@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Residual.RetainedResidualCacheKernels
 import SphincsSecurity.Proof.Residual.RetainedResidualExceptionHistory
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec ENNReal CanonicalProbeRouting

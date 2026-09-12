@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Forced.SecretGuessForceBound
-
 namespace SphincsSecurity.Concrete.SecretGuessObservation
 
 open _root_.OracleComp OracleSpec ENNReal

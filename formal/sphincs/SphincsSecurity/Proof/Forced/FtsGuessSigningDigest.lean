@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Forced.FtsGuessCachedMessage
 import SphincsSecurity.Proof.Residual.RetainedResidualCoverageStep
-
 namespace SphincsSecurity.Concrete.FtsGuessHash
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting ENNReal

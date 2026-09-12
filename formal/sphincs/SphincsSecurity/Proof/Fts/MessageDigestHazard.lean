@@ -4,7 +4,6 @@ import SphincsSecurity.Proof.Fts.FewTimeWeightedOriginRace
 import SphincsSecurity.Proof.Fts.FreshDigestHazard
 import SphincsSecurity.Proof.Fts.MessageCacheCountGrowth
 import SphincsSecurity.Proof.Fts.MessageInputMiss
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

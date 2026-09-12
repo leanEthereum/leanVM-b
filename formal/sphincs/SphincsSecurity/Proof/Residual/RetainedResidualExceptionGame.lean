@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Residual.RetainedResidualExceptionClassification
 import SphincsSecurity.Proof.Residual.RetainedResidualMonitoredGame
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting

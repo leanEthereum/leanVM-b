@@ -3,7 +3,6 @@ import SphincsSecurity.Proof.Fts.CacheSize
 import SphincsSecurity.Proof.Fts.FewTimeLoop
 import SphincsSecurity.Proof.Scheme.Secrets
 import SphincsSecurity.Proof.Reference.SigningTrace
-
 /-!
 # Cached signer views
 

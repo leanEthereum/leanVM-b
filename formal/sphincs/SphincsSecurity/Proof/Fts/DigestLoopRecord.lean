@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FewTimeSignerView
-
 namespace SphincsSecurity.Concrete
 
 open OracleSpec

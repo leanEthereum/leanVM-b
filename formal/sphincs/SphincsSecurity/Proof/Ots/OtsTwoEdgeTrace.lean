@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.OtsTraceRows
-import SphincsSecurity.Proof.Ots.AdaptiveChainCapTwoEdge
-
+import SphincsSecurity.Proof.Chains.AdaptiveChainCapTwoEdge
 namespace SphincsSecurity.Concrete.PartialChainEndpoint
 
 set_option backward.isDefEq.respectTransparency false

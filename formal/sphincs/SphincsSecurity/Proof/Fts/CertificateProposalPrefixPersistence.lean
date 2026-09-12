@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.CertificateProposalPrefixException
 import SphincsSecurity.Proof.Fts.CertificateStoppedState
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

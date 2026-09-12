@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Scheme.Bytes
-
 namespace SphincsSecurity.Concrete.FtsProbeSimulation
 
 open _root_.OracleComp OracleSpec ENNReal

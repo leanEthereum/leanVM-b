@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Hypertree.FrontierSigningOracleCongruence
 import SphincsSecurity.Proof.Hypertree.PublicGraphSigner
 import SphincsSecurity.Proof.Residual.RetainedObservation
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting

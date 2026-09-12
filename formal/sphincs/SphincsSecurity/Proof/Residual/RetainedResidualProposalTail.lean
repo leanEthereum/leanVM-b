@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Residual.RetainedResidualProposalTailStep
 import SphincsSecurity.Proof.Residual.RetainedResidualExceptionGame
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting

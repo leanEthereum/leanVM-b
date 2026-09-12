@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FewTimeSignerView
 import SphincsSecurity.Proof.Ots.SecretProbe
-
 /-!
 # Split random-oracle keys for hidden few-time leaves
 

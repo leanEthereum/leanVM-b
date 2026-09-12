@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Hypertree.CanonicalGraphSampling
-
 namespace SphincsSecurity.Concrete
 
 attribute [local irreducible] canonicalPayloadInputs canonicalGraphInputs instFintypePosition

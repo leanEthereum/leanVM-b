@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.EncodingOracleSplit
 import SphincsSecurity.Proof.Hypertree.FrontierSigningOracleCongruence
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

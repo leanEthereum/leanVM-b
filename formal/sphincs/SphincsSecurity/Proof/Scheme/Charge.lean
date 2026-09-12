@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Hypertree.Settled
 import SphincsSecurity.Proof.Scheme.Slot
-
 /-!
 # The bad event and what pays for it
 

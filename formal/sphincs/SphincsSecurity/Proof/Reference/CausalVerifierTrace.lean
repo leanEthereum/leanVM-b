@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Reference.VerifierTraceSource
-
 namespace SphincsSecurity.Concrete.OtsContactTrace
 
 open _root_.OracleComp OracleSpec

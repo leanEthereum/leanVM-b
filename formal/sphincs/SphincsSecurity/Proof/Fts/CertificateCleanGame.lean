@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.CertificateCleanExecution
 import SphincsSecurity.Proof.Fts.CertificateJointExceptions
 import SphincsSecurity.Proof.Residual.RetainedWorldCoverBudget
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

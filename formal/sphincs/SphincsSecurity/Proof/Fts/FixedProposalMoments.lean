@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Base.StirlingMomentBounds
 import SphincsSecurity.Proof.Fts.UniformProposalVariance
-
 namespace SphincsSecurity.Concrete
 
 open ENNReal

@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Reference.ReferenceVerifierInstantiation
 import SphincsSecurity.Proof.Residual.RetainedResidualSigningHistory
 import SphincsSecurity.Proof.Fts.BankedTargetEnvelope
-
 namespace SphincsSecurity.Concrete.ReferenceFtsCoverage
 
 open _root_.OracleComp OracleSpec OtsContactTrace

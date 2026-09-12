@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.PublicEncodingMatch
 import SphincsSecurity.Proof.Ots.EncodingTablePrior
-
 namespace SphincsSecurity.Concrete.PublicEncodingMatch
 
 open _root_.OracleComp OracleSpec UniformTableCompletion

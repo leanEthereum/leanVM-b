@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Forced.FtsGuessProposalStep
 import SphincsSecurity.Proof.Residual.RetainedResidualProposalInvariant
-
 namespace SphincsSecurity.Concrete.FtsGuessHash
 
 open _root_.OracleComp OracleSpec UniformTableCompletion OtsContactTrace ENNReal

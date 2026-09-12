@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Residual.CanonicalResidualQuery
 import SphincsSecurity.Proof.Ots.EncodingFamilyOracleSplit
 import SphincsSecurity.Proof.Base.UniformTableOverwrite
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting

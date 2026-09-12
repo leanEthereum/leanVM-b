@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.TargetShapeCardinality
 import SphincsSecurity.Proof.Fts.TargetShapeContinuation
-
 namespace SphincsSecurity.Concrete
 
 open ENNReal

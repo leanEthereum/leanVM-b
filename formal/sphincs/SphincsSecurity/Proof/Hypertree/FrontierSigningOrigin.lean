@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Residual.RetainedResidualSigningOrigin
 import SphincsSecurity.Proof.Reference.CausalVerifierTrace
-
 namespace SphincsSecurity.Concrete.ReferenceSigningWitness
 
 open _root_.OracleComp OracleSpec OtsContactTrace

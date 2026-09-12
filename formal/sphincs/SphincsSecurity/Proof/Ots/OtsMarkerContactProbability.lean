@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Ots.OtsMarkerContactPartition
 import SphincsSecurity.Proof.Ots.OtsMarkerContactBound
 import SphincsSecurity.Proof.Ots.OtsContactMarkerBound
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Residual.RetainedResidualOriginalBudget
 import SphincsSecurity.Proof.Residual.RetainedResidualProposalPayment
 import SphincsSecurity.Proof.Fts.UnitCertificateCoverage
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec ENNReal CanonicalProbeRouting

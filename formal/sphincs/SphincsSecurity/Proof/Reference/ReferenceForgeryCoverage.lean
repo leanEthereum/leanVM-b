@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Fts.ReferenceFtsCoverage
 import SphincsSecurity.Proof.Reference.ReferencePrimitiveWitness
-
 namespace SphincsSecurity.Concrete.ReferenceVerifierWitness
 
 open _root_.OracleComp OracleSpec OtsContactTrace OtsVerifierWitness

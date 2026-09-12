@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Hypertree.Extract
-
 /-!
 # Extracting the first divergence in a chain
 

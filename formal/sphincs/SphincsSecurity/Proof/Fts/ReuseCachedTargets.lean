@@ -3,7 +3,6 @@ import SphincsSecurity.Proof.Fts.ExpectedNewTargetEnvelope
 import SphincsSecurity.Proof.Fts.FreshTargetWorld
 import SphincsSecurity.Proof.Fts.NewTargetWorld
 import SphincsSecurity.Proof.Fts.ReuseRawEnvelope
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

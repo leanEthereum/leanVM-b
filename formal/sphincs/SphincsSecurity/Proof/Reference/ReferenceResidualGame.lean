@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Ots.ReferenceFamilyGame
 import SphincsSecurity.Proof.Reference.ReferenceResidualSampling
 import SphincsSecurity.Proof.Residual.ResidualGraphGame
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

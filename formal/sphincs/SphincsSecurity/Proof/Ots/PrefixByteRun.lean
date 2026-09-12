@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Residual.CheckedByteExecution
 import SphincsSecurity.Proof.Ots.PrefixByteAction
 import SphincsSecurity.Proof.Ots.PublicEncodingMatch
-
 namespace SphincsSecurity.Concrete.ResidualByteFrontend
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting HiddenLabelObservation ResidualByteAction

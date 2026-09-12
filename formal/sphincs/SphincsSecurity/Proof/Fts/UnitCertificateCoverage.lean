@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.CertificateJointExceptions
 import SphincsSecurity.Proof.Fts.FixedCertificateCoverage
 import SphincsSecurity.Proof.Base.PositivePartMomentBound
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp ENNReal

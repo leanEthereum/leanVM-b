@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FtsProbeAdversary
-
 namespace SphincsSecurity.AdaptiveRevealProbe
 
 open OracleComp OracleSpec

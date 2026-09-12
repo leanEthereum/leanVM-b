@@ -6,7 +6,6 @@ import SphincsSecurity.Proof.Residual.RetainedResidualInitial
 import SphincsSecurity.Proof.Residual.RetainedResidualMessagePayment
 import SphincsSecurity.Proof.Residual.RetainedResidualResources
 import SphincsSecurity.Proof.Residual.RetainedWorldCoverBudget
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec ENNReal CanonicalProbeRouting

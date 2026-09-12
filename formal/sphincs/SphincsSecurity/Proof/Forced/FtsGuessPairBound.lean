@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Forced.SecretGuessPairBound
 import SphincsSecurity.Proof.Forced.FtsGuessBudget
 import SphincsSecurity.Proof.Forced.FtsGuessReferenceWitness
-
 namespace SphincsSecurity.Concrete.FtsGuessHash
 
 open _root_.OracleComp OracleSpec ENNReal

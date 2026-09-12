@@ -3,7 +3,6 @@ import SphincsSecurity.Proof.Fts.OriginalTerminalProposal
 import SphincsSecurity.Proof.Residual.RetainedResidualMonitoredPayment
 import SphincsSecurity.Proof.Residual.RetainedResidualProposalIndex
 import SphincsSecurity.Proof.Residual.RetainedResidualProposalWord
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec ENNReal CanonicalProbeRouting

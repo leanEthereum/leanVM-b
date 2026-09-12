@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Fts.CertificateMessagePayment
 import SphincsSecurity.Proof.Fts.OriginalProposalBudget
 import SphincsSecurity.Proof.Fts.CertificateCacheMonitor
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

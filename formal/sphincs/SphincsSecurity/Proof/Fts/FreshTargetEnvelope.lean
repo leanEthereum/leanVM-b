@@ -3,7 +3,6 @@ import SphincsSecurity.Proof.Fts.ConcreteTargetShapeQuery
 import SphincsSecurity.Proof.Fts.FreshTargetShapeAverage
 import SphincsSecurity.Proof.Fts.TargetIndexEnvelope
 import SphincsSecurity.Proof.Fts.TargetShapeExpectation
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

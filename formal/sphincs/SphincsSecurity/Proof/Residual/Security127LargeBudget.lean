@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Residual.RetainedResidualCacheTail
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

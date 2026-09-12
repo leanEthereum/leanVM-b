@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Fts.MessageDeficitMomentGrowth
-
 namespace SphincsSecurity
 
 open OracleComp OracleSpec ENNReal

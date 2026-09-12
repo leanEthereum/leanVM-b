@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Scheme.Cached
-
 /-!
 # Cache witnesses for terminal events
 

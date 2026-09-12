@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Hypertree.ReferenceGraphContext
 import SphincsSecurity.Proof.Reference.ReferencePrimitiveWitness
-
 namespace SphincsSecurity.Concrete.ReferenceStructuralMatch
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting OtsContactTrace

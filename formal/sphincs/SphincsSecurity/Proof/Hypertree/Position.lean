@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Scheme.Bytes
-
 /-!
 # The positions of the honest key
 

@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.AdaptiveProposalWords
 import SphincsSecurity.Proof.Fts.DigestSelectionIndex
 import SphincsSecurity.Proof.Fts.ProposalBridgeKernel
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FewTimeFresh
 import SphincsSecurity.Proof.Fts.FewTimePrehit
-
 /-!
 # A weighted prefix split for the digest race
 

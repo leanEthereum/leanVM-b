@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.CachedSigningViews
 import SphincsSecurity.Proof.Fts.NormalizedTargetMatches
 import SphincsSecurity.Proof.Fts.TargetAssignmentReuse
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FewTimeSignerView
 import SphincsSecurity.Proof.Fts.SignerDigestSource
 import SphincsSecurity.Proof.Fts.TerminalCache
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.TargetMomentShapes
-
 namespace SphincsSecurity.Concrete
 
 open ENNReal

@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.CertificateBoundaryInvariants
 import SphincsSecurity.Proof.Fts.CertificateProposalPrefixPersistence
 import SphincsSecurity.Proof.Fts.StoppedSigningLog
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

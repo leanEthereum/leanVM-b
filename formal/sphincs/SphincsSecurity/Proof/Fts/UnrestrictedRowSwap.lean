@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Base.UniformTableOverwrite
-
 namespace SphincsSecurity.Concrete.UnrestrictedRowSwap
 
 open ENNReal

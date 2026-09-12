@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Ots.OtsChainBackward
-
 namespace SphincsSecurity.Concrete.OtsContactTrace
 
 open _root_.OracleComp OracleSpec

@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.HiddenLabelProbe
 import SphincsSecurity.Proof.Residual.RetainedObservation
-
 namespace SphincsSecurity.Concrete.HiddenLabelObservation
 
 open _root_.OracleComp OracleSpec ENNReal UniformTableCompletion RetainedObservation

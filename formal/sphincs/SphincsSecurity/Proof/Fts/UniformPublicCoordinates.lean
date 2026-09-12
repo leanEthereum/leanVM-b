@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Base.UniformTableCompletion
-
 namespace SphincsSecurity.Concrete.UniformPublicCoordinates
 
 open _root_.OracleComp ENNReal UniformTableCompletion

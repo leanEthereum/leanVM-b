@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Ots.OtsTraceRowSource
 import SphincsSecurity.Proof.Ots.OtsTwoEdgeTrace
 import SphincsSecurity.Proof.Ots.OtsPrefixTwoEdgeProbability
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec PartialChainEndpoint

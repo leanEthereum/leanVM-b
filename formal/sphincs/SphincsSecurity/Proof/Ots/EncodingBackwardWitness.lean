@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Ots.EncodingNeighbors
-
 namespace SphincsSecurity.TargetSum
 
 open scoped BigOperators

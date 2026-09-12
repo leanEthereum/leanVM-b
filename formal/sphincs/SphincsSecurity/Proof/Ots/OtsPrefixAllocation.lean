@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Reference.CausalFrontierAllocation
 import SphincsSecurity.Proof.Ots.OtsPrefixFrontier
-
 namespace SphincsSecurity.Concrete.OtsPrefix
 
 open _root_.OracleComp OracleSpec

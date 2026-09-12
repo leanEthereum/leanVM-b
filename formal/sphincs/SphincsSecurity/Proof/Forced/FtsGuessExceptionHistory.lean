@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Forced.FtsGuessMonitoredAccounting
 import SphincsSecurity.Proof.Residual.RetainedResidualCacheKernels
-
 namespace SphincsSecurity.Concrete.FtsGuessHash
 
 open _root_.OracleComp OracleSpec UniformTableCompletion OtsContactTrace ENNReal

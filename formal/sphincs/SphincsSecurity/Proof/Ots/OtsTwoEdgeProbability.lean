@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Ots.OtsTwoEdgeSource
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

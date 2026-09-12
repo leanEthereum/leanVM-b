@@ -1,7 +1,6 @@
-import SphincsSecurity.Proof.Ots.AdaptiveChainAuxiliary
+import SphincsSecurity.Proof.Chains.AdaptiveChainAuxiliary
 import SphincsSecurity.Proof.Ots.OtsPrefixObservedRun
 import SphincsSecurity.Proof.Reference.CausalFrontierProgram
-
 namespace SphincsSecurity.Concrete.OtsPrefix
 
 open _root_.OracleComp OracleSpec

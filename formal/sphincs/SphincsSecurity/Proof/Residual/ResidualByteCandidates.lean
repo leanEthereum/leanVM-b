@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Ots.PrefixByteAction
 import SphincsSecurity.Proof.Residual.ResidualByteExecution
-
 namespace SphincsSecurity.Concrete.CanonicalProbeRouting
 
 theorem charge_probes_mono (parameter : PublicParameter) (words : OtsReferenceWords)

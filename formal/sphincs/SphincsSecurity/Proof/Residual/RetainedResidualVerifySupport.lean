@@ -3,7 +3,6 @@ import SphincsSecurity.Proof.Fts.FtsProbeVerifierSource
 import SphincsSecurity.Proof.Residual.RetainedResidualSuccessTransfer
 import SphincsSecurity.Proof.Residual.RetainedResidualVerify
 import SphincsSecurity.Proof.Residual.RetainedResidualWorld
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting

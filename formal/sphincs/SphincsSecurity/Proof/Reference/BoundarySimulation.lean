@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Reference.FixedHashBoundary
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

@@ -3,7 +3,6 @@ import SphincsSecurity.Proof.Hypertree.CanonicalGraphHonest
 import SphincsSecurity.Proof.Ots.EncodingInputs
 import SphincsSecurity.Proof.Reference.FiniteHashWorld
 import SphincsSecurity.Proof.Ots.ReferenceEncodingTable
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec OracleComp.DeferredSampling

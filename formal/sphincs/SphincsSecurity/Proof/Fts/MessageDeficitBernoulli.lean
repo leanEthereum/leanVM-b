@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Fts.CachedIndexHashMoments
-
 namespace SphincsSecurity
 
 open OracleComp OracleSpec ENNReal

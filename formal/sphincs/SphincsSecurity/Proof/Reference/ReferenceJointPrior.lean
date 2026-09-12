@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Residual.AdaptiveResidualErasure
 import SphincsSecurity.Proof.Hypertree.CanonicalPublicPrior
 import SphincsSecurity.Proof.Reference.ReferenceResidualSeeds
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec UniformTableCompletion ResidualTableCompletion

@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.NormalizedTargetCacheQuery
 import SphincsSecurity.Proof.Fts.TargetMixedGrowthPolynomial
 import SphincsSecurity.Proof.Fts.TargetSigningMatchFactors
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

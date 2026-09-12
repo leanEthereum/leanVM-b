@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Reference.ReferenceCertificateTrace
 import SphincsSecurity.Proof.Fts.OriginalProposalPrefixBound
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec OtsContactTrace

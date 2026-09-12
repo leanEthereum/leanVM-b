@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Ots.OtsTraceRows
 import SphincsSecurity.Proof.Ots.OtsContactFirstLaw
 import SphincsSecurity.Proof.Ots.EncodingMarkerBound
-
 namespace SphincsSecurity.Concrete.OtsPrefix
 
 open _root_.OracleComp OracleSpec PartialChainEndpoint OtsContactTrace

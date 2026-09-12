@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Ots.EncodingFreshRow
 import SphincsSecurity.Proof.Ots.EncodingBackwardWitness
 import SphincsSecurity.Proof.Ots.OtsContactTrace
 import SphincsSecurity.Proof.Reference.QueryClassAllocation
-
 namespace SphincsSecurity.Concrete.OtsEncodingMarker
 
 open _root_.OracleComp OracleSpec

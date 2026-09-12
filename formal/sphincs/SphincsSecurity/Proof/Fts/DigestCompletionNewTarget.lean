@@ -3,7 +3,6 @@ import SphincsSecurity.Proof.Fts.DigestCompletionCacheGrowth
 import SphincsSecurity.Proof.Fts.FreshTargetEnvelope
 import SphincsSecurity.Proof.Fts.FreshTargetPayload
 import SphincsSecurity.Proof.Fts.NewTargetEnvelopeCharge
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

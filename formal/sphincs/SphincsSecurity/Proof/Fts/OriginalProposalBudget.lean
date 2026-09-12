@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.BankedProposalStep
 import SphincsSecurity.Proof.Reference.DirectQueryBudget
 import SphincsSecurity.Proof.Reference.SigningBoundaryHashCost
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

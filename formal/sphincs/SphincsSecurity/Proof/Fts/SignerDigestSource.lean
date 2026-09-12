@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Scheme.NoMessage
-
 /-!
 # Message inputs inserted by a signer
 

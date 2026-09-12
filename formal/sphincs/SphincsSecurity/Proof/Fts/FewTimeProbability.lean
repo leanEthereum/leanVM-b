@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FewTimeWitness
-
 /-!
 # Probability of a fixed few-time coverage pattern
 

@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Base.Prelude
-
 namespace SphincsSecurity
 
 theorem positivePart_shift_even_le (score shift : ℝ) (power : Nat) (heven : Even power) :

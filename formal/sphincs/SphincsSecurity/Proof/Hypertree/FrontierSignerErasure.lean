@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Hypertree.FrontierSigningEvaluation
 import SphincsSecurity.Proof.Hypertree.FrontierTreeEvaluation
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

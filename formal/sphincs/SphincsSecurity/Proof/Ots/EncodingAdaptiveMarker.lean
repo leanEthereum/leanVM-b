@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.EncodingTraceCache
 import SphincsSecurity.Proof.Ots.EncodingMarkerKernel
-
 namespace SphincsSecurity.Concrete.OtsEncodingMarker
 
 open _root_.OracleComp OracleSpec UniformTableCompletion EncodingObservation

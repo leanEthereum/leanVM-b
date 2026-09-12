@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Reference.CausalFrontierProgram
 import SphincsSecurity.Proof.Reference.QueryAllocation
-
 namespace SphincsSecurity.Concrete.CausalFrontierProgram
 
 open _root_.OracleComp OracleSpec

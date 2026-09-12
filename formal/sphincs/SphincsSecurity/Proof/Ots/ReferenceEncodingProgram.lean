@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Hypertree.FrontierEncodingCongruence
 import SphincsSecurity.Proof.Reference.CausalFrontierProgram
 import SphincsSecurity.Proof.Ots.ReferenceFamilyGame
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

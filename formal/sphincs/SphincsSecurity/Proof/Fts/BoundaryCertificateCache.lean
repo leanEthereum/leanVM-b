@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Fts.OriginalCertificateBound
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

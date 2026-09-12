@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Hypertree.CanonicalGraph
 import SphincsSecurity.Proof.Hypertree.CanonicalSigningFrontier
-
 namespace SphincsSecurity
 
 namespace Position

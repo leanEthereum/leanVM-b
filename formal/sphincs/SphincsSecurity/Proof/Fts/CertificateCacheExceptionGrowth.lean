@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Fts.CertificateCacheExceptionPotential
 import SphincsSecurity.Proof.Fts.MessageDeficitHashMoments
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

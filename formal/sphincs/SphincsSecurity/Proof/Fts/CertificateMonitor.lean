@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.BankedProposalStep
 import SphincsSecurity.Proof.Reference.SigningMacroBudget
 import SphincsSecurity.Proof.Fts.ValidInterleavedCover
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

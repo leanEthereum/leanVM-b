@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Ots.OtsPrefixSimulation
-
 namespace SphincsSecurity.Concrete.CausalFrontierProgram
 
 open _root_.OracleComp OracleSpec

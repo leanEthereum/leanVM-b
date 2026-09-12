@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.EncodingConditionalObservation
 import SphincsSecurity.Proof.Base.UniformTableProducts
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec UniformTableCompletion

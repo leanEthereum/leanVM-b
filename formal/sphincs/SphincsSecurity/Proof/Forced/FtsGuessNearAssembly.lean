@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Forced.FtsGuessExceptionClassification
 import SphincsSecurity.Proof.Fts.PoissonPoolTail
 import SphincsSecurity.Proof.Fts.NearCertificateBound
 import SphincsSecurity.Proof.Forced.Security127SmallBudgetArithmetic
-
 /-!
 The forced FTS near-certificate game is bounded slot by slot. One forced run is monitored by the certificate monitor of the retained residual chain, with the keygen debit, the sampled Poisson proposal pool and the prefix stop rule, exactly as the original certificate games were. A near certificate on an unstopped monitor is a banked certificate, so its probability is at most the expected creation cost, which the proposal-word martingale bounds by the budget times the terminal certificate price. A stopped monitor is a short pool, a cache exception or a prefix exception, each of which is rare. The bound `nearCertificateBound` sums the two over the fourteen omitted trees and averages over the pool.
 -/

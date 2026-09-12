@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.EncodingNeighborProbability
 import SphincsSecurity.Proof.Ots.ReferenceEncodingTable
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

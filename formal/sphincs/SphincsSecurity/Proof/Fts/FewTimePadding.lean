@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FewTimeProbability
-
 /-!
 # Padding adaptive few-time view sequences
 

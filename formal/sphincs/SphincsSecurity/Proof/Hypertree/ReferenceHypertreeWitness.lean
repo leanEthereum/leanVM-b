@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.ReferenceLayerWitness
 import SphincsSecurity.Proof.Reference.VerifierTraceDescent
-
 namespace SphincsSecurity.Concrete.OtsVerifierWitness
 
 open _root_.OracleComp OracleSpec OtsContactTrace

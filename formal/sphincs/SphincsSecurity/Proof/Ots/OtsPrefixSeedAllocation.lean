@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.OtsPrefixSeedGame
 import SphincsSecurity.Proof.Ots.ReferenceFamilyAllocation
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

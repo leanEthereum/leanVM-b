@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Fts.MessageDeficitBernoulli
 import SphincsSecurity.Proof.Fts.MessageDeficitCacheGrowth
-
 namespace SphincsSecurity
 
 open OracleComp OracleSpec ENNReal

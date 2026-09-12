@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FixedProposalMoments
 import SphincsSecurity.Proof.Fts.TerminalCertificateCharge
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp ENNReal

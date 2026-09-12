@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.PairedHiddenMiss
 import SphincsSecurity.Proof.Base.UniformTableDisclosure
-
 namespace SphincsSecurity.Concrete.UniformTableCompletion
 
 open _root_.OracleComp ENNReal

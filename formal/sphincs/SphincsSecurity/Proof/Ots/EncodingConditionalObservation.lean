@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Ots.EncodingFreshRow
 import SphincsSecurity.Proof.Ots.ReferenceFamilyGame
 import SphincsSecurity.Proof.Base.UniformTableObservation
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec UniformTableCompletion

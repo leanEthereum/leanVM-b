@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.ProposalLengthProjection
 import SphincsSecurity.Proof.Residual.RetainedObservation
 import SphincsSecurity.Proof.Fts.TerminalProposalWord
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp ENNReal

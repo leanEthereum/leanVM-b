@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.ExtractFts
 import SphincsSecurity.Proof.Ots.ExtractOts
 import SphincsSecurity.Proof.Hypertree.Position
-
 /-!
 # The honest key at a position
 

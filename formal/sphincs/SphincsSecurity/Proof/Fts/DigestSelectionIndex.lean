@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.DigestLoopRecord
 import SphincsSecurity.Proof.Fts.RawProposalMomentBound
 import SphincsSecurity.Proof.Fts.WeightedBinomialOccupancy
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

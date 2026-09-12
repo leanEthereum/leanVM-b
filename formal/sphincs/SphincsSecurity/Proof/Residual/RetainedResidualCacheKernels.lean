@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Fts.CertificateCacheExceptionKernels
 import SphincsSecurity.Proof.Residual.RetainedResidualCacheAccounting
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec ENNReal CanonicalProbeRouting ResidualByteAction

@@ -3,7 +3,6 @@ import SphincsSecurity.Proof.Scheme.Code
 import SphincsSecurity.Proof.Ots.ExtractChain
 import SphincsSecurity.Proof.Ots.Layer
 import SphincsSecurity.Proof.Ots.OneTime
-
 /-!
 # Extracting a one-time signature
 

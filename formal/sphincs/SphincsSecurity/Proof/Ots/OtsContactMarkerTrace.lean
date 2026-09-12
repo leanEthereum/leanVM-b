@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.EncodingAdaptiveMarker
 import SphincsSecurity.Proof.Base.TraceSum
-
 namespace SphincsSecurity.Concrete.OtsEncodingMarker
 
 open _root_.OracleComp OracleSpec

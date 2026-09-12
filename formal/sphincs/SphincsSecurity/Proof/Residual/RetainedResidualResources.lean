@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Residual.RetainedResidualBoundaryCost
 import SphincsSecurity.Proof.Residual.RetainedResidualMonitoredErasure
 import SphincsSecurity.Proof.Residual.RetainedResidualWorkCost
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec ENNReal CanonicalProbeRouting

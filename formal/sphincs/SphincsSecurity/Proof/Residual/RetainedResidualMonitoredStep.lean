@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Residual.RetainedResidualCoverageStep
 import SphincsSecurity.Proof.Residual.RetainedResidualSource
 import SphincsSecurity.Proof.Residual.RetainedResidualWorldCoverage
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec ENNReal CanonicalProbeRouting

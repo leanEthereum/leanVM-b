@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.OtsPrefixSeedGame
 import SphincsSecurity.Proof.Base.QueryCapAccounting
-
 namespace SphincsSecurity.Concrete.OtsPrefix
 
 open _root_.OracleComp OracleSpec

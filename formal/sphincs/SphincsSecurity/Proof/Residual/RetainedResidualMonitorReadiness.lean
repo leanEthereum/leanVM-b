@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Residual.RetainedResidualCacheAccounting
 import SphincsSecurity.Proof.Residual.RetainedResidualProposalSupport
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting

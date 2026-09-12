@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Reference.DirectQueryBudget
 import SphincsSecurity.Proof.Fts.FtsProbeGame
-
 namespace SphincsSecurity.Concrete.FtsProbeSimulation
 
 open OracleComp OracleSpec

@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.OtsPrefixVisible
 import SphincsSecurity.Proof.Base.QueryPauseTranslation
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

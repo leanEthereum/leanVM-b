@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.ProposalWordDistribution
-
 namespace SphincsSecurity.Concrete
 
 open ENNReal

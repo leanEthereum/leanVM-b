@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.FirstSuccessFamily
 import SphincsSecurity.Proof.Base.UniformTableCompletion
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp ENNReal

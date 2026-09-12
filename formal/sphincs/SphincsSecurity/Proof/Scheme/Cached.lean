@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Scheme.Queried
 import SphincsSecurity.Proof.Hypertree.Settled
-
 /-!
 # Cached honest computations settle positions
 

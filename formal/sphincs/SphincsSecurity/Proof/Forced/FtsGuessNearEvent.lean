@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Forced.FtsGuessNearWitness
-
 namespace SphincsSecurity.Concrete.FtsGuessHash
 
 open _root_.OracleComp OracleSpec ENNReal UniformTableCompletion

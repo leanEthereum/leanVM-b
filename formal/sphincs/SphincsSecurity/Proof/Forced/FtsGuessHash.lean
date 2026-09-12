@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Forced.FtsGuessSigning
 import SphincsSecurity.Proof.Forced.SecretGuessErasure
-
 namespace SphincsSecurity.Concrete.FtsGuessHash
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting

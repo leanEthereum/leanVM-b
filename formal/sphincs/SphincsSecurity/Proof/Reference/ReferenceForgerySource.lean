@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Reference.ReferenceForgeryCoverage
 import SphincsSecurity.Proof.Reference.ReferencePrimitiveBound
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec OtsContactTrace

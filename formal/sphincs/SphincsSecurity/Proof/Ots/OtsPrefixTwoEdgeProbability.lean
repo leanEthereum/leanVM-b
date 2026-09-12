@@ -1,6 +1,5 @@
-import SphincsSecurity.Proof.Ots.AdaptiveChainCapTwoEdge
+import SphincsSecurity.Proof.Chains.AdaptiveChainCapTwoEdge
 import SphincsSecurity.Proof.Reference.ReferenceQueryAllocation
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

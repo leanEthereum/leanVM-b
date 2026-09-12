@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Reference.FiniteHashWorld
 import SphincsSecurity.Proof.Hypertree.FrontierGameProjection
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec OracleComp.DeferredSampling

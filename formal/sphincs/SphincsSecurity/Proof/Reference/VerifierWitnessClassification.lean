@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Hypertree.ReferenceHypertreeWitness
 import SphincsSecurity.Proof.Fts.FtsVerifierWitness
-
 namespace SphincsSecurity.Concrete.OtsVerifierWitness
 
 open _root_.OracleComp OracleSpec OtsContactTrace

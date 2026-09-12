@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Hypertree.Position
 import SphincsSecurity.Proof.Scheme.Support
-
 /-!
 # The key-generation cache contains no message query
 

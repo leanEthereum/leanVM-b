@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Base.QueryCapAccounting
-
 namespace SphincsSecurity.QueryCap
 
 open _root_.OracleComp OracleSpec

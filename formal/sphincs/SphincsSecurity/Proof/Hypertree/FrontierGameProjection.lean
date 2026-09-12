@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Reference.BoundarySimulation
 import SphincsSecurity.Proof.Reference.DirectQueryBudget
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

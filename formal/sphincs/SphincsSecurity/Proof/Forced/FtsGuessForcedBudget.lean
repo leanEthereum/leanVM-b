@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Forced.SecretGuessForceBound
 import SphincsSecurity.Proof.Forced.FtsGuessBudget
-
 namespace SphincsSecurity.Concrete.FtsGuessHash
 
 open _root_.OracleComp OracleSpec ENNReal

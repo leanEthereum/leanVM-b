@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Ots.OtsTraceEvents
 import SphincsSecurity.Proof.Ots.OtsPrefixInstrumentedSource
 import SphincsSecurity.Proof.Ots.OtsPrefixObservedBudget
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

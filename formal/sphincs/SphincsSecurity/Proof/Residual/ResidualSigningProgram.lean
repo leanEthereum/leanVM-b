@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Ots.ReferencePrefixSigning
 import SphincsSecurity.Proof.Residual.ResidualSigningDisclosure
-
 namespace SphincsSecurity.Concrete.ResidualByteFrontend
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting ResidualByteAction

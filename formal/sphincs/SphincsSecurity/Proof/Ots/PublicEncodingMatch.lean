@@ -6,7 +6,6 @@ import SphincsSecurity.Proof.Ots.OtsProbeOrigin
 import SphincsSecurity.Proof.Fts.FtsProbeSampling
 import SphincsSecurity.Proof.Base.RomQueryChargeBind
 import SphincsSecurity.Proof.Residual.PublicReferenceResidual
-
 namespace SphincsSecurity.Concrete.PublicEncodingMatch
 
 open _root_.OracleComp OracleSpec ENNReal CanonicalProbeRouting

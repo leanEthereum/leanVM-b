@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.EncodingContactMarkerSource
 import SphincsSecurity.Proof.Ots.OtsContactFirstProbability
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec OtsEncodingMarker

@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.OtsTraceCheckpointLaw
 import SphincsSecurity.Proof.Ots.OtsPrefixCheckpointCompletion
-
 namespace SphincsSecurity.Concrete.OtsPrefix
 
 open _root_.OracleComp OracleSpec PartialChainEndpoint

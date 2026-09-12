@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Hypertree.StructuralMatchBound
 import SphincsSecurity.Proof.Ots.EncodingMatchBound
 import SphincsSecurity.Proof.Ots.OtsDistinctContactBound
 import SphincsSecurity.Proof.Ots.OtsMarkerContactProbability
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

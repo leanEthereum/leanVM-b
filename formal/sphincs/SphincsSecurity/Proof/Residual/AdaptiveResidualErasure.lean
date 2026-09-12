@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Residual.AdaptiveResidualLabels
-
 namespace SphincsSecurity.Concrete.AdaptiveResidualLabels
 
 open _root_.OracleComp OracleSpec HiddenLabelObservation UniformTableCompletion RetainedObservation ResidualTableCompletion

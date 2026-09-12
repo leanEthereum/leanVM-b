@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Scheme.Replay
-
 /-!
 # Finite witnesses for the few-time leak
 

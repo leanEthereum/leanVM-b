@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FewTimeRace
-
 /-!
 # Reusing one fixed cached message entry
 

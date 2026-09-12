@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Fts.OriginalCacheExceptionBound
 import SphincsSecurity.Proof.Fts.ProposalPrefixExponential
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

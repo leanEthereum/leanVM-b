@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Fts.PoissonProposalMoments
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp ENNReal

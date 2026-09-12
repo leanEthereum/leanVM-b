@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FewTimeUniform
 import SphincsSecurity.Proof.Scheme.NoMessage
-
 /-!
 # Signer digest views
 

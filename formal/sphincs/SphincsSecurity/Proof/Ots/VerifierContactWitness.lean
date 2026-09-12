@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Ots.ReferenceLayerWitness
 import SphincsSecurity.Proof.Ots.OtsTwoEdgeProbability
 import SphincsSecurity.Proof.Ots.OtsDistinctContactProbability
 import SphincsSecurity.Proof.Ots.OtsMarkerContactPartition
-
 namespace SphincsSecurity.Concrete.OtsVerifierWitness
 
 open _root_.OracleComp OracleSpec OtsContactTrace

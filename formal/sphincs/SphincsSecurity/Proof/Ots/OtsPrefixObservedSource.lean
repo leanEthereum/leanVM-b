@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Ots.OtsPrefixSourceGame
 import SphincsSecurity.Proof.Ots.OtsPrefixSecretSampling
 import SphincsSecurity.Proof.Ots.OtsPrefixObservedRun
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

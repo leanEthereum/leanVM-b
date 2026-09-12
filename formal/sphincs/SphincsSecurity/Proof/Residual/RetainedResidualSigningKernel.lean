@@ -3,7 +3,6 @@ import SphincsSecurity.Proof.Fts.DigestSelectionWeight
 import SphincsSecurity.Proof.Residual.RetainedResidualCompletion
 import SphincsSecurity.Proof.Residual.RetainedResidualDigestLaw
 import SphincsSecurity.Proof.Residual.RetainedResidualRows
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting

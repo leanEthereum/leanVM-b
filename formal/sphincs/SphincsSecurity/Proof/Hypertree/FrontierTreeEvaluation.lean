@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Hypertree.Extract
 import SphincsSecurity.Proof.Ots.OneTime
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

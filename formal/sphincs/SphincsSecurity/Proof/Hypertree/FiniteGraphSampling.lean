@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Hypertree.Honest
-
 namespace SphincsSecurity.Concrete.FiniteGraphSampling
 
 open _root_.OracleComp OracleSpec OracleComp.DeferredSampling

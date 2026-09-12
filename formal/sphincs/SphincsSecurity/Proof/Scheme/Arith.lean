@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Base.Prelude
-
 /-!
 # Index arithmetic
 

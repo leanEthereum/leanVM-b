@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Fts.BoundaryCertificateCache
 import SphincsSecurity.Proof.Reference.ReferenceForgerySource
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

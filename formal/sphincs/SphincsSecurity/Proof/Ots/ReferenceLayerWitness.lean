@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.LayerVerifierWitness
 import SphincsSecurity.Proof.Ots.PublicEncodingMatch
-
 namespace SphincsSecurity.Concrete.OtsVerifierWitness
 
 open _root_.OracleComp OracleSpec OtsContactTrace

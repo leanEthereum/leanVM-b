@@ -1,8 +1,7 @@
 import SphincsSecurity.Proof.Ots.OtsTraceCheckpointLaw
 import SphincsSecurity.Proof.Ots.OtsPrefixVisibleAccounting
-import SphincsSecurity.Proof.Ots.AdaptiveChainActualBudget
+import SphincsSecurity.Proof.Chains.AdaptiveChainActualBudget
 import SphincsSecurity.Proof.Base.QueryTraceInvariant
-
 namespace SphincsSecurity.Concrete.OtsPrefix
 
 open _root_.OracleComp OracleSpec PartialChainEndpoint

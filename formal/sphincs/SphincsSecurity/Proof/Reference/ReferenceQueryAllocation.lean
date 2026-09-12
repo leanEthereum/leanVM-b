@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Reference.QueryClassAllocation
 import SphincsSecurity.Proof.Ots.OtsPrefixIdealAllocation
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

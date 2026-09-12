@@ -3,7 +3,6 @@ import SphincsSecurity.Proof.Scheme.Eval
 import SphincsSecurity.Proof.Ots.ExtractChain
 import SphincsSecurity.Proof.Fts.ExtractFts
 import SphincsSecurity.Proof.Scheme.Support
-
 /-!
 # Queries made by verification
 

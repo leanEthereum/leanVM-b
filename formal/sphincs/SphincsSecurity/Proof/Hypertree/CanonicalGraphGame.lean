@@ -3,7 +3,6 @@ import SphincsSecurity.Proof.Hypertree.CanonicalGraphHonest
 import SphincsSecurity.Proof.Hypertree.CanonicalGraphSampling
 import SphincsSecurity.Proof.Ots.EncodingInputs
 import SphincsSecurity.Proof.Hypertree.FrontierRandomOracle
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec OracleComp.DeferredSampling

@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Scheme.SignSupport
-
 /-!
 # Signing cache intervals
 

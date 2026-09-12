@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Hypertree.FrontierOracleMask
 import SphincsSecurity.Proof.Ots.OtsEndpointLikelihood
 import SphincsSecurity.Proof.Ots.SecretProbe
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec

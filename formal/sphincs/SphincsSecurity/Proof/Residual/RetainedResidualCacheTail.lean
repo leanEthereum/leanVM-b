@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Residual.RetainedResidualCacheHistory
 import SphincsSecurity.Proof.Residual.RetainedResidualPaymentBudget
 import SphincsSecurity.Proof.Residual.RetainedResidualProposalTail
-
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec ENNReal CanonicalProbeRouting

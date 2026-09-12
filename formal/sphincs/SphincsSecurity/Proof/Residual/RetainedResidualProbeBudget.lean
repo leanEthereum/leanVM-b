@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Residual.RetainedResidualBoundaryCost
 import SphincsSecurity.Proof.Residual.RetainedResidualMonitoredErasure
-
 namespace SphincsSecurity.Concrete.ResidualByteFrontend
 
 open CanonicalProbeRouting HiddenLabelObservation ResidualByteAction

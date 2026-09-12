@@ -4,7 +4,6 @@ import SphincsSecurity.Proof.Fts.OriginalProposalExecution
 import SphincsSecurity.Proof.Base.RomQueryChargeBind
 import SphincsSecurity.Proof.Base.RomQueryChargeComparison
 import SphincsSecurity.Proof.Fts.UpperDigestSelection
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Ots.OtsProbeOrigin
 import SphincsSecurity.Proof.Residual.RetainedSigningTrace
-
 namespace SphincsSecurity.Concrete.FtsProbeSimulation
 
 open _root_.OracleComp OracleSpec ENNReal

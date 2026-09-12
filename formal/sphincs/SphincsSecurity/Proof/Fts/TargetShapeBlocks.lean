@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.ConcreteTargetShapeSigning
 import SphincsSecurity.Proof.Fts.TargetSourceMultiplicity
 import SphincsSecurity.Proof.Fts.WeightedTargetGroups
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

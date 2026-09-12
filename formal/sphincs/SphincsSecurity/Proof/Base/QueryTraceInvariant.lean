@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.QueryPauseTrace
 import SphincsSecurity.Proof.Reference.QueryAllocation
-
 namespace SphincsSecurity.QueryPause
 
 open _root_.OracleComp OracleSpec

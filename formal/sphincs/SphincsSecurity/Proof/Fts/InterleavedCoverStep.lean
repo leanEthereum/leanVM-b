@@ -5,7 +5,6 @@ import SphincsSecurity.Proof.Fts.JointProbeMessageReserve
 import SphincsSecurity.Proof.Fts.FewTimePrehit
 import SphincsSecurity.Proof.Fts.FewTimeWeightedOriginRace
 import SphincsSecurity.Proof.Base.RomQueryCharge
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

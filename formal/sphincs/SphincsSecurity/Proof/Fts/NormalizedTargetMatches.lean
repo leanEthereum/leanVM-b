@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FutureCoverageBound
 import SphincsSecurity.Proof.Fts.SubsetTargetExpectation
 import SphincsSecurity.Proof.Fts.TargetCacheProductQuery
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

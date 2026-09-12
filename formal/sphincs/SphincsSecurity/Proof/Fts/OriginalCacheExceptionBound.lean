@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Fts.OriginalMessageAllocation
 import SphincsSecurity.Proof.Reference.ReferencePrimitiveBound
 import SphincsSecurity.Proof.Fts.CertificateCacheExceptionKernels
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Hypertree.PublicGraphSigner
 import SphincsSecurity.Proof.Ots.ReferenceEncodingProgram
-
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec CanonicalProbeRouting

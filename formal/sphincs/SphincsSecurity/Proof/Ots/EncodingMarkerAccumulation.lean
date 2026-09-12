@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Ots.EncodingMarkerStep
 import SphincsSecurity.Proof.Base.UniformTableObservationMass
 import SphincsSecurity.Proof.Base.QueryTracePotential
-
 namespace SphincsSecurity.Concrete.EncodingObservation
 
 open _root_.OracleComp OracleSpec

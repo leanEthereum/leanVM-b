@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Base.FirstSuccessFamily
 import SphincsSecurity.Proof.Fts.UnrestrictedRowSwap
-
 namespace SphincsSecurity.Concrete.FirstSuccessPrefix
 
 open ENNReal

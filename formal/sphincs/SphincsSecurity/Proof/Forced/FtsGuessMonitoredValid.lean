@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Forced.FtsGuessMonitoredStep
-
 namespace SphincsSecurity.Concrete.FtsGuessHash
 
 open _root_.OracleComp OracleSpec UniformTableCompletion OtsContactTrace
