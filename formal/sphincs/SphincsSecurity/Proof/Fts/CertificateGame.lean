@@ -2,9 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.CertificateMessagePayment
 import SphincsSecurity.Proof.Fts.CertificatePathBudget
 import SphincsSecurity.Proof.Ots.OtsProbeCanonicalChargeGame
-import SphincsSecurity.Proof.Reference.DirectQueryBudget
-import SphincsSecurity.Proof.Fts.FtsProbeSimulation
-import SphincsSecurity.Proof.Ots.OtsProbeSimulation
 
 /-! ## OtsProbeStartErasureBound -/
 

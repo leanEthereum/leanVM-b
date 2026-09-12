@@ -5,8 +5,6 @@ import SphincsSecurity.Proof.Residual.RetainedResidualInitial
 import SphincsSecurity.Proof.Residual.RetainedResidualMessagePayment
 import SphincsSecurity.Proof.Residual.RetainedResidualResources
 import SphincsSecurity.Proof.Residual.RetainedWorldCoverBudget
-import SphincsSecurity.Proof.Hypertree.CanonicalPublicPrior
-import SphincsSecurity.Proof.Reference.ReferenceAuxiliarySigning
 
 /-! ## PublicSigningInitial -/
 

@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.BankedProposalStep
 import SphincsSecurity.Proof.Fts.ValidInterleavedCover
-import SphincsSecurity.Statement
 
 /-! ## SigningMacroBudget -/
 

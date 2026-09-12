@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.DigestLoopRecord
 import SphincsSecurity.Proof.Fts.RawProposalMomentBound
-import SphincsSecurity.Proof.Fts.FewTimeProbability
 
 /-! ## WeightedBinomialOccupancy -/
 

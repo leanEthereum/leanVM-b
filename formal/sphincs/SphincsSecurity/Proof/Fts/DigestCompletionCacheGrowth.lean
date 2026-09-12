@@ -1,10 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.DigestCompletionLogGrowth
 import SphincsSecurity.Proof.Fts.SingleMessageCacheGrowth
-import SphincsSecurity.Proof.Fts.SignerAdmissibleMessage
-import SphincsSecurity.Proof.Fts.NormalizedTargetCacheQuery
-import SphincsSecurity.Proof.Fts.TargetMixedGrowthPolynomial
-import SphincsSecurity.Proof.Fts.TargetSigningMatchFactors
 
 /-! ## SignerNewMessageUnique -/
 

@@ -3,7 +3,6 @@ import SphincsSecurity.Proof.Reference.BoundaryMessageCost
 import SphincsSecurity.Proof.Fts.OriginalProposalExecution
 import SphincsSecurity.Proof.Base.RomQueryChargeBind
 import SphincsSecurity.Proof.Fts.UpperDigestSelection
-import SphincsSecurity.Proof.Base.RomQueryCharge
 
 /-! ## RomQueryChargeComparison -/
 

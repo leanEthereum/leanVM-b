@@ -1,8 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.ReuseRawEnvelope
-import SphincsSecurity.Proof.Fts.NewTargetEnvelopeCharge
 import SphincsSecurity.Proof.Fts.DigestCompletionNewTarget
-import SphincsSecurity.Proof.Fts.JointProbeMessageReserve
 
 /-! ## NewTargetWorld -/
 

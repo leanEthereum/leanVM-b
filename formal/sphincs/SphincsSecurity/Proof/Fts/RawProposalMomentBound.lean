@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.RawSigningMomentBound
-import SphincsSecurity.Proof.Fts.TargetMomentShapes
 import SphincsSecurity.Proof.Fts.MessageDeficitConcentration
 
 /-! ## InitialTargetShape -/

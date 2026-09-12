@@ -1,7 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Reference.BoundaryHashCost
-import SphincsSecurity.Statement
-import SphincsSecurity.Proof.Scheme.Bytes
 
 /-! ## AuthenticationQueryCost -/
 

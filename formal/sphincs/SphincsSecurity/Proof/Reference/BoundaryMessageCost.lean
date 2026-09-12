@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.SigningProposalRecord
-import SphincsSecurity.Proof.Fts.JointProbeMessageReserve
 
 /-! ## JointProbeMessageHashBudget -/
 

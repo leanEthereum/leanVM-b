@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FutureCoverageBound
 import SphincsSecurity.Proof.Fts.SubsetTargetExpectation
-import SphincsSecurity.Proof.Fts.SubsetTargetAssignment
 
 /-! ## TargetCacheProductQuery -/
 

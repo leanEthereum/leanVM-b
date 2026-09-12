@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.ExactTargetShapeSigning
 import SphincsSecurity.Proof.Fts.TargetShapeContinuation
 import SphincsSecurity.Proof.Fts.TargetShapeExpectation
-import SphincsSecurity.Statement
 
 /-! ## SigningExecutionBudget -/
 

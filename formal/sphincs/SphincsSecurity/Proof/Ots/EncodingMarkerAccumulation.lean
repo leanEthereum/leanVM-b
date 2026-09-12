@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Ots.EncodingMarkerStep
 import SphincsSecurity.Proof.Base.QueryTracePotential
-import SphincsSecurity.Proof.Base.UniformTableObservation
 
 /-! ## UniformTableObservationMass -/
 

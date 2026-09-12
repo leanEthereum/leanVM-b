@@ -1,7 +1,6 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.CertificateJointExceptions
 import SphincsSecurity.Proof.Fts.FixedCertificateCoverage
-import SphincsSecurity.Proof.Fts.UniformProposalMixedMoments
 
 /-! ## PositivePartMomentBound -/
 

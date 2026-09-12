@@ -1,5 +1,4 @@
 import SphincsSecurity.Proof.Ots.OtsTraceRestart
-import SphincsSecurity.Proof.Ots.OtsTraceCheckpointLaw
 
 /-! ## OtsContactCheckpointLaw -/
 

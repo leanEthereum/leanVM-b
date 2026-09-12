@@ -1,6 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.NormalizedTargetMatches
-import SphincsSecurity.Proof.Fts.SubsetTargetExpectation
 
 /-! ## TargetBlockExpectation -/
 

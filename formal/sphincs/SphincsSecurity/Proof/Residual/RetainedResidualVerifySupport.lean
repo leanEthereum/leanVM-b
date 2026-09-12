@@ -2,7 +2,6 @@ import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FtsProbeVerifierSource
 import SphincsSecurity.Proof.Residual.RetainedResidualSuccessTransfer
 import SphincsSecurity.Proof.Residual.RetainedResidualVerify
-import SphincsSecurity.Proof.Residual.RetainedResidualSource
 
 /-! ## RetainedResidualWorld -/
 

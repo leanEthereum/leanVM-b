@@ -1,7 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Residual.RetainedResidualMonitoredStep
-import SphincsSecurity.Proof.Residual.RetainedResidualDigestLaw
-import SphincsSecurity.Proof.Residual.RetainedResidualRows
 
 /-! ## RetainedResidualMessageHistory -/
 

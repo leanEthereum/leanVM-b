@@ -1,7 +1,5 @@
 import SphincsSecurity.Proof.Forced.FtsGuessRemaining
 import SphincsSecurity.Proof.Forced.SecretGuessHitPayoff
-import SphincsSecurity.Proof.Forced.SecretGuessForceBound
-import SphincsSecurity.Proof.Forced.FtsGuessBudget
 
 /-! ## FtsGuessForcedBudget -/
 
