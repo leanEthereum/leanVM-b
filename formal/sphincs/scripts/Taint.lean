@@ -2,7 +2,7 @@ import SphincsSecurity
 import Lean
 
 /-!
-Component dependency audit. `lake env lean Taint.lean` writes `taint.txt`, one line per local declaration with its module, the component-specific definitions of `Statement.lean` it references directly and the ones it reaches transitively, as bit sets: 1 the one-time signature, 2 the few-time signature, 4 the hypertree. A module whose transitive set never contains 1 is untouched by a change of the one-time signature.
+Component dependency audit. `lake env lean scripts/Taint.lean` writes `taint.txt`, one line per local declaration with its module, the component-specific definitions of `Statement.lean` it references directly and the ones it reaches transitively, as bit sets: 1 the one-time signature, 2 the few-time signature, 4 the hypertree. A module whose transitive set never contains 1 is untouched by a change of the one-time signature.
 -/
 
 open Lean

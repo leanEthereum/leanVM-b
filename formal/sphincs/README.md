@@ -14,7 +14,7 @@ lake exe cache get
 lake build
 ```
 
-The cache command is needed on initial setup. The build includes [Audit.lean](Audit.lean), which rejects any axiom used by a local declaration other than `propext`, `Classical.choice` and `Quot.sound`, and prints the axioms of the public theorem. Run `lake env lean Audit.lean` to repeat the audit directly. [Reach.lean](Reach.lean) is a maintenance script: `lake env lean Reach.lean` writes `reach.txt`, listing every local declaration with the line range of its source block and whether the proof terms of the public theorem reach it, which is how dead code is found before pruning.
+The cache command is needed on initial setup. The root module pins the axiom footprint of the theorem to `propext`, `Classical.choice` and `Quot.sound` with `#guard_msgs`, so the build fails if it ever grows. [scripts/Reach.lean](scripts/Reach.lean) is a maintenance script: `lake env lean scripts/Reach.lean` writes `reach.txt`, listing every local declaration with the line range of its source block and whether the proof terms of the public theorem reach it, which is how dead code is found before pruning.
 
 ## Where to work
 
