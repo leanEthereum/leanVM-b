@@ -1,8 +1,73 @@
 import SphincsSecurity.Proof.Base.Prelude
-import SphincsSecurity.Proof.Fts.ExpectedNewTargetEnvelope
-import SphincsSecurity.Proof.Fts.FreshTargetWorld
-import SphincsSecurity.Proof.Fts.NewTargetWorld
 import SphincsSecurity.Proof.Fts.ReuseRawEnvelope
+import SphincsSecurity.Proof.Fts.NewTargetEnvelopeCharge
+import SphincsSecurity.Proof.Fts.DigestCompletionNewTarget
+import SphincsSecurity.Proof.Fts.JointProbeMessageReserve
+
+/-! ## NewTargetWorld -/
+
+namespace SphincsSecurity.Concrete
+
+open _root_.OracleComp OracleSpec ENNReal
+open FtsProbeSimulation (MessageHashInput)
+attribute [local instance] Classical.propDecidable
+set_option backward.isDefEq.respectTransparency false
+
+theorem newTargetEnvelopeCharge_cacheQuery (key : SecretKey) (before : QueryCache HashSpec)
+    (log : QueryLog SigningSpec) (uniform reuse arrival : ENNReal) (queries signings : Nat)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (input : HashInput) (output : HashOutput)
+    (hfresh : before input = none) :
+    newTargetEnvelopeCharge key before (before.cacheQuery input output) log uniform reuse arrival queries signings groups remaining =
+      if MessageHashInput key.parameter input ∧ Admissible (truncateMessageDigest output) then
+        targetShapeEnvelope uniform reuse arrival queries signings
+          (targetShapeMoments key (before.cacheQuery input output) log (payloadOf input) (hashOutputFewTimeView output)) groups remaining else 0 := by
+  unfold newTargetEnvelopeCharge
+  rw [cacheMessageWeight_cacheQuery key.parameter _ before input output hfresh,
+    cacheMessageWeight_fresh_restriction, zero_add]
+  simp only [hfresh, if_true]
+
+end SphincsSecurity.Concrete
+
+/-! ## ExpectedNewTargetEnvelope -/
+
+namespace SphincsSecurity.Concrete
+
+open _root_.OracleComp OracleSpec ENNReal
+attribute [local instance] Classical.propDecidable
+set_option backward.isDefEq.respectTransparency false
+
+theorem expected_signWithView_newTargetEnvelopeCharge_le_mass_mul (key : SecretKey) (message : Message)
+    (before : QueryCache HashSpec) (log : QueryLog SigningSpec)
+    (hsigned : SigningDigestsCached key.parameter before key.root log)
+    (uniform reuse arrival : ENNReal) (queries signings : Nat)
+    (groups : Finset (Finset FtsTree)) (remaining : Finset FtsTree) (hvalid : TargetShapeValid groups remaining) :
+    (∑' result, Pr[= result | (simulateQ romImpl (signWithView key message)).run before] *
+      newTargetEnvelopeCharge key before result.2 (log ++ [⟨message, result.1.1⟩]) uniform reuse arrival queries signings groups remaining) ≤
+        freshDigestSelectionProbability key message before *
+          ((Fintype.card Index : ENNReal)⁻¹ *
+            targetIndexEnvelope uniform reuse arrival queries signings (targetIndexMoments key before log) groups.card remaining.card) := by
+  rw [signWithView_run_eq_digestCompletion]
+  exact expected_digestCompletion_newTargetEnvelopeCharge_le_mass_mul key message before
+    (originalDigestCompletion key) id (fun loop _ result hr => originalDigestCompletion_preservesMessages key loop result hr)
+    log hsigned uniform reuse arrival queries signings groups remaining hvalid
+
+end SphincsSecurity.Concrete
+
+/-! ## FreshTargetWorld -/
+
+namespace SphincsSecurity.Concrete
+
+open _root_.OracleComp OracleSpec ENNReal
+open FtsProbeSimulation (MessageHashInput)
+attribute [local instance] Classical.propDecidable
+set_option backward.isDefEq.respectTransparency false
+
+noncomputable def freshWorldTargetHashCost (parameter : PublicParameter) (cache : QueryCache HashSpec) : OracleWorld.Domain → Nat
+  | .inl _ => 0
+  | .inr input => if MessageHashInput parameter input ∧ cache input = none then 1 else 0
+
+end SphincsSecurity.Concrete
+
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

@@ -1,7 +1,21 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.BankedProposalStep
-import SphincsSecurity.Proof.Reference.SigningMacroBudget
 import SphincsSecurity.Proof.Fts.ValidInterleavedCover
+import SphincsSecurity.Statement
+
+/-! ## SigningMacroBudget -/
+
+namespace SphincsSecurity.Concrete
+
+open _root_.OracleComp OracleSpec
+
+def signingMacroHashCost : (OracleWorld + SigningSpec).Domain → Nat
+  | .inl (.inl _) => 0
+  | .inl (.inr _) => 1
+  | .inr _ => 1024
+
+end SphincsSecurity.Concrete
+
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

@@ -1,8 +1,58 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.DigestCompletionLogGrowth
-import SphincsSecurity.Proof.Fts.SignerNewMessageUnique
 import SphincsSecurity.Proof.Fts.SingleMessageCacheGrowth
-import SphincsSecurity.Proof.Fts.TargetSigningCacheGrowth
+import SphincsSecurity.Proof.Fts.SignerAdmissibleMessage
+import SphincsSecurity.Proof.Fts.NormalizedTargetCacheQuery
+import SphincsSecurity.Proof.Fts.TargetMixedGrowthPolynomial
+import SphincsSecurity.Proof.Fts.TargetSigningMatchFactors
+
+/-! ## SignerNewMessageUnique -/
+
+namespace SphincsSecurity.Concrete
+
+open _root_.OracleComp OracleSpec ENNReal
+set_option backward.isDefEq.respectTransparency false
+
+theorem signDigestLoop_new_payload_eq_selected (attempts : Nat) (key : SecretKey) (message : Message)
+    (before after : QueryCache HashSpec) (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf)
+    (hloop : (some (randomness, index, leaves), after) ∈ support ((simulateQ romImpl (signDigestLoop attempts key message)).run before))
+    (payload : HashInput) (output : HashOutput)
+    (hbefore : before (tweakableHashInput key.parameter .message payload) = none)
+    (hafter : after (tweakableHashInput key.parameter .message payload) = some output)
+    (hadmissible : Admissible (truncateMessageDigest output)) :
+    payload = messageDigestPayload key.root message randomness := by
+  obtain ⟨selected, selectedIndex, selectedLeaves, hselected, hpayload⟩ := signDigestLoop_new_admissible_selected attempts key message
+    before after (some (randomness, index, leaves)) hloop payload output hbefore hafter hadmissible
+  have hrandomness : randomness = selected := congrArg Prod.fst (Option.some.inj hselected)
+  exact hpayload.trans (congrArg _ hrandomness.symm)
+
+end SphincsSecurity.Concrete
+
+/-! ## TargetSigningCacheGrowth -/
+
+namespace SphincsSecurity.Concrete
+
+open _root_.OracleComp OracleSpec ENNReal
+open FtsProbeSimulation (messageAnswers MessageHashInput)
+attribute [local instance] Classical.propDecidable
+set_option backward.isDefEq.respectTransparency false
+
+noncomputable def targetMixedSigningGrowth (key : SecretKey) (before after : QueryCache HashSpec)
+    (log : QueryLog SigningSpec) (payload : HashInput) (target : FewTimeView)
+    (groups : Fin m → Finset FtsTree) (required : Finset FtsTree) : ENNReal :=
+  (normalizedTargetCacheProduct key.parameter after (tweakableHashInput key.parameter .message payload) target groups -
+    normalizedTargetCacheProduct key.parameter before (tweakableHashInput key.parameter .message payload) target groups) *
+      normalizedTargetLogProduct key after log payload target required
+
+noncomputable def newTargetMixedGrowthWeight (key : SecretKey) (before : QueryCache HashSpec)
+    (log : QueryLog SigningSpec) (payload : HashInput) (target : FewTimeView)
+    (groups : Fin m → Finset FtsTree) (required : Finset FtsTree) (source : FewTimeView) : ENNReal :=
+  targetMixedGrowthPolynomial
+    (fun slot => normalizedCachedTargetSubsetMatch key.parameter before (tweakableHashInput key.parameter .message payload) target (groups slot))
+    (normalizedTargetLogMatch key before log payload target) groups required target source
+
+end SphincsSecurity.Concrete
+
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

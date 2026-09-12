@@ -1,11 +1,32 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.FtsProbeVerifierSource
-import SphincsSecurity.Proof.Fts.PublicSigningInitial
 import SphincsSecurity.Proof.Residual.RetainedResidualEnvelope
 import SphincsSecurity.Proof.Residual.RetainedResidualInitial
 import SphincsSecurity.Proof.Residual.RetainedResidualMessagePayment
 import SphincsSecurity.Proof.Residual.RetainedResidualResources
 import SphincsSecurity.Proof.Residual.RetainedWorldCoverBudget
+import SphincsSecurity.Proof.Hypertree.CanonicalPublicPrior
+import SphincsSecurity.Proof.Reference.ReferenceAuxiliarySigning
+
+/-! ## PublicSigningInitial -/
+
+namespace SphincsSecurity.Concrete
+
+open _root_.OracleComp OracleSpec CanonicalProbeRouting UniformTableCompletion
+attribute [local irreducible] canonicalEncodingInputs canonicalGraphInputs instFintypePosition
+set_option backward.isDefEq.respectTransparency false
+
+theorem initialKnown_root (words : OtsReferenceWords) (exposedValues : InitialPublicLabels words)
+    (labels : Labels) (hlabels : complete (initialAllowed words exposedValues) labels ≠ 0)
+    (high : CanonicalGraphHighHalves) :
+    knownRoot (initialKnown words exposedValues) = canonicalGraphRoot (coordinateGraphLabels labels high) := by
+  apply knownRoot_eq (coordinateOtsSecrets labels) (coordinateFtsSecrets labels)
+    (coordinateGraphLabels labels high) words (fun _ _ _ => False)
+  rw [coordinateGraphLabels_value]
+  exact initialKnown_agrees words exposedValues labels hlabels
+
+end SphincsSecurity.Concrete
+
 namespace SphincsSecurity.Concrete.RetainedResidual
 
 open _root_.OracleComp OracleSpec ENNReal CanonicalProbeRouting

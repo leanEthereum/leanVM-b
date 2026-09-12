@@ -1,8 +1,24 @@
 import SphincsSecurity.Proof.Base.Prelude
 import SphincsSecurity.Proof.Fts.ExactTargetShapeSigning
-import SphincsSecurity.Proof.Reference.SigningExecutionBudget
 import SphincsSecurity.Proof.Fts.TargetShapeContinuation
 import SphincsSecurity.Proof.Fts.TargetShapeExpectation
+import SphincsSecurity.Statement
+
+/-! ## SigningExecutionBudget -/
+
+namespace SphincsSecurity.Concrete
+
+open _root_.OracleComp OracleSpec
+set_option backward.isDefEq.respectTransparency false
+
+/-- Debit from the syntactic continuation bound, including repeatable digest rejection. -/
+def signingExecutionHashCost : (OracleWorld + SigningSpec).Domain → Nat
+  | .inl (.inl _) => 0
+  | .inl (.inr _) => 1
+  | .inr _ => digestAttemptLimit
+
+end SphincsSecurity.Concrete
+
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal

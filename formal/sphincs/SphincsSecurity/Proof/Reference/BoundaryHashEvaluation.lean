@@ -1,7 +1,43 @@
 import SphincsSecurity.Proof.Base.Prelude
-import SphincsSecurity.Proof.Reference.AuthenticationQueryCost
 import SphincsSecurity.Proof.Reference.BoundaryHashCost
-import SphincsSecurity.Proof.Fts.FtsSigningReserve
+import SphincsSecurity.Statement
+import SphincsSecurity.Proof.Scheme.Bytes
+
+/-! ## AuthenticationQueryCost -/
+
+namespace SphincsSecurity.Concrete
+
+open _root_.OracleComp OracleSpec ENNReal
+set_option backward.isDefEq.respectTransparency false
+
+def authenticationHashCost (lay : Layer) : Nat :=
+  ∑ level : Fin maxLayerHeight, if level.val < layerHeight lay then 296 * 2 ^ level.val - 1 else 0
+
+def layerMessageHashCost (lay : Layer) : Nat :=
+  if hbelow : lay.val + 1 < numLayers then
+    296 * 2 ^ layerHeight ⟨lay.val + 1, hbelow⟩ - 1
+  else 28659
+
+end SphincsSecurity.Concrete
+
+/-! ## FtsSigningReserve -/
+
+namespace SphincsSecurity.Concrete.FtsProbeSimulation
+
+open _root_.OracleComp OracleSpec ENNReal
+set_option backward.isDefEq.respectTransparency false
+
+theorem tweakableHashInput_tag_eq (parameter : PublicParameter) (first second : HashDomain)
+    (firstPayload secondPayload : HashInput)
+    (heq : tweakableHashInput parameter first firstPayload = tweakableHashInput parameter second secondPayload) :
+    (hashDomainFields first).tag = (hashDomainFields second).tag := by
+  simp only [tweakableHashInput] at heq
+  obtain ⟨hprefix, _⟩ := List.append_inj heq (by simp [tweakBytes_length, bytesLE_length])
+  obtain ⟨htweak, _⟩ := List.append_inj' hprefix (by simp [bytesLE_length])
+  exact congrArg TweakFields.tag (tweakBytes_eq_iff.mp htweak)
+
+end SphincsSecurity.Concrete.FtsProbeSimulation
+
 namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec
