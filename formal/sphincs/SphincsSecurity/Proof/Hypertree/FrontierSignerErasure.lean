@@ -107,7 +107,7 @@ theorem boundaryEval_signLayer_frontier (key : SecretKey) (f : QueryImpl HashSpe
 
 def frontierSignAfterDigest (parameter : PublicParameter) (f : QueryImpl HashSpec Id)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (words : OtsReferenceWords)
-    (frontier : OtsFrontierValues) (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    (frontier : OtsFrontierValues) (randomness : Randomness) (index : Index) (leaves : IndexGroup → FtsLeaf) :
     Option Signature × Nat :=
   let layers := fun lay => frontierSignLayer parameter f ftsSecret words frontier index lay
   let paths := evalWithAnswerFn f (ftsOpen parameter index leaves (ftsSecret index))
@@ -123,7 +123,7 @@ def frontierSignAfterDigest (parameter : PublicParameter) (f : QueryImpl HashSpe
 theorem boundaryEval_signAfterDigest_frontier (key : SecretKey) (f : QueryImpl HashSpec Id)
     (words : OtsReferenceWords) (frontier : OtsFrontierValues)
     (hfrontier : IsSigningFrontier key f words frontier) (randomness : Randomness) (index : Index)
-    (leaves : DigestTree → FtsLeaf)
+    (leaves : IndexGroup → FtsLeaf)
     (hwords : ∀ lay, FrontierReferenceWord key.parameter f key.ftsSecret words frontier index lay) :
     boundaryEval key.parameter f (signAfterDigest key randomness index leaves) =
       ((frontierSignAfterDigest key.parameter f key.ftsSecret words frontier randomness index leaves).1,

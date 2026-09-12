@@ -33,8 +33,8 @@ theorem card_randomness : Fintype.card Randomness = 2 ^ randomnessBits := by
 noncomputable def Concrete.signDigestLoopContinuation
     (attempts : Nat) (secretKey : SecretKey) (message : Message)
     (randomness : Randomness)
-    (result : Option (Index × (DigestTree → FtsLeaf)) × QueryCache HashSpec) :
-    ProbComp (Option (Randomness × Index × (DigestTree → FtsLeaf)) ×
+    (result : Option (Index × (IndexGroup → FtsLeaf)) × QueryCache HashSpec) :
+    ProbComp (Option (Randomness × Index × (IndexGroup → FtsLeaf)) ×
       QueryCache HashSpec) :=
   match result.1 with
   | some (index, leaves) => pure (some (randomness, index, leaves), result.2)
@@ -51,7 +51,7 @@ theorem Concrete.signDigestLoop_run_succ_eq
       (($ᵗ Randomness) >>= fun randomness =>
         (simulateQ randomOracle
           (Concrete.signAttempt secretKey message randomness :
-            OracleComp HashSpec (Option (Index × (DigestTree → FtsLeaf))))).run cache >>=
+            OracleComp HashSpec (Option (Index × (IndexGroup → FtsLeaf))))).run cache >>=
           Concrete.signDigestLoopContinuation attempts secretKey message randomness) := by
   rw [Concrete.signDigestLoop, simulateQ_bind, StateT.run_bind]
   have hsampleRun :
@@ -73,17 +73,17 @@ theorem Concrete.signDigestLoop_run_succ_eq
   have hroute :
       simulateQ romImpl
           (liftM (Concrete.signAttempt secretKey message randomness :
-            OracleComp HashSpec (Option (Index × (DigestTree → FtsLeaf))))) =
+            OracleComp HashSpec (Option (Index × (IndexGroup → FtsLeaf))))) =
         simulateQ randomOracle
           (Concrete.signAttempt secretKey message randomness :
-            OracleComp HashSpec (Option (Index × (DigestTree → FtsLeaf)))) := by
+            OracleComp HashSpec (Option (Index × (IndexGroup → FtsLeaf)))) := by
     change simulateQ (unifFwdImpl HashSpec + randomOracle)
         (liftM (Concrete.signAttempt secretKey message randomness :
-          OracleComp HashSpec (Option (Index × (DigestTree → FtsLeaf))))) = _
+          OracleComp HashSpec (Option (Index × (IndexGroup → FtsLeaf))))) = _
     exact QueryImpl.simulateQ_add_liftM_right (unifFwdImpl HashSpec)
       (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp))
       (Concrete.signAttempt secretKey message randomness :
-        OracleComp HashSpec (Option (Index × (DigestTree → FtsLeaf))))
+        OracleComp HashSpec (Option (Index × (IndexGroup → FtsLeaf))))
   rw [hroute]
   apply bind_congr
   intro result
@@ -96,7 +96,7 @@ theorem Concrete.signDigestLoop_run_succ_eq
 
 theorem Concrete.signAfterDigest_some_randomness (f : QueryImpl HashSpec Id)
     (secretKey : SecretKey) (randomness : Randomness) (index : Index)
-    (leaves : DigestTree → FtsLeaf) (signature : Signature)
+    (leaves : IndexGroup → FtsLeaf) (signature : Signature)
     (heval : evalWithAnswerFn f
       (Concrete.signAfterDigest secretKey randomness index leaves) = some signature) :
     signature.randomness = randomness := by
@@ -109,7 +109,7 @@ theorem Concrete.signAfterDigest_some_randomness (f : QueryImpl HashSpec Id)
 
 theorem Concrete.signAfterDigest_support_some_randomness
     (secretKey : SecretKey) (randomness : Randomness) (index : Index)
-    (leaves : DigestTree → FtsLeaf) (beforeCache afterCache : QueryCache HashSpec)
+    (leaves : IndexGroup → FtsLeaf) (beforeCache afterCache : QueryCache HashSpec)
     (signature : Signature)
     (hmem : (some signature, afterCache) ∈ support
       ((simulateQ (randomOracle : QueryImpl HashSpec _)

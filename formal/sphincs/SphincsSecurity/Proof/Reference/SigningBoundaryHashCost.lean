@@ -48,7 +48,7 @@ theorem boundaryHashAtLeast_ftsNode (traceParameter parameter : PublicParameter)
       exact boundaryHashAtLeast_tweakableHash _ _ _ _
 
 theorem boundaryHashAtLeast_ftsOpen (traceParameter parameter : PublicParameter) (index : Index)
-    (leaves : DigestTree → FtsLeaf) (secret : FtsTree → FtsLeaf → Digest) :
+    (leaves : IndexGroup → FtsLeaf) (secret : FtsTree → FtsLeaf → Digest) :
     BoundaryHashAtLeast traceParameter (liftM (ftsOpen parameter index leaves secret : OracleComp HashSpec _))
       (∑ _tree : FtsTree, ∑ level : Fin ftsTreeHeight, (2 ^ (level.val + 1) - 1)) := by
   unfold ftsOpen
@@ -69,7 +69,7 @@ theorem boundaryHashAtLeast_signAttempt (parameter : PublicParameter) (key : Sec
 
 theorem boundaryHashAtLeast_signDigestLoop_bind {α : Type} (parameter : PublicParameter)
     (key : SecretKey) (message : Message) (cost attempts : Nat)
-    (next : Option (Randomness × Index × (DigestTree → FtsLeaf)) → OracleComp OracleWorld α)
+    (next : Option (Randomness × Index × (IndexGroup → FtsLeaf)) → OracleComp OracleWorld α)
     (hnext : ∀ selected, BoundaryHashAtLeast parameter (next (some selected)) cost) :
     BoundaryHashAtLeast parameter (signDigestLoop attempts key message >>= next) (min attempts cost) := by
   induction attempts with

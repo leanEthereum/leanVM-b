@@ -57,7 +57,7 @@ private theorem signDigestLoop_succ (key : SecretKey) (message : Message) (attem
   | some selected => rcases selected with ⟨index, leaves⟩; rfl
 
 private noncomputable def finishSelected (key : SecretKey) :
-    Option (Randomness × Index × (DigestTree → FtsLeaf)) → OracleComp OracleWorld (Option Signature × Option FewTimeView)
+    Option (Randomness × Index × (IndexGroup → FtsLeaf)) → OracleComp OracleWorld (Option Signature × Option FewTimeView)
   | none => pure (none, none)
   | some (randomness, index, leaves) => do
       let signature ← liftM (signAfterDigest key randomness index leaves)
@@ -73,7 +73,7 @@ private theorem signWithView_bind (key : SecretKey) (message : Message) :
   | some selected => rcases selected with ⟨randomness, index, leaves⟩; rfl
 
 theorem fixedBoundaryRun_digest_selected (key : SecretKey) (oracle : QueryImpl HashSpec Id) (message : Message)
-    (attempts : Nat) (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf)
+    (attempts : Nat) (randomness : Randomness) (index : Index) (leaves : IndexGroup → FtsLeaf)
     (trace : SigningBoundaryTrace)
     (hresult : 𝒟[fixedBoundaryRun key.parameter oracle (signDigestLoop attempts key message)]
       (some (randomness, index, leaves), trace) ≠ 0) :
@@ -129,7 +129,7 @@ private theorem finish_none_support (key : SecretKey) (oracle : QueryImpl HashSp
   simpa only [finishSelected, fixedBoundaryRun_pure, evalDist_pure, ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] using h
 
 private theorem finish_some_support (key : SecretKey) (oracle : QueryImpl HashSpec Id)
-    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf)
+    (randomness : Randomness) (index : Index) (leaves : IndexGroup → FtsLeaf)
     (result : (Option Signature × Option FewTimeView) × SigningBoundaryTrace)
     (h : 𝒟[fixedBoundaryRun key.parameter oracle (finishSelected key (some (randomness, index, leaves)))] result ≠ 0) :
     result = ((evalWithAnswerFn oracle (signAfterDigest key randomness index leaves), some (selectedFewTimeView index leaves)),
@@ -137,7 +137,7 @@ private theorem finish_some_support (key : SecretKey) (oracle : QueryImpl HashSp
   simpa only [finishSelected, fixedBoundaryRun_lift_hash_return, evalDist_pure, ne_eq, SPMF.pure_apply_eq_zero_iff, not_not] using h
 
 private theorem finish_success (key : SecretKey) (oracle : QueryImpl HashSpec Id)
-    (selected : Option (Randomness × Index × (DigestTree → FtsLeaf)))
+    (selected : Option (Randomness × Index × (IndexGroup → FtsLeaf)))
     (signature : Signature) (view : Option FewTimeView) (trace : SigningBoundaryTrace)
     (h : 𝒟[fixedBoundaryRun key.parameter oracle (finishSelected key selected)] ((some signature, view), trace) ≠ 0) :
     ∃ randomness index leaves, selected = some (randomness, index, leaves) ∧
@@ -155,7 +155,7 @@ private theorem finish_success (key : SecretKey) (oracle : QueryImpl HashSpec Id
         (Prod.mk.inj (Prod.mk.inj heq).1).2⟩
 
 private theorem fixedBoundaryRun_signing_selected (key : SecretKey) (oracle : QueryImpl HashSpec Id)
-    (loop : OracleComp OracleWorld (Option (Randomness × Index × (DigestTree → FtsLeaf))))
+    (loop : OracleComp OracleWorld (Option (Randomness × Index × (IndexGroup → FtsLeaf))))
     (signature : Signature) (view : Option FewTimeView) (trace : SigningBoundaryTrace)
     (hresult : 𝒟[fixedBoundaryRun key.parameter oracle (loop >>= finishSelected key)] ((some signature, view), trace) ≠ 0) :
     ∃ randomness index leaves loopTrace tailTrace,

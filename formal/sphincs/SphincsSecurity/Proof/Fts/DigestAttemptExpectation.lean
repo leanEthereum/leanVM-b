@@ -7,7 +7,7 @@ attribute [local instance] Classical.propDecidable
 noncomputable local instance instSampleableTypeRandomness_2 : SampleableType Randomness := SampleableType.ofFintype Randomness
 attribute [local irreducible] signAttempt signDigestAttemptPrefix
 
-abbrev DigestAttemptResult := Randomness × (Option (Index × (DigestTree → FtsLeaf)) × QueryCache HashSpec)
+abbrev DigestAttemptResult := Randomness × (Option (Index × (IndexGroup → FtsLeaf)) × QueryCache HashSpec)
 
 noncomputable def cachedDigestAttemptRate (key : SecretKey) (message : Message)
     (cache : QueryCache HashSpec) (P : FewTimeView → Prop) : ENNReal :=
@@ -40,7 +40,7 @@ theorem signDigestAttemptPrefix_cache_le (key : SecretKey) (message : Message)
     (cache : QueryCache HashSpec) (result : DigestAttemptResult)
     (hr : result ∈ support (signDigestAttemptPrefix key message cache)) : cache ≤ result.2.2 := by
   apply simulateQ_romImpl_cache_le (liftM (signAttempt key message result.1 :
-    OracleComp HashSpec (Option (Index × (DigestTree → FtsLeaf))))) cache result.2
+    OracleComp HashSpec (Option (Index × (IndexGroup → FtsLeaf))))) cache result.2
   rw [simulateQ_romImpl_liftM]
   exact signDigestAttemptPrefix_support_attempt key message cache result hr
 

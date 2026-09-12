@@ -19,10 +19,10 @@ def otsSeeds : Array Name := #[``SphincsSecurity.winternitzBits, ``SphincsSecuri
   ``SphincsSecurity.Concrete.otsLeaf, ``SphincsSecurity.Concrete.leafPayload, ``SphincsSecurity.Concrete.leafHash]
 
 def ftsSeeds : Array Name := #[``SphincsSecurity.ftsTreeHeight, ``SphincsSecurity.ftsTrees, ``SphincsSecurity.FtsTree,
-  ``SphincsSecurity.DigestTree, ``SphincsSecurity.FtsLeaf, ``SphincsSecurity.digestAttemptLimit, ``SphincsSecurity.HashDomain.ftsLeaf,
+  ``SphincsSecurity.IndexGroup, ``SphincsSecurity.FtsLeaf, ``SphincsSecurity.digestAttemptLimit, ``SphincsSecurity.HashDomain.ftsLeaf,
   ``SphincsSecurity.HashDomain.ftsNode, ``SphincsSecurity.HashDomain.ftsRoots, ``SphincsSecurity.HashDomain.message,
   ``SphincsSecurity.messageDigestBits, ``SphincsSecurity.MessageDigest, ``SphincsSecurity.truncateMessageDigest,
-  ``SphincsSecurity.Concrete.ftsLeafOfNat, ``SphincsSecurity.Concrete.ftsIndexOf, ``SphincsSecurity.Concrete.lastDigestTree,
+  ``SphincsSecurity.Concrete.ftsLeafOfNat, ``SphincsSecurity.Concrete.ftsIndexOf, ``SphincsSecurity.Concrete.lastIndexGroup,
   ``SphincsSecurity.Concrete.ftsLeafHash, ``SphincsSecurity.Concrete.ftsNode, ``SphincsSecurity.Concrete.ftsRootsPayload,
   ``SphincsSecurity.Concrete.ftsKey, ``SphincsSecurity.Concrete.ftsOpen, ``SphincsSecurity.Concrete.ftsFold,
   ``SphincsSecurity.Concrete.ftsRecover, ``SphincsSecurity.Concrete.messageDigestPayload, ``SphincsSecurity.Concrete.messageDigest,

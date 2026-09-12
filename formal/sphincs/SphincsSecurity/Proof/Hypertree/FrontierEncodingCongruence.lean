@@ -61,7 +61,7 @@ theorem ftsNode (index : Index) (tree : FtsTree) (secret : FtsLeaf → Digest) (
       simp only [ftsNode_succ_eq, evalWithAnswerFn_bind, ih, eval_tweakableHash]
       exact congrArg truncateHash (h.domain (.ftsNode index tree (level + 1) nodeIdx) (by simp only [hashDomainFields]; decide) _)
 
-theorem ftsOpen (index : Index) (leaves : DigestTree → FtsLeaf) (secret : FtsTree → FtsLeaf → Digest) :
+theorem ftsOpen (index : Index) (leaves : IndexGroup → FtsLeaf) (secret : FtsTree → FtsLeaf → Digest) :
     evalWithAnswerFn f (Concrete.ftsOpen parameter index leaves secret) =
       evalWithAnswerFn g (Concrete.ftsOpen parameter index leaves secret) := by
   simp only [Concrete.ftsOpen, evalWithAnswerFn_sequenceFin, h.ftsNode]
@@ -100,7 +100,7 @@ theorem frontierSignAfterDigest (ftsSecret : Index → FtsTree → FtsLeaf → D
     (words : OtsReferenceWords) (frontier : OtsFrontierValues)
     (hsearch : ∀ index lay, frontierLayerSearch parameter f ftsSecret words frontier index lay =
       frontierLayerSearch parameter g ftsSecret words frontier index lay)
-    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    (randomness : Randomness) (index : Index) (leaves : IndexGroup → FtsLeaf) :
     Concrete.frontierSignAfterDigest parameter f ftsSecret words frontier randomness index leaves =
       Concrete.frontierSignAfterDigest parameter g ftsSecret words frontier randomness index leaves := by
   simp only [Concrete.frontierSignAfterDigest, h.frontierSignLayer ftsSecret words frontier _ _ (hsearch _ _),

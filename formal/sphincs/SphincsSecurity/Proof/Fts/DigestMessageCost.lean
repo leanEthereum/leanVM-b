@@ -51,7 +51,7 @@ theorem expectedQueryCharge_messageDigest_message (key : SecretKey) (message : M
 theorem expectedQueryCharge_signAttempt_message (key : SecretKey) (message : Message)
     (randomness : Randomness) (cache : QueryCache HashSpec) :
     expectedQueryCharge (messageHashCharge key.parameter)
-      (liftM (signAttempt key message randomness : OracleComp HashSpec (Option (Index × (DigestTree → FtsLeaf))))) cache = 1 := by
+      (liftM (signAttempt key message randomness : OracleComp HashSpec (Option (Index × (IndexGroup → FtsLeaf))))) cache = 1 := by
   rw [signAttempt, liftM_bind, expectedQueryCharge_bind, expectedQueryCharge_messageDigest_message]
   conv_lhs =>
     arg 2

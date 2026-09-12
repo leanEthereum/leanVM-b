@@ -13,7 +13,7 @@ set_option backward.isDefEq.respectTransparency false
 
 theorem boundaryRun_signDigestLoop_exhaustion (parameter : PublicParameter) (key : SecretKey) (message : Message)
     (attempts : Nat) (cache : QueryCache HashSpec)
-    (result : (Option (Randomness × Index × (DigestTree → FtsLeaf)) × SigningBoundaryTrace) × QueryCache HashSpec)
+    (result : (Option (Randomness × Index × (IndexGroup → FtsLeaf)) × SigningBoundaryTrace) × QueryCache HashSpec)
     (hr : result ∈ support (boundaryRun parameter (signDigestLoop attempts key message) cache))
     (hn : result.1.1 = none) : attempts ≤ result.1.2.hashCalls := by
   induction attempts generalizing cache result with

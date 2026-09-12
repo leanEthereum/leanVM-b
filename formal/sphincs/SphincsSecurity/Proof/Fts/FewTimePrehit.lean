@@ -42,7 +42,7 @@ theorem cachedMessageEntryCountWhere_le_enncard
 
 def Concrete.PrehitSelectedView (referenceCache : QueryCache HashSpec)
     (secretKey : SecretKey) (message : Message) (P : Concrete.FewTimeView → Prop)
-    (result : Option (Randomness × Index × (DigestTree → FtsLeaf)) ×
+    (result : Option (Randomness × Index × (IndexGroup → FtsLeaf)) ×
       QueryCache HashSpec) : Prop :=
   ∃ randomness index leaves,
     result.1 = some (randomness, index, leaves)
@@ -56,7 +56,7 @@ set_option maxRecDepth 100000 in
 set_option linter.constructorNameAsVariable false in
 theorem Concrete.signDigestLoop_initial_cached_result
     (attempts : Nat) (secretKey : SecretKey) (message : Message)
-    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf)
+    (randomness : Randomness) (index : Index) (leaves : IndexGroup → FtsLeaf)
     (initialCache finalCache : QueryCache HashSpec) (output : HashOutput)
     (hcached : initialCache
       (tweakableHashInput secretKey.parameter .message
@@ -80,8 +80,8 @@ theorem Concrete.signDigestLoop_initial_cached_result
       have hle : initialCache ≤ attemptCache :=
         simulateQ_romImpl_cache_le
           (liftM (Concrete.signAttempt secretKey message sampled :
-            OracleComp HashSpec (Option (Index × (DigestTree → FtsLeaf)))) :
-              OracleComp OracleWorld (Option (Index × (DigestTree → FtsLeaf))))
+            OracleComp HashSpec (Option (Index × (IndexGroup → FtsLeaf)))) :
+              OracleComp OracleWorld (Option (Index × (IndexGroup → FtsLeaf))))
           initialCache (attempt, attemptCache) (by
             rw [simulateQ_romImpl_liftM]
             exact hattempt)

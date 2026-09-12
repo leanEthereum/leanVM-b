@@ -14,7 +14,7 @@ open OracleComp OracleSpec ENNReal
 
 def freshSelectedLoopView?
     (referenceCache : QueryCache HashSpec) (secretKey : SecretKey) (message : Message)
-    (result : Option (Randomness × Index × (DigestTree → FtsLeaf)) ×
+    (result : Option (Randomness × Index × (IndexGroup → FtsLeaf)) ×
       QueryCache HashSpec) : Option FewTimeView :=
   match result.1 with
   | none => none
@@ -26,7 +26,7 @@ def freshSelectedLoopView?
 
 noncomputable def completeFreshSelectedLoopView
     (referenceCache : QueryCache HashSpec) (secretKey : SecretKey) (message : Message)
-    (result : Option (Randomness × Index × (DigestTree → FtsLeaf)) ×
+    (result : Option (Randomness × Index × (IndexGroup → FtsLeaf)) ×
       QueryCache HashSpec) : ProbComp FewTimeView :=
   match freshSelectedLoopView? referenceCache secretKey message result with
   | some view => pure view
@@ -62,13 +62,13 @@ theorem probEvent_completeFreshSelectedLoopView_le_uniform
           change Pr[P |
               ((simulateQ randomOracle
                 (signAttempt secretKey message randomness :
-                  OracleComp HashSpec (Option (Index × (DigestTree → FtsLeaf))))).run
+                  OracleComp HashSpec (Option (Index × (IndexGroup → FtsLeaf))))).run
                 workingCache >>= continuation) >>=
                   completeFreshSelectedLoopView referenceCache secretKey message] ≤ _
           have hcoordinates' :
               𝒟[((simulateQ randomOracle
                   (signAttempt secretKey message randomness :
-                    OracleComp HashSpec (Option (Index × (DigestTree → FtsLeaf))))).run
+                    OracleComp HashSpec (Option (Index × (IndexGroup → FtsLeaf))))).run
                     workingCache >>= continuation) >>=
                     completeFreshSelectedLoopView referenceCache secretKey message] =
                 𝒟[(do
@@ -138,8 +138,8 @@ theorem probEvent_completeFreshSelectedLoopView_le_uniform
           have hle : workingCache ≤ attemptResult.2 :=
             simulateQ_romImpl_cache_le
               (liftM (signAttempt secretKey message randomness :
-                OracleComp HashSpec (Option (Index × (DigestTree → FtsLeaf)))) :
-                  OracleComp OracleWorld (Option (Index × (DigestTree → FtsLeaf))))
+                OracleComp HashSpec (Option (Index × (IndexGroup → FtsLeaf)))) :
+                  OracleComp OracleWorld (Option (Index × (IndexGroup → FtsLeaf))))
               workingCache attemptResult (by
                 rw [simulateQ_romImpl_liftM]
                 exact hattempt)

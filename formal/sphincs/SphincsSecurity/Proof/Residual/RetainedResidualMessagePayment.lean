@@ -17,7 +17,7 @@ private theorem expected_evalDist {Result : Type} (computation : ProbComp Result
       ∑' result, Pr[= result | computation] * weight result := rfl
 
 theorem digestWork_messageCalls (known : Labels) (words : OtsReferenceWords) (selections : ReferenceFamily)
-    (selected : Option (Randomness × Index × (DigestTree → FtsLeaf)) × SigningBoundaryTrace) :
+    (selected : Option (Randomness × Index × (IndexGroup → FtsLeaf)) × SigningBoundaryTrace) :
     (digestWork known words selections selected).1.2.messageCalls = selected.2.messageCalls := by
   rcases selected with ⟨selected, trace⟩
   cases selected <;> simp only [digestWork, SigningBoundaryTrace.messageCalls_mul,

@@ -59,7 +59,7 @@ theorem ftsOpeningPosition_public (words : OtsReferenceWords) (disclosed : Index
 def knownTreePath (known : Labels) (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex) : Fin maxLayerHeight → Digest :=
   fun level => if level.val < layerHeight lay then known (.graph (treeOpeningPosition lay tree leaf level)) else 0
 
-def knownFtsPath (known : Labels) (index : Index) (leaves : DigestTree → FtsLeaf) : FtsTree → Fin ftsTreeHeight → Digest :=
+def knownFtsPath (known : Labels) (index : Index) (leaves : IndexGroup → FtsLeaf) : FtsTree → Fin ftsTreeHeight → Digest :=
   fun tree level => known (.graph (ftsOpeningPosition index tree (leaves (ftsIndexOf tree)) level))
 
 variable (parameter : PublicParameter)
@@ -106,7 +106,7 @@ theorem knownTreePath_eq (words : OtsReferenceWords) (disclosed : Index → FtsT
 theorem knownFtsPath_eq (words : OtsReferenceWords) (disclosed : Index → FtsTree → FtsLeaf → Prop) (known : Labels)
     (hagrees : PublicAgreement words disclosed known
       (CanonicalCoordinate.value otsSecret ftsSecret (canonicalGraphLabels parameter otsSecret ftsSecret f)))
-    (index : Index) (leaves : DigestTree → FtsLeaf) :
+    (index : Index) (leaves : IndexGroup → FtsLeaf) :
     knownFtsPath known index leaves = evalWithAnswerFn f (ftsOpen parameter index leaves (ftsSecret index)) := by
   simp only [ftsOpen, evalWithAnswerFn_sequenceFin]
   funext tree level

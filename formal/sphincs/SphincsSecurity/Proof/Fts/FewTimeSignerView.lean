@@ -12,7 +12,7 @@ namespace SphincsSecurity.Concrete
 
 open OracleComp OracleSpec
 
-def selectedFewTimeView (index : Index) (leaves : DigestTree → FtsLeaf) : FewTimeView :=
+def selectedFewTimeView (index : Index) (leaves : IndexGroup → FtsLeaf) : FewTimeView :=
   (index, fun tree => leaves (ftsIndexOf tree))
 
 noncomputable def signWithView (secretKey : SecretKey) (message : Message) :
@@ -52,7 +52,7 @@ theorem signWithView_support_some
     (signature : Signature) (view : Option FewTimeView)
     (hmem : ((some signature, view), finalCache) ∈ support
       ((simulateQ romImpl (signWithView secretKey message)).run initialCache)) :
-    ∃ (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf)
+    ∃ (randomness : Randomness) (index : Index) (leaves : IndexGroup → FtsLeaf)
         (loopCache : QueryCache HashSpec),
       (some (randomness, index, leaves), loopCache) ∈ support
           ((simulateQ romImpl

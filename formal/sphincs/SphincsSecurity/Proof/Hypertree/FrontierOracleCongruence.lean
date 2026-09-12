@@ -52,7 +52,7 @@ theorem eval_ftsKey_eq_of_agree (index : Index) (secret : FtsTree → FtsLeaf �
     eval_ftsNode_eq_of_agree parameter words f g h, eval_tweakableHash]
   exact congrArg truncateHash (h.other (.ftsRoots index) (by simp only [hashDomainFields]; decide) _)
 
-theorem eval_ftsOpen_eq_of_agree (index : Index) (leaves : DigestTree → FtsLeaf)
+theorem eval_ftsOpen_eq_of_agree (index : Index) (leaves : IndexGroup → FtsLeaf)
     (secret : FtsTree → FtsLeaf → Digest) :
     evalWithAnswerFn f (ftsOpen parameter index leaves secret) =
       evalWithAnswerFn g (ftsOpen parameter index leaves secret) := by
@@ -99,7 +99,7 @@ theorem frontierSignLayer_eq_of_agree (ftsSecret : Index → FtsTree → FtsLeaf
     eval_frontierTreePath_eq_of_agree parameter words f g h]
 
 theorem frontierSignAfterDigest_eq_of_agree (ftsSecret : Index → FtsTree → FtsLeaf → Digest)
-    (frontier : OtsFrontierValues) (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    (frontier : OtsFrontierValues) (randomness : Randomness) (index : Index) (leaves : IndexGroup → FtsLeaf) :
     frontierSignAfterDigest parameter f ftsSecret words frontier randomness index leaves =
       frontierSignAfterDigest parameter g ftsSecret words frontier randomness index leaves := by
   simp only [frontierSignAfterDigest, frontierSignLayer_eq_of_agree parameter words f g h,

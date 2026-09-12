@@ -213,7 +213,7 @@ theorem boundaryEval_ftsKey (parameter : PublicParameter) (f : QueryImpl HashSpe
     boundaryEval_tweakableHash _ _ _ _ (by simp [hashDomainFields]), ← pow_succ]
 
 theorem boundaryEval_ftsOpen (parameter : PublicParameter) (f : QueryImpl HashSpec Id)
-    (index : Index) (leaves : DigestTree → FtsLeaf) (secret : FtsTree → FtsLeaf → Digest) :
+    (index : Index) (leaves : IndexGroup → FtsLeaf) (secret : FtsTree → FtsLeaf → Digest) :
     boundaryEval parameter f (ftsOpen parameter index leaves secret) =
       (evalWithAnswerFn f (ftsOpen parameter index leaves secret), (FreeMonoid.of none) ^ 28504) := by
   apply boundaryEval_eq_of_snd

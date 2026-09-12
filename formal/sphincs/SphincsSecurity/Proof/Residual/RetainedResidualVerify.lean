@@ -42,7 +42,7 @@ theorem Compatible.layer_frame_reference {inputs : Finset HashInput} {context : 
 
 theorem Compatible.hypertree_honest {inputs : Finset HashInput} {context : Context inputs} {memory : Memory}
     (hcompatible : Compatible context memory) (hdummy : ∀ lay tree leaf, TargetSum.Valid (context.dummy lay tree leaf))
-    (hroot : context.key.root = canonicalGraphRoot context.graph) (index : Index) (leaves : DigestTree → FtsLeaf)
+    (hroot : context.key.root = canonicalGraphRoot context.graph) (index : Index) (leaves : IndexGroup → FtsLeaf)
     (signature : Signature)
     (hverify : evalWithAnswerFn context.oracle
       (verifyLayers context.key.parameter index signature numLayers

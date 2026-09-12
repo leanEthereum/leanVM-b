@@ -203,16 +203,16 @@ theorem onlyRejectedNewMessageEntries_of_failed_attempt
       have hmemWorld : (none, afterCache) ∈ support
           ((simulateQ romImpl
             (liftM (signAttempt secretKey message sampled :
-              OracleComp HashSpec (Option (Index × (DigestTree → FtsLeaf)))) :
-                OracleComp OracleWorld (Option (Index × (DigestTree → FtsLeaf))))).run
+              OracleComp HashSpec (Option (Index × (IndexGroup → FtsLeaf)))) :
+                OracleComp OracleWorld (Option (Index × (IndexGroup → FtsLeaf))))).run
               beforeCache) := by
         rw [simulateQ_romImpl_liftM]
         exact hmem
       have hle : beforeCache ≤ afterCache :=
         simulateQ_romImpl_cache_le
           (liftM (signAttempt secretKey message sampled :
-            OracleComp HashSpec (Option (Index × (DigestTree → FtsLeaf)))) :
-              OracleComp OracleWorld (Option (Index × (DigestTree → FtsLeaf))))
+            OracleComp HashSpec (Option (Index × (IndexGroup → FtsLeaf)))) :
+              OracleComp OracleWorld (Option (Index × (IndexGroup → FtsLeaf))))
           beforeCache (none, afterCache) hmemWorld
       have heq : prior = output := Option.some.inj ((hle hprior).symm.trans hafter)
       rw [← heq]
@@ -220,7 +220,7 @@ theorem onlyRejectedNewMessageEntries_of_failed_attempt
 
 def FreshSelectedView (referenceCache : QueryCache HashSpec)
     (secretKey : SecretKey) (message : Message) (P : FewTimeView → Prop)
-    (result : Option (Randomness × Index × (DigestTree → FtsLeaf)) ×
+    (result : Option (Randomness × Index × (IndexGroup → FtsLeaf)) ×
       QueryCache HashSpec) : Prop :=
   ∃ randomness index leaves,
     result.1 = some (randomness, index, leaves)

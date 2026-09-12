@@ -26,7 +26,7 @@ open OracleComp OracleSpec
 
 theorem signAttempt_cache_other_none (secretKey : SecretKey) (message : Message)
     (randomness : Randomness) (beforeCache afterCache : QueryCache HashSpec)
-    (attempt : Option (Index × (DigestTree → FtsLeaf)))
+    (attempt : Option (Index × (IndexGroup → FtsLeaf)))
     (hmem : (attempt, afterCache) ∈ support
       ((simulateQ (randomOracle : QueryImpl HashSpec _)
         (signAttempt secretKey message randomness)).run beforeCache))
@@ -41,7 +41,7 @@ theorem signAttempt_cache_other_none (secretKey : SecretKey) (message : Message)
 
 theorem signAfterDigest_cache_message_none (secretKey : SecretKey)
     (randomness : Randomness) (index : Index)
-    (leaves : DigestTree → FtsLeaf) (beforeCache afterCache : QueryCache HashSpec)
+    (leaves : IndexGroup → FtsLeaf) (beforeCache afterCache : QueryCache HashSpec)
     (result : Option Signature)
     (hmem : (result, afterCache) ∈ support
       ((simulateQ (randomOracle : QueryImpl HashSpec _)

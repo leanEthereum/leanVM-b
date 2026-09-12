@@ -82,7 +82,7 @@ theorem Concrete.probEvent_signAttempt_fresh_success_eq
 noncomputable def Concrete.signDigestAttemptPrefix
     (secretKey : SecretKey) (message : Message) (cache : QueryCache HashSpec) :
     ProbComp (Randomness ×
-      (Option (Index × (DigestTree → FtsLeaf)) × QueryCache HashSpec)) :=
+      (Option (Index × (IndexGroup → FtsLeaf)) × QueryCache HashSpec)) :=
   ($ᵗ Randomness) >>= fun randomness =>
     (simulateQ (randomOracle : QueryImpl HashSpec _)
       (signAttempt secretKey message randomness)).run cache >>= fun result =>
@@ -101,7 +101,7 @@ theorem Concrete.signDigestLoop_run_succ_eq_attemptPrefix
 def Concrete.FavorablePrehitAttempt (referenceCache : QueryCache HashSpec)
     (secretKey : SecretKey) (message : Message) (P : FewTimeView → Prop)
     (attempt : Randomness ×
-      (Option (Index × (DigestTree → FtsLeaf)) × QueryCache HashSpec)) : Prop :=
+      (Option (Index × (IndexGroup → FtsLeaf)) × QueryCache HashSpec)) : Prop :=
   ∃ output, referenceCache
     (tweakableHashInput secretKey.parameter .message
       (messageDigestPayload secretKey.root message attempt.1)) = some output

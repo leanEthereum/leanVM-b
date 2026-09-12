@@ -8,7 +8,7 @@ open _root_.OracleComp OracleSpec
 set_option backward.isDefEq.respectTransparency false
 
 theorem signDigestLoop_selected_cached_output (attempts : Nat) (key : SecretKey) (message : Message)
-    (before after : QueryCache HashSpec) (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf)
+    (before after : QueryCache HashSpec) (randomness : Randomness) (index : Index) (leaves : IndexGroup → FtsLeaf)
     (hloop : (some (randomness, index, leaves), after) ∈ support ((simulateQ romImpl (signDigestLoop attempts key message)).run before)) :
     ∃ output, after (tweakableHashInput key.parameter .message (messageDigestPayload key.root message randomness)) = some output ∧
       Admissible (truncateMessageDigest output) ∧ hashOutputFewTimeView output = selectedFewTimeView index leaves := by
@@ -27,7 +27,7 @@ theorem signDigestLoop_selected_cached_output (attempts : Nat) (key : SecretKey)
   simp only [hashOutputFewTimeView, selectedFewTimeView, ← hdigest, hindex, hleaves]
 
 theorem signAfterDigest_message_cache_eq (key : SecretKey) (randomness : Randomness) (index : Index)
-    (leaves : DigestTree → FtsLeaf) (before after : QueryCache HashSpec) (signature : Option Signature)
+    (leaves : IndexGroup → FtsLeaf) (before after : QueryCache HashSpec) (signature : Option Signature)
     (hfinish : (signature, after) ∈ support ((simulateQ (randomOracle : QueryImpl HashSpec _)
       (signAfterDigest key randomness index leaves)).run before)) (payload : HashInput) :
     after (tweakableHashInput key.parameter .message payload) = before (tweakableHashInput key.parameter .message payload) := by

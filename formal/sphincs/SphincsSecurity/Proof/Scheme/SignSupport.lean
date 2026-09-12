@@ -17,14 +17,14 @@ abbrev LayerPart :=
 
 def SuccessfulDigestRun (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
     (secretKey : SecretKey) (message : Message) (randomness : Randomness) (index : Index)
-    (leaves : DigestTree → FtsLeaf) : Prop :=
+    (leaves : IndexGroup → FtsLeaf) : Prop :=
   randomness ∈ support sampleRandomness
     ∧ evalWithAnswerFn f (signAttempt secretKey message randomness) = some (index, leaves)
     ∧ CachedRun cache f (signAttempt secretKey message randomness)
 
 theorem SuccessfulDigestRun.extract {f : QueryImpl HashSpec Id} {cache : QueryCache HashSpec}
     {secretKey : SecretKey} {message : Message} {randomness : Randomness} {index : Index}
-    {leaves : DigestTree → FtsLeaf}
+    {leaves : IndexGroup → FtsLeaf}
     (hrun : SuccessfulDigestRun f cache secretKey message randomness index leaves) :
     randomness ∈ support sampleRandomness
       ∧ ∃ digest : MessageDigest,
@@ -56,7 +56,7 @@ theorem SuccessfulDigestRun.extract {f : QueryImpl HashSpec Id} {cache : QueryCa
 
 theorem successfulDigestLoop_of_mem_support (f : QueryImpl HashSpec Id)
     (secretKey : SecretKey) (message : Message) (attempts : Nat) (randomness : Randomness)
-    (index : Index) (leaves : DigestTree → FtsLeaf)
+    (index : Index) (leaves : IndexGroup → FtsLeaf)
     (beforeCache afterCache finalCache : QueryCache HashSpec)
     (hmem : (some (randomness, index, leaves), afterCache) ∈ support
       ((simulateQ (replayRomImpl f) (signDigestLoop attempts secretKey message)).run beforeCache))

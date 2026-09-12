@@ -49,16 +49,19 @@ abbrev PublicParameter := BitVec publicParameterBits
 abbrev Randomness := BitVec randomnessBits
 abbrev Counter := BitVec counterBits
 abbrev Layer := Fin numLayers
+/-- `idx`, which few-time key signs. -/
 abbrev Index := Fin (2 ^ totalHeight)
+/-- `tau`, a tree of any layer. Layer `lay` only uses the values below `2^(sum_{j < lay} h_j)`. -/
 abbrev TreeIndex := Fin (2 ^ totalHeight)
+/-- `e`, a leaf of any layer. Layer `lay` only uses the values below `2^h_lay`. -/
 abbrev LeafIndex := Fin (2 ^ maxLayerHeight)
 abbrev ChainIndex := Fin numChains
 abbrev Digit := Fin chainLength
 abbrev ChainStep := Fin (chainLength - 1)
 /-- A tree of the few-time forest, `kappa < k - 1`. -/
 abbrev FtsTree := Fin (ftsTrees - 1)
-/-- An index group of the message digest, `kappa < k`. -/
-abbrev DigestTree := Fin ftsTrees
+/-- An index group of the message digest, `kappa < k`. The first `k - 1` select a tree's leaf; the last is pinned to zero. -/
+abbrev IndexGroup := Fin ftsTrees
 abbrev FtsLeaf := Fin (2 ^ ftsTreeHeight)
 /-- A position in the signature's authentication path, the `h` nodes of the `d` layers concatenated top layer first. -/
 abbrev PathIndex := Fin totalHeight
@@ -87,15 +90,17 @@ def messageDigestBits : Nat := totalHeight + ftsTrees * ftsTreeHeight
 
 abbrev MessageDigest := BitVec messageDigestBits
 
+/-- Keep the first `h + k * a` output bits. -/
 def truncateMessageDigest (output : HashOutput) : MessageDigest :=
   output.extractLsb' 0 messageDigestBits
 
+/-- `pk = (root, P)`. -/
 structure PublicKey where
   root : Digest
   parameter : PublicParameter
 deriving DecidableEq
 
-/-- The key of the specification: the public parameter, the layer-`0` root that every digest binds, and every sampled secret. `Gen` samples them independently and uniformly; the seed derivation of the specification is an implementation of this key, not this key. -/
+/-- The key of the specification: the public parameter, the layer-`0` root that every digest binds, and every sampled secret. `Gen` samples them independently and uniformly, at every position of the index types, so positions a layer does not have hold secrets nothing reads; the seed derivation of the specification is an implementation of this key, not this key. -/
 structure SecretKey where
   parameter : PublicParameter
   root : Digest
@@ -117,6 +122,7 @@ def bytesLE (byteCount : Nat) (value : BitVec (8 * byteCount)) : List UInt8 :=
   List.ofFn fun index : Fin byteCount =>
     UInt8.ofBitVec (value.extractLsb' (8 * index.val) 8)
 
+/-- The five fields of the specification's `enc(t, lay, tau, p, j)`. -/
 structure TweakFields where
   tag : BitVec 8
   layer : BitVec 8
@@ -177,19 +183,23 @@ def tweakableHashInput (parameter : PublicParameter) (domain : HashDomain)
 
 namespace TargetSum
 
+/-- The digit sum of a word. -/
 def sum (x : Encoding) : Nat := ∑ i, (x i).val
 
+/-- Membership in the code `C`: digit sum `T`. -/
 def Valid (x : Encoding) : Prop := sum x = targetSum
 
 instance : DecidablePred Valid :=
   fun x => inferInstanceAs (Decidable (sum x = targetSum))
 
+/-- `v / 2 = 21` digits in each half of the digest. -/
 def digitsPerHalf : Nat := numChains / 2
 
 /-- Offset of a three-bit digit, skipping padding bits 63 and 127. -/
 def digitOffset (i : ChainIndex) : Nat :=
   winternitzBits * i.val + if i.val < digitsPerHalf then 0 else 1
 
+/-- `x_i`, the three bits of the digest at the digit's offset. -/
 def digestEncoding (digest : Digest) : Encoding :=
   fun i => (digest.extractLsb' (digitOffset i) winternitzBits).toFin
 
@@ -202,7 +212,7 @@ end TargetSum
 
 /-! ## The algorithms
 
-Key generation, signing and verification as run in the experiment, with every oracle hash call they make. Key generation samples the parameter and every secret and builds layer `0`'s tree; signing rebuilds whatever tree it reads rather than caching anything; verification is the ordinary verifier. The `irreducible` attributes at the end of the namespace only seal definitions against accidental unfolding in proofs, and Lean restricts global reducibility attributes to the defining module. -/
+Key generation, signing and verification as run in the experiment, with every oracle hash call they make. Key generation samples the parameter and every secret and builds layer `0`'s tree; signing rebuilds whatever tree it reads rather than caching anything; verification is the ordinary verifier. Everything under `Concrete` is the instance; the experiment after it is generic over `Scheme`. The hashing algorithms are written for any monad `m` that can query the hash, and key generation and signing run them with `liftM` inside the world that also samples. Branches that return `0` out of range exist only to make the definitions total; the honest algorithms never take them and verification never reads them. The `irreducible` attributes at the end of the namespace only seal definitions against accidental unfolding in proofs, and Lean restricts global reducibility attributes to the defining module. -/
 
 /-- A hash query takes an arbitrary byte string and returns 32 bytes. -/
 abbrev HashSpec := HashInput →ₒ HashOutput
@@ -220,15 +230,7 @@ def randomnessBytes (randomness : Randomness) : HashInput := bytesLE 16 randomne
 
 def counterBytes (counter : Counter) : HashInput := bytesLE 4 counter
 
-def oracleHash {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (input : HashInput) : m HashOutput :=
-  HasQuery.query (spec := HashSpec) (m := m) input
-
-def tweakableHash {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (parameter : PublicParameter) (domain : HashDomain) (payload : HashInput) : m Digest := do
-  let output ← oracleHash (tweakableHashInput parameter domain payload)
-  return truncateHash output
-
+/-- Run the `n` computations in index order and collect their results. -/
 def sequenceFin {m : Type → Type} [Monad m] {α : Type} {n : Nat}
     (computation : Fin n → m α) : m (Fin n → α) :=
   match n with
@@ -237,6 +239,18 @@ def sequenceFin {m : Type → Type} [Monad m] {α : Type} {n : Nat}
       let head ← computation 0
       let tail ← sequenceFin fun index : Fin n => computation index.succ
       return Fin.cases head tail
+
+variable {m : Type → Type} [Monad m] [HasQuery HashSpec m]
+
+/-- One query to the random oracle `H`. -/
+def oracleHash (input : HashInput) : m HashOutput :=
+  HasQuery.query (spec := HashSpec) (m := m) input
+
+/-- `Th(P, tw, M) = Truncate_n(H(tw || P || M))`. -/
+def tweakableHash (parameter : PublicParameter) (domain : HashDomain) (payload : HashInput) :
+    m Digest := do
+  let output ← oracleHash (tweakableHashInput parameter domain payload)
+  return truncateHash output
 
 /-! ### The index -/
 
@@ -253,12 +267,12 @@ def leafIndexAt (index : Index) (lay : Layer) : LeafIndex :=
 
 /-! ### The one-time signature -/
 
+/-- A node index at level `0` read as a leaf index. -/
 def leafOfNat (value : Nat) : LeafIndex :=
   ⟨value % 2 ^ maxLayerHeight, Nat.mod_lt _ (Nat.two_pow_pos _)⟩
 
 /-- `Chain_{lay,tau,e,i}(P, start, steps, value)`: the step onto position `start + steps + 1` carries tweak position `2^w * i + start + steps`. -/
-def chainWalk {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
+def chainWalk (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
     (chainIdx : ChainIndex) : Nat → Nat → Digest → m Digest
   | _, 0, value => pure value
   | start, steps + 1, value => do
@@ -270,36 +284,34 @@ def chainWalk {m : Type → Type} [Monad m] [HasQuery HashSpec m]
         pure 0
 
 /-- The verifier's half of a chain: walk the remaining `2^w - 1 - x_i` steps. -/
-def recoverChain {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
+def recoverChain (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
     (chainIdx : ChainIndex) (digit : Digit) (value : Digest) : m Digest :=
   chainWalk parameter lay tree leaf chainIdx digit.val (chainLength - 1 - digit.val) value
 
-def oneTimePublicKey {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
-    (secret : ChainIndex → Digest) : m (ChainIndex → Digest) :=
+/-- `pk_i = Chain(P, 0, 2^w - 1, sk_i)` for every chain. -/
+def oneTimePublicKey (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex)
+    (leaf : LeafIndex) (secret : ChainIndex → Digest) : m (ChainIndex → Digest) :=
   sequenceFin fun chainIdx =>
     chainWalk parameter lay tree leaf chainIdx 0 (chainLength - 1) (secret chainIdx)
 
+/-- `pk_0 || ... || pk_{v-1}`. -/
 def leafPayload (endpoints : ChainIndex → Digest) : HashInput :=
   (List.ofFn endpoints).flatMap digestBytes
 
-def leafHash {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
+/-- `X^{lay,tau}_{0,e}`, the one-time leaf: the hash of the `v` public values. -/
+def leafHash (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
     (endpoints : ChainIndex → Digest) : m Digest :=
   tweakableHash parameter (.leaf lay tree leaf) (leafPayload endpoints)
 
 /-- `Enc(P, lay, tau, e, M, c)`: hash the message with the counter under the leaf's encoding tweak, and decode. -/
-def encode {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
+def encode (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
     (message : Digest) (counter : Counter) : m (Option Encoding) := do
   let digest ← tweakableHash parameter (.encoding lay tree leaf)
     (digestBytes message ++ counterBytes counter)
   return TargetSum.decodeDigest digest
 
 /-- `OtsSign`: the least admissible counter, and the chain values it dictates. The search starts at `0` and stops after `encodingAttemptLimit` counters. -/
-def otsSignFrom {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
+def otsSignFrom (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
     (secret : ChainIndex → Digest) (message : Digest) :
     Nat → Nat → m (Option (Counter × (ChainIndex → Digest)))
   | 0, _ => pure none
@@ -311,15 +323,13 @@ def otsSignFrom {m : Type → Type} [Monad m] [HasQuery HashSpec m]
           return some (BitVec.ofNat counterBits counter, values)
       | none => otsSignFrom parameter lay tree leaf secret message attempts (counter + 1)
 
-def otsSign {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
+def otsSign (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
     (secret : ChainIndex → Digest) (message : Digest) :
     m (Option (Counter × (ChainIndex → Digest))) :=
   otsSignFrom parameter lay tree leaf secret message encodingAttemptLimit 0
 
 /-- `OtsLeaf`: the verifier's leaf, or nothing if the counter does not encode the message. -/
-def otsLeaf {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
+def otsLeaf (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
     (message : Digest) (counter : Counter) (values : ChainIndex → Digest) : m (Option Digest) := do
   match ← encode parameter lay tree leaf message counter with
   | none => pure none
@@ -331,12 +341,12 @@ def otsLeaf {m : Type → Type} [Monad m] [HasQuery HashSpec m]
 
 /-! ### A layer -/
 
+/-- The two children of a Merkle node. -/
 def nodePayload (left right : Digest) : HashInput :=
   digestBytes left ++ digestBytes right
 
 /-- `X^{lay,tau}_{level,nodeIdx}`, the Merkle tree over the layer's one-time leaves. -/
-def treeNode {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex)
+def treeNode (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex)
     (secret : LeafIndex → ChainIndex → Digest) : Nat → Nat → m Digest
   | 0, nodeIdx => do
       let leaf := leafOfNat nodeIdx
@@ -347,14 +357,13 @@ def treeNode {m : Type → Type} [Monad m] [HasQuery HashSpec m]
       let right ← treeNode parameter lay tree secret level (2 * nodeIdx + 1)
       tweakableHash parameter (.node lay tree (level + 1) nodeIdx) (nodePayload left right)
 
-def treeRoot {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex)
+/-- `TreeRoot(P, lay, tau) = X^{lay,tau}_{h_lay, 0}`. -/
+def treeRoot (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex)
     (secret : LeafIndex → ChainIndex → Digest) : m Digest :=
   treeNode parameter lay tree secret (layerHeight lay) 0
 
 /-- `TreePath`: `A_level = X^{lay,tau}_{level, floor(e / 2^level) xor 1}` for the layer's own `h_lay` levels, and nothing above them. -/
-def treePath {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex)
+def treePath (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex)
     (secret : LeafIndex → ChainIndex → Digest) (leaf : LeafIndex) : m (Fin maxLayerHeight → Digest) :=
   sequenceFin fun level =>
     if level.val < layerHeight lay then
@@ -363,8 +372,7 @@ def treePath {m : Type → Type} [Monad m] [HasQuery HashSpec m]
       pure 0
 
 /-- `TreeFold`: fold a leaf and a path into the layer's root. -/
-def treeFold {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
+def treeFold (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
     (path : Nat → Digest) : Nat → Digest → m Digest
   | 0, value => pure value
   | levels + 1, value => do
@@ -378,24 +386,24 @@ def treeFold {m : Type → Type} [Monad m] [HasQuery HashSpec m]
 
 /-! ### The few-time signature -/
 
+/-- A node index at level `0` read as a leaf index. -/
 def ftsLeafOfNat (value : Nat) : FtsLeaf :=
   ⟨value % 2 ^ ftsTreeHeight, Nat.mod_lt _ (Nat.two_pow_pos _)⟩
 
 /-- The index group of the digest that selects this tree's leaf. -/
-def ftsIndexOf (tree : FtsTree) : DigestTree :=
+def ftsIndexOf (tree : FtsTree) : IndexGroup :=
   tree.castLE (Nat.sub_le ftsTrees 1)
 
 /-- The last index group, the one the digest is resampled to zero and the verifier checks. Its tree is the dropped one. -/
-def lastDigestTree : DigestTree := ⟨ftsTrees - 1, by decide⟩
+def lastIndexGroup : IndexGroup := ⟨ftsTrees - 1, by decide⟩
 
-def ftsLeafHash {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (parameter : PublicParameter) (index : Index) (tree : FtsTree) (leaf : FtsLeaf)
+/-- `Y^{idx,kappa}_{0,j}`, the hash of one few-time secret. -/
+def ftsLeafHash (parameter : PublicParameter) (index : Index) (tree : FtsTree) (leaf : FtsLeaf)
     (secret : Digest) : m Digest :=
   tweakableHash parameter (.ftsLeaf index tree leaf) (digestBytes secret)
 
 /-- `Y^{idx,kappa}_{level,nodeIdx}`, one tree of the forest. -/
-def ftsNode {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (parameter : PublicParameter) (index : Index) (tree : FtsTree)
+def ftsNode (parameter : PublicParameter) (index : Index) (tree : FtsTree)
     (secret : FtsLeaf → Digest) : Nat → Nat → m Digest
   | 0, nodeIdx => do
       let leaf := ftsLeafOfNat nodeIdx
@@ -405,20 +413,19 @@ def ftsNode {m : Type → Type} [Monad m] [HasQuery HashSpec m]
       let right ← ftsNode parameter index tree secret level (2 * nodeIdx + 1)
       tweakableHash parameter (.ftsNode index tree (level + 1) nodeIdx) (nodePayload left right)
 
+/-- The `k - 1` roots of the forest. -/
 def ftsRootsPayload (roots : FtsTree → Digest) : HashInput :=
   (List.ofFn roots).flatMap digestBytes
 
 /-- `FtsKey(P, idx)`, the hash of the forest's `k - 1` roots. -/
-def ftsKey {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (parameter : PublicParameter) (index : Index)
+def ftsKey (parameter : PublicParameter) (index : Index)
     (secret : FtsTree → FtsLeaf → Digest) : m Digest := do
   let roots ← sequenceFin fun tree =>
     ftsNode parameter index tree (secret tree) ftsTreeHeight 0
   tweakableHash parameter (.ftsRoots index) (ftsRootsPayload roots)
 
 /-- `FtsOpen`: the opened secrets and, per tree, the `a` siblings of the opened leaf. -/
-def ftsOpen {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (parameter : PublicParameter) (index : Index) (leaves : DigestTree → FtsLeaf)
+def ftsOpen (parameter : PublicParameter) (index : Index) (leaves : IndexGroup → FtsLeaf)
     (secret : FtsTree → FtsLeaf → Digest) : m (FtsTree → Fin ftsTreeHeight → Digest) :=
   sequenceFin fun tree =>
     sequenceFin fun level =>
@@ -426,8 +433,7 @@ def ftsOpen {m : Type → Type} [Monad m] [HasQuery HashSpec m]
         (Nat.xor ((leaves (ftsIndexOf tree)).val / 2 ^ level.val) 1)
 
 /-- The verifier's half of one few-time tree. -/
-def ftsFold {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (parameter : PublicParameter) (index : Index) (tree : FtsTree) (leaf : FtsLeaf)
+def ftsFold (parameter : PublicParameter) (index : Index) (tree : FtsTree) (leaf : FtsLeaf)
     (path : Fin ftsTreeHeight → Digest) : Nat → Digest → m Digest
   | 0, value => pure value
   | levels + 1, value => do
@@ -442,8 +448,7 @@ def ftsFold {m : Type → Type} [Monad m] [HasQuery HashSpec m]
           (nodePayload current sibling)
 
 /-- `FtsRec`: recover the few-time public key from the opened secrets and paths. -/
-def ftsRecover {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (parameter : PublicParameter) (index : Index) (leaves : DigestTree → FtsLeaf)
+def ftsRecover (parameter : PublicParameter) (index : Index) (leaves : IndexGroup → FtsLeaf)
     (secrets : FtsTree → Digest) (paths : FtsTree → Fin ftsTreeHeight → Digest) : m Digest := do
   let roots ← sequenceFin fun tree => do
     let leaf := leaves (ftsIndexOf tree)
@@ -453,12 +458,12 @@ def ftsRecover {m : Type → Type} [Monad m] [HasQuery HashSpec m]
 
 /-! ### The message digest -/
 
+/-- `rho || root || m`, what the message digest hashes after the tweak and the parameter. -/
 def messageDigestPayload (root : Digest) (message : Message) (randomness : Randomness) : HashInput :=
   randomnessBytes randomness ++ digestBytes root ++ messageBytes message
 
 /-- `Digest(P, root, m, rho)`, truncated to `h + k * a` bits. -/
-def messageDigest {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (parameter : PublicParameter) (root : Digest) (message : Message)
+def messageDigest (parameter : PublicParameter) (root : Digest) (message : Message)
     (randomness : Randomness) : m MessageDigest := do
   let output ← oracleHash
     (tweakableHashInput parameter .message (messageDigestPayload root message randomness))
@@ -469,14 +474,14 @@ def digestIndex (digest : MessageDigest) : Index :=
   (digest.extractLsb' 0 totalHeight).toFin
 
 /-- `u_kappa = floor(N / 2^(h + kappa * a)) mod 2^a`. -/
-def digestLeaves (digest : MessageDigest) : DigestTree → FtsLeaf :=
+def digestLeaves (digest : MessageDigest) : IndexGroup → FtsLeaf :=
   fun tree => (digest.extractLsb' (totalHeight + ftsTreeHeight * tree.val) ftsTreeHeight).toFin
 
 /-- A digest is admissible exactly when its last index group is zero. -/
-def Admissible (digest : MessageDigest) : Prop := digestLeaves digest lastDigestTree = 0
+def Admissible (digest : MessageDigest) : Prop := digestLeaves digest lastIndexGroup = 0
 
 instance (digest : MessageDigest) : Decidable (Admissible digest) :=
-  inferInstanceAs (Decidable (digestLeaves digest lastDigestTree = 0))
+  inferInstanceAs (Decidable (digestLeaves digest lastIndexGroup = 0))
 
 /-! ### Verification -/
 
@@ -488,8 +493,7 @@ def signaturePath (signature : Signature) (lay : Layer) (level : Nat) : Digest :
     0
 
 /-- The hypertree walk, from the bottom layer up: `remaining + 1` enters at layer `remaining`, and layer `0`'s fold returns the value compared against the public root. -/
-def verifyLayers {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (parameter : PublicParameter) (index : Index) (signature : Signature) :
+def verifyLayers (parameter : PublicParameter) (index : Index) (signature : Signature) :
     Nat → Digest → m (Option Digest)
   | 0, message => pure (some message)
   | remaining + 1, message => do
@@ -507,8 +511,8 @@ def verifyLayers {m : Type → Type} [Monad m] [HasQuery HashSpec m]
       else
         pure none
 
-def verify {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (publicKey : PublicKey) (message : Message) (signature : Signature) : m Bool := do
+/-- `Ver(pk, m, sigma)`: recompute the digest, recover the few-time key, walk the layers and compare with the root. -/
+def verify (publicKey : PublicKey) (message : Message) (signature : Signature) : m Bool := do
   let digest ← messageDigest publicKey.parameter publicKey.root message signature.randomness
   if ¬ Admissible digest then
     return false
@@ -520,7 +524,9 @@ def verify {m : Type → Type} [Monad m] [HasQuery HashSpec m]
     | none => return false
     | some root => return decide (root = publicKey.root)
 
-/-! ### Key generation -/
+/-! ### Key generation
+
+Uniform sampling of the parameter, of every one-time secret, of every few-time secret and of a randomizer; `$ᵗ X` draws a uniform element of `X`. The two `opaque` wrappers only keep Lean from unfolding the samplers of the two large function types. -/
 
 noncomputable local instance : SampleableType PublicParameter :=
   SampleableType.ofFintype PublicParameter
@@ -556,6 +562,7 @@ noncomputable def sampleFtsSecrets : ProbComp (Index → FtsTree → FtsLeaf →
 noncomputable def sampleRandomness : ProbComp Randomness :=
   $ᵗ Randomness
 
+/-- Layer `0` holds one tree, at index `0`. -/
 def rootTree : TreeIndex := ⟨0, Nat.two_pow_pos _⟩
 
 /-- `Gen`: sample the parameter and every secret, and build layer `0`'s tree for the root. The trees below it are built when a signature needs them, so nothing else is computed here. -/
@@ -571,9 +578,8 @@ noncomputable def keygen : OracleComp OracleWorld (PublicKey × SecretKey) := do
 /-! ### Signing -/
 
 /-- One digest attempt: one hash, keeping the index and the leaf indices if the digest is admissible. -/
-def signAttempt {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (secretKey : SecretKey) (message : Message) (randomness : Randomness) :
-    m (Option (Index × (DigestTree → FtsLeaf))) := do
+def signAttempt (secretKey : SecretKey) (message : Message) (randomness : Randomness) :
+    m (Option (Index × (IndexGroup → FtsLeaf))) := do
   let digest ← messageDigest secretKey.parameter secretKey.root message randomness
   if Admissible digest then
     return some (digestIndex digest, digestLeaves digest)
@@ -582,20 +588,19 @@ def signAttempt {m : Type → Type} [Monad m] [HasQuery HashSpec m]
 
 /-- The digest loop: at most `digestAttemptLimit` attempts, each sampling a fresh randomizer, stopping at the first admissible digest. It takes `2^a` attempts on average. -/
 noncomputable def signDigestLoop : Nat → SecretKey → Message →
-    OracleComp OracleWorld (Option (Randomness × Index × (DigestTree → FtsLeaf)))
+    OracleComp OracleWorld (Option (Randomness × Index × (IndexGroup → FtsLeaf)))
   | 0, _secretKey, _message => pure none
   | attempts + 1, secretKey, message => do
       let randomness ← liftM sampleRandomness
       let attempt ← liftM
         (signAttempt secretKey message randomness :
-          OracleComp HashSpec (Option (Index × (DigestTree → FtsLeaf))))
+          OracleComp HashSpec (Option (Index × (IndexGroup → FtsLeaf))))
       match attempt with
       | some (index, leaves) => pure (some (randomness, index, leaves))
       | none => signDigestLoop attempts secretKey message
 
 /-- The message layer `lay` signs: the root of the tree below it, or the few-time public key at the bottom. Every layer's message is fixed by the index alone, which is what makes the layers independent. -/
-def layerMessage {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (secretKey : SecretKey) (index : Index) (lay : Layer) : m Digest :=
+def layerMessage (secretKey : SecretKey) (index : Index) (lay : Layer) : m Digest :=
   if hbelow : lay.val + 1 < numLayers then
     let below : Layer := ⟨lay.val + 1, hbelow⟩
     treeRoot secretKey.parameter below (treeIndexAt index below)
@@ -604,8 +609,7 @@ def layerMessage {m : Type → Type} [Monad m] [HasQuery HashSpec m]
     ftsKey secretKey.parameter index (secretKey.ftsSecret index)
 
 /-- One layer's contribution: its counter, its chain values, and its authentication path. -/
-def signLayer {m : Type → Type} [Monad m] [HasQuery HashSpec m]
-    (secretKey : SecretKey) (index : Index) (lay : Layer) :
+def signLayer (secretKey : SecretKey) (index : Index) (lay : Layer) :
     m (Option (Counter × (ChainIndex → Digest) × (Fin maxLayerHeight → Digest))) := do
   let tree := treeIndexAt index lay
   let leaf := leafIndexAt index lay

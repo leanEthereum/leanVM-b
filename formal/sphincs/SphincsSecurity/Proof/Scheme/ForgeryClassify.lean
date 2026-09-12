@@ -12,7 +12,7 @@ namespace SphincsSecurity.Concrete
 open OracleComp OracleSpec
 
 def VerifierLayerMessage (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
-    (index : Index) (leaves : DigestTree → FtsLeaf) (signature : Signature)
+    (index : Index) (leaves : IndexGroup → FtsLeaf) (signature : Signature)
     (lay : Layer) (message : Digest) : Prop :=
   let ftsPublicKey := evalWithAnswerFn f
     (ftsRecover parameter index leaves signature.ftsSecret signature.ftsPath)
@@ -35,7 +35,7 @@ def VerifierLayerMessage (f : QueryImpl HashSpec Id) (parameter : PublicParamete
                 ∨ (lay = topLayer ∧ message = topMessage)
 
 def FullyHonestOpening (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
-    (secretKey : SecretKey) (index : Index) (leaves : DigestTree → FtsLeaf)
+    (secretKey : SecretKey) (index : Index) (leaves : IndexGroup → FtsLeaf)
     (signature : Signature) : Prop :=
   (∀ lay, HonestLayerOpening f secretKey.parameter secretKey.otsSecret lay
         (treeIndexAt index lay) (leafIndexAt index lay)

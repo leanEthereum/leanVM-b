@@ -13,7 +13,7 @@ attribute [local irreducible] canonicalEncodingInputs canonicalGraphInputs instF
 set_option backward.isDefEq.respectTransparency false
 
 def digestWork (known : Labels) (words : OtsReferenceWords) (selections : ReferenceFamily)
-    (selected : Option (Randomness × Index × (DigestTree → FtsLeaf)) × SigningBoundaryTrace) : PublicSigningRecord × Nat :=
+    (selected : Option (Randomness × Index × (IndexGroup → FtsLeaf)) × SigningBoundaryTrace) : PublicSigningRecord × Nat :=
   match selected.1 with
   | none => (((none, none), selected.2), 0)
   | some (randomness, index, leaves) =>

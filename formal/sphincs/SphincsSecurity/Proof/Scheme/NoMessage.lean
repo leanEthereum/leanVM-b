@@ -178,7 +178,7 @@ theorem avoidsMessage_ftsKey (parameter : PublicParameter) (f : QueryImpl HashSp
   · exact AvoidsMessageQueries.tweakableHash parameter f _ (by simp) _
 
 theorem avoidsMessage_ftsOpen (parameter : PublicParameter) (f : QueryImpl HashSpec Id)
-    (index : Index) (leaves : DigestTree → FtsLeaf)
+    (index : Index) (leaves : IndexGroup → FtsLeaf)
     (secret : FtsTree → FtsLeaf → Digest) :
     AvoidsMessageQueries parameter f (ftsOpen parameter index leaves secret) := by
   apply avoidsMessage_sequenceFin
@@ -212,7 +212,7 @@ theorem avoidsMessage_signLayer (f : QueryImpl HashSpec Id) (secretKey : SecretK
     · exact AvoidsMessageQueries.pure secretKey.parameter f _
 
 def signAfterDigest (secretKey : SecretKey) (randomness : Randomness) (index : Index)
-    (leaves : DigestTree → FtsLeaf) : OracleComp HashSpec (Option Signature) := do
+    (leaves : IndexGroup → FtsLeaf) : OracleComp HashSpec (Option Signature) := do
   let ftsPath ← ftsOpen secretKey.parameter index leaves (secretKey.ftsSecret index)
   let layers ← sequenceFin fun lay => signLayer secretKey index lay
   match sequenceFin (m := Option) layers with
@@ -227,7 +227,7 @@ def signAfterDigest (secretKey : SecretKey) (randomness : Randomness) (index : I
           authPath := flattenPaths fun lay => (parts lay).2.2 }
 
 theorem avoidsMessage_signAfterDigest (f : QueryImpl HashSpec Id) (secretKey : SecretKey)
-    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    (randomness : Randomness) (index : Index) (leaves : IndexGroup → FtsLeaf) :
     AvoidsMessageQueries secretKey.parameter f
       (signAfterDigest secretKey randomness index leaves) := by
   rw [signAfterDigest]

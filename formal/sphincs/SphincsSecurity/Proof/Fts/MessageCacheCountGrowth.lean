@@ -37,7 +37,7 @@ theorem randomOracle_cachedMessageEntryCount_le (parameter : PublicParameter) (r
 namespace Concrete
 
 theorem signAttempt_cachedMessageEntryCount_le (key : SecretKey) (message : Message) (randomness : Randomness)
-    (cache : QueryCache HashSpec) (result : Option (Index × (DigestTree → FtsLeaf)) × QueryCache HashSpec)
+    (cache : QueryCache HashSpec) (result : Option (Index × (IndexGroup → FtsLeaf)) × QueryCache HashSpec)
     (hr : result ∈ support ((simulateQ (randomOracle : QueryImpl HashSpec _) (signAttempt key message randomness)).run cache)) :
     cachedMessageEntryCount result.2 key.parameter key.root message ≤ cachedMessageEntryCount cache key.parameter key.root message + 1 := by
   rw [simulateQ_signAttempt_run_eq, mem_support_bind_iff] at hr

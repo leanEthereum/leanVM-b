@@ -27,7 +27,7 @@ theorem SigningBoundaryTrace.hashCalls_of (entry : Option (HashInput × HashOutp
     SigningBoundaryTrace.hashCalls (FreeMonoid.of entry : SigningBoundaryTrace) = 1 := rfl
 
 theorem digestWork_hashCalls_ge (known : CanonicalProbeRouting.Labels) (words : OtsReferenceWords) (selections : ReferenceFamily)
-    (selected : Option (Randomness × Index × (DigestTree → FtsLeaf)) × SigningBoundaryTrace) :
+    (selected : Option (Randomness × Index × (IndexGroup → FtsLeaf)) × SigningBoundaryTrace) :
     selected.2.hashCalls ≤ (digestWork known words selections selected).1.2.hashCalls := by
   rcases selected with ⟨selected, trace⟩
   cases selected with

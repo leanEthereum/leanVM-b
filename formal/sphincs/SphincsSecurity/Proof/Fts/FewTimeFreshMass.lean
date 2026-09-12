@@ -73,7 +73,7 @@ theorem probEvent_selectedOption_eq_mass_mul {α β : Type} (comp : ProbComp α)
 theorem freshSelectedLoopView?_satisfies_iff
     (referenceCache : QueryCache HashSpec) (key : SecretKey) (message : Message)
     (P : FewTimeView → Prop)
-    (result : Option (Randomness × Index × (DigestTree → FtsLeaf)) × QueryCache HashSpec) :
+    (result : Option (Randomness × Index × (IndexGroup → FtsLeaf)) × QueryCache HashSpec) :
     (∃ view, freshSelectedLoopView? referenceCache key message result = some view ∧ P view) ↔
       FreshSelectedView referenceCache key message P result := by
   cases hresult : result.1 with
@@ -87,7 +87,7 @@ theorem freshSelectedLoopView?_satisfies_iff
 
 theorem completeFreshSelectedLoopView_eq_elim
     (referenceCache : QueryCache HashSpec) (key : SecretKey) (message : Message)
-    (result : Option (Randomness × Index × (DigestTree → FtsLeaf)) × QueryCache HashSpec) :
+    (result : Option (Randomness × Index × (IndexGroup → FtsLeaf)) × QueryCache HashSpec) :
     completeFreshSelectedLoopView referenceCache key message result =
       (freshSelectedLoopView? referenceCache key message result).elim
         ($ᵗ FewTimeView) pure := by

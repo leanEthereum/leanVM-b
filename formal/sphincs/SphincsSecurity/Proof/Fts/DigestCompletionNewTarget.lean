@@ -16,7 +16,7 @@ theorem digestCompletion_new_targetShapeMoments_eq (key : SecretKey) (message : 
     (result : (Option Signature × Option FewTimeView) × QueryCache HashSpec)
     (hcompletion : DigestCompletionPreservesMessages key loop result)
     (log : QueryLog SigningSpec) (hsigned : SigningDigestsCached key.parameter before key.root log)
-    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf)
+    (randomness : Randomness) (index : Index) (leaves : IndexGroup → FtsLeaf)
     (hselected : loop.1 = some (randomness, index, leaves))
     (hfresh : before (tweakableHashInput key.parameter .message (messageDigestPayload key.root message randomness)) = none)
     (target : FewTimeView) :

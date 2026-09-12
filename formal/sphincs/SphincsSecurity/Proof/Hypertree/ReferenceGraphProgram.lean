@@ -36,7 +36,7 @@ theorem frontierSignAfterDigest_eq_of_graph (key : SecretKey) (f g : QueryImpl H
     (hf : canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f = labels)
     (hg : canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret g = labels)
     (hselected : referenceTableSelection key f = referenceTableSelection key g)
-    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    (randomness : Randomness) (index : Index) (leaves : IndexGroup → FtsLeaf) :
     frontierSignAfterDigest key.parameter f key.ftsSecret words (canonicalGraphFrontier key.otsSecret labels words)
         randomness index leaves =
       frontierSignAfterDigest key.parameter g key.ftsSecret words (canonicalGraphFrontier key.otsSecret labels words)

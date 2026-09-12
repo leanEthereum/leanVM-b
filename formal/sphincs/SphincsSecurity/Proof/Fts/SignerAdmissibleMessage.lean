@@ -38,7 +38,7 @@ theorem signWithView_successful_cached_output (key : SecretKey) (message : Messa
   · simpa only [selectedFewTimeView, hindex, hleaves, hdigest, hashOutputFewTimeView] using hview
 
 theorem signDigestLoop_new_admissible_selected (attempts : Nat) (key : SecretKey) (message : Message)
-    (before after : QueryCache HashSpec) (result : Option (Randomness × Index × (DigestTree → FtsLeaf)))
+    (before after : QueryCache HashSpec) (result : Option (Randomness × Index × (IndexGroup → FtsLeaf)))
     (hresult : (result, after) ∈ support ((simulateQ romImpl (signDigestLoop attempts key message)).run before))
     (payload : HashInput) (output : HashOutput)
     (hbefore : before (tweakableHashInput key.parameter .message payload) = none)

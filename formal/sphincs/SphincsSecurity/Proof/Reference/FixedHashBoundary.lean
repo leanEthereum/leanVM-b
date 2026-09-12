@@ -54,12 +54,12 @@ theorem fixedBoundaryRun_lift_hash {α : Type} (parameter : PublicParameter) (f 
       rfl
 
 def publicSignAttempt (parameter : PublicParameter) (root : Digest) (message : Message) (randomness : Randomness) :
-    OracleComp HashSpec (Option (Index × (DigestTree → FtsLeaf))) := do
+    OracleComp HashSpec (Option (Index × (IndexGroup → FtsLeaf))) := do
   let digest ← messageDigest parameter root message randomness
   if Admissible digest then pure (some (digestIndex digest, digestLeaves digest)) else pure none
 
 noncomputable def publicDigestLoop (parameter : PublicParameter) (root : Digest) (message : Message) :
-    Nat → OracleComp OracleWorld (Option (Randomness × Index × (DigestTree → FtsLeaf)))
+    Nat → OracleComp OracleWorld (Option (Randomness × Index × (IndexGroup → FtsLeaf)))
   | 0 => pure none
   | attempts + 1 => do
       let randomness ← liftM sampleRandomness

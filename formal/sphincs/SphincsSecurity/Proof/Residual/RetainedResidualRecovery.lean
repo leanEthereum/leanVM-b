@@ -184,7 +184,7 @@ theorem Compatible.layer_reference {inputs : Finset HashInput} {context : Contex
       exact ⟨selected, rfl, (digestBytes_injective hmessage).symm, (bytesLE_injective hcounter).symm, hvalues, hpath⟩
 
 theorem Compatible.ftsTree_honest {inputs : Finset HashInput} {context : Context inputs} {memory : Memory}
-    (hcompatible : Compatible context memory) (index : Index) (leaves : DigestTree → FtsLeaf)
+    (hcompatible : Compatible context memory) (index : Index) (leaves : IndexGroup → FtsLeaf)
     (secrets : FtsTree → Digest) (paths : FtsTree → Fin ftsTreeHeight → Digest) (tree : FtsTree)
     (hfold : ftsFoldValue context.oracle context.key.parameter index tree (leaves (ftsIndexOf tree)) (paths tree)
       (truncateHash (context.oracle (tweakableHashInput context.key.parameter
@@ -221,7 +221,7 @@ theorem Compatible.ftsTree_honest {inputs : Finset HashInput} {context : Context
     · simpa only [Position.domain, honestValue_ftsNode] using hhit.2
 
 theorem Compatible.ftsRecover_honest {inputs : Finset HashInput} {context : Context inputs} {memory : Memory}
-    (hcompatible : Compatible context memory) (index : Index) (leaves : DigestTree → FtsLeaf)
+    (hcompatible : Compatible context memory) (index : Index) (leaves : IndexGroup → FtsLeaf)
     (secrets : FtsTree → Digest) (paths : FtsTree → Fin ftsTreeHeight → Digest)
     (hrecover : evalWithAnswerFn context.oracle (ftsRecover context.key.parameter index leaves secrets paths) =
       honestFtsKey context.oracle context.key.parameter index (context.key.ftsSecret index))
@@ -257,7 +257,7 @@ theorem Compatible.ftsRecover_honest {inputs : Finset HashInput} {context : Cont
       simpa only [evalWithAnswerFn_bind] using hrecover
 
 theorem Compatible.ftsRecover_disclosed {inputs : Finset HashInput} {context : Context inputs} {memory : Memory}
-    (hcompatible : Compatible context memory) (index : Index) (leaves : DigestTree → FtsLeaf)
+    (hcompatible : Compatible context memory) (index : Index) (leaves : IndexGroup → FtsLeaf)
     (secrets : FtsTree → Digest) (paths : FtsTree → Fin ftsTreeHeight → Digest)
     (hrecover : evalWithAnswerFn context.oracle (ftsRecover context.key.parameter index leaves secrets paths) =
       honestFtsKey context.oracle context.key.parameter index (context.key.ftsSecret index))

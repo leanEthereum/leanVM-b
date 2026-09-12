@@ -64,7 +64,7 @@ def hashOutputFewTimeView (output : HashOutput) : FewTimeView :=
   (digestIndex (truncateMessageDigest output),
     fun tree => digestLeaves (truncateMessageDigest output) (ftsIndexOf tree))
 
-abbrev FullDigestView := Index × (DigestTree → FtsLeaf)
+abbrev FullDigestView := Index × (IndexGroup → FtsLeaf)
 
 def fullDigestView (digest : MessageDigest) : FullDigestView :=
   (digestIndex digest, digestLeaves digest)
@@ -85,7 +85,7 @@ theorem fullDigestView_injective : Function.Injective fullDigestView := by
         simpa [totalHeight] using Nat.le_of_not_gt hindex
       simp only [treeIndex, ftsTrees, ftsTreeHeight, totalHeight]
       omega
-    let tree : DigestTree := ⟨treeIndex, htreeIndex⟩
+    let tree : IndexGroup := ⟨treeIndex, htreeIndex⟩
     let within := (position - totalHeight) % ftsTreeHeight
     have hwithin : within < ftsTreeHeight := by
       simp only [within, ftsTreeHeight]
@@ -115,14 +115,14 @@ theorem fullDigestView_bijective : Function.Bijective fullDigestView := by
   rfl
 
 def splitFullDigestView (view : FullDigestView) : FewTimeView × FtsLeaf :=
-  ((view.1, fun tree => view.2 (ftsIndexOf tree)), view.2 lastDigestTree)
+  ((view.1, fun tree => view.2 (ftsIndexOf tree)), view.2 lastIndexGroup)
 
 theorem splitFullDigestView_injective : Function.Injective splitFullDigestView := by
   intro left right heq
   apply Prod.ext
   · exact congrArg (fun view : FewTimeView × FtsLeaf => view.1.1) heq
   · funext tree
-    rcases digestTree_eq_ftsIndexOf_or_last tree with ⟨ftsTree, rfl⟩ | rfl
+    rcases indexGroup_eq_ftsIndexOf_or_last tree with ⟨ftsTree, rfl⟩ | rfl
     · have hfunctions := congrArg (fun view : FewTimeView × FtsLeaf => view.1.2) heq
       exact congrFun hfunctions ftsTree
     · exact congrArg Prod.snd heq
@@ -181,7 +181,7 @@ noncomputable def hashOutputCoordinatesEquiv : HashOutput ≃ HashOutputCoordina
 theorem hashOutputCoordinatesEquiv_apply (output : HashOutput) :
     hashOutputCoordinatesEquiv output =
       ((hashOutputFewTimeView output,
-          digestLeaves (truncateMessageDigest output) lastDigestTree),
+          digestLeaves (truncateMessageDigest output) lastIndexGroup),
         output.extractLsb' messageDigestBits (hashOutputBits - messageDigestBits)) := rfl
 
 set_option maxRecDepth 100000 in
@@ -227,7 +227,7 @@ theorem evalDist_randomOracle_fresh_bind_coordinates {Result : Type}
     continuation (output, cache.cacheQuery input output)
 
 def signAttemptResultOfOutput (output : HashOutput) :
-    Option (Index × (DigestTree → FtsLeaf)) :=
+    Option (Index × (IndexGroup → FtsLeaf)) :=
   let digest := truncateMessageDigest output
   if Admissible digest then some (digestIndex digest, digestLeaves digest) else none
 
@@ -247,7 +247,7 @@ theorem hashOutputCoordinatesEquiv_symm_view (coordinates : HashOutputCoordinate
 
 theorem hashOutputCoordinatesEquiv_symm_lastLeaf (coordinates : HashOutputCoordinates) :
     digestLeaves (truncateMessageDigest (hashOutputCoordinatesEquiv.symm coordinates))
-        lastDigestTree = coordinates.1.2 := by
+        lastIndexGroup = coordinates.1.2 := by
   change (digestCoordinates
     (truncateMessageDigest (hashOutputCoordinatesEquiv.symm coordinates))).2 = coordinates.1.2
   exact congrArg Prod.snd (hashOutputCoordinatesEquiv_symm_digestCoordinates coordinates)
@@ -267,7 +267,7 @@ theorem signAttemptResultOfOutput_coordinates_ne_none_iff
 
 theorem signAttemptResultOfOutput_coordinates_view
     (coordinates : HashOutputCoordinates) (index : Index)
-    (leaves : DigestTree → FtsLeaf)
+    (leaves : IndexGroup → FtsLeaf)
     (hresult : signAttemptResultOfOutput (hashOutputCoordinatesEquiv.symm coordinates) =
       some (index, leaves)) :
     (index, fun tree => leaves (ftsIndexOf tree)) = coordinates.1.1 := by
@@ -280,7 +280,7 @@ theorem signAttemptResultOfOutput_coordinates_view
   · simp at hresult
 
 theorem signAttemptResultOfOutput_view (output : HashOutput) (index : Index)
-    (leaves : DigestTree → FtsLeaf)
+    (leaves : IndexGroup → FtsLeaf)
     (hresult : signAttemptResultOfOutput output = some (index, leaves)) :
     (index, fun tree => leaves (ftsIndexOf tree)) = hashOutputFewTimeView output := by
   let coordinates := hashOutputCoordinatesEquiv output
@@ -329,7 +329,7 @@ theorem evalDist_signAttempt_fresh_bind_coordinates {Result : Type}
     (hcache : cache (tweakableHashInput secretKey.parameter .message
       (messageDigestPayload secretKey.root message randomness)) = none)
     (continuation :
-      Option (Index × (DigestTree → FtsLeaf)) × QueryCache HashSpec →
+      Option (Index × (IndexGroup → FtsLeaf)) × QueryCache HashSpec →
         ProbComp Result) :
     𝒟[(simulateQ (randomOracle : QueryImpl HashSpec _)
         (signAttempt secretKey message randomness)).run cache >>= continuation] =

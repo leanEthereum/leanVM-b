@@ -24,7 +24,7 @@ def AtIndex : Position → Prop
 
 def Exception (trace : Trace) : Prop := ∃ position, AtIndex index position ∧ QueriedOutputMatch f key position trace
 
-def Opening (leaves : DigestTree → FtsLeaf) (secrets : FtsTree → Digest) (paths : FtsTree → Fin ftsTreeHeight → Digest) : Prop :=
+def Opening (leaves : IndexGroup → FtsLeaf) (secrets : FtsTree → Digest) (paths : FtsTree → Fin ftsTreeHeight → Digest) : Prop :=
   ∀ tree, secrets tree = key.ftsSecret index tree (leaves (ftsIndexOf tree)) ∧
     ∀ level (hlevel : level < ftsTreeHeight), paths tree ⟨level, hlevel⟩ =
       honestFtsNode f key.parameter index tree (key.ftsSecret index tree) level (Nat.xor ((leaves (ftsIndexOf tree)).val / 2 ^ level) 1)
@@ -33,7 +33,7 @@ def TrueSecretQuery (tree : FtsTree) (leaf : FtsLeaf) (trace : Trace) : Prop :=
   let input := tweakableHashInput key.parameter (.ftsLeaf index tree leaf) (digestBytes (key.ftsSecret index tree leaf))
   (input, f input) ∈ trace.toList
 
-theorem tree_reference (leaves : DigestTree → FtsLeaf) (secrets : FtsTree → Digest) (paths : FtsTree → Fin ftsTreeHeight → Digest)
+theorem tree_reference (leaves : IndexGroup → FtsLeaf) (secrets : FtsTree → Digest) (paths : FtsTree → Fin ftsTreeHeight → Digest)
     (trace : Trace) (hclean : ¬Exception f key index trace) (tree : FtsTree)
     (hfold : ftsFoldValue f key.parameter index tree (leaves (ftsIndexOf tree)) (paths tree)
       (truncateHash (f (tweakableHashInput key.parameter (.ftsLeaf index tree (leaves (ftsIndexOf tree))) (digestBytes (secrets tree))))) ftsTreeHeight =
@@ -66,7 +66,7 @@ theorem tree_reference (leaves : DigestTree → FtsLeaf) (secrets : FtsTree → 
       hrun _ (ftsRecover_fold_query_mem f key.parameter index leaves secrets paths tree level hl), hh.1, ?_⟩
     simpa only [Position.domain, honestValue_ftsNode] using hh.2
 
-theorem recover_reference (leaves : DigestTree → FtsLeaf) (secrets : FtsTree → Digest) (paths : FtsTree → Fin ftsTreeHeight → Digest)
+theorem recover_reference (leaves : IndexGroup → FtsLeaf) (secrets : FtsTree → Digest) (paths : FtsTree → Fin ftsTreeHeight → Digest)
     (trace : Trace) (hclean : ¬Exception f key index trace)
     (hrecover : evalWithAnswerFn f (ftsRecover key.parameter index leaves secrets paths) = honestFtsKey f key.parameter index (key.ftsSecret index))
     (hrun : ContainsRun f trace (ftsRecover key.parameter index leaves secrets paths)) : Opening f key index leaves secrets paths := by
@@ -89,14 +89,14 @@ theorem recover_reference (leaves : DigestTree → FtsLeaf) (secrets : FtsTree �
       change truncateHash (f (tweakableHashInput key.parameter (.ftsRoots index) (ftsRootsPayload roots))) = _
       simpa only [roots, evalWithAnswerFn_bind] using hrecover
 
-theorem opening_trueSecretQuery (leaves : DigestTree → FtsLeaf) (secrets : FtsTree → Digest) (paths : FtsTree → Fin ftsTreeHeight → Digest)
+theorem opening_trueSecretQuery (leaves : IndexGroup → FtsLeaf) (secrets : FtsTree → Digest) (paths : FtsTree → Fin ftsTreeHeight → Digest)
     (trace : Trace) (hopening : Opening f key index leaves secrets paths)
     (hrun : ContainsRun f trace (ftsRecover key.parameter index leaves secrets paths)) (tree : FtsTree) :
     TrueSecretQuery f key index tree (leaves (ftsIndexOf tree)) trace := by
   apply hrun
   simpa only [(hopening tree).1] using ftsRecover_leaf_query_mem f key.parameter index leaves secrets paths tree
 
-theorem recover_classification (leaves : DigestTree → FtsLeaf) (secrets : FtsTree → Digest) (paths : FtsTree → Fin ftsTreeHeight → Digest)
+theorem recover_classification (leaves : IndexGroup → FtsLeaf) (secrets : FtsTree → Digest) (paths : FtsTree → Fin ftsTreeHeight → Digest)
     (trace : Trace)
     (hrecover : evalWithAnswerFn f (ftsRecover key.parameter index leaves secrets paths) = honestFtsKey f key.parameter index (key.ftsSecret index))
     (hrun : ContainsRun f trace (ftsRecover key.parameter index leaves secrets paths)) :

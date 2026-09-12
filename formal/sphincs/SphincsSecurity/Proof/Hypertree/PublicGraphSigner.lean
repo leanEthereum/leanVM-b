@@ -32,7 +32,7 @@ def PublicSigningPlan.finish (plan : PublicSigningPlan) (secrets : FtsTree → D
   authPath := flattenPaths fun lay => (plan.parts lay).2.2
 
 def publicSignPlan (known : Labels) (words : OtsReferenceWords) (selections : ReferenceFamily)
-    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) : Option PublicSigningPlan × Nat :=
+    (randomness : Randomness) (index : Index) (leaves : IndexGroup → FtsLeaf) : Option PublicSigningPlan × Nat :=
   let layers := fun lay => publicSignLayer known words selections index lay
   ((sequenceFin (m := Option) (fun lay => (layers lay).1)).map (fun parts =>
       ⟨randomness, knownFtsPath known index leaves, parts⟩),
@@ -67,7 +67,7 @@ theorem frontierSignLayer_eq_public (index : Index) (lay : Layer) :
   rfl
 
 include hagrees in
-theorem frontierSignAfterDigest_eq_publicPlan (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+theorem frontierSignAfterDigest_eq_publicPlan (randomness : Randomness) (index : Index) (leaves : IndexGroup → FtsLeaf) :
     frontierSignAfterDigest key.parameter f key.ftsSecret words
         (canonicalGraphFrontier key.otsSecret (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f) words)
         randomness index leaves =
@@ -82,7 +82,7 @@ theorem frontierSignAfterDigest_eq_publicPlan (randomness : Randomness) (index :
 theorem boundaryEval_signAfterDigest_public (dummy : OtsReferenceWords)
     (hagrees : PublicAgreement (canonicalReferenceWords key f dummy) disclosed known
       (CanonicalCoordinate.value key.otsSecret key.ftsSecret (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f)))
-    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    (randomness : Randomness) (index : Index) (leaves : IndexGroup → FtsLeaf) :
     boundaryEval key.parameter f (signAfterDigest key randomness index leaves) =
       ((publicSignPlan known (canonicalReferenceWords key f dummy) (referenceTableSelection key f) randomness index leaves).1.map
         (fun plan => plan.finish (fun tree => key.ftsSecret index tree (leaves (ftsIndexOf tree)))),

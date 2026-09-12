@@ -85,7 +85,7 @@ theorem lazyByteRun_boundary_memory {Result : Type} (routing : Routing)
           rw [hmemory, messageState_memory parameter state ⟨input, hin⟩ reply.1 hm, ← applyBoundary_mul]
 
 theorem digestWork_memory (known : Labels) (words : OtsReferenceWords) (selections : ReferenceFamily)
-    (selected : Option (Randomness × Index × (DigestTree → FtsLeaf)) × SigningBoundaryTrace) (memory : Memory) :
+    (selected : Option (Randomness × Index × (IndexGroup → FtsLeaf)) × SigningBoundaryTrace) (memory : Memory) :
     (memory.applyBoundary selected.2).accountWork (digestWork known words selections selected).2 =
       memory.applyBoundary (digestWork known words selections selected).1.2 := by
   rcases selected with ⟨selected, trace⟩

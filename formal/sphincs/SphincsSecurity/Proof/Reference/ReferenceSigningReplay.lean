@@ -11,7 +11,7 @@ theorem known_honest_public_plan (key : SecretKey) (f : QueryImpl HashSpec Id) (
     (disclosed : Index → FtsTree → FtsLeaf → Prop) (known : Labels)
     (hagrees : PublicAgreement words disclosed known
       (CanonicalCoordinate.value key.otsSecret key.ftsSecret (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f)))
-    (cache : QueryCache HashSpec) (index : Index) (leaves : DigestTree → FtsLeaf) (signature : Signature)
+    (cache : QueryCache HashSpec) (index : Index) (leaves : IndexGroup → FtsLeaf) (signature : Signature)
     (hfull : FullyHonestOpening f cache key index leaves signature)
     (hreference : ∀ lay, ReferenceLayerOpening f key words selections index signature lay) :
     (publicSignPlan known words selections signature.randomness index leaves).1.map
@@ -56,7 +56,7 @@ theorem known_honest_public_plan (key : SecretKey) (f : QueryImpl HashSpec Id) (
   rw [hsecrets, hauthPath]
 
 theorem honest_signAfterDigest (key : SecretKey) (f : QueryImpl HashSpec Id) (dummy : OtsReferenceWords)
-    (cache : QueryCache HashSpec) (index : Index) (leaves : DigestTree → FtsLeaf) (signature : Signature)
+    (cache : QueryCache HashSpec) (index : Index) (leaves : IndexGroup → FtsLeaf) (signature : Signature)
     (hfull : FullyHonestOpening f cache key index leaves signature)
     (hreference : ∀ lay, ReferenceLayerOpening f key (canonicalReferenceWords key f dummy) (referenceTableSelection key f) index signature lay) :
     evalWithAnswerFn f (signAfterDigest key signature.randomness index leaves) = some signature := by
@@ -69,7 +69,7 @@ theorem honest_signAfterDigest (key : SecretKey) (f : QueryImpl HashSpec Id) (du
   exact he.trans hp
 
 theorem honest_signature_eq (key : SecretKey) (f : QueryImpl HashSpec Id) (dummy : OtsReferenceWords)
-    (cache : QueryCache HashSpec) (index : Index) (leaves : DigestTree → FtsLeaf) (signature signed : Signature)
+    (cache : QueryCache HashSpec) (index : Index) (leaves : IndexGroup → FtsLeaf) (signature signed : Signature)
     (hfull : FullyHonestOpening f cache key index leaves signature)
     (hreference : ∀ lay, ReferenceLayerOpening f key (canonicalReferenceWords key f dummy) (referenceTableSelection key f) index signature lay)
     (hsigned : evalWithAnswerFn f (signAfterDigest key signed.randomness index leaves) = some signed)

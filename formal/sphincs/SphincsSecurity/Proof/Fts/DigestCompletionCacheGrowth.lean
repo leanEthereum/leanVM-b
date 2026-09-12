@@ -10,7 +10,7 @@ open _root_.OracleComp OracleSpec ENNReal
 set_option backward.isDefEq.respectTransparency false
 
 theorem signDigestLoop_new_payload_eq_selected (attempts : Nat) (key : SecretKey) (message : Message)
-    (before after : QueryCache HashSpec) (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf)
+    (before after : QueryCache HashSpec) (randomness : Randomness) (index : Index) (leaves : IndexGroup → FtsLeaf)
     (hloop : (some (randomness, index, leaves), after) ∈ support ((simulateQ romImpl (signDigestLoop attempts key message)).run before))
     (payload : HashInput) (output : HashOutput)
     (hbefore : before (tweakableHashInput key.parameter .message payload) = none)
@@ -110,7 +110,7 @@ theorem digestCompletion_targetCacheProduct_le_of_fresh (key : SecretKey) (messa
     (hloop : loop ∈ support ((simulateQ romImpl (signDigestLoop digestAttemptLimit key message)).run before))
     (result : (Option Signature × Option FewTimeView) × QueryCache HashSpec)
     (hcompletion : DigestCompletionPreservesMessages key loop result)
-    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf)
+    (randomness : Randomness) (index : Index) (leaves : IndexGroup → FtsLeaf)
     (hselected : loop.1 = some (randomness, index, leaves))
     (hfresh : before (tweakableHashInput key.parameter .message (messageDigestPayload key.root message randomness)) = none)
     (targetInput : HashInput) (target : FewTimeView) (groups : Fin m → Finset FtsTree) :
@@ -135,7 +135,7 @@ theorem digestCompletion_targetLogProduct_le_view (key : SecretKey) (message : M
     (hloop : loop ∈ support ((simulateQ romImpl (signDigestLoop digestAttemptLimit key message)).run before))
     (result : (Option Signature × Option FewTimeView) × QueryCache HashSpec)
     (hcompletion : DigestCompletionPreservesMessages key loop result)
-    (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf)
+    (randomness : Randomness) (index : Index) (leaves : IndexGroup → FtsLeaf)
     (hselected : loop.1 = some (randomness, index, leaves)) :
     normalizedTargetLogProduct key result.2 (log ++ [⟨message, result.1.1⟩]) payload target required ≤
       ∏ tree ∈ required, (normalizedTargetLogMatch key before log payload target tree +

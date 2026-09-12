@@ -30,7 +30,7 @@ theorem probEvent_signDigestAttemptPrefix_fresh_le_admissibility
         intro result hr hsuccess
         have hle : cache ≤ result.2 :=
           simulateQ_romImpl_cache_le (liftM (signAttempt key message randomness :
-            OracleComp HashSpec (Option (Index × (DigestTree → FtsLeaf))))) cache result (by
+            OracleComp HashSpec (Option (Index × (IndexGroup → FtsLeaf))))) cache result (by
               rw [simulateQ_romImpl_liftM]
               exact hr)
         exact hsuccess ((signAttempt_result_of_cached key message randomness cache result.2 result.1 output

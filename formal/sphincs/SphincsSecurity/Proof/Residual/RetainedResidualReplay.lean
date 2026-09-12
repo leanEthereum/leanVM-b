@@ -10,7 +10,7 @@ set_option backward.isDefEq.respectTransparency false
 
 theorem Compatible.honest_public_plan {inputs : Finset HashInput} {context : Context inputs} {memory : Memory}
     (hcompatible : Compatible context memory) (hdummy : ∀ lay tree leaf, TargetSum.Valid (context.dummy lay tree leaf))
-    (index : Index) (leaves : DigestTree → FtsLeaf) (signature : Signature)
+    (index : Index) (leaves : IndexGroup → FtsLeaf) (signature : Signature)
     (hfull : FullyHonestOpening context.oracle memory.external.cache context.key index leaves signature) :
     (publicSignPlan memory.routing.known context.words context.auxiliary.selections signature.randomness index leaves).1.map
       (fun plan => plan.finish (fun tree => context.key.ftsSecret index tree (leaves (ftsIndexOf tree)))) = some signature := by
@@ -68,7 +68,7 @@ theorem Compatible.honest_public_plan {inputs : Finset HashInput} {context : Con
 
 theorem Compatible.honest_signAfterDigest {inputs : Finset HashInput} {context : Context inputs} {memory : Memory}
     (hcompatible : Compatible context memory) (hdummy : ∀ lay tree leaf, TargetSum.Valid (context.dummy lay tree leaf))
-    (index : Index) (leaves : DigestTree → FtsLeaf) (signature : Signature)
+    (index : Index) (leaves : IndexGroup → FtsLeaf) (signature : Signature)
     (hfull : FullyHonestOpening context.oracle memory.external.cache context.key index leaves signature) :
     evalWithAnswerFn context.oracle (signAfterDigest context.key signature.randomness index leaves) = some signature := by
   have hwords : context.words = canonicalReferenceWords context.key context.oracle context.dummy :=
@@ -88,7 +88,7 @@ theorem Compatible.honest_signAfterDigest {inputs : Finset HashInput} {context :
 
 theorem Compatible.honest_signature_eq {inputs : Finset HashInput} {context : Context inputs} {memory : Memory}
     (hcompatible : Compatible context memory) (hdummy : ∀ lay tree leaf, TargetSum.Valid (context.dummy lay tree leaf))
-    (index : Index) (leaves : DigestTree → FtsLeaf) (signature signed : Signature)
+    (index : Index) (leaves : IndexGroup → FtsLeaf) (signature signed : Signature)
     (hfull : FullyHonestOpening context.oracle memory.external.cache context.key index leaves signature)
     (hsigned : evalWithAnswerFn context.oracle (signAfterDigest context.key signed.randomness index leaves) = some signed)
     (hrandomness : signed.randomness = signature.randomness) : signed = signature := by

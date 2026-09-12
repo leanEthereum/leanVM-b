@@ -53,7 +53,7 @@ theorem layer_frame_reference (index : Index) (signature : Signature) (lay : Lay
       · exact False.elim (hclean (Or.inr ⟨lay, treeIndexAt index lay, leafIndexAt index lay, Or.inr (Or.inr hc)⟩))
       · exact False.elim (hclean (Or.inl he))
 
-theorem hypertree_reference (index : Index) (leaves : DigestTree → FtsLeaf) (signature : Signature) (trace : Trace)
+theorem hypertree_reference (index : Index) (leaves : IndexGroup → FtsLeaf) (signature : Signature) (trace : Trace)
     (hvalid : ∀ lay, TargetSum.Valid (words lay (treeIndexAt index lay) (leafIndexAt index lay)))
     (hmessages : ∀ lay, messages ⟨lay, treeIndexAt index lay, leafIndexAt index lay⟩ = evalWithAnswerFn f (layerMessage key index lay))
     (hroot : key.root = honestNode f key.parameter topLayer rootTree (key.otsSecret topLayer rootTree) (layerHeight topLayer) 0)
@@ -113,7 +113,7 @@ theorem hypertree_reference (index : Index) (leaves : DigestTree → FtsLeaf) (s
   · simpa only [bottomLayer, numLayers] using hpack bottomLayer _ hb.1 hb.2 hbottom.2.2.1
       (hverifier _ _ (Or.inl ⟨rfl, rfl⟩))
 
-theorem hypertree_classification (index : Index) (leaves : DigestTree → FtsLeaf) (signature : Signature) (trace : Trace)
+theorem hypertree_classification (index : Index) (leaves : IndexGroup → FtsLeaf) (signature : Signature) (trace : Trace)
     (hvalid : ∀ lay, TargetSum.Valid (words lay (treeIndexAt index lay) (leafIndexAt index lay)))
     (hmessages : ∀ lay, messages ⟨lay, treeIndexAt index lay, leafIndexAt index lay⟩ = evalWithAnswerFn f (layerMessage key index lay))
     (hroot : key.root = honestNode f key.parameter topLayer rootTree (key.otsSecret topLayer rootTree) (layerHeight topLayer) 0)

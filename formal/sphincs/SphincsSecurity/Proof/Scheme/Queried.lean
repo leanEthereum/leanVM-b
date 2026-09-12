@@ -140,7 +140,7 @@ theorem ftsFold_query_mem (index : Index) (tree : FtsTree) (leafIdx : FtsLeaf)
         simp only [ftsFoldValue, ftsFoldPayload, ftsSibling, dif_pos hlevel]
         cases leafIdx.val.testBit levels <;> simp
 
-theorem ftsRecover_leaf_query_mem (index : Index) (leaves : DigestTree → FtsLeaf)
+theorem ftsRecover_leaf_query_mem (index : Index) (leaves : IndexGroup → FtsLeaf)
     (secrets : FtsTree → Digest) (paths : FtsTree → Fin ftsTreeHeight → Digest)
     (tree : FtsTree) :
     tweakableHashInput parameter (.ftsLeaf index tree (leaves (ftsIndexOf tree)))
@@ -152,7 +152,7 @@ theorem ftsRecover_leaf_query_mem (index : Index) (leaves : DigestTree → FtsLe
   apply queriedInputs_mono_bind_left
   exact ftsLeafHash_query_mem f parameter index tree (leaves (ftsIndexOf tree)) (secrets tree)
 
-theorem ftsRecover_fold_query_mem (index : Index) (leaves : DigestTree → FtsLeaf)
+theorem ftsRecover_fold_query_mem (index : Index) (leaves : IndexGroup → FtsLeaf)
     (secrets : FtsTree → Digest) (paths : FtsTree → Fin ftsTreeHeight → Digest)
     (tree : FtsTree) (offset : Nat) (hoffset : offset < ftsTreeHeight) :
     tweakableHashInput parameter
@@ -172,7 +172,7 @@ theorem ftsRecover_fold_query_mem (index : Index) (leaves : DigestTree → FtsLe
         (.ftsLeaf index tree (leaves (ftsIndexOf tree))) (digestBytes (secrets tree)))))
       ftsTreeHeight offset (le_refl _) hoffset
 
-theorem ftsRecover_roots_query_mem (index : Index) (leaves : DigestTree → FtsLeaf)
+theorem ftsRecover_roots_query_mem (index : Index) (leaves : IndexGroup → FtsLeaf)
     (secrets : FtsTree → Digest) (paths : FtsTree → Fin ftsTreeHeight → Digest) :
     tweakableHashInput parameter (.ftsRoots index)
         (ftsRootsPayload fun tree => evalWithAnswerFn f

@@ -19,7 +19,7 @@ set_option maxRecDepth 100000
 
 theorem signAttempt_result_of_cached (secretKey : SecretKey) (message : Message)
     (randomness : Randomness) (beforeCache afterCache : QueryCache HashSpec)
-    (attempt : Option (Index × (DigestTree → FtsLeaf))) (output : HashOutput)
+    (attempt : Option (Index × (IndexGroup → FtsLeaf))) (output : HashOutput)
     (hcached : afterCache (tweakableHashInput secretKey.parameter .message
       (messageDigestPayload secretKey.root message randomness)) = some output)
     (hmem : (attempt, afterCache) ∈ support

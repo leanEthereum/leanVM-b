@@ -88,7 +88,7 @@ theorem canonicalReferenceWords_valid (key : SecretKey) (f : QueryImpl HashSpec 
       exact referenceEncodingSearch_valid _ _ _ _ _ _ _ _ _ _ hsearch
 
 theorem boundaryEval_signAfterDigest_canonical (key : SecretKey) (f : QueryImpl HashSpec Id)
-    (dummy : OtsReferenceWords) (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) :
+    (dummy : OtsReferenceWords) (randomness : Randomness) (index : Index) (leaves : IndexGroup → FtsLeaf) :
     let words := canonicalReferenceWords key f dummy
     let frontier := canonicalFrontierValues key f words
     let projected := frontierSignAfterDigest key.parameter f key.ftsSecret words frontier randomness index leaves
