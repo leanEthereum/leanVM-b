@@ -21,7 +21,7 @@ noncomputable instance signatureFintype : Fintype Signature := by
       left_inv := fun _ => rfl
       right_inv := fun _ => rfl }
 
-noncomputable local instance instFintypeRangeSumNatHashInputSignRequestHAddOracleSpecOracleWorldSigningSpec (input : (OracleWorld + SigningSpec).Domain) :
+noncomputable local instance instFintypeRangeOracleWorldSigningSpec (input : (OracleWorld + SigningSpec).Domain) :
     Fintype ((OracleWorld + SigningSpec).Range input) := by
   cases input <;> infer_instance
 

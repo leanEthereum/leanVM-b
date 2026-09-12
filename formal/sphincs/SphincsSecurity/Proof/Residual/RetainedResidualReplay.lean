@@ -57,7 +57,7 @@ theorem Compatible.honest_public_plan {inputs : Finset HashInput} {context : Con
     simp only [signaturePath, dif_pos hsum] at hpath
     have hfin : (⟨heightAbove lay + level.val, hsum⟩ : PathIndex) = position := Fin.ext hposition
     simpa only [hfin, honestNode] using hpath.symm
-  simp only [publicSignPlan, hlayers, traverseOption_some, Option.map_some, hftsPath, PublicSigningPlan.finish, parts]
+  simp only [publicSignPlan, hlayers, sequenceFin_some, Option.map_some, hftsPath, PublicSigningPlan.finish, parts]
   congr 1
   change Signature.mk signature.randomness (fun tree => context.key.ftsSecret index tree (leaves (ftsIndexOf tree)))
     signature.ftsPath signature.counter signature.chainValue

@@ -5,13 +5,11 @@ import VCVio.OracleComp.QueryTracking.QueryBound
 /-!
 # Classical random-oracle security of the concrete SPHINCS instance
 
-This module is the reviewer-facing statement of what is proven. It contains everything the statement depends on: the concrete parameters and types, the byte layout of every hash input, the three algorithms exactly as run in the security experiment, the strong-unforgeability experiment, and the claim `SphincsSecurityStatement`. Nothing here describes a reduction or an intermediate game, and nothing instantiates the hash: it is a random oracle throughout. The arithmetic the parameters fix about the layout, the index decomposition and the authentication path offsets, is checked in `Proof/Scheme/StatementLemmas.lean`.
+The reviewer-facing statement of what is proven: the concrete parameters and types, the byte layout of every hash input, the three algorithms exactly as run in the security experiment, the strong-unforgeability experiment, and the claim `SphincsSecurityStatement`. Nothing here is a reduction or an intermediate game, and nothing instantiates the hash: it is a random oracle throughout. The arithmetic the parameters fix about the layout, the index decomposition and the authentication path offsets, is checked in `Proof/Scheme/StatementLemmas.lean`.
 
-The instance is the one specified in `doc/sphincs/main.tex`: 32-byte messages, 128-bit digests truncated from a 256-bit random-oracle output, 42 Winternitz chains of length 8 at target sum 191, a hypertree of height 26 over 3 layers of heights 12, 7 and 7, and a few-time forest of 14 trees of `2^10` leaves selected by a 176-bit message digest. A key answers for all `2^26` indices and signs at most `2^24` messages.
+The instance is the one specified in `doc/sphincs/main.tex`: 32-byte messages, 128-bit digests truncated from a 256-bit random-oracle output, 42 Winternitz chains of length 8 at target sum 191, a hypertree of height 26 over 3 layers of heights 12, 7 and 7, and a few-time forest of 14 trees of `2^10` leaves selected by a 176-bit message digest. A key answers for all `2^26` indices and signs at most `2^24` messages. The scheme is stateless, so a signing request is a message alone and the game caps the number of signing queries; signing is randomized, a fresh randomizer per digest attempt, so a second signature on a signed message is a strong forgery; and the secret key holds the sampled secrets rather than precomputed tables, so signing recomputes through the random oracle whatever tree it reads, as `Sig` is specified.
 
-Three things differ from `formal/xmss`. The signer takes no epoch, this scheme being stateless, so a signing request is a message alone and what the game caps is the number of signing queries, at `signatureLimit`. Signing is randomized, a fresh `randomnessBits` string per digest attempt, so a message has many valid signatures and a second one on a signed message is a strong forgery. And the secret key holds the sampled secrets rather than precomputed tables, so signing recomputes through the random oracle whatever tree it reads, exactly as `Sig` is specified.
-
-The claim is `127` bits: every adversary with a whole-experiment hash-query bound `q ≥ 1` has forgery probability at most `q / 2^127`. `HasHashQueryBound` bounds every execution path, including key generation, signing and verification, rather than only adversarial hash calls. The theorem is in the classical random-oracle model with independently sampled secrets; equivalence to seed-derived secrets and an instantiation with BLAKE2s are outside this model.
+The claim is `127` bits: every adversary whose whole experiment, key generation, signing and verification included, makes at most `q ≥ 1` hash queries forges with probability at most `q / 2^127`. The model is the classical random-oracle model with independently sampled secrets; the seed derivation of the secrets and the instantiation with BLAKE2s are outside it.
 -/
 
 open OracleComp OracleSpec ENNReal
@@ -79,10 +77,6 @@ def heightAbove (lay : Layer) : Nat := ∑ j : Layer, if j.val < lay.val then la
 
 /-- `sum_{j > lay} h_j`, the index bits below layer `lay`. -/
 def heightBelow (lay : Layer) : Nat := totalHeight - heightAbove lay - layerHeight lay
-
-theorem layerHeight_le (lay : Layer) : layerHeight lay ≤ maxLayerHeight := by
-  unfold layerHeight maxLayerHeight
-  split <;> omega
 
 /-- Keep the first 128 output bits, the low bits of the little-endian bit vector. -/
 def truncateHash (output : HashOutput) : Digest :=
@@ -208,9 +202,7 @@ end TargetSum
 
 /-! ## The algorithms
 
-Key generation, signing and verification exactly as run in the experiment, together with the oracle hash calls they make. Key generation samples the parameter and every secret, builds layer `0`'s tree; signing rebuilds whatever tree it reads rather than caching anything, as specified, so the honest experiment spends `2^44.5` hash queries of its own and its worst-case path, which is what the query bound counts, `2^58`; verification is the ordinary verifier.
-
-The `irreducible` attributes only seal definitions against accidental unfolding in proofs. Lean restricts global reducibility attributes to the defining module, so they must appear here. -/
+Key generation, signing and verification as run in the experiment, with every oracle hash call they make. Key generation samples the parameter and every secret and builds layer `0`'s tree; signing rebuilds whatever tree it reads rather than caching anything; verification is the ordinary verifier. The `irreducible` attributes at the end of the namespace only seal definitions against accidental unfolding in proofs, and Lean restricts global reducibility attributes to the defining module. -/
 
 /-- A hash query takes an arbitrary byte string and returns 32 bytes. -/
 abbrev HashSpec := HashInput →ₒ HashOutput
@@ -246,15 +238,6 @@ def sequenceFin {m : Type → Type} [Monad m] {α : Type} {n : Nat}
       let tail ← sequenceFin fun index : Fin n => computation index.succ
       return Fin.cases head tail
 
-/-- Turn a family of optional results into an optional family: the specification's `Sig` returns nothing as soon as one layer fails. -/
-def traverseOption {α : Type} {n : Nat} (family : Fin n → Option α) : Option (Fin n → α) :=
-  match n with
-  | 0 => some Fin.elim0
-  | n + 1 =>
-      match family 0, traverseOption fun index : Fin n => family index.succ with
-      | some head, some tail => some (Fin.cases head tail)
-      | _, _ => none
-
 /-! ### The index -/
 
 /-- `tau_lay = floor(idx / 2^(sum_{j >= lay} h_j))`. -/
@@ -264,12 +247,9 @@ def treeIndexAt (index : Index) (lay : Layer) : TreeIndex :=
 
 /-- `e_lay = floor(idx / 2^(sum_{j > lay} h_j)) mod 2^h_lay`. -/
 def leafIndexAt (index : Index) (lay : Layer) : LeafIndex :=
-  ⟨index.val / 2 ^ heightBelow lay % 2 ^ layerHeight lay, by
-    have hmod : index.val / 2 ^ heightBelow lay % 2 ^ layerHeight lay < 2 ^ layerHeight lay :=
-      Nat.mod_lt _ (Nat.two_pow_pos _)
-    have hpow : 2 ^ layerHeight lay ≤ 2 ^ maxLayerHeight :=
-      Nat.pow_le_pow_right (by omega) (layerHeight_le lay)
-    omega⟩
+  ⟨index.val / 2 ^ heightBelow lay % 2 ^ layerHeight lay,
+    Nat.lt_of_lt_of_le (Nat.mod_lt _ (Nat.two_pow_pos _)) (Nat.pow_le_pow_right (by omega) (by
+      unfold layerHeight maxLayerHeight; split <;> omega))⟩
 
 /-! ### The one-time signature -/
 
@@ -367,8 +347,6 @@ def treeNode {m : Type → Type} [Monad m] [HasQuery HashSpec m]
       let right ← treeNode parameter lay tree secret level (2 * nodeIdx + 1)
       tweakableHash parameter (.node lay tree (level + 1) nodeIdx) (nodePayload left right)
 
-attribute [irreducible] treeNode
-
 def treeRoot {m : Type → Type} [Monad m] [HasQuery HashSpec m]
     (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex)
     (secret : LeafIndex → ChainIndex → Digest) : m Digest :=
@@ -426,8 +404,6 @@ def ftsNode {m : Type → Type} [Monad m] [HasQuery HashSpec m]
       let left ← ftsNode parameter index tree secret level (2 * nodeIdx)
       let right ← ftsNode parameter index tree secret level (2 * nodeIdx + 1)
       tweakableHash parameter (.ftsNode index tree (level + 1) nodeIdx) (nodePayload left right)
-
-attribute [irreducible] ftsNode
 
 def ftsRootsPayload (roots : FtsTree → Digest) : HashInput :=
   (List.ofFn roots).flatMap digestBytes
@@ -544,8 +520,6 @@ def verify {m : Type → Type} [Monad m] [HasQuery HashSpec m]
     | none => return false
     | some root => return decide (root = publicKey.root)
 
-attribute [irreducible] verify
-
 /-! ### Key generation -/
 
 noncomputable local instance : SampleableType PublicParameter :=
@@ -582,8 +556,6 @@ noncomputable def sampleFtsSecrets : ProbComp (Index → FtsTree → FtsLeaf →
 noncomputable def sampleRandomness : ProbComp Randomness :=
   $ᵗ Randomness
 
-attribute [irreducible] sampleParameter sampleOtsSecrets sampleFtsSecrets sampleRandomness
-
 def rootTree : TreeIndex := ⟨0, Nat.two_pow_pos _⟩
 
 /-- `Gen`: sample the parameter and every secret, and build layer `0`'s tree for the root. The trees below it are built when a signature needs them, so nothing else is computed here. -/
@@ -595,8 +567,6 @@ noncomputable def keygen : OracleComp OracleWorld (PublicKey × SecretKey) := do
     (treeRoot parameter topLayer rootTree (otsSecret topLayer rootTree) :
       OracleComp HashSpec Digest)
   return (⟨root, parameter⟩, ⟨parameter, root, otsSecret, ftsSecret⟩)
-
-attribute [irreducible] keygen
 
 /-! ### Signing -/
 
@@ -659,7 +629,7 @@ def flattenPaths (paths : Layer → Fin maxLayerHeight → Digest) : PathIndex �
     let level := position.val - heightAbove lay
     if hlevel : level < maxLayerHeight then paths lay ⟨level, hlevel⟩ else 0
 
-/-- `Sig(sk, m)`: the digest loop, the few-time opening, one one-time signature per layer, and the assembled signature. -/
+/-- `Sig(sk, m)`: the digest loop, the few-time opening, one one-time signature per layer, and the assembled signature, or nothing as soon as one layer fails. -/
 noncomputable def sign (secretKey : SecretKey) (message : Message) :
     OracleComp OracleWorld (Option Signature) := do
   match ← signDigestLoop digestAttemptLimit secretKey message with
@@ -672,7 +642,7 @@ noncomputable def sign (secretKey : SecretKey) (message : Message) :
         (sequenceFin (fun lay => signLayer secretKey index lay) :
           OracleComp HashSpec
             (Layer → Option (Counter × (ChainIndex → Digest) × (Fin maxLayerHeight → Digest))))
-      match traverseOption layers with
+      match sequenceFin (m := Option) layers with
       | none => return none
       | some parts =>
           return some
@@ -683,7 +653,8 @@ noncomputable def sign (secretKey : SecretKey) (message : Message) :
               chainValue := fun lay => (parts lay).2.1
               authPath := flattenPaths fun lay => (parts lay).2.2 }
 
-attribute [irreducible] sign
+attribute [irreducible] treeNode ftsNode verify sampleParameter sampleOtsSecrets sampleFtsSecrets
+  sampleRandomness keygen sign
 
 end Concrete
 
@@ -693,9 +664,6 @@ end Concrete
 noncomputable def romImpl : QueryImpl OracleWorld (StateT (QueryCache HashSpec) ProbComp) :=
   unifFwdImpl HashSpec +
     (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp))
-
-/-- A signing request is a message alone: the scheme is stateless, and the signer chooses the index by hashing. -/
-abbrev SignRequest := Message
 
 /-- A claimed forgery: a message and a signature. -/
 structure Forgery where
@@ -709,8 +677,8 @@ structure Scheme where
   sign : SecretKey → Message → OracleComp OracleWorld (Option Signature)
   verify : PublicKey → Message → Signature → OracleComp OracleWorld Bool
 
-/-- The signing oracle answers a request with either a signature or `none` if the signer fails. -/
-abbrev SigningSpec := SignRequest →ₒ Option Signature
+/-- A signing request is a message alone, the scheme being stateless, and the answer is a signature or `none` if the signer fails. -/
+abbrev SigningSpec := Message →ₒ Option Signature
 
 /-- A classical adaptive adversary. After receiving the public key, it may query the shared random oracle, request signatures, and finally return a claimed forgery. -/
 structure Adversary where

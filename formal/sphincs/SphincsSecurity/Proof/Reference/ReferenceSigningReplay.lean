@@ -46,7 +46,7 @@ theorem known_honest_public_plan (key : SecretKey) (f : QueryImpl HashSpec Id) (
     simp only [signaturePath, dif_pos hsum] at hp
     have hfin : (⟨heightAbove lay + level.val, hsum⟩ : PathIndex) = position := Fin.ext hposition
     simpa only [hfin, honestNode] using hp.symm
-  simp only [publicSignPlan, hlayers, traverseOption_some, Option.map_some, hftsPath, PublicSigningPlan.finish, parts]
+  simp only [publicSignPlan, hlayers, sequenceFin_some, Option.map_some, hftsPath, PublicSigningPlan.finish, parts]
   congr 1
   change Signature.mk signature.randomness (fun tree => key.ftsSecret index tree (leaves (ftsIndexOf tree)))
     signature.ftsPath signature.counter signature.chainValue

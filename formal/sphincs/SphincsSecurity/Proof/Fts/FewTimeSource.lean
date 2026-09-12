@@ -13,17 +13,17 @@ namespace SphincsSecurity.Concrete
 
 open OracleComp OracleSpec
 
-theorem traverseOption_some {alpha : Type} {count : Nat}
+theorem sequenceFin_some {alpha : Type} {count : Nat}
     (values : Fin count → alpha) :
-    traverseOption (fun position => some (values position)) = some values := by
+    sequenceFin (m := Option) (fun position => some (values position)) = some values := by
   induction count with
   | zero =>
-      rw [traverseOption]
+      rw [sequenceFin]
       congr
       funext position
       exact Fin.elim0 position
   | succ count ih =>
-      rw [traverseOption, ih]
+      rw [sequenceFin, ih]
       change some (Fin.cases (values 0) (fun position => values position.succ)) = some values
       rw [Option.some.injEq]
       funext position

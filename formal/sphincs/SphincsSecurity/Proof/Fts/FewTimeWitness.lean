@@ -11,7 +11,7 @@ namespace SphincsSecurity.Concrete
 
 open OracleComp OracleSpec
 
-abbrev SigningEntry := (request : SignRequest) × SigningSpec.Range request
+abbrev SigningEntry := (request : Message) × SigningSpec.Range request
 theorem digestTree_eq_ftsIndexOf_or_last (tree : DigestTree) :
     (∃ ftsTree : FtsTree, tree = ftsIndexOf ftsTree) ∨ tree = lastDigestTree := by
   by_cases htree : tree.val < ftsTrees - 1

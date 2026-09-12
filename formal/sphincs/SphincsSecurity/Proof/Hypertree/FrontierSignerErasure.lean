@@ -111,7 +111,7 @@ def frontierSignAfterDigest (parameter : PublicParameter) (f : QueryImpl HashSpe
     Option Signature × Nat :=
   let layers := fun lay => frontierSignLayer parameter f ftsSecret words frontier index lay
   let paths := evalWithAnswerFn f (ftsOpen parameter index leaves (ftsSecret index))
-  ((traverseOption (fun lay => (layers lay).1)).map (fun parts =>
+  ((sequenceFin (m := Option) (fun lay => (layers lay).1)).map (fun parts =>
       { randomness := randomness
         ftsSecret := fun tree => ftsSecret index tree (leaves (ftsIndexOf tree))
         ftsPath := paths
@@ -143,7 +143,7 @@ theorem boundaryEval_signAfterDigest_frontier (key : SecretKey) (f : QueryImpl H
   rw [boundaryEval_fst] at hlayersValue
   simp only [signAfterDigest, frontierSignAfterDigest, boundaryEval_bind, boundaryEval_ftsOpen,
     hlayers, hlayersValue]
-  cases hc : traverseOption (fun lay =>
+  cases hc : sequenceFin (m := Option) (fun lay =>
       (frontierSignLayer key.parameter f key.ftsSecret words frontier index lay).1) with
   | none => simp only [boundaryEval_pure, Option.map_none, mul_one, pow_add]
   | some parts => simp only [boundaryEval_pure, Option.map_some, mul_one, pow_add]

@@ -41,7 +41,7 @@ theorem simulateQ_expandedAdversaryImpl_query_bind_inl
   simp [expandedAdversaryImpl]
 
 theorem simulateQ_expandedAdversaryImpl_query_bind_inr
-    (secretKey : SecretKey) (request : SignRequest)
+    (secretKey : SecretKey) (request : Message)
     (continuation : SigningSpec.Range request →
       OracleComp (OracleWorld + SigningSpec) α) :
     simulateQ (expandedAdversaryImpl secretKey)

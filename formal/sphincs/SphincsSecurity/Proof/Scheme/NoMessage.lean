@@ -215,7 +215,7 @@ def signAfterDigest (secretKey : SecretKey) (randomness : Randomness) (index : I
     (leaves : DigestTree → FtsLeaf) : OracleComp HashSpec (Option Signature) := do
   let ftsPath ← ftsOpen secretKey.parameter index leaves (secretKey.ftsSecret index)
   let layers ← sequenceFin fun lay => signLayer secretKey index lay
-  match traverseOption layers with
+  match sequenceFin (m := Option) layers with
   | none => return none
   | some parts =>
       return some

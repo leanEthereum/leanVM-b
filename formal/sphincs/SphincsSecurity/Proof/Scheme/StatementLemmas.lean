@@ -9,6 +9,10 @@ import SphincsSecurity.Statement
 
 namespace SphincsSecurity.Concrete
 
+theorem _root_.SphincsSecurity.layerHeight_le (lay : Layer) : layerHeight lay ≤ maxLayerHeight := by
+  unfold layerHeight maxLayerHeight
+  split <;> omega
+
 attribute [local semireducible] treeNode ftsNode verify sign sampleRandomness
 
 noncomputable local instance instSampleableTypeRandomness_1 : SampleableType Randomness :=
@@ -134,7 +138,7 @@ theorem sign_eq (secretKey : SecretKey) (message : Message) :
                   OracleComp HashSpec
                     (Layer →
                       Option (Counter × (ChainIndex → Digest) × (Fin maxLayerHeight → Digest))))
-              match traverseOption layers with
+              match sequenceFin (m := Option) layers with
               | none => return none
               | some parts =>
                   return some

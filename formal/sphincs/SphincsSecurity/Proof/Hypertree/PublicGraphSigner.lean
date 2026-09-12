@@ -34,7 +34,7 @@ def PublicSigningPlan.finish (plan : PublicSigningPlan) (secrets : FtsTree → D
 def publicSignPlan (known : Labels) (words : OtsReferenceWords) (selections : ReferenceFamily)
     (randomness : Randomness) (index : Index) (leaves : DigestTree → FtsLeaf) : Option PublicSigningPlan × Nat :=
   let layers := fun lay => publicSignLayer known words selections index lay
-  ((traverseOption (fun lay => (layers lay).1)).map (fun parts =>
+  ((sequenceFin (m := Option) (fun lay => (layers lay).1)).map (fun parts =>
       ⟨randomness, knownFtsPath known index leaves, parts⟩),
     28504 + ∑ lay, (layers lay).2)
 
